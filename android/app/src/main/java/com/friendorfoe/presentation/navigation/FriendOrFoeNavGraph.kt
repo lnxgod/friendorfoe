@@ -6,7 +6,10 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.friendorfoe.presentation.ar.ArViewModel
 import com.friendorfoe.presentation.ar.ArViewScreen
+import com.friendorfoe.presentation.ar.PermissionHandler
 import com.friendorfoe.presentation.detail.DetailScreen
 import com.friendorfoe.presentation.history.HistoryScreen
 import com.friendorfoe.presentation.list.ListViewScreen
@@ -25,11 +28,15 @@ fun FriendOrFoeNavGraph(
         startDestination = Screen.ArView.route
     ) {
         composable(Screen.ArView.route) {
-            ArViewScreen(
-                onObjectTapped = { objectId ->
-                    navController.navigate(Screen.Detail.createRoute(objectId))
-                }
-            )
+            val arViewModel: ArViewModel = hiltViewModel()
+            PermissionHandler(viewModel = arViewModel) {
+                ArViewScreen(
+                    onObjectTapped = { objectId ->
+                        navController.navigate(Screen.Detail.createRoute(objectId))
+                    },
+                    viewModel = arViewModel
+                )
+            }
         }
 
         composable(Screen.ListView.route) {
