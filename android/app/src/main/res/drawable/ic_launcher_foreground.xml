@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Radar sweep / crosshair icon representing "Friend or Foe" -->
+    <path
+        android:fillColor="#4FC3F7"
+        android:pathData="M54,27 A27,27 0 1,1 54,81 A27,27 0 1,1 54,27Z"/>
+    <path
+        android:fillColor="#1E3A5F"
+        android:pathData="M54,33 A21,21 0 1,1 54,75 A21,21 0 1,1 54,33Z"/>
+    <path
+        android:fillColor="#4FC3F7"
+        android:pathData="M54,39 A15,15 0 1,1 54,69 A15,15 0 1,1 54,39Z"/>
+    <path
+        android:fillColor="#1E3A5F"
+        android:pathData="M54,45 A9,9 0 1,1 54,63 A9,9 0 1,1 54,45Z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,51 A3,3 0 1,1 54,57 A3,3 0 1,1 54,51Z"/>
+    <!-- Crosshair lines -->
+    <path
+        android:fillColor="#4FC3F7"
+        android:pathData="M52,27 L56,27 L56,45 L52,45 Z"/>
+    <path
+        android:fillColor="#4FC3F7"
+        android:pathData="M52,63 L56,63 L56,81 L52,81 Z"/>
+    <path
+        android:fillColor="#4FC3F7"
+        android:pathData="M27,52 L45,52 L45,56 L27,56 Z"/>
+    <path
+        android:fillColor="#4FC3F7"
+        android:pathData="M63,52 L81,52 L81,56 L63,56 Z"/>
+</vector>

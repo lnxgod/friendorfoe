@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.friendorfoe"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.friendorfoe"
