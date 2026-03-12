@@ -1,0 +1,18 @@
+# FastAPI and server
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# Async HTTP client
+httpx==0.28.1
+
+# Redis (async)
+redis[hiredis]==5.2.1
+
+# PostgreSQL (async)
+asyncpg==0.30.0
+sqlalchemy[asyncio]==2.0.36
+
+# Utilities
+python-dotenv==1.0.1
