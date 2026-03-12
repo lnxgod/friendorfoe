@@ -3,9 +3,12 @@ package com.friendorfoe.presentation.ar
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -97,6 +100,15 @@ class ArViewModel @Inject constructor(
         _selectedObjectId.value = objectId
     }
 
+    // --- Sensor accuracy (magnetometer calibration status) ---
+
+    val sensorAccuracy: StateFlow<Int> = sensorFusionEngine.sensorAccuracy
+
+    // --- Network connectivity status ---
+
+    private val _isOnline = MutableStateFlow(true)
+    val isOnline: StateFlow<Boolean> = _isOnline.asStateFlow()
+
     // --- Device orientation (exposed for UI) ---
 
     val orientation: StateFlow<DeviceOrientation> = sensorFusionEngine.orientation
@@ -181,6 +193,9 @@ class ArViewModel @Inject constructor(
 
         // Start sensor fusion for orientation
         sensorFusionEngine.start()
+
+        // Check network connectivity
+        checkConnectivity()
 
         // Initialize ARCore
         initArCore(activity)
@@ -303,6 +318,46 @@ class ArViewModel @Inject constructor(
         } catch (e: Exception) {
             Log.w(TAG, "Error updating ARCore tracking state", e)
             _arCoreStatus.value = ArCoreStatus.LOST_TRACKING
+        }
+    }
+
+    /**
+     * Reduce sensor polling rate for battery optimization.
+     *
+     * Call when the app goes to the background (e.g., onStop) to reduce
+     * battery drain while still maintaining a minimal level of tracking.
+     * Switches sensors from SENSOR_DELAY_GAME (~20ms) to SENSOR_DELAY_NORMAL (~200ms).
+     */
+    fun reducePolling() {
+        Log.i(TAG, "Reducing sensor polling rate for background")
+        sensorFusionEngine.setSensorDelay(SensorManager.SENSOR_DELAY_NORMAL)
+    }
+
+    /**
+     * Restore full sensor polling rate.
+     *
+     * Call when the app returns to the foreground (e.g., onStart) to resume
+     * high-frequency sensor updates for smooth AR overlay rendering.
+     */
+    fun resumePolling() {
+        Log.i(TAG, "Resuming full sensor polling rate")
+        sensorFusionEngine.setSensorDelay(SensorManager.SENSOR_DELAY_GAME)
+    }
+
+    /**
+     * Check current network connectivity and update [_isOnline].
+     *
+     * Should be called during startSensors() and can be polled periodically.
+     */
+    fun checkConnectivity() {
+        try {
+            val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val network = cm.activeNetwork
+            val capabilities = network?.let { cm.getNetworkCapabilities(it) }
+            _isOnline.value = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to check connectivity", e)
+            _isOnline.value = false
         }
     }
 

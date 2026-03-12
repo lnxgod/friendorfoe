@@ -4,6 +4,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,6 +37,8 @@ class SensorFusionEngine @Inject constructor(
 ) : SensorEventListener {
 
     companion object {
+        private const val TAG = "SensorFusionEngine"
+
         /** Low-pass filter smoothing factor. Higher = more smoothing, slower response. */
         private const val LOW_PASS_ALPHA = 0.8f
 
@@ -44,6 +47,24 @@ class SensorFusionEngine @Inject constructor(
     }
 
     private val _orientation = MutableStateFlow(DeviceOrientation())
+
+    /**
+     * Current magnetometer accuracy level, tracked from [onAccuracyChanged].
+     *
+     * Values correspond to [SensorManager] accuracy constants:
+     * - [SensorManager.SENSOR_STATUS_ACCURACY_HIGH] (3)
+     * - [SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM] (2)
+     * - [SensorManager.SENSOR_STATUS_ACCURACY_LOW] (1)
+     * - [SensorManager.SENSOR_STATUS_UNRELIABLE] (0)
+     *
+     * When accuracy is LOW or UNRELIABLE, the UI should prompt the user
+     * to calibrate the compass by waving the phone in a figure-8 pattern.
+     */
+    private val _sensorAccuracy = MutableStateFlow(SensorManager.SENSOR_STATUS_ACCURACY_HIGH)
+    val sensorAccuracy: StateFlow<Int> = _sensorAccuracy.asStateFlow()
+
+    /** Current sensor delay used for registration. */
+    private var currentSensorDelay: Int = SENSOR_DELAY
 
     /** Current device orientation, updated as sensor data arrives. */
     val orientation: StateFlow<DeviceOrientation> = _orientation.asStateFlow()
@@ -79,13 +100,13 @@ class SensorFusionEngine @Inject constructor(
         val gyroscopeSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
 
         accelerometer?.let {
-            sensorManager.registerListener(this, it, SENSOR_DELAY)
+            sensorManager.registerListener(this, it, currentSensorDelay)
         }
         magnetometer?.let {
-            sensorManager.registerListener(this, it, SENSOR_DELAY)
+            sensorManager.registerListener(this, it, currentSensorDelay)
         }
         gyroscopeSensor?.let {
-            sensorManager.registerListener(this, it, SENSOR_DELAY)
+            sensorManager.registerListener(this, it, currentSensorDelay)
         }
     }
 
@@ -130,7 +151,47 @@ class SensorFusionEngine @Inject constructor(
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // Could log accuracy changes for diagnostics; not critical for operation
+        if (sensor?.type == Sensor.TYPE_MAGNETIC_FIELD) {
+            _sensorAccuracy.value = accuracy
+            Log.d(TAG, "Magnetometer accuracy changed: $accuracy")
+        }
+    }
+
+    /**
+     * Change the sensor sampling delay.
+     *
+     * Use [SensorManager.SENSOR_DELAY_GAME] (~20ms) when the app is in the foreground
+     * and actively displaying the AR overlay. Use [SensorManager.SENSOR_DELAY_NORMAL]
+     * (~200ms) when the app is backgrounded to reduce battery drain.
+     *
+     * If sensors are currently running, they are re-registered with the new delay.
+     *
+     * @param delay One of [SensorManager.SENSOR_DELAY_GAME], [SensorManager.SENSOR_DELAY_NORMAL],
+     *              [SensorManager.SENSOR_DELAY_UI], or [SensorManager.SENSOR_DELAY_FASTEST]
+     */
+    fun setSensorDelay(delay: Int) {
+        if (delay == currentSensorDelay) return
+        currentSensorDelay = delay
+        Log.d(TAG, "Sensor delay changed to $delay")
+
+        // Re-register listeners with the new delay if currently running
+        if (isRunning) {
+            sensorManager.unregisterListener(this)
+
+            val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+            val magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+            val gyroscopeSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+
+            accelerometer?.let {
+                sensorManager.registerListener(this, it, currentSensorDelay)
+            }
+            magnetometer?.let {
+                sensorManager.registerListener(this, it, currentSensorDelay)
+            }
+            gyroscopeSensor?.let {
+                sensorManager.registerListener(this, it, currentSensorDelay)
+            }
+        }
     }
 
     /**
