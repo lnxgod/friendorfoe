@@ -7,6 +7,10 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -15,7 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -60,9 +64,9 @@ fun FriendOrFoeApp() {
             if (showBottomBar) {
                 NavigationBar {
                     val bottomNavItems = listOf(
-                        BottomNavItem("AR View", Screen.ArView.route),
-                        BottomNavItem("List", Screen.ListView.route),
-                        BottomNavItem("History", Screen.History.route)
+                        BottomNavItem("AR View", Screen.ArView.route, Icons.Default.Visibility),
+                        BottomNavItem("List", Screen.ListView.route, Icons.Default.List),
+                        BottomNavItem("History", Screen.History.route, Icons.Default.History)
                     )
 
                     bottomNavItems.forEach { item ->
@@ -79,7 +83,12 @@ fun FriendOrFoeApp() {
                                     restoreState = true
                                 }
                             },
-                            icon = { /* TODO: Add icons */ },
+                            icon = {
+                                Icon(
+                                    imageVector = item.icon,
+                                    contentDescription = item.label
+                                )
+                            },
                             label = { Text(item.label) }
                         )
                     }
@@ -95,5 +104,6 @@ fun FriendOrFoeApp() {
 
 private data class BottomNavItem(
     val label: String,
-    val route: String
+    val route: String,
+    val icon: ImageVector
 )
