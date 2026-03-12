@@ -20,9 +20,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,6 +55,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
+import com.friendorfoe.presentation.detail.AircraftDetailContent
+import com.friendorfoe.presentation.detail.DetailState
+import com.friendorfoe.presentation.detail.DetailViewModel
+import com.friendorfoe.presentation.detail.DroneDetailContent
 import com.friendorfoe.sensor.ScreenPosition
 import kotlin.math.roundToInt
 
@@ -67,10 +76,12 @@ import kotlin.math.roundToInt
  * @param onObjectTapped Callback when a sky object label is tapped, receives object ID
  * @param viewModel The AR ViewModel, injected via Hilt
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ArViewScreen(
     onObjectTapped: (String) -> Unit,
-    viewModel: ArViewModel = hiltViewModel()
+    viewModel: ArViewModel = hiltViewModel(),
+    detailViewModel: DetailViewModel = hiltViewModel()
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -80,6 +91,8 @@ fun ArViewScreen(
     val droneCount by viewModel.droneCount.collectAsStateWithLifecycle()
     val gpsStatus by viewModel.gpsStatus.collectAsStateWithLifecycle()
     val arCoreStatus by viewModel.arCoreStatus.collectAsStateWithLifecycle()
+    val selectedObjectId by viewModel.selectedObjectId.collectAsStateWithLifecycle()
+    val detailState by detailViewModel.detailState.collectAsStateWithLifecycle()
 
     // Manage sensor lifecycle: start on resume, stop on pause
     DisposableEffect(lifecycleOwner) {
@@ -96,6 +109,11 @@ fun ArViewScreen(
         }
     }
 
+    // Load detail when an object is selected
+    LaunchedEffect(selectedObjectId) {
+        selectedObjectId?.let { detailViewModel.loadDetail(it) }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         // Layer 1: CameraX Preview
         CameraPreview(
@@ -105,7 +123,7 @@ fun ArViewScreen(
         // Layer 2: AR Overlay with floating labels
         ArOverlay(
             screenPositions = screenPositions,
-            onLabelTapped = onObjectTapped,
+            onLabelTapped = { objectId -> viewModel.selectObject(objectId) },
             modifier = Modifier.fillMaxSize()
         )
 
@@ -119,6 +137,58 @@ fun ArViewScreen(
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
         )
+    }
+
+    // Bottom sheet for detail card
+    if (selectedObjectId != null) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+
+        ModalBottomSheet(
+            onDismissRequest = { viewModel.selectObject(null) },
+            sheetState = sheetState
+        ) {
+            when (val state = detailState) {
+                is DetailState.Loading -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                }
+                is DetailState.AircraftLoaded -> {
+                    AircraftDetailContent(
+                        aircraft = state.aircraft,
+                        detail = state.detail
+                    )
+                }
+                is DetailState.DroneLoaded -> {
+                    DroneDetailContent(drone = state.drone)
+                }
+                is DetailState.Error -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(text = "Error: ${state.message}")
+                    }
+                }
+                is DetailState.Idle -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -306,9 +376,8 @@ private fun DrawScope.drawLabel(
     )
 
     // Draw text content
-    val labelText = getLabelText(skyObject)
-    val altitudeText = getAltitudeText(skyObject)
-    val distanceText = getDistanceText(labelInfo.screenPosition.distanceMeters)
+    val primaryLine = getLabelText(skyObject)
+    val secondaryLine = getSecondaryLabelText(skyObject)
 
     drawContext.canvas.nativeCanvas.apply {
         val textPaint = android.graphics.Paint().apply {
@@ -326,13 +395,12 @@ private fun DrawScope.drawLabel(
             setShadowLayer(2f, 1f, 1f, android.graphics.Color.BLACK)
         }
 
-        // Primary text (callsign or drone ID)
-        val primaryText = ellipsize(labelText, textPaint, labelWidth - 16f)
+        // Primary text (callsign + type for aircraft, drone ID for drones)
+        val primaryText = ellipsize(primaryLine, textPaint, labelWidth - 16f)
         drawText(primaryText, left + 8f, top + 24f, textPaint)
 
-        // Secondary text (altitude + distance)
-        val secondaryText = "$altitudeText  $distanceText"
-        val secondaryEllipsized = ellipsize(secondaryText, subtextPaint, labelWidth - 16f)
+        // Secondary text (altitude for aircraft, manufacturer for drones)
+        val secondaryEllipsized = ellipsize(secondaryLine, subtextPaint, labelWidth - 16f)
         drawText(secondaryEllipsized, left + 8f, top + 50f, subtextPaint)
     }
 
@@ -341,23 +409,39 @@ private fun DrawScope.drawLabel(
 
 // ---- Label text helpers ----
 
+/**
+ * Primary label line: callsign + aircraft type abbreviation for aircraft,
+ * drone ID for drones.
+ *
+ * Examples:
+ * - Aircraft: "UAL123 B738"
+ * - Drone: "FPV-DRONE-01"
+ */
 private fun getLabelText(skyObject: com.friendorfoe.domain.model.SkyObject): String {
     return when (skyObject) {
-        is Aircraft -> skyObject.callsign ?: skyObject.icaoHex
-        is Drone -> skyObject.manufacturer ?: skyObject.droneId.take(10)
+        is Aircraft -> {
+            val callsign = skyObject.callsign ?: skyObject.icaoHex
+            val type = skyObject.aircraftType
+            if (type != null) "$callsign $type" else callsign
+        }
+        is Drone -> skyObject.droneId.take(14)
     }
 }
 
-private fun getAltitudeText(skyObject: com.friendorfoe.domain.model.SkyObject): String {
-    val altFeet = (skyObject.position.altitudeMeters * 3.281).roundToInt()
-    return "${altFeet}ft"
-}
-
-private fun getDistanceText(distanceMeters: Double): String {
-    return when {
-        distanceMeters < 1000 -> "${distanceMeters.roundToInt()}m"
-        distanceMeters < 10_000 -> String.format("%.1fkm", distanceMeters / 1000)
-        else -> "${(distanceMeters / 1000).roundToInt()}km"
+/**
+ * Secondary label line: altitude for aircraft, manufacturer for drones.
+ *
+ * Examples:
+ * - Aircraft: "35000ft"
+ * - Drone: "DJI"
+ */
+private fun getSecondaryLabelText(skyObject: com.friendorfoe.domain.model.SkyObject): String {
+    return when (skyObject) {
+        is Aircraft -> {
+            val altFeet = (skyObject.position.altitudeMeters * 3.281).roundToInt()
+            "${altFeet}ft"
+        }
+        is Drone -> skyObject.manufacturer ?: "Unknown"
     }
 }
 

@@ -136,7 +136,7 @@ fun DetailScreen(
  * Full detail card for an aircraft, showing identity, route, stats, and detection info.
  */
 @Composable
-private fun AircraftDetailContent(
+internal fun AircraftDetailContent(
     aircraft: Aircraft,
     detail: AircraftDetailDto?
 ) {
@@ -225,7 +225,7 @@ private fun AircraftDetailContent(
  * Full detail card for a drone, showing ID, manufacturer, operator info, and signal data.
  */
 @Composable
-private fun DroneDetailContent(drone: Drone) {
+internal fun DroneDetailContent(drone: Drone) {
     Column(
         modifier = Modifier
             .fillMaxSize()

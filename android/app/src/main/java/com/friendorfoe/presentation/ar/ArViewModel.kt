@@ -1,6 +1,8 @@
 package com.friendorfoe.presentation.ar
 
 import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.Context
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -16,7 +18,12 @@ import com.friendorfoe.sensor.DeviceOrientation
 import com.friendorfoe.sensor.ScreenPosition
 import com.friendorfoe.sensor.SensorFusionEngine
 import com.friendorfoe.sensor.SkyPositionMapper
+import com.google.ar.core.ArCoreApk
+import com.google.ar.core.Session
+import com.google.ar.core.TrackingState
+import com.google.ar.core.exceptions.UnavailableException
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -43,7 +50,8 @@ import javax.inject.Inject
 class ArViewModel @Inject constructor(
     private val sensorFusionEngine: SensorFusionEngine,
     private val skyObjectRepository: SkyObjectRepository,
-    private val locationManager: LocationManager
+    private val locationManager: LocationManager,
+    @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
     companion object {
@@ -59,6 +67,9 @@ class ArViewModel @Inject constructor(
     private val skyPositionMapper = SkyPositionMapper()
     val cameraFovCalculator = CameraFovCalculator()
 
+    // --- ARCore session ---
+    private var arSession: Session? = null
+
     // --- User position ---
 
     private val _userPosition = MutableStateFlow(
@@ -71,10 +82,20 @@ class ArViewModel @Inject constructor(
     private val _gpsStatus = MutableStateFlow(GpsStatus.SEARCHING)
     val gpsStatus: StateFlow<GpsStatus> = _gpsStatus.asStateFlow()
 
-    // --- ARCore status (simplified for v1 -- compass-math primary) ---
+    // --- ARCore status ---
 
-    private val _arCoreStatus = MutableStateFlow(ArCoreStatus.UNAVAILABLE)
+    private val _arCoreStatus = MutableStateFlow(ArCoreStatus.INITIALIZING)
     val arCoreStatus: StateFlow<ArCoreStatus> = _arCoreStatus.asStateFlow()
+
+    // --- Selected object for bottom sheet ---
+
+    private val _selectedObjectId = MutableStateFlow<String?>(null)
+    val selectedObjectId: StateFlow<String?> = _selectedObjectId.asStateFlow()
+
+    /** Set the selected object ID to show in the bottom sheet. Pass null to dismiss. */
+    fun selectObject(objectId: String?) {
+        _selectedObjectId.value = objectId
+    }
 
     // --- Device orientation (exposed for UI) ---
 
@@ -150,13 +171,19 @@ class ArViewModel @Inject constructor(
     /**
      * Start all sensors and detection sources.
      * Call when the AR view becomes active (onResume).
+     *
+     * @param activity Optional Activity reference needed for ARCore session creation.
+     *                 If null, ARCore will be marked UNAVAILABLE and compass-math is used.
      */
     @SuppressLint("MissingPermission")
-    fun startSensors() {
+    fun startSensors(activity: Activity? = null) {
         Log.i(TAG, "Starting sensors and detection")
 
         // Start sensor fusion for orientation
         sensorFusionEngine.start()
+
+        // Initialize ARCore
+        initArCore(activity)
 
         // Request GPS updates
         try {
@@ -205,6 +232,81 @@ class ArViewModel @Inject constructor(
     }
 
     /**
+     * Initialize ARCore session and check device availability.
+     *
+     * If ARCore is supported and installed, creates a Session and begins
+     * monitoring tracking state. If not available, gracefully falls back to
+     * compass-math and marks status as UNAVAILABLE.
+     */
+    private fun initArCore(activity: Activity?) {
+        if (activity == null) {
+            Log.w(TAG, "No Activity provided, cannot initialize ARCore session")
+            _arCoreStatus.value = ArCoreStatus.UNAVAILABLE
+            return
+        }
+
+        try {
+            val availability = ArCoreApk.getInstance().checkAvailability(appContext)
+            when {
+                availability.isSupported -> {
+                    // ARCore is supported; attempt to create a session
+                    _arCoreStatus.value = ArCoreStatus.INITIALIZING
+                    try {
+                        // Ensure ARCore is installed / up to date
+                        val installStatus = ArCoreApk.getInstance()
+                            .requestInstall(activity, true)
+                        if (installStatus == ArCoreApk.InstallStatus.INSTALLED) {
+                            val session = Session(activity)
+                            arSession = session
+                            session.resume()
+                            updateArCoreTrackingState()
+                            Log.i(TAG, "ARCore session created and resumed")
+                        } else {
+                            // Install was requested; will complete on next resume
+                            _arCoreStatus.value = ArCoreStatus.INITIALIZING
+                            Log.i(TAG, "ARCore install requested, waiting for completion")
+                        }
+                    } catch (e: UnavailableException) {
+                        Log.w(TAG, "ARCore unavailable: ${e.message}")
+                        _arCoreStatus.value = ArCoreStatus.UNAVAILABLE
+                        arSession = null
+                    }
+                }
+                else -> {
+                    Log.i(TAG, "ARCore not supported on this device (availability=$availability)")
+                    _arCoreStatus.value = ArCoreStatus.UNAVAILABLE
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking ARCore availability", e)
+            _arCoreStatus.value = ArCoreStatus.UNAVAILABLE
+        }
+    }
+
+    /**
+     * Poll the current ARCore tracking state and update [_arCoreStatus].
+     *
+     * Called after session creation and can be called periodically to refresh status.
+     * Even when ARCore is tracking, compass-math is still used for label placement in v1.
+     */
+    fun updateArCoreTrackingState() {
+        val session = arSession ?: return
+        try {
+            val frame = session.update()
+            val camera = frame.camera
+            _arCoreStatus.value = when (camera.trackingState) {
+                TrackingState.TRACKING -> ArCoreStatus.TRACKING
+                TrackingState.PAUSED -> ArCoreStatus.LOST_TRACKING
+                TrackingState.STOPPED -> ArCoreStatus.LOST_TRACKING
+                else -> ArCoreStatus.LOST_TRACKING
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error updating ARCore tracking state", e)
+            _arCoreStatus.value = ArCoreStatus.LOST_TRACKING
+        }
+    }
+
+    /**
      * Stop all sensors and detection sources.
      * Call when the AR view is no longer visible (onPause).
      */
@@ -212,6 +314,13 @@ class ArViewModel @Inject constructor(
         Log.i(TAG, "Stopping sensors and detection")
         sensorFusionEngine.stop()
         skyObjectRepository.stop()
+
+        // Pause ARCore session (don't destroy it -- will resume on next startSensors)
+        try {
+            arSession?.pause()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error pausing ARCore session", e)
+        }
 
         try {
             locationManager.removeUpdates(locationListener)
@@ -223,6 +332,14 @@ class ArViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         stopSensors()
+
+        // Destroy ARCore session
+        try {
+            arSession?.close()
+            arSession = null
+        } catch (e: Exception) {
+            Log.w(TAG, "Error closing ARCore session", e)
+        }
     }
 }
 
