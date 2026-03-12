@@ -106,6 +106,8 @@ fun ArViewScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            // Stop sensors when leaving AR view (e.g., tab switch)
+            viewModel.stopSensors()
         }
     }
 

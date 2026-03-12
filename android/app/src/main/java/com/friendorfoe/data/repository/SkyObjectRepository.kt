@@ -1,9 +1,12 @@
 package com.friendorfoe.data.repository
 
 import android.util.Log
+import com.friendorfoe.data.local.HistoryDao
+import com.friendorfoe.data.local.HistoryEntity
 import com.friendorfoe.detection.AdsbPoller
 import com.friendorfoe.detection.RemoteIdScanner
 import com.friendorfoe.detection.WifiDroneScanner
+import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.SkyObject
@@ -39,7 +42,8 @@ import javax.inject.Singleton
 class SkyObjectRepository @Inject constructor(
     private val adsbPoller: AdsbPoller,
     private val remoteIdScanner: RemoteIdScanner,
-    private val wifiDroneScanner: WifiDroneScanner
+    private val wifiDroneScanner: WifiDroneScanner,
+    private val historyDao: HistoryDao
 ) {
 
     companion object {
@@ -62,6 +66,13 @@ class SkyObjectRepository @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var collectionJob: Job? = null
 
+    // Track user position for history persistence
+    private var userLatitude: Double = 0.0
+    private var userLongitude: Double = 0.0
+
+    // Track which objects have already been persisted to avoid duplicate writes
+    private val persistedObjectIds = mutableSetOf<String>()
+
     // Internal mutable maps keyed by object ID for efficient updates
     private val adsbObjects = mutableMapOf<String, SkyObject>()
     private val remoteIdObjects = mutableMapOf<String, Drone>()
@@ -80,6 +91,8 @@ class SkyObjectRepository @Inject constructor(
      */
     fun start(latitude: Double, longitude: Double) {
         stop()
+        userLatitude = latitude
+        userLongitude = longitude
         Log.i(TAG, "Starting all detection sources at ($latitude, $longitude)")
 
         // Start ADS-B polling
@@ -105,6 +118,7 @@ class SkyObjectRepository @Inject constructor(
         adsbObjects.clear()
         remoteIdObjects.clear()
         wifiObjects.clear()
+        persistedObjectIds.clear()
         _skyObjects.value = emptyList()
 
         Log.i(TAG, "All detection sources stopped")
@@ -117,6 +131,8 @@ class SkyObjectRepository @Inject constructor(
      * @param longitude New longitude
      */
     fun updatePosition(latitude: Double, longitude: Double) {
+        userLatitude = latitude
+        userLongitude = longitude
         adsbPoller.updatePosition(latitude, longitude)
     }
 
@@ -215,8 +231,74 @@ class SkyObjectRepository @Inject constructor(
         pruneStaleEntries(now)
 
         _skyObjects.value = merged
+
+        // Persist new detections to Room history
+        persistNewDetections(merged)
+
         Log.d(TAG, "Merged sky objects: ${merged.size} total " +
                 "(${adsbObjects.size} ADS-B, ${remoteIdObjects.size} RID, ${wifiObjects.size} WiFi)")
+    }
+
+    /**
+     * Persist newly-seen sky objects to the Room history database.
+     * Only writes each unique object once per session to avoid excessive DB writes.
+     */
+    private fun persistNewDetections(objects: List<SkyObject>) {
+        val newObjects = objects.filter { it.id !in persistedObjectIds }
+        if (newObjects.isEmpty()) return
+
+        scope.launch(Dispatchers.IO) {
+            for (obj in newObjects) {
+                try {
+                    val entity = obj.toHistoryEntity(userLatitude, userLongitude)
+                    historyDao.insert(entity)
+                    persistedObjectIds.add(obj.id)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to persist detection ${obj.id}: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /** Convert a SkyObject to a HistoryEntity for Room persistence. */
+    private fun SkyObject.toHistoryEntity(userLat: Double, userLon: Double): HistoryEntity {
+        return when (this) {
+            is Aircraft -> HistoryEntity(
+                objectId = icaoHex,
+                objectType = "aircraft",
+                detectionSource = source.name.lowercase(),
+                category = category.name.lowercase(),
+                displayName = callsign ?: icaoHex,
+                description = displaySummary(),
+                latitude = position.latitude,
+                longitude = position.longitude,
+                altitudeMeters = position.altitudeMeters,
+                userLatitude = userLat,
+                userLongitude = userLon,
+                distanceMeters = distanceMeters,
+                confidence = confidence,
+                firstSeen = firstSeen.toEpochMilli(),
+                lastSeen = lastUpdated.toEpochMilli(),
+                photoUrl = photoUrl
+            )
+            is Drone -> HistoryEntity(
+                objectId = droneId,
+                objectType = "drone",
+                detectionSource = source.name.lowercase(),
+                category = category.name.lowercase(),
+                displayName = manufacturer ?: "Unknown drone",
+                description = displaySummary(),
+                latitude = position.latitude,
+                longitude = position.longitude,
+                altitudeMeters = position.altitudeMeters,
+                userLatitude = userLat,
+                userLongitude = userLon,
+                distanceMeters = distanceMeters,
+                confidence = confidence,
+                firstSeen = firstSeen.toEpochMilli(),
+                lastSeen = lastUpdated.toEpochMilli()
+            )
+        }
     }
 
     /**

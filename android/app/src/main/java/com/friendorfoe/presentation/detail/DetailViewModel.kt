@@ -3,16 +3,21 @@ package com.friendorfoe.presentation.detail
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.friendorfoe.data.local.HistoryDao
 import com.friendorfoe.data.remote.AircraftDetailDto
 import com.friendorfoe.data.repository.AircraftRepository
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.domain.model.Aircraft
+import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
+import com.friendorfoe.domain.model.ObjectCategory
+import com.friendorfoe.domain.model.Position
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.time.Instant
 import javax.inject.Inject
 
 /**
@@ -25,7 +30,8 @@ import javax.inject.Inject
 @HiltViewModel
 class DetailViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
-    private val aircraftRepository: AircraftRepository
+    private val aircraftRepository: AircraftRepository,
+    private val historyDao: HistoryDao
 ) : ViewModel() {
 
     companion object {
@@ -49,11 +55,15 @@ class DetailViewModel @Inject constructor(
         val skyObject = skyObjectRepository.skyObjects.value
             .firstOrNull { it.id == objectId }
 
-        if (skyObject == null) {
-            _detailState.value = DetailState.Error("Object not found. It may have moved out of range.")
-            return
+        if (skyObject != null) {
+            loadFromLiveSkyObject(skyObject)
+        } else {
+            // Fallback: load from history database (for past detections)
+            loadFromHistory(objectId)
         }
+    }
 
+    private fun loadFromLiveSkyObject(skyObject: com.friendorfoe.domain.model.SkyObject) {
         viewModelScope.launch {
             when (skyObject) {
                 is Aircraft -> {
@@ -66,7 +76,6 @@ class DetailViewModel @Inject constructor(
                             )
                         },
                         onFailure = { error ->
-                            // Show aircraft with local data even if enrichment API fails
                             _detailState.value = DetailState.AircraftLoaded(
                                 aircraft = skyObject,
                                 detail = null
@@ -78,6 +87,65 @@ class DetailViewModel @Inject constructor(
                 is Drone -> {
                     _detailState.value = DetailState.DroneLoaded(drone = skyObject)
                 }
+            }
+        }
+    }
+
+    private fun loadFromHistory(objectId: String) {
+        viewModelScope.launch {
+            try {
+                val historyEntity = historyDao.getByObjectId(objectId)
+                if (historyEntity == null) {
+                    _detailState.value = DetailState.Error("Object not found.")
+                    return@launch
+                }
+
+                val pos = Position(
+                    latitude = historyEntity.latitude,
+                    longitude = historyEntity.longitude,
+                    altitudeMeters = historyEntity.altitudeMeters
+                )
+                val source = try {
+                    DetectionSource.valueOf(historyEntity.detectionSource.uppercase())
+                } catch (_: Exception) { DetectionSource.ADS_B }
+                val category = try {
+                    ObjectCategory.valueOf(historyEntity.category.uppercase())
+                } catch (_: Exception) { ObjectCategory.UNKNOWN }
+                val now = Instant.ofEpochMilli(historyEntity.lastSeen)
+
+                if (historyEntity.objectType == "aircraft") {
+                    val aircraft = Aircraft(
+                        id = historyEntity.objectId,
+                        position = pos,
+                        source = source,
+                        category = category,
+                        confidence = historyEntity.confidence,
+                        firstSeen = Instant.ofEpochMilli(historyEntity.firstSeen),
+                        lastUpdated = now,
+                        distanceMeters = historyEntity.distanceMeters,
+                        icaoHex = historyEntity.objectId,
+                        callsign = historyEntity.displayName,
+                        photoUrl = historyEntity.photoUrl
+                    )
+                    _detailState.value = DetailState.AircraftLoaded(aircraft = aircraft, detail = null)
+                } else {
+                    val drone = Drone(
+                        id = historyEntity.objectId,
+                        position = pos,
+                        source = source,
+                        category = category,
+                        confidence = historyEntity.confidence,
+                        firstSeen = Instant.ofEpochMilli(historyEntity.firstSeen),
+                        lastUpdated = now,
+                        distanceMeters = historyEntity.distanceMeters,
+                        droneId = historyEntity.objectId,
+                        manufacturer = historyEntity.displayName
+                    )
+                    _detailState.value = DetailState.DroneLoaded(drone = drone)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to load from history: ${e.message}", e)
+                _detailState.value = DetailState.Error("Could not load detail.")
             }
         }
     }
