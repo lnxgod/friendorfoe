@@ -1,5 +1,6 @@
 """Aircraft API endpoints."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException, Query
@@ -71,6 +72,17 @@ async def nearby_aircraft(
                 distance_nm=round(dist, 1),
             )
         )
+
+    # Enrich each aircraft with aircraft_type and registration via concurrent lookups
+    async def _enrich(ac: NearbyAircraft) -> None:
+        try:
+            detail = await get_aircraft_detail(ac.icao_hex, callsign=ac.callsign)
+            ac.aircraft_type = detail.aircraft_type
+            ac.registration = detail.registration
+        except Exception:
+            logger.debug("Enrichment failed for %s, skipping", ac.icao_hex)
+
+    await asyncio.gather(*[_enrich(ac) for ac in result], return_exceptions=True)
 
     # Sort by distance
     result.sort(key=lambda a: a.distance_nm if a.distance_nm is not None else float("inf"))

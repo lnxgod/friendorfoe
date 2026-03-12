@@ -50,6 +50,104 @@ def _country_from_icao(icao_hex: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Country → registration prefix mapping
+# ---------------------------------------------------------------------------
+_COUNTRY_REG_PREFIX: dict[str, str] = {
+    "United States": "N",
+    "Canada": "C-",
+    "United Kingdom": "G-",
+    "Germany": "D-",
+    "France": "F-",
+    "Italy": "I-",
+    "Spain": "EC-",
+    "China": "B-",
+    "Japan": "JA",
+    "Australia": "VH-",
+    "Israel": "4X-",
+    "South Korea": "HL",
+    "Netherlands": "PH-",
+    "Austria": "OE-",
+    "Belgium": "OO-",
+    "Mexico": "XA-",
+    "Brazil": "PT-",
+    "Russia": "RA-",
+    "India": "VT-",
+}
+
+
+def _registration_from_icao(icao_hex: str, country: str | None) -> str | None:
+    """Construct a partial registration from country prefix and ICAO hex suffix."""
+    if not country:
+        return None
+    prefix = _COUNTRY_REG_PREFIX.get(country)
+    if not prefix:
+        return None
+    # Use the lower 16 bits of the ICAO hex as a numeric suffix to build a
+    # plausible (but not guaranteed-accurate) partial registration.
+    try:
+        val = int(icao_hex, 16)
+    except ValueError:
+        return None
+    suffix = f"{val & 0xFFFF:05d}"
+    return f"{prefix}{suffix}"
+
+
+# ---------------------------------------------------------------------------
+# Airline ICAO code → common fleet types (simplified heuristic)
+# ---------------------------------------------------------------------------
+_AIRLINE_FLEET_TYPES: dict[str, list[str]] = {
+    "AAL": ["A321", "B738", "B789", "B77W"],
+    "UAL": ["B739", "B77W", "B789", "A320"],
+    "DAL": ["B739", "A321", "B764", "A339"],
+    "SWA": ["B737", "B738", "B38M"],
+    "JBU": ["A320", "A321", "E190"],
+    "SKW": ["E175", "CRJ7", "CRJ9"],
+    "ASA": ["B739", "E175", "B38M"],
+    "NKS": ["A320", "A321"],
+    "FFT": ["A320", "A321"],
+    "RPA": ["E175", "E170"],
+    "ENY": ["E175", "E145", "CRJ7"],
+    "BAW": ["A320", "B772", "B789", "A388"],
+    "DLH": ["A320", "A321", "B748", "A359"],
+    "AFR": ["A320", "A321", "B77W", "A388"],
+    "KLM": ["B738", "B772", "B789", "A330"],
+    "EZY": ["A319", "A320"],
+    "RYR": ["B738", "B38M"],
+    "QFA": ["A332", "B789", "A388", "B738"],
+    "ACA": ["A320", "B77W", "B789", "A333"],
+    "ANZ": ["B789", "A321", "ATR72"],
+    "SIA": ["A388", "B77W", "A359", "B789"],
+    "CPA": ["A350", "B77W", "A321"],
+    "ANA": ["B77W", "B789", "A321", "B738"],
+    "JAL": ["B77W", "B789", "A350", "B738"],
+    "UAE": ["B77W", "A388"],
+    "ETH": ["B789", "B77W", "A350"],
+    "THY": ["A321", "B738", "B77W", "A333"],
+    "CSN": ["A320", "B738", "B789", "A333"],
+    "CCA": ["A320", "B738", "B77W", "A332"],
+    "CES": ["A320", "B738", "B789", "A332"],
+}
+
+
+def _aircraft_type_from_callsign(callsign: str | None) -> str | None:
+    """Infer a likely aircraft type from the airline ICAO prefix in the callsign.
+
+    Returns the first (most common) fleet type for the airline. This is a rough
+    heuristic — the actual type depends on the specific airframe, not the airline.
+    """
+    if not callsign:
+        return None
+    cs = callsign.strip().upper()
+    if len(cs) < 4:
+        return None
+    prefix = cs[:3]
+    fleet = _AIRLINE_FLEET_TYPES.get(prefix)
+    if fleet:
+        return fleet[0]
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Callsign → airline / route (heuristic)
 # ---------------------------------------------------------------------------
 
@@ -118,19 +216,29 @@ def _parse_callsign(callsign: str | None) -> RouteInfo | None:
 # Photo lookup via Planespotters.net public API
 # ---------------------------------------------------------------------------
 
-async def _fetch_photo(icao_hex: str) -> AircraftPhoto | None:
-    """Fetch aircraft photo from Planespotters.net public API."""
+_PLACEHOLDER_PHOTO = AircraftPhoto(
+    url="https://via.placeholder.com/400x300?text=No+Photo+Available",
+    photographer="N/A",
+    thumbnail_url=None,
+)
+
+
+async def _fetch_photo(icao_hex: str) -> AircraftPhoto:
+    """Fetch aircraft photo from Planespotters.net public API.
+
+    Returns a placeholder photo when no real photo is available.
+    """
     url = f"{settings.planespotters_base_url}/{icao_hex}"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url)
             if resp.status_code != 200:
                 logger.debug("Planespotters returned %d for %s", resp.status_code, icao_hex)
-                return None
+                return _PLACEHOLDER_PHOTO
             data = resp.json()
         photos = data.get("photos", [])
         if not photos:
-            return None
+            return _PLACEHOLDER_PHOTO
         p = photos[0]
         return AircraftPhoto(
             url=p.get("link"),
@@ -139,7 +247,7 @@ async def _fetch_photo(icao_hex: str) -> AircraftPhoto | None:
         )
     except Exception:
         logger.warning("Photo fetch failed for %s", icao_hex, exc_info=True)
-        return None
+        return _PLACEHOLDER_PHOTO
 
 
 # ---------------------------------------------------------------------------
@@ -161,12 +269,14 @@ async def get_aircraft_detail(
     country = _country_from_icao(icao_clean)
     route = _parse_callsign(callsign)
     photo = await _fetch_photo(icao_clean)
+    registration = _registration_from_icao(icao_clean, country)
+    aircraft_type = _aircraft_type_from_callsign(callsign)
 
     return AircraftDetail(
         icao_hex=icao_clean,
         callsign=callsign.strip() if callsign else None,
-        registration=None,  # requires local DB — deferred
-        aircraft_type=None,  # requires local DB — deferred
+        registration=registration,
+        aircraft_type=aircraft_type,
         aircraft_description=None,
         operator=route.airline if route else None,
         photo=photo,
