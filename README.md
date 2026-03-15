@@ -1,10 +1,12 @@
 # Friend or Foe — Real-Time Aircraft & Drone Identification
 
+[![Android Build](https://github.com/lnxgod/friendorfoe/actions/workflows/android-build.yml/badge.svg)](https://github.com/lnxgod/friendorfoe/actions/workflows/android-build.yml)
+
 **Point your phone at the sky. Know what's up there.**
 
 Friend or Foe is an open-source, **fully standalone** Android app that identifies aircraft and drones in real time using augmented reality. It combines ADS-B transponder data, FAA Remote ID drone broadcasts, WiFi signal analysis, and on-device visual detection to overlay floating labels on the camera view — telling you what's flying overhead, who operates it, where it's going, and whether it's friend or foe. No backend server, no API keys, no accounts required.
 
-This project was **vibe coded with [Claude](https://claude.ai)** — Anthropic's AI — and released by [GAMECHANGERSai](https://gamechangersai.org) to showcase what's possible when AI meets human creativity.
+This project was **vibe coded with [Claude](https://claude.ai)** — Anthropic's AI — and released by [GAMECHANGERSai](https://gamechangersai.org) to showcase what's possible when AI meets human creativity. See the [CHANGELOG](CHANGELOG.md) for version history.
 
 ### The 72-Hour Speed Run
 
@@ -173,6 +175,7 @@ Update the backend URL in the Android app's network configuration to point to yo
 | DI | Hilt | 2.50 |
 | HTTP | Retrofit + OkHttp | 2.9.0 / 4.12.0 |
 | Database | Room | 2.6.1 |
+| Images | Coil | 2.5.0 |
 | Maps | OSMDroid | 6.1.18 |
 | Async | Coroutines + Flow | 1.7.3 |
 
@@ -214,7 +217,9 @@ friendorfoe/
 │       │   ├── list/                  # Sortable object list
 │       │   ├── detail/                # Full object detail cards
 │       │   ├── history/               # Detection history
-│       │   └── about/                 # App info
+│       │   ├── welcome/               # Welcome/launch screen
+│       │   ├── about/                 # App info
+│       │   └── util/                  # AircraftPhotos, CategoryColors
 │       └── sensor/                    # Sensor fusion & positioning
 ├── backend/                           # Python FastAPI server
 │   └── app/
@@ -224,6 +229,8 @@ friendorfoe/
 │       └── services/
 │           ├── adsb.py                # Multi-source ADS-B fetching
 │           └── enrichment.py          # Aircraft data enrichment
+├── images/                            # Aircraft reference photos (Wikimedia CC)
+├── scripts/                           # Utility scripts (photo downloader)
 ├── macos/                             # macOS companion (early stage)
 └── docs/                              # Design documents
 ```
@@ -269,8 +276,8 @@ This entire project was **vibe coded** with [Claude](https://claude.ai) by Anthr
 | Date | What Happened |
 |------|--------------|
 | **March 12** |  13 commits had landed — **8,500+ lines of code** written in ~2 hours of AI pair-programming. The result: a build-ready APK with AR viewfinder, four detection sources, Bayesian sensor fusion, map view, and history tracking. |
-| **March 14** | Open-source release. Added 120+ aircraft silhouettes, styled map markers with category shapes, permission handling polish, and security review. |
-| **Total** | **22,000+ lines** of Kotlin, Python, and XML. Confirmed real-world detections of commercial aircraft and drones on device. |
+| **March 14** | Open-source release. Added 120+ aircraft silhouettes, styled map markers with category shapes, permission handling polish, and security review. Later: bundled 134 aircraft photos as offline assets, added welcome screen with update checker, and Coil image loading. |
+| **Total** | **23,000+ lines** of Kotlin, Python, and XML. Confirmed real-world detections of commercial aircraft and drones on device. |
 
 **What is vibe coding?** It's a collaborative, conversational approach to software development where a human and an AI build together in real time. Instead of writing every line by hand, you describe what you want, iterate on ideas, debug together, and let the AI handle the boilerplate while you focus on the vision and architecture. It's programming by vibes — and it works.
 
