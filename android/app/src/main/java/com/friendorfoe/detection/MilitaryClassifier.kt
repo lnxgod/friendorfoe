@@ -224,6 +224,15 @@ object MilitaryClassifier {
             CallsignPattern(Regex("^CBP\\d+"), "CBP", isGovernment = true),
             CallsignPattern(Regex("^PAT\\d+"), "BORDER_PATROL", isGovernment = true),
             CallsignPattern(Regex("^COPTER\\d+"), "LAW_ENFORCEMENT", isGovernment = true),
+            CallsignPattern(Regex("^OMAHA\\d*"), "SECRET_SERVICE", isGovernment = true),
+            CallsignPattern(Regex("^SWORD\\d+"), "US_MARSHALS", isGovernment = true),
+            CallsignPattern(Regex("^TIGER\\d+"), "DEA", isGovernment = true),
+            CallsignPattern(Regex("^ICE\\d+"), "ICE", isGovernment = true),
+            CallsignPattern(Regex("^NARC\\d+"), "DRUG_ENFORCEMENT", isGovernment = true),
+            CallsignPattern(Regex("^FED\\d+"), "FEDERAL", isGovernment = true),
+            CallsignPattern(Regex("^TROOPER\\d+"), "STATE_POLICE", isGovernment = true),
+            CallsignPattern(Regex("^NIGHTWATCH"), "NAOC", isGovernment = true),
+            CallsignPattern(Regex("^ANGEL\\d+"), "PRESIDENTIAL_SUPPORT", isGovernment = true),
             // Emergency / medevac
             CallsignPattern(Regex("^LIFEGUARD"), "LIFEGUARD"),
             CallsignPattern(Regex("^MEDEVAC"), "MEDEVAC"),
@@ -257,7 +266,7 @@ object MilitaryClassifier {
             "B1", "B1B", "B2", "B52", "B52H",
             "TU95", "TU160", "TU22",
             // Transport
-            "C130", "C17", "C5", "C5M", "C2",
+            "C130", "C17", "C17A", "C30J", "C5", "C5M", "C2", "C295W",
             "KC10", "KC46", "KC135",
             "A400", "A400M",
             "C160", "AN12", "AN22", "AN124", "AN225",
@@ -271,8 +280,9 @@ object MilitaryClassifier {
             "MI8", "MI17", "MI24", "MI26", "MI28", "KA52",
             "S70",
             // Patrol / Recon / AWACS
-            "E3", "E3A", "E3B",
+            "E3", "E3A", "E3B", "E3CF",
             "E2", "E2C", "E2D",
+            "E4B",
             "E6", "E6B",
             "E8", "E8C",
             "RC135",
@@ -285,6 +295,10 @@ object MilitaryClassifier {
             "T6", "T38", "T45",
             "PC21", "PC7",
             "HAWK",
+            // Attack
+            "AC130", "F117", "AV8B", "EA18",
+            // Misc
+            "C12",
             // Tankers / Special
             "A330MRTT", "MRTT",
             "C295", "CN35"

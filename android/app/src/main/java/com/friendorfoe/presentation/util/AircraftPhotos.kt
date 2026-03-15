@@ -65,7 +65,18 @@ private val AVAILABLE_PHOTOS: Set<String> = setOf(
     "BE36", "BE58",
     "DA40", "DA42",
     "SR20", "SR22", "M20P",
-    "P46T" // Piper Malibu/Meridian
+    "P46T", // Piper Malibu/Meridian
+    // GA twins & singles
+    "BE55", "BE76", "PA44", "PA34", "C310", "C340",
+    "C414", "C421", "C150", "PA18", "M20T",
+    // Bizjets
+    "CL30", "G280", "F900", "F2TH", "H25B", "BE40", "PRM1", "E545",
+    // Military
+    "AC130", "U2", "SR71", "AH64", "UH1", "C12",
+    // Regional jets
+    "E135", "E145", "SF34", "SB20",
+    // Airliners
+    "B734", "B735", "A318", "A342", "A343", "A345", "A346"
 )
 
 /**
