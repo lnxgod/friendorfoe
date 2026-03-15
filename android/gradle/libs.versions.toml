@@ -40,6 +40,9 @@ room = "2.6.1"
 # Coroutines
 coroutines = "1.7.3"
 
+# Image Loading
+coil = "2.6.0"
+
 # Maps
 osmdroid = "6.1.18"
 
@@ -103,6 +106,9 @@ room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 # Coroutines
 coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
 coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+
+# Image Loading
+coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
 
 # Maps
 osmdroid = { group = "org.osmdroid", name = "osmdroid-android", version.ref = "osmdroid" }

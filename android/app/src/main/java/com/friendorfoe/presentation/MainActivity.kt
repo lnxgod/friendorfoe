@@ -109,7 +109,8 @@ fun FriendOrFoeApp() {
 
     // Hide bottom nav on detail and about screens
     val showBottomBar = currentDestination?.route != Screen.Detail.route &&
-        currentDestination?.route != Screen.About.route
+        currentDestination?.route != Screen.About.route &&
+        currentDestination?.route != Screen.Welcome.route
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),

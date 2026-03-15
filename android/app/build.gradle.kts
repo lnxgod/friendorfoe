@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0-beta"
+        versionCode = 3
+        versionName = "0.3.0-beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -112,6 +112,9 @@ dependencies {
     implementation(libs.room.runtime)
     ksp(libs.room.compiler)
     implementation(libs.room.ktx)
+
+    // Image Loading (Coil - Compose-native async image loading)
+    implementation(libs.coil.compose)
 
     // Maps (osmdroid - OpenStreetMap, no API key needed)
     implementation(libs.osmdroid)

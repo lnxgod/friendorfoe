@@ -30,4 +30,7 @@ sealed class Screen(val route: String) {
 
     /** Help / About screen */
     data object About : Screen("about")
+
+    /** Welcome / launch screen */
+    data object Welcome : Screen("welcome")
 }

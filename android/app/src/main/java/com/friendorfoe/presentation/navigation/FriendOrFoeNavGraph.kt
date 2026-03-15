@@ -15,6 +15,7 @@ import com.friendorfoe.presentation.detail.DetailScreen
 import com.friendorfoe.presentation.history.HistoryScreen
 import com.friendorfoe.presentation.list.ListViewScreen
 import com.friendorfoe.presentation.map.MapViewScreen
+import com.friendorfoe.presentation.welcome.WelcomeScreen
 
 /**
  * Main navigation graph for the app.
@@ -27,8 +28,18 @@ fun FriendOrFoeNavGraph(
 ) {
     NavHost(
         navController = navController,
-        startDestination = Screen.ArView.route
+        startDestination = Screen.Welcome.route
     ) {
+        composable(Screen.Welcome.route) {
+            WelcomeScreen(
+                onGetStarted = {
+                    navController.navigate(Screen.ArView.route) {
+                        popUpTo(Screen.Welcome.route) { inclusive = true }
+                    }
+                }
+            )
+        }
+
         composable(Screen.ArView.route) {
             val arViewModel: ArViewModel = hiltViewModel()
             PermissionHandler(viewModel = arViewModel) {
