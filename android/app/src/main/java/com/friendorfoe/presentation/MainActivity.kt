@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.FlightTakeoff
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -110,7 +111,8 @@ fun FriendOrFoeApp() {
     // Hide bottom nav on detail and about screens
     val showBottomBar = currentDestination?.route != Screen.Detail.route &&
         currentDestination?.route != Screen.About.route &&
-        currentDestination?.route != Screen.Welcome.route
+        currentDestination?.route != Screen.Welcome.route &&
+        currentDestination?.route != Screen.DroneGuide.route
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -145,6 +147,22 @@ fun FriendOrFoeApp() {
                                 )
                             },
                             label = { Text(item.label) }
+                        )
+                    }
+
+                    // Drone Guide icon
+                    IconButton(
+                        onClick = {
+                            navController.navigate(Screen.DroneGuide.createRoute()) {
+                                launchSingleTop = true
+                            }
+                        },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FlightTakeoff,
+                            contentDescription = "Drone Guide",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 

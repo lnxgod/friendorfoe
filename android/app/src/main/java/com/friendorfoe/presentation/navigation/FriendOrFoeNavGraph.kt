@@ -15,6 +15,7 @@ import com.friendorfoe.presentation.detail.DetailScreen
 import com.friendorfoe.presentation.history.HistoryScreen
 import com.friendorfoe.presentation.list.ListViewScreen
 import com.friendorfoe.presentation.map.MapViewScreen
+import com.friendorfoe.presentation.drones.DroneReferenceScreen
 import com.friendorfoe.presentation.welcome.WelcomeScreen
 
 /**
@@ -81,6 +82,24 @@ fun FriendOrFoeNavGraph(
         }
 
         composable(
+            route = Screen.DroneGuide.route,
+            arguments = listOf(
+                navArgument("manufacturer") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                    nullable = true
+                }
+            )
+        ) { backStackEntry ->
+            val manufacturer = backStackEntry.arguments?.getString("manufacturer")
+                ?.takeIf { it.isNotBlank() }
+            DroneReferenceScreen(
+                onBack = { navController.popBackStack() },
+                initialManufacturerFilter = manufacturer
+            )
+        }
+
+        composable(
             route = Screen.Detail.route,
             arguments = listOf(
                 navArgument("objectId") { type = NavType.StringType }
@@ -89,7 +108,10 @@ fun FriendOrFoeNavGraph(
             val objectId = backStackEntry.arguments?.getString("objectId") ?: return@composable
             DetailScreen(
                 objectId = objectId,
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                onNavigateToDroneGuide = { manufacturer ->
+                    navController.navigate(Screen.DroneGuide.createRoute(manufacturer))
+                }
             )
         }
     }

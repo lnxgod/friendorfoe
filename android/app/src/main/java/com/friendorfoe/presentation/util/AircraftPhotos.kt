@@ -9,10 +9,18 @@ private val AVAILABLE_PHOTOS: Set<String> = setOf(
     "B738", "B737", "B739", "B38M", "B39M",
     "A320", "A321", "A319", "A20N", "A21N",
     "B752", "B753",
+    "B712", // Boeing 717
+    "A220", "BCS1", "BCS3", // Airbus A220 family
+    "MD80", // McDonnell Douglas MD-80
     // Widebody
     "B77W", "B772", "B77L", "B788", "B789", "B78X",
     "A332", "A333", "A339", "A359", "A35K", "A388",
     "B744", "B748", "B763", "B764",
+    "MD11", "DC10", // McDonnell Douglas widebody
+    "A306", "A30B", "A310", // Airbus classics
+    "B703", // Boeing 707
+    "SU95", // Sukhoi Superjet
+    "RJ85", "RJ1H", // Avro RJ / BAe 146
     // Regional
     "CRJ2", "CRJ7", "CRJ9", "CRJX",
     "E170", "E75L", "E75S", "E190", "E195", "E290", "E295",
@@ -20,17 +28,22 @@ private val AVAILABLE_PHOTOS: Set<String> = setOf(
     "AT72", "AT76", "AT43",
     "DH8A", "DH8B", "DH8C", "DH8D",
     "BE20", "BE30", "C208", "PC12", "SW4",
+    "TBM7", "TBM8", "TBM9", // Daher TBM family
+    "PC6", // Pilatus Porter
     // Bizjet
     "GLF4", "GLF5", "GLF6", "GLEX",
     "CL35", "CL60", "C56X", "C560", "C680", "C700",
     "LJ35", "LJ45", "LJ60",
     "FA7X", "FA8X", "E55P", "HDJT", "C510",
     "GA5C", "GA6C",
+    "C525", "C25A", "C25B", // Citation CJ variants
     // Helicopter
     "R44", "R22", "EC35", "EC45", "EC30",
     "AS50", "A109", "A139",
     "B06", "B407", "B429",
     "S76", "S92", "BK17",
+    "UH60", "H60", "CH47", // Military helicopters
+    "V22", // V-22 Osprey
     // Fighter / military
     "F16", "F15", "F18", "FA18", "F22", "F35",
     "EUFI", "RFAL",
@@ -39,16 +52,20 @@ private val AVAILABLE_PHOTOS: Set<String> = setOf(
     "A10", "C130H", "F117",
     "AV8B", "EA18", "E2C", "E3CF", "E6B",
     "KC10", "KC46", "KC135",
+    "P8", "P8A", // P-8 Poseidon
+    "MQ9", // MQ-9 Reaper
     // Cargo
-    "C130", "C17", "C5", "C5M",
+    "C130", "C17", "C17A", "C5", "C5M",
     "A400", "A400M", "IL76", "AN124", "C295",
+    "C30J", "C295W", // C-130J / C-295 variants
     // Lightplane
     "C172", "C182", "C152",
     "P28A", "PA28", "PA32",
     "C210", "C206",
     "BE36", "BE58",
     "DA40", "DA42",
-    "SR20", "SR22", "M20P"
+    "SR20", "SR22", "M20P",
+    "P46T" // Piper Malibu/Meridian
 )
 
 /**

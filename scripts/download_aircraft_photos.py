@@ -166,9 +166,52 @@ TYPE_CODE_SEARCH = {
     "SR20": "Cirrus SR20",
     "SR22": "Cirrus SR22",
     "M20P": "Mooney M20",
+    # === New additions ===
+    # McDonnell Douglas classics
+    "MD80": "McDonnell Douglas MD-80",
+    "MD11": "McDonnell Douglas MD-11",
+    "DC10": "McDonnell Douglas DC-10",
+    # Boeing 717
+    "B712": "Boeing 717",
+    # Airbus A220 family
+    "A220": "Airbus A220",
+    "BCS1": "Airbus A220-100",
+    "BCS3": "Airbus A220-300",
+    # Airbus widebody classics
+    "A306": "Airbus A300-600",
+    "A30B": "Airbus A300",
+    "A310": "Airbus A310",
+    # Boeing 707
+    "B703": "Boeing 707",
+    # Avro RJ / BAe 146
+    "RJ85": "Avro RJ85",
+    "RJ1H": "Avro RJ100",
+    # Sukhoi Superjet
+    "SU95": "Sukhoi Superjet 100",
+    # Military additions
+    "C17A": "Boeing C-17 Globemaster III",
+    "P8": "Boeing P-8 Poseidon",
+    "P8A": "Boeing P-8A Poseidon",
+    "V22": "Bell Boeing V-22 Osprey",
+    "UH60": "Sikorsky UH-60 Black Hawk",
+    "H60": "Sikorsky H-60 Black Hawk",
+    "CH47": "Boeing CH-47 Chinook",
+    "MQ9": "General Atomics MQ-9 Reaper",
+    "C30J": "Lockheed Martin C-130J Super Hercules",
+    "C295W": "Airbus C-295",
+    # General aviation additions
+    "PC6": "Pilatus PC-6 Porter",
+    "TBM7": "Socata TBM 700",
+    "TBM8": "Daher TBM 850",
+    "TBM9": "Daher TBM 900",
+    "P46T": "Piper PA-46 Malibu Meridian",
+    # Citation CJ variants
+    "C525": "Cessna CitationJet CJ1",
+    "C25A": "Cessna Citation CJ2",
+    "C25B": "Cessna Citation CJ3",
 }
 
-OUTPUT_DIR = Path(__file__).parent.parent / "images" / "aircraft"
+OUTPUT_DIR = Path(__file__).parent.parent / "android" / "app" / "src" / "main" / "assets" / "aircraft"
 
 
 def api_request(url: str) -> dict | None:
