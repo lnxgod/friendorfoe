@@ -6,7 +6,7 @@
 
 Friend or Foe is an open-source, **fully standalone** Android app that identifies aircraft and drones in real time using augmented reality. It combines ADS-B transponder data, FAA Remote ID drone broadcasts, WiFi signal analysis, and on-device visual detection to overlay floating labels on the camera view — telling you what's flying overhead, who operates it, where it's going, and whether it's friend or foe. No backend server, no API keys, no accounts required.
 
-This project was **vibe coded with [Claude](https://claude.ai)** — Anthropic's AI — and released by [GAMECHANGERSai](https://gamechangersai.org) to showcase what's possible when AI meets human creativity. See the [CHANGELOG](CHANGELOG.md) for version history.
+This project was **built with AI** — not just one, but all of them. Claude wrote the code, Grok shaped the design, Codex reviewed the security, and Gemini helped pick the tech stack. Released by [GAMECHANGERSai](https://gamechangersai.org) to showcase what's possible when AI meets human creativity. See the [CHANGELOG](CHANGELOG.md) for version history.
 
 ### The 72-Hour Speed Run
 
@@ -271,7 +271,7 @@ Contributions are welcome! Whether it's bug fixes, new detection methods, UI imp
 
 ## Built With AI
 
-This entire project was **vibe coded** with [Claude](https://claude.ai) by Anthropic — and the git history tells the story:
+This project wasn't built with just one AI — it was built with **all of them**. We tested every major AI platform and used each one where it was strongest. The git history tells the story:
 
 | Date | What Happened |
 |------|--------------|
@@ -279,11 +279,21 @@ This entire project was **vibe coded** with [Claude](https://claude.ai) by Anthr
 | **March 14** | Open-source release. Added 120+ aircraft silhouettes, styled map markers with category shapes, permission handling polish, and security review. Later: bundled 134 aircraft photos as offline assets, added welcome screen with update checker, and Coil image loading. |
 | **Total** | **23,000+ lines** of Kotlin, Python, and XML. Confirmed real-world detections of commercial aircraft and drones on device. |
 
-**What is vibe coding?** It's a collaborative, conversational approach to software development where a human and an AI build together in real time. Instead of writing every line by hand, you describe what you want, iterate on ideas, debug together, and let the AI handle the boilerplate while you focus on the vision and architecture. It's programming by vibes — and it works.
+### AI Roles
 
-Friend or Foe was built with Claude acting as a tireless pair-programming partner — from initial architecture design through sensor fusion algorithms, Bayesian math, vector drawable artwork, and the final security audit before open-sourcing. Every file in this repo was shaped by human-AI collaboration.
+| AI | Role |
+|----|------|
+| **[Claude](https://claude.ai)** (Anthropic) | Primary coding agent — architecture, implementation, pair-programming |
+| **[Grok](https://grok.com)** (xAI) | Design direction and research |
+| **[Codex](https://chatgpt.com)** (OpenAI) | Security review and consulting |
+| **[Gemini](https://gemini.google.com)** (Google) | Tech stack research — evaluating libraries, frameworks, and approaches |
+| **[ML Kit](https://developers.google.com/ml-kit)** (Google) | On-device visual object detection (runs directly on the phone) |
 
-**We believe this is the future of software development**, and we're open-sourcing this project so you can see what that looks like in practice.
+**What is vibe coding?** It's a collaborative, conversational approach to software development where a human and AI build together in real time. Instead of writing every line by hand, you describe what you want, iterate on ideas, debug together, and let the AI handle the boilerplate while you focus on the vision and architecture. It's programming by vibes — and it works.
+
+Friend or Foe was built with multiple AIs, each contributing where they excel. Claude served as the primary coding partner — from initial architecture through sensor fusion algorithms, Bayesian math, and vector drawable artwork. Grok helped shape the design direction. Codex performed the security audit before open-sourcing. Gemini researched which technologies and frameworks to use. And ML Kit runs on-device, powering visual detection without any cloud dependency. Every file in this repo was shaped by human-AI collaboration.
+
+**We believe the future of software development is using the right AI for the right job**, and we're open-sourcing this project so you can see what that looks like in practice.
 
 ---
 
@@ -355,5 +365,5 @@ You are free to use, modify, and distribute this software for any purpose. We ju
 
 ---
 
-*Made with curiosity, code, and Claude.*
+*Made with curiosity, code, and every AI we could get our hands on.*
 *Released with love by [GAMECHANGERSai](https://gamechangersai.org).*

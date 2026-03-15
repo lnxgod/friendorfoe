@@ -22,7 +22,9 @@ All of this gets combined using math (Bayesian sensor fusion) to give you a conf
 
 **The backstory is kind of wild:**
 
-I built this with an AI called Claude in about 72 hours. The first working version -- 8,500 lines of code -- was written in a single 2-hour session on March 12. By March 14 it was polished and open-sourced. The entire codebase is now over 22,000 lines.
+I built this in about 72 hours -- using not just one AI, but all of them. Claude (by Anthropic) wrote the code as my pair-programming partner. Grok (by xAI) helped with the design. Codex (by OpenAI) reviewed the security. Gemini (by Google) helped me figure out which technologies to use. And ML Kit (also Google) runs right on the phone for visual detection -- no cloud needed.
+
+The first working version -- 8,500 lines of code -- was written in a single 2-hour session on March 12. By March 14 it was polished and open-sourced. The entire codebase is now over 22,000 lines. Each AI brought something different, and the result is better than any one of them could have done alone.
 
 **It's completely free:**
 - No subscriptions

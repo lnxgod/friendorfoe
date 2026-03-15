@@ -8,7 +8,9 @@ I just open-sourced Friend or Foe -- an Android AR app that identifies aircraft 
 
 ADS-B transponders. FAA Remote ID. WiFi drone detection. Visual ML. All fused with Bayesian math and overlaid on your camera in augmented reality.
 
-The wild part? I vibe coded the entire thing with Claude in 72 hours.
+The wild part? I vibe coded the entire thing in 72 hours -- using every major AI.
+
+Claude wrote the code. Grok shaped the design. Codex did the security review. Gemini picked the tech stack. ML Kit runs on-device for visual detection.
 
 13 commits. 8,500+ lines of code. 2 hours of AI pair-programming. First commit to working APK in a single afternoon.
 
@@ -48,6 +50,8 @@ The tech under the hood:
 - OpenStreetMap with category-shaped markers and FOV cone overlay
 - Hilt DI, CameraX, Retrofit, Coroutines + Flow
 
+The multi-AI approach: Claude (Anthropic) as coding agent, Grok (xAI) for design research, Codex (OpenAI) for security review, Gemini (Google) for tech stack research. ML Kit runs on-device for visual detection -- AI isn't just in the cloud.
+
 All built by a nonprofit (GAMECHANGERSai) to show what AI + human creativity can do.
 
 Fork it. Build on it. Point it at the sky.
@@ -56,7 +60,7 @@ Fork it. Build on it. Point it at the sky.
 
 ## Shorter Single-Post Version (if you prefer one tweet)
 
-I vibe coded a 22,000-line Android app with Claude in 72 hours.
+I vibe coded a 22,000-line Android app in 72 hours -- using Claude, Grok, Codex, Gemini, and ML Kit. Every major AI, each doing what it does best.
 
 Friend or Foe: point your phone at the sky and it identifies aircraft + drones in real time using AR.
 
@@ -66,7 +70,7 @@ Fully standalone. No API keys. Free. Open-source.
 
 https://github.com/lnxgod/friendorfoe
 
-#ADSB #drones #buildinpublic #vibecoding #opensource
+#ADSB #drones #buildinpublic #vibecoding #opensource #multiAI
 
 ---
 

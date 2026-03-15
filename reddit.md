@@ -73,7 +73,15 @@ It confirmed real-world detections of commercial aircraft and drones on a physic
 
 **The vibe coding part:**
 
-This wasn't "AI writes some boilerplate." Claude was a full pair-programming partner -- architecture design, sensor fusion algorithms, Bayesian math, vector drawable artwork, ARCore compass-math hybrid fallback, the works. Every file was shaped by human-AI collaboration. I focused on vision and architecture, Claude handled the implementation at speed.
+This wasn't "AI writes some boilerplate" -- and it wasn't just one AI either. I used every major AI platform, each for what it does best:
+
+- **Claude** (Anthropic) was the primary coding agent -- architecture design, sensor fusion algorithms, Bayesian math, vector drawable artwork, ARCore compass-math hybrid fallback, the full implementation
+- **Grok** (xAI) helped with design direction and research
+- **Codex** (OpenAI) performed the security review before open-sourcing
+- **Gemini** (Google) helped research which technologies, libraries, and frameworks to use
+- **ML Kit** (Google) runs on-device for visual object detection -- AI that lives on the phone, not in the cloud
+
+Every file was shaped by human-AI collaboration. I focused on vision and architecture, the AIs handled their specialties at speed.
 
 **It's fully standalone** -- no backend, no API keys, no accounts. Install the APK and point it at the sky.
 
@@ -103,10 +111,10 @@ Happy to answer questions about the process, the architecture, or the AI workflo
 **Angle:** Weekend project that escalated. Zero to working app in 72 hours, now 22,000+ lines and open-source. Built with AI pair programming. Free, no API keys, standalone Android app. Great example of a side project with real-world utility.
 
 ### r/artificial
-**Angle:** What AI-assisted development actually looks like in practice. Not a toy demo -- a production Android app with AR, sensor fusion, ML, and four detection systems. 8,500+ lines in 2 hours of pair-programming. The git history proves it. Open-sourced so people can see every line.
+**Angle:** What multi-AI development actually looks like in practice. Not a toy demo -- a production Android app with AR, sensor fusion, ML, and four detection systems. Built using every major AI: Claude for coding, Grok for design, Codex for security review, Gemini for tech research, and ML Kit running on-device. The best results came from using the right AI for the right job. 8,500+ lines in 2 hours of pair-programming. The git history proves it. Open-sourced so people can see every line.
 
 ### r/ClaudeAI
-**Angle:** Vibe coding showcase. Built entirely with Claude as a pair-programming partner. Architecture design through implementation, sensor fusion math, vector drawable artwork, security audit. 22,000+ lines in 72 hours. Show the git timeline. This is what Claude Code can do with a motivated human driving.
+**Angle:** Vibe coding showcase. Claude was the primary coding agent -- architecture design through implementation, sensor fusion math, vector drawable artwork. 22,000+ lines in 72 hours. But we also used Grok for design, Codex for security review, and Gemini for tech research. Claude did the heavy lifting, and the multi-AI approach made the whole project stronger. Show the git timeline. This is what Claude Code can do with a motivated human driving.
 
 ### r/opensource
 **Angle:** New MIT-licensed project from a 501(c)(3) nonprofit. Full-featured Android AR app for aircraft/drone identification. 22,000+ lines of Kotlin + Python. No API keys required, connects to free public data sources. Looking for contributors -- ideas for additional type code mappings, drone manufacturer fingerprints, iOS port, night mode.
