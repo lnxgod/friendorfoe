@@ -209,6 +209,48 @@ TYPE_CODE_SEARCH = {
     "C525": "Cessna CitationJet CJ1",
     "C25A": "Cessna Citation CJ2",
     "C25B": "Cessna Citation CJ3",
+    # === Wave 2 additions ===
+    # GA twins & singles
+    "BE55": "Beechcraft Baron 55",
+    "BE76": "Beechcraft Duchess",
+    "PA44": "Piper Seminole",
+    "PA34": "Piper Seneca",
+    "C310": "Cessna 310",
+    "C340": "Cessna 340",
+    "C414": "Cessna 414",
+    "C421": "Cessna 421",
+    "C150": "Cessna 150",
+    "PA18": "Piper Super Cub",
+    "M20T": "Mooney Acclaim",
+    # Bizjets
+    "CL30": "Bombardier Challenger 300",
+    "G280": "Gulfstream G280",
+    "F900": "Dassault Falcon 900",
+    "F2TH": "Dassault Falcon 2000",
+    "H25B": "Hawker 800XP",
+    "BE40": "Beechjet 400A",
+    "PRM1": "Raytheon Premier I",
+    "E545": "Embraer Legacy 500",
+    # Military
+    "AC130": "Lockheed AC-130 Gunship",
+    "U2": "Lockheed U-2 Dragon Lady",
+    "SR71": "Lockheed SR-71 Blackbird",
+    "AH64": "Boeing AH-64 Apache",
+    "UH1": "Bell UH-1 Huey",
+    "C12": "Beechcraft C-12 Huron",
+    # Regional jets
+    "E135": "Embraer ERJ-135",
+    "E145": "Embraer ERJ-145",
+    "SF34": "Saab 340",
+    "SB20": "Saab 2000",
+    # Airliners
+    "B734": "Boeing 737-400",
+    "B735": "Boeing 737-500",
+    "A318": "Airbus A318",
+    "A342": "Airbus A340-200",
+    "A343": "Airbus A340-300",
+    "A345": "Airbus A340-500",
+    "A346": "Airbus A340-600",
 }
 
 OUTPUT_DIR = Path(__file__).parent.parent / "android" / "app" / "src" / "main" / "assets" / "aircraft"
