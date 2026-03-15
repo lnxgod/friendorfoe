@@ -27,5 +27,6 @@ class GetNearbyAircraftUseCase @Inject constructor(
         radiusNm: Int = 50
     ): Result<List<Aircraft>> {
         return aircraftRepository.getNearbyAircraft(latitude, longitude, radiusNm)
+            .map { it.aircraft }
     }
 }

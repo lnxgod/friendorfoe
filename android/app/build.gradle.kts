@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0-beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -48,6 +48,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {
@@ -67,6 +68,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.activity.compose)
 
     // Compose
@@ -91,6 +93,9 @@ dependencies {
     // ARCore
     implementation(libs.arcore)
 
+    // ML Kit - Visual Object Detection
+    implementation(libs.mlkit.objectdetection)
+
     // Hilt - Dependency Injection
     implementation(libs.hilt.android)
     ksp(libs.hilt.android.compiler)
@@ -107,6 +112,9 @@ dependencies {
     implementation(libs.room.runtime)
     ksp(libs.room.compiler)
     implementation(libs.room.ktx)
+
+    // Maps (osmdroid - OpenStreetMap, no API key needed)
+    implementation(libs.osmdroid)
 
     // Coroutines
     implementation(libs.coroutines.core)

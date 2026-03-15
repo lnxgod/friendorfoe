@@ -3,6 +3,7 @@ package com.friendorfoe.di
 import android.content.Context
 import com.friendorfoe.data.local.FriendOrFoeDatabase
 import com.friendorfoe.data.local.HistoryDao
+import com.friendorfoe.data.local.TrackingDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -26,5 +27,10 @@ object DatabaseModule {
     @Provides
     fun provideHistoryDao(database: FriendOrFoeDatabase): HistoryDao {
         return database.historyDao()
+    }
+
+    @Provides
+    fun provideTrackingDao(database: FriendOrFoeDatabase): TrackingDao {
+        return database.trackingDao()
     }
 }

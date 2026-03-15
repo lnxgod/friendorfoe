@@ -37,4 +37,10 @@ sealed class SkyObject {
 
     /** Short summary for list view */
     abstract fun displaySummary(): String
+
+    /** Create a copy with the given distance value filled in. */
+    fun copyWithDistance(distance: Double): SkyObject = when (this) {
+        is Aircraft -> copy(distanceMeters = distance)
+        is Drone -> copy(distanceMeters = distance)
+    }
 }

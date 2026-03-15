@@ -1,0 +1,38 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="100dp"
+    android:viewportWidth="200"
+    android:viewportHeight="100">
+    <!-- CRJ/E175 side profile: shorter fuselage, smaller proportions -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="
+            M20,50
+            Q20,46 26,44
+            L60,42
+            Q66,40 70,40
+            L165,42
+            Q174,42 178,44
+            L184,48
+            Q186,50 184,52
+            L178,54
+            L165,54
+            L158,56
+            L140,58
+            Q135,60 130,58
+            L126,56
+            L100,54
+            L85,54
+            L80,56
+            L65,58
+            Q60,60 56,58
+            L52,56
+            L40,54
+            L30,52
+            Q20,52 20,50
+            Z
+            M68,40 L64,32 L88,30 L96,34 L96,38 L90,40 Z
+            M68,58 L64,66 L88,68 L96,64 L96,58 L90,56 Z
+            M165,42 L168,36 L178,34 L182,40 Z
+            M165,54 L168,60 L178,62 L182,56 Z" />
+</vector>

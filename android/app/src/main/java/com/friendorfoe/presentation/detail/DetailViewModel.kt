@@ -19,6 +19,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.time.Instant
 import javax.inject.Inject
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * ViewModel for the Detail screen.
@@ -41,6 +45,12 @@ class DetailViewModel @Inject constructor(
     private val _detailState = MutableStateFlow<DetailState>(DetailState.Idle)
     val detailState: StateFlow<DetailState> = _detailState.asStateFlow()
 
+    private val _nearbyCandidates = MutableStateFlow<List<Drone>>(emptyList())
+    val nearbyCandidates: StateFlow<List<Drone>> = _nearbyCandidates.asStateFlow()
+
+    private val _positionTrail = MutableStateFlow<List<SkyObjectRepository.TrailPoint>>(emptyList())
+    val positionTrail: StateFlow<List<SkyObjectRepository.TrailPoint>> = _positionTrail.asStateFlow()
+
     /**
      * Load detail for the given object ID.
      *
@@ -50,23 +60,32 @@ class DetailViewModel @Inject constructor(
     fun loadDetail(objectId: String) {
         if (_detailState.value is DetailState.Loading) return
 
-        _detailState.value = DetailState.Loading
+        _nearbyCandidates.value = emptyList()
+        _positionTrail.value = emptyList()
 
         val skyObject = skyObjectRepository.skyObjects.value
             .firstOrNull { it.id == objectId }
 
         if (skyObject != null) {
+            // Live object — show immediately, no Loading state
             loadFromLiveSkyObject(skyObject)
         } else {
             // Fallback: load from history database (for past detections)
+            _detailState.value = DetailState.Loading
             loadFromHistory(objectId)
         }
     }
 
     private fun loadFromLiveSkyObject(skyObject: com.friendorfoe.domain.model.SkyObject) {
-        viewModelScope.launch {
-            when (skyObject) {
-                is Aircraft -> {
+        when (skyObject) {
+            is Aircraft -> {
+                // Show data immediately — no spinner for live aircraft
+                _detailState.value = DetailState.AircraftLoaded(
+                    aircraft = skyObject,
+                    detail = null
+                )
+                // Enrich asynchronously
+                viewModelScope.launch {
                     val result = aircraftRepository.getAircraftDetail(skyObject.icaoHex)
                     result.fold(
                         onSuccess = { detail ->
@@ -76,16 +95,17 @@ class DetailViewModel @Inject constructor(
                             )
                         },
                         onFailure = { error ->
-                            _detailState.value = DetailState.AircraftLoaded(
-                                aircraft = skyObject,
-                                detail = null
-                            )
                             Log.w(TAG, "Failed to fetch aircraft detail for ${skyObject.icaoHex}: ${error.message}")
+                            // Already showing aircraft data, no state change needed
                         }
                     )
                 }
-                is Drone -> {
-                    _detailState.value = DetailState.DroneLoaded(drone = skyObject)
+            }
+            is Drone -> {
+                _detailState.value = DetailState.DroneLoaded(drone = skyObject)
+                viewModelScope.launch {
+                    _nearbyCandidates.value = buildNearbyCandidates(skyObject)
+                    _positionTrail.value = skyObjectRepository.getTrail(skyObject.id)
                 }
             }
         }
@@ -148,6 +168,39 @@ class DetailViewModel @Inject constructor(
                 _detailState.value = DetailState.Error("Could not load detail.")
             }
         }
+    }
+
+    private fun buildNearbyCandidates(tappedDrone: Drone): List<Drone> {
+        val allDrones = skyObjectRepository.skyObjects.value.filterIsInstance<Drone>()
+            .filter { it.id != tappedDrone.id }
+
+        val tappedHasPos = tappedDrone.position.latitude != 0.0 || tappedDrone.position.longitude != 0.0
+
+        return allDrones.sortedWith(compareBy<Drone> { candidate ->
+            val candidateHasPos = candidate.position.latitude != 0.0 || candidate.position.longitude != 0.0
+            if (tappedHasPos && candidateHasPos) 0 else 1
+        }.thenBy { candidate ->
+            val candidateHasPos = candidate.position.latitude != 0.0 || candidate.position.longitude != 0.0
+            if (tappedHasPos && candidateHasPos) {
+                haversineMeters(
+                    tappedDrone.position.latitude, tappedDrone.position.longitude,
+                    candidate.position.latitude, candidate.position.longitude
+                )
+            } else {
+                // No position — sort by signal strength (stronger first → negate)
+                -(candidate.signalStrengthDbm?.toDouble() ?: -999.0)
+            }
+        })
+    }
+
+    private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val r = 6_371_000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = sin(dLat / 2) * sin(dLat / 2) +
+                cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
+                sin(dLon / 2) * sin(dLon / 2)
+        return r * 2 * atan2(sqrt(a), sqrt(1 - a))
     }
 }
 

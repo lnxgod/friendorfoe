@@ -1,0 +1,39 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="100dp"
+    android:viewportWidth="200"
+    android:viewportHeight="100">
+    <!-- Dash 8/King Air: high straight wings, prop discs -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="
+            M12,50
+            Q12,47 16,45
+            L30,44
+            Q36,42 40,42
+            L165,42
+            Q172,42 176,44
+            L182,46
+            Q184,48 182,50
+            L176,52
+            L165,54
+            L158,54
+            L152,56
+            L140,58
+            Q136,60 132,58
+            L128,56
+            L100,54
+            L42,54
+            L36,52
+            L24,52
+            Q12,52 12,50
+            Z
+            M42,42 L38,28 L94,26 L100,30 L100,40 Z
+            M42,54 L38,68 L94,70 L100,66 L100,56 Z
+            M60,26 L58,20 L62,20 L60,26 Z
+            M60,70 L58,76 L62,76 L60,70 Z
+            M80,26 L78,20 L82,20 L80,26 Z
+            M80,70 L78,76 L82,76 L80,70 Z
+            M172,44 L176,38 L184,38 L186,44 Z
+            M172,52 L176,58 L184,58 L186,52 Z" />
+</vector>

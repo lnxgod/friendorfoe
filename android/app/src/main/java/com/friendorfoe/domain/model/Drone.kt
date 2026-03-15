@@ -42,14 +42,39 @@ data class Drone(
     val operatorLongitude: Double? = null,
     val ssid: String? = null,
     val signalStrengthDbm: Int? = null,
-    val estimatedDistanceMeters: Double? = null
+    val estimatedDistanceMeters: Double? = null,
+    val operatorId: String? = null,
+    val uaType: Int? = null
 ) : SkyObject() {
+
+    fun uaTypeLabel(): String? = when (uaType) {
+        0 -> "None/Unknown"
+        1 -> "Aeroplane"
+        2 -> "Helicopter/Multirotor"
+        3 -> "Gyroplane"
+        4 -> "Hybrid Lift (VTOL)"
+        5 -> "Ornithopter"
+        6 -> "Glider"
+        7 -> "Kite"
+        8 -> "Free Balloon"
+        9 -> "Captive Balloon"
+        10 -> "Airship"
+        11 -> "Free Fall / Parachute"
+        12 -> "Rocket"
+        13 -> "Tethered Powered Aircraft"
+        14 -> "Ground Obstacle"
+        15 -> "Other"
+        else -> null
+    }
 
     override fun displayLabel(): String {
         val name = manufacturer ?: "Drone"
         val alt = "${(position.altitudeMeters * 3.281).toInt()}ft"
-        val conf = if (source == DetectionSource.WIFI) " ?" else ""
-        return "$name $alt$conf"
+        val suffix = when {
+            source == DetectionSource.WIFI && confidence < 0.5f -> " ?"
+            else -> ""
+        }
+        return "$name $alt$suffix"
     }
 
     override fun displaySummary(): String {

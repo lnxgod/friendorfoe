@@ -1,0 +1,42 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="100dp"
+    android:viewportWidth="200"
+    android:viewportHeight="100">
+    <!-- B737/A320 side profile: tubular fuselage, swept wings, 2 underwing engines -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="
+            M10,50
+            Q10,46 14,44
+            L50,42
+            L55,40
+            Q58,38 60,38
+            L170,40
+            Q180,40 185,42
+            L190,46
+            Q192,48 190,50
+            L185,52
+            L170,52
+            L160,52
+            L155,54
+            L140,56
+            Q135,58 130,58
+            L125,56
+            L100,54
+            L80,54
+            L75,56
+            L60,58
+            Q55,60 50,58
+            L45,56
+            L30,54
+            L20,52
+            Q10,52 10,50
+            Z
+            M60,38 L55,30 L80,28 L90,30 L90,36 L85,38 Z
+            M60,58 L55,66 L80,68 L90,66 L90,60 L85,58 Z
+            M35,42 L30,36 L40,34 L48,36 L48,40 Z
+            M35,54 L30,60 L40,62 L48,60 L48,56 Z
+            M170,42 L172,38 L180,36 L184,40 Z
+            M170,54 L172,58 L180,60 L184,56 Z" />
+</vector>

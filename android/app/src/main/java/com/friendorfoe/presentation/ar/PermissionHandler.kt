@@ -11,6 +11,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,11 +35,15 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -79,8 +84,10 @@ fun PermissionHandler(
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     // --- Permission state tracking ---
+    // Camera is the only permission gated here; Location/BT/WiFi are requested at app startup
     var cameraGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -97,46 +104,56 @@ fun PermissionHandler(
         mutableStateOf(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) ==
+                    PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
                     PackageManager.PERMISSION_GRANTED
             } else {
                 true // Not needed below API 31
             }
         )
     }
+    // Track whether camera permission has been requested
+    var hasRequestedCamera by remember { mutableStateOf(false) }
 
-    // Track whether the initial bulk request has been launched
-    var hasRequestedPermissions by remember { mutableStateOf(false) }
-
-    // --- Permission launchers ---
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        cameraGranted = results[Manifest.permission.CAMERA] == true
-        locationGranted = results[Manifest.permission.ACCESS_FINE_LOCATION] == true
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            bluetoothGranted = results[Manifest.permission.BLUETOOTH_SCAN] == true
-        }
-    }
-
-    // Launch permission request on first composition
-    LaunchedEffect(Unit) {
-        if (!hasRequestedPermissions && (!cameraGranted || !locationGranted || !bluetoothGranted)) {
-            hasRequestedPermissions = true
-            val permissions = buildList {
-                if (!cameraGranted) add(Manifest.permission.CAMERA)
-                if (!locationGranted) add(Manifest.permission.ACCESS_FINE_LOCATION)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !bluetoothGranted) {
-                    add(Manifest.permission.BLUETOOTH_SCAN)
+    // Re-check permissions when returning from Settings
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                cameraGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                    PackageManager.PERMISSION_GRANTED
+                locationGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+                    PackageManager.PERMISSION_GRANTED
+                bluetoothGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) ==
+                        PackageManager.PERMISSION_GRANTED &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
+                        PackageManager.PERMISSION_GRANTED
+                } else {
+                    true
                 }
             }
-            if (permissions.isNotEmpty()) {
-                permissionLauncher.launch(permissions.toTypedArray())
-            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // --- Permission launchers (camera only) ---
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        cameraGranted = granted
+    }
+
+    // Request camera permission on first composition if not granted
+    LaunchedEffect(Unit) {
+        if (!hasRequestedCamera && !cameraGranted) {
+            hasRequestedCamera = true
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
-    // --- Gate: Camera permission ---
+    // --- Gate: Camera permission (AR-only) ---
     if (!cameraGranted) {
         PermissionBlockedScreen(
             icon = Icons.Filled.CameraAlt,
@@ -146,12 +163,10 @@ fun PermissionHandler(
                 "If the permission dialog did not appear, please grant camera access in Settings.",
             buttonText = "Grant Camera Access",
             onButtonClick = {
-                // Try requesting again; if the system won't show the dialog,
-                // the user can tap again and we'll open settings.
-                if (hasRequestedPermissions) {
+                if (hasRequestedCamera) {
                     openAppSettings(context)
                 } else {
-                    permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
+                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                 }
             }
         )
@@ -165,15 +180,9 @@ fun PermissionHandler(
             title = "Location Access Required",
             message = "Friend or Foe needs your precise location to calculate the bearing " +
                 "and distance to aircraft and drones in the sky around you.\n\n" +
-                "If the permission dialog did not appear, please grant location access in Settings.",
-            buttonText = "Grant Location Access",
-            onButtonClick = {
-                if (hasRequestedPermissions) {
-                    openAppSettings(context)
-                } else {
-                    permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION))
-                }
-            }
+                "Please grant location access in Settings.",
+            buttonText = "Open Settings",
+            onButtonClick = { openAppSettings(context) }
         )
         return
     }
@@ -203,12 +212,13 @@ fun PermissionHandler(
         // Calculate vertical offset for stacking banners
         var bannerOffset = 0.dp
 
-        // --- Overlay: Bluetooth not granted (non-blocking warning) ---
+        // --- Overlay: Bluetooth not granted (non-blocking, tappable warning) ---
         if (!bluetoothGranted) {
             OverlayBanner(
                 icon = Icons.Filled.Bluetooth,
-                text = "Bluetooth not available -- Remote ID drone scanning disabled",
+                text = "Bluetooth not available -- Tap to enable in Settings",
                 color = Color(0xFFFF9800),
+                onClick = { openAppSettings(context) },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = bannerOffset)
@@ -324,12 +334,14 @@ private fun OverlayBanner(
     icon: ImageVector,
     text: String,
     color: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
             .background(color.copy(alpha = 0.85f))
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

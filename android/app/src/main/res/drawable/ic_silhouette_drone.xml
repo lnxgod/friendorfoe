@@ -1,0 +1,47 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="100dp"
+    android:height="100dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <!-- Top-down quadcopter: center body, 4 arms with rotor circles -->
+    <!-- Center body -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M42,42 L58,42 L58,58 L42,58 Z" />
+    <!-- Arm top-left -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M44,48 L48,44 L28,24 L24,28 Z" />
+    <!-- Arm top-right -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M52,44 L56,48 L76,28 L72,24 Z" />
+    <!-- Arm bottom-right -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M56,52 L52,56 L72,76 L76,72 Z" />
+    <!-- Arm bottom-left -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M48,56 L44,52 L24,72 L28,76 Z" />
+    <!-- Rotor top-left -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M26,26 m-12,0 a12,12 0 1,1 24,0 a12,12 0 1,1 -24,0" />
+    <!-- Rotor top-right -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M74,26 m-12,0 a12,12 0 1,1 24,0 a12,12 0 1,1 -24,0" />
+    <!-- Rotor bottom-right -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M74,74 m-12,0 a12,12 0 1,1 24,0 a12,12 0 1,1 -24,0" />
+    <!-- Rotor bottom-left -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M26,74 m-12,0 a12,12 0 1,1 24,0 a12,12 0 1,1 -24,0" />
+    <!-- Direction indicator (front) -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M46,42 L50,36 L54,42 Z" />
+</vector>

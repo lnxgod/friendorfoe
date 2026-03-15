@@ -8,8 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.config import settings
 from app.models.schemas import AircraftDetail, NearbyAircraft, NearbyAircraftResponse
 from app.services.adsb import (
-    bbox_from_point,
-    fetch_aircraft_in_bbox,
+    fetch_aircraft_multi,
     haversine_nm,
     meters_to_feet,
     ms_to_fpm,
@@ -38,10 +37,9 @@ async def nearby_aircraft(
     Calls OpenSky (with Redis caching) then converts units and computes
     distance from the user.
     """
-    lamin, lamax, lomin, lomax = bbox_from_point(lat, lon, radius_nm)
-
     try:
-        raw_aircraft = await fetch_aircraft_in_bbox(lamin, lamax, lomin, lomax)
+        raw_aircraft, source = await fetch_aircraft_multi(lat, lon, radius_nm)
+        logger.info("Fetched %d aircraft from %s", len(raw_aircraft), source)
     except Exception as exc:
         logger.error("Failed to fetch aircraft: %s", exc)
         raise HTTPException(status_code=502, detail="ADS-B data source unavailable") from exc

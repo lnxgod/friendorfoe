@@ -1,0 +1,53 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="100dp"
+    android:viewportWidth="200"
+    android:viewportHeight="100">
+    <!-- Helicopter side profile: rotor disc, body, tail boom, tail rotor -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="
+            M20,14 L180,14 L180,18 L102,18 L102,26 L98,26 L98,18 L20,18 Z" />
+    <!-- Main rotor mast -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="
+            M96,18 L104,18 L104,30 L96,30 Z" />
+    <!-- Fuselage body -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="
+            M40,30
+            Q36,30 30,34
+            L24,40
+            Q20,46 22,50
+            L28,54
+            Q34,58 42,60
+            L60,62
+            L70,62
+            L72,58
+            L74,56
+            L110,56
+            L116,54
+            Q120,52 120,48
+            L118,40
+            Q116,34 112,32
+            L100,30
+            Z" />
+    <!-- Tail boom -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="
+            M116,44 L118,42 L174,38 L178,42 L178,48 L174,50 L118,48 L116,46 Z" />
+    <!-- Tail rotor -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="
+            M174,28 L180,28 L180,60 L174,60 L176,48 L176,40 Z" />
+    <!-- Landing skids -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="
+            M36,60 L38,62 L38,68 L30,70 L80,70 L78,68 L42,68 L42,62 L36,60 Z
+            M100,56 L102,58 L102,68 L94,70 L110,70 L108,68 L106,68 L106,58 L100,56 Z" />
+</vector>

@@ -1,0 +1,37 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="100dp"
+    android:viewportWidth="200"
+    android:viewportHeight="100">
+    <!-- Gulfstream/Citation: slender fuselage, rear-mounted engines, T-tail -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="
+            M10,50
+            Q10,47 14,45
+            L40,44
+            Q48,42 52,42
+            L160,42
+            Q168,42 172,44
+            L178,46
+            Q180,48 178,50
+            L172,52
+            L160,54
+            L156,54
+            L150,56
+            L138,58
+            Q134,60 130,58
+            L126,56
+            L100,54
+            L50,54
+            L44,52
+            L30,52
+            Q10,52 10,50
+            Z
+            M50,42 L46,32 L78,30 L86,34 L86,40 L80,42 Z
+            M50,54 L46,64 L78,66 L86,62 L86,56 L80,54 Z
+            M156,42 L152,38 L162,36 L168,40 L168,42 Z
+            M156,54 L152,58 L162,60 L168,56 L168,54 Z
+            M172,42 L174,32 L180,32 L180,42 Z
+            M172,54 L174,64 L180,64 L180,54 Z" />
+</vector>

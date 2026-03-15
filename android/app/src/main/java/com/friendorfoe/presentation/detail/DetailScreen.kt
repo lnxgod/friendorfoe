@@ -41,11 +41,30 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.remote.AircraftDetailDto
+import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
+import com.friendorfoe.presentation.util.categoryColor
+import com.friendorfoe.presentation.util.silhouetteForTypeCode
+import com.friendorfoe.presentation.util.silhouetteForCategory
+import com.friendorfoe.presentation.util.silhouetteDrawableRes
+import java.time.Duration
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material3.Icon
 
 /**
  * Detail screen showing full information about a specific sky object.
@@ -66,6 +85,7 @@ fun DetailScreen(
     viewModel: DetailViewModel = hiltViewModel()
 ) {
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
+    val positionTrail by viewModel.positionTrail.collectAsStateWithLifecycle()
 
     // Load detail on first composition
     LaunchedEffect(objectId) {
@@ -119,7 +139,10 @@ fun DetailScreen(
                 }
 
                 is DetailState.DroneLoaded -> {
-                    DroneDetailContent(drone = state.drone)
+                    DroneDetailContent(
+                        drone = state.drone,
+                        positionTrail = positionTrail
+                    )
                 }
 
                 is DetailState.Error -> {
@@ -138,7 +161,9 @@ fun DetailScreen(
 @Composable
 internal fun AircraftDetailContent(
     aircraft: Aircraft,
-    detail: AircraftDetailDto?
+    detail: AircraftDetailDto?,
+    onZoom: (() -> Unit)? = null,
+    onLockOn: (() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -150,10 +175,11 @@ internal fun AircraftDetailContent(
         // Header with category color and callsign
         AircraftHeader(aircraft, detail)
 
-        // Photo placeholder
+        // Aircraft silhouette
         PhotoPlaceholder(
-            photoUrl = detail?.photoUrl ?: aircraft.photoUrl,
-            aircraftType = detail?.aircraftModel ?: aircraft.aircraftType
+            aircraftType = detail?.aircraftType ?: aircraft.aircraftType,
+            aircraftDescription = detail?.aircraftDescription ?: aircraft.aircraftModel,
+            category = aircraft.category
         )
 
         // Identity section
@@ -162,14 +188,14 @@ internal fun AircraftDetailContent(
             DetailRow("ICAO Hex", aircraft.icaoHex)
             DetailRow("Registration", detail?.registration ?: aircraft.registration ?: "Unknown")
             DetailRow("Type", detail?.aircraftType ?: aircraft.aircraftType ?: "Unknown")
-            DetailRow("Model", detail?.aircraftModel ?: aircraft.aircraftModel ?: "Unknown")
-            DetailRow("Airline", detail?.airline ?: aircraft.airline ?: "Unknown")
+            DetailRow("Model", detail?.aircraftDescription ?: aircraft.aircraftModel ?: "Unknown")
+            DetailRow("Operator", detail?.operator ?: aircraft.airline ?: "Unknown")
             DetailRow("Category", formatCategory(aircraft.category))
         }
 
         // Route section
-        val origin = detail?.origin ?: aircraft.origin
-        val destination = detail?.destination ?: aircraft.destination
+        val origin = detail?.route?.origin ?: aircraft.origin
+        val destination = detail?.route?.destination ?: aircraft.destination
         if (origin != null || destination != null) {
             SectionCard(title = "Route") {
                 RouteDisplay(
@@ -201,10 +227,19 @@ internal fun AircraftDetailContent(
             DetailRow("Longitude", String.format("%.5f", aircraft.position.longitude))
 
             aircraft.squawk?.let { squawk ->
-                DetailRow("Squawk", squawk)
+                DetailRow("Squawk", formatSquawk(squawk))
             }
 
             DetailRow("On Ground", if (aircraft.isOnGround) "Yes" else "No")
+        }
+
+        // Classification signals (for MILITARY/GOVERNMENT/EMERGENCY)
+        if (!aircraft.classificationSignals.isNullOrEmpty()) {
+            SectionCard(title = "Classification Signals") {
+                aircraft.classificationSignals.forEach { signal ->
+                    DetailRow("Signal", signal)
+                }
+            }
         }
 
         // Detection source
@@ -213,6 +248,44 @@ internal fun AircraftDetailContent(
                 source = aircraft.source,
                 confidence = aircraft.confidence
             )
+        }
+
+        // Zoom button (only in AR bottom sheet context)
+        if (onZoom != null) {
+            Button(
+                onClick = onZoom,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF2196F3)
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ZoomIn,
+                    contentDescription = "Zoom",
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Zoom & Capture")
+            }
+        }
+
+        // Lock-on button (only in AR bottom sheet context)
+        if (onLockOn != null) {
+            Button(
+                onClick = onLockOn,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF009688)
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MyLocation,
+                    contentDescription = "Lock On",
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Lock On & Track")
+            }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -225,7 +298,13 @@ internal fun AircraftDetailContent(
  * Full detail card for a drone, showing ID, manufacturer, operator info, and signal data.
  */
 @Composable
-internal fun DroneDetailContent(drone: Drone) {
+internal fun DroneDetailContent(
+    drone: Drone,
+    nearbyCandidates: List<Drone> = emptyList(),
+    positionTrail: List<SkyObjectRepository.TrailPoint> = emptyList(),
+    onZoom: (() -> Unit)? = null,
+    onLockOn: (() -> Unit)? = null
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -243,6 +322,12 @@ internal fun DroneDetailContent(drone: Drone) {
             DetailRow("Model", drone.model ?: "Unknown")
             drone.ssid?.let { ssid ->
                 DetailRow("WiFi SSID", ssid)
+            }
+            drone.operatorId?.let { opId ->
+                DetailRow("Operator ID", opId)
+            }
+            drone.uaTypeLabel()?.let { label ->
+                DetailRow("UA Type", label)
             }
         }
 
@@ -262,7 +347,11 @@ internal fun DroneDetailContent(drone: Drone) {
                     DetailRow("Speed", "${speed.roundToInt()} m/s")
                 }
             } else {
-                DetailRow("Position", "Not available (WiFi detection)")
+                val reason = when (drone.source) {
+                    DetectionSource.WIFI -> "WiFi detection"
+                    else -> "No position data"
+                }
+                DetailRow("Position", "Not available ($reason)")
             }
 
             drone.distanceMeters?.let { dist ->
@@ -289,12 +378,129 @@ internal fun DroneDetailContent(drone: Drone) {
             }
         }
 
+        // Flight Path
+        SectionCard(title = "Flight Path") {
+            if (positionTrail.isEmpty()) {
+                DetailRow("Status", "No position history available")
+            } else {
+                DetailRow("Track Points", "${positionTrail.size}")
+                val firstTime = positionTrail.first().timestamp
+                val lastTime = positionTrail.last().timestamp
+                val duration = Duration.between(firstTime, lastTime)
+                val minutes = duration.toMinutes()
+                val seconds = duration.seconds % 60
+                DetailRow("Duration", "${minutes}m ${seconds}s")
+
+                // Total distance traveled
+                var totalDist = 0.0
+                for (i in 1 until positionTrail.size) {
+                    totalDist += haversineMeters(
+                        positionTrail[i - 1].lat, positionTrail[i - 1].lon,
+                        positionTrail[i].lat, positionTrail[i].lon
+                    )
+                }
+                DetailRow("Distance Traveled", formatDistance(totalDist))
+
+                Spacer(modifier = Modifier.height(4.dp))
+                Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                Spacer(modifier = Modifier.height(4.dp))
+
+                val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
+                    .withZone(ZoneId.systemDefault())
+                val recentPoints = positionTrail.takeLast(5)
+                recentPoints.forEach { point ->
+                    val altFeet = (point.altM * 3.281).roundToInt()
+                    DetailRow(
+                        timeFormatter.format(point.timestamp),
+                        "${String.format("%.5f", point.lat)}, ${String.format("%.5f", point.lon)} · ${altFeet}ft"
+                    )
+                }
+                if (positionTrail.size > 5) {
+                    DetailRow("", "... ${positionTrail.size - 5} earlier points")
+                }
+            }
+        }
+
         // Detection source
         SectionCard(title = "Detection") {
             DetectionSourceBadge(
                 source = drone.source,
                 confidence = drone.confidence
             )
+        }
+
+        // Nearby Drone IDs
+        SectionCard(title = "Nearby Drone IDs") {
+            if (nearbyCandidates.isEmpty()) {
+                DetailRow("Status", "No other drone IDs detected")
+            } else {
+                nearbyCandidates.forEachIndexed { index, candidate ->
+                    if (index > 0) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
+                    DetailRow("Drone ID", candidate.droneId.take(16))
+                    val sourceLabel = when (candidate.source) {
+                        DetectionSource.REMOTE_ID -> "BLE"
+                        DetectionSource.WIFI -> "WiFi"
+                        else -> candidate.source.name
+                    }
+                    DetailRow("Source", sourceLabel)
+                    candidate.manufacturer?.let { mfr ->
+                        DetailRow("Manufacturer", mfr)
+                    }
+                    val candidateHasPos = candidate.position.latitude != 0.0 || candidate.position.longitude != 0.0
+                    val tappedHasPos = drone.position.latitude != 0.0 || drone.position.longitude != 0.0
+                    if (tappedHasPos && candidateHasPos) {
+                        val dist = haversineMeters(
+                            drone.position.latitude, drone.position.longitude,
+                            candidate.position.latitude, candidate.position.longitude
+                        )
+                        DetailRow("Distance", formatDistance(dist))
+                    } else {
+                        DetailRow("Distance", "WiFi only")
+                    }
+                }
+            }
+        }
+
+        // Zoom button (only in AR bottom sheet context)
+        if (onZoom != null) {
+            Button(
+                onClick = onZoom,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF2196F3)
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ZoomIn,
+                    contentDescription = "Zoom",
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Zoom & Capture")
+            }
+        }
+
+        // Lock-on button (only in AR bottom sheet context)
+        if (onLockOn != null) {
+            Button(
+                onClick = onLockOn,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF009688)
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MyLocation,
+                    contentDescription = "Lock On",
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Lock On & Track")
+            }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -338,12 +544,12 @@ private fun AircraftHeader(aircraft: Aircraft, detail: AircraftDetailDto?) {
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = detail?.aircraftModel ?: aircraft.aircraftModel
+                    text = detail?.aircraftDescription ?: aircraft.aircraftModel
                         ?: aircraft.aircraftType ?: "Unknown Aircraft",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                 )
-                val airline = detail?.airline ?: aircraft.airline
+                val airline = detail?.operator ?: aircraft.airline
                 if (airline != null) {
                     Text(
                         text = airline,
@@ -357,7 +563,7 @@ private fun AircraftHeader(aircraft: Aircraft, detail: AircraftDetailDto?) {
 }
 
 /**
- * Header banner for a drone with blue category indicator.
+ * Header banner for a drone with blue category indicator (amber for visual-only).
  */
 @Composable
 private fun DroneHeader(drone: Drone) {
@@ -409,13 +615,19 @@ private fun DroneHeader(drone: Drone) {
 }
 
 /**
- * Photo placeholder card. Displays a placeholder for aircraft photos.
- *
- * Note: Uses a text placeholder since Coil is not in the dependency list.
- * When Coil is added, replace with AsyncImage for actual photo loading.
+ * Aircraft silhouette card. Shows a tinted vector silhouette matching the aircraft type.
+ * Falls back to category-based silhouette when type code is not recognized.
  */
 @Composable
-private fun PhotoPlaceholder(photoUrl: String?, aircraftType: String?) {
+private fun PhotoPlaceholder(
+    aircraftType: String?,
+    aircraftDescription: String?,
+    category: ObjectCategory
+) {
+    val silhouette = silhouetteForTypeCode(aircraftType) ?: silhouetteForCategory(category)
+    val drawableRes = silhouetteDrawableRes(silhouette)
+    val tintColor = categoryColor(category)
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -429,26 +641,21 @@ private fun PhotoPlaceholder(photoUrl: String?, aircraftType: String?) {
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
-            if (photoUrl != null) {
-                // TODO: Replace with AsyncImage when Coil dependency is added
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = aircraftType ?: "Aircraft",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Photo available",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                    )
-                }
-            } else {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Image(
+                    painter = painterResource(id = drawableRes),
+                    contentDescription = aircraftDescription ?: aircraftType ?: "Aircraft",
+                    modifier = Modifier
+                        .fillMaxWidth(0.7f)
+                        .height(120.dp),
+                    contentScale = ContentScale.Fit,
+                    colorFilter = ColorFilter.tint(tintColor)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = aircraftType ?: "No photo available",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                    text = aircraftType ?: "Unknown",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                 )
             }
         }
@@ -623,19 +830,6 @@ private fun CenteredMessage(message: String) {
 // ---- Helper functions ----
 
 /**
- * Map [ObjectCategory] to its display color.
- */
-private fun categoryColor(category: ObjectCategory): Color {
-    return when (category) {
-        ObjectCategory.COMMERCIAL -> Color(0xFF4CAF50)
-        ObjectCategory.GENERAL_AVIATION -> Color(0xFFFFEB3B)
-        ObjectCategory.MILITARY -> Color(0xFFF44336)
-        ObjectCategory.DRONE -> Color(0xFF2196F3)
-        ObjectCategory.UNKNOWN -> Color(0xFF9E9E9E)
-    }
-}
-
-/**
  * Format category enum to human-readable string.
  */
 private fun formatCategory(category: ObjectCategory): String {
@@ -643,8 +837,25 @@ private fun formatCategory(category: ObjectCategory): String {
         ObjectCategory.COMMERCIAL -> "Commercial"
         ObjectCategory.GENERAL_AVIATION -> "General Aviation"
         ObjectCategory.MILITARY -> "Military"
+        ObjectCategory.HELICOPTER -> "Helicopter"
+        ObjectCategory.GOVERNMENT -> "Government"
+        ObjectCategory.EMERGENCY -> "Emergency"
+        ObjectCategory.CARGO -> "Cargo"
         ObjectCategory.DRONE -> "Drone / UAS"
+        ObjectCategory.GROUND_VEHICLE -> "Ground Vehicle"
         ObjectCategory.UNKNOWN -> "Unknown"
+    }
+}
+
+private fun formatSquawk(squawk: String): String {
+    return when (squawk) {
+        "7700" -> "$squawk - EMERGENCY"
+        "7600" -> "$squawk - COMM FAILURE"
+        "7500" -> "$squawk - HIJACK"
+        "1200" -> "$squawk - VFR"
+        "1000" -> "$squawk - IFR (no assigned code)"
+        "7777" -> "$squawk - MILITARY INTERCEPT"
+        else -> squawk
     }
 }
 
@@ -662,6 +873,16 @@ private fun formatDistance(meters: Double): String {
 /**
  * Convert a heading in degrees to a cardinal direction abbreviation.
  */
+private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val r = 6_371_000.0
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLon = Math.toRadians(lon2 - lon1)
+    val a = kotlin.math.sin(dLat / 2) * kotlin.math.sin(dLat / 2) +
+            kotlin.math.cos(Math.toRadians(lat1)) * kotlin.math.cos(Math.toRadians(lat2)) *
+            kotlin.math.sin(dLon / 2) * kotlin.math.sin(dLon / 2)
+    return r * 2 * kotlin.math.atan2(kotlin.math.sqrt(a), kotlin.math.sqrt(1 - a))
+}
+
 private fun headingToCardinal(heading: Float): String {
     val normalized = ((heading % 360f) + 360f) % 360f
     return when {

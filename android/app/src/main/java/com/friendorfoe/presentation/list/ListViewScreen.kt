@@ -25,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,12 +36,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.presentation.util.categoryBadge
+import com.friendorfoe.presentation.util.categoryColor
+import androidx.compose.foundation.shape.RoundedCornerShape
 
 /**
  * List View screen showing all detected sky objects sorted by distance.
@@ -56,6 +63,21 @@ fun ListViewScreen(
     viewModel: ListViewModel = hiltViewModel()
 ) {
     val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.startLocationUpdates()
+                Lifecycle.Event.ON_PAUSE -> viewModel.stopLocationUpdates()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     if (skyObjects.isEmpty()) {
         EmptyListState()
@@ -111,9 +133,17 @@ private fun SkyObjectItem(
     skyObject: SkyObject,
     onClick: () -> Unit
 ) {
+    val rowBackground = when (skyObject.category) {
+        ObjectCategory.MILITARY -> Modifier.background(Color(0xFFF44336).copy(alpha = 0.08f))
+        ObjectCategory.GOVERNMENT -> Modifier.background(Color(0xFFE65100).copy(alpha = 0.08f))
+        ObjectCategory.EMERGENCY -> Modifier.background(Color(0xFFE91E63).copy(alpha = 0.10f))
+        else -> Modifier
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(rowBackground)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -132,13 +162,29 @@ private fun SkyObjectItem(
         Column(
             modifier = Modifier.weight(1f)
         ) {
-            Text(
-                text = primaryText(skyObject),
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = primaryText(skyObject),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                val badge = categoryBadge(skyObject.category)
+                if (badge != null) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = badge.first,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier
+                            .background(badge.second, RoundedCornerShape(4.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                    )
+                }
+            }
             Text(
                 text = secondaryText(skyObject),
                 style = MaterialTheme.typography.bodySmall,
@@ -180,7 +226,10 @@ private fun SkyObjectItem(
 
 /** Returns the primary display text for a sky object (callsign or drone ID). */
 private fun primaryText(skyObject: SkyObject): String = when (skyObject) {
-    is Aircraft -> skyObject.callsign ?: skyObject.icaoHex
+    is Aircraft -> {
+        val callsign = skyObject.callsign ?: skyObject.icaoHex
+        if (skyObject.aircraftType != null) "$callsign  ${skyObject.aircraftType}" else callsign
+    }
     is Drone -> skyObject.droneId
 }
 
@@ -191,15 +240,6 @@ private fun secondaryText(skyObject: SkyObject): String = when (skyObject) {
         val parts = listOfNotNull(skyObject.manufacturer, skyObject.model)
         if (parts.isNotEmpty()) parts.joinToString(" ") else "Unknown drone"
     }
-}
-
-/** Maps an [ObjectCategory] to its display color. */
-private fun categoryColor(category: ObjectCategory): Color = when (category) {
-    ObjectCategory.COMMERCIAL -> Color(0xFF4CAF50)      // Green
-    ObjectCategory.GENERAL_AVIATION -> Color(0xFFFFC107) // Yellow/Amber
-    ObjectCategory.MILITARY -> Color(0xFFF44336)         // Red
-    ObjectCategory.DRONE -> Color(0xFF2196F3)            // Blue
-    ObjectCategory.UNKNOWN -> Color(0xFF9E9E9E)          // Gray
 }
 
 /**

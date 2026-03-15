@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
  * Room database for Friend or Foe local data storage.
@@ -12,16 +14,24 @@ import androidx.room.RoomDatabase
  * aircraft metadata for offline use.
  */
 @Database(
-    entities = [HistoryEntity::class],
-    version = 1,
+    entities = [HistoryEntity::class, TrackingEntity::class],
+    version = 3,
     exportSchema = true
 )
 abstract class FriendOrFoeDatabase : RoomDatabase() {
 
     abstract fun historyDao(): HistoryDao
+    abstract fun trackingDao(): TrackingDao
 
     companion object {
         private const val DATABASE_NAME = "friendorfoe.db"
+
+        /** Migration from v2 to v3: no schema changes, preserves data. */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // No schema changes — this migration exists to avoid destructive fallback
+            }
+        }
 
         fun create(context: Context): FriendOrFoeDatabase {
             return Room.databaseBuilder(
@@ -29,7 +39,7 @@ abstract class FriendOrFoeDatabase : RoomDatabase() {
                 FriendOrFoeDatabase::class.java,
                 DATABASE_NAME
             )
-                .fallbackToDestructiveMigration()
+                .addMigrations(MIGRATION_2_3)
                 .build()
         }
     }

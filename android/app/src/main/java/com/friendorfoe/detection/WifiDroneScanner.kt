@@ -78,12 +78,84 @@ class WifiDroneScanner @Inject constructor(
          * Patterns are matched as prefixes (case-insensitive).
          */
         private val DRONE_SSID_PATTERNS = listOf(
+            // Major consumer brands - DJI
             DronePattern("DJI-", "DJI"),
             DronePattern("TELLO-", "Ryze/DJI"),
-            DronePattern("SKYDIO-", "Skydio"),
             DronePattern("MAVIC-", "DJI"),
+            DronePattern("PHANTOM-", "DJI"),
+            DronePattern("INSPIRE-", "DJI"),
+            DronePattern("MINI-", "DJI"),
+            DronePattern("SPARK-", "DJI"),
+            DronePattern("FPV-", "DJI"),
+            DronePattern("AVATA-", "DJI"),
+            // Skydio / Parrot / Autel
+            DronePattern("SKYDIO-", "Skydio"),
             DronePattern("PARROT-", "Parrot"),
-            DronePattern("AUTEL-", "Autel")
+            DronePattern("ANAFI-", "Parrot"),
+            DronePattern("AUTEL-", "Autel"),
+            DronePattern("EVO-", "Autel"),
+            // HOVERAir (Zero Zero Robotics) - X1, X1 Pro, etc.
+            DronePattern("HOVERAIR", "HOVERAir"),
+            DronePattern("HOVER AIR", "HOVERAir"),
+            DronePattern("HOVER_AIR", "HOVERAir"),
+            DronePattern("HOVER-AIR", "HOVERAir"),
+            DronePattern("HOVERAir", "HOVERAir"),
+            DronePattern("HOVER X1", "HOVERAir"),
+            DronePattern("HOVER-X1", "HOVERAir"),
+            DronePattern("HOVER_X1", "HOVERAir"),
+            DronePattern("X1PRO", "HOVERAir"),
+            DronePattern("X1-PRO", "HOVERAir"),
+            DronePattern("X1 PRO", "HOVERAir"),
+            DronePattern("HOVER-", "HOVERAir"),
+            // Holy Stone
+            DronePattern("HOLY", "Holy Stone"),
+            DronePattern("HS-", "Holy Stone"),
+            // Other known brands
+            DronePattern("SNAPTAIN-", "Snaptain"),
+            DronePattern("POTENSIC-", "Potensic"),
+            DronePattern("RUKO-", "Ruko"),
+            DronePattern("SYMA-", "Syma"),
+            DronePattern("HUBSAN-", "Hubsan"),
+            DronePattern("EACHINE-", "Eachine"),
+            DronePattern("FIMI-", "Fimi"),
+            DronePattern("XIAOMI-", "Xiaomi"),
+            DronePattern("YUNEEC-", "Yuneec"),
+            DronePattern("TYPHOON-", "Yuneec"),
+            DronePattern("WINGSLAND-", "Wingsland"),
+            DronePattern("BETAFPV-", "BetaFPV"),
+            DronePattern("GEPRC-", "GEPRC"),
+            DronePattern("EMAX-", "EMAX"),
+            // Budget Chinese drones using "WiFi UAV" / generic FPV apps
+            DronePattern("WIFI-UAV", "Generic"),
+            DronePattern("WIFI_UAV", "Generic"),
+            DronePattern("WIFIUAV", "Generic"),
+            DronePattern("WiFi-720P", "Generic"),
+            DronePattern("WiFi-1080P", "Generic"),
+            DronePattern("WiFi-4K", "Generic"),
+            DronePattern("WIFI_CAMERA", "Generic"),
+            DronePattern("WiFi_FPV", "Generic"),
+            DronePattern("WiFi-FPV", "Generic"),
+            DronePattern("RCDrone", "Generic"),
+            DronePattern("RC-DRONE", "Generic"),
+            DronePattern("RCTOY", "Generic"),
+            DronePattern("UFO-", "Generic"),
+            // Chinese brands commonly using WiFi UAV-type apps
+            DronePattern("JJRC-", "JJRC"),
+            DronePattern("MJX-", "MJX"),
+            DronePattern("VISUO-", "Visuo"),
+            DronePattern("SJRC-", "SJRC"),
+            DronePattern("4DRC-", "4DRC"),
+            DronePattern("FLYHAL-", "Flyhal"),
+            DronePattern("LYZRC-", "LYZRC"),
+            DronePattern("XINLIN-", "Xinlin"),
+            DronePattern("E58-", "Generic"),
+            DronePattern("E88-", "Generic"),
+            DronePattern("E99-", "Generic"),
+            DronePattern("V2PRO", "Generic"),
+            // Generic drone SSIDs
+            DronePattern("DRONE-", "Unknown"),
+            DronePattern("UAV-", "Unknown"),
+            DronePattern("QUADCOPTER-", "Unknown"),
         )
     }
 
@@ -176,7 +248,13 @@ class WifiDroneScanner @Inject constructor(
     }
 
     /**
-     * Process WiFi scan results, filtering for drone-matching SSIDs.
+     * Process WiFi scan results, filtering for drone-matching SSIDs,
+     * OUI prefixes, and DJI DroneID Information Elements.
+     *
+     * Detection priority:
+     * 1. DJI DroneID IE → conf 0.85, full position from parsed GPS
+     * 2. SSID pattern match → conf 0.3, no position
+     * 3. OUI match (known drone vendor) → conf 0.4, no position
      *
      * Uses cached scan results from WifiManager (which persist even when
      * startScan() is throttled).
@@ -187,46 +265,111 @@ class WifiDroneScanner @Inject constructor(
         val scanResults = wifiManager.scanResults ?: return emptyList()
         val now = Instant.now()
         val drones = mutableListOf<Drone>()
+        val seenBssids = mutableSetOf<String>()
 
         for (result in scanResults) {
-            val ssid = result.SSID ?: continue
-            if (ssid.isBlank()) continue
-
-            val matchedPattern = matchDronePattern(ssid) ?: continue
-
+            val ssid = result.SSID ?: ""
+            val bssid = result.BSSID ?: continue
             val rssi = result.level
             val estimatedDistance = estimateDistance(rssi)
 
-            Log.d(TAG, "Drone WiFi detected: SSID=$ssid, RSSI=$rssi dBm, ~${estimatedDistance.toInt()}m")
+            // --- Priority 1: Try DJI DroneID IE parsing ---
+            val droneIdData = DjiDroneIdParser.parse(result)
+            if (droneIdData != null) {
+                seenBssids.add(bssid)
+                val serial = droneIdData.serialPrefix ?: ssid.ifBlank { bssid }
 
-            // WiFi detection doesn't give us the drone's actual position,
-            // so we set lat/lon/alt to 0 - the presentation layer should use
-            // estimatedDistanceMeters for display instead.
-            val drone = Drone(
-                id = "wifi_${ssid.lowercase().replace(Regex("[^a-z0-9]"), "_")}",
-                position = Position(
-                    latitude = 0.0,
-                    longitude = 0.0,
-                    altitudeMeters = 0.0
-                ),
-                source = DetectionSource.WIFI,
-                category = ObjectCategory.DRONE,
-                confidence = 0.3f,
-                firstSeen = now,
-                lastUpdated = now,
-                droneId = ssid,
-                manufacturer = matchedPattern.manufacturer,
-                model = inferModel(ssid, matchedPattern),
-                ssid = ssid,
-                signalStrengthDbm = rssi,
-                estimatedDistanceMeters = estimatedDistance
-            )
+                Log.i(TAG, "DJI DroneID IE: BSSID=$bssid, lat=${droneIdData.latitude}, " +
+                        "lon=${droneIdData.longitude}, alt=${droneIdData.altitudeMeters}m, " +
+                        "speed=${droneIdData.speedMps}m/s, serial=$serial")
 
-            drones.add(drone)
+                drones.add(Drone(
+                    id = "wifi_dji_${bssid.replace(":", "").lowercase()}",
+                    position = Position(
+                        latitude = droneIdData.latitude,
+                        longitude = droneIdData.longitude,
+                        altitudeMeters = droneIdData.altitudeMeters,
+                        heading = droneIdData.headingDegrees,
+                        speedMps = droneIdData.speedMps
+                    ),
+                    source = DetectionSource.WIFI,
+                    category = ObjectCategory.DRONE,
+                    confidence = 0.85f,
+                    firstSeen = now,
+                    lastUpdated = now,
+                    droneId = serial,
+                    manufacturer = "DJI",
+                    model = if (ssid.isNotBlank()) inferModel(ssid, DronePattern("DJI-", "DJI")) else null,
+                    ssid = ssid.ifBlank { null },
+                    signalStrengthDbm = rssi,
+                    estimatedDistanceMeters = estimatedDistance,
+                    operatorLatitude = droneIdData.homeLatitude,
+                    operatorLongitude = droneIdData.homeLongitude
+                ))
+                continue
+            }
+
+            // --- Priority 2: SSID pattern matching ---
+            if (ssid.isNotBlank()) {
+                val matchedPattern = matchDronePattern(ssid)
+                if (matchedPattern != null) {
+                    seenBssids.add(bssid)
+                    Log.d(TAG, "Drone WiFi SSID: $ssid, RSSI=$rssi dBm, ~${estimatedDistance.toInt()}m")
+
+                    drones.add(Drone(
+                        id = "wifi_${ssid.lowercase().replace(Regex("[^a-z0-9]"), "_")}",
+                        position = Position(0.0, 0.0, 0.0),
+                        source = DetectionSource.WIFI,
+                        category = ObjectCategory.DRONE,
+                        confidence = 0.3f,
+                        firstSeen = now,
+                        lastUpdated = now,
+                        droneId = ssid,
+                        manufacturer = matchedPattern.manufacturer,
+                        model = inferModel(ssid, matchedPattern),
+                        ssid = ssid,
+                        signalStrengthDbm = rssi,
+                        estimatedDistanceMeters = estimatedDistance
+                    ))
+                    continue
+                }
+            }
+
+            // --- Priority 3: OUI prefix matching (catches hidden/generic SSIDs) ---
+            if (bssid !in seenBssids) {
+                val ouiEntry = WifiOuiDatabase.lookup(bssid)
+                if (ouiEntry != null && !ouiEntry.highFalsePositiveRisk) {
+                    seenBssids.add(bssid)
+                    val displaySsid = ssid.ifBlank { "(hidden)" }
+                    Log.d(TAG, "Drone WiFi OUI: BSSID=$bssid (${ouiEntry.manufacturer}), " +
+                            "SSID=$displaySsid, RSSI=$rssi dBm, ~${estimatedDistance.toInt()}m")
+
+                    drones.add(Drone(
+                        id = "wifi_oui_${bssid.replace(":", "").lowercase()}",
+                        position = Position(0.0, 0.0, 0.0),
+                        source = DetectionSource.WIFI,
+                        category = ObjectCategory.DRONE,
+                        confidence = 0.4f,
+                        firstSeen = now,
+                        lastUpdated = now,
+                        droneId = bssid,
+                        manufacturer = ouiEntry.manufacturer,
+                        ssid = ssid.ifBlank { null },
+                        signalStrengthDbm = rssi,
+                        estimatedDistanceMeters = estimatedDistance
+                    ))
+                }
+            }
         }
 
         if (drones.isNotEmpty()) {
-            Log.i(TAG, "Found ${drones.size} potential drone(s) via WiFi")
+            Log.i(TAG, "Found ${drones.size} potential drone(s) via WiFi " +
+                    "(${drones.count { it.confidence >= 0.85f }} DroneID, " +
+                    "${drones.count { it.confidence == 0.4f }} OUI, " +
+                    "${drones.count { it.confidence == 0.3f }} SSID)")
+        } else if (scanResults.isNotEmpty()) {
+            val ssids = scanResults.mapNotNull { it.SSID }.filter { it.isNotBlank() }
+            Log.d(TAG, "No drone SSIDs/OUIs matched. Visible networks (${ssids.size}): ${ssids.take(10)}")
         }
 
         return drones

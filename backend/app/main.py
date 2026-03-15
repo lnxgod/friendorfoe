@@ -3,7 +3,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from app.cache import close_redis, redis_ping
 from app.config import settings
@@ -32,6 +32,19 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# ---------------------------------------------------------------------------
+# Request logging middleware
+# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log every incoming request for debugging."""
+    logger.info(">>> %s %s from %s", request.method, request.url.path, request.client.host if request.client else "unknown")
+    logger.info("    query: %s", str(request.query_params))
+    response = await call_next(request)
+    logger.info("<<< %s %s -> %d", request.method, request.url.path, response.status_code)
+    return response
+
 
 # ---------------------------------------------------------------------------
 # Routers

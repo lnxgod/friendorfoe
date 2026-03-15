@@ -48,7 +48,8 @@ data class Aircraft(
     val destination: String? = null,
     val squawk: String? = null,
     val isOnGround: Boolean = false,
-    val photoUrl: String? = null
+    val photoUrl: String? = null,
+    val classificationSignals: List<String>? = null
 ) : SkyObject() {
 
     override fun displayLabel(): String {

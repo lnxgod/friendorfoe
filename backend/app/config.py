@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # PostgreSQL
     database_url: str = "postgresql+asyncpg://friendorfoe:friendorfoe@localhost:5432/friendorfoe"
 
+    # ADS-B data sources (fallback chain)
+    adsbfi_base_url: str = "https://opendata.adsb.fi/api"
+    airplanes_live_base_url: str = "https://api.airplanes.live"
+
     # Aircraft enrichment
     planespotters_base_url: str = "https://api.planespotters.net/pub/photos/hex"
 

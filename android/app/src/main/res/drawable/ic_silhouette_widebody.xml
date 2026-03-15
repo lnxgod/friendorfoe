@@ -1,0 +1,41 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="100dp"
+    android:viewportWidth="200"
+    android:viewportHeight="100">
+    <!-- B777/A350 side profile: wider/longer fuselage, larger wingspan -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="
+            M8,50
+            Q8,44 14,42
+            L50,38
+            Q58,36 62,36
+            L172,38
+            Q182,38 188,42
+            L194,46
+            Q196,48 194,50
+            L188,54
+            L172,56
+            L160,56
+            L155,58
+            L135,62
+            Q128,64 122,62
+            L118,58
+            L95,56
+            L80,56
+            L74,58
+            L54,62
+            Q48,64 42,62
+            L38,58
+            L25,54
+            L18,52
+            Q8,54 8,50
+            Z
+            M55,36 L48,24 L85,22 L98,26 L98,34 L90,36 Z
+            M55,62 L48,74 L85,76 L98,72 L98,62 L90,60 Z
+            M30,40 L24,32 L38,30 L48,34 L48,38 Z
+            M30,56 L24,64 L38,66 L48,62 L48,58 Z
+            M172,40 L176,34 L184,34 L188,40 Z
+            M172,56 L176,62 L184,62 L188,56 Z" />
+</vector>

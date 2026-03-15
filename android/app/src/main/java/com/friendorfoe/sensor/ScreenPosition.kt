@@ -1,5 +1,6 @@
 package com.friendorfoe.sensor
 
+import com.friendorfoe.detection.VisualDetection
 import com.friendorfoe.domain.model.SkyObject
 
 /**
@@ -23,5 +24,9 @@ data class ScreenPosition(
     val isInView: Boolean,
     val bearingDegrees: Float = 0f,
     val elevationDegrees: Float = 0f,
-    val distanceMeters: Double = 0.0
+    val distanceMeters: Double = 0.0,
+    /** True when a visual detection has been matched to this radio position */
+    val visuallyConfirmed: Boolean = false,
+    /** The matched visual detection, if any */
+    val matchedDetection: VisualDetection? = null
 )

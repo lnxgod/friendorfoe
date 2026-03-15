@@ -1,6 +1,10 @@
 package com.friendorfoe.di
 
-import com.friendorfoe.data.remote.FriendOrFoeApiService
+import com.friendorfoe.BuildConfig
+import com.friendorfoe.data.remote.AdsbFiApiService
+import com.friendorfoe.data.remote.AirplanesLiveApiService
+import com.friendorfoe.data.remote.OpenMeteoApiService
+import com.friendorfoe.data.remote.OpenSkyApiService
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -10,6 +14,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
+import javax.inject.Named
 import javax.inject.Singleton
 
 /**
@@ -19,14 +24,17 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
-    // TODO: Move to BuildConfig or remote config
-    private const val BASE_URL = "http://10.0.2.2:8000/api/v1/"
+    private const val OPENSKY_BASE_URL = "https://opensky-network.org/api/"
+    private const val ADSBFI_BASE_URL = "https://opendata.adsb.fi/api/"
+    private const val AIRPLANES_LIVE_BASE_URL = "https://api.airplanes.live/"
+    private const val OPEN_METEO_BASE_URL = "https://api.open-meteo.com/"
 
     @Provides
     @Singleton
     fun provideLoggingInterceptor(): HttpLoggingInterceptor {
         return HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC
+                    else HttpLoggingInterceptor.Level.NONE
         }
     }
 
@@ -45,9 +53,10 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit {
+    @Named("opensky")
+    fun provideOpenSkyRetrofit(okHttpClient: OkHttpClient): Retrofit {
         return Retrofit.Builder()
-            .baseUrl(BASE_URL)
+            .baseUrl(OPENSKY_BASE_URL)
             .client(okHttpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
@@ -55,7 +64,58 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideFriendOrFoeApiService(retrofit: Retrofit): FriendOrFoeApiService {
-        return retrofit.create(FriendOrFoeApiService::class.java)
+    fun provideOpenSkyApiService(@Named("opensky") retrofit: Retrofit): OpenSkyApiService {
+        return retrofit.create(OpenSkyApiService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    @Named("adsbfi")
+    fun provideAdsbFiRetrofit(okHttpClient: OkHttpClient): Retrofit {
+        return Retrofit.Builder()
+            .baseUrl(ADSBFI_BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideAdsbFiApiService(@Named("adsbfi") retrofit: Retrofit): AdsbFiApiService {
+        return retrofit.create(AdsbFiApiService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    @Named("airplaneslive")
+    fun provideAirplanesLiveRetrofit(okHttpClient: OkHttpClient): Retrofit {
+        return Retrofit.Builder()
+            .baseUrl(AIRPLANES_LIVE_BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideAirplanesLiveApiService(@Named("airplaneslive") retrofit: Retrofit): AirplanesLiveApiService {
+        return retrofit.create(AirplanesLiveApiService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    @Named("openmeteo")
+    fun provideOpenMeteoRetrofit(okHttpClient: OkHttpClient): Retrofit {
+        return Retrofit.Builder()
+            .baseUrl(OPEN_METEO_BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideOpenMeteoApiService(@Named("openmeteo") retrofit: Retrofit): OpenMeteoApiService {
+        return retrofit.create(OpenMeteoApiService::class.java)
     }
 }

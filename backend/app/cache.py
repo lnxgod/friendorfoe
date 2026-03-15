@@ -78,6 +78,53 @@ async def set_cached_aircraft(
         logger.warning("Redis write failed — proceeding without cache", exc_info=True)
 
 
+def _point_cache_key(lat: float, lon: float, radius_nm: float) -> str:
+    """Deterministic cache key for a point+radius query.
+
+    Rounds lat/lon to 2 decimal places (~1 km) and radius to nearest 5nm
+    so that nearby queries share cached results.
+    """
+    rounded_lat = round(lat, 2)
+    rounded_lon = round(lon, 2)
+    rounded_radius = round(radius_nm / 5) * 5
+    raw = f"{rounded_lat:.2f},{rounded_lon:.2f},{rounded_radius}"
+    digest = hashlib.md5(raw.encode()).hexdigest()[:12]
+    return f"adsb:point:{digest}"
+
+
+async def get_cached_aircraft_point(
+    lat: float, lon: float, radius_nm: float
+) -> list[dict] | None:
+    """Return cached aircraft list for a point+radius query, or None on miss."""
+    try:
+        r = await get_redis()
+        key = _point_cache_key(lat, lon, radius_nm)
+        raw = await r.get(key)
+        if raw is not None:
+            logger.debug("Cache HIT for %s", key)
+            return json.loads(raw)
+        logger.debug("Cache MISS for %s", key)
+    except Exception:
+        logger.warning("Redis read failed — treating as cache miss", exc_info=True)
+    return None
+
+
+async def set_cached_aircraft_point(
+    lat: float,
+    lon: float,
+    radius_nm: float,
+    aircraft: list[dict],
+) -> None:
+    """Store aircraft list in cache for a point+radius query with configured TTL."""
+    try:
+        r = await get_redis()
+        key = _point_cache_key(lat, lon, radius_nm)
+        await r.set(key, json.dumps(aircraft), ex=settings.cache_ttl_seconds)
+        logger.debug("Cached %d aircraft at %s (TTL=%ds)", len(aircraft), key, settings.cache_ttl_seconds)
+    except Exception:
+        logger.warning("Redis write failed — proceeding without cache", exc_info=True)
+
+
 async def redis_ping() -> bool:
     """Return True if Redis is reachable."""
     try:

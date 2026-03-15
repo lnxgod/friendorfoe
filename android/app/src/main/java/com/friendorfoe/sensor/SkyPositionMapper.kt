@@ -1,5 +1,7 @@
 package com.friendorfoe.sensor
 
+import com.friendorfoe.domain.model.Aircraft
+import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
 import kotlin.math.atan2
@@ -28,6 +30,12 @@ class SkyPositionMapper {
     companion object {
         /** Mean Earth radius in meters (WGS84 approximation) */
         private const val EARTH_RADIUS_METERS = 6_371_000.0
+
+        /** Max visual range for aircraft: ~7 nm (13 km) — beyond this, aircraft are specks */
+        private const val MAX_AIRCRAFT_VISUAL_RANGE_M = 13_000.0
+
+        /** Max visual range for drones: ~2 km — small objects invisible further */
+        private const val MAX_DRONE_VISUAL_RANGE_M = 2_000.0
     }
 
     /**
@@ -85,8 +93,15 @@ class SkyPositionMapper {
         val azimuthOffsetRad = Math.toRadians(azimuthOffsetDeg.toDouble())
         val elevationOffsetRad = Math.toRadians(elevationOffsetDeg.toDouble())
 
-        // Step 5: Check if within FOV
-        val isInView = fovCalculator.isInFieldOfView(azimuthOffsetRad, elevationOffsetRad)
+        // Step 5: Check if within FOV and within visual range
+        val slantDistance = calculateSlantDistance(groundDistanceMeters, altitudeDiff)
+        val maxVisualRange = when (skyObject) {
+            is Aircraft -> MAX_AIRCRAFT_VISUAL_RANGE_M
+            is Drone -> MAX_DRONE_VISUAL_RANGE_M
+        }
+        val withinRange = slantDistance <= maxVisualRange
+        val aboveHorizon = elevationDeg > -2f  // Must be at or above horizon (allow -2° for Earth curvature)
+        val isInView = fovCalculator.isInFieldOfView(azimuthOffsetRad, elevationOffsetRad) && withinRange && aboveHorizon
 
         // Step 6: Map to normalized screen coordinates (0.0 to 1.0)
         // Screen X: center is 0.5, left is 0.0, right is 1.0
@@ -106,7 +121,7 @@ class SkyPositionMapper {
             isInView = isInView,
             bearingDegrees = normalizeAngle360(bearingDeg),
             elevationDegrees = elevationDeg,
-            distanceMeters = calculateSlantDistance(groundDistanceMeters, altitudeDiff)
+            distanceMeters = slantDistance
         )
     }
 

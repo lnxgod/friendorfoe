@@ -41,6 +41,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.local.HistoryEntity
+import com.friendorfoe.presentation.util.categoryColor
+import com.friendorfoe.presentation.util.isMilitary
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -138,9 +140,16 @@ private fun HistoryItem(
     entry: HistoryEntity,
     onClick: () -> Unit
 ) {
+    val rowBackground = when {
+        isMilitary(entry.category) -> Modifier.background(Color(0xFFF44336).copy(alpha = 0.08f))
+        entry.category.equals("emergency", ignoreCase = true) -> Modifier.background(Color(0xFFE91E63).copy(alpha = 0.10f))
+        else -> Modifier
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(rowBackground)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -200,10 +209,12 @@ private fun HistoryItem(
 @Composable
 private fun DetectionSourceBadge(source: String) {
     val (icon, label) = detectionSourceInfo(source)
+    val badgeColor = MaterialTheme.colorScheme.surfaceVariant
+    val tintColor = MaterialTheme.colorScheme.onSurfaceVariant
 
     Surface(
         shape = RoundedCornerShape(4.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
+        color = badgeColor
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
@@ -213,13 +224,13 @@ private fun DetectionSourceBadge(source: String) {
                 imageVector = icon,
                 contentDescription = label,
                 modifier = Modifier.size(12.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                tint = tintColor
             )
             Spacer(modifier = Modifier.width(2.dp))
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = tintColor
             )
         }
     }
@@ -231,15 +242,6 @@ private fun formatTime(epochMillis: Long): String {
     return Instant.ofEpochMilli(epochMillis)
         .atZone(ZoneId.systemDefault())
         .format(formatter)
-}
-
-/** Maps a category string from the database to a display color. */
-private fun categoryColor(category: String): Color = when (category.lowercase()) {
-    "commercial" -> Color(0xFF4CAF50)       // Green
-    "general_aviation" -> Color(0xFFFFC107) // Yellow/Amber
-    "military" -> Color(0xFFF44336)         // Red
-    "drone" -> Color(0xFF2196F3)            // Blue
-    else -> Color(0xFF9E9E9E)               // Gray (unknown)
 }
 
 /** Maps a detection source string to its icon and short label. */

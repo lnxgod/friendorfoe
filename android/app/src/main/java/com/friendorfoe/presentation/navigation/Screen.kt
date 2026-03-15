@@ -14,6 +14,9 @@ sealed class Screen(val route: String) {
     /** AR viewfinder with floating labels on sky objects */
     data object ArView : Screen("ar_view")
 
+    /** 2D map view with aircraft markers on OpenStreetMap */
+    data object MapView : Screen("map_view")
+
     /** List of all currently detected objects */
     data object ListView : Screen("list_view")
 
@@ -24,4 +27,7 @@ sealed class Screen(val route: String) {
     data object Detail : Screen("detail/{objectId}") {
         fun createRoute(objectId: String) = "detail/$objectId"
     }
+
+    /** Help / About screen */
+    data object About : Screen("about")
 }

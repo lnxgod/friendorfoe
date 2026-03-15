@@ -20,13 +20,16 @@ import kotlin.math.atan
  */
 class CameraFovCalculator {
 
-    /** Horizontal field of view in radians */
-    var horizontalFovRadians: Double = Math.toRadians(60.0)
+    /** Horizontal field of view in radians (default for portrait: narrower) */
+    var horizontalFovRadians: Double = Math.toRadians(45.0)
         private set
 
-    /** Vertical field of view in radians */
-    var verticalFovRadians: Double = Math.toRadians(45.0)
+    /** Vertical field of view in radians (default for portrait: wider) */
+    var verticalFovRadians: Double = Math.toRadians(60.0)
         private set
+
+    /** Whether portrait swap has been applied */
+    private var portraitSwapped = false
 
     /** Horizontal FOV in degrees */
     val horizontalFovDegrees: Double get() = Math.toDegrees(horizontalFovRadians)
@@ -84,6 +87,24 @@ class CameraFovCalculator {
     ) {
         horizontalFovRadians = 2.0 * atan(sensorWidthMm / (2.0 * focalLengthMm))
         verticalFovRadians = 2.0 * atan(sensorHeightMm / (2.0 * focalLengthMm))
+    }
+
+    /**
+     * Swap horizontal and vertical FOV for portrait mode.
+     *
+     * Camera sensors report FOV in landscape orientation (wider = horizontal).
+     * When the app is locked to portrait, the narrower sensor dimension maps
+     * to screen horizontal and the wider to screen vertical. This method
+     * swaps the values so label positioning matches what the user sees.
+     *
+     * Safe to call multiple times; only swaps once.
+     */
+    fun swapForPortrait() {
+        if (portraitSwapped) return
+        val tmp = horizontalFovRadians
+        horizontalFovRadians = verticalFovRadians
+        verticalFovRadians = tmp
+        portraitSwapped = true
     }
 
     /**

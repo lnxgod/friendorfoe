@@ -39,8 +39,12 @@ class SensorFusionEngine @Inject constructor(
     companion object {
         private const val TAG = "SensorFusionEngine"
 
-        /** Low-pass filter smoothing factor. Higher = more smoothing, slower response. */
-        private const val LOW_PASS_ALPHA = 0.8f
+        /** Low-pass filter smoothing factor for raw accel/mag input. */
+        private const val LOW_PASS_ALPHA = 0.65f
+
+        /** Output smoothing factor applied to final orientation angles.
+         *  Reduces jitter from all sensor sources including rotation vector. */
+        private const val OUTPUT_SMOOTH_ALPHA = 0.25f
 
         /** Sensor sampling period. SENSOR_DELAY_GAME (~20ms) is a good balance. */
         private const val SENSOR_DELAY = SensorManager.SENSOR_DELAY_GAME
@@ -72,16 +76,23 @@ class SensorFusionEngine @Inject constructor(
     // Raw sensor data arrays
     private var gravity = FloatArray(3)
     private var geomagnetic = FloatArray(3)
-    private var gyroscope = FloatArray(3)
 
     // Flag to track whether we have received at least one reading from each sensor
     private var hasGravity = false
     private var hasGeomagnetic = false
 
+    /** Whether the device has a gyroscope-based rotation vector sensor. */
+    private var hasRotationVector = false
+
     // Reusable arrays to avoid allocation in the sensor callback hot path
     private val rotationMatrix = FloatArray(9)
     private val remappedRotationMatrix = FloatArray(9)
     private val orientationAngles = FloatArray(3)
+
+    // Output smoothing state (applied after orientation computation)
+    private var smoothedAzimuth = Float.NaN
+    private var smoothedPitch = Float.NaN
+    private var smoothedRoll = Float.NaN
 
     private var isRunning = false
 
@@ -95,17 +106,33 @@ class SensorFusionEngine @Inject constructor(
         if (isRunning) return
         isRunning = true
 
+        // 1. Prefer TYPE_ROTATION_VECTOR (accel+gyro+mag fusion: smooth AND compass-calibrated).
+        // This gives azimuth aligned to magnetic north, unlike TYPE_GAME_ROTATION_VECTOR.
+        val rotationVector = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        if (rotationVector != null) {
+            sensorManager.registerListener(this, rotationVector, currentSensorDelay)
+            hasRotationVector = true
+            Log.d(TAG, "Using TYPE_ROTATION_VECTOR for orientation (compass-calibrated)")
+        }
+
+        // 2. Fallback: TYPE_GAME_ROTATION_VECTOR (no compass, but smooth)
+        if (!hasRotationVector) {
+            val gameRotation = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+            if (gameRotation != null) {
+                sensorManager.registerListener(this, gameRotation, currentSensorDelay)
+                hasRotationVector = true
+                Log.d(TAG, "Using TYPE_GAME_ROTATION_VECTOR fallback for orientation")
+            }
+        }
+
+        // 3. Always register accel+mag as last fallback (no gyro devices)
         val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         val magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
-        val gyroscopeSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
 
         accelerometer?.let {
             sensorManager.registerListener(this, it, currentSensorDelay)
         }
         magnetometer?.let {
-            sensorManager.registerListener(this, it, currentSensorDelay)
-        }
-        gyroscopeSensor?.let {
             sensorManager.registerListener(this, it, currentSensorDelay)
         }
     }
@@ -124,10 +151,18 @@ class SensorFusionEngine @Inject constructor(
         // Reset state so next start() begins fresh
         hasGravity = false
         hasGeomagnetic = false
+        hasRotationVector = false
+        smoothedAzimuth = Float.NaN
+        smoothedPitch = Float.NaN
+        smoothedRoll = Float.NaN
     }
 
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
+            Sensor.TYPE_ROTATION_VECTOR, Sensor.TYPE_GAME_ROTATION_VECTOR -> {
+                SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+                updateOrientation()
+            }
             Sensor.TYPE_ACCELEROMETER -> {
                 gravity = lowPassFilter(event.values, gravity)
                 hasGravity = true
@@ -136,16 +171,10 @@ class SensorFusionEngine @Inject constructor(
                 geomagnetic = lowPassFilter(event.values, geomagnetic)
                 hasGeomagnetic = true
             }
-            Sensor.TYPE_GYROSCOPE -> {
-                // Store gyroscope data for potential future complementary filter use.
-                // Currently orientation is derived from accelerometer + magnetometer
-                // via getRotationMatrix, which is sufficient for our AR overlay use case.
-                System.arraycopy(event.values, 0, gyroscope, 0, 3)
-            }
         }
 
-        // Only compute orientation when we have both required sensor inputs
-        if (hasGravity && hasGeomagnetic) {
+        // Fallback: use accel+mag when rotation vector is not available
+        if (!hasRotationVector && hasGravity && hasGeomagnetic) {
             updateOrientation()
         }
     }
@@ -178,17 +207,27 @@ class SensorFusionEngine @Inject constructor(
         if (isRunning) {
             sensorManager.unregisterListener(this)
 
+            // Re-register rotation vector with same preference order
+            var reRegisteredRotation = false
+            val rotationVector = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+            if (rotationVector != null) {
+                sensorManager.registerListener(this, rotationVector, currentSensorDelay)
+                reRegisteredRotation = true
+            }
+            if (!reRegisteredRotation) {
+                val gameRotation = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+                gameRotation?.let {
+                    sensorManager.registerListener(this, it, currentSensorDelay)
+                }
+            }
+
             val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
             val magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
-            val gyroscopeSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
 
             accelerometer?.let {
                 sensorManager.registerListener(this, it, currentSensorDelay)
             }
             magnetometer?.let {
-                sensorManager.registerListener(this, it, currentSensorDelay)
-            }
-            gyroscopeSensor?.let {
                 sensorManager.registerListener(this, it, currentSensorDelay)
             }
         }
@@ -207,10 +246,14 @@ class SensorFusionEngine @Inject constructor(
      * - Roll: device tilt left/right
      */
     private fun updateOrientation() {
-        val success = SensorManager.getRotationMatrix(
-            rotationMatrix, null, gravity, geomagnetic
-        )
-        if (!success) return
+        if (!hasRotationVector) {
+            // Fallback: compute rotation matrix from accel+mag
+            val success = SensorManager.getRotationMatrix(
+                rotationMatrix, null, gravity, geomagnetic
+            )
+            if (!success) return
+        }
+        // rotationMatrix is already set by getRotationMatrixFromVector when using rotation vector
 
         // Remap for portrait mode with phone held upright (camera pointing at sky).
         // SensorManager.AXIS_X keeps the X axis as-is.
@@ -230,7 +273,7 @@ class SensorFusionEngine @Inject constructor(
         // orientationAngles[2] = roll in radians (-PI to PI)
 
         var azimuthDeg = Math.toDegrees(orientationAngles[0].toDouble()).toFloat()
-        val pitchDeg = Math.toDegrees(orientationAngles[1].toDouble()).toFloat()
+        val pitchDeg = -Math.toDegrees(orientationAngles[1].toDouble()).toFloat()
         val rollDeg = Math.toDegrees(orientationAngles[2].toDouble()).toFloat()
 
         // Normalize azimuth to 0-360 range
@@ -238,11 +281,37 @@ class SensorFusionEngine @Inject constructor(
             azimuthDeg += 360f
         }
 
+        // Apply output smoothing to reduce jitter from all sensor sources.
+        // For azimuth, use circular interpolation to handle the 0/360 wrap.
+        if (smoothedAzimuth.isNaN()) {
+            smoothedAzimuth = azimuthDeg
+            smoothedPitch = pitchDeg
+            smoothedRoll = rollDeg
+        } else {
+            smoothedAzimuth = circularLerp(smoothedAzimuth, azimuthDeg, OUTPUT_SMOOTH_ALPHA)
+            smoothedPitch += OUTPUT_SMOOTH_ALPHA * (pitchDeg - smoothedPitch)
+            smoothedRoll += OUTPUT_SMOOTH_ALPHA * (rollDeg - smoothedRoll)
+        }
+
         _orientation.value = DeviceOrientation(
-            azimuthDegrees = azimuthDeg,
-            pitchDegrees = pitchDeg,
-            rollDegrees = rollDeg
+            azimuthDegrees = smoothedAzimuth,
+            pitchDegrees = smoothedPitch,
+            rollDegrees = smoothedRoll
         )
+    }
+
+    /**
+     * Circular linear interpolation for angular values (handles 0/360 wrap).
+     * Interpolates from [current] toward [target] by [alpha] fraction.
+     */
+    private fun circularLerp(current: Float, target: Float, alpha: Float): Float {
+        var diff = target - current
+        if (diff > 180f) diff -= 360f
+        if (diff < -180f) diff += 360f
+        var result = current + alpha * diff
+        if (result < 0f) result += 360f
+        if (result >= 360f) result -= 360f
+        return result
     }
 
     /**
