@@ -112,7 +112,7 @@ cd android
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Or download the pre-built APK from the repo: **`foe21.apk`**
+Or download the latest pre-built APK from [**GitHub Releases**](https://github.com/GAMECHANGERSai/friendorfoe/releases).
 
 ### Backend Setup (Optional — enables enrichment)
 
@@ -217,8 +217,7 @@ friendorfoe/
 │           ├── adsb.py                # Multi-source ADS-B fetching
 │           └── enrichment.py          # Aircraft data enrichment
 ├── macos/                             # macOS companion (early stage)
-├── docs/                              # Design documents
-└── foe21.apk                         # Pre-built Android APK
+└── docs/                              # Design documents
 ```
 
 ---
