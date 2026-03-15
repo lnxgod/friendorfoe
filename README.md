@@ -10,7 +10,7 @@ This project was **vibe coded with [Claude](https://claude.ai)** — Anthropic's
 
 > **From zero to confirmed aircraft and drone detections on a real device — in under 72 hours.**
 >
-> On March 12, 2025, the first commit landed at 12:13 PM. By 2:22 PM the same day, 13 commits and **8,500+ lines of code** had been written in ~2 hours of AI pair-programming with Claude — producing a build-ready APK with AR viewfinder, multi-source detection, Bayesian sensor fusion, and map view. By March 14, the app was open-sourced with aircraft silhouettes, styled map markers, and polish — totaling **22,000+ lines** across Kotlin, Python, and XML.
+> On March 12, 2025, the first commit was made that evening, 13 commits and **8,500+ lines of code** had been written in ~2 hours of AI pair-programming with Claude — producing a build-ready APK with AR viewfinder, multi-source detection, Bayesian sensor fusion, and map view. By March 14, the app was open-sourced with aircraft silhouettes, styled map markers, and polish — totaling **22,000+ lines** across Kotlin, Python, and XML.
 >
 > The app is **fully standalone** — install the APK, grant permissions, and start identifying aircraft. It connects directly to free public ADS-B APIs with no server, no keys, no accounts. The optional Python backend only adds enrichment (photos, airline names, route info).
 
