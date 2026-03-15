@@ -268,7 +268,7 @@ This entire project was **vibe coded** with [Claude](https://claude.ai) by Anthr
 
 | Date | What Happened |
 |------|--------------|
-| **March 12** | First commit at 12:13 PM. By 2:22 PM, 13 commits had landed — **8,500+ lines of code** written in ~2 hours of AI pair-programming. The result: a build-ready APK with AR viewfinder, four detection sources, Bayesian sensor fusion, map view, and history tracking. |
+| **March 12** |  13 commits had landed — **8,500+ lines of code** written in ~2 hours of AI pair-programming. The result: a build-ready APK with AR viewfinder, four detection sources, Bayesian sensor fusion, map view, and history tracking. |
 | **March 14** | Open-source release. Added 120+ aircraft silhouettes, styled map markers with category shapes, permission handling polish, and security review. |
 | **Total** | **22,000+ lines** of Kotlin, Python, and XML. Confirmed real-world detections of commercial aircraft and drones on device. |
 
