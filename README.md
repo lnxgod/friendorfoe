@@ -112,7 +112,7 @@ cd android
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Or download the latest pre-built APK from [**GitHub Releases**](https://github.com/GAMECHANGERSai/friendorfoe/releases).
+Or download the latest pre-built APK from [**GitHub Releases**](https://github.com/lnxgod/friendorfoe/releases).
 
 ### Backend Setup (Optional — enables enrichment)
 
