@@ -87,6 +87,7 @@ import com.friendorfoe.presentation.util.getAircraftPhotoUrl
 fun DetailScreen(
     objectId: String,
     onBack: () -> Unit,
+    onNavigateToDroneGuide: ((String?) -> Unit)? = null,
     viewModel: DetailViewModel = hiltViewModel()
 ) {
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
@@ -146,7 +147,8 @@ fun DetailScreen(
                 is DetailState.DroneLoaded -> {
                     DroneDetailContent(
                         drone = state.drone,
-                        positionTrail = positionTrail
+                        positionTrail = positionTrail,
+                        onNavigateToDroneGuide = onNavigateToDroneGuide
                     )
                 }
 
@@ -309,7 +311,8 @@ internal fun DroneDetailContent(
     nearbyCandidates: List<Drone> = emptyList(),
     positionTrail: List<SkyObjectRepository.TrailPoint> = emptyList(),
     onZoom: (() -> Unit)? = null,
-    onLockOn: (() -> Unit)? = null
+    onLockOn: (() -> Unit)? = null,
+    onNavigateToDroneGuide: ((String?) -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -433,6 +436,36 @@ internal fun DroneDetailContent(
                 source = drone.source,
                 confidence = drone.confidence
             )
+        }
+
+        // Drone Reference Guide link
+        if (onNavigateToDroneGuide != null) {
+            val isUnknown = drone.manufacturer == null || drone.manufacturer == "Unknown" || drone.manufacturer == "Generic"
+            val isKnownManufacturerUnknownModel = drone.manufacturer != null &&
+                drone.manufacturer != "Unknown" && drone.manufacturer != "Generic" &&
+                drone.model == null
+
+            if (isUnknown) {
+                Button(
+                    onClick = { onNavigateToDroneGuide(null) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF9C27B0)
+                    )
+                ) {
+                    Text("Browse Drone Reference Guide")
+                }
+            } else if (isKnownManufacturerUnknownModel) {
+                Button(
+                    onClick = { onNavigateToDroneGuide(drone.manufacturer) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF9C27B0)
+                    )
+                ) {
+                    Text("Could this be a ${drone.manufacturer} drone?")
+                }
+            }
         }
 
         // Nearby Drone IDs

@@ -1,10 +1,12 @@
+🌍 **[English](README.md)** | [עברית](README.he.md) | [Українська](README.uk.md) | [العربية](README.ar.md) | [Türkçe](README.tr.md) | [Azərbaycan](README.az.md) | [Türkmen](README.tk.md) | [پښتو](README.ps.md) | [اردو](README.ur.md) | [Kurdî](README.ku.md) | [Հայերեն](README.hy.md) | [ქართული](README.ka.md) | [فارسی](README.fa.md)
+
 # Friend or Foe — Real-Time Aircraft & Drone Identification
 
 [![Android Build](https://github.com/lnxgod/friendorfoe/actions/workflows/android-build.yml/badge.svg)](https://github.com/lnxgod/friendorfoe/actions/workflows/android-build.yml)
 
 **Point your phone at the sky. Know what's up there.**
 
-Friend or Foe is an open-source, **fully standalone** Android app that identifies aircraft and drones in real time using augmented reality. It combines ADS-B transponder data, FAA Remote ID drone broadcasts, WiFi signal analysis, and on-device visual detection to overlay floating labels on the camera view — telling you what's flying overhead, who operates it, where it's going, and whether it's friend or foe. No backend server, no API keys, no accounts required.
+Friend or Foe is an open-source, **install-and-go** Android app that identifies aircraft and drones in real time using augmented reality. It combines ADS-B transponder data, FAA Remote ID drone broadcasts, WiFi signal analysis, and on-device visual detection to overlay floating labels on the camera view — telling you what's flying overhead, who operates it, where it's going, and whether it's friend or foe. No accounts, no signups, no API keys required — just install and go.
 
 This project was **built with AI** — not just one, but all of them. Claude wrote the code, Grok shaped the design, Codex reviewed the security, and Gemini helped pick the tech stack. Released by [GAMECHANGERSai](https://gamechangersai.org) to showcase what's possible when AI meets human creativity. See the [CHANGELOG](CHANGELOG.md) for version history.
 
@@ -14,7 +16,7 @@ This project was **built with AI** — not just one, but all of them. Claude wro
 >
 > On March 12, 2025, the first commit was made that evening, 13 commits and **8,500+ lines of code** had been written in ~2 hours of AI pair-programming with Claude — producing a build-ready APK with AR viewfinder, multi-source detection, Bayesian sensor fusion, and map view. By March 14, the app was open-sourced with aircraft silhouettes, styled map markers, and polish — totaling **22,000+ lines** across Kotlin, Python, and XML.
 >
-> The app is **fully standalone** — install the APK, grant permissions, and start identifying aircraft. It connects directly to free public ADS-B APIs with no server, no keys, no accounts. The optional Python backend only adds enrichment (photos, airline names, route info).
+> The app is **install-and-go** — install the APK, grant permissions, and start identifying aircraft. It connects directly to free public ADS-B APIs with no signup, no keys, no accounts. The optional Python backend only adds additional enrichment (airline names, route info).
 
 ---
 
@@ -28,11 +30,12 @@ This project was **built with AI** — not just one, but all of them. Claude wro
   - Visual detection with ML Kit (camera-based object recognition)
 - **Smart Classification** — Categorizes everything into 10 types: Commercial, General Aviation, Military, Helicopter, Government, Emergency, Cargo, Drone, Ground Vehicle, and Unknown. Military detection uses callsign patterns, squawk codes, and operator databases.
 - **Bayesian Sensor Fusion** — When multiple sensors detect the same object, confidence scores are combined using Bayesian log-odds — not just "pick the highest." Two weak signals agreeing can outweigh one strong signal.
-- **Aircraft Silhouettes** — 120+ ICAO type codes mapped to 10 vector silhouette categories (narrowbody, widebody, regional, turboprop, bizjet, helicopter, fighter, cargo, lightplane, drone) for instant visual recognition.
+- **Aircraft Silhouettes & Photos** — 120+ ICAO type codes mapped to 10 vector silhouette categories (narrowbody, widebody, regional, turboprop, bizjet, helicopter, fighter, cargo, lightplane, drone) plus 134 bundled aircraft photos for instant visual recognition — no network needed.
 - **2D Map View** — OpenStreetMap with distinct marker shapes per category, distance rings, compass-follow mode, and FOV cone overlay.
 - **Detail Cards** — Tap any object for full details: registration, operator, route (origin/destination), altitude, speed, heading, squawk code, detection source, and confidence level.
 - **History Log** — Persistent database of everything you've identified, searchable and sortable.
-- **Backend Enrichment (Optional)** — An optional Python API server can add aircraft photos, airline names, registration numbers, and route information. The app works fully without it.
+- **Drone Reference Guide** — Built-in database of 30+ drone types with photos, specs, and descriptions — from DJI consumer drones to military UCAVs like the Bayraktar TB2, MQ-9 Reaper, and Shahed-136. Browse by category, search by name, or jump straight from an unknown drone detection to identify what you're seeing.
+- **Backend Enrichment (Optional)** — An optional Python API server can add airline names, registration numbers, and route information beyond what's already bundled. The app works fully without it — aircraft photos and drone references are included in the APK.
 
 ---
 
@@ -109,11 +112,11 @@ The app fuses accelerometer, magnetometer, and gyroscope data to determine exact
 - **Android SDK 35** (compileSdk) with minSdk 26 (Android 8.0+)
 - An Android device with GPS, compass, and camera (emulator works for list/map views but not AR)
 
-> **No server needed.** The app connects directly to free public ADS-B APIs — no backend, no API keys, no accounts.
+> **No accounts or signups needed.** The app connects directly to free public ADS-B APIs — no backend setup, no API keys, no accounts.
 
 ### Quick Start — Android Only
 
-The app works without the backend — it connects directly to public ADS-B APIs. To just build and run:
+The app connects directly to free public ADS-B APIs — no backend setup or accounts needed. Aircraft photos and the drone reference guide are bundled in the APK. To just build and run:
 
 ```bash
 cd android
@@ -216,10 +219,11 @@ friendorfoe/
 │       │   ├── map/                   # OpenStreetMap view
 │       │   ├── list/                  # Sortable object list
 │       │   ├── detail/                # Full object detail cards
+│       │   ├── drones/                # Drone reference guide browser
 │       │   ├── history/               # Detection history
 │       │   ├── welcome/               # Welcome/launch screen
 │       │   ├── about/                 # App info
-│       │   └── util/                  # AircraftPhotos, CategoryColors
+│       │   └── util/                  # AircraftPhotos, CategoryColors, DroneDatabase
 │       └── sensor/                    # Sensor fusion & positioning
 ├── backend/                           # Python FastAPI server
 │   └── app/

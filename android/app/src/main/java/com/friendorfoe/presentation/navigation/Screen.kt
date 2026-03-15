@@ -28,6 +28,13 @@ sealed class Screen(val route: String) {
         fun createRoute(objectId: String) = "detail/$objectId"
     }
 
+    /** Drone reference guide */
+    data object DroneGuide : Screen("drone_guide?manufacturer={manufacturer}") {
+        fun createRoute(manufacturer: String? = null) =
+            if (manufacturer != null) "drone_guide?manufacturer=$manufacturer"
+            else "drone_guide"
+    }
+
     /** Help / About screen */
     data object About : Screen("about")
 
