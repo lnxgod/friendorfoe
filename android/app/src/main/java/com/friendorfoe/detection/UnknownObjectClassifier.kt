@@ -60,7 +60,8 @@ class UnknownObjectClassifier @Inject constructor() {
                 detection = visual,
                 classification = classification,
                 alertLevel = alertLevel,
-                persistenceSeconds = persistenceSeconds
+                persistenceSeconds = persistenceSeconds,
+                shapeClass = scored?.shapeClass ?: ShapeClass.INDETERMINATE
             )
         }
 
@@ -82,5 +83,6 @@ data class ClassifiedVisualDetection(
     val detection: VisualDetection,
     val classification: VisualClassification,
     val alertLevel: AlertLevel,
-    val persistenceSeconds: Float
+    val persistenceSeconds: Float,
+    val shapeClass: ShapeClass = ShapeClass.INDETERMINATE
 )

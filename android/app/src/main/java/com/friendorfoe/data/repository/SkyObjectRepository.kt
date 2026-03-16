@@ -220,13 +220,24 @@ class SkyObjectRepository @Inject constructor(
     /**
      * Collect WiFi drones from SSID scanner.
      * Each emission is a single drone detection.
+     *
+     * WiFi Beacon Remote ID drones (source == REMOTE_ID) are routed to
+     * remoteIdObjects for proper dedup against BLE/NaN drones and trail tracking.
      */
     private suspend fun collectWifi() {
         wifiDroneScanner.startScanning().collect { drone ->
-            synchronized(wifiObjects) {
-                wifiObjects[drone.id] = drone
+            if (drone.source == DetectionSource.REMOTE_ID) {
+                synchronized(remoteIdObjects) {
+                    remoteIdObjects[drone.id] = drone
+                }
+                appendTrailPoint(drone)
+                Log.d(TAG, "WiFi Beacon RID updated: drone ${drone.droneId}")
+            } else {
+                synchronized(wifiObjects) {
+                    wifiObjects[drone.id] = drone
+                }
+                Log.d(TAG, "WiFi updated: drone ${drone.ssid}")
             }
-            Log.d(TAG, "WiFi updated: drone ${drone.ssid}")
             rebuildMergedList()
         }
     }

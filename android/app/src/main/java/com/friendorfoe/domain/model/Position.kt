@@ -14,5 +14,6 @@ data class Position(
     val longitude: Double,
     val altitudeMeters: Double,
     val heading: Float? = null,
-    val speedMps: Float? = null
+    val speedMps: Float? = null,
+    val verticalRateMps: Float? = null
 )

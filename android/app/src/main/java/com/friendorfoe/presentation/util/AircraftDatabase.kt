@@ -7,7 +7,7 @@ package com.friendorfoe.presentation.util
  * military, and general aviation aircraft types. Used by the Aircraft Reference
  * Screen to help users identify aircraft, and linked from aircraft detail cards.
  *
- * Covers 138 aircraft types referencing bundled photo assets.
+ * Covers 160 aircraft types referencing bundled photo assets.
  */
 
 data class AircraftReference(
@@ -864,7 +864,49 @@ object AircraftDatabase {
             description = "Tiltrotor aircraft that takes off like a helicopter and flies like a turboprop. Used by USMC, USAF, and Navy. Can carry 24 troops at 509km/h. Unique silhouette is unmistakable.",
             specs = "Crew: 4 + 24 troops | Range: 1,627km | Cruise: 509km/h | Engines: 2x T406-AD-400",
             photoAsset = "aircraft/V22.jpg",
-            icaoTypeCodes = listOf("V22")
+            icaoTypeCodes = listOf("V22", "MV22", "CV22")
+        ),
+
+        // ── Russian / Adversary Helicopters ──
+        AircraftReference(
+            id = "mi8",
+            name = "Mil Mi-8/17 Hip",
+            manufacturer = "Mil (Russia)",
+            category = AircraftCategory.HELICOPTER,
+            description = "Most-produced helicopter in history with over 17,000 built. Medium twin-turbine transport and gunship workhorse. Used by 90+ countries for troop transport, medevac, and armed assault.",
+            specs = "Passengers: 24 | Range: 580km | Cruise: 225km/h | Engines: 2x TV3-117",
+            photoAsset = "aircraft/MI8.jpg",
+            icaoTypeCodes = listOf("MI8", "MI17")
+        ),
+        AircraftReference(
+            id = "mi24",
+            name = "Mil Mi-24/35 Hind",
+            manufacturer = "Mil (Russia)",
+            category = AircraftCategory.HELICOPTER,
+            description = "Iconic Soviet attack helicopter with troop compartment — the only gunship that can carry 8 soldiers. Heavily armored, tandem cockpit with chin-mounted gun turret. Proved devastating in Afghanistan.",
+            specs = "Crew: 2-3 + 8 troops | Range: 450km | Cruise: 270km/h | Engines: 2x TV3-117",
+            photoAsset = "aircraft/MI24.jpg",
+            icaoTypeCodes = listOf("MI24")
+        ),
+        AircraftReference(
+            id = "mi28",
+            name = "Mil Mi-28 Havoc",
+            manufacturer = "Mil (Russia)",
+            category = AircraftCategory.HELICOPTER,
+            description = "Dedicated attack helicopter designed to destroy tanks and armored vehicles. Tandem cockpit with armored crew seats. Mi-28NM 'Night Hunter' variant has millimeter-wave radar. Used extensively in Ukraine.",
+            specs = "Crew: 2 | Range: 450km | Max speed: 324km/h | Engines: 2x TV3-117VMA",
+            photoAsset = "aircraft/MI28.jpg",
+            icaoTypeCodes = listOf("MI28")
+        ),
+        AircraftReference(
+            id = "ka52",
+            name = "Kamov Ka-52 Alligator",
+            manufacturer = "Kamov (Russia)",
+            category = AircraftCategory.HELICOPTER,
+            description = "Coaxial-rotor attack helicopter with side-by-side seating — unique among combat helicopters. No tail rotor needed. Equipped with Vikhr anti-tank missiles. Heavily used in Ukraine conflict.",
+            specs = "Crew: 2 | Range: 460km | Max speed: 310km/h | Engines: 2x TV3-117VMA",
+            photoAsset = "aircraft/KA52.jpg",
+            icaoTypeCodes = listOf("KA52")
         ),
 
         // ══════════════════════════════════════
@@ -1120,6 +1162,184 @@ object AircraftDatabase {
             specs = "Passengers: 8 | Range: 3,185km | Cruise: 536km/h | Engines: 2x PT6A-42",
             photoAsset = "aircraft/C12.jpg",
             icaoTypeCodes = listOf("C12")
+        ),
+
+        // ── Russian Fighters ──
+        AircraftReference(
+            id = "su27",
+            name = "Sukhoi Su-27 Flanker",
+            manufacturer = "Sukhoi (Russia)",
+            category = AircraftCategory.FIGHTER,
+            description = "Russia's premier air superiority fighter and one of the most agile jets ever built. Twin-engine, twin-tail design with exceptional range. Basis for an entire family of derivatives (Su-30, Su-33, Su-34, Su-35).",
+            specs = "Crew: 1 | Max speed: Mach 2.35 | Range: 3,530km | Engines: 2x AL-31F",
+            photoAsset = "aircraft/SU27.jpg",
+            icaoTypeCodes = listOf("SU27")
+        ),
+        AircraftReference(
+            id = "su30",
+            name = "Sukhoi Su-30 Flanker-C",
+            manufacturer = "Sukhoi (Russia)",
+            category = AircraftCategory.FIGHTER,
+            description = "Twin-seat multirole derivative of Su-27. Widely exported to India (Su-30MKI), China, Vietnam, Algeria, and others. Canard foreplanes on some variants for enhanced maneuverability.",
+            specs = "Crew: 2 | Max speed: Mach 2.0 | Range: 3,000km | Engines: 2x AL-31FP",
+            photoAsset = "aircraft/SU30.jpg",
+            icaoTypeCodes = listOf("SU30")
+        ),
+        AircraftReference(
+            id = "su34",
+            name = "Sukhoi Su-34 Fullback",
+            manufacturer = "Sukhoi (Russia)",
+            category = AircraftCategory.FIGHTER,
+            description = "Side-by-side two-seat fighter-bomber with distinctive 'platypus' nose. Armored cockpit, internal toilet, and galley for long missions. Heavily used for ground attack in Ukraine and Syria.",
+            specs = "Crew: 2 | Max speed: Mach 1.8 | Range: 4,000km | Engines: 2x AL-31FM1",
+            photoAsset = "aircraft/SU34.jpg",
+            icaoTypeCodes = listOf("SU34")
+        ),
+        AircraftReference(
+            id = "su35",
+            name = "Sukhoi Su-35 Flanker-E",
+            manufacturer = "Sukhoi (Russia)",
+            category = AircraftCategory.FIGHTER,
+            description = "Most advanced Flanker variant, designated 4++ generation. Thrust-vectoring engines enable extreme post-stall maneuvers. Irbis-E PESA radar. Exported to China, Egypt, and Indonesia.",
+            specs = "Crew: 1 | Max speed: Mach 2.25 | Range: 3,600km | Engines: 2x AL-41F1S (117S)",
+            photoAsset = "aircraft/SU35.jpg",
+            icaoTypeCodes = listOf("SU35")
+        ),
+        AircraftReference(
+            id = "mig29",
+            name = "Mikoyan MiG-29 Fulcrum",
+            manufacturer = "Mikoyan (Russia)",
+            category = AircraftCategory.FIGHTER,
+            description = "Lightweight frontal fighter designed to counter the F-16. Twin engines with distinctive wedge intakes. Widely exported to 30+ countries. Ukrainian MiG-29s have been adapted to fire Western weapons.",
+            specs = "Crew: 1 | Max speed: Mach 2.25 | Range: 1,430km | Engines: 2x RD-33",
+            photoAsset = "aircraft/MIG29.jpg",
+            icaoTypeCodes = listOf("MIG29")
+        ),
+        AircraftReference(
+            id = "mig31",
+            name = "Mikoyan MiG-31 Foxhound",
+            manufacturer = "Mikoyan (Russia)",
+            category = AircraftCategory.FIGHTER,
+            description = "High-altitude, high-speed interceptor derived from MiG-25. Mach 2.83 capable with Zaslon PESA radar — first fighter with phased-array radar. Carries Kinzhal hypersonic missile on MiG-31K variant.",
+            specs = "Crew: 2 | Max speed: Mach 2.83 | Range: 3,000km | Engines: 2x D-30F6",
+            photoAsset = "aircraft/MIG31.jpg",
+            icaoTypeCodes = listOf("MIG31")
+        ),
+
+        // ── Russian Bombers ──
+        AircraftReference(
+            id = "tu95",
+            name = "Tupolev Tu-95 Bear",
+            manufacturer = "Tupolev (Russia)",
+            category = AircraftCategory.FIGHTER,
+            description = "Nuclear-capable turboprop strategic bomber with distinctive contra-rotating propellers — the fastest propeller-driven aircraft. Routinely probes NATO airspace. Over 60 years in service.",
+            specs = "Crew: 7 | Max speed: 925km/h | Range: 15,000km | Engines: 4x NK-12",
+            photoAsset = "aircraft/TU95.jpg",
+            icaoTypeCodes = listOf("TU95")
+        ),
+        AircraftReference(
+            id = "tu160",
+            name = "Tupolev Tu-160 Blackjack",
+            manufacturer = "Tupolev (Russia)",
+            category = AircraftCategory.FIGHTER,
+            description = "World's largest and heaviest combat aircraft. Supersonic swing-wing strategic bomber. Carries Kh-101/102 cruise missiles. New Tu-160M2 production restarted. Elegant white paint scheme.",
+            specs = "Crew: 4 | Max speed: Mach 2.05 | Range: 12,300km | Engines: 4x NK-32",
+            photoAsset = "aircraft/TU160.jpg",
+            icaoTypeCodes = listOf("TU160")
+        ),
+        AircraftReference(
+            id = "tu22m",
+            name = "Tupolev Tu-22M Backfire",
+            manufacturer = "Tupolev (Russia)",
+            category = AircraftCategory.FIGHTER,
+            description = "Supersonic swing-wing bomber designed for maritime strike and theater nuclear delivery. Carries Kh-22 anti-ship missiles. Used for strategic bombing in Ukraine and Syria.",
+            specs = "Crew: 4 | Max speed: Mach 1.88 | Range: 6,800km | Engines: 2x NK-25",
+            photoAsset = "aircraft/TU22.jpg",
+            icaoTypeCodes = listOf("TU22")
+        ),
+
+        // ── Chinese Fighters ──
+        AircraftReference(
+            id = "j10",
+            name = "Chengdu J-10 Vigorous Dragon",
+            manufacturer = "Chengdu (China)",
+            category = AircraftCategory.FIGHTER,
+            description = "Chinese single-engine canard-delta multirole fighter. Comparable to F-16. J-10C variant features AESA radar and PL-15 long-range missiles. Backbone of PLAAF alongside J-11/J-16.",
+            specs = "Crew: 1 | Max speed: Mach 2.2 | Range: 1,850km | Engine: 1x AL-31FN/WS-10B",
+            photoAsset = "aircraft/J10.jpg",
+            icaoTypeCodes = listOf("J10")
+        ),
+        AircraftReference(
+            id = "j20",
+            name = "Chengdu J-20 Mighty Dragon",
+            manufacturer = "Chengdu (China)",
+            category = AircraftCategory.FIGHTER,
+            description = "China's first stealth fifth-generation fighter. Large canard-delta design optimized for long range and sensor fusion. WS-15 engine in development for supercruise. Over 200 believed in service.",
+            specs = "Crew: 1 | Max speed: Mach 2.0+ | Range: 2,000km (est.) | Engines: 2x WS-10C/WS-15",
+            photoAsset = "aircraft/J20.jpg",
+            icaoTypeCodes = listOf("J20")
+        ),
+        AircraftReference(
+            id = "jf17",
+            name = "CAC/PAC JF-17 Thunder",
+            manufacturer = "Chengdu/PAC (China/Pakistan)",
+            category = AircraftCategory.FIGHTER,
+            description = "Sino-Pakistani lightweight single-engine multirole fighter. Affordable F-16 alternative for developing nations. Block 3 variant adds AESA radar and HMD. Exported to Myanmar and Nigeria.",
+            specs = "Crew: 1 | Max speed: Mach 1.6 | Range: 1,352km | Engine: 1x RD-93/WS-13",
+            photoAsset = "aircraft/JF17.jpg",
+            icaoTypeCodes = listOf("JF17")
+        ),
+
+        // ── European / International Fighters ──
+        AircraftReference(
+            id = "gripen",
+            name = "Saab Gripen",
+            manufacturer = "Saab (Sweden)",
+            category = AircraftCategory.FIGHTER,
+            description = "Swedish lightweight single-engine canard-delta fighter designed for dispersed road-base operations. Can be refueled and rearmed by conscript crew in 10 minutes. NATO-compatible. Gripen E/F is the latest variant.",
+            specs = "Crew: 1-2 | Max speed: Mach 2.0 | Range: 3,200km | Engine: 1x RM12/F414G",
+            photoAsset = "aircraft/GRF4.jpg",
+            icaoTypeCodes = listOf("GRF4")
+        ),
+        AircraftReference(
+            id = "tornado",
+            name = "Panavia Tornado",
+            manufacturer = "Panavia (UK/Germany/Italy)",
+            category = AircraftCategory.FIGHTER,
+            description = "Multinational swing-wing strike and interceptor aircraft. IDS variant for ground attack, ADV for air defense. Served in Gulf War, Kosovo, Libya, and Syria. Being retired in favor of Eurofighter.",
+            specs = "Crew: 2 | Max speed: Mach 2.2 | Range: 3,890km | Engines: 2x RB199",
+            photoAsset = "aircraft/GR4.jpg",
+            icaoTypeCodes = listOf("GR4")
+        ),
+        AircraftReference(
+            id = "mirage2000",
+            name = "Dassault Mirage 2000",
+            manufacturer = "Dassault (France)",
+            category = AircraftCategory.FIGHTER,
+            description = "French single-engine delta-wing multirole fighter. Widely exported to India, UAE, Greece, Taiwan, Egypt, and others. Mirage 2000D/N variants carry nuclear weapons for France. Predecessor to Rafale.",
+            specs = "Crew: 1-2 | Max speed: Mach 2.2 | Range: 1,550km | Engine: 1x M53-P2",
+            photoAsset = "aircraft/MIR2.jpg",
+            icaoTypeCodes = listOf("MIRA", "MIR2")
+        ),
+        AircraftReference(
+            id = "kfir",
+            name = "IAI Kfir",
+            manufacturer = "Israel Aerospace Industries",
+            category = AircraftCategory.FIGHTER,
+            description = "Israeli fighter derived from the Dassault Mirage III/5 with a GE J79 engine. Canard foreplanes added on C.2 variant. Used by Israel, Colombia, Ecuador, and Sri Lanka. Some converted to drones.",
+            specs = "Crew: 1 | Max speed: Mach 2.3 | Range: 768km | Engine: 1x J79-GEJ1E",
+            photoAsset = "aircraft/KFIR.jpg",
+            icaoTypeCodes = listOf("KFIR")
+        ),
+        AircraftReference(
+            id = "f14",
+            name = "Grumman F-14 Tomcat",
+            manufacturer = "Grumman",
+            category = AircraftCategory.FIGHTER,
+            description = "Iconic variable-sweep wing naval fighter made famous by 'Top Gun.' AIM-54 Phoenix missile could engage targets at 190km. Retired from US Navy in 2006 but still flown by Iran's air force.",
+            specs = "Crew: 2 | Max speed: Mach 2.34 | Range: 2,960km | Engines: 2x TF30/F110-GE-400",
+            photoAsset = "aircraft/F14.jpg",
+            icaoTypeCodes = listOf("F14")
         ),
 
         // ══════════════════════════════════════

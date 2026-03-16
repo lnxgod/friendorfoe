@@ -42,10 +42,13 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.remote.AircraftDetailDto
 import com.friendorfoe.data.repository.SkyObjectRepository
+import com.friendorfoe.detection.WifiChannelUtil
+import com.friendorfoe.detection.WifiOuiDatabase
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
+import com.friendorfoe.presentation.util.IcaoCountryLookup
 import com.friendorfoe.presentation.util.categoryColor
 import com.friendorfoe.presentation.util.silhouetteForTypeCode
 import com.friendorfoe.presentation.util.silhouetteForCategory
@@ -71,6 +74,10 @@ import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import com.friendorfoe.presentation.util.getAircraftPhotoUrl
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.OpenInNew
 
 /**
  * Detail screen showing full information about a specific sky object.
@@ -202,6 +209,9 @@ internal fun AircraftDetailContent(
             DetailRow("Type", detail?.aircraftType ?: aircraft.aircraftType ?: "Unknown")
             DetailRow("Model", detail?.aircraftDescription ?: aircraft.aircraftModel ?: "Unknown")
             DetailRow("Operator", detail?.operator ?: aircraft.airline ?: "Unknown")
+            IcaoCountryLookup.countryFromIcaoHex(aircraft.icaoHex)?.let { country ->
+                DetailRow("Country", country)
+            }
             DetailRow("Category", formatCategory(aircraft.category))
         }
 
@@ -225,6 +235,16 @@ internal fun AircraftDetailContent(
             aircraft.position.speedMps?.let { speedMps ->
                 val speedKnots = (speedMps * 1.944).roundToInt()
                 DetailRow("Speed", "$speedKnots kts (${speedMps.roundToInt()} m/s)")
+            }
+
+            aircraft.position.verticalRateMps?.let { vr ->
+                val fpm = (vr / 0.3048f * 60f).roundToInt()
+                val label = when {
+                    fpm > 100 -> "Climbing"
+                    fpm < -100 -> "Descending"
+                    else -> "Level"
+                }
+                DetailRow("Vertical Rate", "$fpm fpm ($label)")
             }
 
             aircraft.position.heading?.let { heading ->
@@ -260,6 +280,14 @@ internal fun AircraftDetailContent(
                 source = aircraft.source,
                 confidence = aircraft.confidence
             )
+        }
+
+        // External lookup links
+        SectionCard(title = "Look Up") {
+            ExternalLinkRow("ADS-B Exchange", "https://globe.adsbexchange.com/?icao=${aircraft.icaoHex}")
+            aircraft.callsign?.let { cs ->
+                ExternalLinkRow("FlightAware", "https://flightaware.com/live/flight/$cs")
+            }
         }
 
         // Zoom button (only in AR bottom sheet context)
@@ -356,9 +384,6 @@ internal fun DroneDetailContent(
             DetailRow("Drone ID", drone.droneId)
             DetailRow("Manufacturer", drone.manufacturer ?: "Unknown")
             DetailRow("Model", drone.model ?: "Unknown")
-            drone.ssid?.let { ssid ->
-                DetailRow("WiFi SSID", ssid)
-            }
             drone.operatorId?.let { opId ->
                 DetailRow("Operator ID", opId)
             }
@@ -383,20 +408,27 @@ internal fun DroneDetailContent(
                     DetailRow("Speed", "${speed.roundToInt()} m/s")
                 }
             } else {
-                val reason = when (drone.source) {
-                    DetectionSource.WIFI -> "WiFi detection"
-                    else -> "No position data"
+                DetailRow("GPS Position", "Not available")
+                val reason = when {
+                    drone.source == DetectionSource.WIFI && drone.confidence < 0.5f ->
+                        "Detected by WiFi SSID only. Sub-250g drones are exempt from " +
+                        "FAA Remote ID and do not broadcast GPS coordinates."
+                    drone.source == DetectionSource.WIFI ->
+                        "WiFi detection \u2014 no GPS coordinates in broadcast"
+                    else -> "No position data available"
                 }
-                DetailRow("Position", "Not available ($reason)")
+                Text(
+                    text = reason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
 
             drone.distanceMeters?.let { dist ->
                 DetailRow("Distance", formatDistance(dist))
             }
 
-            drone.estimatedDistanceMeters?.let { dist ->
-                DetailRow("Est. Distance", formatDistance(dist) + " (signal-based)")
-            }
         }
 
         // Operator location (Remote ID only)
@@ -407,10 +439,31 @@ internal fun DroneDetailContent(
             }
         }
 
-        // Signal info
-        if (drone.signalStrengthDbm != null) {
-            SectionCard(title = "Signal") {
-                DetailRow("Signal Strength", "${drone.signalStrengthDbm} dBm")
+        // Transmitter section (WiFi radio details)
+        val hasTransmitterInfo = drone.bssid != null || drone.signalStrengthDbm != null || drone.ssid != null
+        if (hasTransmitterInfo) {
+            SectionCard(title = "Transmitter") {
+                drone.ssid?.let {
+                    DetailRow("SSID", it)
+                }
+                drone.bssid?.let { bssid ->
+                    DetailRow("BSSID", bssid)
+                    WifiOuiDatabase.lookup(bssid)?.let { ouiEntry ->
+                        DetailRow("Hardware", ouiEntry.fullName)
+                    }
+                }
+                drone.frequencyMhz?.let {
+                    DetailRow("Channel", WifiChannelUtil.frequencyToChannelLabel(it))
+                }
+                drone.channelWidthMhz?.let {
+                    DetailRow("Bandwidth", "$it MHz")
+                }
+                drone.signalStrengthDbm?.let {
+                    DetailRow("Signal", "$it dBm")
+                }
+                drone.estimatedDistanceMeters?.let {
+                    DetailRow("Est. Distance", formatDistance(it) + " (signal)")
+                }
             }
         }
 
@@ -851,6 +904,37 @@ private fun DetailRow(label: String, value: String) {
             fontWeight = FontWeight.Medium,
             textAlign = TextAlign.End,
             modifier = Modifier.weight(0.6f)
+        )
+    }
+}
+
+/**
+ * Clickable row that opens a URL in the system browser.
+ */
+@Composable
+private fun ExternalLinkRow(label: String, url: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            }
+            .padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Medium
+        )
+        Icon(
+            imageVector = Icons.Default.OpenInNew,
+            contentDescription = "Open",
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
         )
     }
 }

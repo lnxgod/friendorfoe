@@ -121,7 +121,8 @@ class SkyPositionMapper {
             isInView = isInView,
             bearingDegrees = normalizeAngle360(bearingDeg),
             elevationDegrees = elevationDeg,
-            distanceMeters = slantDistance
+            distanceMeters = slantDistance,
+            groundDistanceMeters = groundDistanceMeters
         )
     }
 

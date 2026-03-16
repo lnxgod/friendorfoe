@@ -326,5 +326,6 @@ private fun categoryChipColor(category: DroneCategory): Color {
         DroneCategory.MILITARY_RECON -> Color(0xFF607D8B)
         DroneCategory.MILITARY_STRIKE -> Color(0xFFF44336)
         DroneCategory.LOITERING_MUNITION -> Color(0xFF9C27B0)
+        DroneCategory.FPV_COMBAT -> Color(0xFFB71C1C)
     }
 }

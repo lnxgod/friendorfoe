@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.wifi.ScanResult
 import android.net.wifi.WifiManager
 import android.util.Log
 import com.friendorfoe.domain.model.DetectionSource
@@ -88,6 +89,11 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("SPARK-", "DJI"),
             DronePattern("FPV-", "DJI"),
             DronePattern("AVATA-", "DJI"),
+            DronePattern("AGRAS-", "DJI"),         // DJI Agras agricultural drones
+            DronePattern("MATRICE-", "DJI"),       // DJI Matrice enterprise series
+            DronePattern("AIR-", "DJI"),           // DJI Air series
+            DronePattern("FLIP-", "DJI"),          // DJI Flip
+            DronePattern("NEO-", "DJI"),           // DJI Neo
             // Skydio / Parrot / Autel
             DronePattern("SKYDIO-", "Skydio"),
             DronePattern("PARROT-", "Parrot"),
@@ -111,6 +117,10 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("HOLY", "Holy Stone"),
             DronePattern("HS-", "Holy Stone"),
             // Other known brands
+            DronePattern("SIMREX-", "SIMREX"),
+            DronePattern("NEHEME-", "Neheme"),
+            DronePattern("AOVO-", "AOVO"),
+            DronePattern("TENSSENX-", "TENSSENX"),
             DronePattern("SNAPTAIN-", "Snaptain"),
             DronePattern("POTENSIC-", "Potensic"),
             DronePattern("RUKO-", "Ruko"),
@@ -125,6 +135,20 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("BETAFPV-", "BetaFPV"),
             DronePattern("GEPRC-", "GEPRC"),
             DronePattern("EMAX-", "EMAX"),
+            // Enterprise / commercial
+            DronePattern("FREEFLY-", "Freefly"),
+            DronePattern("SENSEFLY-", "senseFly"),
+            DronePattern("WINGCOPTER-", "Wingcopter"),
+            DronePattern("FLYABILITY-", "Flyability"),
+            // FPV and hobby brands
+            DronePattern("IFLIGHT-", "iFlight"),
+            DronePattern("FLYWOO-", "Flywoo"),
+            DronePattern("DIATONE-", "Diatone"),
+            DronePattern("WALKERA-", "Walkera"),
+            DronePattern("BLADE-", "Blade"),
+            DronePattern("CADDX-", "Caddx"),
+            DronePattern("TBS-", "TBS"),
+            DronePattern("RUNCAM-", "RunCam"),
             // Budget Chinese drones using "WiFi UAV" / generic FPV apps
             DronePattern("WIFI-UAV", "Generic"),
             DronePattern("WIFI_UAV", "Generic"),
@@ -148,9 +172,9 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("FLYHAL-", "Flyhal"),
             DronePattern("LYZRC-", "LYZRC"),
             DronePattern("XINLIN-", "Xinlin"),
-            DronePattern("E58-", "Generic"),
-            DronePattern("E88-", "Generic"),
-            DronePattern("E99-", "Generic"),
+            DronePattern("E58-", "Eachine"),
+            DronePattern("E88-", "Eachine"),
+            DronePattern("E99-", "Eachine"),
             DronePattern("V2PRO", "Generic"),
             // Generic drone SSIDs
             DronePattern("DRONE-", "Unknown"),
@@ -161,6 +185,9 @@ class WifiDroneScanner @Inject constructor(
 
     /** Timestamps of recent scan requests for throttle enforcement. */
     private val scanTimestamps = LinkedList<Long>()
+
+    /** Partial state accumulators for ASTM F3411 WiFi Beacon Remote ID, keyed by BSSID. */
+    private val wifiBeaconRidStates = mutableMapOf<String, OpenDroneIdParser.DronePartialState>()
 
     /**
      * Start periodic WiFi scanning for drone SSIDs.
@@ -214,6 +241,7 @@ class WifiDroneScanner @Inject constructor(
     /** Stop scanning (for imperative callers; flow-based callers cancel the coroutine). */
     fun stopScanning() {
         scanTimestamps.clear()
+        wifiBeaconRidStates.clear()
     }
 
     /**
@@ -272,6 +300,8 @@ class WifiDroneScanner @Inject constructor(
             val bssid = result.BSSID ?: continue
             val rssi = result.level
             val estimatedDistance = estimateDistance(rssi)
+            val freqMhz = result.frequency
+            val chanWidth = mapChannelWidth(result.channelWidth)
 
             // --- Priority 1: Try DJI DroneID IE parsing ---
             val droneIdData = DjiDroneIdParser.parse(result)
@@ -303,9 +333,33 @@ class WifiDroneScanner @Inject constructor(
                     ssid = ssid.ifBlank { null },
                     signalStrengthDbm = rssi,
                     estimatedDistanceMeters = estimatedDistance,
+                    bssid = bssid,
+                    frequencyMhz = freqMhz,
+                    channelWidthMhz = chanWidth,
                     operatorLatitude = droneIdData.homeLatitude,
                     operatorLongitude = droneIdData.homeLongitude
                 ))
+                continue
+            }
+
+            // --- Priority 1.5: ASTM F3411 WiFi Beacon Remote ID ---
+            val beaconState = wifiBeaconRidStates.getOrPut(bssid) {
+                OpenDroneIdParser.DronePartialState(bssid, now)
+            }
+            beaconState.lastUpdated = now
+            beaconState.signalStrengthDbm = rssi
+            if (WifiBeaconRemoteIdParser.parse(result, beaconState)) {
+                seenBssids.add(bssid)
+                beaconState.toDroneOrNull(idPrefix = "wfb_")?.let { drone ->
+                    drones.add(drone.copy(
+                        ssid = ssid.ifBlank { null },
+                        bssid = bssid,
+                        frequencyMhz = freqMhz,
+                        channelWidthMhz = chanWidth,
+                        signalStrengthDbm = rssi,
+                        estimatedDistanceMeters = estimatedDistance
+                    ))
+                }
                 continue
             }
 
@@ -329,7 +383,10 @@ class WifiDroneScanner @Inject constructor(
                         model = inferModel(ssid, matchedPattern),
                         ssid = ssid,
                         signalStrengthDbm = rssi,
-                        estimatedDistanceMeters = estimatedDistance
+                        estimatedDistanceMeters = estimatedDistance,
+                        bssid = bssid,
+                        frequencyMhz = freqMhz,
+                        channelWidthMhz = chanWidth
                     ))
                     continue
                 }
@@ -356,7 +413,10 @@ class WifiDroneScanner @Inject constructor(
                         manufacturer = ouiEntry.manufacturer,
                         ssid = ssid.ifBlank { null },
                         signalStrengthDbm = rssi,
-                        estimatedDistanceMeters = estimatedDistance
+                        estimatedDistanceMeters = estimatedDistance,
+                        bssid = bssid,
+                        frequencyMhz = freqMhz,
+                        channelWidthMhz = chanWidth
                     ))
                 }
             }
@@ -365,6 +425,7 @@ class WifiDroneScanner @Inject constructor(
         if (drones.isNotEmpty()) {
             Log.i(TAG, "Found ${drones.size} potential drone(s) via WiFi " +
                     "(${drones.count { it.confidence >= 0.85f }} DroneID, " +
+                    "${drones.count { it.source == DetectionSource.REMOTE_ID }} BeaconRID, " +
                     "${drones.count { it.confidence == 0.4f }} OUI, " +
                     "${drones.count { it.confidence == 0.3f }} SSID)")
         } else if (scanResults.isNotEmpty()) {
@@ -426,6 +487,17 @@ class WifiDroneScanner @Inject constructor(
     private fun estimateDistance(rssi: Int): Double {
         val exponent = (RSSI_REF - rssi) / (10.0 * PATH_LOSS_EXPONENT)
         return 10.0.pow(exponent).coerceIn(0.5, 5000.0)
+    }
+
+    /** Map Android's ScanResult.channelWidth constants to integer MHz values. */
+    @Suppress("DEPRECATION")
+    private fun mapChannelWidth(channelWidth: Int): Int = when (channelWidth) {
+        ScanResult.CHANNEL_WIDTH_20MHZ -> 20
+        ScanResult.CHANNEL_WIDTH_40MHZ -> 40
+        ScanResult.CHANNEL_WIDTH_80MHZ -> 80
+        ScanResult.CHANNEL_WIDTH_160MHZ -> 160
+        ScanResult.CHANNEL_WIDTH_80MHZ_PLUS_MHZ -> 160
+        else -> 20
     }
 
     /**

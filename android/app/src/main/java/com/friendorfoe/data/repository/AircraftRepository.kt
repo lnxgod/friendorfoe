@@ -11,6 +11,8 @@ import com.friendorfoe.detection.MilitaryClassifier
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.Position
+import com.friendorfoe.presentation.util.AircraftDatabase
+import com.friendorfoe.presentation.util.AirlineLookup
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import retrofit2.HttpException
@@ -239,7 +241,8 @@ class AircraftRepository @Inject constructor(
                 longitude = lon,
                 altitudeMeters = altitudeM,
                 heading = track?.toFloat(),
-                speedMps = gs?.let { (it * KTS_TO_MPS).toFloat() }
+                speedMps = gs?.let { (it * KTS_TO_MPS).toFloat() },
+                verticalRateMps = baroRate?.let { (it * FT_TO_M / 60f).toFloat() }
             ),
             category = classifiedCategory,
             firstSeen = Instant.now(),
@@ -248,6 +251,10 @@ class AircraftRepository @Inject constructor(
             callsign = cleanCallsign,
             registration = r,
             aircraftType = t,
+            aircraftModel = t?.let { typeCode ->
+                AircraftDatabase.matchByTypeCode(typeCode)?.name
+            },
+            airline = cleanCallsign?.let { AirlineLookup.matchByCallsign(it)?.name },
             squawk = squawk,
             isOnGround = onGround,
             classificationSignals = signals.ifEmpty { null }
@@ -381,6 +388,8 @@ class AircraftRepository @Inject constructor(
         // Use classified result if it found something specific, otherwise use OpenSky's category
         val finalCategory = if (classifiedCategory != ObjectCategory.UNKNOWN) classifiedCategory else openSkyBase
 
+        val verticalRate = (state[11] as? Double)?.toFloat()
+
         return Aircraft(
             id = icao,
             position = Position(
@@ -388,13 +397,15 @@ class AircraftRepository @Inject constructor(
                 longitude = longitude,
                 altitudeMeters = altitude,
                 heading = heading,
-                speedMps = velocity
+                speedMps = velocity,
+                verticalRateMps = verticalRate
             ),
             category = finalCategory,
             firstSeen = Instant.now(),
             lastUpdated = Instant.ofEpochSecond(lastContact),
             icaoHex = icao,
             callsign = callsign,
+            airline = callsign?.let { AirlineLookup.matchByCallsign(it)?.name },
             squawk = squawk,
             isOnGround = onGround,
             classificationSignals = signals.ifEmpty { null }

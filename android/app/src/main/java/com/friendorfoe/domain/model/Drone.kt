@@ -23,6 +23,9 @@ import java.time.Instant
  * @property ssid WiFi SSID if detected via WiFi, null for Remote ID
  * @property signalStrengthDbm Signal strength in dBm, for distance estimation
  * @property estimatedDistanceMeters Rough distance estimate from signal strength
+ * @property bssid WiFi BSSID (MAC address) of the transmitter, null for BLE Remote ID
+ * @property frequencyMhz WiFi channel center frequency in MHz (e.g., 2437), null for BLE
+ * @property channelWidthMhz WiFi channel bandwidth in MHz (20/40/80/160), null for BLE
  */
 data class Drone(
     override val id: String,
@@ -43,6 +46,9 @@ data class Drone(
     val ssid: String? = null,
     val signalStrengthDbm: Int? = null,
     val estimatedDistanceMeters: Double? = null,
+    val bssid: String? = null,
+    val frequencyMhz: Int? = null,
+    val channelWidthMhz: Int? = null,
     val operatorId: String? = null,
     val uaType: Int? = null
 ) : SkyObject() {
