@@ -60,12 +60,19 @@ class SkyObjectFilter @Inject constructor() {
                 skyScore
             }
 
+            val shapeClass = if (classification != VisualClassification.LIKELY_STATIC) {
+                inferShapeClass(detection)
+            } else {
+                ShapeClass.INDETERMINATE
+            }
+
             results.add(
                 ScoredVisualDetection(
                     detection = detection,
                     skyScore = adjustedSkyScore,
                     motionScore = motionScore,
-                    classification = classification
+                    classification = classification,
+                    shapeClass = shapeClass
                 )
             )
         }
@@ -314,6 +321,39 @@ class SkyObjectFilter @Inject constructor() {
         return (avgDiff / Math.PI.toFloat()).coerceIn(0f, 1f)
     }
 
+    /**
+     * Infer physical shape class from bounding box aspect ratio and motion history.
+     * Uses averaged aspect ratio over the motion buffer to smooth jitter.
+     */
+    private fun inferShapeClass(detection: VisualDetection): ShapeClass {
+        val trackingId = detection.trackingId ?: return ShapeClass.INDETERMINATE
+        val history = motionHistory[trackingId]
+        if (history == null || history.size < 3) return ShapeClass.INDETERMINATE
+
+        val avgVelocity = computeAverageVelocity(history)
+        val erraticism = computeErraticism(history)
+
+        // Use current detection aspect ratio (width/height)
+        val aspectRatio = if (detection.height > 0f) detection.width / detection.height else 1f
+        val area = detection.width * detection.height
+
+        return when {
+            // Fixed-wing: elongated, fast, straight path
+            aspectRatio > 1.5f && avgVelocity > 0.06f && erraticism < 0.4f ->
+                ShapeClass.FIXED_WING
+            // Helicopter: moderately elongated, moderate speed and erraticism
+            aspectRatio in 1.3f..2.0f && avgVelocity in 0.02f..0.07f && erraticism in 0.2f..0.6f ->
+                ShapeClass.HELICOPTER
+            // Multirotor (hex/octo): near-square, slow, larger bounding box
+            aspectRatio in 0.8f..1.5f && avgVelocity < 0.05f && area > 0.01f ->
+                ShapeClass.MULTIROTOR
+            // Quadcopter: near-square, slow/hovering, small
+            aspectRatio in 0.7f..1.3f && avgVelocity < 0.05f && erraticism < 0.4f ->
+                ShapeClass.QUADCOPTER
+            else -> ShapeClass.INDETERMINATE
+        }
+    }
+
     /** Reset all motion tracking history. */
     fun reset() {
         motionHistory.clear()
@@ -332,5 +372,6 @@ data class ScoredVisualDetection(
     val detection: VisualDetection,
     val skyScore: Float,
     val motionScore: Float,
-    val classification: VisualClassification
+    val classification: VisualClassification,
+    val shapeClass: ShapeClass = ShapeClass.INDETERMINATE
 )

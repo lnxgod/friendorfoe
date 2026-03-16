@@ -25,6 +25,8 @@ data class ScreenPosition(
     val bearingDegrees: Float = 0f,
     val elevationDegrees: Float = 0f,
     val distanceMeters: Double = 0.0,
+    /** Ground distance (horizontal only, no altitude component) in meters */
+    val groundDistanceMeters: Double = 0.0,
     /** True when a visual detection has been matched to this radio position */
     val visuallyConfirmed: Boolean = false,
     /** The matched visual detection, if any */

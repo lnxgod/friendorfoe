@@ -77,6 +77,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.friendorfoe.detection.ShapeClass
 import com.friendorfoe.detection.AlertLevel
 import com.friendorfoe.detection.ClassifiedVisualDetection
 import com.friendorfoe.detection.DataSourceStatus
@@ -722,7 +723,8 @@ private fun ArOverlay(
             drawBoundingBox(visual, boxColor.copy(alpha = boxColor.alpha * effectiveAlpha), canvasWidth, canvasHeight)
 
             // Draw classification tag
-            val tagText = classificationTagText(classification)
+            val shapeClass = classified?.shapeClass ?: ShapeClass.INDETERMINATE
+            val tagText = classificationTagText(classification, shapeClass)
             val tagRect = drawClassifiedTag(visual, tagText, boxColor, canvasWidth, canvasHeight)
             val visualId = "visual_${visual.trackingId ?: visual.timestampMs}"
             hitTargets.add(LabelHitTarget(objectId = visualId, rect = tagRect))
@@ -1300,15 +1302,32 @@ private fun classificationBoxColor(classification: VisualClassification): Color 
     }
 }
 
-/** Tag text for visual detection based on classification. */
-private fun classificationTagText(classification: VisualClassification): String {
-    return when (classification) {
+/** Tag text for visual detection based on classification, with optional shape hint. */
+private fun classificationTagText(
+    classification: VisualClassification,
+    shapeClass: ShapeClass = ShapeClass.INDETERMINATE
+): String {
+    val base = when (classification) {
         VisualClassification.LIKELY_DRONE -> "DRONE?"
         VisualClassification.UNKNOWN_FLYING -> "?"
         VisualClassification.LIKELY_BIRD -> "BIRD?"
         VisualClassification.LIKELY_AIRCRAFT -> "AIRCRAFT?"
-        VisualClassification.LIKELY_STATIC -> ""
+        VisualClassification.LIKELY_STATIC -> return ""
     }
+    // Append shape hint for drone-like detections
+    if (shapeClass != ShapeClass.INDETERMINATE &&
+        (classification == VisualClassification.LIKELY_DRONE || classification == VisualClassification.UNKNOWN_FLYING)
+    ) {
+        val hint = when (shapeClass) {
+            ShapeClass.QUADCOPTER -> "quad"
+            ShapeClass.FIXED_WING -> "fw"
+            ShapeClass.MULTIROTOR -> "multi"
+            ShapeClass.HELICOPTER -> "heli"
+            else -> null
+        }
+        if (hint != null) return "$base $hint"
+    }
+    return base
 }
 
 // ---- Label text helpers ----
@@ -1352,11 +1371,18 @@ private fun getSecondaryLabelText(
             } else {
                 "${altFeet}ft"
             }
+            val vsIndicator = skyObject.position.verticalRateMps?.let { vr ->
+                when {
+                    vr > 2.5f -> "\u2191"   // ↑ climbing (>500 fpm)
+                    vr < -2.5f -> "\u2193"  // ↓ descending
+                    else -> ""
+                }
+            } ?: ""
             val spdStr = skyObject.position.speedMps?.let {
                 "${(it / 0.5144f).roundToInt()}kt"
             } ?: ""
             val parts = listOfNotNull(
-                altStr,
+                "$altStr$vsIndicator",
                 spdStr.ifEmpty { null },
                 distStr.ifEmpty { null }
             )

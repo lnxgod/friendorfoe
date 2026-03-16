@@ -186,9 +186,9 @@ class ArViewModel @Inject constructor(
         _showUnidentifiedSheet.value = false
         _zoomTarget.value = null
         _lockedObjectId.value = objectId
-        // Auto-zoom based on distance
+        // Auto-zoom based on ground distance
         screenPositions.value.firstOrNull { it.skyObject.id == objectId }?.let {
-            zoomToObject(it.distanceMeters)
+            zoomToObject(it.groundDistanceMeters)
         }
     }
 
@@ -286,8 +286,13 @@ class ArViewModel @Inject constructor(
     /** Set hardware zoom ratio, clamped to [minZoom, maxZoom]. Spans ultrawide to telephoto. */
     fun setZoomRatio(ratio: Float) {
         val clamped = ratio.coerceIn(_minZoomRatio.value, _maxZoomRatio.value)
-        cameraRef?.cameraControl?.setZoomRatio(clamped)
-        _currentZoomRatio.value = clamped
+        val camera = cameraRef
+        if (camera != null) {
+            camera.cameraControl.setZoomRatio(clamped)
+            _currentZoomRatio.value = clamped
+        } else {
+            Log.w(TAG, "Camera not available for zoom to $clamped")
+        }
     }
 
     // --- Snap-to photo capture ---
@@ -315,10 +320,10 @@ class ArViewModel @Inject constructor(
         // Lock on to the object
         _lockedObjectId.value = objectId
 
-        // Auto-zoom based on distance
+        // Auto-zoom based on ground distance
         val sp = screenPositions.value.firstOrNull { it.skyObject.id == objectId }
         if (sp != null) {
-            zoomToObject(sp.distanceMeters)
+            zoomToObject(sp.groundDistanceMeters)
         }
 
         // Build snap target info from sky object (fall back to repository if not yet in screenPositions)
@@ -365,13 +370,16 @@ class ArViewModel @Inject constructor(
         capturePhotoToGallery(context, capture, label, onResult)
     }
 
-    /** Auto-zoom toward an object based on distance. Near=2x, mid=4x, far=max. */
-    fun zoomToObject(distanceMeters: Double) {
+    /** Auto-zoom toward an object based on ground distance (horizontal, not slant). */
+    fun zoomToObject(groundDistanceMeters: Double) {
         val maxZoom = _maxZoomRatio.value
         val ratio = when {
-            distanceMeters < 1000 -> 2.0f
-            distanceMeters < 5000 -> 4.0f
-            else -> maxZoom
+            groundDistanceMeters < 500 -> 1.5f      // Overhead/very close
+            groundDistanceMeters < 2000 -> 2.0f     // Nearby
+            groundDistanceMeters < 5000 -> 3.0f     // Medium
+            groundDistanceMeters < 10000 -> 4.0f    // Far
+            groundDistanceMeters < 20000 -> 6.0f    // Very far
+            else -> maxZoom * 0.75f                  // Distant — leave headroom
         }.coerceAtMost(maxZoom)
         setZoomRatio(ratio)
     }

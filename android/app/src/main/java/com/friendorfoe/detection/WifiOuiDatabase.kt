@@ -22,6 +22,8 @@ object WifiOuiDatabase {
         "34:D2:62" to OuiEntry("DJI", "DJI Technology Co."),
         "48:1C:B9" to OuiEntry("DJI", "DJI Innovation Technology"),
         "08:D4:6A" to OuiEntry("DJI", "DJI Technology (Shenzhen)"),
+        "D0:32:9A" to OuiEntry("DJI", "DJI Technology Co."),
+        "C4:2F:90" to OuiEntry("DJI", "DJI Technology Co."),
 
         // Parrot SA — Anafi, Bebop, Disco
         "A0:14:3D" to OuiEntry("Parrot", "Parrot SA"),
@@ -56,6 +58,9 @@ object WifiOuiDatabase {
 
         // Potensic — Dreamer series
         "B0:A7:32" to OuiEntry("Potensic", "Potensic"),
+
+        // Walkera — Vitus, Runner series
+        "C8:14:51" to OuiEntry("Walkera", "Walkera Technology Co."),
 
         // Syma — X-series toy drones
         "E8:AB:FA" to OuiEntry("Syma", "Syma"),
