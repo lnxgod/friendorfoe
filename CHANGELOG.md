@@ -4,6 +4,23 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0-beta] - 2026-03-15
+
+### Added
+- Snap-to photo capture: tap any AR label to lock on, zoom, and capture full-resolution photos
+- Aircraft Reference Guide with 138 searchable entries covering all bundled aircraft types
+- 20 new drone database entries (DJI Neo, Mini 3, Agras T40, Bayraktar TB3, MQ-25 Stingray, XQ-58 Valkyrie, and more)
+- 20 new drone photos sourced from Wikimedia Commons
+- Zoom slider spans ultrawide to telephoto (all forward-facing lenses via CameraX)
+- Zoom preset buttons (0.5x, 1x, 2x, 5x, Max) in snap photo sheet
+- "View in Aircraft Guide" button on aircraft detail cards
+- AircraftGuide navigation route with type code deep linking
+- ImageCapture use case added to CameraX pipeline for full-resolution photo capture
+
+### Changed
+- AR label tap behavior: now opens snap-to photo sheet instead of detail bottom sheet
+- Camera zoom range now tracks minZoomRatio for ultrawide lens access
+
 ## [0.4.0-beta] - 2026-03-15
 
 ### Added
@@ -64,6 +81,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - List view with sortable columns
 - Bottom navigation (AR, Map, List, History, About)
 
+[0.5.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.5.0-beta
 [0.4.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.4.0-beta
 [0.3.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.3.0-beta
 [0.2.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.2.0-beta

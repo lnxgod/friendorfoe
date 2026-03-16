@@ -56,6 +56,29 @@ DRONE_SEARCH = {
     "rq4_global_hawk": "RQ-4 Global Hawk drone",
     "switchblade": "AeroVironment Switchblade drone",
     "heron": "IAI Heron drone Israel",
+    # New consumer drones
+    "dji_neo": "DJI Neo drone",
+    "dji_mini3": "DJI Mini 3 drone",
+    "dji_mavic_air2s": "DJI Mavic Air 2S drone",
+    "dji_air2": "DJI Air 2 drone quadcopter",
+    "parrot_bebop2": "Parrot Bebop 2 drone",
+    "skydio_x2": "Skydio X2 drone",
+    # New enterprise drones
+    "autel_evo_max4t": "Autel EVO Max 4T drone",
+    "autel_dragonfish": "Autel Dragonfish drone VTOL",
+    "dji_agras_t40": "DJI Agras T40 agricultural drone",
+    "wingtraone": "WingtraOne VTOL mapping drone",
+    "zipline_p2": "Zipline delivery drone Rwanda",
+    "wing_delivery": "Wing drone delivery Google",
+    # New military drones
+    "mq25_stingray": "MQ-25 Stingray Boeing tanker drone",
+    "mq1c_gray_eagle": "MQ-1C Gray Eagle drone Army",
+    "mq4c_triton": "MQ-4C Triton Northrop Grumman drone",
+    "xq58_valkyrie": "XQ-58 Valkyrie Kratos drone",
+    "bayraktar_tb3": "Bayraktar TB3 drone",
+    "anka_s": "TAI Anka drone Turkey",
+    "rq170_sentinel": "RQ-170 Sentinel stealth drone",
+    "shahed_238": "Shahed 238 Iran drone jet",
 }
 
 OUTPUT_DIR = Path(__file__).parent.parent / "android" / "app" / "src" / "main" / "assets" / "drones"

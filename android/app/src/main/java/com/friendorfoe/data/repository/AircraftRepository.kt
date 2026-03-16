@@ -2,6 +2,7 @@ package com.friendorfoe.data.repository
 
 import android.util.Log
 import com.friendorfoe.data.remote.AdsbFiApiService
+import com.friendorfoe.data.remote.AdsbLolApiService
 import com.friendorfoe.data.remote.AdsbxAircraft
 import com.friendorfoe.data.remote.AircraftDetailDto
 import com.friendorfoe.data.remote.AirplanesLiveApiService
@@ -10,6 +11,8 @@ import com.friendorfoe.detection.MilitaryClassifier
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.Position
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import retrofit2.HttpException
 import java.io.IOException
 import java.time.Instant
@@ -27,7 +30,7 @@ data class NearbyResult(
 )
 
 enum class DataSource {
-    ADSBFI, AIRPLANES_LIVE, OPENSKY
+    ADSBFI, AIRPLANES_LIVE, OPENSKY, ADSB_LOL, MULTI
 }
 
 /**
@@ -49,7 +52,8 @@ sealed class FetchException(message: String, cause: Throwable? = null) : Excepti
 class AircraftRepository @Inject constructor(
     private val openSkyApi: OpenSkyApiService,
     private val adsbFiApi: AdsbFiApiService,
-    private val airplanesLiveApi: AirplanesLiveApiService
+    private val airplanesLiveApi: AirplanesLiveApiService,
+    private val adsbLolApi: AdsbLolApiService
 ) {
 
     companion object {
@@ -74,57 +78,101 @@ class AircraftRepository @Inject constructor(
     private val detailCache = ConcurrentHashMap<String, CachedDetail>()
 
     /**
-     * Fetch nearby aircraft using multi-source fallback chain:
-     * adsb.fi → airplanes.live → Backend → OpenSky
+     * Fetch nearby aircraft from all ADS-B providers in parallel and merge results.
      *
-     * adsb.fi is the primary source (fastest, no backend hop).
-     * Backend is still useful for enrichment but is no longer first.
-     * OpenSky is last resort (rate-limited).
+     * Queries adsb.fi, airplanes.live, adsb.lol, and OpenSky concurrently.
+     * Merges results by ICAO hex, preferring the most recently updated aircraft
+     * when duplicates exist. Returns MULTI source when multiple providers contributed.
+     * Falls back to Result.failure only if ALL providers fail.
      */
     suspend fun getNearbyAircraft(
         latitude: Double,
         longitude: Double,
         radiusNm: Int = 50
-    ): Result<NearbyResult> {
-        // 1. Try adsb.fi direct (fastest, no backend hop)
-        try {
-            val response = adsbFiApi.getNearby(latitude, longitude, radiusNm)
+    ): Result<NearbyResult> = coroutineScope {
+        val adsbFiDeferred = async { fetchAdsbFi(latitude, longitude, radiusNm) }
+        val airplanesLiveDeferred = async { fetchAirplanesLive(latitude, longitude, radiusNm) }
+        val adsbLolDeferred = async { fetchAdsbLol(latitude, longitude, radiusNm) }
+        val openSkyDeferred = async { fetchOpenSky(latitude, longitude, radiusNm) }
+
+        val results = listOf(
+            adsbFiDeferred.await(),
+            airplanesLiveDeferred.await(),
+            adsbLolDeferred.await(),
+            openSkyDeferred.await()
+        )
+
+        val successful = results.filterNotNull()
+        if (successful.isEmpty()) {
+            Log.w(TAG, "All ADS-B sources failed")
+            return@coroutineScope Result.failure(FetchException.NetworkError(IOException("All ADS-B sources failed")))
+        }
+
+        // Merge by ICAO hex, preferring the most recently updated aircraft
+        val merged = mutableMapOf<String, Aircraft>()
+        val contributingSources = mutableSetOf<DataSource>()
+        for ((aircraft, source) in successful) {
+            contributingSources.add(source)
+            for (ac in aircraft) {
+                val existing = merged[ac.icaoHex]
+                if (existing == null || ac.lastUpdated.isAfter(existing.lastUpdated)) {
+                    merged[ac.icaoHex] = ac
+                }
+            }
+        }
+
+        val finalSource = if (contributingSources.size > 1) DataSource.MULTI else contributingSources.first()
+        Log.d(TAG, "Multi-source merged: ${merged.size} aircraft from ${contributingSources.joinToString()}")
+        Result.success(NearbyResult(aircraft = merged.values.toList(), source = finalSource))
+    }
+
+    private suspend fun fetchAdsbFi(lat: Double, lon: Double, radiusNm: Int): Pair<List<Aircraft>, DataSource>? {
+        return try {
+            val response = adsbFiApi.getNearby(lat, lon, radiusNm)
             val aircraft = response.ac?.mapNotNull { it.toAircraft() } ?: emptyList()
             Log.d(TAG, "adsb.fi returned ${aircraft.size} aircraft")
-            return Result.success(NearbyResult(aircraft = aircraft, source = DataSource.ADSBFI))
-        } catch (e: HttpException) {
-            Log.w(TAG, "adsb.fi failed (${e.code()}): ${e.message()}, trying airplanes.live")
-        } catch (e: IOException) {
-            Log.w(TAG, "adsb.fi unreachable: ${e.message}, trying airplanes.live")
+            aircraft to DataSource.ADSBFI
         } catch (e: Exception) {
-            Log.w(TAG, "adsb.fi failed: ${e.message}, trying airplanes.live")
+            Log.w(TAG, "adsb.fi failed: ${e.message}")
+            null
         }
+    }
 
-        // 2. Try airplanes.live direct
-        try {
-            val response = airplanesLiveApi.getNearby(latitude, longitude, radiusNm)
+    private suspend fun fetchAirplanesLive(lat: Double, lon: Double, radiusNm: Int): Pair<List<Aircraft>, DataSource>? {
+        return try {
+            val response = airplanesLiveApi.getNearby(lat, lon, radiusNm)
             val aircraft = response.ac?.mapNotNull { it.toAircraft() } ?: emptyList()
             Log.d(TAG, "airplanes.live returned ${aircraft.size} aircraft")
-            return Result.success(NearbyResult(aircraft = aircraft, source = DataSource.AIRPLANES_LIVE))
-        } catch (e: HttpException) {
-            Log.w(TAG, "airplanes.live failed (${e.code()}): ${e.message()}, trying OpenSky")
-        } catch (e: IOException) {
-            Log.w(TAG, "airplanes.live unreachable: ${e.message}, trying OpenSky")
+            aircraft to DataSource.AIRPLANES_LIVE
         } catch (e: Exception) {
-            Log.w(TAG, "airplanes.live failed: ${e.message}, trying OpenSky")
+            Log.w(TAG, "airplanes.live failed: ${e.message}")
+            null
         }
+    }
 
-        // 3. Fallback: OpenSky direct (last resort, rate-limited)
+    private suspend fun fetchAdsbLol(lat: Double, lon: Double, radiusNm: Int): Pair<List<Aircraft>, DataSource>? {
+        return try {
+            val response = adsbLolApi.getNearby(lat, lon, radiusNm)
+            val aircraft = response.ac?.mapNotNull { it.toAircraft() } ?: emptyList()
+            Log.d(TAG, "adsb.lol returned ${aircraft.size} aircraft")
+            aircraft to DataSource.ADSB_LOL
+        } catch (e: Exception) {
+            Log.w(TAG, "adsb.lol failed: ${e.message}")
+            null
+        }
+    }
+
+    private suspend fun fetchOpenSky(lat: Double, lon: Double, radiusNm: Int): Pair<List<Aircraft>, DataSource>? {
         return try {
             val radiusKm = radiusNm * NM_TO_KM
             val deltaLat = radiusKm / KM_PER_DEG_LAT
-            val deltaLon = radiusKm / (KM_PER_DEG_LAT * cos(Math.toRadians(latitude)))
+            val deltaLon = radiusKm / (KM_PER_DEG_LAT * cos(Math.toRadians(lat)))
 
             val response = openSkyApi.getStates(
-                latMin = latitude - deltaLat,
-                latMax = latitude + deltaLat,
-                lonMin = longitude - deltaLon,
-                lonMax = longitude + deltaLon
+                latMin = lat - deltaLat,
+                latMax = lat + deltaLat,
+                lonMin = lon - deltaLon,
+                lonMax = lon + deltaLon
             )
 
             val aircraft = response.states?.mapNotNull { state ->
@@ -132,17 +180,10 @@ class AircraftRepository @Inject constructor(
             } ?: emptyList()
 
             Log.d(TAG, "OpenSky returned ${aircraft.size} aircraft")
-            Result.success(NearbyResult(aircraft = aircraft, source = DataSource.OPENSKY))
-        } catch (e: HttpException) {
-            val error = handleHttpException(e)
-            Log.w(TAG, "OpenSky failed (${e.code()}): ${e.message()}")
-            Result.failure(error)
-        } catch (e: IOException) {
-            Log.w(TAG, "OpenSky unreachable: ${e.message}")
-            Result.failure(FetchException.NetworkError(e))
+            aircraft to DataSource.OPENSKY
         } catch (e: Exception) {
-            Log.w(TAG, "All ADS-B sources failed: ${e.message}")
-            Result.failure(e)
+            Log.w(TAG, "OpenSky failed: ${e.message}")
+            null
         }
     }
 

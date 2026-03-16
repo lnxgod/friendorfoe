@@ -13,6 +13,8 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
 import androidx.camera.core.Camera
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.repository.SkyObjectRepository
@@ -259,7 +261,10 @@ class ArViewModel @Inject constructor(
     private val _maxZoomRatio = MutableStateFlow(1.0f)
     val maxZoomRatio: StateFlow<Float> = _maxZoomRatio.asStateFlow()
 
-    /** Store the CameraX Camera reference and read max zoom from camera info. */
+    private val _minZoomRatio = MutableStateFlow(1.0f)
+    val minZoomRatio: StateFlow<Float> = _minZoomRatio.asStateFlow()
+
+    /** Store the CameraX Camera reference and read min/max zoom from camera info. */
     fun setCameraRef(camera: Camera) {
         // Remove previous observer to prevent leak on camera rebind
         cameraRef?.cameraInfo?.zoomState?.let { liveData ->
@@ -269,19 +274,95 @@ class ArViewModel @Inject constructor(
         val observer = androidx.lifecycle.Observer<androidx.camera.core.ZoomState> { zoomState ->
             if (zoomState != null) {
                 _maxZoomRatio.value = zoomState.maxZoomRatio
+                _minZoomRatio.value = zoomState.minZoomRatio
                 _currentZoomRatio.value = zoomState.zoomRatio
             }
         }
         zoomObserver = observer
         camera.cameraInfo.zoomState.observeForever(observer)
-        Log.d(TAG, "Camera ref set, max zoom=${camera.cameraInfo.zoomState.value?.maxZoomRatio}")
+        Log.d(TAG, "Camera ref set, zoom range=${camera.cameraInfo.zoomState.value?.minZoomRatio}..${camera.cameraInfo.zoomState.value?.maxZoomRatio}")
     }
 
-    /** Set hardware zoom ratio, clamped to [1.0, maxZoom]. */
+    /** Set hardware zoom ratio, clamped to [minZoom, maxZoom]. Spans ultrawide to telephoto. */
     fun setZoomRatio(ratio: Float) {
-        val clamped = ratio.coerceIn(1.0f, _maxZoomRatio.value)
+        val clamped = ratio.coerceIn(_minZoomRatio.value, _maxZoomRatio.value)
         cameraRef?.cameraControl?.setZoomRatio(clamped)
         _currentZoomRatio.value = clamped
+    }
+
+    // --- Snap-to photo capture ---
+
+    private var imageCaptureRef: ImageCapture? = null
+
+    private val _snapTarget = MutableStateFlow<SnapTarget?>(null)
+    val snapTarget: StateFlow<SnapTarget?> = _snapTarget.asStateFlow()
+
+    /** Store the ImageCapture reference from CameraX setup. */
+    fun setImageCaptureRef(imageCapture: ImageCapture) {
+        imageCaptureRef = imageCapture
+    }
+
+    /**
+     * Snap to an object: lock on, auto-zoom, and open the snap photo sheet.
+     * Called when a user taps an AR label.
+     */
+    fun snapToObject(objectId: String) {
+        // Dismiss any other sheets
+        _selectedObjectId.value = null
+        _showUnidentifiedSheet.value = false
+        _zoomTarget.value = null
+
+        // Lock on to the object
+        _lockedObjectId.value = objectId
+
+        // Auto-zoom based on distance
+        val sp = screenPositions.value.firstOrNull { it.skyObject.id == objectId }
+        if (sp != null) {
+            zoomToObject(sp.distanceMeters)
+        }
+
+        // Build snap target info from sky object (fall back to repository if not yet in screenPositions)
+        val skyObj = sp?.skyObject
+            ?: skyObjectRepository.skyObjects.value.firstOrNull { it.id == objectId }
+        val label = when (skyObj) {
+            is com.friendorfoe.domain.model.Aircraft -> skyObj.callsign ?: skyObj.icaoHex
+            is com.friendorfoe.domain.model.Drone -> skyObj.droneId.take(16)
+            else -> objectId
+        }
+        val typeDesc = when (skyObj) {
+            is com.friendorfoe.domain.model.Aircraft -> skyObj.aircraftModel ?: skyObj.aircraftType ?: "Aircraft"
+            is com.friendorfoe.domain.model.Drone -> skyObj.model ?: skyObj.manufacturer ?: "Drone"
+            else -> null
+        }
+
+        _snapTarget.value = SnapTarget(
+            objectId = objectId,
+            label = label,
+            typeDescription = typeDesc,
+            distanceMeters = sp?.distanceMeters
+        )
+    }
+
+    /** Dismiss the snap photo sheet, unlock, and reset zoom. */
+    fun dismissSnap() {
+        _snapTarget.value = null
+        _lockedObjectId.value = null
+        resetZoom()
+    }
+
+    /**
+     * Capture a full-resolution photo using the ImageCapture use case.
+     * Saves to Pictures/FriendOrFoe/ via MediaStore.
+     */
+    fun capturePhoto(context: Context, onResult: (Boolean) -> Unit = {}) {
+        val capture = imageCaptureRef
+        if (capture == null) {
+            Log.w(TAG, "ImageCapture not available")
+            onResult(false)
+            return
+        }
+        val label = _snapTarget.value?.label ?: "unknown"
+        capturePhotoToGallery(context, capture, label, onResult)
     }
 
     /** Auto-zoom toward an object based on distance. Near=2x, mid=4x, far=max. */

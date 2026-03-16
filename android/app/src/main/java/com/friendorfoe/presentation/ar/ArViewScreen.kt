@@ -5,6 +5,7 @@ import android.view.ViewGroup
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageCapture
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -153,8 +154,10 @@ fun ArViewScreen(
     val strobeCount by viewModel.strobeCount.collectAsStateWithLifecycle()
     val currentZoomRatio by viewModel.currentZoomRatio.collectAsStateWithLifecycle()
     val maxZoomRatio by viewModel.maxZoomRatio.collectAsStateWithLifecycle()
+    val minZoomRatio by viewModel.minZoomRatio.collectAsStateWithLifecycle()
     val lockedObjectId by viewModel.lockedObjectId.collectAsStateWithLifecycle()
     val lockedScreenPosition by viewModel.lockedScreenPosition.collectAsStateWithLifecycle()
+    val snapTarget by viewModel.snapTarget.collectAsStateWithLifecycle()
 
     // Manage sensor lifecycle: start on resume, stop on pause
     DisposableEffect(lifecycleOwner) {
@@ -179,10 +182,11 @@ fun ArViewScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Layer 1: CameraX Preview + ImageAnalysis
+        // Layer 1: CameraX Preview + ImageAnalysis + ImageCapture
         CameraPreview(
             visualDetectionAnalyzer = viewModel.visualDetectionAnalyzer,
             onCameraReady = { camera -> viewModel.setCameraRef(camera) },
+            onImageCaptureReady = { imageCapture -> viewModel.setImageCaptureRef(imageCapture) },
             modifier = Modifier.fillMaxSize()
         )
 
@@ -194,7 +198,7 @@ fun ArViewScreen(
             lockedObjectId = lockedObjectId,
             lockedScreenPosition = lockedScreenPosition,
             orientation = orientation,
-            onLabelTapped = { objectId -> viewModel.selectObject(objectId) },
+            onLabelTapped = { objectId -> viewModel.snapToObject(objectId) },
             onLabelLongPressed = { objectId -> viewModel.lockOnObject(objectId) },
             onVisualTapped = { detection -> viewModel.showZoom(detection) },
             onEmptySpaceTapped = { viewModel.showUnidentifiedSheet() },
@@ -437,6 +441,26 @@ fun ArViewScreen(
         )
     }
 
+    // Bottom sheet for snap-to photo capture (tapped AR label)
+    snapTarget?.let { target ->
+        val context = LocalContext.current
+        SnapPhotoSheet(
+            target = target,
+            getFrame = { viewModel.captureZoomFrame() },
+            currentZoomRatio = currentZoomRatio,
+            minZoomRatio = minZoomRatio,
+            maxZoomRatio = maxZoomRatio,
+            onZoomChange = { viewModel.setZoomRatio(it) },
+            onCapture = { onResult -> viewModel.capturePhoto(context, onResult) },
+            onViewDetails = {
+                val id = target.objectId
+                viewModel.dismissSnap()
+                onObjectTapped(id)
+            },
+            onDismiss = { viewModel.dismissSnap() }
+        )
+    }
+
     // Bottom sheet for unidentified tap (empty space)
     if (showUnidentifiedSheet) {
         val unidentifiedSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
@@ -468,6 +492,7 @@ fun ArViewScreen(
 private fun CameraPreview(
     visualDetectionAnalyzer: VisualDetectionAnalyzer,
     onCameraReady: (Camera) -> Unit = {},
+    onImageCaptureReady: (ImageCapture) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -512,18 +537,25 @@ private fun CameraPreview(
                             )
                         }
 
+                    // ImageCapture for full-resolution photo capture
+                    val imageCapture = ImageCapture.Builder()
+                        .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                        .build()
+
                     // Use back camera (pointing at sky)
                     val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
-                    // Unbind all and rebind with both Preview and ImageAnalysis
+                    // Unbind all and rebind with Preview, ImageAnalysis, and ImageCapture
                     cameraProvider.unbindAll()
                     val camera = cameraProvider.bindToLifecycle(
                         lifecycleOwner,
                         cameraSelector,
                         preview,
-                        imageAnalysis
+                        imageAnalysis,
+                        imageCapture
                     )
                     onCameraReady(camera)
+                    onImageCaptureReady(imageCapture)
                 } catch (e: Exception) {
                     Log.e("CameraPreview", "Camera initialization failed", e)
                 }
