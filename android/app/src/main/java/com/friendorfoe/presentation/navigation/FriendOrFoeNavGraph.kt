@@ -17,6 +17,7 @@ import com.friendorfoe.presentation.list.ListViewScreen
 import com.friendorfoe.presentation.map.MapViewScreen
 import com.friendorfoe.presentation.drones.DroneReferenceScreen
 import com.friendorfoe.presentation.aircraft.AircraftReferenceScreen
+import com.friendorfoe.presentation.reference.ReferenceGuideScreen
 import com.friendorfoe.presentation.welcome.WelcomeScreen
 
 /**
@@ -80,6 +81,12 @@ fun FriendOrFoeNavGraph(
 
         composable(Screen.About.route) {
             AboutScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Screen.ReferenceGuide.route) {
+            ReferenceGuideScreen(
+                onBack = { navController.popBackStack() }
+            )
         }
 
         composable(

@@ -42,6 +42,9 @@ sealed class Screen(val route: String) {
             else "aircraft_guide"
     }
 
+    /** Combined reference guide with Aircraft + Drone tabs */
+    data object ReferenceGuide : Screen("reference_guide")
+
     /** Help / About screen */
     data object About : Screen("about")
 
