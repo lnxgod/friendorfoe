@@ -7,9 +7,12 @@
     @retrofit2.http.* <methods>;
 }
 
-# Keep Gson serialized models
--keepclassmembers class com.friendorfoe.data.remote.** {
+# Keep Gson/Retrofit response models (class + fields + constructors)
+# Must use -keep (not -keepclassmembers) so R8 retains classes that
+# Retrofit creates via reflection/generics
+-keep class com.friendorfoe.data.remote.** {
     <fields>;
+    <init>(...);
 }
 
 # Keep Room entities

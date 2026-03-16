@@ -64,29 +64,6 @@ fun AircraftReferenceScreen(
     onBack: () -> Unit,
     initialTypeFilter: String? = null
 ) {
-    var searchQuery by remember {
-        mutableStateOf(
-            if (initialTypeFilter != null) {
-                // Try to find the aircraft name for a nicer initial search
-                AircraftDatabase.matchByTypeCode(initialTypeFilter)?.name ?: initialTypeFilter
-            } else ""
-        )
-    }
-    var selectedCategory by remember { mutableStateOf<AircraftCategory?>(null) }
-    var expandedAircraftId by remember { mutableStateOf<String?>(null) }
-
-    val filteredAircraft = remember(searchQuery, selectedCategory) {
-        var aircraft = if (searchQuery.isNotBlank()) {
-            AircraftDatabase.search(searchQuery)
-        } else {
-            AircraftDatabase.allAircraft
-        }
-        if (selectedCategory != null) {
-            aircraft = aircraft.filter { it.category == selectedCategory }
-        }
-        aircraft
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -107,89 +84,120 @@ fun AircraftReferenceScreen(
             )
         }
     ) { innerPadding ->
-        Column(
+        Column(modifier = Modifier.padding(innerPadding)) {
+            AircraftReferenceContent(initialTypeFilter = initialTypeFilter)
+        }
+    }
+}
+
+/**
+ * Aircraft reference content without Scaffold wrapper.
+ * Used by both the standalone screen and the tabbed ReferenceGuideScreen.
+ */
+@Composable
+fun AircraftReferenceContent(
+    initialTypeFilter: String? = null
+) {
+    var searchQuery by remember {
+        mutableStateOf(
+            if (initialTypeFilter != null) {
+                AircraftDatabase.matchByTypeCode(initialTypeFilter)?.name ?: initialTypeFilter
+            } else ""
+        )
+    }
+    var selectedCategory by remember { mutableStateOf<AircraftCategory?>(null) }
+    var expandedAircraftId by remember { mutableStateOf<String?>(null) }
+
+    val filteredAircraft = remember(searchQuery, selectedCategory) {
+        var aircraft = if (searchQuery.isNotBlank()) {
+            AircraftDatabase.search(searchQuery)
+        } else {
+            AircraftDatabase.allAircraft
+        }
+        if (selectedCategory != null) {
+            aircraft = aircraft.filter { it.category == selectedCategory }
+        }
+        aircraft
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Search bar
+        TextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
             modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            placeholder = { Text("Search aircraft...") },
+            leadingIcon = {
+                Icon(Icons.Default.Search, contentDescription = "Search")
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            colors = TextFieldDefaults.colors(
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent
+            )
+        )
+
+        // Category filter chips
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Search bar
-            TextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                placeholder = { Text("Search aircraft...") },
-                leadingIcon = {
-                    Icon(Icons.Default.Search, contentDescription = "Search")
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent
+            item {
+                FilterChip(
+                    selected = selectedCategory == null,
+                    onClick = { selectedCategory = null },
+                    label = { Text("All") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                    )
                 )
-            )
-
-            // Category filter chips
-            LazyRow(
-                modifier = Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                item {
-                    FilterChip(
-                        selected = selectedCategory == null,
-                        onClick = { selectedCategory = null },
-                        label = { Text("All") },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primary,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                        )
-                    )
-                }
-                items(AircraftCategory.entries.toList()) { category ->
-                    FilterChip(
-                        selected = selectedCategory == category,
-                        onClick = {
-                            selectedCategory = if (selectedCategory == category) null else category
-                        },
-                        label = { Text(category.label) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = aircraftCategoryColor(category),
-                            selectedLabelColor = Color.White
-                        )
-                    )
-                }
             }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Results count
-            Text(
-                text = "${filteredAircraft.size} aircraft",
-                modifier = Modifier.padding(horizontal = 16.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            // Aircraft list
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(filteredAircraft, key = { it.id }) { aircraft ->
-                    AircraftReferenceCard(
-                        aircraft = aircraft,
-                        isExpanded = expandedAircraftId == aircraft.id,
-                        onToggle = {
-                            expandedAircraftId = if (expandedAircraftId == aircraft.id) null else aircraft.id
-                        }
+            items(AircraftCategory.entries.toList()) { category ->
+                FilterChip(
+                    selected = selectedCategory == category,
+                    onClick = {
+                        selectedCategory = if (selectedCategory == category) null else category
+                    },
+                    label = { Text(category.label) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = aircraftCategoryColor(category),
+                        selectedLabelColor = Color.White
                     )
-                }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Results count
+        Text(
+            text = "${filteredAircraft.size} aircraft",
+            modifier = Modifier.padding(horizontal = 16.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Aircraft list
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(filteredAircraft, key = { it.id }) { aircraft ->
+                AircraftReferenceCard(
+                    aircraft = aircraft,
+                    isExpanded = expandedAircraftId == aircraft.id,
+                    onToggle = {
+                        expandedAircraftId = if (expandedAircraftId == aircraft.id) null else aircraft.id
+                    }
+                )
             }
         }
     }

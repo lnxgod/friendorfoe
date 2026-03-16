@@ -2,7 +2,6 @@ package com.friendorfoe.presentation.drones
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -11,8 +10,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -65,22 +62,6 @@ fun DroneReferenceScreen(
     onBack: () -> Unit,
     initialManufacturerFilter: String? = null
 ) {
-    var searchQuery by remember { mutableStateOf(initialManufacturerFilter ?: "") }
-    var selectedCategory by remember { mutableStateOf<DroneCategory?>(null) }
-    var expandedDroneId by remember { mutableStateOf<String?>(null) }
-
-    val filteredDrones = remember(searchQuery, selectedCategory) {
-        var drones = if (searchQuery.isNotBlank()) {
-            DroneDatabase.search(searchQuery)
-        } else {
-            DroneDatabase.allDrones
-        }
-        if (selectedCategory != null) {
-            drones = drones.filter { it.category == selectedCategory }
-        }
-        drones
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -101,89 +82,114 @@ fun DroneReferenceScreen(
             )
         }
     ) { innerPadding ->
-        Column(
+        Column(modifier = Modifier.padding(innerPadding)) {
+            DroneReferenceContent(initialManufacturerFilter = initialManufacturerFilter)
+        }
+    }
+}
+
+/**
+ * Drone reference content without Scaffold wrapper.
+ * Used by both the standalone screen and the tabbed ReferenceGuideScreen.
+ */
+@Composable
+fun DroneReferenceContent(
+    initialManufacturerFilter: String? = null
+) {
+    var searchQuery by remember { mutableStateOf(initialManufacturerFilter ?: "") }
+    var selectedCategory by remember { mutableStateOf<DroneCategory?>(null) }
+    var expandedDroneId by remember { mutableStateOf<String?>(null) }
+
+    val filteredDrones = remember(searchQuery, selectedCategory) {
+        var drones = if (searchQuery.isNotBlank()) {
+            DroneDatabase.search(searchQuery)
+        } else {
+            DroneDatabase.allDrones
+        }
+        if (selectedCategory != null) {
+            drones = drones.filter { it.category == selectedCategory }
+        }
+        drones
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Search bar
+        TextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
             modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            placeholder = { Text("Search drones...") },
+            leadingIcon = {
+                Icon(Icons.Default.Search, contentDescription = "Search")
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            colors = TextFieldDefaults.colors(
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent
+            )
+        )
+
+        // Category filter chips
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Search bar
-            TextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                placeholder = { Text("Search drones...") },
-                leadingIcon = {
-                    Icon(Icons.Default.Search, contentDescription = "Search")
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent
+            item {
+                FilterChip(
+                    selected = selectedCategory == null,
+                    onClick = { selectedCategory = null },
+                    label = { Text("All") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                    )
                 )
-            )
-
-            // Category filter chips
-            LazyRow(
-                modifier = Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                item {
-                    FilterChip(
-                        selected = selectedCategory == null,
-                        onClick = { selectedCategory = null },
-                        label = { Text("All") },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primary,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                        )
-                    )
-                }
-                items(DroneCategory.entries.toList()) { category ->
-                    FilterChip(
-                        selected = selectedCategory == category,
-                        onClick = {
-                            selectedCategory = if (selectedCategory == category) null else category
-                        },
-                        label = { Text(category.label) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = categoryChipColor(category),
-                            selectedLabelColor = Color.White
-                        )
-                    )
-                }
             }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Results count
-            Text(
-                text = "${filteredDrones.size} drone${if (filteredDrones.size != 1) "s" else ""}",
-                modifier = Modifier.padding(horizontal = 16.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            // Drone list
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(filteredDrones, key = { it.id }) { drone ->
-                    DroneReferenceCard(
-                        drone = drone,
-                        isExpanded = expandedDroneId == drone.id,
-                        onToggle = {
-                            expandedDroneId = if (expandedDroneId == drone.id) null else drone.id
-                        }
+            items(DroneCategory.entries.toList()) { category ->
+                FilterChip(
+                    selected = selectedCategory == category,
+                    onClick = {
+                        selectedCategory = if (selectedCategory == category) null else category
+                    },
+                    label = { Text(category.label) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = categoryChipColor(category),
+                        selectedLabelColor = Color.White
                     )
-                }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Results count
+        Text(
+            text = "${filteredDrones.size} drone${if (filteredDrones.size != 1) "s" else ""}",
+            modifier = Modifier.padding(horizontal = 16.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Drone list
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(filteredDrones, key = { it.id }) { drone ->
+                DroneReferenceCard(
+                    drone = drone,
+                    isExpanded = expandedDroneId == drone.id,
+                    onToggle = {
+                        expandedDroneId = if (expandedDroneId == drone.id) null else drone.id
+                    }
+                )
             }
         }
     }

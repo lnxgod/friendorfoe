@@ -112,7 +112,9 @@ fun FriendOrFoeApp() {
     val showBottomBar = currentDestination?.route != Screen.Detail.route &&
         currentDestination?.route != Screen.About.route &&
         currentDestination?.route != Screen.Welcome.route &&
-        currentDestination?.route != Screen.DroneGuide.route
+        currentDestination?.route != Screen.DroneGuide.route &&
+        currentDestination?.route != Screen.AircraftGuide.route &&
+        currentDestination?.route != Screen.ReferenceGuide.route
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -150,10 +152,10 @@ fun FriendOrFoeApp() {
                         )
                     }
 
-                    // Drone Guide icon
+                    // Reference Guide icon
                     IconButton(
                         onClick = {
-                            navController.navigate(Screen.DroneGuide.createRoute()) {
+                            navController.navigate(Screen.ReferenceGuide.route) {
                                 launchSingleTop = true
                             }
                         },
@@ -161,7 +163,7 @@ fun FriendOrFoeApp() {
                     ) {
                         Icon(
                             imageVector = Icons.Default.FlightTakeoff,
-                            contentDescription = "Drone Guide",
+                            contentDescription = "Reference",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
