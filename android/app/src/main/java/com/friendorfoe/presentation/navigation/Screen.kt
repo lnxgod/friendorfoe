@@ -35,6 +35,13 @@ sealed class Screen(val route: String) {
             else "drone_guide"
     }
 
+    /** Aircraft reference guide */
+    data object AircraftGuide : Screen("aircraft_guide?type={type}") {
+        fun createRoute(typeCode: String? = null) =
+            if (typeCode != null) "aircraft_guide?type=$typeCode"
+            else "aircraft_guide"
+    }
+
     /** Help / About screen */
     data object About : Screen("about")
 

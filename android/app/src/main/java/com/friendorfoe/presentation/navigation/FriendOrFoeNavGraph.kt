@@ -16,6 +16,7 @@ import com.friendorfoe.presentation.history.HistoryScreen
 import com.friendorfoe.presentation.list.ListViewScreen
 import com.friendorfoe.presentation.map.MapViewScreen
 import com.friendorfoe.presentation.drones.DroneReferenceScreen
+import com.friendorfoe.presentation.aircraft.AircraftReferenceScreen
 import com.friendorfoe.presentation.welcome.WelcomeScreen
 
 /**
@@ -100,6 +101,24 @@ fun FriendOrFoeNavGraph(
         }
 
         composable(
+            route = Screen.AircraftGuide.route,
+            arguments = listOf(
+                navArgument("type") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                    nullable = true
+                }
+            )
+        ) { backStackEntry ->
+            val typeCode = backStackEntry.arguments?.getString("type")
+                ?.takeIf { it.isNotBlank() }
+            AircraftReferenceScreen(
+                onBack = { navController.popBackStack() },
+                initialTypeFilter = typeCode
+            )
+        }
+
+        composable(
             route = Screen.Detail.route,
             arguments = listOf(
                 navArgument("objectId") { type = NavType.StringType }
@@ -111,6 +130,9 @@ fun FriendOrFoeNavGraph(
                 onBack = { navController.popBackStack() },
                 onNavigateToDroneGuide = { manufacturer ->
                     navController.navigate(Screen.DroneGuide.createRoute(manufacturer))
+                },
+                onNavigateToAircraftGuide = { typeCode ->
+                    navController.navigate(Screen.AircraftGuide.createRoute(typeCode))
                 }
             )
         }

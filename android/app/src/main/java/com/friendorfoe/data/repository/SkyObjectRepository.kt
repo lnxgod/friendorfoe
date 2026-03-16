@@ -171,12 +171,13 @@ class SkyObjectRepository @Inject constructor(
 
     /**
      * Collect ADS-B aircraft from the poller.
-     * Each emission replaces the entire ADS-B set (the backend returns all nearby aircraft).
+     * Upserts new/updated aircraft instead of replacing the entire set,
+     * so aircraft that a provider momentarily stops reporting persist
+     * until pruneStaleEntries() removes them after STALE_THRESHOLD (60s).
      */
     private suspend fun collectAdsb() {
         adsbPoller.aircraft.collect { aircraftList ->
             synchronized(adsbObjects) {
-                adsbObjects.clear()
                 aircraftList.forEach { aircraft ->
                     adsbObjects[aircraft.id] = aircraft
                 }

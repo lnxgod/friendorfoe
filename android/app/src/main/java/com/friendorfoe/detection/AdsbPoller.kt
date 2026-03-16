@@ -103,6 +103,14 @@ class AdsbPoller @Inject constructor(
                                 Log.d(TAG, "OpenSky returned ${nearbyResult.aircraft.size} aircraft")
                                 DataSourceStatus.OPENSKY_FALLBACK
                             }
+                            DataSource.ADSB_LOL -> {
+                                Log.d(TAG, "adsb.lol returned ${nearbyResult.aircraft.size} aircraft")
+                                DataSourceStatus.ADSBFI_FALLBACK
+                            }
+                            DataSource.MULTI -> {
+                                Log.d(TAG, "Multi-source returned ${nearbyResult.aircraft.size} aircraft")
+                                DataSourceStatus.ADSBFI_FALLBACK
+                            }
                         }
                         _aircraft.emit(nearbyResult.aircraft)
                         _dataSourceStatus.value = status
@@ -114,7 +122,7 @@ class AdsbPoller @Inject constructor(
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Unexpected error during ADS-B poll", e)
-                    _aircraft.emit(emptyList())
+                    // Don't emit emptyList() — let stale aircraft persist until pruned
                     _dataSourceStatus.value = DataSourceStatus.OFFLINE
                     _lastError.value = e.message ?: "Connection failed"
                     consecutiveFailures++
@@ -126,23 +134,22 @@ class AdsbPoller @Inject constructor(
         }
     }
 
-    private suspend fun handleError(error: Throwable, consecutiveFailures: Int) {
+    private fun handleError(error: Throwable, consecutiveFailures: Int) {
+        // Update status/error for UI, but DON'T emit emptyList() — let stale aircraft
+        // persist in SkyObjectRepository until pruned after STALE_THRESHOLD (60s).
         when (error) {
             is FetchException.RateLimited -> {
                 Log.w(TAG, "Rate limited, retry after ${error.retryAfterSeconds}s")
-                _aircraft.emit(emptyList())
                 _dataSourceStatus.value = DataSourceStatus.RATE_LIMITED
                 _lastError.value = "Rate limited (${error.retryAfterSeconds}s)"
             }
             is FetchException.NetworkError -> {
                 Log.w(TAG, "Network error: ${error.message}")
-                _aircraft.emit(emptyList())
                 _dataSourceStatus.value = DataSourceStatus.OFFLINE
                 _lastError.value = error.message ?: "Network error"
             }
             else -> {
                 Log.w(TAG, "Fetch failed: ${error.message}")
-                _aircraft.emit(emptyList())
                 _dataSourceStatus.value = DataSourceStatus.OFFLINE
                 _lastError.value = error.message ?: "Unknown error"
             }

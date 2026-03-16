@@ -62,6 +62,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.Icon
@@ -88,6 +89,7 @@ fun DetailScreen(
     objectId: String,
     onBack: () -> Unit,
     onNavigateToDroneGuide: ((String?) -> Unit)? = null,
+    onNavigateToAircraftGuide: ((String?) -> Unit)? = null,
     viewModel: DetailViewModel = hiltViewModel()
 ) {
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
@@ -140,7 +142,8 @@ fun DetailScreen(
                 is DetailState.AircraftLoaded -> {
                     AircraftDetailContent(
                         aircraft = state.aircraft,
-                        detail = state.detail
+                        detail = state.detail,
+                        onNavigateToAircraftGuide = onNavigateToAircraftGuide
                     )
                 }
 
@@ -170,7 +173,8 @@ internal fun AircraftDetailContent(
     aircraft: Aircraft,
     detail: AircraftDetailDto?,
     onZoom: (() -> Unit)? = null,
-    onLockOn: (() -> Unit)? = null
+    onLockOn: (() -> Unit)? = null,
+    onNavigateToAircraftGuide: ((String?) -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -293,6 +297,29 @@ internal fun AircraftDetailContent(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("Lock On & Track")
+            }
+        }
+
+        // Aircraft Reference Guide link
+        if (onNavigateToAircraftGuide != null) {
+            val typeCode = detail?.aircraftType ?: aircraft.aircraftType
+            Button(
+                onClick = { onNavigateToAircraftGuide(typeCode) },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF1565C0)
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = "Aircraft Guide",
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    if (typeCode != null) "View $typeCode in Aircraft Guide"
+                    else "Browse Aircraft Reference Guide"
+                )
             }
         }
 

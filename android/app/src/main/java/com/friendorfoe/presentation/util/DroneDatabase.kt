@@ -344,6 +344,212 @@ object DroneDatabase {
             specs = "Weight: 1150kg | Range: 1000km | Max speed: 207km/h | Endurance: 45h",
             photoAsset = "drones/heron.jpg",
             wifiPatterns = emptyList()
+        ),
+
+        // ── New Consumer Drones ──
+        DroneReference(
+            id = "dji_neo",
+            name = "DJI Neo",
+            manufacturer = "DJI",
+            category = DroneCategory.CONSUMER,
+            description = "Ultra-compact palm-sized drone under 135g. Controller-free AI flight modes for selfies and vlogging. Takes off from your hand and returns automatically.",
+            specs = "Weight: 135g | Range: 6km | Max speed: 33km/h | Flight time: 18min",
+            photoAsset = "drones/dji_neo.jpg",
+            wifiPatterns = listOf("DJI-", "NEO-")
+        ),
+        DroneReference(
+            id = "dji_mini3",
+            name = "DJI Mini 3",
+            manufacturer = "DJI",
+            category = DroneCategory.CONSUMER,
+            description = "Budget sub-250g drone with true vertical shooting for social media. No obstacle avoidance but lightweight and affordable. Great for beginners.",
+            specs = "Weight: 248g | Range: 10km | Max speed: 57km/h | Flight time: 38min",
+            photoAsset = "drones/dji_mini3.jpg",
+            wifiPatterns = listOf("DJI-", "MINI-")
+        ),
+        DroneReference(
+            id = "dji_mavic_air2s",
+            name = "DJI Mavic Air 2S",
+            manufacturer = "DJI",
+            category = DroneCategory.CONSUMER,
+            description = "Compact foldable drone with 1-inch sensor and 5.4K video. MasterShots automated cinematography. Four-directional obstacle sensing. Popular prosumer choice.",
+            specs = "Weight: 595g | Range: 18.5km | Max speed: 68km/h | Flight time: 31min",
+            photoAsset = "drones/dji_mavic_air2s.jpg",
+            wifiPatterns = listOf("DJI-")
+        ),
+        DroneReference(
+            id = "dji_air2",
+            name = "DJI Air 2",
+            manufacturer = "DJI",
+            category = DroneCategory.CONSUMER,
+            description = "Predecessor to Air 2S. 48MP photos, 4K/60fps video, and FocusTrack subject tracking. Solid mid-range option that brought pro features to a compact form factor.",
+            specs = "Weight: 570g | Range: 18.5km | Max speed: 68km/h | Flight time: 34min",
+            photoAsset = "drones/dji_air2.jpg",
+            wifiPatterns = listOf("DJI-")
+        ),
+        DroneReference(
+            id = "parrot_bebop2",
+            name = "Parrot Bebop 2",
+            manufacturer = "Parrot",
+            category = DroneCategory.CONSUMER,
+            description = "French-made GPS drone with fish-eye camera and digital stabilization. Lightweight at 500g with FPV goggle support. Now discontinued but still flown by enthusiasts.",
+            specs = "Weight: 500g | Range: 2km | Max speed: 60km/h | Flight time: 25min",
+            photoAsset = "drones/parrot_bebop2.jpg",
+            wifiPatterns = listOf("PARROT-", "BEBOP-")
+        ),
+        DroneReference(
+            id = "skydio_x2",
+            name = "Skydio X2",
+            manufacturer = "Skydio",
+            category = DroneCategory.ENTERPRISE,
+            description = "US-made enterprise drone with dual thermal/visual cameras. Foldable, rucksack-portable. Used by US Army Short Range Reconnaissance program. AI-powered autonomy.",
+            specs = "Weight: 1500g | Range: 6km | Max speed: 58km/h | Flight time: 35min",
+            photoAsset = "drones/skydio_x2.jpg",
+            wifiPatterns = listOf("SKYDIO-")
+        ),
+
+        // ── New Enterprise Drones ──
+        DroneReference(
+            id = "autel_evo_max4t",
+            name = "Autel EVO Max 4T",
+            manufacturer = "Autel",
+            category = DroneCategory.ENTERPRISE,
+            description = "Multi-sensor enterprise drone with wide, zoom, thermal, and laser rangefinder cameras. Omnidirectional obstacle avoidance. Built for public safety and inspection.",
+            specs = "Weight: 1164g | Range: 20km | Max speed: 75km/h | Flight time: 42min",
+            photoAsset = "drones/autel_evo_max4t.jpg",
+            wifiPatterns = listOf("AUTEL-", "EVO-")
+        ),
+        DroneReference(
+            id = "autel_dragonfish",
+            name = "Autel Dragonfish",
+            manufacturer = "Autel",
+            category = DroneCategory.ENTERPRISE,
+            description = "Fixed-wing VTOL drone for long-range mapping and surveillance. Transitions between hover and forward flight. Up to 126 minutes flight time with 18km range.",
+            specs = "Weight: 9kg | Range: 18km | Max speed: 108km/h | Flight time: 126min",
+            photoAsset = "drones/autel_dragonfish.jpg",
+            wifiPatterns = listOf("AUTEL-")
+        ),
+        DroneReference(
+            id = "dji_agras_t40",
+            name = "DJI Agras T40",
+            manufacturer = "DJI",
+            category = DroneCategory.ENTERPRISE,
+            description = "Large agricultural spray drone with 40L tank and 20m spray width. Coaxial twin-rotor design. Spreads granular fertilizer and pesticide with precision. Leading ag-drone worldwide.",
+            specs = "Weight: 52kg (loaded) | Spray rate: 16L/min | Max speed: 41km/h | Flight time: ~10min (loaded)",
+            photoAsset = "drones/dji_agras_t40.jpg",
+            wifiPatterns = listOf("DJI-")
+        ),
+        DroneReference(
+            id = "wingtraone",
+            name = "WingtraOne",
+            manufacturer = "Wingtra",
+            category = DroneCategory.ENTERPRISE,
+            description = "Swiss-made VTOL mapping drone with PPK/RTK survey-grade accuracy. Tailsitter design — takes off vertically, transitions to fixed-wing for efficient long-range mapping.",
+            specs = "Weight: 4.5kg | Range: 70km | Max speed: 120km/h | Flight time: 59min",
+            photoAsset = "drones/wingtraone.jpg",
+            wifiPatterns = emptyList()
+        ),
+        DroneReference(
+            id = "zipline_p2",
+            name = "Zipline P2 Zip",
+            manufacturer = "Zipline",
+            category = DroneCategory.ENTERPRISE,
+            description = "Autonomous delivery drone used for medical supply drops in Rwanda, Ghana, and US. Launches from catapult, drops packages by parachute. Over 1 million deliveries made.",
+            specs = "Weight: 20kg | Range: 160km round-trip | Max speed: 128km/h | Payload: 1.8kg",
+            photoAsset = "drones/zipline_p2.jpg",
+            wifiPatterns = emptyList()
+        ),
+        DroneReference(
+            id = "wing_delivery",
+            name = "Wing (Alphabet) Delivery Drone",
+            manufacturer = "Wing (Alphabet/Google)",
+            category = DroneCategory.ENTERPRISE,
+            description = "Autonomous delivery drone from Google's parent company. Lowers packages on a tether from hover. Operating commercially in Australia, Finland, and parts of the US.",
+            specs = "Weight: 5.2kg | Range: 12km | Max speed: 113km/h | Payload: 1.2kg",
+            photoAsset = "drones/wing_delivery.jpg",
+            wifiPatterns = listOf("WING-")
+        ),
+
+        // ── New Military Drones ──
+        DroneReference(
+            id = "mq25_stingray",
+            name = "MQ-25 Stingray",
+            manufacturer = "Boeing (USA)",
+            category = DroneCategory.MILITARY_RECON,
+            description = "US Navy's first carrier-based unmanned tanker. Refuels F/A-18s and F-35Cs in flight, extending carrier air wing range by up to 700nm. Stealthy flying-wing design.",
+            specs = "Weight: 20,200kg | Range: 900km | Max speed: 890km/h | Fuel offload: 6,800kg",
+            photoAsset = "drones/mq25_stingray.jpg",
+            wifiPatterns = emptyList()
+        ),
+        DroneReference(
+            id = "mq1c_gray_eagle",
+            name = "MQ-1C Gray Eagle",
+            manufacturer = "General Atomics (USA)",
+            category = DroneCategory.MILITARY_RECON,
+            description = "US Army's primary ISR and strike UAS. Extended-range Predator derivative with heavier payload and longer endurance. Carries Hellfire missiles and GBU-44 Viper Strike.",
+            specs = "Weight: 1633kg | Range: 400km | Max speed: 280km/h | Endurance: 25h",
+            photoAsset = "drones/mq1c_gray_eagle.jpg",
+            wifiPatterns = emptyList()
+        ),
+        DroneReference(
+            id = "mq4c_triton",
+            name = "MQ-4C Triton",
+            manufacturer = "Northrop Grumman (USA)",
+            category = DroneCategory.MILITARY_RECON,
+            description = "Naval variant of Global Hawk for maritime ISR. Flies at 56,000ft for 24+ hours, covering 7 million square km per mission. Provides persistent maritime domain awareness.",
+            specs = "Weight: 14,628kg | Range: 15,186km | Max speed: 611km/h | Endurance: 24h | Ceiling: 56,000ft",
+            photoAsset = "drones/mq4c_triton.jpg",
+            wifiPatterns = emptyList()
+        ),
+        DroneReference(
+            id = "xq58_valkyrie",
+            name = "XQ-58 Valkyrie",
+            manufacturer = "Kratos (USA)",
+            category = DroneCategory.MILITARY_STRIKE,
+            description = "Low-cost attritable autonomous combat drone. Designed as 'loyal wingman' to accompany manned fighters. Subsonic, stealthy, and expendable. Can carry JDAMs and small-diameter bombs.",
+            specs = "Weight: 2,722kg | Range: 3,941km | Max speed: Mach 0.85 | Ceiling: 45,000ft",
+            photoAsset = "drones/xq58_valkyrie.jpg",
+            wifiPatterns = emptyList()
+        ),
+        DroneReference(
+            id = "bayraktar_tb3",
+            name = "Bayraktar TB3",
+            manufacturer = "Baykar (Turkey)",
+            category = DroneCategory.MILITARY_STRIKE,
+            description = "Carrier-capable evolution of TB2 with folding wings for naval operations. Designed for Turkey's TCG Anadolu amphibious assault ship. STOL capability for short flight decks.",
+            specs = "Weight: 1450kg | Range: 185km | Max speed: 260km/h | Endurance: 24h",
+            photoAsset = "drones/bayraktar_tb3.jpg",
+            wifiPatterns = emptyList()
+        ),
+        DroneReference(
+            id = "anka_s",
+            name = "TAI Anka-S",
+            manufacturer = "Turkish Aerospace (Turkey)",
+            category = DroneCategory.MILITARY_STRIKE,
+            description = "Turkish MALE UCAV with satellite communication link for beyond-line-of-sight operations. Carries MAM-L smart munitions. Used by Turkish Armed Forces and exported to Tunisia and others.",
+            specs = "Weight: 1685kg | Range: 200km | Max speed: 218km/h | Endurance: 24h",
+            photoAsset = "drones/anka_s.jpg",
+            wifiPatterns = emptyList()
+        ),
+        DroneReference(
+            id = "rq170_sentinel",
+            name = "RQ-170 Sentinel",
+            manufacturer = "Lockheed Martin (USA)",
+            category = DroneCategory.MILITARY_RECON,
+            description = "Stealthy flying-wing ISR drone nicknamed 'Beast of Kandahar.' Used in the Osama bin Laden raid. One captured by Iran in 2011. Very little officially confirmed about its capabilities.",
+            specs = "Wingspan: ~20m | Ceiling: >50,000ft | Details classified",
+            photoAsset = "drones/rq170_sentinel.jpg",
+            wifiPatterns = emptyList()
+        ),
+        DroneReference(
+            id = "shahed_238",
+            name = "Shahed-238",
+            manufacturer = "HESA (Iran)",
+            category = DroneCategory.LOITERING_MUNITION,
+            description = "Jet-powered evolution of the Shahed-136. Significantly faster and harder to intercept than the propeller-driven 136. Multiple guidance options including IR seeker for anti-ship role.",
+            specs = "Weight: ~200kg | Range: 1500km (est.) | Max speed: 600km/h | Warhead: ~40kg",
+            photoAsset = "drones/shahed_238.jpg",
+            wifiPatterns = emptyList()
         )
     )
 
