@@ -38,10 +38,11 @@ class RemoteIdScanner @Inject constructor(
 
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
     private var bleScanner: BluetoothLeScanner? = null
+    private var activeScanCallback: ScanCallback? = null
 
     // Track parsed data per drone MAC address. We may receive Basic ID and Location
     // in separate advertisements, so we accumulate partial state.
-    private val droneStates = mutableMapOf<String, OpenDroneIdParser.DronePartialState>()
+    private val droneStates = java.util.concurrent.ConcurrentHashMap<String, OpenDroneIdParser.DronePartialState>()
 
     /**
      * Start scanning for Remote ID broadcasts.
@@ -107,6 +108,7 @@ class RemoteIdScanner @Inject constructor(
             }
         }
 
+        activeScanCallback = callback
         Log.i(TAG, "Starting BLE Remote ID scan")
         scanner.startScan(listOf(scanFilter), scanSettings, callback)
 
@@ -125,10 +127,13 @@ class RemoteIdScanner @Inject constructor(
     @SuppressLint("MissingPermission")
     fun stopScanning() {
         try {
+            activeScanCallback?.let { cb -> bleScanner?.stopScan(cb) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping BLE scan", e)
+        } finally {
+            activeScanCallback = null
             bleScanner = null
             droneStates.clear()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error in stopScanning", e)
         }
     }
 
@@ -162,11 +167,11 @@ class RemoteIdScanner @Inject constructor(
         val state = droneStates.getOrPut(deviceAddress) {
             OpenDroneIdParser.DronePartialState(deviceAddress = deviceAddress, firstSeen = now)
         }
-        state.lastUpdated = now
-        state.signalStrengthDbm = result.rssi
-
-        OpenDroneIdParser.parseMessage(messageData, state)
-
-        return state.toDroneOrNull(idPrefix = "rid_")
+        synchronized(state) {
+            state.lastUpdated = now
+            state.signalStrengthDbm = result.rssi
+            OpenDroneIdParser.parseMessage(messageData, state)
+            return state.toDroneOrNull(idPrefix = "rid_")
+        }
     }
 }

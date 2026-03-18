@@ -12,6 +12,7 @@ import android.net.wifi.aware.WifiAwareSession
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
@@ -48,7 +49,7 @@ class WifiNanRemoteIdScanner @Inject constructor(
 
     // Track parsed data per NaN peer. Like BLE, messages may arrive in
     // separate service discovery events.
-    private val droneStates = mutableMapOf<String, OpenDroneIdParser.DronePartialState>()
+    private val droneStates = java.util.concurrent.ConcurrentHashMap<String, OpenDroneIdParser.DronePartialState>()
 
     /**
      * Start scanning for OpenDroneID broadcasts over WiFi NaN.
@@ -191,16 +192,18 @@ class WifiNanRemoteIdScanner @Inject constructor(
         val state = droneStates.getOrPut(peerId) {
             OpenDroneIdParser.DronePartialState(deviceAddress = peerId, firstSeen = now)
         }
-        state.lastUpdated = now
+        synchronized(state) {
+            state.lastUpdated = now
 
-        // Use RTT distance when available (much more accurate than RSSI estimation)
-        if (rttDistanceMeters != null) {
-            state.rttDistanceMeters = rttDistanceMeters
+            // Use RTT distance when available (much more accurate than RSSI estimation)
+            if (rttDistanceMeters != null) {
+                state.rttDistanceMeters = rttDistanceMeters
+            }
+
+            OpenDroneIdParser.parseMessage(messageData, state)
+
+            return state.toDroneOrNull(idPrefix = "nan_", detectionSource = DetectionSource.WIFI_NAN)
         }
-
-        OpenDroneIdParser.parseMessage(messageData, state)
-
-        return state.toDroneOrNull(idPrefix = "nan_")
     }
 
     /**

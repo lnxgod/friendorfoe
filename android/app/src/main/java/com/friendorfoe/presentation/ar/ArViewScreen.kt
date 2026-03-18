@@ -1,5 +1,6 @@
 package com.friendorfoe.presentation.ar
 
+import android.content.Intent
 import android.util.Log
 import android.view.ViewGroup
 import androidx.camera.core.Camera
@@ -37,8 +38,20 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
@@ -160,6 +173,11 @@ fun ArViewScreen(
     val lockedScreenPosition by viewModel.lockedScreenPosition.collectAsStateWithLifecycle()
     val snapTarget by viewModel.snapTarget.collectAsStateWithLifecycle()
 
+    // Main-screen capture state
+    var captureInProgress by remember { mutableStateOf(false) }
+    var capturedPhotoUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var showShareConfirmation by remember { mutableStateOf(false) }
+
     // Manage sensor lifecycle: start on resume, stop on pause
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -176,6 +194,8 @@ fun ArViewScreen(
             viewModel.stopSensors()
         }
     }
+
+    val context = LocalContext.current
 
     // Load detail when an object is selected
     LaunchedEffect(selectedObjectId) {
@@ -281,7 +301,159 @@ fun ArViewScreen(
             }
         }
 
-        // Layer 4: Status bar + detection log at bottom
+        // Layer 4: Floating zoom + capture controls (right edge)
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 12.dp)
+                .background(
+                    color = Color.Black.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(24.dp)
+                )
+                .padding(vertical = 8.dp, horizontal = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            // Zoom controls: only shown when device supports zoom
+            if (maxZoomRatio > minZoomRatio + 0.1f) {
+                IconButton(
+                    onClick = { viewModel.zoomIn() },
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Zoom in",
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+
+                // Zoom ratio label (only when zoomed in)
+                if (currentZoomRatio > minZoomRatio + 0.05f) {
+                    Text(
+                        text = "%.1fx".format(currentZoomRatio),
+                        color = Color(0xFF00BCD4),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                IconButton(
+                    onClick = { viewModel.zoomOut() },
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Remove,
+                        contentDescription = "Zoom out",
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+
+            // Take Photo button
+            IconButton(
+                onClick = {
+                    if (!captureInProgress) {
+                        captureInProgress = true
+                        viewModel.capturePhotoFromMainScreen(context) { uri ->
+                            captureInProgress = false
+                            if (uri != null) {
+                                capturedPhotoUri = uri
+                                showShareConfirmation = true
+                            }
+                        }
+                    }
+                },
+                enabled = !captureInProgress,
+                modifier = Modifier
+                    .size(56.dp)
+                    .background(
+                        color = if (captureInProgress) Color.Gray else Color.White,
+                        shape = CircleShape
+                    )
+            ) {
+                Icon(
+                    imageVector = if (captureInProgress) Icons.Default.HourglassEmpty else Icons.Default.CameraAlt,
+                    contentDescription = "Take Photo",
+                    tint = Color.Black,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+        }
+
+        // Share confirmation bar (bottom, above status bar)
+        if (showShareConfirmation) {
+            // Auto-dismiss after 6 seconds
+            LaunchedEffect(showShareConfirmation) {
+                kotlinx.coroutines.delay(6000L)
+                showShareConfirmation = false
+            }
+
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 64.dp, start = 16.dp, end = 16.dp)
+                    .background(
+                        color = Color(0xDD2E7D32),
+                        shape = RoundedCornerShape(24.dp)
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = "Photo saved",
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    onClick = {
+                        capturedPhotoUri?.let { uri ->
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "image/jpeg"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(shareIntent, "Share photo"))
+                        }
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "Share",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(start = 4.dp)
+                    )
+                }
+                IconButton(
+                    onClick = { showShareConfirmation = false },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Dismiss",
+                        tint = Color.White.copy(alpha = 0.7f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+
+        // Layer 5: Status bar + detection log at bottom
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -444,7 +616,6 @@ fun ArViewScreen(
 
     // Bottom sheet for snap-to photo capture (tapped AR label)
     snapTarget?.let { target ->
-        val context = LocalContext.current
         SnapPhotoSheet(
             target = target,
             getFrame = { viewModel.captureZoomFrame() },
@@ -956,6 +1127,8 @@ private fun DrawScope.drawLabel(
         val (sourceBadgeColor, sourceBadgeChar) = when (skyObject.source) {
             DetectionSource.ADS_B -> android.graphics.Color.rgb(76, 175, 80) to "A"      // green
             DetectionSource.REMOTE_ID -> android.graphics.Color.rgb(156, 39, 176) to "B"  // purple
+            DetectionSource.WIFI_NAN -> android.graphics.Color.rgb(156, 39, 176) to "N"   // purple
+            DetectionSource.WIFI_BEACON -> android.graphics.Color.rgb(156, 39, 176) to "W" // purple
             DetectionSource.WIFI -> android.graphics.Color.rgb(33, 150, 243) to "W"       // blue
         }
         val badgeRadius = 9f
@@ -1830,11 +2003,15 @@ private fun DetectionLogRow(
         val sourceLabel = when (entry.source) {
             DetectionSource.ADS_B -> "ADS-B"
             DetectionSource.REMOTE_ID -> "BLE"
+            DetectionSource.WIFI_NAN -> "NaN"
+            DetectionSource.WIFI_BEACON -> "Beacon"
             DetectionSource.WIFI -> "WiFi"
         }
         val sourceColor = when (entry.source) {
             DetectionSource.ADS_B -> Color(0xFF4CAF50)
             DetectionSource.REMOTE_ID -> Color(0xFF9C27B0)
+            DetectionSource.WIFI_NAN -> Color(0xFF9C27B0)
+            DetectionSource.WIFI_BEACON -> Color(0xFF9C27B0)
             DetectionSource.WIFI -> Color(0xFF2196F3)
         }
         Text(
@@ -1955,6 +2132,8 @@ private fun DroneCandidateRow(
         // Source badge
         val (sourceLabel, sourceColor) = when (drone.source) {
             DetectionSource.REMOTE_ID -> "BLE" to Color(0xFF9C27B0)
+            DetectionSource.WIFI_NAN -> "NaN" to Color(0xFF9C27B0)
+            DetectionSource.WIFI_BEACON -> "Beacon" to Color(0xFF9C27B0)
             DetectionSource.WIFI -> "WiFi" to Color(0xFF2196F3)
             else -> "Other" to Color(0xFF9E9E9E)
         }

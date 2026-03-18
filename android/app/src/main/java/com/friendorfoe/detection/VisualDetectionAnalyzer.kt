@@ -86,6 +86,7 @@ class VisualDetectionAnalyzer(
             return
         }
 
+        try {
         // Capture frame bitmap before ML Kit processes it
         try {
             val bitmap = imageProxy.toBitmapSafe()
@@ -204,6 +205,10 @@ class VisualDetectionAnalyzer(
                 // Critical: always close to unblock next frame
                 imageProxy.close()
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception before ML Kit processing, closing imageProxy", e)
+            imageProxy.close()
+        }
     }
 
     /** Get the most recently captured camera frame (thread-safe). */

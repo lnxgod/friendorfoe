@@ -367,6 +367,27 @@ class ArViewModel @Inject constructor(
             return
         }
         val label = _snapTarget.value?.label ?: "unknown"
+        capturePhotoToGallery(context, capture, label) { uri -> onResult(uri != null) }
+    }
+
+    /** Capture a photo from the main AR screen (no snap target required). Returns the saved URI. */
+    fun capturePhotoFromMainScreen(context: Context, onResult: (android.net.Uri?) -> Unit) {
+        val capture = imageCaptureRef
+        if (capture == null) {
+            Log.w(TAG, "ImageCapture not available")
+            onResult(null)
+            return
+        }
+        // Use locked object label if available, otherwise "sky"
+        val label = _lockedObjectId.value?.let { lockedId ->
+            skyObjectRepository.skyObjects.value.firstOrNull { it.id == lockedId }?.let { obj ->
+                when (obj) {
+                    is com.friendorfoe.domain.model.Aircraft -> obj.callsign ?: obj.icaoHex
+                    is com.friendorfoe.domain.model.Drone -> obj.droneId.take(16)
+                    else -> "sky"
+                }
+            }
+        } ?: "sky"
         capturePhotoToGallery(context, capture, label, onResult)
     }
 
@@ -387,6 +408,18 @@ class ArViewModel @Inject constructor(
     /** Reset hardware zoom to 1x. */
     fun resetZoom() {
         setZoomRatio(1.0f)
+    }
+
+    /** Zoom in by 15% of the device's zoom range. */
+    fun zoomIn() {
+        val step = (_maxZoomRatio.value - _minZoomRatio.value) * 0.15f
+        setZoomRatio(_currentZoomRatio.value + step)
+    }
+
+    /** Zoom out by 15% of the device's zoom range. */
+    fun zoomOut() {
+        val step = (_maxZoomRatio.value - _minZoomRatio.value) * 0.15f
+        setZoomRatio(_currentZoomRatio.value - step)
     }
 
     // --- Classified unknowns ---

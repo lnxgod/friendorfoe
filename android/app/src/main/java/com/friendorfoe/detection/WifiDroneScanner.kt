@@ -20,7 +20,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.Instant
-import java.util.LinkedList
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.pow
@@ -85,19 +84,26 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("MAVIC-", "DJI"),
             DronePattern("PHANTOM-", "DJI"),
             DronePattern("INSPIRE-", "DJI"),
-            DronePattern("MINI-", "DJI"),
+            DronePattern("MINI SE-", "DJI"),
+            DronePattern("MINI2-", "DJI"),
+            DronePattern("MINI3-", "DJI"),
+            DronePattern("MINI4-", "DJI"),
             DronePattern("SPARK-", "DJI"),
             DronePattern("FPV-", "DJI"),
             DronePattern("AVATA-", "DJI"),
             DronePattern("AGRAS-", "DJI"),         // DJI Agras agricultural drones
             DronePattern("MATRICE-", "DJI"),       // DJI Matrice enterprise series
-            DronePattern("AIR-", "DJI"),           // DJI Air series
+            DronePattern("AIR 2S-", "DJI"),        // DJI Air 2S
+            DronePattern("AIR2-", "DJI"),          // DJI Air 2
             DronePattern("FLIP-", "DJI"),          // DJI Flip
-            DronePattern("NEO-", "DJI"),           // DJI Neo
+            DronePattern("DJI NEO-", "DJI"),       // DJI Neo
             // Skydio / Parrot / Autel
             DronePattern("SKYDIO-", "Skydio"),
             DronePattern("PARROT-", "Parrot"),
             DronePattern("ANAFI-", "Parrot"),
+            DronePattern("BEBOP-", "Parrot"),
+            DronePattern("DISCO-", "Parrot"),
+            DronePattern("ARDRONE-", "Parrot"),
             DronePattern("AUTEL-", "Autel"),
             DronePattern("EVO-", "Autel"),
             // HOVERAir (Zero Zero Robotics) - X1, X1 Pro, etc.
@@ -112,7 +118,7 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("X1PRO", "HOVERAir"),
             DronePattern("X1-PRO", "HOVERAir"),
             DronePattern("X1 PRO", "HOVERAir"),
-            DronePattern("HOVER-", "HOVERAir"),
+            // HOVER- removed: too generic, redundant with 8 more specific HOVER patterns above
             // Holy Stone
             DronePattern("HOLY", "Holy Stone"),
             DronePattern("HS-", "Holy Stone"),
@@ -131,10 +137,18 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("XIAOMI-", "Xiaomi"),
             DronePattern("YUNEEC-", "Yuneec"),
             DronePattern("TYPHOON-", "Yuneec"),
+            DronePattern("MANTIS-", "Yuneec"),
             DronePattern("WINGSLAND-", "Wingsland"),
             DronePattern("BETAFPV-", "BetaFPV"),
             DronePattern("GEPRC-", "GEPRC"),
             DronePattern("EMAX-", "EMAX"),
+            // Other brands
+            DronePattern("POWEREGG-", "PowerVision"),
+            DronePattern("DOBBY-", "ZEROTECH"),
+            DronePattern("SPLASHDRONE-", "Swellpro"),
+            DronePattern("CONTIXO-", "Contixo"),
+            DronePattern("SKYVIPER-", "Sky Viper"),
+            DronePattern("DROCON-", "Drocon"),
             // Enterprise / commercial
             DronePattern("FREEFLY-", "Freefly"),
             DronePattern("SENSEFLY-", "senseFly"),
@@ -143,11 +157,13 @@ class WifiDroneScanner @Inject constructor(
             // FPV and hobby brands
             DronePattern("IFLIGHT-", "iFlight"),
             DronePattern("FLYWOO-", "Flywoo"),
-            DronePattern("DIATONE-", "Diatone"),
+            // DIATONE- removed: frame manufacturer, no WiFi broadcasts
             DronePattern("WALKERA-", "Walkera"),
             DronePattern("BLADE-", "Blade"),
             DronePattern("CADDX-", "Caddx"),
-            DronePattern("TBS-", "TBS"),
+            DronePattern("WALKSNAIL-", "Walksnail"),
+            DronePattern("AVATAR-", "Walksnail"),
+            // TBS- removed: radio equipment, not WiFi hotspots
             DronePattern("RUNCAM-", "RunCam"),
             // Budget Chinese drones using "WiFi UAV" / generic FPV apps
             DronePattern("WIFI-UAV", "Generic"),
@@ -184,7 +200,7 @@ class WifiDroneScanner @Inject constructor(
     }
 
     /** Timestamps of recent scan requests for throttle enforcement. */
-    private val scanTimestamps = LinkedList<Long>()
+    private val scanTimestamps = java.util.concurrent.ConcurrentLinkedDeque<Long>()
 
     /** Partial state accumulators for ASTM F3411 WiFi Beacon Remote ID, keyed by BSSID. */
     private val wifiBeaconRidStates = mutableMapOf<String, OpenDroneIdParser.DronePartialState>()
@@ -255,8 +271,10 @@ class WifiDroneScanner @Inject constructor(
         val now = System.currentTimeMillis()
 
         // Remove scan timestamps outside the throttle window
-        while (scanTimestamps.isNotEmpty() && now - scanTimestamps.peek() > THROTTLE_WINDOW_MS) {
-            scanTimestamps.poll()
+        var oldest = scanTimestamps.peekFirst()
+        while (oldest != null && now - oldest > THROTTLE_WINDOW_MS) {
+            scanTimestamps.pollFirst()
+            oldest = scanTimestamps.peekFirst()
         }
 
         if (scanTimestamps.size >= MAX_SCANS_IN_WINDOW) {
@@ -350,7 +368,7 @@ class WifiDroneScanner @Inject constructor(
             beaconState.signalStrengthDbm = rssi
             if (WifiBeaconRemoteIdParser.parse(result, beaconState)) {
                 seenBssids.add(bssid)
-                beaconState.toDroneOrNull(idPrefix = "wfb_")?.let { drone ->
+                beaconState.toDroneOrNull(idPrefix = "wfb_", detectionSource = DetectionSource.WIFI_BEACON)?.let { drone ->
                     drones.add(drone.copy(
                         ssid = ssid.ifBlank { null },
                         bssid = bssid,
@@ -425,7 +443,7 @@ class WifiDroneScanner @Inject constructor(
         if (drones.isNotEmpty()) {
             Log.i(TAG, "Found ${drones.size} potential drone(s) via WiFi " +
                     "(${drones.count { it.confidence >= 0.85f }} DroneID, " +
-                    "${drones.count { it.source == DetectionSource.REMOTE_ID }} BeaconRID, " +
+                    "${drones.count { it.source == DetectionSource.WIFI_BEACON }} BeaconRID, " +
                     "${drones.count { it.confidence == 0.4f }} OUI, " +
                     "${drones.count { it.confidence == 0.3f }} SSID)")
         } else if (scanResults.isNotEmpty()) {

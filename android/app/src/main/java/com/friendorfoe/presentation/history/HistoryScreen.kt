@@ -248,6 +248,8 @@ private fun formatTime(epochMillis: Long): String {
 private fun detectionSourceInfo(source: String): Pair<ImageVector, String> = when (source.lowercase()) {
     "ads_b" -> Icons.Default.CellTower to "ADS-B"
     "remote_id" -> Icons.Default.Bluetooth to "RID"
+    "wifi_nan" -> Icons.Default.Wifi to "NaN"
+    "wifi_beacon" -> Icons.Default.Wifi to "Beacon"
     "wifi" -> Icons.Default.Wifi to "WiFi"
     else -> Icons.Default.CellTower to source
 }

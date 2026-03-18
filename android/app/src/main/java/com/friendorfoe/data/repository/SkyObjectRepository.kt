@@ -68,7 +68,7 @@ class SkyObjectRepository @Inject constructor(
 
     data class TrailPoint(val lat: Double, val lon: Double, val altM: Double, val timestamp: Instant)
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var collectionJob: Job? = null
     private val isRunning = AtomicBoolean(false)
 
@@ -118,6 +118,7 @@ class SkyObjectRepository @Inject constructor(
             updatePosition(latitude, longitude)
             return
         }
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         userLatitude = latitude
         userLongitude = longitude
         Log.i(TAG, "Starting all detection sources at ($latitude, $longitude)")
@@ -153,6 +154,7 @@ class SkyObjectRepository @Inject constructor(
         persistedObjectIds.clear()
         positionTrails.clear()
         _skyObjects.value = emptyList()
+        scope.cancel()
 
         Log.i(TAG, "All detection sources stopped")
     }
@@ -226,7 +228,7 @@ class SkyObjectRepository @Inject constructor(
      */
     private suspend fun collectWifi() {
         wifiDroneScanner.startScanning().collect { drone ->
-            if (drone.source == DetectionSource.REMOTE_ID) {
+            if (drone.source == DetectionSource.WIFI_BEACON) {
                 synchronized(remoteIdObjects) {
                     remoteIdObjects[drone.id] = drone
                 }
