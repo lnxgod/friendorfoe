@@ -97,3 +97,69 @@ class HealthResponse(BaseModel):
     version: str = "0.1.0"
     redis: str = "unknown"
     database: str = "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Drone detections (ESP32 sensor ingestion)
+# ---------------------------------------------------------------------------
+
+class DroneDetectionItem(BaseModel):
+    """A single drone detection from an ESP32 sensor node."""
+
+    drone_id: str = Field(..., description="Drone serial number or generated identifier")
+    source: str = Field(
+        ...,
+        description="Detection source: ble_rid, wifi_ssid, wifi_dji_ie, wifi_beacon_rid, wifi_oui",
+    )
+    confidence: float = Field(ge=0.0, le=1.0, description="Raw detection confidence 0.0-1.0")
+    latitude: float | None = Field(None, description="Drone latitude (WGS84 degrees)")
+    longitude: float | None = Field(None, description="Drone longitude (WGS84 degrees)")
+    altitude_m: float | None = Field(None, description="Altitude in meters MSL")
+    heading_deg: float | None = Field(None, description="Heading 0-360 degrees true north")
+    speed_mps: float | None = Field(None, description="Ground speed in m/s")
+    rssi: int | None = Field(None, description="Signal strength in dBm")
+    manufacturer: str | None = Field(None, description="Drone manufacturer (e.g. DJI, Skydio)")
+    model: str | None = Field(None, description="Drone model name")
+    operator_lat: float | None = Field(None, description="Operator latitude (WGS84 degrees)")
+    operator_lon: float | None = Field(None, description="Operator longitude (WGS84 degrees)")
+    operator_id: str | None = Field(None, description="Operator registration ID")
+    ssid: str | None = Field(None, description="WiFi SSID if detected via WiFi")
+    bssid: str | None = Field(None, description="WiFi BSSID (MAC address)")
+
+
+class DroneDetectionBatch(BaseModel):
+    """Batch of drone detections from a single ESP32 sensor node."""
+
+    device_id: str = Field(..., description="Unique identifier for the ESP32 sensor device")
+    device_lat: float | None = Field(None, description="Sensor device latitude")
+    device_lon: float | None = Field(None, description="Sensor device longitude")
+    device_alt: float | None = Field(None, description="Sensor device altitude in meters")
+    timestamp: int = Field(..., description="Batch timestamp (epoch seconds)")
+    detections: list[DroneDetectionItem] = Field(
+        ..., description="List of drone detections in this batch"
+    )
+
+
+class DroneDetectionResponse(BaseModel):
+    """Response for POST /detections/drones."""
+
+    status: str = "ok"
+    accepted: int = Field(..., description="Number of detections accepted")
+    device_id: str = Field(..., description="Echo of the submitting device ID")
+
+
+class StoredDetection(DroneDetectionItem):
+    """A detection stored in the ring buffer with ingestion metadata."""
+
+    device_id: str = Field(..., description="Source device ID")
+    device_lat: float | None = Field(None, description="Source device latitude")
+    device_lon: float | None = Field(None, description="Source device longitude")
+    received_at: float = Field(..., description="Server receive timestamp (epoch seconds)")
+
+
+class RecentDetectionsResponse(BaseModel):
+    """Response for GET /detections/drones/recent."""
+
+    count: int = Field(..., description="Number of detections returned")
+    max_stored: int = Field(..., description="Maximum ring buffer capacity")
+    detections: list[StoredDetection] = Field(default_factory=list)

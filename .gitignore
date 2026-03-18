@@ -23,6 +23,10 @@ __pycache__/
 .venv/
 venv/
 
+# ESP32 / PlatformIO
+.pio/
+esp32/web-flasher/firmware/**/*.bin
+
 # IDE
 .idea/
 .vscode/

@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from app.cache import close_redis, redis_ping
 from app.config import settings
 from app.models.schemas import HealthResponse
-from app.routers import aircraft
+from app.routers import aircraft, detections
 
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
@@ -50,6 +50,7 @@ async def log_requests(request: Request, call_next):
 # Routers
 # ---------------------------------------------------------------------------
 app.include_router(aircraft.router)
+app.include_router(detections.router)
 
 
 # ---------------------------------------------------------------------------
