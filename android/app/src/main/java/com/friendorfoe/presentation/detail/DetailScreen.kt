@@ -390,6 +390,8 @@ internal fun DroneDetailContent(
             drone.uaTypeLabel()?.let { label ->
                 DetailRow("UA Type", label)
             }
+            drone.selfIdText?.let { DetailRow("Self-ID", it) }
+            drone.idTypeLabel()?.let { DetailRow("ID Type", it) }
         }
 
         // Position section
@@ -406,6 +408,35 @@ internal fun DroneDetailContent(
 
                 drone.position.speedMps?.let { speed ->
                     DetailRow("Speed", "${speed.roundToInt()} m/s")
+                }
+
+                drone.geodeticAltitudeMeters?.let { geoAlt ->
+                    val geoAltFeet = (geoAlt * 3.281).roundToInt()
+                    if (geoAltFeet != (drone.position.altitudeMeters * 3.281).roundToInt()) {
+                        DetailRow("Geodetic Alt", "$geoAltFeet ft (${geoAlt.roundToInt()} m)")
+                    }
+                }
+
+                drone.heightAglMeters?.let { agl ->
+                    val aglFeet = (agl * 3.281).roundToInt()
+                    DetailRow("Height AGL", "$aglFeet ft (${agl.roundToInt()} m)")
+                }
+
+                drone.verticalSpeedMps?.let { vs ->
+                    val arrow = when {
+                        vs > 0.25f -> "\u2191"   // up arrow
+                        vs < -0.25f -> "\u2193"  // down arrow
+                        else -> "\u2194"          // level
+                    }
+                    DetailRow("Vertical Speed", "$arrow ${"%.1f".format(vs)} m/s")
+                }
+
+                drone.horizontalAccuracyMeters?.let { acc ->
+                    DetailRow("H. Accuracy", "\u00B1 ${"%.0f".format(acc)} m")
+                }
+
+                drone.verticalAccuracyMeters?.let { acc ->
+                    DetailRow("V. Accuracy", "\u00B1 ${"%.0f".format(acc)} m")
                 }
             } else {
                 DetailRow("GPS Position", "Not available")
@@ -562,6 +593,8 @@ internal fun DroneDetailContent(
                     DetailRow("Drone ID", candidate.droneId.take(16))
                     val sourceLabel = when (candidate.source) {
                         DetectionSource.REMOTE_ID -> "BLE"
+                        DetectionSource.WIFI_NAN -> "NaN"
+                        DetectionSource.WIFI_BEACON -> "Beacon"
                         DetectionSource.WIFI -> "WiFi"
                         else -> candidate.source.name
                     }
@@ -722,6 +755,8 @@ private fun DroneHeader(drone: Drone) {
                 Text(
                     text = when (drone.source) {
                         DetectionSource.REMOTE_ID -> "Remote ID (BLE)"
+                        DetectionSource.WIFI_NAN -> "Remote ID (NaN)"
+                        DetectionSource.WIFI_BEACON -> "Remote ID (Beacon)"
                         DetectionSource.WIFI -> "WiFi Detection"
                         else -> drone.source.name
                     },
@@ -962,6 +997,8 @@ private fun DetectionSourceBadge(
                 text = when (source) {
                     DetectionSource.ADS_B -> "ADS-B Transponder"
                     DetectionSource.REMOTE_ID -> "FAA Remote ID (BLE)"
+                    DetectionSource.WIFI_NAN -> "FAA Remote ID (WiFi NaN)"
+                    DetectionSource.WIFI_BEACON -> "FAA Remote ID (WiFi Beacon)"
                     DetectionSource.WIFI -> "WiFi SSID Pattern"
                 },
                 style = MaterialTheme.typography.bodyMedium,

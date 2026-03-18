@@ -25,11 +25,13 @@ object DatabaseModule {
     }
 
     @Provides
+    @Singleton
     fun provideHistoryDao(database: FriendOrFoeDatabase): HistoryDao {
         return database.historyDao()
     }
 
     @Provides
+    @Singleton
     fun provideTrackingDao(database: FriendOrFoeDatabase): TrackingDao {
         return database.trackingDao()
     }

@@ -156,6 +156,7 @@ object DjiDroneIdParser {
 
     /** Read a signed 32-bit little-endian integer at the given offset. */
     private fun readInt32LE(data: ByteArray, offset: Int): Int {
+        if (offset + 3 >= data.size) return 0
         return (data[offset].toInt() and 0xFF) or
                 ((data[offset + 1].toInt() and 0xFF) shl 8) or
                 ((data[offset + 2].toInt() and 0xFF) shl 16) or
@@ -164,6 +165,7 @@ object DjiDroneIdParser {
 
     /** Read a signed 16-bit little-endian integer at the given offset. */
     private fun readInt16LE(data: ByteArray, offset: Int): Int {
+        if (offset + 1 >= data.size) return 0
         val value = (data[offset].toInt() and 0xFF) or
                 ((data[offset + 1].toInt() and 0xFF) shl 8)
         // Sign extend from 16-bit
@@ -172,6 +174,7 @@ object DjiDroneIdParser {
 
     /** Read an unsigned 16-bit little-endian integer at the given offset. */
     private fun readUInt16LE(data: ByteArray, offset: Int): Int {
+        if (offset + 1 >= data.size) return 0
         return (data[offset].toInt() and 0xFF) or
                 ((data[offset + 1].toInt() and 0xFF) shl 8)
     }

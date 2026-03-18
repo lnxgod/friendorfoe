@@ -275,5 +275,7 @@ private fun formatDistance(distanceMeters: Double?): String {
 private fun detectionSourceIcon(source: DetectionSource): ImageVector = when (source) {
     DetectionSource.ADS_B -> Icons.Default.CellTower
     DetectionSource.REMOTE_ID -> Icons.Default.Bluetooth
+    DetectionSource.WIFI_NAN -> Icons.Default.Wifi
+    DetectionSource.WIFI_BEACON -> Icons.Default.Wifi
     DetectionSource.WIFI -> Icons.Default.Wifi
 }

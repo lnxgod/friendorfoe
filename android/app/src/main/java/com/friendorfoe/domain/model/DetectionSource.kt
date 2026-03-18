@@ -15,6 +15,12 @@ enum class DetectionSource {
     /** FAA Remote ID via BLE (ASTM F3411) */
     REMOTE_ID,
 
+    /** FAA Remote ID via WiFi Aware (NaN) */
+    WIFI_NAN,
+
+    /** FAA Remote ID via WiFi Beacon vendor IE */
+    WIFI_BEACON,
+
     /** WiFi SSID pattern matching (e.g., DJI-*, TELLO-*) */
     WIFI
 }

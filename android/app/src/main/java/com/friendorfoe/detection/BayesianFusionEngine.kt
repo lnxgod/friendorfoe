@@ -51,6 +51,8 @@ class BayesianFusionEngine @Inject constructor() {
          */
         private val SENSOR_LIKELIHOOD_RATIOS = mapOf(
             DetectionSource.REMOTE_ID to 50.0,   // Very reliable, few false positives
+            DetectionSource.WIFI_NAN to 50.0,     // WiFi NaN Remote ID, same reliability as BLE
+            DetectionSource.WIFI_BEACON to 50.0,  // WiFi Beacon Remote ID, same reliability as BLE
             DetectionSource.ADS_B to 100.0,       // Extremely reliable (transponder data)
             DetectionSource.WIFI to 3.0           // SSID matching has false positives
         )
@@ -65,6 +67,9 @@ class BayesianFusionEngine @Inject constructor() {
         private val NEGATIVE_EVIDENCE_RATIOS = mapOf(
             DetectionSource.WIFI to 0.9            // WiFi off or out of range
         )
+
+        /** Maximum number of tracked candidates before forced eviction */
+        private const val MAX_BELIEF_STATES = 500
     }
 
     /** Belief state per candidate ID: log-odds of being a real drone */
@@ -193,6 +198,17 @@ class BayesianFusionEngine @Inject constructor() {
             Duration.between(state.lastUpdate, now) > maxAge
         }.keys
         expiredKeys.forEach { beliefStates.remove(it) }
+
+        // Safety cap: evict oldest if over limit
+        if (beliefStates.size > MAX_BELIEF_STATES) {
+            val excess = beliefStates.size - MAX_BELIEF_STATES
+            beliefStates.entries
+                .sortedBy { it.value.lastUpdate }
+                .take(excess)
+                .map { it.key }
+                .forEach { beliefStates.remove(it) }
+            Log.d(TAG, "Evicted $excess oldest belief states (cap=$MAX_BELIEF_STATES)")
+        }
     }
 
     /** Reset all belief states. */
@@ -207,6 +223,8 @@ class BayesianFusionEngine @Inject constructor() {
     private fun sourceReliabilityRank(source: DetectionSource): Int = when (source) {
         DetectionSource.ADS_B -> 5
         DetectionSource.REMOTE_ID -> 4
+        DetectionSource.WIFI_NAN -> 4
+        DetectionSource.WIFI_BEACON -> 4
         DetectionSource.WIFI -> 2
     }
 

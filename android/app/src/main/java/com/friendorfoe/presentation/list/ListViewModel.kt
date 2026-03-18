@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
 /**
@@ -60,7 +61,7 @@ class ListViewModel @Inject constructor(
     )
     val userPosition: StateFlow<Position> = _userPosition.asStateFlow()
 
-    private var locationStarted = false
+    private val locationStarted = AtomicBoolean(false)
     private var scanningStarted = false
 
     private val locationListener = object : LocationListener {
@@ -87,8 +88,7 @@ class ListViewModel @Inject constructor(
 
     @SuppressLint("MissingPermission")
     fun startLocationUpdates() {
-        if (locationStarted) return
-        locationStarted = true
+        if (locationStarted.getAndSet(true)) return
 
         try {
             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
@@ -123,8 +123,7 @@ class ListViewModel @Inject constructor(
     }
 
     fun stopLocationUpdates() {
-        if (!locationStarted) return
-        locationStarted = false
+        if (!locationStarted.getAndSet(false)) return
         try {
             locationManager.removeUpdates(locationListener)
         } catch (e: SecurityException) {

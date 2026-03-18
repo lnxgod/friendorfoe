@@ -50,8 +50,24 @@ data class Drone(
     val frequencyMhz: Int? = null,
     val channelWidthMhz: Int? = null,
     val operatorId: String? = null,
-    val uaType: Int? = null
+    val uaType: Int? = null,
+    val selfIdText: String? = null,
+    val verticalSpeedMps: Float? = null,
+    val heightAglMeters: Double? = null,
+    val geodeticAltitudeMeters: Double? = null,
+    val horizontalAccuracyMeters: Float? = null,
+    val verticalAccuracyMeters: Float? = null,
+    val idType: Int? = null
 ) : SkyObject() {
+
+    fun idTypeLabel(): String? = when (idType) {
+        0 -> "None"
+        1 -> "Serial Number (ANSI/CTA-2063-A)"
+        2 -> "CAA Registration ID"
+        3 -> "UTM (USS) Assigned ID"
+        4 -> "Specific Session ID"
+        else -> null
+    }
 
     fun uaTypeLabel(): String? = when (uaType) {
         0 -> "None/Unknown"
@@ -78,6 +94,8 @@ data class Drone(
         val alt = "${(position.altitudeMeters * 3.281).toInt()}ft"
         val suffix = when {
             source == DetectionSource.WIFI && confidence < 0.5f -> " ?"
+            source == DetectionSource.WIFI_NAN -> ""
+            source == DetectionSource.WIFI_BEACON -> ""
             else -> ""
         }
         return "$name $alt$suffix"
@@ -91,6 +109,8 @@ data class Drone(
         }
         val sourceLabel = when (source) {
             DetectionSource.REMOTE_ID -> "Remote ID"
+            DetectionSource.WIFI_NAN -> "Remote ID (NaN)"
+            DetectionSource.WIFI_BEACON -> "Remote ID (Beacon)"
             DetectionSource.WIFI -> "WiFi (low confidence)"
             else -> source.name
         }

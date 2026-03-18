@@ -6,6 +6,7 @@ import com.friendorfoe.data.repository.DataSource
 import com.friendorfoe.data.repository.FetchException
 import com.friendorfoe.domain.model.Aircraft
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -58,7 +59,7 @@ class AdsbPoller @Inject constructor(
         private const val DEFAULT_RADIUS_NM = 50
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollingJob: Job? = null
 
     private val _aircraft = MutableSharedFlow<List<Aircraft>>(replay = 1)
@@ -72,6 +73,7 @@ class AdsbPoller @Inject constructor(
 
     fun start(latitude: Double, longitude: Double) {
         stop()
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         Log.i(TAG, "Starting ADS-B polling at ($latitude, $longitude)")
 
@@ -184,6 +186,7 @@ class AdsbPoller @Inject constructor(
     fun stop() {
         pollingJob?.cancel()
         pollingJob = null
+        scope.cancel()
         Log.i(TAG, "ADS-B polling stopped")
     }
 

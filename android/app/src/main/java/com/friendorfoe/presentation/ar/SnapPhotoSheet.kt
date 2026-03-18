@@ -374,7 +374,7 @@ fun capturePhotoToGallery(
     context: Context,
     imageCapture: ImageCapture,
     label: String,
-    onComplete: (Boolean) -> Unit
+    onComplete: (android.net.Uri?) -> Unit
 ) {
     val timestamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
         .format(java.util.Date())
@@ -400,13 +400,13 @@ fun capturePhotoToGallery(
             override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                 Log.d("SnapPhotoSheet", "Photo saved: ${output.savedUri}")
                 Toast.makeText(context, "Photo saved to FriendOrFoe album", Toast.LENGTH_SHORT).show()
-                onComplete(true)
+                onComplete(output.savedUri)
             }
 
             override fun onError(exception: ImageCaptureException) {
                 Log.e("SnapPhotoSheet", "Photo capture failed", exception)
                 Toast.makeText(context, "Photo capture failed", Toast.LENGTH_SHORT).show()
-                onComplete(false)
+                onComplete(null)
             }
         }
     )
