@@ -4,6 +4,48 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0-beta] - 2026-03-17
+
+### Added
+- Always-visible floating zoom +/- buttons on AR screen right edge
+- Take Photo button captures full-resolution image to gallery
+- Share confirmation bar with Android share sheet integration
+- capturePhotoToGallery now returns saved URI for sharing
+- ~75 new drone reference photos
+
+### Fixed
+- BLE scanner not stopped in RemoteIdScanner.stopScanning()
+- Bounds checks in OpenDroneIdParser and DjiDroneIdParser
+- ImageProxy not closed on exception in VisualDetectionAnalyzer
+- Thread-unsafe LinkedList replaced with ConcurrentLinkedDeque in WifiDroneScanner
+- Coroutine scope leaks in AdsbPoller and SkyObjectRepository
+- Missing synchronized blocks for DronePartialState mutations
+- ListViewModel.locationStarted race condition (now AtomicBoolean)
+- DAO providers missing @Singleton in DatabaseModule
+- BayesianFusionEngine beliefStates unbounded growth (capped at 500)
+
+## [0.6.0-beta] - 2026-03-16
+
+### Added
+- 49 new drones across consumer 2024-25, budget/toy, enterprise, and military/defense categories
+- 12 new WiFi SSID patterns for SIMREX, Neheme, AOVO, TENSSENX, Freefly, senseFly, Wingcopter, Flyability, DJI Flip/Neo
+- Visual shape classification using bounding box aspect ratio and motion history (quad vs fixed-wing hints)
+- WiFi beacon Remote ID parser
+- Airline lookup and ICAO country code display
+- WiFi channel utility for drone frequency detection
+
+### Changed
+- Visual detection tags now show shape hints ("DRONE? quad", "DRONE? fw")
+- Mark CI releases as full releases instead of prerelease
+
+## [0.5.1-beta] - 2026-03-15
+
+### Fixed
+- ADS-B silent failure in release builds: ProGuard was stripping Gson/Retrofit response classes, causing null deserialization and 0 aircraft displayed
+
+### Added
+- Combined Reference Guide screen with tabbed Aircraft (138) and Drones (52) view, replacing drone-only entry point
+
 ## [0.5.0-beta] - 2026-03-15
 
 ### Added
@@ -81,6 +123,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - List view with sortable columns
 - Bottom navigation (AR, Map, List, History, About)
 
+[0.7.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.7.0-beta
+[0.6.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.6.0-beta
+[0.5.1-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.5.1-beta
 [0.5.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.5.0-beta
 [0.4.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.4.0-beta
 [0.3.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.3.0-beta
