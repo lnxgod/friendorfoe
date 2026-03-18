@@ -119,7 +119,7 @@ static bool handle_set_command(const char *line)
     /* Find the '=' separator */
     const char *eq = strchr(payload, '=');
     if (!eq || eq == payload) {
-        char msg[64];
+        char msg[96];
         snprintf(msg, sizeof(msg), "%smalformed command\n", RESP_ERROR);
         send_response(msg);
         return false;
@@ -129,7 +129,7 @@ static bool handle_set_command(const char *line)
     int key_len = eq - payload;
     char key[32] = {0};
     if (key_len >= (int)sizeof(key)) {
-        char msg[64];
+        char msg[96];
         snprintf(msg, sizeof(msg), "%skey too long\n", RESP_ERROR);
         send_response(msg);
         return false;
@@ -139,7 +139,7 @@ static bool handle_set_command(const char *line)
 
     /* Validate key */
     if (!is_allowed_key(key)) {
-        char msg[64];
+        char msg[96];
         snprintf(msg, sizeof(msg), "%sunknown key '%s'\n", RESP_ERROR, key);
         send_response(msg);
         return false;
@@ -150,14 +150,14 @@ static bool handle_set_command(const char *line)
 
     /* Write to NVS */
     if (nvs_config_set_string(key, value)) {
-        char msg[64];
+        char msg[96];
         snprintf(msg, sizeof(msg), "%s%s\n", RESP_OK, key);
         send_response(msg);
         ESP_LOGI(TAG, "Set %s = %s", key,
                  strcmp(key, "wifi_pass") == 0 ? "****" : value);
         return true;
     } else {
-        char msg[64];
+        char msg[96];
         snprintf(msg, sizeof(msg), "%sNVS write failed for '%s'\n",
                  RESP_ERROR, key);
         send_response(msg);
@@ -195,7 +195,7 @@ bool serial_config_listen(int timeout_ms)
             ESP_LOGI(TAG, "Configuration saved to NVS");
             break;
         } else if (strlen(line) > 0) {
-            char msg[64];
+            char msg[96];
             snprintf(msg, sizeof(msg), "%sunknown command\n", RESP_ERROR);
             send_response(msg);
         }
