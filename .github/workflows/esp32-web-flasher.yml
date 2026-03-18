@@ -1,0 +1,105 @@
+name: ESP32 Web Flasher
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'esp32/**'
+      - '.github/workflows/esp32-web-flasher.yml'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# Only allow one Pages deploy at a time
+concurrency:
+  group: esp32-web-flasher
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-pio-${{ hashFiles('esp32/scanner/platformio.ini', 'esp32/uplink/platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-pio-
+
+      - name: Build Scanner firmware (ESP32-S3)
+        run: cd esp32/scanner && pio run
+
+      - name: Build Uplink firmware (ESP32-C3)
+        run: cd esp32/uplink && pio run
+
+      - name: Assemble web flasher site
+        run: |
+          mkdir -p _site/firmware/scanner _site/firmware/uplink
+
+          # Copy web flasher static files
+          cp esp32/web-flasher/index.html _site/
+          cp esp32/web-flasher/manifest-scanner.json _site/
+          cp esp32/web-flasher/manifest-uplink.json _site/
+
+          # Copy scanner firmware binaries
+          cp esp32/scanner/.pio/build/scanner/bootloader.bin _site/firmware/scanner/
+          cp esp32/scanner/.pio/build/scanner/partitions.bin _site/firmware/scanner/partition-table.bin
+          cp esp32/scanner/.pio/build/scanner/firmware.bin _site/firmware/scanner/
+
+          # Copy uplink firmware binaries
+          cp esp32/uplink/.pio/build/uplink/bootloader.bin _site/firmware/uplink/
+          cp esp32/uplink/.pio/build/uplink/partitions.bin _site/firmware/uplink/partition-table.bin
+          cp esp32/uplink/.pio/build/uplink/firmware.bin _site/firmware/uplink/
+
+          echo "=== Site contents ==="
+          find _site -type f -exec ls -lh {} \;
+
+      - name: Upload firmware to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=${{ github.event.release.tag_name }}
+
+          # Package scanner firmware
+          cd _site/firmware/scanner
+          tar czf /tmp/scanner-firmware-${TAG}.tar.gz *.bin
+          cd -
+
+          # Package uplink firmware
+          cd _site/firmware/uplink
+          tar czf /tmp/uplink-firmware-${TAG}.tar.gz *.bin
+          cd -
+
+          # Attach to release
+          gh release upload "$TAG" \
+            /tmp/scanner-firmware-${TAG}.tar.gz \
+            /tmp/uplink-firmware-${TAG}.tar.gz \
+            --clobber
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
