@@ -24,6 +24,7 @@
 /* Core */
 #include "config.h"
 #include "nvs_config.h"
+#include "serial_config.h"
 #include "detection_types.h"
 
 /* Comms */
@@ -117,6 +118,9 @@ void app_main(void)
 
     /* ── 2. Initialize NVS configuration ──────────────────────────────── */
     nvs_config_init();
+
+    /* ── 2b. Serial config window (web flasher sends config here) ──── */
+    serial_config_listen(3000);
 
     /* ── 3. Create default event loop ─────────────────────────────────── */
     ESP_ERROR_CHECK(esp_event_loop_create_default());

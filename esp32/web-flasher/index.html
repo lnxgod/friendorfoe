@@ -67,6 +67,7 @@
       color: var(--accent-green);
       font-weight: bold;
     }
+    .flash-card.no-config { border-color: var(--accent-green); border-style: dashed; }
 
     esp-web-install-button {
       display: block;
@@ -159,6 +160,94 @@
       font-weight: 700;
       font-size: 0.85rem;
     }
+
+    /* ── Config form ──────────────────────────────────────────────────── */
+    .config-section {
+      background: var(--surface);
+      border: 2px solid var(--accent);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+    }
+    .config-section h2 {
+      margin-top: 0;
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+    .config-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    @media (max-width: 640px) {
+      .config-grid { grid-template-columns: 1fr; }
+    }
+    .field { display: flex; flex-direction: column; }
+    .field label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+      font-weight: 600;
+    }
+    .field input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.6rem 0.75rem;
+      color: var(--text);
+      font-size: 0.95rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .field input:focus { border-color: var(--accent); }
+    .field input::placeholder { color: #484f58; }
+    .field .hint { font-size: 0.75rem; color: #484f58; margin-top: 0.2rem; }
+
+    .config-actions {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .btn-config {
+      background: var(--accent-green);
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      padding: 0.75rem 2rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .btn-config:hover { opacity: 0.85; }
+    .btn-config:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #config-status {
+      font-size: 0.9rem;
+      min-height: 1.4rem;
+    }
+    .status-ok { color: var(--accent-green); }
+    .status-err { color: var(--accent-red); }
+    .status-busy { color: var(--accent-orange); }
+
+    #config-log {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.8rem;
+      line-height: 1.5;
+      max-height: 150px;
+      overflow-y: auto;
+      display: none;
+      margin-top: 0.75rem;
+      color: var(--text-muted);
+    }
+    #config-log.visible { display: block; }
   </style>
 </head>
 <body>
@@ -171,11 +260,13 @@
       (version 89+). Firefox and Safari are not supported.
     </div>
 
-    <!-- Flash Cards -->
+    <!-- ── Step 1: Flash ──────────────────────────────────────────────── -->
+    <h2>Step 1 — Flash Firmware</h2>
+
     <div class="flash-cards">
-      <div class="flash-card">
+      <div class="flash-card no-config">
         <h3>Scanner Board</h3>
-        <div class="chip">ESP32-S3-DevKitC-1</div>
+        <div class="chip">ESP32-S3-DevKitC-1 — no configuration needed</div>
         <ul>
           <li>BLE Remote ID (ASTM F3411)</li>
           <li>WiFi promiscuous capture</li>
@@ -187,11 +278,11 @@
           <button slot="activate">Flash Scanner Firmware</button>
           <span slot="not-allowed">Your browser does not support Web Serial</span>
         </esp-web-install-button>
-        <div class="desc">Connect your ESP32-S3 via USB, then click to flash.</div>
+        <div class="desc">Connect your ESP32-S3 via USB, then click to flash. That's it.</div>
       </div>
       <div class="flash-card">
         <h3>Uplink Board</h3>
-        <div class="chip">ESP32-C3-DevKitM-1</div>
+        <div class="chip">ESP32-C3-DevKitM-1 — needs WiFi config (Step 2)</div>
         <ul>
           <li>WiFi STA + backend upload</li>
           <li>GPS NMEA parsing</li>
@@ -203,17 +294,50 @@
           <button slot="activate">Flash Uplink Firmware</button>
           <span slot="not-allowed">Your browser does not support Web Serial</span>
         </esp-web-install-button>
-        <div class="desc">Connect your ESP32-C3 via USB, then click to flash.</div>
+        <div class="desc">Flash first, then configure WiFi in Step 2 below.</div>
       </div>
     </div>
 
-    <div class="info">
-      <strong>Ready to flash:</strong> Firmware binaries are built automatically and served from this page.
-      Just plug in your board and click the button above. If you're running this page locally,
-      run <code>build.sh</code> first to compile the firmware from source.
+    <!-- ── Step 2: Configure Uplink ───────────────────────────────────── -->
+    <div class="config-section">
+      <h2>Step 2 — Configure Uplink</h2>
+      <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
+        After flashing the Uplink board, keep it plugged in via USB and fill in your settings below.
+        The configurator writes directly to the board's flash memory over serial.
+      </p>
+
+      <div class="config-grid">
+        <div class="field">
+          <label for="cfg-ssid">WiFi Network Name</label>
+          <input type="text" id="cfg-ssid" placeholder="MyHomeWiFi" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="cfg-pass">WiFi Password</label>
+          <input type="password" id="cfg-pass" placeholder="password" autocomplete="off" />
+          <div class="hint">Stored on the ESP32 only — never sent to any server.</div>
+        </div>
+        <div class="field">
+          <label for="cfg-backend">Backend URL</label>
+          <input type="text" id="cfg-backend" placeholder="http://192.168.1.100:8000" value="http://192.168.1.100:8000" />
+          <div class="hint">Your Friend or Foe backend server address.</div>
+        </div>
+        <div class="field">
+          <label for="cfg-device">Device ID</label>
+          <input type="text" id="cfg-device" placeholder="fof_esp32_001" value="fof_esp32_001" />
+          <div class="hint">Unique name for this sensor node.</div>
+        </div>
+      </div>
+
+      <div class="config-actions">
+        <button class="btn-config" id="btn-send-config" onclick="sendConfig()">
+          Send Configuration to Board
+        </button>
+        <span id="config-status"></span>
+      </div>
+      <div id="config-log"></div>
     </div>
 
-    <!-- Architecture Diagram -->
+    <!-- ── Architecture ───────────────────────────────────────────────── -->
     <h2>System Architecture</h2>
     <div class="arch-diagram">
 +---------------------------+   UART 921600   +---------------------------+
@@ -232,27 +356,27 @@
                                                |  drones           |
                                                +-------------------+</div>
 
-    <!-- Instructions -->
+    <!-- ── Quick Start ────────────────────────────────────────────────── -->
     <h2>Quick Start</h2>
     <ol class="steps">
       <li>
         <strong>Get the hardware</strong> — ESP32-S3 (scanner) + ESP32-C3 (uplink) + GPS module + OLED display.
-        See <a href="../INSTALL.md">INSTALL.md</a> for the full BOM (~$25-40 total).
+        See <a href="https://github.com/lnxgod/friendorfoe/blob/main/esp32/INSTALL.md">INSTALL.md</a> for the full BOM (~$25-40 total).
       </li>
       <li>
         <strong>Flash the Scanner</strong> — connect the ESP32-S3 via USB, click "Flash Scanner Firmware" above.
-        The flasher auto-detects the S3 chip and writes the firmware.
+        No configuration needed — it auto-starts scanning.
       </li>
       <li>
         <strong>Flash the Uplink</strong> — disconnect the S3, connect the ESP32-C3, click "Flash Uplink Firmware".
       </li>
       <li>
-        <strong>Wire the boards</strong> — connect TX/RX/GND between Scanner and Uplink, attach GPS and OLED to the Uplink.
-        See the <a href="../INSTALL.md">wiring diagram</a> for pin assignments.
+        <strong>Configure the Uplink</strong> — with the C3 still plugged in, fill in WiFi and backend settings
+        in Step 2 above and click "Send Configuration to Board". Settings are saved to flash.
       </li>
       <li>
-        <strong>Configure WiFi</strong> — edit <code>config.h</code> before building, or use the serial console
-        to set WiFi credentials and backend URL via NVS (future feature).
+        <strong>Wire the boards</strong> — connect TX/RX/GND between Scanner and Uplink, attach GPS and OLED to the Uplink.
+        See the <a href="https://github.com/lnxgod/friendorfoe/blob/main/esp32/INSTALL.md">wiring diagram</a> for pin assignments.
       </li>
       <li>
         <strong>Power on</strong> — both boards via USB or a shared 5V supply. The OLED will show connection status,
@@ -286,8 +410,9 @@ Uplink ESP32-C3 Peripherals:
       to your ESP32 over USB — no installs, no toolchain, no command line.
     </p>
     <p>
-      Web Serial requires <strong>HTTPS</strong> (GitHub Pages provides this) or <code>localhost</code>.
-      For local development: <code>cd esp32/web-flasher && python3 -m http.server 8080</code>
+      The configuration step also uses the browser's serial connection to write your WiFi credentials
+      and backend URL directly to the ESP32's flash memory. <strong>Your credentials never leave your browser</strong>
+      — they go straight to the board over USB.
     </p>
 
     <h2>Troubleshooting</h2>
@@ -295,6 +420,7 @@ Uplink ESP32-C3 Peripherals:
       <li><strong>"No compatible device found"</strong> — make sure you're using a data-capable USB cable (not charge-only).</li>
       <li><strong>"Failed to connect"</strong> — hold the BOOT button on the ESP32 board while clicking flash, then release after connection starts.</li>
       <li><strong>Button says "Not supported"</strong> — switch to Chrome or Edge. Firefox and Safari do not support Web Serial.</li>
+      <li><strong>Config says "No response"</strong> — press the RST button on the C3 board, then quickly click "Send Configuration". The board waits 3 seconds for config at boot.</li>
       <li><strong>Firmware files missing</strong> — the CI may not have run yet. Check <a href="https://github.com/lnxgod/friendorfoe/actions">Actions</a> or download from <a href="https://github.com/lnxgod/friendorfoe/releases">Releases</a>.</li>
     </ul>
 
@@ -305,5 +431,182 @@ Uplink ESP32-C3 Peripherals:
       &mdash; <a href="https://github.com/lnxgod/friendorfoe">GitHub</a>
     </p>
   </div>
+
+  <script>
+    // ── Web Serial configuration writer ──────────────────────────────────
+
+    const statusEl = () => document.getElementById('config-status');
+    const logEl = () => document.getElementById('config-log');
+
+    function setStatus(msg, cls) {
+      const el = statusEl();
+      el.textContent = msg;
+      el.className = cls || '';
+    }
+
+    function appendLog(msg) {
+      const el = logEl();
+      el.classList.add('visible');
+      el.textContent += msg + '\n';
+      el.scrollTop = el.scrollHeight;
+    }
+
+    async function sendConfig() {
+      const ssid = document.getElementById('cfg-ssid').value.trim();
+      const pass = document.getElementById('cfg-pass').value;
+      const backend = document.getElementById('cfg-backend').value.trim();
+      const deviceId = document.getElementById('cfg-device').value.trim();
+
+      // Validation
+      if (!ssid) {
+        setStatus('WiFi network name is required.', 'status-err');
+        document.getElementById('cfg-ssid').focus();
+        return;
+      }
+
+      const btn = document.getElementById('btn-send-config');
+      btn.disabled = true;
+      logEl().textContent = '';
+      logEl().classList.add('visible');
+
+      let port = null;
+      let reader = null;
+
+      try {
+        setStatus('Select the ESP32-C3 serial port...', 'status-busy');
+
+        // Request serial port
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 921600 });
+
+        appendLog('Serial port opened at 921600 baud');
+        setStatus('Connecting to board... Press RST if needed.', 'status-busy');
+
+        // Set up reader for responses
+        const decoder = new TextDecoderStream();
+        const readableStreamClosed = port.readable.pipeTo(decoder.writable);
+        reader = decoder.readable.getReader();
+
+        // Set up writer
+        const encoder = new TextEncoderStream();
+        const writableStreamClosed = encoder.readable.pipeTo(port.writable);
+        const writer = encoder.writable.getWriter();
+
+        // Wait for FOF_READY (board sends this on boot)
+        appendLog('Waiting for board to enter config mode...');
+        appendLog('(Press RST button on the Uplink board now)');
+
+        const ready = await waitForLine(reader, 'FOF_READY', 15000);
+        if (!ready) {
+          throw new Error('No response from board. Press RST and try again.');
+        }
+        appendLog('Board is in config mode!');
+        setStatus('Sending configuration...', 'status-busy');
+
+        // Send config commands
+        const commands = [];
+        if (ssid) commands.push(`FOF_SET:wifi_ssid=${ssid}`);
+        if (pass) commands.push(`FOF_SET:wifi_pass=${pass}`);
+        if (backend) commands.push(`FOF_SET:backend_url=${backend}`);
+        if (deviceId) commands.push(`FOF_SET:device_id=${deviceId}`);
+        commands.push('FOF_SAVE');
+
+        for (const cmd of commands) {
+          const displayCmd = cmd.startsWith('FOF_SET:wifi_pass=')
+            ? 'FOF_SET:wifi_pass=****'
+            : cmd;
+          appendLog('>> ' + displayCmd);
+          await writer.write(cmd + '\n');
+
+          // Read response
+          const resp = await waitForLine(reader, 'FOF_', 3000);
+          if (resp) {
+            appendLog('<< ' + resp);
+            if (resp.startsWith('FOF_ERROR:')) {
+              throw new Error('Board error: ' + resp.substring(10));
+            }
+          }
+
+          // Small delay between commands
+          await sleep(100);
+        }
+
+        setStatus('Configuration saved to board!', 'status-ok');
+        appendLog('Done! Board will use these settings on next boot.');
+
+        // Clean up writer
+        writer.close();
+        await writableStreamClosed;
+
+      } catch (err) {
+        if (err.name === 'NotFoundError') {
+          setStatus('No port selected.', 'status-err');
+        } else {
+          setStatus(err.message, 'status-err');
+          appendLog('Error: ' + err.message);
+        }
+      } finally {
+        // Clean up reader
+        if (reader) {
+          try { reader.cancel(); } catch (e) {}
+        }
+        if (port) {
+          try { await port.close(); } catch (e) {}
+        }
+        btn.disabled = false;
+      }
+    }
+
+    /**
+     * Read lines from serial until we get one starting with `prefix`,
+     * or until timeout.
+     */
+    async function waitForLine(reader, prefix, timeoutMs) {
+      const deadline = Date.now() + timeoutMs;
+      let buffer = '';
+
+      while (Date.now() < deadline) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+
+        try {
+          // Race between read and timeout
+          const result = await Promise.race([
+            reader.read(),
+            sleep(Math.min(remaining, 500)).then(() => ({ timeout: true }))
+          ]);
+
+          if (result.timeout) continue;
+          if (result.done) break;
+
+          buffer += result.value;
+
+          // Check for complete lines
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // Keep incomplete line in buffer
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith(prefix)) {
+              return trimmed;
+            }
+            // Log other output from the board
+            if (trimmed.length > 0) {
+              appendLog('   ' + trimmed);
+            }
+          }
+        } catch (e) {
+          // Reader error, may be disconnected
+          break;
+        }
+      }
+
+      return null;
+    }
+
+    function sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+  </script>
 </body>
 </html>
