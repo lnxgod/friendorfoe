@@ -3,6 +3,9 @@
  *
  * Reads config commands from the USB console (stdin) during a startup
  * window, allowing the web flasher to push NVS settings right after flash.
+ *
+ * Uses standard stdin/stdout via VFS — works with whatever console backend
+ * is configured (USB-JTAG on C3, UART0 on other chips).
  */
 
 #include "serial_config.h"
@@ -10,10 +13,12 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/select.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "driver/usb_serial_jtag.h"
 
 static const char *TAG = "serial_cfg";
 
@@ -48,7 +53,25 @@ static void send_response(const char *msg)
 }
 
 /**
- * Try to read one line from stdin with a timeout.
+ * Check if data is available on stdin within timeout_ms.
+ * Returns true if data is ready to read.
+ */
+static bool stdin_has_data(int timeout_ms)
+{
+    fd_set fds;
+    struct timeval tv;
+
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+    int ret = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+    return (ret > 0 && FD_ISSET(STDIN_FILENO, &fds));
+}
+
+/**
+ * Read one line from stdin with a timeout.
  * Returns the number of characters read, or 0 on timeout.
  */
 static int read_line(char *buf, int buf_size, int timeout_ms)
@@ -60,11 +83,14 @@ static int read_line(char *buf, int buf_size, int timeout_ms)
     memset(buf, 0, buf_size);
 
     while (elapsed < timeout_ms && pos < buf_size - 1) {
-        int len = usb_serial_jtag_read_bytes(
-            (uint8_t *)(buf + pos), 1, pdMS_TO_TICKS(poll_interval));
+        if (stdin_has_data(poll_interval)) {
+            int ch = fgetc(stdin);
+            if (ch == EOF) {
+                elapsed += poll_interval;
+                continue;
+            }
 
-        if (len > 0) {
-            if (buf[pos] == '\n' || buf[pos] == '\r') {
+            if (ch == '\n' || ch == '\r') {
                 buf[pos] = '\0';
                 if (pos > 0) {
                     return pos;
@@ -72,7 +98,8 @@ static int read_line(char *buf, int buf_size, int timeout_ms)
                 /* Skip empty lines / lone CR/LF */
                 continue;
             }
-            pos++;
+
+            buf[pos++] = (char)ch;
             /* Reset timeout on each received character */
             elapsed = 0;
         } else {
@@ -143,16 +170,8 @@ bool serial_config_listen(int timeout_ms)
     char line[LINE_BUF_SIZE];
     bool any_saved = false;
 
-    /* Install USB-JTAG serial driver for reading */
-    usb_serial_jtag_driver_config_t cfg = {
-        .tx_buffer_size = 256,
-        .rx_buffer_size = 256,
-    };
-    esp_err_t err = usb_serial_jtag_driver_install(&cfg);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "USB serial driver install failed: %s (may already be installed)",
-                 esp_err_to_name(err));
-    }
+    /* Make stdin non-blocking friendly via VFS select */
+    fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
 
     ESP_LOGI(TAG, "Config mode: waiting %dms for serial commands...", timeout_ms);
     send_response(RESP_READY);
@@ -191,7 +210,7 @@ bool serial_config_listen(int timeout_ms)
     }
 
 cleanup:
-    /* Uninstall driver so normal logging continues */
-    usb_serial_jtag_driver_uninstall();
+    /* Restore blocking mode */
+    fcntl(STDIN_FILENO, F_SETFL, 0);
     return any_saved;
 }
