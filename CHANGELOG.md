@@ -4,6 +4,19 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0-alpha] - 2026-03-18
+
+### Added
+- **ESP32 Hardware Edition** — dual-board drone detector (ESP32-S3 scanner + ESP32-C3 uplink)
+- BLE Remote ID + WiFi promiscuous scanning ported from Android to ESP-IDF C firmware
+- 104 SSID patterns, 29 OUI entries, Bayesian fusion engine — full detection parity with Android app
+- UART inter-board protocol at 921,600 baud with newline-delimited JSON
+- SSD1306 OLED display, GPS NMEA parser, battery monitor, status LED on uplink board
+- HTTP batch upload to backend with offline ring buffer (100 batches)
+- `POST /detections/drones` and `GET /detections/drones/recent` backend endpoints
+- 27 native unit tests for parsers and fusion engine
+- See `esp32/INSTALL.md` for hardware setup and `esp32/CHANGELOG.md` for full details
+
 ## [0.7.0-beta] - 2026-03-17
 
 ### Added

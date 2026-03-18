@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Friend or Foe — ESP32 Web Flasher</title>
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+  ></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-green: #3fb950;
+      --accent-orange: #d29922;
+      --accent-red: #f85149;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 2rem 1rem;
+    }
+    .container { max-width: 860px; margin: 0 auto; }
+    h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+    h1 span { color: var(--accent); }
+    .subtitle { color: var(--text-muted); margin-bottom: 2rem; font-size: 1.1rem; }
+    h2 { font-size: 1.4rem; margin: 2rem 0 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+    h3 { font-size: 1.1rem; margin: 1.5rem 0 0.75rem; color: var(--accent); }
+
+    .flash-cards {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin: 1.5rem 0;
+    }
+    @media (max-width: 640px) {
+      .flash-cards { grid-template-columns: 1fr; }
+    }
+    .flash-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      text-align: center;
+    }
+    .flash-card h3 { margin-top: 0; }
+    .flash-card .chip { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem; }
+    .flash-card .desc { color: var(--text-muted); font-size: 0.85rem; margin-top: 1rem; }
+    .flash-card ul {
+      text-align: left;
+      list-style: none;
+      padding: 0;
+      margin: 0.75rem 0;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+    .flash-card ul li::before {
+      content: "\2713 ";
+      color: var(--accent-green);
+      font-weight: bold;
+    }
+
+    esp-web-install-button {
+      display: block;
+      margin: 1rem auto 0;
+    }
+    esp-web-install-button button {
+      background: var(--accent);
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      padding: 0.75rem 2rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    esp-web-install-button button:hover { opacity: 0.85; }
+    esp-web-install-button::part(not-allowed) {
+      color: var(--accent-red);
+      font-size: 0.85rem;
+    }
+
+    .warning {
+      background: #2d1b00;
+      border: 1px solid var(--accent-orange);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin: 1.5rem 0;
+      font-size: 0.9rem;
+    }
+    .warning strong { color: var(--accent-orange); }
+
+    .info {
+      background: #0c2d6b;
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin: 1.5rem 0;
+      font-size: 0.9rem;
+    }
+    .info strong { color: var(--accent); }
+
+    .arch-diagram {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.8rem;
+      line-height: 1.4;
+      overflow-x: auto;
+      white-space: pre;
+      margin: 1rem 0;
+    }
+
+    ol, ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    li { margin-bottom: 0.4rem; }
+    code {
+      background: var(--surface);
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    p { margin-bottom: 0.75rem; }
+
+    .steps {
+      counter-reset: step;
+      list-style: none;
+      padding: 0;
+    }
+    .steps li {
+      counter-increment: step;
+      position: relative;
+      padding-left: 2.5rem;
+      margin-bottom: 1.25rem;
+    }
+    .steps li::before {
+      content: counter(step);
+      position: absolute;
+      left: 0;
+      width: 1.75rem;
+      height: 1.75rem;
+      background: var(--accent);
+      color: #000;
+      border-radius: 50%;
+      text-align: center;
+      line-height: 1.75rem;
+      font-weight: 700;
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Friend or Foe <span>ESP32 Flasher</span></h1>
+    <p class="subtitle">Flash drone detector firmware to your ESP32 boards — directly from your browser.</p>
+
+    <div class="warning">
+      <strong>Browser requirement:</strong> Web Serial requires <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>
+      (version 89+). Firefox and Safari are not supported.
+    </div>
+
+    <!-- Flash Cards -->
+    <div class="flash-cards">
+      <div class="flash-card">
+        <h3>Scanner Board</h3>
+        <div class="chip">ESP32-S3-DevKitC-1</div>
+        <ul>
+          <li>BLE Remote ID (ASTM F3411)</li>
+          <li>WiFi promiscuous capture</li>
+          <li>DJI DroneID IE parsing</li>
+          <li>SSID pattern matching (104 patterns)</li>
+          <li>Bayesian sensor fusion</li>
+        </ul>
+        <esp-web-install-button manifest="manifest-scanner.json">
+          <button slot="activate">Flash Scanner Firmware</button>
+          <span slot="not-allowed">Your browser does not support Web Serial</span>
+        </esp-web-install-button>
+        <div class="desc">Connect your ESP32-S3 via USB, then click to flash.</div>
+      </div>
+      <div class="flash-card">
+        <h3>Uplink Board</h3>
+        <div class="chip">ESP32-C3-DevKitM-1</div>
+        <ul>
+          <li>WiFi STA + backend upload</li>
+          <li>GPS NMEA parsing</li>
+          <li>OLED status display</li>
+          <li>Battery monitoring</li>
+          <li>Offline ring buffer (100 batches)</li>
+        </ul>
+        <esp-web-install-button manifest="manifest-uplink.json">
+          <button slot="activate">Flash Uplink Firmware</button>
+          <span slot="not-allowed">Your browser does not support Web Serial</span>
+        </esp-web-install-button>
+        <div class="desc">Connect your ESP32-C3 via USB, then click to flash.</div>
+      </div>
+    </div>
+
+    <div class="info">
+      <strong>Firmware binaries required:</strong> The flash buttons above need pre-built firmware binaries
+      in the <code>firmware/</code> directory. Run <code>build.sh</code> to build from source, or download
+      release binaries from GitHub Releases.
+    </div>
+
+    <!-- Architecture Diagram -->
+    <h2>System Architecture</h2>
+    <div class="arch-diagram">
++---------------------------+   UART 921600   +---------------------------+
+|   ESP32-S3 "SCANNER"      | ---------------&gt; |   ESP32-C3 "UPLINK"       |
+|                           |  JSON messages   |                           |
+|  Core 0: WiFi promisc     |                  |  WiFi STA (always on)     |
+|          BLE scan         |                  |  HTTP POST -> backend     |
+|  Core 1: Bayesian fusion  |                  |  GPS, OLED, LED, Battery  |
+|          UART TX          |                  |  UART RX                  |
++---------------------------+                  +---------------------------+
+                                                          |
+                                                          v
+                                               +-------------------+
+                                               |  FastAPI Backend   |
+                                               |  /detections/     |
+                                               |  drones           |
+                                               +-------------------+</div>
+
+    <!-- Instructions -->
+    <h2>Quick Start</h2>
+    <ol class="steps">
+      <li>
+        <strong>Get the hardware</strong> — ESP32-S3 (scanner) + ESP32-C3 (uplink) + GPS module + OLED display.
+        See <a href="../INSTALL.md">INSTALL.md</a> for the full BOM (~$25-40 total).
+      </li>
+      <li>
+        <strong>Flash the Scanner</strong> — connect the ESP32-S3 via USB, click "Flash Scanner Firmware" above.
+        The flasher auto-detects the S3 chip and writes the firmware.
+      </li>
+      <li>
+        <strong>Flash the Uplink</strong> — disconnect the S3, connect the ESP32-C3, click "Flash Uplink Firmware".
+      </li>
+      <li>
+        <strong>Wire the boards</strong> — connect TX/RX/GND between Scanner and Uplink, attach GPS and OLED to the Uplink.
+        See the <a href="../INSTALL.md">wiring diagram</a> for pin assignments.
+      </li>
+      <li>
+        <strong>Configure WiFi</strong> — edit <code>config.h</code> before building, or use the serial console
+        to set WiFi credentials and backend URL via NVS (future feature).
+      </li>
+      <li>
+        <strong>Power on</strong> — both boards via USB or a shared 5V supply. The OLED will show connection status,
+        GPS fix, and drone detection count.
+      </li>
+    </ol>
+
+    <h2>Wiring Reference</h2>
+    <div class="arch-diagram">
+Scanner ESP32-S3                  Uplink ESP32-C3
++----------------+                +----------------+
+|         TX  ---+-- GPIO 17 ---&gt; | GPIO 20 -- RX  |
+|         RX  ---+-- GPIO 18 &lt;--- | GPIO 21 -- TX  |
+|        GND  ---+----------------+-- GND          |
++----------------+                +----------------+
+
+Uplink ESP32-C3 Peripherals:
+  GPIO 4 (SDA) ---&gt; SSD1306 OLED SDA
+  GPIO 5 (SCL) ---&gt; SSD1306 OLED SCL
+  GPIO 6 (TX)  ---&gt; GPS module RX
+  GPIO 7 (RX)  &lt;--- GPS module TX
+  GPIO 8       ---&gt; Status LED (+ 220ohm -&gt; GND)
+  GPIO 3 (ADC) &lt;--- Battery voltage divider midpoint
+  3.3V         ---&gt; OLED VCC, GPS VCC
+  GND          ---&gt; OLED GND, GPS GND, LED GND</div>
+
+    <h2>Hosting This Page</h2>
+    <p>
+      The Web Serial API requires a <strong>secure context</strong> (HTTPS) — except for <code>localhost</code>,
+      which is exempt. Options:
+    </p>
+    <ul>
+      <li><strong>Local testing:</strong> <code>python3 -m http.server 8080</code> in the <code>web-flasher/</code> directory, then open <code>http://localhost:8080</code></li>
+      <li><strong>GitHub Pages:</strong> push to a <code>gh-pages</code> branch — free HTTPS at <code>https://youruser.github.io/friendorfoe/esp32/web-flasher/</code></li>
+      <li><strong>Any static host:</strong> Netlify, Vercel, Cloudflare Pages — all provide HTTPS</li>
+    </ul>
+
+    <h2>Troubleshooting</h2>
+    <ul>
+      <li><strong>"No compatible device found"</strong> — make sure you're using a data-capable USB cable (not charge-only).</li>
+      <li><strong>"Failed to connect"</strong> — hold the BOOT button on the ESP32 board while clicking flash, then release after connection starts.</li>
+      <li><strong>Button says "Not supported"</strong> — switch to Chrome or Edge. Firefox and Safari do not support Web Serial.</li>
+      <li><strong>Firmware files missing</strong> — run <code>build.sh</code> to compile from source, or download from GitHub Releases.</li>
+    </ul>
+
+    <p style="margin-top: 2rem; color: var(--text-muted); font-size: 0.85rem; text-align: center;">
+      Friend or Foe ESP32 Drone Detector &mdash; v0.8.0-alpha
+      &mdash; <a href="../INSTALL.md">Full Install Guide</a>
+      &mdash; <a href="../PARITY.md">Detection Parity</a>
+    </p>
+  </div>
+</body>
+</html>

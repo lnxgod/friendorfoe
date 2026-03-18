@@ -1,0 +1,23 @@
+# Friend or Foe — Uplink (ESP32-C3) SDK Configuration
+# WiFi STA + HTTP client for backend communication
+
+# ── WiFi ─────────────────────────────────────────────────────────────────────
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+
+# ── FreeRTOS ─────────────────────────────────────────────────────────────────
+CONFIG_FREERTOS_HZ=1000
+
+# ── Watchdog ─────────────────────────────────────────────────────────────────
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# ── Console via USB-JTAG (frees UART0 for GPS) ─────────────────────────────
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# ── SNTP for time synchronization ────────────────────────────────────────────
+CONFIG_LWIP_SNTP_MAX_SERVERS=2
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
