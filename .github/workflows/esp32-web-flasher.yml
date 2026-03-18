@@ -10,18 +10,14 @@ on:
     types: [published]
   workflow_dispatch:
 
-# Only allow one Pages deploy at a time
 concurrency:
   group: esp32-web-flasher
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  # ── Build firmware ──────────────────────────────────────────────────────────
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pages: write
-      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -48,50 +44,89 @@ jobs:
       - name: Build Uplink firmware (ESP32-C3)
         run: cd esp32/uplink && pio run
 
-      - name: Assemble web flasher site
+      - name: Package firmware binaries
         run: |
-          mkdir -p _site/firmware/scanner _site/firmware/uplink
+          mkdir -p firmware/scanner firmware/uplink
 
-          # Copy web flasher static files
-          cp esp32/web-flasher/index.html _site/
-          cp esp32/web-flasher/manifest-scanner.json _site/
-          cp esp32/web-flasher/manifest-uplink.json _site/
+          cp esp32/scanner/.pio/build/scanner/bootloader.bin firmware/scanner/
+          cp esp32/scanner/.pio/build/scanner/partitions.bin firmware/scanner/partition-table.bin
+          cp esp32/scanner/.pio/build/scanner/firmware.bin   firmware/scanner/
 
-          # Copy scanner firmware binaries
-          cp esp32/scanner/.pio/build/scanner/bootloader.bin _site/firmware/scanner/
-          cp esp32/scanner/.pio/build/scanner/partitions.bin _site/firmware/scanner/partition-table.bin
-          cp esp32/scanner/.pio/build/scanner/firmware.bin _site/firmware/scanner/
+          cp esp32/uplink/.pio/build/uplink/bootloader.bin firmware/uplink/
+          cp esp32/uplink/.pio/build/uplink/partitions.bin firmware/uplink/partition-table.bin
+          cp esp32/uplink/.pio/build/uplink/firmware.bin   firmware/uplink/
 
-          # Copy uplink firmware binaries
-          cp esp32/uplink/.pio/build/uplink/bootloader.bin _site/firmware/uplink/
-          cp esp32/uplink/.pio/build/uplink/partitions.bin _site/firmware/uplink/partition-table.bin
-          cp esp32/uplink/.pio/build/uplink/firmware.bin _site/firmware/uplink/
+          echo "=== Firmware sizes ==="
+          find firmware -name '*.bin' -exec ls -lh {} \;
 
-          echo "=== Site contents ==="
-          find _site -type f -exec ls -lh {} \;
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-firmware
+          path: firmware/
+          retention-days: 90
 
-      - name: Upload firmware to release
+      - name: Attach firmware to release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG=${{ github.event.release.tag_name }}
-
-          # Package scanner firmware
-          cd _site/firmware/scanner
-          tar czf /tmp/scanner-firmware-${TAG}.tar.gz *.bin
-          cd -
-
-          # Package uplink firmware
-          cd _site/firmware/uplink
-          tar czf /tmp/uplink-firmware-${TAG}.tar.gz *.bin
-          cd -
-
-          # Attach to release
+          cd firmware/scanner && tar czf /tmp/scanner-firmware-${TAG}.tar.gz *.bin && cd -
+          cd firmware/uplink  && tar czf /tmp/uplink-firmware-${TAG}.tar.gz *.bin && cd -
           gh release upload "$TAG" \
             /tmp/scanner-firmware-${TAG}.tar.gz \
             /tmp/uplink-firmware-${TAG}.tar.gz \
             --clobber
+
+  # ── Deploy web flasher to GitHub Pages ──────────────────────────────────────
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    # Deploy even if build failed — page will show but flash won't work yet
+    if: always()
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble site
+        run: |
+          mkdir -p _site/firmware/scanner _site/firmware/uplink
+
+          # Web flasher page + manifests
+          cp esp32/web-flasher/index.html          _site/
+          cp esp32/web-flasher/manifest-scanner.json _site/
+          cp esp32/web-flasher/manifest-uplink.json  _site/
+
+      - name: Download firmware artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: esp32-firmware
+          path: _site/firmware/
+        continue-on-error: true
+
+      - name: Verify site contents
+        run: |
+          echo "=== Pages site ==="
+          find _site -type f -exec ls -lh {} \;
+
+          if [ -f _site/firmware/scanner/firmware.bin ]; then
+            echo "Scanner firmware: OK"
+          else
+            echo "Scanner firmware: MISSING (build may have failed)"
+          fi
+
+          if [ -f _site/firmware/uplink/firmware.bin ]; then
+            echo "Uplink firmware: OK"
+          else
+            echo "Uplink firmware: MISSING (build may have failed)"
+          fi
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -102,4 +137,5 @@ jobs:
           path: _site
 
       - name: Deploy to GitHub Pages
+        id: deploy
         uses: actions/deploy-pages@v4
