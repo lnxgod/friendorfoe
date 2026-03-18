@@ -208,9 +208,9 @@
     </div>
 
     <div class="info">
-      <strong>Firmware binaries required:</strong> The flash buttons above need pre-built firmware binaries
-      in the <code>firmware/</code> directory. Run <code>build.sh</code> to build from source, or download
-      release binaries from GitHub Releases.
+      <strong>Ready to flash:</strong> Firmware binaries are built automatically and served from this page.
+      Just plug in your board and click the button above. If you're running this page locally,
+      run <code>build.sh</code> first to compile the firmware from source.
     </div>
 
     <!-- Architecture Diagram -->
@@ -279,23 +279,23 @@ Uplink ESP32-C3 Peripherals:
   3.3V         ---&gt; OLED VCC, GPS VCC
   GND          ---&gt; OLED GND, GPS GND, LED GND</div>
 
-    <h2>Hosting This Page</h2>
+    <h2>How It Works</h2>
     <p>
-      The Web Serial API requires a <strong>secure context</strong> (HTTPS) — except for <code>localhost</code>,
-      which is exempt. Options:
+      This page is deployed automatically via <strong>GitHub Pages</strong> with CI-built firmware binaries.
+      When you click a flash button, your browser downloads the firmware from this site and writes it
+      to your ESP32 over USB — no installs, no toolchain, no command line.
     </p>
-    <ul>
-      <li><strong>Local testing:</strong> <code>python3 -m http.server 8080</code> in the <code>web-flasher/</code> directory, then open <code>http://localhost:8080</code></li>
-      <li><strong>GitHub Pages:</strong> push to a <code>gh-pages</code> branch — free HTTPS at <code>https://youruser.github.io/friendorfoe/esp32/web-flasher/</code></li>
-      <li><strong>Any static host:</strong> Netlify, Vercel, Cloudflare Pages — all provide HTTPS</li>
-    </ul>
+    <p>
+      Web Serial requires <strong>HTTPS</strong> (GitHub Pages provides this) or <code>localhost</code>.
+      For local development: <code>cd esp32/web-flasher && python3 -m http.server 8080</code>
+    </p>
 
     <h2>Troubleshooting</h2>
     <ul>
       <li><strong>"No compatible device found"</strong> — make sure you're using a data-capable USB cable (not charge-only).</li>
       <li><strong>"Failed to connect"</strong> — hold the BOOT button on the ESP32 board while clicking flash, then release after connection starts.</li>
       <li><strong>Button says "Not supported"</strong> — switch to Chrome or Edge. Firefox and Safari do not support Web Serial.</li>
-      <li><strong>Firmware files missing</strong> — run <code>build.sh</code> to compile from source, or download from GitHub Releases.</li>
+      <li><strong>Firmware files missing</strong> — the CI may not have run yet. Check <a href="https://github.com/lnxgod/friendorfoe/actions">Actions</a> or download from <a href="https://github.com/lnxgod/friendorfoe/releases">Releases</a>.</li>
     </ul>
 
     <p style="margin-top: 2rem; color: var(--text-muted); font-size: 0.85rem; text-align: center;">
