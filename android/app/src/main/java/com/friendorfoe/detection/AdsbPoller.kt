@@ -109,6 +109,10 @@ class AdsbPoller @Inject constructor(
                                 Log.d(TAG, "adsb.lol returned ${nearbyResult.aircraft.size} aircraft")
                                 DataSourceStatus.ADSBFI_FALLBACK
                             }
+                            DataSource.ADSB_ONE -> {
+                                Log.d(TAG, "ADSB One returned ${nearbyResult.aircraft.size} aircraft")
+                                DataSourceStatus.ADSBFI_FALLBACK
+                            }
                             DataSource.MULTI -> {
                                 Log.d(TAG, "Multi-source returned ${nearbyResult.aircraft.size} aircraft")
                                 DataSourceStatus.ADSBFI_FALLBACK

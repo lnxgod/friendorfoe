@@ -2,6 +2,20 @@
 
 All notable changes to the ESP32 hardware edition of Friend or Foe.
 
+## [0.3.0-alpha] - 2026-03-19
+
+### Added
+- **WiFi AP mode** — uplink now runs AP + STA concurrently, creating `FoF-XXXX` hotspot for field configuration without needing the main WiFi network
+- **HTTP status page** — embedded web server at `http://192.168.4.1` showing live device status: drone count, GPS fix, WiFi strength, battery level, upload stats
+- **Post-flash Web Serial configuration** — configure WiFi credentials and backend URL directly from Chrome after flashing, no serial terminal needed
+- Improved UART RX buffering with larger message parsing
+- Extended NVS configuration for AP settings
+
+### Fixed
+- Format-truncation warning in serial_config.c (msg buffer 64→96)
+- Uplink build: use stdin/stdout for serial config instead of usb_serial_jtag
+- Shared include path in CMakeLists.txt
+
 ## [0.2.0-alpha] - 2026-03-18
 
 ### Added

@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.local.HistoryEntity
+import com.friendorfoe.presentation.filter.FilterBar
 import com.friendorfoe.presentation.util.categoryColor
 import com.friendorfoe.presentation.util.isMilitary
 import java.time.Instant
@@ -63,30 +64,40 @@ fun HistoryScreen(
     viewModel: HistoryViewModel = hiltViewModel()
 ) {
     val groupedHistory by viewModel.groupedHistory.collectAsStateWithLifecycle()
+    val filterState by viewModel.filterState.collectAsStateWithLifecycle()
+    val filteredEntryCount by viewModel.filteredEntryCount.collectAsStateWithLifecycle()
 
-    if (groupedHistory.isEmpty()) {
-        EmptyHistoryState()
-    } else {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize()
-        ) {
-            groupedHistory.forEach { (dateLabel, entries) ->
-                stickyHeader(key = dateLabel) {
-                    DateGroupHeader(dateLabel = dateLabel)
-                }
+    Column(modifier = Modifier.fillMaxSize()) {
+        FilterBar(
+            filterState = filterState,
+            onFilterStateChange = { viewModel.updateFilter(it) },
+            resultCount = filteredEntryCount
+        )
 
-                items(
-                    items = entries,
-                    key = { it.id }
-                ) { entry ->
-                    HistoryItem(
-                        entry = entry,
-                        onClick = { onEntryTapped(entry.objectId) }
-                    )
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        thickness = 0.5.dp
-                    )
+        if (groupedHistory.isEmpty()) {
+            EmptyHistoryState()
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                groupedHistory.forEach { (dateLabel, entries) ->
+                    stickyHeader(key = dateLabel) {
+                        DateGroupHeader(dateLabel = dateLabel)
+                    }
+
+                    items(
+                        items = entries,
+                        key = { it.id }
+                    ) { entry ->
+                        HistoryItem(
+                            entry = entry,
+                            onClick = { onEntryTapped(entry.objectId) }
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                            thickness = 0.5.dp
+                        )
+                    }
                 }
             }
         }

@@ -82,13 +82,23 @@ private val AVAILABLE_PHOTOS: Set<String> = setOf(
 /**
  * Returns a file:///android_asset/ URI for an aircraft type photo,
  * or null if no photo is available for that type.
- * Coil loads these URIs natively from bundled APK assets.
+ *
+ * Delegates to AircraftDatabase as the single source of truth for variant-to-photo
+ * mapping. For example, B737 will use B738.jpg (the NG representative) rather than
+ * a potentially incorrect B737.jpg.
  */
 fun getAircraftPhotoUrl(typeCode: String?): String? {
     if (typeCode.isNullOrBlank()) return null
-    val normalized = typeCode.uppercase()
-    return if (normalized in AVAILABLE_PHOTOS) {
-        "file:///android_asset/aircraft/$normalized.jpg"
+    val normalized = typeCode.trim().uppercase()
+    // Use AircraftDatabase as single source of truth for photo mapping
+    val dbEntry = AircraftDatabase.matchByTypeCode(normalized)
+    // Extract just the filename without path/extension from photoAsset (e.g., "aircraft/B738.jpg" → "B738")
+    val photoCode = dbEntry?.photoAsset
+        ?.substringAfterLast("/")
+        ?.substringBeforeLast(".")
+        ?: normalized
+    return if (photoCode in AVAILABLE_PHOTOS) {
+        "file:///android_asset/aircraft/$photoCode.jpg"
     } else {
         null
     }

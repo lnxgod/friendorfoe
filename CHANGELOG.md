@@ -4,6 +4,57 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0-beta] - 2026-03-19
+
+### Added
+
+#### Android — New ADS-B & Enrichment Sources
+- **ADSB One** — 5th ADS-B source added to parallel query (ADSBx v2 format, no API key)
+- **hexdb.io enrichment** — real aircraft database lookup replaces heuristic registration/type guessing. Returns actual registration, ICAO type code, manufacturer, type, and registered owner
+- hexdb.io route lookup — resolves callsigns to origin/destination airport pairs
+- Aircraft detail now populated from hexdb.io instead of returning failure when backend is unavailable
+
+#### Android — Filtering & Search
+- **Filter bar** on List and History screens — search by callsign/ICAO/registration, filter by category, detection source, and object type
+- Advanced filter options: max distance, altitude range
+- `FilterEngine` — stateless filter engine supporting all filter dimensions
+- `FilterState` domain model for reactive filter UI state
+
+#### Android — Auto-Capture & Threat Assessment
+- **Auto-capture engine** — correlates ML Kit visual detections with radio-tracked sky objects to automatically photograph nearby aircraft/drones
+- Auto-capture toggle button on AR screen with visual indicator
+- **Drone threat assessment** on detail cards — risk level (Benign→Restricted) and threat classification (Civilian, Military ISR, Loitering Munition, FPV Combat, etc.) from OSINT drone database
+- Autonomy level display (Manual, Semi-Autonomous, Fully Autonomous)
+
+#### Android — Drone Database Expansion
+- Drone database expanded with risk levels, threat classifications, and autonomy levels for all entries
+- New enum types: `RiskLevel`, `ThreatClassification`, `AutonomyLevel`
+- ~1,100 new lines of drone reference data
+
+#### Backend — New ADS-B Sources (fixes bug B8: missing adsb.lol)
+- **ADSB One** added to backend fallback chain
+- **adsb.lol** added to backend fallback chain (was in Android but missing from backend)
+- Backend ADS-B chain now: adsb.fi → airplanes.live → ADSB One → adsb.lol → OpenSky
+
+#### Backend — Enhanced Enrichment
+- **hexdb.io** — primary aircraft data source for detail endpoint (real registration, type, manufacturer, owner)
+- **hexdb.io route API** — resolves callsigns to origin→destination routes
+- **airport-data.com** — added as photo fallback source
+- **hexdb.io thumbnails** — added as tertiary photo fallback
+- Photo chain now: planespotters.net → airport-data.com → hexdb thumbnail → placeholder
+- Concurrent fetching of hexdb.io data and photos for faster detail responses
+
+#### ESP32 — Uplink Enhancements
+- **WiFi AP mode** — uplink now runs AP + STA concurrently, creates `FoF-XXXX` hotspot for field configuration
+- **HTTP status page** — embedded web server on `http://192.168.4.1` shows live device status, drone count, GPS, WiFi, battery
+- Post-flash Web Serial configuration for WiFi credentials and backend URL
+- Improved UART RX buffering and NVS configuration persistence
+
+### Changed
+- ADS-B fallback chain expanded from 4 to 5 sources (Android) and 3 to 5 sources (backend)
+- `AircraftRepository.getAircraftDetail()` now queries hexdb.io instead of returning failure
+- `DataSource` enum extended with `ADSB_ONE`
+
 ## [0.8.0-alpha] - 2026-03-18
 
 ### Added
@@ -136,6 +187,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - List view with sortable columns
 - Bottom navigation (AR, Map, List, History, About)
 
+[0.8.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.8.0-beta
 [0.7.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.7.0-beta
 [0.6.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.6.0-beta
 [0.5.1-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.5.1-beta

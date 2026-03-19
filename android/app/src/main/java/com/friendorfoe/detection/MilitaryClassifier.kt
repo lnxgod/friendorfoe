@@ -88,8 +88,6 @@ object MilitaryClassifier {
             // USA — DoD
             HexRangeEntry(0xAE0000, 0xAEFFFF, "US_MIL_DOD"),
             HexRangeEntry(0xAF0000, 0xAFFFFF, "US_MIL_DOD2"),
-            // USA — Government/FAA
-            HexRangeEntry(0xA00000, 0xA00FFF, "US_GOV_FAA", isGovernment = true),
             // USA — Coast Guard
             HexRangeEntry(0xAD0000, 0xAD0FFF, "US_COAST_GUARD", isGovernment = true),
             // USA — CBP

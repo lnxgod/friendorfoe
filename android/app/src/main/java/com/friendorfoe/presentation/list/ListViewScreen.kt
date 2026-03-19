@@ -45,6 +45,7 @@ import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.presentation.filter.FilterBar
 import com.friendorfoe.presentation.util.categoryBadge
 import com.friendorfoe.presentation.util.categoryColor
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -63,6 +64,7 @@ fun ListViewScreen(
     viewModel: ListViewModel = hiltViewModel()
 ) {
     val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
+    val filterState by viewModel.filterState.collectAsStateWithLifecycle()
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -79,24 +81,32 @@ fun ListViewScreen(
         }
     }
 
-    if (skyObjects.isEmpty()) {
-        EmptyListState()
-    } else {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize()
-        ) {
-            items(
-                items = skyObjects,
-                key = { it.id }
-            ) { skyObject ->
-                SkyObjectItem(
-                    skyObject = skyObject,
-                    onClick = { onObjectTapped(skyObject.id) }
-                )
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                    thickness = 0.5.dp
-                )
+    Column(modifier = Modifier.fillMaxSize()) {
+        FilterBar(
+            filterState = filterState,
+            onFilterStateChange = { viewModel.updateFilter(it) },
+            resultCount = skyObjects.size
+        )
+
+        if (skyObjects.isEmpty()) {
+            EmptyListState()
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(
+                    items = skyObjects,
+                    key = { it.id }
+                ) { skyObject ->
+                    SkyObjectItem(
+                        skyObject = skyObject,
+                        onClick = { onObjectTapped(skyObject.id) }
+                    )
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        thickness = 0.5.dp
+                    )
+                }
             }
         }
     }

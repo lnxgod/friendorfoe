@@ -48,7 +48,9 @@ import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
+import com.friendorfoe.presentation.util.DroneDatabase
 import com.friendorfoe.presentation.util.IcaoCountryLookup
+import com.friendorfoe.presentation.util.RiskLevel
 import com.friendorfoe.presentation.util.categoryColor
 import com.friendorfoe.presentation.util.silhouetteForTypeCode
 import com.friendorfoe.presentation.util.silhouetteForCategory
@@ -392,6 +394,98 @@ internal fun DroneDetailContent(
             }
             drone.selfIdText?.let { DetailRow("Self-ID", it) }
             drone.idTypeLabel()?.let { DetailRow("ID Type", it) }
+        }
+
+        // Threat Assessment (from DroneDatabase OSINT)
+        val droneRef = drone.ssid?.let { ssid ->
+            DroneDatabase.matchByWifiSsid(ssid).firstOrNull()
+        } ?: drone.manufacturer?.let { mfr ->
+            DroneDatabase.matchByManufacturer(mfr).firstOrNull()
+        }
+        if (droneRef != null && (droneRef.riskLevel != null || droneRef.threatClassification != null)) {
+            SectionCard(title = "Threat Assessment") {
+                droneRef.riskLevel?.let { risk ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Risk Level",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            modifier = Modifier.weight(0.4f)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .background(
+                                    color = Color(risk.color).copy(alpha = 0.2f),
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = risk.label,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(risk.color)
+                            )
+                        }
+                    }
+                }
+                droneRef.threatClassification?.let { tc ->
+                    DetailRow("Classification", tc.label)
+                }
+                droneRef.countryOfOrigin?.let { country ->
+                    DetailRow("Country of Origin", country)
+                }
+                if (droneRef.sanctionedManufacturer) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Sanctioned",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            modifier = Modifier.weight(0.4f)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .background(
+                                    color = Color(0xFFF44336).copy(alpha = 0.2f),
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "SANCTIONED",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFF44336)
+                            )
+                        }
+                    }
+                }
+                droneRef.autonomyLevel?.let { al ->
+                    DetailRow("Autonomy", al.label)
+                }
+                droneRef.operationalHistory?.let { history ->
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Divider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = history,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                }
+            }
         }
 
         // Position section

@@ -33,7 +33,9 @@ static const char *TAG = "serial_cfg";
 
 /* Allowed NVS keys — only accept known config keys */
 static const char *ALLOWED_KEYS[] = {
-    "wifi_ssid", "wifi_pass", "backend_url", "device_id", NULL
+    "wifi_ssid", "wifi_pass", "backend_url", "device_id",
+    "ap_ssid", "ap_pass",
+    NULL
 };
 
 static bool is_allowed_key(const char *key)
@@ -154,7 +156,8 @@ static bool handle_set_command(const char *line)
         snprintf(msg, sizeof(msg), "%s%s\n", RESP_OK, key);
         send_response(msg);
         ESP_LOGI(TAG, "Set %s = %s", key,
-                 strcmp(key, "wifi_pass") == 0 ? "****" : value);
+                 (strcmp(key, "wifi_pass") == 0 || strcmp(key, "ap_pass") == 0)
+                 ? "****" : value);
         return true;
     } else {
         char msg[96];

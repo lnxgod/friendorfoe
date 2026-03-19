@@ -9,6 +9,31 @@ package com.friendorfoe.presentation.util
  * the manufacturer or model is unknown.
  */
 
+enum class RiskLevel(val label: String, val color: Long) {
+    BENIGN("Benign", 0xFF4CAF50),
+    LOW("Low", 0xFFFFA726),
+    MEDIUM("Medium", 0xFFFF9800),
+    HIGH("High", 0xFFF44336),
+    RESTRICTED("Restricted", 0xFF9C27B0)
+}
+
+enum class ThreatClassification(val label: String) {
+    CIVILIAN("Civilian"),
+    COMMERCIAL_SURVEY("Commercial Survey"),
+    MILITARY_ISR("Military ISR"),
+    MILITARY_STRIKE("Military Strike"),
+    LOITERING_MUNITION("Loitering Munition"),
+    FPV_COMBAT("FPV Combat"),
+    COUNTER_DRONE("Counter-Drone")
+}
+
+enum class AutonomyLevel(val label: String) {
+    MANUAL("Manual"),
+    SEMI_AUTONOMOUS("Semi-Autonomous"),
+    FULLY_AUTONOMOUS("Fully Autonomous"),
+    LOITERING("Loitering")
+}
+
 data class DroneReference(
     val id: String,
     val name: String,
@@ -17,7 +42,18 @@ data class DroneReference(
     val description: String,
     val specs: String,
     val photoAsset: String,
-    val wifiPatterns: List<String>
+    val wifiPatterns: List<String>,
+    val countryOfOrigin: String? = null,
+    val riskLevel: RiskLevel? = null,
+    val threatClassification: ThreatClassification? = null,
+    val operationalHistory: String? = null,
+    val sanctionedManufacturer: Boolean = false,
+    val maxRangeKm: Float? = null,
+    val maxEnduranceMin: Int? = null,
+    val maxAltitudeM: Int? = null,
+    val maxSpeedKmh: Float? = null,
+    val swarmCapable: Boolean = false,
+    val autonomyLevel: AutonomyLevel? = null
 )
 
 enum class DroneCategory(val label: String) {
@@ -42,7 +78,14 @@ object DroneDatabase {
             description = "Foldable prosumer quadcopter with Hasselblad camera and 46-minute flight time. Dual camera system with telephoto zoom.",
             specs = "Weight: 895g | Range: 15km | Max speed: 75km/h | Flight time: 46min",
             photoAsset = "drones/dji_mavic3.jpg",
-            wifiPatterns = listOf("DJI-", "MAVIC-")
+            wifiPatterns = listOf("DJI-", "MAVIC-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.LOW,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 15f,
+            maxEnduranceMin = 46,
+            maxSpeedKmh = 75f
         ),
         DroneReference(
             id = "dji_mini4",
@@ -52,7 +95,14 @@ object DroneDatabase {
             description = "Sub-250g consumer drone requiring no FAA registration for recreational use. Omnidirectional obstacle sensing despite tiny size.",
             specs = "Weight: 249g | Range: 20km | Max speed: 57km/h | Flight time: 34min",
             photoAsset = "drones/dji_mini4.jpg",
-            wifiPatterns = listOf("DJI-", "MINI-")
+            wifiPatterns = listOf("DJI-", "MINI-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 20f,
+            maxEnduranceMin = 34,
+            maxSpeedKmh = 57f
         ),
         DroneReference(
             id = "dji_phantom4",
@@ -62,7 +112,14 @@ object DroneDatabase {
             description = "Classic white quadcopter that defined consumer drones. 1-inch sensor camera with mechanical shutter. Now discontinued but still widely flown.",
             specs = "Weight: 1388g | Range: 7km | Max speed: 72km/h | Flight time: 30min",
             photoAsset = "drones/dji_phantom4.jpg",
-            wifiPatterns = listOf("DJI-", "PHANTOM-")
+            wifiPatterns = listOf("DJI-", "PHANTOM-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 7f,
+            maxEnduranceMin = 30,
+            maxSpeedKmh = 72f
         ),
         DroneReference(
             id = "dji_inspire3",
@@ -72,7 +129,14 @@ object DroneDatabase {
             description = "Large cinema drone with full-frame Zenmuse X9-8K camera. Transforming design with retractable landing gear for unobstructed 360-degree camera view.",
             specs = "Weight: 3995g | Range: 15km | Max speed: 94km/h | Flight time: 28min",
             photoAsset = "drones/dji_inspire3.jpg",
-            wifiPatterns = listOf("DJI-", "INSPIRE-")
+            wifiPatterns = listOf("DJI-", "INSPIRE-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.LOW,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 15f,
+            maxEnduranceMin = 28,
+            maxSpeedKmh = 94f
         ),
         DroneReference(
             id = "dji_fpv",
@@ -82,7 +146,14 @@ object DroneDatabase {
             description = "First-person-view racing drone with immersive goggles. Emergency brake and hover. The Avata is the smaller, ducted-fan indoor-friendly variant.",
             specs = "Weight: 795g | Range: 10km | Max speed: 140km/h | Flight time: 20min",
             photoAsset = "drones/dji_fpv.jpg",
-            wifiPatterns = listOf("DJI-", "FPV-", "AVATA-")
+            wifiPatterns = listOf("DJI-", "FPV-", "AVATA-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 10f,
+            maxEnduranceMin = 20,
+            maxSpeedKmh = 140f
         ),
         DroneReference(
             id = "dji_matrice",
@@ -92,7 +163,14 @@ object DroneDatabase {
             description = "Heavy-duty enterprise drone for mapping, inspection, and search-and-rescue. IP45 weather resistance. Supports multiple payload configurations.",
             specs = "Weight: 6300g | Range: 15km | Max speed: 82km/h | Flight time: 55min",
             photoAsset = "drones/dji_matrice.jpg",
-            wifiPatterns = listOf("DJI-", "MATRICE-")
+            wifiPatterns = listOf("DJI-", "MATRICE-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.MEDIUM,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 15f,
+            maxEnduranceMin = 55,
+            maxSpeedKmh = 82f
         ),
         DroneReference(
             id = "dji_air",
@@ -102,7 +180,14 @@ object DroneDatabase {
             description = "Mid-range foldable drone with dual cameras — wide and medium telephoto. Good balance of portability, image quality, and flight time.",
             specs = "Weight: 720g | Range: 20km | Max speed: 75km/h | Flight time: 46min",
             photoAsset = "drones/dji_air.jpg",
-            wifiPatterns = listOf("DJI-")
+            wifiPatterns = listOf("DJI-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 20f,
+            maxEnduranceMin = 46,
+            maxSpeedKmh = 75f
         ),
         DroneReference(
             id = "skydio2",
@@ -112,7 +197,14 @@ object DroneDatabase {
             description = "US-made autonomous drone with industry-leading obstacle avoidance using six navigation cameras. Popular for autonomous tracking shots.",
             specs = "Weight: 800g | Range: 6km | Max speed: 58km/h | Flight time: 27min",
             photoAsset = "drones/skydio2.jpg",
-            wifiPatterns = listOf("SKYDIO-")
+            wifiPatterns = listOf("SKYDIO-"),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 6f,
+            maxEnduranceMin = 27,
+            maxSpeedKmh = 58f
         ),
         DroneReference(
             id = "skydio_x10",
@@ -122,7 +214,14 @@ object DroneDatabase {
             description = "Enterprise-grade US drone with 65x zoom, thermal imaging, and edge computing. Designed for defense, public safety, and critical infrastructure.",
             specs = "Weight: 2200g | Range: 12km | Max speed: 65km/h | Flight time: 35min",
             photoAsset = "drones/skydio_x10.jpg",
-            wifiPatterns = listOf("SKYDIO-")
+            wifiPatterns = listOf("SKYDIO-"),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.LOW,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 12f,
+            maxEnduranceMin = 35,
+            maxSpeedKmh = 65f
         ),
         DroneReference(
             id = "parrot_anafi",
@@ -132,7 +231,14 @@ object DroneDatabase {
             description = "French-made foldable drone with 180-degree tilt gimbal that can look straight up. Compact and lightweight.",
             specs = "Weight: 320g | Range: 4km | Max speed: 55km/h | Flight time: 25min",
             photoAsset = "drones/parrot_anafi.jpg",
-            wifiPatterns = listOf("PARROT-", "ANAFI-")
+            wifiPatterns = listOf("PARROT-", "ANAFI-"),
+            countryOfOrigin = "France",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 4f,
+            maxEnduranceMin = 25,
+            maxSpeedKmh = 55f
         ),
         DroneReference(
             id = "autel_evo2",
@@ -142,7 +248,14 @@ object DroneDatabase {
             description = "Orange enterprise drone with 6K camera and 1-inch sensor. Strong DJI competitor with longer flight time and US-friendly support.",
             specs = "Weight: 1191g | Range: 9km | Max speed: 72km/h | Flight time: 42min",
             photoAsset = "drones/autel_evo2.jpg",
-            wifiPatterns = listOf("AUTEL-", "EVO-")
+            wifiPatterns = listOf("AUTEL-", "EVO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.LOW,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 9f,
+            maxEnduranceMin = 42,
+            maxSpeedKmh = 72f
         ),
         DroneReference(
             id = "autel_evo_nano",
@@ -152,7 +265,14 @@ object DroneDatabase {
             description = "Sub-250g alternative to DJI Mini series with RYYB sensor for better low-light performance. Three-way obstacle avoidance.",
             specs = "Weight: 249g | Range: 10km | Max speed: 54km/h | Flight time: 28min",
             photoAsset = "drones/autel_evo_nano.jpg",
-            wifiPatterns = listOf("AUTEL-", "EVO-")
+            wifiPatterns = listOf("AUTEL-", "EVO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 10f,
+            maxEnduranceMin = 28,
+            maxSpeedKmh = 54f
         ),
         DroneReference(
             id = "holy_stone",
@@ -162,7 +282,14 @@ object DroneDatabase {
             description = "Budget-friendly GPS drone popular on Amazon. Foldable with 4K camera. Good entry-level option for beginners.",
             specs = "Weight: 460g | Range: 1km | Max speed: 40km/h | Flight time: 26min",
             photoAsset = "drones/holy_stone.jpg",
-            wifiPatterns = listOf("HOLY", "HS-")
+            wifiPatterns = listOf("HOLY", "HS-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 1f,
+            maxEnduranceMin = 26,
+            maxSpeedKmh = 40f
         ),
         DroneReference(
             id = "hubsan",
@@ -172,7 +299,14 @@ object DroneDatabase {
             description = "Budget GPS drone with obstacle avoidance. Sub-250g design at a fraction of DJI pricing.",
             specs = "Weight: 249g | Range: 10km | Max speed: 57km/h | Flight time: 40min",
             photoAsset = "drones/hubsan.jpg",
-            wifiPatterns = listOf("HUBSAN-")
+            wifiPatterns = listOf("HUBSAN-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 10f,
+            maxEnduranceMin = 40,
+            maxSpeedKmh = 57f
         ),
         DroneReference(
             id = "yuneec_typhoon",
@@ -182,7 +316,14 @@ object DroneDatabase {
             description = "Hexacopter with retractable landing gear and 360-degree rotating camera. Six rotors provide redundancy — can land safely with one motor out.",
             specs = "Weight: 1985g | Range: 1.6km | Max speed: 75km/h | Flight time: 28min",
             photoAsset = "drones/yuneec_typhoon.jpg",
-            wifiPatterns = listOf("YUNEEC-", "TYPHOON-")
+            wifiPatterns = listOf("YUNEEC-", "TYPHOON-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 1.6f,
+            maxEnduranceMin = 28,
+            maxSpeedKmh = 75f
         ),
         DroneReference(
             id = "fimi_x8",
@@ -192,7 +333,14 @@ object DroneDatabase {
             description = "Part of the Xiaomi ecosystem. Compact GPS drone with 4K video and 3-axis gimbal at an aggressive price point.",
             specs = "Weight: 258g | Range: 8km | Max speed: 57km/h | Flight time: 31min",
             photoAsset = "drones/fimi_x8.jpg",
-            wifiPatterns = listOf("FIMI-", "XIAOMI-")
+            wifiPatterns = listOf("FIMI-", "XIAOMI-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 8f,
+            maxEnduranceMin = 31,
+            maxSpeedKmh = 57f
         ),
         DroneReference(
             id = "hoverair_x1",
@@ -202,7 +350,14 @@ object DroneDatabase {
             description = "Palm-sized selfie drone that takes off from your hand. No controller needed — fully autonomous flight paths for social media content.",
             specs = "Weight: 125g | Range: 30m | Max speed: 25km/h | Flight time: 11min",
             photoAsset = "drones/hoverair_x1.jpg",
-            wifiPatterns = listOf("HOVERAIR", "HOVER-", "HOVER AIR", "HOVER_AIR")
+            wifiPatterns = listOf("HOVERAIR", "HOVER-", "HOVER AIR", "HOVER_AIR"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 0.03f,
+            maxEnduranceMin = 11,
+            maxSpeedKmh = 25f
         ),
         DroneReference(
             id = "hoverair_x1_pro",
@@ -213,7 +368,14 @@ object DroneDatabase {
                 "Longer range and flight time than X1. May support FAA Remote ID via firmware update.",
             specs = "Weight: 135g | Range: 100m | Max speed: 36km/h | Flight time: 18min | WiFi 6 | 4K HDR",
             photoAsset = "drones/hoverair_x1.jpg",
-            wifiPatterns = listOf("HOVERAIR", "HOVER-", "X1PRO", "X1-PRO", "X1 PRO")
+            wifiPatterns = listOf("HOVERAIR", "HOVER-", "X1PRO", "X1-PRO", "X1 PRO"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 0.1f,
+            maxEnduranceMin = 18,
+            maxSpeedKmh = 36f
         ),
         DroneReference(
             id = "tello",
@@ -223,7 +385,14 @@ object DroneDatabase {
             description = "Mini educational drone powered by DJI flight tech. Programmable via Scratch and Python. Popular for STEM education.",
             specs = "Weight: 80g | Range: 100m | Max speed: 28km/h | Flight time: 13min",
             photoAsset = "drones/tello.jpg",
-            wifiPatterns = listOf("TELLO-")
+            wifiPatterns = listOf("TELLO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.1f,
+            maxEnduranceMin = 13,
+            maxSpeedKmh = 28f
         ),
 
         // ── Budget & FPV Drones ──
@@ -235,7 +404,14 @@ object DroneDatabase {
             description = "Budget foldable GPS drone with 4K camera and brushless motors. Popular Amazon best-seller for beginners with follow-me and return-to-home.",
             specs = "Weight: 450g | Range: 1km | Max speed: 36km/h | Flight time: 26min",
             photoAsset = "drones/snaptain_sp7100.jpg",
-            wifiPatterns = listOf("SNAPTAIN-")
+            wifiPatterns = listOf("SNAPTAIN-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 1f,
+            maxEnduranceMin = 26,
+            maxSpeedKmh = 36f
         ),
         DroneReference(
             id = "potensic_dreamer_pro",
@@ -245,7 +421,14 @@ object DroneDatabase {
             description = "Mid-range GPS drone with 3-axis gimbal and Sony sensor. Offers features typically found in higher-priced drones at a budget-friendly price point.",
             specs = "Weight: 770g | Range: 2km | Max speed: 43km/h | Flight time: 28min",
             photoAsset = "drones/potensic_dreamer_pro.jpg",
-            wifiPatterns = listOf("POTENSIC-")
+            wifiPatterns = listOf("POTENSIC-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 2f,
+            maxEnduranceMin = 28,
+            maxSpeedKmh = 43f
         ),
         DroneReference(
             id = "ruko_f11_gim2",
@@ -255,7 +438,14 @@ object DroneDatabase {
             description = "Budget GPS drone with 2-axis gimbal and 4K camera. Long flight time and stable hovering make it popular for casual aerial photography.",
             specs = "Weight: 540g | Range: 3km | Max speed: 40km/h | Flight time: 28min",
             photoAsset = "drones/ruko_f11_gim2.jpg",
-            wifiPatterns = listOf("RUKO-")
+            wifiPatterns = listOf("RUKO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 3f,
+            maxEnduranceMin = 28,
+            maxSpeedKmh = 40f
         ),
         DroneReference(
             id = "syma_x500",
@@ -265,7 +455,14 @@ object DroneDatabase {
             description = "Beginner-friendly GPS drone with 4K camera and optical flow positioning. One of the most affordable GPS drones available. Good for learning to fly.",
             specs = "Weight: 370g | Range: 500m | Max speed: 32km/h | Flight time: 20min",
             photoAsset = "drones/syma_x500.jpg",
-            wifiPatterns = listOf("SYMA-")
+            wifiPatterns = listOf("SYMA-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 0.5f,
+            maxEnduranceMin = 20,
+            maxSpeedKmh = 32f
         ),
         DroneReference(
             id = "eachine_e520s",
@@ -275,7 +472,14 @@ object DroneDatabase {
             description = "Ultra-budget foldable drone resembling a mini Mavic. WiFi FPV with 4K camera. Extremely popular entry-level drone sold under many brand names including E58, E88, and E99 variants.",
             specs = "Weight: 270g | Range: 300m | Max speed: 30km/h | Flight time: 16min",
             photoAsset = "drones/eachine_e520s.jpg",
-            wifiPatterns = listOf("EACHINE-", "E58-", "E88-", "E99-")
+            wifiPatterns = listOf("EACHINE-", "E58-", "E88-", "E99-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.3f,
+            maxEnduranceMin = 16,
+            maxSpeedKmh = 30f
         ),
         DroneReference(
             id = "jjrc_x20",
@@ -285,7 +489,14 @@ object DroneDatabase {
             description = "Budget GPS drone with 3-axis gimbal and EIS stabilization. JJRC is one of the largest Chinese drone brands, offering DJI-like features at a fraction of the price.",
             specs = "Weight: 560g | Range: 1.2km | Max speed: 40km/h | Flight time: 25min",
             photoAsset = "drones/jjrc_x20.jpg",
-            wifiPatterns = listOf("JJRC-")
+            wifiPatterns = listOf("JJRC-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 1.2f,
+            maxEnduranceMin = 25,
+            maxSpeedKmh = 40f
         ),
         DroneReference(
             id = "mjx_bugs_16_pro",
@@ -295,7 +506,14 @@ object DroneDatabase {
             description = "Budget GPS drone with 3-axis EIS and 4K camera. The Bugs series is well-known in the budget drone community for offering solid GPS performance at low cost.",
             specs = "Weight: 520g | Range: 1.6km | Max speed: 43km/h | Flight time: 28min",
             photoAsset = "drones/mjx_bugs_16_pro.jpg",
-            wifiPatterns = listOf("MJX-")
+            wifiPatterns = listOf("MJX-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 1.6f,
+            maxEnduranceMin = 28,
+            maxSpeedKmh = 43f
         ),
         DroneReference(
             id = "visuo_xs816",
@@ -305,7 +523,14 @@ object DroneDatabase {
             description = "Ultra-budget foldable drone with dual cameras and optical flow. Known as one of the cheapest drones with gesture control and V-sign selfie mode.",
             specs = "Weight: 200g | Range: 100m | Max speed: 25km/h | Flight time: 15min",
             photoAsset = "drones/visuo_xs816.jpg",
-            wifiPatterns = listOf("VISUO-")
+            wifiPatterns = listOf("VISUO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.1f,
+            maxEnduranceMin = 15,
+            maxSpeedKmh = 25f
         ),
         DroneReference(
             id = "sjrc_f22s_4k_pro",
@@ -315,7 +540,14 @@ object DroneDatabase {
             description = "Budget GPS drone with laser obstacle avoidance and 2-axis gimbal. SJRC offers competitive features at budget pricing including 3.5km range.",
             specs = "Weight: 520g | Range: 3.5km | Max speed: 43km/h | Flight time: 35min",
             photoAsset = "drones/sjrc_f22s_4k_pro.jpg",
-            wifiPatterns = listOf("SJRC-")
+            wifiPatterns = listOf("SJRC-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 3.5f,
+            maxEnduranceMin = 35,
+            maxSpeedKmh = 43f
         ),
         DroneReference(
             id = "4drc_f13",
@@ -325,7 +557,14 @@ object DroneDatabase {
             description = "Budget foldable drone with brushless motors and GPS. 4DRC is a fast-growing budget brand on Amazon known for aggressive pricing and frequent new models.",
             specs = "Weight: 400g | Range: 1km | Max speed: 36km/h | Flight time: 24min",
             photoAsset = "drones/4drc_f13.jpg",
-            wifiPatterns = listOf("4DRC-")
+            wifiPatterns = listOf("4DRC-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 1f,
+            maxEnduranceMin = 24,
+            maxSpeedKmh = 36f
         ),
         DroneReference(
             id = "wingsland_s6",
@@ -335,7 +574,14 @@ object DroneDatabase {
             description = "Pocket-sized foldable drone with modular accessories. Supports swappable attachments including searchlight, emoji display, and water gun modules.",
             specs = "Weight: 230g | Range: 100m | Max speed: 32km/h | Flight time: 10min",
             photoAsset = "drones/wingsland_s6.jpg",
-            wifiPatterns = listOf("WINGSLAND-")
+            wifiPatterns = listOf("WINGSLAND-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.1f,
+            maxEnduranceMin = 10,
+            maxSpeedKmh = 32f
         ),
         DroneReference(
             id = "betafpv_cetus_pro",
@@ -345,7 +591,14 @@ object DroneDatabase {
             description = "Beginner FPV whoop drone with altitude hold and turtle mode. Part of the popular Cetus FPV training kit with goggles and radio. Ducted propellers for safe indoor flying.",
             specs = "Weight: 33g | Range: 200m | Max speed: 40km/h | Flight time: 5min",
             photoAsset = "drones/betafpv_cetus_pro.jpg",
-            wifiPatterns = listOf("BETAFPV-")
+            wifiPatterns = listOf("BETAFPV-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.2f,
+            maxEnduranceMin = 5,
+            maxSpeedKmh = 40f
         ),
         DroneReference(
             id = "geprc_cinelog35",
@@ -355,7 +608,13 @@ object DroneDatabase {
             description = "Popular 3.5-inch cinewhoop for smooth cinematic FPV footage. Ducted propellers reduce noise and improve safety. Carries GoPro or similar action cameras.",
             specs = "Weight: 200g (no battery) | Max speed: 100km/h | Flight time: 8min",
             photoAsset = "drones/geprc_cinelog35.jpg",
-            wifiPatterns = listOf("GEPRC-")
+            wifiPatterns = listOf("GEPRC-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxEnduranceMin = 8,
+            maxSpeedKmh = 100f
         ),
         DroneReference(
             id = "emax_tinyhawk3",
@@ -365,7 +624,14 @@ object DroneDatabase {
             description = "Micro FPV racing quad for indoor and outdoor flying. Third generation of the iconic Tinyhawk series. Great trainer for learning FPV flying skills.",
             specs = "Weight: 37g | Range: 200m | Max speed: 50km/h | Flight time: 5min",
             photoAsset = "drones/emax_tinyhawk3.jpg",
-            wifiPatterns = listOf("EMAX-")
+            wifiPatterns = listOf("EMAX-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.2f,
+            maxEnduranceMin = 5,
+            maxSpeedKmh = 50f
         ),
         DroneReference(
             id = "iflight_nazgul5_v3",
@@ -375,7 +641,13 @@ object DroneDatabase {
             description = "5-inch freestyle FPV quad known for durability and performance. The Nazgul series is a community favorite for aggressive freestyle flying and racing.",
             specs = "Weight: 380g (no battery) | Max speed: 160km/h | Flight time: 6min",
             photoAsset = "drones/iflight_nazgul5_v3.jpg",
-            wifiPatterns = listOf("IFLIGHT-")
+            wifiPatterns = listOf("IFLIGHT-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxEnduranceMin = 6,
+            maxSpeedKmh = 160f
         ),
         DroneReference(
             id = "walkera_vitus_320",
@@ -385,7 +657,14 @@ object DroneDatabase {
             description = "Compact foldable drone with obstacle avoidance and 4K camera. Walkera was a pioneering Chinese drone brand known for the QR X350 and later Vitus series.",
             specs = "Weight: 480g | Range: 2km | Max speed: 54km/h | Flight time: 20min",
             photoAsset = "drones/walkera_vitus_320.jpg",
-            wifiPatterns = listOf("WALKERA-")
+            wifiPatterns = listOf("WALKERA-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 2f,
+            maxEnduranceMin = 20,
+            maxSpeedKmh = 54f
         ),
         DroneReference(
             id = "blade_inductrix_fpv",
@@ -395,7 +674,14 @@ object DroneDatabase {
             description = "Tiny ducted whoop drone from Blade/Horizon Hobby. One of the first popular micro FPV quads. Safe indoor flyer with prop guards for beginners.",
             specs = "Weight: 30g | Range: 50m | Max speed: 25km/h | Flight time: 4min",
             photoAsset = "drones/blade_inductrix_fpv.jpg",
-            wifiPatterns = listOf("BLADE-")
+            wifiPatterns = listOf("BLADE-"),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.05f,
+            maxEnduranceMin = 4,
+            maxSpeedKmh = 25f
         ),
         DroneReference(
             id = "flywoo_explorer_lr",
@@ -405,7 +691,13 @@ object DroneDatabase {
             description = "Long-range FPV quad designed for cinematic exploration. Efficient design with long flight times for an FPV drone. Popular for mountain and landscape cruising.",
             specs = "Weight: 210g (no battery) | Max speed: 100km/h | Flight time: 15min",
             photoAsset = "drones/flywoo_explorer_lr.jpg",
-            wifiPatterns = listOf("FLYWOO-")
+            wifiPatterns = listOf("FLYWOO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxEnduranceMin = 15,
+            maxSpeedKmh = 100f
         ),
 
         // ── Military / Threat Drones ──
@@ -417,7 +709,16 @@ object DroneDatabase {
             description = "Iranian-made delta-wing kamikaze drone used extensively in the Russia-Ukraine war. Cheap, mass-produced one-way attack drone with GPS guidance. Flies in swarms to overwhelm air defenses.",
             specs = "Weight: 200kg | Range: 2500km | Max speed: 185km/h | Warhead: 40-50kg",
             photoAsset = "drones/shahed_136.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Iran",
+            riskLevel = RiskLevel.RESTRICTED,
+            threatClassification = ThreatClassification.LOITERING_MUNITION,
+            sanctionedManufacturer = true,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            swarmCapable = true,
+            maxRangeKm = 2500f,
+            maxSpeedKmh = 185f,
+            operationalHistory = "Extensively used by Russia against Ukraine since 2022. Originally developed for use in Yemen and Iraq. Mass-produced at low cost to overwhelm air defenses through saturation attacks."
         ),
         DroneReference(
             id = "shahed_129",
@@ -427,7 +728,16 @@ object DroneDatabase {
             description = "Iranian medium-altitude long-endurance (MALE) drone for surveillance and strike. Resembles the MQ-1 Predator. Can carry Sadid precision-guided munitions.",
             specs = "Weight: 450kg | Range: 1700km | Max speed: 200km/h | Endurance: 24h",
             photoAsset = "drones/shahed_129.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Iran",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            sanctionedManufacturer = true,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 1700f,
+            maxEnduranceMin = 1440,
+            maxSpeedKmh = 200f,
+            operationalHistory = "Deployed in Syria by Iranian forces. Claimed to have been used for reconnaissance and strike missions. One shot down over Israel in 2018."
         ),
         DroneReference(
             id = "mohajer_6",
@@ -437,7 +747,16 @@ object DroneDatabase {
             description = "Iranian tactical reconnaissance and strike drone. Twin-boom pusher configuration. Exported to several countries and used in multiple conflicts.",
             specs = "Weight: 670kg | Range: 200km | Max speed: 200km/h | Endurance: 12h",
             photoAsset = "drones/mohajer_6.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Iran",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            sanctionedManufacturer = true,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 200f,
+            maxEnduranceMin = 720,
+            maxSpeedKmh = 200f,
+            operationalHistory = "Used by Iran in multiple Middle East conflicts. Supplied to Russia for use in Ukraine. Capable of carrying precision-guided munitions."
         ),
         DroneReference(
             id = "bayraktar_tb2",
@@ -447,7 +766,15 @@ object DroneDatabase {
             description = "Turkish tactical UCAV that proved devastating in Libya, Nagorno-Karabakh, and Ukraine. Carries laser-guided MAM munitions. Changed modern warfare doctrine.",
             specs = "Weight: 650kg | Range: 150km | Max speed: 220km/h | Endurance: 27h",
             photoAsset = "drones/bayraktar_tb2.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Turkey",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_STRIKE,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 150f,
+            maxEnduranceMin = 1620,
+            maxSpeedKmh = 220f,
+            operationalHistory = "Decisive in 2020 Nagorno-Karabakh war, destroying Armenian armor and air defenses. Used in Libya, Syria, and Ukraine. Became a symbol of Turkish defense industry success."
         ),
         DroneReference(
             id = "bayraktar_akinci",
@@ -457,7 +784,16 @@ object DroneDatabase {
             description = "Turkish heavy UCAV with twin engines and AI-assisted targeting. Can carry cruise missiles and SOM-J standoff munitions. Next generation after TB2.",
             specs = "Weight: 5500kg | Range: 300km | Max speed: 361km/h | Endurance: 24h | Ceiling: 40,000ft",
             photoAsset = "drones/bayraktar_akinci.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Turkey",
+            riskLevel = RiskLevel.RESTRICTED,
+            threatClassification = ThreatClassification.MILITARY_STRIKE,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 300f,
+            maxEnduranceMin = 1440,
+            maxSpeedKmh = 361f,
+            maxAltitudeM = 12192,
+            operationalHistory = "Entered service with Turkish Armed Forces in 2021. Capable of carrying cruise missiles for standoff strike. Represents Turkey's most advanced UCAV platform."
         ),
         DroneReference(
             id = "orion_uav",
@@ -467,7 +803,16 @@ object DroneDatabase {
             description = "Russian medium-altitude reconnaissance and strike drone. Used in Ukraine for surveillance and precision strikes with guided munitions.",
             specs = "Weight: 1000kg | Range: 250km | Max speed: 200km/h | Endurance: 24h",
             photoAsset = "drones/orion_uav.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Russia",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            sanctionedManufacturer = true,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 250f,
+            maxEnduranceMin = 1440,
+            maxSpeedKmh = 200f,
+            operationalHistory = "Deployed in Syria for combat testing. Used in Ukraine for ISR and strike missions. Russia's primary indigenous MALE drone platform."
         ),
         DroneReference(
             id = "lancet",
@@ -477,7 +822,15 @@ object DroneDatabase {
             description = "Russian loitering munition used extensively in Ukraine. Small, cheap kamikaze drone with TV/IR seeker. Effective against artillery, vehicles, and trenches.",
             specs = "Weight: 12kg | Range: 40km | Max speed: 110km/h | Warhead: 3-5kg",
             photoAsset = "drones/lancet.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Russia",
+            riskLevel = RiskLevel.RESTRICTED,
+            threatClassification = ThreatClassification.LOITERING_MUNITION,
+            sanctionedManufacturer = true,
+            autonomyLevel = AutonomyLevel.LOITERING,
+            maxRangeKm = 40f,
+            maxSpeedKmh = 110f,
+            operationalHistory = "Widely used by Russia in Ukraine since 2022 against artillery, vehicles, and fortifications. AI-enhanced target recognition in later variants. One of Russia's most effective precision weapons."
         ),
         DroneReference(
             id = "wing_loong",
@@ -487,7 +840,15 @@ object DroneDatabase {
             description = "Chinese MALE UCAV exported widely as an affordable MQ-9 alternative. Used by UAE, Saudi Arabia, Egypt, Pakistan, and others.",
             specs = "Weight: 4200kg | Range: 4000km | Max speed: 370km/h | Endurance: 32h",
             photoAsset = "drones/wing_loong.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_STRIKE,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 4000f,
+            maxEnduranceMin = 1920,
+            maxSpeedKmh = 370f,
+            operationalHistory = "Widely exported as affordable MQ-9 alternative. Used by UAE and Saudi Arabia in Yemen conflict. Operated by Egypt, Pakistan, Kazakhstan, and others."
         ),
         DroneReference(
             id = "mq9_reaper",
@@ -497,7 +858,16 @@ object DroneDatabase {
             description = "Primary US military hunter-killer drone. Carries Hellfire missiles and precision bombs. Used extensively in counter-terrorism operations worldwide.",
             specs = "Weight: 4760kg | Range: 1850km | Max speed: 482km/h | Endurance: 27h | Ceiling: 50,000ft",
             photoAsset = "drones/mq9_reaper.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_STRIKE,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 1850f,
+            maxEnduranceMin = 1620,
+            maxSpeedKmh = 482f,
+            maxAltitudeM = 15240,
+            operationalHistory = "Primary US hunter-killer drone since 2007. Used in Afghanistan, Iraq, Syria, Yemen, Somalia. Over 2 million flight hours. Responsible for numerous high-value target strikes."
         ),
         DroneReference(
             id = "mq1_predator",
@@ -507,7 +877,15 @@ object DroneDatabase {
             description = "The drone that started it all. Originally designed for reconnaissance, later armed with Hellfire missiles. Retired from USAF in 2018 but still in use by other countries.",
             specs = "Weight: 1020kg | Range: 1240km | Max speed: 217km/h | Endurance: 24h",
             photoAsset = "drones/mq1_predator.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 1240f,
+            maxEnduranceMin = 1440,
+            maxSpeedKmh = 217f,
+            operationalHistory = "Pioneered armed drone warfare. First armed strike in 2001 in Afghanistan. Used extensively in War on Terror. Retired from USAF in 2018, replaced by MQ-9 Reaper."
         ),
         DroneReference(
             id = "rq4_global_hawk",
@@ -517,7 +895,16 @@ object DroneDatabase {
             description = "High-altitude, long-endurance ISR platform. Flies at 60,000ft for 30+ hours. Provides wide-area surveillance with synthetic aperture radar and electro-optical sensors.",
             specs = "Weight: 14628kg | Range: 22,780km | Max speed: 629km/h | Endurance: 34h | Ceiling: 60,000ft",
             photoAsset = "drones/rq4_global_hawk.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 22780f,
+            maxEnduranceMin = 2040,
+            maxSpeedKmh = 629f,
+            maxAltitudeM = 18288,
+            operationalHistory = "Primary US high-altitude ISR platform since 2001. Used by USAF, NATO, Japan, South Korea, and Australia. One shot down by Iran over Strait of Hormuz in 2019."
         ),
         DroneReference(
             id = "switchblade",
@@ -527,7 +914,15 @@ object DroneDatabase {
             description = "US-made tube-launched loitering munition. Backpack-portable. Can loiter for 40+ minutes before striking armored vehicles. Sent to Ukraine in large numbers.",
             specs = "Weight: 23kg | Range: 40km | Max speed: 185km/h | Loiter: 40min | Warhead: anti-armor",
             photoAsset = "drones/switchblade.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.LOITERING_MUNITION,
+            autonomyLevel = AutonomyLevel.LOITERING,
+            maxRangeKm = 40f,
+            maxEnduranceMin = 40,
+            maxSpeedKmh = 185f,
+            operationalHistory = "Supplied to Ukraine in significant numbers since 2022. Anti-armor variant designed to defeat tanks and armored vehicles. Operator-in-the-loop guidance."
         ),
         DroneReference(
             id = "heron",
@@ -537,7 +932,15 @@ object DroneDatabase {
             description = "Israeli MALE drone widely exported and used by India, Germany, Australia, Turkey, and others. Long endurance with multi-sensor payload.",
             specs = "Weight: 1150kg | Range: 1000km | Max speed: 207km/h | Endurance: 45h",
             photoAsset = "drones/heron.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Israel",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 1000f,
+            maxEnduranceMin = 2700,
+            maxSpeedKmh = 207f,
+            operationalHistory = "Operated by India, Germany, Australia, Turkey, Brazil, and others. Used extensively for ISR in multiple conflicts. German Bundeswehr operated Heron TP in Afghanistan."
         ),
 
         // ── New Consumer Drones ──
@@ -549,7 +952,14 @@ object DroneDatabase {
             description = "Ultra-compact palm-sized drone under 135g. Controller-free AI flight modes for selfies and vlogging. Takes off from your hand and returns automatically.",
             specs = "Weight: 135g | Range: 6km | Max speed: 33km/h | Flight time: 18min",
             photoAsset = "drones/dji_neo.jpg",
-            wifiPatterns = listOf("DJI-", "NEO-")
+            wifiPatterns = listOf("DJI-", "NEO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 6f,
+            maxEnduranceMin = 18,
+            maxSpeedKmh = 33f
         ),
         DroneReference(
             id = "dji_mini3",
@@ -559,7 +969,14 @@ object DroneDatabase {
             description = "Budget sub-250g drone with true vertical shooting for social media. No obstacle avoidance but lightweight and affordable. Great for beginners.",
             specs = "Weight: 248g | Range: 10km | Max speed: 57km/h | Flight time: 38min",
             photoAsset = "drones/dji_mini3.jpg",
-            wifiPatterns = listOf("DJI-", "MINI-")
+            wifiPatterns = listOf("DJI-", "MINI-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 10f,
+            maxEnduranceMin = 38,
+            maxSpeedKmh = 57f
         ),
         DroneReference(
             id = "dji_mavic_air2s",
@@ -569,7 +986,14 @@ object DroneDatabase {
             description = "Compact foldable drone with 1-inch sensor and 5.4K video. MasterShots automated cinematography. Four-directional obstacle sensing. Popular prosumer choice.",
             specs = "Weight: 595g | Range: 18.5km | Max speed: 68km/h | Flight time: 31min",
             photoAsset = "drones/dji_mavic_air2s.jpg",
-            wifiPatterns = listOf("DJI-")
+            wifiPatterns = listOf("DJI-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 18.5f,
+            maxEnduranceMin = 31,
+            maxSpeedKmh = 68f
         ),
         DroneReference(
             id = "dji_air2",
@@ -579,7 +1003,14 @@ object DroneDatabase {
             description = "Predecessor to Air 2S. 48MP photos, 4K/60fps video, and FocusTrack subject tracking. Solid mid-range option that brought pro features to a compact form factor.",
             specs = "Weight: 570g | Range: 18.5km | Max speed: 68km/h | Flight time: 34min",
             photoAsset = "drones/dji_air2.jpg",
-            wifiPatterns = listOf("DJI-")
+            wifiPatterns = listOf("DJI-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 18.5f,
+            maxEnduranceMin = 34,
+            maxSpeedKmh = 68f
         ),
         DroneReference(
             id = "parrot_bebop2",
@@ -589,7 +1020,14 @@ object DroneDatabase {
             description = "French-made GPS drone with fish-eye camera and digital stabilization. Lightweight at 500g with FPV goggle support. Now discontinued but still flown by enthusiasts.",
             specs = "Weight: 500g | Range: 2km | Max speed: 60km/h | Flight time: 25min",
             photoAsset = "drones/parrot_bebop2.jpg",
-            wifiPatterns = listOf("PARROT-", "BEBOP-")
+            wifiPatterns = listOf("PARROT-", "BEBOP-"),
+            countryOfOrigin = "France",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 2f,
+            maxEnduranceMin = 25,
+            maxSpeedKmh = 60f
         ),
         DroneReference(
             id = "skydio_x2",
@@ -599,7 +1037,14 @@ object DroneDatabase {
             description = "US-made enterprise drone with dual thermal/visual cameras. Foldable, rucksack-portable. Used by US Army Short Range Reconnaissance program. AI-powered autonomy.",
             specs = "Weight: 1500g | Range: 6km | Max speed: 58km/h | Flight time: 35min",
             photoAsset = "drones/skydio_x2.jpg",
-            wifiPatterns = listOf("SKYDIO-")
+            wifiPatterns = listOf("SKYDIO-"),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.LOW,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 6f,
+            maxEnduranceMin = 35,
+            maxSpeedKmh = 58f
         ),
 
         // ── New Enterprise Drones ──
@@ -611,7 +1056,14 @@ object DroneDatabase {
             description = "Multi-sensor enterprise drone with wide, zoom, thermal, and laser rangefinder cameras. Omnidirectional obstacle avoidance. Built for public safety and inspection.",
             specs = "Weight: 1164g | Range: 20km | Max speed: 75km/h | Flight time: 42min",
             photoAsset = "drones/autel_evo_max4t.jpg",
-            wifiPatterns = listOf("AUTEL-", "EVO-")
+            wifiPatterns = listOf("AUTEL-", "EVO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.LOW,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 20f,
+            maxEnduranceMin = 42,
+            maxSpeedKmh = 75f
         ),
         DroneReference(
             id = "autel_dragonfish",
@@ -621,7 +1073,14 @@ object DroneDatabase {
             description = "Fixed-wing VTOL drone for long-range mapping and surveillance. Transitions between hover and forward flight. Up to 126 minutes flight time with 18km range.",
             specs = "Weight: 9kg | Range: 18km | Max speed: 108km/h | Flight time: 126min",
             photoAsset = "drones/autel_dragonfish.jpg",
-            wifiPatterns = listOf("AUTEL-")
+            wifiPatterns = listOf("AUTEL-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.MEDIUM,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 18f,
+            maxEnduranceMin = 126,
+            maxSpeedKmh = 108f
         ),
         DroneReference(
             id = "dji_agras_t40",
@@ -631,7 +1090,13 @@ object DroneDatabase {
             description = "Large agricultural spray drone with 40L tank and 20m spray width. Coaxial twin-rotor design. Spreads granular fertilizer and pesticide with precision. Leading ag-drone worldwide.",
             specs = "Weight: 52kg (loaded) | Spray rate: 16L/min | Max speed: 41km/h | Flight time: ~10min (loaded)",
             photoAsset = "drones/dji_agras_t40.jpg",
-            wifiPatterns = listOf("DJI-", "AGRAS-")
+            wifiPatterns = listOf("DJI-", "AGRAS-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.LOW,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxEnduranceMin = 10,
+            maxSpeedKmh = 41f
         ),
         DroneReference(
             id = "wingtraone",
@@ -641,7 +1106,14 @@ object DroneDatabase {
             description = "Swiss-made VTOL mapping drone with PPK/RTK survey-grade accuracy. Tailsitter design — takes off vertically, transitions to fixed-wing for efficient long-range mapping.",
             specs = "Weight: 4.5kg | Range: 70km | Max speed: 120km/h | Flight time: 59min",
             photoAsset = "drones/wingtraone.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Switzerland",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 70f,
+            maxEnduranceMin = 59,
+            maxSpeedKmh = 120f
         ),
         DroneReference(
             id = "zipline_p2",
@@ -651,7 +1123,13 @@ object DroneDatabase {
             description = "Autonomous delivery drone used for medical supply drops in Rwanda, Ghana, and US. Launches from catapult, drops packages by parachute. Over 1 million deliveries made.",
             specs = "Weight: 20kg | Range: 160km round-trip | Max speed: 128km/h | Payload: 1.8kg",
             photoAsset = "drones/zipline_p2.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 80f,
+            maxSpeedKmh = 128f
         ),
         DroneReference(
             id = "wing_delivery",
@@ -661,7 +1139,13 @@ object DroneDatabase {
             description = "Autonomous delivery drone from Google's parent company. Lowers packages on a tether from hover. Operating commercially in Australia, Finland, and parts of the US.",
             specs = "Weight: 5.2kg | Range: 12km | Max speed: 113km/h | Payload: 1.2kg",
             photoAsset = "drones/wing_delivery.jpg",
-            wifiPatterns = listOf("WING-")
+            wifiPatterns = listOf("WING-"),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 12f,
+            maxSpeedKmh = 113f
         ),
 
         // ── New Military Drones ──
@@ -673,7 +1157,14 @@ object DroneDatabase {
             description = "US Navy's first carrier-based unmanned tanker. Refuels F/A-18s and F-35Cs in flight, extending carrier air wing range by up to 700nm. Stealthy flying-wing design.",
             specs = "Weight: 20,200kg | Range: 900km | Max speed: 890km/h | Fuel offload: 6,800kg",
             photoAsset = "drones/mq25_stingray.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 900f,
+            maxSpeedKmh = 890f,
+            operationalHistory = "First successful autonomous aerial refueling of an F/A-18 in 2021. Under development for US Navy carrier operations. Will be the first operational carrier-based unmanned aircraft."
         ),
         DroneReference(
             id = "mq1c_gray_eagle",
@@ -683,7 +1174,15 @@ object DroneDatabase {
             description = "US Army's primary ISR and strike UAS. Extended-range Predator derivative with heavier payload and longer endurance. Carries Hellfire missiles and GBU-44 Viper Strike.",
             specs = "Weight: 1633kg | Range: 400km | Max speed: 280km/h | Endurance: 25h",
             photoAsset = "drones/mq1c_gray_eagle.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 400f,
+            maxEnduranceMin = 1500,
+            maxSpeedKmh = 280f,
+            operationalHistory = "US Army's primary medium-altitude UAS. Deployed in Iraq and Afghanistan. Extended-range variant offered to Ukraine. Carries Hellfire missiles and Viper Strike munitions."
         ),
         DroneReference(
             id = "mq4c_triton",
@@ -693,7 +1192,16 @@ object DroneDatabase {
             description = "Naval variant of Global Hawk for maritime ISR. Flies at 56,000ft for 24+ hours, covering 7 million square km per mission. Provides persistent maritime domain awareness.",
             specs = "Weight: 14,628kg | Range: 15,186km | Max speed: 611km/h | Endurance: 24h | Ceiling: 56,000ft",
             photoAsset = "drones/mq4c_triton.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 15186f,
+            maxEnduranceMin = 1440,
+            maxSpeedKmh = 611f,
+            maxAltitudeM = 17069,
+            operationalHistory = "US Navy maritime surveillance platform. Achieved Initial Operational Capability in 2023. Ordered by Australia for maritime patrol. Complements P-8 Poseidon."
         ),
         DroneReference(
             id = "xq58_valkyrie",
@@ -703,7 +1211,14 @@ object DroneDatabase {
             description = "Low-cost attritable autonomous combat drone. Designed as 'loyal wingman' to accompany manned fighters. Subsonic, stealthy, and expendable. Can carry JDAMs and small-diameter bombs.",
             specs = "Weight: 2,722kg | Range: 3,941km | Max speed: Mach 0.85 | Ceiling: 45,000ft",
             photoAsset = "drones/xq58_valkyrie.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_STRIKE,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 3941f,
+            maxAltitudeM = 13716,
+            operationalHistory = "First flight in 2019. Part of USAF's autonomous Collaborative Combat Aircraft (CCA) program. Successfully launched an ALTIUS-600 drone from its weapons bay in flight."
         ),
         DroneReference(
             id = "bayraktar_tb3",
@@ -713,7 +1228,15 @@ object DroneDatabase {
             description = "Carrier-capable evolution of TB2 with folding wings for naval operations. Designed for Turkey's TCG Anadolu amphibious assault ship. STOL capability for short flight decks.",
             specs = "Weight: 1450kg | Range: 185km | Max speed: 260km/h | Endurance: 24h",
             photoAsset = "drones/bayraktar_tb3.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Turkey",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_STRIKE,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 185f,
+            maxEnduranceMin = 1440,
+            maxSpeedKmh = 260f,
+            operationalHistory = "First flight in 2023. Designed for carrier operations on TCG Anadolu. Folding wings for naval storage. Successor to combat-proven TB2."
         ),
         DroneReference(
             id = "anka_s",
@@ -723,7 +1246,15 @@ object DroneDatabase {
             description = "Turkish MALE UCAV with satellite communication link for beyond-line-of-sight operations. Carries MAM-L smart munitions. Used by Turkish Armed Forces and exported to Tunisia and others.",
             specs = "Weight: 1685kg | Range: 200km | Max speed: 218km/h | Endurance: 24h",
             photoAsset = "drones/anka_s.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Turkey",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_STRIKE,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 200f,
+            maxEnduranceMin = 1440,
+            maxSpeedKmh = 218f,
+            operationalHistory = "Used by Turkish Armed Forces in Syria and Libya. SATCOM-equipped for BLOS operations. Exported to Tunisia and other countries."
         ),
         DroneReference(
             id = "rq170_sentinel",
@@ -733,7 +1264,13 @@ object DroneDatabase {
             description = "Stealthy flying-wing ISR drone nicknamed 'Beast of Kandahar.' Used in the Osama bin Laden raid. One captured by Iran in 2011. Very little officially confirmed about its capabilities.",
             specs = "Wingspan: ~20m | Ceiling: >50,000ft | Details classified",
             photoAsset = "drones/rq170_sentinel.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxAltitudeM = 15240,
+            operationalHistory = "Used to surveil Osama bin Laden's compound in Abbottabad prior to the 2011 raid. One captured intact by Iran in December 2011 after GPS spoofing. Highly classified program."
         ),
         DroneReference(
             id = "shahed_238",
@@ -743,7 +1280,16 @@ object DroneDatabase {
             description = "Jet-powered evolution of the Shahed-136. Significantly faster and harder to intercept than the propeller-driven 136. Multiple guidance options including IR seeker for anti-ship role.",
             specs = "Weight: ~200kg | Range: 1500km (est.) | Max speed: 600km/h | Warhead: ~40kg",
             photoAsset = "drones/shahed_238.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Iran",
+            riskLevel = RiskLevel.RESTRICTED,
+            threatClassification = ThreatClassification.LOITERING_MUNITION,
+            sanctionedManufacturer = true,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            swarmCapable = true,
+            maxRangeKm = 1500f,
+            maxSpeedKmh = 600f,
+            operationalHistory = "Jet-powered successor to Shahed-136. Unveiled in 2023. Multiple guidance modes including IR seeker for anti-ship role. Significantly harder to intercept due to jet speed."
         ),
 
         // ── Loitering Munitions (additional) ──
@@ -755,7 +1301,16 @@ object DroneDatabase {
             description = "Anti-radiation loitering munition designed to detect and destroy radar emitters. Launched from a truck-mounted container, it autonomously seeks enemy air defense radars. Exported to China, India, South Korea, and Turkey.",
             specs = "Weight: 135kg | Range: 500km | Max speed: 185km/h | Warhead: 32kg | Loiter: 2.5h",
             photoAsset = "drones/harpy.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Israel",
+            riskLevel = RiskLevel.RESTRICTED,
+            threatClassification = ThreatClassification.LOITERING_MUNITION,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            swarmCapable = true,
+            maxRangeKm = 500f,
+            maxEnduranceMin = 150,
+            maxSpeedKmh = 185f,
+            operationalHistory = "In service since 1994. Exported to China, India, South Korea, and Turkey. Autonomous anti-radiation seeker homes on enemy radar emissions. Pioneer of loitering munition concept."
         ),
         DroneReference(
             id = "harop",
@@ -765,7 +1320,15 @@ object DroneDatabase {
             description = "Advanced man-in-the-loop loitering munition. Unlike Harpy, operator selects the target via datalink. Used by Azerbaijan to devastating effect in 2020 Nagorno-Karabakh war. Can abort and return to loiter.",
             specs = "Weight: 135kg | Range: 1,000km | Max speed: 225km/h | Warhead: 23kg | Loiter: 6h",
             photoAsset = "drones/harop.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Israel",
+            riskLevel = RiskLevel.RESTRICTED,
+            threatClassification = ThreatClassification.LOITERING_MUNITION,
+            autonomyLevel = AutonomyLevel.LOITERING,
+            maxRangeKm = 1000f,
+            maxEnduranceMin = 360,
+            maxSpeedKmh = 225f,
+            operationalHistory = "Used by Azerbaijan to devastating effect in 2020 Nagorno-Karabakh war against Armenian air defenses. Exported to India, Germany, and others. Man-in-the-loop allows abort and re-engagement."
         ),
         DroneReference(
             id = "hero_family",
@@ -775,7 +1338,14 @@ object DroneDatabase {
             description = "Family of precision loitering munitions in multiple sizes. Hero-30 is man-portable for infantry. Hero-120 is vehicle-launched for medium targets. Hero-400 can destroy tanks. All feature electro-optical guidance.",
             specs = "Weight: 3-40kg | Range: 40-150km | Max speed: 100-185km/h | Warhead: 0.5-10kg",
             photoAsset = "drones/hero_family.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Israel",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.LOITERING_MUNITION,
+            autonomyLevel = AutonomyLevel.LOITERING,
+            maxRangeKm = 150f,
+            maxSpeedKmh = 185f,
+            operationalHistory = "Adopted by multiple NATO armies. Hero-120 integrated into US Marine Corps platforms. Scalable family from infantry man-portable to vehicle-launched anti-armor."
         ),
         DroneReference(
             id = "warmate",
@@ -785,7 +1355,15 @@ object DroneDatabase {
             description = "Lightweight man-portable loitering munition from Poland. Hand-launched by infantry. Used by Ukraine and several NATO allies. Can be recovered if target is not engaged. Simple catapult launch.",
             specs = "Weight: 5.3kg | Range: 30km | Max speed: 150km/h | Warhead: 1.4kg | Loiter: 70min",
             photoAsset = "drones/warmate.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Poland",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.LOITERING_MUNITION,
+            autonomyLevel = AutonomyLevel.LOITERING,
+            maxRangeKm = 30f,
+            maxEnduranceMin = 70,
+            maxSpeedKmh = 150f,
+            operationalHistory = "Supplied to Ukraine. Used by Polish and other NATO forces. Hand-launched loitering munition with recovery capability if not used."
         ),
 
         // ── Military Recon (additional) ──
@@ -797,7 +1375,16 @@ object DroneDatabase {
             description = "Russia's most-used ISR drone in Ukraine, with hundreds lost and captured. Catapult-launched, parachute-recovered. Provides artillery spotting and jamming. Built partly from commercial components including Canon cameras.",
             specs = "Weight: 18kg | Range: 120km | Max speed: 150km/h | Endurance: 16h",
             photoAsset = "drones/orlan10.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Russia",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            sanctionedManufacturer = true,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 120f,
+            maxEnduranceMin = 960,
+            maxSpeedKmh = 150f,
+            operationalHistory = "Russia's most widely used tactical drone. Hundreds lost and captured in Ukraine. Provides artillery spotting and electronic warfare. Built with Western commercial components including Canon cameras and Garmin GPS."
         ),
         DroneReference(
             id = "forpost_r",
@@ -807,7 +1394,16 @@ object DroneDatabase {
             description = "Russian-built variant of the IAI Searcher II produced under license. Medium-altitude ISR platform. Forpost-R version uses Russian-made components and APD-85 engine to reduce import dependence.",
             specs = "Weight: 500kg | Range: 250km | Max speed: 204km/h | Endurance: 18h",
             photoAsset = "drones/forpost_r.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Russia",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            sanctionedManufacturer = true,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 250f,
+            maxEnduranceMin = 1080,
+            maxSpeedKmh = 204f,
+            operationalHistory = "Based on Israeli IAI Searcher II produced under license. Forpost-R variant uses Russian-sourced components. Deployed in Syria and Ukraine for ISR missions."
         ),
         DroneReference(
             id = "ch4",
@@ -817,7 +1413,15 @@ object DroneDatabase {
             description = "Chinese medium-altitude ISR and strike drone comparable to MQ-1 Predator. Widely exported to Iraq, Jordan, Saudi Arabia, Algeria, Egypt, and Pakistan as an affordable armed drone option.",
             specs = "Weight: 1330kg | Range: 250km | Max speed: 235km/h | Endurance: 14h",
             photoAsset = "drones/ch4.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 250f,
+            maxEnduranceMin = 840,
+            maxSpeedKmh = 235f,
+            operationalHistory = "Widely exported to Iraq, Jordan, Saudi Arabia, Algeria, Egypt, and Pakistan. Used by Iraqi forces against ISIS. Affordable armed drone option for nations unable to procure Western systems."
         ),
 
         // ── Military Strike (additional) ──
@@ -829,7 +1433,15 @@ object DroneDatabase {
             description = "Chinese heavy UCAV comparable to MQ-9 Reaper. Can carry up to 16 missiles on 4 hardpoints. Satellite data link for beyond-line-of-sight operations. Exported as cost-effective alternative to Western drones.",
             specs = "Weight: 3300kg | Range: 400km | Max speed: 300km/h | Endurance: 60h | Payload: 1200kg",
             photoAsset = "drones/ch5.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_STRIKE,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 400f,
+            maxEnduranceMin = 3600,
+            maxSpeedKmh = 300f,
+            operationalHistory = "Chinese MQ-9 Reaper equivalent. Exported as affordable alternative to Western UCAV platforms. SATCOM link for beyond-line-of-sight operations. Can carry 16 missiles."
         ),
         DroneReference(
             id = "kargu2",
@@ -839,7 +1451,16 @@ object DroneDatabase {
             description = "Small autonomous attack quadcopter with AI-powered target recognition. Can operate in swarms. Reported by UN to have autonomously engaged targets in Libya in 2021 — possibly the first autonomous drone strike.",
             specs = "Weight: 7kg | Range: 5km | Max speed: 72km/h | Warhead: 1.4kg | Endurance: 30min",
             photoAsset = "drones/kargu2.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Turkey",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_STRIKE,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            swarmCapable = true,
+            maxRangeKm = 5f,
+            maxEnduranceMin = 30,
+            maxSpeedKmh = 72f,
+            operationalHistory = "Reported by UN to have autonomously engaged retreating forces in Libya in 2021 — possibly the first autonomous drone strike in history. AI-powered target recognition with swarm capability."
         ),
 
         // ── FPV Combat Drones ──
@@ -851,7 +1472,14 @@ object DroneDatabase {
             description = "Custom-built racing-style quadcopters modified to carry explosives, dominant weapon of the Ukraine war. Typically 5-7 inch frames with analog/digital FPV video. Costs \$400-500 per unit. Pilot flies via goggles into target at 100+ km/h.",
             specs = "Weight: 0.5-2kg | Range: 5-10km | Max speed: 120km/h | Warhead: RPG/grenade",
             photoAsset = "drones/fpv_combat.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Ukraine",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.FPV_COMBAT,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 10f,
+            maxSpeedKmh = 120f,
+            operationalHistory = "Dominant weapon of the Ukraine war since 2023. Both sides produce tens of thousands monthly. Modified racing drones carrying RPG warheads or grenades. Low cost (\$400-500) and devastating effectiveness."
         ),
         DroneReference(
             id = "baba_yaga",
@@ -861,7 +1489,14 @@ object DroneDatabase {
             description = "Ukrainian large octocopter used for nighttime bomb drops on Russian positions. Named after the Slavic witch. Carries multiple mortar rounds or anti-tank mines. Operates at night using thermal cameras. Terrifying psychological impact.",
             specs = "Weight: 10-20kg | Range: 10-15km | Max speed: 60km/h | Payload: 5-10kg munitions",
             photoAsset = "drones/baba_yaga.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Ukraine",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.FPV_COMBAT,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 15f,
+            maxSpeedKmh = 60f,
+            operationalHistory = "Named after Slavic folklore witch. Ukrainian innovation for nighttime precision munitions drops. Operates with thermal cameras. Significant psychological impact on enemy positions."
         ),
         DroneReference(
             id = "r18",
@@ -871,7 +1506,14 @@ object DroneDatabase {
             description = "Ukrainian heavy FPV octocopter designed for anti-armor munitions drops. Built by the Aerorozvidka volunteer unit. Drops modified anti-tank grenades with precision onto Russian vehicles and positions from above.",
             specs = "Weight: 12kg | Range: 5km | Max speed: 50km/h | Payload: RKG-3 anti-tank grenades",
             photoAsset = "drones/r18.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Ukraine",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.FPV_COMBAT,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 5f,
+            maxSpeedKmh = 50f,
+            operationalHistory = "Built by Aerorozvidka volunteer reconnaissance unit. Used since early 2022 to drop RKG-3 anti-tank grenades on Russian vehicles and positions. Pioneer of heavy bomber drone concept."
         ),
 
         // ── Consumer 2024-25 ──
@@ -883,7 +1525,14 @@ object DroneDatabase {
             description = "Updated mid-range foldable drone with improved obstacle avoidance sensors and 4K/60fps HDR video. Dual-camera system with 1/1.3-inch wide and 1/1.3-inch telephoto sensors.",
             specs = "Weight: 720g | Range: 20km | Max speed: 75km/h | Flight time: 46min",
             photoAsset = "drones/dji_air3s.jpg",
-            wifiPatterns = listOf("DJI-", "AIR-")
+            wifiPatterns = listOf("DJI-", "AIR-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 20f,
+            maxEnduranceMin = 46,
+            maxSpeedKmh = 75f
         ),
         DroneReference(
             id = "dji_mini4k",
@@ -893,7 +1542,14 @@ object DroneDatabase {
             description = "Ultra-lightweight sub-250g drone with 4K video. No Remote ID required in many jurisdictions due to weight. Ideal entry-level drone for recreational flying.",
             specs = "Weight: 249g | Range: 10km | Max speed: 57km/h | Flight time: 31min",
             photoAsset = "drones/dji_mini4k.jpg",
-            wifiPatterns = listOf("DJI-", "MINI-")
+            wifiPatterns = listOf("DJI-", "MINI-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 10f,
+            maxEnduranceMin = 31,
+            maxSpeedKmh = 57f
         ),
         DroneReference(
             id = "dji_mavic3_classic",
@@ -903,7 +1559,14 @@ object DroneDatabase {
             description = "Cost-reduced Mavic 3 with single Hasselblad camera (no telephoto). Same flight performance and obstacle avoidance as full Mavic 3. 4/3 CMOS sensor.",
             specs = "Weight: 895g | Range: 15km | Max speed: 75km/h | Flight time: 46min",
             photoAsset = "drones/dji_mavic3_classic.jpg",
-            wifiPatterns = listOf("DJI-", "MAVIC-")
+            wifiPatterns = listOf("DJI-", "MAVIC-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.LOW,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 15f,
+            maxEnduranceMin = 46,
+            maxSpeedKmh = 75f
         ),
         DroneReference(
             id = "dji_avata2",
@@ -913,7 +1576,14 @@ object DroneDatabase {
             description = "Second-gen FPV cinewhoop with 4K/60fps, 1/1.3-inch sensor. Lighter and more agile than original Avata. Pairs with DJI Goggles 3 for immersive flight. Built-in propeller guards.",
             specs = "Weight: 377g | Range: 13km | Max speed: 108km/h | Flight time: 23min",
             photoAsset = "drones/dji_avata2.jpg",
-            wifiPatterns = listOf("DJI-", "AVATA-")
+            wifiPatterns = listOf("DJI-", "AVATA-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 13f,
+            maxEnduranceMin = 23,
+            maxSpeedKmh = 108f
         ),
         DroneReference(
             id = "dji_flip",
@@ -923,7 +1593,14 @@ object DroneDatabase {
             description = "Compact sub-250g vlogging drone with flip-up camera for selfies and subject tracking. AI-powered intelligent flight modes for content creators.",
             specs = "Weight: 249g | Range: 13km | Max speed: 57km/h | Flight time: 31min",
             photoAsset = "drones/dji_flip.jpg",
-            wifiPatterns = listOf("DJI-", "FLIP-")
+            wifiPatterns = listOf("DJI-", "FLIP-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 13f,
+            maxEnduranceMin = 31,
+            maxSpeedKmh = 57f
         ),
         DroneReference(
             id = "dji_neo",
@@ -933,7 +1610,14 @@ object DroneDatabase {
             description = "Palm-sized selfie drone that can launch from your hand. AI subject tracking and QuickShots. Ultra-portable for on-the-go content creation. No controller required.",
             specs = "Weight: 135g | Range: 6km | Max speed: 50km/h | Flight time: 18min",
             photoAsset = "drones/dji_neo.jpg",
-            wifiPatterns = listOf("DJI-", "NEO-")
+            wifiPatterns = listOf("DJI-", "NEO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 6f,
+            maxEnduranceMin = 18,
+            maxSpeedKmh = 50f
         ),
         DroneReference(
             id = "autel_evo3_pro",
@@ -943,7 +1627,14 @@ object DroneDatabase {
             description = "Flagship tri-camera drone with 1-inch main sensor, telephoto, and wide-angle. Competes directly with DJI Mavic 3 Pro. Omnidirectional obstacle sensing.",
             specs = "Weight: 900g | Range: 15km | Max speed: 75km/h | Flight time: 42min",
             photoAsset = "drones/autel_evo3_pro.jpg",
-            wifiPatterns = listOf("AUTEL-", "EVO-")
+            wifiPatterns = listOf("AUTEL-", "EVO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.LOW,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 15f,
+            maxEnduranceMin = 42,
+            maxSpeedKmh = 75f
         ),
         DroneReference(
             id = "autel_lite_plus",
@@ -953,7 +1644,14 @@ object DroneDatabase {
             description = "Mid-range 1-inch CMOS sensor drone with f/1.9 aperture for low-light performance. Moonlight Algorithm for night photography. Three-way obstacle avoidance.",
             specs = "Weight: 835g | Range: 12km | Max speed: 65km/h | Flight time: 40min",
             photoAsset = "drones/autel_lite_plus.jpg",
-            wifiPatterns = listOf("AUTEL-", "EVO-")
+            wifiPatterns = listOf("AUTEL-", "EVO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 12f,
+            maxEnduranceMin = 40,
+            maxSpeedKmh = 65f
         ),
         DroneReference(
             id = "skydio_s1",
@@ -963,7 +1661,14 @@ object DroneDatabase {
             description = "AI-powered autonomous drone with industry-leading obstacle avoidance using six 4K navigation cameras. Superior autonomous tracking for sports and action. US-manufactured.",
             specs = "Weight: 775g | Range: 6km | Max speed: 58km/h | Flight time: 27min",
             photoAsset = "drones/skydio_s1.jpg",
-            wifiPatterns = listOf("SKYDIO-")
+            wifiPatterns = listOf("SKYDIO-"),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 6f,
+            maxEnduranceMin = 27,
+            maxSpeedKmh = 58f
         ),
         DroneReference(
             id = "parrot_anafi_ai",
@@ -973,7 +1678,13 @@ object DroneDatabase {
             description = "European-made drone with 4G connectivity for unlimited range. 48MP camera on 4K HDR gimbal. Designed for photogrammetry and inspection. Built-in 4G modem.",
             specs = "Weight: 898g | Range: 4G unlimited | Max speed: 55km/h | Flight time: 32min",
             photoAsset = "drones/parrot_anafi_ai.jpg",
-            wifiPatterns = listOf("PARROT-", "ANAFI-")
+            wifiPatterns = listOf("PARROT-", "ANAFI-"),
+            countryOfOrigin = "France",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxEnduranceMin = 32,
+            maxSpeedKmh = 55f
         ),
         DroneReference(
             id = "hoverair_x1_promax",
@@ -983,7 +1694,14 @@ object DroneDatabase {
             description = "Palm-sized self-flying camera with no controller needed. Gesture and voice control. Upgraded from X1 with longer range and better camera. Foldable prop guards.",
             specs = "Weight: 190g | Range: 100m | Max speed: 35km/h | Flight time: 16min",
             photoAsset = "drones/hoverair_x1_promax.jpg",
-            wifiPatterns = listOf("HOVERAIR", "HOVER-")
+            wifiPatterns = listOf("HOVERAIR", "HOVER-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 0.1f,
+            maxEnduranceMin = 16,
+            maxSpeedKmh = 35f
         ),
         DroneReference(
             id = "potensic_atom_se",
@@ -993,7 +1711,14 @@ object DroneDatabase {
             description = "Budget-friendly sub-250g drone with GPS, 4K camera, and 31-minute flight time. Visual tracking and smart return-to-home. Great value entry-level option.",
             specs = "Weight: 249g | Range: 4km | Max speed: 50km/h | Flight time: 31min",
             photoAsset = "drones/potensic_atom_se.jpg",
-            wifiPatterns = listOf("POTENSIC-")
+            wifiPatterns = listOf("POTENSIC-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 4f,
+            maxEnduranceMin = 31,
+            maxSpeedKmh = 50f
         ),
 
         // ── Budget / Toy (new) ──
@@ -1005,7 +1730,14 @@ object DroneDatabase {
             description = "Budget GPS drone with 4K camera and 2-axis gimbal stabilization. Includes carrying case and two batteries. Surprisingly capable for price point.",
             specs = "Weight: 360g | Range: 1.2km | Max speed: 36km/h | Flight time: 26min",
             photoAsset = "drones/ruko_u11_pro.jpg",
-            wifiPatterns = listOf("RUKO-")
+            wifiPatterns = listOf("RUKO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 1.2f,
+            maxEnduranceMin = 26,
+            maxSpeedKmh = 36f
         ),
         DroneReference(
             id = "simrex_x500",
@@ -1015,7 +1747,14 @@ object DroneDatabase {
             description = "Foldable beginner drone with 4K camera and optical flow positioning. Altitude hold and headless mode for easy learning. Very affordable entry point.",
             specs = "Weight: 200g | Range: 100m | Max speed: 25km/h | Flight time: 15min",
             photoAsset = "drones/simrex_x500.jpg",
-            wifiPatterns = listOf("SIMREX-")
+            wifiPatterns = listOf("SIMREX-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.1f,
+            maxEnduranceMin = 15,
+            maxSpeedKmh = 25f
         ),
         DroneReference(
             id = "simrex_x900",
@@ -1025,7 +1764,14 @@ object DroneDatabase {
             description = "GPS-enabled budget drone with brushless motors and 4K camera. Follow-me mode and waypoint flight. Step up from X500 with GPS stability.",
             specs = "Weight: 350g | Range: 500m | Max speed: 35km/h | Flight time: 22min",
             photoAsset = "drones/simrex_x900.jpg",
-            wifiPatterns = listOf("SIMREX-")
+            wifiPatterns = listOf("SIMREX-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 0.5f,
+            maxEnduranceMin = 22,
+            maxSpeedKmh = 35f
         ),
         DroneReference(
             id = "snaptain_sp510",
@@ -1035,7 +1781,14 @@ object DroneDatabase {
             description = "Foldable GPS drone with 2.7K camera and brushless motors. Smart return home and follow-me mode. Popular Amazon bestseller in budget category.",
             specs = "Weight: 370g | Range: 500m | Max speed: 30km/h | Flight time: 20min",
             photoAsset = "drones/snaptain_sp510.jpg",
-            wifiPatterns = listOf("SNAPTAIN-")
+            wifiPatterns = listOf("SNAPTAIN-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 0.5f,
+            maxEnduranceMin = 20,
+            maxSpeedKmh = 30f
         ),
         DroneReference(
             id = "ryze_tello2",
@@ -1045,7 +1798,14 @@ object DroneDatabase {
             description = "DJI-powered programmable mini drone for STEM education. Scratch and Python SDK for learning to code with drones. Improved camera and stability over original Tello.",
             specs = "Weight: 87g | Range: 100m | Max speed: 29km/h | Flight time: 13min",
             photoAsset = "drones/ryze_tello2.jpg",
-            wifiPatterns = listOf("TELLO-")
+            wifiPatterns = listOf("TELLO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.1f,
+            maxEnduranceMin = 13,
+            maxSpeedKmh = 29f
         ),
         DroneReference(
             id = "potensic_p5",
@@ -1055,7 +1815,14 @@ object DroneDatabase {
             description = "Ultra-compact foldable drone with dual cameras and optical flow. One-key takeoff and landing. Popular gift drone for beginners and kids.",
             specs = "Weight: 130g | Range: 100m | Max speed: 25km/h | Flight time: 15min",
             photoAsset = "drones/potensic_p5.jpg",
-            wifiPatterns = listOf("POTENSIC-")
+            wifiPatterns = listOf("POTENSIC-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.1f,
+            maxEnduranceMin = 15,
+            maxSpeedKmh = 25f
         ),
         DroneReference(
             id = "holy_stone_hs175d",
@@ -1065,7 +1832,14 @@ object DroneDatabase {
             description = "Foldable GPS drone with 2K camera and brushless motors. Smart return home, follow-me, and circle fly. Two batteries included for extended flight.",
             specs = "Weight: 406g | Range: 600m | Max speed: 36km/h | Flight time: 23min",
             photoAsset = "drones/holy_stone_hs175d.jpg",
-            wifiPatterns = listOf("HOLY", "HS-")
+            wifiPatterns = listOf("HOLY", "HS-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 0.6f,
+            maxEnduranceMin = 23,
+            maxSpeedKmh = 36f
         ),
         DroneReference(
             id = "holy_stone_hs440",
@@ -1075,7 +1849,14 @@ object DroneDatabase {
             description = "Foldable FPV drone with 1080p camera and voice control. Gesture photo/video and 3D flip tricks. Great indoor/outdoor beginner drone.",
             specs = "Weight: 160g | Range: 100m | Max speed: 25km/h | Flight time: 20min",
             photoAsset = "drones/holy_stone_hs440.jpg",
-            wifiPatterns = listOf("HOLY", "HS-")
+            wifiPatterns = listOf("HOLY", "HS-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.1f,
+            maxEnduranceMin = 20,
+            maxSpeedKmh = 25f
         ),
         DroneReference(
             id = "neheme_nh525",
@@ -1085,7 +1866,14 @@ object DroneDatabase {
             description = "Budget foldable drone with 1080p camera. Altitude hold and headless mode. Popular starter drone on Amazon with multiple color options.",
             specs = "Weight: 100g | Range: 80m | Max speed: 20km/h | Flight time: 12min",
             photoAsset = "drones/neheme_nh525.jpg",
-            wifiPatterns = listOf("NEHEME-")
+            wifiPatterns = listOf("NEHEME-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.08f,
+            maxEnduranceMin = 12,
+            maxSpeedKmh = 20f
         ),
         DroneReference(
             id = "aovo_v3",
@@ -1095,7 +1883,14 @@ object DroneDatabase {
             description = "Compact WiFi FPV drone with dual cameras and obstacle avoidance sensors. Budget-friendly with altitude hold and one-key return.",
             specs = "Weight: 150g | Range: 100m | Max speed: 25km/h | Flight time: 15min",
             photoAsset = "drones/aovo_v3.jpg",
-            wifiPatterns = listOf("AOVO-")
+            wifiPatterns = listOf("AOVO-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.1f,
+            maxEnduranceMin = 15,
+            maxSpeedKmh = 25f
         ),
         DroneReference(
             id = "4drc_v2",
@@ -1105,7 +1900,14 @@ object DroneDatabase {
             description = "Ultra-cheap mini foldable drone with 1080p WiFi camera. 3D flips and headless mode. Very popular low-end Amazon drone for casual use.",
             specs = "Weight: 80g | Range: 80m | Max speed: 20km/h | Flight time: 12min",
             photoAsset = "drones/4drc_v2.jpg",
-            wifiPatterns = listOf("4DRC-")
+            wifiPatterns = listOf("4DRC-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 0.08f,
+            maxEnduranceMin = 12,
+            maxSpeedKmh = 20f
         ),
         DroneReference(
             id = "tenssenx_t80",
@@ -1115,7 +1917,14 @@ object DroneDatabase {
             description = "Budget drone with brushless motors and 4K camera. GPS-assisted hover and smart return home. Decent wind resistance for the price.",
             specs = "Weight: 300g | Range: 300m | Max speed: 30km/h | Flight time: 20min",
             photoAsset = "drones/tenssenx_t80.jpg",
-            wifiPatterns = listOf("TENSSENX-")
+            wifiPatterns = listOf("TENSSENX-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.CIVILIAN,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 0.3f,
+            maxEnduranceMin = 20,
+            maxSpeedKmh = 30f
         ),
 
         // ── Enterprise / Commercial (new) ──
@@ -1127,7 +1936,14 @@ object DroneDatabase {
             description = "Modular mapping and inspection drone with swappable payloads. US-manufactured. Open SDK for custom integration. RTK-capable for survey-grade accuracy.",
             specs = "Weight: 6.8kg | Range: 10km | Max speed: 65km/h | Flight time: 38min",
             photoAsset = "drones/freefly_astro.jpg",
-            wifiPatterns = listOf("FREEFLY-")
+            wifiPatterns = listOf("FREEFLY-"),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 10f,
+            maxEnduranceMin = 38,
+            maxSpeedKmh = 65f
         ),
         DroneReference(
             id = "sensefly_ebee_x",
@@ -1137,7 +1953,14 @@ object DroneDatabase {
             description = "Fixed-wing mapping drone covering up to 500ha in a single flight. Swappable camera payloads including multispectral and thermal. Hand-launched, belly-landing.",
             specs = "Weight: 1.6kg | Range: 10km | Max speed: 110km/h | Flight time: 90min",
             photoAsset = "drones/sensefly_ebee_x.jpg",
-            wifiPatterns = listOf("SENSEFLY-")
+            wifiPatterns = listOf("SENSEFLY-"),
+            countryOfOrigin = "Switzerland",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 10f,
+            maxEnduranceMin = 90,
+            maxSpeedKmh = 110f
         ),
         DroneReference(
             id = "dji_dock2",
@@ -1147,7 +1970,14 @@ object DroneDatabase {
             description = "Autonomous drone-in-a-box system. Matrice 3TD deploys from weatherproof dock for scheduled inspection flights. Triple camera (wide, zoom, thermal). Fully autonomous operations.",
             specs = "Weight: 1920g (drone) | Range: 7km from dock | Max speed: 57km/h | Flight time: 50min",
             photoAsset = "drones/dji_dock2.jpg",
-            wifiPatterns = listOf("DJI-", "MATRICE-")
+            wifiPatterns = listOf("DJI-", "MATRICE-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.MEDIUM,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 7f,
+            maxEnduranceMin = 50,
+            maxSpeedKmh = 57f
         ),
         DroneReference(
             id = "dji_flycart30",
@@ -1157,7 +1987,13 @@ object DroneDatabase {
             description = "Heavy-lift delivery drone carrying up to 30kg payload. Dual battery redundancy and winch delivery system. Designed for cargo delivery to remote areas.",
             specs = "Weight: 42kg (empty) | Payload: 30kg | Max speed: 54km/h | Flight time: 16min (full load)",
             photoAsset = "drones/dji_flycart30.jpg",
-            wifiPatterns = listOf("DJI-")
+            wifiPatterns = listOf("DJI-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.LOW,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxEnduranceMin = 16,
+            maxSpeedKmh = 54f
         ),
         DroneReference(
             id = "dji_mavic3e",
@@ -1167,7 +2003,14 @@ object DroneDatabase {
             description = "Enterprise version of Mavic 3 with mechanical shutter, RTK module, and speaker/spotlight accessories. Thermal variant available. Used for inspection, mapping, and public safety.",
             specs = "Weight: 915g | Range: 15km | Max speed: 75km/h | Flight time: 45min",
             photoAsset = "drones/dji_mavic3e.jpg",
-            wifiPatterns = listOf("DJI-", "MAVIC-")
+            wifiPatterns = listOf("DJI-", "MAVIC-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.MEDIUM,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 15f,
+            maxEnduranceMin = 45,
+            maxSpeedKmh = 75f
         ),
         DroneReference(
             id = "dji_matrice30t",
@@ -1177,7 +2020,14 @@ object DroneDatabase {
             description = "Ruggedized enterprise drone with IP55 rating and wide-zoom-thermal tri-camera. Foldable for rapid deployment. Pilot 2 remote with built-in screen.",
             specs = "Weight: 3770g | Range: 15km | Max speed: 82km/h | Flight time: 41min",
             photoAsset = "drones/dji_matrice30t.jpg",
-            wifiPatterns = listOf("DJI-", "MATRICE-")
+            wifiPatterns = listOf("DJI-", "MATRICE-"),
+            countryOfOrigin = "China",
+            riskLevel = RiskLevel.MEDIUM,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 15f,
+            maxEnduranceMin = 41,
+            maxSpeedKmh = 82f
         ),
         DroneReference(
             id = "wingcopter_198",
@@ -1187,7 +2037,13 @@ object DroneDatabase {
             description = "eVTOL fixed-wing delivery drone with patented tilt-rotor mechanism. Transitions from hover to forward flight. Triple-drop delivery system for medical supplies and packages.",
             specs = "Weight: 21kg | Payload: 6kg | Max speed: 150km/h | Range: 110km",
             photoAsset = "drones/wingcopter_198.jpg",
-            wifiPatterns = listOf("WINGCOPTER-")
+            wifiPatterns = listOf("WINGCOPTER-"),
+            countryOfOrigin = "Germany",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 110f,
+            maxSpeedKmh = 150f
         ),
         DroneReference(
             id = "flyability_elios3",
@@ -1197,7 +2053,13 @@ object DroneDatabase {
             description = "Collision-tolerant indoor inspection drone with protective cage. LiDAR SLAM for GPS-denied 3D mapping. Designed for confined spaces like boilers, tanks, and mines.",
             specs = "Weight: 1950g | Max speed: 25km/h | Flight time: 12min | LiDAR range: 30m",
             photoAsset = "drones/flyability_elios3.jpg",
-            wifiPatterns = listOf("FLYABILITY-")
+            wifiPatterns = listOf("FLYABILITY-"),
+            countryOfOrigin = "Switzerland",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxEnduranceMin = 12,
+            maxSpeedKmh = 25f
         ),
         DroneReference(
             id = "skydio_dock",
@@ -1207,7 +2069,14 @@ object DroneDatabase {
             description = "Autonomous drone-in-a-box with Skydio X10. AI-powered autonomous inspection missions. Remote operations via cloud. US-manufactured for government and enterprise.",
             specs = "Weight: 1300g (drone) | Range: 6km from dock | Max speed: 58km/h | Flight time: 35min",
             photoAsset = "drones/skydio_dock.jpg",
-            wifiPatterns = listOf("SKYDIO-")
+            wifiPatterns = listOf("SKYDIO-"),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.LOW,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 6f,
+            maxEnduranceMin = 35,
+            maxSpeedKmh = 58f
         ),
         DroneReference(
             id = "amazon_mk30",
@@ -1217,7 +2086,13 @@ object DroneDatabase {
             description = "Amazon's latest delivery drone with improved range and rain tolerance. Hexagonal form factor with sense-and-avoid. Delivers packages under 5lb to customers in under an hour.",
             specs = "Weight: ~36kg | Payload: 2.3kg | Max speed: 80km/h | Range: 12km",
             photoAsset = "drones/amazon_mk30.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 12f,
+            maxSpeedKmh = 80f
         ),
         DroneReference(
             id = "joby_s4",
@@ -1227,7 +2102,13 @@ object DroneDatabase {
             description = "Electric air taxi with 6 tilting propellers for vertical takeoff and wing-borne cruise. Piloted aircraft designed for urban air mobility. FAA certification in progress.",
             specs = "Weight: 1815kg | Passengers: 4 | Max speed: 321km/h | Range: 161km",
             photoAsset = "drones/joby_s4.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.BENIGN,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.MANUAL,
+            maxRangeKm = 161f,
+            maxSpeedKmh = 321f
         ),
         DroneReference(
             id = "impossible_us1",
@@ -1237,7 +2118,14 @@ object DroneDatabase {
             description = "Long-endurance quadcopter with battery-as-airframe design. 78-minute flight time. Built in the US for public safety and defense. Thermal and zoom payloads available.",
             specs = "Weight: 6.8kg | Range: 5km | Max speed: 67km/h | Flight time: 78min",
             photoAsset = "drones/impossible_us1.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.LOW,
+            threatClassification = ThreatClassification.COMMERCIAL_SURVEY,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 5f,
+            maxEnduranceMin = 78,
+            maxSpeedKmh = 67f
         ),
 
         // ── Military / Defense (new) ──
@@ -1249,7 +2137,15 @@ object DroneDatabase {
             description = "Man-portable loitering munition launched from a tube. Backpackable by a single soldier. GPS and EO guidance with operator-in-the-loop. Extensively supplied to Ukraine.",
             specs = "Weight: 2.5kg | Range: 10km | Max speed: 160km/h | Loiter: 15min | Warhead: anti-personnel",
             photoAsset = "drones/switchblade_300.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.LOITERING_MUNITION,
+            autonomyLevel = AutonomyLevel.LOITERING,
+            maxRangeKm = 10f,
+            maxEnduranceMin = 15,
+            maxSpeedKmh = 160f,
+            operationalHistory = "Extensively supplied to Ukraine since 2022. Man-portable anti-personnel variant. Tube-launched by single soldier. Operator-in-the-loop guidance with abort capability."
         ),
         DroneReference(
             id = "shield_ai_vbat",
@@ -1259,7 +2155,15 @@ object DroneDatabase {
             description = "Autonomous VTOL fixed-wing UAS that needs no GPS or comms link. AI pilot 'Hivemind' enables fully autonomous ISR missions. Tail-sitter design launches and lands vertically.",
             specs = "Weight: 25kg | Range: 100km | Max speed: 167km/h | Endurance: 9h | Payload: 3.6kg",
             photoAsset = "drones/shield_ai_vbat.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 100f,
+            maxEnduranceMin = 540,
+            maxSpeedKmh = 167f,
+            operationalHistory = "AI-powered autonomous ISR platform. Hivemind AI pilot enables operations without GPS or comms. Used by US military and special operations forces."
         ),
         DroneReference(
             id = "ghost_mkii",
@@ -1269,7 +2173,15 @@ object DroneDatabase {
             description = "AI-powered multi-mission sUAS from Anduril. Autonomous navigation, target recognition, and sensor fusion via Lattice OS. Used by US special operations forces.",
             specs = "Weight: 6.8kg | Range: 5km | Max speed: 65km/h | Endurance: 100min",
             photoAsset = "drones/ghost_mkii.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 5f,
+            maxEnduranceMin = 100,
+            maxSpeedKmh = 65f,
+            operationalHistory = "Used by US special operations forces. Integrates with Anduril's Lattice autonomous command and control platform. Multi-mission capable with modular payloads."
         ),
         DroneReference(
             id = "coyote_block3",
@@ -1279,7 +2191,15 @@ object DroneDatabase {
             description = "Tube-launched counter-UAS and strike drone. Block 3+ features warhead for kinetic defeat of enemy drones. Part of the HOWLER and KuRFS C-UAS systems.",
             specs = "Weight: 5.9kg | Range: 10km | Max speed: 130km/h | Endurance: 60min",
             photoAsset = "drones/coyote_block3.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.COUNTER_DRONE,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 10f,
+            maxEnduranceMin = 60,
+            maxSpeedKmh = 130f,
+            operationalHistory = "Deployed for counter-UAS defense. Part of HOWLER and KuRFS C-UAS systems. Block 3+ variant features kinetic warhead for drone defeat. Used to protect forward operating bases."
         ),
         DroneReference(
             id = "altius_600",
@@ -1289,7 +2209,16 @@ object DroneDatabase {
             description = "Modular, tube-launched loitering munition/ISR drone. Air-launched from C-130 or ground-launched. Reconfigurable payloads including EW, ISR, and kinetic warhead.",
             specs = "Weight: 12kg | Range: 90km | Max speed: 175km/h | Endurance: 4h",
             photoAsset = "drones/altius_600.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.LOITERING_MUNITION,
+            autonomyLevel = AutonomyLevel.LOITERING,
+            swarmCapable = true,
+            maxRangeKm = 90f,
+            maxEnduranceMin = 240,
+            maxSpeedKmh = 175f,
+            operationalHistory = "Successfully air-launched from XQ-58 Valkyrie weapons bay. Modular payload system supports ISR, EW, and kinetic strike. Integrates with Anduril Lattice platform."
         ),
         DroneReference(
             id = "rq21_blackjack",
@@ -1299,7 +2228,15 @@ object DroneDatabase {
             description = "Ship-launched small tactical UAS used by USMC and Navy. Catapult-launched and SkyHook recovered (no runway needed). Multi-INT payload with EO/IR and SIGINT.",
             specs = "Weight: 61kg | Range: 93km | Max speed: 167km/h | Endurance: 16h",
             photoAsset = "drones/rq21_blackjack.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 93f,
+            maxEnduranceMin = 960,
+            maxSpeedKmh = 167f,
+            operationalHistory = "Primary USMC small tactical UAS. Ship-launched for maritime operations. SkyHook recovery system requires no runway. Deployed in multiple combat theaters."
         ),
         DroneReference(
             id = "rq7_shadow",
@@ -1309,7 +2246,15 @@ object DroneDatabase {
             description = "US Army's primary tactical UAS for brigade-level ISR. Catapult-launched, arresting-gear recovered. Over 1 million flight hours. EO/IR and laser designator payloads.",
             specs = "Weight: 170kg | Range: 125km | Max speed: 204km/h | Endurance: 9h",
             photoAsset = "drones/rq7_shadow.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 125f,
+            maxEnduranceMin = 540,
+            maxSpeedKmh = 204f,
+            operationalHistory = "US Army's brigade-level tactical UAS with over 1 million flight hours. Deployed in Iraq and Afghanistan. Catapult-launched, arresting-gear recovered."
         ),
         DroneReference(
             id = "scan_eagle",
@@ -1319,7 +2264,15 @@ object DroneDatabase {
             description = "Long-endurance small UAS for maritime and land ISR. Launched via catapult, recovered with SkyHook wire system. Widely used by US Navy and allies. Over 1.5 million flight hours.",
             specs = "Weight: 22kg | Range: 100km | Max speed: 148km/h | Endurance: 28h",
             photoAsset = "drones/scan_eagle.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 100f,
+            maxEnduranceMin = 1680,
+            maxSpeedKmh = 148f,
+            operationalHistory = "Over 1.5 million flight hours. Widely used by US Navy, allies, and commercial operators. Originally developed for tuna fishing fleet, adopted by military for persistent maritime ISR."
         ),
         DroneReference(
             id = "puma_ae",
@@ -1329,7 +2282,15 @@ object DroneDatabase {
             description = "Hand-launched small UAS for squad-level ISR. All-environment (AE) version with waterproof design for maritime operations. EO/IR gimballed payload.",
             specs = "Weight: 6.3kg | Range: 20km | Max speed: 83km/h | Endurance: 3.5h",
             photoAsset = "drones/puma_ae.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_ISR,
+            autonomyLevel = AutonomyLevel.SEMI_AUTONOMOUS,
+            maxRangeKm = 20f,
+            maxEnduranceMin = 210,
+            maxSpeedKmh = 83f,
+            operationalHistory = "Standard squad-level ISR asset for US military. Hand-launched, waterproof for maritime ops. Widely deployed by US and allied forces in multiple theaters."
         ),
         DroneReference(
             id = "mq28_ghost_bat",
@@ -1339,7 +2300,13 @@ object DroneDatabase {
             description = "AI-powered autonomous loyal wingman developed for Royal Australian Air Force. Accompanies manned fighters as force multiplier. First combat aircraft designed and built in Australia in 50 years.",
             specs = "Weight: ~6000kg | Range: 3700km | Max speed: subsonic | Payload: modular nose",
             photoAsset = "drones/mq28_ghost_bat.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Australia",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_STRIKE,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 3700f,
+            operationalHistory = "First combat aircraft designed and built in Australia in 50 years. Autonomous loyal wingman for RAAF. Modular nose section for ISR, EW, or strike payloads."
         ),
         DroneReference(
             id = "phoenix_ghost",
@@ -1349,7 +2316,13 @@ object DroneDatabase {
             description = "Loitering munition developed rapidly for Ukraine under USAF Big Safari program. Details largely classified. Believed to have 6+ hour loiter time and anti-armor capability.",
             specs = "Weight: classified | Range: classified | Endurance: 6h+ | Warhead: anti-armor",
             photoAsset = "drones/phoenix_ghost.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.LOITERING_MUNITION,
+            autonomyLevel = AutonomyLevel.LOITERING,
+            maxEnduranceMin = 360,
+            operationalHistory = "Developed rapidly under USAF Big Safari program specifically for Ukraine. Details largely classified. Believed to have extended loiter time and anti-armor warhead. Supplied to Ukraine since 2022."
         ),
         DroneReference(
             id = "kratos_xq67a",
@@ -1359,7 +2332,13 @@ object DroneDatabase {
             description = "Off-board sensing station (OBSS) autonomous jet drone. Part of USAF's Collaborative Combat Aircraft (CCA) program. Designed as affordable attritable wingman for manned fighters.",
             specs = "Weight: ~2700kg | Range: 3000km+ | Max speed: subsonic | Payload: modular",
             photoAsset = "drones/kratos_xq67a.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "USA",
+            riskLevel = RiskLevel.HIGH,
+            threatClassification = ThreatClassification.MILITARY_STRIKE,
+            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
+            maxRangeKm = 3000f,
+            operationalHistory = "First flight in 2024. Part of USAF Collaborative Combat Aircraft (CCA) program. Designed as affordable attritable autonomous wingman. Evolved from XQ-58 Valkyrie program."
         ),
         DroneReference(
             id = "harop_ng",
@@ -1369,7 +2348,15 @@ object DroneDatabase {
             description = "Next-generation Harop with extended range, improved AI target recognition, and enhanced datalink. Builds on combat-proven Harop used by Azerbaijan, India, and others.",
             specs = "Weight: ~135kg | Range: 1,000km+ | Max speed: 225km/h | Warhead: 23kg | Loiter: 9h",
             photoAsset = "drones/harop_ng.jpg",
-            wifiPatterns = emptyList()
+            wifiPatterns = emptyList(),
+            countryOfOrigin = "Israel",
+            riskLevel = RiskLevel.RESTRICTED,
+            threatClassification = ThreatClassification.LOITERING_MUNITION,
+            autonomyLevel = AutonomyLevel.LOITERING,
+            maxRangeKm = 1000f,
+            maxEnduranceMin = 540,
+            maxSpeedKmh = 225f,
+            operationalHistory = "Next-generation evolution of combat-proven Harop. Enhanced AI target recognition and extended loiter time. Builds on operational success in Nagorno-Karabakh and other conflicts."
         )
     )
 

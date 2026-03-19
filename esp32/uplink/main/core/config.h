@@ -58,6 +58,18 @@ extern "C" {
 #define CONFIG_DISPLAY_STACK        4096
 #define CONFIG_LED_STACK            2048
 
+/* ── WiFi AP defaults (override via NVS) ──────────────────────────────── */
+
+#define CONFIG_AP_PASSWORD          "friendorfoe"
+#define CONFIG_AP_CHANNEL           1
+#define CONFIG_AP_MAX_CONNECTIONS   4
+
+/* ── HTTP status server ───────────────────────────────────────────────── */
+
+#define CONFIG_HTTP_STATUS_PRIORITY  2
+#define CONFIG_HTTP_STATUS_STACK     4096
+#define CONFIG_HTTP_STATUS_PORT      80
+
 /* ── Task priorities ───────────────────────────────────────────────────── */
 
 #define CONFIG_UART_RX_PRIORITY     5

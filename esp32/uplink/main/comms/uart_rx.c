@@ -13,9 +13,11 @@
 #include <string.h>
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/portmacro.h"
 
 static const char *TAG = "uart_rx";
 
@@ -25,6 +27,32 @@ static const char *TAG = "uart_rx";
 
 static QueueHandle_t s_detection_queue = NULL;
 static int           s_detection_count = 0;
+
+/* ── Recent detections ring buffer ─────────────────────────────────────── */
+
+#define RECENT_RING_SIZE  8
+
+static detection_summary_t s_recent_ring[RECENT_RING_SIZE];
+static int                 s_recent_head = 0;   /* next write index */
+static int                 s_recent_count = 0;
+static portMUX_TYPE        s_recent_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static void push_recent(const drone_detection_t *det)
+{
+    portENTER_CRITICAL(&s_recent_lock);
+    detection_summary_t *slot = &s_recent_ring[s_recent_head];
+    strncpy(slot->drone_id, det->drone_id, sizeof(slot->drone_id) - 1);
+    slot->drone_id[sizeof(slot->drone_id) - 1] = '\0';
+    slot->source       = det->source;
+    slot->confidence   = det->confidence;
+    slot->rssi         = det->rssi;
+    slot->timestamp_ms = esp_timer_get_time() / 1000;
+    s_recent_head = (s_recent_head + 1) % RECENT_RING_SIZE;
+    if (s_recent_count < RECENT_RING_SIZE) {
+        s_recent_count++;
+    }
+    portEXIT_CRITICAL(&s_recent_lock);
+}
 
 /* ── Source string to DETECTION_SRC mapping ────────────────────────────── */
 
@@ -192,6 +220,7 @@ static void process_line(const char *line, size_t len)
             } else {
                 ESP_LOGW(TAG, "Detection queue full, dropping: %s", det.drone_id);
             }
+            push_recent(&det);
         }
     } else if (strcmp(msg_type, MSG_TYPE_STATUS) == 0) {
         handle_status(root);
@@ -278,4 +307,22 @@ void uart_rx_start(void)
 int uart_rx_get_detection_count(void)
 {
     return s_detection_count;
+}
+
+int uart_rx_get_recent_detections(detection_summary_t *out, int max)
+{
+    if (!out || max <= 0) {
+        return 0;
+    }
+
+    int copied = 0;
+    portENTER_CRITICAL(&s_recent_lock);
+    int count = s_recent_count < max ? s_recent_count : max;
+    /* Copy newest first */
+    for (int i = 0; i < count; i++) {
+        int idx = (s_recent_head - 1 - i + RECENT_RING_SIZE) % RECENT_RING_SIZE;
+        out[copied++] = s_recent_ring[idx];
+    }
+    portEXIT_CRITICAL(&s_recent_lock);
+    return copied;
 }
