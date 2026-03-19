@@ -189,7 +189,9 @@ class VisualDetectionAnalyzer(
                     s.detection.copy(
                         skyScore = s.skyScore,
                         motionScore = s.motionScore,
-                        visualClassification = s.classification
+                        visualClassification = s.classification,
+                        strobeConfirmed = s.detection.labels.contains("strobe") ||
+                            (isDarkMode && s.skyScore > s.detection.skyScore)
                     )
                 }
 

@@ -20,6 +20,8 @@ import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.data.repository.WeatherRepository
 import com.friendorfoe.detection.AlertLevel
+import com.friendorfoe.detection.AutoCaptureEngine
+import com.friendorfoe.detection.CaptureCandidate
 import com.friendorfoe.detection.ClassifiedVisualDetection
 import com.friendorfoe.detection.DataSourceStatus
 import com.friendorfoe.detection.SkyObjectFilter
@@ -199,6 +201,87 @@ class ArViewModel @Inject constructor(
 
     val detectedDrones: StateFlow<List<Drone>> = skyObjectRepository.skyObjects
         .map { objects -> objects.filterIsInstance<Drone>() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // --- Auto-capture ---
+
+    private val _autoCaptureEnabled = MutableStateFlow(true)
+    val autoCaptureEnabled: StateFlow<Boolean> = _autoCaptureEnabled.asStateFlow()
+
+    private val capturedThisSession = mutableSetOf<String>()
+    private var lastAutoCaptureTimeMs = 0L
+
+    private val _lastAutoCapture = MutableStateFlow<String?>(null)
+    /** Brief label of the last auto-captured object (for toast display). Cleared after consumption. */
+    val lastAutoCapture: StateFlow<String?> = _lastAutoCapture.asStateFlow()
+
+    fun toggleAutoCapture() {
+        _autoCaptureEnabled.value = !_autoCaptureEnabled.value
+    }
+
+    fun clearLastAutoCapture() {
+        _lastAutoCapture.value = null
+    }
+
+    /**
+     * Attempt auto-capture by correlating current visual detections with nearby sky objects.
+     * Called from a LaunchedEffect when visual detections update.
+     */
+    fun attemptAutoCapture(context: Context) {
+        if (!_autoCaptureEnabled.value) return
+
+        val candidate = AutoCaptureEngine.findCaptureCandidate(
+            screenPositions = screenPositions.value,
+            visualDetections = visualDetectionAnalyzer.detections.value,
+            capturedIds = capturedThisSession,
+            lastCaptureTimeMs = lastAutoCaptureTimeMs,
+            isLockedOn = _lockedObjectId.value != null
+        ) ?: return
+
+        // Mark as captured immediately to prevent re-trigger
+        capturedThisSession.add(candidate.skyObject.id)
+        lastAutoCaptureTimeMs = System.currentTimeMillis()
+
+        // Build label for the toast and filename
+        val label = when (val obj = candidate.skyObject) {
+            is Aircraft -> {
+                val cs = obj.callsign ?: obj.icaoHex
+                val type = obj.aircraftType?.let { " ($it)" } ?: ""
+                "$cs$type"
+            }
+            is Drone -> obj.droneId.take(16)
+        }
+
+        // Zoom → stabilize → capture → restore
+        viewModelScope.launch {
+            val previousZoom = _currentZoomRatio.value
+            setZoomRatio(candidate.suggestedZoom)
+            delay(300L) // wait for zoom to settle
+            val capture = imageCaptureRef
+            if (capture != null) {
+                capturePhotoToGallery(context, capture, "auto_$label") { uri ->
+                    if (uri != null) {
+                        Log.i(TAG, "Auto-captured $label at ${candidate.distanceMeters.roundToInt()}m")
+                        _lastAutoCapture.value = "Auto-captured $label"
+                    }
+                }
+            }
+            delay(200L)
+            setZoomRatio(previousZoom)
+        }
+    }
+
+    // --- Drone proximity alert ---
+
+    /** WiFi-only drones with strong RSSI signal (no GPS position but clearly nearby) */
+    val proximityDrones: StateFlow<List<Drone>> = skyObjectRepository.skyObjects
+        .map { objects ->
+            objects.filterIsInstance<Drone>().filter { drone ->
+                drone.source == DetectionSource.WIFI &&
+                (drone.position.latitude == 0.0 && drone.position.longitude == 0.0) &&
+                (drone.signalStrengthDbm != null && drone.signalStrengthDbm > -60)
+            }
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun showUnidentifiedSheet() {

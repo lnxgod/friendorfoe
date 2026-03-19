@@ -88,6 +88,7 @@ void wifi_sta_init(void)
     /* Initialize TCP/IP stack */
     ESP_ERROR_CHECK(esp_netif_init());
     esp_netif_create_default_wifi_sta();
+    esp_netif_create_default_wifi_ap();
 
     /* Initialize WiFi with default config */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -113,7 +114,7 @@ void wifi_sta_init(void)
     wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     wifi_config.sta.sae_pwe_h2e       = WPA3_SAE_PWE_BOTH;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 

@@ -326,6 +326,16 @@
           <input type="text" id="cfg-device" placeholder="fof_esp32_001" value="fof_esp32_001" />
           <div class="hint">Unique name for this sensor node.</div>
         </div>
+        <div class="field">
+          <label for="cfg-ap-ssid">AP Network Name</label>
+          <input type="text" id="cfg-ap-ssid" placeholder="FoF-XXYYZZ (auto)" autocomplete="off" />
+          <div class="hint">Optional. WiFi hotspot name for direct phone connection. Leave blank for auto.</div>
+        </div>
+        <div class="field">
+          <label for="cfg-ap-pass">AP Password</label>
+          <input type="password" id="cfg-ap-pass" placeholder="friendorfoe (default)" autocomplete="off" />
+          <div class="hint">Optional. Default is "friendorfoe". Stored on the ESP32 only.</div>
+        </div>
       </div>
 
       <div class="config-actions">
@@ -456,6 +466,8 @@ Uplink ESP32-C3 Peripherals:
       const pass = document.getElementById('cfg-pass').value;
       const backend = document.getElementById('cfg-backend').value.trim();
       const deviceId = document.getElementById('cfg-device').value.trim();
+      const apSsid = document.getElementById('cfg-ap-ssid').value.trim();
+      const apPass = document.getElementById('cfg-ap-pass').value;
 
       // Validation
       if (!ssid) {
@@ -509,6 +521,8 @@ Uplink ESP32-C3 Peripherals:
         if (pass) commands.push(`FOF_SET:wifi_pass=${pass}`);
         if (backend) commands.push(`FOF_SET:backend_url=${backend}`);
         if (deviceId) commands.push(`FOF_SET:device_id=${deviceId}`);
+        if (apSsid) commands.push(`FOF_SET:ap_ssid=${apSsid}`);
+        if (apPass) commands.push(`FOF_SET:ap_pass=${apPass}`);
         commands.push('FOF_SAVE');
 
         for (const cmd of commands) {

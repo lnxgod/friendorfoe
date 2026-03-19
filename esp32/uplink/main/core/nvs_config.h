@@ -52,6 +52,12 @@ bool nvs_config_get_backend_url(char *buf, size_t buf_size);
 /** Get device ID (NVS key "device_id", default CONFIG_DEVICE_ID) */
 bool nvs_config_get_device_id(char *buf, size_t buf_size);
 
+/** Get AP SSID (NVS key "ap_ssid", default: MAC-based "FoF-XXYYZZ") */
+bool nvs_config_get_ap_ssid(char *buf, size_t buf_size);
+
+/** Get AP password (NVS key "ap_pass", default CONFIG_AP_PASSWORD) */
+bool nvs_config_get_ap_password(char *buf, size_t buf_size);
+
 #ifdef __cplusplus
 }
 #endif

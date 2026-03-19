@@ -8,14 +8,16 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.repository.SkyObjectRepository
+import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.domain.usecase.FilterEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -42,19 +44,27 @@ class ListViewModel @Inject constructor(
         private const val LOCATION_UPDATE_DISTANCE_M = 10f
     }
 
-    /** All detected sky objects sorted by confidence (highest first), then distance. */
-    val skyObjects: StateFlow<List<SkyObject>> = skyObjectRepository.skyObjects
-        .map { objects ->
-            objects.sortedWith(
-                compareByDescending<SkyObject> { it.confidence }
-                    .thenBy { it.distanceMeters ?: Double.MAX_VALUE }
-            )
-        }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
+    private val _filterState = MutableStateFlow(FilterState())
+    val filterState: StateFlow<FilterState> = _filterState.asStateFlow()
+
+    fun updateFilter(filterState: FilterState) {
+        _filterState.value = filterState
+    }
+
+    /** All detected sky objects filtered and sorted by confidence (highest first), then distance. */
+    val skyObjects: StateFlow<List<SkyObject>> = combine(
+        skyObjectRepository.skyObjects,
+        _filterState
+    ) { objects, filter ->
+        FilterEngine.applyFilters(objects, filter).sortedWith(
+            compareByDescending<SkyObject> { it.confidence }
+                .thenBy { it.distanceMeters ?: Double.MAX_VALUE }
         )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
 
     private val _userPosition = MutableStateFlow(
         Position(latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0)

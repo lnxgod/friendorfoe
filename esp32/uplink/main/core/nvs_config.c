@@ -9,8 +9,10 @@
 #include "config.h"
 
 #include <string.h>
+#include <stdio.h>
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_mac.h"
 #include "esp_log.h"
 
 static const char *TAG = "nvs_cfg";
@@ -117,5 +119,23 @@ bool nvs_config_get_backend_url(char *buf, size_t buf_size)
 bool nvs_config_get_device_id(char *buf, size_t buf_size)
 {
     get_with_default("device_id", CONFIG_DEVICE_ID, buf, buf_size);
+    return true;
+}
+
+bool nvs_config_get_ap_ssid(char *buf, size_t buf_size)
+{
+    if (nvs_config_get_string("ap_ssid", buf, buf_size)) {
+        return true;
+    }
+    /* Generate MAC-based default: FoF-XXYYZZ */
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    snprintf(buf, buf_size, "FoF-%02X%02X%02X", mac[3], mac[4], mac[5]);
+    return true;
+}
+
+bool nvs_config_get_ap_password(char *buf, size_t buf_size)
+{
+    get_with_default("ap_pass", CONFIG_AP_PASSWORD, buf, buf_size);
     return true;
 }

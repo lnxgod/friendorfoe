@@ -28,5 +28,7 @@ data class VisualDetection(
     /** Motion consistency score from [SkyObjectFilter] (0-1, higher = consistent movement) */
     val motionScore: Float = 0f,
     /** Heuristic classification from [SkyObjectFilter] */
-    val visualClassification: VisualClassification? = null
+    val visualClassification: VisualClassification? = null,
+    /** True when a strobe pattern has been correlated with this detection */
+    val strobeConfirmed: Boolean = false
 )

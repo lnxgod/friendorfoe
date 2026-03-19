@@ -1,6 +1,6 @@
 """Multi-source ADS-B client with Redis caching.
 
-Fallback chain: adsb.fi → airplanes.live → OpenSky Network.
+Fallback chain: adsb.fi → airplanes.live → ADSB One → adsb.lol → OpenSky Network.
 """
 
 import logging
@@ -190,12 +190,56 @@ async def fetch_from_airplanes_live(
     return aircraft
 
 
+async def fetch_from_adsb_one(
+    lat: float, lon: float, radius_nm: float
+) -> list[AircraftPosition]:
+    """Fetch aircraft from ADSB One within a radius of a point."""
+    url = f"{settings.adsb_one_base_url}/v2/point/{lat}/{lon}/{int(radius_nm)}"
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+
+    ac_list = data.get("ac") or []
+    aircraft = []
+    for ac in ac_list:
+        parsed = _parse_adsbx_aircraft(ac)
+        if parsed is not None:
+            aircraft.append(parsed)
+
+    logger.info("ADSB One returned %d raw, parsed %d aircraft", len(ac_list), len(aircraft))
+    return aircraft
+
+
+async def fetch_from_adsb_lol(
+    lat: float, lon: float, radius_nm: float
+) -> list[AircraftPosition]:
+    """Fetch aircraft from adsb.lol within a radius of a point."""
+    url = f"{settings.adsb_lol_base_url}/v2/point/{lat}/{lon}/{int(radius_nm)}"
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+
+    ac_list = data.get("ac") or []
+    aircraft = []
+    for ac in ac_list:
+        parsed = _parse_adsbx_aircraft(ac)
+        if parsed is not None:
+            aircraft.append(parsed)
+
+    logger.info("adsb.lol returned %d raw, parsed %d aircraft", len(ac_list), len(aircraft))
+    return aircraft
+
+
 async def fetch_aircraft_multi(
     lat: float, lon: float, radius_nm: float
 ) -> tuple[list[AircraftPosition], str]:
     """Fetch aircraft using the multi-source fallback chain.
 
-    Tries: adsb.fi → airplanes.live → OpenSky (bbox).
+    Tries: adsb.fi → airplanes.live → ADSB One → adsb.lol → OpenSky (bbox).
     Returns (aircraft_list, source_name).
     """
     # --- Cache check ---
@@ -226,7 +270,27 @@ async def fetch_aircraft_multi(
         logger.warning("airplanes.live failed: %s", exc)
         last_exc = exc
 
-    # 3. Try OpenSky (existing bbox logic)
+    # 3. Try ADSB One
+    try:
+        aircraft = await fetch_from_adsb_one(lat, lon, radius_nm)
+        cache_payload = [ac.model_dump() for ac in aircraft]
+        await set_cached_aircraft_point(lat, lon, radius_nm, cache_payload)
+        return aircraft, "adsb.one"
+    except Exception as exc:
+        logger.warning("ADSB One failed: %s", exc)
+        last_exc = exc
+
+    # 4. Try adsb.lol
+    try:
+        aircraft = await fetch_from_adsb_lol(lat, lon, radius_nm)
+        cache_payload = [ac.model_dump() for ac in aircraft]
+        await set_cached_aircraft_point(lat, lon, radius_nm, cache_payload)
+        return aircraft, "adsb.lol"
+    except Exception as exc:
+        logger.warning("adsb.lol failed: %s", exc)
+        last_exc = exc
+
+    # 5. Try OpenSky (existing bbox logic)
     try:
         lamin, lamax, lomin, lomax = bbox_from_point(lat, lon, radius_nm)
         aircraft = await fetch_aircraft_in_bbox(lamin, lamax, lomin, lomax)

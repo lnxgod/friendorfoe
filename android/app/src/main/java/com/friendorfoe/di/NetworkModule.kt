@@ -3,7 +3,9 @@ package com.friendorfoe.di
 import com.friendorfoe.BuildConfig
 import com.friendorfoe.data.remote.AdsbFiApiService
 import com.friendorfoe.data.remote.AdsbLolApiService
+import com.friendorfoe.data.remote.AdsbOneApiService
 import com.friendorfoe.data.remote.AirplanesLiveApiService
+import com.friendorfoe.data.remote.HexDbApiService
 import com.friendorfoe.data.remote.OpenMeteoApiService
 import com.friendorfoe.data.remote.OpenSkyApiService
 import dagger.Module
@@ -29,6 +31,8 @@ object NetworkModule {
     private const val ADSBFI_BASE_URL = "https://opendata.adsb.fi/api/"
     private const val AIRPLANES_LIVE_BASE_URL = "https://api.airplanes.live/"
     private const val ADSB_LOL_BASE_URL = "https://api.adsb.lol/"
+    private const val ADSB_ONE_BASE_URL = "https://api.adsb.one/"
+    private const val HEXDB_BASE_URL = "https://hexdb.io/"
     private const val OPEN_METEO_BASE_URL = "https://api.open-meteo.com/"
 
     @Provides
@@ -133,6 +137,40 @@ object NetworkModule {
     @Singleton
     fun provideAdsbLolApiService(@Named("adsblol") retrofit: Retrofit): AdsbLolApiService {
         return retrofit.create(AdsbLolApiService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    @Named("adsbone")
+    fun provideAdsbOneRetrofit(@Named("adsb") okHttpClient: OkHttpClient): Retrofit {
+        return Retrofit.Builder()
+            .baseUrl(ADSB_ONE_BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideAdsbOneApiService(@Named("adsbone") retrofit: Retrofit): AdsbOneApiService {
+        return retrofit.create(AdsbOneApiService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    @Named("hexdb")
+    fun provideHexDbRetrofit(okHttpClient: OkHttpClient): Retrofit {
+        return Retrofit.Builder()
+            .baseUrl(HEXDB_BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideHexDbApiService(@Named("hexdb") retrofit: Retrofit): HexDbApiService {
+        return retrofit.create(HexDbApiService::class.java)
     }
 
     @Provides

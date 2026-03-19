@@ -25,9 +25,12 @@ class Settings(BaseSettings):
     # ADS-B data sources (fallback chain)
     adsbfi_base_url: str = "https://opendata.adsb.fi/api"
     airplanes_live_base_url: str = "https://api.airplanes.live"
+    adsb_one_base_url: str = "https://api.adsb.one"
+    adsb_lol_base_url: str = "https://api.adsb.lol"
 
     # Aircraft enrichment
     planespotters_base_url: str = "https://api.planespotters.net/pub/photos/hex"
+    hexdb_base_url: str = "https://hexdb.io"
 
     # Defaults
     default_radius_nm: float = 50.0

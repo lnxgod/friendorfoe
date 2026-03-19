@@ -40,6 +40,8 @@
 
 /* Network */
 #include "time_sync.h"
+#include "wifi_ap.h"
+#include "http_status.h"
 
 static const char *TAG = "main";
 
@@ -97,6 +99,8 @@ static void print_banner(void)
     ESP_LOGI(TAG, "Batch:     %d detections / %dms",
              CONFIG_MAX_BATCH_SIZE, CONFIG_BATCH_INTERVAL_MS);
     ESP_LOGI(TAG, "Queue:     %d slots", CONFIG_DETECTION_QUEUE_SIZE);
+    ESP_LOGI(TAG, "AP SSID:   %s", wifi_ap_get_ssid());
+    ESP_LOGI(TAG, "AP URL:    http://192.168.4.1");
     ESP_LOGI(TAG, "=============================================");
 }
 
@@ -137,6 +141,9 @@ void app_main(void)
 
     /* ── 5. Initialize WiFi STA + connect ─────────────────────────────── */
     wifi_sta_init();
+
+    /* ── 5b. Initialize WiFi AP (runs concurrently with STA) ──────── */
+    wifi_ap_init();
 
     /* ── 6. Wait for WiFi connection (30s timeout) ────────────────────── */
     wifi_sta_wait_connected(30000);
@@ -180,7 +187,10 @@ void app_main(void)
     xTaskCreate(display_task, "display", CONFIG_DISPLAY_STACK,
                 NULL, CONFIG_DISPLAY_PRIORITY, NULL);
 
-    /* ── 15. Print startup banner ─────────────────────────────────────── */
+    /* ── 15. Start HTTP status server ────────────────────────────────── */
+    http_status_init();
+
+    /* ── 16. Print startup banner ─────────────────────────────────────── */
     print_banner();
 
     ESP_LOGI(TAG, "All tasks started. Uplink is operational.");

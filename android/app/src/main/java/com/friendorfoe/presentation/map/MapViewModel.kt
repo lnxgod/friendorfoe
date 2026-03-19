@@ -8,13 +8,16 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.repository.SkyObjectRepository
+import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.domain.usecase.FilterEngine
 import com.friendorfoe.sensor.SensorFusionEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
@@ -33,7 +36,23 @@ class MapViewModel @Inject constructor(
         private const val LOCATION_UPDATE_DISTANCE_M = 10f
     }
 
-    val skyObjects: StateFlow<List<SkyObject>> = skyObjectRepository.skyObjects
+    private val _filterState = MutableStateFlow(FilterState())
+    val filterState: StateFlow<FilterState> = _filterState.asStateFlow()
+
+    fun updateFilter(filterState: FilterState) {
+        _filterState.value = filterState
+    }
+
+    val skyObjects: StateFlow<List<SkyObject>> = combine(
+        skyObjectRepository.skyObjects,
+        _filterState
+    ) { objects, filter ->
+        FilterEngine.applyFilters(objects, filter)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
 
     private val _userPosition = MutableStateFlow(
         Position(latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0)

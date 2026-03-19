@@ -3,10 +3,14 @@ package com.friendorfoe.data.repository
 import android.util.Log
 import com.friendorfoe.data.remote.AdsbFiApiService
 import com.friendorfoe.data.remote.AdsbLolApiService
+import com.friendorfoe.data.remote.AdsbOneApiService
 import com.friendorfoe.data.remote.AdsbxAircraft
 import com.friendorfoe.data.remote.AircraftDetailDto
+import com.friendorfoe.data.remote.AircraftPhotoDto
 import com.friendorfoe.data.remote.AirplanesLiveApiService
+import com.friendorfoe.data.remote.HexDbApiService
 import com.friendorfoe.data.remote.OpenSkyApiService
+import com.friendorfoe.data.remote.RouteInfoDto
 import com.friendorfoe.detection.MilitaryClassifier
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.ObjectCategory
@@ -32,7 +36,7 @@ data class NearbyResult(
 )
 
 enum class DataSource {
-    ADSBFI, AIRPLANES_LIVE, OPENSKY, ADSB_LOL, MULTI
+    ADSBFI, AIRPLANES_LIVE, OPENSKY, ADSB_LOL, ADSB_ONE, MULTI
 }
 
 /**
@@ -55,7 +59,9 @@ class AircraftRepository @Inject constructor(
     private val openSkyApi: OpenSkyApiService,
     private val adsbFiApi: AdsbFiApiService,
     private val airplanesLiveApi: AirplanesLiveApiService,
-    private val adsbLolApi: AdsbLolApiService
+    private val adsbLolApi: AdsbLolApiService,
+    private val adsbOneApi: AdsbOneApiService,
+    private val hexDbApi: HexDbApiService
 ) {
 
     companion object {
@@ -95,11 +101,13 @@ class AircraftRepository @Inject constructor(
         val adsbFiDeferred = async { fetchAdsbFi(latitude, longitude, radiusNm) }
         val airplanesLiveDeferred = async { fetchAirplanesLive(latitude, longitude, radiusNm) }
         val adsbLolDeferred = async { fetchAdsbLol(latitude, longitude, radiusNm) }
+        val adsbOneDeferred = async { fetchAdsbOne(latitude, longitude, radiusNm) }
         val openSkyDeferred = async { fetchOpenSky(latitude, longitude, radiusNm) }
 
         val results = listOf(
             adsbFiDeferred.await(),
             airplanesLiveDeferred.await(),
+            adsbOneDeferred.await(),
             adsbLolDeferred.await(),
             openSkyDeferred.await()
         )
@@ -164,6 +172,18 @@ class AircraftRepository @Inject constructor(
         }
     }
 
+    private suspend fun fetchAdsbOne(lat: Double, lon: Double, radiusNm: Int): Pair<List<Aircraft>, DataSource>? {
+        return try {
+            val response = adsbOneApi.getNearby(lat, lon, radiusNm)
+            val aircraft = response.ac?.mapNotNull { it.toAircraft() } ?: emptyList()
+            Log.d(TAG, "ADSB One returned ${aircraft.size} aircraft")
+            aircraft to DataSource.ADSB_ONE
+        } catch (e: Exception) {
+            Log.w(TAG, "ADSB One failed: ${e.message}")
+            null
+        }
+    }
+
     private suspend fun fetchOpenSky(lat: Double, lon: Double, radiusNm: Int): Pair<List<Aircraft>, DataSource>? {
         return try {
             val radiusKm = radiusNm * NM_TO_KM
@@ -190,11 +210,11 @@ class AircraftRepository @Inject constructor(
     }
 
     /**
-     * Fetch detailed info for a specific aircraft.
-     * Backend has been removed — returns failure. Detail enrichment gracefully degrades.
+     * Fetch detailed info for a specific aircraft via hexdb.io.
+     * Queries hexdb.io for real registration/type/owner data and optionally route info.
      */
-    suspend fun getAircraftDetail(icaoHex: String): Result<AircraftDetailDto> {
-        // Check cache first (entries from previous sessions may still be valid)
+    suspend fun getAircraftDetail(icaoHex: String, callsign: String? = null): Result<AircraftDetailDto> {
+        // Check cache first
         detailCache[icaoHex]?.let { cached ->
             if (!cached.isExpired()) {
                 Log.d(TAG, "Detail cache hit for $icaoHex")
@@ -204,8 +224,54 @@ class AircraftRepository @Inject constructor(
             }
         }
 
-        // No backend available — detail enrichment gracefully degrades
-        return Result.failure(Exception("Backend not available"))
+        return try {
+            val hexDbData = hexDbApi.getAircraft(icaoHex.uppercase())
+
+            // Optionally fetch route
+            val route = if (!callsign.isNullOrBlank()) {
+                try {
+                    val routeData = hexDbApi.getRoute(callsign.trim().uppercase())
+                    val routeStr = routeData.route
+                    if (routeStr != null && "-" in routeStr) {
+                        val parts = routeStr.split("-", limit = 2)
+                        RouteInfoDto(
+                            airline = null,
+                            airlineIata = null,
+                            flightNumber = null,
+                            origin = parts[0].trim(),
+                            destination = parts[1].trim()
+                        )
+                    } else null
+                } catch (e: Exception) {
+                    null
+                }
+            } else null
+
+            val detail = AircraftDetailDto(
+                icaoHex = icaoHex.lowercase(),
+                callsign = callsign?.trim(),
+                registration = hexDbData.registration,
+                aircraftType = hexDbData.icaoTypeCode,
+                aircraftDescription = hexDbData.type,
+                operator = hexDbData.registeredOwners,
+                photo = null,
+                route = route,
+                country = null
+            )
+
+            // Cache the result
+            if (detailCache.size >= DETAIL_CACHE_MAX_SIZE) {
+                val oldest = detailCache.entries.minByOrNull { it.value.timestampMs }
+                oldest?.let { detailCache.remove(it.key) }
+            }
+            detailCache[icaoHex] = CachedDetail(detail)
+            Log.d(TAG, "hexdb.io enriched $icaoHex: reg=${detail.registration} type=${detail.aircraftType}")
+
+            Result.success(detail)
+        } catch (e: Exception) {
+            Log.w(TAG, "hexdb.io lookup failed for $icaoHex: ${e.message}")
+            Result.failure(e)
+        }
     }
 
     /**
@@ -303,6 +369,15 @@ class AircraftRepository @Inject constructor(
         if (callsign != null && emergencyCallsignPattern.matches(callsign)) {
             signals.add("CALLSIGN:EMERGENCY")
             return ObjectCategory.EMERGENCY to signals
+        }
+
+        // 2.5 Known commercial airline callsigns — skip military classifier
+        if (callsign != null && callsign.length >= 4) {
+            val airlineMatch = AirlineLookup.matchByCallsign(callsign)
+            if (airlineMatch != null) {
+                signals.add("AIRLINE:${callsign.take(3).uppercase()}")
+                return ObjectCategory.COMMERCIAL to signals
+            }
         }
 
         // 3. Military/Government classifier

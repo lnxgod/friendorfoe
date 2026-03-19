@@ -1,6 +1,7 @@
 package com.friendorfoe.presentation.map
 
 import android.graphics.Paint
+import androidx.compose.foundation.background
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.Bitmap
@@ -16,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -42,6 +44,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.presentation.filter.FilterBar
 import com.friendorfoe.presentation.detail.AircraftDetailContent
 import com.friendorfoe.presentation.detail.DetailState
 import com.friendorfoe.presentation.detail.DetailViewModel
@@ -69,6 +72,7 @@ fun MapViewScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
+    val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val userPosition by viewModel.userPosition.collectAsStateWithLifecycle()
     val selectedObjectId by viewModel.selectedObjectId.collectAsStateWithLifecycle()
     val detailState by detailViewModel.detailState.collectAsStateWithLifecycle()
@@ -183,6 +187,16 @@ fun MapViewScreen(
                     map.invalidate()
                 }
             }
+        )
+
+        // Filter bar overlay
+        FilterBar(
+            filterState = filterState,
+            onFilterStateChange = { viewModel.updateFilter(it) },
+            resultCount = skyObjects.size,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
         )
 
         // Compass follow toggle FAB

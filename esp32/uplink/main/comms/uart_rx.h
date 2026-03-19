@@ -38,6 +38,26 @@ void uart_rx_start(void);
  */
 int uart_rx_get_detection_count(void);
 
+/**
+ * Summary of a recent detection for the status page.
+ */
+typedef struct {
+    char    drone_id[64];
+    uint8_t source;
+    float   confidence;
+    int8_t  rssi;
+    int64_t timestamp_ms;   /* esp_timer_get_time() / 1000 at detection time */
+} detection_summary_t;
+
+/**
+ * Copy the most recent detections into the caller's buffer.
+ *
+ * @param out  Output array
+ * @param max  Maximum entries to copy
+ * @return Number of entries written (0..max), newest first
+ */
+int uart_rx_get_recent_detections(detection_summary_t *out, int max);
+
 #ifdef __cplusplus
 }
 #endif

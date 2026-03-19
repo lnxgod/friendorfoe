@@ -173,6 +173,11 @@ fun ArViewScreen(
     val lockedScreenPosition by viewModel.lockedScreenPosition.collectAsStateWithLifecycle()
     val snapTarget by viewModel.snapTarget.collectAsStateWithLifecycle()
 
+    // Auto-capture state
+    val autoCaptureEnabled by viewModel.autoCaptureEnabled.collectAsStateWithLifecycle()
+    val lastAutoCapture by viewModel.lastAutoCapture.collectAsStateWithLifecycle()
+    val proximityDrones by viewModel.proximityDrones.collectAsStateWithLifecycle()
+
     // Main-screen capture state
     var captureInProgress by remember { mutableStateOf(false) }
     var capturedPhotoUri by remember { mutableStateOf<android.net.Uri?>(null) }
@@ -200,6 +205,21 @@ fun ArViewScreen(
     // Load detail when an object is selected
     LaunchedEffect(selectedObjectId) {
         selectedObjectId?.let { detailViewModel.loadDetail(it) }
+    }
+
+    // Auto-capture: attempt on each visual detection update
+    LaunchedEffect(visualCount, autoCaptureEnabled) {
+        if (autoCaptureEnabled) {
+            viewModel.attemptAutoCapture(context)
+        }
+    }
+
+    // Auto-capture toast
+    LaunchedEffect(lastAutoCapture) {
+        if (lastAutoCapture != null) {
+            android.widget.Toast.makeText(context, lastAutoCapture, android.widget.Toast.LENGTH_SHORT).show()
+            viewModel.clearLastAutoCapture()
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -379,6 +399,77 @@ fun ArViewScreen(
                     tint = Color.Black,
                     modifier = Modifier.size(28.dp)
                 )
+            }
+
+            // Auto-capture toggle
+            IconButton(
+                onClick = { viewModel.toggleAutoCapture() },
+                modifier = Modifier
+                    .size(36.dp)
+                    .background(
+                        color = if (autoCaptureEnabled) Color(0xFF4CAF50).copy(alpha = 0.8f)
+                            else Color.Gray.copy(alpha = 0.5f),
+                        shape = CircleShape
+                    )
+            ) {
+                Text(
+                    text = "A",
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        // Drone proximity alert banner
+        if (proximityDrones.isNotEmpty()) {
+            val topDrone = proximityDrones.maxByOrNull { it.signalStrengthDbm ?: -100 }
+            if (topDrone != null) {
+                val pulseTransition = rememberInfiniteTransition(label = "proximity_pulse")
+                val pulseAlpha by pulseTransition.animateFloat(
+                    initialValue = 0.7f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(800),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "pulse_alpha"
+                )
+                val rssi = topDrone.signalStrengthDbm ?: -60
+                val proximityLabel = when {
+                    rssi > -40 -> "Very Close (< 10m)"
+                    rssi > -50 -> "Close (10-30m)"
+                    else -> "Nearby (30-60m)"
+                }
+                val mfr = topDrone.manufacturer ?: "Unknown"
+                val bannerColor = if (mfr == "Unknown" || mfr == "Generic")
+                    Color(0xFFFF9800) else Color(0xFF2196F3)
+
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 48.dp, start = 16.dp, end = 16.dp)
+                        .background(
+                            color = bannerColor.copy(alpha = pulseAlpha * 0.85f),
+                            shape = RoundedCornerShape(24.dp)
+                        )
+                        .clickable { viewModel.selectObject(topDrone.id) }
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "DRONE NEARBY",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "$mfr | $proximityLabel | ${rssi}dBm",
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 12.sp
+                    )
+                }
             }
         }
 
@@ -1147,6 +1238,19 @@ private fun DrawScope.drawLabel(
             textAlign = android.graphics.Paint.Align.CENTER
         }
         drawText(sourceBadgeChar, badgeCenterX, badgeCenterY + 5f, badgeTextPaint)
+
+        // Strobe indicator: lightning bolt when visual detection has strobe correlation
+        val matchedVis = labelInfo.screenPosition.matchedDetection
+        val hasStrobe = matchedVis?.strobeConfirmed == true
+        if (hasStrobe) {
+            val strobePaint = android.graphics.Paint().apply {
+                this.color = android.graphics.Color.rgb(255, 235, 59) // yellow
+                textSize = 16f
+                isAntiAlias = true
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+            }
+            drawText("\u26A1", left + 4f, top + labelHeight - 4f, strobePaint)
+        }
     }
 
     return Rect(left, top, left + labelWidth, top + labelHeight)

@@ -1,5 +1,12 @@
-"""Aircraft enrichment service — registration, type, photos, route info."""
+"""Aircraft enrichment service — registration, type, photos, route info.
 
+Enrichment chain:
+  Aircraft data: hexdb.io (real DB) → heuristic fallbacks
+  Photos: planespotters.net → airport-data.com → hexdb thumbnail → placeholder
+  Routes: hexdb.io route API → callsign heuristic
+"""
+
+import asyncio
 import logging
 import re
 
@@ -223,22 +230,19 @@ _PLACEHOLDER_PHOTO = AircraftPhoto(
 )
 
 
-async def _fetch_photo(icao_hex: str) -> AircraftPhoto:
-    """Fetch aircraft photo from Planespotters.net public API.
-
-    Returns a placeholder photo when no real photo is available.
-    """
+async def _fetch_planespotters_photo(icao_hex: str) -> AircraftPhoto | None:
+    """Fetch aircraft photo from Planespotters.net public API."""
     url = f"{settings.planespotters_base_url}/{icao_hex}"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url)
             if resp.status_code != 200:
                 logger.debug("Planespotters returned %d for %s", resp.status_code, icao_hex)
-                return _PLACEHOLDER_PHOTO
+                return None
             data = resp.json()
         photos = data.get("photos", [])
         if not photos:
-            return _PLACEHOLDER_PHOTO
+            return None
         p = photos[0]
         return AircraftPhoto(
             url=p.get("link"),
@@ -246,39 +250,175 @@ async def _fetch_photo(icao_hex: str) -> AircraftPhoto:
             thumbnail_url=p.get("thumbnail", {}).get("src") if isinstance(p.get("thumbnail"), dict) else p.get("thumbnail_large", {}).get("src"),
         )
     except Exception:
-        logger.warning("Photo fetch failed for %s", icao_hex, exc_info=True)
-        return _PLACEHOLDER_PHOTO
+        logger.warning("Planespotters photo fetch failed for %s", icao_hex, exc_info=True)
+        return None
+
+
+async def _fetch_airport_data_photo(icao_hex: str) -> AircraftPhoto | None:
+    """Fetch aircraft photo from airport-data.com."""
+    url = f"https://airport-data.com/api/ac_thumb.json?m={icao_hex}&n=1"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+        image = data.get("data", [{}])[0] if isinstance(data.get("data"), list) and data.get("data") else None
+        if not image:
+            return None
+        photo_url = image.get("image")
+        if not photo_url:
+            return None
+        return AircraftPhoto(
+            url=photo_url,
+            photographer=image.get("photographer"),
+            thumbnail_url=image.get("image"),
+        )
+    except Exception:
+        logger.warning("airport-data.com photo fetch failed for %s", icao_hex, exc_info=True)
+        return None
+
+
+async def _fetch_photo(icao_hex: str) -> AircraftPhoto:
+    """Fetch aircraft photo using fallback chain.
+
+    Chain: planespotters.net → airport-data.com → hexdb thumbnail → placeholder.
+    """
+    # 1. Planespotters.net
+    photo = await _fetch_planespotters_photo(icao_hex)
+    if photo is not None:
+        return photo
+
+    # 2. airport-data.com
+    photo = await _fetch_airport_data_photo(icao_hex)
+    if photo is not None:
+        return photo
+
+    # 3. hexdb.io thumbnail
+    hexdb_thumb = f"https://hexdb.io/hex-image-thumb?hex={icao_hex.upper()}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.head(hexdb_thumb)
+            if resp.status_code == 200:
+                return AircraftPhoto(
+                    url=hexdb_thumb,
+                    photographer="hexdb.io",
+                    thumbnail_url=hexdb_thumb,
+                )
+    except Exception:
+        pass
+
+    return _PLACEHOLDER_PHOTO
 
 
 # ---------------------------------------------------------------------------
 # Main enrichment entry point
 # ---------------------------------------------------------------------------
 
+async def _fetch_hexdb(icao_hex: str) -> dict | None:
+    """Fetch real aircraft data from hexdb.io.
+
+    Returns dict with keys: registration, type_code, manufacturer, type, owner.
+    """
+    url = f"https://hexdb.io/api/v1/aircraft/{icao_hex.upper()}"
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+        reg = data.get("Registration")
+        if not reg:
+            return None
+        return {
+            "registration": reg,
+            "type_code": data.get("ICAOTypeCode"),
+            "manufacturer": data.get("Manufacturer"),
+            "type": data.get("Type"),
+            "owner": data.get("RegisteredOwners"),
+        }
+    except Exception:
+        logger.debug("hexdb.io lookup failed for %s", icao_hex, exc_info=True)
+        return None
+
+
+async def _fetch_hexdb_route(callsign: str) -> str | None:
+    """Fetch route string from hexdb.io (e.g. 'KJFK-EGLL')."""
+    url = f"https://hexdb.io/api/v1/route/icao/{callsign.strip().upper()}"
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+        return data.get("route")
+    except Exception:
+        return None
+
+
 async def get_aircraft_detail(
     icao_hex: str,
     callsign: str | None = None,
 ) -> AircraftDetail:
-    """Build a full AircraftDetail by combining static lookups and API calls.
+    """Build a full AircraftDetail by combining hexdb.io lookups, photo APIs,
+    and heuristic fallbacks.
 
-    In a production system the registration/type data would come from a local
-    database (e.g., the OpenSky aircraft metadata CSV or a FAA registration DB).
-    For v1 we rely on the photo API (which often includes type info) and
-    heuristic callsign parsing.
+    Enrichment chain:
+      Aircraft data: hexdb.io (real DB) → heuristic fallbacks
+      Photos: planespotters → airport-data → hexdb thumbnail → placeholder
+      Routes: hexdb.io route → callsign heuristic
     """
     icao_clean = icao_hex.strip().lower()
     country = _country_from_icao(icao_clean)
+
+    # Fetch hexdb.io data and photo concurrently
+    hexdb_task = asyncio.create_task(_fetch_hexdb(icao_clean))
+    photo_task = asyncio.create_task(_fetch_photo(icao_clean))
+    route_task = asyncio.create_task(_fetch_hexdb_route(callsign)) if callsign else None
+
+    hexdb = await hexdb_task
+    photo = await photo_task
+    hexdb_route_str = await route_task if route_task else None
+
+    # Aircraft data: prefer hexdb.io, fall back to heuristics
+    if hexdb:
+        registration = hexdb["registration"]
+        aircraft_type = hexdb["type_code"]
+        aircraft_description = hexdb["type"]
+        operator = hexdb["owner"]
+    else:
+        registration = _registration_from_icao(icao_clean, country)
+        aircraft_type = _aircraft_type_from_callsign(callsign)
+        aircraft_description = None
+        operator = None
+
+    # Route: parse hexdb route string into origin/destination, merge with callsign heuristic
     route = _parse_callsign(callsign)
-    photo = await _fetch_photo(icao_clean)
-    registration = _registration_from_icao(icao_clean, country)
-    aircraft_type = _aircraft_type_from_callsign(callsign)
+    if hexdb_route_str and "-" in hexdb_route_str:
+        parts = hexdb_route_str.split("-", 1)
+        if route:
+            route.origin = parts[0].strip()
+            route.destination = parts[1].strip()
+        else:
+            route = RouteInfo(
+                airline=None,
+                airline_iata=None,
+                flight_number=None,
+                origin=parts[0].strip(),
+                destination=parts[1].strip(),
+            )
+
+    # Use hexdb owner as operator, fallback to airline from callsign
+    if not operator and route:
+        operator = route.airline
 
     return AircraftDetail(
         icao_hex=icao_clean,
         callsign=callsign.strip() if callsign else None,
         registration=registration,
         aircraft_type=aircraft_type,
-        aircraft_description=None,
-        operator=route.airline if route else None,
+        aircraft_description=aircraft_description,
+        operator=operator,
         photo=photo,
         route=route,
         country=country,
