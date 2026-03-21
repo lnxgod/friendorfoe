@@ -132,6 +132,12 @@ static const drone_ssid_pattern_t PATTERNS[] = {
     { "E99-",          "Eachine" },
     { "V2PRO",         "Generic" },
 
+    /* ── Additional budget brands ────────────────────────────────────────── */
+    { "WLTOYS-",       "WLtoys" },
+    { "ATTOP-",        "Attop" },
+    { "BUGS-",         "MJX" },
+    { "EHANG-",        "EHang" },
+
     /* ── Generic drone SSIDs ───────────────────────────────────────────────── */
     { "DRONE-",        "Unknown" },
     { "UAV-",          "Unknown" },

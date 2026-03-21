@@ -163,3 +163,72 @@ class RecentDetectionsResponse(BaseModel):
     count: int = Field(..., description="Number of detections returned")
     max_stored: int = Field(..., description="Maximum ring buffer capacity")
     detections: list[StoredDetection] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Sensor map (triangulated drone positions)
+# ---------------------------------------------------------------------------
+
+class SensorObservation(BaseModel):
+    """A single sensor's observation of a drone, for map display."""
+
+    device_id: str
+    sensor_lat: float
+    sensor_lon: float
+    rssi: int | None = None
+    estimated_distance_m: float | None = None
+    confidence: float = 0.0
+    source: str = ""
+
+
+class LocatedDroneItem(BaseModel):
+    """A drone with estimated or known position, for map display."""
+
+    drone_id: str = Field(..., description="Drone serial number or generated ID")
+    lat: float = Field(..., description="Estimated or known latitude")
+    lon: float = Field(..., description="Estimated or known longitude")
+    alt: float | None = Field(None, description="Altitude in meters MSL")
+    heading_deg: float | None = Field(None, description="Heading 0-360 degrees")
+    speed_mps: float | None = Field(None, description="Ground speed m/s")
+    position_source: str = Field(
+        ...,
+        description="How position was determined: gps, trilateration, intersection, range_only",
+    )
+    accuracy_m: float | None = Field(None, description="Estimated position accuracy in meters")
+    range_m: float | None = Field(
+        None, description="For range_only: RSSI-estimated distance from sensor (radius of range circle)"
+    )
+    sensor_count: int = Field(..., description="Number of sensors observing this drone")
+    confidence: float = Field(0.0, description="Best detection confidence across sensors")
+    manufacturer: str | None = None
+    model: str | None = None
+    operator_lat: float | None = None
+    operator_lon: float | None = None
+    operator_id: str | None = None
+    observations: list[SensorObservation] = Field(default_factory=list)
+
+
+class SensorItem(BaseModel):
+    """An active ESP32 sensor node."""
+
+    device_id: str = Field(..., description="Unique sensor identifier")
+    lat: float = Field(..., description="Sensor latitude")
+    lon: float = Field(..., description="Sensor longitude")
+    alt: float | None = Field(None, description="Sensor altitude in meters")
+    last_seen: float = Field(..., description="Last heartbeat epoch seconds")
+
+
+class DroneMapResponse(BaseModel):
+    """Response for GET /detections/drones/map."""
+
+    drone_count: int = Field(..., description="Number of located drones")
+    sensor_count: int = Field(..., description="Number of active sensors")
+    drones: list[LocatedDroneItem] = Field(default_factory=list)
+    sensors: list[SensorItem] = Field(default_factory=list)
+
+
+class SensorsResponse(BaseModel):
+    """Response for GET /detections/sensors."""
+
+    count: int = Field(..., description="Number of active sensors")
+    sensors: list[SensorItem] = Field(default_factory=list)

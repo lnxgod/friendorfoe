@@ -90,10 +90,14 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.friendorfoe.detection.DarkTargetScore
+import com.friendorfoe.detection.DarkTargetScorer
 import com.friendorfoe.detection.ShapeClass
 import com.friendorfoe.detection.AlertLevel
+import com.friendorfoe.detection.BehaviorClass
 import com.friendorfoe.detection.ClassifiedVisualDetection
 import com.friendorfoe.detection.DataSourceStatus
+import com.friendorfoe.detection.ThreatLevel
 import com.friendorfoe.detection.VisualClassification
 import com.friendorfoe.detection.VisualDetection
 import com.friendorfoe.detection.VisualDetectionRange
@@ -166,6 +170,8 @@ fun ArViewScreen(
     val rangeOverride by viewModel.rangeOverride.collectAsStateWithLifecycle()
     val isDarkMode by viewModel.isDarkMode.collectAsStateWithLifecycle()
     val strobeCount by viewModel.strobeCount.collectAsStateWithLifecycle()
+    val darkTargetScores by viewModel.darkTargetScores.collectAsStateWithLifecycle()
+    val maxThreatLevel by viewModel.maxThreatLevel.collectAsStateWithLifecycle()
     val currentZoomRatio by viewModel.currentZoomRatio.collectAsStateWithLifecycle()
     val maxZoomRatio by viewModel.maxZoomRatio.collectAsStateWithLifecycle()
     val minZoomRatio by viewModel.minZoomRatio.collectAsStateWithLifecycle()
@@ -236,6 +242,7 @@ fun ArViewScreen(
             screenPositions = screenPositions,
             unmatchedVisuals = unmatchedVisuals,
             classifiedUnknowns = classifiedUnknowns,
+            darkTargetScores = darkTargetScores,
             lockedObjectId = lockedObjectId,
             lockedScreenPosition = lockedScreenPosition,
             orientation = orientation,
@@ -849,6 +856,7 @@ private fun ArOverlay(
     screenPositions: List<ScreenPosition>,
     unmatchedVisuals: List<VisualDetection>,
     classifiedUnknowns: List<ClassifiedVisualDetection>,
+    darkTargetScores: List<DarkTargetScore>,
     lockedObjectId: String?,
     lockedScreenPosition: ScreenPosition?,
     orientation: com.friendorfoe.sensor.DeviceOrientation,
@@ -867,6 +875,13 @@ private fun ArOverlay(
     // Build lookup for classified unknowns by tracking ID
     val classifiedMap = remember(classifiedUnknowns) {
         classifiedUnknowns.associateBy { it.detection.trackingId }
+    }
+
+    // Build lookup for dark target scores by tracking ID (parallel to classifiedUnknowns)
+    val darkTargetMap = remember(darkTargetScores, classifiedUnknowns) {
+        classifiedUnknowns.zip(darkTargetScores).associate { (classified, score) ->
+            classified.detection.trackingId to score
+        }
     }
 
     // Pulsing animation for ALERT-level detections
@@ -978,15 +993,27 @@ private fun ArOverlay(
             if (classification == VisualClassification.LIKELY_STATIC) return@forEach
 
             val alertLevel = classified?.alertLevel ?: AlertLevel.NORMAL
-            val boxColor = classificationBoxColor(classification)
+            val darkScore = darkTargetMap[visual.trackingId]
 
-            // Use pulsing alpha for ALERT-level
-            val effectiveAlpha = if (alertLevel == AlertLevel.ALERT) pulseAlpha else 1.0f
+            // Override color and tag based on dark target threat level
+            val boxColor = if (darkScore != null && darkScore.level != ThreatLevel.NONE) {
+                darkTargetBoxColor(darkScore.level)
+            } else {
+                classificationBoxColor(classification)
+            }
+
+            // Use pulsing alpha for ALERT-level or THREAT dark targets
+            val effectiveAlpha = if (alertLevel == AlertLevel.ALERT ||
+                darkScore?.level == ThreatLevel.THREAT) pulseAlpha else 1.0f
             drawBoundingBox(visual, boxColor.copy(alpha = boxColor.alpha * effectiveAlpha), canvasWidth, canvasHeight)
 
-            // Draw classification tag
+            // Draw classification tag — enhanced with dark target label
             val shapeClass = classified?.shapeClass ?: ShapeClass.INDETERMINATE
-            val tagText = classificationTagText(classification, shapeClass)
+            val tagText = if (darkScore != null && darkScore.level != ThreatLevel.NONE) {
+                darkTargetTagText(darkScore)
+            } else {
+                classificationTagText(classification, shapeClass)
+            }
             val tagRect = drawClassifiedTag(visual, tagText, boxColor, canvasWidth, canvasHeight)
             val visualId = "visual_${visual.trackingId ?: visual.timestampMs}"
             hitTargets.add(LabelHitTarget(objectId = visualId, rect = tagRect))
@@ -1579,6 +1606,29 @@ private fun classificationBoxColor(classification: VisualClassification): Color 
     }
 }
 
+/** Box color for dark target based on threat level. */
+private fun darkTargetBoxColor(level: ThreatLevel): Color {
+    return when (level) {
+        ThreatLevel.UNIDENTIFIED -> Color(0xFFFFEB3B)  // yellow
+        ThreatLevel.NO_TRANSPONDER -> Color(0xFFFF9800) // orange
+        ThreatLevel.THREAT -> Color(0xFFF44336)         // red
+        ThreatLevel.NONE -> Color.Transparent
+    }
+}
+
+/** Tag text for dark target with threat level, shape, and behavior. */
+private fun darkTargetTagText(score: DarkTargetScore): String {
+    val base = score.level.label
+    val parts = mutableListOf(base)
+    if (score.shapeClass != ShapeClass.INDETERMINATE) {
+        parts.add(score.shapeClass.label.lowercase())
+    }
+    if (score.behaviorClass != BehaviorClass.UNKNOWN) {
+        parts.add(score.behaviorClass.label.lowercase())
+    }
+    return parts.joinToString(" ")
+}
+
 /** Tag text for visual detection based on classification, with optional shape hint. */
 private fun classificationTagText(
     classification: VisualClassification,
@@ -1598,6 +1648,7 @@ private fun classificationTagText(
         val hint = when (shapeClass) {
             ShapeClass.QUADCOPTER -> "quad"
             ShapeClass.FIXED_WING -> "fw"
+            ShapeClass.DELTA_WING -> "delta"
             ShapeClass.MULTIROTOR -> "multi"
             ShapeClass.HELICOPTER -> "heli"
             else -> null

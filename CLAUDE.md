@@ -1,32 +1,98 @@
-# Friend or Foe
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
-Android AR app for real-time aircraft & drone identification using ADS-B, FAA Remote ID, and WiFi detection. Point your phone at the sky — floating labels identify what's up there.
+
+Friend or Foe is a multi-platform system for real-time aircraft and drone identification. The Android app uses AR to overlay floating labels on the camera view. ESP32 hardware provides continuous unattended detection. A Python backend aggregates and enriches ADS-B data.
+
+## Build & Test Commands
+
+### Android (Kotlin, JDK 17, compileSdk 35, minSdk 26)
+```bash
+cd android && ./gradlew assembleDebug          # Debug build
+cd android && ./gradlew assembleRelease        # Release (needs keystore env vars)
+cd android && ./gradlew test                   # Unit tests
+cd android && ./gradlew test --tests "*.SkyPositionMapperTest"  # Single test class
+adb install app/build/outputs/apk/debug/app-debug.apk          # Install on device
+```
+
+### Backend (Python 3.11+, FastAPI)
+```bash
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8000   # Run server
+pytest                                              # All tests
+pytest tests/test_api.py -v                         # Verbose
+pytest tests/test_api.py::test_health_check -v      # Single test
+docker compose up                                   # Full stack (API + Redis + PostgreSQL)
+```
+
+### ESP32 (PlatformIO + ESP-IDF, requires Python 3.12 venv — 3.14 breaks pydantic-core)
+```bash
+cd esp32/scanner && pio run                    # Build scanner (ESP32-S3)
+cd esp32/uplink && pio run                     # Build uplink (ESP32-C3)
+cd esp32 && pio test -e native                 # Run unit tests (27 tests, no hardware needed)
+cd esp32/web-flasher && python3 -m http.server 8080  # Local web flasher
+```
 
 ## Architecture
-- `android/` — Kotlin + Jetpack Compose, Clean Architecture (data/domain/presentation/sensor/detection)
-- `backend/` — Python FastAPI, multi-source ADS-B aggregation + aircraft enrichment
-- `macos/` — Swift companion app (early stage)
 
-## Build
-- Android: `cd android && ./gradlew assembleDebug`
-- Backend: `cd backend && pip install -r requirements.txt && uvicorn app.main:app`
-- Backend (Docker): `cd backend && docker compose up`
+### Platforms
+- **`android/`** — Kotlin + Jetpack Compose, Clean Architecture. AR viewfinder with multi-source detection.
+- **`backend/`** — Python FastAPI. ADS-B aggregation with three-source fallback chain, aircraft enrichment via planespotters.net, Redis caching.
+- **`esp32/`** — Two-board ESP-IDF system: Scanner (ESP32-S3, promiscuous WiFi + BLE) and Uplink (ESP32-C3, HTTP upload + GPS + OLED). Communicates via UART at 921,600 baud with newline-delimited JSON.
+- **`macos/`** — Swift companion app (early stage, not production).
+
+### Android Clean Architecture Layers
+- **`data/`** — Room database (HistoryEntity, TrackingEntity), Retrofit API services (separate clients for adsb.fi, airplanes.live, adsb.lol, OpenSky, Open-Meteo), repositories with fallback chains
+- **`domain/model/`** — `SkyObject` sealed class (`Aircraft`, `Drone`), `Position`, `DetectionSource` enum, `ObjectCategory` enum
+- **`domain/usecase/`** — `GetNearbyAircraftUseCase`, `SaveDetectionUseCase`
+- **`detection/`** — `AdsbPoller` (5s interval), `RemoteIdScanner` (BLE), `WifiDroneScanner` (SSID patterns + DJI IE + WiFi Beacon RID), `BayesianFusionEngine`, `MilitaryClassifier`, `VisualDetectionAnalyzer` (ML Kit)
+- **`sensor/`** — `SensorFusionEngine` (accel/mag/gyro with low-pass filtering), `SkyPositionMapper` (haversine + screen projection)
+- **`presentation/`** — Compose screens (AR, Map, List, Detail, History, DroneGuide, Welcome), ViewModels with StateFlow
+- **`di/`** — Hilt modules: `NetworkModule` (named Retrofit instances per API), `DatabaseModule`, `SensorModule`
+
+### Backend Structure
+- **`app/main.py`** — FastAPI with lifespan management, request logging middleware
+- **`app/services/adsb.py`** — Multi-source ADS-B with Redis caching (30s TTL), bounding box queries, unit conversion helpers
+- **`app/services/enrichment.py`** — ICAO hex → country, callsign → airline, planespotters.net photo lookup
+- **`app/routers/`** — `aircraft.py` (GET /aircraft/nearby, GET /aircraft/{icao_hex}/detail), `detections.py` (POST /detections/drones from ESP32, GET /detections/drones/recent)
+- **`app/models/schemas.py`** — Pydantic v2 models for all API requests/responses
+
+### ESP32 Detection Pipeline
+Scanner captures raw 802.11 frames (channel hopping 1-13) and BLE advertisements, runs 5 parsers (BLE Remote ID, DJI DroneID IE, WiFi Beacon RID, SSID pattern, OUI lookup), fuses via Bayesian engine, serializes to JSON over UART → Uplink batches and POSTs to backend.
+
+### Shared Code (`esp32/shared/`)
+- `uart_protocol.h` — Wire format: short JSON keys (`src`, `conf`, `mfr`, etc.)
+- `detection_types.h` — `drone_detection_t` struct used by both scanner and uplink
+- `constants.h` — Bayesian priors, RSSI model, OpenDroneID encoding constants, DJI/ASTM OUIs
+
+### Detection Parsers — Ported Byte-for-Byte
+The same core detection logic exists in both Android (Kotlin) and ESP32 (C): OpenDroneID, DJI DroneID IE, WiFi Beacon RID, SSID patterns (104 prefixes), OUI database (29 entries), Bayesian fusion (log-odds with 30s half-life evidence decay).
 
 ## Key Patterns
-- Hilt dependency injection, Room database, Retrofit HTTP, CameraX, ARCore
-- Bayesian sensor fusion for multi-source confidence scoring
-- Repository pattern with fallback chains (adsb.fi → airplanes.live → OpenSky)
-- Flow-based reactive streams throughout
-- ARCore + compass-math hybrid (ARCore for feature-rich scenes, compass fallback for open sky)
+
+- **Bayesian sensor fusion** — Log-odds evidence combination, not max-confidence. Likelihood ratios: ADS_B=100, BLE_RID/WiFi_NAN=50, DJI_IE=30, OUI=5, SSID=3. Clamped to [-7, +7].
+- **ADS-B fallback chain** — adsb.fi → airplanes.live → adsb.lol → OpenSky. All free, no API keys.
+- **Reactive streams** — StateFlow for UI state, SharedFlow for detection emissions, Flow for database queries. `SharingStarted.WhileSubscribed` for lifecycle.
+- **Hilt DI** — `@Named` qualifiers distinguish Retrofit instances per API source. Separate OkHttpClient for ADS-B (8s timeout) vs general (15s timeout).
+- **ARCore + compass hybrid** — ARCore for feature-rich scenes, compass-math fallback for open sky (exactly when you need it most).
+- **Repository pattern** — `AircraftRepository` merges 4 ADS-B sources by ICAO hex, preferring most recently updated. `SkyObjectRepository` merges all detection types with deduplication.
 
 ## Conventions
-- Domain models in `domain/model/`, ViewModels use StateFlow
-- Category colors defined in `presentation/util/CategoryColors.kt`
-- All ADS-B sources abstracted behind `AircraftRepository`
-- Detection sources in `detection/` package, each emitting Flow<List<SkyObject>>
-- Vector drawable silhouettes in `res/drawable/ic_silhouette_*.xml`, mapped via `AircraftSilhouettes.kt`
 
-## Testing
-- Android: `cd android && ./gradlew test`
-- Backend: `cd backend && pytest`
+- Domain models in `domain/model/`, sealed `SkyObject` with `Aircraft` and `Drone` subtypes
+- ViewModels use `StateFlow`, Compose screens observe via `collectAsStateWithLifecycle`
+- Category colors in `presentation/util/CategoryColors.kt`
+- Vector silhouettes in `res/drawable/ic_silhouette_*.xml`, mapped via `AircraftSilhouettes.kt`
+- Detection sources each emit `Flow<List<SkyObject>>`, collected by `SkyObjectRepository`
+- Backend uses `Result<T>` returns; 502 when all upstream ADS-B sources fail
+- ESP32 uses FreeRTOS tasks with priority-based scheduling (Scanner: dual-core radio/processing split; Uplink: priority 5=UART down to 1=LED)
+- Stale detection pruning: 60s (Android), 120s (ESP32)
+
+## CI/CD
+
+- **Android**: GitHub Actions on push/PR to main. JDK 17, Gradle cache. Debug APK artifact (30-day retention). Release APK on `v*` tags via `softprops/action-gh-release`.
+- **ESP32**: GitHub Actions on push to main (esp32/ paths). PlatformIO build, firmware artifacts (90-day retention). Deploys web flasher to GitHub Pages. Firmware tarballs attached to releases.

@@ -192,6 +192,11 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("E88-", "Eachine"),
             DronePattern("E99-", "Eachine"),
             DronePattern("V2PRO", "Generic"),
+            // Additional budget brands
+            DronePattern("WLTOYS-", "WLtoys"),
+            DronePattern("ATTOP-", "Attop"),
+            DronePattern("BUGS-", "MJX"),
+            DronePattern("EHANG-", "EHang"),
             // Generic drone SSIDs
             DronePattern("DRONE-", "Unknown"),
             DronePattern("UAV-", "Unknown"),
@@ -204,6 +209,9 @@ class WifiDroneScanner @Inject constructor(
 
     /** Partial state accumulators for ASTM F3411 WiFi Beacon Remote ID, keyed by BSSID. */
     private val wifiBeaconRidStates = mutableMapOf<String, OpenDroneIdParser.DronePartialState>()
+
+    /** Partial state accumulators for French DRI, keyed by BSSID. */
+    private val frenchDriStates = mutableMapOf<String, OpenDroneIdParser.DronePartialState>()
 
     /**
      * Start periodic WiFi scanning for drone SSIDs.
@@ -258,6 +266,7 @@ class WifiDroneScanner @Inject constructor(
     fun stopScanning() {
         scanTimestamps.clear()
         wifiBeaconRidStates.clear()
+        frenchDriStates.clear()
     }
 
     /**
@@ -381,6 +390,27 @@ class WifiDroneScanner @Inject constructor(
                 continue
             }
 
+            // --- Priority 1.75: French "Signalement Electronique" DRI ---
+            val frenchState = frenchDriStates.getOrPut(bssid) {
+                OpenDroneIdParser.DronePartialState(bssid, now)
+            }
+            frenchState.lastUpdated = now
+            frenchState.signalStrengthDbm = rssi
+            if (FrenchDriParser.parse(result, frenchState)) {
+                seenBssids.add(bssid)
+                frenchState.toDroneOrNull(idPrefix = "fr_", detectionSource = DetectionSource.WIFI_BEACON)?.let { drone ->
+                    drones.add(drone.copy(
+                        ssid = ssid.ifBlank { null },
+                        bssid = bssid,
+                        frequencyMhz = freqMhz,
+                        channelWidthMhz = chanWidth,
+                        signalStrengthDbm = rssi,
+                        estimatedDistanceMeters = estimatedDistance
+                    ))
+                }
+                continue
+            }
+
             // --- Priority 2: SSID pattern matching ---
             if (ssid.isNotBlank()) {
                 val matchedPattern = matchDronePattern(ssid)
@@ -441,9 +471,10 @@ class WifiDroneScanner @Inject constructor(
         }
 
         if (drones.isNotEmpty()) {
+            val beaconRidCount = drones.count { it.source == DetectionSource.WIFI_BEACON }
             Log.i(TAG, "Found ${drones.size} potential drone(s) via WiFi " +
                     "(${drones.count { it.confidence >= 0.85f }} DroneID, " +
-                    "${drones.count { it.source == DetectionSource.WIFI_BEACON }} BeaconRID, " +
+                    "$beaconRidCount BeaconRID/FrenchDRI, " +
                     "${drones.count { it.confidence == 0.4f }} OUI, " +
                     "${drones.count { it.confidence == 0.3f }} SSID)")
         } else if (scanResults.isNotEmpty()) {

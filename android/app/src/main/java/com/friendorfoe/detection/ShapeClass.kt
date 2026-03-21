@@ -4,6 +4,7 @@ package com.friendorfoe.detection
 enum class ShapeClass(val label: String) {
     QUADCOPTER("Quadcopter"),
     FIXED_WING("Fixed-wing"),
+    DELTA_WING("Delta-wing"),
     MULTIROTOR("Multirotor"),
     HELICOPTER("Helicopter"),
     INDETERMINATE("Unknown shape")
