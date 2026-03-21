@@ -7,6 +7,9 @@ import android.location.LocationManager
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.friendorfoe.data.remote.LocatedDroneDto
+import com.friendorfoe.data.remote.SensorDto
+import com.friendorfoe.data.remote.SensorMapApiService
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
@@ -14,6 +17,8 @@ import com.friendorfoe.domain.model.SkyObject
 import com.friendorfoe.domain.usecase.FilterEngine
 import com.friendorfoe.sensor.SensorFusionEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,13 +26,16 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
 class MapViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
     private val locationManager: LocationManager,
-    private val sensorFusionEngine: SensorFusionEngine
+    private val sensorFusionEngine: SensorFusionEngine,
+    private val sensorMapApiService: SensorMapApiService
 ) : ViewModel() {
 
     companion object {
@@ -80,6 +88,46 @@ class MapViewModel @Inject constructor(
         if (newValue) {
             sensorFusionEngine.start()
         }
+    }
+
+    // --- Sensor map (ESP32 backend triangulation) ---
+
+    private val _sensorDrones = MutableStateFlow<List<LocatedDroneDto>>(emptyList())
+    /** Drones detected by remote ESP32 sensors, with triangulated/estimated positions. */
+    val sensorDrones: StateFlow<List<LocatedDroneDto>> = _sensorDrones.asStateFlow()
+
+    private val _remoteSensors = MutableStateFlow<List<SensorDto>>(emptyList())
+    /** Active ESP32 sensor nodes with their GPS positions. */
+    val remoteSensors: StateFlow<List<SensorDto>> = _remoteSensors.asStateFlow()
+
+    private val _sensorMapOnline = MutableStateFlow(false)
+    /** True when the backend sensor map API is reachable. */
+    val sensorMapOnline: StateFlow<Boolean> = _sensorMapOnline.asStateFlow()
+
+    private var sensorPollJob: kotlinx.coroutines.Job? = null
+
+    /** Start polling the backend sensor map endpoint every 5 seconds. */
+    fun startSensorMapPolling() {
+        if (sensorPollJob != null) return
+        sensorPollJob = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                try {
+                    val response = sensorMapApiService.getDroneMap()
+                    _sensorDrones.value = response.drones
+                    _remoteSensors.value = response.sensors
+                    _sensorMapOnline.value = true
+                } catch (e: Exception) {
+                    Log.d(TAG, "Sensor map poll failed: ${e.message}")
+                    _sensorMapOnline.value = false
+                }
+                delay(5000L)
+            }
+        }
+    }
+
+    fun stopSensorMapPolling() {
+        sensorPollJob?.cancel()
+        sensorPollJob = null
     }
 
     private var locationStarted = false
@@ -158,6 +206,7 @@ class MapViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         stopLocationUpdates()
+        stopSensorMapPolling()
         if (_followCompass.value) {
             sensorFusionEngine.stop()
         }

@@ -19,8 +19,21 @@ extern "C" {
 #define UART_BAUD_RATE              921600
 
 /* Scanner (ESP32-S3) pin assignment */
-#define SCANNER_UART_TX_PIN         17
-#define SCANNER_UART_RX_PIN         18
+#define SCANNER_S3_UART_TX_PIN      17
+#define SCANNER_S3_UART_RX_PIN      18
+
+/* Scanner (ESP32-C5) pin assignment */
+#define SCANNER_C5_UART_TX_PIN      4
+#define SCANNER_C5_UART_RX_PIN      5
+
+/* Select pins based on target chip */
+#if defined(CONFIG_IDF_TARGET_ESP32C5)
+#define SCANNER_UART_TX_PIN         SCANNER_C5_UART_TX_PIN
+#define SCANNER_UART_RX_PIN         SCANNER_C5_UART_RX_PIN
+#else
+#define SCANNER_UART_TX_PIN         SCANNER_S3_UART_TX_PIN
+#define SCANNER_UART_RX_PIN         SCANNER_S3_UART_RX_PIN
+#endif
 
 /* Uplink (ESP32-C3) pin assignment */
 #define UPLINK_UART_RX_PIN          20

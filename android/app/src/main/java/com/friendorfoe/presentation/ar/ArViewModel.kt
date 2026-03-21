@@ -19,12 +19,17 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.data.repository.WeatherRepository
+import com.friendorfoe.detection.AcousticDetector
+import com.friendorfoe.detection.AcousticResult
 import com.friendorfoe.detection.AlertLevel
 import com.friendorfoe.detection.AutoCaptureEngine
 import com.friendorfoe.detection.CaptureCandidate
 import com.friendorfoe.detection.ClassifiedVisualDetection
+import com.friendorfoe.detection.DarkTargetScore
+import com.friendorfoe.detection.DarkTargetScorer
 import com.friendorfoe.detection.DataSourceStatus
 import com.friendorfoe.detection.SkyObjectFilter
+import com.friendorfoe.detection.ThreatLevel
 import com.friendorfoe.detection.VisualDetection
 import com.friendorfoe.detection.VisualDetectionAnalyzer
 import com.friendorfoe.detection.VisualDetectionRange
@@ -84,6 +89,8 @@ class ArViewModel @Inject constructor(
     private val visualCorrelationEngine: VisualCorrelationEngine,
     private val skyObjectFilter: SkyObjectFilter,
     private val weatherRepository: WeatherRepository,
+    private val darkTargetScorer: DarkTargetScorer,
+    private val acousticDetector: AcousticDetector,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
@@ -514,6 +521,51 @@ class ArViewModel @Inject constructor(
         .map { list -> list.count { it.alertLevel == AlertLevel.ALERT } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
+    // --- Dark target threat assessment ---
+
+    private val _darkTargetScores = MutableStateFlow<List<DarkTargetScore>>(emptyList())
+    /** Scored dark targets (visual detections with no radio match). */
+    val darkTargetScores: StateFlow<List<DarkTargetScore>> = _darkTargetScores.asStateFlow()
+
+    /** Count of dark targets at or above UNIDENTIFIED threshold. */
+    val darkTargetCount: StateFlow<Int> = _darkTargetScores
+        .map { list -> list.count { it.level != ThreatLevel.NONE } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    /** Highest active threat level among all dark targets. */
+    val maxThreatLevel: StateFlow<ThreatLevel> = _darkTargetScores
+        .map { list -> list.maxByOrNull { it.score }?.level ?: ThreatLevel.NONE }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ThreatLevel.NONE)
+
+    // --- Acoustic detection ---
+
+    private val _acousticResult = MutableStateFlow(AcousticResult.NONE)
+    val acousticResult: StateFlow<AcousticResult> = _acousticResult.asStateFlow()
+
+    private val _acousticEnabled = MutableStateFlow(false)
+    val acousticEnabled: StateFlow<Boolean> = _acousticEnabled.asStateFlow()
+
+    fun toggleAcousticDetection() {
+        _acousticEnabled.value = !_acousticEnabled.value
+        if (_acousticEnabled.value) {
+            startAcousticMonitoring()
+        } else {
+            acousticJob?.cancel()
+            _acousticResult.value = AcousticResult.NONE
+        }
+    }
+
+    private var acousticJob: kotlinx.coroutines.Job? = null
+
+    private fun startAcousticMonitoring() {
+        acousticJob?.cancel()
+        acousticJob = viewModelScope.launch(Dispatchers.IO) {
+            acousticDetector.startMonitoring().collect { result ->
+                _acousticResult.value = result
+            }
+        }
+    }
+
     // --- Weather-based detection range ---
 
     private val _weatherRange = MutableStateFlow<VisualDetectionRange?>(null)
@@ -581,6 +633,13 @@ class ArViewModel @Inject constructor(
             val result = visualCorrelationEngine.correlate(radioPositions, effectiveVisualDetections, scored)
             _unmatchedVisuals.value = result.unmatchedVisuals
             _classifiedUnknowns.value = result.classifiedUnknowns
+
+            // Score dark targets (unmatched visuals with no radio correlation)
+            val currentAcoustic = _acousticResult.value
+            val currentDarkMode = _isDarkMode.value
+            _darkTargetScores.value = result.classifiedUnknowns.map { classified ->
+                darkTargetScorer.score(classified, currentDarkMode, currentAcoustic)
+            }
 
             result.positions
         }
@@ -1073,6 +1132,7 @@ class ArViewModel @Inject constructor(
 
         weatherPollJob?.cancel()
         detectionStatusJob?.cancel()
+        acousticJob?.cancel()
         visualCorrelationEngine.reset()
 
         // Now safe to pause ARCore session (no concurrent update() calls)

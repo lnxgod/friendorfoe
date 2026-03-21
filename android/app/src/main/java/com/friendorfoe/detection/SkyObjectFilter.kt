@@ -14,8 +14,8 @@ import javax.inject.Singleton
 class SkyObjectFilter @Inject constructor() {
 
     companion object {
-        /** Ring buffer capacity for motion tracking */
-        private const val MOTION_BUFFER_SIZE = 10
+        /** Ring buffer capacity for motion tracking (90 frames = ~3s at 30fps for trajectory analysis) */
+        private const val MOTION_BUFFER_SIZE = 90
         /** Frames stationary before classifying as static */
         private const val STATIC_FRAME_THRESHOLD = 10
         /** Minimum movement between frames to count as motion (normalized coords) */
@@ -338,6 +338,9 @@ class SkyObjectFilter @Inject constructor() {
         val area = detection.width * detection.height
 
         return when {
+            // Delta-wing: very wide aspect ratio (triangular silhouette), fast, straight
+            aspectRatio > 2.0f && avgVelocity > 0.06f && erraticism < 0.3f ->
+                ShapeClass.DELTA_WING
             // Fixed-wing: elongated, fast, straight path
             aspectRatio > 1.5f && avgVelocity > 0.06f && erraticism < 0.4f ->
                 ShapeClass.FIXED_WING
@@ -354,6 +357,11 @@ class SkyObjectFilter @Inject constructor() {
         }
     }
 
+    /** Get the motion history for a tracking ID (for trajectory analysis). */
+    fun getMotionHistory(trackingId: Int): List<PositionFrame> {
+        return motionHistory[trackingId]?.toList() ?: emptyList()
+    }
+
     /** Reset all motion tracking history. */
     fun reset() {
         motionHistory.clear()
@@ -361,7 +369,7 @@ class SkyObjectFilter @Inject constructor() {
 }
 
 /** Position sample for motion tracking ring buffer. */
-private data class PositionFrame(
+data class PositionFrame(
     val x: Float,
     val y: Float,
     val timestampMs: Long

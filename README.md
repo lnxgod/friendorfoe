@@ -3,6 +3,7 @@
 # Friend or Foe — Real-Time Aircraft & Drone Identification
 
 [![Android Build](https://github.com/lnxgod/friendorfoe/actions/workflows/android-build.yml/badge.svg)](https://github.com/lnxgod/friendorfoe/actions/workflows/android-build.yml)
+[![ESP32 Build](https://github.com/lnxgod/friendorfoe/actions/workflows/esp32-web-flasher.yml/badge.svg)](https://github.com/lnxgod/friendorfoe/actions/workflows/esp32-web-flasher.yml)
 
 **Point your phone at the sky. Know what's up there.**
 
@@ -17,6 +18,26 @@ This project was **built with AI** — not just one, but all of them. Claude wro
 > On March 12, 2025, the first commit was made that evening, 13 commits and **8,500+ lines of code** had been written in ~2 hours of AI pair-programming with Claude — producing a build-ready APK with AR viewfinder, multi-source detection, Bayesian sensor fusion, and map view. By March 14, the app was open-sourced with aircraft silhouettes, styled map markers, and polish — totaling **22,000+ lines** across Kotlin, Python, and XML.
 >
 > The app is **install-and-go** — install the APK, grant permissions, and start identifying aircraft. It connects directly to free public ADS-B APIs with no signup, no keys, no accounts. The optional Python backend only adds additional enrichment (airline names, route info).
+
+---
+
+## Two Ways to Detect
+
+### Android App — Point and Identify
+
+Install the APK, point at the sky — ADS-B, BLE Remote ID, WiFi, and visual ML detection all running on your phone. No accounts, no API keys.
+
+**Download:** [GitHub Releases](https://github.com/lnxgod/friendorfoe/releases)
+
+### ESP32 Hardware Edition — Deploy and Walk Away
+
+Always-on, unattended drone detection. Two-board system you can build for ~$25-40:
+
+- **Scanner** (ESP32-S3 or ESP32-C5) — BLE Remote ID + WiFi promiscuous frame capture, Bayesian fusion, JSON output over UART
+- **Uplink** (ESP32-C3) — GPS, OLED status display, WiFi backhaul to backend
+- **ESP32-C5 variant** — dual-band WiFi 6 scans 2.4 GHz AND 5 GHz (38 channels), catches modern drones that hide on 5 GHz
+- **Flash from your browser** — no toolchain needed: [**ESP32 Web Flasher**](https://lnxgod.github.io/friendorfoe/)
+- Hardware setup: [INSTALL.md](esp32/INSTALL.md)
 
 ---
 
@@ -99,6 +120,23 @@ The app fuses accelerometer, magnetometer, and gyroscope data to determine exact
               │               │               │
          adsb.fi     airplanes.live     OpenSky
         (primary)     (fallback)      (fallback)
+
+┌──────────────────────────────────────────────────┐
+│  ESP32 Hardware Edition                          │
+│                                                  │
+│  ┌──────────────────┐    UART     ┌───────────┐ │
+│  │  Scanner (S3/C5) │───921600───→│  Uplink   │ │
+│  │  • BLE Remote ID │   baud      │  (C3)     │ │
+│  │  • WiFi Promisc  │            │  • GPS    │ │
+│  │  • Bayesian      │            │  • OLED   │ │
+│  │    Fusion        │            │  • WiFi   │ │
+│  └──────────────────┘            └─────┬─────┘ │
+│                                        │        │
+└────────────────────────────────────────┼────────┘
+                                         │ HTTP POST
+                               ┌─────────┴─────────┐
+                               │  Backend (FastAPI) │
+                               └───────────────────┘
 ```
 
 ---
@@ -233,6 +271,11 @@ friendorfoe/
 │       └── services/
 │           ├── adsb.py                # Multi-source ADS-B fetching
 │           └── enrichment.py          # Aircraft data enrichment
+├── esp32/                             # ESP32 hardware edition
+│   ├── scanner/                       # Scanner firmware (S3 + C5)
+│   ├── uplink/                        # Uplink firmware (C3)
+│   ├── shared/                        # Shared UART protocol, types
+│   └── web-flasher/                   # Browser-based firmware flasher
 ├── images/                            # Aircraft reference photos (Wikimedia CC)
 ├── scripts/                           # Utility scripts (photo downloader)
 ├── macos/                             # macOS companion (early stage)

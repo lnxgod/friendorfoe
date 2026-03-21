@@ -37,7 +37,7 @@
 
     .flash-cards {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
       gap: 1.5rem;
       margin: 1.5rem 0;
     }
@@ -265,20 +265,36 @@
 
     <div class="flash-cards">
       <div class="flash-card no-config">
-        <h3>Scanner Board</h3>
-        <div class="chip">ESP32-S3-DevKitC-1 — no configuration needed</div>
+        <h3>Scanner Board (S3)</h3>
+        <div class="chip">ESP32-S3-DevKitC-1 — 2.4 GHz, no config needed</div>
         <ul>
           <li>BLE Remote ID (ASTM F3411)</li>
-          <li>WiFi promiscuous capture</li>
+          <li>WiFi promiscuous capture (2.4 GHz)</li>
           <li>DJI DroneID IE parsing</li>
           <li>SSID pattern matching (104 patterns)</li>
           <li>Bayesian sensor fusion</li>
         </ul>
         <esp-web-install-button manifest="manifest-scanner.json">
-          <button slot="activate">Flash Scanner Firmware</button>
+          <button slot="activate">Flash Scanner (S3)</button>
           <span slot="not-allowed">Your browser does not support Web Serial</span>
         </esp-web-install-button>
         <div class="desc">Connect your ESP32-S3 via USB, then click to flash. That's it.</div>
+      </div>
+      <div class="flash-card no-config">
+        <h3>Scanner Board (C5)</h3>
+        <div class="chip">ESP32-C5-DevKitC-1 — dual-band 2.4 + 5 GHz, no config needed</div>
+        <ul>
+          <li>BLE Remote ID (ASTM F3411)</li>
+          <li>WiFi dual-band capture (2.4 + 5 GHz)</li>
+          <li>DJI DroneID IE parsing</li>
+          <li>SSID pattern matching (104 patterns)</li>
+          <li>Bayesian sensor fusion</li>
+        </ul>
+        <esp-web-install-button manifest="manifest-scanner-c5.json">
+          <button slot="activate">Flash Scanner (C5)</button>
+          <span slot="not-allowed">Your browser does not support Web Serial</span>
+        </esp-web-install-button>
+        <div class="desc">Connect your ESP32-C5 via USB, then click to flash. Detects 5 GHz drones.</div>
       </div>
       <div class="flash-card">
         <h3>Uplink Board</h3>
@@ -350,14 +366,15 @@
     <!-- ── Architecture ───────────────────────────────────────────────── -->
     <h2>System Architecture</h2>
     <div class="arch-diagram">
-+---------------------------+   UART 921600   +---------------------------+
-|   ESP32-S3 "SCANNER"      | ---------------&gt; |   ESP32-C3 "UPLINK"       |
-|                           |  JSON messages   |                           |
-|  Core 0: WiFi promisc     |                  |  WiFi STA (always on)     |
-|          BLE scan         |                  |  HTTP POST -> backend     |
-|  Core 1: Bayesian fusion  |                  |  GPS, OLED, LED, Battery  |
-|          UART TX          |                  |  UART RX                  |
-+---------------------------+                  +---------------------------+
++-------------------------------+  UART 921600  +---------------------------+
+| ESP32-S3 or C5 "SCANNER"     | -------------&gt; | ESP32-C3 "UPLINK"         |
+|                               | JSON messages  |                           |
+| S3: Dual-core, 2.4 GHz WiFi  |                | WiFi STA (always on)      |
+| C5: Single-core, 2.4+5 GHz   |                | HTTP POST -> backend      |
+|                               |                | GPS, OLED, LED, Battery   |
+| BLE scan + WiFi promisc       |                | UART RX                   |
+| Bayesian fusion + UART TX     |                |                           |
++-------------------------------+                +---------------------------+
                                                           |
                                                           v
                                                +-------------------+
@@ -400,6 +417,13 @@ Scanner ESP32-S3                  Uplink ESP32-C3
 +----------------+                +----------------+
 |         TX  ---+-- GPIO 17 ---&gt; | GPIO 20 -- RX  |
 |         RX  ---+-- GPIO 18 &lt;--- | GPIO 21 -- TX  |
+|        GND  ---+----------------+-- GND          |
++----------------+                +----------------+
+
+Scanner ESP32-C5                  Uplink ESP32-C3
++----------------+                +----------------+
+|         TX  ---+-- GPIO 4  ---&gt; | GPIO 20 -- RX  |
+|         RX  ---+-- GPIO 5  &lt;--- | GPIO 21 -- TX  |
 |        GND  ---+----------------+-- GND          |
 +----------------+                +----------------+
 

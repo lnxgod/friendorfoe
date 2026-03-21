@@ -4,6 +4,24 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0-beta] - 2026-03-20
+
+### Added
+- **ESP32-C5 dual-band scanner** — 2.4 + 5 GHz WiFi 6 channel hopping (38 channels interleaved), RISC-V single-core support
+- **French DRI parser** — "Signalement Electronique a Distance" beacon parsing (Android + ESP32)
+- **Acoustic drone detector** — microphone-based drone detection using frequency analysis (Android)
+- **Dark target scorer** — visual detection scoring for non-transmitting objects (Android)
+- **Trajectory classifier** — flight path analysis for drone vs bird/aircraft discrimination (Android)
+- **Sensor map API service** — crowd-sourced detection map endpoint (Android)
+- **Backend triangulation service** — multi-sensor position triangulation
+- **ESP32 web flasher C5 variant** — flash ESP32-C5 boards from browser
+- ESP32-C5 sdkconfig with WiFi 6 (802.11ac/ax), BLE 5.0, single-core FreeRTOS
+
+### Changed
+- Scanner firmware builds for both ESP32-S3 and ESP32-C5 from shared source tree
+- CI builds and packages both scanner variants; C5 firmware attached to releases
+- Web flasher updated with C5 flash card and wiring diagram
+
 ## [0.8.0-beta] - 2026-03-19
 
 ### Added
@@ -187,6 +205,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - List view with sortable columns
 - Bottom navigation (AR, Map, List, History, About)
 
+[0.9.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.9.0-beta
 [0.8.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.8.0-beta
 [0.7.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.7.0-beta
 [0.6.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.6.0-beta

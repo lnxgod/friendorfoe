@@ -1,5 +1,5 @@
 /**
- * Friend or Foe -- ESP32-S3 Promiscuous WiFi Scanner
+ * Friend or Foe -- Promiscuous WiFi Scanner
  *
  * Captures raw 802.11 management frames (beacons) in promiscuous mode,
  * then applies a detection pipeline:
@@ -9,7 +9,9 @@
  *   3. SSID pattern match      -> conf 0.30, no position
  *   4. OUI prefix match        -> conf 0.40, no position
  *
- * Channel hops across 2.4 GHz channels 1-13 with ~100ms dwell per channel.
+ * ESP32-S3: 2.4 GHz channels 1-13 (~1.3s full sweep).
+ * ESP32-C5: Interleaved 2.4 + 5 GHz channels (~3.8s full sweep).
+ * Dwell time: ~100ms per channel.
  */
 
 #include "wifi_scanner.h"
@@ -17,6 +19,7 @@
 #include "wifi_oui_database.h"
 #include "dji_drone_id_parser.h"
 #include "wifi_beacon_rid_parser.h"
+#include "french_dri_parser.h"
 #include "open_drone_id_parser.h"
 #include "constants.h"
 #include "detection_types.h"
@@ -31,6 +34,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 
+#include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -39,9 +43,24 @@
 
 static const char *TAG = "wifi_scan";
 
-#define WIFI_CHANNEL_MIN            1
-#define WIFI_CHANNEL_MAX            13
 #define CHANNEL_DWELL_MS            100
+
+/* ── Channel tables ────────────────────────────────────────────────────────── */
+
+static const uint16_t s_channels_24ghz[] = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+};
+#define NUM_CHANNELS_24GHZ  (sizeof(s_channels_24ghz) / sizeof(s_channels_24ghz[0]))
+
+#ifdef CONFIG_SCANNER_5GHZ_ENABLED
+static const uint16_t s_channels_5ghz[] = {
+    36,  40,  44,  48,                                     /* UNII-1 */
+    52,  56,  60,  64,                                     /* UNII-2 */
+    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, /* UNII-2 Ext */
+    149, 153, 157, 161, 165                                /* UNII-3 */
+};
+#define NUM_CHANNELS_5GHZ   (sizeof(s_channels_5ghz) / sizeof(s_channels_5ghz[0]))
+#endif
 
 /* 802.11 frame control: Management frame type = 0x00, Beacon subtype = 0x80 */
 #define WIFI_FC_TYPE_MGMT           0x00
@@ -61,7 +80,12 @@ static const char *TAG = "wifi_scan";
 /* ── Module state ──────────────────────────────────────────────────────────── */
 
 static QueueHandle_t s_detection_queue = NULL;
-static uint8_t       s_current_channel = WIFI_CHANNEL_MIN;
+static uint16_t      s_current_channel = 1;
+static size_t        s_idx_24ghz = 0;
+#ifdef CONFIG_SCANNER_5GHZ_ENABLED
+static size_t        s_idx_5ghz = 0;
+static bool          s_next_is_5ghz = false; /* interleave toggle */
+#endif
 
 /* ── Helper: distance estimation from RSSI ─────────────────────────────────── */
 
@@ -246,6 +270,44 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
         }
     }
 
+    /* Priority 2.5: French "Signalement Electronique" DRI */
+    {
+        char bssid_str2[18];
+        format_bssid(bssid, bssid_str2, sizeof(bssid_str2));
+
+        odid_state_t fr_state;
+        odid_state_init(&fr_state, bssid_str2, now_ms());
+        fr_state.rssi = rssi;
+
+        if (french_dri_parse_frame(frame, (size_t)frame_len, &fr_state)) {
+            drone_detection_t fr_det;
+            if (odid_state_to_detection(&fr_state, "fr_",
+                                        DETECTION_SRC_WIFI_BEACON, &fr_det)) {
+                fr_det.rssi = rssi;
+                fr_det.estimated_distance_m = estimate_distance(rssi);
+                strncpy(fr_det.bssid, bssid_str2, sizeof(fr_det.bssid) - 1);
+                if (ssid[0] != '\0') {
+                    strncpy(fr_det.ssid, ssid, sizeof(fr_det.ssid) - 1);
+                }
+                if (fr_det.confidence == 0.0f) {
+                    fr_det.confidence = 0.90f;
+                }
+
+                int64_t ts = now_ms();
+                fr_det.first_seen_ms = ts;
+                fr_det.last_updated_ms = ts;
+
+                ESP_LOGI(TAG, "French DRI: BSSID=%s id=%s",
+                         fr_det.bssid, fr_det.drone_id);
+
+                if (s_detection_queue) {
+                    xQueueSend(s_detection_queue, &fr_det, pdMS_TO_TICKS(10));
+                }
+                return;
+            }
+        }
+    }
+
     /* Priority 3: SSID pattern match */
     if (ssid[0] != '\0') {
         const drone_ssid_pattern_t *pattern = wifi_ssid_match(ssid);
@@ -333,13 +395,63 @@ static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     process_beacon_frame(frame, frame_len, rssi);
 }
 
+/* ── Channel advance helpers ────────────────────────────────────────────────── */
+
+static uint16_t next_channel_24ghz(void)
+{
+    uint16_t ch = s_channels_24ghz[s_idx_24ghz];
+    s_idx_24ghz = (s_idx_24ghz + 1) % NUM_CHANNELS_24GHZ;
+    return ch;
+}
+
+#ifdef CONFIG_SCANNER_5GHZ_ENABLED
+static uint16_t next_channel_5ghz(void)
+{
+    uint16_t ch = s_channels_5ghz[s_idx_5ghz];
+    s_idx_5ghz = (s_idx_5ghz + 1) % NUM_CHANNELS_5GHZ;
+    return ch;
+}
+#endif
+
+/**
+ * Pick the next channel to scan.
+ *
+ * Single-band (S3): sequential 2.4 GHz sweep.
+ * Dual-band (C5):   interleaved — alternates between 2.4 and 5 GHz so
+ *                    neither band is starved.
+ */
+static uint16_t advance_channel(void)
+{
+#ifdef CONFIG_SCANNER_5GHZ_ENABLED
+    uint16_t ch;
+    if (s_next_is_5ghz) {
+        ch = next_channel_5ghz();
+    } else {
+        ch = next_channel_24ghz();
+    }
+    s_next_is_5ghz = !s_next_is_5ghz;
+    return ch;
+#else
+    return next_channel_24ghz();
+#endif
+}
+
 /* ── WiFi scan task (channel hopping) ──────────────────────────────────────── */
 
 static void wifi_scan_task(void *arg)
 {
     ESP_LOGI(TAG, "WiFi scan task started on core %d", xPortGetCoreID());
+#ifdef CONFIG_SCANNER_5GHZ_ENABLED
+    ESP_LOGI(TAG, "Dual-band: %d channels (2.4 GHz: %d, 5 GHz: %d)",
+             (int)(NUM_CHANNELS_24GHZ + NUM_CHANNELS_5GHZ),
+             (int)NUM_CHANNELS_24GHZ, (int)NUM_CHANNELS_5GHZ);
+#else
+    ESP_LOGI(TAG, "2.4 GHz only: %d channels", (int)NUM_CHANNELS_24GHZ);
+#endif
 
     while (1) {
+        s_current_channel = advance_channel();
+
         /* Set channel */
         esp_err_t err = esp_wifi_set_channel(s_current_channel, WIFI_SECOND_CHAN_NONE);
         if (err != ESP_OK) {
@@ -349,12 +461,6 @@ static void wifi_scan_task(void *arg)
 
         /* Dwell on this channel */
         vTaskDelay(pdMS_TO_TICKS(CHANNEL_DWELL_MS));
-
-        /* Advance to next channel */
-        s_current_channel++;
-        if (s_current_channel > WIFI_CHANNEL_MAX) {
-            s_current_channel = WIFI_CHANNEL_MIN;
-        }
     }
 }
 
@@ -380,7 +486,12 @@ void wifi_scanner_init(QueueHandle_t detection_queue)
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
 
     /* Start on channel 1 */
-    s_current_channel = WIFI_CHANNEL_MIN;
+    s_current_channel = 1;
+    s_idx_24ghz = 0;
+#ifdef CONFIG_SCANNER_5GHZ_ENABLED
+    s_idx_5ghz = 0;
+    s_next_is_5ghz = false;
+#endif
     ESP_ERROR_CHECK(esp_wifi_set_channel(s_current_channel, WIFI_SECOND_CHAN_NONE));
 
     ESP_LOGI(TAG, "WiFi promiscuous scanner initialized");
@@ -403,15 +514,29 @@ void wifi_scanner_start(void)
              WIFI_SCAN_TASK_STACK_SIZE);
 }
 
-void wifi_scanner_set_channel(uint8_t channel)
+void wifi_scanner_set_channel(uint16_t channel)
 {
-    if (channel >= WIFI_CHANNEL_MIN && channel <= WIFI_CHANNEL_MAX) {
+    /* Accept any valid 2.4 GHz or 5 GHz channel */
+    bool valid = (channel >= 1 && channel <= 13);
+#ifdef CONFIG_SCANNER_5GHZ_ENABLED
+    valid = valid || (channel >= 36 && channel <= 165);
+#endif
+    if (valid) {
         s_current_channel = channel;
         esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     }
 }
 
-uint8_t wifi_scanner_get_channel(void)
+uint16_t wifi_scanner_get_channel(void)
 {
     return s_current_channel;
+}
+
+bool wifi_scanner_is_5ghz_enabled(void)
+{
+#ifdef CONFIG_SCANNER_5GHZ_ENABLED
+    return true;
+#else
+    return false;
+#endif
 }

@@ -8,6 +8,7 @@ import com.friendorfoe.data.remote.AirplanesLiveApiService
 import com.friendorfoe.data.remote.HexDbApiService
 import com.friendorfoe.data.remote.OpenMeteoApiService
 import com.friendorfoe.data.remote.OpenSkyApiService
+import com.friendorfoe.data.remote.SensorMapApiService
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -34,6 +35,7 @@ object NetworkModule {
     private const val ADSB_ONE_BASE_URL = "https://api.adsb.one/"
     private const val HEXDB_BASE_URL = "https://hexdb.io/"
     private const val OPEN_METEO_BASE_URL = "https://api.open-meteo.com/"
+    private const val BACKEND_BASE_URL = "http://10.0.2.2:8000/"  // Android emulator → host localhost
 
     @Provides
     @Singleton
@@ -188,5 +190,22 @@ object NetworkModule {
     @Singleton
     fun provideOpenMeteoApiService(@Named("openmeteo") retrofit: Retrofit): OpenMeteoApiService {
         return retrofit.create(OpenMeteoApiService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    @Named("backend")
+    fun provideBackendRetrofit(okHttpClient: OkHttpClient): Retrofit {
+        return Retrofit.Builder()
+            .baseUrl(BACKEND_BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideSensorMapApiService(@Named("backend") retrofit: Retrofit): SensorMapApiService {
+        return retrofit.create(SensorMapApiService::class.java)
     }
 }

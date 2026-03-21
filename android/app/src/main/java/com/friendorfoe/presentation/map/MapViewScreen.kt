@@ -41,6 +41,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.friendorfoe.data.remote.LocatedDroneDto
+import com.friendorfoe.data.remote.SensorDto
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.SkyObject
@@ -78,6 +80,8 @@ fun MapViewScreen(
     val detailState by detailViewModel.detailState.collectAsStateWithLifecycle()
     val followCompass by viewModel.followCompass.collectAsStateWithLifecycle()
     val compassHeading by viewModel.compassHeading.collectAsStateWithLifecycle()
+    val sensorDrones by viewModel.sensorDrones.collectAsStateWithLifecycle()
+    val remoteSensors by viewModel.remoteSensors.collectAsStateWithLifecycle()
 
     // Configure osmdroid
     LaunchedEffect(Unit) {
@@ -88,8 +92,14 @@ fun MapViewScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> viewModel.startLocationUpdates()
-                Lifecycle.Event.ON_PAUSE -> viewModel.stopLocationUpdates()
+                Lifecycle.Event.ON_RESUME -> {
+                    viewModel.startLocationUpdates()
+                    viewModel.startSensorMapPolling()
+                }
+                Lifecycle.Event.ON_PAUSE -> {
+                    viewModel.stopLocationUpdates()
+                    viewModel.stopSensorMapPolling()
+                }
                 else -> {}
             }
         }
@@ -169,6 +179,74 @@ fun MapViewScreen(
                             }
                         }
                         map.overlays.add(marker)
+                    }
+
+                    // Remote ESP32 sensor markers (green squares)
+                    for (sensor in remoteSensors) {
+                        val sGeo = GeoPoint(sensor.lat, sensor.lon)
+                        val sMarker = Marker(map).apply {
+                            position = sGeo
+                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                            title = "Sensor: ${sensor.deviceId}"
+                            icon = createSensorDrawable(context)
+                        }
+                        map.overlays.add(sMarker)
+                    }
+
+                    // Sensor-detected drones (triangulated / range-estimated)
+                    for (drone in sensorDrones) {
+                        val dGeo = GeoPoint(drone.lat, drone.lon)
+
+                        // Range circle for single-sensor detections
+                        if (drone.positionSource == "range_only" && drone.rangeM != null) {
+                            val rangeCircle = Polygon(map).apply {
+                                points = Polygon.pointsAsCircle(dGeo, drone.rangeM)
+                                fillPaint.apply {
+                                    color = 0x20FF6D00  // semi-transparent orange
+                                    style = Paint.Style.FILL
+                                }
+                                outlinePaint.apply {
+                                    color = 0xAAFF6D00.toInt()
+                                    strokeWidth = 2f
+                                    style = Paint.Style.STROKE
+                                }
+                                title = "Range: ~${drone.rangeM.toInt()}m"
+                            }
+                            map.overlays.add(rangeCircle)
+                        }
+
+                        // Accuracy circle for triangulated positions
+                        if (drone.positionSource == "trilateration" && drone.accuracyM != null && drone.accuracyM > 10) {
+                            val accCircle = Polygon(map).apply {
+                                points = Polygon.pointsAsCircle(dGeo, drone.accuracyM)
+                                fillPaint.apply {
+                                    color = 0x15E91E63  // faint pink
+                                    style = Paint.Style.FILL
+                                }
+                                outlinePaint.apply {
+                                    color = 0xAAE91E63.toInt()
+                                    strokeWidth = 1.5f
+                                    style = Paint.Style.STROKE
+                                }
+                            }
+                            map.overlays.add(accCircle)
+                        }
+
+                        // Drone marker
+                        val droneColor = when (drone.positionSource) {
+                            "gps" -> 0xFFF44336.toInt()            // red — GPS confirmed
+                            "trilateration" -> 0xFFE91E63.toInt()  // pink — triangulated
+                            "intersection" -> 0xFFFF9800.toInt()   // orange — 2-sensor
+                            else -> 0xFFFF6D00.toInt()             // dark orange — range only
+                        }
+                        val droneMarker = Marker(map).apply {
+                            position = dGeo
+                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                            title = buildSensorDroneTitle(drone)
+                            snippet = buildSensorDroneSnippet(drone)
+                            icon = createSensorDroneDrawable(context, droneColor)
+                        }
+                        map.overlays.add(droneMarker)
                     }
 
                     // Center map on user when following compass, or if moved significantly
@@ -428,5 +506,75 @@ private fun createUserDrawable(context: android.content.Context, followCompass: 
     }
 
     return BitmapDrawable(context.resources, bitmap)
+}
+
+/** Green square marker for ESP32 sensor nodes. */
+private fun createSensorDrawable(context: android.content.Context): Drawable {
+    val density = context.resources.displayMetrics.density
+    val sizePx = (14 * density).toInt()
+    val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF4CAF50.toInt() // green
+        style = Paint.Style.FILL
+    }
+    val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFFFFFFF.toInt()
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * density
+    }
+    canvas.drawRect(2f, 2f, sizePx - 2f, sizePx - 2f, paint)
+    canvas.drawRect(2f, 2f, sizePx - 2f, sizePx - 2f, border)
+    return BitmapDrawable(context.resources, bitmap)
+}
+
+/** Colored diamond marker for sensor-detected drones. */
+private fun createSensorDroneDrawable(context: android.content.Context, color: Int): Drawable {
+    val density = context.resources.displayMetrics.density
+    val sizePx = (18 * density).toInt()
+    val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    val half = sizePx / 2f
+    val path = android.graphics.Path().apply {
+        moveTo(half, 2f)
+        lineTo(sizePx - 2f, half)
+        lineTo(half, sizePx - 2f)
+        lineTo(2f, half)
+        close()
+    }
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = color
+        style = Paint.Style.FILL
+    }
+    val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = 0xFFFFFFFF.toInt()
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * density
+    }
+    canvas.drawPath(path, paint)
+    canvas.drawPath(path, border)
+    return BitmapDrawable(context.resources, bitmap)
+}
+
+private fun buildSensorDroneTitle(drone: LocatedDroneDto): String {
+    val mfr = drone.manufacturer?.let { "$it " } ?: ""
+    val model = drone.model ?: ""
+    val label = "$mfr$model".trim().ifEmpty { drone.droneId.take(20) }
+    val method = when (drone.positionSource) {
+        "gps" -> "GPS"
+        "trilateration" -> "${drone.sensorCount}-sensor triangulated"
+        "intersection" -> "2-sensor intersection"
+        "range_only" -> "~${drone.rangeM?.toInt() ?: "?"}m range"
+        else -> ""
+    }
+    return "$label ($method)"
+}
+
+private fun buildSensorDroneSnippet(drone: LocatedDroneDto): String {
+    val parts = mutableListOf<String>()
+    parts.add("Sensors: ${drone.sensorCount}")
+    parts.add("Confidence: ${"%.0f".format(drone.confidence * 100)}%")
+    drone.accuracyM?.let { parts.add("Accuracy: ~${it.toInt()}m") }
+    return parts.joinToString(", ")
 }
 

@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * Friend or Foe -- ESP32-S3 Promiscuous WiFi Scanner
+ * Friend or Foe -- Promiscuous WiFi Scanner
  *
  * Captures raw WiFi beacon frames in promiscuous mode, parsing:
  * - DJI vendor-specific Information Elements (DroneID)
@@ -9,13 +9,19 @@
  * - Known drone SSID patterns
  * - Known drone manufacturer OUI prefixes
  *
- * Runs on Core 0 alongside the WiFi driver ISRs for lowest latency.
- * Channel-hops across 2.4 GHz channels 1-13 with ~100ms dwell time.
+ * ESP32-S3: 2.4 GHz only (ch 1-13), dual-core, pinned to Core 0.
+ * ESP32-C5: Dual-band 2.4 + 5 GHz (ch 1-13 + 36-165), single-core.
+ *
+ * Channel-hops with ~100ms dwell time per channel. On dual-band builds,
+ * channels are interleaved (one 2.4 GHz, one 5 GHz) so neither band
+ * is starved.
  */
 
 #include "detection_types.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,23 +36,31 @@ void wifi_scanner_init(QueueHandle_t detection_queue);
 
 /**
  * Start the WiFi scan task (channel hopping + frame processing).
- * Creates a FreeRTOS task pinned to Core 0.
+ * On dual-core (S3) the task is pinned to Core 0; on single-core (C5)
+ * it runs without core affinity.
  */
 void wifi_scanner_start(void);
 
 /**
  * Set the WiFi channel manually (overrides automatic hopping for one cycle).
  *
- * @param channel WiFi channel number (1-13)
+ * @param channel WiFi channel number (1-13 for 2.4 GHz, 36-165 for 5 GHz)
  */
-void wifi_scanner_set_channel(uint8_t channel);
+void wifi_scanner_set_channel(uint16_t channel);
 
 /**
  * Get the current WiFi channel.
  *
- * @return Current channel number (1-13)
+ * @return Current channel number (1-13 or 36-165)
  */
-uint8_t wifi_scanner_get_channel(void);
+uint16_t wifi_scanner_get_channel(void);
+
+/**
+ * Check if 5 GHz scanning is enabled (compile-time).
+ *
+ * @return true if built with CONFIG_SCANNER_5GHZ_ENABLED
+ */
+bool wifi_scanner_is_5ghz_enabled(void);
 
 #ifdef __cplusplus
 }
