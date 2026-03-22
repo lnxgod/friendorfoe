@@ -1,12 +1,14 @@
 #pragma once
 
 /**
- * Friend or Foe -- Uplink Status LED
+ * Friend or Foe -- Scanner Status LED
  *
  * Drives a single GPIO LED with configurable blink patterns to
  * indicate system state at a glance.
  *
- * Hardware: GPIO8
+ * Hardware:
+ *   ESP32-S3: GPIO48 (built-in RGB LED on DevKitC-1, driven as on/off)
+ *   ESP32-C5: GPIO27 (RGB LED pin on C5 dev boards)
  */
 
 #ifdef __cplusplus
@@ -14,13 +16,12 @@ extern "C" {
 #endif
 
 typedef enum {
+    LED_BOOT,       /* 3 fast blinks then off   */
     LED_IDLE,       /* Slow blink (1Hz)         */
     LED_SCANNING,   /* Fast blink (4Hz)         */
     LED_DETECTION,  /* Solid on for 2s          */
-    LED_UPLOADING,  /* Double blink             */
+    LED_UART_OK,    /* Single short pulse / 2s  */
     LED_ERROR,      /* Triple blink             */
-    LED_NO_GPS,        /* Very slow blink (0.5Hz)          */
-    LED_NO_SCANNER,    /* Alternating long/short blink     */
 } led_pattern_t;
 
 /**

@@ -24,6 +24,7 @@
 #include "detection_types.h"
 #include "uart_protocol.h"
 #include "task_priorities.h"
+#include "led_status.h"
 
 #include "esp_log.h"
 #include "esp_event.h"
@@ -39,7 +40,7 @@
 
 static const char *TAG = "fof_scanner";
 
-#define FIRMWARE_VERSION    "0.7.0-beta"
+#define FIRMWARE_VERSION    "0.10.0-beta"
 #define DETECTION_QUEUE_LEN 50
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
@@ -76,31 +77,39 @@ void app_main(void)
     bayesian_fusion_init();
     ESP_LOGI(TAG, "Bayesian fusion engine initialised");
 
-    /* ── 5. Initialize UART TX (hardware setup, no task yet) ──────────── */
+    /* ── 5. Initialize status LED ────────────────────────────────────── */
+    led_init();
+    led_set_pattern(LED_BOOT);
+
+    /* ── 6. Initialize UART TX (hardware setup, no task yet) ──────────── */
     uart_tx_init();
 
-    /* ── 6. Initialize WiFi scanner (sets up promiscuous mode) ────────── */
+    /* ── 7. Initialize WiFi scanner (sets up promiscuous mode) ────────── */
     wifi_scanner_init(detection_queue);
     ESP_LOGI(TAG, "WiFi scanner initialised");
 
-    /* ── 7. Initialize BLE Remote ID scanner ──────────────────────────── */
+    /* ── 8. Initialize BLE Remote ID scanner ──────────────────────────── */
     ble_remote_id_init(detection_queue);
     ESP_LOGI(TAG, "BLE Remote ID scanner initialised");
 
-    /* ── 8. Start UART TX task on Core 1 (processing core) ────────────── */
+    /* ── 9. Start UART TX task on Core 1 (processing core) ────────────── */
     uart_tx_start(detection_queue);
 
-    /* ── 9. Start WiFi scanner task on Core 0 (radio core) ────────────── */
+    /* ── 10. Start WiFi scanner task on Core 0 (radio core) ───────────── */
     wifi_scanner_start();
     ESP_LOGI(TAG, "WiFi scanner started on core %d, priority %d",
              WIFI_SCAN_TASK_CORE, WIFI_SCAN_TASK_PRIORITY);
 
-    /* ── 10. Start BLE scanner task on Core 0 (radio core) ────────────── */
+    /* ── 11. Start BLE scanner task on Core 0 (radio core) ────────────── */
     ble_remote_id_start();
     ESP_LOGI(TAG, "BLE Remote ID scanner started on core %d, priority %d",
              BLE_SCAN_TASK_CORE, BLE_SCAN_TASK_PRIORITY);
 
-    /* ── 11. Startup banner ───────────────────────────────────────────── */
+    /* ── 12. Start LED task ───────────────────────────────────────────── */
+    led_start();
+    led_set_pattern(LED_SCANNING);
+
+    /* ── 13. Startup banner ───────────────────────────────────────────── */
     ESP_LOGI(TAG, "============================================");
     ESP_LOGI(TAG, "  Friend or Foe -- Scanner v%s", FIRMWARE_VERSION);
     ESP_LOGI(TAG, "  ESP32-S3 dual-core @ 240 MHz");

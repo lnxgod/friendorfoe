@@ -13,6 +13,7 @@
 #include "detection_types.h"
 #include "uart_protocol.h"
 #include "task_priorities.h"
+#include "led_status.h"
 
 #include "cJSON.h"
 
@@ -261,6 +262,7 @@ static void uart_tx_task(void *arg)
 
             /* Serialize and transmit */
             uart_tx_send_detection(&det);
+            led_set_pattern(LED_DETECTION);
 
             ESP_LOGD(TAG, "TX: %s src=%d raw=%.2f fused=%.2f rssi=%d",
                      det.drone_id, det.source,
@@ -281,6 +283,7 @@ static void uart_tx_task(void *arg)
 
             uart_tx_send_status(s_ble_count, s_wifi_count,
                                 s_current_channel, uptime_s);
+            led_set_pattern(LED_SCANNING);
 
             ESP_LOGD(TAG, "Status: ble=%d wifi=%d ch=%d uptime=%lus",
                      s_ble_count, s_wifi_count,
