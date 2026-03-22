@@ -25,6 +25,7 @@
 #include "uart_protocol.h"
 #include "task_priorities.h"
 #include "led_status.h"
+#include "oled_display.h"
 
 #include "esp_log.h"
 #include "esp_event.h"
@@ -42,6 +43,44 @@ static const char *TAG = "fof_scanner";
 
 #define FIRMWARE_VERSION    "0.10.0-beta"
 #define DETECTION_QUEUE_LEN 50
+#define DISPLAY_UPDATE_MS   500
+
+/* ── Display update task ───────────────────────────────────────────────── */
+
+static void display_task(void *arg)
+{
+    ESP_LOGI(TAG, "Display task started");
+
+    bool have_detection = false;
+    scanner_detection_summary_t last_det = {0};
+
+    while (1) {
+        int total       = uart_tx_get_total_count();
+        int active      = bayesian_fusion_get_active_count();
+        uint8_t channel = uart_tx_get_current_channel();
+        int ble         = uart_tx_get_ble_count();
+        int wifi        = uart_tx_get_wifi_count();
+        uint32_t uptime = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
+
+        /* Check for new/updated detections */
+        scanner_detection_summary_t recent;
+        if (uart_tx_get_recent_detection(&recent)) {
+            last_det = recent;
+            have_detection = true;
+        }
+
+        /* Update stats (top section) */
+        oled_update(total, active, channel, ble, wifi, uptime);
+
+        /* Persistently show last detection in bottom section */
+        if (have_detection) {
+            oled_show_detection(last_det.drone_id, last_det.manufacturer,
+                                last_det.confidence, last_det.rssi);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(DISPLAY_UPDATE_MS));
+    }
+}
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
@@ -81,6 +120,11 @@ void app_main(void)
     led_init();
     led_set_pattern(LED_BOOT);
 
+    /* ── 5b. Initialize OLED display ─────────────────────────────────── */
+    oled_init();
+    oled_set_version(FIRMWARE_VERSION);
+    oled_update(0, 0, 0, 0, 0, 0);
+
     /* ── 6. Initialize UART TX (hardware setup, no task yet) ──────────── */
     uart_tx_init();
 
@@ -108,6 +152,19 @@ void app_main(void)
     /* ── 12. Start LED task ───────────────────────────────────────────── */
     led_start();
     led_set_pattern(LED_SCANNING);
+
+    /* ── 12b. Start display task ─────────────────────────────────────── */
+    xTaskCreatePinnedToCore(
+        display_task,
+        "display",
+        DISPLAY_TASK_STACK_SIZE,
+        NULL,
+        DISPLAY_TASK_PRIORITY,
+        NULL,
+        DISPLAY_TASK_CORE
+    );
+    ESP_LOGI(TAG, "Display task started on core %d, priority %d",
+             DISPLAY_TASK_CORE, DISPLAY_TASK_PRIORITY);
 
     /* ── 13. Startup banner ───────────────────────────────────────────── */
     ESP_LOGI(TAG, "============================================");

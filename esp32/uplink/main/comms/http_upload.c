@@ -298,6 +298,13 @@ static void http_upload_task(void *arg)
     ESP_LOGI(TAG, "HTTP upload task started");
 
     while (1) {
+        /* In standalone mode, just drain the queue without uploading */
+        if (wifi_sta_is_standalone()) {
+            drone_detection_t det;
+            xQueueReceive(s_detection_queue, &det, pdMS_TO_TICKS(500));
+            continue;
+        }
+
         /* Try to drain offline buffer first when WiFi is up */
         if (wifi_sta_is_connected() && !ring_buffer_is_empty(s_offline_buffer)) {
             drain_offline_buffer();

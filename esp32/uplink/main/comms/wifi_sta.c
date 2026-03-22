@@ -25,6 +25,7 @@ static const char *TAG = "wifi_sta";
 
 static EventGroupHandle_t s_wifi_event_group = NULL;
 static bool               s_is_connected     = false;
+static bool               s_standalone       = false;
 static int                s_retry_count      = 0;
 
 /* Exponential backoff parameters */
@@ -106,6 +107,16 @@ void wifi_sta_init(void)
     nvs_config_get_wifi_ssid(ssid, sizeof(ssid));
     nvs_config_get_wifi_password(password, sizeof(password));
 
+    /* Check if SSID is unconfigured */
+    if (ssid[0] == '\0' || strcmp(ssid, "YourSSID") == 0) {
+        s_standalone = true;
+        ESP_LOGI(TAG, "No WiFi SSID configured -- standalone mode (AP-only)");
+
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+        ESP_ERROR_CHECK(esp_wifi_start());
+        return;
+    }
+
     /* Configure and start */
     wifi_config_t wifi_config = {0};
     strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
@@ -123,11 +134,21 @@ void wifi_sta_init(void)
 
 bool wifi_sta_is_connected(void)
 {
-    return s_is_connected;
+    return !s_standalone && s_is_connected;
+}
+
+bool wifi_sta_is_standalone(void)
+{
+    return s_standalone;
 }
 
 void wifi_sta_wait_connected(int timeout_ms)
 {
+    if (s_standalone) {
+        ESP_LOGI(TAG, "Standalone mode -- skipping STA connection wait");
+        return;
+    }
+
     TickType_t ticks = (timeout_ms > 0) ? pdMS_TO_TICKS(timeout_ms) : portMAX_DELAY;
 
     ESP_LOGI(TAG, "Waiting for WiFi connection (timeout=%dms)...", timeout_ms);

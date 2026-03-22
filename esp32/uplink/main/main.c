@@ -51,6 +51,10 @@ static void display_task(void *arg)
 {
     ESP_LOGI(TAG, "Display task started");
 
+    int prev_detection_count = 0;
+    int overlay_ticks = 0;
+    detection_summary_t last_det = {0};
+
     while (1) {
         /* Gather current state */
         int drone_count    = uart_rx_get_detection_count();
@@ -59,19 +63,37 @@ static void display_task(void *arg)
         float battery_pct  = battery_get_percentage();
         int upload_count   = http_upload_get_success_count();
 
-        /* Update status screen */
+        /* Check for new detections */
+        if (drone_count > prev_detection_count) {
+            detection_summary_t recent[1];
+            if (uart_rx_get_recent_detections(recent, 1) > 0) {
+                last_det = recent[0];
+                overlay_ticks = 6;  /* ~3s at 500ms interval */
+            }
+        }
+        prev_detection_count = drone_count;
+
+        /* Update status screen, then overlay detection if active */
         oled_update(drone_count, gps_fix, wifi_ok, battery_pct, upload_count);
 
+        if (overlay_ticks > 0) {
+            oled_show_detection(last_det.drone_id, NULL,
+                                last_det.confidence, last_det.rssi);
+            overlay_ticks--;
+        }
+
         /* Update LED pattern based on system state */
-        bool scanner_ok = uart_rx_is_scanner_connected();
+        bool scanner_ok  = uart_rx_is_scanner_connected();
+        bool standalone  = wifi_sta_is_standalone();
 
         if (!gps_fix) {
             led_set_pattern(LED_NO_GPS);
-        } else if (!wifi_ok) {
+        } else if (!standalone && !wifi_ok) {
             led_set_pattern(LED_ERROR);
         } else if (!scanner_ok) {
             led_set_pattern(LED_NO_SCANNER);
-        } else if (http_upload_get_fail_count() > http_upload_get_success_count()) {
+        } else if (!standalone &&
+                   http_upload_get_fail_count() > http_upload_get_success_count()) {
             led_set_pattern(LED_ERROR);
         } else if (drone_count > 0) {
             led_set_pattern(LED_SCANNING);
@@ -96,9 +118,13 @@ static void print_banner(void)
     nvs_config_get_device_id(device_id, sizeof(device_id));
     ESP_LOGI(TAG, "Device ID: %s", device_id);
 
-    char backend_url[128] = {0};
-    nvs_config_get_backend_url(backend_url, sizeof(backend_url));
-    ESP_LOGI(TAG, "Backend:   %s%s", backend_url, CONFIG_UPLOAD_ENDPOINT);
+    if (wifi_sta_is_standalone()) {
+        ESP_LOGI(TAG, "Mode:      STANDALONE (AP-only, no backend)");
+    } else {
+        char backend_url[128] = {0};
+        nvs_config_get_backend_url(backend_url, sizeof(backend_url));
+        ESP_LOGI(TAG, "Backend:   %s%s", backend_url, CONFIG_UPLOAD_ENDPOINT);
+    }
 
     ESP_LOGI(TAG, "Batch:     %d detections / %dms",
              CONFIG_MAX_BATCH_SIZE, CONFIG_BATCH_INTERVAL_MS);

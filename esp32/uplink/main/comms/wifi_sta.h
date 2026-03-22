@@ -34,6 +34,12 @@ bool wifi_sta_is_connected(void);
  */
 void wifi_sta_wait_connected(int timeout_ms);
 
+/**
+ * Check whether the uplink is running in standalone mode (AP-only).
+ * Standalone mode is entered when no WiFi SSID has been configured.
+ */
+bool wifi_sta_is_standalone(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -23,6 +23,7 @@ extern "C" {
 #define FUSION_TASK_PRIORITY        3
 #define UART_TX_TASK_PRIORITY       2
 #define LED_TASK_PRIORITY           1
+#define DISPLAY_TASK_PRIORITY      1
 
 /* ── Stack sizes (bytes) ─────────────────────────────────────────────────── */
 
@@ -31,6 +32,7 @@ extern "C" {
 #define FUSION_TASK_STACK_SIZE      4096
 #define UART_TX_TASK_STACK_SIZE     4096
 #define LED_TASK_STACK_SIZE         2048
+#define DISPLAY_TASK_STACK_SIZE    4096
 
 /* ── Core affinity ───────────────────────────────────────────────────────── */
 
@@ -40,6 +42,7 @@ extern "C" {
 #define BLE_SCAN_TASK_CORE          tskNO_AFFINITY
 #define FUSION_TASK_CORE            tskNO_AFFINITY
 #define UART_TX_TASK_CORE           tskNO_AFFINITY
+#define DISPLAY_TASK_CORE           tskNO_AFFINITY
 #else
 /* Dual-core (ESP32-S3): PRO_CPU = 0, APP_CPU = 1                           */
 /* Radio tasks share core 0 with WiFi/BT driver ISRs for lowest latency.    */
@@ -51,6 +54,7 @@ extern "C" {
 #define BLE_SCAN_TASK_CORE          CORE_RADIO
 #define FUSION_TASK_CORE            CORE_PROCESSING
 #define UART_TX_TASK_CORE           CORE_PROCESSING
+#define DISPLAY_TASK_CORE           CORE_PROCESSING
 #endif
 
 #ifdef __cplusplus
