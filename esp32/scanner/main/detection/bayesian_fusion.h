@@ -57,6 +57,11 @@ float bayesian_fusion_get_probability(const char *candidate_id, int64_t now_ms);
 void bayesian_fusion_prune(int64_t now_ms);
 
 /**
+ * Get the number of active (in-use) tracked candidates.
+ */
+int bayesian_fusion_get_active_count(void);
+
+/**
  * Reset all belief states. Clears the entire fusion table.
  */
 void bayesian_fusion_reset(void);

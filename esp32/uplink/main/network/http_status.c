@@ -67,6 +67,8 @@ static esp_err_t status_html_handler(httpd_req_t *req)
     int upload_fail = http_upload_get_fail_count();
 
     int ap_clients = wifi_ap_get_station_count();
+    bool standalone = wifi_sta_is_standalone();
+    bool scanner_ok = uart_rx_is_scanner_connected();
 
     char buf[512];
 
@@ -106,6 +108,17 @@ static esp_err_t status_html_handler(httpd_req_t *req)
         device_id, up_h, up_m, up_s);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
+    /* ── Standalone banner ────────────────────────────────────────────── */
+    if (standalone) {
+        httpd_resp_send_chunk(req,
+            "<div style=\"background:#3d2e00;border:1px solid #d29922;"
+            "border-radius:8px;padding:.6rem .8rem;margin:.75rem 0;"
+            "color:#d29922;font-size:.85rem\">"
+            "Standalone Mode &mdash; connect STA WiFi via web flasher "
+            "to enable backend uploads</div>",
+            HTTPD_RESP_USE_STRLEN);
+    }
+
     /* ── GPS section ───────────────────────────────────────────────────── */
     httpd_resp_send_chunk(req, "<h2>GPS</h2><div class=\"g\">", HTTPD_RESP_USE_STRLEN);
 
@@ -134,15 +147,40 @@ static esp_err_t status_html_handler(httpd_req_t *req)
 
     httpd_resp_send_chunk(req, "</div>", HTTPD_RESP_USE_STRLEN);
 
+    /* ── Scanner section ──────────────────────────────────────────────── */
+    httpd_resp_send_chunk(req, "<h2>Scanner</h2><div class=\"g\">", HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf),
+        "<div class=\"r\"><div class=\"l\">Status</div>"
+        "<div class=\"v %s\">%s</div></div>",
+        scanner_ok ? "ok" : "err",
+        scanner_ok ? "Connected" : "Disconnected");
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf),
+        "<div class=\"r\"><div class=\"l\">Detections</div>"
+        "<div class=\"v\">%d</div></div>",
+        det_count);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    httpd_resp_send_chunk(req, "</div>", HTTPD_RESP_USE_STRLEN);
+
     /* ── Network section ───────────────────────────────────────────────── */
     httpd_resp_send_chunk(req, "<h2>Network</h2><div class=\"g\">", HTTPD_RESP_USE_STRLEN);
 
-    snprintf(buf, sizeof(buf),
-        "<div class=\"r\"><div class=\"l\">WiFi STA</div>"
-        "<div class=\"v %s\">%s</div></div>",
-        wifi_ok ? "ok" : "err",
-        wifi_ok ? "Connected" : "Disconnected");
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    if (standalone) {
+        httpd_resp_send_chunk(req,
+            "<div class=\"r\"><div class=\"l\">WiFi STA</div>"
+            "<div class=\"v warn\">Standalone</div></div>",
+            HTTPD_RESP_USE_STRLEN);
+    } else {
+        snprintf(buf, sizeof(buf),
+            "<div class=\"r\"><div class=\"l\">WiFi STA</div>"
+            "<div class=\"v %s\">%s</div></div>",
+            wifi_ok ? "ok" : "err",
+            wifi_ok ? "Connected" : "Disconnected");
+        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    }
 
     snprintf(buf, sizeof(buf),
         "<div class=\"r\"><div class=\"l\">AP Clients</div>"
@@ -166,20 +204,21 @@ static esp_err_t status_html_handler(httpd_req_t *req)
 
     httpd_resp_send_chunk(req, "</div>", HTTPD_RESP_USE_STRLEN);
 
-    /* ── Detections section ────────────────────────────────────────────── */
-    httpd_resp_send_chunk(req, "<h2>Detections</h2><div class=\"g\">", HTTPD_RESP_USE_STRLEN);
+    /* ── Uploads section (hidden in standalone mode) ─────────────────── */
+    if (!standalone) {
+        httpd_resp_send_chunk(req, "<h2>Uploads</h2><div class=\"g\">", HTTPD_RESP_USE_STRLEN);
 
-    snprintf(buf, sizeof(buf),
-        "<div class=\"r\"><div class=\"l\">Total Detected</div>"
-        "<div class=\"v\">%d</div></div>"
-        "<div class=\"r\"><div class=\"l\">Uploaded / Failed</div>"
-        "<div class=\"v\"><span class=\"ok\">%d</span> / "
-        "<span class=\"%s\">%d</span></div></div>",
-        det_count, upload_ok,
-        upload_fail > 0 ? "err" : "ok", upload_fail);
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+        snprintf(buf, sizeof(buf),
+            "<div class=\"r\"><div class=\"l\">Uploaded</div>"
+            "<div class=\"v ok\">%d</div></div>"
+            "<div class=\"r\"><div class=\"l\">Failed</div>"
+            "<div class=\"v %s\">%d</div></div>",
+            upload_ok,
+            upload_fail > 0 ? "err" : "ok", upload_fail);
+        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
-    httpd_resp_send_chunk(req, "</div>", HTTPD_RESP_USE_STRLEN);
+        httpd_resp_send_chunk(req, "</div>", HTTPD_RESP_USE_STRLEN);
+    }
 
     /* ── Recent detections table ───────────────────────────────────────── */
     detection_summary_t recent[8];
@@ -255,6 +294,8 @@ static esp_err_t status_json_handler(httpd_req_t *req)
     int upload_ok   = http_upload_get_success_count();
     int upload_fail = http_upload_get_fail_count();
     int ap_clients  = wifi_ap_get_station_count();
+    bool standalone = wifi_sta_is_standalone();
+    bool scanner_ok = uart_rx_is_scanner_connected();
 
     char buf[512];
 
@@ -263,11 +304,14 @@ static esp_err_t status_json_handler(httpd_req_t *req)
         "{\"device_id\":\"%s\",\"uptime_s\":%lld,"
         "\"gps\":{\"fix\":%s,\"lat\":%.6f,\"lon\":%.6f,\"satellites\":%d},"
         "\"wifi_sta\":%s,\"ap_clients\":%d,"
+        "\"standalone\":%s,\"scanner_connected\":%s,"
         "\"battery\":{\"percent\":%.1f,\"voltage\":%.2f},"
         "\"detections\":%d,\"uploads_ok\":%d,\"uploads_fail\":%d,",
         device_id, (long long)uptime_sec,
         gps_fix ? "true" : "false", gps.latitude, gps.longitude, gps.satellites,
         wifi_ok ? "true" : "false", ap_clients,
+        standalone ? "true" : "false",
+        scanner_ok ? "true" : "false",
         batt_pct, batt_v,
         det_count, upload_ok, upload_fail);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);

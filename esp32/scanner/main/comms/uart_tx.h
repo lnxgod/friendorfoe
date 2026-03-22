@@ -11,6 +11,8 @@
  * Hardware: UART1, TX=GPIO17, RX=GPIO18, 921600 baud, 8N1
  */
 
+#include <stdbool.h>
+#include <stdint.h>
 #include "detection_types.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -52,6 +54,35 @@ void uart_tx_send_status(int ble_count, int wifi_count,
  *                         produced by WiFi and BLE scanner tasks.
  */
 void uart_tx_start(QueueHandle_t detection_queue);
+
+/**
+ * Summary of the most recent detection, cached for display.
+ */
+typedef struct {
+    char    drone_id[64];
+    char    manufacturer[32];
+    float   confidence;
+    int8_t  rssi;
+    int64_t timestamp_ms;
+} scanner_detection_summary_t;
+
+/** Get cumulative BLE detection count. */
+int uart_tx_get_ble_count(void);
+
+/** Get cumulative WiFi detection count. */
+int uart_tx_get_wifi_count(void);
+
+/** Get total detection count (BLE + WiFi). */
+int uart_tx_get_total_count(void);
+
+/** Get current WiFi channel being scanned. */
+uint8_t uart_tx_get_current_channel(void);
+
+/**
+ * Copy the most recent detection summary.
+ * @return true if a detection has been cached, false if none yet
+ */
+bool uart_tx_get_recent_detection(scanner_detection_summary_t *out);
 
 #ifdef __cplusplus
 }

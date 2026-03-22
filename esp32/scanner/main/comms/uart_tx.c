@@ -45,6 +45,11 @@ static int s_wifi_count = 0;
 static uint8_t s_current_channel = 0;
 static uint32_t s_seq = 0;
 
+/* ── Last detection cache (for OLED display) ───────────────────────────── */
+
+static scanner_detection_summary_t s_last_detection = {0};
+static bool s_has_detection = false;
+
 /* ── Helpers ────────────────────────────────────────────────────────────── */
 
 /**
@@ -260,6 +265,18 @@ static void uart_tx_task(void *arg)
                                                  now_ms);
             det.fused_confidence = fused;
 
+            /* Cache for OLED display */
+            strncpy(s_last_detection.drone_id, det.drone_id,
+                    sizeof(s_last_detection.drone_id) - 1);
+            s_last_detection.drone_id[sizeof(s_last_detection.drone_id) - 1] = '\0';
+            strncpy(s_last_detection.manufacturer, det.manufacturer,
+                    sizeof(s_last_detection.manufacturer) - 1);
+            s_last_detection.manufacturer[sizeof(s_last_detection.manufacturer) - 1] = '\0';
+            s_last_detection.confidence = det.fused_confidence;
+            s_last_detection.rssi = det.rssi;
+            s_last_detection.timestamp_ms = det.last_updated_ms;
+            s_has_detection = true;
+
             /* Serialize and transmit */
             uart_tx_send_detection(&det);
             led_set_pattern(LED_DETECTION);
@@ -308,4 +325,35 @@ void uart_tx_start(QueueHandle_t detection_queue)
 
     ESP_LOGI(TAG, "UART TX task created on core %d, priority %d",
              UART_TX_TASK_CORE, UART_TX_TASK_PRIORITY);
+}
+
+/* ── Display getters ───────────────────────────────────────────────────── */
+
+int uart_tx_get_ble_count(void)
+{
+    return s_ble_count;
+}
+
+int uart_tx_get_wifi_count(void)
+{
+    return s_wifi_count;
+}
+
+int uart_tx_get_total_count(void)
+{
+    return s_ble_count + s_wifi_count;
+}
+
+uint8_t uart_tx_get_current_channel(void)
+{
+    return s_current_channel;
+}
+
+bool uart_tx_get_recent_detection(scanner_detection_summary_t *out)
+{
+    if (!s_has_detection || !out) {
+        return false;
+    }
+    *out = s_last_detection;
+    return true;
 }

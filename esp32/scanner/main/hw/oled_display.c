@@ -1,10 +1,13 @@
 /**
- * Friend or Foe -- Uplink OLED Display Implementation
+ * Friend or Foe -- Scanner OLED Display Implementation
  *
  * Drives an SSD1306 128x64 monochrome OLED over I2C.  Uses a 1024-byte
  * frame buffer and a built-in 5x7 pixel font for text rendering.
  *
- * Hardware: I2C, address 0x3C, pins configurable via KConfig
+ * Hardware:
+ *   ESP32-S3: I2C, SDA=GPIO4, SCL=GPIO5, address 0x3C (default)
+ *   ESP32-C5: I2C, SDA=GPIO6, SCL=GPIO7, address 0x3C (default)
+ *   Pins configurable via KConfig (menuconfig or sdkconfig overrides)
  */
 
 #include "oled_display.h"
@@ -25,6 +28,7 @@ static const char *TAG = "oled";
 #define OLED_SDA_PIN    CONFIG_FOF_OLED_SDA_PIN
 #define OLED_SCL_PIN    CONFIG_FOF_OLED_SCL_PIN
 #define OLED_RST_PIN    CONFIG_FOF_OLED_RST_PIN
+
 #define OLED_ADDR       0x3C
 #define OLED_WIDTH      128
 #define OLED_HEIGHT     64
@@ -38,8 +42,8 @@ static const char *TAG = "oled";
 #define SSD1306_CMD_SET_MUX_RATIO       0xA8
 #define SSD1306_CMD_SET_DISPLAY_OFFSET  0xD3
 #define SSD1306_CMD_SET_START_LINE      0x40
-#define SSD1306_CMD_SET_SEG_REMAP       0xA1    /* column 127 = SEG0 */
-#define SSD1306_CMD_SET_COM_SCAN_DEC    0xC8    /* scan COM63 to COM0 */
+#define SSD1306_CMD_SET_SEG_REMAP       0xA1
+#define SSD1306_CMD_SET_COM_SCAN_DEC    0xC8
 #define SSD1306_CMD_SET_COM_PINS        0xDA
 #define SSD1306_CMD_SET_CONTRAST        0x81
 #define SSD1306_CMD_RESUME_RAM          0xA4
@@ -52,8 +56,8 @@ static const char *TAG = "oled";
 #define SSD1306_CMD_SET_PAGE_ADDR       0x22
 
 /* I2C control bytes */
-#define OLED_CTRL_CMD       0x00    /* Co=0, D/C#=0: command */
-#define OLED_CTRL_DATA      0x40    /* Co=0, D/C#=1: data */
+#define OLED_CTRL_CMD       0x00
+#define OLED_CTRL_DATA      0x40
 
 /* ── State ─────────────────────────────────────────────────────────────── */
 
@@ -61,6 +65,7 @@ static i2c_master_bus_handle_t    s_bus_handle    = NULL;
 static i2c_master_dev_handle_t    s_dev_handle    = NULL;
 static uint8_t s_framebuf[OLED_BUF_SIZE];
 static bool    s_initialized = false;
+static char    s_version[16] = "";
 
 /* ── 5x7 ASCII font (printable chars 0x20-0x7E) ───────────────────────── */
 
@@ -172,10 +177,6 @@ static esp_err_t oled_send_cmd(uint8_t cmd)
 
 static esp_err_t oled_send_data(const uint8_t *data, size_t len)
 {
-    /*
-     * I2C transmission: [control_byte] [data0] [data1] ...
-     * We need a temporary buffer with the control byte prepended.
-     */
     uint8_t *buf = malloc(len + 1);
     if (!buf) {
         return ESP_ERR_NO_MEM;
@@ -203,10 +204,6 @@ static void fb_set_pixel(int x, int y)
     s_framebuf[x + (y / 8) * OLED_WIDTH] |= (1 << (y % 8));
 }
 
-/**
- * Draw a character at pixel position (x, y) using the 5x7 font.
- * Returns the x advance (character width + spacing).
- */
 static int fb_draw_char(int x, int y, char c)
 {
     if (c < 0x20 || c > 0x7E) {
@@ -226,9 +223,6 @@ static int fb_draw_char(int x, int y, char c)
     return 6; /* 5 pixels + 1 pixel spacing */
 }
 
-/**
- * Draw a null-terminated string at pixel position (x, y).
- */
 static void fb_draw_string(int x, int y, const char *str)
 {
     while (*str) {
@@ -237,9 +231,6 @@ static void fb_draw_string(int x, int y, const char *str)
     }
 }
 
-/**
- * Draw a horizontal line from (x0, y) to (x1, y).
- */
 static void fb_draw_hline(int x0, int x1, int y)
 {
     for (int x = x0; x <= x1; x++) {
@@ -247,24 +238,45 @@ static void fb_draw_hline(int x0, int x1, int y)
     }
 }
 
+/**
+ * Draw 4 signal-strength bars (pixel art) at the given position.
+ * Bars are 2px wide with 1px gap, heights 3/5/7/9px, bottom-aligned.
+ * Thresholds based on typical BLE/WiFi RSSI ranges.
+ */
+static void fb_draw_signal_bars(int x, int y_bottom, int rssi)
+{
+    /* Bar heights and RSSI thresholds */
+    static const struct { int height; int threshold; } bars[4] = {
+        { 3, -90 },   /* bar 1: any signal */
+        { 5, -70 },   /* bar 2: moderate */
+        { 7, -55 },   /* bar 3: good */
+        { 9, -40 },   /* bar 4: strong */
+    };
+
+    for (int b = 0; b < 4; b++) {
+        if (rssi < bars[b].threshold) {
+            continue;
+        }
+        int bx = x + b * 3;  /* 2px wide + 1px gap */
+        for (int row = 0; row < bars[b].height; row++) {
+            fb_set_pixel(bx,     y_bottom - row);
+            fb_set_pixel(bx + 1, y_bottom - row);
+        }
+    }
+}
+
 /* ── Flush frame buffer to display ─────────────────────────────────────── */
 
 static void oled_flush(void)
 {
-    /* Set column address range: 0-127 */
     oled_send_cmd(SSD1306_CMD_SET_COL_ADDR);
     oled_send_cmd(0x00);
     oled_send_cmd(0x7F);
 
-    /* Set page address range: 0-7 */
     oled_send_cmd(SSD1306_CMD_SET_PAGE_ADDR);
     oled_send_cmd(0x00);
     oled_send_cmd(0x07);
 
-    /*
-     * Send the frame buffer in chunks to avoid exceeding I2C
-     * transaction limits.
-     */
     for (int page = 0; page < OLED_PAGES; page++) {
         oled_send_data(&s_framebuf[page * OLED_WIDTH], OLED_WIDTH);
     }
@@ -287,7 +299,6 @@ void oled_init(void)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    /* Initialize I2C master bus */
     i2c_master_bus_config_t bus_cfg = {
         .i2c_port   = I2C_NUM_0,
         .sda_io_num = OLED_SDA_PIN,
@@ -302,7 +313,6 @@ void oled_init(void)
         return;
     }
 
-    /* Add SSD1306 device */
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address  = OLED_ADDR,
@@ -323,32 +333,31 @@ void oled_init(void)
     oled_send_cmd(SSD1306_CMD_SET_DISPLAY_OFFSET);
     oled_send_cmd(0x00);
 
-    oled_send_cmd(SSD1306_CMD_SET_START_LINE);   /* start line 0 */
+    oled_send_cmd(SSD1306_CMD_SET_START_LINE);
 
-    oled_send_cmd(SSD1306_CMD_SET_SEG_REMAP);    /* segment remap */
-    oled_send_cmd(SSD1306_CMD_SET_COM_SCAN_DEC); /* COM scan direction */
+    oled_send_cmd(SSD1306_CMD_SET_SEG_REMAP);
+    oled_send_cmd(SSD1306_CMD_SET_COM_SCAN_DEC);
 
     oled_send_cmd(SSD1306_CMD_SET_COM_PINS);
-    oled_send_cmd(0x12);                         /* alt COM pin config */
+    oled_send_cmd(0x12);
 
     oled_send_cmd(SSD1306_CMD_SET_CONTRAST);
     oled_send_cmd(0xCF);
 
-    oled_send_cmd(SSD1306_CMD_RESUME_RAM);       /* output follows RAM */
+    oled_send_cmd(SSD1306_CMD_RESUME_RAM);
     oled_send_cmd(SSD1306_CMD_NORMAL_DISPLAY);
 
     oled_send_cmd(SSD1306_CMD_SET_CLOCK_DIV);
-    oled_send_cmd(0x80);                         /* default clock */
+    oled_send_cmd(0x80);
 
     oled_send_cmd(SSD1306_CMD_SET_CHARGE_PUMP);
-    oled_send_cmd(0x14);                         /* enable charge pump */
+    oled_send_cmd(0x14);
 
     oled_send_cmd(SSD1306_CMD_SET_MEMORY_MODE);
     oled_send_cmd(0x00);                         /* horizontal addressing */
 
     oled_send_cmd(SSD1306_CMD_DISPLAY_ON);
 
-    /* Clear display */
     fb_clear();
     oled_flush();
 
@@ -357,8 +366,15 @@ void oled_init(void)
              OLED_SDA_PIN, OLED_SCL_PIN);
 }
 
-void oled_update(int drone_count, bool gps_fix, bool wifi_connected,
-                 float battery_pct, int upload_count)
+void oled_set_version(const char *version)
+{
+    if (version) {
+        snprintf(s_version, sizeof(s_version), "%s", version);
+    }
+}
+
+void oled_update(int detection_count, int active_drones, uint8_t wifi_channel,
+                 int ble_count, int wifi_count, uint32_t uptime_s)
 {
     if (!s_initialized) {
         return;
@@ -366,25 +382,53 @@ void oled_update(int drone_count, bool gps_fix, bool wifi_connected,
 
     fb_clear();
 
-    /* Line 0: Title */
-    fb_draw_string(0, 0, "FOF Drone Detector");
+    /* Line 0: Title with version (max ~21 chars at 6px = 126px) */
+    char line[24];
+    if (s_version[0]) {
+        /* Truncate version to major.minor for display (e.g. "0.10.0-beta" -> "0.10") */
+        char short_ver[8];
+        int dot_count = 0;
+        int i;
+        for (i = 0; s_version[i] && i < (int)sizeof(short_ver) - 1; i++) {
+            if (s_version[i] == '.') {
+                dot_count++;
+                if (dot_count >= 2) break;
+            }
+            short_ver[i] = s_version[i];
+        }
+        short_ver[i] = '\0';
+        snprintf(line, sizeof(line), "FoF Scanner v%s", short_ver);
+    } else {
+        snprintf(line, sizeof(line), "FoF Scanner");
+    }
+    fb_draw_string(0, 0, line);
 
     /* Line 1: Separator */
     fb_draw_hline(0, 107, 9);
 
-    /* Line 2: Drones + GPS */
-    char line[24];
-    snprintf(line, sizeof(line), "Drones:%-3d GPS:%s",
-             drone_count, gps_fix ? "OK" : "--");
+    /* Line 2: Drones + Channel */
+    snprintf(line, sizeof(line), "Drones:%-3d Ch:%d",
+             active_drones, wifi_channel);
     fb_draw_string(0, 12, line);
 
-    /* Line 3: WiFi + Battery */
-    snprintf(line, sizeof(line), "WiFi:%s  Bat:%d%%",
-             wifi_connected ? "OK" : "--", (int)battery_pct);
+    /* Line 3: BLE + WiFi counts */
+    snprintf(line, sizeof(line), "BLE:%-5d WiFi:%d",
+             ble_count, wifi_count);
     fb_draw_string(0, 22, line);
 
-    /* Line 4: Upload count */
-    snprintf(line, sizeof(line), "Uploads: %d", upload_count);
+    /* Line 4: Total + Uptime combined */
+    uint32_t m = (uptime_s % 3600) / 60;
+    uint32_t s = uptime_s % 60;
+    if (uptime_s >= 3600) {
+        uint32_t h = uptime_s / 3600;
+        snprintf(line, sizeof(line), "Tot:%-4d %lu:%02lu:%02lu",
+                 detection_count, (unsigned long)h,
+                 (unsigned long)m, (unsigned long)s);
+    } else {
+        snprintf(line, sizeof(line), "Tot:%-5d Up:%02lu:%02lu",
+                 detection_count,
+                 (unsigned long)m, (unsigned long)s);
+    }
     fb_draw_string(0, 32, line);
 
     oled_flush();
@@ -397,20 +441,21 @@ void oled_show_detection(const char *drone_id, const char *manufacturer,
         return;
     }
 
-    /* Draw detection info on the lower portion of the screen */
+    /* Draw detection info on the lower portion of the screen (below stats) */
     char line[24];
 
     /* Line 5: Separator */
     fb_draw_hline(0, 127, 42);
 
-    /* Line 6: Drone ID (truncated) */
-    snprintf(line, sizeof(line), "ID:%.17s", drone_id ? drone_id : "???");
+    /* Line 6: Drone ID + signal bars */
+    snprintf(line, sizeof(line), "%.17s", drone_id ? drone_id : "???");
     fb_draw_string(0, 45, line);
+    fb_draw_signal_bars(116, 52, rssi);  /* right-aligned, bottom of line 6 */
 
-    /* Line 7: Manufacturer + RSSI */
-    snprintf(line, sizeof(line), "%.8s %ddBm %.0f%%",
-             (manufacturer && manufacturer[0]) ? manufacturer : "Unknown",
-             rssi, confidence * 100.0f);
+    /* Line 7: Manufacturer + RSSI + confidence */
+    snprintf(line, sizeof(line), "%.6s %ddBm %d%%",
+             (manufacturer && manufacturer[0]) ? manufacturer : "Unkn",
+             rssi, (int)(confidence * 100.0f));
     fb_draw_string(0, 55, line);
 
     oled_flush();

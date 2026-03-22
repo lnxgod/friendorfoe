@@ -261,6 +261,17 @@ void bayesian_fusion_prune(int64_t now_ms_val)
     }
 }
 
+int bayesian_fusion_get_active_count(void)
+{
+    int count = 0;
+    for (int i = 0; i < MAX_TRACKED_DRONES; i++) {
+        if (s_states[i].in_use) {
+            count++;
+        }
+    }
+    return count;
+}
+
 void bayesian_fusion_reset(void)
 {
     memset(s_states, 0, sizeof(s_states));
