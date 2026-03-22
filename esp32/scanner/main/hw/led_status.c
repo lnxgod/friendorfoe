@@ -1,13 +1,17 @@
 /**
- * Friend or Foe -- Uplink Status LED Implementation
+ * Friend or Foe -- Scanner Status LED Implementation
  *
- * Drives a single LED on GPIO8 with configurable blink patterns.
+ * Drives a single LED with configurable blink patterns.
  * A FreeRTOS task cycles through timing arrays to produce the
  * desired visual pattern.
+ *
+ * GPIO:
+ *   ESP32-S3: GPIO48 (built-in RGB LED on DevKitC-1)
+ *   ESP32-C5: GPIO27 (RGB LED pin on C5 dev boards)
  */
 
 #include "led_status.h"
-#include "config.h"
+#include "task_priorities.h"
 
 #include <stdatomic.h>
 #include "driver/gpio.h"
@@ -17,7 +21,13 @@
 
 static const char *TAG = "led";
 
-#define LED_GPIO    GPIO_NUM_8
+#if CONFIG_IDF_TARGET_ESP32S3
+#define LED_GPIO    GPIO_NUM_48
+#elif CONFIG_IDF_TARGET_ESP32C5
+#define LED_GPIO    GPIO_NUM_27
+#else
+#define LED_GPIO    GPIO_NUM_48
+#endif
 
 /*
  * Pattern definitions: arrays of {on_ms, off_ms} pairs.
@@ -28,6 +38,14 @@ typedef struct {
     uint16_t on_ms;
     uint16_t off_ms;
 } led_step_t;
+
+/* LED_BOOT: 3 fast blinks then long off */
+static const led_step_t pattern_boot[] = {
+    { 100, 100 },
+    { 100, 100 },
+    { 100, 1500 },
+    { 0, 0 },
+};
 
 /* LED_IDLE: Slow blink 1Hz (500ms on, 500ms off) */
 static const led_step_t pattern_idle[] = {
@@ -47,10 +65,9 @@ static const led_step_t pattern_detection[] = {
     { 0, 0 },
 };
 
-/* LED_UPLOADING: Double blink (100 on, 100 off, 100 on, 700 off) */
-static const led_step_t pattern_uploading[] = {
-    { 100, 100 },
-    { 100, 700 },
+/* LED_UART_OK: Single short pulse every 2s */
+static const led_step_t pattern_uart_ok[] = {
+    { 100, 1900 },
     { 0, 0 },
 };
 
@@ -62,27 +79,13 @@ static const led_step_t pattern_error[] = {
     { 0, 0 },
 };
 
-/* LED_NO_GPS: Very slow blink 0.5Hz (1000ms on, 1000ms off) */
-static const led_step_t pattern_no_gps[] = {
-    { 1000, 1000 },
-    { 0, 0 },
-};
-
-/* LED_NO_SCANNER: Alternating long/short blink (800 on, 200 off, 200 on, 800 off) */
-static const led_step_t pattern_no_scanner[] = {
-    { 800, 200 },
-    { 200, 800 },
-    { 0, 0 },
-};
-
 static const led_step_t *const s_patterns[] = {
-    [LED_IDLE]        = pattern_idle,
-    [LED_SCANNING]    = pattern_scanning,
-    [LED_DETECTION]   = pattern_detection,
-    [LED_UPLOADING]   = pattern_uploading,
-    [LED_ERROR]       = pattern_error,
-    [LED_NO_GPS]      = pattern_no_gps,
-    [LED_NO_SCANNER]  = pattern_no_scanner,
+    [LED_BOOT]      = pattern_boot,
+    [LED_IDLE]      = pattern_idle,
+    [LED_SCANNING]  = pattern_scanning,
+    [LED_DETECTION] = pattern_detection,
+    [LED_UART_OK]   = pattern_uart_ok,
+    [LED_ERROR]     = pattern_error,
 };
 
 static atomic_int s_current_pattern = LED_IDLE;
@@ -155,8 +158,13 @@ void led_set_pattern(led_pattern_t pattern)
 
 void led_start(void)
 {
-    xTaskCreate(led_task, "led", CONFIG_LED_STACK,
-                NULL, CONFIG_LED_PRIORITY, NULL);
+#ifdef CONFIG_FREERTOS_UNICORE
+    xTaskCreate(led_task, "led", LED_TASK_STACK_SIZE,
+                NULL, LED_TASK_PRIORITY, NULL);
+#else
+    xTaskCreatePinnedToCore(led_task, "led", LED_TASK_STACK_SIZE,
+                            NULL, LED_TASK_PRIORITY, NULL, CORE_PROCESSING);
+#endif
     ESP_LOGI(TAG, "LED task created (priority=%d, stack=%d)",
-             CONFIG_LED_PRIORITY, CONFIG_LED_STACK);
+             LED_TASK_PRIORITY, LED_TASK_STACK_SIZE);
 }

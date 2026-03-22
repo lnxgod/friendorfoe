@@ -9,8 +9,10 @@
 #include "uart_rx.h"
 #include "uart_protocol.h"
 #include "config.h"
+#include "led_status.h"
 
 #include <string.h>
+#include <stdatomic.h>
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -24,6 +26,11 @@ static const char *TAG = "uart_rx";
 #define UART_NUM            UART_NUM_1
 #define LINE_BUF_SIZE       1024
 #define READ_BUF_SIZE       256
+
+/* Scanner connection tracking */
+#define SCANNER_TIMEOUT_MS  5000
+static atomic_int_fast64_t s_last_rx_time = 0;
+static bool s_first_status_received = false;
 
 static QueueHandle_t s_detection_queue = NULL;
 static int           s_detection_count = 0;
@@ -191,12 +198,22 @@ static void handle_status(const cJSON *root)
 
     ESP_LOGI(TAG, "Scanner status: BLE=%d WiFi=%d ch=%d uptime=%ds",
              ble_count, wifi_count, channel, uptime);
+
+    /* First status message from scanner: flash "connected!" */
+    if (!s_first_status_received) {
+        s_first_status_received = true;
+        led_set_pattern(LED_DETECTION);
+        ESP_LOGI(TAG, "Scanner connected (first status received)");
+    }
 }
 
 /* ── Process one complete JSON line ────────────────────────────────────── */
 
 static void process_line(const char *line, size_t len)
 {
+    /* Update last-received timestamp for scanner connection tracking */
+    atomic_store(&s_last_rx_time, (int_fast64_t)(esp_timer_get_time() / 1000));
+
     cJSON *root = cJSON_ParseWithLength(line, len);
     if (!root) {
         ESP_LOGW(TAG, "JSON parse error: %.64s...", line);
@@ -325,4 +342,14 @@ int uart_rx_get_recent_detections(detection_summary_t *out, int max)
     }
     portEXIT_CRITICAL(&s_recent_lock);
     return copied;
+}
+
+bool uart_rx_is_scanner_connected(void)
+{
+    int_fast64_t last = atomic_load(&s_last_rx_time);
+    if (last == 0) {
+        return false;  /* Never received anything */
+    }
+    int_fast64_t now_ms = (int_fast64_t)(esp_timer_get_time() / 1000);
+    return (now_ms - last) < SCANNER_TIMEOUT_MS;
 }

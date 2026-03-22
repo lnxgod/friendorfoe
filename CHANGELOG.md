@@ -4,6 +4,14 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0-beta] - 2026-03-21
+
+### Added
+- **Scanner status LED** — 6 blink patterns on Scanner board (boot, idle, scanning, detection, UART heartbeat, error) using GPIO48 (S3) / GPIO27 (C5)
+- **Uplink scanner-disconnect LED** — alternating long/short blink pattern when Scanner UART link is lost (5s timeout)
+- **UART connection handshake** — Uplink flashes solid 2s "connected!" when Scanner's first status message arrives
+- Version sync: all ESP32 firmware and web flasher versions now match project version
+
 ## [0.9.0-beta] - 2026-03-20
 
 ### Added
@@ -205,6 +213,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - List view with sortable columns
 - Bottom navigation (AR, Map, List, History, About)
 
+[0.10.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.10.0-beta
 [0.9.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.9.0-beta
 [0.8.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.8.0-beta
 [0.7.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.7.0-beta

@@ -2,6 +2,27 @@
 
 All notable changes to the ESP32 hardware edition of Friend or Foe.
 
+## [0.4.0-alpha] - 2026-03-21
+
+### Added
+- **Scanner LED status patterns** — 6 blink patterns on Scanner board: boot (3 fast flashes), idle (slow pulse), scanning (double blink), detection (rapid triple), UART heartbeat (single short), error (SOS)
+- **Scanner LED GPIO selection** — GPIO48 on ESP32-S3, GPIO27 on ESP32-C5 (compile-time via sdkconfig)
+- **Uplink `LED_NO_SCANNER` pattern** — alternating long/short blink when Scanner UART link lost (5s timeout)
+- **Uplink scanner connection tracking** — `uart_rx_is_scanner_connected()` with 5-second heartbeat timeout
+- **Uplink first-connect handshake** — solid 2s LED flash when Scanner's first status message arrives
+- LED pattern quick reference:
+
+| Pattern | Scanner | Uplink |
+|---------|---------|--------|
+| Boot | 3 fast flashes | (existing) |
+| Idle | Slow pulse (1s on/1s off) | — |
+| Scanning | Double blink (0.1s) | — |
+| Detection | Rapid triple (0.08s) | — |
+| UART OK | Single short (0.05s) | — |
+| Error | SOS pattern | — |
+| No Scanner | — | Alternating long/short |
+| Connected | — | Solid 2s flash |
+
 ## [0.3.0-alpha] - 2026-03-19
 
 ### Added

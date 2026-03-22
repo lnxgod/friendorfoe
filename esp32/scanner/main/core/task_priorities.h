@@ -22,6 +22,7 @@ extern "C" {
 #define BLE_SCAN_TASK_PRIORITY      4
 #define FUSION_TASK_PRIORITY        3
 #define UART_TX_TASK_PRIORITY       2
+#define LED_TASK_PRIORITY           1
 
 /* ── Stack sizes (bytes) ─────────────────────────────────────────────────── */
 
@@ -29,6 +30,7 @@ extern "C" {
 #define BLE_SCAN_TASK_STACK_SIZE    4096
 #define FUSION_TASK_STACK_SIZE      4096
 #define UART_TX_TASK_STACK_SIZE     4096
+#define LED_TASK_STACK_SIZE         2048
 
 /* ── Core affinity ───────────────────────────────────────────────────────── */
 

@@ -63,10 +63,14 @@ static void display_task(void *arg)
         oled_update(drone_count, gps_fix, wifi_ok, battery_pct, upload_count);
 
         /* Update LED pattern based on system state */
+        bool scanner_ok = uart_rx_is_scanner_connected();
+
         if (!gps_fix) {
             led_set_pattern(LED_NO_GPS);
         } else if (!wifi_ok) {
             led_set_pattern(LED_ERROR);
+        } else if (!scanner_ok) {
+            led_set_pattern(LED_NO_SCANNER);
         } else if (http_upload_get_fail_count() > http_upload_get_success_count()) {
             led_set_pattern(LED_ERROR);
         } else if (drone_count > 0) {

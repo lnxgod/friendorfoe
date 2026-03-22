@@ -58,6 +58,11 @@ typedef struct {
  */
 int uart_rx_get_recent_detections(detection_summary_t *out, int max);
 
+/**
+ * Check if the scanner board is connected (sent a message within the last 5s).
+ */
+bool uart_rx_is_scanner_connected(void);
+
 #ifdef __cplusplus
 }
 #endif
