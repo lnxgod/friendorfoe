@@ -151,15 +151,17 @@ class RemoteIdScanner @Inject constructor(
 
         if (serviceData.isEmpty()) return null
 
-        // OpenDroneID BLE: first byte of service data is the App Code (0x0D for OpenDroneID),
-        // followed by the message counter byte, then the 25-byte message.
-        val messageData = if (serviceData.size >= 27) {
-            serviceData.copyOfRange(2, serviceData.size)
-        } else if (serviceData.size >= 25) {
-            serviceData
-        } else {
-            Log.d(TAG, "Service data too short: ${serviceData.size} bytes")
-            return null
+        // OpenDroneID BLE service data: the 25-byte ODID message.
+        // Android's getServiceData() already strips the UUID prefix.
+        // Some implementations prepend App Code (0x0D) + counter byte (27 bytes total),
+        // others send the raw 25-byte message directly.
+        val messageData = when {
+            serviceData.size >= 27 -> serviceData.copyOfRange(2, 27) // Skip app code + counter
+            serviceData.size >= 25 -> serviceData.copyOfRange(0, 25) // Raw 25-byte message
+            else -> {
+                Log.d(TAG, "Service data too short: ${serviceData.size} bytes")
+                return null
+            }
         }
 
         val now = Instant.now()
@@ -171,6 +173,12 @@ class RemoteIdScanner @Inject constructor(
             state.lastUpdated = now
             state.signalStrengthDbm = result.rssi
             OpenDroneIdParser.parseMessage(messageData, state)
+
+            // Only emit when we have an actual drone ID (serial number from Basic ID message).
+            // Without it, the drone gets a MAC-based ID that creates duplicates when
+            // the serial arrives later as a different ID.
+            if (state.droneId == null) return null
+
             return state.toDroneOrNull(idPrefix = "rid_")
         }
     }
