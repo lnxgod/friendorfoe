@@ -43,7 +43,11 @@
 
 static const char *TAG = "wifi_scan";
 
+#ifdef CONFIG_SCANNER_5GHZ_ENABLED
+#define CHANNEL_DWELL_MS            200   /* Dual-band: faster sweep needed */
+#else
 #define CHANNEL_DWELL_MS            100
+#endif
 
 /* ── Channel tables ────────────────────────────────────────────────────────── */
 
@@ -86,6 +90,74 @@ static size_t        s_idx_24ghz = 0;
 static size_t        s_idx_5ghz = 0;
 static bool          s_next_is_5ghz = false; /* interleave toggle */
 #endif
+
+/* ── Diagnostic counters ──────────────────────────────────────────────────── */
+static uint32_t s_total_frames = 0;
+static uint32_t s_mgmt_frames = 0;
+static uint32_t s_beacon_frames = 0;
+static uint32_t s_fc_histogram[16] = {0};  /* subtype distribution */
+
+/* ── RSSI movement tracker (for soft-match confidence boost) ─────────────── */
+
+#define RSSI_TRACK_SLOTS    16
+#define RSSI_HISTORY_LEN     4       /* samples per BSSID */
+#define RSSI_MOVE_THRESHOLD  6       /* dBm delta to count as movement */
+
+typedef struct {
+    uint8_t  bssid[6];
+    bool     in_use;
+    int8_t   rssi[RSSI_HISTORY_LEN];
+    uint8_t  count;        /* total samples seen */
+    uint8_t  idx;          /* ring buffer write index */
+} rssi_track_t;
+
+static rssi_track_t s_rssi_track[RSSI_TRACK_SLOTS];
+
+/**
+ * Record an RSSI sample for a BSSID and return true if the RSSI history
+ * shows enough variance to indicate movement (likely a drone, not a router).
+ */
+static bool rssi_track_update(const uint8_t *bssid, int8_t rssi)
+{
+    /* Find existing or allocate */
+    int free_idx = -1;
+    rssi_track_t *slot = NULL;
+    for (int i = 0; i < RSSI_TRACK_SLOTS; i++) {
+        if (s_rssi_track[i].in_use &&
+            memcmp(s_rssi_track[i].bssid, bssid, 6) == 0) {
+            slot = &s_rssi_track[i];
+            break;
+        }
+        if (!s_rssi_track[i].in_use && free_idx < 0) {
+            free_idx = i;
+        }
+    }
+    if (!slot) {
+        if (free_idx < 0) free_idx = 0;  /* overwrite first slot */
+        slot = &s_rssi_track[free_idx];
+        memset(slot, 0, sizeof(*slot));
+        memcpy(slot->bssid, bssid, 6);
+        slot->in_use = true;
+    }
+
+    /* Record sample */
+    slot->rssi[slot->idx] = rssi;
+    slot->idx = (slot->idx + 1) % RSSI_HISTORY_LEN;
+    if (slot->count < 255) slot->count++;
+
+    /* Need at least 3 samples to judge movement */
+    if (slot->count < 3) return false;
+
+    /* Check max delta across history */
+    int8_t lo = 0, hi = -127;
+    int n = slot->count < RSSI_HISTORY_LEN ? slot->count : RSSI_HISTORY_LEN;
+    lo = hi = slot->rssi[0];
+    for (int i = 1; i < n; i++) {
+        if (slot->rssi[i] < lo) lo = slot->rssi[i];
+        if (slot->rssi[i] > hi) hi = slot->rssi[i];
+    }
+    return (hi - lo) >= RSSI_MOVE_THRESHOLD;
+}
 
 /* ── Helper: distance estimation from RSSI ─────────────────────────────────── */
 
@@ -355,6 +427,28 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
             return;
         }
     }
+
+    /* Priority 5: Soft SSID match (cheap drone-like SSIDs, low confidence) */
+    if (ssid[0] != '\0' && wifi_ssid_match_soft(ssid)) {
+        bool moving = rssi_track_update(bssid, rssi);
+        float conf = moving ? 0.30f : 0.15f;
+
+        init_detection(&det, bssid, rssi, ssid);
+        det.source = DETECTION_SRC_WIFI_SSID;
+        det.confidence = conf;
+
+        strncpy(det.manufacturer, "Drone Likely", sizeof(det.manufacturer) - 1);
+        strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
+
+        ESP_LOGI(TAG, "Soft SSID: \"%s\" RSSI=%d ~%.0fm conf=%.2f%s",
+                 ssid, rssi, det.estimated_distance_m, conf,
+                 moving ? " [MOVING]" : "");
+
+        if (s_detection_queue) {
+            xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
+        }
+        return;
+    }
 }
 
 /* ── Promiscuous mode callback ─────────────────────────────────────────────── */
@@ -365,9 +459,12 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
  */
 static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 {
+    s_total_frames++;
+
     if (type != WIFI_PKT_MGMT) {
         return;
     }
+    s_mgmt_frames++;
 
     const wifi_promiscuous_pkt_t *pkt = (const wifi_promiscuous_pkt_t *)buf;
     const uint8_t *frame = pkt->payload;
@@ -388,9 +485,17 @@ static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
      * frame[0] for beacon = 0x80 (subtype=1000, type=00, proto=00)
      */
     uint8_t frame_ctrl = frame[0];
-    if (frame_ctrl != WIFI_FC_SUBTYPE_BEACON) {
+    /* Track management subtype distribution (bits 7:4) */
+    uint8_t subtype = (frame_ctrl >> 4) & 0x0F;
+    if (subtype < 16) {
+        s_fc_histogram[subtype]++;
+    }
+
+    /* Also process probe responses — they contain SSIDs and vendor IEs just like beacons */
+    if (frame_ctrl != WIFI_FC_SUBTYPE_BEACON && frame_ctrl != 0x50 /* probe response */) {
         return;
     }
+    s_beacon_frames++;
 
     process_beacon_frame(frame, frame_len, rssi);
 }
@@ -449,18 +554,34 @@ static void wifi_scan_task(void *arg)
     ESP_LOGI(TAG, "2.4 GHz only: %d channels", (int)NUM_CHANNELS_24GHZ);
 #endif
 
-    while (1) {
-        s_current_channel = advance_channel();
+    TickType_t last_heartbeat = xTaskGetTickCount();
 
-        /* Set channel */
-        esp_err_t err = esp_wifi_set_channel(s_current_channel, WIFI_SECOND_CHAN_NONE);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to set channel %d: %s",
-                     s_current_channel, esp_err_to_name(err));
+    while (1) {
+        /* Sweep all channels */
+        int num_channels = NUM_CHANNELS_24GHZ;
+#ifdef CONFIG_SCANNER_5GHZ_ENABLED
+        num_channels += NUM_CHANNELS_5GHZ;
+#endif
+        for (int i = 0; i < num_channels; i++) {
+            s_current_channel = advance_channel();
+
+            esp_err_t err = esp_wifi_set_channel(s_current_channel, WIFI_SECOND_CHAN_NONE);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to set channel %d: %s",
+                         s_current_channel, esp_err_to_name(err));
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(CHANNEL_DWELL_MS));
         }
 
-        /* Dwell on this channel */
-        vTaskDelay(pdMS_TO_TICKS(CHANNEL_DWELL_MS));
+        /* Heartbeat every ~10 seconds */
+        if ((xTaskGetTickCount() - last_heartbeat) >= pdMS_TO_TICKS(10000)) {
+            last_heartbeat = xTaskGetTickCount();
+            ESP_LOGI(TAG, "ch=%d tot=%lu bcn=%lu",
+                     s_current_channel,
+                     (unsigned long)s_total_frames,
+                     (unsigned long)s_beacon_frames);
+        }
     }
 }
 
@@ -477,7 +598,7 @@ void wifi_scanner_init(QueueHandle_t detection_queue)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    /* Configure promiscuous mode: only capture management frames */
+    /* Capture management frames (beacons, probe responses contain drone IEs) */
     wifi_promiscuous_filter_t filter = {
         .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT
     };

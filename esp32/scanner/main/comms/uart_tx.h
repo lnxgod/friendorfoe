@@ -84,6 +84,17 @@ uint8_t uart_tx_get_current_channel(void);
  */
 bool uart_tx_get_recent_detection(scanner_detection_summary_t *out);
 
+/** Maximum number of cached detections for display scoreboard. */
+#define DETECTION_CACHE_SIZE 10
+
+/**
+ * Copy all cached detections into @p out, sorted most-recent first.
+ * @param out        Caller-allocated array of at least @p max_count entries
+ * @param max_count  Maximum entries to copy
+ * @return           Number of entries actually copied (0..max_count)
+ */
+int uart_tx_get_cached_detections(scanner_detection_summary_t *out, int max_count);
+
 #ifdef __cplusplus
 }
 #endif

@@ -142,9 +142,68 @@ static const drone_ssid_pattern_t PATTERNS[] = {
     { "DRONE-",        "Unknown" },
     { "UAV-",          "Unknown" },
     { "QUADCOPTER-",   "Unknown" },
+
+    /* ── Cheap Chinese / Temu drones (generic WiFi FPV) ─────────────────── */
+    { "FPV_WIFI",      "Generic" },
+    { "FPV-WIFI",      "Generic" },
+    { "WIFI FPV",      "Generic" },
 };
 
 #define PATTERN_COUNT  (sizeof(PATTERNS) / sizeof(PATTERNS[0]))
+
+/* ── Soft-match helpers ───────────────────────────────────────────────────── */
+
+/**
+ * Return true if every character in s[0..len-1] is alphanumeric.
+ */
+static bool all_alnum(const char *s, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+              (c >= 'a' && c <= 'z'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Check whether the SSID starts with `prefix` (case-insensitive) and is
+ * followed by 1-8 alphanumeric characters and nothing else.
+ */
+static bool soft_prefix_match(const char *ssid, const char *prefix)
+{
+    size_t plen = strlen(prefix);
+    if (strncasecmp(ssid, prefix, plen) != 0) {
+        return false;
+    }
+    size_t tail = strlen(ssid) - plen;
+    return tail >= 1 && tail <= 8 && all_alnum(ssid + plen, tail);
+}
+
+bool wifi_ssid_match_soft(const char *ssid)
+{
+    if (!ssid || ssid[0] == '\0') {
+        return false;
+    }
+
+    /* Reject long SSIDs — enterprise names like "WIFI_OFFICE_3RD_FLOOR" */
+    if (strlen(ssid) > 16) {
+        return false;
+    }
+
+    if (soft_prefix_match(ssid, "WIFI_"))   return true;
+    if (soft_prefix_match(ssid, "FPV_"))    return true;
+    if (soft_prefix_match(ssid, "CAMERA_")) return true;
+
+    /* Exact-prefix patterns (case-insensitive) */
+    if (strncasecmp(ssid, "4K_CAM", 6) == 0) return true;
+    if (strncasecmp(ssid, "4KCAM",  5) == 0) return true;
+    if (strncasecmp(ssid, "RCFPV",  5) == 0) return true;
+
+    return false;
+}
 
 const drone_ssid_pattern_t *wifi_ssid_match(const char *ssid)
 {

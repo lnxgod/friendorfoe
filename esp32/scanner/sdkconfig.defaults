@@ -1,24 +1,17 @@
-# Friend or Foe — Scanner (ESP32-S3) SDK Configuration
-# BLE + WiFi coexistence for simultaneous BLE Remote ID and WiFi promiscuous scanning
+# Friend or Foe — WiFi Scanner (ESP32-S3) SDK Configuration
+# Dedicated WiFi promiscuous scanning — no BLE, no coex
 
-# ── Bluetooth / NimBLE ───────────────────────────────────────────────────────
-CONFIG_BT_ENABLED=y
-CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=0
-CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
-CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
-CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
-CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
-CONFIG_BT_NIMBLE_EXT_ADV=y
+# ── Bluetooth (disabled — BLE runs on separate board) ────────────────────────
+CONFIG_BT_ENABLED=n
 
 # ── WiFi ─────────────────────────────────────────────────────────────────────
 CONFIG_ESP_WIFI_ENABLED=y
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
 
-# ── BLE + WiFi coexistence ───────────────────────────────────────────────────
-CONFIG_SW_COEXIST_ENABLE=y
-CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+# ── Coexistence (disabled — WiFi only) ──────────────────────────────────────
+CONFIG_SW_COEXIST_ENABLE=n
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=n
 
 # ── PSRAM (ESP32-S3 has onboard PSRAM) ───────────────────────────────────────
 CONFIG_ESP32S3_SPIRAM_SUPPORT=y

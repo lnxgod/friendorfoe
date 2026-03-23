@@ -1,0 +1,28 @@
+menu "FoF RID Simulator OLED"
+    config FOF_OLED_SDA_PIN
+        int "I2C SDA pin"
+        default 6 if IDF_TARGET_ESP32C5
+        default 4
+    config FOF_OLED_SCL_PIN
+        int "I2C SCL pin"
+        default 7 if IDF_TARGET_ESP32C5
+        default 5
+    config FOF_OLED_RST_PIN
+        int "OLED reset pin (-1 to disable)"
+        default -1
+endmenu
+
+menu "FoF RID Simulator Flight"
+    config FOF_SIM_HOME_LAT
+        string "Home latitude (decimal degrees)"
+        default "0.0"
+        help
+            Latitude of the simulated drone orbit center.
+            Set to your local test coordinates at build time.
+    config FOF_SIM_HOME_LON
+        string "Home longitude (decimal degrees)"
+        default "0.0"
+        help
+            Longitude of the simulated drone orbit center.
+            Set to your local test coordinates at build time.
+endmenu

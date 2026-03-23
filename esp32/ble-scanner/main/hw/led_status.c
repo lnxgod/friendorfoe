@@ -1,24 +1,16 @@
 /**
- * Friend or Foe -- Scanner Status LED Implementation
+ * Friend or Foe -- BLE Scanner Status LED Implementation
  *
  * Drives an addressable WS2812 RGB LED via the RMT-based led_strip driver.
- * Different colours indicate system state at a glance.
  *
  * GPIO:
  *   ESP32-S3: GPIO48 (built-in RGB LED on DevKitC-1)
  *   ESP32-C5: GPIO27 (RGB LED pin on C5 dev boards)
- *
- * Colour key:
- *   BOOT       — blue blinks
- *   IDLE       — dim green slow blink
- *   SCANNING   — green fast blink
- *   DETECTION  — bright red solid
- *   UART_OK    — cyan pulse
- *   ERROR      — red triple blink
+ *   ESP32-C3: GPIO8  (built-in RGB LED on DevKitM-1)
  */
 
 #include "led_status.h"
-#include "task_priorities.h"
+#include "core/task_priorities.h"
 
 #include <stdatomic.h>
 #include "led_strip.h"
@@ -32,6 +24,8 @@ static const char *TAG = "led";
 #define LED_GPIO    48
 #elif CONFIG_IDF_TARGET_ESP32C5
 #define LED_GPIO    27
+#elif CONFIG_IDF_TARGET_ESP32C3
+#define LED_GPIO    8
 #else
 #define LED_GPIO    48
 #endif
@@ -51,7 +45,7 @@ static const rgb_t s_colours[] = {
     [LED_ERROR]     = { 30,   0,   0 },   /* red    */
 };
 
-/* ── Pattern timing (same structure as before) ────────────────────────── */
+/* ── Pattern timing ───────────────────────────────────────────────────── */
 
 typedef struct {
     uint16_t on_ms;

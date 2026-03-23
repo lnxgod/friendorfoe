@@ -1,0 +1,35 @@
+# Friend or Foe — RID Simulator (ESP32-S3) SDK Configuration
+# BLE broadcaster — transmits OpenDroneID advertisements
+
+# ── Bluetooth / NimBLE ───────────────────────────────────────────────────────
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=0
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+
+# ── WiFi (disabled) ─────────────────────────────────────────────────────────
+CONFIG_ESP_WIFI_ENABLED=n
+
+# ── Coexistence (disabled — BLE only) ───────────────────────────────────────
+CONFIG_SW_COEXIST_ENABLE=n
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=n
+
+# ── PSRAM (ESP32-S3 has onboard PSRAM) ───────────────────────────────────────
+CONFIG_ESP32S3_SPIRAM_SUPPORT=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# ── FreeRTOS ─────────────────────────────────────────────────────────────────
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_UNICORE=n
+
+# ── Watchdog ─────────────────────────────────────────────────────────────────
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
