@@ -37,6 +37,10 @@ typedef struct {
     float   confidence;
     int8_t  rssi;
     int64_t timestamp_ms;
+    double  latitude;
+    double  longitude;
+    double  altitude_m;
+    float   speed_mps;
 } scanner_detection_summary_t;
 
 /** Get cumulative BLE detection count. */

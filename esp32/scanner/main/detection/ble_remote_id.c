@@ -196,43 +196,57 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISC: {
         const struct ble_gap_disc_desc *desc = &event->disc;
 
+        /* Debug: count all BLE advertisements to verify scanner is receiving */
+        static uint32_t s_total_adv_rx = 0;
+        s_total_adv_rx++;
+        if (s_total_adv_rx % 500 == 1) {
+            ESP_LOGI(TAG, "BLE adv received (total=%lu, this: addr=%02x:%02x:%02x:%02x:%02x:%02x rssi=%d len=%d)",
+                     (unsigned long)s_total_adv_rx,
+                     desc->addr.val[5], desc->addr.val[4], desc->addr.val[3],
+                     desc->addr.val[2], desc->addr.val[1], desc->addr.val[0],
+                     desc->rssi, desc->length_data);
+        }
+
         /*
          * Search the advertisement data for service data with UUID 0xFFFA.
          *
          * BLE AD type 0x16 = Service Data - 16-bit UUID
          * Format: UUID_lo(1) + UUID_hi(1) + service_data(N)
          */
+        /*
+         * Try NimBLE structured parser first (handles standard advertisements
+         * with flags). If it succeeds, check for ODID service data.
+         */
         struct ble_hs_adv_fields fields;
         int rc = ble_hs_adv_parse_fields(&fields, desc->data, desc->length_data);
-        if (rc != 0) {
-            break;
-        }
+        if (rc == 0) {
+            /*
+             * NimBLE parses svc_data_uuid16 for us. Check if it matches ODID UUID.
+             * The svc_data_uuid16 field contains the raw bytes after the AD length+type,
+             * starting with the 2-byte UUID in little-endian.
+             */
+            if (fields.svc_data_uuid16 != NULL && fields.svc_data_uuid16_len >= 2) {
+                uint16_t uuid16 = (uint16_t)fields.svc_data_uuid16[0] |
+                                  ((uint16_t)fields.svc_data_uuid16[1] << 8);
 
-        /*
-         * NimBLE parses svc_data_uuid16 for us. Check if it matches ODID UUID.
-         * The svc_data_uuid16 field contains the raw bytes after the AD length+type,
-         * starting with the 2-byte UUID in little-endian.
-         */
-        if (fields.svc_data_uuid16 != NULL && fields.svc_data_uuid16_len >= 2) {
-            uint16_t uuid16 = (uint16_t)fields.svc_data_uuid16[0] |
-                              ((uint16_t)fields.svc_data_uuid16[1] << 8);
+                if (uuid16 == ODID_SERVICE_UUID_16 && fields.svc_data_uuid16_len > 2) {
+                    const uint8_t *svc_data = fields.svc_data_uuid16 + 2;
+                    int svc_data_len = fields.svc_data_uuid16_len - 2;
 
-            if (uuid16 == ODID_SERVICE_UUID_16 && fields.svc_data_uuid16_len > 2) {
-                const uint8_t *svc_data = fields.svc_data_uuid16 + 2;
-                int svc_data_len = fields.svc_data_uuid16_len - 2;
-
-                process_odid_service_data(
-                    desc->addr.val,
-                    svc_data,
-                    svc_data_len,
-                    desc->rssi
-                );
+                    process_odid_service_data(
+                        desc->addr.val,
+                        svc_data,
+                        svc_data_len,
+                        desc->rssi
+                    );
+                }
             }
         }
 
         /*
-         * Also check scan response data (some devices split ODID across
-         * advertisement + scan response).
+         * ALWAYS walk raw AD structures as fallback — handles non-standard
+         * advertisements without flags (e.g., OpenDroneID-only payloads where
+         * flags are omitted to fit within the 31-byte BLE 4.x limit).
          */
         if (desc->data != NULL && desc->length_data > 0) {
             /* Walk raw AD structures looking for type 0x16 with UUID 0xFFFA */

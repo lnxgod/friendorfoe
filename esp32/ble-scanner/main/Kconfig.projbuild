@@ -2,10 +2,12 @@ menu "FoF BLE Scanner OLED"
     config FOF_OLED_SDA_PIN
         int "I2C SDA pin"
         default 6 if IDF_TARGET_ESP32C5
+        default 21 if IDF_TARGET_ESP32
         default 4
     config FOF_OLED_SCL_PIN
         int "I2C SCL pin"
         default 7 if IDF_TARGET_ESP32C5
+        default 22 if IDF_TARGET_ESP32
         default 5
     config FOF_OLED_RST_PIN
         int "OLED reset pin (-1 to disable)"

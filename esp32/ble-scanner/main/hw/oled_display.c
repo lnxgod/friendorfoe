@@ -27,9 +27,24 @@ static const char *TAG = "oled";
 
 /* ── Hardware constants ────────────────────────────────────────────────── */
 
+/*
+ * OLED pin mapping per board:
+ *   ESP32 (original): SDA=4, SCL=15, RST=16  (Heltec/TTGO ESP32 OLED)
+ *   ESP32-S3:         SDA=4, SCL=5, RST=-1   (standard devkit)
+ *   ESP32-C5:         SDA=6, SCL=7, RST=-1   (standard devkit)
+ *   ESP32-C3:         SDA=4, SCL=5, RST=-1   (standard devkit)
+ *
+ * Override via KConfig or use the defaults below.
+ */
+#if CONFIG_IDF_TARGET_ESP32 && !defined(CONFIG_FOF_OLED_PINS_CUSTOM)
+#define OLED_SDA_PIN    21
+#define OLED_SCL_PIN    22
+#define OLED_RST_PIN    -1
+#else
 #define OLED_SDA_PIN    CONFIG_FOF_OLED_SDA_PIN
 #define OLED_SCL_PIN    CONFIG_FOF_OLED_SCL_PIN
 #define OLED_RST_PIN    CONFIG_FOF_OLED_RST_PIN
+#endif
 
 #define OLED_ADDR       0x3C
 #define OLED_WIDTH      128
@@ -498,6 +513,68 @@ void oled_show_detection_paged(const char *drone_id, const char *manufacturer,
              (manufacturer && manufacturer[0]) ? manufacturer : "Unkn",
              rssi, (int)(confidence * 100.0f));
     fb_draw_string(0, 55, line);
+
+    oled_flush();
+}
+
+void oled_draw_drone_list(const oled_drone_entry_t *drones, int count,
+                          int page_index)
+{
+    if (!s_initialized) return;
+
+    fb_clear();
+    char line[24];
+
+    /* Header in yellow band (y=0..15): title + drone count */
+    snprintf(line, sizeof(line), "FoF Scanner %d drone%s",
+             count, count == 1 ? "" : "s");
+    fb_draw_string(0, 3, line);
+
+    if (count == 0) {
+        fb_draw_string(0, 24, "Scanning...");
+        fb_draw_string(0, 38, "No drones detected");
+        oled_flush();
+        return;
+    }
+
+    /* Drone data starts in blue band (y=18+).
+     * Each drone: 3 lines x 10px = 30px. Blue area = y18..63 = 46px.
+     * Fits 1 drone with room, page through if >1. */
+    int start = page_index;
+    if (start >= count) start = 0;
+    int y = 18;
+
+    for (int i = start; i < count && y < 60; i++) {
+        const oled_drone_entry_t *d = &drones[i];
+
+        /* Line 1: Short ID + RSSI */
+        const char *short_id = d->id;
+        /* Skip "rid_" prefix if present */
+        if (short_id && strncmp(short_id, "rid_", 4) == 0) {
+            short_id += 4;
+        }
+        snprintf(line, sizeof(line), "%.15s %ddB", short_id ? short_id : "???", d->rssi);
+        fb_draw_string(0, y, line);
+        y += 10;
+
+        /* Line 2: Lat/Lon */
+        snprintf(line, sizeof(line), "%.4f,%.4f", d->lat, d->lon);
+        fb_draw_string(0, y, line);
+        y += 10;
+
+        /* Line 3: Alt + Speed */
+        snprintf(line, sizeof(line), "Alt:%.0fm Spd:%.0fm/s",
+                 d->alt_m, d->speed_mps);
+        fb_draw_string(0, y, line);
+        y += 12;  /* Extra gap between drones */
+    }
+
+    /* Page indicator in yellow header area */
+    if (count > 1) {
+        snprintf(line, sizeof(line), "%d/%d", start + 1, count);
+        int px = 128 - (int)strlen(line) * 6;
+        fb_draw_string(px, 3, line);
+    }
 
     oled_flush();
 }

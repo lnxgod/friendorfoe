@@ -223,6 +223,10 @@ static void console_output_task(void *arg)
                 slot->confidence = det.fused_confidence;
                 slot->rssi = det.rssi;
                 slot->timestamp_ms = det.last_updated_ms;
+                slot->latitude = det.latitude;
+                slot->longitude = det.longitude;
+                slot->altitude_m = det.altitude_m;
+                slot->speed_mps = det.speed_mps;
             }
             portEXIT_CRITICAL(&s_cache_lock);
 
