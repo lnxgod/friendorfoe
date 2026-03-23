@@ -4,6 +4,41 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.13.0-beta] - 2026-03-23
+
+### Added
+- **Trajectory prediction** — Dead-reckoning extrapolates aircraft positions between 5s ADS-B polls using heading, speed, and vertical rate. Labels now track smoothly instead of jumping.
+- **Compass bias auto-correction** — Visual-radio match residuals used to estimate and correct compass drift in real-time
+- **Triple photo capture** — Each capture saves clean photo + annotated (AR overlay + info panel) + AI-aimed zoomed shot
+- **One-tap smart spotter** — Tap AR label to auto-lock, track 2s, then capture all 3 photos automatically
+- **Trajectory direction arrows** — Cyan arrows on AR labels showing aircraft heading
+- **Confidence-based label styling** — Labels fade from solid (fresh) to yellow (coasting) to gray (stale)
+- **ESP32 BLE Scanner** — Standalone BLE Remote ID scanner with OLED drone list display (ESP32 original support)
+- **OLED drone list** — Clean display showing drone ID, lat/lon, altitude, speed with yellow/blue split layout
+
+### Fixed
+- **BLE Remote ID scan filter** — Android was filtering by Service UUID (AD type 0x03) instead of Service Data (AD type 0x16), preventing detection of BLE Remote ID drones
+- **BLE drone GPS coordinates** — 2-byte offset in service data parsing caused wrong lat/lon
+- **BLE drone duplicates** — Location messages arriving before Basic ID created MAC-based duplicate entries
+- **Camera FOV swap** — Horizontal/vertical FOV defaults were swapped (45/60 instead of 60/45), causing incorrect AR label placement. All 51 tests now pass.
+- **ADS-B timestamp merge bug** — All aircraft got `Instant.now()` instead of actual API timestamps, making merge logic pick random winners
+- **Scanner raw AD walker** — BLE parser now always tries raw AD structure walking even when NimBLE structured parse fails
+- **MapViewModel thread safety** — Location listener uses AtomicBoolean to prevent double registration
+
+### Improved
+- **Adaptive visual-radio match threshold** — Tighter when data is fresh, looser when stale/extrapolated; match candidates increased from 2 to 5
+- **DJI DroneID GPS validation** — Rejects near-null-island coordinates and physically implausible altitude/speed values
+- **Faster compass convergence** — Adaptive P-controller gain (5s convergence vs 20s)
+- **Aircraft images** — Replaced 10 wrong photos (H60, UH60, U2, R44, E135, SF34, BE76, C5, C5M, R22)
+- **Type code mappings** — Added H47 (Chinook) + 12 new codes (SF50, PC24, RQ4, MQ1, etc.)
+- **Simulator orbit** — 150m radius at 15 m/s for better map tracking visibility
+
+## [0.11.0-beta] - 2026-03-22
+
+### Added
+- Scanner OLED display improvements
+- Uplink enhancements and KConfig pin configuration
+
 ## [0.10.0-beta] - 2026-03-21
 
 ### Added
