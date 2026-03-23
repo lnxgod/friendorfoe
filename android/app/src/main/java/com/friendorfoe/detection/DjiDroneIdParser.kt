@@ -110,6 +110,11 @@ object DjiDroneIdParser {
             Log.d(TAG, "Zero coordinates in DroneID — GPS not acquired")
             return null
         }
+        // Reject near-null-island (GPS still acquiring — reports near 0,0)
+        if (kotlin.math.abs(droneLat) < 0.01 && kotlin.math.abs(droneLon) < 0.01) {
+            Log.d(TAG, "Near-null-island coordinates in DroneID — GPS likely not locked")
+            return null
+        }
 
         // Altitude relative to takeoff (int16, meters)
         val altitudeRelative = readInt16LE(data, 13).toDouble()
@@ -120,6 +125,16 @@ object DjiDroneIdParser {
         // Speed (uint16, cm/s → m/s)
         val speedCmS = readUInt16LE(data, 17)
         val speedMps = speedCmS / 100.0f
+
+        // Reject physically implausible values for consumer drones
+        if (altitudeRelative > 500 || altitudeRelative < -100) {
+            Log.d(TAG, "Implausible altitude in DroneID: ${altitudeRelative}m — rejecting")
+            return null
+        }
+        if (speedMps > 50f) {
+            Log.d(TAG, "Implausible speed in DroneID: ${speedMps}m/s — rejecting")
+            return null
+        }
 
         // Heading (int16, degrees × 100 → degrees)
         val headingRaw = readInt16LE(data, 19)

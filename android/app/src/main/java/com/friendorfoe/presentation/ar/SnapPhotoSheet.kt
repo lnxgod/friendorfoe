@@ -411,3 +411,178 @@ fun capturePhotoToGallery(
         }
     )
 }
+
+/**
+ * Dual capture: saves a clean photo AND an annotated version with AR overlay + info panel.
+ *
+ * 1. Clean photo: full-resolution camera capture via ImageCapture
+ * 2. Annotated photo: screen capture via PixelCopy (camera + overlay), plus info panel
+ *
+ * @param activity The activity (needed for PixelCopy window access)
+ * @param imageCapture CameraX ImageCapture use case
+ * @param label Display label for the object being captured
+ * @param screenBitmap Pre-captured screen bitmap from PixelCopy (camera + AR overlay)
+ * @param panelInfo Key-value pairs for the info panel (e.g., "Callsign" to "UAL123")
+ * @param onComplete Callback with clean URI and annotated URI
+ */
+fun captureDualPhoto(
+    context: Context,
+    imageCapture: ImageCapture,
+    label: String,
+    screenBitmap: Bitmap?,
+    panelInfo: List<Pair<String, String>>,
+    onComplete: (cleanUri: android.net.Uri?, annotatedUri: android.net.Uri?) -> Unit
+) {
+    val timestamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+        .format(java.util.Date())
+    val safeLabel = label.replace(Regex("[^a-zA-Z0-9]"), "_").lowercase()
+
+    // Step 1: Save clean photo
+    val cleanValues = ContentValues().apply {
+        put(MediaStore.Images.Media.DISPLAY_NAME, "friendorfoe_${safeLabel}_$timestamp.jpg")
+        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+        put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/FriendOrFoe")
+        put(MediaStore.Images.Media.DESCRIPTION, "FriendOrFoe capture: $label")
+    }
+
+    val cleanOptions = ImageCapture.OutputFileOptions.Builder(
+        context.contentResolver,
+        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+        cleanValues
+    ).build()
+
+    imageCapture.takePicture(
+        cleanOptions,
+        androidx.core.content.ContextCompat.getMainExecutor(context),
+        object : ImageCapture.OnImageSavedCallback {
+            override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                val cleanUri = output.savedUri
+                Log.d("DualCapture", "Clean photo saved: $cleanUri")
+
+                // Step 2: Save annotated version (screen capture + info panel)
+                if (screenBitmap != null) {
+                    Thread {
+                        try {
+                            val annotated = composeAnnotatedBitmap(screenBitmap, panelInfo)
+                            val annotatedUri = saveBitmapToGallery(
+                                context, annotated,
+                                "friendorfoe_${safeLabel}_${timestamp}_annotated",
+                                "FriendOrFoe annotated: $label"
+                            )
+                            annotated.recycle()
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                Toast.makeText(context, "Saved clean + annotated photos", Toast.LENGTH_SHORT).show()
+                                onComplete(cleanUri, annotatedUri)
+                            }
+                        } catch (e: Exception) {
+                            Log.e("DualCapture", "Annotated save failed", e)
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                onComplete(cleanUri, null)
+                            }
+                        }
+                    }.start()
+                } else {
+                    Toast.makeText(context, "Photo saved (annotated capture unavailable)", Toast.LENGTH_SHORT).show()
+                    onComplete(cleanUri, null)
+                }
+            }
+
+            override fun onError(exception: ImageCaptureException) {
+                Log.e("DualCapture", "Clean photo capture failed", exception)
+                Toast.makeText(context, "Photo capture failed", Toast.LENGTH_SHORT).show()
+                onComplete(null, null)
+            }
+        }
+    )
+}
+
+/**
+ * Compose an annotated bitmap: screen capture + info panel at the bottom.
+ */
+private fun composeAnnotatedBitmap(
+    screenBitmap: Bitmap,
+    panelInfo: List<Pair<String, String>>
+): Bitmap {
+    val panelHeight = (screenBitmap.width * 0.15f).toInt().coerceIn(120, 300)
+    val result = Bitmap.createBitmap(
+        screenBitmap.width,
+        screenBitmap.height + panelHeight,
+        Bitmap.Config.ARGB_8888
+    )
+    val canvas = android.graphics.Canvas(result)
+
+    // Draw the screen capture (camera + AR overlay)
+    canvas.drawBitmap(screenBitmap, 0f, 0f, null)
+
+    // Draw dark info panel at the bottom
+    val panelTop = screenBitmap.height.toFloat()
+    val bgPaint = android.graphics.Paint().apply {
+        color = android.graphics.Color.argb(235, 12, 16, 20)
+    }
+    canvas.drawRect(0f, panelTop, result.width.toFloat(), result.height.toFloat(), bgPaint)
+
+    val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.LTGRAY
+        textSize = panelHeight * 0.10f
+    }
+    val valuePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        textSize = panelHeight * 0.14f
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+    }
+
+    // Layout info in 2 columns
+    val colWidth = result.width / 2f
+    val rowHeight = panelHeight / ((panelInfo.size + 1) / 2f + 0.5f)
+    val padding = 24f
+
+    panelInfo.forEachIndexed { idx, (key, value) ->
+        val col = idx % 2
+        val row = idx / 2
+        val x = col * colWidth + padding
+        val y = panelTop + padding + row * rowHeight
+
+        canvas.drawText(key, x, y + labelPaint.textSize, labelPaint)
+        canvas.drawText(value, x, y + labelPaint.textSize + valuePaint.textSize + 4f, valuePaint)
+    }
+
+    // App watermark
+    val watermarkPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.argb(120, 255, 255, 255)
+        textSize = panelHeight * 0.09f
+        textAlign = android.graphics.Paint.Align.RIGHT
+    }
+    canvas.drawText(
+        "Friend or Foe",
+        result.width - padding,
+        result.height - 8f,
+        watermarkPaint
+    )
+
+    return result
+}
+
+/**
+ * Save a Bitmap to MediaStore gallery.
+ */
+private fun saveBitmapToGallery(
+    context: Context,
+    bitmap: Bitmap,
+    fileName: String,
+    description: String
+): android.net.Uri? {
+    val values = ContentValues().apply {
+        put(MediaStore.Images.Media.DISPLAY_NAME, "$fileName.jpg")
+        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+        put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/FriendOrFoe")
+        put(MediaStore.Images.Media.DESCRIPTION, description)
+    }
+
+    val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+    if (uri != null) {
+        context.contentResolver.openOutputStream(uri)?.use { out ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+        }
+    }
+    return uri
+}

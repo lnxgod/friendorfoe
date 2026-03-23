@@ -272,7 +272,7 @@ object MilitaryClassifier {
             // Helicopters (military)
             "H60", "UH60", "HH60", "MH60", "SH60",
             "AH64", "AH1", "AH1Z",
-            "CH47", "CH53", "CH46",
+            "H47", "CH47", "CH53", "CH46",
             "V22", "MV22", "CV22",
             "NH90", "EH10", "LYNX",
             "MI8", "MI17", "MI24", "MI26", "MI28", "KA52",

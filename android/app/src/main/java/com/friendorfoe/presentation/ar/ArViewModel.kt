@@ -3,6 +3,7 @@ package com.friendorfoe.presentation.ar
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.graphics.Bitmap
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.SensorManager
@@ -44,7 +45,9 @@ import com.friendorfoe.sensor.CameraFovCalculator
 import com.friendorfoe.sensor.DeviceOrientation
 import com.friendorfoe.sensor.ScreenPosition
 import com.friendorfoe.sensor.SensorFusionEngine
+import com.friendorfoe.sensor.CompassBiasEstimator
 import com.friendorfoe.sensor.SkyPositionMapper
+import com.friendorfoe.sensor.TrajectoryPredictor
 import com.friendorfoe.sensor.VisualCorrelationEngine
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Session
@@ -59,6 +62,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
@@ -132,6 +136,8 @@ class ArViewModel @Inject constructor(
     }
 
     private val skyPositionMapper = SkyPositionMapper()
+    private val trajectoryPredictor = TrajectoryPredictor()
+    private val compassBiasEstimator = CompassBiasEstimator()
     val cameraFovCalculator = CameraFovCalculator()
     val visualDetectionAnalyzer = VisualDetectionAnalyzer(skyObjectFilter)
 
@@ -189,6 +195,105 @@ class ArViewModel @Inject constructor(
 
     private val _lockedObjectId = MutableStateFlow<String?>(null)
     val lockedObjectId: StateFlow<String?> = _lockedObjectId.asStateFlow()
+
+    // --- Tap-to-auto-capture state ---
+
+    enum class AutoCaptureState { IDLE, TRACKING, CAPTURING, DONE }
+
+    private val _autoCapturePhase = MutableStateFlow(AutoCaptureState.IDLE)
+    val autoCapturePhase: StateFlow<AutoCaptureState> = _autoCapturePhase.asStateFlow()
+
+    private var autoCaptureJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * One-tap smart spotter: lock on, briefly track (2s), then auto-capture triple photos.
+     * Tap on AR label triggers this flow.
+     */
+    fun snapAndAutoCapture(objectId: String, context: Context) {
+        // Cancel any in-progress auto-capture
+        autoCaptureJob?.cancel()
+
+        // Dismiss other sheets
+        _selectedObjectId.value = null
+        _showUnidentifiedSheet.value = false
+        _zoomTarget.value = null
+        _snapTarget.value = null
+
+        // Lock on
+        _lockedObjectId.value = objectId
+        _autoCapturePhase.value = AutoCaptureState.TRACKING
+
+        // Auto-zoom based on ground distance
+        val sp = screenPositions.value.firstOrNull { it.skyObject.id == objectId }
+        val previousZoom = _currentZoomRatio.value
+        if (sp != null) {
+            zoomToObject(sp.groundDistanceMeters)
+        }
+
+        // Get label for file naming
+        val skyObj = sp?.skyObject
+            ?: skyObjectRepository.skyObjects.value.firstOrNull { it.id == objectId }
+        val label = when (skyObj) {
+            is Aircraft -> skyObj.callsign ?: skyObj.icaoHex
+            is Drone -> skyObj.droneId.take(16)
+            else -> objectId
+        }
+
+        autoCaptureJob = viewModelScope.launch {
+            // Phase 1: Track for 2 seconds (let zoom settle + ML Kit refine bounding box)
+            delay(2000L)
+
+            // Check target is still in view
+            val currentPos = screenPositions.value.firstOrNull { it.skyObject.id == objectId }
+            if (currentPos == null || !currentPos.isInView) {
+                Log.d(TAG, "Auto-capture: target lost during tracking")
+                _autoCapturePhase.value = AutoCaptureState.IDLE
+                _lockedObjectId.value = null
+                setZoomRatio(previousZoom)
+                android.widget.Toast.makeText(context, "Target lost", android.widget.Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+
+            // Phase 2: Capture
+            _autoCapturePhase.value = AutoCaptureState.CAPTURING
+
+            val capture = imageCaptureRef
+            if (capture == null) {
+                _autoCapturePhase.value = AutoCaptureState.IDLE
+                _lockedObjectId.value = null
+                setZoomRatio(previousZoom)
+                return@launch
+            }
+
+            // Triple capture (clean + annotated + AI-zoomed)
+            val panelInfo = buildPanelInfo(skyObj, currentPos)
+            val screenBitmap = captureScreenBitmap(context)
+            val timestamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                .format(java.util.Date())
+
+            captureDualPhoto(context, capture, label, screenBitmap, panelInfo) { cleanUri, _ ->
+                // After clean + annotated, trigger AI-aimed zoom
+                captureSmartZoomedPhoto(context, capture, label, timestamp) { zoomedUri ->
+                    val photoCount = listOfNotNull(cleanUri, zoomedUri).size + 1 // +1 for annotated
+                    android.widget.Toast.makeText(
+                        context,
+                        "Captured $label — $photoCount photos saved",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+
+                    _autoCapturePhase.value = AutoCaptureState.DONE
+
+                    // Auto-dismiss after brief confirmation
+                    viewModelScope.launch {
+                        delay(1500L)
+                        _autoCapturePhase.value = AutoCaptureState.IDLE
+                        _lockedObjectId.value = null
+                        setZoomRatio(previousZoom)
+                    }
+                }
+            }
+        }
+    }
 
     fun lockOnObject(objectId: String) {
         _selectedObjectId.value = null
@@ -457,7 +562,22 @@ class ArViewModel @Inject constructor(
             return
         }
         val label = _snapTarget.value?.label ?: "unknown"
-        capturePhotoToGallery(context, capture, label) { uri -> onResult(uri != null) }
+        val timestamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        val snapObj = _snapTarget.value?.let { snap ->
+            skyObjectRepository.skyObjects.value.firstOrNull { it.id == snap.objectId }
+        }
+        val panelInfo = buildPanelInfo(snapObj, screenPositions.value.firstOrNull {
+            it.skyObject.id == snapObj?.id
+        })
+        val screenBitmap = captureScreenBitmap(context)
+
+        captureDualPhoto(context, capture, label, screenBitmap, panelInfo) { cleanUri, _ ->
+            // After clean + annotated saved, trigger AI-aimed zoom capture
+            captureSmartZoomedPhoto(context, capture, label, timestamp) { _ ->
+                onResult(cleanUri != null)
+            }
+        }
     }
 
     /** Capture a photo from the main AR screen (no snap target required). Returns the saved URI. */
@@ -469,16 +589,208 @@ class ArViewModel @Inject constructor(
             return
         }
         // Use locked object label if available, otherwise "sky"
-        val label = _lockedObjectId.value?.let { lockedId ->
-            skyObjectRepository.skyObjects.value.firstOrNull { it.id == lockedId }?.let { obj ->
-                when (obj) {
-                    is com.friendorfoe.domain.model.Aircraft -> obj.callsign ?: obj.icaoHex
-                    is com.friendorfoe.domain.model.Drone -> obj.droneId.take(16)
-                    else -> "sky"
+        val lockedObj = _lockedObjectId.value?.let { lockedId ->
+            skyObjectRepository.skyObjects.value.firstOrNull { it.id == lockedId }
+        }
+        val label = when (lockedObj) {
+            is Aircraft -> lockedObj.callsign ?: lockedObj.icaoHex
+            is Drone -> lockedObj.droneId.take(16)
+            else -> "sky"
+        }
+
+        // Build info panel data from locked/nearest object
+        val panelInfo = buildPanelInfo(lockedObj, screenPositions.value.firstOrNull {
+            it.skyObject.id == lockedObj?.id
+        })
+
+        // Capture screen bitmap for annotated version
+        val screenBitmap = captureScreenBitmap(context)
+        val timestamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+
+        captureDualPhoto(context, capture, label, screenBitmap, panelInfo) { cleanUri, _ ->
+            // After clean + annotated saved, trigger AI-aimed zoom capture
+            captureSmartZoomedPhoto(context, capture, label, timestamp) { _ ->
+                onResult(cleanUri)
+            }
+        }
+    }
+
+    /**
+     * Calculate optimal hardware zoom to frame an ML Kit detection at ~45% of frame width.
+     * Formula: newZoom = targetFill * currentZoom / bboxWidth
+     */
+    private fun calculateSmartZoom(detection: VisualDetection): Float {
+        if (detection.width <= 0f) return _currentZoomRatio.value
+        val targetFill = 0.45f
+        val newZoom = targetFill * _currentZoomRatio.value / detection.width
+        return newZoom.coerceIn(_minZoomRatio.value, _maxZoomRatio.value)
+    }
+
+    /**
+     * Find the best visual detection target for smart zoom capture.
+     * Priority: locked object's matched detection > nearest visually confirmed in-view object.
+     */
+    private fun findSmartZoomTarget(): VisualDetection? {
+        val positions = screenPositions.value
+        // Try locked object first
+        val lockedId = _lockedObjectId.value
+        if (lockedId != null) {
+            val lockedPos = positions.firstOrNull { it.skyObject.id == lockedId }
+            if (lockedPos?.matchedDetection != null) return lockedPos.matchedDetection
+        }
+        // Fall back to nearest visually confirmed in-view object
+        return positions
+            .filter { it.isInView && it.visuallyConfirmed && it.matchedDetection != null }
+            .minByOrNull { it.distanceMeters }
+            ?.matchedDetection
+    }
+
+    /**
+     * Capture a smart-zoomed photo aimed at the ML Kit bounding box.
+     * Zooms hardware to frame the aircraft at ~45% of frame width, captures, then restores zoom.
+     */
+    fun captureSmartZoomedPhoto(
+        context: Context,
+        imageCapture: ImageCapture,
+        label: String,
+        timestamp: String,
+        onComplete: (android.net.Uri?) -> Unit
+    ) {
+        val detection = findSmartZoomTarget()
+        if (detection == null) {
+            Log.d(TAG, "No visual target for smart zoom capture")
+            onComplete(null)
+            return
+        }
+
+        val smartZoom = calculateSmartZoom(detection)
+        val currentZoom = _currentZoomRatio.value
+
+        // Skip if zoom wouldn't change meaningfully (< 0.3x increase)
+        if (smartZoom <= currentZoom + 0.3f) {
+            Log.d(TAG, "Smart zoom not needed (current=$currentZoom, calculated=$smartZoom)")
+            onComplete(null)
+            return
+        }
+
+        val safeLabel = label.replace(Regex("[^a-zA-Z0-9]"), "_").lowercase()
+
+        viewModelScope.launch {
+            // Zoom in
+            setZoomRatio(smartZoom)
+            delay(300L) // Wait for hardware zoom to settle
+
+            // Capture zoomed photo
+            val zoomValues = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Images.Media.DISPLAY_NAME,
+                    "friendorfoe_${safeLabel}_${timestamp}_zoomed.jpg")
+                put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                put(android.provider.MediaStore.Images.Media.RELATIVE_PATH,
+                    "${android.os.Environment.DIRECTORY_PICTURES}/FriendOrFoe")
+                put(android.provider.MediaStore.Images.Media.DESCRIPTION,
+                    "FriendOrFoe AI-aimed capture: $label")
+            }
+
+            val options = ImageCapture.OutputFileOptions.Builder(
+                context.contentResolver,
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                zoomValues
+            ).build()
+
+            imageCapture.takePicture(
+                options,
+                androidx.core.content.ContextCompat.getMainExecutor(context),
+                object : ImageCapture.OnImageSavedCallback {
+                    override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                        Log.d(TAG, "Smart zoomed photo saved: ${output.savedUri}")
+                        viewModelScope.launch {
+                            delay(200L)
+                            setZoomRatio(currentZoom) // Restore original zoom
+                        }
+                        onComplete(output.savedUri)
+                    }
+
+                    override fun onError(exception: ImageCaptureException) {
+                        Log.e(TAG, "Smart zoom capture failed", exception)
+                        viewModelScope.launch {
+                            setZoomRatio(currentZoom) // Restore zoom on failure too
+                        }
+                        onComplete(null)
+                    }
+                }
+            )
+        }
+    }
+
+    /**
+     * Capture the current screen as a Bitmap (camera preview + AR overlay).
+     * Uses the DecorView draw method for simplicity.
+     */
+    private fun captureScreenBitmap(context: Context): Bitmap? {
+        return try {
+            val activity = context as? Activity ?: return null
+            val view = activity.window.decorView.rootView
+            val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bitmap)
+            view.draw(canvas)
+            bitmap
+        } catch (e: Exception) {
+            Log.w(TAG, "Screen capture failed", e)
+            null
+        }
+    }
+
+    /**
+     * Build info panel key-value pairs for the annotated screenshot.
+     */
+    private fun buildPanelInfo(
+        skyObject: com.friendorfoe.domain.model.SkyObject?,
+        screenPos: ScreenPosition?
+    ): List<Pair<String, String>> {
+        val info = mutableListOf<Pair<String, String>>()
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", java.util.Locale.US)
+            .format(java.util.Date())
+        info.add("Timestamp" to now)
+
+        val userPos = _userPosition.value
+        if (userPos.latitude != 0.0) {
+            info.add("GPS" to "%.5f, %.5f".format(userPos.latitude, userPos.longitude))
+        }
+
+        when (skyObject) {
+            is Aircraft -> {
+                info.add("Callsign" to (skyObject.callsign ?: skyObject.icaoHex))
+                skyObject.aircraftType?.let { info.add("Type" to it) }
+                info.add("Altitude" to "${(skyObject.position.altitudeMeters * 3.281).toInt()} ft")
+                skyObject.position.speedMps?.let {
+                    info.add("Speed" to "${(it * 1.944).toInt()} kts")
+                }
+                skyObject.position.heading?.let {
+                    info.add("Heading" to "${it.toInt()}°")
+                }
+                info.add("Source" to skyObject.source.name)
+                screenPos?.let {
+                    info.add("Distance" to "%.1f km".format(it.distanceMeters / 1000.0))
+                }
+                info.add("Category" to skyObject.category.name)
+            }
+            is Drone -> {
+                info.add("Drone ID" to skyObject.droneId)
+                info.add("Source" to skyObject.source.name)
+                info.add("Confidence" to "%.0f%%".format(skyObject.confidence * 100))
+                screenPos?.let {
+                    info.add("Distance" to "%.0f m".format(it.distanceMeters))
                 }
             }
-        } ?: "sky"
-        capturePhotoToGallery(context, capture, label, onResult)
+            else -> {
+                info.add("Target" to "No lock")
+                val count = screenPositions.value.count { it.isInView }
+                info.add("In View" to "$count objects")
+            }
+        }
+
+        return info
     }
 
     /** Auto-zoom toward an object based on ground distance (horizontal, not slant). */
@@ -600,14 +912,24 @@ class ArViewModel @Inject constructor(
         .map { it.size }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
+    // --- Frame clock for trajectory prediction (ensures extrapolation updates even when sensors are quiet) ---
+
+    private val frameClockFlow = flow {
+        while (true) {
+            emit(System.currentTimeMillis())
+            delay(33L) // ~30 fps
+        }
+    }
+
     // --- Screen positions (combined from orientation + sky objects + visual detections) ---
 
     val screenPositions: StateFlow<List<ScreenPosition>> = combine(
+        frameClockFlow,
         orientation,
         skyObjectRepository.skyObjects,
         _userPosition,
         visualDetectionAnalyzer.detections
-    ) { orient, skyObjects, userPos, visualDetections ->
+    ) { nowMs, orient, skyObjects, userPos, visualDetections ->
         // Keep analyzer updated with current pitch for pitch-aware filtering
         visualDetectionAnalyzer.currentPitch = orient.pitchDegrees
 
@@ -617,10 +939,18 @@ class ArViewModel @Inject constructor(
             _classifiedUnknowns.value = emptyList()
             emptyList()
         } else {
-            val radioPositions = skyPositionMapper.mapToScreen(
+            // Apply compass bias correction from visual-radio calibration
+            val correctedOrient = orient.copy(
+                azimuthDegrees = orient.azimuthDegrees + compassBiasEstimator.biasDegrees
+            )
+
+            // Dead-reckon positions forward from last ADS-B report
+            val predicted = trajectoryPredictor.predictAll(skyObjects, nowMs)
+
+            val radioPositions = skyPositionMapper.mapPredictedToScreen(
                 userPosition = userPos,
-                skyObjects = skyObjects,
-                orientation = orient,
+                predictedObjects = predicted,
+                orientation = correctedOrient,
                 fovCalculator = cameraFovCalculator
             )
             // Suppress visual detections when phone points below horizon (ground clutter)
@@ -633,6 +963,12 @@ class ArViewModel @Inject constructor(
             val result = visualCorrelationEngine.correlate(radioPositions, effectiveVisualDetections, scored)
             _unmatchedVisuals.value = result.unmatchedVisuals
             _classifiedUnknowns.value = result.classifiedUnknowns
+
+            // Feed visual-radio matches back to compass bias estimator
+            compassBiasEstimator.observe(
+                result.positions,
+                Math.toDegrees(cameraFovCalculator.horizontalFovRadians)
+            )
 
             // Score dark targets (unmatched visuals with no radio correlation)
             val currentAcoustic = _acousticResult.value
@@ -1134,6 +1470,8 @@ class ArViewModel @Inject constructor(
         detectionStatusJob?.cancel()
         acousticJob?.cancel()
         visualCorrelationEngine.reset()
+        trajectoryPredictor.reset()
+        compassBiasEstimator.reset()
 
         // Now safe to pause ARCore session (no concurrent update() calls)
         try {

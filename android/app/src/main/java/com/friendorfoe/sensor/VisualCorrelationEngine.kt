@@ -24,8 +24,10 @@ class VisualCorrelationEngine @Inject constructor(
 ) {
 
     companion object {
-        /** Maximum normalized distance to consider a visual-radio match (~50px on 1080p) */
-        private const val MATCH_THRESHOLD = 0.046f
+        /** Base match threshold — adapted per-object by position confidence */
+        private const val MATCH_THRESHOLD_BASE = 0.035f
+        /** Additional threshold allowance when data is stale (scales with 1-confidence) */
+        private const val MATCH_THRESHOLD_STALE_BONUS = 0.045f
 
         /** Blend weight for radio position (visual = 1 - RADIO_WEIGHT) */
         private const val RADIO_WEIGHT = 0.4f
@@ -34,7 +36,7 @@ class VisualCorrelationEngine @Inject constructor(
         private const val SMOOTHING_ALPHA = 0.3f
 
         /** Maximum number of in-view radio positions to attempt visual matching against */
-        private const val MAX_VISUAL_MATCH_CANDIDATES = 2
+        private const val MAX_VISUAL_MATCH_CANDIDATES = 5
     }
 
     /** Smoothed position history keyed by sky object ID */
@@ -92,6 +94,11 @@ class VisualCorrelationEngine @Inject constructor(
         val matchedDetectionIndices = mutableSetOf<Int>()
 
         for ((radioPos, _) in inViewPositions) {
+            // Adaptive threshold: tighter when data is fresh, looser when stale/extrapolated
+            val effectiveThreshold = MATCH_THRESHOLD_BASE +
+                MATCH_THRESHOLD_STALE_BONUS * (1f - radioPos.positionConfidence) +
+                if (radioPos.trackHeadingDegrees != null && radioPos.isExtrapolated) 0.02f else 0f
+
             // Find nearest unmatched visual detection
             var bestIdx = -1
             var bestDist = Float.MAX_VALUE
@@ -107,13 +114,16 @@ class VisualCorrelationEngine @Inject constructor(
                 }
             }
 
-            if (bestIdx >= 0 && bestDist <= MATCH_THRESHOLD) {
+            if (bestIdx >= 0 && bestDist <= effectiveThreshold) {
                 // Match found — blend radio and visual positions
                 matchedDetectionIndices.add(bestIdx)
                 val visual = visualDetections[bestIdx]
 
-                val blendedX = radioPos.screenX * RADIO_WEIGHT + visual.centerX * (1f - RADIO_WEIGHT)
-                val blendedY = radioPos.screenY * RADIO_WEIGHT + visual.centerY * (1f - RADIO_WEIGHT)
+                // Dynamic blend weight: trust radio more when prediction is confident,
+                // trust visual more when data is stale
+                val dynamicRadioWeight = RADIO_WEIGHT * radioPos.positionConfidence
+                val blendedX = radioPos.screenX * dynamicRadioWeight + visual.centerX * (1f - dynamicRadioWeight)
+                val blendedY = radioPos.screenY * dynamicRadioWeight + visual.centerY * (1f - dynamicRadioWeight)
 
                 // Apply temporal smoothing
                 val (smoothedX, smoothedY) = applySmoothing(

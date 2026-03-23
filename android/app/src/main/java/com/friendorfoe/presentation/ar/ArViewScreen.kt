@@ -183,6 +183,7 @@ fun ArViewScreen(
     val autoCaptureEnabled by viewModel.autoCaptureEnabled.collectAsStateWithLifecycle()
     val lastAutoCapture by viewModel.lastAutoCapture.collectAsStateWithLifecycle()
     val proximityDrones by viewModel.proximityDrones.collectAsStateWithLifecycle()
+    val autoCapturePhase by viewModel.autoCapturePhase.collectAsStateWithLifecycle()
 
     // Main-screen capture state
     var captureInProgress by remember { mutableStateOf(false) }
@@ -246,13 +247,44 @@ fun ArViewScreen(
             lockedObjectId = lockedObjectId,
             lockedScreenPosition = lockedScreenPosition,
             orientation = orientation,
-            onLabelTapped = { objectId -> viewModel.snapToObject(objectId) },
-            onLabelLongPressed = { objectId -> viewModel.lockOnObject(objectId) },
+            onLabelTapped = { objectId -> viewModel.snapAndAutoCapture(objectId, context) },
+            onLabelLongPressed = { objectId -> viewModel.snapToObject(objectId) },
             onVisualTapped = { detection -> viewModel.showZoom(detection) },
             onEmptySpaceTapped = { viewModel.showUnidentifiedSheet() },
             onReticleTapped = { viewModel.unlockObject() },
             modifier = Modifier.fillMaxSize()
         )
+
+        // Auto-capture phase indicator
+        if (autoCapturePhase != com.friendorfoe.presentation.ar.ArViewModel.AutoCaptureState.IDLE) {
+            val phaseText = when (autoCapturePhase) {
+                com.friendorfoe.presentation.ar.ArViewModel.AutoCaptureState.TRACKING -> "TRACKING..."
+                com.friendorfoe.presentation.ar.ArViewModel.AutoCaptureState.CAPTURING -> "CAPTURING..."
+                com.friendorfoe.presentation.ar.ArViewModel.AutoCaptureState.DONE -> "CAPTURED!"
+                else -> ""
+            }
+            val phaseColor = when (autoCapturePhase) {
+                com.friendorfoe.presentation.ar.ArViewModel.AutoCaptureState.DONE -> androidx.compose.ui.graphics.Color(0xFF4CAF50)
+                else -> androidx.compose.ui.graphics.Color(0xFF00BCD4)
+            }
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 80.dp)
+                    .background(
+                        phaseColor.copy(alpha = 0.85f),
+                        androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
+                    )
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+            ) {
+                androidx.compose.material3.Text(
+                    text = phaseText,
+                    color = androidx.compose.ui.graphics.Color.White,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            }
+        }
 
         // Layer 3: Compass strip at top
         CompassOverlay(
@@ -1106,7 +1138,15 @@ private fun DrawScope.drawLabel(
 ): Rect {
     val skyObject = labelInfo.screenPosition.skyObject
     val color = categoryColor(skyObject.category)
-    val dimFactor = if (isDimmed) 0.4f else 1f
+    val sp = labelInfo.screenPosition
+
+    // Confidence-based opacity: fresh data = full, stale = faded
+    val confidenceDim = when {
+        sp.dataStalenessSeconds > 15f -> 0.4f
+        sp.dataStalenessSeconds > 5f -> 0.7f
+        else -> 1f
+    }
+    val dimFactor = (if (isDimmed) 0.4f else 1f) * confidenceDim
 
     // Label dimensions
     val labelWidth = 240f
@@ -1119,6 +1159,47 @@ private fun DrawScope.drawLabel(
     val left = (centerX - labelWidth / 2).coerceIn(4f, canvasWidth - labelWidth - 4f)
     val top = (centerY - labelHeight / 2).coerceIn(4f, canvasHeight - labelHeight - 4f)
 
+    // Draw trajectory direction arrow (before label background so it appears behind)
+    val trackHeading = sp.trackHeadingDegrees
+    if (trackHeading != null && sp.isExtrapolated) {
+        val arrowLength = 30f
+        // Direction on screen: aircraft heading relative to camera azimuth
+        // Camera azimuth ≈ bearing at screen center; resolvedX offset scales by ~60° FOV
+        val deltaRad = Math.toRadians((trackHeading - sp.bearingDegrees +
+            (labelInfo.resolvedX - 0.5f) * 60f).toDouble())
+        val arrowDx = kotlin.math.sin(deltaRad).toFloat() * arrowLength
+        val arrowDy = -kotlin.math.cos(deltaRad).toFloat() * arrowLength
+        val arrowStartX = centerX
+        val arrowStartY = centerY
+        drawLine(
+            color = Color.Cyan.copy(alpha = 0.6f * confidenceDim),
+            start = Offset(arrowStartX, arrowStartY),
+            end = Offset(arrowStartX + arrowDx, arrowStartY + arrowDy),
+            strokeWidth = 2.5f
+        )
+        // Small arrowhead
+        val headLen = 8f
+        val headAngle = Math.toRadians(150.0)
+        val cos1 = kotlin.math.cos(deltaRad + headAngle).toFloat()
+        val sin1 = kotlin.math.sin(deltaRad + headAngle).toFloat()
+        val cos2 = kotlin.math.cos(deltaRad - headAngle).toFloat()
+        val sin2 = kotlin.math.sin(deltaRad - headAngle).toFloat()
+        val tipX = arrowStartX + arrowDx
+        val tipY = arrowStartY + arrowDy
+        drawLine(
+            color = Color.Cyan.copy(alpha = 0.6f * confidenceDim),
+            start = Offset(tipX, tipY),
+            end = Offset(tipX + sin1 * headLen, tipY - cos1 * headLen),
+            strokeWidth = 2f
+        )
+        drawLine(
+            color = Color.Cyan.copy(alpha = 0.6f * confidenceDim),
+            start = Offset(tipX, tipY),
+            end = Offset(tipX + sin2 * headLen, tipY - cos2 * headLen),
+            strokeWidth = 2f
+        )
+    }
+
     // Draw background rounded rect with semi-transparency
     drawRoundRect(
         color = color.copy(alpha = 0.75f * dimFactor),
@@ -1130,13 +1211,17 @@ private fun DrawScope.drawLabel(
     val isEmergency = skyObject.category == ObjectCategory.EMERGENCY
 
     // Draw border — cyan pulsing if locked, magenta pulsing if emergency,
-    // bright green if visually confirmed, white otherwise
+    // bright green if visually confirmed, yellow if coasting (stale), white otherwise
     val borderColor = if (isLocked) {
         Color(0xFF00BCD4).copy(alpha = pulseAlpha)  // cyan pulsing
     } else if (isEmergency) {
         Color(0xFFE91E63).copy(alpha = pulseAlpha)  // magenta pulsing — always visible
-    } else if (labelInfo.screenPosition.visuallyConfirmed) {
+    } else if (sp.visuallyConfirmed) {
         Color(0xFF76FF03).copy(alpha = dimFactor)  // bright green — visual confirmation
+    } else if (sp.dataStalenessSeconds > 15f) {
+        Color.Gray.copy(alpha = 0.5f * dimFactor)  // gray — stale data
+    } else if (sp.dataStalenessSeconds > 5f) {
+        Color(0xFFFFEB3B).copy(alpha = 0.7f * dimFactor)  // yellow — coasting
     } else {
         Color.White.copy(alpha = 0.6f * dimFactor)
     }

@@ -42,7 +42,7 @@ private val AVAILABLE_PHOTOS: Set<String> = setOf(
     "AS50", "A109", "A139",
     "B06", "B407", "B429",
     "S76", "S92", "BK17",
-    "UH60", "H60", "CH47", // Military helicopters
+    "UH60", "H60", "H47", "CH47", // Military helicopters
     "V22", // V-22 Osprey
     // Fighter / military
     "F16", "F15", "F18", "FA18", "F22", "F35",

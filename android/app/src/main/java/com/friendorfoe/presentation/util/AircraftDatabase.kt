@@ -834,7 +834,7 @@ object AircraftDatabase {
             description = "Tandem-rotor heavy-lift helicopter. Two counter-rotating rotors eliminate need for tail rotor. Can carry 33 troops or 10 tons of cargo. Over 60 years in service.",
             specs = "Crew: 3 + 33 troops | Range: 741km | Cruise: 291km/h | Engines: 2x T55-GA-714A",
             photoAsset = "aircraft/CH47.jpg",
-            icaoTypeCodes = listOf("CH47")
+            icaoTypeCodes = listOf("CH47", "H47")
         ),
         AircraftReference(
             id = "ah64",

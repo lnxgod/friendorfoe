@@ -20,12 +20,12 @@ import kotlin.math.atan
  */
 class CameraFovCalculator {
 
-    /** Horizontal field of view in radians (default for portrait: narrower) */
-    var horizontalFovRadians: Double = Math.toRadians(45.0)
+    /** Horizontal field of view in radians (default ~60° for typical wide-angle in portrait) */
+    var horizontalFovRadians: Double = Math.toRadians(60.0)
         private set
 
-    /** Vertical field of view in radians (default for portrait: wider) */
-    var verticalFovRadians: Double = Math.toRadians(60.0)
+    /** Vertical field of view in radians (default ~45° for typical wide-angle in portrait) */
+    var verticalFovRadians: Double = Math.toRadians(45.0)
         private set
 
     /** Whether portrait swap has been applied */

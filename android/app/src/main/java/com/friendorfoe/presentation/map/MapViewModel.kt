@@ -130,7 +130,7 @@ class MapViewModel @Inject constructor(
         sensorPollJob = null
     }
 
-    private var locationStarted = false
+    private var locationStarted = java.util.concurrent.atomic.AtomicBoolean(false)
     private var scanningStarted = false
 
     private val locationListener = object : LocationListener {
@@ -158,8 +158,7 @@ class MapViewModel @Inject constructor(
 
     @SuppressLint("MissingPermission")
     fun startLocationUpdates() {
-        if (locationStarted) return
-        locationStarted = true
+        if (!locationStarted.compareAndSet(false, true)) return
 
         try {
             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
@@ -194,8 +193,7 @@ class MapViewModel @Inject constructor(
     }
 
     fun stopLocationUpdates() {
-        if (!locationStarted) return
-        locationStarted = false
+        if (!locationStarted.compareAndSet(true, false)) return
         try {
             locationManager.removeUpdates(locationListener)
         } catch (e: SecurityException) {

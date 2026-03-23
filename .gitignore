@@ -26,6 +26,10 @@ venv/
 # ESP32 / PlatformIO
 .pio/
 esp32/web-flasher/firmware/**/*.bin
+esp32/**/managed_components/
+esp32/**/dependencies.lock
+esp32/**/sdkconfig
+esp32/**/sdkconfig.old
 
 # IDE
 .idea/

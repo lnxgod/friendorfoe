@@ -202,25 +202,87 @@ class SkyPositionMapper {
     }
 
     /**
-     * Normalize an angle difference to the range -180 to 180 degrees.
+     * Map a list of predicted objects to screen positions, passing through prediction metadata.
      *
-     * This correctly handles the 360/0 degree boundary. For example,
-     * if the camera points at 350 degrees and the object is at 10 degrees,
-     * the difference should be +20, not -340.
+     * @param userPosition The user's current GPS position
+     * @param predictedObjects List of predicted objects from [TrajectoryPredictor]
+     * @param orientation Current device orientation
+     * @param fovCalculator Camera FOV calculator
+     * @return List of [ScreenPosition] with prediction metadata populated
      */
-    private fun normalizeAngleDifference(diff: Float): Float {
-        var result = diff % 360f
-        if (result > 180f) result -= 360f
-        if (result < -180f) result += 360f
-        return result
+    fun mapPredictedToScreen(
+        userPosition: Position,
+        predictedObjects: List<PredictedObject>,
+        orientation: DeviceOrientation,
+        fovCalculator: CameraFovCalculator
+    ): List<ScreenPosition> {
+        return predictedObjects.map { predicted ->
+            val basePosition = mapSingleObjectFromPosition(
+                userPosition, predicted.skyObject, predicted.predictedPosition,
+                orientation, fovCalculator
+            )
+            basePosition.copy(
+                positionConfidence = predicted.confidence,
+                dataStalenessSeconds = predicted.ageSeconds,
+                isExtrapolated = predicted.isExtrapolated,
+                trackHeadingDegrees = predicted.trackHeadingDegrees
+            )
+        }
     }
 
     /**
-     * Normalize an angle to the 0-360 degree range.
+     * Map a single sky object using a specified position (may differ from skyObject.position
+     * when using predicted/extrapolated positions).
      */
-    private fun normalizeAngle360(degrees: Float): Float {
-        var result = degrees % 360f
-        if (result < 0f) result += 360f
-        return result
+    private fun mapSingleObjectFromPosition(
+        userPosition: Position,
+        skyObject: SkyObject,
+        objectPosition: Position,
+        orientation: DeviceOrientation,
+        fovCalculator: CameraFovCalculator
+    ): ScreenPosition {
+        val bearingDeg = calculateBearing(
+            userPosition.latitude, userPosition.longitude,
+            objectPosition.latitude, objectPosition.longitude
+        )
+        val groundDistanceMeters = calculateHaversineDistance(
+            userPosition.latitude, userPosition.longitude,
+            objectPosition.latitude, objectPosition.longitude
+        )
+        val altitudeDiff = objectPosition.altitudeMeters - userPosition.altitudeMeters
+        val elevationDeg = calculateElevationAngle(altitudeDiff, groundDistanceMeters)
+        val azimuthOffsetDeg = normalizeAngleDifference(bearingDeg - orientation.azimuthDegrees)
+        val elevationOffsetDeg = elevationDeg - orientation.pitchDegrees
+        val azimuthOffsetRad = Math.toRadians(azimuthOffsetDeg.toDouble())
+        val elevationOffsetRad = Math.toRadians(elevationOffsetDeg.toDouble())
+        val slantDistance = calculateSlantDistance(groundDistanceMeters, altitudeDiff)
+        val maxVisualRange = when (skyObject) {
+            is Aircraft -> MAX_AIRCRAFT_VISUAL_RANGE_M
+            is Drone -> MAX_DRONE_VISUAL_RANGE_M
+        }
+        val withinRange = slantDistance <= maxVisualRange
+        val aboveHorizon = elevationDeg > -2f
+        val isInView = fovCalculator.isInFieldOfView(azimuthOffsetRad, elevationOffsetRad) && withinRange && aboveHorizon
+        val halfHFovRad = fovCalculator.horizontalFovRadians / 2.0
+        val halfVFovRad = fovCalculator.verticalFovRadians / 2.0
+        val screenX = (0.5 + azimuthOffsetRad / (2.0 * halfHFovRad)).toFloat()
+        val screenY = (0.5 - elevationOffsetRad / (2.0 * halfVFovRad)).toFloat()
+
+        return ScreenPosition(
+            skyObject = skyObject,
+            screenX = screenX.coerceIn(0f, 1f),
+            screenY = screenY.coerceIn(0f, 1f),
+            isInView = isInView,
+            bearingDegrees = normalizeAngle360(bearingDeg),
+            elevationDegrees = elevationDeg,
+            distanceMeters = slantDistance,
+            groundDistanceMeters = groundDistanceMeters
+        )
     }
+
+    private fun normalizeAngleDifference(diff: Float): Float =
+        AngleUtils.normalizeAngleDifference(diff)
+
+    private fun normalizeAngle360(degrees: Float): Float =
+        AngleUtils.normalizeAngle360(degrees)
 }
