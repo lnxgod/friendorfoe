@@ -35,6 +35,16 @@ const drone_ssid_pattern_t *wifi_ssid_match(const char *ssid);
  */
 const drone_ssid_pattern_t *wifi_ssid_get_patterns(int *count);
 
+/**
+ * Soft-match an SSID against generic drone-like patterns.
+ * Catches cheap/generic drone hotspots (e.g. "WIFI_9", "FPV_123", "4KCAM").
+ * These are low-confidence (0.15) — too ambiguous for the hard match table.
+ *
+ * @param ssid Null-terminated SSID string
+ * @return true if the SSID looks like a cheap drone hotspot
+ */
+bool wifi_ssid_match_soft(const char *ssid);
+
 #ifdef __cplusplus
 }
 #endif

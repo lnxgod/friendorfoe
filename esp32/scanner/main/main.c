@@ -1,24 +1,22 @@
 /**
- * Friend or Foe -- Scanner Firmware Entry Point (ESP32-S3)
+ * Friend or Foe -- WiFi Scanner Firmware Entry Point
  *
- * The scanner board performs WiFi promiscuous scanning and BLE Remote ID
- * scanning, fuses detections through a Bayesian engine, and streams
- * results over UART to the uplink board for relay to the Android app.
+ * Dedicated WiFi promiscuous scanner. Captures raw 802.11 frames,
+ * fuses detections through a Bayesian engine, and streams results
+ * over UART to the uplink board for relay to the Android app.
  *
  * Architecture:
- *   Core 0 (radio):      WiFi scan task, BLE scan task
+ *   Core 0 (radio):      WiFi scan task
  *   Core 1 (processing): UART TX task (fusion runs inline)
  *
  * Detection flow:
- *   WiFi scanner ──┐
- *                   ├──▶ detection_queue ──▶ UART TX task
- *   BLE scanner  ──┘         (50 items)       │
- *                                              ├── Bayesian fusion
- *                                              └── JSON → UART1 → Uplink
+ *   WiFi scanner ──▶ detection_queue ──▶ UART TX task
+ *                         (50 items)       │
+ *                                          ├── Bayesian fusion
+ *                                          └── JSON → UART1 → Uplink
  */
 
 #include "wifi_scanner.h"
-#include "ble_remote_id.h"
 #include "bayesian_fusion.h"
 #include "uart_tx.h"
 #include "detection_types.h"
@@ -51,8 +49,11 @@ static void display_task(void *arg)
 {
     ESP_LOGI(TAG, "Display task started");
 
-    bool have_detection = false;
-    scanner_detection_summary_t last_det = {0};
+    int page_index = 0;
+    int cycle_counter = 0;
+
+    /* Advance page every 5 ticks = 2.5s at 500ms refresh */
+    #define PAGE_CYCLE_TICKS 5
 
     while (1) {
         int total       = uart_tx_get_total_count();
@@ -62,20 +63,32 @@ static void display_task(void *arg)
         int wifi        = uart_tx_get_wifi_count();
         uint32_t uptime = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
 
-        /* Check for new/updated detections */
-        scanner_detection_summary_t recent;
-        if (uart_tx_get_recent_detection(&recent)) {
-            last_det = recent;
-            have_detection = true;
-        }
-
         /* Update stats (top section) */
         oled_update(total, active, channel, ble, wifi, uptime);
 
-        /* Persistently show last detection in bottom section */
-        if (have_detection) {
-            oled_show_detection(last_det.drone_id, last_det.manufacturer,
-                                last_det.confidence, last_det.rssi);
+        /* Fetch all cached detections for scoreboard */
+        scanner_detection_summary_t det_list[DETECTION_CACHE_SIZE];
+        int det_count = uart_tx_get_cached_detections(det_list, DETECTION_CACHE_SIZE);
+
+        if (det_count > 0) {
+            /* Wrap page_index if list shrunk */
+            if (page_index >= det_count) {
+                page_index = 0;
+            }
+
+            oled_show_detection_paged(
+                det_list[page_index].drone_id,
+                det_list[page_index].manufacturer,
+                det_list[page_index].confidence,
+                det_list[page_index].rssi,
+                page_index + 1, det_count);
+
+            /* Advance page on cycle boundary */
+            cycle_counter++;
+            if (cycle_counter >= PAGE_CYCLE_TICKS) {
+                cycle_counter = 0;
+                page_index = (page_index + 1) % det_count;
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(DISPLAY_UPDATE_MS));
@@ -132,28 +145,19 @@ void app_main(void)
     wifi_scanner_init(detection_queue);
     ESP_LOGI(TAG, "WiFi scanner initialised");
 
-    /* ── 8. Initialize BLE Remote ID scanner ──────────────────────────── */
-    ble_remote_id_init(detection_queue);
-    ESP_LOGI(TAG, "BLE Remote ID scanner initialised");
-
-    /* ── 9. Start UART TX task on Core 1 (processing core) ────────────── */
+    /* ── 8. Start UART TX task on Core 1 (processing core) ──────────────── */
     uart_tx_start(detection_queue);
 
-    /* ── 10. Start WiFi scanner task on Core 0 (radio core) ───────────── */
+    /* ── 9. Start WiFi scanner task on Core 0 (radio core) ───────────── */
     wifi_scanner_start();
     ESP_LOGI(TAG, "WiFi scanner started on core %d, priority %d",
              WIFI_SCAN_TASK_CORE, WIFI_SCAN_TASK_PRIORITY);
 
-    /* ── 11. Start BLE scanner task on Core 0 (radio core) ────────────── */
-    ble_remote_id_start();
-    ESP_LOGI(TAG, "BLE Remote ID scanner started on core %d, priority %d",
-             BLE_SCAN_TASK_CORE, BLE_SCAN_TASK_PRIORITY);
-
-    /* ── 12. Start LED task ───────────────────────────────────────────── */
+    /* ── 10. Start LED task ───────────────────────────────────────────── */
     led_start();
     led_set_pattern(LED_SCANNING);
 
-    /* ── 12b. Start display task ─────────────────────────────────────── */
+    /* ── 11. Start display task ──────────────────────────────────────── */
     xTaskCreatePinnedToCore(
         display_task,
         "display",
@@ -166,11 +170,16 @@ void app_main(void)
     ESP_LOGI(TAG, "Display task started on core %d, priority %d",
              DISPLAY_TASK_CORE, DISPLAY_TASK_PRIORITY);
 
-    /* ── 13. Startup banner ───────────────────────────────────────────── */
+    /* ── 12. Startup banner ───────────────────────────────────────────── */
     ESP_LOGI(TAG, "============================================");
-    ESP_LOGI(TAG, "  Friend or Foe -- Scanner v%s", FIRMWARE_VERSION);
+    ESP_LOGI(TAG, "  Friend or Foe — WiFi Scanner v%s", FIRMWARE_VERSION);
+#if CONFIG_IDF_TARGET_ESP32C5
+    ESP_LOGI(TAG, "  ESP32-C5 single-core RISC-V @ 240 MHz");
+    ESP_LOGI(TAG, "  WiFi 6 dual-band promiscuous");
+#else
     ESP_LOGI(TAG, "  ESP32-S3 dual-core @ 240 MHz");
-    ESP_LOGI(TAG, "  WiFi promiscuous + BLE Remote ID");
+    ESP_LOGI(TAG, "  WiFi promiscuous");
+#endif
     ESP_LOGI(TAG, "  UART1 -> Uplink @ %d baud", UART_BAUD_RATE);
     ESP_LOGI(TAG, "  Detection queue: %d slots", DETECTION_QUEUE_LEN);
     ESP_LOGI(TAG, "  drone_detection_t: %u bytes", (unsigned)sizeof(drone_detection_t));

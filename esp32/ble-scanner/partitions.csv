@@ -1,0 +1,6 @@
+# Friend or Foe — BLE Scanner Partition Table
+# Name,    Type, SubType, Offset,   Size,     Flags
+nvs,       data, nvs,     0x9000,   0x6000,
+phy_init,  data, phy,     0xf000,   0x1000,
+factory,   app,  factory, 0x10000,  0x1E0000,
+storage,   data, nvs,     0x1F0000, 0x10000,

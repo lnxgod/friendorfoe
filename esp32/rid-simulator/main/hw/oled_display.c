@@ -1,13 +1,8 @@
 /**
- * Friend or Foe -- Scanner OLED Display Implementation
+ * Friend or Foe — RID Simulator OLED Display Implementation
  *
- * Drives an SSD1306 128x64 monochrome OLED over I2C.  Uses a 1024-byte
- * frame buffer and a built-in 5x7 pixel font for text rendering.
- *
- * Hardware:
- *   ESP32-S3: I2C, SDA=GPIO4, SCL=GPIO5, address 0x3C (default)
- *   ESP32-C5: I2C, SDA=GPIO6, SCL=GPIO7, address 0x3C (default)
- *   Pins configurable via KConfig (menuconfig or sdkconfig overrides)
+ * Drives an SSD1306 128x64 monochrome OLED over I2C.
+ * Shows simulator status: drone position, altitude, heading, adv count.
  */
 
 #include "oled_display.h"
@@ -34,9 +29,9 @@ static const char *TAG = "oled";
 #define OLED_WIDTH      128
 #define OLED_HEIGHT     64
 #define OLED_PAGES      (OLED_HEIGHT / 8)
-#define OLED_BUF_SIZE   (OLED_WIDTH * OLED_PAGES)  /* 1024 bytes */
+#define OLED_BUF_SIZE   (OLED_WIDTH * OLED_PAGES)
 
-#define I2C_FREQ_HZ     100000   /* 100 kHz — more reliable with radio + jumper wires */
+#define I2C_FREQ_HZ     100000
 
 /* SSD1306 commands */
 #define SSD1306_CMD_DISPLAY_OFF         0xAE
@@ -56,7 +51,6 @@ static const char *TAG = "oled";
 #define SSD1306_CMD_SET_COL_ADDR        0x21
 #define SSD1306_CMD_SET_PAGE_ADDR       0x22
 
-/* I2C control bytes */
 #define OLED_CTRL_CMD       0x00
 #define OLED_CTRL_DATA      0x40
 
@@ -67,8 +61,7 @@ static i2c_master_dev_handle_t    s_dev_handle    = NULL;
 static uint8_t s_framebuf[OLED_BUF_SIZE];
 static bool    s_initialized = false;
 static int     s_error_count = 0;
-#define OLED_MAX_ERRORS  5   /* disable OLED after this many consecutive I2C failures */
-static char    s_version[16] = "";
+#define OLED_MAX_ERRORS  5
 
 /* ── 5x7 ASCII font (printable chars 0x20-0x7E) ───────────────────────── */
 
@@ -223,7 +216,7 @@ static int fb_draw_char(int x, int y, char c)
         }
     }
 
-    return 6; /* 5 pixels + 1 pixel spacing */
+    return 6;
 }
 
 static void fb_draw_string(int x, int y, const char *str)
@@ -238,33 +231,6 @@ static void fb_draw_hline(int x0, int x1, int y)
 {
     for (int x = x0; x <= x1; x++) {
         fb_set_pixel(x, y);
-    }
-}
-
-/**
- * Draw 4 signal-strength bars (pixel art) at the given position.
- * Bars are 2px wide with 1px gap, heights 3/5/7/9px, bottom-aligned.
- * Thresholds based on typical BLE/WiFi RSSI ranges.
- */
-static void fb_draw_signal_bars(int x, int y_bottom, int rssi)
-{
-    /* Bar heights and RSSI thresholds */
-    static const struct { int height; int threshold; } bars[4] = {
-        { 3, -90 },   /* bar 1: any signal */
-        { 5, -70 },   /* bar 2: moderate */
-        { 7, -55 },   /* bar 3: good */
-        { 9, -40 },   /* bar 4: strong */
-    };
-
-    for (int b = 0; b < 4; b++) {
-        if (rssi < bars[b].threshold) {
-            continue;
-        }
-        int bx = x + b * 3;  /* 2px wide + 1px gap */
-        for (int row = 0; row < bars[b].height; row++) {
-            fb_set_pixel(bx,     y_bottom - row);
-            fb_set_pixel(bx + 1, y_bottom - row);
-        }
     }
 }
 
@@ -289,7 +255,7 @@ static void oled_flush(void)
     for (int page = 0; page < OLED_PAGES; page++) {
         oled_send_data(&s_framebuf[page * OLED_WIDTH], OLED_WIDTH);
     }
-    s_error_count = 0;  /* reset on successful flush */
+    s_error_count = 0;
 }
 
 /* ── Public API ────────────────────────────────────────────────────────── */
@@ -297,15 +263,11 @@ static void oled_flush(void)
 void oled_init(void)
 {
 #if CONFIG_IDF_TARGET_ESP32C5
-    /* On ESP32-C5, GPIO 6/7 are JTAG (MTDI/MTCK) by default and get
-     * reserved in the GPIO reservation system during startup.  Revoke
-     * that reservation so the I2C driver can claim them cleanly. */
     esp_gpio_revoke(BIT64(OLED_SDA_PIN) | BIT64(OLED_SCL_PIN));
     gpio_reset_pin(OLED_SDA_PIN);
     gpio_reset_pin(OLED_SCL_PIN);
 #endif
 
-    /* Toggle hardware reset pin if configured */
     if (OLED_RST_PIN >= 0) {
         gpio_config_t rst_cfg = {
             .pin_bit_mask = 1ULL << OLED_RST_PIN,
@@ -343,44 +305,31 @@ void oled_init(void)
         return;
     }
 
-    /* Probe the display — if it doesn't ACK, skip init to avoid
-     * spamming I2C timeout errors during the display task loop. */
     if (oled_send_cmd(SSD1306_CMD_DISPLAY_OFF) != ESP_OK) {
         ESP_LOGW(TAG, "No OLED detected at 0x%02X (SDA=%d SCL=%d) — display disabled",
                  OLED_ADDR, OLED_SDA_PIN, OLED_SCL_PIN);
         return;
     }
 
-    /* SSD1306 initialization sequence */
     oled_send_cmd(SSD1306_CMD_SET_MUX_RATIO);
-    oled_send_cmd(0x3F);                         /* 64 lines */
-
+    oled_send_cmd(0x3F);
     oled_send_cmd(SSD1306_CMD_SET_DISPLAY_OFFSET);
     oled_send_cmd(0x00);
-
     oled_send_cmd(SSD1306_CMD_SET_START_LINE);
-
     oled_send_cmd(SSD1306_CMD_SET_SEG_REMAP);
     oled_send_cmd(SSD1306_CMD_SET_COM_SCAN_DEC);
-
     oled_send_cmd(SSD1306_CMD_SET_COM_PINS);
     oled_send_cmd(0x12);
-
     oled_send_cmd(SSD1306_CMD_SET_CONTRAST);
     oled_send_cmd(0xCF);
-
     oled_send_cmd(SSD1306_CMD_RESUME_RAM);
     oled_send_cmd(SSD1306_CMD_NORMAL_DISPLAY);
-
     oled_send_cmd(SSD1306_CMD_SET_CLOCK_DIV);
     oled_send_cmd(0x80);
-
     oled_send_cmd(SSD1306_CMD_SET_CHARGE_PUMP);
     oled_send_cmd(0x14);
-
     oled_send_cmd(SSD1306_CMD_SET_MEMORY_MODE);
-    oled_send_cmd(0x00);                         /* horizontal addressing */
-
+    oled_send_cmd(0x00);
     oled_send_cmd(SSD1306_CMD_DISPLAY_ON);
 
     fb_clear();
@@ -391,15 +340,8 @@ void oled_init(void)
              OLED_SDA_PIN, OLED_SCL_PIN);
 }
 
-void oled_set_version(const char *version)
-{
-    if (version) {
-        snprintf(s_version, sizeof(s_version), "%s", version);
-    }
-}
-
-void oled_update(int detection_count, int active_drones, uint8_t wifi_channel,
-                 int ble_count, int wifi_count, uint32_t uptime_s)
+void oled_sim_update(double lat, double lon, double alt_m,
+                      float heading, uint32_t adv_count, uint32_t uptime_s)
 {
     if (!s_initialized) {
         return;
@@ -407,121 +349,44 @@ void oled_update(int detection_count, int active_drones, uint8_t wifi_channel,
 
     fb_clear();
 
-    /* Line 0: Title with version (max ~21 chars at 6px = 126px) */
     char line[24];
-    if (s_version[0]) {
-        /* Truncate version to major.minor for display (e.g. "0.10.0-beta" -> "0.10") */
-        char short_ver[8];
-        int dot_count = 0;
-        int i;
-        for (i = 0; s_version[i] && i < (int)sizeof(short_ver) - 1; i++) {
-            if (s_version[i] == '.') {
-                dot_count++;
-                if (dot_count >= 2) break;
-            }
-            short_ver[i] = s_version[i];
-        }
-        short_ver[i] = '\0';
-        snprintf(line, sizeof(line), "FoF WiFi Scan v%s", short_ver);
-    } else {
-        snprintf(line, sizeof(line), "FoF WiFi Scan");
-    }
-    fb_draw_string(0, 0, line);
+
+    /* Line 0: Title */
+    fb_draw_string(0, 0, "FoF RID Sim");
 
     /* Line 1: Separator */
     fb_draw_hline(0, 107, 9);
 
-    /* Line 2: Drones + Channel */
-    snprintf(line, sizeof(line), "Drones:%-3d Ch:%d",
-             active_drones, wifi_channel);
+    /* Line 2: Latitude */
+    snprintf(line, sizeof(line), "Lat: %.4f", lat);
     fb_draw_string(0, 12, line);
 
-    /* Line 3: BLE + WiFi counts */
-    snprintf(line, sizeof(line), "BLE:%-5d WiFi:%d",
-             ble_count, wifi_count);
+    /* Line 3: Longitude */
+    snprintf(line, sizeof(line), "Lon: %.4f", lon);
     fb_draw_string(0, 22, line);
 
-    /* Line 4: Total + Uptime combined */
+    /* Line 4: Alt + Heading */
+    snprintf(line, sizeof(line), "Alt:%.0fm Hdg:%.0f", alt_m, (double)heading);
+    fb_draw_string(0, 32, line);
+
+    /* Line 5: Separator */
+    fb_draw_hline(0, 127, 42);
+
+    /* Line 6: Adv count */
+    snprintf(line, sizeof(line), "Adverts: %lu", (unsigned long)adv_count);
+    fb_draw_string(0, 45, line);
+
+    /* Line 7: Uptime */
     uint32_t m = (uptime_s % 3600) / 60;
     uint32_t s = uptime_s % 60;
     if (uptime_s >= 3600) {
         uint32_t h = uptime_s / 3600;
-        snprintf(line, sizeof(line), "Tot:%-4d %lu:%02lu:%02lu",
-                 detection_count, (unsigned long)h,
-                 (unsigned long)m, (unsigned long)s);
+        snprintf(line, sizeof(line), "Up: %lu:%02lu:%02lu",
+                 (unsigned long)h, (unsigned long)m, (unsigned long)s);
     } else {
-        snprintf(line, sizeof(line), "Tot:%-5d Up:%02lu:%02lu",
-                 detection_count,
+        snprintf(line, sizeof(line), "Uptime: %02lu:%02lu",
                  (unsigned long)m, (unsigned long)s);
     }
-    fb_draw_string(0, 32, line);
-
-    oled_flush();
-}
-
-void oled_show_detection(const char *drone_id, const char *manufacturer,
-                         float confidence, int rssi)
-{
-    if (!s_initialized) {
-        return;
-    }
-
-    /* Draw detection info on the lower portion of the screen (below stats) */
-    char line[24];
-
-    /* Line 5: Separator */
-    fb_draw_hline(0, 127, 42);
-
-    /* Line 6: Drone ID + signal bars */
-    snprintf(line, sizeof(line), "%.17s", drone_id ? drone_id : "???");
-    fb_draw_string(0, 45, line);
-    fb_draw_signal_bars(116, 52, rssi);  /* right-aligned, bottom of line 6 */
-
-    /* Line 7: Manufacturer + RSSI + confidence */
-    snprintf(line, sizeof(line), "%.6s %ddBm %d%%",
-             (manufacturer && manufacturer[0]) ? manufacturer : "Unkn",
-             rssi, (int)(confidence * 100.0f));
-    fb_draw_string(0, 55, line);
-
-    oled_flush();
-}
-
-void oled_show_detection_paged(const char *drone_id, const char *manufacturer,
-                               float confidence, int rssi,
-                               int page_current, int page_total)
-{
-    if (!s_initialized) {
-        return;
-    }
-
-    char line[24];
-
-    /* Line 5: Separator */
-    fb_draw_hline(0, 127, 42);
-
-    /* Line 6: Drone ID + page indicator or signal bars */
-    if (page_total > 1) {
-        /* Truncated ID + page indicator */
-        snprintf(line, sizeof(line), "%.14s", drone_id ? drone_id : "???");
-        fb_draw_string(0, 45, line);
-
-        /* Right-aligned page indicator (e.g. "2/5") */
-        char page_str[8];
-        snprintf(page_str, sizeof(page_str), "%d/%d", page_current, page_total);
-        int len = (int)strlen(page_str);
-        int px = 128 - len * 6;  /* 6px per char */
-        fb_draw_string(px, 45, page_str);
-    } else {
-        /* Single drone: full ID + signal bars (identical to oled_show_detection) */
-        snprintf(line, sizeof(line), "%.17s", drone_id ? drone_id : "???");
-        fb_draw_string(0, 45, line);
-        fb_draw_signal_bars(116, 52, rssi);
-    }
-
-    /* Line 7: Manufacturer + RSSI + confidence */
-    snprintf(line, sizeof(line), "%.6s %ddBm %d%%",
-             (manufacturer && manufacturer[0]) ? manufacturer : "Unkn",
-             rssi, (int)(confidence * 100.0f));
     fb_draw_string(0, 55, line);
 
     oled_flush();

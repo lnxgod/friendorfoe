@@ -1,24 +1,16 @@
 /**
- * Friend or Foe -- Scanner Status LED Implementation
+ * Friend or Foe — RID Simulator Status LED Implementation
  *
  * Drives an addressable WS2812 RGB LED via the RMT-based led_strip driver.
- * Different colours indicate system state at a glance.
  *
  * GPIO:
  *   ESP32-S3: GPIO48 (built-in RGB LED on DevKitC-1)
  *   ESP32-C5: GPIO27 (RGB LED pin on C5 dev boards)
- *
- * Colour key:
- *   BOOT       — blue blinks
- *   IDLE       — dim green slow blink
- *   SCANNING   — green fast blink
- *   DETECTION  — bright red solid
- *   UART_OK    — cyan pulse
- *   ERROR      — red triple blink
+ *   ESP32-C3: GPIO8  (built-in RGB LED on DevKitM-1)
  */
 
 #include "led_status.h"
-#include "task_priorities.h"
+#include "core/task_priorities.h"
 
 #include <stdatomic.h>
 #include "led_strip.h"
@@ -32,6 +24,8 @@ static const char *TAG = "led";
 #define LED_GPIO    48
 #elif CONFIG_IDF_TARGET_ESP32C5
 #define LED_GPIO    27
+#elif CONFIG_IDF_TARGET_ESP32C3
+#define LED_GPIO    8
 #else
 #define LED_GPIO    48
 #endif
@@ -43,15 +37,13 @@ typedef struct {
 } rgb_t;
 
 static const rgb_t s_colours[] = {
-    [LED_BOOT]      = {  0,   0,  30 },   /* blue   */
-    [LED_IDLE]      = {  0,  15,   0 },   /* dim green */
-    [LED_SCANNING]  = {  0,  30,   0 },   /* green  */
-    [LED_DETECTION] = { 30,   0,   0 },   /* red    */
-    [LED_UART_OK]   = {  0,  15,  15 },   /* cyan   */
-    [LED_ERROR]     = { 30,   0,   0 },   /* red    */
+    [LED_BOOT]       = {  0,   0,  30 },   /* blue   */
+    [LED_IDLE]       = {  0,  15,   0 },   /* dim green */
+    [LED_SIMULATING] = { 20,   0,  30 },   /* purple */
+    [LED_ERROR]      = { 30,   0,   0 },   /* red    */
 };
 
-/* ── Pattern timing (same structure as before) ────────────────────────── */
+/* ── Pattern timing ───────────────────────────────────────────────────── */
 
 typedef struct {
     uint16_t on_ms;
@@ -64,26 +56,18 @@ static const led_step_t pattern_boot[] = {
 static const led_step_t pattern_idle[] = {
     { 500, 500 }, { 0, 0 },
 };
-static const led_step_t pattern_scanning[] = {
-    { 125, 125 }, { 0, 0 },
-};
-static const led_step_t pattern_detection[] = {
-    { 2000, 100 }, { 0, 0 },
-};
-static const led_step_t pattern_uart_ok[] = {
-    { 100, 1900 }, { 0, 0 },
+static const led_step_t pattern_simulating[] = {
+    { 1000, 1000 }, { 0, 0 },
 };
 static const led_step_t pattern_error[] = {
     { 100, 100 }, { 100, 100 }, { 100, 700 }, { 0, 0 },
 };
 
 static const led_step_t *const s_patterns[] = {
-    [LED_BOOT]      = pattern_boot,
-    [LED_IDLE]      = pattern_idle,
-    [LED_SCANNING]  = pattern_scanning,
-    [LED_DETECTION] = pattern_detection,
-    [LED_UART_OK]   = pattern_uart_ok,
-    [LED_ERROR]     = pattern_error,
+    [LED_BOOT]       = pattern_boot,
+    [LED_IDLE]       = pattern_idle,
+    [LED_SIMULATING] = pattern_simulating,
+    [LED_ERROR]      = pattern_error,
 };
 
 static atomic_int s_current_pattern = LED_IDLE;
@@ -127,18 +111,15 @@ static void led_task(void *arg)
                 continue;
             }
 
-            /* ON phase */
             led_on(pat);
             vTaskDelay(pdMS_TO_TICKS(steps[step].on_ms));
 
-            /* Check again before OFF phase */
             current = (led_pattern_t)atomic_load(&s_current_pattern);
             if (current != pat) {
                 led_off();
                 break;
             }
 
-            /* OFF phase */
             led_off();
             vTaskDelay(pdMS_TO_TICKS(steps[step].off_ms));
 
@@ -160,7 +141,7 @@ void led_init(void)
     };
 
     led_strip_rmt_config_t rmt_config = {
-        .resolution_hz = 10 * 1000 * 1000,  /* 10 MHz */
+        .resolution_hz = 10 * 1000 * 1000,
         .flags.with_dma = false,
     };
 

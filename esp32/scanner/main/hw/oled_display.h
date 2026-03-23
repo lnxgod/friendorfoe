@@ -57,6 +57,24 @@ void oled_show_detection(const char *drone_id, const char *manufacturer,
                          float confidence, int rssi);
 
 /**
+ * Show a detection with a page indicator for multi-drone scoreboard.
+ *
+ * When page_total == 1, behaves identically to oled_show_detection
+ * (full 17-char ID + signal bars). When page_total > 1, truncates
+ * drone_id to 14 chars and draws a right-aligned "N/M" indicator.
+ *
+ * @param drone_id      Drone serial number or generated ID
+ * @param manufacturer  Manufacturer name (may be NULL/empty)
+ * @param confidence    Detection confidence 0.0-1.0
+ * @param rssi          Signal strength in dBm
+ * @param page_current  Current page (1-based)
+ * @param page_total    Total number of pages
+ */
+void oled_show_detection_paged(const char *drone_id, const char *manufacturer,
+                               float confidence, int rssi,
+                               int page_current, int page_total);
+
+/**
  * Clear the display to all black.
  */
 void oled_clear(void);

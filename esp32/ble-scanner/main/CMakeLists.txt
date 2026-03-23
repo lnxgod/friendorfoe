@@ -1,0 +1,13 @@
+idf_component_register(
+    SRCS "main.c"
+         "comms/console_output.c"
+         "hw/led_status.c"
+         "hw/oled_display.c"
+         "../../scanner/main/detection/ble_remote_id.c"
+         "../../scanner/main/detection/open_drone_id_parser.c"
+         "../../scanner/main/detection/bayesian_fusion.c"
+    INCLUDE_DIRS "." "comms" "core" "hw"
+                 "../../scanner/main/detection"
+                 "../../shared"
+    REQUIRES bt driver nvs_flash esp_timer json
+)
