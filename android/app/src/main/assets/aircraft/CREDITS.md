@@ -73,7 +73,7 @@ Licensed under Creative Commons or Public Domain.
 | BE40 | Beechjet 400A | Acroterion / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Beechjet_400A_N940VA_FDK_MD1.jpg |
 | BE55 | Beechcraft Baron 55 | Matti Blume / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Beechcraft_Baron,_AERO_Friedrichshafen_2018,_Friedrichshafen_(1X7A4261).jpg |
 | BE58 | Beechcraft Baron | Wikimedia Commons (see source file) |
-| BE76 | Beechcraft Duchess | Commercial Publications, Beech Aircraft Corporation / Public domain / https://commons.wikimedia.org/wiki/File:Beechcraft_76_Duchess_3-view_line_drawing.png |
+| BE76 | Beechcraft Duchess | NTPS / CC BY-SA 3.0 / https://commons.wikimedia.org/wiki/File:Ntps-be76-N5410M-090123-02-cr8.jpg |
 | BK17 | Kawasaki BK117 | Wikimedia Commons (see source file) |
 | C12 | Beechcraft C-12 Huron | kitmasterbloke / CC BY 2.0 / https://commons.wikimedia.org/wiki/File:84-00165_Beechcraft_C_12_Huron_FFD_130785.jpg |
 | C130 | Lockheed C-130 Hercules | Wikimedia Commons (see source file) |
@@ -96,12 +96,12 @@ Licensed under Creative Commons or Public Domain.
 | C340 | Cessna 340 | Peter Bakema / GFDL 1.2 / https://commons.wikimedia.org/wiki/File:Cessna_340A_II,_Private_JP6927036.jpg |
 | C414 | Cessna 414 | ZLEA / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Cessna_414_(N882BC,_cn_414-0470)_(4-12-2024).jpg |
 | C421 | Cessna 421 | Cory W. Watts from Madison, Wisconsin, United States of America / CC BY-SA 2.0 / https://commons.wikimedia.org/wiki/File:Cessna_421_Golden_Eagle_(293274079).jpg |
-| C5 | Lockheed C-5 Galaxy | Wikimedia Commons (see source file) |
+| C5 | Lockheed C-5 Galaxy | Wikimedia Commons / CC BY 2.0 / https://commons.wikimedia.org/wiki/File:C-5_Galaxy_(10563974324).jpg |
 | C510 | Cessna Citation Mustang | Wikimedia Commons (see source file) |
 | C525 | Cessna CitationJet CJ1 | Wikimedia Commons (see source file) |
 | C560 | Cessna Citation V | Wikimedia Commons (see source file) |
 | C56X | Cessna Citation Excel | Wikimedia Commons (see source file) |
-| C5M | Lockheed C-5M Super Galaxy | Wikimedia Commons (see source file) |
+| C5M | Lockheed C-5M Super Galaxy | Wikimedia Commons / GFDL 1.2 / https://commons.wikimedia.org/wiki/File:Lockheed_C-5M_Super_Galaxy,_United_States_-_US_Air_Force_(USAF)_JP7610056.jpg |
 | C680 | Cessna Citation Sovereign | Wikimedia Commons (see source file) |
 | C700 | Cessna Citation Longitude | Wikimedia Commons (see source file) |
 | CH47 | Boeing CH-47 Chinook | Wikimedia Commons (see source file) |
@@ -119,7 +119,7 @@ Licensed under Creative Commons or Public Domain.
 | DH8B | Dash 8-200 | Wikimedia Commons (see source file) |
 | DH8C | Dash 8-300 | Wikimedia Commons (see source file) |
 | DH8D | Dash 8-400 | Wikimedia Commons (see source file) |
-| E135 | Embraer ERJ-135 | Ktr101 / CC BY-SA 3.0 / https://commons.wikimedia.org/wiki/File:Embraer_ERJ-135_interior.jpg |
+| E135 | Embraer ERJ-135 | Adrian Pingstone / Public domain / https://commons.wikimedia.org/wiki/File:City_airline_embraer_erj135_se-raa_arp.jpg |
 | E145 | Embraer ERJ-145 | Łukasz Golowanow &amp; Maciek Hypś, Konflikty.pl / Attribution / https://commons.wikimedia.org/wiki/File:Embraer_ERJ-145MP_SP-LGM_2.JPG |
 | E170 | Embraer E170 | Wikimedia Commons (see source file) |
 | E190 | Embraer E190 | Wikimedia Commons (see source file) |
@@ -157,7 +157,7 @@ Licensed under Creative Commons or Public Domain.
 | GLF5 | Gulfstream V | Wikimedia Commons (see source file) |
 | GLF6 | Gulfstream G650 | Wikimedia Commons (see source file) |
 | H25B | Hawker 800XP | Cory W. Watts from Madison, Wisconsin, United States of America / CC BY-SA 2.0 / https://commons.wikimedia.org/wiki/File:The_Hawker_800XP_at_%22mad-town%22_(455375803).jpg |
-| H60 | Sikorsky H-60 Black Hawk | Wikimedia Commons (see source file) |
+| H60 | Sikorsky VH-60 Black Hawk | Acroterion / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Sikorsky_VH-60M_09-20197_FDK_MD6.jpg |
 | HDJT | Honda HA-420 HondaJet | Wikimedia Commons (see source file) |
 | IL76 | Ilyushin Il-76 | Wikimedia Commons (see source file) |
 | KC10 | McDonnell Douglas KC-10 Extender | Wikimedia Commons (see source file) |
@@ -183,15 +183,15 @@ Licensed under Creative Commons or Public Domain.
 | PC12 | Pilatus PC-12 | Wikimedia Commons (see source file) |
 | PC6 | Pilatus PC-6 Porter | Wikimedia Commons (see source file) |
 | PRM1 | Raytheon Premier I | Sean D Silva / GFDL 1.2 / https://commons.wikimedia.org/wiki/File:Raytheon_390_Premier_I,_Raytheon_Aircraft_JP7554008.jpg |
-| R22 | Robinson R22 | Wikimedia Commons (see source file) |
-| R44 | Robinson R44 | Wikimedia Commons (see source file) |
+| R22 | Robinson R22 | Wikimedia Commons / https://commons.wikimedia.org/wiki/File:Robinson_R22_Helicopter_hovering.jpg |
+| R44 | Robinson R44 Raven II | PENTAX Corporation / CC BY-SA 3.0 / https://commons.wikimedia.org/wiki/File:Robinson_R44_Raven_II_Bakoma.JPG |
 | RFAL | Dassault Rafale | Wikimedia Commons (see source file) |
 | RJ1H | Avro RJ100 | Wikimedia Commons (see source file) |
 | RJ85 | Avro RJ85 | Wikimedia Commons (see source file) |
 | S76 | Sikorsky S-76 | Wikimedia Commons (see source file) |
 | S92 | Sikorsky S-92 | Wikimedia Commons (see source file) |
 | SB20 | Saab 2000 | MarcelX42 / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Braunschweig_Airport_Frost_Air_Saab_2000_OY-FSD_(DSC09300).jpg |
-| SF34 | Saab 340 | EgorovaSvetlana / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Silver_Airways_Saab_340_Aircraft_Cabin_Window_View_at_sunset.jpg |
+| SF34 | Saab 340 | Wikimedia Commons / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:VH-ZXQ_and_VH-OWR_at_Esperance_Airport,_January_2025.jpg |
 | SR20 | Cirrus SR20 | Wikimedia Commons (see source file) |
 | SR22 | Cirrus SR22 | Wikimedia Commons (see source file) |
 | SR71 | Lockheed SR-71 Blackbird | USAF / Judson Brohmer / Public domain / https://commons.wikimedia.org/wiki/File:Lockheed_SR-71_Blackbird.jpg |
@@ -203,7 +203,7 @@ Licensed under Creative Commons or Public Domain.
 | TBM7 | Socata TBM 700 | Wikimedia Commons (see source file) |
 | TBM8 | Daher TBM 850 | Wikimedia Commons (see source file) |
 | TBM9 | Daher TBM 900 | Wikimedia Commons (see source file) |
-| U2 | Lockheed U-2 Dragon Lady | Christopher Michel / CC BY 2.0 / https://commons.wikimedia.org/wiki/File:Christopher_Michel_in_a_U-2_Dragon_Lady.jpg |
+| U2 | Lockheed U-2 Dragon Lady | U.S. Air Force / Public domain / https://commons.wikimedia.org/wiki/File:5th_Reconnaissance_Squadron_-_U-2_Osan.jpg |
 | UH1 | Bell UH-1 Huey | calflier001 / CC BY-SA 2.0 / https://commons.wikimedia.org/wiki/File:Bell_UH-1_Huey_in_the_Ho_Chi_Minh_City_Museum_(1).jpg |
-| UH60 | Sikorsky UH-60 Black Hawk | Wikimedia Commons (see source file) |
+| UH60 | Sikorsky UH-60 Black Hawk | Public domain / https://commons.wikimedia.org/wiki/File:Blackhawk.jpg |
 | V22 | Bell Boeing V-22 Osprey | Wikimedia Commons (see source file) |

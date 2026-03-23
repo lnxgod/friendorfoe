@@ -30,5 +30,13 @@ data class ScreenPosition(
     /** True when a visual detection has been matched to this radio position */
     val visuallyConfirmed: Boolean = false,
     /** The matched visual detection, if any */
-    val matchedDetection: VisualDetection? = null
+    val matchedDetection: VisualDetection? = null,
+    /** Confidence in predicted position (1.0 = just updated, decays toward 0 over time) */
+    val positionConfidence: Float = 1.0f,
+    /** Seconds since last ADS-B/detection update for this object */
+    val dataStalenessSeconds: Float = 0f,
+    /** True if the position has been extrapolated via dead reckoning */
+    val isExtrapolated: Boolean = false,
+    /** Aircraft track heading in degrees (0-360), null if unknown. For trajectory arrow rendering. */
+    val trackHeadingDegrees: Float? = null
 )

@@ -300,19 +300,8 @@ class SensorFusionEngine @Inject constructor(
         )
     }
 
-    /**
-     * Circular linear interpolation for angular values (handles 0/360 wrap).
-     * Interpolates from [current] toward [target] by [alpha] fraction.
-     */
-    private fun circularLerp(current: Float, target: Float, alpha: Float): Float {
-        var diff = target - current
-        if (diff > 180f) diff -= 360f
-        if (diff < -180f) diff += 360f
-        var result = current + alpha * diff
-        if (result < 0f) result += 360f
-        if (result >= 360f) result -= 360f
-        return result
-    }
+    private fun circularLerp(current: Float, target: Float, alpha: Float): Float =
+        AngleUtils.circularLerp(current, target, alpha)
 
     /**
      * Low-pass filter to smooth sensor noise.

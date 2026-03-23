@@ -312,7 +312,7 @@ class AircraftRepository @Inject constructor(
             ),
             category = classifiedCategory,
             firstSeen = Instant.now(),
-            lastUpdated = Instant.now(),
+            lastUpdated = seenPos?.let { Instant.now().minusMillis((it * 1000).toLong()) } ?: Instant.now(),
             icaoHex = icao,
             callsign = cleanCallsign,
             registration = r,

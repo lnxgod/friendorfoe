@@ -96,7 +96,8 @@ private val TYPE_CODE_MAP: Map<String, SilhouetteCategory> = buildMap {
         "FA7X", "FA8X", "E55P", "HDJT", "C510",
         "GA5C", "GA6C",
         "C525", "C25A", "C25B",
-        "CL30", "G280", "F900", "F2TH", "H25B", "BE40", "PRM1", "E545"
+        "CL30", "G280", "F900", "F2TH", "H25B", "BE40", "PRM1", "E545",
+        "SF50", "PC24", "E550", "E545"
     )) put(code, SilhouetteCategory.BIZJET)
 
     // Helicopter
@@ -105,10 +106,11 @@ private val TYPE_CODE_MAP: Map<String, SilhouetteCategory> = buildMap {
         "AS50", "A109", "A139",
         "B06", "B407", "B429",
         "S76", "S92", "BK17",
-        "UH60", "H60", "CH47",
+        "UH60", "H60", "H47", "CH47",
         "AH64", "UH1",
         "MI8", "MI17", "MI24", "MI26", "MI28", "KA52",
-        "CH53", "CH46", "MH60", "SH60", "HH60", "AH1", "AH1Z", "NH90", "EH10", "S70"
+        "CH53", "CH46", "MH60", "SH60", "HH60", "AH1", "AH1Z", "NH90", "EH10", "S70",
+        "EC55", "AS32", "B412", "A169", "B505"
     )) put(code, SilhouetteCategory.HELICOPTER)
 
     // Fighter / military
@@ -121,7 +123,7 @@ private val TYPE_CODE_MAP: Map<String, SilhouetteCategory> = buildMap {
         "AV8B", "EA18", "E2C", "E3CF", "E6B",
         "KC10", "KC46", "KC135",
         "V22", "MV22", "CV22", "P8", "P8A", "MQ9",
-        "AC130", "U2", "SR71", "C12",
+        "AC130", "U2", "SR71", "C12", "RQ4", "MQ1", "RQ170",
         "SU27", "SU30", "SU34", "SU35", "MIG29", "MIG31",
         "J10", "J20", "JF17",
         "GR4", "GRF4", "MIRA", "MIR2", "KFIR", "F14",

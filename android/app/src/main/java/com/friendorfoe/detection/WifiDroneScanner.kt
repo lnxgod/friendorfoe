@@ -201,7 +201,44 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("DRONE-", "Unknown"),
             DronePattern("UAV-", "Unknown"),
             DronePattern("QUADCOPTER-", "Unknown"),
+            // Cheap Chinese / Temu drone generic WiFi FPV
+            DronePattern("FPV_WIFI", "Generic"),
+            DronePattern("FPV-WIFI", "Generic"),
+            DronePattern("WIFI FPV", "Generic"),
         )
+
+        /**
+         * Check if an SSID looks like a cheap generic drone hotspot.
+         * These drones broadcast very short, generic SSIDs like "WIFI_9", "WIFI_123",
+         * "FPV_1", "CAMERA_1", "4KCAM", "RCFPV", etc.
+         * Returns true for low-confidence drone-likely matches.
+         */
+        private fun isSoftDroneMatch(ssid: String): Boolean {
+            val upper = ssid.uppercase()
+            val len = ssid.length
+            // Must be short (cheap drones use short SSIDs)
+            if (len > 16) return false
+
+            // "WIFI_" + 1-8 alphanumeric chars (e.g. WIFI_9, WIFI_123456)
+            if (upper.startsWith("WIFI_") && len in 6..13 &&
+                upper.substring(5).all { it.isLetterOrDigit() }) return true
+
+            // "FPV_" + 1-8 alphanumeric chars
+            if (upper.startsWith("FPV_") && len in 5..12 &&
+                upper.substring(4).all { it.isLetterOrDigit() }) return true
+
+            // "CAMERA_" + 1-8 chars
+            if (upper.startsWith("CAMERA_") && len in 8..15 &&
+                upper.substring(7).all { it.isLetterOrDigit() }) return true
+
+            // "4K_CAM" or "4KCAM" prefixes
+            if (upper.startsWith("4K_CAM") || upper.startsWith("4KCAM")) return true
+
+            // "RCFPV" prefix
+            if (upper.startsWith("RCFPV")) return true
+
+            return false
+        }
     }
 
     /** Timestamps of recent scan requests for throttle enforcement. */
@@ -467,6 +504,30 @@ class WifiDroneScanner @Inject constructor(
                         channelWidthMhz = chanWidth
                     ))
                 }
+            }
+
+            // --- Priority 4: Soft SSID match (cheap drone-like generic WiFi) ---
+            if (ssid.isNotBlank() && bssid !in seenBssids && isSoftDroneMatch(ssid)) {
+                seenBssids.add(bssid)
+                Log.d(TAG, "Soft drone match: $ssid, RSSI=$rssi dBm, ~${estimatedDistance.toInt()}m")
+
+                drones.add(Drone(
+                    id = "wifi_soft_${bssid.replace(":", "").lowercase()}",
+                    position = Position(0.0, 0.0, 0.0),
+                    source = DetectionSource.WIFI,
+                    category = ObjectCategory.DRONE,
+                    confidence = 0.15f,
+                    firstSeen = now,
+                    lastUpdated = now,
+                    droneId = ssid,
+                    manufacturer = "Drone Likely",
+                    ssid = ssid,
+                    signalStrengthDbm = rssi,
+                    estimatedDistanceMeters = estimatedDistance,
+                    bssid = bssid,
+                    frequencyMhz = freqMhz,
+                    channelWidthMhz = chanWidth
+                ))
             }
         }
 
