@@ -16,6 +16,16 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/** Info for one drone to display on OLED. Populated by caller. */
+typedef struct {
+    const char *id;         /* Short drone ID string */
+    double  lat;
+    double  lon;
+    double  alt_m;
+    float   speed_mps;
+    int8_t  rssi;
+} oled_drone_entry_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -29,6 +39,19 @@ void oled_show_detection(const char *drone_id, const char *manufacturer,
 void oled_show_detection_paged(const char *drone_id, const char *manufacturer,
                                float confidence, int rssi,
                                int page_current, int page_total);
+
+/**
+ * Draw a clean drone list on the OLED.
+ * Shows header with drone count, then each drone's ID, lat/lon, alt, speed.
+ * Pages through drones if more than fit on screen.
+ *
+ * @param drones      Array of detection summaries
+ * @param count       Number of entries in array
+ * @param page_index  Which page to show (0-based)
+ */
+void oled_draw_drone_list(const oled_drone_entry_t *drones, int count,
+                          int page_index);
+
 void oled_clear(void);
 
 #ifdef __cplusplus

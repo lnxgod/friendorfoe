@@ -70,7 +70,7 @@ class RemoteIdScanner @Inject constructor(
         bleScanner = scanner
 
         val scanFilter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(OpenDroneIdParser.OPEN_DRONE_ID_UUID))
+            .setServiceData(ParcelUuid(OpenDroneIdParser.OPEN_DRONE_ID_UUID), null)
             .build()
 
         val scanSettings = ScanSettings.Builder()

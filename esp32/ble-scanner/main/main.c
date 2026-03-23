@@ -45,33 +45,32 @@ static void display_task(void *arg)
     int page_index = 0;
     int cycle_counter = 0;
 
-    #define PAGE_CYCLE_TICKS 5
+    #define PAGE_CYCLE_TICKS 6  /* 6 * 500ms = 3s per page */
 
     while (1) {
-        int total       = console_output_get_total_count();
-        int active      = bayesian_fusion_get_active_count();
-        int ble         = console_output_get_ble_count();
-        uint32_t uptime = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
-
-        /* Update stats (top section) — channel=0, wifi=0 for BLE-only scanner */
-        oled_update(total, active, 0, ble, 0, uptime);
-
-        /* Fetch all cached detections for scoreboard */
+        /* Fetch cached detections */
         scanner_detection_summary_t det_list[DETECTION_CACHE_SIZE];
         int det_count = console_output_get_cached_detections(det_list, DETECTION_CACHE_SIZE);
 
-        if (det_count > 0) {
-            if (page_index >= det_count) {
-                page_index = 0;
-            }
+        /* Build OLED drone entries from cache */
+        oled_drone_entry_t oled_drones[DETECTION_CACHE_SIZE];
+        for (int i = 0; i < det_count; i++) {
+            oled_drones[i].id = det_list[i].drone_id;
+            oled_drones[i].lat = det_list[i].latitude;
+            oled_drones[i].lon = det_list[i].longitude;
+            oled_drones[i].alt_m = det_list[i].altitude_m;
+            oled_drones[i].speed_mps = det_list[i].speed_mps;
+            oled_drones[i].rssi = det_list[i].rssi;
+        }
 
-            oled_show_detection_paged(
-                det_list[page_index].drone_id,
-                det_list[page_index].manufacturer,
-                det_list[page_index].confidence,
-                det_list[page_index].rssi,
-                page_index + 1, det_count);
+        /* Draw drone list (single clean screen, no separate stats overlay) */
+        if (page_index >= det_count && det_count > 0) {
+            page_index = 0;
+        }
+        oled_draw_drone_list(oled_drones, det_count, page_index);
 
+        /* Page through drones every 3 seconds */
+        if (det_count > 1) {
             cycle_counter++;
             if (cycle_counter >= PAGE_CYCLE_TICKS) {
                 cycle_counter = 0;
@@ -158,6 +157,8 @@ void app_main(void)
     ESP_LOGI(TAG, "  ESP32-C5 single-core RISC-V @ 240 MHz");
 #elif CONFIG_IDF_TARGET_ESP32C3
     ESP_LOGI(TAG, "  ESP32-C3 single-core RISC-V @ 160 MHz");
+#elif CONFIG_IDF_TARGET_ESP32
+    ESP_LOGI(TAG, "  ESP32 dual-core Xtensa @ 240 MHz");
 #endif
     ESP_LOGI(TAG, "  BLE Remote ID (OpenDroneID 0xFFFA)");
     ESP_LOGI(TAG, "  Console JSON output");

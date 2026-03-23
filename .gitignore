@@ -37,3 +37,5 @@ esp32/**/sdkconfig.old
 *.swp
 *.swo
 *.iml
+esp32/**/platformio_override.ini
+esp32/**/local_coords.h
