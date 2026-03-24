@@ -45,6 +45,8 @@ import com.friendorfoe.sensor.CameraFovCalculator
 import com.friendorfoe.sensor.DeviceOrientation
 import com.friendorfoe.sensor.ScreenPosition
 import com.friendorfoe.sensor.SensorFusionEngine
+import com.friendorfoe.detection.RoiConfirmation
+import com.friendorfoe.detection.RoiConfirmationEngine
 import com.friendorfoe.sensor.CompassBiasEstimator
 import com.friendorfoe.sensor.SkyPositionMapper
 import com.friendorfoe.sensor.TrajectoryPredictor
@@ -140,6 +142,20 @@ class ArViewModel @Inject constructor(
     private val compassBiasEstimator = CompassBiasEstimator()
     val cameraFovCalculator = CameraFovCalculator()
     val visualDetectionAnalyzer = VisualDetectionAnalyzer(skyObjectFilter)
+
+    /** ROI-based visual confirmation engine — confirms aircraft at predicted positions */
+    private val roiConfirmationEngine = RoiConfirmationEngine(
+        scope = viewModelScope,
+        onResults = { results ->
+            _roiConfirmations.value = results.filter { it.confirmed }
+            val confirmedCount = results.count { it.confirmed }
+            if (confirmedCount > 0) {
+                Log.d(TAG, "ROI confirmed $confirmedCount/${results.size} in-view aircraft")
+            }
+        }
+    )
+    private val _roiConfirmations = MutableStateFlow<List<RoiConfirmation>>(emptyList())
+    val roiConfirmations: StateFlow<List<RoiConfirmation>> = _roiConfirmations.asStateFlow()
 
     private var locationListenerRegistered = false
 
@@ -932,6 +948,10 @@ class ArViewModel @Inject constructor(
     ) { nowMs, orient, skyObjects, userPos, visualDetections ->
         // Keep analyzer updated with current pitch for pitch-aware filtering
         visualDetectionAnalyzer.currentPitch = orient.pitchDegrees
+        visualDetectionAnalyzer.lastAzimuth = orient.azimuthDegrees
+        visualDetectionAnalyzer.lastPitch = orient.pitchDegrees
+        visualDetectionAnalyzer.hFovDeg = cameraFovCalculator.horizontalFovDegrees.toFloat()
+        visualDetectionAnalyzer.vFovDeg = cameraFovCalculator.verticalFovDegrees.toFloat()
 
         if (userPos.latitude == 0.0 && userPos.longitude == 0.0) {
             // No GPS fix yet, return empty
@@ -953,6 +973,26 @@ class ArViewModel @Inject constructor(
                 orientation = correctedOrient,
                 fovCalculator = cameraFovCalculator
             )
+            // Submit in-view positions to ROI confirmation engine (~5Hz)
+            val roiTargets = radioPositions
+                .filter { it.isInView && it.distanceMeters > 0 }
+                .sortedBy { it.distanceMeters }
+                .take(8)
+                .map { sp ->
+                    RoiConfirmationEngine.Target(
+                        skyObjectId = sp.skyObject.id,
+                        screenX = sp.screenX,
+                        screenY = sp.screenY,
+                        distanceMeters = sp.distanceMeters
+                    )
+                }
+            if (roiTargets.isNotEmpty()) {
+                val frame = visualDetectionAnalyzer.getLastFrame()
+                if (frame != null) {
+                    roiConfirmationEngine.submitFrame(roiTargets, frame)
+                }
+            }
+
             // Suppress visual detections when phone points below horizon (ground clutter)
             val effectiveVisualDetections = if (orient.pitchDegrees < -10f) {
                 emptyList()

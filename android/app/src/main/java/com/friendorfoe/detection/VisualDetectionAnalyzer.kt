@@ -68,6 +68,24 @@ class VisualDetectionAnalyzer(
         private set
 
     private val strobeDetector = StrobePatternDetector()
+    private val motionDetector = MotionDetector()
+    private val visualTracker = VisualTracker()
+
+    /** Tracked visual objects with stable IDs and velocity prediction */
+    private val _trackedObjects = MutableStateFlow<List<VisualTracker.Track>>(emptyList())
+    val trackedObjects: StateFlow<List<VisualTracker.Track>> = _trackedObjects.asStateFlow()
+
+    /** Motion blobs detected via temporal differencing (radio-silent object candidates) */
+    private val _motionBlobs = MutableStateFlow<List<MotionDetector.MotionBlob>>(emptyList())
+    val motionBlobs: StateFlow<List<MotionDetector.MotionBlob>> = _motionBlobs.asStateFlow()
+
+    /** Device orientation deltas for IMU stabilization */
+    @Volatile var lastAzimuth: Float = 0f
+    @Volatile var lastPitch: Float = 0f
+    @Volatile var hFovDeg: Float = 60f
+    @Volatile var vFovDeg: Float = 45f
+    private var _prevAzimuth: Float = 0f
+    private var _prevPitch: Float = 0f
 
     private val detector: ObjectDetector = run {
         val options = ObjectDetectorOptions.Builder()
@@ -112,6 +130,28 @@ class VisualDetectionAnalyzer(
             }
         } catch (e: Exception) {
             null
+        }
+
+        // --- Motion detection: temporal differencing for radio-silent objects ---
+        if (grayscaleData != null) {
+            val currentAzimuth = lastAzimuth  // Snapshot volatile
+            val currentPitchVal = currentPitch
+            // Compute delta from last frame (rough — actual delta comes from sensor rate)
+            val deltaYaw = currentAzimuth - _prevAzimuth
+            val deltaPitch = currentPitchVal - _prevPitch
+            _prevAzimuth = currentAzimuth
+            _prevPitch = currentPitchVal
+
+            val blobs = motionDetector.processFrame(
+                luma = grayscaleData,
+                width = imageProxy.width,
+                height = imageProxy.height,
+                deltaYawDeg = deltaYaw,
+                deltaPitchDeg = deltaPitch,
+                hFovDeg = hFovDeg,
+                vFovDeg = vFovDeg
+            )
+            _motionBlobs.value = blobs
         }
 
         val ambientBrightness = if (grayscaleData != null) {
@@ -196,8 +236,13 @@ class VisualDetectionAnalyzer(
                 }
 
                 _detections.value = enrichedResults
+
+                // Run SORT tracker for label persistence across frames
+                val tracks = visualTracker.update(enrichedResults)
+                _trackedObjects.value = tracks.filter { it.confirmed }
+
                 if (enrichedResults.isNotEmpty()) {
-                    Log.d(TAG, "Detected ${enrichedResults.size} objects (${scored.count { it.classification != VisualClassification.LIKELY_STATIC }} non-static)")
+                    Log.d(TAG, "Detected ${enrichedResults.size} objects, ${tracks.count { it.confirmed }} tracked")
                 }
             }
             .addOnFailureListener { e ->
@@ -220,6 +265,8 @@ class VisualDetectionAnalyzer(
         detector.close()
         skyObjectFilter.reset()
         strobeDetector.reset()
+        motionDetector.reset()
+        visualTracker.reset()
         lastFrame.getAndSet(null)?.recycle()
         Log.d(TAG, "Visual detector closed")
     }
