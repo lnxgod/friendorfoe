@@ -166,20 +166,46 @@ class RemoteIdScanner @Inject constructor(
 
         val now = Instant.now()
 
-        val state = droneStates.getOrPut(deviceAddress) {
+        // Parse into a temporary state first to extract the serial number
+        val tempState = droneStates.getOrPut(deviceAddress) {
             OpenDroneIdParser.DronePartialState(deviceAddress = deviceAddress, firstSeen = now)
         }
-        synchronized(state) {
-            state.lastUpdated = now
-            state.signalStrengthDbm = result.rssi
-            OpenDroneIdParser.parseMessage(messageData, state)
 
-            // Only emit when we have an actual drone ID (serial number from Basic ID message).
-            // Without it, the drone gets a MAC-based ID that creates duplicates when
-            // the serial arrives later as a different ID.
-            if (state.droneId == null) return null
+        synchronized(tempState) {
+            tempState.lastUpdated = now
+            tempState.signalStrengthDbm = result.rssi
+            OpenDroneIdParser.parseMessage(messageData, tempState)
+        }
 
-            return state.toDroneOrNull(idPrefix = "rid_")
+        // If we now have a serial, use it as the canonical key (handles multi-drone on same MAC)
+        val serial = tempState.droneId ?: return null
+        val canonicalState = droneStates.getOrPut(serial) {
+            OpenDroneIdParser.DronePartialState(deviceAddress = deviceAddress, firstSeen = now)
+        }
+
+        synchronized(canonicalState) {
+            // Copy latest data from the MAC-keyed state to the serial-keyed state
+            canonicalState.lastUpdated = now
+            canonicalState.signalStrengthDbm = result.rssi
+            canonicalState.droneId = serial
+            canonicalState.latitude = tempState.latitude
+            canonicalState.longitude = tempState.longitude
+            canonicalState.altitudeMeters = tempState.altitudeMeters
+            canonicalState.heading = tempState.heading
+            canonicalState.speedMps = tempState.speedMps
+            canonicalState.verticalSpeedMps = tempState.verticalSpeedMps
+            canonicalState.heightAglMeters = tempState.heightAglMeters
+            canonicalState.geodeticAltitudeMeters = tempState.geodeticAltitudeMeters
+            canonicalState.operatorLatitude = tempState.operatorLatitude
+            canonicalState.operatorLongitude = tempState.operatorLongitude
+            canonicalState.operatorId = tempState.operatorId
+            canonicalState.selfIdText = tempState.selfIdText
+            canonicalState.uaType = tempState.uaType
+            canonicalState.idType = tempState.idType
+            canonicalState.horizontalAccuracyCode = tempState.horizontalAccuracyCode
+            canonicalState.verticalAccuracyCode = tempState.verticalAccuracyCode
+
+            return canonicalState.toDroneOrNull(idPrefix = "rid_")
         }
     }
 }
