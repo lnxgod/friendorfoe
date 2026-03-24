@@ -235,14 +235,37 @@ class VisualDetectionAnalyzer(
                     )
                 }
 
-                _detections.value = enrichedResults
-
                 // Run SORT tracker for label persistence across frames
                 val tracks = visualTracker.update(enrichedResults)
                 _trackedObjects.value = tracks.filter { it.confirmed }
 
-                if (enrichedResults.isNotEmpty()) {
-                    Log.d(TAG, "Detected ${enrichedResults.size} objects, ${tracks.count { it.confirmed }} tracked")
+                // Inject coasted SORT tracks as synthetic detections — keeps labels
+                // alive when ML Kit misses a frame (common for distant aircraft)
+                val coastedDetections = tracks
+                    .filter { it.confirmed && it.coastFrames > 0 && it.coastFrames <= 10 }
+                    .map { track ->
+                        VisualDetection(
+                            trackingId = track.trackId,
+                            centerX = track.centerX,
+                            centerY = track.centerY,
+                            width = track.width,
+                            height = track.height,
+                            labels = emptyList(),
+                            labelConfidences = emptyList(),
+                            timestampMs = System.currentTimeMillis(),
+                            skyScore = 0.5f,  // Lower confidence for predicted positions
+                            motionScore = 0.8f
+                        )
+                    }
+                val mergedDetections = enrichedResults + coastedDetections
+                _detections.value = mergedDetections
+
+                if (mergedDetections.isNotEmpty()) {
+                    val coasted = coastedDetections.size
+                    val fresh = enrichedResults.size
+                    if (coasted > 0) {
+                        Log.d(TAG, "Detections: $fresh ML Kit + $coasted SORT coasted = ${mergedDetections.size} total")
+                    }
                 }
             }
             .addOnFailureListener { e ->
