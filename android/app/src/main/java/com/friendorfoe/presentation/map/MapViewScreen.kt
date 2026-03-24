@@ -28,7 +28,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -115,12 +117,26 @@ fun MapViewScreen(
         selectedObjectId?.let { detailViewModel.loadDetail(it) }
     }
 
+    // Track user interaction to disable auto-centering while panning
+    var userPannedAt by remember { mutableStateOf(0L) }
+    val isUserPanning = remember(userPannedAt) {
+        System.currentTimeMillis() - userPannedAt < 10_000L  // 10s after last touch
+    }
+
     val mapView = remember {
         MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
             controller.setZoom(10.0)
             zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
+            // Detect user pan/zoom gestures to temporarily disable auto-center
+            setOnTouchListener { _, event ->
+                if (event.action == android.view.MotionEvent.ACTION_MOVE ||
+                    event.action == android.view.MotionEvent.ACTION_DOWN) {
+                    userPannedAt = System.currentTimeMillis()
+                }
+                false  // Don't consume — let the map handle it
+            }
         }
     }
 
@@ -249,16 +265,18 @@ fun MapViewScreen(
                         map.overlays.add(droneMarker)
                     }
 
-                    // Center map on user when following compass, or if moved significantly
-                    if (followCompass) {
-                        map.controller.animateTo(userGeoPoint)
-                    } else {
-                        val currentCenter = map.mapCenter
-                        val dist = userGeoPoint.distanceToAsDouble(
-                            GeoPoint(currentCenter.latitude, currentCenter.longitude)
-                        )
-                        if (dist > 500) {
+                    // Center map on user — but NOT while user is actively panning
+                    if (!isUserPanning) {
+                        if (followCompass) {
                             map.controller.animateTo(userGeoPoint)
+                        } else {
+                            val currentCenter = map.mapCenter
+                            val dist = userGeoPoint.distanceToAsDouble(
+                                GeoPoint(currentCenter.latitude, currentCenter.longitude)
+                            )
+                            if (dist > 500) {
+                                map.controller.animateTo(userGeoPoint)
+                            }
                         }
                     }
 

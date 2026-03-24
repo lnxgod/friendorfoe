@@ -60,7 +60,7 @@ class SkyObjectRepository @Inject constructor(
 
     companion object {
         private const val TAG = "SkyObjectRepository"
-        private val STALE_THRESHOLD = Duration.ofSeconds(60)
+        private val STALE_THRESHOLD = Duration.ofSeconds(120)
         private const val DEDUP_DISTANCE_THRESHOLD_DEG = 0.001
         private const val MAX_TRAIL_POINTS = 60
         private const val MIN_POSITION_DELTA_DEG = 0.00001

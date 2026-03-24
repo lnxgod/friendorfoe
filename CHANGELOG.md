@@ -4,6 +4,13 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.17.0-beta] - 2026-03-24
+
+### Fixed
+- **Drone stale timeout** — Increased from 60s to 120s, matching ESP32 scanner. Drones now stay visible for 2 full minutes after last BLE update instead of disappearing too quickly.
+- **MAC address in drone ID** — Fixed multi-drone-on-same-MAC issue where simulator's 2 drones shared one BLE address. Now keys drone state by serial number when available, preventing MAC-based IDs from appearing.
+- **Map auto-centering** — Map no longer snaps back to user position while panning. Detects touch gestures and disables auto-center for 10 seconds after last interaction. Allows free exploration of the map.
+
 ## [0.16.0-beta] - 2026-03-24
 
 ### Added
