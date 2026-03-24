@@ -110,7 +110,7 @@ private val TYPE_CODE_MAP: Map<String, SilhouetteCategory> = buildMap {
         "AH64", "UH1",
         "MI8", "MI17", "MI24", "MI26", "MI28", "KA52",
         "CH53", "CH46", "MH60", "SH60", "HH60", "AH1", "AH1Z", "NH90", "EH10", "S70",
-        "EC55", "AS32", "B412", "A169", "B505"
+        "EC55", "AS32", "B412", "A169", "B505", "WZ10"
     )) put(code, SilhouetteCategory.HELICOPTER)
 
     // Fighter / military
@@ -124,18 +124,18 @@ private val TYPE_CODE_MAP: Map<String, SilhouetteCategory> = buildMap {
         "KC10", "KC46", "KC135",
         "V22", "MV22", "CV22", "P8", "P8A", "MQ9",
         "AC130", "U2", "SR71", "C12", "RQ4", "MQ1", "RQ170",
-        "SU27", "SU30", "SU34", "SU35", "MIG29", "MIG31",
-        "J10", "J20", "JF17",
+        "SU27", "SU30", "SU34", "SU35", "SU57", "SU25", "MIG29", "MIG31",
+        "J10", "J20", "FC31", "JF17",
         "GR4", "GRF4", "MIRA", "MIR2", "KFIR", "F14",
         "F4", "F5",
-        "B1B", "B52H", "TU95", "TU160", "TU22"
+        "B1B", "B52H", "TU95", "TU160", "TU22", "TU16"
     )) put(code, SilhouetteCategory.FIGHTER)
 
     // Cargo
     for (code in listOf(
         "C130", "C17", "C5", "C5M",
-        "A400", "A400M", "IL76", "AN124", "C295",
-        "C17A", "C30J", "C295W"
+        "A400", "A400M", "IL76", "AN72", "AN124", "C295",
+        "C17A", "C30J", "C295W", "Y20"
     )) put(code, SilhouetteCategory.CARGO)
 
     // Lightplane
