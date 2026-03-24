@@ -4,6 +4,13 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.14.0-beta] - 2026-03-23
+
+### Added
+- **ROI-based visual confirmation** — Crops small regions around ADS-B predicted positions and analyzes brightness/edge patterns to confirm aircraft are visually present. Runs at 5Hz on background thread, independent of ML Kit. Reduces false positives by focusing on where planes should be.
+- **Motion detection for radio-silent objects** — IMU-stabilized temporal differencing detects moving objects in the sky even without ADS-B or Remote ID. Finds drones without transponders by detecting pixel changes between camera frames, compensating for phone movement using gyroscope data.
+- **SORT visual tracker** — Simple Online Realtime Tracker keeps AR labels alive between ML Kit detection frames using velocity prediction. A plane detected in frame 1 stays tracked through frames 2-10 even if ML Kit temporarily misses it. Assigns stable tracking IDs across frames.
+
 ## [0.13.0-beta] - 2026-03-23
 
 ### Added
