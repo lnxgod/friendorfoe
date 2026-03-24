@@ -257,18 +257,20 @@ object MilitaryClassifier {
             "F14", "F4", "F5",
             "EUFI", "RFAL", "GR4", "GRF4",
             "MIRA", "MIR2",
-            "SU27", "SU30", "SU34", "SU35", "MIG29", "MIG31",
-            "JF17", "J10", "J20",
+            "SU27", "SU30", "SU34", "SU35", "SU57", "SU25",
+            "MIG29", "MIG31",
+            "JF17", "J10", "J20", "FC31",   // FC31 = J-31 Gyrfalcon
+            "WZ10",                           // Z-10 attack helicopter
             "KFIR",
             // Bombers
             "B1", "B1B", "B2", "B52", "B52H",
-            "TU95", "TU160", "TU22",
+            "TU95", "TU160", "TU22", "TU16", // TU16 = H-6 (Chinese license)
             // Transport
             "C130", "C17", "C17A", "C30J", "C5", "C5M", "C2", "C295W",
             "KC10", "KC46", "KC135",
             "A400", "A400M",
-            "C160", "AN12", "AN22", "AN124", "AN225",
-            "IL76",
+            "C160", "AN12", "AN22", "AN72", "AN124", "AN225",
+            "IL76", "Y20",                    // Y-20 Chinese heavy transport
             // Helicopters (military)
             "H60", "UH60", "HH60", "MH60", "SH60",
             "AH64", "AH1", "AH1Z",
