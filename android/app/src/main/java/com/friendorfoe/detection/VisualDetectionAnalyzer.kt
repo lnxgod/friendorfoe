@@ -241,8 +241,11 @@ class VisualDetectionAnalyzer(
 
                 // Inject coasted SORT tracks as synthetic detections — keeps labels
                 // alive when ML Kit misses a frame (common for distant aircraft)
+                // Only inject tracks NOT already present in ML Kit results (avoid duplicates)
+                val mlKitTrackIds = enrichedResults.mapNotNull { it.trackingId }.toSet()
                 val coastedDetections = tracks
-                    .filter { it.confirmed && it.coastFrames > 0 && it.coastFrames <= 10 }
+                    .filter { it.confirmed && it.coastFrames > 0 && it.coastFrames <= 10
+                              && it.trackId !in mlKitTrackIds }
                     .map { track ->
                         VisualDetection(
                             trackingId = track.trackId,

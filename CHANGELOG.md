@@ -4,6 +4,20 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.16.0-beta] - 2026-03-24
+
+### Added
+- **Visual engines wired to UI** — ROI confirmation, motion detector, and SORT tracker now produce visible effects instead of being orphaned dead code
+- **SORT label persistence** — Labels stay on screen during ML Kit dropouts via velocity-predicted synthetic detections
+- **ROI confidence boost** — Triple-confirmed aircraft (radio + visual + ROI) get 20% brighter labels
+- **Motion blob alerting** — Radio-silent moving sky objects trigger DarkTargetScorer "UNKNOWN FLYING" alerts
+- **Multi-drone RID simulator** — 2 simulated drones: FOF-SIM-001 (80m/15m/s CW) + FOF-SIM-002 (120m/10m/s CCW)
+
+### Fixed
+- **SORT duplicate prevention** — Coasted tracks no longer duplicate ML Kit detections in same frame
+- **ROI recycled bitmap guard** — Prevents crash when bitmap is recycled during ROI analysis
+- **Removed USB OTG detector** — Not a contactless detection method
+
 ## [0.15.0-beta] - 2026-03-24
 
 ### Added
