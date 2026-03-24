@@ -186,6 +186,27 @@ static const drone_ssid_pattern_t PATTERNS[] = {
     /* ── Camera payloads (enterprise) ───────────────────────────────────── */
     { "rededge",       "MicaSense" },
     { "Sequoia_",      "Parrot" },
+    /* ── Toy drones (Walmart/Target/Amazon) ─────────────────────────────── */
+    { "SKYVIPERGPS_",  "Sky Viper" },
+    { "SKYVIPER17_",   "Sky Viper" },
+    { "SKY VIPER_",    "Sky Viper" },
+    { "Force1_",       "Force1" },
+    { "RMTT-",         "Ryze/DJI" },
+    /* ── Budget WiFi FPV app SSIDs ──────────────────────────────────────── */
+    { "iFly-",         "Generic" },
+    { "FH8610UFO-",    "Generic" },
+    { "FH8610-",       "Generic" },
+    { "ht-ufo_",       "Generic" },
+    { "HolyStoneFPV_", "Holy Stone" },
+    { "Potensic_",     "Potensic" },
+    { "Eachine_",      "Eachine" },
+    { "EggX_",         "PowerVision" },
+    { "Solo_",         "3DR" },
+    { "sololink_",     "3DR" },
+    /* ── Military/tactical radio datalinks ───────────────────────────────── */
+    { "Silvus-",       "Silvus Technologies" },
+    { "Silvus_",       "Silvus Technologies" },
+    { "MPU5-",         "Persistent Systems" },
 };
 
 #define PATTERN_COUNT  (sizeof(PATTERNS) / sizeof(PATTERNS[0]))
