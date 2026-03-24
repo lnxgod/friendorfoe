@@ -1675,6 +1675,259 @@ object AircraftDatabase {
             specs = "Passengers: 5-7 | Range: 2,580km | Cruise: 396km/h | Engines: 2x Continental TSIO/GTSIO-520",
             photoAsset = "aircraft/C421.jpg",
             icaoTypeCodes = listOf("C414", "C421")
+        ),
+        // === NEW ENTRIES: Round 4 enrichment (35 aircraft) ===
+        // Commercial variants
+        AircraftReference(
+            id = "b736", name = "Boeing 737-600", manufacturer = "Boeing",
+            category = AircraftCategory.NARROWBODY,
+            description = "The smallest variant of the 737 Next Generation family, introduced to replace the 737-500 with modernized avionics and an upgraded wing design.",
+            specs = "Crew: 2 | Range: 5,990km | Cruise: 828km/h | Engines: 2x CFM56-7B turbofans",
+            photoAsset = "aircraft/B737.jpg", icaoTypeCodes = listOf("B736")
+        ),
+        AircraftReference(
+            id = "b37m", name = "Boeing 737 MAX 7", manufacturer = "Boeing",
+            category = AircraftCategory.NARROWBODY,
+            description = "The smallest variant of the 737 MAX series offering improved fuel efficiency, greater range, and a quieter cabin compared to the 737-700.",
+            specs = "Crew: 2 | Range: 7,130km | Cruise: 839km/h | Engines: 2x CFM LEAP-1B turbofans",
+            photoAsset = "aircraft/B38M.jpg", icaoTypeCodes = listOf("B37M")
+        ),
+        AircraftReference(
+            id = "b77f", name = "Boeing 777 Freighter", manufacturer = "Boeing",
+            category = AircraftCategory.CARGO,
+            description = "A dedicated twin-engine freighter based on the 777-200LR, renowned for immense payload capacity and long-range efficiency.",
+            specs = "Crew: 2 | Range: 9,200km | Cruise: 896km/h | Engines: 2x GE90-110B1L turbofans",
+            photoAsset = "aircraft/B77W.jpg", icaoTypeCodes = listOf("B77F")
+        ),
+        // Military fighters
+        AircraftReference(
+            id = "su57", name = "Sukhoi Su-57 Felon", manufacturer = "Sukhoi",
+            category = AircraftCategory.FIGHTER,
+            description = "Russia's stealth fifth-generation twin-engine multirole fighter for air superiority and ground strike missions.",
+            specs = "Crew: 1 | Range: 3,500km | Cruise: Mach 1.3 | Engines: 2x Saturn AL-41F1",
+            photoAsset = "aircraft/F22.jpg", icaoTypeCodes = listOf("SU57")
+        ),
+        AircraftReference(
+            id = "su25", name = "Sukhoi Su-25 Frogfoot", manufacturer = "Sukhoi",
+            category = AircraftCategory.FIGHTER,
+            description = "A heavily armored Soviet close air support jet, exceptionally effective at low-altitude ground attack missions.",
+            specs = "Crew: 1 | Range: 1,000km | Cruise: 750km/h | Engines: 2x R-195 turbojets",
+            photoAsset = "aircraft/A10.jpg", icaoTypeCodes = listOf("SU25")
+        ),
+        AircraftReference(
+            id = "fc31", name = "Shenyang FC-31 Gyrfalcon", manufacturer = "Shenyang Aircraft Corp",
+            category = AircraftCategory.FIGHTER,
+            description = "A Chinese fifth-generation twin-engine stealth fighter in advanced development for multirole combat and export.",
+            specs = "Crew: 1 | Range: 1,200km | Cruise: Mach 1.8 | Engines: 2x WS-13E",
+            photoAsset = "aircraft/F35.jpg", icaoTypeCodes = listOf("FC31")
+        ),
+        AircraftReference(
+            id = "y20", name = "Xian Y-20 Kunpeng", manufacturer = "Xi'an Aircraft Industrial Corp",
+            category = AircraftCategory.CARGO,
+            description = "A massive Chinese military transport providing heavy airlift capability for rapid deployment and strategic logistics.",
+            specs = "Crew: 3 | Range: 7,800km | Cruise: 800km/h | Engines: 4x D-30KP-2 or WS-20",
+            photoAsset = "aircraft/C17.jpg", icaoTypeCodes = listOf("Y20")
+        ),
+        AircraftReference(
+            id = "tu16", name = "Xian H-6", manufacturer = "Xi'an Aircraft Industrial Corp",
+            category = AircraftCategory.FIGHTER,
+            description = "A twin-engine jet bomber based on the Soviet Tu-16, extensively modernized as the backbone of China's strategic bomber force.",
+            specs = "Crew: 4 | Range: 6,000km | Cruise: 768km/h | Engines: 2x D-30KP-2 turbofans",
+            photoAsset = "aircraft/B52.jpg", icaoTypeCodes = listOf("TU16")
+        ),
+        AircraftReference(
+            id = "wz10", name = "Changhe Z-10", manufacturer = "CAIC",
+            category = AircraftCategory.HELICOPTER,
+            description = "China's first dedicated modern attack helicopter, optimized for anti-tank warfare with tandem-seat cockpit and stealth features.",
+            specs = "Crew: 2 | Range: 800km | Cruise: 270km/h | Engines: 2x WZ-9 turboshafts",
+            photoAsset = "aircraft/AH64.jpg", icaoTypeCodes = listOf("WZ10")
+        ),
+        AircraftReference(
+            id = "an72", name = "Antonov An-72", manufacturer = "Antonov",
+            category = AircraftCategory.CARGO,
+            description = "A rugged Soviet STOL transport utilizing the Coanda effect with engines mounted over the wings for exceptional short-field performance.",
+            specs = "Crew: 3 | Range: 2,000km | Cruise: 600km/h | Engines: 2x Progress D-36 turbofans",
+            photoAsset = "aircraft/C130.jpg", icaoTypeCodes = listOf("AN72")
+        ),
+        AircraftReference(
+            id = "f4", name = "McDonnell Douglas F-4 Phantom II", manufacturer = "McDonnell Douglas",
+            category = AircraftCategory.FIGHTER,
+            description = "A legendary tandem two-seat supersonic jet interceptor that served prolifically during the Cold War and Vietnam War.",
+            specs = "Crew: 2 | Range: 2,600km | Cruise: 940km/h | Engines: 2x GE J79 turbojets",
+            photoAsset = "aircraft/F15.jpg", icaoTypeCodes = listOf("F4")
+        ),
+        AircraftReference(
+            id = "f5", name = "Northrop F-5 Tiger II", manufacturer = "Northrop",
+            category = AircraftCategory.FIGHTER,
+            description = "An iconic light supersonic fighter renowned for aerodynamic simplicity, low cost, and effectiveness as an aggressor training aircraft.",
+            specs = "Crew: 1 | Range: 1,400km | Cruise: 1,040km/h | Engines: 2x GE J85-GE-21B turbojets",
+            photoAsset = "aircraft/F16.jpg", icaoTypeCodes = listOf("F5")
+        ),
+        AircraftReference(
+            id = "kfir", name = "IAI Kfir", manufacturer = "Israel Aerospace Industries",
+            category = AircraftCategory.FIGHTER,
+            description = "An Israeli all-weather multirole fighter developed by mating the Dassault Mirage 5 airframe with a US-built J79 turbojet engine.",
+            specs = "Crew: 1 | Range: 768km | Cruise: Mach 2.0 | Engines: 1x GE J79-J1E turbojet",
+            photoAsset = "aircraft/RFAL.jpg", icaoTypeCodes = listOf("KFIR")
+        ),
+        // Military helicopters
+        AircraftReference(
+            id = "ch53", name = "Sikorsky CH-53 Sea Stallion", manufacturer = "Sikorsky",
+            category = AircraftCategory.HELICOPTER,
+            description = "A massive heavy-lift transport helicopter for the US Marine Corps, excelling at deploying heavy equipment and large troop contingents.",
+            specs = "Crew: 3 | Range: 1,000km | Cruise: 278km/h | Engines: 2x GE T64-GE-413 turboshafts",
+            photoAsset = "aircraft/CH47.jpg", icaoTypeCodes = listOf("CH53")
+        ),
+        AircraftReference(
+            id = "ch46", name = "Boeing CH-46 Sea Knight", manufacturer = "Boeing Vertol",
+            category = AircraftCategory.HELICOPTER,
+            description = "A medium-lift tandem-rotor transport helicopter relied upon by the US Marine Corps for troop transport and ship-to-ship resupply.",
+            specs = "Crew: 5 | Range: 1,020km | Cruise: 265km/h | Engines: 2x GE T58-GE-16 turboshafts",
+            photoAsset = "aircraft/CH47.jpg", icaoTypeCodes = listOf("CH46")
+        ),
+        AircraftReference(
+            id = "mh60", name = "Sikorsky MH-60 Seahawk", manufacturer = "Sikorsky",
+            category = AircraftCategory.HELICOPTER,
+            description = "A multi-mission US Navy helicopter based on the UH-60 Black Hawk, equipped for anti-submarine warfare and search and rescue.",
+            specs = "Crew: 3-4 | Range: 834km | Cruise: 268km/h | Engines: 2x GE T700-GE-401C turboshafts",
+            photoAsset = "aircraft/UH60.jpg", icaoTypeCodes = listOf("MH60")
+        ),
+        AircraftReference(
+            id = "sh60", name = "Sikorsky SH-60 Seahawk", manufacturer = "Sikorsky",
+            category = AircraftCategory.HELICOPTER,
+            description = "A twin-turboshaft multi-mission US Navy helicopter serving as a ship-borne platform for anti-surface and anti-submarine operations.",
+            specs = "Crew: 3 | Range: 834km | Cruise: 268km/h | Engines: 2x GE T700-GE-401C turboshafts",
+            photoAsset = "aircraft/UH60.jpg", icaoTypeCodes = listOf("SH60")
+        ),
+        AircraftReference(
+            id = "hh60", name = "Sikorsky HH-60 Pave Hawk", manufacturer = "Sikorsky",
+            category = AircraftCategory.HELICOPTER,
+            description = "A modified Black Hawk for combat search and rescue featuring an integrated rescue hoist and air-to-air refueling probe.",
+            specs = "Crew: 4 | Range: 600km | Cruise: 294km/h | Engines: 2x GE T700-GE-700/701C turboshafts",
+            photoAsset = "aircraft/UH60.jpg", icaoTypeCodes = listOf("HH60")
+        ),
+        AircraftReference(
+            id = "ah1z", name = "Bell AH-1Z Viper", manufacturer = "Bell Helicopter",
+            category = AircraftCategory.HELICOPTER,
+            description = "A lethal twin-engine attack helicopter based on the AH-1W SuperCobra with a four-blade rotor and advanced targeting.",
+            specs = "Crew: 2 | Range: 685km | Cruise: 296km/h | Engines: 2x GE T700-GE-401C turboshafts",
+            photoAsset = "aircraft/AH64.jpg", icaoTypeCodes = listOf("AH1Z")
+        ),
+        AircraftReference(
+            id = "nh90", name = "NHIndustries NH90", manufacturer = "NHIndustries",
+            category = AircraftCategory.HELICOPTER,
+            description = "A medium-sized twin-engine multi-role NATO helicopter — the world's first to fly with full fly-by-wire controls.",
+            specs = "Crew: 2 | Range: 800km | Cruise: 300km/h | Engines: 2x RTM322 turboshafts",
+            photoAsset = "aircraft/UH60.jpg", icaoTypeCodes = listOf("NH90")
+        ),
+        AircraftReference(
+            id = "eh10", name = "AgustaWestland EH101 Merlin", manufacturer = "AgustaWestland",
+            category = AircraftCategory.HELICOPTER,
+            description = "A capable medium-lift helicopter with a distinctive three-engine configuration for enhanced safety and power in offshore operations.",
+            specs = "Crew: 3-4 | Range: 833km | Cruise: 278km/h | Engines: 3x RTM322 turboshafts",
+            photoAsset = "aircraft/S92.jpg", icaoTypeCodes = listOf("EH10")
+        ),
+        AircraftReference(
+            id = "mi26", name = "Mil Mi-26 Halo", manufacturer = "Mil",
+            category = AircraftCategory.HELICOPTER,
+            description = "The largest and most powerful helicopter ever to enter serial production, capable of lifting up to 20 tons of cargo.",
+            specs = "Crew: 5 | Range: 800km | Cruise: 255km/h | Engines: 2x Lotarev D-136 turboshafts",
+            photoAsset = "aircraft/CH47.jpg", icaoTypeCodes = listOf("MI26")
+        ),
+        // UAVs
+        AircraftReference(
+            id = "mq1", name = "General Atomics MQ-1 Predator", manufacturer = "General Atomics",
+            category = AircraftCategory.FIGHTER,
+            description = "An iconic remotely piloted aircraft that ushered in the modern era of military drones, later armed for targeted strike missions.",
+            specs = "Crew: 0 | Range: 1,100km | Cruise: 135km/h | Engines: 1x Rotax 914F turbocharged",
+            photoAsset = "aircraft/MQ9.jpg", icaoTypeCodes = listOf("MQ1")
+        ),
+        AircraftReference(
+            id = "rq4", name = "Northrop Grumman RQ-4 Global Hawk", manufacturer = "Northrop Grumman",
+            category = AircraftCategory.FIGHTER,
+            description = "A high-altitude, long-endurance unmanned surveillance platform capable of gathering broad-area intelligence over incredible distances.",
+            specs = "Crew: 0 | Range: 22,780km | Cruise: 575km/h | Engines: 1x Rolls-Royce F137-RR-100 turbofan",
+            photoAsset = "aircraft/MQ9.jpg", icaoTypeCodes = listOf("RQ4")
+        ),
+        // Business jets
+        AircraftReference(
+            id = "e550", name = "Embraer Praetor 500", manufacturer = "Embraer",
+            category = AircraftCategory.BIZJET,
+            description = "A premium mid-size business jet with coast-to-coast range, ultra-modern avionics, and refined cabin comfort.",
+            specs = "Crew: 2 | Range: 6,186km | Cruise: 863km/h | Engines: 2x Honeywell HTF7500E turbofans",
+            photoAsset = "aircraft/E55P.jpg", icaoTypeCodes = listOf("E550")
+        ),
+        AircraftReference(
+            id = "pc24", name = "Pilatus PC-24", manufacturer = "Pilatus Aircraft",
+            category = AircraftCategory.BIZJET,
+            description = "The 'Super Versatile Jet' uniquely combining jet speed with the short, unpaved runway capability of a turboprop.",
+            specs = "Crew: 1-2 | Range: 3,704km | Cruise: 815km/h | Engines: 2x Williams FJ44-4A turbofans",
+            photoAsset = "aircraft/PC12.jpg", icaoTypeCodes = listOf("PC24")
+        ),
+        AircraftReference(
+            id = "sf50", name = "Cirrus Vision Jet SF50", manufacturer = "Cirrus Aircraft",
+            category = AircraftCategory.BIZJET,
+            description = "A groundbreaking single-engine very light jet with a unique V-tail and whole-airframe parachute system for personal/owner-pilot use.",
+            specs = "Crew: 1 | Range: 2,222km | Cruise: 556km/h | Engines: 1x Williams FJ33-5A turbofan",
+            photoAsset = "aircraft/HDJT.jpg", icaoTypeCodes = listOf("SF50")
+        ),
+        // Civilian helicopters
+        AircraftReference(
+            id = "a169", name = "Leonardo AW169", manufacturer = "Leonardo S.p.A.",
+            category = AircraftCategory.HELICOPTER,
+            description = "A modern twin-engine light intermediate helicopter popular for VIP transport, EMS, and law enforcement.",
+            specs = "Crew: 1-2 | Range: 820km | Cruise: 268km/h | Engines: 2x PW210A turboshafts",
+            photoAsset = "aircraft/A139.jpg", icaoTypeCodes = listOf("A169")
+        ),
+        AircraftReference(
+            id = "b505", name = "Bell 505 Jet Ranger X", manufacturer = "Bell Helicopter",
+            category = AircraftCategory.HELICOPTER,
+            description = "A modern light single-engine successor to the legendary Bell 206 JetRanger with advanced avionics and a flat floor.",
+            specs = "Crew: 1 | Range: 566km | Cruise: 232km/h | Engines: 1x Safran Arrius 2R turboshaft",
+            photoAsset = "aircraft/B407.jpg", icaoTypeCodes = listOf("B505")
+        ),
+        AircraftReference(
+            id = "s70", name = "Sikorsky S-70 Black Hawk (Export)", manufacturer = "Sikorsky",
+            category = AircraftCategory.HELICOPTER,
+            description = "The export and commercial variant of the UH-60 Black Hawk, universally revered for extreme ruggedness and versatility.",
+            specs = "Crew: 2 | Range: 592km | Cruise: 277km/h | Engines: 2x GE T700-GE-701C turboshafts",
+            photoAsset = "aircraft/UH60.jpg", icaoTypeCodes = listOf("S70")
+        ),
+        AircraftReference(
+            id = "ec55", name = "Airbus EC155 / AS365 Dauphin", manufacturer = "Airbus Helicopters",
+            category = AircraftCategory.HELICOPTER,
+            description = "A sleek medium twin-engine helicopter with a shrouded Fenestron tail rotor, popular for VIP transport and offshore operations.",
+            specs = "Crew: 1-2 | Range: 857km | Cruise: 280km/h | Engines: 2x Arriel 2C2 turboshafts",
+            photoAsset = "aircraft/EC45.jpg", icaoTypeCodes = listOf("EC55")
+        ),
+        AircraftReference(
+            id = "as32", name = "Airbus AS332 Super Puma", manufacturer = "Airbus Helicopters",
+            category = AircraftCategory.HELICOPTER,
+            description = "A heavy-duty medium twin-engine helicopter relied upon for offshore oil support, VIP transport, and search and rescue.",
+            specs = "Crew: 2 | Range: 841km | Cruise: 262km/h | Engines: 2x Makila 1A1 turboshafts",
+            photoAsset = "aircraft/S92.jpg", icaoTypeCodes = listOf("AS32")
+        ),
+        AircraftReference(
+            id = "b412", name = "Bell 412", manufacturer = "Bell Helicopter",
+            category = AircraftCategory.HELICOPTER,
+            description = "A rugged twin-engine utility helicopter descended from the Huey with a four-blade main rotor for improved hot-and-high performance.",
+            specs = "Crew: 1-2 | Range: 650km | Cruise: 226km/h | Engines: 2x PT6T-3D Twin-Pac",
+            photoAsset = "aircraft/UH1.jpg", icaoTypeCodes = listOf("B412")
+        ),
+        // Bomber variants
+        AircraftReference(
+            id = "b1b", name = "Rockwell B-1B Lancer", manufacturer = "Rockwell International",
+            category = AircraftCategory.FIGHTER,
+            description = "A supersonic variable-sweep wing heavy bomber carrying the largest payload of guided and unguided weapons in the US Air Force.",
+            specs = "Crew: 4 | Range: 9,400km | Cruise: Mach 1.2 | Engines: 4x GE F101-GE-102 turbofans",
+            photoAsset = "aircraft/B1.jpg", icaoTypeCodes = listOf("B1B")
+        ),
+        AircraftReference(
+            id = "b52h", name = "Boeing B-52H Stratofortress", manufacturer = "Boeing",
+            category = AircraftCategory.FIGHTER,
+            description = "A massive eight-engine strategic bomber that has served as the backbone of the US strategic deterrent for over 60 years.",
+            specs = "Crew: 5 | Range: 14,200km | Cruise: 844km/h | Engines: 8x P&W TF33-P-3/103 turbofans",
+            photoAsset = "aircraft/B52.jpg", icaoTypeCodes = listOf("B52H")
         )
     )
 
