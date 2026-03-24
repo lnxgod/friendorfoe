@@ -107,6 +107,7 @@ class RoiConfirmationEngine(
      * Used when working with the retained last-frame bitmap.
      */
     fun submitFrame(targets: List<Target>, bitmap: Bitmap) {
+        if (bitmap.isRecycled) return  // Guard against stale bitmap references
         val now = SystemClock.elapsedRealtimeNanos()
         if (now - lastRunNanos.get() < intervalNanos) return
         if (!running.compareAndSet(false, true)) return
