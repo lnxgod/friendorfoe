@@ -31,6 +31,7 @@ import com.friendorfoe.detection.DarkTargetScorer
 import com.friendorfoe.detection.DataSourceStatus
 import com.friendorfoe.detection.SkyObjectFilter
 import com.friendorfoe.detection.ThreatLevel
+import com.friendorfoe.detection.VisualClassification
 import com.friendorfoe.detection.VisualDetection
 import com.friendorfoe.detection.VisualDetectionAnalyzer
 import com.friendorfoe.detection.VisualDetectionRange
@@ -999,8 +1000,29 @@ class ArViewModel @Inject constructor(
             } else {
                 visualDetections
             }
+
+            // Inject motion blobs as synthetic visual detections for dark target scoring.
+            // These are radio-silent moving objects detected via temporal differencing.
+            val motionBlobs = visualDetectionAnalyzer.motionBlobs.value
+            val motionDetections = motionBlobs.map { blob ->
+                VisualDetection(
+                    trackingId = null,
+                    centerX = blob.centerX,
+                    centerY = blob.centerY,
+                    width = blob.width,
+                    height = blob.height,
+                    labels = emptyList(),
+                    labelConfidences = emptyList(),
+                    timestampMs = System.currentTimeMillis(),
+                    skyScore = 0.7f,
+                    motionScore = 0.9f,
+                    visualClassification = VisualClassification.UNKNOWN_FLYING
+                )
+            }
+            val allVisualDetections = effectiveVisualDetections + motionDetections
+
             val scored = visualDetectionAnalyzer.scoredDetections.value
-            val result = visualCorrelationEngine.correlate(radioPositions, effectiveVisualDetections, scored)
+            val result = visualCorrelationEngine.correlate(radioPositions, allVisualDetections, scored)
             _unmatchedVisuals.value = result.unmatchedVisuals
             _classifiedUnknowns.value = result.classifiedUnknowns
 
@@ -1010,6 +1032,14 @@ class ArViewModel @Inject constructor(
                 Math.toDegrees(cameraFovCalculator.horizontalFovRadians)
             )
 
+            // Boost confidence for ROI-confirmed aircraft (radio + visual + ROI triple-confirmed)
+            val roiConfirmed = _roiConfirmations.value.map { it.skyObjectId }.toSet()
+            val boostedPositions = result.positions.map { pos ->
+                if (pos.skyObject.id in roiConfirmed) {
+                    pos.copy(positionConfidence = (pos.positionConfidence * 1.2f).coerceAtMost(1f))
+                } else pos
+            }
+
             // Score dark targets (unmatched visuals with no radio correlation)
             val currentAcoustic = _acousticResult.value
             val currentDarkMode = _isDarkMode.value
@@ -1017,7 +1047,7 @@ class ArViewModel @Inject constructor(
                 darkTargetScorer.score(classified, currentDarkMode, currentAcoustic)
             }
 
-            result.positions
+            boostedPositions
         }
     }.stateIn(
         scope = viewModelScope,
