@@ -32,7 +32,7 @@
 
 static const char *TAG = "fof_ble_scanner";
 
-#define FIRMWARE_VERSION    "0.13.0-beta"
+#define FIRMWARE_VERSION    "0.15.0-beta"
 #define DETECTION_QUEUE_LEN 50
 #define DISPLAY_UPDATE_MS   500
 

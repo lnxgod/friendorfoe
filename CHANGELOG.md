@@ -4,6 +4,28 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.15.0-beta] - 2026-03-24
+
+### Added
+- **ROI-based visual confirmation** — Crops regions around ADS-B predicted positions, analyzes brightness/edge patterns at 5Hz to confirm aircraft visually present
+- **Motion detection for radio-silent objects** — IMU-stabilized temporal differencing detects moving sky objects without radio signals (catches drones with no transponder)
+- **SORT visual tracker** — Keeps AR labels alive between ML Kit frames using velocity prediction (up to 10 frame coast)
+- **ESP32 probe request sniffing** — WiFi scanner now catches drone controllers probing for their drone's SSID, detecting operators even when the drone isn't broadcasting
+- **193 aircraft reference entries** (+35 new: Su-57, FC-31, Y-20, H-6, Z-10, MQ-1, RQ-4, PC-24, SF50, AW169, Bell 505, CH-53, NH90, Mi-26, B-1B, B-52H, F-4, F-5, Kfir, and more)
+- **135 airline callsigns** (+105 new: IndiGo, Korean Air, LATAM, Qatar Airways, Swiss, Iberia, Wizz Air, FedEx, UPS, and 95 more)
+- **62 ICAO country hex ranges** (+43 new: Turkey, Saudi Arabia, UAE, Indonesia, Thailand, Poland, Sweden, Argentina, and 35 more)
+- **195 drone WiFi SSID patterns** (+91 from baseline: DJI newer models, FPV systems, underwater drones, military datalinks, budget brands, counter-UAS)
+- **52 drone OUI entries** (+23 from baseline: DJI variants, Autel, Skydio, Shield AI, AeroVironment, PowerVision, Silvus Technologies)
+
+### Fixed
+- **BLE drone GPS coordinates** — 2-byte offset in OpenDroneID service data parsing
+- **BLE drone duplicates** — Wait for Basic ID serial before emitting drone
+- **Autel OUI misattribution** — 78:8C:B5 was TP-Link, not Autel (removed)
+
+### Improved
+- **Chinese/Russian military classification** — Added Su-57, FC-31, Y-20, TU16 (H-6), WZ10 (Z-10), SU25, AN72 type codes
+- **ESP32 scanner patterns synced** — 191 patterns matching Android's 195
+
 ## [0.14.0-beta] - 2026-03-23
 
 ### Added
