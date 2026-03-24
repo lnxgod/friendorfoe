@@ -87,6 +87,25 @@ object WifiOuiDatabase {
 
         // Shenzhen Bilian (LB-LINK) — very common WiFi module in budget drones
         "08:EA:40" to OuiEntry("Generic/Bilian", "Shenzhen Bilian Electronic (LB-LINK)", highFalsePositiveRisk = true),
+
+        // Hubsan — additional OUI
+        "98:AA:FC" to OuiEntry("Hubsan", "Hubsan Technology"),
+
+        // Yuneec — additional OUI
+        "00:E0:6D" to OuiEntry("Yuneec", "Yuneec International"),
+
+        // Military/defense drone manufacturers
+        "14:DD:48" to OuiEntry("Shield AI", "Shield AI Inc."),         // Nova 1/2
+        "14:DD:9C" to OuiEntry("Shield AI", "Shield AI Inc."),
+        "00:1A:F9" to OuiEntry("AeroVironment", "AeroVironment Inc."), // Switchblade/Puma/Raven
+
+        // Industrial drone datalink vendors
+        "1C:BA:8C" to OuiEntry("UAV Navigation", "UAV Navigation S.L."),
+        "00:30:1A" to OuiEntry("Doodle Labs", "Doodle Labs"),          // Long-range mesh
+        "00:11:1C" to OuiEntry("Microhard", "Microhard Systems"),      // Military datalinks
+
+        // Thermal camera payloads (found on drone platforms)
+        "00:13:56" to OuiEntry("FLIR", "Teledyne FLIR"),
     )
 
     /**

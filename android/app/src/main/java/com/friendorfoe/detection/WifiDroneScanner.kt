@@ -244,6 +244,27 @@ class WifiDroneScanner @Inject constructor(
             // Camera payloads (enterprise)
             DronePattern("rededge", "MicaSense"),      // MicaSense RedEdge on senseFly/Wingtra
             DronePattern("Sequoia_", "Parrot"),        // Parrot Sequoia sensor
+            // Toy drones (Walmart/Target/Amazon)
+            DronePattern("SKYVIPERGPS_", "Sky Viper"),
+            DronePattern("SKYVIPER17_", "Sky Viper"),
+            DronePattern("SKY VIPER_", "Sky Viper"),
+            DronePattern("Force1_", "Force1"),
+            DronePattern("RMTT-", "Ryze/DJI"),         // RoboMaster Tello Talent
+            // Budget WiFi FPV app-derived SSIDs
+            DronePattern("iFly-", "Generic"),           // iFly GPS app
+            DronePattern("FH8610UFO-", "Generic"),      // XDrone app
+            DronePattern("FH8610-", "Generic"),
+            DronePattern("ht-ufo_", "Generic"),         // HT-UFO app
+            DronePattern("HolyStoneFPV_", "Holy Stone"),
+            DronePattern("Potensic_", "Potensic"),
+            DronePattern("Eachine_", "Eachine"),
+            DronePattern("EggX_", "PowerVision"),       // PowerEgg X
+            DronePattern("Solo_", "3DR"),               // 3DR Solo (legacy)
+            DronePattern("sololink_", "3DR"),
+            // Military/tactical radio datalinks (ground station WiFi)
+            DronePattern("Silvus-", "Silvus Technologies"),  // AeroVironment/military MANET
+            DronePattern("Silvus_", "Silvus Technologies"),
+            DronePattern("MPU5-", "Persistent Systems"),     // L3Harris FVR-90 radios
         )
 
         /**
