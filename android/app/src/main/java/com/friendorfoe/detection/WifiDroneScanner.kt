@@ -205,6 +205,45 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("FPV_WIFI", "Generic"),
             DronePattern("FPV-WIFI", "Generic"),
             DronePattern("WIFI FPV", "Generic"),
+            // DJI newer model-specific SSIDs (QuickTransfer / direct connect)
+            DronePattern("DJI-Mini4Pro-", "DJI"),
+            DronePattern("DJI-Air3-", "DJI"),
+            DronePattern("DJI-Mavic3Classic-", "DJI"),
+            DronePattern("DJI-Avata2-", "DJI"),
+            DronePattern("DJI-Neo-", "DJI"),
+            DronePattern("DJI_FPV_", "DJI"),
+            DronePattern("DJI_Goggles_", "DJI"),
+            DronePattern("DJI-Goggles3-", "DJI"),
+            DronePattern("RID-", "DJI"),              // DJI Remote ID WiFi SSID
+            // FPV video systems
+            DronePattern("avatarx_", "Walksnail"),
+            DronePattern("avatar_rx_", "Walksnail"),
+            DronePattern("hd0", "HDZero"),
+            DronePattern("HDZero", "HDZero"),
+            // Budget drone generic WiFi modules
+            DronePattern("WiFiUFO-", "Generic"),
+            DronePattern("Wi-Fi UFO-", "Generic"),
+            DronePattern("WIFI UFO-", "Generic"),
+            DronePattern("GM-WiFiUFO", "Generic"),
+            DronePattern("Wifi_Drone_", "Generic"),
+            DronePattern("DEERC-", "DEERC"),
+            DronePattern("DeercFPV-", "DEERC"),
+            DronePattern("4DRC", "4DRC"),
+            DronePattern("Bwine-F7-", "Ruko/Bwine"),
+            DronePattern("LW FPV-", "Eachine"),       // Eachine E520S and similar
+            DronePattern("SJ-GPS", "SJRC"),
+            DronePattern("SJF Pro_", "SJRC"),
+            DronePattern("SG906", "ZLRC"),
+            DronePattern("Beast-", "ZLRC"),
+            DronePattern("CSJ-GPS-", "CSJ"),
+            DronePattern("HolyStoneEIS-", "Holy Stone"),
+            DronePattern("Potensic D_", "Potensic"),
+            DronePattern("RUKO-F11-", "Ruko"),
+            DronePattern("RUKO-PRO-", "Ruko"),
+            DronePattern("Controller-", "Generic"),    // JJRC/budget 5G controller
+            // Camera payloads (enterprise)
+            DronePattern("rededge", "MicaSense"),      // MicaSense RedEdge on senseFly/Wingtra
+            DronePattern("Sequoia_", "Parrot"),        // Parrot Sequoia sensor
         )
 
         /**

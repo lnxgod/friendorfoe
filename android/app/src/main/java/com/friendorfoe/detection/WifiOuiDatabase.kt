@@ -17,13 +17,20 @@ object WifiOuiDatabase {
      * Entries are organized by manufacturer for readability.
      */
     private val OUI_MAP: Map<String, OuiEntry> = mapOf(
-        // DJI Technology — primary chipsets used in Mavic, Mini, Air, Phantom, Inspire, Avata, FPV
+        // DJI Technology — primary chipsets across all product lines
         "60:60:1F" to OuiEntry("DJI", "DJI Technology Co."),
         "34:D2:62" to OuiEntry("DJI", "DJI Technology Co."),
         "48:1C:B9" to OuiEntry("DJI", "DJI Innovation Technology"),
         "08:D4:6A" to OuiEntry("DJI", "DJI Technology (Shenzhen)"),
         "D0:32:9A" to OuiEntry("DJI", "DJI Technology Co."),
         "C4:2F:90" to OuiEntry("DJI", "DJI Technology Co."),
+        "04:A8:5A" to OuiEntry("DJI", "DJI Technology Co."),          // Older Phantom/Inspire
+        "0C:9A:E6" to OuiEntry("DJI", "DJI Technology Co."),          // Mavic/Mini series
+        "E4:7A:2C" to OuiEntry("DJI", "DJI Technology Co."),          // OcuSync modules
+        "58:B8:58" to OuiEntry("DJI", "DJI Technology Co."),          // FPV/Avata
+        "8C:58:23" to OuiEntry("DJI", "DJI Technology Co."),          // Newer models
+        "88:29:85" to OuiEntry("DJI", "DJI Technology Co."),          // Enterprise/Matrice
+        "4C:43:F6" to OuiEntry("DJI", "DJI Technology Co."),          // Agras/agricultural
 
         // Parrot SA — Anafi, Bebop, Disco
         "A0:14:3D" to OuiEntry("Parrot", "Parrot SA"),
@@ -31,12 +38,15 @@ object WifiOuiDatabase {
         "00:12:1C" to OuiEntry("Parrot", "Parrot SA"),
         "00:26:7E" to OuiEntry("Parrot", "Parrot SA"),
 
-        // Autel Robotics — EVO series
+        // Autel Robotics — EVO, EVO Max, EVO Nano/Lite
         "2C:DC:AD" to OuiEntry("Autel", "Autel Robotics"),
-        "78:8C:B5" to OuiEntry("Autel", "Autel Intelligent Technology"),
+        // NOTE: 78:8C:B5 was previously listed as Autel but is actually TP-Link (removed)
+        "EC:5B:CD" to OuiEntry("Autel", "Autel Robotics USA LLC"),    // Registered May 2024
+        "18:D7:93" to OuiEntry("Autel", "Autel Intelligent Technology"), // Registered Jan 2023
 
         // Skydio — S2, X2, X10
         "58:D5:6E" to OuiEntry("Skydio", "Skydio Inc."),
+        "38:1D:14" to OuiEntry("Skydio", "Skydio Inc."),              // Registered July 2019
 
         // Yuneec — Typhoon, H520
         "EC:D0:9F" to OuiEntry("Yuneec", "Yuneec International"),
@@ -66,14 +76,17 @@ object WifiOuiDatabase {
         "E8:AB:FA" to OuiEntry("Syma", "Syma"),
 
         // Espressif Systems — ESP32/ESP8266 used in many DIY/budget drones
-        // Higher false-positive risk since ESP chips are used in many IoT devices
         "24:0A:C4" to OuiEntry("Generic/ESP", "Espressif Systems", highFalsePositiveRisk = true),
         "30:AE:A4" to OuiEntry("Generic/ESP", "Espressif Systems", highFalsePositiveRisk = true),
         "A4:CF:12" to OuiEntry("Generic/ESP", "Espressif Systems", highFalsePositiveRisk = true),
         "AC:67:B2" to OuiEntry("Generic/ESP", "Espressif Systems", highFalsePositiveRisk = true),
+        "10:06:1C" to OuiEntry("Generic/ESP", "Espressif Systems", highFalsePositiveRisk = true),
 
         // Realtek — used in many budget Chinese drones (WiFi FPV cameras)
         "00:E0:4C" to OuiEntry("Generic/Realtek", "Realtek Semiconductor", highFalsePositiveRisk = true),
+
+        // Shenzhen Bilian (LB-LINK) — very common WiFi module in budget drones
+        "08:EA:40" to OuiEntry("Generic/Bilian", "Shenzhen Bilian Electronic (LB-LINK)", highFalsePositiveRisk = true),
     )
 
     /**
