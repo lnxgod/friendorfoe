@@ -207,6 +207,42 @@ static const drone_ssid_pattern_t PATTERNS[] = {
     { "Silvus-",       "Silvus Technologies" },
     { "Silvus_",       "Silvus Technologies" },
     { "MPU5-",         "Persistent Systems" },
+    /* ── Selfie / hover camera drones ───────────────────────────────────── */
+    { "HoverCamera_",  "Zero Zero Robotics" },
+    { "PowerUp-",      "PowerUp Toys" },
+    /* ── Underwater drones / ROVs ───────────────────────────────────────── */
+    { "PRA_Station_",  "PowerVision" },
+    { "PSE_",          "PowerVision" },
+    { "Gladius_5G_",   "CHASING" },
+    { "Gladius_2.4G_", "CHASING" },
+    { "Chasing_",      "CHASING" },
+    { "M2_",           "CHASING" },
+    { "FIFISHRC_",     "QYSEA" },
+    { "FIFISH RC_",    "QYSEA" },
+    /* ── Open-source FPV / radio systems ────────────────────────────────── */
+    { "Open.HD",       "OpenHD" },
+    { "ExpressLRS TX", "ELRS" },
+    { "ExpressLRS RX", "ELRS" },
+    /* ── TBS radio modules ──────────────────────────────────────────────── */
+    { "TBS_XF_AP_",    "TBS" },
+    { "TBS_TR_AP_",    "TBS" },
+    { "TBS_Fusion_AP_","TBS" },
+    /* ── RunCam ─────────────────────────────────────────────────────────── */
+    { "RunCam_",       "RunCam" },
+    { "RunCam2_",      "RunCam" },
+    /* ── Ground control stations ────────────────────────────────────────── */
+    { "Herelink",      "CubePilot" },
+    { "PixRacer",      "ArduPilot" },
+    { "DJI_Smart_Controller_", "DJI" },
+    { "DJI-RC-",       "DJI" },
+    /* ── Skydio dock/drone ──────────────────────────────────────────────── */
+    { "Skydio2-",      "Skydio" },
+    { "Skydio2+-",     "Skydio" },
+    { "SkydioX10-",    "Skydio" },
+    /* ── Counter-UAS ────────────────────────────────────────────────────── */
+    { "DT_",           "Dedrone" },
+    /* ── Agricultural ───────────────────────────────────────────────────── */
+    { "ACS2",          "XAG" },
 };
 
 #define PATTERN_COUNT  (sizeof(PATTERNS) / sizeof(PATTERNS[0]))
