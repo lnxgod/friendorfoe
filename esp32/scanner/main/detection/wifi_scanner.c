@@ -491,8 +491,12 @@ static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         s_fc_histogram[subtype]++;
     }
 
-    /* Also process probe responses — they contain SSIDs and vendor IEs just like beacons */
-    if (frame_ctrl != WIFI_FC_SUBTYPE_BEACON && frame_ctrl != 0x50 /* probe response */) {
+    /* Process beacons, probe responses, AND probe requests.
+     * Probe requests (0x40) catch drone controllers searching for their drone's SSID.
+     * Even when a drone isn't broadcasting an AP, its controller probes for it. */
+    if (frame_ctrl != WIFI_FC_SUBTYPE_BEACON &&
+        frame_ctrl != 0x50 /* probe response */ &&
+        frame_ctrl != 0x40 /* probe request */) {
         return;
     }
     s_beacon_frames++;
