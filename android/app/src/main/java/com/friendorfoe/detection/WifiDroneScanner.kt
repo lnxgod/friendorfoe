@@ -265,6 +265,42 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("Silvus-", "Silvus Technologies"),  // AeroVironment/military MANET
             DronePattern("Silvus_", "Silvus Technologies"),
             DronePattern("MPU5-", "Persistent Systems"),     // L3Harris FVR-90 radios
+            // Hover Camera / selfie drones
+            DronePattern("HoverCamera_", "Zero Zero Robotics"),
+            DronePattern("PowerUp-", "PowerUp Toys"),        // PowerUp FPV paper airplane drone
+            // Underwater drones / ROVs (WiFi to surface station)
+            DronePattern("PRA_Station_", "PowerVision"),     // PowerRay base station
+            DronePattern("PSE_", "PowerVision"),             // PowerSeeker fish finder
+            DronePattern("Gladius_5G_", "CHASING"),          // Gladius Mini underwater drone
+            DronePattern("Gladius_2.4G_", "CHASING"),
+            DronePattern("Chasing_", "CHASING"),             // Later CHASING models
+            DronePattern("M2_", "CHASING"),                  // CHASING M2 ROV (caution: generic prefix)
+            DronePattern("FIFISHRC_", "QYSEA"),              // QYSEA FIFISH V6/V6S
+            DronePattern("FIFISH RC_", "QYSEA"),             // QYSEA FIFISH P3
+            // Open-source FPV / radio systems
+            DronePattern("Open.HD", "OpenHD"),               // OpenHD digital FPV ground station
+            DronePattern("ExpressLRS TX", "ELRS"),           // ExpressLRS transmitter WiFi AP mode
+            DronePattern("ExpressLRS RX", "ELRS"),           // ExpressLRS receiver WiFi AP mode
+            // Team BlackSheep radio modules
+            DronePattern("TBS_XF_AP_", "TBS"),               // TBS Crossfire WiFi AP
+            DronePattern("TBS_TR_AP_", "TBS"),               // TBS Tracer WiFi AP
+            DronePattern("TBS_Fusion_AP_", "TBS"),           // TBS Fusion WiFi AP
+            // RunCam action cameras on drones
+            DronePattern("RunCam_", "RunCam"),
+            DronePattern("RunCam2_", "RunCam"),
+            // Ground control stations
+            DronePattern("Herelink", "CubePilot"),           // CubePilot Herelink GCS
+            DronePattern("PixRacer", "ArduPilot"),           // QGroundControl MavESP8266 bridge
+            DronePattern("DJI_Smart_Controller_", "DJI"),    // DJI Smart Controller
+            DronePattern("DJI-RC-", "DJI"),                  // DJI RC/RC Pro/RC-N1
+            // Skydio dock/drone direct SSIDs
+            DronePattern("Skydio2-", "Skydio"),
+            DronePattern("Skydio2+-", "Skydio"),
+            DronePattern("SkydioX10-", "Skydio"),
+            // Counter-UAS systems (detect the detectors)
+            DronePattern("DT_", "Dedrone"),                  // Dedrone DroneTracker sensor
+            // Agricultural controllers
+            DronePattern("ACS2", "XAG"),                     // XAG ACS2 controller hotspot
         )
 
         /**

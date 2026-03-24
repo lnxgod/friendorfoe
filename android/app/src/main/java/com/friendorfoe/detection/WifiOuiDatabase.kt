@@ -106,6 +106,15 @@ object WifiOuiDatabase {
 
         // Thermal camera payloads (found on drone platforms)
         "00:13:56" to OuiEntry("FLIR", "Teledyne FLIR"),
+
+        // DJI adjacent entity
+        "9C:5A:8A" to OuiEntry("DJI", "DJI Baiwang Technology Co Ltd"),
+
+        // PowerVision (PowerEgg, PowerRay)
+        "54:7D:40" to OuiEntry("PowerVision", "Powervision Tech Inc."),
+
+        // Silvus Technologies (military MANET radios on AeroVironment drones)
+        "C4:7C:8D" to OuiEntry("Silvus", "Silvus Technologies"),
     )
 
     /**
