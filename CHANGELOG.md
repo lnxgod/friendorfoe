@@ -4,6 +4,26 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.28.0-beta] - 2026-03-25
+
+### Added
+- **ESP32 OLED tracking lock** — Double-tap BOOT button to lock onto a privacy device. Signal strength bar shows RSSI + percentage + CLOSER/AWAY/SAME direction relative to normalized baseline. LED indicates proximity (red=close, cyan=medium, green=far).
+- **ESP32 ACK confirmation** — Long-press shows "ACKNOWLEDGED / Marked as friendly" overlay for 2 seconds with "[OK] device whitelisted" status bar
+- **ESP32 double-tap detection** — 2 taps within 800ms = lock tracking, 3 taps = cycle scan mode
+- **Hybrid WiFi+BLE scanning** — Time-sliced: 25s BLE + 5s WiFi every 30s. Detects hidden camera SSIDs + Meta WiFi transfer hotspots alongside BLE privacy devices
+- **WiFi privacy scanner** — 40+ hidden camera SSID patterns, Meta/Luxottica OUI hotspot detection
+- **Triple-tap scan mode cycling** — [B+W] Hybrid → [BLE] BLE-only → [WiFi] WiFi-only
+- **Dedicated Privacy tab** — 5th nav tab (Shield icon) with categorized tree view, 10 privacy categories
+- **136 detection signatures** — 39 BLE names, 15 CIDs, 12 UUIDs, 70 WiFi SSIDs
+
+### Fixed
+- **OLED flicker eliminated** — Single atomic flush per frame instead of double-flush
+- **Status bar stability** — Shows "LIVE" when <2s, no more rapid counter updates
+- **FindMy iPhone noise** — Only actual AirTag accessories (length 0x19), not phone relays
+- **Samsung CID noise** — Removed 0x0075 (matched all Samsung devices)
+- **iBeacon/Eddystone/FastPair** — Dropped below threshold, filtered out
+- **ESP32 stack overflow** — Display task 4096→6144 bytes
+
 ## [0.27.0-beta] - 2026-03-25
 
 ### Fixed
