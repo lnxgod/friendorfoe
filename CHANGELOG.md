@@ -4,6 +4,25 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.25.0-beta] - 2026-03-25
+
+### Added
+- **Dedicated Privacy tab** — New 5th bottom nav tab (Shield icon) with full categorized tree view of all privacy detections. Categories: Smart Glasses, BLE Trackers, Hidden Cameras, Body Cameras, Vehicle Cameras, Attack Tools, Action Cameras, Dash Cameras, IoT Devices, Informational.
+- **Category tree view** — Expandable/collapsible sections grouped by threat level. High-threat categories (glasses, trackers, cameras, attack tools) expanded by default. Informational (beacons, Fast Pair) collapsed.
+- **PrivacyCategory enum** — 10 categories with icons, labels, and threat levels (0-3)
+- **Status bar** — Shows scanning status, total device count, and threat count
+- **Per-device cards** — Tap to expand details. Shows RSSI with color coding (red=close, orange=near, gray=far), parsed BLE details, match reason, confidence %, and action buttons
+- **Device detail dialog** — Full packet breakdown with all parsed fields
+
+### Fixed
+- **FindMy iPhone noise eliminated** — Only flags actual AirTag/FindMy accessories (length byte 0x19), not iPhones/iPads/Macs relaying FindMy. Further filters: separated AirTags flagged as threats, near-owner AirTags shown as informational
+- **Google device noise eliminated** — Removed Google CID 0x00E0 from manufacturer database (matched all Nest/Chromecast/Pixel devices). Glass EE detected by name only.
+- **Eddystone/Fast Pair noise reduced** — Moved to informational category at lower confidence
+
+### Changed
+- **Privacy alerts moved from List to own tab** — List screen is now clean for aircraft/drones only
+- **5-tab navigation** — AR View, Map, List, Privacy, History
+
 ## [0.24.0-beta] - 2026-03-25
 
 ### Fixed

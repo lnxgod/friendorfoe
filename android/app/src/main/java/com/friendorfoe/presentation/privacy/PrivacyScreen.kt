@@ -1,0 +1,376 @@
+package com.friendorfoe.presentation.privacy
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.friendorfoe.detection.GlassesDetection
+import com.friendorfoe.detection.PrivacyCategory
+
+@Composable
+fun PrivacyScreen(
+    viewModel: PrivacyViewModel = hiltViewModel()
+) {
+    val categorized by viewModel.categorizedDetections.collectAsStateWithLifecycle()
+    val totalCount by viewModel.totalCount.collectAsStateWithLifecycle()
+    val threatCount by viewModel.threatCount.collectAsStateWithLifecycle()
+
+    // Track which categories are expanded
+    val expandedCategories = remember {
+        mutableStateOf(setOf(PrivacyCategory.SMART_GLASSES, PrivacyCategory.BLE_TRACKER,
+            PrivacyCategory.HIDDEN_CAMERA, PrivacyCategory.ATTACK_TOOL))
+    }
+
+    var selectedDetail by remember { mutableStateOf<GlassesDetection?>(null) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Status bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    if (threatCount > 0) MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+                    else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                )
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = if (threatCount > 0) "\uD83D\uDEA8" else "\uD83D\uDD12",
+                modifier = Modifier.width(28.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (threatCount > 0) "Privacy Threats Detected"
+                           else "Privacy Scanner Active",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = if (threatCount > 0) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "$totalCount device${if (totalCount != 1) "s" else ""} detected" +
+                           if (threatCount > 0) " \u2022 $threatCount threat${if (threatCount != 1) "s" else ""}" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        if (categorized.isEmpty()) {
+            // Empty state
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(text = "\uD83D\uDD12", style = MaterialTheme.typography.displaySmall)
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "No privacy devices detected",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Scanning for smart glasses, BLE trackers,\nhidden cameras, and other devices nearby",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+        } else {
+            // Category tree
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                categorized.forEach { (category, devices) ->
+                    // Category header
+                    item(key = "header_${category.name}") {
+                        val isExpanded = category in expandedCategories.value
+                        CategoryHeader(
+                            category = category,
+                            count = devices.size,
+                            isExpanded = isExpanded,
+                            onClick = {
+                                expandedCategories.value = if (isExpanded) {
+                                    expandedCategories.value - category
+                                } else {
+                                    expandedCategories.value + category
+                                }
+                            }
+                        )
+                    }
+
+                    // Device cards (if expanded)
+                    if (category in expandedCategories.value) {
+                        items(
+                            items = devices.sortedByDescending { it.rssi },
+                            key = { "device_${it.mac}_${it.matchReason}" }
+                        ) { detection ->
+                            DeviceCard(
+                                detection = detection,
+                                onIgnore = { viewModel.ignoreDevice(detection.mac) },
+                                onTrack = { viewModel.startDirectionScan(detection.mac) },
+                                onDetails = { selectedDetail = detection }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Detail dialog
+    if (selectedDetail != null) {
+        DeviceDetailDialog(
+            detection = selectedDetail!!,
+            onIgnore = {
+                viewModel.ignoreDevice(selectedDetail!!.mac)
+                selectedDetail = null
+            },
+            onTrack = {
+                viewModel.startDirectionScan(selectedDetail!!.mac)
+                selectedDetail = null
+            },
+            onDismiss = { selectedDetail = null }
+        )
+    }
+}
+
+@Composable
+private fun CategoryHeader(
+    category: PrivacyCategory,
+    count: Int,
+    isExpanded: Boolean,
+    onClick: () -> Unit
+) {
+    val threatColor = when (category.threatLevel) {
+        3 -> MaterialTheme.colorScheme.error
+        2 -> Color(0xFFFF9800)
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = if (isExpanded) "\u25BC" else "\u25B6", color = threatColor)
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(text = category.icon, modifier = Modifier.width(24.dp))
+        Text(
+            text = category.label,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = threatColor,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = "$count",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = threatColor,
+            modifier = Modifier
+                .background(threatColor.copy(alpha = 0.15f), MaterialTheme.shapes.small)
+                .padding(horizontal = 8.dp, vertical = 2.dp)
+        )
+    }
+}
+
+@Composable
+private fun DeviceCard(
+    detection: GlassesDetection,
+    onIgnore: () -> Unit,
+    onTrack: () -> Unit,
+    onDetails: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onDetails)
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = if (detection.hasCamera) "\uD83D\uDCF7" else "\uD83D\uDD0A",
+                modifier = Modifier.width(22.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "${detection.manufacturer} ${detection.deviceType}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                if (detection.deviceName != null) {
+                    Text(
+                        text = detection.deviceName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = "${detection.rssi}dB",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    color = when {
+                        detection.rssi > -50 -> MaterialTheme.colorScheme.error
+                        detection.rssi > -70 -> Color(0xFFFF9800)
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+                Text(
+                    text = "${(detection.confidence * 100).toInt()}%",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                )
+            }
+        }
+
+        // Parsed details
+        if (detection.details.isNotEmpty()) {
+            Text(
+                text = detection.details.entries.take(3).joinToString(" \u2022 ") { "${it.key}: ${it.value}" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier.padding(start = 22.dp, top = 2.dp)
+            )
+        }
+
+        // Match reason
+        Text(
+            text = detection.matchReason,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+            modifier = Modifier.padding(start = 22.dp, top = 1.dp)
+        )
+
+        // Action buttons
+        Row(
+            modifier = Modifier.padding(start = 22.dp, top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = "Ignore",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.clickable(onClick = onIgnore)
+            )
+            Text(
+                text = "Track",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.clickable(onClick = onTrack)
+            )
+        }
+
+        HorizontalDivider(
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+            modifier = Modifier.padding(top = 8.dp)
+        )
+    }
+}
+
+@Composable
+private fun DeviceDetailDialog(
+    detection: GlassesDetection,
+    onIgnore: () -> Unit,
+    onTrack: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = if (detection.hasCamera) "\uD83D\uDCF7" else "\uD83D\uDD0A",
+                    modifier = Modifier.width(28.dp)
+                )
+                Text("${detection.manufacturer} ${detection.deviceType}")
+            }
+        },
+        text = {
+            Column {
+                if (detection.deviceName != null) DetailRow("Name", detection.deviceName)
+                DetailRow("MAC", detection.mac)
+                DetailRow("RSSI", "${detection.rssi} dBm")
+                DetailRow("Confidence", "${(detection.confidence * 100).toInt()}%")
+                DetailRow("Match", detection.matchReason)
+                DetailRow("Category", detection.category.label)
+                DetailRow("Camera", if (detection.hasCamera) "Yes" else "No")
+
+                if (detection.details.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Parsed Details", fontWeight = FontWeight.Medium,
+                         style = MaterialTheme.typography.titleSmall)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    for ((key, value) in detection.details) {
+                        DetailRow(key, value)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onIgnore) { Text("Ignore") }
+                TextButton(onClick = onTrack) { Text("Track") }
+                TextButton(onClick = onDismiss) { Text("Close") }
+            }
+        }
+    )
+}
+
+@Composable
+private fun DetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 1.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(90.dp)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}

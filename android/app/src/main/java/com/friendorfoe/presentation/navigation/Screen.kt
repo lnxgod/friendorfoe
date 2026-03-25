@@ -45,6 +45,9 @@ sealed class Screen(val route: String) {
     /** Combined reference guide with Aircraft + Drone tabs */
     data object ReferenceGuide : Screen("reference_guide")
 
+    /** Privacy scanner screen */
+    data object Privacy : Screen("privacy")
+
     /** Help / About screen */
     data object About : Screen("about")
 

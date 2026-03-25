@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -119,6 +120,7 @@ fun FriendOrFoeApp() {
                         BottomNavItem("AR View", Screen.ArView.route, Icons.Default.Visibility),
                         BottomNavItem("Map", Screen.MapView.route, Icons.Default.Map),
                         BottomNavItem("List", Screen.ListView.route, Icons.Default.List),
+                        BottomNavItem("Privacy", Screen.Privacy.route, Icons.Default.Shield),
                         BottomNavItem("History", Screen.History.route, Icons.Default.History)
                     )
 
