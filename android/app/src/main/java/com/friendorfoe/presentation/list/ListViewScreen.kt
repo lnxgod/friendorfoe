@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CellTower
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -45,6 +46,7 @@ import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.presentation.filter.FilterBar
 import com.friendorfoe.presentation.util.categoryBadge
 import com.friendorfoe.presentation.util.categoryColor
@@ -67,6 +69,7 @@ fun ListViewScreen(
 ) {
     val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
+    val glassesDetections by viewModel.glassesDetections.collectAsStateWithLifecycle()
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -91,6 +94,11 @@ fun ListViewScreen(
             onNavigateToReferenceGuide = onNavigateToReferenceGuide,
             onNavigateToAbout = onNavigateToAbout
         )
+
+        // Smart glasses privacy alert banner
+        if (glassesDetections.isNotEmpty()) {
+            GlassesAlertBanner(glassesDetections)
+        }
 
         if (skyObjects.isEmpty()) {
             EmptyListState()
@@ -292,4 +300,78 @@ private fun detectionSourceIcon(source: DetectionSource): ImageVector = when (so
     DetectionSource.WIFI_NAN -> Icons.Default.Wifi
     DetectionSource.WIFI_BEACON -> Icons.Default.Wifi
     DetectionSource.WIFI -> Icons.Default.Wifi
+}
+
+@Composable
+private fun GlassesAlertBanner(detections: List<GlassesDetection>) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Default.Visibility,
+                contentDescription = "Privacy Alert",
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "PRIVACY ALERT",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.error
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                text = "${detections.size} device${if (detections.size > 1) "s" else ""}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        for (det in detections.take(3)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (det.hasCamera) "\uD83D\uDCF7" else "\uD83D\uDD0A",
+                    modifier = Modifier.width(20.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "${det.manufacturer} ${det.deviceType}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (det.deviceName != null) {
+                        Text(
+                            text = det.deviceName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Text(
+                    text = "${det.rssi}dB",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        if (detections.size > 3) {
+            Text(
+                text = "+${detections.size - 3} more",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+    }
 }
