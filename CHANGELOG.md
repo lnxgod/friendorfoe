@@ -4,6 +4,19 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.24.0-beta] - 2026-03-25
+
+### Fixed
+- **False positives eliminated** — Removed overly broad "Glass" name pattern (matched everything), Amazon CID 0x0171 (matched all Amazon devices), Xiaomi UUID 0xFD2E, generic "Camera-" and "Cam-" patterns. Raised confidence threshold from 0.50 to 0.60.
+- **Flickering stopped** — Privacy scanner now debounces UI updates to every 2 seconds instead of every BLE scan result
+
+### Added
+- **Expandable privacy scanner** — Collapsed "Privacy Scanner — N devices" header, tap to expand into full device cards with all details
+- **Per-device actions** — Each detected device has Ignore, Track, and Details buttons
+- **Ignore/dismiss devices** — Tap "Ignore" to permanently suppress a false positive. Persists across app restarts via SharedPreferences
+- **Device detail dialog** — Tap any device for full info: MAC, RSSI, confidence, match reason, camera status, and all parsed BLE packet details
+- **Direction scan trigger** — "Track" button starts BLE direction finder for that specific device
+
 ## [0.23.0-beta] - 2026-03-25
 
 ### Added

@@ -113,6 +113,13 @@ class SkyObjectRepository @Inject constructor(
     /** Detection preferences — exposed for Settings UI. */
     val prefs: DetectionPrefs get() = detectionPrefs
 
+    /** Ignore a privacy device by MAC (removes from list, persists). */
+    fun ignorePrivacyDevice(mac: String) {
+        glassesDetector.ignoreDevice(mac)
+        glassesMap.remove(mac)
+        updateGlassesList(force = true)
+    }
+
     /** Toggle privacy detection on/off. */
     fun setPrivacyDetectionEnabled(enabled: Boolean) {
         detectionPrefs.privacyEnabled = enabled
@@ -282,8 +289,14 @@ class SkyObjectRepository @Inject constructor(
      * Collect smart glasses / privacy device detections from BLE + WiFi.
      */
     private val glassesMap = java.util.concurrent.ConcurrentHashMap<String, GlassesDetection>()
+    @Volatile private var lastGlassesUpdateMs = 0L
+    private val GLASSES_DEBOUNCE_MS = 2000L
 
-    private fun updateGlassesList() {
+    private fun updateGlassesList(force: Boolean = false) {
+        val nowMs = System.currentTimeMillis()
+        if (!force && (nowMs - lastGlassesUpdateMs) < GLASSES_DEBOUNCE_MS) return
+        lastGlassesUpdateMs = nowMs
+
         val now = Instant.now()
         val staleKeys = glassesMap.filter {
             Duration.between(it.value.lastSeen, now).seconds > 60

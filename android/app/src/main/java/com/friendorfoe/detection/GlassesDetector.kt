@@ -40,7 +40,8 @@ data class GlassesDetection(
  */
 @Singleton
 class GlassesDetector @Inject constructor(
-    private val bluetoothManager: BluetoothManager
+    private val bluetoothManager: BluetoothManager,
+    private val detectionPrefs: com.friendorfoe.data.DetectionPrefs
 ) {
     companion object {
         private const val TAG = "GlassesDetector"
@@ -80,7 +81,7 @@ class GlassesDetector @Inject constructor(
             WifiPattern("AIS", "TinyCam", "Hidden Camera", 0.75f, true),
             WifiPattern("DGK-", "SpyGear", "Hidden Camera", 0.80f, true),
             WifiPattern("WIFI-CAM", "Generic", "Hidden Camera", 0.75f, true),
-            WifiPattern("Cam-", "Generic", "IP Camera", 0.50f, true),
+            // "Cam-" removed — too generic
             // Espressif-based DIY / cheap spy cameras
             WifiPattern("ESP-", "Espressif", "Possible Camera", 0.55f, true),
             WifiPattern("ESP32-", "Espressif", "Possible Camera", 0.55f, true),
@@ -166,7 +167,7 @@ class GlassesDetector @Inject constructor(
         MfrEntry(0x09B1, "Brilliant Labs", "Smart Glasses", 0.80f, true),
         MfrEntry(0x0BC6, "TCL", "Smart Glasses", 0.70f, true),
         MfrEntry(0x0962, "Rokid", "Smart Glasses", 0.75f, true),
-        MfrEntry(0x0171, "Amazon", "Smart Glasses", 0.50f, false),
+        // Amazon CID 0x0171 removed — too broad, matches Echo/Fire/Kindle/Ring
         // Trackers / Stalkerware
         MfrEntry(0x000D, "Tile", "BLE Tracker", 0.85f, false),
         MfrEntry(0x067C, "Tile", "BLE Tracker", 0.85f, false),
@@ -201,7 +202,7 @@ class GlassesDetector @Inject constructor(
         // Retail Tracking
         UuidEntry(0xFEAA, "Google", "Tracking Beacon", 0.70f, false),
         // IoT ecosystems
-        UuidEntry(0xFD2E, "Xiaomi", "IoT Device", 0.55f, false),
+        // Xiaomi UUID 0xFD2E removed — too broad, matches all Mi Home devices
     )
 
     // ── Device name prefix database ──
@@ -230,7 +231,7 @@ class GlassesDetector @Inject constructor(
         NameEntry("INMO", "INMO", "Smart Glasses", 0.80f, true),
         NameEntry("IMA0", "INMO", "Smart Glasses", 0.80f, true),
         NameEntry("Solos AirGo", "Solos", "Smart Glasses", 0.80f, false),
-        NameEntry("Glass", "Google", "Smart Glasses", 0.70f, true),
+        NameEntry("Glass EE", "Google", "Smart Glasses", 0.85f, true),
         NameEntry("Bose Frames", "Bose", "Audio Glasses", 0.90f, false),
         // Body cameras
         NameEntry("Axon Body", "Axon", "Body Camera", 0.90f, true),
@@ -240,7 +241,7 @@ class GlassesDetector @Inject constructor(
         NameEntry("V380_", "Generic", "Spy Camera", 0.75f, true),
         NameEntry("IPC_", "Generic", "Spy Camera", 0.70f, true),
         NameEntry("LookCam_", "Generic", "Spy Camera", 0.70f, true),
-        NameEntry("Camera-", "Generic", "Spy Camera", 0.55f, true),
+        // "Camera-" removed — too generic, matches legitimate devices
         NameEntry("CLOUDCAM-", "Generic", "Spy Camera", 0.80f, true),
         NameEntry("HIDVCAM-", "Generic", "Hidden Camera", 0.90f, true),
         NameEntry("HDWiFiCam-", "Generic", "Hidden Camera", 0.85f, true),
@@ -249,7 +250,7 @@ class GlassesDetector @Inject constructor(
         // Attack / hacking tools
         NameEntry("Flipper ", "Flipper Zero", "Attack Tool", 0.90f, false),
         // Trackers
-        NameEntry("Tile", "Tile", "BLE Tracker", 0.70f, false),
+        NameEntry("Tile ", "Tile", "BLE Tracker", 0.65f, false), // space after to avoid "Tiled", "Tiles" etc
         NameEntry("SmartTag", "Samsung", "BLE Tracker", 0.80f, false),
         // Camera accessories / remotes
         NameEntry("AB Shutter3", "Generic", "Camera Remote", 0.80f, false, exact = true),
@@ -342,8 +343,18 @@ class GlassesDetector @Inject constructor(
         }
     }
 
+    /** Ignore a MAC address — won't be reported again */
+    fun ignoreDevice(mac: String) = detectionPrefs.ignoreMac(mac)
+
+    /** Un-ignore a MAC address */
+    fun unignoreDevice(mac: String) = detectionPrefs.unignoreMac(mac)
+
     private fun checkScanResult(result: ScanResult): GlassesDetection? {
         val mac = result.device.address
+
+        // Skip ignored devices
+        if (mac in detectionPrefs.getIgnoredMacs()) return null
+
         val rssi = result.rssi
         val record = result.scanRecord ?: return null
 
@@ -446,7 +457,7 @@ class GlassesDetector @Inject constructor(
             }
         }
 
-        if (bestConf < 0.50f) return null
+        if (bestConf < 0.60f) return null
 
         // Parse rich details from the raw packet
         val parsedDetails = BlePacketParser.parseAllDetails(result)

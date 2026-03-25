@@ -25,6 +25,7 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_STALKER = "detection_stalker_enabled"
         private const val KEY_ULTRASONIC = "detection_ultrasonic_enabled"
         private const val KEY_WIFI_ANOMALY = "detection_wifi_anomaly_enabled"
+        private const val KEY_IGNORED_MACS = "privacy_ignored_macs"
     }
 
     var adsbEnabled: Boolean
@@ -54,4 +55,22 @@ class DetectionPrefs @Inject constructor(
     var wifiAnomalyEnabled: Boolean
         get() = prefs.getBoolean(KEY_WIFI_ANOMALY, true)
         set(value) = prefs.edit().putBoolean(KEY_WIFI_ANOMALY, value).apply()
+
+    /** MACs the user has dismissed / marked as not a threat */
+    fun getIgnoredMacs(): Set<String> {
+        val csv = prefs.getString(KEY_IGNORED_MACS, "") ?: ""
+        return if (csv.isBlank()) emptySet() else csv.split(",").toSet()
+    }
+
+    fun ignoreMac(mac: String) {
+        val current = getIgnoredMacs().toMutableSet()
+        current.add(mac)
+        prefs.edit().putString(KEY_IGNORED_MACS, current.joinToString(",")).apply()
+    }
+
+    fun unignoreMac(mac: String) {
+        val current = getIgnoredMacs().toMutableSet()
+        current.remove(mac)
+        prefs.edit().putString(KEY_IGNORED_MACS, current.joinToString(",")).apply()
+    }
 }
