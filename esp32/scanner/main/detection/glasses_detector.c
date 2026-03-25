@@ -73,7 +73,7 @@ static const mfr_cid_entry_t s_mfr_cid_db[] = {
     { 0x01AB, "Meta",           "Smart Glasses", 0.90f, true  }, /* Meta Platforms, Inc. */
     { 0x058E, "Meta",           "Smart Glasses", 0.90f, true  }, /* Meta Platforms Technologies */
     { 0x03C2, "Snap",           "Smart Glasses", 0.85f, true  }, /* Snapchat Inc. */
-    { 0x00E0, "Google",         "Smart Glasses", 0.80f, true  }, /* Google LLC */
+    /* Google CID 0x00E0 removed — too broad, matches Nest/Chromecast/Pixel */
     { 0x060C, "Vuzix",          "Smart Glasses", 0.85f, true  }, /* Vuzix Corporation */
     { 0x009E, "Bose",           "Audio Glasses", 0.75f, false }, /* Bose Corporation */
     { 0x009F, "Bose",           "Audio Glasses", 0.75f, false }, /* Bose Corporation (alt) */
@@ -85,7 +85,7 @@ static const mfr_cid_entry_t s_mfr_cid_db[] = {
     { 0x0962, "Rokid",          "Smart Glasses", 0.75f, true  }, /* Shanghai Lingban Tech */
 
     /* LOW confidence — too broad, many non-glasses devices */
-    { 0x0171, "Amazon",         "Smart Glasses", 0.50f, false }, /* Amazon.com (Echo Frames but also Echo, Fire, etc.) */
+    /* Amazon CID 0x0171 removed — too broad, matches Echo/Fire/Kindle/Ring */
 
     /* ── Trackers / Stalkerware ────────────────────────────────────── */
     { 0x000D, "Tile",           "BLE Tracker",   0.85f, false }, /* Tile Inc. */
@@ -157,7 +157,7 @@ static const name_pattern_entry_t s_name_db[] = {
     { "INMO",            "INMO",            "Smart Glasses", 0.80f, true,  false },
     { "IMA0",            "INMO",            "Smart Glasses", 0.80f, true,  false },
     { "Solos AirGo",     "Solos",           "Smart Glasses", 0.80f, false, false },
-    { "Glass",           "Google",          "Smart Glasses", 0.70f, true,  false },
+    { "Glass EE",        "Google",          "Smart Glasses", 0.85f, true,  false },
     { "Bose Frames",     "Bose",            "Audio Glasses", 0.90f, false, false },
 
     /* Body cameras / spy cameras (BLE names) */
@@ -169,10 +169,16 @@ static const name_pattern_entry_t s_name_db[] = {
     { "V380_",           "Generic",         "Spy Camera",    0.75f, true,  false },
     { "IPC_",            "Generic",         "Spy Camera",    0.70f, true,  false },
     { "LookCam_",        "Generic",         "Spy Camera",    0.70f, true,  false },
-    { "Camera-",         "Generic",         "Spy Camera",    0.55f, true,  false },
+    /* "Camera-" removed — too generic */
     { "CLOUDCAM-",       "Generic",         "Spy Camera",    0.80f, true,  false },
     { "HIDVCAM-",        "Generic",         "Hidden Camera", 0.90f, true,  false },
     { "HDWiFiCam-",      "Generic",         "Hidden Camera", 0.85f, true,  false },
+
+    /* More trackers */
+    { "Chipolo",         "Chipolo",         "BLE Tracker",   0.85f, false, false },
+    { "Pebblebee",       "Pebblebee",       "BLE Tracker",   0.85f, false, false },
+    { "eufy SmartTrack", "Eufy",            "BLE Tracker",   0.85f, false, false },
+    { "Nutale",          "Nutale",          "BLE Tracker",   0.80f, false, false },
 
     /* Vehicles with cameras */
     { "Tesla ",          "Tesla",           "Vehicle Camera", 0.90f, true,  false },
@@ -316,7 +322,7 @@ bool glasses_check_advertisement(
         best_conf = (best_conf + 0.10f > 1.0f) ? 1.0f : best_conf + 0.10f;
     }
 
-    if (best_conf < 0.50f) return false;
+    if (best_conf < 0.60f) return false;
 
     /* Populate output */
     int64_t now_ms = esp_timer_get_time() / 1000;

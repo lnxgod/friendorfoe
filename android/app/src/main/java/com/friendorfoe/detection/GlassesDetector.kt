@@ -99,6 +99,21 @@ class GlassesDetector @Inject constructor(
             WifiPattern("DGK-", "SpyGear", "Hidden Camera", 0.80f, true),
             WifiPattern("WIFI-CAM", "Generic", "Hidden Camera", 0.75f, true),
             // "Cam-" removed — too generic
+            // Smart home cameras (WiFi setup/AP mode)
+            WifiPattern("Wyze_", "Wyze", "IP Camera", 0.80f, true),
+            WifiPattern("Reolink_", "Reolink", "IP Camera", 0.80f, true),
+            WifiPattern("Tapo_", "TP-Link", "IP Camera", 0.80f, true),
+            WifiPattern("TAPO-", "TP-Link", "IP Camera", 0.80f, true),
+            WifiPattern("Amcrest_", "Amcrest", "IP Camera", 0.80f, true),
+            WifiPattern("Hik-", "Hikvision", "IP Camera", 0.85f, true),
+            WifiPattern("HIKVISION_", "Hikvision", "IP Camera", 0.85f, true),
+            WifiPattern("DH_", "Dahua", "IP Camera", 0.80f, true),
+            WifiPattern("Eufy ", "Eufy", "IP Camera", 0.75f, true),
+            WifiPattern("Blink-", "Amazon", "IP Camera", 0.80f, true),
+            WifiPattern("Arlo-VMB", "Arlo", "IP Camera", 0.80f, true),
+            WifiPattern("Furbo_", "Furbo", "Pet Camera", 0.80f, true),
+            WifiPattern("Petcube", "Petcube", "Pet Camera", 0.80f, true),
+            WifiPattern("Nanit_", "Nanit", "Baby Monitor", 0.75f, true),
             // Espressif-based DIY / cheap spy cameras
             WifiPattern("ESP-", "Espressif", "Possible Camera", 0.55f, true),
             WifiPattern("ESP32-", "Espressif", "Possible Camera", 0.55f, true),
@@ -127,6 +142,11 @@ class GlassesDetector @Inject constructor(
             WifiPattern("DDPai_", "DDPai", "Dash Camera", 0.85f, true),
             WifiPattern("vYou_DDPai", "DDPai", "Dash Camera", 0.85f, true),
             WifiPattern("Garmin_VIRB", "Garmin", "Action Camera", 0.85f, true),
+            WifiPattern("Akaso_", "Akaso", "Action Camera", 0.85f, true),
+            WifiPattern("SJCAM_", "SJCAM", "Action Camera", 0.85f, true),
+            WifiPattern("Rexing_", "Rexing", "Dash Camera", 0.85f, true),
+            WifiPattern("APEMAN_", "Apeman", "Dash Camera", 0.80f, true),
+            WifiPattern("YI-", "YI", "Dash Camera", 0.80f, true),
             // Body cameras
             WifiPattern("Axon Body", "Axon", "Body Camera", 0.90f, true),
             WifiPattern("WGVISTA", "Motorola", "Body Camera", 0.85f, true),
@@ -266,9 +286,13 @@ class GlassesDetector @Inject constructor(
         NameEntry("Tesla ", "Tesla", "Vehicle Camera", 0.90f, true),
         // Attack / hacking tools
         NameEntry("Flipper ", "Flipper Zero", "Attack Tool", 0.90f, false),
-        // Trackers
-        NameEntry("Tile ", "Tile", "BLE Tracker", 0.65f, false), // space after to avoid "Tiled", "Tiles" etc
+        // Trackers (BLE name-based)
+        NameEntry("Tile ", "Tile", "BLE Tracker", 0.65f, false),
         NameEntry("SmartTag", "Samsung", "BLE Tracker", 0.80f, false),
+        NameEntry("Chipolo", "Chipolo", "BLE Tracker", 0.85f, false),
+        NameEntry("Pebblebee", "Pebblebee", "BLE Tracker", 0.85f, false),
+        NameEntry("eufy SmartTrack", "Eufy", "BLE Tracker", 0.85f, false),
+        NameEntry("Nutale", "Nutale", "BLE Tracker", 0.80f, false),
         // Camera accessories / remotes
         NameEntry("AB Shutter3", "Generic", "Camera Remote", 0.80f, false, exact = true),
         // Endoscope cameras (BLE pairing)
