@@ -238,6 +238,25 @@ fun AboutScreen(
                             initialValue = viewModel.stalkerEnabled,
                             onToggle = { viewModel.setStalkerEnabled(it) }
                         )
+                        SettingsToggle(
+                            title = "WiFi Evil Twin Detection",
+                            description = "Detect rogue access points, evil twin attacks, and WiFi Pineapple karma attacks",
+                            initialValue = viewModel.wifiAnomalyEnabled,
+                            onToggle = { viewModel.setWifiAnomalyEnabled(it) }
+                        )
+                        SettingsToggle(
+                            title = "Ultrasonic Beacon Detection",
+                            description = "Detect inaudible 18-22 kHz tracking beacons from ads/stores (requires microphone)",
+                            initialValue = viewModel.ultrasonicEnabled,
+                            onToggle = { viewModel.setUltrasonicEnabled(it) }
+                        )
+                    }
+                }
+                item {
+                    SectionCard(title = "Sweep Tools") {
+                        BulletItem("EMF Sweep — Use magnetometer to find hidden electronics at close range")
+                        BulletItem("IR Camera Scan — Use front camera to detect night-vision IR LEDs in dark rooms")
+                        BulletItem("BLE Direction Finder — Rotate 360° to locate a detected BLE device")
                     }
                 }
             }

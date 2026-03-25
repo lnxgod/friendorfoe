@@ -23,6 +23,8 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_WIFI = "detection_wifi_enabled"
         private const val KEY_PRIVACY = "glasses_detection_enabled"
         private const val KEY_STALKER = "detection_stalker_enabled"
+        private const val KEY_ULTRASONIC = "detection_ultrasonic_enabled"
+        private const val KEY_WIFI_ANOMALY = "detection_wifi_anomaly_enabled"
     }
 
     var adsbEnabled: Boolean
@@ -44,4 +46,12 @@ class DetectionPrefs @Inject constructor(
     var stalkerDetectionEnabled: Boolean
         get() = prefs.getBoolean(KEY_STALKER, true)
         set(value) = prefs.edit().putBoolean(KEY_STALKER, value).apply()
+
+    var ultrasonicEnabled: Boolean
+        get() = prefs.getBoolean(KEY_ULTRASONIC, false) // OFF by default — uses microphone
+        set(value) = prefs.edit().putBoolean(KEY_ULTRASONIC, value).apply()
+
+    var wifiAnomalyEnabled: Boolean
+        get() = prefs.getBoolean(KEY_WIFI_ANOMALY, true)
+        set(value) = prefs.edit().putBoolean(KEY_WIFI_ANOMALY, value).apply()
 }

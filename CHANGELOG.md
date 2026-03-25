@@ -4,6 +4,17 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.22.0-beta] - 2026-03-25
+
+### Added
+- **WiFi evil twin / rogue AP detection** — Detects same SSID on multiple BSSIDs with mixed security (classic evil twin), different vendor OUIs (rogue AP), and single BSSID broadcasting many SSIDs (karma/Pineapple attack)
+- **Ultrasonic beacon detection** — FFT analysis of microphone input at 48 kHz to detect inaudible 18-22 kHz tracking beacons (SilverPush, Lisnr, Shopkick, Signal360). Off by default — requires microphone permission
+- **EMF sweep detector** — Magnetometer-based electromagnetic field detector for finding hidden electronics at close range (1-5cm). Real-time magnitude gauge with color-coded threat levels
+- **IR camera detector** — Front camera analysis for detecting night-vision IR LEDs from hidden cameras in dark rooms. Detects bright saturated clusters persisting across frames
+- **30+ new WiFi SSID patterns** — V380 variants, Tuya/SmartLife, iCam365, XMeye, CareCam, BVCAM, P2PCam, ThroughTek, TinyCam/SpyGear, AI-Thinker, DEPSTECH/Jetion endoscopes, Tactacam trail cameras, ez Share WiFi SD cards, DDPai/Garmin dashcams
+- **8 new BLE signatures** — Tuya IoT (CID 0x07D0), Xiaomi (UUID 0xFD2E), AB Shutter3 camera remotes, DEPSTECH endoscopes, Roborock/iRobot/Ecovacs robot vacuums
+- **Settings toggles** for WiFi evil twin detection and ultrasonic beacon detection
+
 ## [0.21.0-beta] - 2026-03-25
 
 ### Added

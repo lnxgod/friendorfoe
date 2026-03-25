@@ -17,6 +17,8 @@ class AboutViewModel @Inject constructor(
     val wifiEnabled: Boolean get() = detectionPrefs.wifiEnabled
     val privacyEnabled: Boolean get() = detectionPrefs.privacyEnabled
     val stalkerEnabled: Boolean get() = detectionPrefs.stalkerDetectionEnabled
+    val ultrasonicEnabled: Boolean get() = detectionPrefs.ultrasonicEnabled
+    val wifiAnomalyEnabled: Boolean get() = detectionPrefs.wifiAnomalyEnabled
 
     fun setAdsbEnabled(enabled: Boolean) { detectionPrefs.adsbEnabled = enabled }
     fun setBleRidEnabled(enabled: Boolean) { detectionPrefs.bleRidEnabled = enabled }
@@ -25,4 +27,6 @@ class AboutViewModel @Inject constructor(
         skyObjectRepository.setPrivacyDetectionEnabled(enabled)
     }
     fun setStalkerEnabled(enabled: Boolean) { detectionPrefs.stalkerDetectionEnabled = enabled }
+    fun setUltrasonicEnabled(enabled: Boolean) { detectionPrefs.ultrasonicEnabled = enabled }
+    fun setWifiAnomalyEnabled(enabled: Boolean) { detectionPrefs.wifiAnomalyEnabled = enabled }
 }
