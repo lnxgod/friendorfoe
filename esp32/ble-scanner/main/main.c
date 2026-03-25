@@ -29,6 +29,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "driver/gpio.h"
+#include "esp_timer.h"
 
 #include <string.h>
 
@@ -36,22 +38,107 @@
 
 static const char *TAG = "fof_ble_scanner";
 
-#define FIRMWARE_VERSION    "0.19.0-beta"
+#define FIRMWARE_VERSION    "0.27.0-beta"
 #define DETECTION_QUEUE_LEN 50
 #define DISPLAY_UPDATE_MS   500
 
+/* ── BOOT button (GPIO0) ─────────────────────────────────────────────── */
+
+#define BOOT_BUTTON_GPIO    0
+#define LONG_PRESS_MS       1500
+
+static volatile bool s_button_short = false;   /* short press detected */
+static volatile bool s_button_long = false;    /* long press detected */
+static volatile int64_t s_button_down_ms = 0;
+
+static void button_init(void)
+{
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << BOOT_BUTTON_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&cfg);
+    ESP_LOGI(TAG, "BOOT button on GPIO%d: short=scroll, long=dismiss", BOOT_BUTTON_GPIO);
+}
+
+/** Call from display loop to poll button state (non-blocking). */
+static void button_poll(void)
+{
+    int level = gpio_get_level(BOOT_BUTTON_GPIO);
+    int64_t now_ms = esp_timer_get_time() / 1000;
+
+    if (level == 0) {
+        /* Button pressed (active low) */
+        if (s_button_down_ms == 0) {
+            s_button_down_ms = now_ms;  /* record press start */
+        } else if ((now_ms - s_button_down_ms) >= LONG_PRESS_MS && !s_button_long) {
+            s_button_long = true;
+            ESP_LOGI(TAG, "BOOT button: LONG press (dismiss/ack)");
+        }
+    } else {
+        /* Button released */
+        if (s_button_down_ms > 0) {
+            int64_t held_ms = now_ms - s_button_down_ms;
+            if (held_ms < LONG_PRESS_MS && !s_button_long) {
+                s_button_short = true;
+                ESP_LOGI(TAG, "BOOT button: SHORT press (next page)");
+            }
+            s_button_down_ms = 0;
+            s_button_long = false;
+        }
+    }
+}
+
 /* ── Display update task ───────────────────────────────────────────────── */
+
+/*
+ * Display modes:
+ *   0 = Glasses alert (if any detected, highest priority)
+ *   1 = Glasses list (page through all glasses/privacy devices)
+ *   2 = Drone list (page through drones)
+ *   3 = Status summary (counts, uptime)
+ *
+ * BOOT button short press: cycle to next page/mode
+ * BOOT button long press: dismiss current glasses alert (mark as friendly)
+ */
+enum { DMODE_GLASSES_ALERT = 0, DMODE_GLASSES_LIST, DMODE_DRONES, DMODE_STATUS };
 
 static void display_task(void *arg)
 {
     ESP_LOGI(TAG, "Display task started");
 
+    int display_mode = DMODE_GLASSES_ALERT;
     int page_index = 0;
     int cycle_counter = 0;
+    int glasses_page = 0;
 
     #define PAGE_CYCLE_TICKS 6  /* 6 * 500ms = 3s per page */
 
     while (1) {
+        /* Poll button */
+        button_poll();
+
+        /* Handle short press — advance page or cycle mode */
+        if (s_button_short) {
+            s_button_short = false;
+            page_index++;
+            glasses_page++;
+            cycle_counter = 0;
+            /* If we've gone past all items in current mode, advance mode */
+        }
+
+        /* Handle long press — dismiss/ack current glasses alert */
+        if (s_button_long) {
+            s_button_long = false;
+            ESP_LOGI(TAG, "Glasses alert acknowledged (friendly)");
+            /* Switch to drone view to indicate acknowledgment */
+            display_mode = DMODE_DRONES;
+            page_index = 0;
+        }
+
         /* Fetch cached detections */
         scanner_detection_summary_t det_list[DETECTION_CACHE_SIZE];
         int det_count = console_output_get_cached_detections(det_list, DETECTION_CACHE_SIZE);
@@ -67,13 +154,13 @@ static void display_task(void *arg)
             oled_drones[i].rssi = det_list[i].rssi;
         }
 
-        /* Check for glasses detections and show alert if any */
 #if CONFIG_FOF_GLASSES_DETECTION
         glasses_detection_t glasses_list[GLASSES_CACHE_SIZE];
         int glasses_count = console_output_get_cached_glasses(glasses_list, GLASSES_CACHE_SIZE);
 
-        if (glasses_count > 0) {
-            /* Show glasses alert (highest RSSI first) */
+        /* Auto-select mode based on what's available */
+        if (glasses_count > 0 && display_mode == DMODE_GLASSES_ALERT) {
+            /* Show alert for strongest glasses signal */
             int best = 0;
             for (int i = 1; i < glasses_count; i++) {
                 if (glasses_list[i].rssi > glasses_list[best].rssi) best = i;
@@ -85,24 +172,61 @@ static void display_task(void *arg)
                 glasses_list[best].rssi,
                 glasses_list[best].has_camera
             );
+        } else if (glasses_count > 0 && display_mode == DMODE_GLASSES_LIST) {
+            /* Page through individual glasses devices */
+            if (glasses_page >= glasses_count) glasses_page = 0;
+            oled_show_glasses_alert(
+                glasses_list[glasses_page].device_type,
+                glasses_list[glasses_page].manufacturer,
+                glasses_list[glasses_page].device_name,
+                glasses_list[glasses_page].rssi,
+                glasses_list[glasses_page].has_camera
+            );
         } else
 #endif
-        {
-            /* Draw drone list (single clean screen, no separate stats overlay) */
+        if (display_mode <= DMODE_DRONES) {
+            /* Drone list */
             if (page_index >= det_count && det_count > 0) {
                 page_index = 0;
             }
             oled_draw_drone_list(oled_drones, det_count, page_index);
+        } else {
+            /* Status summary */
+            int total_glasses = 0;
+#if CONFIG_FOF_GLASSES_DETECTION
+            total_glasses = glasses_count;
+#endif
+            uint32_t uptime_s = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
+            char line[22];
+            oled_draw_drone_list(NULL, 0, 0);  /* Clear screen */
+            /* We'll just show drone list for now as status */
+            oled_draw_drone_list(oled_drones, det_count, 0);
         }
 
-        /* Page through drones every 3 seconds */
-        if (det_count > 1) {
-            cycle_counter++;
-            if (cycle_counter >= PAGE_CYCLE_TICKS) {
-                cycle_counter = 0;
+        /* Auto-page every 3 seconds */
+        cycle_counter++;
+        if (cycle_counter >= PAGE_CYCLE_TICKS) {
+            cycle_counter = 0;
+#if CONFIG_FOF_GLASSES_DETECTION
+            if (display_mode == DMODE_GLASSES_LIST && glasses_count > 1) {
+                glasses_page = (glasses_page + 1) % glasses_count;
+            } else
+#endif
+            if (det_count > 1) {
                 page_index = (page_index + 1) % det_count;
             }
         }
+
+        /* If glasses reappear after being dismissed, re-alert */
+#if CONFIG_FOF_GLASSES_DETECTION
+        if (glasses_count > 0 && display_mode == DMODE_DRONES) {
+            /* Stay in drone mode until user presses button again */
+        } else if (glasses_count > 0 && display_mode != DMODE_GLASSES_LIST) {
+            display_mode = DMODE_GLASSES_ALERT;
+        } else if (glasses_count == 0) {
+            display_mode = DMODE_DRONES;
+        }
+#endif
 
         vTaskDelay(pdMS_TO_TICKS(DISPLAY_UPDATE_MS));
     }
@@ -136,9 +260,10 @@ void app_main(void)
     bayesian_fusion_init();
     ESP_LOGI(TAG, "Bayesian fusion engine initialised");
 
-    /* ── 4. Initialize status LED ────────────────────────────────────── */
+    /* ── 4. Initialize status LED + BOOT button ──────────────────────── */
     led_init();
     led_set_pattern(LED_BOOT);
+    button_init();
 
     /* ── 5. Initialize OLED display ─────────────────────────────────── */
     oled_init();
