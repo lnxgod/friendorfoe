@@ -21,7 +21,12 @@ Friend or Foe is an open-source **privacy awareness** and **airspace detection**
 | **Vehicle Cameras** | Tesla Sentry Mode | BLE advertisement |
 | **Retail Trackers** | iBeacon, Eddystone | BLE beacon signatures |
 | **Action Cameras** | GoPro, Insta360, DJI Action | WiFi SSID patterns |
-| **Dash Cameras** | BlackVue, Viofo, 70mai, Nextbase, Thinkware | WiFi SSID patterns |
+| **Dash Cameras** | BlackVue, Viofo, 70mai, Nextbase, Thinkware, DDPai | WiFi SSID patterns |
+| **Endoscope Cameras** | DEPSTECH, Jetion (peeping tools) | WiFi SSID + BLE |
+| **Evil Twin / Rogue APs** | WiFi Pineapple, karma attacks, SSID spoofing | WiFi anomaly analysis |
+| **Ultrasonic Beacons** | SilverPush, Lisnr, Shopkick tracking tones | Microphone FFT (18-22 kHz) |
+| **Hidden Electronics** | Cameras behind walls, concealed recorders | Magnetometer EMF sweep |
+| **Night Vision Cameras** | IR LED arrays from hidden cameras | Front camera IR detection |
 | **Drones** | DJI, Skydio, Parrot, Autel + 190 SSID patterns | BLE Remote ID + WiFi + visual ML |
 | **Aircraft** | Commercial, military, GA, helicopter, cargo, emergency | ADS-B transponder + AR overlay |
 

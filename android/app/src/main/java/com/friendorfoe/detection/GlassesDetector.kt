@@ -54,21 +54,50 @@ class GlassesDetector @Inject constructor(
         )
 
         private val wifiSsidPatterns = listOf(
-            // Hidden cameras / spy cameras
-            WifiPattern("MV", "V380", "Hidden Camera", 0.80f, true),
+            // Hidden cameras / spy cameras — app ecosystems
+            WifiPattern("MV", "V380", "Hidden Camera", 0.85f, true),
+            WifiPattern("V380-", "V380", "Hidden Camera", 0.85f, true),
             WifiPattern("YDXJ_", "YI", "IP Camera", 0.85f, true),
             WifiPattern("IPC-", "Generic", "IP Camera", 0.75f, true),
             WifiPattern("IP_CAM_", "Generic", "IP Camera", 0.80f, true),
+            WifiPattern("IPCAM-", "Generic", "IP Camera", 0.75f, true),
             WifiPattern("HDWiFiCam", "Generic", "Hidden Camera", 0.85f, true),
             WifiPattern("CLOUDCAM", "Generic", "Hidden Camera", 0.80f, true),
             WifiPattern("HIDVCAM", "Generic", "Hidden Camera", 0.90f, true),
             WifiPattern("GW_AP", "Yoosee", "IP Camera", 0.75f, true),
             WifiPattern("JXLCAM", "Generic", "Spy Camera", 0.85f, true),
-            // Action cameras / dashcams
+            WifiPattern("iCam-", "iCam365", "Hidden Camera", 0.80f, true),
+            WifiPattern("iCam365-", "iCam365", "Hidden Camera", 0.80f, true),
+            WifiPattern("XM-", "XMeye", "IP Camera", 0.80f, true),
+            WifiPattern("CareCam-", "CareCam", "Hidden Camera", 0.80f, true),
+            WifiPattern("BVCAM-", "BVCAM", "Hidden Camera", 0.80f, true),
+            WifiPattern("P2PCam-", "P2PCam", "Hidden Camera", 0.80f, true),
+            WifiPattern("TUTK-", "ThroughTek", "IP Camera", 0.75f, true),
+            WifiPattern("SmartLife-", "Tuya", "IoT Camera", 0.70f, true),
+            WifiPattern("TuyaSmart-", "Tuya", "IoT Camera", 0.70f, true),
+            WifiPattern("AI_", "TinyCam", "Hidden Camera", 0.80f, true),
+            WifiPattern("AIS", "TinyCam", "Hidden Camera", 0.75f, true),
+            WifiPattern("DGK-", "SpyGear", "Hidden Camera", 0.80f, true),
+            WifiPattern("WIFI-CAM", "Generic", "Hidden Camera", 0.75f, true),
+            WifiPattern("Cam-", "Generic", "IP Camera", 0.50f, true),
+            // Espressif-based DIY / cheap spy cameras
+            WifiPattern("ESP-", "Espressif", "Possible Camera", 0.55f, true),
+            WifiPattern("ESP32-", "Espressif", "Possible Camera", 0.55f, true),
+            WifiPattern("AI-THINKER_", "AI-Thinker", "Possible Camera", 0.65f, true),
+            // Endoscope / borescope cameras (peeping tools)
+            WifiPattern("DEPSTECH_", "DEPSTECH", "Endoscope Camera", 0.85f, true),
+            WifiPattern("Jetion_", "Jetion", "Endoscope Camera", 0.80f, true),
+            WifiPattern("WiFi_Cam_", "Generic", "Endoscope Camera", 0.75f, true),
+            // Trail / game cameras (outdoor surveillance)
+            WifiPattern("REVEAL", "Tactacam", "Trail Camera", 0.80f, true),
+            WifiPattern("4K WIFI CAM", "CamPark", "Trail Camera", 0.75f, true),
+            // WiFi SD card adapters (data exfiltration)
+            WifiPattern("ez Share", "ez Share", "WiFi SD Card", 0.70f, false),
+            // Action cameras
             WifiPattern("GoPro", "GoPro", "Action Camera", 0.90f, true),
-            WifiPattern("GP", "GoPro", "Action Camera", 0.70f, true),
             WifiPattern("Insta360", "Insta360", "Action Camera", 0.90f, true),
             WifiPattern("OsmoAction", "DJI", "Action Camera", 0.90f, true),
+            // Dash cameras
             WifiPattern("BlackVue", "BlackVue", "Dash Camera", 0.90f, true),
             WifiPattern("DR900", "BlackVue", "Dash Camera", 0.85f, true),
             WifiPattern("DR750", "BlackVue", "Dash Camera", 0.85f, true),
@@ -76,6 +105,9 @@ class GlassesDetector @Inject constructor(
             WifiPattern("70mai_", "70mai", "Dash Camera", 0.85f, true),
             WifiPattern("Nextbase", "Nextbase", "Dash Camera", 0.85f, true),
             WifiPattern("Thinkware", "Thinkware", "Dash Camera", 0.85f, true),
+            WifiPattern("DDPai_", "DDPai", "Dash Camera", 0.85f, true),
+            WifiPattern("vYou_DDPai", "DDPai", "Dash Camera", 0.85f, true),
+            WifiPattern("Garmin_VIRB", "Garmin", "Action Camera", 0.85f, true),
             // Body cameras
             WifiPattern("Axon Body", "Axon", "Body Camera", 0.90f, true),
             WifiPattern("WGVISTA", "Motorola", "Body Camera", 0.85f, true),
@@ -138,6 +170,8 @@ class GlassesDetector @Inject constructor(
         MfrEntry(0x000D, "Tile", "BLE Tracker", 0.85f, false),
         MfrEntry(0x067C, "Tile", "BLE Tracker", 0.85f, false),
         MfrEntry(0x0075, "Samsung", "BLE Tracker", 0.80f, false),
+        // IoT / Camera ecosystems
+        MfrEntry(0x07D0, "Tuya", "IoT Camera", 0.65f, true),
     )
 
     // ── 16-bit Service UUID database ──
@@ -165,6 +199,8 @@ class GlassesDetector @Inject constructor(
         UuidEntry(0xFE2C, "Google", "BLE Tracker", 0.85f, false),
         // Retail Tracking
         UuidEntry(0xFEAA, "Google", "Tracking Beacon", 0.70f, false),
+        // IoT ecosystems
+        UuidEntry(0xFD2E, "Xiaomi", "IoT Device", 0.55f, false),
     )
 
     // ── Device name prefix database ──
@@ -214,6 +250,14 @@ class GlassesDetector @Inject constructor(
         // Trackers
         NameEntry("Tile", "Tile", "BLE Tracker", 0.70f, false),
         NameEntry("SmartTag", "Samsung", "BLE Tracker", 0.80f, false),
+        // Camera accessories / remotes
+        NameEntry("AB Shutter3", "Generic", "Camera Remote", 0.80f, false, exact = true),
+        // Endoscope cameras (BLE pairing)
+        NameEntry("DEPSTECH", "DEPSTECH", "Endoscope Camera", 0.85f, true),
+        // Robot vacuums with cameras
+        NameEntry("roborock-", "Roborock", "Robot Vacuum", 0.60f, true),
+        NameEntry("iRobot-", "iRobot", "Robot Vacuum", 0.60f, true),
+        NameEntry("Ecovacs-", "Ecovacs", "Robot Vacuum", 0.60f, true),
     )
 
     private val GAP_APPEARANCE_EYEGLASSES = 0x01C0
