@@ -588,3 +588,50 @@ void oled_clear(void)
     fb_clear();
     oled_flush();
 }
+
+#if CONFIG_FOF_GLASSES_DETECTION
+void oled_show_glasses_alert(const char *device_type, const char *manufacturer,
+                              const char *device_name, int8_t rssi,
+                              bool has_camera)
+{
+    if (!s_initialized) return;
+
+    fb_clear();
+    char line[24];
+
+    /* Header in yellow band: ALERT */
+    fb_draw_string(0, 3, "!! PRIVACY ALERT !!");
+
+    /* Device info in blue band */
+    int y = 18;
+
+    /* Line 1: Device type */
+    snprintf(line, sizeof(line), "%.21s", device_type);
+    fb_draw_string(0, y, line);
+    y += 10;
+
+    /* Line 2: Manufacturer + RSSI */
+    snprintf(line, sizeof(line), "%.14s  %ddB", manufacturer, rssi);
+    fb_draw_string(0, y, line);
+    y += 10;
+
+    /* Line 3: Device name if available */
+    if (device_name && device_name[0]) {
+        snprintf(line, sizeof(line), "%.21s", device_name);
+        fb_draw_string(0, y, line);
+        y += 10;
+    }
+
+    /* Line 4: Camera indicator + distance estimate */
+    const char *cam_str = has_camera ? "CAM: YES" : "CAM: no";
+    const char *dist_str;
+    if (rssi > -50)      dist_str = "~2m";
+    else if (rssi > -60) dist_str = "~5m";
+    else if (rssi > -70) dist_str = "~10m";
+    else                 dist_str = ">10m";
+    snprintf(line, sizeof(line), "%s  Dist:%s", cam_str, dist_str);
+    fb_draw_string(0, y, line);
+
+    oled_flush();
+}
+#endif

@@ -296,6 +296,22 @@
         </esp-web-install-button>
         <div class="desc">Connect your ESP32-C5 via USB, then click to flash. Detects 5 GHz drones.</div>
       </div>
+      <div class="flash-card no-config">
+        <h3>BLE Scanner</h3>
+        <div class="chip">ESP32-S3 — BLE-only, no config needed</div>
+        <ul>
+          <li>BLE Remote ID detection</li>
+          <li>Smart glasses / privacy alerts</li>
+          <li>OLED drone + glasses display</li>
+          <li>Meta, Snap, Xreal, Vuzix, Bose</li>
+          <li>No WiFi needed</li>
+        </ul>
+        <esp-web-install-button manifest="manifest-ble-scanner.json">
+          <button slot="activate">Flash BLE Scanner</button>
+          <span slot="not-allowed">Your browser does not support Web Serial</span>
+        </esp-web-install-button>
+        <div class="desc">Standalone BLE detector with OLED. Detects drones AND smart glasses nearby.</div>
+      </div>
       <div class="flash-card">
         <h3>Uplink Board</h3>
         <div class="chip">ESP32-C3-DevKitM-1 — needs WiFi config (Step 2)</div>

@@ -6,6 +6,7 @@ idf_component_register(
          "../../scanner/main/detection/ble_remote_id.c"
          "../../scanner/main/detection/open_drone_id_parser.c"
          "../../scanner/main/detection/bayesian_fusion.c"
+         "../../scanner/main/detection/glasses_detector.c"
     INCLUDE_DIRS "." "comms" "core" "hw"
                  "../../scanner/main/detection"
                  "../../shared"

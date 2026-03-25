@@ -8,6 +8,7 @@ idf_component_register(
          "detection/french_dri_parser.c"
          "detection/open_drone_id_parser.c"
          "detection/bayesian_fusion.c"
+         "detection/glasses_detector.c"
          "comms/uart_tx.c"
          "hw/led_status.c"
          "hw/oled_display.c"

@@ -11,3 +11,22 @@ menu "FoF Scanner OLED"
         int "OLED reset pin (-1 to disable)"
         default -1
 endmenu
+
+menu "FoF Privacy Detection"
+    config FOF_GLASSES_DETECTION
+        bool "Enable smart glasses / privacy device detection"
+        default y
+        help
+            Detect BLE advertisements from smart glasses (Meta Ray-Ban,
+            Snap Spectacles, Xreal, Vuzix, etc.) and other privacy-intrusion
+            devices (body cameras). Shows alerts on OLED and outputs via
+            serial JSON. Can also be toggled at runtime via NVS.
+
+    config FOF_GLASSES_ALERT_RSSI
+        int "Minimum RSSI to alert (dBm)"
+        default -75
+        depends on FOF_GLASSES_DETECTION
+        help
+            Only alert on glasses detected above this signal strength.
+            -50 dBm = very close (~2m), -70 = nearby (~10m), -90 = far.
+endmenu

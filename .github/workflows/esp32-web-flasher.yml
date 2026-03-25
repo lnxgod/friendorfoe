@@ -44,12 +44,15 @@ jobs:
       - name: Build Scanner firmware (ESP32-C5)
         run: cd esp32/scanner && pio run -e scanner-c5
 
+      - name: Build BLE Scanner firmware (ESP32-S3)
+        run: cd esp32/ble-scanner && pio run -e ble-scanner-s3
+
       - name: Build Uplink firmware (ESP32-C3)
         run: cd esp32/uplink && pio run
 
       - name: Package firmware binaries
         run: |
-          mkdir -p firmware/scanner firmware/scanner-c5 firmware/uplink
+          mkdir -p firmware/scanner firmware/scanner-c5 firmware/ble-scanner firmware/uplink
 
           cp esp32/scanner/.pio/build/scanner/bootloader.bin firmware/scanner/
           cp esp32/scanner/.pio/build/scanner/partitions.bin firmware/scanner/partition-table.bin
@@ -58,6 +61,10 @@ jobs:
           cp esp32/scanner/.pio/build/scanner-c5/bootloader.bin firmware/scanner-c5/
           cp esp32/scanner/.pio/build/scanner-c5/partitions.bin firmware/scanner-c5/partition-table.bin
           cp esp32/scanner/.pio/build/scanner-c5/firmware.bin   firmware/scanner-c5/
+
+          cp esp32/ble-scanner/.pio/build/ble-scanner-s3/bootloader.bin firmware/ble-scanner/
+          cp esp32/ble-scanner/.pio/build/ble-scanner-s3/partitions.bin firmware/ble-scanner/partition-table.bin
+          cp esp32/ble-scanner/.pio/build/ble-scanner-s3/firmware.bin   firmware/ble-scanner/
 
           cp esp32/uplink/.pio/build/uplink/bootloader.bin firmware/uplink/
           cp esp32/uplink/.pio/build/uplink/partitions.bin firmware/uplink/partition-table.bin
@@ -79,11 +86,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG=${{ github.event.release.tag_name }}
-          cd firmware/scanner    && tar czf /tmp/scanner-firmware-${TAG}.tar.gz *.bin && cd -
-          cd firmware/scanner-c5 && tar czf /tmp/scanner-c5-firmware-${TAG}.tar.gz *.bin && cd -
-          cd firmware/uplink     && tar czf /tmp/uplink-firmware-${TAG}.tar.gz *.bin && cd -
+          cd firmware/scanner      && tar czf /tmp/scanner-firmware-${TAG}.tar.gz *.bin && cd -
+          cd firmware/scanner-c5   && tar czf /tmp/scanner-c5-firmware-${TAG}.tar.gz *.bin && cd -
+          cd firmware/ble-scanner  && tar czf /tmp/ble-scanner-firmware-${TAG}.tar.gz *.bin && cd -
+          cd firmware/uplink       && tar czf /tmp/uplink-firmware-${TAG}.tar.gz *.bin && cd -
           gh release upload "$TAG" \
             /tmp/scanner-firmware-${TAG}.tar.gz \
+            /tmp/ble-scanner-firmware-${TAG}.tar.gz \
             /tmp/scanner-c5-firmware-${TAG}.tar.gz \
             /tmp/uplink-firmware-${TAG}.tar.gz \
             --clobber
@@ -106,13 +115,14 @@ jobs:
 
       - name: Assemble site
         run: |
-          mkdir -p _site/firmware/scanner _site/firmware/scanner-c5 _site/firmware/uplink
+          mkdir -p _site/firmware/scanner _site/firmware/scanner-c5 _site/firmware/ble-scanner _site/firmware/uplink
 
           # Web flasher page + manifests
-          cp esp32/web-flasher/index.html               _site/
-          cp esp32/web-flasher/manifest-scanner.json     _site/
-          cp esp32/web-flasher/manifest-scanner-c5.json  _site/
-          cp esp32/web-flasher/manifest-uplink.json      _site/
+          cp esp32/web-flasher/index.html                  _site/
+          cp esp32/web-flasher/manifest-scanner.json        _site/
+          cp esp32/web-flasher/manifest-scanner-c5.json     _site/
+          cp esp32/web-flasher/manifest-ble-scanner.json    _site/
+          cp esp32/web-flasher/manifest-uplink.json         _site/
 
       - name: Download firmware artifact
         uses: actions/download-artifact@v4
@@ -136,6 +146,12 @@ jobs:
             echo "Scanner C5 firmware: OK"
           else
             echo "Scanner C5 firmware: MISSING (build may have failed)"
+          fi
+
+          if [ -f _site/firmware/ble-scanner/firmware.bin ]; then
+            echo "BLE Scanner firmware: OK"
+          else
+            echo "BLE Scanner firmware: MISSING (build may have failed)"
           fi
 
           if [ -f _site/firmware/uplink/firmware.bin ]; then

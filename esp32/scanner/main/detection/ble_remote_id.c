@@ -19,6 +19,10 @@
 #include "detection_types.h"
 #include "core/task_priorities.h"
 
+#if CONFIG_FOF_GLASSES_DETECTION
+#include "glasses_detector.h"
+#endif
+
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -59,6 +63,10 @@ typedef struct {
 /* ── Module state ──────────────────────────────────────────────────────────── */
 
 static QueueHandle_t    s_detection_queue = NULL;
+
+#if CONFIG_FOF_GLASSES_DETECTION
+static QueueHandle_t    s_glasses_queue = NULL;
+#endif
 static ble_device_slot_t s_devices[MAX_BLE_DEVICES];
 static bool             s_scanning = false;
 
@@ -278,6 +286,56 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 pos += 1 + ad_len;
             }
         }
+
+#if CONFIG_FOF_GLASSES_DETECTION
+        /* ── Smart glasses / privacy device check ──────────────────── */
+        if (s_glasses_queue != NULL && glasses_detection_is_enabled()) {
+            /* Extract name, manufacturer data, service UUIDs from parsed fields */
+            const char *adv_name = NULL;
+            int adv_name_len = 0;
+            const uint8_t *mfr_data = NULL;
+            int mfr_data_len = 0;
+            uint16_t svc_uuids[8];
+            int svc_uuid_count = 0;
+            uint16_t appearance = 0;
+
+            if (rc == 0) { /* NimBLE parsed successfully */
+                if (fields.name != NULL && fields.name_len > 0) {
+                    adv_name = (const char *)fields.name;
+                    adv_name_len = fields.name_len;
+                }
+                if (fields.mfg_data != NULL && fields.mfg_data_len >= 2) {
+                    mfr_data = fields.mfg_data;
+                    mfr_data_len = fields.mfg_data_len;
+                }
+                if (fields.svc_data_uuid16 != NULL && fields.svc_data_uuid16_len >= 2) {
+                    uint16_t u = (uint16_t)fields.svc_data_uuid16[0] |
+                                 ((uint16_t)fields.svc_data_uuid16[1] << 8);
+                    if (u != ODID_SERVICE_UUID_16 && svc_uuid_count < 8) {
+                        svc_uuids[svc_uuid_count++] = u;
+                    }
+                }
+                if (fields.uuids16 != NULL) {
+                    for (int i = 0; i < (int)fields.num_uuids16 && svc_uuid_count < 8; i++) {
+                        svc_uuids[svc_uuid_count++] = ble_uuid_u16(&fields.uuids16[i].u);
+                    }
+                }
+                if (fields.appearance_is_present) {
+                    appearance = fields.appearance;
+                }
+            }
+
+            glasses_detection_t gdet;
+            if (glasses_check_advertisement(
+                    desc->addr.val, adv_name, adv_name_len,
+                    mfr_data, mfr_data_len,
+                    svc_uuids, svc_uuid_count,
+                    appearance, desc->rssi, &gdet)) {
+                xQueueSend(s_glasses_queue, &gdet, pdMS_TO_TICKS(5));
+            }
+        }
+#endif  /* CONFIG_FOF_GLASSES_DETECTION */
+
         break;
     }
 
@@ -372,6 +430,14 @@ void ble_remote_id_init(QueueHandle_t detection_queue)
 
     ESP_LOGI(TAG, "BLE Remote ID scanner initialized");
 }
+
+#if CONFIG_FOF_GLASSES_DETECTION
+void ble_remote_id_set_glasses_queue(QueueHandle_t queue)
+{
+    s_glasses_queue = queue;
+    ESP_LOGI(TAG, "Glasses detection queue attached");
+}
+#endif
 
 void ble_remote_id_start(void)
 {
