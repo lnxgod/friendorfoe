@@ -54,6 +54,15 @@ void oled_draw_drone_list(const oled_drone_entry_t *drones, int count,
 
 void oled_clear(void);
 
+/**
+ * Draw a status bar at the bottom of the OLED (y=56..63).
+ * Shows scan mode and uptime.
+ *
+ * @param mode_label  e.g. "BLE", "WiFi", "B+W"
+ * @param uptime_s    Seconds since boot
+ */
+void oled_draw_status_bar(const char *mode_label, uint32_t uptime_s);
+
 #if CONFIG_FOF_GLASSES_DETECTION
 /**
  * Show a glasses/privacy device alert on the OLED.
