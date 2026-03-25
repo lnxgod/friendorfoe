@@ -46,6 +46,12 @@ static scanner_detection_summary_t s_det_cache[DETECTION_CACHE_SIZE];
 static int s_det_cache_count = 0;
 static portMUX_TYPE s_cache_lock = portMUX_INITIALIZER_UNLOCKED;
 
+#if CONFIG_FOF_GLASSES_DETECTION
+/* Forward declarations for glasses detection (defined at bottom of file) */
+static QueueHandle_t s_glasses_queue;
+static void glasses_output_task(void *arg);
+#endif
+
 /* ── Detection cache helpers ────────────────────────────────────────────── */
 
 static scanner_detection_summary_t *cache_find_or_alloc(const char *drone_id)
@@ -346,7 +352,7 @@ int console_output_get_cached_detections(scanner_detection_summary_t *out, int m
 
 #if CONFIG_FOF_GLASSES_DETECTION
 
-static QueueHandle_t s_glasses_queue = NULL;
+/* s_glasses_queue declared with forward decl above */
 static glasses_detection_t s_glasses_cache[GLASSES_CACHE_SIZE];
 static int s_glasses_cache_count = 0;
 static portMUX_TYPE s_glasses_lock = portMUX_INITIALIZER_UNLOCKED;

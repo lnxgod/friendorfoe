@@ -89,7 +89,7 @@ static const mfr_cid_entry_t s_mfr_cid_db[] = {
 
     /* ── Trackers / Stalkerware ────────────────────────────────────── */
     { 0x000D, "Tile",           "BLE Tracker",   0.85f, false }, /* Tile Inc. */
-    { 0x0075, "Samsung",        "BLE Tracker",   0.80f, false }, /* Samsung SmartTag */
+    /* Samsung CID 0x0075 removed — matches ALL Samsung devices. Use UUID 0xFD5A instead */
     { 0x067C, "Tile",           "BLE Tracker",   0.85f, false }, /* Tile (alt CID) */
 
     /* ── Vehicles with cameras ─────────────────────────────────────── */

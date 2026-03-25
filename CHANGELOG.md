@@ -4,6 +4,16 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.27.0-beta] - 2026-03-25
+
+### Fixed
+- **ESP32 display stack overflow** — Increased display task stack from 4096 to 6144 bytes to accommodate glasses_detection_t array
+- **Samsung CID 0x0075 false positives** — Removed Samsung general CID (matched ALL Samsung devices: phones, watches, earbuds). SmartTags now detected by specific UUID 0xFD5A/0xFD59 only (no false positives)
+- **ESP32 glasses code forward declaration** — Fixed C compilation order issue with static variables
+
+### Added
+- **ESP32 BLE scanner glasses detection verified** — Confirmed working: AirTag/FindMy, Apple iBeacons, Google Eddystone beacons all detected correctly. Samsung spam eliminated. Meta glasses detection ready (CID 0x01AB/0x058E).
+
 ## [0.26.0-beta] - 2026-03-25
 
 ### Added
