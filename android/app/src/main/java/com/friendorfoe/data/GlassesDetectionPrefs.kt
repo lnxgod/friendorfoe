@@ -22,6 +22,6 @@ class GlassesDetectionPrefs @Inject constructor(
     }
 
     var isEnabled: Boolean
-        get() = prefs.getBoolean(KEY_ENABLED, false)
+        get() = prefs.getBoolean(KEY_ENABLED, true)
         set(value) = prefs.edit().putBoolean(KEY_ENABLED, value).apply()
 }

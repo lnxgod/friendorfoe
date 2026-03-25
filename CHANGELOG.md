@@ -4,6 +4,16 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.20.0-beta] - 2026-03-24
+
+### Changed
+- **Privacy detection ON by default** — Smart glasses, trackers, hidden cameras, and all privacy device scanning now enabled out of the box. Toggle in About > Settings.
+- **README rebrand** — Friend or Foe is now positioned as a "Privacy Awareness & Airspace Detection" platform. README leads with privacy detection capabilities, documents all 60+ device signatures.
+
+### Added
+- **Expanded privacy database** — Added Apple AirTag/FindMy, Samsung SmartTag, Tile, DULT unwanted tracker protocol, Google Find My Device, iBeacon, Eddystone, Tesla Sentry Mode, Flipper Zero, Motorola body cameras, hidden camera BLE names, and 25 WiFi SSID patterns (hidden cameras, action cams, dash cams, attack tools, doorbell cameras)
+- **WiFi privacy scanning** — WiFi scan results now checked against 25 suspicious SSID patterns for hidden cameras, spy cams, dash cams, action cameras, body cameras, and attack tools
+
 ## [0.19.0-beta] - 2026-03-24
 
 ### Added
