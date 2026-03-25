@@ -37,6 +37,16 @@ void ble_remote_id_start(void);
  */
 void ble_remote_id_stop(void);
 
+#if CONFIG_FOF_GLASSES_DETECTION
+/**
+ * Attach a queue for smart glasses / privacy device detections.
+ * Must be called after ble_remote_id_init() and before ble_remote_id_start().
+ *
+ * @param queue FreeRTOS queue for glasses_detection_t results
+ */
+void ble_remote_id_set_glasses_queue(QueueHandle_t queue);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

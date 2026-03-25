@@ -4,6 +4,25 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.19.0-beta] - 2026-03-24
+
+### Added
+- **Smart glasses / privacy device BLE detection** — New detection module identifies Meta Ray-Ban, Snap Spectacles, Xreal, Vuzix, Google Glass, Bose Frames, Amazon Echo Frames, Brilliant Labs, TCL RayNeo, Rokid, INMO, Even Realities, Solos AirGo, and Axon body cameras via BLE manufacturer Company IDs, service UUIDs, and device name patterns
+- **Privacy alert OLED display** — When smart glasses are detected nearby, OLED shows alert with device type, manufacturer, signal strength, camera indicator, and estimated distance
+- **Glasses detection JSON output** — New `"type":"glasses"` messages in serial JSON output with device info, confidence, match reason, and camera flag
+- **KConfig toggle** — `CONFIG_FOF_GLASSES_DETECTION` (default: ON) enables/disables at build time; NVS runtime toggle via web flasher serial config
+- **BLE Scanner web flasher card** — New "BLE Scanner" option on the web flasher page for standalone BLE drone + glasses detection firmware
+- **BLE Scanner in CI** — GitHub Actions now builds and deploys BLE Scanner firmware alongside Scanner and Uplink
+- **Web flasher manifest** — `manifest-ble-scanner.json` for ESP32-S3 BLE scanner firmware
+- **README update** — BLE Scanner with smart glasses detection listed in ESP32 Hardware Edition section
+
+### Detection Database
+- 12 manufacturer Company IDs (Meta, Snap, Google, Vuzix, Bose, Axon, Brilliant Labs, TCL, Rokid, Amazon)
+- 4 service UUID signatures (Meta 0xFD5F, Bose 0xFDD2, Snap 0xFE45, Amazon 0xFE15)
+- 21 device name patterns covering all major smart glasses brands
+- GAP Appearance 0x01C0 (eyeglasses) detection as fallback
+- Confidence scoring from 0.50 to 0.95 based on match specificity
+
 ## [0.18.0-beta] - 2026-03-24
 
 ### Changed

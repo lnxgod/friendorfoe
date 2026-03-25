@@ -52,6 +52,22 @@ int console_output_get_total_count(void);
 /** Maximum number of cached detections for display scoreboard. */
 #define DETECTION_CACHE_SIZE 10
 
+#if CONFIG_FOF_GLASSES_DETECTION
+#include "glasses_detector.h"
+
+/** Attach a glasses detection queue for output. */
+void console_output_set_glasses_queue(QueueHandle_t glasses_queue);
+
+/** Maximum cached glasses detections for display. */
+#define GLASSES_CACHE_SIZE 10
+
+/** Get cached glasses detections. */
+int console_output_get_cached_glasses(glasses_detection_t *out, int max_count);
+
+/** Get cumulative glasses detection count. */
+int console_output_get_glasses_count(void);
+#endif
+
 /**
  * Copy all cached detections into @p out, sorted most-recent first.
  * @param out        Caller-allocated array of at least @p max_count entries

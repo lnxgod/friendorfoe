@@ -20,6 +20,10 @@
 #include "led_status.h"
 #include "oled_display.h"
 
+#if CONFIG_FOF_GLASSES_DETECTION
+#include "glasses_detector.h"
+#endif
+
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
@@ -32,7 +36,7 @@
 
 static const char *TAG = "fof_ble_scanner";
 
-#define FIRMWARE_VERSION    "0.16.0-beta"
+#define FIRMWARE_VERSION    "0.19.0-beta"
 #define DETECTION_QUEUE_LEN 50
 #define DISPLAY_UPDATE_MS   500
 
@@ -63,11 +67,33 @@ static void display_task(void *arg)
             oled_drones[i].rssi = det_list[i].rssi;
         }
 
-        /* Draw drone list (single clean screen, no separate stats overlay) */
-        if (page_index >= det_count && det_count > 0) {
-            page_index = 0;
+        /* Check for glasses detections and show alert if any */
+#if CONFIG_FOF_GLASSES_DETECTION
+        glasses_detection_t glasses_list[GLASSES_CACHE_SIZE];
+        int glasses_count = console_output_get_cached_glasses(glasses_list, GLASSES_CACHE_SIZE);
+
+        if (glasses_count > 0) {
+            /* Show glasses alert (highest RSSI first) */
+            int best = 0;
+            for (int i = 1; i < glasses_count; i++) {
+                if (glasses_list[i].rssi > glasses_list[best].rssi) best = i;
+            }
+            oled_show_glasses_alert(
+                glasses_list[best].device_type,
+                glasses_list[best].manufacturer,
+                glasses_list[best].device_name,
+                glasses_list[best].rssi,
+                glasses_list[best].has_camera
+            );
+        } else
+#endif
+        {
+            /* Draw drone list (single clean screen, no separate stats overlay) */
+            if (page_index >= det_count && det_count > 0) {
+                page_index = 0;
+            }
+            oled_draw_drone_list(oled_drones, det_count, page_index);
         }
-        oled_draw_drone_list(oled_drones, det_count, page_index);
 
         /* Page through drones every 3 seconds */
         if (det_count > 1) {
@@ -123,6 +149,17 @@ void app_main(void)
     ble_remote_id_init(detection_queue);
     ESP_LOGI(TAG, "BLE Remote ID scanner initialised");
 
+#if CONFIG_FOF_GLASSES_DETECTION
+    /* ── 6b. Create glasses detection queue and attach ──────────────── */
+    QueueHandle_t glasses_queue = xQueueCreate(20, sizeof(glasses_detection_t));
+    if (glasses_queue != NULL) {
+        ble_remote_id_set_glasses_queue(glasses_queue);
+        console_output_set_glasses_queue(glasses_queue);
+        bool glasses_on = glasses_detection_is_enabled();
+        ESP_LOGI(TAG, "Smart glasses detection: %s", glasses_on ? "ENABLED" : "DISABLED");
+    }
+#endif
+
     /* ── 7. Start console output task ─────────────────────────────────── */
     console_output_start(detection_queue);
 
@@ -161,6 +198,9 @@ void app_main(void)
     ESP_LOGI(TAG, "  ESP32 dual-core Xtensa @ 240 MHz");
 #endif
     ESP_LOGI(TAG, "  BLE Remote ID (OpenDroneID 0xFFFA)");
+#if CONFIG_FOF_GLASSES_DETECTION
+    ESP_LOGI(TAG, "  Smart glasses / privacy device detection: ON");
+#endif
     ESP_LOGI(TAG, "  Console JSON output");
     ESP_LOGI(TAG, "  Detection queue: %d slots", DETECTION_QUEUE_LEN);
     ESP_LOGI(TAG, "============================================");

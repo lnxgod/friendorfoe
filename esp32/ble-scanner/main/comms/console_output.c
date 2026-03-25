@@ -289,6 +289,22 @@ void console_output_start(QueueHandle_t detection_queue)
 
     ESP_LOGI(TAG, "Console output task created on core %d, priority %d",
              CONSOLE_TX_TASK_CORE, CONSOLE_TX_TASK_PRIORITY);
+
+#if CONFIG_FOF_GLASSES_DETECTION
+    /* Start glasses output task if queue is attached */
+    if (s_glasses_queue != NULL) {
+        xTaskCreatePinnedToCore(
+            glasses_output_task,
+            "glasses_tx",
+            3072,
+            NULL,
+            CONSOLE_TX_TASK_PRIORITY,
+            NULL,
+            CONSOLE_TX_TASK_CORE
+        );
+        ESP_LOGI(TAG, "Glasses output task created");
+    }
+#endif
 }
 
 int console_output_get_ble_count(void)
@@ -325,3 +341,126 @@ int console_output_get_cached_detections(scanner_detection_summary_t *out, int m
 
     return count;
 }
+
+/* ── Glasses detection support ─────────────────────────────────────────── */
+
+#if CONFIG_FOF_GLASSES_DETECTION
+
+static QueueHandle_t s_glasses_queue = NULL;
+static glasses_detection_t s_glasses_cache[GLASSES_CACHE_SIZE];
+static int s_glasses_cache_count = 0;
+static portMUX_TYPE s_glasses_lock = portMUX_INITIALIZER_UNLOCKED;
+static int s_glasses_count = 0;
+
+void console_output_set_glasses_queue(QueueHandle_t glasses_queue)
+{
+    s_glasses_queue = glasses_queue;
+}
+
+static void console_send_glasses(const glasses_detection_t *g)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return;
+
+    cJSON_AddStringToObject(root, "type", "glasses");
+    cJSON_AddStringToObject(root, "device", g->device_name[0] ? g->device_name : g->device_type);
+    cJSON_AddStringToObject(root, "device_type", g->device_type);
+    cJSON_AddStringToObject(root, "manufacturer", g->manufacturer);
+    cJSON_AddBoolToObject(root, "has_camera", g->has_camera);
+    cJSON_AddNumberToObject(root, "rssi", g->rssi);
+    cJSON_AddNumberToObject(root, "confidence", g->confidence);
+    cJSON_AddStringToObject(root, "match", g->match_reason);
+    cJSON_AddNumberToObject(root, "ts", (double)g->last_seen_ms);
+
+    char mac_str[18];
+    snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
+             g->mac[5], g->mac[4], g->mac[3], g->mac[2], g->mac[1], g->mac[0]);
+    cJSON_AddStringToObject(root, "mac", mac_str);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json_str) {
+        printf("%s\n", json_str);
+        cJSON_free(json_str);
+    }
+}
+
+/**
+ * Glasses output task — polls the glasses queue and outputs JSON.
+ * Runs as a lightweight task alongside the main console_output_task.
+ */
+static void glasses_output_task(void *arg)
+{
+    glasses_detection_t g;
+    const TickType_t timeout = pdMS_TO_TICKS(200);
+
+    for (;;) {
+        if (s_glasses_queue == NULL) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        if (xQueueReceive(s_glasses_queue, &g, timeout) == pdTRUE) {
+#if defined(CONFIG_FOF_GLASSES_ALERT_RSSI)
+            if (g.rssi < CONFIG_FOF_GLASSES_ALERT_RSSI) {
+                continue;  /* Too far away — skip */
+            }
+#endif
+            s_glasses_count++;
+
+            /* Cache for OLED display */
+            portENTER_CRITICAL(&s_glasses_lock);
+            {
+                /* Find existing entry by MAC or allocate new */
+                int idx = -1;
+                for (int i = 0; i < s_glasses_cache_count; i++) {
+                    if (memcmp(s_glasses_cache[i].mac, g.mac, 6) == 0) {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx < 0) {
+                    if (s_glasses_cache_count < GLASSES_CACHE_SIZE) {
+                        idx = s_glasses_cache_count++;
+                    } else {
+                        /* Evict oldest */
+                        int oldest = 0;
+                        for (int i = 1; i < s_glasses_cache_count; i++) {
+                            if (s_glasses_cache[i].last_seen_ms < s_glasses_cache[oldest].last_seen_ms) {
+                                oldest = i;
+                            }
+                        }
+                        idx = oldest;
+                    }
+                }
+                s_glasses_cache[idx] = g;
+            }
+            portEXIT_CRITICAL(&s_glasses_lock);
+
+            console_send_glasses(&g);
+            led_set_pattern(LED_DETECTION);
+
+            ESP_LOGI(TAG, "GLASSES: %s (%s) RSSI=%d cam=%s [%s]",
+                     g.device_type, g.manufacturer, g.rssi,
+                     g.has_camera ? "YES" : "no", g.match_reason);
+        }
+    }
+}
+
+int console_output_get_cached_glasses(glasses_detection_t *out, int max_count)
+{
+    if (!out || max_count <= 0) return 0;
+
+    portENTER_CRITICAL(&s_glasses_lock);
+    int count = s_glasses_cache_count < max_count ? s_glasses_cache_count : max_count;
+    memcpy(out, s_glasses_cache, count * sizeof(glasses_detection_t));
+    portEXIT_CRITICAL(&s_glasses_lock);
+
+    return count;
+}
+
+int console_output_get_glasses_count(void)
+{
+    return s_glasses_count;
+}
+
+#endif /* CONFIG_FOF_GLASSES_DETECTION */

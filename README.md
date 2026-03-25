@@ -34,6 +34,7 @@ Install the APK, point at the sky — ADS-B, BLE Remote ID, WiFi, and visual ML 
 Always-on, unattended drone detection. Two-board system you can build for ~$25-40:
 
 - **Scanner** (ESP32-S3 or ESP32-C5) — BLE Remote ID + WiFi promiscuous frame capture, Bayesian fusion, JSON output over UART
+- **BLE Scanner** (ESP32-S3/ESP32) — Standalone BLE detector with OLED display. Detects drones via Remote ID AND smart glasses / privacy devices (Meta Ray-Ban, Snap Spectacles, Xreal, etc.)
 - **Uplink** (ESP32-C3) — GPS, OLED status display, WiFi backhaul to backend
 - **ESP32-C5 variant** — dual-band WiFi 6 scans 2.4 GHz AND 5 GHz (38 channels), catches modern drones that hide on 5 GHz
 - **Flash from your browser** — no toolchain needed: [**ESP32 Web Flasher**](https://lnxgod.github.io/friendorfoe/)

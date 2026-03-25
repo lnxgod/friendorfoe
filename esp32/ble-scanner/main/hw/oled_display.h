@@ -54,6 +54,21 @@ void oled_draw_drone_list(const oled_drone_entry_t *drones, int count,
 
 void oled_clear(void);
 
+#if CONFIG_FOF_GLASSES_DETECTION
+/**
+ * Show a glasses/privacy device alert on the OLED.
+ *
+ * @param device_type   e.g. "Smart Glasses", "Body Camera"
+ * @param manufacturer  e.g. "Meta", "Snap"
+ * @param device_name   BLE advertised name (may be empty)
+ * @param rssi          Signal strength
+ * @param has_camera    Whether the device has a camera
+ */
+void oled_show_glasses_alert(const char *device_type, const char *manufacturer,
+                              const char *device_name, int8_t rssi,
+                              bool has_camera);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
