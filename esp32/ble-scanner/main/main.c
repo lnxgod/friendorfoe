@@ -55,6 +55,7 @@ static const char *TAG = "fof_ble_scanner";
 static volatile bool s_button_short = false;   /* single short press */
 static volatile bool s_button_long = false;    /* long press */
 static volatile bool s_button_triple = false;  /* triple tap */
+static volatile bool s_button_double = false;  /* double tap */
 static volatile int64_t s_button_down_ms = 0;
 
 /* Triple-tap tracking */
@@ -107,6 +108,8 @@ static void button_poll(void)
                     s_button_triple = true;
                     s_tap_count = 0;
                     ESP_LOGI(TAG, "BOOT: TRIPLE tap (cycle scan mode)");
+                } else if (s_tap_count == 2) {
+                    /* Don't emit yet — wait to see if 3rd tap comes */
                 }
             }
             s_button_down_ms = 0;
@@ -114,10 +117,15 @@ static void button_poll(void)
         }
     }
 
-    /* If tap sequence timed out with 1 tap, emit single press */
+    /* If tap sequence timed out, emit the appropriate action */
     if (s_tap_count > 0 && s_tap_count < 3 &&
         (now_ms - s_first_tap_ms) > TRIPLE_TAP_WINDOW_MS) {
-        s_button_short = true;
+        if (s_tap_count == 2) {
+            s_button_double = true;
+            ESP_LOGI(TAG, "BOOT: DOUBLE tap (lock tracking)");
+        } else {
+            s_button_short = true;
+        }
         s_tap_count = 0;
     }
 }
@@ -170,6 +178,21 @@ static void ack_device(const char *mac_str)
     s_acked_count++;
     ESP_LOGI(TAG, "Device ACK'd (friendly): %s (%d total)", mac_str, s_acked_count);
 }
+
+/* ── Tracking lock state ──────────────────────────────────────────────── */
+
+static volatile bool s_tracking_locked = false;     /* double-tap toggles */
+static volatile int8_t s_tracking_rssi = -100;      /* current tracked RSSI */
+static volatile int8_t s_tracking_baseline = -100;  /* baseline RSSI (normalized after 3s) */
+static volatile int64_t s_tracking_lock_ms = 0;
+static char s_tracking_mac[18] = {0};
+
+/* ── ACK confirmation overlay ─────────────────────────────────────────── */
+static volatile int64_t s_ack_confirm_ms = 0;       /* when ACK was pressed */
+static char s_ack_confirm_name[24] = {0};            /* name to show */
+#define ACK_CONFIRM_DURATION_MS 2000
+
+/* s_button_double declared above with other button flags */
 
 /* ── Hybrid WiFi scan task (time-sliced with BLE) ─────────────────────── */
 
@@ -237,6 +260,19 @@ static void display_task(void *arg)
             ESP_LOGI(TAG, "Scan mode: %s", scan_mode_label(s_scan_mode));
         }
 
+        /* ── Double tap: toggle tracking lock ─────────────────── */
+        if (s_button_double) {
+            s_button_double = false;
+            s_tracking_locked = !s_tracking_locked;
+            if (s_tracking_locked) {
+                s_tracking_lock_ms = now_ms;
+                s_tracking_baseline = -100; /* will normalize after 3s */
+                ESP_LOGI(TAG, "TRACKING LOCKED on current device");
+            } else {
+                ESP_LOGI(TAG, "TRACKING UNLOCKED");
+            }
+        }
+
         /* Fetch data */
         scanner_detection_summary_t det_list[DETECTION_CACHE_SIZE];
         int det_count = console_output_get_cached_detections(det_list, DETECTION_CACHE_SIZE);
@@ -254,10 +290,12 @@ static void display_task(void *arg)
         /* ── Short press: next page, wrap to other mode ─────────── */
         if (s_button_short) {
             s_button_short = false;
-            page_index++;
-            if (page_index >= current_max || current_max == 0) {
-                show_privacy = !show_privacy;
-                page_index = 0;
+            if (!s_tracking_locked) {
+                page_index++;
+                if (page_index >= current_max || current_max == 0) {
+                    show_privacy = !show_privacy;
+                    page_index = 0;
+                }
             }
             cycle_counter = 0;
         }
@@ -267,29 +305,51 @@ static void display_task(void *arg)
             s_button_long = false;
 #if CONFIG_FOF_GLASSES_DETECTION
             if (show_privacy && glasses_count > 0 && page_index < glasses_count) {
-                /* Build MAC string from the glasses detection */
                 char mac_str[18];
                 snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
                     glasses_list[page_index].mac[0], glasses_list[page_index].mac[1],
                     glasses_list[page_index].mac[2], glasses_list[page_index].mac[3],
                     glasses_list[page_index].mac[4], glasses_list[page_index].mac[5]);
                 ack_device(mac_str);
+                /* Show confirmation */
+                s_ack_confirm_ms = now_ms;
+                snprintf(s_ack_confirm_name, sizeof(s_ack_confirm_name), "%.16s",
+                    glasses_list[page_index].manufacturer);
             } else
 #endif
             {
-                /* In drone mode, long press switches view */
                 show_privacy = !show_privacy;
                 page_index = 0;
             }
             cycle_counter = 0;
         }
 
+        /* ── ACK confirmation overlay (shows for 2 seconds) ──────── */
+        if (s_ack_confirm_ms > 0 && (now_ms - s_ack_confirm_ms) < ACK_CONFIRM_DURATION_MS) {
+            oled_show_glasses_alert("ACKNOWLEDGED", s_ack_confirm_name, "Marked as friendly", 0, false);
+            oled_draw_status_bar("[OK] device whitelisted", 0);
+            vTaskDelay(pdMS_TO_TICKS(DISPLAY_UPDATE_MS));
+            continue;
+        }
+        s_ack_confirm_ms = 0;
+
+        /* ── Update tracking RSSI if locked ──────────────────────── */
+#if CONFIG_FOF_GLASSES_DETECTION
+        if (s_tracking_locked && glasses_count > 0 && page_index < glasses_count) {
+            s_tracking_rssi = glasses_list[page_index].rssi;
+            /* Set baseline after 3 seconds of lock */
+            if (s_tracking_baseline == -100 && (now_ms - s_tracking_lock_ms) > 3000) {
+                s_tracking_baseline = s_tracking_rssi;
+                ESP_LOGI(TAG, "Tracking baseline set: %d dBm", s_tracking_baseline);
+            }
+        }
+#endif
+
         /* ── Render current mode ────────────────────────────────── */
 #if CONFIG_FOF_GLASSES_DETECTION
         if (show_privacy && glasses_count > 0) {
             if (page_index >= glasses_count) page_index = 0;
 
-            /* Check if this device is ACK'd */
             char cur_mac[18];
             snprintf(cur_mac, sizeof(cur_mac), "%02x:%02x:%02x:%02x:%02x:%02x",
                 glasses_list[page_index].mac[0], glasses_list[page_index].mac[1],
@@ -297,11 +357,14 @@ static void display_task(void *arg)
                 glasses_list[page_index].mac[4], glasses_list[page_index].mac[5]);
             bool acked = is_acked(cur_mac);
 
-            /* Show alert — prefix device type with "NEW" or "OK" */
             char type_buf[32];
-            snprintf(type_buf, sizeof(type_buf), "%s%s",
-                acked ? "" : "NEW ",
-                glasses_list[page_index].device_type);
+            if (s_tracking_locked) {
+                snprintf(type_buf, sizeof(type_buf), ">>%s", glasses_list[page_index].device_type);
+            } else {
+                snprintf(type_buf, sizeof(type_buf), "%s%s",
+                    acked ? "" : "NEW ",
+                    glasses_list[page_index].device_type);
+            }
 
             oled_show_glasses_alert(
                 type_buf,
@@ -317,7 +380,6 @@ static void display_task(void *arg)
         } else
 #endif
         {
-            /* Drone mode */
             oled_drone_entry_t oled_drones[DETECTION_CACHE_SIZE];
             for (int i = 0; i < det_count; i++) {
                 oled_drones[i].id   = det_list[i].drone_id;
@@ -331,21 +393,47 @@ static void display_task(void *arg)
             oled_draw_drone_list(oled_drones, det_count, page_index);
         }
 
-        /* ── Status bar: [mode] time since last detection ─────────── */
-        {
+        /* ── Bottom bar: signal strength bar if tracking, else status ── */
+        if (s_tracking_locked && s_tracking_rssi > -100) {
+            /* RSSI signal bar: -100 = empty, -40 = full */
+            int bar_pct = (s_tracking_rssi + 100) * 100 / 60;
+            if (bar_pct < 0) bar_pct = 0;
+            if (bar_pct > 100) bar_pct = 100;
+
+            /* Direction indicator based on baseline comparison */
+            const char *direction = "";
+            if (s_tracking_baseline > -100) {
+                int delta = s_tracking_rssi - s_tracking_baseline;
+                if (delta > 3) direction = " CLOSER>>>";
+                else if (delta < -3) direction = " <<<AWAY";
+                else direction = " ~SAME";
+            }
+
+            char bar[22];
+            snprintf(bar, sizeof(bar), "%ddB %d%%%s",
+                s_tracking_rssi, bar_pct, direction);
+            oled_draw_status_bar(bar, 0);
+
+            /* Also set LED color on S3 (green→red based on proximity) */
+            if (bar_pct > 70) led_set_pattern(LED_DETECTION);  /* red = very close */
+            else if (bar_pct > 40) led_set_pattern(LED_UART_OK); /* cyan = medium */
+            else led_set_pattern(LED_SCANNING); /* green = far */
+        } else {
+            /* Normal status: mode + time since last detection */
             int64_t last_det = show_privacy ? s_last_privacy_det_ms : s_last_drone_det_ms;
             uint32_t ago_s = (last_det > 0) ? (uint32_t)((now_ms - last_det) / 1000) : 0;
             char status[22];
             if (last_det == 0) {
-                snprintf(status, sizeof(status), "[%s] no detections", scan_mode_label(s_scan_mode));
+                snprintf(status, sizeof(status), "[%s] scanning...", scan_mode_label(s_scan_mode));
+            } else if (ago_s < 2) {
+                snprintf(status, sizeof(status), "[%s] LIVE", scan_mode_label(s_scan_mode));
             } else if (ago_s < 60) {
                 snprintf(status, sizeof(status), "[%s] %lus ago", scan_mode_label(s_scan_mode), (unsigned long)ago_s);
             } else {
-                snprintf(status, sizeof(status), "[%s] %lum%lus ago",
-                    scan_mode_label(s_scan_mode),
-                    (unsigned long)(ago_s / 60), (unsigned long)(ago_s % 60));
+                snprintf(status, sizeof(status), "[%s] %lum ago",
+                    scan_mode_label(s_scan_mode), (unsigned long)(ago_s / 60));
             }
-            oled_draw_status_bar(status, 0); /* pass 0 for uptime — not used anymore */
+            oled_draw_status_bar(status, 0);
         }
 
         /* ── Auto-advance page every 3s ─────────────────────────── */
