@@ -27,10 +27,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -44,8 +49,13 @@ import com.friendorfoe.BuildConfig
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AboutScreen(onBack: () -> Unit) {
+fun AboutScreen(
+    onBack: () -> Unit,
+    isGlassesDetectionEnabled: Boolean = false,
+    onGlassesDetectionToggle: ((Boolean) -> Unit)? = null
+) {
     val context = LocalContext.current
+    var glassesEnabled by remember { mutableStateOf(isGlassesDetectionEnabled) }
 
     Scaffold(
         topBar = {
@@ -189,6 +199,39 @@ fun AboutScreen(onBack: () -> Unit) {
                     BulletItem("Aircraft data from public ADS-B feeds")
                     BulletItem("No personal data is collected or transmitted")
                     BulletItem("All detection data stays on your device")
+                }
+            }
+
+            // Settings
+            if (onGlassesDetectionToggle != null) {
+                item {
+                    SectionCard(title = "Settings") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Smart Glasses Detection",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = "Detect Meta Ray-Ban, Snap Spectacles, Xreal, and other camera-equipped smart glasses nearby via BLE",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Switch(
+                                checked = glassesEnabled,
+                                onCheckedChange = {
+                                    glassesEnabled = it
+                                    onGlassesDetectionToggle(it)
+                                }
+                            )
+                        }
+                    }
                 }
             }
 

@@ -66,6 +66,9 @@ class ListViewModel @Inject constructor(
         initialValue = emptyList()
     )
 
+    /** Smart glasses / privacy devices detected nearby. */
+    val glassesDetections = skyObjectRepository.glassesDetections
+
     private val _userPosition = MutableStateFlow(
         Position(latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0)
     )

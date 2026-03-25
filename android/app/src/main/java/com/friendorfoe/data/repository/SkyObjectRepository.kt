@@ -5,9 +5,12 @@ import com.friendorfoe.data.local.HistoryDao
 import com.friendorfoe.data.local.HistoryEntity
 import com.friendorfoe.data.local.TrackingDao
 import com.friendorfoe.data.local.TrackingEntity
+import com.friendorfoe.data.GlassesDetectionPrefs
 import com.friendorfoe.detection.AdsbPoller
 import com.friendorfoe.detection.BayesianFusionEngine
 import com.friendorfoe.detection.DataSourceStatus
+import com.friendorfoe.detection.GlassesDetection
+import com.friendorfoe.detection.GlassesDetector
 import com.friendorfoe.detection.RemoteIdScanner
 import com.friendorfoe.detection.WifiDroneScanner
 import com.friendorfoe.detection.WifiNanRemoteIdScanner
@@ -53,6 +56,8 @@ class SkyObjectRepository @Inject constructor(
     private val remoteIdScanner: RemoteIdScanner,
     private val wifiDroneScanner: WifiDroneScanner,
     private val wifiNanRemoteIdScanner: WifiNanRemoteIdScanner,
+    private val glassesDetector: GlassesDetector,
+    private val glassesPrefs: GlassesDetectionPrefs,
     private val fusionEngine: BayesianFusionEngine,
     private val historyDao: HistoryDao,
     private val trackingDao: TrackingDao
@@ -92,6 +97,23 @@ class SkyObjectRepository @Inject constructor(
 
     /** Combined, deduplicated list of all detected sky objects. */
     val skyObjects: StateFlow<List<SkyObject>> = _skyObjects.asStateFlow()
+
+    private val _glassesDetections = MutableStateFlow<List<GlassesDetection>>(emptyList())
+
+    /** Smart glasses / privacy devices detected nearby. */
+    val glassesDetections: StateFlow<List<GlassesDetection>> = _glassesDetections.asStateFlow()
+
+    /** Whether glasses detection is currently enabled. */
+    val isGlassesDetectionEnabled: Boolean get() = glassesPrefs.isEnabled
+
+    /** Toggle glasses detection on/off. Takes effect on next start(). */
+    fun setGlassesDetectionEnabled(enabled: Boolean) {
+        glassesPrefs.isEnabled = enabled
+        if (!enabled) {
+            _glassesDetections.value = emptyList()
+            glassesDetector.stopScanning()
+        }
+    }
 
     /** Get the position trail for a given object ID. */
     fun getTrail(objectId: String): List<TrailPoint> {
@@ -133,6 +155,9 @@ class SkyObjectRepository @Inject constructor(
             launch { collectRemoteId() }
             launch { collectWifiNan() }
             launch { collectWifi() }
+            if (glassesPrefs.isEnabled) {
+                launch { collectGlasses() }
+            }
         }
     }
 
@@ -241,6 +266,25 @@ class SkyObjectRepository @Inject constructor(
                 Log.d(TAG, "WiFi updated: drone ${drone.ssid}")
             }
             rebuildMergedList()
+        }
+    }
+
+    /**
+     * Collect smart glasses / privacy device detections from BLE.
+     */
+    private suspend fun collectGlasses() {
+        val glassesMap = mutableMapOf<String, GlassesDetection>()
+        glassesDetector.startScanning().collect { detection ->
+            glassesMap[detection.mac] = detection
+            // Prune stale entries (>60s)
+            val now = Instant.now()
+            val staleKeys = glassesMap.filter {
+                Duration.between(it.value.lastSeen, now).seconds > 60
+            }.keys
+            staleKeys.forEach { glassesMap.remove(it) }
+            _glassesDetections.value = glassesMap.values
+                .sortedByDescending { it.rssi }
+                .toList()
         }
     }
 
