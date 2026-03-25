@@ -101,20 +101,6 @@ fun ListViewScreen(
             onNavigateToAbout = onNavigateToAbout
         )
 
-        // Stalker alert banner (highest priority)
-        if (stalkerAlerts.isNotEmpty()) {
-            StalkerAlertBanner(stalkerAlerts)
-        }
-
-        // Privacy scanner section — expandable with ignore/track/details
-        if (glassesDetections.isNotEmpty()) {
-            PrivacyScannerSection(
-                detections = glassesDetections,
-                onIgnore = { mac -> viewModel.ignoreDevice(mac) },
-                onTrack = { mac -> viewModel.startDirectionScan(mac) }
-            )
-        }
-
         if (skyObjects.isEmpty()) {
             EmptyListState()
         } else {

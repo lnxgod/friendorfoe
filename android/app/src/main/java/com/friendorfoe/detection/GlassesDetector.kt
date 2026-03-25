@@ -15,6 +15,22 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * Category for privacy-threatening devices, used for tree view grouping.
+ */
+enum class PrivacyCategory(val label: String, val icon: String, val threatLevel: Int) {
+    SMART_GLASSES("Smart Glasses", "\uD83D\uDC53", 3),
+    BLE_TRACKER("BLE Trackers", "\uD83D\uDCCD", 3),
+    HIDDEN_CAMERA("Hidden Cameras", "\uD83D\uDCF7", 3),
+    BODY_CAMERA("Body Cameras", "\uD83D\uDCF9", 2),
+    VEHICLE_CAMERA("Vehicle Cameras", "\uD83D\uDE97", 2),
+    ATTACK_TOOL("Attack Tools", "\u26A0\uFE0F", 3),
+    ACTION_CAMERA("Action Cameras", "\uD83C\uDFA5", 1),
+    DASH_CAMERA("Dash Cameras", "\uD83D\uDE99", 1),
+    IOT_DEVICE("IoT Devices", "\uD83C\uDFE0", 1),
+    INFORMATIONAL("Informational", "\u2139\uFE0F", 0),
+}
+
+/**
  * Detected smart glasses or privacy-intrusion device.
  */
 data class GlassesDetection(
@@ -28,7 +44,8 @@ data class GlassesDetection(
     val matchReason: String,
     val firstSeen: Instant,
     val lastSeen: Instant,
-    val details: Map<String, String> = emptyMap()
+    val details: Map<String, String> = emptyMap(),
+    val category: PrivacyCategory = PrivacyCategory.INFORMATIONAL
 )
 
 /**
@@ -159,7 +176,7 @@ class GlassesDetector @Inject constructor(
         MfrEntry(0x01AB, "Meta", "Smart Glasses", 0.90f, true),
         MfrEntry(0x058E, "Meta", "Smart Glasses", 0.90f, true),
         MfrEntry(0x03C2, "Snap", "Smart Glasses", 0.85f, true),
-        MfrEntry(0x00E0, "Google", "Smart Glasses", 0.80f, true),
+        // Google CID 0x00E0 removed — too broad, matches Nest/Chromecast/Pixel
         MfrEntry(0x060C, "Vuzix", "Smart Glasses", 0.85f, true),
         MfrEntry(0x009E, "Bose", "Audio Glasses", 0.75f, false),
         MfrEntry(0x009F, "Bose", "Audio Glasses", 0.75f, false),
@@ -198,9 +215,9 @@ class GlassesDetector @Inject constructor(
         UuidEntry(0xFEED, "Tile", "BLE Tracker", 0.85f, false),
         UuidEntry(0xFEEC, "Tile", "BLE Tracker", 0.85f, false),
         UuidEntry(0xFCB2, "DULT", "BLE Tracker", 0.90f, false),
-        UuidEntry(0xFE2C, "Google", "BLE Tracker", 0.85f, false),
-        // Retail Tracking
-        UuidEntry(0xFEAA, "Google", "Tracking Beacon", 0.70f, false),
+        UuidEntry(0xFE2C, "Google", "Fast Pair", 0.65f, false),
+        // Retail Tracking — informational only
+        UuidEntry(0xFEAA, "Google", "Eddystone Beacon", 0.65f, false),
         // IoT ecosystems
         // Xiaomi UUID 0xFD2E removed — too broad, matches all Mi Home devices
     )
@@ -263,6 +280,30 @@ class GlassesDetector @Inject constructor(
     )
 
     private val GAP_APPEARANCE_EYEGLASSES = 0x01C0
+
+    private fun categorize(deviceType: String): PrivacyCategory = when {
+        deviceType.contains("Glasses", ignoreCase = true) -> PrivacyCategory.SMART_GLASSES
+        deviceType.contains("Audio Glasses", ignoreCase = true) -> PrivacyCategory.SMART_GLASSES
+        deviceType.contains("Tracker", ignoreCase = true) -> PrivacyCategory.BLE_TRACKER
+        deviceType.contains("AirTag", ignoreCase = true) -> PrivacyCategory.BLE_TRACKER
+        deviceType.contains("Hidden Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+        deviceType.contains("Spy Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+        deviceType.contains("IP Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+        deviceType.contains("Body Camera", ignoreCase = true) -> PrivacyCategory.BODY_CAMERA
+        deviceType.contains("Vehicle", ignoreCase = true) -> PrivacyCategory.VEHICLE_CAMERA
+        deviceType.contains("Attack", ignoreCase = true) -> PrivacyCategory.ATTACK_TOOL
+        deviceType.contains("Action Camera", ignoreCase = true) -> PrivacyCategory.ACTION_CAMERA
+        deviceType.contains("Dash Camera", ignoreCase = true) -> PrivacyCategory.DASH_CAMERA
+        deviceType.contains("Endoscope", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+        deviceType.contains("Robot Vacuum", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
+        deviceType.contains("IoT", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
+        deviceType.contains("Camera Remote", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
+        deviceType.contains("Doorbell", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+        deviceType.contains("Trail Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+        deviceType.contains("Beacon", ignoreCase = true) -> PrivacyCategory.INFORMATIONAL
+        deviceType.contains("Fast Pair", ignoreCase = true) -> PrivacyCategory.INFORMATIONAL
+        else -> PrivacyCategory.INFORMATIONAL
+    }
 
     private val detectedDevices = java.util.concurrent.ConcurrentHashMap<String, GlassesDetection>()
     private var bleScanner: BluetoothLeScanner? = null
@@ -383,20 +424,39 @@ class GlassesDetector @Inject constructor(
         // 1b. Apple-specific: AirTag (FindMy type 0x12) and iBeacon (type 0x02)
         if (mfrData != null) {
             val appleData = mfrData.get(0x004C) // Apple Inc. Company ID
-            if (appleData != null && appleData.isNotEmpty()) {
+            if (appleData != null && appleData.size >= 3) {
                 val appleType = appleData[0].toInt() and 0xFF
-                if (appleType == 0x12) {
-                    // AirTag / FindMy accessory
-                    val c = 0.95f
-                    if (c > bestConf) {
-                        bestConf = c; bestMfr = "Apple"; bestType = "AirTag/FindMy"
-                        bestCamera = false; bestReason = "apple_findmy:0x12"
+                if (appleType == 0x12 && appleData.size >= 3) {
+                    // FindMy type 0x12 — but only flag as tracker if it looks like
+                    // an actual AirTag/accessory. Check length byte = 0x19 (25 bytes)
+                    // which indicates a FindMy accessory vs a phone relay.
+                    val lengthByte = appleData[1].toInt() and 0xFF
+                    if (lengthByte == 0x19 && appleData.size >= 27) {
+                        // This is a FindMy accessory (AirTag, Chipolo, etc.)
+                        val statusByte = appleData[2].toInt() and 0xFF
+                        val separated = (statusByte and 0x20) == 0 // bit 5 = 0 means separated
+                        if (separated) {
+                            // Separated AirTag — potential stalker tracker
+                            val c = 0.95f
+                            if (c > bestConf) {
+                                bestConf = c; bestMfr = "Apple"; bestType = "AirTag (Separated)"
+                                bestCamera = false; bestReason = "airtag_separated"
+                            }
+                        } else {
+                            // AirTag near its owner — low threat, informational only
+                            val c = 0.65f
+                            if (c > bestConf) {
+                                bestConf = c; bestMfr = "Apple"; bestType = "AirTag (Near Owner)"
+                                bestCamera = false; bestReason = "airtag_near_owner"
+                            }
+                        }
                     }
+                    // Else: iPhone/iPad/Mac FindMy relay — skip entirely (not a tracker)
                 } else if (appleType == 0x02 && appleData.size >= 21) {
-                    // iBeacon (retail tracking)
-                    val c = 0.70f
+                    // iBeacon (retail tracking) — informational
+                    val c = 0.65f
                     if (c > bestConf) {
-                        bestConf = c; bestMfr = "Apple"; bestType = "Tracking Beacon"
+                        bestConf = c; bestMfr = "Apple"; bestType = "iBeacon"
                         bestCamera = false; bestReason = "ibeacon:0x02"
                     }
                 }
@@ -462,6 +522,9 @@ class GlassesDetector @Inject constructor(
         // Parse rich details from the raw packet
         val parsedDetails = BlePacketParser.parseAllDetails(result)
 
+        // Assign category based on device type
+        val category = categorize(bestType)
+
         val now = Instant.now()
         val existing = detectedDevices[mac]
         val detection = GlassesDetection(
@@ -475,7 +538,8 @@ class GlassesDetector @Inject constructor(
             matchReason = bestReason,
             firstSeen = existing?.firstSeen ?: now,
             lastSeen = now,
-            details = parsedDetails
+            details = parsedDetails,
+            category = category
         )
         detectedDevices[mac] = detection
 

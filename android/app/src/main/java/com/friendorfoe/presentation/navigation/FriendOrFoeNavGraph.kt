@@ -100,6 +100,10 @@ fun FriendOrFoeNavGraph(
             )
         }
 
+        composable(Screen.Privacy.route) {
+            com.friendorfoe.presentation.privacy.PrivacyScreen()
+        }
+
         composable(Screen.About.route) {
             val aboutViewModel: com.friendorfoe.presentation.about.AboutViewModel = hiltViewModel()
             AboutScreen(
