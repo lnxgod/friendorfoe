@@ -4,6 +4,15 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.26.0-beta] - 2026-03-25
+
+### Added
+- **25 new detection signatures** — Total now **136 signatures** (39 BLE names, 15 CIDs, 12 UUIDs, 70 WiFi SSIDs)
+- **New BLE trackers**: Chipolo, Pebblebee, Eufy SmartTrack, Nutale name patterns
+- **New WiFi cameras**: Wyze, Reolink, TP-Link Tapo, Hikvision, Dahua, Amcrest, Arlo, Blink, Eufy, Furbo pet camera, Petcube, Nanit baby monitor
+- **New WiFi action/dash cams**: Akaso, SJCAM, Rexing, Apeman, YI dashcam
+- **ESP32 parity**: Same false positive fixes (Glass→Glass EE, removed Google CID, raised threshold) and new tracker names applied to ESP32 glasses_detector.c
+
 ## [0.25.0-beta] - 2026-03-25
 
 ### Added

@@ -14,8 +14,8 @@ Friend or Foe is an open-source **privacy awareness** and **airspace detection**
 | Category | Examples | Method |
 |----------|----------|--------|
 | **Smart Glasses** | Meta Ray-Ban, Snap Spectacles, Xreal, Vuzix, Google Glass, Bose Frames | BLE manufacturer ID + service UUID |
-| **BLE Trackers** | Apple AirTag, Samsung SmartTag, Tile, Google Find My | BLE service UUID + manufacturer data |
-| **Hidden Cameras** | WiFi spy cams, IP cameras, nanny cams, charger cams | WiFi SSID patterns + BLE names |
+| **BLE Trackers** | Apple AirTag, Samsung SmartTag, Tile, Chipolo, Pebblebee, Eufy SmartTrack, Nutale | BLE service UUID + manufacturer data |
+| **Hidden Cameras** | WiFi spy cams, IP cameras, nanny cams, Wyze, Reolink, Tapo, Hikvision, Dahua, Amcrest, Arlo, Blink | WiFi SSID patterns + BLE names |
 | **Body Cameras** | Axon, Motorola VISTA | BLE + WiFi signatures |
 | **Attack Tools** | Flipper Zero, WiFi Pineapple | BLE name + WiFi SSID |
 | **Vehicle Cameras** | Tesla Sentry Mode | BLE advertisement |
