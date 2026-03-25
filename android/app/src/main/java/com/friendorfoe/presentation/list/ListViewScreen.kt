@@ -61,6 +61,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 @Composable
 fun ListViewScreen(
     onObjectTapped: (String) -> Unit,
+    onNavigateToReferenceGuide: (() -> Unit)? = null,
+    onNavigateToAbout: (() -> Unit)? = null,
     viewModel: ListViewModel = hiltViewModel()
 ) {
     val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
@@ -85,7 +87,9 @@ fun ListViewScreen(
         FilterBar(
             filterState = filterState,
             onFilterStateChange = { viewModel.updateFilter(it) },
-            resultCount = skyObjects.size
+            resultCount = skyObjects.size,
+            onNavigateToReferenceGuide = onNavigateToReferenceGuide,
+            onNavigateToAbout = onNavigateToAbout
         )
 
         if (skyObjects.isEmpty()) {

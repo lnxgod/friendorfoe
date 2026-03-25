@@ -2,6 +2,7 @@ package com.friendorfoe.data.local
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
@@ -10,7 +11,14 @@ import androidx.room.PrimaryKey
  * Stores every unique sky object detected, with timestamps and
  * enriched data, for the History screen.
  */
-@Entity(tableName = "detection_history")
+@Entity(
+    tableName = "detection_history",
+    indices = [
+        Index(value = ["object_id"]),
+        Index(value = ["object_type"]),
+        Index(value = ["last_seen"])
+    ]
+)
 data class HistoryEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,

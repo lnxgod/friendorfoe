@@ -1,5 +1,10 @@
 package com.friendorfoe.presentation.navigation
 
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -31,7 +36,11 @@ fun FriendOrFoeNavGraph(
 ) {
     NavHost(
         navController = navController,
-        startDestination = Screen.Welcome.route
+        startDestination = Screen.Welcome.route,
+        enterTransition = { fadeIn(tween(300)) + slideInHorizontally { it / 4 } },
+        exitTransition = { fadeOut(tween(200)) },
+        popEnterTransition = { fadeIn(tween(300)) + slideInHorizontally { -it / 4 } },
+        popExitTransition = { fadeOut(tween(200)) + slideOutHorizontally { it / 4 } }
     ) {
         composable(Screen.Welcome.route) {
             WelcomeScreen(
@@ -67,6 +76,12 @@ fun FriendOrFoeNavGraph(
             ListViewScreen(
                 onObjectTapped = { objectId ->
                     navController.navigate(Screen.Detail.createRoute(objectId))
+                },
+                onNavigateToReferenceGuide = {
+                    navController.navigate(Screen.ReferenceGuide.route) { launchSingleTop = true }
+                },
+                onNavigateToAbout = {
+                    navController.navigate(Screen.About.route) { launchSingleTop = true }
                 }
             )
         }
@@ -75,6 +90,12 @@ fun FriendOrFoeNavGraph(
             HistoryScreen(
                 onEntryTapped = { objectId ->
                     navController.navigate(Screen.Detail.createRoute(objectId))
+                },
+                onNavigateToReferenceGuide = {
+                    navController.navigate(Screen.ReferenceGuide.route) { launchSingleTop = true }
+                },
+                onNavigateToAbout = {
+                    navController.navigate(Screen.About.route) { launchSingleTop = true }
                 }
             )
         }

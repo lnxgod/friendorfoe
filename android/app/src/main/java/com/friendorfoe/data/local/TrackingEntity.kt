@@ -2,9 +2,16 @@ package com.friendorfoe.data.local
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "position_tracking")
+@Entity(
+    tableName = "position_tracking",
+    indices = [
+        Index(value = ["object_id"]),
+        Index(value = ["timestamp"])
+    ]
+)
 data class TrackingEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     @ColumnInfo(name = "object_id") val objectId: String,

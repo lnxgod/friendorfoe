@@ -12,18 +12,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Map
-import androidx.compose.material.icons.filled.FlightTakeoff
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -149,38 +143,6 @@ fun FriendOrFoeApp() {
                                 )
                             },
                             label = { Text(item.label) }
-                        )
-                    }
-
-                    // Reference Guide icon
-                    IconButton(
-                        onClick = {
-                            navController.navigate(Screen.ReferenceGuide.route) {
-                                launchSingleTop = true
-                            }
-                        },
-                        modifier = Modifier.size(48.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.FlightTakeoff,
-                            contentDescription = "Reference",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    // Info/About icon
-                    IconButton(
-                        onClick = {
-                            navController.navigate(Screen.About.route) {
-                                launchSingleTop = true
-                            }
-                        },
-                        modifier = Modifier.size(48.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Info,
-                            contentDescription = "About",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }

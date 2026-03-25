@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  */
 @Database(
     entities = [HistoryEntity::class, TrackingEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class FriendOrFoeDatabase : RoomDatabase() {
@@ -33,13 +33,24 @@ abstract class FriendOrFoeDatabase : RoomDatabase() {
             }
         }
 
+        /** Migration from v3 to v4: add indices for query performance. */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_detection_history_object_id` ON `detection_history` (`object_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_detection_history_object_type` ON `detection_history` (`object_type`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_detection_history_last_seen` ON `detection_history` (`last_seen`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_position_tracking_object_id` ON `position_tracking` (`object_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_position_tracking_timestamp` ON `position_tracking` (`timestamp`)")
+            }
+        }
+
         fun create(context: Context): FriendOrFoeDatabase {
             return Room.databaseBuilder(
                 context.applicationContext,
                 FriendOrFoeDatabase::class.java,
                 DATABASE_NAME
             )
-                .addMigrations(MIGRATION_2_3)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                 .build()
         }
     }

@@ -1,84 +1,117 @@
 /**
- * Friend or Foe — Flight Simulator Engine
+ * Friend or Foe — Multi-Drone Flight Simulator
  *
- * Circle orbit around configurable home coordinates.
- * Advances angle by (speed / radius) * dt each tick.
- * Set HOME_LAT/LON via KConfig (menuconfig → FoF RID Simulator Flight).
+ * Simulates multiple drones orbiting around home coordinates at different
+ * speeds, radii, and altitudes. Each drone has a unique serial number.
  */
 
 #include "flight_sim.h"
 #include <math.h>
 #include <stdlib.h>
 
-/* ── Orbit parameters ────────────────────────────────────────────────────── */
+#if __has_include("local_coords.h")
+#include "local_coords.h"
+#endif
 
-#define HOME_LAT            atof(CONFIG_FOF_SIM_HOME_LAT)
-#define HOME_LON            atof(CONFIG_FOF_SIM_HOME_LON)
-#define ORBIT_RADIUS_M      60.0
-#define ORBIT_ALT_M         30.0
-#define ORBIT_SPEED_MPS      5.0
 #define UPDATE_INTERVAL_MS 250
-
-/* ── State ─────────────────────────────────────────────────────────────── */
-
-static double s_angle_rad = 0.0;
-static double s_lat       = HOME_LAT;
-static double s_lon       = HOME_LON;
-
-/* ── Constants ─────────────────────────────────────────────────────────── */
-
 #define DEG_TO_RAD          (M_PI / 180.0)
 #define RAD_TO_DEG          (180.0 / M_PI)
 #define METERS_PER_DEG_LAT  111320.0
 
-/* ── Public API ────────────────────────────────────────────────────────── */
+/* ── Per-drone configuration ─────────────────────────────────────────── */
+
+typedef struct {
+    double radius_m;
+    double alt_m;
+    double speed_mps;
+    double start_angle;     /* Initial orbit angle (radians) */
+    int    clockwise;       /* 1 = CW, -1 = CCW */
+    const char *serial;
+} drone_config_t;
+
+static const drone_config_t DRONE_CONFIGS[SIM_DRONE_COUNT] = {
+    { .radius_m = 80.0,  .alt_m = 30.0, .speed_mps = 15.0,
+      .start_angle = 0.0,        .clockwise = 1,  .serial = "FOF-SIM-001" },
+    { .radius_m = 120.0, .alt_m = 50.0, .speed_mps = 10.0,
+      .start_angle = M_PI,       .clockwise = -1, .serial = "FOF-SIM-002" },
+};
+
+/* ── Per-drone runtime state ─────────────────────────────────────────── */
+
+typedef struct {
+    double angle_rad;
+    double lat;
+    double lon;
+} drone_state_t;
+
+static double s_home_lat;
+static double s_home_lon;
+static drone_state_t s_drones[SIM_DRONE_COUNT];
+
+/* ── Helpers ─────────────────────────────────────────────────────────── */
+
+static void update_position(int idx)
+{
+    const drone_config_t *cfg = &DRONE_CONFIGS[idx];
+    drone_state_t *st = &s_drones[idx];
+
+    st->lat = s_home_lat + (cfg->radius_m / METERS_PER_DEG_LAT) * sin(st->angle_rad);
+    st->lon = s_home_lon + (cfg->radius_m / (METERS_PER_DEG_LAT * cos(s_home_lat * DEG_TO_RAD))) * cos(st->angle_rad);
+}
+
+/* ── Public API ──────────────────────────────────────────────────────── */
 
 void flight_sim_init(void)
 {
-    s_angle_rad = 0.0;
-    s_lat = HOME_LAT + (ORBIT_RADIUS_M / METERS_PER_DEG_LAT) * sin(s_angle_rad);
-    s_lon = HOME_LON + (ORBIT_RADIUS_M / (METERS_PER_DEG_LAT * cos(HOME_LAT * DEG_TO_RAD))) * cos(s_angle_rad);
+#ifdef FOF_HOME_LAT_OVERRIDE
+    s_home_lat = FOF_HOME_LAT_OVERRIDE;
+    s_home_lon = FOF_HOME_LON_OVERRIDE;
+#else
+    s_home_lat = atof(CONFIG_FOF_SIM_HOME_LAT);
+    s_home_lon = atof(CONFIG_FOF_SIM_HOME_LON);
+#endif
+
+    for (int i = 0; i < SIM_DRONE_COUNT; i++) {
+        s_drones[i].angle_rad = DRONE_CONFIGS[i].start_angle;
+        update_position(i);
+    }
 }
 
 void flight_sim_tick(void)
 {
     double dt = UPDATE_INTERVAL_MS / 1000.0;
-    double angular_speed = ORBIT_SPEED_MPS / ORBIT_RADIUS_M;
 
-    s_angle_rad += angular_speed * dt;
-    if (s_angle_rad >= 2.0 * M_PI) {
-        s_angle_rad -= 2.0 * M_PI;
+    for (int i = 0; i < SIM_DRONE_COUNT; i++) {
+        const drone_config_t *cfg = &DRONE_CONFIGS[i];
+        double angular_speed = cfg->speed_mps / cfg->radius_m;
+
+        s_drones[i].angle_rad += cfg->clockwise * angular_speed * dt;
+        if (s_drones[i].angle_rad >= 2.0 * M_PI) s_drones[i].angle_rad -= 2.0 * M_PI;
+        if (s_drones[i].angle_rad < 0.0) s_drones[i].angle_rad += 2.0 * M_PI;
+
+        update_position(i);
     }
-
-    s_lat = HOME_LAT + (ORBIT_RADIUS_M / METERS_PER_DEG_LAT) * sin(s_angle_rad);
-    s_lon = HOME_LON + (ORBIT_RADIUS_M / (METERS_PER_DEG_LAT * cos(HOME_LAT * DEG_TO_RAD))) * cos(s_angle_rad);
 }
 
-double flight_sim_get_lat(void)
-{
-    return s_lat;
-}
+double flight_sim_get_lat(int idx)   { return (idx < SIM_DRONE_COUNT) ? s_drones[idx].lat : 0; }
+double flight_sim_get_lon(int idx)   { return (idx < SIM_DRONE_COUNT) ? s_drones[idx].lon : 0; }
+double flight_sim_get_alt(int idx)   { return (idx < SIM_DRONE_COUNT) ? DRONE_CONFIGS[idx].alt_m : 0; }
 
-double flight_sim_get_lon(void)
+float flight_sim_get_heading(int idx)
 {
-    return s_lon;
-}
-
-double flight_sim_get_alt(void)
-{
-    return ORBIT_ALT_M;
-}
-
-float flight_sim_get_heading(void)
-{
-    /* Tangent direction = angle + 90 degrees */
-    double heading = s_angle_rad * RAD_TO_DEG + 90.0;
+    if (idx >= SIM_DRONE_COUNT) return 0;
+    double heading = s_drones[idx].angle_rad * RAD_TO_DEG + 90.0 * DRONE_CONFIGS[idx].clockwise;
     if (heading >= 360.0) heading -= 360.0;
     if (heading < 0.0) heading += 360.0;
     return (float)heading;
 }
 
-float flight_sim_get_speed(void)
+float flight_sim_get_speed(int idx)
 {
-    return (float)ORBIT_SPEED_MPS;
+    return (idx < SIM_DRONE_COUNT) ? (float)DRONE_CONFIGS[idx].speed_mps : 0;
+}
+
+const char *flight_sim_get_serial(int idx)
+{
+    return (idx < SIM_DRONE_COUNT) ? DRONE_CONFIGS[idx].serial : "UNKNOWN";
 }

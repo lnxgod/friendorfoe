@@ -11,13 +11,18 @@
 extern "C" {
 #endif
 
+/** Number of simulated drones */
+#define SIM_DRONE_COUNT 2
+
+/** Per-drone state accessible by index (0..SIM_DRONE_COUNT-1) */
 void   flight_sim_init(void);
 void   flight_sim_tick(void);
-double flight_sim_get_lat(void);
-double flight_sim_get_lon(void);
-double flight_sim_get_alt(void);
-float  flight_sim_get_heading(void);
-float  flight_sim_get_speed(void);
+double flight_sim_get_lat(int drone_idx);
+double flight_sim_get_lon(int drone_idx);
+double flight_sim_get_alt(int drone_idx);
+float  flight_sim_get_heading(int drone_idx);
+float  flight_sim_get_speed(int drone_idx);
+const char *flight_sim_get_serial(int drone_idx);
 
 #ifdef __cplusplus
 }

@@ -123,6 +123,8 @@ fun MapViewScreen(
         System.currentTimeMillis() - userPannedAt < 10_000L  // 10s after last touch
     }
 
+    val isDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
+
     val mapView = remember {
         MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
@@ -137,6 +139,24 @@ fun MapViewScreen(
                 }
                 false  // Don't consume — let the map handle it
             }
+        }
+    }
+
+    // Apply dark mode color filter to map tiles
+    LaunchedEffect(isDarkTheme) {
+        if (isDarkTheme) {
+            mapView.overlayManager.tilesOverlay.setColorFilter(
+                android.graphics.ColorMatrixColorFilter(
+                    android.graphics.ColorMatrix(floatArrayOf(
+                        -1f, 0f, 0f, 0f, 255f,
+                         0f,-1f, 0f, 0f, 255f,
+                         0f, 0f,-1f, 0f, 255f,
+                         0f, 0f, 0f, 1f,   0f
+                    ))
+                )
+            )
+        } else {
+            mapView.overlayManager.tilesOverlay.setColorFilter(null)
         }
     }
 
