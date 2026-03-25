@@ -236,9 +236,9 @@ class GlassesDetector @Inject constructor(
         UuidEntry(0xFEED, "Tile", "BLE Tracker", 0.85f, false),
         UuidEntry(0xFEEC, "Tile", "BLE Tracker", 0.85f, false),
         UuidEntry(0xFCB2, "DULT", "BLE Tracker", 0.90f, false),
-        UuidEntry(0xFE2C, "Google", "Fast Pair", 0.65f, false),
-        // Retail Tracking — informational only
-        UuidEntry(0xFEAA, "Google", "Eddystone Beacon", 0.65f, false),
+        UuidEntry(0xFE2C, "Google", "Fast Pair", 0.50f, false), // below threshold
+        // Retail Tracking — below threshold, informational only
+        UuidEntry(0xFEAA, "Google", "Eddystone Beacon", 0.50f, false),
         // IoT ecosystems
         // Xiaomi UUID 0xFD2E removed — too broad, matches all Mi Home devices
     )
@@ -478,8 +478,8 @@ class GlassesDetector @Inject constructor(
                     }
                     // Else: iPhone/iPad/Mac FindMy relay — skip entirely (not a tracker)
                 } else if (appleType == 0x02 && appleData.size >= 21) {
-                    // iBeacon (retail tracking) — informational
-                    val c = 0.65f
+                    // iBeacon (retail tracking) — below threshold, filtered
+                    val c = 0.50f
                     if (c > bestConf) {
                         bestConf = c; bestMfr = "Apple"; bestType = "iBeacon"
                         bestCamera = false; bestReason = "ibeacon:0x02"

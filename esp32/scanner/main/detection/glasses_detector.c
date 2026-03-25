@@ -120,10 +120,10 @@ static const svc_uuid_entry_t s_svc_uuid_db[] = {
     { 0xFEED, "Tile",    "BLE Tracker",   0.85f, false }, /* Tile tracker */
     { 0xFEEC, "Tile",    "BLE Tracker",   0.85f, false }, /* Tile tracker (alt) */
     { 0xFCB2, "DULT",    "BLE Tracker",   0.90f, false }, /* DULT unwanted tracker protocol */
-    { 0xFE2C, "Google",  "BLE Tracker",   0.85f, false }, /* Google Find My Device network */
+    { 0xFE2C, "Google",  "Fast Pair",     0.50f, false }, /* Google Fast Pair — below threshold */
 
     /* Retail Tracking */
-    { 0xFEAA, "Google",  "Tracking Beacon", 0.70f, false }, /* Eddystone beacon */
+    { 0xFEAA, "Google",  "Eddystone Beacon", 0.50f, false }, /* below threshold */
 };
 #define SVC_UUID_DB_COUNT (sizeof(s_svc_uuid_db) / sizeof(s_svc_uuid_db[0]))
 
@@ -265,8 +265,8 @@ bool glasses_check_advertisement(
                     snprintf(best_reason, sizeof(best_reason), "apple_findmy:0x12");
                 }
             } else if (apple_type == 0x02 && mfr_data_len >= 23) {
-                /* iBeacon (retail tracking) — type 0x02 + 21 bytes payload */
-                float c = 0.70f;
+                /* iBeacon (retail tracking) — below threshold, filtered out */
+                float c = 0.50f;
                 if (c > best_conf) {
                     best_conf = c;
                     best_mfr = "Apple";
