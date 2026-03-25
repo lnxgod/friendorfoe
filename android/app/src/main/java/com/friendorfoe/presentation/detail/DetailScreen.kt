@@ -67,6 +67,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.ZoomIn
@@ -109,17 +110,22 @@ fun DetailScreen(
         viewModel.loadDetail(objectId)
     }
 
+    // Dynamic title based on loaded object
+    val title = when (val state = detailState) {
+        is DetailState.AircraftLoaded -> state.aircraft.callsign ?: state.aircraft.registration ?: "Aircraft"
+        is DetailState.DroneLoaded -> state.drone.droneId ?: "Drone"
+        else -> "Object Detail"
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Object Detail") },
+                title = { Text(title) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Text(
-                            text = "\u2190",
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Navigate back"
                         )
                     }
                 },

@@ -35,6 +35,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -155,7 +156,7 @@ fun ZoomViewSheet(
             Text(
                 text = classificationLabel(classification),
                 color = headerColor,
-                fontSize = 20.sp,
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(bottom = 4.dp)
             )
@@ -180,8 +181,8 @@ fun ZoomViewSheet(
             classified?.let {
                 Text(
                     text = "Tracked for %.1fs".format(it.persistenceSeconds),
-                    color = Color.White.copy(alpha = 0.7f),
-                    fontSize = 13.sp
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
 
@@ -242,24 +243,24 @@ fun ZoomViewSheet(
                 ) {
                     Text(
                         text = "Zoom",
-                        color = Color.White.copy(alpha = 0.7f),
-                        fontSize = 12.sp
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall
                     )
                     Slider(
                         value = currentZoomRatio,
                         onValueChange = { onZoomChange(it) },
                         valueRange = 1.0f..maxZoomRatio,
                         colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFF00BCD4),
-                            activeTrackColor = Color(0xFF00BCD4),
-                            inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary,
+                            inactiveTrackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
                         ),
                         modifier = Modifier.weight(1f)
                     )
                     Text(
                         text = "%.1fx".format(currentZoomRatio),
-                        color = Color.White.copy(alpha = 0.7f),
-                        fontSize = 12.sp
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
@@ -291,7 +292,7 @@ fun ZoomViewSheet(
                     },
                     enabled = croppedBitmap != null && saveState != SaveState.SAVING,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (saveState == SaveState.SAVED) Color(0xFF4CAF50) else Color(0xFF2196F3)
+                        containerColor = if (saveState == SaveState.SAVED) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
                     )
                 ) {
                     Icon(
@@ -313,8 +314,8 @@ fun ZoomViewSheet(
             if (autoSaved) {
                 Text(
                     text = "Auto-saved to FriendOrFoe album",
-                    color = Color(0xFF4CAF50).copy(alpha = 0.8f),
-                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.secondary,
+                    style = MaterialTheme.typography.labelSmall,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 4.dp),
@@ -327,11 +328,11 @@ fun ZoomViewSheet(
             // Info section
             Text(
                 text = "NOT in any aircraft database",
-                color = Color(0xFFF44336),
-                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier
-                    .background(Color(0xFFF44336).copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
                     .padding(horizontal = 8.dp, vertical = 4.dp)
             )
 
@@ -342,13 +343,13 @@ fun ZoomViewSheet(
             val conf = detection.labelConfidences.firstOrNull()?.let { "%.0f%%".format(it * 100) } ?: ""
             Text(
                 text = "ML label: $mlLabel $conf",
-                color = Color.White.copy(alpha = 0.6f),
-                fontSize = 12.sp
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall
             )
             Text(
                 text = "Sky score: %.2f | Motion: %.2f".format(detection.skyScore, detection.motionScore),
-                color = Color.White.copy(alpha = 0.5f),
-                fontSize = 11.sp
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                style = MaterialTheme.typography.labelSmall
             )
 
             Spacer(modifier = Modifier.height(16.dp))

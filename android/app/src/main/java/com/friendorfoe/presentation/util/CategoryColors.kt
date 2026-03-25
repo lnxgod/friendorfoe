@@ -1,12 +1,19 @@
 package com.friendorfoe.presentation.util
 
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import com.friendorfoe.domain.model.ObjectCategory
 
 /**
- * Map an [ObjectCategory] to its overlay color.
+ * Map an [ObjectCategory] to its overlay color (light theme default).
+ * For non-Composable contexts (map markers, Canvas drawing).
  */
 fun categoryColor(category: ObjectCategory): Color {
+    return categoryColorLight(category)
+}
+
+private fun categoryColorLight(category: ObjectCategory): Color {
     return when (category) {
         ObjectCategory.COMMERCIAL -> Color(0xFF4CAF50)       // Green
         ObjectCategory.GENERAL_AVIATION -> Color(0xFFFFA726) // Orange
@@ -19,6 +26,29 @@ fun categoryColor(category: ObjectCategory): Color {
         ObjectCategory.GROUND_VEHICLE -> Color(0xFF616161)   // Dark Gray
         ObjectCategory.UNKNOWN -> Color(0xFF9E9E9E)          // Gray
     }
+}
+
+private fun categoryColorDark(category: ObjectCategory): Color {
+    return when (category) {
+        ObjectCategory.COMMERCIAL -> Color(0xFF66BB6A)       // Lighter green
+        ObjectCategory.GENERAL_AVIATION -> Color(0xFFFFCC80) // Lighter orange
+        ObjectCategory.MILITARY -> Color(0xFFEF5350)         // Lighter red
+        ObjectCategory.HELICOPTER -> Color(0xFF4DB6AC)       // Lighter teal
+        ObjectCategory.GOVERNMENT -> Color(0xFFFF8A65)       // Lighter deep orange
+        ObjectCategory.EMERGENCY -> Color(0xFFF06292)        // Lighter pink
+        ObjectCategory.CARGO -> Color(0xFFA1887F)            // Lighter brown
+        ObjectCategory.DRONE -> Color(0xFF64B5F6)            // Lighter blue
+        ObjectCategory.GROUND_VEHICLE -> Color(0xFF9E9E9E)   // Lighter gray
+        ObjectCategory.UNKNOWN -> Color(0xFFBDBDBD)          // Lighter gray
+    }
+}
+
+/**
+ * Theme-aware category color. Use this in Composable contexts.
+ */
+@Composable
+fun categoryColorThemed(category: ObjectCategory): Color {
+    return if (isSystemInDarkTheme()) categoryColorDark(category) else categoryColorLight(category)
 }
 
 /**

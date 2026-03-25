@@ -30,6 +30,8 @@ esp32/**/managed_components/
 esp32/**/dependencies.lock
 esp32/**/sdkconfig
 esp32/**/sdkconfig.old
+esp32/**/sdkconfig.local
+esp32/**/sdkconfig.ble-scanner-*
 
 # IDE
 .idea/

@@ -70,13 +70,9 @@ object AutoCaptureEngine {
         var bestCorrelation = Float.MAX_VALUE
 
         for (sp in eligiblePositions) {
-            // Use normalized screen coordinates for correlation
-            val radioX = sp.screenX / screenWidthPx(sp)
-            val radioY = sp.screenY / screenHeightPx(sp)
-
             for (vis in flyingVisuals) {
-                val dx = vis.centerX - radioX
-                val dy = vis.centerY - radioY
+                val dx = vis.centerX - sp.screenX
+                val dy = vis.centerY - sp.screenY
                 val dist = sqrt(dx * dx + dy * dy)
 
                 if (dist < MAX_CORRELATION_DISTANCE && dist < bestCorrelation) {
@@ -133,13 +129,6 @@ object AutoCaptureEngine {
         else -> 4.0f
     }
 
-    // Screen position values are in pixels; we normalize against approximate screen size.
-    // These are used as rough denominators — correlation uses normalized visual coords.
-    private fun screenWidthPx(sp: ScreenPosition): Float =
-        if (sp.screenX > 10f) 1080f else 1f  // heuristic: >10 means pixel coords
-
-    private fun screenHeightPx(sp: ScreenPosition): Float =
-        if (sp.screenY > 10f) 2340f else 1f
 }
 
 /**

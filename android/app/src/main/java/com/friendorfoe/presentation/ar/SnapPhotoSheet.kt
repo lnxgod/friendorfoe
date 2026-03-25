@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -134,8 +135,8 @@ fun SnapPhotoSheet(
             // Header: object label + type + distance
             Text(
                 text = target.label,
-                color = Color(0xFF00BCD4),
-                fontSize = 22.sp,
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold
             )
 
@@ -145,8 +146,8 @@ fun SnapPhotoSheet(
             ) {
                 Text(
                     text = target.typeDescription ?: "Unknown Type",
-                    color = Color.White.copy(alpha = 0.7f),
-                    fontSize = 14.sp
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
                 )
                 target.distanceMeters?.let { dist ->
                     val distStr = if (dist > 800.0) {
@@ -156,8 +157,8 @@ fun SnapPhotoSheet(
                     }
                     Text(
                         text = distStr,
-                        color = Color.White.copy(alpha = 0.7f),
-                        fontSize = 14.sp
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium
                     )
                 }
             }
@@ -212,24 +213,24 @@ fun SnapPhotoSheet(
                 ) {
                     Text(
                         text = "%.1fx".format(minZoomRatio),
-                        color = Color.White.copy(alpha = 0.5f),
-                        fontSize = 11.sp
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall
                     )
                     Slider(
                         value = currentZoomRatio,
                         onValueChange = { onZoomChange(it) },
                         valueRange = minZoomRatio..maxZoomRatio,
                         colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFF00BCD4),
-                            activeTrackColor = Color(0xFF00BCD4),
-                            inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary,
+                            inactiveTrackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
                         ),
                         modifier = Modifier.weight(1f)
                     )
                     Text(
                         text = "%.0fx".format(maxZoomRatio),
-                        color = Color.White.copy(alpha = 0.5f),
-                        fontSize = 11.sp
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall
                     )
                 }
 
@@ -271,9 +272,9 @@ fun SnapPhotoSheet(
                     enabled = captureState != CaptureState.CAPTURING,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = when (captureState) {
-                            CaptureState.READY -> Color.White
-                            CaptureState.CAPTURING -> Color.Gray
-                            CaptureState.SAVED -> Color(0xFF4CAF50)
+                            CaptureState.READY -> MaterialTheme.colorScheme.primaryContainer
+                            CaptureState.CAPTURING -> MaterialTheme.colorScheme.surfaceVariant
+                            CaptureState.SAVED -> MaterialTheme.colorScheme.secondary
                         }
                     )
                 ) {
@@ -284,9 +285,9 @@ fun SnapPhotoSheet(
                         },
                         contentDescription = "Capture Photo",
                         tint = when (captureState) {
-                            CaptureState.READY -> Color.Black
-                            CaptureState.CAPTURING -> Color.White
-                            CaptureState.SAVED -> Color.White
+                            CaptureState.READY -> MaterialTheme.colorScheme.onPrimaryContainer
+                            CaptureState.CAPTURING -> MaterialTheme.colorScheme.onSurfaceVariant
+                            CaptureState.SAVED -> MaterialTheme.colorScheme.onSecondary
                         },
                         modifier = Modifier.size(32.dp)
                     )
@@ -297,8 +298,8 @@ fun SnapPhotoSheet(
             if (captureState == CaptureState.SAVED) {
                 Text(
                     text = "Saved to Pictures/FriendOrFoe",
-                    color = Color(0xFF4CAF50).copy(alpha = 0.8f),
-                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.secondary,
+                    style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 4.dp),

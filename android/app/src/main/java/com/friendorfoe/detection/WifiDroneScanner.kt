@@ -1,13 +1,17 @@
 package com.friendorfoe.detection
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.net.wifi.ScanResult
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
@@ -356,6 +360,21 @@ class WifiDroneScanner @Inject constructor(
      */
     @SuppressLint("MissingPermission")
     fun startScanning(): Flow<Drone> = callbackFlow {
+        // Check required permissions before scanning
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES)
+                != PackageManager.PERMISSION_GRANTED) {
+                Log.w(TAG, "NEARBY_WIFI_DEVICES permission not granted, skipping WiFi scan")
+                close()
+                return@callbackFlow
+            }
+        } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "ACCESS_FINE_LOCATION permission not granted, skipping WiFi scan")
+            close()
+            return@callbackFlow
+        }
+
         Log.i(TAG, "Starting WiFi drone scanner")
 
         val receiver = object : BroadcastReceiver() {

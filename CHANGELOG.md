@@ -4,6 +4,29 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0-beta] - 2026-03-24
+
+### Changed
+- **Material Design 3 UI polish** — Comprehensive UI overhaul based on M3 guidelines audit (Gemini + Codex analysis)
+- **Bottom navigation** — Cleaned up from 4 tabs + 2 stray IconButtons to proper 4-tab M3 NavigationBar. Reference Guide and About moved to overflow menu (⋮) in filter bar
+- **Back arrows** — Replaced Unicode text arrows with proper `Icons.AutoMirrored.Filled.ArrowBack` + content descriptions across 5 screens
+- **Theme system** — Added custom Typography (12 styles with weights, line heights, letter spacing) and Shapes (8/12/16/24dp corners) to MaterialTheme
+- **Bottom sheets light theme** — Fixed ~20 hardcoded white/cyan text colors in ZoomViewSheet and SnapPhotoSheet — now readable in both light and dark themes
+- **Category colors** — Added dark mode variants with lighter tones for readability
+- **Detail screen** — Dynamic title shows callsign/serial instead of generic "Object Detail"
+- **Screen transitions** — Added fade+slide animations to all navigation transitions
+- **Dark mode map** — Map tiles invert colors in dark theme for consistent dark UI
+- **Welcome screen** — Upgraded to ElevatedCard with tonal surface, fixed deprecated Divider
+- **Haptic feedback** — Added haptics on AR label tap and long-press interactions
+- **Spacing system** — Created Dimens.kt with named constants for consistent spacing
+
+### Fixed
+- **ConcurrentModificationException** — SkyObjectRepository.rebuildMergedList no longer modifies list during iteration (Critical bug C2)
+- **Database query performance** — Added indices on object_id, object_type, last_seen, timestamp across HistoryEntity and TrackingEntity (DB v3→v4 migration)
+- **WiFi permission check** — Added runtime NEARBY_WIFI_DEVICES permission check (Android 13+) before WiFi scanning
+- **AutoCaptureEngine cleanup** — Removed pointless screenWidthPx/screenHeightPx normalization (coordinates already 0-1)
+- **AR ground banner flicker** — Added pitch hysteresis (show <-10°, hide >-5°) to prevent banner flickering
+
 ## [0.17.0-beta] - 2026-03-24
 
 ### Fixed

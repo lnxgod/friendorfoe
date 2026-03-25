@@ -97,6 +97,8 @@ import com.friendorfoe.detection.AlertLevel
 import com.friendorfoe.detection.BehaviorClass
 import com.friendorfoe.detection.ClassifiedVisualDetection
 import com.friendorfoe.detection.DataSourceStatus
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import com.friendorfoe.detection.ThreatLevel
 import com.friendorfoe.detection.VisualClassification
 import com.friendorfoe.detection.VisualDetection
@@ -208,6 +210,7 @@ fun ArViewScreen(
     }
 
     val context = LocalContext.current
+    val hapticFeedback = LocalHapticFeedback.current
 
     // Load detail when an object is selected
     LaunchedEffect(selectedObjectId) {
@@ -247,8 +250,14 @@ fun ArViewScreen(
             lockedObjectId = lockedObjectId,
             lockedScreenPosition = lockedScreenPosition,
             orientation = orientation,
-            onLabelTapped = { objectId -> viewModel.snapAndAutoCapture(objectId, context) },
-            onLabelLongPressed = { objectId -> viewModel.snapToObject(objectId) },
+            onLabelTapped = { objectId ->
+                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                viewModel.snapAndAutoCapture(objectId, context)
+            },
+            onLabelLongPressed = { objectId ->
+                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                viewModel.snapToObject(objectId)
+            },
             onVisualTapped = { detection -> viewModel.showZoom(detection) },
             onEmptySpaceTapped = { viewModel.showUnidentifiedSheet() },
             onReticleTapped = { viewModel.unlockObject() },
@@ -336,8 +345,12 @@ fun ArViewScreen(
             }
         }
 
-        // Ground-pointing banner: shown when camera aims below horizon
-        if (orientation.pitchDegrees < -10f) {
+        // Ground-pointing banner with hysteresis: show at <-10°, hide at >-5°
+        val showGroundBanner = remember { mutableStateOf(false) }
+        if (orientation.pitchDegrees < -10f) showGroundBanner.value = true
+        else if (orientation.pitchDegrees > -5f) showGroundBanner.value = false
+
+        if (showGroundBanner.value) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()

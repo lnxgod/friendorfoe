@@ -344,18 +344,25 @@ class SkyObjectRepository @Inject constructor(
         }
         // Build a set of droneIds already seen via BLE RID for fast lookup
         val bleRidDroneIds = remoteIdList.mapNotNull { it.droneId }.toSet()
+        // Track BLE drones replaced by fresher NaN duplicates (avoid modifying merged during iteration)
+        val replacedByNan = mutableSetOf<String>()
+        val nanToAdd = mutableListOf<Drone>()
         for (nanDrone in nanList) {
             fusionEngine.updateWithEvidence(nanDrone.id, nanDrone.source, nanDrone.confidence, now)
             if (nanDrone.droneId in bleRidDroneIds) {
                 val bleMatch = remoteIdList.find { it.droneId == nanDrone.droneId }
                 if (bleMatch != null && nanDrone.lastUpdated.isAfter(bleMatch.lastUpdated)) {
-                    merged.remove(bleMatch)
-                    merged.add(nanDrone)
+                    replacedByNan.add(bleMatch.id)
+                    nanToAdd.add(nanDrone)
                 }
             } else {
-                merged.add(nanDrone)
+                nanToAdd.add(nanDrone)
             }
         }
+        if (replacedByNan.isNotEmpty()) {
+            merged.removeAll { it.id in replacedByNan }
+        }
+        merged.addAll(nanToAdd)
         // Combined Remote ID list for WiFi dedup (both BLE and NaN)
         val allRemoteIdList = remoteIdList + nanList
 

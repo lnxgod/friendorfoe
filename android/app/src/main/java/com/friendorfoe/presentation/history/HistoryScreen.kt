@@ -61,6 +61,8 @@ import java.util.Locale
 @Composable
 fun HistoryScreen(
     onEntryTapped: (String) -> Unit,
+    onNavigateToReferenceGuide: (() -> Unit)? = null,
+    onNavigateToAbout: (() -> Unit)? = null,
     viewModel: HistoryViewModel = hiltViewModel()
 ) {
     val groupedHistory by viewModel.groupedHistory.collectAsStateWithLifecycle()
@@ -71,7 +73,9 @@ fun HistoryScreen(
         FilterBar(
             filterState = filterState,
             onFilterStateChange = { viewModel.updateFilter(it) },
-            resultCount = filteredEntryCount
+            resultCount = filteredEntryCount,
+            onNavigateToReferenceGuide = onNavigateToReferenceGuide,
+            onNavigateToAbout = onNavigateToAbout
         )
 
         if (groupedHistory.isEmpty()) {

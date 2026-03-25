@@ -604,6 +604,13 @@ CONFIG_FOF_OLED_RST_PIN=-1
 # end of FoF RID Simulator OLED
 
 #
+# FoF RID Simulator Flight
+#
+CONFIG_FOF_SIM_HOME_LAT="0.0"
+CONFIG_FOF_SIM_HOME_LON="0.0"
+# end of FoF RID Simulator Flight
+
+#
 # Compiler options
 #
 CONFIG_COMPILER_OPTIMIZATION_DEBUG=y
