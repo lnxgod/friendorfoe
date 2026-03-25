@@ -576,7 +576,7 @@ void oled_draw_drone_list(const oled_drone_entry_t *drones, int count,
         fb_draw_string(px, 3, line);
     }
 
-    oled_flush();
+    /* Don't flush here — status bar will flush once after drawing bottom row */
 }
 
 void oled_clear(void)
@@ -632,7 +632,7 @@ void oled_show_glasses_alert(const char *device_type, const char *manufacturer,
     snprintf(line, sizeof(line), "%s  Dist:%s", cam_str, dist_str);
     fb_draw_string(0, y, line);
 
-    oled_flush();
+    /* Don't flush here — status bar will flush once after drawing bottom row */
 }
 #endif
 
@@ -641,7 +641,10 @@ void oled_draw_status_bar(const char *status_text, uint32_t unused)
     if (!s_initialized) return;
     (void)unused;
 
-    /* Draw pre-formatted status text at bottom row (y=56) */
+    /* Draw pre-formatted status text at bottom row (y=56)
+     * Note: does NOT flush — the previous oled_show_glasses_alert or
+     * oled_draw_drone_list already flushed. We draw on top and flush
+     * again to avoid partial-frame flicker. Single atomic flush. */
     fb_draw_string(0, 56, status_text);
     oled_flush();
 }
