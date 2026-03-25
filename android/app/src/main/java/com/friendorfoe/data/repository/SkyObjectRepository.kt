@@ -5,9 +5,10 @@ import com.friendorfoe.data.local.HistoryDao
 import com.friendorfoe.data.local.HistoryEntity
 import com.friendorfoe.data.local.TrackingDao
 import com.friendorfoe.data.local.TrackingEntity
-import com.friendorfoe.data.GlassesDetectionPrefs
+import com.friendorfoe.data.DetectionPrefs
 import com.friendorfoe.detection.AdsbPoller
 import com.friendorfoe.detection.BayesianFusionEngine
+import com.friendorfoe.detection.BleTracker
 import com.friendorfoe.detection.DataSourceStatus
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.GlassesDetector
@@ -57,7 +58,8 @@ class SkyObjectRepository @Inject constructor(
     private val wifiDroneScanner: WifiDroneScanner,
     private val wifiNanRemoteIdScanner: WifiNanRemoteIdScanner,
     private val glassesDetector: GlassesDetector,
-    private val glassesPrefs: GlassesDetectionPrefs,
+    val bleTracker: BleTracker,
+    private val detectionPrefs: DetectionPrefs,
     private val fusionEngine: BayesianFusionEngine,
     private val historyDao: HistoryDao,
     private val trackingDao: TrackingDao
@@ -103,12 +105,17 @@ class SkyObjectRepository @Inject constructor(
     /** Smart glasses / privacy devices detected nearby. */
     val glassesDetections: StateFlow<List<GlassesDetection>> = _glassesDetections.asStateFlow()
 
-    /** Whether glasses detection is currently enabled. */
-    val isGlassesDetectionEnabled: Boolean get() = glassesPrefs.isEnabled
+    private val _stalkerAlerts = MutableStateFlow<List<BleTracker.StalkerAlert>>(emptyList())
 
-    /** Toggle glasses detection on/off. Takes effect on next start(). */
-    fun setGlassesDetectionEnabled(enabled: Boolean) {
-        glassesPrefs.isEnabled = enabled
+    /** BLE devices that appear to be following the user. */
+    val stalkerAlerts: StateFlow<List<BleTracker.StalkerAlert>> = _stalkerAlerts.asStateFlow()
+
+    /** Detection preferences — exposed for Settings UI. */
+    val prefs: DetectionPrefs get() = detectionPrefs
+
+    /** Toggle privacy detection on/off. */
+    fun setPrivacyDetectionEnabled(enabled: Boolean) {
+        detectionPrefs.privacyEnabled = enabled
         if (!enabled) {
             _glassesDetections.value = emptyList()
             glassesDetector.stopScanning()
@@ -145,19 +152,19 @@ class SkyObjectRepository @Inject constructor(
         userLongitude = longitude
         Log.i(TAG, "Starting all detection sources at ($latitude, $longitude)")
 
-        // Start ADS-B polling
-        adsbPoller.start(latitude, longitude)
+        // Start ADS-B polling (if enabled)
+        if (detectionPrefs.adsbEnabled) {
+            adsbPoller.start(latitude, longitude)
+        }
 
-        // Collect from all sources
+        // Collect from all sources (respecting per-source toggles)
         collectionJob = scope.launch {
-            // Launch parallel collectors for each source
-            launch { collectAdsb() }
-            launch { collectRemoteId() }
-            launch { collectWifiNan() }
-            launch { collectWifi() }
-            if (glassesPrefs.isEnabled) {
-                launch { collectGlasses() }
-            }
+            if (detectionPrefs.adsbEnabled) launch { collectAdsb() }
+            if (detectionPrefs.bleRidEnabled) launch { collectRemoteId() }
+            if (detectionPrefs.bleRidEnabled) launch { collectWifiNan() }
+            if (detectionPrefs.wifiEnabled) launch { collectWifi() }
+            if (detectionPrefs.privacyEnabled) launch { collectGlasses() }
+            if (detectionPrefs.stalkerDetectionEnabled) launch { collectStalkerAlerts() }
         }
     }
 
@@ -291,12 +298,38 @@ class SkyObjectRepository @Inject constructor(
         glassesDetector.startScanning().collect { detection ->
             glassesMap[detection.mac] = detection
             updateGlassesList()
+
+            // Feed to BLE tracker for stalker detection
+            if (detectionPrefs.stalkerDetectionEnabled) {
+                bleTracker.recordSighting(
+                    mac = detection.mac,
+                    rssi = detection.rssi,
+                    deviceName = detection.deviceName,
+                    deviceType = detection.deviceType,
+                    manufacturer = detection.manufacturer,
+                    hasCamera = detection.hasCamera,
+                    userLat = userLatitude,
+                    userLon = userLongitude,
+                    compassBearing = 0f // TODO: get from sensor fusion
+                )
+            }
+        }
+    }
+
+    /** Periodically check for BLE devices following the user */
+    private suspend fun collectStalkerAlerts() {
+        while (true) {
+            kotlinx.coroutines.delay(30_000L) // Check every 30 seconds
+            val alerts = bleTracker.checkForFollowers()
+            if (alerts.isNotEmpty()) {
+                _stalkerAlerts.value = alerts
+            }
         }
     }
 
     /** Called from collectWifi to also check WiFi SSIDs for privacy threats. */
     private fun checkWifiForPrivacy(drone: com.friendorfoe.domain.model.Drone) {
-        if (!glassesPrefs.isEnabled) return
+        if (!detectionPrefs.privacyEnabled) return
         val ssid = drone.ssid ?: return
         val bssid = drone.bssid ?: return
         val rssi = drone.signalStrengthDbm ?: -80

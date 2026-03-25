@@ -69,6 +69,12 @@ class ListViewModel @Inject constructor(
     /** Smart glasses / privacy devices detected nearby. */
     val glassesDetections = skyObjectRepository.glassesDetections
 
+    /** BLE stalker/follower alerts. */
+    val stalkerAlerts = skyObjectRepository.stalkerAlerts
+
+    /** BLE direction finder. */
+    val bleTracker = skyObjectRepository.bleTracker
+
     private val _userPosition = MutableStateFlow(
         Position(latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0)
     )

@@ -4,6 +4,15 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.21.0-beta] - 2026-03-25
+
+### Added
+- **Per-source detection toggles** — Settings screen with on/off switches for: ADS-B Aircraft, BLE Remote ID (Drones), WiFi Detection (Drones), Privacy Scanner, and Stalker/Follower Detection. All default to ON. Changes take effect on next app launch.
+- **BLE stalker/follower detection** — Tracks all detected BLE devices over time. Alerts when a device follows you across multiple locations (2+ min, 50+ meters movement) or lingers near you while stationary. Threat levels: Low (tracking), Medium (persistent), High (camera device following 5+ min). Red "STALKER ALERT" banner in list screen.
+- **BLE direction finder engine** — Lock onto any detected BLE device and rotate 360° to map RSSI to compass bearing. Estimates the direction to the device with confidence scoring. Uses top 20% of RSSI samples with circular mean for accuracy.
+- **DetectionPrefs** — Centralized settings class replacing GlassesDetectionPrefs. Controls all detection source toggles via SharedPreferences.
+- **BleTracker** — New tracking engine that records BLE sightings with location context, calculates user movement, detects followers, and provides direction-finding scan API.
+
 ## [0.20.0-beta] - 2026-03-24
 
 ### Changed
