@@ -265,27 +265,44 @@ class SkyObjectRepository @Inject constructor(
                 }
                 Log.d(TAG, "WiFi updated: drone ${drone.ssid}")
             }
+            // Also check WiFi SSIDs for privacy threats (hidden cameras, etc.)
+            checkWifiForPrivacy(drone)
             rebuildMergedList()
         }
     }
 
     /**
-     * Collect smart glasses / privacy device detections from BLE.
+     * Collect smart glasses / privacy device detections from BLE + WiFi.
      */
+    private val glassesMap = java.util.concurrent.ConcurrentHashMap<String, GlassesDetection>()
+
+    private fun updateGlassesList() {
+        val now = Instant.now()
+        val staleKeys = glassesMap.filter {
+            Duration.between(it.value.lastSeen, now).seconds > 60
+        }.keys
+        staleKeys.forEach { glassesMap.remove(it) }
+        _glassesDetections.value = glassesMap.values
+            .sortedByDescending { it.rssi }
+            .toList()
+    }
+
     private suspend fun collectGlasses() {
-        val glassesMap = mutableMapOf<String, GlassesDetection>()
         glassesDetector.startScanning().collect { detection ->
             glassesMap[detection.mac] = detection
-            // Prune stale entries (>60s)
-            val now = Instant.now()
-            val staleKeys = glassesMap.filter {
-                Duration.between(it.value.lastSeen, now).seconds > 60
-            }.keys
-            staleKeys.forEach { glassesMap.remove(it) }
-            _glassesDetections.value = glassesMap.values
-                .sortedByDescending { it.rssi }
-                .toList()
+            updateGlassesList()
         }
+    }
+
+    /** Called from collectWifi to also check WiFi SSIDs for privacy threats. */
+    private fun checkWifiForPrivacy(drone: com.friendorfoe.domain.model.Drone) {
+        if (!glassesPrefs.isEnabled) return
+        val ssid = drone.ssid ?: return
+        val bssid = drone.bssid ?: return
+        val rssi = drone.signalStrengthDbm ?: -80
+        val detection = GlassesDetector.checkWifiSsid(ssid, bssid, rssi) ?: return
+        glassesMap[detection.mac] = detection
+        updateGlassesList()
     }
 
     /**
