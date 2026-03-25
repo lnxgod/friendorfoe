@@ -208,7 +208,8 @@ class GlassesDetector @Inject constructor(
         // Trackers / Stalkerware
         MfrEntry(0x000D, "Tile", "BLE Tracker", 0.85f, false),
         MfrEntry(0x067C, "Tile", "BLE Tracker", 0.85f, false),
-        MfrEntry(0x0075, "Samsung", "BLE Tracker", 0.80f, false),
+        // Samsung CID 0x0075 removed — matches ALL Samsung devices (phones, watches, buds)
+        // SmartTag detected by UUID 0xFD5A/0xFD59 instead (much more specific)
         // IoT / Camera ecosystems
         MfrEntry(0x07D0, "Tuya", "IoT Camera", 0.65f, true),
     )

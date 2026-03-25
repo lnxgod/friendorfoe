@@ -24,7 +24,7 @@ extern "C" {
 
 #define BLE_SCAN_TASK_STACK_SIZE    4096
 #define CONSOLE_TX_TASK_STACK_SIZE  4096
-#define DISPLAY_TASK_STACK_SIZE     4096
+#define DISPLAY_TASK_STACK_SIZE     6144
 #define LED_TASK_STACK_SIZE         2048
 
 /* ── Core affinity ───────────────────────────────────────────────────────── */
