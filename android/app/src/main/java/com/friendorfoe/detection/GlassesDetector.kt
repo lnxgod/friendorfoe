@@ -27,7 +27,8 @@ data class GlassesDetection(
     val confidence: Float,
     val matchReason: String,
     val firstSeen: Instant,
-    val lastSeen: Instant
+    val lastSeen: Instant,
+    val details: Map<String, String> = emptyMap()
 )
 
 /**
@@ -447,6 +448,9 @@ class GlassesDetector @Inject constructor(
 
         if (bestConf < 0.50f) return null
 
+        // Parse rich details from the raw packet
+        val parsedDetails = BlePacketParser.parseAllDetails(result)
+
         val now = Instant.now()
         val existing = detectedDevices[mac]
         val detection = GlassesDetection(
@@ -459,11 +463,12 @@ class GlassesDetector @Inject constructor(
             confidence = bestConf,
             matchReason = bestReason,
             firstSeen = existing?.firstSeen ?: now,
-            lastSeen = now
+            lastSeen = now,
+            details = parsedDetails
         )
         detectedDevices[mac] = detection
 
-        Log.i(TAG, "Detected $bestType ($bestMfr) RSSI=$rssi conf=$bestConf [$bestReason] cam=$bestCamera")
+        Log.i(TAG, "Detected $bestType ($bestMfr) RSSI=$rssi conf=$bestConf [$bestReason] cam=$bestCamera details=$parsedDetails")
         return detection
     }
 }
