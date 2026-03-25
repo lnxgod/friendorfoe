@@ -46,6 +46,7 @@ import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.detection.BleTracker
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.presentation.filter.FilterBar
 import com.friendorfoe.presentation.util.categoryBadge
@@ -70,6 +71,7 @@ fun ListViewScreen(
     val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val glassesDetections by viewModel.glassesDetections.collectAsStateWithLifecycle()
+    val stalkerAlerts by viewModel.stalkerAlerts.collectAsStateWithLifecycle()
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -94,6 +96,11 @@ fun ListViewScreen(
             onNavigateToReferenceGuide = onNavigateToReferenceGuide,
             onNavigateToAbout = onNavigateToAbout
         )
+
+        // Stalker alert banner (highest priority)
+        if (stalkerAlerts.isNotEmpty()) {
+            StalkerAlertBanner(stalkerAlerts)
+        }
 
         // Smart glasses privacy alert banner
         if (glassesDetections.isNotEmpty()) {
@@ -372,6 +379,64 @@ private fun GlassesAlertBanner(detections: List<GlassesDetection>) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp)
             )
+        }
+    }
+}
+
+@Composable
+private fun StalkerAlertBanner(alerts: List<BleTracker.StalkerAlert>) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFFD32F2F).copy(alpha = 0.15f))
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "\u26A0\uFE0F",
+                modifier = Modifier.width(24.dp)
+            )
+            Text(
+                text = "STALKER ALERT",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFD32F2F)
+            )
+        }
+        for (alert in alerts.take(3)) {
+            val dev = alert.device
+            val duration = dev.durationMs / 1000
+            val label = dev.deviceType ?: dev.deviceName ?: dev.mac.takeLast(8)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val threatIcon = when (alert.threatLevel) {
+                    3 -> "\uD83D\uDED1" // stop sign
+                    2 -> "\u26A0\uFE0F" // warning
+                    else -> "\u2139\uFE0F" // info
+                }
+                Text(text = threatIcon, modifier = Modifier.width(20.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "$label (${dev.manufacturer ?: "Unknown"})",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "${alert.reason} for ${duration}s | ${dev.sightingCount} sightings",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    text = "${dev.peakRssi}dB",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFD32F2F)
+                )
+            }
         }
     }
 }

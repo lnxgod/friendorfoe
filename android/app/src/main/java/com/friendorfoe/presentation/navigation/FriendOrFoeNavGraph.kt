@@ -104,8 +104,7 @@ fun FriendOrFoeNavGraph(
             val aboutViewModel: com.friendorfoe.presentation.about.AboutViewModel = hiltViewModel()
             AboutScreen(
                 onBack = { navController.popBackStack() },
-                isGlassesDetectionEnabled = aboutViewModel.isGlassesDetectionEnabled,
-                onGlassesDetectionToggle = { aboutViewModel.setGlassesDetectionEnabled(it) }
+                viewModel = aboutViewModel
             )
         }
 

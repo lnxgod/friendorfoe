@@ -51,11 +51,9 @@ import com.friendorfoe.BuildConfig
 @Composable
 fun AboutScreen(
     onBack: () -> Unit,
-    isGlassesDetectionEnabled: Boolean = false,
-    onGlassesDetectionToggle: ((Boolean) -> Unit)? = null
+    viewModel: AboutViewModel? = null
 ) {
     val context = LocalContext.current
-    var glassesEnabled by remember { mutableStateOf(isGlassesDetectionEnabled) }
 
     Scaffold(
         topBar = {
@@ -202,35 +200,44 @@ fun AboutScreen(
                 }
             }
 
-            // Settings
-            if (onGlassesDetectionToggle != null) {
+            // Detection Settings
+            if (viewModel != null) {
                 item {
-                    SectionCard(title = "Settings") {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Smart Glasses Detection",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    text = "Detect Meta Ray-Ban, Snap Spectacles, Xreal, and other camera-equipped smart glasses nearby via BLE",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Switch(
-                                checked = glassesEnabled,
-                                onCheckedChange = {
-                                    glassesEnabled = it
-                                    onGlassesDetectionToggle(it)
-                                }
-                            )
-                        }
+                    SectionCard(title = "Detection Sources") {
+                        SettingsToggle(
+                            title = "ADS-B Aircraft",
+                            description = "Commercial flights, GA, military via transponder data",
+                            initialValue = viewModel.adsbEnabled,
+                            onToggle = { viewModel.setAdsbEnabled(it) }
+                        )
+                        SettingsToggle(
+                            title = "BLE Remote ID (Drones)",
+                            description = "FAA-compliant drone detection via Bluetooth LE",
+                            initialValue = viewModel.bleRidEnabled,
+                            onToggle = { viewModel.setBleRidEnabled(it) }
+                        )
+                        SettingsToggle(
+                            title = "WiFi Detection (Drones)",
+                            description = "Drone SSID patterns, DJI DroneID, WiFi beacons",
+                            initialValue = viewModel.wifiEnabled,
+                            onToggle = { viewModel.setWifiEnabled(it) }
+                        )
+                    }
+                }
+                item {
+                    SectionCard(title = "Privacy Detection") {
+                        SettingsToggle(
+                            title = "Privacy Scanner",
+                            description = "Smart glasses, trackers, hidden cameras, body cams, attack tools, Tesla Sentry via BLE + WiFi",
+                            initialValue = viewModel.privacyEnabled,
+                            onToggle = { viewModel.setPrivacyEnabled(it) }
+                        )
+                        SettingsToggle(
+                            title = "Stalker / Follower Detection",
+                            description = "Alert when BLE devices follow you across locations or linger nearby",
+                            initialValue = viewModel.stalkerEnabled,
+                            onToggle = { viewModel.setStalkerEnabled(it) }
+                        )
                     }
                 }
             }
@@ -391,6 +398,43 @@ private fun PermissionRow(permission: String, reason: String) {
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
             modifier = Modifier.weight(0.7f),
             textAlign = TextAlign.End
+        )
+    }
+}
+
+@Composable
+private fun SettingsToggle(
+    title: String,
+    description: String,
+    initialValue: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    var enabled by remember { mutableStateOf(initialValue) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Switch(
+            checked = enabled,
+            onCheckedChange = {
+                enabled = it
+                onToggle(it)
+            }
         )
     }
 }
