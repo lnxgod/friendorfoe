@@ -1,23 +1,31 @@
 🌍 **[English](README.md)** | [עברית](README.he.md) | [Українська](README.uk.md) | [العربية](README.ar.md) | [Türkçe](README.tr.md) | [Azərbaycan](README.az.md) | [Türkmen](README.tk.md) | [پښتو](README.ps.md) | [اردو](README.ur.md) | [Kurdî](README.ku.md) | [Հայերեն](README.hy.md) | [ქართული](README.ka.md) | [فارسی](README.fa.md)
 
-# Friend or Foe — Real-Time Aircraft & Drone Identification
+# Friend or Foe — Privacy Awareness & Airspace Detection
 
 [![Android Build](https://github.com/lnxgod/friendorfoe/actions/workflows/android-build.yml/badge.svg)](https://github.com/lnxgod/friendorfoe/actions/workflows/android-build.yml)
 [![ESP32 Build](https://github.com/lnxgod/friendorfoe/actions/workflows/esp32-web-flasher.yml/badge.svg)](https://github.com/lnxgod/friendorfoe/actions/workflows/esp32-web-flasher.yml)
 
-**Point your phone at the sky. Know what's up there.**
+**Know what's watching you. Know what's flying above you.**
 
-Friend or Foe is an open-source, **install-and-go** Android app that identifies aircraft and drones in real time using augmented reality. It combines ADS-B transponder data, FAA Remote ID drone broadcasts, WiFi signal analysis, and on-device visual detection to overlay floating labels on the camera view — telling you what's flying overhead, who operates it, where it's going, and whether it's friend or foe. No accounts, no signups, no API keys required — just install and go.
+Friend or Foe is an open-source **privacy awareness** and **airspace detection** platform for Android and ESP32. It passively scans Bluetooth and WiFi signals around you to detect surveillance devices, tracking beacons, hidden cameras, smart glasses, and drones — then identifies every aircraft overhead using augmented reality. No accounts, no signups, no API keys. Install and go.
 
-This project was **built with AI** — not just one, but all of them. Claude wrote the code, Grok shaped the design, Codex reviewed the security, and Gemini helped pick the tech stack. Released by [GAMECHANGERSai](https://gamechangersai.org) to showcase what's possible when AI meets human creativity. See the [CHANGELOG](CHANGELOG.md) for version history.
+### What It Detects
 
-### The 72-Hour Speed Run
+| Category | Examples | Method |
+|----------|----------|--------|
+| **Smart Glasses** | Meta Ray-Ban, Snap Spectacles, Xreal, Vuzix, Google Glass, Bose Frames | BLE manufacturer ID + service UUID |
+| **BLE Trackers** | Apple AirTag, Samsung SmartTag, Tile, Google Find My | BLE service UUID + manufacturer data |
+| **Hidden Cameras** | WiFi spy cams, IP cameras, nanny cams, charger cams | WiFi SSID patterns + BLE names |
+| **Body Cameras** | Axon, Motorola VISTA | BLE + WiFi signatures |
+| **Attack Tools** | Flipper Zero, WiFi Pineapple | BLE name + WiFi SSID |
+| **Vehicle Cameras** | Tesla Sentry Mode | BLE advertisement |
+| **Retail Trackers** | iBeacon, Eddystone | BLE beacon signatures |
+| **Action Cameras** | GoPro, Insta360, DJI Action | WiFi SSID patterns |
+| **Dash Cameras** | BlackVue, Viofo, 70mai, Nextbase, Thinkware | WiFi SSID patterns |
+| **Drones** | DJI, Skydio, Parrot, Autel + 190 SSID patterns | BLE Remote ID + WiFi + visual ML |
+| **Aircraft** | Commercial, military, GA, helicopter, cargo, emergency | ADS-B transponder + AR overlay |
 
-> **From zero to confirmed aircraft and drone detections on a real device — in under 72 hours.**
->
-> On March 12, 2025, the first commit was made that evening, 13 commits and **8,500+ lines of code** had been written in ~2 hours of AI pair-programming with Claude — producing a build-ready APK with AR viewfinder, multi-source detection, Bayesian sensor fusion, and map view. By March 14, the app was open-sourced with aircraft silhouettes, styled map markers, and polish — totaling **22,000+ lines** across Kotlin, Python, and XML.
->
-> The app is **install-and-go** — install the APK, grant permissions, and start identifying aircraft. It connects directly to free public ADS-B APIs with no signup, no keys, no accounts. The optional Python backend only adds additional enrichment (airline names, route info).
+This project was **built with AI** — Claude, Codex, Gemini, and Grok working together. Released by [GAMECHANGERSai](https://gamechangersai.org). See the [CHANGELOG](CHANGELOG.md) for version history.
 
 ---
 
@@ -25,39 +33,63 @@ This project was **built with AI** — not just one, but all of them. Claude wro
 
 ### Android App — Point and Identify
 
-Install the APK, point at the sky — ADS-B, BLE Remote ID, WiFi, and visual ML detection all running on your phone. No accounts, no API keys.
+Install the APK, grant permissions — privacy scanning and aircraft detection start immediately. BLE scans for smart glasses, trackers, and hidden cameras nearby. WiFi scans for spy camera SSIDs. ADS-B identifies aircraft overhead with AR labels. No accounts, no API keys.
 
 **Download:** [GitHub Releases](https://github.com/lnxgod/friendorfoe/releases)
 
 ### ESP32 Hardware Edition — Deploy and Walk Away
 
-Always-on, unattended drone detection. Two-board system you can build for ~$25-40:
+Always-on, unattended detection. Build for ~$25-40:
 
-- **Scanner** (ESP32-S3 or ESP32-C5) — BLE Remote ID + WiFi promiscuous frame capture, Bayesian fusion, JSON output over UART
-- **BLE Scanner** (ESP32-S3/ESP32) — Standalone BLE detector with OLED display. Detects drones via Remote ID AND smart glasses / privacy devices (Meta Ray-Ban, Snap Spectacles, Xreal, etc.)
+- **Scanner** (ESP32-S3 or ESP32-C5) — BLE Remote ID + WiFi promiscuous frame capture, Bayesian fusion
+- **BLE Scanner** (ESP32-S3/ESP32) — Standalone BLE detector with OLED display. Detects drones AND smart glasses / privacy devices with on-screen alerts
 - **Uplink** (ESP32-C3) — GPS, OLED status display, WiFi backhaul to backend
-- **ESP32-C5 variant** — dual-band WiFi 6 scans 2.4 GHz AND 5 GHz (38 channels), catches modern drones that hide on 5 GHz
+- **ESP32-C5 variant** — dual-band WiFi 6 scans 2.4 + 5 GHz (38 channels)
 - **Flash from your browser** — no toolchain needed: [**ESP32 Web Flasher**](https://lnxgod.github.io/friendorfoe/)
 - Hardware setup: [INSTALL.md](esp32/INSTALL.md)
 
 ---
 
-## What It Does
+## Privacy Detection
 
-- **AR Viewfinder** — Live camera view with color-coded floating labels on detected aircraft and drones. Labels show callsign, aircraft type, altitude, and distance.
-- **Multi-Source Detection** — Combines four independent detection methods for comprehensive sky awareness:
+Friend or Foe passively monitors BLE advertisements and WiFi networks around you, matching against a database of **60+ known surveillance device signatures**:
+
+### BLE Detection (Android + ESP32)
+- **13 smart glasses brands** — Meta Ray-Ban, Snap Spectacles, Google Glass, Vuzix, Bose Frames, Amazon Echo Frames, Xreal, Brilliant Labs, TCL RayNeo, Rokid, INMO, Even Realities, Solos
+- **7 tracker/stalkerware signatures** — Apple AirTag (FindMy type 0x12), Samsung SmartTag (UUID 0xFD5A), Tile (UUID 0xFEED), DULT protocol (UUID 0xFCB2), Google Find My Device (UUID 0xFE2C)
+- **3 body camera brands** — Axon, Motorola VISTA
+- **7 hidden camera BLE name patterns** — V380, IPC, CLOUDCAM, HIDVCAM, HDWiFiCam, LookCam, Camera
+- **Vehicle cameras** — Tesla Sentry Mode (BLE name)
+- **Attack tools** — Flipper Zero (BLE name)
+- **Retail tracking** — iBeacon (Apple type 0x02), Eddystone (UUID 0xFEAA)
+
+### WiFi Detection (Android)
+- **9 hidden camera SSID patterns** — MV*, YDXJ_*, IPC-*, IP_CAM_*, HDWiFiCam*, CLOUDCAM*, HIDVCAM*, GW_AP*, JXLCAM*
+- **3 action camera SSIDs** — GoPro*, Insta360*, OsmoAction*
+- **7 dash camera SSIDs** — BlackVue*, DR900*, DR750*, VIOFO_*, 70mai_*, Nextbase*, Thinkware*
+- **2 body camera WiFi patterns** — Axon Body*, WGVISTA*
+- **Attack tools** — Pineapple*
+- **Doorbell cameras** — Ring Setup*
+
+Privacy detection is **on by default** and can be toggled in Settings (About screen).
+
+---
+
+## Airspace Detection
+
+- **AR Viewfinder** — Live camera view with color-coded floating labels on aircraft and drones. Labels show callsign, type, altitude, and distance.
+- **Multi-Source Detection** — Four independent methods:
   - ADS-B transponder data (commercial flights, general aviation)
   - FAA Remote ID via Bluetooth LE (compliant drones)
-  - WiFi SSID pattern matching (DJI, Skydio, Parrot, 100+ manufacturers)
+  - WiFi SSID pattern matching (190+ drone manufacturer patterns)
   - Visual detection with ML Kit (camera-based object recognition)
-- **Smart Classification** — Categorizes everything into 10 types: Commercial, General Aviation, Military, Helicopter, Government, Emergency, Cargo, Drone, Ground Vehicle, and Unknown. Military detection uses callsign patterns, squawk codes, and operator databases.
-- **Bayesian Sensor Fusion** — When multiple sensors detect the same object, confidence scores are combined using Bayesian log-odds — not just "pick the highest." Two weak signals agreeing can outweigh one strong signal.
-- **Aircraft Silhouettes & Photos** — 120+ ICAO type codes mapped to 10 vector silhouette categories (narrowbody, widebody, regional, turboprop, bizjet, helicopter, fighter, cargo, lightplane, drone) plus 134 bundled aircraft photos for instant visual recognition — no network needed.
-- **2D Map View** — OpenStreetMap with distinct marker shapes per category, distance rings, compass-follow mode, and FOV cone overlay.
-- **Detail Cards** — Tap any object for full details: registration, operator, route (origin/destination), altitude, speed, heading, squawk code, detection source, and confidence level.
-- **History Log** — Persistent database of everything you've identified, searchable and sortable.
-- **Drone Reference Guide** — Built-in database of 30+ drone types with photos, specs, and descriptions — from DJI consumer drones to military UCAVs like the Bayraktar TB2, MQ-9 Reaper, and Shahed-136. Browse by category, search by name, or jump straight from an unknown drone detection to identify what you're seeing.
-- **Backend Enrichment (Optional)** — An optional Python API server can add airline names, registration numbers, and route information beyond what's already bundled. The app works fully without it — aircraft photos and drone references are included in the APK.
+- **Smart Classification** — 10 categories: Commercial, GA, Military, Helicopter, Government, Emergency, Cargo, Drone, Ground Vehicle, Unknown
+- **Bayesian Sensor Fusion** — Log-odds evidence combination across all sensors
+- **Aircraft Database** — 193 type codes, 135 airlines, 62 countries, 134 bundled photos, 10 vector silhouette categories
+- **2D Map View** — OpenStreetMap with category markers, distance rings, dark mode support
+- **Detail Cards** — Full aircraft/drone details with external lookup links
+- **History Log** — Persistent detection database, searchable and filterable
+- **Drone Reference Guide** — 30+ drone types from consumer to military UCAVs
 
 ---
 
