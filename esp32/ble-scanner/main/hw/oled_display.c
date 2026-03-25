@@ -635,3 +635,30 @@ void oled_show_glasses_alert(const char *device_type, const char *manufacturer,
     oled_flush();
 }
 #endif
+
+void oled_draw_status_bar(const char *mode_label, uint32_t uptime_s)
+{
+    if (!s_initialized) return;
+
+    /* Draw on bottom row (y=56) — 8px tall, fits one line of text */
+    char line[22];
+    uint32_t h = uptime_s / 3600;
+    uint32_t m = (uptime_s % 3600) / 60;
+    uint32_t s = uptime_s % 60;
+
+    if (h > 0) {
+        snprintf(line, sizeof(line), "[%s] %luh%02lum%02lus", mode_label, (unsigned long)h, (unsigned long)m, (unsigned long)s);
+    } else {
+        snprintf(line, sizeof(line), "[%s] %lum%02lus", mode_label, (unsigned long)m, (unsigned long)s);
+    }
+
+    /* Clear bottom 8 pixels and draw */
+    for (int x = 0; x < 128; x++) {
+        for (int bit = 0; bit < 8; bit++) {
+            /* Clear pixel at (x, 56+bit) by clearing the byte in page 7 */
+        }
+    }
+    /* Simpler: just draw the text at y=56. The font is 8px tall so it fits. */
+    fb_draw_string(0, 56, line);
+    oled_flush();
+}

@@ -50,10 +50,16 @@ static const char *TAG = "fof_ble_scanner";
 
 #define BOOT_BUTTON_GPIO    0
 #define LONG_PRESS_MS       1500
+#define TRIPLE_TAP_WINDOW_MS 800  /* 3 taps within this window = triple tap */
 
-static volatile bool s_button_short = false;   /* short press detected */
-static volatile bool s_button_long = false;    /* long press detected */
+static volatile bool s_button_short = false;   /* single short press */
+static volatile bool s_button_long = false;    /* long press */
+static volatile bool s_button_triple = false;  /* triple tap */
 static volatile int64_t s_button_down_ms = 0;
+
+/* Triple-tap tracking */
+static volatile int s_tap_count = 0;
+static volatile int64_t s_first_tap_ms = 0;
 
 static void button_init(void)
 {
@@ -65,7 +71,7 @@ static void button_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&cfg);
-    ESP_LOGI(TAG, "BOOT button on GPIO%d: short=scroll, long=dismiss", BOOT_BUTTON_GPIO);
+    ESP_LOGI(TAG, "BOOT: tap=scroll, hold=switch view, 3x tap=cycle mode");
 }
 
 /** Call from display loop to poll button state (non-blocking). */
@@ -77,22 +83,56 @@ static void button_poll(void)
     if (level == 0) {
         /* Button pressed (active low) */
         if (s_button_down_ms == 0) {
-            s_button_down_ms = now_ms;  /* record press start */
+            s_button_down_ms = now_ms;
         } else if ((now_ms - s_button_down_ms) >= LONG_PRESS_MS && !s_button_long) {
             s_button_long = true;
-            ESP_LOGI(TAG, "BOOT button: LONG press (dismiss/ack)");
+            s_tap_count = 0; /* cancel any multi-tap in progress */
+            ESP_LOGI(TAG, "BOOT: LONG press");
         }
     } else {
         /* Button released */
         if (s_button_down_ms > 0) {
             int64_t held_ms = now_ms - s_button_down_ms;
             if (held_ms < LONG_PRESS_MS && !s_button_long) {
-                s_button_short = true;
-                ESP_LOGI(TAG, "BOOT button: SHORT press (next page)");
+                /* Short tap — accumulate for multi-tap detection */
+                if (s_tap_count == 0 || (now_ms - s_first_tap_ms) > TRIPLE_TAP_WINDOW_MS) {
+                    /* Start new tap sequence */
+                    s_tap_count = 1;
+                    s_first_tap_ms = now_ms;
+                } else {
+                    s_tap_count++;
+                }
+
+                if (s_tap_count >= 3) {
+                    s_button_triple = true;
+                    s_tap_count = 0;
+                    ESP_LOGI(TAG, "BOOT: TRIPLE tap (cycle scan mode)");
+                }
             }
             s_button_down_ms = 0;
             s_button_long = false;
         }
+    }
+
+    /* If tap sequence timed out with 1 tap, emit single press */
+    if (s_tap_count > 0 && s_tap_count < 3 &&
+        (now_ms - s_first_tap_ms) > TRIPLE_TAP_WINDOW_MS) {
+        s_button_short = true;
+        s_tap_count = 0;
+    }
+}
+
+/* ── Scan mode (BLE / WiFi / Hybrid) ──────────────────────────────────── */
+
+enum scan_mode { SMODE_HYBRID = 0, SMODE_BLE_ONLY, SMODE_WIFI_ONLY, SMODE_COUNT };
+static volatile int s_scan_mode = SMODE_HYBRID;
+
+static const char *scan_mode_label(int mode) {
+    switch (mode) {
+        case SMODE_HYBRID:   return "B+W";
+        case SMODE_BLE_ONLY: return "BLE";
+        case SMODE_WIFI_ONLY:return "WiFi";
+        default:             return "???";
     }
 }
 
@@ -110,9 +150,12 @@ static void wifi_scan_task(void *arg)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(25000)); /* Wait 25s (BLE scanning) */
 
-        ESP_LOGI(TAG, "WiFi scan starting...");
+        /* Only scan WiFi in hybrid or wifi-only mode */
+        if (s_scan_mode == SMODE_BLE_ONLY) {
+            continue;
+        }
 
-        /* Run WiFi scan (blocks ~2-3s) */
+        ESP_LOGI(TAG, "WiFi scan starting...");
         s_wifi_result_count = wifi_privacy_scan(s_wifi_results, MAX_WIFI_PRIVACY_RESULTS);
         s_meta_wifi_active = wifi_privacy_meta_transfer_detected();
 
@@ -123,7 +166,7 @@ static void wifi_scan_task(void *arg)
             ESP_LOGW(TAG, "!! META WIFI TRANSFER DETECTED !!");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(5000)); /* WiFi scan cooldown */
+        vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
 #endif
@@ -131,27 +174,32 @@ static void wifi_scan_task(void *arg)
 /* ── Display update task ───────────────────────────────────────────────── */
 
 /*
- * Display modes — user cycles through with BOOT button:
- *   PRIVACY: Show privacy/glasses detections (one per page)
- *   DRONES:  Show drone detections (one per page)
- *
- * BOOT short press: next item. When past last item, switch mode.
- * BOOT long press:  force switch mode immediately.
+ * Display:
+ *   Tap:        next page / switch between privacy & drone views
+ *   Long press: force switch view
+ *   Triple tap: cycle scan mode (Hybrid → BLE → WiFi → Hybrid)
+ *   Bottom row always shows: [mode] uptime
  */
 
 static void display_task(void *arg)
 {
     ESP_LOGI(TAG, "Display task started");
 
-    bool show_privacy = true;     /* true = privacy mode, false = drone mode */
+    bool show_privacy = true;
     int page_index = 0;
     int cycle_counter = 0;
 
-    #define PAGE_CYCLE_TICKS  6   /* 6 × 500ms = 3s auto-advance */
-    #define NUM_MODES         2
+    #define PAGE_CYCLE_TICKS  6
 
     while (1) {
         button_poll();
+
+        /* ── Triple tap: cycle scan mode ──────────────────────── */
+        if (s_button_triple) {
+            s_button_triple = false;
+            s_scan_mode = (s_scan_mode + 1) % SMODE_COUNT;
+            ESP_LOGI(TAG, "Scan mode: %s", scan_mode_label(s_scan_mode));
+        }
 
         /* Fetch data */
         scanner_detection_summary_t det_list[DETECTION_CACHE_SIZE];
@@ -218,6 +266,12 @@ static void display_task(void *arg)
             }
             if (page_index >= det_count && det_count > 0) page_index = 0;
             oled_draw_drone_list(oled_drones, det_count, page_index);
+        }
+
+        /* ── Draw status bar (bottom row): mode + uptime ─────────── */
+        {
+            uint32_t uptime_s = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
+            oled_draw_status_bar(scan_mode_label(s_scan_mode), uptime_s);
         }
 
         /* ── Auto-advance page every 3s ─────────────────────────── */
