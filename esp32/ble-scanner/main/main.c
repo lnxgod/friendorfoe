@@ -95,138 +95,104 @@ static void button_poll(void)
 /* ── Display update task ───────────────────────────────────────────────── */
 
 /*
- * Display modes:
- *   0 = Glasses alert (if any detected, highest priority)
- *   1 = Glasses list (page through all glasses/privacy devices)
- *   2 = Drone list (page through drones)
- *   3 = Status summary (counts, uptime)
+ * Display modes — user cycles through with BOOT button:
+ *   PRIVACY: Show privacy/glasses detections (one per page)
+ *   DRONES:  Show drone detections (one per page)
  *
- * BOOT button short press: cycle to next page/mode
- * BOOT button long press: dismiss current glasses alert (mark as friendly)
+ * BOOT short press: next item. When past last item, switch mode.
+ * BOOT long press:  force switch mode immediately.
  */
-enum { DMODE_GLASSES_ALERT = 0, DMODE_GLASSES_LIST, DMODE_DRONES, DMODE_STATUS };
 
 static void display_task(void *arg)
 {
     ESP_LOGI(TAG, "Display task started");
 
-    int display_mode = DMODE_GLASSES_ALERT;
+    bool show_privacy = true;     /* true = privacy mode, false = drone mode */
     int page_index = 0;
     int cycle_counter = 0;
-    int glasses_page = 0;
 
-    #define PAGE_CYCLE_TICKS 6  /* 6 * 500ms = 3s per page */
+    #define PAGE_CYCLE_TICKS  6   /* 6 × 500ms = 3s auto-advance */
+    #define NUM_MODES         2
 
     while (1) {
-        /* Poll button */
         button_poll();
 
-        /* Handle short press — advance page or cycle mode */
-        if (s_button_short) {
-            s_button_short = false;
-            page_index++;
-            glasses_page++;
-            cycle_counter = 0;
-            /* If we've gone past all items in current mode, advance mode */
-        }
-
-        /* Handle long press — dismiss/ack current glasses alert */
-        if (s_button_long) {
-            s_button_long = false;
-            ESP_LOGI(TAG, "Glasses alert acknowledged (friendly)");
-            /* Switch to drone view to indicate acknowledgment */
-            display_mode = DMODE_DRONES;
-            page_index = 0;
-        }
-
-        /* Fetch cached detections */
+        /* Fetch data */
         scanner_detection_summary_t det_list[DETECTION_CACHE_SIZE];
         int det_count = console_output_get_cached_detections(det_list, DETECTION_CACHE_SIZE);
 
-        /* Build OLED drone entries from cache */
-        oled_drone_entry_t oled_drones[DETECTION_CACHE_SIZE];
-        for (int i = 0; i < det_count; i++) {
-            oled_drones[i].id = det_list[i].drone_id;
-            oled_drones[i].lat = det_list[i].latitude;
-            oled_drones[i].lon = det_list[i].longitude;
-            oled_drones[i].alt_m = det_list[i].altitude_m;
-            oled_drones[i].speed_mps = det_list[i].speed_mps;
-            oled_drones[i].rssi = det_list[i].rssi;
-        }
-
+        int glasses_count = 0;
 #if CONFIG_FOF_GLASSES_DETECTION
         glasses_detection_t glasses_list[GLASSES_CACHE_SIZE];
-        int glasses_count = console_output_get_cached_glasses(glasses_list, GLASSES_CACHE_SIZE);
+        glasses_count = console_output_get_cached_glasses(glasses_list, GLASSES_CACHE_SIZE);
+#endif
 
-        /* Auto-select mode based on what's available */
-        if (glasses_count > 0 && display_mode == DMODE_GLASSES_ALERT) {
-            /* Show alert for strongest glasses signal */
-            int best = 0;
-            for (int i = 1; i < glasses_count; i++) {
-                if (glasses_list[i].rssi > glasses_list[best].rssi) best = i;
-            }
-            oled_show_glasses_alert(
-                glasses_list[best].device_type,
-                glasses_list[best].manufacturer,
-                glasses_list[best].device_name,
-                glasses_list[best].rssi,
-                glasses_list[best].has_camera
-            );
-        } else if (glasses_count > 0 && display_mode == DMODE_GLASSES_LIST) {
-            /* Page through individual glasses devices */
-            if (glasses_page >= glasses_count) glasses_page = 0;
-            oled_show_glasses_alert(
-                glasses_list[glasses_page].device_type,
-                glasses_list[glasses_page].manufacturer,
-                glasses_list[glasses_page].device_name,
-                glasses_list[glasses_page].rssi,
-                glasses_list[glasses_page].has_camera
-            );
-        } else
-#endif
-        if (display_mode <= DMODE_DRONES) {
-            /* Drone list */
-            if (page_index >= det_count && det_count > 0) {
+        int current_max = show_privacy ? glasses_count : det_count;
+
+        /* ── Short press: next page, wrap to other mode ─────────── */
+        if (s_button_short) {
+            s_button_short = false;
+            page_index++;
+            if (page_index >= current_max || current_max == 0) {
+                /* Wrap to other mode */
+                show_privacy = !show_privacy;
                 page_index = 0;
+                ESP_LOGI(TAG, "Mode: %s", show_privacy ? "PRIVACY" : "DRONES");
             }
-            oled_draw_drone_list(oled_drones, det_count, page_index);
-        } else {
-            /* Status summary */
-            int total_glasses = 0;
-#if CONFIG_FOF_GLASSES_DETECTION
-            total_glasses = glasses_count;
-#endif
-            uint32_t uptime_s = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
-            char line[22];
-            oled_draw_drone_list(NULL, 0, 0);  /* Clear screen */
-            /* We'll just show drone list for now as status */
-            oled_draw_drone_list(oled_drones, det_count, 0);
+            cycle_counter = 0;
         }
 
-        /* Auto-page every 3 seconds */
+        /* ── Long press: force switch mode ──────────────────────── */
+        if (s_button_long) {
+            s_button_long = false;
+            show_privacy = !show_privacy;
+            page_index = 0;
+            cycle_counter = 0;
+            ESP_LOGI(TAG, "Mode switch: %s", show_privacy ? "PRIVACY" : "DRONES");
+        }
+
+        /* ── Render current mode ────────────────────────────────── */
+#if CONFIG_FOF_GLASSES_DETECTION
+        if (show_privacy && glasses_count > 0) {
+            if (page_index >= glasses_count) page_index = 0;
+            oled_show_glasses_alert(
+                glasses_list[page_index].device_type,
+                glasses_list[page_index].manufacturer,
+                glasses_list[page_index].device_name,
+                glasses_list[page_index].rssi,
+                glasses_list[page_index].has_camera
+            );
+        } else if (show_privacy && glasses_count == 0) {
+            /* No privacy devices — show placeholder then auto-switch */
+            oled_draw_drone_list(NULL, 0, 0);
+            show_privacy = false;
+            page_index = 0;
+        } else
+#endif
+        {
+            /* Drone mode */
+            oled_drone_entry_t oled_drones[DETECTION_CACHE_SIZE];
+            for (int i = 0; i < det_count; i++) {
+                oled_drones[i].id   = det_list[i].drone_id;
+                oled_drones[i].lat  = det_list[i].latitude;
+                oled_drones[i].lon  = det_list[i].longitude;
+                oled_drones[i].alt_m = det_list[i].altitude_m;
+                oled_drones[i].speed_mps = det_list[i].speed_mps;
+                oled_drones[i].rssi = det_list[i].rssi;
+            }
+            if (page_index >= det_count && det_count > 0) page_index = 0;
+            oled_draw_drone_list(oled_drones, det_count, page_index);
+        }
+
+        /* ── Auto-advance page every 3s ─────────────────────────── */
         cycle_counter++;
         if (cycle_counter >= PAGE_CYCLE_TICKS) {
             cycle_counter = 0;
-#if CONFIG_FOF_GLASSES_DETECTION
-            if (display_mode == DMODE_GLASSES_LIST && glasses_count > 1) {
-                glasses_page = (glasses_page + 1) % glasses_count;
-            } else
-#endif
-            if (det_count > 1) {
-                page_index = (page_index + 1) % det_count;
+            int max_pages = show_privacy ? glasses_count : det_count;
+            if (max_pages > 1) {
+                page_index = (page_index + 1) % max_pages;
             }
         }
-
-        /* If glasses reappear after being dismissed, re-alert */
-#if CONFIG_FOF_GLASSES_DETECTION
-        if (glasses_count > 0 && display_mode == DMODE_DRONES) {
-            /* Stay in drone mode until user presses button again */
-        } else if (glasses_count > 0 && display_mode != DMODE_GLASSES_LIST) {
-            display_mode = DMODE_GLASSES_ALERT;
-        } else if (glasses_count == 0) {
-            display_mode = DMODE_DRONES;
-        }
-#endif
 
         vTaskDelay(pdMS_TO_TICKS(DISPLAY_UPDATE_MS));
     }
