@@ -24,6 +24,10 @@
 #include "glasses_detector.h"
 #endif
 
+#if CONFIG_FOF_SCAN_HYBRID || CONFIG_FOF_SCAN_WIFI_ONLY
+#include "wifi_privacy_scanner.h"
+#endif
+
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
@@ -91,6 +95,38 @@ static void button_poll(void)
         }
     }
 }
+
+/* ── Hybrid WiFi scan task (time-sliced with BLE) ─────────────────────── */
+
+#if CONFIG_FOF_SCAN_HYBRID || CONFIG_FOF_SCAN_WIFI_ONLY
+static wifi_privacy_result_t s_wifi_results[MAX_WIFI_PRIVACY_RESULTS];
+static int s_wifi_result_count = 0;
+static bool s_meta_wifi_active = false;
+
+static void wifi_scan_task(void *arg)
+{
+    ESP_LOGI(TAG, "WiFi privacy scan task started (every 30s)");
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(25000)); /* Wait 25s (BLE scanning) */
+
+        ESP_LOGI(TAG, "WiFi scan starting...");
+
+        /* Run WiFi scan (blocks ~2-3s) */
+        s_wifi_result_count = wifi_privacy_scan(s_wifi_results, MAX_WIFI_PRIVACY_RESULTS);
+        s_meta_wifi_active = wifi_privacy_meta_transfer_detected();
+
+        if (s_wifi_result_count > 0) {
+            ESP_LOGI(TAG, "WiFi scan: %d privacy matches", s_wifi_result_count);
+        }
+        if (s_meta_wifi_active) {
+            ESP_LOGW(TAG, "!! META WIFI TRANSFER DETECTED !!");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5000)); /* WiFi scan cooldown */
+    }
+}
+#endif
 
 /* ── Display update task ───────────────────────────────────────────────── */
 
@@ -258,6 +294,16 @@ void app_main(void)
     ble_remote_id_start();
     ESP_LOGI(TAG, "BLE Remote ID scanner started on core %d, priority %d",
              BLE_SCAN_TASK_CORE, BLE_SCAN_TASK_PRIORITY);
+
+    /* ── 8b. Start WiFi privacy scanner (hybrid mode) ─────────────────── */
+#if CONFIG_FOF_SCAN_HYBRID || CONFIG_FOF_SCAN_WIFI_ONLY
+    wifi_privacy_init();
+    xTaskCreatePinnedToCore(
+        wifi_scan_task, "wifi_priv", 4096, NULL,
+        2, NULL, CONSOLE_TX_TASK_CORE
+    );
+    ESP_LOGI(TAG, "WiFi privacy scan task started (hybrid mode)");
+#endif
 
     /* ── 9. Start LED task ───────────────────────────────────────────── */
     led_start();

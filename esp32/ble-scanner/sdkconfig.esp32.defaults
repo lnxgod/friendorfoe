@@ -1,6 +1,6 @@
 # Friend or Foe — BLE Scanner (ESP32 original) SDK Configuration
-# Dedicated BLE Remote ID scanning — no WiFi, no coex
-# Original ESP32 has BLE 4.2 (no extended advertising)
+# Hybrid BLE + WiFi scanning with time-slicing
+# Original ESP32 with OLED display
 
 # ── Bluetooth / NimBLE ───────────────────────────────────────────────────────
 CONFIG_BT_ENABLED=y
@@ -12,12 +12,15 @@ CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
 CONFIG_BT_NIMBLE_EXT_ADV=n
 
-# ── WiFi (disabled) ─────────────────────────────────────────────────────────
-CONFIG_ESP_WIFI_ENABLED=n
+# ── WiFi (enabled for hybrid scanning) ───────────────────────────────────────
+CONFIG_ESP_WIFI_ENABLED=y
 
-# ── Coexistence (disabled — BLE only) ───────────────────────────────────────
-CONFIG_SW_COEXIST_ENABLE=n
-CONFIG_ESP_COEX_SW_COEXIST_ENABLE=n
+# ── Coexistence (enabled for BLE+WiFi) ───────────────────────────────────────
+CONFIG_SW_COEXIST_ENABLE=y
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# ── Scan Mode ─────────────────────────────────────────────────────────────────
+CONFIG_FOF_SCAN_HYBRID=y
 
 # ── FreeRTOS (dual-core Xtensa) ─────────────────────────────────────────────
 CONFIG_FREERTOS_HZ=1000
@@ -31,9 +34,10 @@ CONFIG_FOF_OLED_SDA_PIN=4
 CONFIG_FOF_OLED_SCL_PIN=15
 CONFIG_FOF_OLED_RST_PIN=16
 
-# ── Logging (DEBUG level for BLE troubleshooting) ────────────────────────────
+# ── Logging ──────────────────────────────────────────────────────────────────
 CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
 CONFIG_LOG_DEFAULT_LEVEL=4
 
+# ── Privacy Detection ────────────────────────────────────────────────────────
 CONFIG_FOF_GLASSES_DETECTION=y
 CONFIG_FOF_GLASSES_ALERT_RSSI=-75

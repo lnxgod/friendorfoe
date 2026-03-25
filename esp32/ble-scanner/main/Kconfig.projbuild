@@ -14,6 +14,19 @@ menu "FoF BLE Scanner OLED"
         default -1
 endmenu
 
+menu "FoF Scan Mode"
+    choice FOF_SCAN_MODE
+        prompt "Scanning mode"
+        default FOF_SCAN_HYBRID
+        config FOF_SCAN_BLE_ONLY
+            bool "BLE only (max BLE sensitivity)"
+        config FOF_SCAN_WIFI_ONLY
+            bool "WiFi only (hidden camera SSIDs)"
+        config FOF_SCAN_HYBRID
+            bool "Hybrid BLE+WiFi (time-sliced)"
+    endchoice
+endmenu
+
 menu "FoF Privacy Detection"
     config FOF_GLASSES_DETECTION
         bool "Enable smart glasses / privacy device detection"
