@@ -136,6 +136,41 @@ static const char *scan_mode_label(int mode) {
     }
 }
 
+/* ── Last detection timestamp (for status bar) ────────────────────────── */
+
+static volatile int64_t s_last_privacy_det_ms = 0;
+static volatile int64_t s_last_drone_det_ms = 0;
+
+/* ── ACK'd / whitelisted devices ──────────────────────────────────────── */
+/* Devices the user has acknowledged as "known/friendly" via long press.
+ * New devices that DON'T appear here get a "NEW" tag on the OLED. */
+
+#define MAX_ACKED_MACS 20
+static char s_acked_macs[MAX_ACKED_MACS][18]; /* "AA:BB:CC:DD:EE:FF" */
+static int s_acked_count = 0;
+
+static bool is_acked(const char *mac_str)
+{
+    for (int i = 0; i < s_acked_count; i++) {
+        if (strcmp(s_acked_macs[i], mac_str) == 0) return true;
+    }
+    return false;
+}
+
+static void ack_device(const char *mac_str)
+{
+    if (is_acked(mac_str)) return;
+    if (s_acked_count >= MAX_ACKED_MACS) {
+        /* Evict oldest */
+        memmove(&s_acked_macs[0], &s_acked_macs[1], (MAX_ACKED_MACS - 1) * 18);
+        s_acked_count--;
+    }
+    strncpy(s_acked_macs[s_acked_count], mac_str, 17);
+    s_acked_macs[s_acked_count][17] = '\0';
+    s_acked_count++;
+    ESP_LOGI(TAG, "Device ACK'd (friendly): %s (%d total)", mac_str, s_acked_count);
+}
+
 /* ── Hybrid WiFi scan task (time-sliced with BLE) ─────────────────────── */
 
 #if CONFIG_FOF_SCAN_HYBRID || CONFIG_FOF_SCAN_WIFI_ONLY
@@ -176,9 +211,9 @@ static void wifi_scan_task(void *arg)
 /*
  * Display:
  *   Tap:        next page / switch between privacy & drone views
- *   Long press: force switch view
- *   Triple tap: cycle scan mode (Hybrid → BLE → WiFi → Hybrid)
- *   Bottom row always shows: [mode] uptime
+ *   Long press: ACK current device as "known/friendly"
+ *   Triple tap: cycle scan mode (Hybrid → BLE → WiFi)
+ *   Bottom row: [mode] time-since-last-detection
  */
 
 static void display_task(void *arg)
@@ -193,6 +228,7 @@ static void display_task(void *arg)
 
     while (1) {
         button_poll();
+        int64_t now_ms = esp_timer_get_time() / 1000;
 
         /* ── Triple tap: cycle scan mode ──────────────────────── */
         if (s_button_triple) {
@@ -209,7 +245,9 @@ static void display_task(void *arg)
 #if CONFIG_FOF_GLASSES_DETECTION
         glasses_detection_t glasses_list[GLASSES_CACHE_SIZE];
         glasses_count = console_output_get_cached_glasses(glasses_list, GLASSES_CACHE_SIZE);
+        if (glasses_count > 0) s_last_privacy_det_ms = now_ms;
 #endif
+        if (det_count > 0) s_last_drone_det_ms = now_ms;
 
         int current_max = show_privacy ? glasses_count : det_count;
 
@@ -218,36 +256,61 @@ static void display_task(void *arg)
             s_button_short = false;
             page_index++;
             if (page_index >= current_max || current_max == 0) {
-                /* Wrap to other mode */
                 show_privacy = !show_privacy;
                 page_index = 0;
-                ESP_LOGI(TAG, "Mode: %s", show_privacy ? "PRIVACY" : "DRONES");
             }
             cycle_counter = 0;
         }
 
-        /* ── Long press: force switch mode ──────────────────────── */
+        /* ── Long press: ACK current device as friendly ─────────── */
         if (s_button_long) {
             s_button_long = false;
-            show_privacy = !show_privacy;
-            page_index = 0;
+#if CONFIG_FOF_GLASSES_DETECTION
+            if (show_privacy && glasses_count > 0 && page_index < glasses_count) {
+                /* Build MAC string from the glasses detection */
+                char mac_str[18];
+                snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
+                    glasses_list[page_index].mac[0], glasses_list[page_index].mac[1],
+                    glasses_list[page_index].mac[2], glasses_list[page_index].mac[3],
+                    glasses_list[page_index].mac[4], glasses_list[page_index].mac[5]);
+                ack_device(mac_str);
+            } else
+#endif
+            {
+                /* In drone mode, long press switches view */
+                show_privacy = !show_privacy;
+                page_index = 0;
+            }
             cycle_counter = 0;
-            ESP_LOGI(TAG, "Mode switch: %s", show_privacy ? "PRIVACY" : "DRONES");
         }
 
         /* ── Render current mode ────────────────────────────────── */
 #if CONFIG_FOF_GLASSES_DETECTION
         if (show_privacy && glasses_count > 0) {
             if (page_index >= glasses_count) page_index = 0;
+
+            /* Check if this device is ACK'd */
+            char cur_mac[18];
+            snprintf(cur_mac, sizeof(cur_mac), "%02x:%02x:%02x:%02x:%02x:%02x",
+                glasses_list[page_index].mac[0], glasses_list[page_index].mac[1],
+                glasses_list[page_index].mac[2], glasses_list[page_index].mac[3],
+                glasses_list[page_index].mac[4], glasses_list[page_index].mac[5]);
+            bool acked = is_acked(cur_mac);
+
+            /* Show alert — prefix device type with "NEW" or "OK" */
+            char type_buf[32];
+            snprintf(type_buf, sizeof(type_buf), "%s%s",
+                acked ? "" : "NEW ",
+                glasses_list[page_index].device_type);
+
             oled_show_glasses_alert(
-                glasses_list[page_index].device_type,
+                type_buf,
                 glasses_list[page_index].manufacturer,
                 glasses_list[page_index].device_name,
                 glasses_list[page_index].rssi,
                 glasses_list[page_index].has_camera
             );
         } else if (show_privacy && glasses_count == 0) {
-            /* No privacy devices — show placeholder then auto-switch */
             oled_draw_drone_list(NULL, 0, 0);
             show_privacy = false;
             page_index = 0;
@@ -268,10 +331,21 @@ static void display_task(void *arg)
             oled_draw_drone_list(oled_drones, det_count, page_index);
         }
 
-        /* ── Draw status bar (bottom row): mode + uptime ─────────── */
+        /* ── Status bar: [mode] time since last detection ─────────── */
         {
-            uint32_t uptime_s = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
-            oled_draw_status_bar(scan_mode_label(s_scan_mode), uptime_s);
+            int64_t last_det = show_privacy ? s_last_privacy_det_ms : s_last_drone_det_ms;
+            uint32_t ago_s = (last_det > 0) ? (uint32_t)((now_ms - last_det) / 1000) : 0;
+            char status[22];
+            if (last_det == 0) {
+                snprintf(status, sizeof(status), "[%s] no detections", scan_mode_label(s_scan_mode));
+            } else if (ago_s < 60) {
+                snprintf(status, sizeof(status), "[%s] %lus ago", scan_mode_label(s_scan_mode), (unsigned long)ago_s);
+            } else {
+                snprintf(status, sizeof(status), "[%s] %lum%lus ago",
+                    scan_mode_label(s_scan_mode),
+                    (unsigned long)(ago_s / 60), (unsigned long)(ago_s % 60));
+            }
+            oled_draw_status_bar(status, 0); /* pass 0 for uptime — not used anymore */
         }
 
         /* ── Auto-advance page every 3s ─────────────────────────── */
