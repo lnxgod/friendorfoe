@@ -25,6 +25,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -102,9 +106,13 @@ fun ListViewScreen(
             StalkerAlertBanner(stalkerAlerts)
         }
 
-        // Smart glasses privacy alert banner
+        // Privacy scanner section — expandable with ignore/track/details
         if (glassesDetections.isNotEmpty()) {
-            GlassesAlertBanner(glassesDetections)
+            PrivacyScannerSection(
+                detections = glassesDetections,
+                onIgnore = { mac -> viewModel.ignoreDevice(mac) },
+                onTrack = { mac -> viewModel.startDirectionScan(mac) }
+            )
         }
 
         if (skyObjects.isEmpty()) {
@@ -310,84 +318,180 @@ private fun detectionSourceIcon(source: DetectionSource): ImageVector = when (so
 }
 
 @Composable
-private fun GlassesAlertBanner(detections: List<GlassesDetection>) {
+private fun PrivacyScannerSection(
+    detections: List<GlassesDetection>,
+    onIgnore: (String) -> Unit,
+    onTrack: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var selectedDetail by remember { mutableStateOf<GlassesDetection?>(null) }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .background(MaterialTheme.colorScheme.error.copy(alpha = 0.08f))
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // Header — always visible, tap to expand/collapse
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Icon(
                 imageVector = Icons.Default.Visibility,
-                contentDescription = "Privacy Alert",
+                contentDescription = "Privacy Scanner",
                 tint = MaterialTheme.colorScheme.error,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(18.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = "PRIVACY ALERT",
+                text = "Privacy Scanner",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.error
             )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = "${detections.size} device${if (detections.size != 1) "s" else ""}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
+            )
             Spacer(modifier = Modifier.weight(1f))
             Text(
-                text = "${detections.size} device${if (detections.size > 1) "s" else ""}",
-                style = MaterialTheme.typography.bodySmall,
+                text = if (expanded) "\u25B2" else "\u25BC",
                 color = MaterialTheme.colorScheme.error
             )
         }
-        for (det in detections.take(3)) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = if (det.hasCamera) "\uD83D\uDCF7" else "\uD83D\uDD0A",
-                    modifier = Modifier.width(20.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "${det.manufacturer} ${det.deviceType}",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    if (det.deviceName != null) {
+
+        // Expanded — show all devices with actions
+        if (expanded) {
+            for (det in detections) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.error.copy(alpha = 0.15f))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { selectedDetail = det }
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = det.deviceName,
+                            text = if (det.hasCamera) "\uD83D\uDCF7" else "\uD83D\uDD0A",
+                            modifier = Modifier.width(22.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "${det.manufacturer} ${det.deviceType}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                            if (det.deviceName != null) {
+                                Text(
+                                    text = det.deviceName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Text(
+                            text = "${det.rssi}dB",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.error
                         )
                     }
-                    // Show parsed packet details (battery, separated, distance, etc.)
+                    // Parsed details row
                     if (det.details.isNotEmpty()) {
                         Text(
                             text = det.details.entries.take(4).joinToString(" | ") { "${it.key}: ${it.value}" },
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            modifier = Modifier.padding(start = 22.dp, top = 2.dp)
+                        )
+                    }
+                    // Match reason + confidence
+                    Text(
+                        text = "Match: ${det.matchReason} (${(det.confidence * 100).toInt()}%)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(start = 22.dp, top = 1.dp)
+                    )
+                    // Action buttons
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 22.dp, top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "Ignore",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.clickable { onIgnore(det.mac) }
+                        )
+                        Text(
+                            text = "Track",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.clickable { onTrack(det.mac) }
+                        )
+                        Text(
+                            text = "Details",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable { selectedDetail = det }
                         )
                     }
                 }
-                Text(
-                    text = "${det.rssi}dB",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         }
-        if (detections.size > 3) {
-            Text(
-                text = "+${detections.size - 3} more",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 2.dp)
-            )
-        }
+    }
+
+    // Detail bottom sheet
+    if (selectedDetail != null) {
+        val det = selectedDetail!!
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { selectedDetail = null },
+            title = {
+                Text("${det.manufacturer} ${det.deviceType}")
+            },
+            text = {
+                Column {
+                    if (det.deviceName != null) {
+                        Text("Name: ${det.deviceName}")
+                    }
+                    Text("MAC: ${det.mac}")
+                    Text("RSSI: ${det.rssi} dBm")
+                    Text("Confidence: ${(det.confidence * 100).toInt()}%")
+                    Text("Match: ${det.matchReason}")
+                    Text("Camera: ${if (det.hasCamera) "Yes" else "No"}")
+                    if (det.details.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Parsed Details:", fontWeight = FontWeight.Medium)
+                        for ((key, value) in det.details) {
+                            Text("  $key: $value", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    androidx.compose.material3.TextButton(onClick = {
+                        onIgnore(det.mac)
+                        selectedDetail = null
+                    }) { Text("Ignore") }
+                    androidx.compose.material3.TextButton(onClick = {
+                        onTrack(det.mac)
+                        selectedDetail = null
+                    }) { Text("Track") }
+                    androidx.compose.material3.TextButton(onClick = { selectedDetail = null }) {
+                        Text("Close")
+                    }
+                }
+            }
+        )
     }
 }
 
