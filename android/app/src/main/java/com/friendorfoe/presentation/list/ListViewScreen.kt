@@ -364,6 +364,14 @@ private fun GlassesAlertBanner(detections: List<GlassesDetection>) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    // Show parsed packet details (battery, separated, distance, etc.)
+                    if (det.details.isNotEmpty()) {
+                        Text(
+                            text = det.details.entries.take(4).joinToString(" | ") { "${it.key}: ${it.value}" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                        )
+                    }
                 }
                 Text(
                     text = "${det.rssi}dB",

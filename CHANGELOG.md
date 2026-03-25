@@ -4,6 +4,21 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.23.0-beta] - 2026-03-25
+
+### Added
+- **Deep BLE packet parsing** — New `BlePacketParser` extracts rich details from every BLE advertisement:
+  - Apple AirTag/FindMy: battery level (Full/Medium/Low/Critical), separated-from-owner flag
+  - Apple AirPods/Beats: device family, left/right/case battery percentages
+  - Samsung SmartTag: state (offline/connected/overmature), aging counter (how long separated), battery
+  - iBeacon: proximity UUID, major/minor IDs, TX power → distance
+  - Eddystone-URL: decoded broadcast URL
+  - Eddystone-TLM: beacon battery voltage, temperature, uptime
+  - Google Fast Pair: 24-bit model ID
+  - TX Power + RSSI → estimated distance in meters
+  - BLE address type (Public vs Random, API 33+ native, heuristic fallback)
+- **Details in privacy alerts** — Detected devices now show parsed info inline (battery, separated status, distance, beacon data)
+
 ## [0.22.0-beta] - 2026-03-25
 
 ### Added
