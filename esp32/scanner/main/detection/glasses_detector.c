@@ -86,6 +86,14 @@ static const mfr_cid_entry_t s_mfr_cid_db[] = {
 
     /* LOW confidence — too broad, many non-glasses devices */
     { 0x0171, "Amazon",         "Smart Glasses", 0.50f, false }, /* Amazon.com (Echo Frames but also Echo, Fire, etc.) */
+
+    /* ── Trackers / Stalkerware ────────────────────────────────────── */
+    { 0x000D, "Tile",           "BLE Tracker",   0.85f, false }, /* Tile Inc. */
+    { 0x0075, "Samsung",        "BLE Tracker",   0.80f, false }, /* Samsung SmartTag */
+    { 0x067C, "Tile",           "BLE Tracker",   0.85f, false }, /* Tile (alt CID) */
+
+    /* ── Vehicles with cameras ─────────────────────────────────────── */
+    /* Tesla CID not in SIG — detected by name/UUID instead */
 };
 #define MFR_CID_DB_COUNT (sizeof(s_mfr_cid_db) / sizeof(s_mfr_cid_db[0]))
 
@@ -100,10 +108,22 @@ typedef struct {
 } svc_uuid_entry_t;
 
 static const svc_uuid_entry_t s_svc_uuid_db[] = {
-    { 0xFD5F, "Meta",  "Smart Glasses", 0.95f, true  }, /* Meta Ray-Ban Gen 2 */
-    { 0xFDD2, "Bose",  "Audio Glasses", 0.85f, false }, /* Bose AR wearable */
-    { 0xFE45, "Snap",  "Smart Glasses", 0.80f, true  }, /* Snapchat assigned */
-    { 0xFE15, "Amazon","Smart Glasses", 0.70f, false }, /* Amazon assigned */
+    /* Smart Glasses */
+    { 0xFD5F, "Meta",    "Smart Glasses", 0.95f, true  }, /* Meta Ray-Ban Gen 2 */
+    { 0xFDD2, "Bose",    "Audio Glasses", 0.85f, false }, /* Bose AR wearable */
+    { 0xFE45, "Snap",    "Smart Glasses", 0.80f, true  }, /* Snapchat assigned */
+    { 0xFE15, "Amazon",  "Smart Glasses", 0.70f, false }, /* Amazon assigned */
+
+    /* Trackers / Stalkerware */
+    { 0xFD5A, "Samsung", "BLE Tracker",   0.90f, false }, /* Samsung Offline Finding */
+    { 0xFD59, "Samsung", "BLE Tracker",   0.85f, false }, /* Samsung SmartTag pairing */
+    { 0xFEED, "Tile",    "BLE Tracker",   0.85f, false }, /* Tile tracker */
+    { 0xFEEC, "Tile",    "BLE Tracker",   0.85f, false }, /* Tile tracker (alt) */
+    { 0xFCB2, "DULT",    "BLE Tracker",   0.90f, false }, /* DULT unwanted tracker protocol */
+    { 0xFE2C, "Google",  "BLE Tracker",   0.85f, false }, /* Google Find My Device network */
+
+    /* Retail Tracking */
+    { 0xFEAA, "Google",  "Tracking Beacon", 0.70f, false }, /* Eddystone beacon */
 };
 #define SVC_UUID_DB_COUNT (sizeof(s_svc_uuid_db) / sizeof(s_svc_uuid_db[0]))
 
@@ -140,12 +160,29 @@ static const name_pattern_entry_t s_name_db[] = {
     { "Glass",           "Google",          "Smart Glasses", 0.70f, true,  false },
     { "Bose Frames",     "Bose",            "Audio Glasses", 0.90f, false, false },
 
-    /* Body cameras / spy cameras */
+    /* Body cameras / spy cameras (BLE names) */
     { "Axon Body",       "Axon",            "Body Camera",   0.90f, true,  false },
     { "Axon Signal",     "Axon",            "Body Camera",   0.85f, true,  false },
+    { "VISTA_",          "Motorola",        "Body Camera",   0.85f, true,  false },
+
+    /* BLE hidden cameras / spy cameras */
     { "V380_",           "Generic",         "Spy Camera",    0.75f, true,  false },
     { "IPC_",            "Generic",         "Spy Camera",    0.70f, true,  false },
     { "LookCam_",        "Generic",         "Spy Camera",    0.70f, true,  false },
+    { "Camera-",         "Generic",         "Spy Camera",    0.55f, true,  false },
+    { "CLOUDCAM-",       "Generic",         "Spy Camera",    0.80f, true,  false },
+    { "HIDVCAM-",        "Generic",         "Hidden Camera", 0.90f, true,  false },
+    { "HDWiFiCam-",      "Generic",         "Hidden Camera", 0.85f, true,  false },
+
+    /* Vehicles with cameras */
+    { "Tesla ",          "Tesla",           "Vehicle Camera", 0.90f, true,  false },
+
+    /* Attack / hacking tools */
+    { "Flipper ",        "Flipper Zero",    "Attack Tool",   0.90f, false, false },
+
+    /* Trackers (BLE name-based — supplement CID/UUID matching) */
+    { "Tile",            "Tile",            "BLE Tracker",   0.70f, false, false },
+    { "SmartTag",        "Samsung",         "BLE Tracker",   0.80f, false, false },
 };
 #define NAME_DB_COUNT (sizeof(s_name_db) / sizeof(s_name_db[0]))
 
@@ -202,6 +239,35 @@ bool glasses_check_advertisement(
                              "mfr_cid:0x%04X", cid);
                 }
                 break;
+            }
+        }
+    }
+
+    /* 1b. Special Apple manufacturer data parsing (AirTag, FindMy) */
+    if (mfr_data != NULL && mfr_data_len >= 4) {
+        uint16_t cid = (uint16_t)(mfr_data[0] | (mfr_data[1] << 8));
+        if (cid == 0x004C) { /* Apple Inc. */
+            uint8_t apple_type = mfr_data[2];
+            if (apple_type == 0x12) {
+                /* AirTag / FindMy accessory */
+                float c = 0.95f;
+                if (c > best_conf) {
+                    best_conf = c;
+                    best_mfr = "Apple";
+                    best_type = "AirTag/FindMy";
+                    best_camera = false;
+                    snprintf(best_reason, sizeof(best_reason), "apple_findmy:0x12");
+                }
+            } else if (apple_type == 0x02 && mfr_data_len >= 23) {
+                /* iBeacon (retail tracking) — type 0x02 + 21 bytes payload */
+                float c = 0.70f;
+                if (c > best_conf) {
+                    best_conf = c;
+                    best_mfr = "Apple";
+                    best_type = "Tracking Beacon";
+                    best_camera = false;
+                    snprintf(best_reason, sizeof(best_reason), "ibeacon:0x02");
+                }
             }
         }
     }

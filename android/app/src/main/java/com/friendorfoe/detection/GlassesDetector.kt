@@ -43,6 +43,71 @@ class GlassesDetector @Inject constructor(
 ) {
     companion object {
         private const val TAG = "GlassesDetector"
+
+        /** Suspicious WiFi SSID patterns that indicate hidden cameras, attack tools, or spy devices */
+        private data class WifiPattern(
+            val prefix: String,
+            val manufacturer: String,
+            val deviceType: String,
+            val confidence: Float,
+            val hasCamera: Boolean
+        )
+
+        private val wifiSsidPatterns = listOf(
+            // Hidden cameras / spy cameras
+            WifiPattern("MV", "V380", "Hidden Camera", 0.80f, true),
+            WifiPattern("YDXJ_", "YI", "IP Camera", 0.85f, true),
+            WifiPattern("IPC-", "Generic", "IP Camera", 0.75f, true),
+            WifiPattern("IP_CAM_", "Generic", "IP Camera", 0.80f, true),
+            WifiPattern("HDWiFiCam", "Generic", "Hidden Camera", 0.85f, true),
+            WifiPattern("CLOUDCAM", "Generic", "Hidden Camera", 0.80f, true),
+            WifiPattern("HIDVCAM", "Generic", "Hidden Camera", 0.90f, true),
+            WifiPattern("GW_AP", "Yoosee", "IP Camera", 0.75f, true),
+            WifiPattern("JXLCAM", "Generic", "Spy Camera", 0.85f, true),
+            // Action cameras / dashcams
+            WifiPattern("GoPro", "GoPro", "Action Camera", 0.90f, true),
+            WifiPattern("GP", "GoPro", "Action Camera", 0.70f, true),
+            WifiPattern("Insta360", "Insta360", "Action Camera", 0.90f, true),
+            WifiPattern("OsmoAction", "DJI", "Action Camera", 0.90f, true),
+            WifiPattern("BlackVue", "BlackVue", "Dash Camera", 0.90f, true),
+            WifiPattern("DR900", "BlackVue", "Dash Camera", 0.85f, true),
+            WifiPattern("DR750", "BlackVue", "Dash Camera", 0.85f, true),
+            WifiPattern("VIOFO_", "Viofo", "Dash Camera", 0.85f, true),
+            WifiPattern("70mai_", "70mai", "Dash Camera", 0.85f, true),
+            WifiPattern("Nextbase", "Nextbase", "Dash Camera", 0.85f, true),
+            WifiPattern("Thinkware", "Thinkware", "Dash Camera", 0.85f, true),
+            // Body cameras
+            WifiPattern("Axon Body", "Axon", "Body Camera", 0.90f, true),
+            WifiPattern("WGVISTA", "Motorola", "Body Camera", 0.85f, true),
+            // Attack tools
+            WifiPattern("Pineapple", "Hak5", "Attack Tool", 0.90f, false),
+            // Smart home cameras (setup mode)
+            WifiPattern("Ring Setup", "Ring", "Doorbell Camera", 0.85f, true),
+        )
+
+        /**
+         * Check a WiFi SSID for privacy-threatening device patterns.
+         * @return GlassesDetection if match, null otherwise.
+         */
+        fun checkWifiSsid(ssid: String, bssid: String, rssi: Int): GlassesDetection? {
+            for (pattern in wifiSsidPatterns) {
+                if (ssid.startsWith(pattern.prefix, ignoreCase = true)) {
+                    return GlassesDetection(
+                        mac = bssid,
+                        deviceName = ssid,
+                        deviceType = pattern.deviceType,
+                        manufacturer = pattern.manufacturer,
+                        hasCamera = pattern.hasCamera,
+                        rssi = rssi,
+                        confidence = pattern.confidence,
+                        matchReason = "wifi_ssid:${pattern.prefix}",
+                        firstSeen = Instant.now(),
+                        lastSeen = Instant.now()
+                    )
+                }
+            }
+            return null
+        }
     }
 
     // ── Manufacturer Company ID database (from Bluetooth SIG) ──
@@ -56,6 +121,7 @@ class GlassesDetector @Inject constructor(
     )
 
     private val mfrDatabase = listOf(
+        // Smart Glasses
         MfrEntry(0x01AB, "Meta", "Smart Glasses", 0.90f, true),
         MfrEntry(0x058E, "Meta", "Smart Glasses", 0.90f, true),
         MfrEntry(0x03C2, "Snap", "Smart Glasses", 0.85f, true),
@@ -68,6 +134,10 @@ class GlassesDetector @Inject constructor(
         MfrEntry(0x0BC6, "TCL", "Smart Glasses", 0.70f, true),
         MfrEntry(0x0962, "Rokid", "Smart Glasses", 0.75f, true),
         MfrEntry(0x0171, "Amazon", "Smart Glasses", 0.50f, false),
+        // Trackers / Stalkerware
+        MfrEntry(0x000D, "Tile", "BLE Tracker", 0.85f, false),
+        MfrEntry(0x067C, "Tile", "BLE Tracker", 0.85f, false),
+        MfrEntry(0x0075, "Samsung", "BLE Tracker", 0.80f, false),
     )
 
     // ── 16-bit Service UUID database ──
@@ -81,10 +151,20 @@ class GlassesDetector @Inject constructor(
     )
 
     private val uuidDatabase = listOf(
+        // Smart Glasses
         UuidEntry(0xFD5F, "Meta", "Smart Glasses", 0.95f, true),
         UuidEntry(0xFDD2, "Bose", "Audio Glasses", 0.85f, false),
         UuidEntry(0xFE45, "Snap", "Smart Glasses", 0.80f, true),
         UuidEntry(0xFE15, "Amazon", "Smart Glasses", 0.70f, false),
+        // Trackers / Stalkerware
+        UuidEntry(0xFD5A, "Samsung", "BLE Tracker", 0.90f, false),
+        UuidEntry(0xFD59, "Samsung", "BLE Tracker", 0.85f, false),
+        UuidEntry(0xFEED, "Tile", "BLE Tracker", 0.85f, false),
+        UuidEntry(0xFEEC, "Tile", "BLE Tracker", 0.85f, false),
+        UuidEntry(0xFCB2, "DULT", "BLE Tracker", 0.90f, false),
+        UuidEntry(0xFE2C, "Google", "BLE Tracker", 0.85f, false),
+        // Retail Tracking
+        UuidEntry(0xFEAA, "Google", "Tracking Beacon", 0.70f, false),
     )
 
     // ── Device name prefix database ──
@@ -115,11 +195,25 @@ class GlassesDetector @Inject constructor(
         NameEntry("Solos AirGo", "Solos", "Smart Glasses", 0.80f, false),
         NameEntry("Glass", "Google", "Smart Glasses", 0.70f, true),
         NameEntry("Bose Frames", "Bose", "Audio Glasses", 0.90f, false),
+        // Body cameras
         NameEntry("Axon Body", "Axon", "Body Camera", 0.90f, true),
         NameEntry("Axon Signal", "Axon", "Body Camera", 0.85f, true),
+        NameEntry("VISTA_", "Motorola", "Body Camera", 0.85f, true),
+        // Hidden cameras / spy cameras
         NameEntry("V380_", "Generic", "Spy Camera", 0.75f, true),
         NameEntry("IPC_", "Generic", "Spy Camera", 0.70f, true),
         NameEntry("LookCam_", "Generic", "Spy Camera", 0.70f, true),
+        NameEntry("Camera-", "Generic", "Spy Camera", 0.55f, true),
+        NameEntry("CLOUDCAM-", "Generic", "Spy Camera", 0.80f, true),
+        NameEntry("HIDVCAM-", "Generic", "Hidden Camera", 0.90f, true),
+        NameEntry("HDWiFiCam-", "Generic", "Hidden Camera", 0.85f, true),
+        // Vehicles with cameras
+        NameEntry("Tesla ", "Tesla", "Vehicle Camera", 0.90f, true),
+        // Attack / hacking tools
+        NameEntry("Flipper ", "Flipper Zero", "Attack Tool", 0.90f, false),
+        // Trackers
+        NameEntry("Tile", "Tile", "BLE Tracker", 0.70f, false),
+        NameEntry("SmartTag", "Samsung", "BLE Tracker", 0.80f, false),
     )
 
     private val GAP_APPEARANCE_EYEGLASSES = 0x01C0
@@ -226,6 +320,29 @@ class GlassesDetector @Inject constructor(
                     bestType = entry.deviceType
                     bestCamera = entry.hasCamera
                     bestReason = "mfr_cid:0x${companyId.toString(16).uppercase().padStart(4, '0')}"
+                }
+            }
+        }
+
+        // 1b. Apple-specific: AirTag (FindMy type 0x12) and iBeacon (type 0x02)
+        if (mfrData != null) {
+            val appleData = mfrData.get(0x004C) // Apple Inc. Company ID
+            if (appleData != null && appleData.isNotEmpty()) {
+                val appleType = appleData[0].toInt() and 0xFF
+                if (appleType == 0x12) {
+                    // AirTag / FindMy accessory
+                    val c = 0.95f
+                    if (c > bestConf) {
+                        bestConf = c; bestMfr = "Apple"; bestType = "AirTag/FindMy"
+                        bestCamera = false; bestReason = "apple_findmy:0x12"
+                    }
+                } else if (appleType == 0x02 && appleData.size >= 21) {
+                    // iBeacon (retail tracking)
+                    val c = 0.70f
+                    if (c > bestConf) {
+                        bestConf = c; bestMfr = "Apple"; bestType = "Tracking Beacon"
+                        bestCamera = false; bestReason = "ibeacon:0x02"
+                    }
                 }
             }
         }
