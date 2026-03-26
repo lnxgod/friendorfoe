@@ -59,7 +59,7 @@ int console_output_get_total_count(void);
 void console_output_set_glasses_queue(QueueHandle_t glasses_queue);
 
 /** Maximum cached glasses detections for display. */
-#define GLASSES_CACHE_SIZE 10
+#define GLASSES_CACHE_SIZE 5
 
 /** Get cached glasses detections. */
 int console_output_get_cached_glasses(glasses_detection_t *out, int max_count);
