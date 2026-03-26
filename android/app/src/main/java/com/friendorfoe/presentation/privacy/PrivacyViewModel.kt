@@ -5,6 +5,7 @@ import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.detection.BleTracker
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.PrivacyCategory
+import com.friendorfoe.sensor.SensorFusionEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -15,12 +16,11 @@ import javax.inject.Inject
 
 @HiltViewModel
 class PrivacyViewModel @Inject constructor(
-    private val skyObjectRepository: SkyObjectRepository
+    private val skyObjectRepository: SkyObjectRepository,
+    val sensorFusionEngine: SensorFusionEngine
 ) : ViewModel() {
 
     init {
-        // Ensure privacy BLE scanning starts even if user navigates directly to Privacy tab
-        // (ensureStarted is idempotent — safe to call if already running)
         skyObjectRepository.ensureStarted(0.0, 0.0)
     }
 
@@ -28,7 +28,6 @@ class PrivacyViewModel @Inject constructor(
     val categorizedDetections: StateFlow<Map<PrivacyCategory, List<GlassesDetection>>> =
         skyObjectRepository.glassesDetections.map { detections ->
             detections.groupBy { it.category }
-                // thenBy name breaks ties — TreeMap treats comparator-equal keys as identical
                 .toSortedMap(compareByDescending<PrivacyCategory> { it.threatLevel }.thenBy { it.name })
         }.stateIn(
             scope = viewModelScope,
@@ -51,11 +50,21 @@ class PrivacyViewModel @Inject constructor(
     /** BLE tracker for direction finding */
     val bleTracker: BleTracker = skyObjectRepository.bleTracker
 
+    /** Live RSSI for the device being tracked (updated every BLE advertisement) */
+    fun getTrackedDeviceRssi(mac: String): Int? {
+        return skyObjectRepository.glassesDetections.value
+            .find { it.mac == mac }?.rssi
+    }
+
     fun ignoreDevice(mac: String) {
         skyObjectRepository.ignorePrivacyDevice(mac)
     }
 
     fun startDirectionScan(mac: String) {
         bleTracker.startDirectionScan(mac)
+    }
+
+    fun finishDirectionScan(): BleTracker.DirectionResult? {
+        return bleTracker.finishDirectionScan()
     }
 }
