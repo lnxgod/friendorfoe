@@ -72,7 +72,7 @@ static void button_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&cfg);
-    ESP_LOGI(TAG, "BOOT: tap=scroll, hold=switch view, 3x tap=cycle mode");
+    ESP_LOGI(TAG, "BOOT: tap=scroll, 2x=view, 3x=lock, hold=ack+hide");
 }
 
 /** Call from display loop to poll button state (non-blocking). */
@@ -107,7 +107,7 @@ static void button_poll(void)
                 if (s_tap_count >= 3) {
                     s_button_triple = true;
                     s_tap_count = 0;
-                    ESP_LOGI(TAG, "BOOT: TRIPLE tap (cycle scan mode)");
+                    ESP_LOGI(TAG, "BOOT: TRIPLE tap (lock tracking)");
                 } else if (s_tap_count == 2) {
                     /* Don't emit yet — wait to see if 3rd tap comes */
                 }
@@ -122,7 +122,7 @@ static void button_poll(void)
         (now_ms - s_first_tap_ms) > TRIPLE_TAP_WINDOW_MS) {
         if (s_tap_count == 2) {
             s_button_double = true;
-            ESP_LOGI(TAG, "BOOT: DOUBLE tap (lock tracking)");
+            ESP_LOGI(TAG, "BOOT: DOUBLE tap (switch view)");
         } else {
             s_button_short = true;
         }
@@ -253,23 +253,26 @@ static void display_task(void *arg)
         button_poll();
         int64_t now_ms = esp_timer_get_time() / 1000;
 
-        /* ── Triple tap: cycle scan mode ──────────────────────── */
+        /* ── Triple tap: toggle tracking lock ──────────────────── */
         if (s_button_triple) {
             s_button_triple = false;
-            s_scan_mode = (s_scan_mode + 1) % SMODE_COUNT;
-            ESP_LOGI(TAG, "Scan mode: %s", scan_mode_label(s_scan_mode));
-        }
-
-        /* ── Double tap: toggle tracking lock ─────────────────── */
-        if (s_button_double) {
-            s_button_double = false;
             s_tracking_locked = !s_tracking_locked;
             if (s_tracking_locked) {
                 s_tracking_lock_ms = now_ms;
-                s_tracking_baseline = -100; /* will normalize after 3s */
+                s_tracking_baseline = -100;
                 ESP_LOGI(TAG, "TRACKING LOCKED on current device");
             } else {
                 ESP_LOGI(TAG, "TRACKING UNLOCKED");
+            }
+        }
+
+        /* ── Double tap: switch privacy↔drone view ────────────── */
+        if (s_button_double) {
+            s_button_double = false;
+            if (!s_tracking_locked) {
+                show_privacy = !show_privacy;
+                page_index = 0;
+                ESP_LOGI(TAG, "View: %s", show_privacy ? "PRIVACY" : "DRONES");
             }
         }
 
@@ -279,8 +282,21 @@ static void display_task(void *arg)
 
         int glasses_count = 0;
 #if CONFIG_FOF_GLASSES_DETECTION
+        glasses_detection_t glasses_raw[GLASSES_CACHE_SIZE];
+        int glasses_raw_count = console_output_get_cached_glasses(glasses_raw, GLASSES_CACHE_SIZE);
+
+        /* Filter out ACK'd devices — they're hidden for this session */
         glasses_detection_t glasses_list[GLASSES_CACHE_SIZE];
-        glasses_count = console_output_get_cached_glasses(glasses_list, GLASSES_CACHE_SIZE);
+        for (int i = 0; i < glasses_raw_count; i++) {
+            char mac_str[18];
+            snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
+                glasses_raw[i].mac[0], glasses_raw[i].mac[1],
+                glasses_raw[i].mac[2], glasses_raw[i].mac[3],
+                glasses_raw[i].mac[4], glasses_raw[i].mac[5]);
+            if (!is_acked(mac_str)) {
+                glasses_list[glasses_count++] = glasses_raw[i];
+            }
+        }
         if (glasses_count > 0) s_last_privacy_det_ms = now_ms;
 #endif
         if (det_count > 0) s_last_drone_det_ms = now_ms;
@@ -300,7 +316,7 @@ static void display_task(void *arg)
             cycle_counter = 0;
         }
 
-        /* ── Long press: ACK current device as friendly ─────────── */
+        /* ── Long press: ACK + hide current device for session ──── */
         if (s_button_long) {
             s_button_long = false;
 #if CONFIG_FOF_GLASSES_DETECTION
@@ -311,16 +327,13 @@ static void display_task(void *arg)
                     glasses_list[page_index].mac[2], glasses_list[page_index].mac[3],
                     glasses_list[page_index].mac[4], glasses_list[page_index].mac[5]);
                 ack_device(mac_str);
-                /* Show confirmation */
                 s_ack_confirm_ms = now_ms;
                 snprintf(s_ack_confirm_name, sizeof(s_ack_confirm_name), "%.16s",
                     glasses_list[page_index].manufacturer);
-            } else
-#endif
-            {
-                show_privacy = !show_privacy;
+                /* Move to next device */
                 page_index = 0;
             }
+#endif
             cycle_counter = 0;
         }
 
@@ -350,20 +363,12 @@ static void display_task(void *arg)
         if (show_privacy && glasses_count > 0) {
             if (page_index >= glasses_count) page_index = 0;
 
-            char cur_mac[18];
-            snprintf(cur_mac, sizeof(cur_mac), "%02x:%02x:%02x:%02x:%02x:%02x",
-                glasses_list[page_index].mac[0], glasses_list[page_index].mac[1],
-                glasses_list[page_index].mac[2], glasses_list[page_index].mac[3],
-                glasses_list[page_index].mac[4], glasses_list[page_index].mac[5]);
-            bool acked = is_acked(cur_mac);
-
+            /* ACK'd devices already filtered out above — all shown are unacked */
             char type_buf[32];
             if (s_tracking_locked) {
                 snprintf(type_buf, sizeof(type_buf), ">>%s", glasses_list[page_index].device_type);
             } else {
-                snprintf(type_buf, sizeof(type_buf), "%s%s",
-                    acked ? "" : "NEW ",
-                    glasses_list[page_index].device_type);
+                snprintf(type_buf, sizeof(type_buf), "%s", glasses_list[page_index].device_type);
             }
 
             oled_show_glasses_alert(
