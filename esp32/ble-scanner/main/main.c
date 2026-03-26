@@ -379,7 +379,7 @@ static void display_task(void *arg)
                 glasses_list[page_index].has_camera
             );
         } else if (show_privacy && glasses_count == 0) {
-            oled_draw_drone_list(NULL, 0, 0);
+            /* No privacy devices — switch to drone view */
             show_privacy = false;
             page_index = 0;
         } else
