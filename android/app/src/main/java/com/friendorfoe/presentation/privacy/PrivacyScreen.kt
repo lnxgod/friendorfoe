@@ -71,6 +71,7 @@ fun PrivacyScreen(
     val collapsedSections = remember { mutableStateOf(setOf<Int>()) }
 
     var selectedDetail by remember { mutableStateOf<GlassesDetection?>(null) }
+    var trackingTarget by remember { mutableStateOf<GlassesDetection?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Status bar
@@ -185,7 +186,7 @@ fun PrivacyScreen(
                                     DeviceCard(
                                         detection = detection,
                                         onIgnore = { viewModel.ignoreDevice(detection.mac) },
-                                        onTrack = { viewModel.startDirectionScan(detection.mac) },
+                                        onTrack = { trackingTarget = detection },
                                         onDetails = { selectedDetail = detection }
                                     )
                                 }
@@ -206,10 +207,19 @@ fun PrivacyScreen(
                 selectedDetail = null
             },
             onTrack = {
-                viewModel.startDirectionScan(selectedDetail!!.mac)
+                trackingTarget = selectedDetail
                 selectedDetail = null
             },
             onDismiss = { selectedDetail = null }
+        )
+    }
+
+    // Direction scan overlay (full-screen)
+    if (trackingTarget != null) {
+        DirectionScanOverlay(
+            detection = trackingTarget!!,
+            viewModel = viewModel,
+            onDismiss = { trackingTarget = null }
         )
     }
 }

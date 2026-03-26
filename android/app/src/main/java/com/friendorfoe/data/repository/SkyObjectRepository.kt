@@ -61,6 +61,7 @@ class SkyObjectRepository @Inject constructor(
     val bleTracker: BleTracker,
     private val detectionPrefs: DetectionPrefs,
     private val fusionEngine: BayesianFusionEngine,
+    private val sensorFusionEngine: com.friendorfoe.sensor.SensorFusionEngine,
     private val historyDao: HistoryDao,
     private val trackingDao: TrackingDao
 ) {
@@ -354,7 +355,7 @@ class SkyObjectRepository @Inject constructor(
                     hasCamera = detection.hasCamera,
                     userLat = userLatitude,
                     userLon = userLongitude,
-                    compassBearing = 0f // TODO: get from sensor fusion
+                    compassBearing = sensorFusionEngine.orientation.value.azimuthDegrees
                 )
             }
         }
