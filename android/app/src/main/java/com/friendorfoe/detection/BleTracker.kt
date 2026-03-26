@@ -56,10 +56,10 @@ class BleTracker @Inject constructor() {
         val hasCamera: Boolean,
         val sightings: MutableList<Sighting> = mutableListOf(),
         var firstSeen: Instant = Instant.now(),
-        var lastSeen: Instant = Instant.now(),
-        var peakRssi: Int = -100,
-        var isFollowing: Boolean = false,
-        var isStalker: Boolean = false
+        @Volatile var lastSeen: Instant = Instant.now(),
+        @Volatile var peakRssi: Int = -100,
+        @Volatile var isFollowing: Boolean = false,
+        @Volatile var isStalker: Boolean = false
     ) {
         val durationMs: Long get() = Duration.between(firstSeen, lastSeen).toMillis()
         val sightingCount: Int get() = sightings.size
@@ -107,7 +107,7 @@ class BleTracker @Inject constructor() {
         compassBearing: Float
     ) {
         val now = Instant.now()
-        val device = trackedDevices.getOrPut(mac) {
+        val device = trackedDevices.computeIfAbsent(mac) {
             TrackedDevice(
                 mac = mac,
                 deviceName = deviceName,

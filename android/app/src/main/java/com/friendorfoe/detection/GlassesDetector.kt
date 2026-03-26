@@ -582,12 +582,18 @@ class GlassesDetector @Inject constructor(
         }
 
         // 2. Check service UUIDs
+        // Helper: extract 16-bit UUID only if it's a standard Bluetooth SIG base UUID
+        fun extractUuid16(uuid: java.util.UUID): Int? {
+            // Bluetooth SIG base: 0000XXXX-0000-1000-8000-00805F9B34FB
+            if (uuid.leastSignificantBits != -0x7FFFFF7FA64CB4FDL) return null
+            if ((uuid.mostSignificantBits and 0xFFFFFFFFL) != 0x00001000L) return null
+            return uuid.mostSignificantBits.ushr(32).toInt() and 0xFFFF
+        }
+
         val serviceUuids = record.serviceUuids
         if (serviceUuids != null) {
             for (parcelUuid in serviceUuids) {
-                val uuid = parcelUuid.uuid
-                // Check if it's a 16-bit UUID (standard Bluetooth base UUID)
-                val uuid16 = uuid.mostSignificantBits.ushr(32).toInt() and 0xFFFF
+                val uuid16 = extractUuid16(parcelUuid.uuid) ?: continue
                 val entry = uuidDatabase.find { it.uuid16 == uuid16 }
                 if (entry != null && entry.confidence > bestConf) {
                     bestConf = entry.confidence
@@ -603,8 +609,7 @@ class GlassesDetector @Inject constructor(
         val serviceData = record.serviceData
         if (serviceData != null) {
             for ((parcelUuid, _) in serviceData) {
-                val uuid = parcelUuid.uuid
-                val uuid16 = uuid.mostSignificantBits.ushr(32).toInt() and 0xFFFF
+                val uuid16 = extractUuid16(parcelUuid.uuid) ?: continue
                 val entry = uuidDatabase.find { it.uuid16 == uuid16 }
                 if (entry != null && entry.confidence > bestConf) {
                     bestConf = entry.confidence

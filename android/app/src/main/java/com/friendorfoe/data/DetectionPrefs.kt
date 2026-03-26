@@ -56,21 +56,28 @@ class DetectionPrefs @Inject constructor(
         get() = prefs.getBoolean(KEY_WIFI_ANOMALY, true)
         set(value) = prefs.edit().putBoolean(KEY_WIFI_ANOMALY, value).apply()
 
-    /** MACs the user has dismissed / marked as not a threat */
+    /** MACs the user has dismissed / marked as not a threat. Cached in memory for hot-path BLE checks. */
+    @Volatile private var cachedIgnoredMacs: Set<String>? = null
+
     fun getIgnoredMacs(): Set<String> {
+        cachedIgnoredMacs?.let { return it }
         val csv = prefs.getString(KEY_IGNORED_MACS, "") ?: ""
-        return if (csv.isBlank()) emptySet() else csv.split(",").toSet()
+        val set = if (csv.isBlank()) emptySet() else csv.split(",").toSet()
+        cachedIgnoredMacs = set
+        return set
     }
 
     fun ignoreMac(mac: String) {
         val current = getIgnoredMacs().toMutableSet()
         current.add(mac)
         prefs.edit().putString(KEY_IGNORED_MACS, current.joinToString(",")).apply()
+        cachedIgnoredMacs = current
     }
 
     fun unignoreMac(mac: String) {
         val current = getIgnoredMacs().toMutableSet()
         current.remove(mac)
         prefs.edit().putString(KEY_IGNORED_MACS, current.joinToString(",")).apply()
+        cachedIgnoredMacs = current
     }
 }
