@@ -62,7 +62,9 @@ fun PrivacyScreen(
         mutableStateOf(setOf(PrivacyCategory.SMART_GLASSES,
             PrivacyCategory.HIDDEN_CAMERA, PrivacyCategory.ATTACK_TOOL,
             PrivacyCategory.SURVEILLANCE_CAMERA, PrivacyCategory.ALPR_CAMERA,
-            PrivacyCategory.SMART_SPEAKER, PrivacyCategory.SMART_HOME_HUB))
+            PrivacyCategory.BABY_MONITOR, PrivacyCategory.THERMAL_CAMERA,
+            PrivacyCategory.SMART_SPEAKER, PrivacyCategory.SMART_HOME_HUB,
+            PrivacyCategory.GPS_TRACKER, PrivacyCategory.OBD_TRACKER))
     }
 
     // Track collapsed sections (all expanded by default)

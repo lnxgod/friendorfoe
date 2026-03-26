@@ -27,16 +27,23 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     ALPR_CAMERA("ALPR / Plate Readers", "\uD83D\uDE94", 2),
     BODY_CAMERA("Body Cameras", "\uD83D\uDCF9", 2),
     VEHICLE_CAMERA("Vehicle Cameras", "\uD83D\uDE97", 2),
+    BABY_MONITOR("Baby Monitors", "\uD83D\uDC76", 2),
+    THERMAL_CAMERA("Thermal Cameras", "\uD83C\uDF21\uFE0F", 2),
     // Threat level 1 — nearby devices
     DOORBELL_CAMERA("Doorbell Cameras", "\uD83D\uDEAA", 1),
     SMART_SPEAKER("Smart Speakers", "\uD83D\uDD0A", 1),
     SMART_HOME_HUB("Smart Home Hubs", "\uD83C\uDFE0", 1),
     SMART_LOCK("Smart Locks", "\uD83D\uDD12", 1),
+    TRAIL_CAMERA("Trail Cameras", "\uD83C\uDF32", 1),
+    OBD_TRACKER("OBD / Car Trackers", "\uD83D\uDD0C", 1),
+    GPS_TRACKER("GPS Trackers", "\uD83D\uDCE1", 1),
     ACTION_CAMERA("Action Cameras", "\uD83C\uDFA5", 1),
     DASH_CAMERA("Dash Cameras", "\uD83D\uDE99", 1),
     BLE_TRACKER("BLE Trackers", "\uD83D\uDCCD", 1),
     IOT_DEVICE("IoT Devices", "\uD83D\uDCE1", 1),
     // Threat level 0 — informational
+    SMART_TV("Smart TVs", "\uD83D\uDCFA", 0),
+    DRONE_CONTROLLER("Drone Controllers", "\uD83C\uDFAE", 0),
     E_SCOOTER("E-Scooters", "\uD83D\uDEF4", 0),
     FINDMY("FindMy / AirTags", "\uD83D\uDCF1", 0),
     INFORMATIONAL("Informational", "\u2139\uFE0F", 0),
@@ -179,6 +186,31 @@ class GlassesDetector @Inject constructor(
             // Smart speakers / hubs (setup AP mode)
             WifiPattern("Sonos_", "Sonos", "Smart Speaker", 0.80f, false),
             WifiPattern("Google-Home-", "Google", "Smart Home Hub", 0.75f, false),
+            // Baby monitors (setup AP)
+            WifiPattern("OwletCam-", "Owlet", "Baby Monitor", 0.85f, true),
+            WifiPattern("Miku-", "Miku", "Baby Monitor", 0.85f, true),
+            WifiPattern("VTech_", "VTech", "Baby Monitor", 0.80f, true),
+            WifiPattern("Hubble-", "Hubble", "Baby Monitor", 0.80f, true),
+            WifiPattern("CuboAi-", "CuboAi", "Baby Monitor", 0.85f, true),
+            WifiPattern("Lollipop-", "Lollipop", "Baby Monitor", 0.80f, true),
+            WifiPattern("iBaby-", "iBaby", "Baby Monitor", 0.80f, true),
+            // More camera setup APs
+            WifiPattern("EZVIZ_", "EZVIZ", "Surveillance Camera", 0.80f, true),
+            WifiPattern("Lorex_", "Lorex", "Surveillance Camera", 0.80f, true),
+            WifiPattern("ZOSI_", "ZOSI", "Surveillance Camera", 0.75f, true),
+            WifiPattern("Swann-SWIFI-", "Swann", "Surveillance Camera", 0.85f, true),
+            WifiPattern("Annke_", "Annke", "Surveillance Camera", 0.75f, true),
+            WifiPattern("RemoBellS_", "Remo+", "Doorbell Camera", 0.80f, true),
+            WifiPattern("RemoBellW_", "Remo+", "Doorbell Camera", 0.80f, true),
+            // Chinese IP cameras
+            WifiPattern("IPCAM-", "Generic", "Hidden Camera", 0.80f, true),
+            WifiPattern("Care-AP", "CareCam", "Hidden Camera", 0.80f, true),
+            WifiPattern("Danale-", "Danale", "Hidden Camera", 0.80f, true),
+            // Trail cameras
+            WifiPattern("Spypoint-", "Spypoint", "Trail Camera", 0.85f, true),
+            // Deauther / attack tools
+            WifiPattern("pwned", "Spacehuhn", "Attack Tool", 0.95f, false),
+            WifiPattern("Advanced-Deauther", "Generic", "Attack Tool", 0.95f, false),
         )
 
         /** Assign a privacy category based on device type string. Used by both BLE and WiFi paths. */
@@ -207,11 +239,28 @@ class GlassesDetector @Inject constructor(
             deviceType.contains("Action Camera", ignoreCase = true) -> PrivacyCategory.ACTION_CAMERA
             deviceType.contains("Dash Camera", ignoreCase = true) -> PrivacyCategory.DASH_CAMERA
             deviceType.contains("Endoscope", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+            // Baby monitors
+            deviceType.contains("Baby Monitor", ignoreCase = true) -> PrivacyCategory.BABY_MONITOR
+            // Thermal cameras
+            deviceType.contains("Thermal", ignoreCase = true) -> PrivacyCategory.THERMAL_CAMERA
+            // Trail / game cameras
+            deviceType.contains("Trail Camera", ignoreCase = true) -> PrivacyCategory.TRAIL_CAMERA
+            deviceType.contains("Game Camera", ignoreCase = true) -> PrivacyCategory.TRAIL_CAMERA
+            // OBD / car trackers
+            deviceType.contains("OBD", ignoreCase = true) -> PrivacyCategory.OBD_TRACKER
+            deviceType.contains("Car Tracker", ignoreCase = true) -> PrivacyCategory.OBD_TRACKER
+            // GPS trackers
+            deviceType.contains("GPS Tracker", ignoreCase = true) -> PrivacyCategory.GPS_TRACKER
+            deviceType.contains("Pet Tracker", ignoreCase = true) -> PrivacyCategory.GPS_TRACKER
             // Smart speakers & home hubs (always-listening)
             deviceType.contains("Smart Speaker", ignoreCase = true) -> PrivacyCategory.SMART_SPEAKER
             deviceType.contains("Smart Home Hub", ignoreCase = true) -> PrivacyCategory.SMART_HOME_HUB
             // Smart locks (physical security)
             deviceType.contains("Smart Lock", ignoreCase = true) -> PrivacyCategory.SMART_LOCK
+            // Smart TVs (ACR tracking)
+            deviceType.contains("Smart TV", ignoreCase = true) -> PrivacyCategory.SMART_TV
+            // Drone controllers
+            deviceType.contains("Drone Controller", ignoreCase = true) -> PrivacyCategory.DRONE_CONTROLLER
             // E-Scooters
             deviceType.contains("E-Scooter", ignoreCase = true) -> PrivacyCategory.E_SCOOTER
             deviceType.contains("Robot Vacuum", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
@@ -412,6 +461,64 @@ class GlassesDetector @Inject constructor(
         NameEntry("Schlage", "Schlage", "Smart Lock", 0.75f, false),
         NameEntry("Kwikset", "Kwikset", "Smart Lock", 0.70f, false),
         NameEntry("Level Lock", "Level", "Smart Lock", 0.75f, false),
+        // Baby monitors (camera + microphone, always-on)
+        NameEntry("Owlet", "Owlet", "Baby Monitor", 0.85f, true),
+        NameEntry("Miku-", "Miku", "Baby Monitor", 0.85f, true),
+        NameEntry("CuboAi-", "CuboAi", "Baby Monitor", 0.85f, true),
+        NameEntry("Lollipop-", "Lollipop", "Baby Monitor", 0.80f, true),
+        NameEntry("iBaby-", "iBaby", "Baby Monitor", 0.80f, true),
+        NameEntry("Hubble-", "Hubble", "Baby Monitor", 0.75f, true),
+        // More security cameras (BLE setup)
+        NameEntry("EZVIZ_", "EZVIZ", "Surveillance Camera", 0.80f, true),
+        NameEntry("Lorex_", "Lorex", "Surveillance Camera", 0.80f, true),
+        NameEntry("ZOSI_", "ZOSI", "Surveillance Camera", 0.75f, true),
+        NameEntry("Swann", "Swann", "Surveillance Camera", 0.80f, true),
+        NameEntry("Annke_", "Annke", "Surveillance Camera", 0.75f, true),
+        // More doorbells
+        NameEntry("RemoBell", "Remo+", "Doorbell Camera", 0.80f, true),
+        NameEntry("EZVIZ DB", "EZVIZ", "Doorbell Camera", 0.80f, true),
+        NameEntry("Circle-", "Logitech", "Doorbell Camera", 0.80f, true),
+        // OBD2 / car diagnostic dongles (vehicle tracking potential)
+        NameEntry("ELM327", "Generic", "OBD Tracker", 0.80f, false),
+        NameEntry("VEEPEAK", "Veepeak", "OBD Tracker", 0.85f, false),
+        NameEntry("BlueDriver", "BlueDriver", "OBD Tracker", 0.85f, false),
+        NameEntry("FIXD", "Fixd", "OBD Tracker", 0.85f, false),
+        NameEntry("OBDLink", "OBDLink", "OBD Tracker", 0.85f, false),
+        NameEntry("Carly", "Carly", "OBD Tracker", 0.70f, false),
+        NameEntry("OBDII", "Generic", "OBD Tracker", 0.75f, false),
+        // GPS trackers (location surveillance)
+        NameEntry("Tracki_", "Tracki", "GPS Tracker", 0.85f, false),
+        NameEntry("Bouncie_", "Bouncie", "GPS Tracker", 0.85f, false),
+        NameEntry("Invoxia_", "Invoxia", "GPS Tracker", 0.85f, false),
+        NameEntry("LandAirSea", "LandAirSea", "GPS Tracker", 0.85f, false),
+        NameEntry("Spytec_", "Spytec", "GPS Tracker", 0.85f, false),
+        // Pet trackers (location tracking)
+        NameEntry("Whistle_", "Whistle", "Pet Tracker", 0.80f, false),
+        NameEntry("Fi_", "Fi", "Pet Tracker", 0.75f, false),
+        NameEntry("Tractive_", "Tractive", "Pet Tracker", 0.80f, false),
+        NameEntry("Jiobit_", "Jiobit", "Pet Tracker", 0.80f, false),
+        NameEntry("PitPat_", "PitPat", "Pet Tracker", 0.75f, false),
+        // Thermal cameras (can see through walls / in dark)
+        NameEntry("FLIR-ONE-", "FLIR", "Thermal Camera", 0.90f, true),
+        NameEntry("FLIR-Edge-", "FLIR", "Thermal Camera", 0.90f, true),
+        NameEntry("Seek-", "Seek Thermal", "Thermal Camera", 0.85f, true),
+        NameEntry("SeekThermal", "Seek Thermal", "Thermal Camera", 0.85f, true),
+        NameEntry("InfiRay-", "InfiRay", "Thermal Camera", 0.85f, true),
+        // Trail / game cameras (outdoor surveillance)
+        NameEntry("Spypoint-", "Spypoint", "Trail Camera", 0.85f, true),
+        NameEntry("Bushnell-", "Bushnell", "Trail Camera", 0.80f, true),
+        NameEntry("Moultrie-", "Moultrie", "Trail Camera", 0.80f, true),
+        NameEntry("Reconyx-", "Reconyx", "Trail Camera", 0.85f, true),
+        NameEntry("Stealth-", "Stealth Cam", "Trail Camera", 0.80f, true),
+        // Smart TVs (ACR tracking, microphones)
+        NameEntry("[TV] Samsung", "Samsung", "Smart TV", 0.85f, false),
+        NameEntry("[LG] webOS TV", "LG", "Smart TV", 0.85f, false),
+        NameEntry("BRAVIA", "Sony", "Smart TV", 0.80f, false),
+        NameEntry("Vizio SmartCast", "Vizio", "Smart TV", 0.80f, false),
+        NameEntry("Roku TV", "Roku", "Smart TV", 0.75f, false),
+        // DJI drone controllers (drone operator nearby)
+        NameEntry("DJI-RC-", "DJI", "Drone Controller", 0.90f, false),
+        NameEntry("DJI-RC Pro", "DJI", "Drone Controller", 0.90f, false),
         // E-Scooters (location tracking, informational)
         NameEntry("Lime-", "Lime", "E-Scooter", 0.80f, false),
         NameEntry("Bird ", "Bird", "E-Scooter", 0.75f, false),
