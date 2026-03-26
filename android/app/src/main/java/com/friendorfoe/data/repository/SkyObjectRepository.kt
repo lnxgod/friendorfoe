@@ -364,10 +364,7 @@ class SkyObjectRepository @Inject constructor(
     private suspend fun collectStalkerAlerts() {
         while (true) {
             kotlinx.coroutines.delay(30_000L) // Check every 30 seconds
-            val alerts = bleTracker.checkForFollowers()
-            if (alerts.isNotEmpty()) {
-                _stalkerAlerts.value = alerts
-            }
+            _stalkerAlerts.value = bleTracker.checkForFollowers()
         }
     }
 
