@@ -43,9 +43,10 @@ fun PrivacyScreen(
     val totalCount by viewModel.totalCount.collectAsStateWithLifecycle()
     val threatCount by viewModel.threatCount.collectAsStateWithLifecycle()
 
-    // Track which categories are expanded
+    // Track which categories are expanded — high-threat categories open by default,
+    // FindMy/trackers/informational collapsed to reduce noise
     val expandedCategories = remember {
-        mutableStateOf(setOf(PrivacyCategory.SMART_GLASSES, PrivacyCategory.BLE_TRACKER,
+        mutableStateOf(setOf(PrivacyCategory.SMART_GLASSES,
             PrivacyCategory.HIDDEN_CAMERA, PrivacyCategory.ATTACK_TOOL))
     }
 

@@ -18,6 +18,11 @@ class FriendOrFoeApplication : Application() {
         super.onCreate()
 
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) {
+                Log.i("FriendOrFoeApp", "App foregrounded — restarting detection sources")
+                skyObjectRepository.ensureStarted(0.0, 0.0)
+            }
+
             override fun onStop(owner: LifecycleOwner) {
                 Log.i("FriendOrFoeApp", "App backgrounded — stopping scanning to save battery")
                 skyObjectRepository.stop()

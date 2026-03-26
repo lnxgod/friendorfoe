@@ -8,7 +8,6 @@ import com.friendorfoe.detection.PrivacyCategory
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.combine
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
@@ -19,11 +18,18 @@ class PrivacyViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository
 ) : ViewModel() {
 
+    init {
+        // Ensure privacy BLE scanning starts even if user navigates directly to Privacy tab
+        // (ensureStarted is idempotent — safe to call if already running)
+        skyObjectRepository.ensureStarted(0.0, 0.0)
+    }
+
     /** All privacy detections, grouped by category */
     val categorizedDetections: StateFlow<Map<PrivacyCategory, List<GlassesDetection>>> =
         skyObjectRepository.glassesDetections.map { detections ->
             detections.groupBy { it.category }
-                .toSortedMap(compareByDescending { it.threatLevel })
+                // thenBy name breaks ties — TreeMap treats comparator-equal keys as identical
+                .toSortedMap(compareByDescending<PrivacyCategory> { it.threatLevel }.thenBy { it.name })
         }.stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),

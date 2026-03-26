@@ -75,6 +75,32 @@ void oled_show_detection_paged(const char *drone_id, const char *manufacturer,
                                int page_current, int page_total);
 
 /**
+ * Show a privacy/glasses detection with paged view.
+ * Full-screen layout: title "Privacy Scan", device info, page indicator.
+ *
+ * @param device_type   e.g. "Smart Glasses", "Body Camera"
+ * @param manufacturer  e.g. "Meta", "Snap"
+ * @param device_name   BLE advertised name (may be NULL)
+ * @param confidence    Detection confidence 0.0-1.0
+ * @param rssi          Signal strength in dBm
+ * @param has_camera    true if device has camera
+ * @param page_current  Current page (1-based)
+ * @param page_total    Total number of pages
+ */
+void oled_show_glasses_paged(const char *device_type, const char *manufacturer,
+                              const char *device_name, float confidence,
+                              int rssi, bool has_camera,
+                              int page_current, int page_total);
+
+/**
+ * Show privacy scan status header (no detections).
+ *
+ * @param glasses_count  Number of privacy devices detected
+ * @param uptime_s       System uptime in seconds
+ */
+void oled_show_privacy_status(int glasses_count, uint32_t uptime_s);
+
+/**
  * Clear the display to all black.
  */
 void oled_clear(void);

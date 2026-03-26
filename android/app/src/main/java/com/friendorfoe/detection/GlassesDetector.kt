@@ -19,14 +19,15 @@ import javax.inject.Singleton
  */
 enum class PrivacyCategory(val label: String, val icon: String, val threatLevel: Int) {
     SMART_GLASSES("Smart Glasses", "\uD83D\uDC53", 3),
-    BLE_TRACKER("BLE Trackers", "\uD83D\uDCCD", 3),
     HIDDEN_CAMERA("Hidden Cameras", "\uD83D\uDCF7", 3),
+    ATTACK_TOOL("Attack Tools", "\u26A0\uFE0F", 3),
     BODY_CAMERA("Body Cameras", "\uD83D\uDCF9", 2),
     VEHICLE_CAMERA("Vehicle Cameras", "\uD83D\uDE97", 2),
-    ATTACK_TOOL("Attack Tools", "\u26A0\uFE0F", 3),
     ACTION_CAMERA("Action Cameras", "\uD83C\uDFA5", 1),
     DASH_CAMERA("Dash Cameras", "\uD83D\uDE99", 1),
+    BLE_TRACKER("BLE Trackers", "\uD83D\uDCCD", 1),
     IOT_DEVICE("IoT Devices", "\uD83C\uDFE0", 1),
+    FINDMY("FindMy / AirTags", "\uD83D\uDCF1", 0),
     INFORMATIONAL("Informational", "\u2139\uFE0F", 0),
 }
 
@@ -156,6 +157,33 @@ class GlassesDetector @Inject constructor(
             WifiPattern("Ring Setup", "Ring", "Doorbell Camera", 0.85f, true),
         )
 
+        /** Assign a privacy category based on device type string. Used by both BLE and WiFi paths. */
+        fun categorizeDeviceType(deviceType: String): PrivacyCategory = when {
+            deviceType.contains("Glasses", ignoreCase = true) -> PrivacyCategory.SMART_GLASSES
+            deviceType.contains("Audio Glasses", ignoreCase = true) -> PrivacyCategory.SMART_GLASSES
+            // AirTag / FindMy separated into their own low-priority section
+            deviceType.contains("AirTag", ignoreCase = true) -> PrivacyCategory.FINDMY
+            deviceType.contains("FindMy", ignoreCase = true) -> PrivacyCategory.FINDMY
+            deviceType.contains("Tracker", ignoreCase = true) -> PrivacyCategory.BLE_TRACKER
+            deviceType.contains("Hidden Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+            deviceType.contains("Spy Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+            deviceType.contains("IP Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+            deviceType.contains("Body Camera", ignoreCase = true) -> PrivacyCategory.BODY_CAMERA
+            deviceType.contains("Vehicle", ignoreCase = true) -> PrivacyCategory.VEHICLE_CAMERA
+            deviceType.contains("Attack", ignoreCase = true) -> PrivacyCategory.ATTACK_TOOL
+            deviceType.contains("Action Camera", ignoreCase = true) -> PrivacyCategory.ACTION_CAMERA
+            deviceType.contains("Dash Camera", ignoreCase = true) -> PrivacyCategory.DASH_CAMERA
+            deviceType.contains("Endoscope", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+            deviceType.contains("Robot Vacuum", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
+            deviceType.contains("IoT", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
+            deviceType.contains("Camera Remote", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
+            deviceType.contains("Doorbell", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+            deviceType.contains("Trail Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+            deviceType.contains("Beacon", ignoreCase = true) -> PrivacyCategory.INFORMATIONAL
+            deviceType.contains("Fast Pair", ignoreCase = true) -> PrivacyCategory.INFORMATIONAL
+            else -> PrivacyCategory.INFORMATIONAL
+        }
+
         /**
          * Check a WiFi SSID for privacy-threatening device patterns.
          * @return GlassesDetection if match, null otherwise.
@@ -173,7 +201,8 @@ class GlassesDetector @Inject constructor(
                         confidence = pattern.confidence,
                         matchReason = "wifi_ssid:${pattern.prefix}",
                         firstSeen = Instant.now(),
-                        lastSeen = Instant.now()
+                        lastSeen = Instant.now(),
+                        category = categorizeDeviceType(pattern.deviceType)
                     )
                 }
             }
@@ -256,7 +285,10 @@ class GlassesDetector @Inject constructor(
 
     private val nameDatabase = listOf(
         NameEntry("RB Meta", "Meta", "Smart Glasses", 0.95f, true),
+        NameEntry("Ray-Ban Meta", "Meta", "Smart Glasses", 0.95f, true),
         NameEntry("Ray-Ban Stories", "Meta", "Smart Glasses", 0.95f, true),
+        NameEntry("Oakley Meta", "Meta", "Smart Glasses", 0.95f, true),
+        NameEntry("Meta Neural", "Meta", "Smart Glasses", 0.90f, false),
         NameEntry("Spectacles", "Snap", "Smart Glasses", 0.90f, true),
         NameEntry("Echo Frames", "Amazon", "Smart Glasses", 0.90f, false, exact = true),
         NameEntry("Vuzix", "Vuzix", "Smart Glasses", 0.90f, true),
@@ -306,29 +338,7 @@ class GlassesDetector @Inject constructor(
 
     private val GAP_APPEARANCE_EYEGLASSES = 0x01C0
 
-    private fun categorize(deviceType: String): PrivacyCategory = when {
-        deviceType.contains("Glasses", ignoreCase = true) -> PrivacyCategory.SMART_GLASSES
-        deviceType.contains("Audio Glasses", ignoreCase = true) -> PrivacyCategory.SMART_GLASSES
-        deviceType.contains("Tracker", ignoreCase = true) -> PrivacyCategory.BLE_TRACKER
-        deviceType.contains("AirTag", ignoreCase = true) -> PrivacyCategory.BLE_TRACKER
-        deviceType.contains("Hidden Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
-        deviceType.contains("Spy Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
-        deviceType.contains("IP Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
-        deviceType.contains("Body Camera", ignoreCase = true) -> PrivacyCategory.BODY_CAMERA
-        deviceType.contains("Vehicle", ignoreCase = true) -> PrivacyCategory.VEHICLE_CAMERA
-        deviceType.contains("Attack", ignoreCase = true) -> PrivacyCategory.ATTACK_TOOL
-        deviceType.contains("Action Camera", ignoreCase = true) -> PrivacyCategory.ACTION_CAMERA
-        deviceType.contains("Dash Camera", ignoreCase = true) -> PrivacyCategory.DASH_CAMERA
-        deviceType.contains("Endoscope", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
-        deviceType.contains("Robot Vacuum", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
-        deviceType.contains("IoT", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
-        deviceType.contains("Camera Remote", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
-        deviceType.contains("Doorbell", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
-        deviceType.contains("Trail Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
-        deviceType.contains("Beacon", ignoreCase = true) -> PrivacyCategory.INFORMATIONAL
-        deviceType.contains("Fast Pair", ignoreCase = true) -> PrivacyCategory.INFORMATIONAL
-        else -> PrivacyCategory.INFORMATIONAL
-    }
+    private fun categorize(deviceType: String): PrivacyCategory = categorizeDeviceType(deviceType)
 
     private val detectedDevices = java.util.concurrent.ConcurrentHashMap<String, GlassesDetection>()
     private var bleScanner: BluetoothLeScanner? = null
@@ -523,8 +533,9 @@ class GlassesDetector @Inject constructor(
             }
         }
 
-        // 3. Check device name
-        val deviceName = record.deviceName
+        // 3. Check device name (try scan record first, fall back to cached system name)
+        @android.annotation.SuppressLint("MissingPermission")
+        val deviceName = record.deviceName?.takeIf { it.isNotEmpty() } ?: result.device.name
         if (deviceName != null && deviceName.isNotEmpty()) {
             for (entry in nameDatabase) {
                 val matches = if (entry.exact) {

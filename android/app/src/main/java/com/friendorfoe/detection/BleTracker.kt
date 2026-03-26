@@ -88,8 +88,8 @@ class BleTracker @Inject constructor() {
     private val userLocations = mutableListOf<Pair<Location, Instant>>()
 
     // Direction finding state
-    private var directionScanTarget: String? = null
-    private val directionSamples = mutableListOf<Pair<Float, Int>>() // bearing, rssi
+    @Volatile private var directionScanTarget: String? = null
+    private val directionSamples = java.util.Collections.synchronizedList(mutableListOf<Pair<Float, Int>>()) // bearing, rssi
 
     /**
      * Record a BLE device sighting. Called from GlassesDetector or RemoteIdScanner
@@ -207,7 +207,7 @@ class BleTracker @Inject constructor() {
      */
     fun startDirectionScan(mac: String) {
         directionScanTarget = mac
-        directionSamples.clear()
+        synchronized(directionSamples) { directionSamples.clear() }
         Log.i(TAG, "Direction scan started for $mac — rotate 360° slowly")
     }
 
@@ -219,18 +219,20 @@ class BleTracker @Inject constructor() {
         val mac = directionScanTarget ?: return null
         directionScanTarget = null
 
-        if (directionSamples.size < MIN_DIRECTION_SAMPLES) {
-            Log.w(TAG, "Direction scan: only ${directionSamples.size} samples, need $MIN_DIRECTION_SAMPLES")
+        // Take a snapshot under the lock to avoid ConcurrentModificationException
+        val snapshot = synchronized(directionSamples) { directionSamples.toList() }
+
+        if (snapshot.size < MIN_DIRECTION_SAMPLES) {
+            Log.w(TAG, "Direction scan: only ${snapshot.size} samples, need $MIN_DIRECTION_SAMPLES")
             return null
         }
 
         // Find the bearing with the strongest RSSI (closest direction)
-        val sorted = directionSamples.sortedByDescending { it.second }
+        val sorted = snapshot.sortedByDescending { it.second }
         val peakRssi = sorted.first().second
-        val peakBearing = sorted.first().first
 
         // Average the top 20% of samples for better accuracy
-        val topCount = (directionSamples.size * 0.2).toInt().coerceAtLeast(3)
+        val topCount = (snapshot.size * 0.2).toInt().coerceAtLeast(3)
         val topSamples = sorted.take(topCount)
 
         // Circular mean of top bearings
@@ -253,14 +255,14 @@ class BleTracker @Inject constructor() {
             else -> 0.3f
         }
 
-        Log.i(TAG, "Direction scan complete: bearing=${"%.0f".format(normalizedBearing)}° confidence=${"%.0f".format(confidence * 100)}% peak=${peakRssi}dBm (${directionSamples.size} samples)")
+        Log.i(TAG, "Direction scan complete: bearing=${"%.0f".format(normalizedBearing)}° confidence=${"%.0f".format(confidence * 100)}% peak=${peakRssi}dBm (${snapshot.size} samples)")
 
         return DirectionResult(
             mac = mac,
             estimatedBearing = normalizedBearing,
             confidence = confidence,
             peakRssi = peakRssi,
-            samples = directionSamples.toList()
+            samples = snapshot
         )
     }
 
