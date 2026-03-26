@@ -13,13 +13,15 @@ Friend or Foe is an open-source **privacy awareness** and **airspace detection**
 
 | Category | Examples | Method |
 |----------|----------|--------|
-| **Smart Glasses** | Meta Ray-Ban, Snap Spectacles, Xreal, Vuzix, Google Glass, Bose Frames | BLE manufacturer ID + service UUID |
+| **Smart Glasses** | Meta Ray-Ban, Oakley Meta, Snap Spectacles, Xreal, Vuzix, Google Glass, Bose Frames | BLE manufacturer ID + service UUID |
+| **Surveillance Cameras** | Nest Cam, Arlo, Wyze, eufy, SimpliSafe, Verkada, Rhombus, Reolink | BLE setup + WiFi SSID |
+| **ALPR / Plate Readers** | Flock Safety, Leonardo ELSAG, Genetec AutoVu, Vigilant/Motorola | BLE name + WiFi SSID |
+| **Doorbell Cameras** | Ring, Nest Hello, eufy Doorbell, Blink | WiFi SSID + BLE setup |
+| **Hidden Cameras** | WiFi spy cams, IP cameras, nanny cams, Tapo, Hikvision, Dahua, Amcrest | WiFi SSID patterns + BLE names |
 | **BLE Trackers** | Apple AirTag, Samsung SmartTag, Tile, Chipolo, Pebblebee, Eufy SmartTrack, Nutale | BLE service UUID + manufacturer data |
-| **Hidden Cameras** | WiFi spy cams, IP cameras, nanny cams, Wyze, Reolink, Tapo, Hikvision, Dahua, Amcrest, Arlo, Blink | WiFi SSID patterns + BLE names |
-| **Body Cameras** | Axon, Motorola VISTA | BLE + WiFi signatures |
+| **Body Cameras** | Axon Body, Axon Fleet, Motorola VISTA, WatchGuard | BLE + WiFi signatures |
 | **Attack Tools** | Flipper Zero, WiFi Pineapple | BLE name + WiFi SSID |
 | **Vehicle Cameras** | Tesla Sentry Mode | BLE advertisement |
-| **Retail Trackers** | iBeacon, Eddystone | BLE beacon signatures |
 | **Action Cameras** | GoPro, Insta360, DJI Action | WiFi SSID patterns |
 | **Dash Cameras** | BlackVue, Viofo, 70mai, Nextbase, Thinkware, DDPai | WiFi SSID patterns |
 | **Endoscope Cameras** | DEPSTECH, Jetion (peeping tools) | WiFi SSID + BLE |
@@ -46,7 +48,7 @@ Install the APK, grant permissions — privacy scanning and aircraft detection s
 
 Always-on, unattended detection. Build for ~$25-40:
 
-- **Scanner** (ESP32-S3 or ESP32-C5) — BLE Remote ID + WiFi promiscuous frame capture, Bayesian fusion
+- **Scanner** (ESP32-S3 or ESP32-C5) — BLE Remote ID + WiFi promiscuous frame capture, Bayesian fusion. C5 runs dual-mode BLE 5 + WiFi 6 with privacy device detection on OLED (double-tap BOOT to switch views)
 - **BLE Scanner** (ESP32-S3/ESP32) — Standalone BLE detector with OLED display. Detects drones AND smart glasses / privacy devices with on-screen alerts
 - **Uplink** (ESP32-C3) — GPS, OLED status display, WiFi backhaul to backend
 - **ESP32-C5 variant** — dual-band WiFi 6 scans 2.4 + 5 GHz (38 channels)
@@ -57,24 +59,26 @@ Always-on, unattended detection. Build for ~$25-40:
 
 ## Privacy Detection
 
-Friend or Foe passively monitors BLE advertisements and WiFi networks around you, matching against a database of **60+ known surveillance device signatures**:
+Friend or Foe passively monitors BLE advertisements and WiFi networks around you, matching against a database of **90+ known surveillance device signatures**:
 
 ### BLE Detection (Android + ESP32)
-- **13 smart glasses brands** — Meta Ray-Ban, Snap Spectacles, Google Glass, Vuzix, Bose Frames, Amazon Echo Frames, Xreal, Brilliant Labs, TCL RayNeo, Rokid, INMO, Even Realities, Solos
-- **7 tracker/stalkerware signatures** — Apple AirTag (FindMy type 0x12), Samsung SmartTag (UUID 0xFD5A), Tile (UUID 0xFEED), DULT protocol (UUID 0xFCB2), Google Find My Device (UUID 0xFE2C)
-- **3 body camera brands** — Axon, Motorola VISTA
-- **7 hidden camera BLE name patterns** — V380, IPC, CLOUDCAM, HIDVCAM, HDWiFiCam, LookCam, Camera
+- **16 smart glasses brands** — Meta Ray-Ban, Oakley Meta, Meta Neural Band, Snap Spectacles, Google Glass, Vuzix, Bose Frames, Amazon Echo Frames, Xreal, Brilliant Labs, TCL RayNeo, Rokid, INMO, Even Realities, Solos
+- **11 surveillance camera brands** — Nest Cam, Arlo, Wyze Cam, eufy, SimpliSafe, Verkada, Rhombus, Reolink, Nest Doorbell, eufy Doorbell, eufy Floodlight
+- **5 ALPR / plate reader brands** — Flock Safety, Leonardo ELSAG, Genetec AutoVu, Vigilant/Motorola, plus WiFi SSID patterns
+- **5 police / fleet cameras** — Axon Body, Axon Signal, Axon Fleet, Motorola VISTA, WatchGuard
+- **7 tracker/stalkerware signatures** — Apple AirTag (FindMy type 0x12), Samsung SmartTag (UUID 0xFD5A), Tile (UUID 0xFEED), DULT protocol (UUID 0xFCB2), Chipolo, Pebblebee, Nutale
+- **7 hidden camera BLE name patterns** — V380, IPC, CLOUDCAM, HIDVCAM, HDWiFiCam, LookCam
 - **Vehicle cameras** — Tesla Sentry Mode (BLE name)
 - **Attack tools** — Flipper Zero (BLE name)
-- **Retail tracking** — iBeacon (Apple type 0x02), Eddystone (UUID 0xFEAA)
 
 ### WiFi Detection (Android)
-- **9 hidden camera SSID patterns** — MV*, YDXJ_*, IPC-*, IP_CAM_*, HDWiFiCam*, CLOUDCAM*, HIDVCAM*, GW_AP*, JXLCAM*
+- **30+ hidden camera SSID patterns** — MV*, YDXJ_*, IPC-*, IP_CAM_*, Wyze_*, Reolink_*, Tapo_*, Hik-*, Amcrest_*, Blink-*, Arlo-*, Ring-*, and more
+- **5 surveillance / ALPR SSIDs** — Verkada-*, Rhombus-*, Flock-*, FLK-*, ELSAG-*
+- **4 doorbell / smart home SSIDs** — Ring Setup*, Ring-*, SimpliSafe-*, BLINK-*
 - **3 action camera SSIDs** — GoPro*, Insta360*, OsmoAction*
-- **7 dash camera SSIDs** — BlackVue*, DR900*, DR750*, VIOFO_*, 70mai_*, Nextbase*, Thinkware*
+- **10 dash camera SSIDs** — BlackVue*, DR900*, DR750*, VIOFO_*, 70mai_*, Nextbase*, Thinkware*, DDPai_*, Rexing_*, Akaso_*
 - **2 body camera WiFi patterns** — Axon Body*, WGVISTA*
 - **Attack tools** — Pineapple*
-- **Doorbell cameras** — Ring Setup*
 
 Privacy detection is **on by default** and can be toggled in Settings (About screen).
 

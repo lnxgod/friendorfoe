@@ -4,6 +4,31 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.29.0-beta] - 2026-03-25
+
+### Added
+- **Surveillance camera detection** — Nest Cam, Arlo, Wyze Cam, eufy (Indoor/Doorbell/Floodlight), SimpliSafe, Verkada, Rhombus, Reolink detected via BLE setup advertisements
+- **ALPR / license plate reader detection** — Flock Safety, Leonardo ELSAG, Genetec AutoVu, Vigilant/Motorola detected via BLE name + WiFi SSID patterns
+- **Doorbell camera detection** — Ring, Nest Hello/Doorbell, eufy Doorbell, Blink via WiFi AP and BLE
+- **Police / fleet camera detection** — Axon Fleet, WatchGuard/Motorola via BLE name patterns
+- **New privacy categories** — Surveillance Cameras (threat 2), ALPR/Plate Readers (threat 2), Doorbell Cameras (threat 1)
+- **ESP32-C5 dual-mode scanning** — BLE 5 + WiFi 6 running simultaneously with NimBLE coexistence
+- **ESP32 BOOT button privacy view** — Double-tap GPIO9 switches OLED between drone view and privacy scan view. Single tap scrolls pages
+- **ESP32 privacy OLED view** — Shows device type, manufacturer, name, RSSI, confidence, camera flag with paged display
+- **Meta product name updates** — Added "Ray-Ban Meta" (current official name), "Oakley Meta" (June 2025), "Meta Neural Band" (Sep 2025) to both Android and ESP32
+- **8 new WiFi SSID patterns** — Ring-, BLINK-, SimpliSafe-, Nest-, Verkada-, Rhombus-, Flock-, ELSAG-
+
+### Fixed
+- **12 Android privacy detection bugs** — SortedMap category collision (TreeMap collapsed same-threatLevel categories into one), scanner not starting from Privacy tab, backgrounding killing scanner permanently, neverForLocation filtering BLE packets, toggle leaking coroutines, debounce dropping UI updates, stop() not cleaning privacy state, missing device.name fallback
+- **BLE permission fix** — Removed neverForLocation from BLUETOOTH_SCAN (was silently filtering tracker/glasses BLE packets), added legacy BLUETOOTH/BLUETOOTH_ADMIN for API ≤30
+- **App lifecycle fix** — Added ProcessLifecycleOwner.onStart() to restart scanning when app returns from background
+- **Privacy stale timeout** — Increased from 60s to 180s (BLE advertisers are intermittent)
+- **FindMy/AirTag noise** — Separated into own collapsed category (threat level 0), won't trigger threat banner
+- **BLE Trackers decluttered** — Dropped from threat level 3 to 1, collapsed by default in tree view
+- **ESP32 tracker entries removed** — Removed AirTag/FindMy/Tile/Samsung/DULT from ESP32 glasses detector to focus on glasses + drones + cameras
+- **Dead code cleanup** — Deleted unused GlassesDetectionPrefs.kt
+- **BleTracker thread safety** — directionSamples synchronized, finishDirectionScan takes snapshot under lock
+
 ## [0.28.0-beta] - 2026-03-25
 
 ### Added
