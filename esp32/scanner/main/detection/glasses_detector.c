@@ -87,10 +87,7 @@ static const mfr_cid_entry_t s_mfr_cid_db[] = {
     /* LOW confidence — too broad, many non-glasses devices */
     /* Amazon CID 0x0171 removed — too broad, matches Echo/Fire/Kindle/Ring */
 
-    /* ── Trackers / Stalkerware ────────────────────────────────────── */
-    { 0x000D, "Tile",           "BLE Tracker",   0.85f, false }, /* Tile Inc. */
-    /* Samsung CID 0x0075 removed — matches ALL Samsung devices. Use UUID 0xFD5A instead */
-    { 0x067C, "Tile",           "BLE Tracker",   0.85f, false }, /* Tile (alt CID) */
+    /* Trackers removed from ESP32 — focus on glasses + drones, not FindMy/AirTag/Tile */
 
     /* ── Vehicles with cameras ─────────────────────────────────────── */
     /* Tesla CID not in SIG — detected by name/UUID instead */
@@ -114,15 +111,8 @@ static const svc_uuid_entry_t s_svc_uuid_db[] = {
     { 0xFE45, "Snap",    "Smart Glasses", 0.80f, true  }, /* Snapchat assigned */
     { 0xFE15, "Amazon",  "Smart Glasses", 0.70f, false }, /* Amazon assigned */
 
-    /* Trackers / Stalkerware */
-    { 0xFD5A, "Samsung", "BLE Tracker",   0.90f, false }, /* Samsung Offline Finding */
-    { 0xFD59, "Samsung", "BLE Tracker",   0.85f, false }, /* Samsung SmartTag pairing */
-    { 0xFEED, "Tile",    "BLE Tracker",   0.85f, false }, /* Tile tracker */
-    { 0xFEEC, "Tile",    "BLE Tracker",   0.85f, false }, /* Tile tracker (alt) */
-    { 0xFCB2, "DULT",    "BLE Tracker",   0.90f, false }, /* DULT unwanted tracker protocol */
+    /* Trackers removed from ESP32 — focus on glasses + drones */
     { 0xFE2C, "Google",  "Fast Pair",     0.50f, false }, /* Google Fast Pair — below threshold */
-
-    /* Retail Tracking */
     { 0xFEAA, "Google",  "Eddystone Beacon", 0.50f, false }, /* below threshold */
 };
 #define SVC_UUID_DB_COUNT (sizeof(s_svc_uuid_db) / sizeof(s_svc_uuid_db[0]))
@@ -141,7 +131,10 @@ typedef struct {
 static const name_pattern_entry_t s_name_db[] = {
     /* HIGH confidence — well-known device names */
     { "RB Meta",         "Meta",            "Smart Glasses", 0.95f, true,  false },
+    { "Ray-Ban Meta",    "Meta",            "Smart Glasses", 0.95f, true,  false },
     { "Ray-Ban Stories", "Meta",            "Smart Glasses", 0.95f, true,  false },
+    { "Oakley Meta",     "Meta",            "Smart Glasses", 0.95f, true,  false },
+    { "Meta Neural",     "Meta",            "Smart Glasses", 0.90f, false, false },
     { "Spectacles",      "Snap",            "Smart Glasses", 0.90f, true,  false },
     { "Echo Frames",     "Amazon",          "Smart Glasses", 0.90f, false, true  },
     { "Vuzix",           "Vuzix",           "Smart Glasses", 0.90f, true,  false },
@@ -174,11 +167,7 @@ static const name_pattern_entry_t s_name_db[] = {
     { "HIDVCAM-",        "Generic",         "Hidden Camera", 0.90f, true,  false },
     { "HDWiFiCam-",      "Generic",         "Hidden Camera", 0.85f, true,  false },
 
-    /* More trackers */
-    { "Chipolo",         "Chipolo",         "BLE Tracker",   0.85f, false, false },
-    { "Pebblebee",       "Pebblebee",       "BLE Tracker",   0.85f, false, false },
-    { "eufy SmartTrack", "Eufy",            "BLE Tracker",   0.85f, false, false },
-    { "Nutale",          "Nutale",          "BLE Tracker",   0.80f, false, false },
+    /* Trackers removed from ESP32 — focus on glasses + drones */
 
     /* Vehicles with cameras */
     { "Tesla ",          "Tesla",           "Vehicle Camera", 0.90f, true,  false },
@@ -186,9 +175,7 @@ static const name_pattern_entry_t s_name_db[] = {
     /* Attack / hacking tools */
     { "Flipper ",        "Flipper Zero",    "Attack Tool",   0.90f, false, false },
 
-    /* Trackers (BLE name-based — supplement CID/UUID matching) */
-    { "Tile",            "Tile",            "BLE Tracker",   0.70f, false, false },
-    { "SmartTag",        "Samsung",         "BLE Tracker",   0.80f, false, false },
+    /* Tracker name entries removed from ESP32 — focus on glasses + drones */
 };
 #define NAME_DB_COUNT (sizeof(s_name_db) / sizeof(s_name_db[0]))
 
@@ -249,34 +236,7 @@ bool glasses_check_advertisement(
         }
     }
 
-    /* 1b. Special Apple manufacturer data parsing (AirTag, FindMy) */
-    if (mfr_data != NULL && mfr_data_len >= 4) {
-        uint16_t cid = (uint16_t)(mfr_data[0] | (mfr_data[1] << 8));
-        if (cid == 0x004C) { /* Apple Inc. */
-            uint8_t apple_type = mfr_data[2];
-            if (apple_type == 0x12) {
-                /* AirTag / FindMy accessory */
-                float c = 0.95f;
-                if (c > best_conf) {
-                    best_conf = c;
-                    best_mfr = "Apple";
-                    best_type = "AirTag/FindMy";
-                    best_camera = false;
-                    snprintf(best_reason, sizeof(best_reason), "apple_findmy:0x12");
-                }
-            } else if (apple_type == 0x02 && mfr_data_len >= 23) {
-                /* iBeacon (retail tracking) — below threshold, filtered out */
-                float c = 0.50f;
-                if (c > best_conf) {
-                    best_conf = c;
-                    best_mfr = "Apple";
-                    best_type = "Tracking Beacon";
-                    best_camera = false;
-                    snprintf(best_reason, sizeof(best_reason), "ibeacon:0x02");
-                }
-            }
-        }
-    }
+    /* Apple AirTag/FindMy removed from ESP32 — focus on glasses + drones */
 
     /* 2. Check 16-bit Service UUIDs */
     for (int u = 0; u < svc_uuid16_count; u++) {

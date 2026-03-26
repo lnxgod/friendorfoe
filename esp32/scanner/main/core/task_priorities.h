@@ -19,6 +19,7 @@ extern "C" {
 /* ── Task priorities (higher number = higher priority) ───────────────────── */
 
 #define WIFI_SCAN_TASK_PRIORITY     5
+#define BLE_SCAN_TASK_PRIORITY      4
 #define FUSION_TASK_PRIORITY        3
 #define UART_TX_TASK_PRIORITY       2
 #define LED_TASK_PRIORITY           1
@@ -27,6 +28,7 @@ extern "C" {
 /* ── Stack sizes (bytes) ─────────────────────────────────────────────────── */
 
 #define WIFI_SCAN_TASK_STACK_SIZE   8192
+#define BLE_SCAN_TASK_STACK_SIZE    6144
 #define FUSION_TASK_STACK_SIZE      4096
 #define UART_TX_TASK_STACK_SIZE     4096
 #define LED_TASK_STACK_SIZE         2048
@@ -37,6 +39,7 @@ extern "C" {
 #ifdef CONFIG_FREERTOS_UNICORE
 /* Single-core (ESP32-C5): no pinning, scheduler handles it */
 #define WIFI_SCAN_TASK_CORE         tskNO_AFFINITY
+#define BLE_SCAN_TASK_CORE          tskNO_AFFINITY
 #define FUSION_TASK_CORE            tskNO_AFFINITY
 #define UART_TX_TASK_CORE           tskNO_AFFINITY
 #define DISPLAY_TASK_CORE           tskNO_AFFINITY
@@ -48,6 +51,7 @@ extern "C" {
 #define CORE_PROCESSING             1
 
 #define WIFI_SCAN_TASK_CORE         CORE_RADIO
+#define BLE_SCAN_TASK_CORE          CORE_RADIO
 #define FUSION_TASK_CORE            CORE_PROCESSING
 #define UART_TX_TASK_CORE           CORE_PROCESSING
 #define DISPLAY_TASK_CORE           CORE_PROCESSING

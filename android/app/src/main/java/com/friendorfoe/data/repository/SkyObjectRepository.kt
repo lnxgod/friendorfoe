@@ -77,6 +77,8 @@ class SkyObjectRepository @Inject constructor(
 
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var collectionJob: Job? = null
+    private var glassesJob: Job? = null
+    private var glassesUpdateJob: Job? = null
     private val isRunning = AtomicBoolean(false)
 
     // Track user position for history persistence
@@ -124,8 +126,17 @@ class SkyObjectRepository @Inject constructor(
     fun setPrivacyDetectionEnabled(enabled: Boolean) {
         detectionPrefs.privacyEnabled = enabled
         if (!enabled) {
+            glassesJob?.cancel()
+            glassesJob = null
+            glassesUpdateJob?.cancel()
+            glassesUpdateJob = null
+            glassesMap.clear()
             _glassesDetections.value = emptyList()
             glassesDetector.stopScanning()
+        } else if (isRunning.get()) {
+            // Cancel any stale collector before launching a new one
+            glassesJob?.cancel()
+            glassesJob = scope.launch { collectGlasses() }
         }
     }
 
@@ -170,7 +181,9 @@ class SkyObjectRepository @Inject constructor(
             if (detectionPrefs.bleRidEnabled) launch { collectRemoteId() }
             if (detectionPrefs.bleRidEnabled) launch { collectWifiNan() }
             if (detectionPrefs.wifiEnabled) launch { collectWifi() }
-            if (detectionPrefs.privacyEnabled) launch { collectGlasses() }
+            if (detectionPrefs.privacyEnabled) {
+                glassesJob = launch { collectGlasses() }
+            }
             if (detectionPrefs.stalkerDetectionEnabled) launch { collectStalkerAlerts() }
         }
     }
@@ -180,19 +193,27 @@ class SkyObjectRepository @Inject constructor(
         isRunning.set(false)
         collectionJob?.cancel()
         collectionJob = null
+        glassesJob?.cancel()
+        glassesJob = null
+        glassesUpdateJob?.cancel()
+        glassesUpdateJob = null
         adsbPoller.stop()
         remoteIdScanner.stopScanning()
         wifiNanRemoteIdScanner.stopScanning()
         wifiDroneScanner.stopScanning()
+        glassesDetector.stopScanning()
         fusionEngine.reset()
 
         adsbObjects.clear()
         remoteIdObjects.clear()
         nanObjects.clear()
         wifiObjects.clear()
+        glassesMap.clear()
         persistedObjectIds.clear()
         positionTrails.clear()
         _skyObjects.value = emptyList()
+        _glassesDetections.value = emptyList()
+        _stalkerAlerts.value = emptyList()
         scope.cancel()
 
         Log.i(TAG, "All detection sources stopped")
@@ -289,22 +310,32 @@ class SkyObjectRepository @Inject constructor(
      * Collect smart glasses / privacy device detections from BLE + WiFi.
      */
     private val glassesMap = java.util.concurrent.ConcurrentHashMap<String, GlassesDetection>()
-    @Volatile private var lastGlassesUpdateMs = 0L
-    private val GLASSES_DEBOUNCE_MS = 2000L
+    private val GLASSES_STALE_SECONDS = 180L // More generous than sky objects — BLE advertisers are intermittent
 
-    private fun updateGlassesList(force: Boolean = false) {
-        val nowMs = System.currentTimeMillis()
-        if (!force && (nowMs - lastGlassesUpdateMs) < GLASSES_DEBOUNCE_MS) return
-        lastGlassesUpdateMs = nowMs
-
+    private fun commitGlassesUpdate() {
         val now = Instant.now()
         val staleKeys = glassesMap.filter {
-            Duration.between(it.value.lastSeen, now).seconds > 60
+            Duration.between(it.value.lastSeen, now).seconds > GLASSES_STALE_SECONDS
         }.keys
         staleKeys.forEach { glassesMap.remove(it) }
         _glassesDetections.value = glassesMap.values
             .sortedByDescending { it.rssi }
             .toList()
+    }
+
+    private fun updateGlassesList(force: Boolean = false) {
+        if (force) {
+            glassesUpdateJob?.cancel()
+            commitGlassesUpdate()
+            return
+        }
+        // Debounce: schedule an update if one isn't already pending.
+        // This ensures updates within the window are batched, never dropped.
+        if (glassesUpdateJob?.isActive == true) return
+        glassesUpdateJob = scope.launch {
+            kotlinx.coroutines.delay(1000)
+            commitGlassesUpdate()
+        }
     }
 
     private suspend fun collectGlasses() {

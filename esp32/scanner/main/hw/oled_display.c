@@ -527,6 +527,100 @@ void oled_show_detection_paged(const char *drone_id, const char *manufacturer,
     oled_flush();
 }
 
+void oled_show_glasses_paged(const char *device_type, const char *manufacturer,
+                              const char *device_name, float confidence,
+                              int rssi, bool has_camera,
+                              int page_current, int page_total)
+{
+    if (!s_initialized) return;
+
+    fb_clear();
+
+    char line[24];
+
+    /* Line 0: Title */
+    fb_draw_string(0, 0, "Privacy Scan");
+    if (has_camera) {
+        fb_draw_string(78, 0, "[CAM]");
+    }
+
+    /* Line 1: Separator */
+    fb_draw_hline(0, 127, 9);
+
+    /* Line 2: Device type (e.g. "Smart Glasses") */
+    snprintf(line, sizeof(line), "%.21s", device_type ? device_type : "Unknown");
+    fb_draw_string(0, 12, line);
+
+    /* Line 3: Manufacturer */
+    snprintf(line, sizeof(line), "%.21s", manufacturer ? manufacturer : "Unknown");
+    fb_draw_string(0, 22, line);
+
+    /* Line 4: Device name (if available) */
+    if (device_name && device_name[0]) {
+        snprintf(line, sizeof(line), "%.21s", device_name);
+        fb_draw_string(0, 32, line);
+    }
+
+    /* Line 5: Separator */
+    fb_draw_hline(0, 127, 42);
+
+    /* Line 6: RSSI + confidence + page */
+    snprintf(line, sizeof(line), "%ddBm %d%%",
+             rssi, (int)(confidence * 100.0f));
+    fb_draw_string(0, 45, line);
+
+    if (page_total > 1) {
+        char page_str[8];
+        snprintf(page_str, sizeof(page_str), "%d/%d", page_current, page_total);
+        int len = (int)strlen(page_str);
+        int px = 128 - len * 6;
+        fb_draw_string(px, 45, page_str);
+    } else {
+        fb_draw_signal_bars(116, 52, rssi);
+    }
+
+    /* Line 7: Signal bar visual */
+    snprintf(line, sizeof(line), "RSSI ");
+    fb_draw_string(0, 55, line);
+    fb_draw_signal_bars(30, 62, rssi);
+
+    oled_flush();
+}
+
+void oled_show_privacy_status(int glasses_count, uint32_t uptime_s)
+{
+    if (!s_initialized) return;
+
+    fb_clear();
+
+    char line[24];
+
+    /* Line 0: Title */
+    fb_draw_string(0, 0, "Privacy Scan");
+
+    /* Line 1: Separator */
+    fb_draw_hline(0, 127, 9);
+
+    /* Line 2: Status */
+    fb_draw_string(0, 16, "Scanning BLE...");
+
+    /* Line 3: Count */
+    snprintf(line, sizeof(line), "Devices: %d", glasses_count);
+    fb_draw_string(0, 28, line);
+
+    /* Line 4: Uptime */
+    uint32_t m = (uptime_s % 3600) / 60;
+    uint32_t s = uptime_s % 60;
+    snprintf(line, sizeof(line), "Up: %02lu:%02lu",
+             (unsigned long)m, (unsigned long)s);
+    fb_draw_string(0, 40, line);
+
+    /* Line 5: Hint */
+    fb_draw_string(0, 55, "2x tap = drones");
+
+    oled_flush();
+}
+
 void oled_clear(void)
 {
     if (!s_initialized) {

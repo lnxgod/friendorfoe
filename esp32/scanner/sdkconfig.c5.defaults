@@ -1,20 +1,26 @@
-# Friend or Foe — WiFi Scanner (ESP32-C5) SDK Configuration
-# Dedicated dual-band WiFi 6 (2.4 + 5 GHz) promiscuous scanning — no BLE, no coex
+# Friend or Foe — Scanner (ESP32-C5) SDK Configuration
+# Dual-band WiFi 6 (2.4 + 5 GHz) promiscuous + BLE 5 scanning
 # Single-core RISC-V 240 MHz
 
-# ── Bluetooth (disabled — BLE runs on separate board) ────────────────────────
-CONFIG_BT_ENABLED=n
+# ── Bluetooth (NimBLE for BLE Remote ID + glasses detection) ──────────────
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=0
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
 
 # ── WiFi (dual-band) ────────────────────────────────────────────────────────
 CONFIG_ESP_WIFI_ENABLED=y
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=20
 CONFIG_ESP_WIFI_11AC_ENABLED=y
 CONFIG_ESP_WIFI_11AX_ENABLED=y
 
-# ── Coexistence (disabled — WiFi only) ──────────────────────────────────────
-CONFIG_SW_COEXIST_ENABLE=n
-CONFIG_ESP_COEX_SW_COEXIST_ENABLE=n
+# ── Coexistence (required for WiFi + BLE) ─────────────────────────────────
+CONFIG_SW_COEXIST_ENABLE=y
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
 
 # ── PSRAM (external, optional — enable if populated) ─────────────────────────
 # CONFIG_SPIRAM=y
@@ -32,3 +38,6 @@ CONFIG_LOG_DEFAULT_LEVEL=3
 
 # ── 5 GHz channel scanning (custom app-level flag) ──────────────────────────
 CONFIG_SCANNER_5GHZ_ENABLED=y
+
+# ── Glasses detection ────────────────────────────────────────────────────────
+CONFIG_FOF_GLASSES_DETECTION=y
