@@ -214,6 +214,51 @@ static const name_pattern_entry_t s_name_db[] = {
     { "Schlage",         "Schlage",         "Smart Lock",    0.75f, false, false },
     { "Level Lock",      "Level",           "Smart Lock",    0.75f, false, false },
 
+    /* Baby monitors (camera + microphone) */
+    { "Owlet",           "Owlet",           "Baby Monitor",  0.85f, true,  false },
+    { "Miku-",           "Miku",            "Baby Monitor",  0.85f, true,  false },
+    { "CuboAi-",         "CuboAi",          "Baby Monitor",  0.85f, true,  false },
+    { "Lollipop-",       "Lollipop",        "Baby Monitor",  0.80f, true,  false },
+    { "iBaby-",          "iBaby",           "Baby Monitor",  0.80f, true,  false },
+
+    /* More security cameras */
+    { "EZVIZ_",          "EZVIZ",           "Surveillance",  0.80f, true,  false },
+    { "Lorex_",          "Lorex",           "Surveillance",  0.80f, true,  false },
+    { "ZOSI_",           "ZOSI",            "Surveillance",  0.75f, true,  false },
+    { "Swann",           "Swann",           "Surveillance",  0.80f, true,  false },
+
+    /* OBD2 / car diagnostic dongles */
+    { "ELM327",          "Generic",         "OBD Tracker",   0.80f, false, false },
+    { "VEEPEAK",         "Veepeak",         "OBD Tracker",   0.85f, false, false },
+    { "BlueDriver",      "BlueDriver",      "OBD Tracker",   0.85f, false, false },
+    { "FIXD",            "Fixd",            "OBD Tracker",   0.85f, false, false },
+    { "OBDLink",         "OBDLink",         "OBD Tracker",   0.85f, false, false },
+    { "OBDII",           "Generic",         "OBD Tracker",   0.75f, false, false },
+
+    /* GPS trackers */
+    { "Tracki_",         "Tracki",          "GPS Tracker",   0.85f, false, false },
+    { "Bouncie_",        "Bouncie",         "GPS Tracker",   0.85f, false, false },
+    { "Invoxia_",        "Invoxia",         "GPS Tracker",   0.85f, false, false },
+    { "LandAirSea",      "LandAirSea",      "GPS Tracker",   0.85f, false, false },
+
+    /* Thermal cameras (see through walls / in dark) */
+    { "FLIR-ONE-",       "FLIR",            "Thermal Cam",   0.90f, true,  false },
+    { "InfiRay-",        "InfiRay",         "Thermal Cam",   0.85f, true,  false },
+    { "Seek-",           "Seek Thermal",    "Thermal Cam",   0.85f, true,  false },
+
+    /* Trail / game cameras (outdoor surveillance) */
+    { "Spypoint-",       "Spypoint",        "Trail Camera",  0.85f, true,  false },
+    { "Bushnell-",       "Bushnell",        "Trail Camera",  0.80f, true,  false },
+    { "Moultrie-",       "Moultrie",        "Trail Camera",  0.80f, true,  false },
+
+    /* Smart TVs (ACR tracking) */
+    { "[TV] Samsung",    "Samsung",         "Smart TV",      0.85f, false, false },
+    { "[LG] webOS TV",   "LG",             "Smart TV",      0.85f, false, false },
+    { "BRAVIA",          "Sony",            "Smart TV",      0.80f, false, false },
+
+    /* DJI drone controllers */
+    { "DJI-RC-",         "DJI",             "Drone Ctrl",    0.90f, false, false },
+
     /* E-Scooters (location tracking) */
     { "Lime-",           "Lime",            "E-Scooter",     0.80f, false, false },
     { "Bird ",           "Bird",            "E-Scooter",     0.75f, false, false },
