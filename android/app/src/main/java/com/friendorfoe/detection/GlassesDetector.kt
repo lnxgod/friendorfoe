@@ -8,8 +8,12 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.util.Log
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -533,65 +537,139 @@ class GlassesDetector @Inject constructor(
     private val detectedDevices = java.util.concurrent.ConcurrentHashMap<String, GlassesDetection>()
     private var bleScanner: BluetoothLeScanner? = null
     private var activeScanCallback: ScanCallback? = null
+    @Volatile var isScanRunning = false
+        private set
 
     /**
      * Start scanning for smart glasses / privacy devices.
      * Returns a Flow that emits GlassesDetection objects.
+     *
+     * Includes automatic retry on scan failure and periodic scan restart
+     * to catch devices with slow advertising intervals (e.g. Meta glasses
+     * that are already paired and connected reduce their BLE advertising
+     * to ~10s+ intervals — easy to miss on initial scan start).
      */
     @SuppressLint("MissingPermission")
     fun startScanning(): Flow<GlassesDetection> = callbackFlow {
-        val adapter = bluetoothManager.adapter
-        if (adapter == null || !adapter.isEnabled) {
-            Log.w(TAG, "Bluetooth not available, skipping glasses scan")
-            close()
-            return@callbackFlow
-        }
+        val SCAN_RESTART_INTERVAL_MS = 30_000L // Restart scan every 30s to catch slow advertisers
+        val SCAN_FAILURE_RETRY_MS = 5_000L     // Wait 5s before retrying after failure
+        val MAX_RETRIES = 3
 
-        val scanner = adapter.bluetoothLeScanner
-        if (scanner == null) {
-            Log.w(TAG, "BLE scanner not available")
-            close()
-            return@callbackFlow
-        }
-        bleScanner = scanner
+        var retryCount = 0
 
-        // No scan filter — we need to see ALL BLE advertisements
-        val scanSettings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .setReportDelay(0)
-            .build()
-
-        val callback = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val detection = checkScanResult(result)
-                if (detection != null) {
-                    trySend(detection)
-                }
+        suspend fun doStartScan(): Boolean {
+            val adapter = bluetoothManager.adapter
+            if (adapter == null || !adapter.isEnabled) {
+                Log.w(TAG, "Bluetooth not available, skipping glasses scan")
+                return false
             }
 
-            override fun onBatchScanResults(results: List<ScanResult>) {
-                for (result in results) {
+            val scanner = adapter.bluetoothLeScanner
+            if (scanner == null) {
+                Log.w(TAG, "BLE scanner not available")
+                return false
+            }
+            bleScanner = scanner
+
+            val scanSettings = ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .setReportDelay(0)
+                .build()
+
+            val callback = object : ScanCallback() {
+                override fun onScanResult(callbackType: Int, result: ScanResult) {
                     val detection = checkScanResult(result)
                     if (detection != null) {
                         trySend(detection)
                     }
                 }
+
+                override fun onBatchScanResults(results: List<ScanResult>) {
+                    for (result in results) {
+                        val detection = checkScanResult(result)
+                        if (detection != null) {
+                            trySend(detection)
+                        }
+                    }
+                }
+
+                override fun onScanFailed(errorCode: Int) {
+                    val errorName = when (errorCode) {
+                        SCAN_FAILED_ALREADY_STARTED -> "ALREADY_STARTED"
+                        SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> "REGISTRATION_FAILED"
+                        SCAN_FAILED_FEATURE_UNSUPPORTED -> "UNSUPPORTED"
+                        SCAN_FAILED_INTERNAL_ERROR -> "INTERNAL_ERROR"
+                        else -> "UNKNOWN($errorCode)"
+                    }
+                    Log.e(TAG, "BLE scan failed: $errorName")
+                    isScanRunning = false
+
+                    // ALREADY_STARTED means a scan is running — that's actually fine
+                    if (errorCode == SCAN_FAILED_ALREADY_STARTED) {
+                        isScanRunning = true
+                    }
+                }
             }
 
-            override fun onScanFailed(errorCode: Int) {
-                Log.e(TAG, "BLE scan failed: $errorCode")
+            // Stop any previous scan before starting a new one
+            activeScanCallback?.let { old ->
+                try { scanner.stopScan(old) } catch (_: Exception) {}
+            }
+
+            activeScanCallback = callback
+            try {
+                scanner.startScan(null, scanSettings, callback)
+                isScanRunning = true
+                retryCount = 0
+                Log.i(TAG, "BLE privacy scan started successfully")
+                return true
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start BLE scan: ${e.message}")
+                isScanRunning = false
+                return false
             }
         }
 
-        activeScanCallback = callback
-        Log.i(TAG, "Starting smart glasses BLE scan")
-        scanner.startScan(null, scanSettings, callback)
+        // Initial start with retry
+        var started = false
+        while (!started && retryCount < MAX_RETRIES) {
+            started = doStartScan()
+            if (!started) {
+                retryCount++
+                Log.w(TAG, "BLE scan start failed, retry $retryCount/$MAX_RETRIES in ${SCAN_FAILURE_RETRY_MS}ms")
+                delay(SCAN_FAILURE_RETRY_MS)
+            }
+        }
+
+        if (!started) {
+            Log.e(TAG, "BLE scan failed after $MAX_RETRIES retries")
+            close()
+            return@callbackFlow
+        }
+
+        // Periodic scan restart to catch slow-advertising devices.
+        // Meta glasses in connected mode advertise at ~10s intervals.
+        // Android may internally deduplicate some advertisements.
+        // Restarting the scan resets Android's internal dedup state.
+        val restartJob = CoroutineScope(Dispatchers.Default).launch {
+            while (true) {
+                delay(SCAN_RESTART_INTERVAL_MS)
+                Log.d(TAG, "Periodic scan restart to catch slow advertisers")
+                doStartScan()
+            }
+        }
 
         awaitClose {
             Log.i(TAG, "Stopping smart glasses BLE scan")
-            try { scanner.stopScan(callback) } catch (e: Exception) {
+            isScanRunning = false
+            restartJob.cancel()
+            try {
+                activeScanCallback?.let { cb -> bleScanner?.stopScan(cb) }
+            } catch (e: Exception) {
                 Log.w(TAG, "Error stopping glasses scan", e)
             }
+            activeScanCallback = null
+            bleScanner = null
             detectedDevices.clear()
         }
     }
