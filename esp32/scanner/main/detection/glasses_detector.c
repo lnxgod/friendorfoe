@@ -195,6 +195,28 @@ static const name_pattern_entry_t s_name_db[] = {
 
     /* Attack / hacking tools */
     { "Flipper ",        "Flipper Zero",    "Attack Tool",   0.90f, false, false },
+
+    /* Smart speakers (always-listening) */
+    { "Sonos Move",      "Sonos",           "Smart Speaker", 0.85f, false, false },
+    { "Sonos Roam",      "Sonos",           "Smart Speaker", 0.85f, false, false },
+    { "Sonos ",          "Sonos",           "Smart Speaker", 0.75f, false, false },
+
+    /* Smart home hubs (always-listening microphones) */
+    { "Google Home",     "Google",          "Smart Hub",     0.80f, false, false },
+    { "Google Nest",     "Google",          "Smart Hub",     0.80f, false, false },
+    { "Nest Mini",       "Google",          "Smart Hub",     0.85f, false, false },
+    { "Nest Audio",      "Google",          "Smart Hub",     0.85f, false, false },
+    { "Nest Hub",        "Google",          "Smart Hub",     0.85f, false, false },
+    { "HomePod",         "Apple",           "Smart Hub",     0.85f, false, false },
+
+    /* Smart locks (physical security) */
+    { "August ",         "August",          "Smart Lock",    0.70f, false, false },
+    { "Schlage",         "Schlage",         "Smart Lock",    0.75f, false, false },
+    { "Level Lock",      "Level",           "Smart Lock",    0.75f, false, false },
+
+    /* E-Scooters (location tracking) */
+    { "Lime-",           "Lime",            "E-Scooter",     0.80f, false, false },
+    { "Bird ",           "Bird",            "E-Scooter",     0.75f, false, false },
 };
 #define NAME_DB_COUNT (sizeof(s_name_db) / sizeof(s_name_db[0]))
 

@@ -18,18 +18,26 @@ import javax.inject.Singleton
  * Category for privacy-threatening devices, used for tree view grouping.
  */
 enum class PrivacyCategory(val label: String, val icon: String, val threatLevel: Int) {
+    // Threat level 3 — high privacy threat
     SMART_GLASSES("Smart Glasses", "\uD83D\uDC53", 3),
     HIDDEN_CAMERA("Hidden Cameras", "\uD83D\uDCF7", 3),
     ATTACK_TOOL("Attack Tools", "\u26A0\uFE0F", 3),
+    // Threat level 2 — awareness
     SURVEILLANCE_CAMERA("Surveillance Cameras", "\uD83D\uDCF9", 2),
     ALPR_CAMERA("ALPR / Plate Readers", "\uD83D\uDE94", 2),
     BODY_CAMERA("Body Cameras", "\uD83D\uDCF9", 2),
     VEHICLE_CAMERA("Vehicle Cameras", "\uD83D\uDE97", 2),
+    // Threat level 1 — nearby devices
     DOORBELL_CAMERA("Doorbell Cameras", "\uD83D\uDEAA", 1),
+    SMART_SPEAKER("Smart Speakers", "\uD83D\uDD0A", 1),
+    SMART_HOME_HUB("Smart Home Hubs", "\uD83C\uDFE0", 1),
+    SMART_LOCK("Smart Locks", "\uD83D\uDD12", 1),
     ACTION_CAMERA("Action Cameras", "\uD83C\uDFA5", 1),
     DASH_CAMERA("Dash Cameras", "\uD83D\uDE99", 1),
     BLE_TRACKER("BLE Trackers", "\uD83D\uDCCD", 1),
-    IOT_DEVICE("IoT Devices", "\uD83C\uDFE0", 1),
+    IOT_DEVICE("IoT Devices", "\uD83D\uDCE1", 1),
+    // Threat level 0 — informational
+    E_SCOOTER("E-Scooters", "\uD83D\uDEF4", 0),
     FINDMY("FindMy / AirTags", "\uD83D\uDCF1", 0),
     INFORMATIONAL("Informational", "\u2139\uFE0F", 0),
 }
@@ -168,6 +176,9 @@ class GlassesDetector @Inject constructor(
             WifiPattern("Flock-", "Flock Safety", "ALPR Camera", 0.85f, true),
             WifiPattern("FLK-", "Flock Safety", "ALPR Camera", 0.85f, true),
             WifiPattern("ELSAG-", "Leonardo", "ALPR Camera", 0.85f, true),
+            // Smart speakers / hubs (setup AP mode)
+            WifiPattern("Sonos_", "Sonos", "Smart Speaker", 0.80f, false),
+            WifiPattern("Google-Home-", "Google", "Smart Home Hub", 0.75f, false),
         )
 
         /** Assign a privacy category based on device type string. Used by both BLE and WiFi paths. */
@@ -196,6 +207,13 @@ class GlassesDetector @Inject constructor(
             deviceType.contains("Action Camera", ignoreCase = true) -> PrivacyCategory.ACTION_CAMERA
             deviceType.contains("Dash Camera", ignoreCase = true) -> PrivacyCategory.DASH_CAMERA
             deviceType.contains("Endoscope", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+            // Smart speakers & home hubs (always-listening)
+            deviceType.contains("Smart Speaker", ignoreCase = true) -> PrivacyCategory.SMART_SPEAKER
+            deviceType.contains("Smart Home Hub", ignoreCase = true) -> PrivacyCategory.SMART_HOME_HUB
+            // Smart locks (physical security)
+            deviceType.contains("Smart Lock", ignoreCase = true) -> PrivacyCategory.SMART_LOCK
+            // E-Scooters
+            deviceType.contains("E-Scooter", ignoreCase = true) -> PrivacyCategory.E_SCOOTER
             deviceType.contains("Robot Vacuum", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
             deviceType.contains("IoT", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
             deviceType.contains("Camera Remote", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
@@ -377,6 +395,28 @@ class GlassesDetector @Inject constructor(
         NameEntry("roborock-", "Roborock", "Robot Vacuum", 0.60f, true),
         NameEntry("iRobot-", "iRobot", "Robot Vacuum", 0.60f, true),
         NameEntry("Ecovacs-", "Ecovacs", "Robot Vacuum", 0.60f, true),
+        // Smart speakers (always-listening)
+        NameEntry("Sonos Move", "Sonos", "Smart Speaker", 0.85f, false),
+        NameEntry("Sonos Roam", "Sonos", "Smart Speaker", 0.85f, false),
+        NameEntry("Sonos ", "Sonos", "Smart Speaker", 0.75f, false),
+        // Smart home hubs (always-listening microphones)
+        NameEntry("Google Home", "Google", "Smart Home Hub", 0.80f, false),
+        NameEntry("Google Nest", "Google", "Smart Home Hub", 0.80f, false),
+        NameEntry("Nest Mini", "Google", "Smart Home Hub", 0.85f, false),
+        NameEntry("Nest Audio", "Google", "Smart Home Hub", 0.85f, false),
+        NameEntry("Nest Hub", "Google", "Smart Home Hub", 0.85f, false),
+        NameEntry("HomePod", "Apple", "Smart Home Hub", 0.85f, false),
+        // Smart locks (physical security)
+        NameEntry("August ", "August", "Smart Lock", 0.70f, false),
+        NameEntry("Yale ", "Yale", "Smart Lock", 0.70f, false),
+        NameEntry("Schlage", "Schlage", "Smart Lock", 0.75f, false),
+        NameEntry("Kwikset", "Kwikset", "Smart Lock", 0.70f, false),
+        NameEntry("Level Lock", "Level", "Smart Lock", 0.75f, false),
+        // E-Scooters (location tracking, informational)
+        NameEntry("Lime-", "Lime", "E-Scooter", 0.80f, false),
+        NameEntry("Bird ", "Bird", "E-Scooter", 0.75f, false),
+        NameEntry("Lyft Scooter", "Lyft", "E-Scooter", 0.80f, false),
+        NameEntry("Spin ", "Spin", "E-Scooter", 0.70f, false),
     )
 
     private val GAP_APPEARANCE_EYEGLASSES = 0x01C0
