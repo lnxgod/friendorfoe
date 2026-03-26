@@ -48,7 +48,7 @@
 
 static const char *TAG = "fof_scanner";
 
-#define FIRMWARE_VERSION    "0.17.0-beta"
+#define FIRMWARE_VERSION    "0.31.0-beta"
 #define DETECTION_QUEUE_LEN 50
 #define DISPLAY_UPDATE_MS   250
 

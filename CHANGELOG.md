@@ -4,6 +4,38 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.31.0-beta] - 2026-03-26
+
+### Added
+- **BLE direction-finding UI** — Tap "Track" on any privacy device to open a full-screen guided direction scan
+- **Phase 1: Guided 360° rotation** — Compass rose with 12 sector arcs that fill green as you spin. Rotation speed guide (too slow / good / too fast). Auto-finishes at 16+ samples with 10/12 sectors covered, or manual finish at 8+
+- **Phase 2: Active tracking** — Large green arrow rotates with phone compass, pointing toward device. 10-bar signal strength meter (red→yellow→green). Proximity label (Very Close / Close / Medium / Far / Very Far). Live RSSI updates every 200ms. Rescan button to improve accuracy
+- **254 total detection signatures** (up from 88):
+  - Baby monitors: Owlet, Miku, CuboAi, Lollipop, iBaby, VTech, Hubble
+  - Thermal cameras: FLIR One/Edge, Seek Thermal, InfiRay
+  - Trail cameras: Spypoint, Bushnell, Moultrie, Reconyx, Stealth Cam
+  - OBD/car trackers: ELM327, VEEPEAK, BlueDriver, FIXD, OBDLink, Carly
+  - GPS trackers: Tracki, Bouncie, Invoxia, LandAirSea, Spytec
+  - Pet trackers: Whistle, Fi, Tractive, Jiobit, PitPat
+  - Smart TVs: Samsung [TV], LG webOS, Sony BRAVIA, Vizio, Roku
+  - Drone controllers: DJI-RC-, DJI-RC Pro
+  - Smart speakers: Sonos Move/Roam
+  - Smart home hubs: Google Home/Nest Mini/Audio/Hub, Apple HomePod
+  - Smart locks: August, Yale, Schlage, Kwikset, Level Lock
+  - More cameras: EZVIZ, Lorex, ZOSI, Swann, Annke, RemoBell
+  - Chinese IP cams: IPCAM-, Care-AP, Danale-
+  - Attack tools: ESP8266 deauther ("pwned", "Advanced-Deauther")
+- **14 new privacy categories** (22 total): Baby Monitors, Thermal Cameras, Trail Cameras, OBD/Car Trackers, GPS Trackers, Smart Speakers, Smart Home Hubs, Smart Locks, Smart TVs, Drone Controllers, E-Scooters, Doorbell Cameras, Surveillance Cameras, ALPR/Plate Readers
+- **Sectioned Privacy UI** — 4 color-coded sections: THREATS (red), AWARENESS (orange), NEARBY (yellow), INFO (gray). Section headers with aggregate counts, tap to collapse/expand all categories in group
+
+### Fixed
+- **Compass bearing was hardcoded to 0** — Direction scanning was completely non-functional. Now wired to SensorFusionEngine for real compass data
+- **Stalker alerts never cleared** when threat moved out of range (stale alerts persisted forever)
+- **UUID false positives** — Added Bluetooth SIG base UUID validation before 16-bit extraction
+- **Ignored MAC CSV re-parsed on every BLE advertisement** — Now cached in memory
+- **BleTracker.getOrPut race condition** — Changed to atomic computeIfAbsent (prevents firstSeen reset)
+- **BleTracker TrackedDevice fields** — Marked @Volatile for cross-thread visibility
+
 ## [0.29.0-beta] - 2026-03-25
 
 ### Added
