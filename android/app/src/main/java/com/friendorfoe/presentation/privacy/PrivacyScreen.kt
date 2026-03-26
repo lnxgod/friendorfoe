@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -35,6 +34,21 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.PrivacyCategory
 
+/** Section group definition for threat-level grouping */
+private data class SectionGroup(
+    val title: String,
+    val threatLevel: Int,
+    val color: @Composable () -> Color,
+    val icon: String
+)
+
+private val sectionGroups = listOf(
+    SectionGroup("THREATS", 3, { Color(0xFFD32F2F) }, "\uD83D\uDD34"),
+    SectionGroup("AWARENESS", 2, { Color(0xFFFF9800) }, "\uD83D\uDFE0"),
+    SectionGroup("NEARBY", 1, { Color(0xFFFFC107) }, "\uD83D\uDFE1"),
+    SectionGroup("INFO", 0, { Color(0xFF9E9E9E) }, "\u26AA"),
+)
+
 @Composable
 fun PrivacyScreen(
     viewModel: PrivacyViewModel = hiltViewModel()
@@ -43,13 +57,16 @@ fun PrivacyScreen(
     val totalCount by viewModel.totalCount.collectAsStateWithLifecycle()
     val threatCount by viewModel.threatCount.collectAsStateWithLifecycle()
 
-    // Track which categories are expanded — high-threat categories open by default,
-    // FindMy/trackers/informational collapsed to reduce noise
+    // Track expanded categories (high-threat auto-expanded)
     val expandedCategories = remember {
         mutableStateOf(setOf(PrivacyCategory.SMART_GLASSES,
             PrivacyCategory.HIDDEN_CAMERA, PrivacyCategory.ATTACK_TOOL,
-            PrivacyCategory.SURVEILLANCE_CAMERA, PrivacyCategory.ALPR_CAMERA))
+            PrivacyCategory.SURVEILLANCE_CAMERA, PrivacyCategory.ALPR_CAMERA,
+            PrivacyCategory.SMART_SPEAKER, PrivacyCategory.SMART_HOME_HUB))
     }
+
+    // Track collapsed sections (all expanded by default)
+    val collapsedSections = remember { mutableStateOf(setOf<Int>()) }
 
     var selectedDetail by remember { mutableStateOf<GlassesDetection?>(null) }
 
@@ -105,45 +122,72 @@ fun PrivacyScreen(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Scanning for smart glasses, BLE trackers,\nhidden cameras, and other devices nearby",
+                    text = "Scanning for smart glasses, cameras, trackers,\nspeakers, locks, and other devices nearby",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
                 )
             }
         } else {
-            // Category tree
+            // Sectioned category tree
             LazyColumn(modifier = Modifier.fillMaxSize()) {
-                categorized.forEach { (category, devices) ->
-                    // Category header
-                    item(key = "header_${category.name}") {
-                        val isExpanded = category in expandedCategories.value
-                        CategoryHeader(
-                            category = category,
-                            count = devices.size,
-                            isExpanded = isExpanded,
+                for (section in sectionGroups) {
+                    // Get categories in this section that have detections
+                    val sectionCategories = categorized.filter { it.key.threatLevel == section.threatLevel }
+                    if (sectionCategories.isEmpty()) continue
+
+                    val sectionDeviceCount = sectionCategories.values.sumOf { it.size }
+                    val isSectionCollapsed = section.threatLevel in collapsedSections.value
+
+                    // Section group header
+                    item(key = "section_${section.threatLevel}") {
+                        SectionHeader(
+                            section = section,
+                            deviceCount = sectionDeviceCount,
+                            isCollapsed = isSectionCollapsed,
                             onClick = {
-                                expandedCategories.value = if (isExpanded) {
-                                    expandedCategories.value - category
+                                collapsedSections.value = if (isSectionCollapsed) {
+                                    collapsedSections.value - section.threatLevel
                                 } else {
-                                    expandedCategories.value + category
+                                    collapsedSections.value + section.threatLevel
                                 }
                             }
                         )
                     }
 
-                    // Device cards (if expanded)
-                    if (category in expandedCategories.value) {
-                        items(
-                            items = devices.sortedByDescending { it.rssi },
-                            key = { "device_${it.mac}_${it.matchReason}" }
-                        ) { detection ->
-                            DeviceCard(
-                                detection = detection,
-                                onIgnore = { viewModel.ignoreDevice(detection.mac) },
-                                onTrack = { viewModel.startDirectionScan(detection.mac) },
-                                onDetails = { selectedDetail = detection }
-                            )
+                    if (!isSectionCollapsed) {
+                        sectionCategories.forEach { (category, devices) ->
+                            // Category header (indented under section)
+                            item(key = "header_${category.name}") {
+                                val isExpanded = category in expandedCategories.value
+                                CategoryHeader(
+                                    category = category,
+                                    count = devices.size,
+                                    isExpanded = isExpanded,
+                                    onClick = {
+                                        expandedCategories.value = if (isExpanded) {
+                                            expandedCategories.value - category
+                                        } else {
+                                            expandedCategories.value + category
+                                        }
+                                    }
+                                )
+                            }
+
+                            // Device cards (if expanded)
+                            if (category in expandedCategories.value) {
+                                items(
+                                    items = devices.sortedByDescending { it.rssi },
+                                    key = { "device_${it.mac}_${it.matchReason}" }
+                                ) { detection ->
+                                    DeviceCard(
+                                        detection = detection,
+                                        onIgnore = { viewModel.ignoreDevice(detection.mac) },
+                                        onTrack = { viewModel.startDirectionScan(detection.mac) },
+                                        onDetails = { selectedDetail = detection }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -169,6 +213,50 @@ fun PrivacyScreen(
 }
 
 @Composable
+private fun SectionHeader(
+    section: SectionGroup,
+    deviceCount: Int,
+    isCollapsed: Boolean,
+    onClick: () -> Unit
+) {
+    val sectionColor = section.color()
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .background(sectionColor.copy(alpha = 0.08f))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = if (isCollapsed) "\u25B6" else "\u25BC",
+            color = sectionColor,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(text = section.icon)
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = section.title,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = sectionColor,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = "$deviceCount",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = sectionColor,
+            modifier = Modifier
+                .background(sectionColor.copy(alpha = 0.15f), MaterialTheme.shapes.small)
+                .padding(horizontal = 10.dp, vertical = 3.dp)
+        )
+    }
+}
+
+@Composable
 private fun CategoryHeader(
     category: PrivacyCategory,
     count: Int,
@@ -178,6 +266,7 @@ private fun CategoryHeader(
     val threatColor = when (category.threatLevel) {
         3 -> MaterialTheme.colorScheme.error
         2 -> Color(0xFFFF9800)
+        1 -> Color(0xFFFFC107)
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
@@ -185,28 +274,32 @@ private fun CategoryHeader(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+            .padding(start = 28.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = if (isExpanded) "\u25BC" else "\u25B6", color = threatColor)
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(text = category.icon, modifier = Modifier.width(24.dp))
+        Text(
+            text = if (isExpanded) "\u25BC" else "\u25B6",
+            color = threatColor,
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(text = category.icon, modifier = Modifier.width(22.dp))
         Text(
             text = category.label,
-            style = MaterialTheme.typography.titleSmall,
+            style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
             color = threatColor,
             modifier = Modifier.weight(1f)
         )
         Text(
             text = "$count",
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
             color = threatColor,
             modifier = Modifier
-                .background(threatColor.copy(alpha = 0.15f), MaterialTheme.shapes.small)
-                .padding(horizontal = 8.dp, vertical = 2.dp)
+                .background(threatColor.copy(alpha = 0.12f), MaterialTheme.shapes.extraSmall)
+                .padding(horizontal = 6.dp, vertical = 1.dp)
         )
     }
 }
@@ -222,7 +315,7 @@ private fun DeviceCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onDetails)
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .padding(start = 40.dp, end = 16.dp, top = 6.dp, bottom = 6.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -302,7 +395,7 @@ private fun DeviceCard(
 
         HorizontalDivider(
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
-            modifier = Modifier.padding(top = 8.dp)
+            modifier = Modifier.padding(top = 6.dp)
         )
     }
 }
