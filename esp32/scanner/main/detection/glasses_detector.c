@@ -158,24 +158,43 @@ static const name_pattern_entry_t s_name_db[] = {
     { "Axon Signal",     "Axon",            "Body Camera",   0.85f, true,  false },
     { "VISTA_",          "Motorola",        "Body Camera",   0.85f, true,  false },
 
+    /* Surveillance / security cameras (BLE setup mode) */
+    { "Nest Cam",        "Google",          "Surveillance",  0.85f, true,  false },
+    { "Nest Hello",      "Google",          "Doorbell Cam",  0.85f, true,  false },
+    { "Nest Doorbell",   "Google",          "Doorbell Cam",  0.85f, true,  false },
+    { "Arlo ",           "Arlo",            "Surveillance",  0.80f, true,  false },
+    { "Wyze Cam",        "Wyze",            "Surveillance",  0.80f, true,  false },
+    { "eufy Indoor",     "Eufy",            "Surveillance",  0.80f, true,  false },
+    { "eufy Doorbell",   "Eufy",            "Doorbell Cam",  0.80f, true,  false },
+    { "SimpliSafe",      "SimpliSafe",      "Surveillance",  0.75f, true,  false },
+    { "Verkada",         "Verkada",         "Surveillance",  0.90f, true,  false },
+    { "Rhombus",         "Rhombus",         "Surveillance",  0.85f, true,  false },
+    { "Reolink",         "Reolink",         "Surveillance",  0.75f, true,  false },
+
+    /* ALPR / license plate readers */
+    { "Flock",           "Flock Safety",    "ALPR Camera",   0.90f, true,  false },
+    { "FLK-",            "Flock Safety",    "ALPR Camera",   0.85f, true,  false },
+    { "ELSAG",           "Leonardo",        "ALPR Camera",   0.90f, true,  false },
+    { "AutoVu",          "Genetec",         "ALPR Camera",   0.85f, true,  false },
+    { "Vigilant",        "Motorola",        "ALPR Camera",   0.80f, true,  false },
+
+    /* Police / fleet cameras */
+    { "Axon Fleet",      "Axon",            "Police Camera", 0.90f, true,  false },
+    { "WatchGuard",      "Motorola",        "Police Camera", 0.85f, true,  false },
+
     /* BLE hidden cameras / spy cameras */
     { "V380_",           "Generic",         "Spy Camera",    0.75f, true,  false },
     { "IPC_",            "Generic",         "Spy Camera",    0.70f, true,  false },
     { "LookCam_",        "Generic",         "Spy Camera",    0.70f, true,  false },
-    /* "Camera-" removed — too generic */
     { "CLOUDCAM-",       "Generic",         "Spy Camera",    0.80f, true,  false },
     { "HIDVCAM-",        "Generic",         "Hidden Camera", 0.90f, true,  false },
     { "HDWiFiCam-",      "Generic",         "Hidden Camera", 0.85f, true,  false },
-
-    /* Trackers removed from ESP32 — focus on glasses + drones */
 
     /* Vehicles with cameras */
     { "Tesla ",          "Tesla",           "Vehicle Camera", 0.90f, true,  false },
 
     /* Attack / hacking tools */
     { "Flipper ",        "Flipper Zero",    "Attack Tool",   0.90f, false, false },
-
-    /* Tracker name entries removed from ESP32 — focus on glasses + drones */
 };
 #define NAME_DB_COUNT (sizeof(s_name_db) / sizeof(s_name_db[0]))
 

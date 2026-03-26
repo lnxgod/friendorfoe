@@ -47,7 +47,8 @@ fun PrivacyScreen(
     // FindMy/trackers/informational collapsed to reduce noise
     val expandedCategories = remember {
         mutableStateOf(setOf(PrivacyCategory.SMART_GLASSES,
-            PrivacyCategory.HIDDEN_CAMERA, PrivacyCategory.ATTACK_TOOL))
+            PrivacyCategory.HIDDEN_CAMERA, PrivacyCategory.ATTACK_TOOL,
+            PrivacyCategory.SURVEILLANCE_CAMERA, PrivacyCategory.ALPR_CAMERA))
     }
 
     var selectedDetail by remember { mutableStateOf<GlassesDetection?>(null) }

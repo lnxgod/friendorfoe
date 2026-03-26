@@ -21,8 +21,11 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     SMART_GLASSES("Smart Glasses", "\uD83D\uDC53", 3),
     HIDDEN_CAMERA("Hidden Cameras", "\uD83D\uDCF7", 3),
     ATTACK_TOOL("Attack Tools", "\u26A0\uFE0F", 3),
+    SURVEILLANCE_CAMERA("Surveillance Cameras", "\uD83D\uDCF9", 2),
+    ALPR_CAMERA("ALPR / Plate Readers", "\uD83D\uDE94", 2),
     BODY_CAMERA("Body Cameras", "\uD83D\uDCF9", 2),
     VEHICLE_CAMERA("Vehicle Cameras", "\uD83D\uDE97", 2),
+    DOORBELL_CAMERA("Doorbell Cameras", "\uD83D\uDEAA", 1),
     ACTION_CAMERA("Action Cameras", "\uD83C\uDFA5", 1),
     DASH_CAMERA("Dash Cameras", "\uD83D\uDE99", 1),
     BLE_TRACKER("BLE Trackers", "\uD83D\uDCCD", 1),
@@ -155,6 +158,16 @@ class GlassesDetector @Inject constructor(
             WifiPattern("Pineapple", "Hak5", "Attack Tool", 0.90f, false),
             // Smart home cameras (setup mode)
             WifiPattern("Ring Setup", "Ring", "Doorbell Camera", 0.85f, true),
+            WifiPattern("Ring-", "Ring", "Doorbell Camera", 0.80f, true),
+            WifiPattern("SimpliSafe-", "SimpliSafe", "Surveillance Camera", 0.80f, true),
+            WifiPattern("BLINK-", "Blink", "Surveillance Camera", 0.80f, true),
+            WifiPattern("Nest-", "Google", "Surveillance Camera", 0.75f, true),
+            // Surveillance / ALPR cameras
+            WifiPattern("Verkada-", "Verkada", "Surveillance Camera", 0.90f, true),
+            WifiPattern("Rhombus-", "Rhombus", "Surveillance Camera", 0.85f, true),
+            WifiPattern("Flock-", "Flock Safety", "ALPR Camera", 0.85f, true),
+            WifiPattern("FLK-", "Flock Safety", "ALPR Camera", 0.85f, true),
+            WifiPattern("ELSAG-", "Leonardo", "ALPR Camera", 0.85f, true),
         )
 
         /** Assign a privacy category based on device type string. Used by both BLE and WiFi paths. */
@@ -164,6 +177,15 @@ class GlassesDetector @Inject constructor(
             // AirTag / FindMy separated into their own low-priority section
             deviceType.contains("AirTag", ignoreCase = true) -> PrivacyCategory.FINDMY
             deviceType.contains("FindMy", ignoreCase = true) -> PrivacyCategory.FINDMY
+            // ALPR / license plate readers
+            deviceType.contains("ALPR", ignoreCase = true) -> PrivacyCategory.ALPR_CAMERA
+            deviceType.contains("Plate Reader", ignoreCase = true) -> PrivacyCategory.ALPR_CAMERA
+            // Surveillance / security cameras
+            deviceType.contains("Surveillance", ignoreCase = true) -> PrivacyCategory.SURVEILLANCE_CAMERA
+            deviceType.contains("Security Camera", ignoreCase = true) -> PrivacyCategory.SURVEILLANCE_CAMERA
+            deviceType.contains("Doorbell Camera", ignoreCase = true) -> PrivacyCategory.DOORBELL_CAMERA
+            deviceType.contains("Doorbell", ignoreCase = true) -> PrivacyCategory.DOORBELL_CAMERA
+            deviceType.contains("Police Camera", ignoreCase = true) -> PrivacyCategory.BODY_CAMERA
             deviceType.contains("Tracker", ignoreCase = true) -> PrivacyCategory.BLE_TRACKER
             deviceType.contains("Hidden Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
             deviceType.contains("Spy Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
@@ -177,7 +199,6 @@ class GlassesDetector @Inject constructor(
             deviceType.contains("Robot Vacuum", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
             deviceType.contains("IoT", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
             deviceType.contains("Camera Remote", ignoreCase = true) -> PrivacyCategory.IOT_DEVICE
-            deviceType.contains("Doorbell", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
             deviceType.contains("Trail Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
             deviceType.contains("Beacon", ignoreCase = true) -> PrivacyCategory.INFORMATIONAL
             deviceType.contains("Fast Pair", ignoreCase = true) -> PrivacyCategory.INFORMATIONAL
@@ -307,6 +328,28 @@ class GlassesDetector @Inject constructor(
         NameEntry("Axon Body", "Axon", "Body Camera", 0.90f, true),
         NameEntry("Axon Signal", "Axon", "Body Camera", 0.85f, true),
         NameEntry("VISTA_", "Motorola", "Body Camera", 0.85f, true),
+        // Surveillance / security cameras (BLE setup mode)
+        NameEntry("Nest Cam", "Google", "Surveillance Camera", 0.85f, true),
+        NameEntry("Nest Hello", "Google", "Doorbell Camera", 0.85f, true),
+        NameEntry("Nest Doorbell", "Google", "Doorbell Camera", 0.85f, true),
+        NameEntry("Arlo ", "Arlo", "Surveillance Camera", 0.80f, true),
+        NameEntry("Wyze Cam", "Wyze", "Surveillance Camera", 0.80f, true),
+        NameEntry("eufy Indoor", "Eufy", "Surveillance Camera", 0.80f, true),
+        NameEntry("eufy Doorbell", "Eufy", "Doorbell Camera", 0.80f, true),
+        NameEntry("eufy Floodlight", "Eufy", "Surveillance Camera", 0.80f, true),
+        NameEntry("SimpliSafe", "SimpliSafe", "Surveillance Camera", 0.75f, true),
+        NameEntry("Verkada", "Verkada", "Surveillance Camera", 0.90f, true),
+        NameEntry("Rhombus", "Rhombus", "Surveillance Camera", 0.85f, true),
+        NameEntry("Reolink", "Reolink", "Surveillance Camera", 0.75f, true),
+        // ALPR / license plate readers
+        NameEntry("Flock", "Flock Safety", "ALPR Camera", 0.90f, true),
+        NameEntry("FLK-", "Flock Safety", "ALPR Camera", 0.85f, true),
+        NameEntry("ELSAG", "Leonardo", "ALPR Camera", 0.90f, true),
+        NameEntry("AutoVu", "Genetec", "ALPR Camera", 0.85f, true),
+        NameEntry("Vigilant", "Motorola", "ALPR Camera", 0.80f, true),
+        // Police / fleet cameras
+        NameEntry("Axon Fleet", "Axon", "Police Camera", 0.90f, true),
+        NameEntry("WatchGuard", "Motorola", "Police Camera", 0.85f, true),
         // Hidden cameras / spy cameras
         NameEntry("V380_", "Generic", "Spy Camera", 0.75f, true),
         NameEntry("IPC_", "Generic", "Spy Camera", 0.70f, true),
