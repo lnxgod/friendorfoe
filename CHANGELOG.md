@@ -4,6 +4,21 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.32.0-beta] - 2026-03-27
+
+### Added
+- **Ultrasonic beacon detection wired into Privacy tab** — UltrasonicDetector (FFT at 48kHz, 17.5-22kHz range) was implemented but never connected. Now collects alerts and displays red banner with frequency, SNR, and persistence data when tracking beacons detected
+- **Retail tracking beacons** (threat 3) — Estimote, Kontakt.io, Gimbal, Radius Networks, RetailNext, FootfallCam, V-Count, Density, VergeSense, XY Sense
+- **Conference cameras** (threat 2) — Owl Labs Meeting Owl/Owl Pro/Owl 3, Poly Studio, Logitech Rally/MeetUp/RoomMate, Neat Bar/Board, Cisco Webex
+- **Video intercoms** (threat 2) — DoorBird, ButterflyMX, Akuvox, 2N
+- **Fleet AI dashcams** (threat 1) — Samsara, Motive/KeepTruckin, Geotab, Verizon Hum, Zubie, Lytx
+- **Insurance telematics** — Progressive Snapshot, Allstate Drivewise, State Farm Drive Safe
+- 7 new privacy categories (29 total): Ultrasonic Beacons, Retail Trackers, Conference Cameras, Video Intercoms, Fleet Dashcams + expanded existing
+- 288 total detection signatures (161 BLE names + 101 WiFi SSIDs + 14 MFR CIDs + 12 UUIDs)
+
+### Fixed
+- BLE scan not detecting already-on Meta glasses — added retry (3 attempts, 5s backoff) + periodic 30s scan restart to catch slow advertisers
+
 ## [0.31.0-beta] - 2026-03-26
 
 ### Added

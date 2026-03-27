@@ -47,6 +47,9 @@ class PrivacyViewModel @Inject constructor(
     /** Stalker alerts */
     val stalkerAlerts = skyObjectRepository.stalkerAlerts
 
+    /** Ultrasonic tracking beacon alerts */
+    val ultrasonicAlerts = skyObjectRepository.ultrasonicAlerts
+
     /** BLE tracker for direction finding */
     val bleTracker: BleTracker = skyObjectRepository.bleTracker
 

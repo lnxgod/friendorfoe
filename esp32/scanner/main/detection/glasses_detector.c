@@ -259,6 +259,29 @@ static const name_pattern_entry_t s_name_db[] = {
     /* DJI drone controllers */
     { "DJI-RC-",         "DJI",             "Drone Ctrl",    0.90f, false, false },
 
+    /* Retail / location tracking beacons */
+    { "Estimote",        "Estimote",        "Retail Beacon", 0.85f, false, false },
+    { "Kontakt",         "Kontakt.io",      "Retail Beacon", 0.85f, false, false },
+    { "Gimbal",          "Gimbal",          "Retail Beacon", 0.80f, false, false },
+    { "RetailNext",      "RetailNext",      "Retail Track",  0.90f, false, false },
+    { "VergeSense",      "VergeSense",      "Retail Track",  0.85f, false, false },
+
+    /* Conference / meeting room cameras */
+    { "Meeting Owl",     "Owl Labs",        "Conference",    0.90f, true,  false },
+    { "Owl Pro",         "Owl Labs",        "Conference",    0.90f, true,  false },
+    { "Poly Studio",     "Poly",            "Conference",    0.85f, true,  false },
+    { "MeetUp",          "Logitech",        "Conference",    0.85f, true,  false },
+    { "Neat Bar",        "Neat",            "Conference",    0.85f, true,  false },
+
+    /* Video intercoms */
+    { "DoorBird",        "DoorBird",        "Intercom",      0.85f, true,  false },
+    { "ButterflyMX",     "ButterflyMX",     "Intercom",      0.85f, true,  false },
+
+    /* Fleet / AI dashcams */
+    { "Samsara",         "Samsara",         "Fleet Cam",     0.85f, true,  false },
+    { "Motive",          "Motive",          "Fleet Cam",     0.85f, true,  false },
+    { "Lytx",            "Lytx",            "Fleet Cam",     0.85f, true,  false },
+
     /* E-Scooters (location tracking) */
     { "Lime-",           "Lime",            "E-Scooter",     0.80f, false, false },
     { "Bird ",           "Bird",            "E-Scooter",     0.75f, false, false },

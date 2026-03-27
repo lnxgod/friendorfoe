@@ -61,8 +61,10 @@ fun PrivacyScreen(
     val expandedCategories = remember {
         mutableStateOf(setOf(PrivacyCategory.SMART_GLASSES,
             PrivacyCategory.HIDDEN_CAMERA, PrivacyCategory.ATTACK_TOOL,
+            PrivacyCategory.ULTRASONIC_BEACON, PrivacyCategory.RETAIL_TRACKER,
             PrivacyCategory.SURVEILLANCE_CAMERA, PrivacyCategory.ALPR_CAMERA,
             PrivacyCategory.BABY_MONITOR, PrivacyCategory.THERMAL_CAMERA,
+            PrivacyCategory.CONFERENCE_CAMERA, PrivacyCategory.VIDEO_INTERCOM,
             PrivacyCategory.SMART_SPEAKER, PrivacyCategory.SMART_HOME_HUB,
             PrivacyCategory.GPS_TRACKER, PrivacyCategory.OBD_TRACKER))
     }
@@ -72,8 +74,36 @@ fun PrivacyScreen(
 
     var selectedDetail by remember { mutableStateOf<GlassesDetection?>(null) }
     var trackingTarget by remember { mutableStateOf<GlassesDetection?>(null) }
+    val ultrasonicAlerts by viewModel.ultrasonicAlerts.collectAsStateWithLifecycle()
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // Ultrasonic beacon alert banner (high priority, above everything)
+        if (ultrasonicAlerts.isNotEmpty()) {
+            val alert = ultrasonicAlerts.last()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFFD32F2F).copy(alpha = 0.15f))
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = "\uD83D\uDD0A", modifier = Modifier.width(28.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Ultrasonic Beacon Detected!",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFD32F2F)
+                    )
+                    Text(
+                        text = "${"%.0f".format(alert.frequencyHz)} Hz \u2022 SNR ${"%.1f".format(alert.snrDb)} dB \u2022 ${alert.persistenceFrames} frames",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
         // Status bar
         Row(
             modifier = Modifier

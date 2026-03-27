@@ -26,6 +26,8 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     SMART_GLASSES("Smart Glasses", "\uD83D\uDC53", 3),
     HIDDEN_CAMERA("Hidden Cameras", "\uD83D\uDCF7", 3),
     ATTACK_TOOL("Attack Tools", "\u26A0\uFE0F", 3),
+    ULTRASONIC_BEACON("Ultrasonic Beacons", "\uD83D\uDD0A", 3),
+    RETAIL_TRACKER("Retail Trackers", "\uD83D\uDED2", 3),
     // Threat level 2 — awareness
     SURVEILLANCE_CAMERA("Surveillance Cameras", "\uD83D\uDCF9", 2),
     ALPR_CAMERA("ALPR / Plate Readers", "\uD83D\uDE94", 2),
@@ -33,6 +35,8 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     VEHICLE_CAMERA("Vehicle Cameras", "\uD83D\uDE97", 2),
     BABY_MONITOR("Baby Monitors", "\uD83D\uDC76", 2),
     THERMAL_CAMERA("Thermal Cameras", "\uD83C\uDF21\uFE0F", 2),
+    CONFERENCE_CAMERA("Conference Cameras", "\uD83C\uDFA5", 2),
+    VIDEO_INTERCOM("Video Intercoms", "\uD83D\uDEAA", 2),
     // Threat level 1 — nearby devices
     DOORBELL_CAMERA("Doorbell Cameras", "\uD83D\uDEAA", 1),
     SMART_SPEAKER("Smart Speakers", "\uD83D\uDD0A", 1),
@@ -41,6 +45,7 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     TRAIL_CAMERA("Trail Cameras", "\uD83C\uDF32", 1),
     OBD_TRACKER("OBD / Car Trackers", "\uD83D\uDD0C", 1),
     GPS_TRACKER("GPS Trackers", "\uD83D\uDCE1", 1),
+    FLEET_DASHCAM("Fleet Dashcams", "\uD83D\uDE9A", 1),
     ACTION_CAMERA("Action Cameras", "\uD83C\uDFA5", 1),
     DASH_CAMERA("Dash Cameras", "\uD83D\uDE99", 1),
     BLE_TRACKER("BLE Trackers", "\uD83D\uDCCD", 1),
@@ -243,6 +248,21 @@ class GlassesDetector @Inject constructor(
             deviceType.contains("Action Camera", ignoreCase = true) -> PrivacyCategory.ACTION_CAMERA
             deviceType.contains("Dash Camera", ignoreCase = true) -> PrivacyCategory.DASH_CAMERA
             deviceType.contains("Endoscope", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+            // Ultrasonic beacons
+            deviceType.contains("Ultrasonic", ignoreCase = true) -> PrivacyCategory.ULTRASONIC_BEACON
+            // Retail tracking
+            deviceType.contains("Retail Tracker", ignoreCase = true) -> PrivacyCategory.RETAIL_TRACKER
+            deviceType.contains("Retail Beacon", ignoreCase = true) -> PrivacyCategory.RETAIL_TRACKER
+            deviceType.contains("Location Beacon", ignoreCase = true) -> PrivacyCategory.RETAIL_TRACKER
+            // Conference cameras
+            deviceType.contains("Conference", ignoreCase = true) -> PrivacyCategory.CONFERENCE_CAMERA
+            deviceType.contains("Meeting Camera", ignoreCase = true) -> PrivacyCategory.CONFERENCE_CAMERA
+            // Video intercoms
+            deviceType.contains("Video Intercom", ignoreCase = true) -> PrivacyCategory.VIDEO_INTERCOM
+            deviceType.contains("Intercom", ignoreCase = true) -> PrivacyCategory.VIDEO_INTERCOM
+            // Fleet dashcams
+            deviceType.contains("Fleet Dashcam", ignoreCase = true) -> PrivacyCategory.FLEET_DASHCAM
+            deviceType.contains("Fleet Camera", ignoreCase = true) -> PrivacyCategory.FLEET_DASHCAM
             // Baby monitors
             deviceType.contains("Baby Monitor", ignoreCase = true) -> PrivacyCategory.BABY_MONITOR
             // Thermal cameras
@@ -523,6 +543,45 @@ class GlassesDetector @Inject constructor(
         // DJI drone controllers (drone operator nearby)
         NameEntry("DJI-RC-", "DJI", "Drone Controller", 0.90f, false),
         NameEntry("DJI-RC Pro", "DJI", "Drone Controller", 0.90f, false),
+        // Retail / location tracking beacons
+        NameEntry("Estimote", "Estimote", "Retail Beacon", 0.85f, false),
+        NameEntry("Kontakt", "Kontakt.io", "Retail Beacon", 0.85f, false),
+        NameEntry("Gimbal", "Gimbal", "Retail Beacon", 0.80f, false),
+        NameEntry("Radius", "Radius Networks", "Retail Beacon", 0.80f, false),
+        NameEntry("RetailNext", "RetailNext", "Retail Tracker", 0.90f, false),
+        NameEntry("Footfall", "FootfallCam", "Retail Tracker", 0.85f, false),
+        NameEntry("V-Count", "V-Count", "Retail Tracker", 0.85f, false),
+        NameEntry("Density ", "Density", "Retail Tracker", 0.80f, false),
+        NameEntry("VergeSense", "VergeSense", "Retail Tracker", 0.85f, false),
+        NameEntry("XY Find", "XY Sense", "Retail Tracker", 0.80f, false),
+        // Conference / meeting room cameras (always-on mics + cameras)
+        NameEntry("Meeting Owl", "Owl Labs", "Conference Camera", 0.90f, true),
+        NameEntry("Owl Pro", "Owl Labs", "Conference Camera", 0.90f, true),
+        NameEntry("Owl 3", "Owl Labs", "Conference Camera", 0.90f, true),
+        NameEntry("Poly Studio", "Poly", "Conference Camera", 0.85f, true),
+        NameEntry("Rally", "Logitech", "Conference Camera", 0.80f, true),
+        NameEntry("MeetUp", "Logitech", "Conference Camera", 0.85f, true),
+        NameEntry("RoomMate", "Logitech", "Conference Camera", 0.85f, true),
+        NameEntry("Neat Bar", "Neat", "Conference Camera", 0.85f, true),
+        NameEntry("Neat Board", "Neat", "Conference Camera", 0.85f, true),
+        NameEntry("Cisco Webex", "Cisco", "Conference Camera", 0.85f, true),
+        // Video intercoms (building access with cameras)
+        NameEntry("DoorBird", "DoorBird", "Video Intercom", 0.85f, true),
+        NameEntry("ButterflyMX", "ButterflyMX", "Video Intercom", 0.85f, true),
+        NameEntry("Akuvox", "Akuvox", "Video Intercom", 0.80f, true),
+        NameEntry("2N ", "2N", "Video Intercom", 0.75f, true),
+        // Fleet / AI dashcams
+        NameEntry("Samsara", "Samsara", "Fleet Dashcam", 0.85f, true),
+        NameEntry("Motive", "Motive", "Fleet Dashcam", 0.85f, true),
+        NameEntry("KeepTruckin", "Motive", "Fleet Dashcam", 0.85f, true),
+        NameEntry("Geotab", "Geotab", "Fleet Dashcam", 0.80f, false),
+        NameEntry("Verizon Hum", "Verizon", "Fleet Dashcam", 0.80f, true),
+        NameEntry("Zubie", "Zubie", "Fleet Dashcam", 0.75f, false),
+        NameEntry("Lytx", "Lytx", "Fleet Dashcam", 0.85f, true),
+        // Insurance telematics (car tracking)
+        NameEntry("Snapshot", "Progressive", "OBD Tracker", 0.85f, false),
+        NameEntry("Drivewise", "Allstate", "OBD Tracker", 0.85f, false),
+        NameEntry("Drive Safe", "State Farm", "OBD Tracker", 0.80f, false),
         // E-Scooters (location tracking, informational)
         NameEntry("Lime-", "Lime", "E-Scooter", 0.80f, false),
         NameEntry("Bird ", "Bird", "E-Scooter", 0.75f, false),
