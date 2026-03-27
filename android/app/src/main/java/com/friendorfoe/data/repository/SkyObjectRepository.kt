@@ -59,6 +59,7 @@ class SkyObjectRepository @Inject constructor(
     private val wifiNanRemoteIdScanner: WifiNanRemoteIdScanner,
     private val glassesDetector: GlassesDetector,
     val bleTracker: BleTracker,
+    private val ultrasonicDetector: com.friendorfoe.detection.UltrasonicDetector,
     private val detectionPrefs: DetectionPrefs,
     private val fusionEngine: BayesianFusionEngine,
     private val sensorFusionEngine: com.friendorfoe.sensor.SensorFusionEngine,
@@ -112,6 +113,11 @@ class SkyObjectRepository @Inject constructor(
 
     /** BLE devices that appear to be following the user. */
     val stalkerAlerts: StateFlow<List<BleTracker.StalkerAlert>> = _stalkerAlerts.asStateFlow()
+
+    private val _ultrasonicAlerts = MutableStateFlow<List<com.friendorfoe.detection.UltrasonicDetector.UltrasonicAlert>>(emptyList())
+
+    /** Ultrasonic tracking beacons detected nearby. */
+    val ultrasonicAlerts: StateFlow<List<com.friendorfoe.detection.UltrasonicDetector.UltrasonicAlert>> = _ultrasonicAlerts.asStateFlow()
 
     /** Detection preferences — exposed for Settings UI. */
     val prefs: DetectionPrefs get() = detectionPrefs
@@ -186,6 +192,7 @@ class SkyObjectRepository @Inject constructor(
                 glassesJob = launch { collectGlasses() }
             }
             if (detectionPrefs.stalkerDetectionEnabled) launch { collectStalkerAlerts() }
+            if (detectionPrefs.ultrasonicEnabled) launch { collectUltrasonic() }
         }
     }
 
@@ -215,6 +222,7 @@ class SkyObjectRepository @Inject constructor(
         _skyObjects.value = emptyList()
         _glassesDetections.value = emptyList()
         _stalkerAlerts.value = emptyList()
+        _ultrasonicAlerts.value = emptyList()
         scope.cancel()
 
         Log.i(TAG, "All detection sources stopped")
@@ -358,6 +366,19 @@ class SkyObjectRepository @Inject constructor(
                     compassBearing = sensorFusionEngine.orientation.value.azimuthDegrees
                 )
             }
+        }
+    }
+
+    /** Collect ultrasonic tracking beacon alerts from microphone FFT analysis */
+    private suspend fun collectUltrasonic() {
+        Log.i(TAG, "Ultrasonic beacon monitoring started")
+        val recentAlerts = mutableListOf<com.friendorfoe.detection.UltrasonicDetector.UltrasonicAlert>()
+        ultrasonicDetector.startMonitoring().collect { alert ->
+            // Keep last 10 alerts, dedup by frequency bin (within 100Hz)
+            recentAlerts.removeAll { kotlin.math.abs(it.frequencyHz - alert.frequencyHz) < 100f }
+            recentAlerts.add(alert)
+            if (recentAlerts.size > 10) recentAlerts.removeAt(0)
+            _ultrasonicAlerts.value = recentAlerts.toList()
         }
     }
 
