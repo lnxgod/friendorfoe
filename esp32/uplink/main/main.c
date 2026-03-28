@@ -73,8 +73,19 @@ static void display_task(void *arg)
         }
         prev_detection_count = drone_count;
 
+        /* Gather additional state for the new OLED layout */
+        bool scanner_ok  = uart_rx_is_scanner_connected();
+        bool backend_ok  = (http_upload_get_success_count() > 0 &&
+                           http_upload_get_fail_count() < http_upload_get_success_count());
+        uint32_t uptime  = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
+        static char device_id_buf[64] = {0};
+        if (device_id_buf[0] == '\0') {
+            nvs_config_get_device_id(device_id_buf, sizeof(device_id_buf));
+        }
+
         /* Update status screen, then overlay detection if active */
-        oled_update(drone_count, gps_fix, wifi_ok, battery_pct, upload_count);
+        oled_update(drone_count, scanner_ok, wifi_ok, backend_ok,
+                    upload_count, gps_fix, battery_pct, uptime, device_id_buf);
 
         if (overlay_ticks > 0) {
             oled_show_detection(last_det.drone_id, NULL,
@@ -83,7 +94,6 @@ static void display_task(void *arg)
         }
 
         /* Update LED pattern based on system state */
-        bool scanner_ok  = uart_rx_is_scanner_connected();
         bool standalone  = wifi_sta_is_standalone();
 
         if (!gps_fix) {
@@ -190,7 +200,7 @@ void app_main(void)
 
     /* ── 9. Initialize OLED display ───────────────────────────────────── */
     oled_init();
-    oled_update(0, false, wifi_sta_is_connected(), 0.0f, 0);
+    oled_update(0, false, wifi_sta_is_connected(), false, 0, false, 0.0f, 0, NULL);
 
     /* ── 10. Initialize battery monitor ───────────────────────────────── */
     battery_init();

@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Friend or Foe — 3-Node Sensor Wiring Diagram</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
+  h1 { color: #58a6ff; margin-bottom: 8px; }
+  h2 { color: #f0883e; margin: 30px 0 12px; }
+  h3 { color: #7ee787; margin: 16px 0 8px; }
+  .subtitle { color: #8b949e; margin-bottom: 30px; }
+  .node-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 24px; margin: 20px 0; }
+  .node-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; }
+  .node-card h3 { margin-top: 0; }
+  .board { background: #1c2333; border: 2px solid #444; border-radius: 8px; padding: 12px 16px; margin: 8px 0; position: relative; }
+  .board.scanner { border-color: #f97583; }
+  .board.uplink { border-color: #58a6ff; }
+  .board.oled { border-color: #d2a8ff; border-style: dashed; }
+  .board-label { font-weight: bold; font-size: 14px; margin-bottom: 6px; }
+  .board-label.scanner { color: #f97583; }
+  .board-label.uplink { color: #58a6ff; }
+  .board-label.oled { color: #d2a8ff; }
+  .chip { color: #8b949e; font-size: 12px; }
+  .pin-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0; }
+  .pin-table th { text-align: left; color: #8b949e; padding: 3px 8px; border-bottom: 1px solid #30363d; }
+  .pin-table td { padding: 3px 8px; }
+  .pin-from { color: #f97583; font-family: monospace; }
+  .pin-to { color: #58a6ff; font-family: monospace; }
+  .pin-pwr { color: #7ee787; font-family: monospace; }
+  .pin-gnd { color: #ffa657; font-family: monospace; }
+  .wire { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 13px; }
+  .wire-line { flex: 1; height: 2px; background: repeating-linear-gradient(90deg, #444 0, #444 6px, transparent 6px, transparent 10px); }
+  .wire-line.uart { background: #f97583; }
+  .wire-line.i2c { background: #d2a8ff; }
+  .wire-line.pwr { background: #7ee787; }
+  .connection-box { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px; margin: 12px 0; }
+  .legend { display: flex; gap: 20px; flex-wrap: wrap; margin: 12px 0; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .legend-color { width: 24px; height: 3px; border-radius: 2px; }
+  .overview-svg { width: 100%; max-width: 900px; margin: 20px auto; display: block; }
+  .notes { background: #161b22; border-left: 3px solid #f0883e; padding: 12px 16px; margin: 16px 0; border-radius: 0 8px 8px 0; }
+  .notes li { margin: 4px 0; font-size: 13px; }
+  code { background: #1c2333; padding: 2px 6px; border-radius: 4px; font-size: 13px; color: #79c0ff; }
+  .system-overview { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; margin: 20px 0; font-family: monospace; font-size: 13px; line-height: 1.6; white-space: pre; overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<h1>Friend or Foe — 3-Node Sensor Deployment</h1>
+<p class="subtitle">Wiring diagram for ESP32 scanner + uplink pairs with OLED status display</p>
+
+<h2>System Overview</h2>
+<div class="system-overview">
+                          WiFi (192.168.x.x)
+                               |
+                    +----------+-----------+
+                    |    Backend Server     |
+                    |  FastAPI + PostgreSQL |
+                    |     Port 8000        |
+                    +----------+-----------+
+                               |
+          +--------------------+--------------------+
+          |                    |                    |
+     +---------+          +---------+          +---------+
+     | Node 1  |          | Node 2  |          | Node 3  |
+     | BLE+WiFi|          |WiFi Only|          |WiFi Only|
+     +---------+          +---------+          +---------+
+          |                    |                    |
+   Scanner(S3)          Scanner(C5)          Scanner(S3)
+     UART 921600          UART 921600          UART 921600
+   Uplink(C3)           Uplink(C3)           Uplink(C3)
+   + OLED(I2C)          + OLED(I2C)          + OLED(I2C)
+</div>
+
+<h2>Per-Node Wiring</h2>
+<div class="legend">
+  <div class="legend-item"><div class="legend-color" style="background:#f97583"></div> UART (data)</div>
+  <div class="legend-item"><div class="legend-color" style="background:#d2a8ff"></div> I2C (OLED)</div>
+  <div class="legend-item"><div class="legend-color" style="background:#7ee787"></div> Power (3.3V)</div>
+  <div class="legend-item"><div class="legend-color" style="background:#ffa657"></div> Ground</div>
+</div>
+
+<div class="node-grid">
+
+<!-- NODE 1: S3 BLE+WiFi Scanner -->
+<div class="node-card">
+  <h3>Node 1 — BLE + WiFi (ESP32-S3)</h3>
+
+  <div class="board scanner">
+    <div class="board-label scanner">SCANNER — ESP32-S3 DevKitC</div>
+    <div class="chip">Dual-core Xtensa @ 240MHz, WiFi + BLE 5</div>
+    <div class="chip">Firmware: scanner (pio run -e scanner)</div>
+  </div>
+
+  <div class="connection-box">
+    <strong style="color:#f97583">UART Connection (921600 baud)</strong>
+    <table class="pin-table">
+      <tr><th>Scanner (S3)</th><th></th><th>Uplink (C3)</th><th>Wire</th></tr>
+      <tr><td><span class="pin-from">GPIO17 (TX)</span></td><td>→</td><td><span class="pin-to">GPIO20 (RX)</span></td><td style="color:#f97583">data</td></tr>
+      <tr><td><span class="pin-from">GPIO18 (RX)</span></td><td>→</td><td><span class="pin-to">GPIO21 (TX)</span></td><td style="color:#f97583">data</td></tr>
+      <tr><td><span class="pin-gnd">GND</span></td><td>→</td><td><span class="pin-gnd">GND</span></td><td style="color:#ffa657">ground</td></tr>
+    </table>
+  </div>
+
+  <div class="board uplink">
+    <div class="board-label uplink">UPLINK — ESP32-C3 DevKitM</div>
+    <div class="chip">Single-core RISC-V @ 160MHz, WiFi + BLE 5</div>
+    <div class="chip">Firmware: uplink (pio run -e uplink)</div>
+  </div>
+
+  <div class="connection-box">
+    <strong style="color:#d2a8ff">I2C Connection (OLED SSD1306 128x64)</strong>
+    <table class="pin-table">
+      <tr><th>Uplink (C3)</th><th></th><th>OLED</th><th>Wire</th></tr>
+      <tr><td><span class="pin-to">GPIO4 (SDA)</span></td><td>→</td><td><span class="pin-oled" style="color:#d2a8ff">SDA</span></td><td style="color:#d2a8ff">data</td></tr>
+      <tr><td><span class="pin-to">GPIO5 (SCL)</span></td><td>→</td><td><span class="pin-oled" style="color:#d2a8ff">SCL</span></td><td style="color:#d2a8ff">clock</td></tr>
+      <tr><td><span class="pin-pwr">3V3</span></td><td>→</td><td><span class="pin-pwr">VCC</span></td><td style="color:#7ee787">power</td></tr>
+      <tr><td><span class="pin-gnd">GND</span></td><td>→</td><td><span class="pin-gnd">GND</span></td><td style="color:#ffa657">ground</td></tr>
+    </table>
+  </div>
+
+  <div class="board oled">
+    <div class="board-label oled">OLED — SSD1306 128x64 (0x3C)</div>
+    <div class="chip">I2C address 0x3C, 100kHz</div>
+  </div>
+</div>
+
+<!-- NODE 2: C5 WiFi Scanner -->
+<div class="node-card">
+  <h3>Node 2 — WiFi Only (ESP32-C5)</h3>
+
+  <div class="board scanner">
+    <div class="board-label scanner">SCANNER — ESP32-C5 DevKitC</div>
+    <div class="chip">Single-core RISC-V @ 240MHz, WiFi 6 (2.4+5GHz) + BLE 5</div>
+    <div class="chip">Firmware: scanner-c5 (pio run -e scanner-c5)</div>
+  </div>
+
+  <div class="connection-box">
+    <strong style="color:#f97583">UART Connection (921600 baud)</strong>
+    <table class="pin-table">
+      <tr><th>Scanner (C5)</th><th></th><th>Uplink (C3)</th><th>Wire</th></tr>
+      <tr><td><span class="pin-from">GPIO4 (TX)</span></td><td>→</td><td><span class="pin-to">GPIO20 (RX)</span></td><td style="color:#f97583">data</td></tr>
+      <tr><td><span class="pin-from">GPIO5 (RX)</span></td><td>→</td><td><span class="pin-to">GPIO21 (TX)</span></td><td style="color:#f97583">data</td></tr>
+      <tr><td><span class="pin-gnd">GND</span></td><td>→</td><td><span class="pin-gnd">GND</span></td><td style="color:#ffa657">ground</td></tr>
+    </table>
+  </div>
+
+  <div class="board uplink">
+    <div class="board-label uplink">UPLINK — ESP32-C3 DevKitM</div>
+    <div class="chip">Firmware: uplink (pio run -e uplink)</div>
+  </div>
+
+  <div class="connection-box">
+    <strong style="color:#d2a8ff">I2C Connection (OLED SSD1306)</strong>
+    <table class="pin-table">
+      <tr><th>Uplink (C3)</th><th></th><th>OLED</th><th>Wire</th></tr>
+      <tr><td><span class="pin-to">GPIO4 (SDA)</span></td><td>→</td><td><span style="color:#d2a8ff">SDA</span></td><td style="color:#d2a8ff">data</td></tr>
+      <tr><td><span class="pin-to">GPIO5 (SCL)</span></td><td>→</td><td><span style="color:#d2a8ff">SCL</span></td><td style="color:#d2a8ff">clock</td></tr>
+      <tr><td><span class="pin-pwr">3V3</span></td><td>→</td><td><span class="pin-pwr">VCC</span></td><td style="color:#7ee787">power</td></tr>
+      <tr><td><span class="pin-gnd">GND</span></td><td>→</td><td><span class="pin-gnd">GND</span></td><td style="color:#ffa657">ground</td></tr>
+    </table>
+  </div>
+
+  <div class="board oled">
+    <div class="board-label oled">OLED — SSD1306 128x64 (0x3C)</div>
+  </div>
+</div>
+
+<!-- NODE 3: S3 WiFi Scanner -->
+<div class="node-card">
+  <h3>Node 3 — WiFi + BLE (ESP32-S3)</h3>
+
+  <div class="board scanner">
+    <div class="board-label scanner">SCANNER — ESP32-S3 DevKitC</div>
+    <div class="chip">Dual-core Xtensa @ 240MHz, WiFi + BLE 5</div>
+    <div class="chip">Firmware: scanner (pio run -e scanner)</div>
+  </div>
+
+  <div class="connection-box">
+    <strong style="color:#f97583">UART Connection (921600 baud)</strong>
+    <table class="pin-table">
+      <tr><th>Scanner (S3)</th><th></th><th>Uplink (C3)</th><th>Wire</th></tr>
+      <tr><td><span class="pin-from">GPIO17 (TX)</span></td><td>→</td><td><span class="pin-to">GPIO20 (RX)</span></td><td style="color:#f97583">data</td></tr>
+      <tr><td><span class="pin-from">GPIO18 (RX)</span></td><td>→</td><td><span class="pin-to">GPIO21 (TX)</span></td><td style="color:#f97583">data</td></tr>
+      <tr><td><span class="pin-gnd">GND</span></td><td>→</td><td><span class="pin-gnd">GND</span></td><td style="color:#ffa657">ground</td></tr>
+    </table>
+  </div>
+
+  <div class="board uplink">
+    <div class="board-label uplink">UPLINK — ESP32-C3 DevKitM</div>
+    <div class="chip">Firmware: uplink (pio run -e uplink)</div>
+  </div>
+
+  <div class="connection-box">
+    <strong style="color:#d2a8ff">I2C Connection (OLED SSD1306)</strong>
+    <table class="pin-table">
+      <tr><th>Uplink (C3)</th><th></th><th>OLED</th><th>Wire</th></tr>
+      <tr><td><span class="pin-to">GPIO4 (SDA)</span></td><td>→</td><td><span style="color:#d2a8ff">SDA</span></td><td style="color:#d2a8ff">data</td></tr>
+      <tr><td><span class="pin-to">GPIO5 (SCL)</span></td><td>→</td><td><span style="color:#d2a8ff">SCL</span></td><td style="color:#d2a8ff">clock</td></tr>
+      <tr><td><span class="pin-pwr">3V3</span></td><td>→</td><td><span class="pin-pwr">VCC</span></td><td style="color:#7ee787">power</td></tr>
+      <tr><td><span class="pin-gnd">GND</span></td><td>→</td><td><span class="pin-gnd">GND</span></td><td style="color:#ffa657">ground</td></tr>
+    </table>
+  </div>
+
+  <div class="board oled">
+    <div class="board-label oled">OLED — SSD1306 128x64 (0x3C)</div>
+  </div>
+</div>
+
+</div>
+
+<h2>Flash Commands</h2>
+<div class="system-overview">
+# ── Scanner Firmware ─────────────────────────────
+# ESP32-S3 (Nodes 1 & 3):
+cd esp32/scanner && pio run -e scanner -t upload
+
+# ESP32-C5 (Node 2):
+cd esp32/scanner && pio run -e scanner-c5 -t upload
+
+# ── Uplink Firmware (all 3 nodes) ────────────────
+cd esp32/uplink && pio run -e uplink -t upload
+
+# ── Configure Each Uplink (3-sec window at boot) ─
+# Node 1:
+FOF_SET:device_id=fof_node_1
+FOF_SET:wifi_ssid=YourNetwork
+FOF_SET:wifi_pass=YourPassword
+FOF_SET:backend_url=http://192.168.42.145:8000
+FOF_SAVE
+
+# Node 2:
+FOF_SET:device_id=fof_node_2
+FOF_SET:wifi_ssid=YourNetwork
+FOF_SET:wifi_pass=YourPassword
+FOF_SET:backend_url=http://192.168.42.145:8000
+FOF_SAVE
+
+# Node 3:
+FOF_SET:device_id=fof_node_3
+FOF_SET:wifi_ssid=YourNetwork
+FOF_SET:wifi_pass=YourPassword
+FOF_SET:backend_url=http://192.168.42.145:8000
+FOF_SAVE
+</div>
+
+<h2>Register Nodes on Backend</h2>
+<div class="system-overview">
+# Start backend
+cd backend
+DATABASE_URL="postgresql+asyncpg://gamechangers:localdev@localhost:5432/friendorfoe" \
+  .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# Register fixed positions (adjust lat/lon for your location)
+curl -X POST http://localhost:8000/nodes -H "Content-Type: application/json" \
+  -d '{"device_id":"fof_node_1","name":"North","lat":YOUR_LAT,"lon":YOUR_LON}'
+
+curl -X POST http://localhost:8000/nodes -H "Content-Type: application/json" \
+  -d '{"device_id":"fof_node_2","name":"East","lat":YOUR_LAT,"lon":YOUR_LON}'
+
+curl -X POST http://localhost:8000/nodes -H "Content-Type: application/json" \
+  -d '{"device_id":"fof_node_3","name":"South","lat":YOUR_LAT,"lon":YOUR_LON}'
+</div>
+
+<h2>Important Notes</h2>
+<ul class="notes">
+  <li><strong>Power:</strong> Each board powered via USB-C. Scanner and uplink share GND but NOT 3.3V (each has its own regulator).</li>
+  <li><strong>UART:</strong> Cross-connect TX→RX. Scanner TX goes to Uplink RX. 921600 baud, 8N1.</li>
+  <li><strong>OLED:</strong> I2C at address 0x3C, 100kHz. Connect to Uplink board only (GPIO4=SDA, GPIO5=SCL).</li>
+  <li><strong>WiFi:</strong> Uplink connects to your network and POSTs to the backend. Scanner has no WiFi STA.</li>
+  <li><strong>C5 UART pins differ:</strong> C5 uses GPIO4/5 for UART (not 17/18 like S3). Same uplink pins (GPIO20/21).</li>
+  <li><strong>Backend URL:</strong> Configurable at runtime via serial config or NVS. Default: <code>http://192.168.42.145:8000</code></li>
+</ul>
+
+</body>
+</html>

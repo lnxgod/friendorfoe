@@ -22,16 +22,27 @@ extern "C" {
 void oled_init(void);
 
 /**
- * Redraw the main status screen.
+ * Redraw the main status screen with uplink + node + drone info.
  *
- * @param drone_count     Number of currently tracked drones
- * @param gps_fix         Whether GPS has a valid fix
- * @param wifi_connected  Whether WiFi STA is connected
- * @param battery_pct     Battery level 0.0-100.0
- * @param upload_count    Total successful uploads
+ * @param drone_count       Number of currently tracked drones
+ * @param scanner_connected Whether a scanner board is connected via UART
+ * @param wifi_connected    Whether WiFi STA is connected to the network
+ * @param backend_ok        Whether last HTTP upload to backend succeeded
+ * @param upload_count      Total successful uploads
+ * @param gps_fix           Whether GPS has a valid fix
+ * @param battery_pct       Battery level 0.0-100.0
+ * @param uptime_s          System uptime in seconds
+ * @param device_id         This node's device ID (e.g. "fof_node_1")
  */
-void oled_update(int drone_count, bool gps_fix, bool wifi_connected,
-                 float battery_pct, int upload_count);
+void oled_update(int drone_count, bool scanner_connected, bool wifi_connected,
+                 bool backend_ok, int upload_count, bool gps_fix,
+                 float battery_pct, uint32_t uptime_s, const char *device_id);
+
+/**
+ * Legacy oled_update signature for backward compatibility.
+ */
+void oled_update_legacy(int drone_count, bool gps_fix, bool wifi_connected,
+                        float battery_pct, int upload_count);
 
 /**
  * Briefly show the latest detection on screen.
