@@ -4,6 +4,27 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.33.0-beta] - 2026-03-27
+
+### Added
+- **PostgreSQL persistent storage** — All drone detections now logged to PostgreSQL (was in-memory only, lost on restart). 3 tables: sensor_nodes, drone_detections, triangulated_positions
+- **Node management API** — Register ESP32 sensor nodes at fixed GPS positions:
+  - `POST /nodes` — Register node with fixed lat/lon/alt
+  - `GET /nodes` — List all registered nodes
+  - `PUT /nodes/{device_id}` — Update node position/name
+  - `DELETE /nodes/{device_id}` — Remove node
+  - `GET /nodes/{device_id}/detections` — Get detections from this node
+- **Fixed node position override** — When a registered fixed node sends a detection batch, its registered GPS position is used instead of the GPS from the payload. Dynamic nodes auto-update position from GPS.
+- **Detection history API** — `GET /detections/drones/history?hours=1&source=wifi_ssid` — Paginated query with time range and source filter
+- **Drone track API** — `GET /detections/drones/{drone_id}/track?hours=1` — Position history for a specific drone over time (triangulated positions)
+- **Triangulated position logging** — Every triangulation result stored in PostgreSQL with drone_id, position, accuracy, source, sensor observations JSON
+- **Auto-create tables on startup** — Tables created via SQLAlchemy IF NOT EXISTS on each server start
+
+### Changed
+- Backend version bumped to 0.32.0
+- Detection ingestion endpoint now writes to PostgreSQL + ring buffer + triangulation engine
+- Sensor position resolved from DB before triangulation (fixed nodes override GPS payload)
+
 ## [0.32.0-beta] - 2026-03-27
 
 ### Added

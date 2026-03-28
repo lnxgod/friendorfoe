@@ -1,16 +1,25 @@
 """Drone detection ingestion endpoints for ESP32 sensor nodes."""
 
+import json
 import logging
 import time
 from collections import deque
+from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.db_models import DroneDetection, SensorNode, TriangulatedPosition
 from app.models.schemas import (
+    DetectionHistoryItem,
+    DetectionHistoryResponse,
     DroneDetectionBatch,
     DroneDetectionResponse,
     DroneMapResponse,
+    DroneTrackPoint,
+    DroneTrackResponse,
     LocatedDroneItem,
     RecentDetectionsResponse,
     SensorItem,
@@ -18,6 +27,7 @@ from app.models.schemas import (
     SensorsResponse,
     StoredDetection,
 )
+from app.services.database import get_db
 from app.services.triangulation import SensorTracker
 
 logger = logging.getLogger(__name__)
@@ -25,8 +35,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/detections", tags=["detections"])
 
 # ---------------------------------------------------------------------------
-# In-memory ring buffer for recent detections
-# Future: Replace with Redis or PostgreSQL for persistence and horizontal scaling
+# In-memory ring buffer for recent detections (fast path, no DB needed)
 # ---------------------------------------------------------------------------
 
 _MAX_RECENT = 1000
@@ -39,71 +48,122 @@ _recent_detections: deque[StoredDetection] = deque(maxlen=_MAX_RECENT)
 _sensor_tracker = SensorTracker()
 
 
+async def _resolve_sensor_position(
+    device_id: str,
+    device_lat: float | None,
+    device_lon: float | None,
+    device_alt: float | None,
+    db: AsyncSession | None,
+) -> tuple[float | None, float | None, float | None]:
+    """
+    Look up sensor node in DB. If it's a registered fixed node, use the
+    registered position (ignoring GPS from payload). Otherwise use GPS.
+    """
+    if db:
+        try:
+            result = await db.execute(
+                select(SensorNode).where(SensorNode.device_id == device_id)
+            )
+            node = result.scalar_one_or_none()
+            if node and node.is_fixed:
+                # Update last_seen timestamp
+                node.last_seen = datetime.now(timezone.utc)
+                await db.commit()
+                return node.lat, node.lon, node.alt
+            elif node and not node.is_fixed:
+                # Dynamic node — update position from GPS
+                if device_lat is not None and device_lon is not None:
+                    node.lat = device_lat
+                    node.lon = device_lon
+                    node.alt = device_alt
+                    node.last_seen = datetime.now(timezone.utc)
+                    await db.commit()
+                return device_lat, device_lon, device_alt
+        except Exception as e:
+            logger.warning("DB lookup failed for %s: %s", device_id, e)
+
+    return device_lat, device_lon, device_alt
+
+
 # ---------------------------------------------------------------------------
-# POST /detections/drones — ingest a batch of drone detections from an ESP32
+# POST /detections/drones — ingest a batch from an ESP32
 # ---------------------------------------------------------------------------
 
 @router.post("/drones", response_model=DroneDetectionResponse)
-async def ingest_drone_detections(batch: DroneDetectionBatch) -> DroneDetectionResponse:
+async def ingest_drone_detections(
+    batch: DroneDetectionBatch,
+    db: AsyncSession = Depends(get_db),
+) -> DroneDetectionResponse:
     """
     Receive a batch of drone detections from an ESP32 sensor node.
 
-    The sensor sends periodic batches containing all currently-tracked
-    drones.  Each detection includes the detection source (BLE Remote ID,
-    WiFi SSID pattern, DJI vendor IE, etc.) and optional position data.
+    If the device_id matches a registered fixed node, the registered
+    GPS position is used (overriding any GPS from the payload). Otherwise
+    the GPS from the payload is used directly.
 
-    Detections are stored in a ring buffer AND fed to the multi-sensor
-    triangulation engine for cross-sensor position estimation.
+    Each detection is:
+    1. Stored in PostgreSQL for historical logging
+    2. Kept in an in-memory ring buffer for fast recent queries
+    3. Fed to the triangulation engine for multi-sensor position estimation
     """
     received_at = time.time()
 
+    # Resolve sensor position (fixed node overrides GPS)
+    sensor_lat, sensor_lon, sensor_alt = await _resolve_sensor_position(
+        batch.device_id, batch.device_lat, batch.device_lon, batch.device_alt, db
+    )
+
     logger.info(
-        "Drone detection batch from device=%s ts=%d count=%d pos=(%s, %s, %s)",
-        batch.device_id,
-        batch.timestamp,
-        len(batch.detections),
-        batch.device_lat,
-        batch.device_lon,
-        batch.device_alt,
+        "Drone batch from device=%s count=%d sensor_pos=(%s, %s)",
+        batch.device_id, len(batch.detections), sensor_lat, sensor_lon,
     )
 
     accepted = 0
-    for det in batch.detections:
-        logger.info(
-            "  [%s] drone_id=%s src=%s conf=%.2f rssi=%s pos=(%s, %s) alt=%s "
-            "heading=%s speed=%s mfr=%s model=%s ssid=%s bssid=%s",
-            batch.device_id,
-            det.drone_id,
-            det.source,
-            det.confidence,
-            det.rssi,
-            det.latitude,
-            det.longitude,
-            det.altitude_m,
-            det.heading_deg,
-            det.speed_mps,
-            det.manufacturer,
-            det.model,
-            det.ssid,
-            det.bssid,
-        )
+    db_detections = []
 
-        # Store in ring buffer for the /recent endpoint
+    for det in batch.detections:
+        # Ring buffer
         stored = StoredDetection(
             device_id=batch.device_id,
-            device_lat=batch.device_lat,
-            device_lon=batch.device_lon,
+            device_lat=sensor_lat,
+            device_lon=sensor_lon,
             received_at=received_at,
             **det.model_dump(),
         )
         _recent_detections.append(stored)
 
-        # Feed into multi-sensor tracker for triangulation
+        # PostgreSQL
+        db_det = DroneDetection(
+            device_id=batch.device_id,
+            drone_id=det.drone_id,
+            source=det.source,
+            ssid=det.ssid,
+            bssid=det.bssid,
+            rssi=det.rssi,
+            confidence=det.confidence,
+            drone_lat=det.latitude,
+            drone_lon=det.longitude,
+            drone_alt=det.altitude_m,
+            speed_mps=det.speed_mps,
+            heading_deg=det.heading_deg,
+            manufacturer=det.manufacturer,
+            model=det.model,
+            operator_lat=det.operator_lat,
+            operator_lon=det.operator_lon,
+            operator_id=det.operator_id,
+            sensor_lat=sensor_lat,
+            sensor_lon=sensor_lon,
+            sensor_alt=sensor_alt,
+            timestamp=batch.timestamp,
+        )
+        db_detections.append(db_det)
+
+        # Triangulation engine
         _sensor_tracker.ingest(
             device_id=batch.device_id,
-            device_lat=batch.device_lat,
-            device_lon=batch.device_lon,
-            device_alt=batch.device_alt,
+            device_lat=sensor_lat,
+            device_lon=sensor_lon,
+            device_alt=sensor_alt,
             drone_id=det.drone_id,
             rssi=det.rssi,
             drone_lat=det.latitude,
@@ -121,40 +181,50 @@ async def ingest_drone_detections(batch: DroneDetectionBatch) -> DroneDetectionR
             operator_lon=det.operator_lon,
             operator_id=det.operator_id,
         )
-
         accepted += 1
 
-    logger.info(
-        "Accepted %d/%d detections from device=%s",
-        accepted,
-        len(batch.detections),
-        batch.device_id,
-    )
+    # Bulk insert to PostgreSQL
+    try:
+        db.add_all(db_detections)
+
+        # Also store triangulated positions
+        located = _sensor_tracker.get_located_drones()
+        for d in located:
+            tri = TriangulatedPosition(
+                drone_id=d.drone_id,
+                lat=d.lat,
+                lon=d.lon,
+                alt=d.alt,
+                accuracy_m=d.accuracy_m,
+                position_source=d.position_source,
+                sensor_count=d.sensor_count,
+                confidence=d.confidence,
+                manufacturer=d.manufacturer,
+                model=d.model,
+                ssid=getattr(d, 'ssid', None),
+                observations_json=json.dumps([
+                    {"device_id": o.device_id, "rssi": o.rssi, "distance_m": o.estimated_distance_m}
+                    for o in d.observations
+                ]),
+            )
+            db.add(tri)
+
+        await db.commit()
+    except Exception as e:
+        logger.warning("DB write failed (detections still in memory): %s", e)
 
     return DroneDetectionResponse(
-        status="ok",
-        accepted=accepted,
-        device_id=batch.device_id,
+        status="ok", accepted=accepted, device_id=batch.device_id
     )
 
 
 # ---------------------------------------------------------------------------
-# GET /detections/drones/map — triangulated + range-estimated drone positions
+# GET /detections/drones/map — triangulated drone positions
 # ---------------------------------------------------------------------------
 
 @router.get("/drones/map", response_model=DroneMapResponse)
 async def get_drone_map() -> DroneMapResponse:
-    """
-    Return all currently-tracked drones with estimated positions.
-
-    Position estimation priority:
-    1. **GPS** — drone reports its own position (Remote ID, DJI IE)
-    2. **Trilateration** — 3+ sensors, nonlinear least-squares multilateration
-    3. **Intersection** — 2 sensors, circle-circle intersection
-    4. **Range only** — 1 sensor, RSSI-estimated range circle
-
-    Also returns all active sensor positions for map display.
-    """
+    """Return all currently-tracked drones with estimated positions."""
     located = _sensor_tracker.get_located_drones()
     sensors = _sensor_tracker.get_active_sensors()
 
@@ -194,11 +264,7 @@ async def get_drone_map() -> DroneMapResponse:
 
     sensor_items = [
         SensorItem(
-            device_id=s.device_id,
-            lat=s.lat,
-            lon=s.lon,
-            alt=s.alt,
-            last_seen=s.last_seen,
+            device_id=s.device_id, lat=s.lat, lon=s.lon, alt=s.alt, last_seen=s.last_seen,
         )
         for s in sensors
     ]
@@ -220,38 +286,116 @@ async def get_active_sensors() -> SensorsResponse:
     """Return all active ESP32 sensor nodes with their positions."""
     sensors = _sensor_tracker.get_active_sensors()
     items = [
-        SensorItem(
-            device_id=s.device_id,
-            lat=s.lat,
-            lon=s.lon,
-            alt=s.alt,
-            last_seen=s.last_seen,
-        )
+        SensorItem(device_id=s.device_id, lat=s.lat, lon=s.lon, alt=s.alt, last_seen=s.last_seen)
         for s in sensors
     ]
     return SensorsResponse(count=len(items), sensors=items)
 
 
 # ---------------------------------------------------------------------------
-# GET /detections/drones/recent — return last N detections from ring buffer
+# GET /detections/drones/recent — ring buffer (fast, in-memory)
 # ---------------------------------------------------------------------------
 
 @router.get("/drones/recent", response_model=RecentDetectionsResponse)
 async def get_recent_detections(
-    limit: Annotated[int, Query(ge=1, le=1000, description="Max detections to return")] = 100,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
 ) -> RecentDetectionsResponse:
-    """
-    Return the most recent drone detections from the in-memory ring buffer.
-
-    Results are ordered newest-first.  The ring buffer holds a maximum of
-    1000 detections; older entries are automatically evicted.
-    """
-    # Slice from the end (newest) and reverse so newest is first
+    """Return the most recent drone detections from the in-memory ring buffer."""
     items = list(_recent_detections)[-limit:]
     items.reverse()
+    return RecentDetectionsResponse(count=len(items), max_stored=_MAX_RECENT, detections=items)
 
-    return RecentDetectionsResponse(
-        count=len(items),
-        max_stored=_MAX_RECENT,
-        detections=items,
+
+# ---------------------------------------------------------------------------
+# GET /detections/drones/history — PostgreSQL paginated history
+# ---------------------------------------------------------------------------
+
+@router.get("/drones/history", response_model=DetectionHistoryResponse)
+async def get_detection_history(
+    hours: Annotated[float, Query(ge=0.1, le=720, description="Hours of history to return")] = 1.0,
+    limit: Annotated[int, Query(ge=1, le=10000)] = 500,
+    source: Annotated[str | None, Query(description="Filter by source (wifi_ssid, ble_rid, etc.)")] = None,
+    db: AsyncSession = Depends(get_db),
+) -> DetectionHistoryResponse:
+    """Query historical detections from PostgreSQL with time range and source filter."""
+    import datetime as dt
+
+    cutoff = datetime.now(timezone.utc) - dt.timedelta(hours=hours)
+
+    query = select(DroneDetection).where(DroneDetection.received_at >= cutoff)
+    if source:
+        query = query.where(DroneDetection.source == source)
+    query = query.order_by(DroneDetection.id.desc()).limit(limit)
+
+    result = await db.execute(query)
+    detections = result.scalars().all()
+
+    # Total count
+    count_query = select(func.count(DroneDetection.id)).where(DroneDetection.received_at >= cutoff)
+    if source:
+        count_query = count_query.where(DroneDetection.source == source)
+    total = (await db.execute(count_query)).scalar() or 0
+
+    items = [
+        DetectionHistoryItem(
+            id=d.id,
+            device_id=d.device_id,
+            drone_id=d.drone_id,
+            source=d.source,
+            ssid=d.ssid,
+            bssid=d.bssid,
+            rssi=d.rssi,
+            confidence=d.confidence,
+            drone_lat=d.drone_lat,
+            drone_lon=d.drone_lon,
+            sensor_lat=d.sensor_lat,
+            sensor_lon=d.sensor_lon,
+            manufacturer=d.manufacturer,
+            model=d.model,
+            timestamp=d.timestamp,
+            received_at=d.received_at.isoformat() if d.received_at else "",
+        )
+        for d in detections
+    ]
+
+    return DetectionHistoryResponse(count=len(items), total=total, detections=items)
+
+
+# ---------------------------------------------------------------------------
+# GET /detections/drones/{drone_id}/track — position history for one drone
+# ---------------------------------------------------------------------------
+
+@router.get("/drones/{drone_id}/track", response_model=DroneTrackResponse)
+async def get_drone_track(
+    drone_id: str,
+    hours: Annotated[float, Query(ge=0.1, le=720)] = 1.0,
+    db: AsyncSession = Depends(get_db),
+) -> DroneTrackResponse:
+    """Get triangulated position history for a specific drone over time."""
+    import datetime as dt
+
+    cutoff = datetime.now(timezone.utc) - dt.timedelta(hours=hours)
+
+    result = await db.execute(
+        select(TriangulatedPosition)
+        .where(TriangulatedPosition.drone_id == drone_id)
+        .where(TriangulatedPosition.created_at >= cutoff)
+        .order_by(TriangulatedPosition.created_at.asc())
     )
+    positions = result.scalars().all()
+
+    track = [
+        DroneTrackPoint(
+            lat=p.lat,
+            lon=p.lon,
+            alt=p.alt,
+            accuracy_m=p.accuracy_m,
+            position_source=p.position_source,
+            sensor_count=p.sensor_count,
+            confidence=p.confidence,
+            timestamp=p.timestamp.isoformat() if p.timestamp else "",
+        )
+        for p in positions
+    ]
+
+    return DroneTrackResponse(drone_id=drone_id, point_count=len(track), track=track)

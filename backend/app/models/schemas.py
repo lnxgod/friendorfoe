@@ -232,3 +232,100 @@ class SensorsResponse(BaseModel):
 
     count: int = Field(..., description="Number of active sensors")
     sensors: list[SensorItem] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Node management
+# ---------------------------------------------------------------------------
+
+class NodeCreateRequest(BaseModel):
+    """Request to register a sensor node at a fixed position."""
+
+    device_id: str = Field(..., description="Unique device identifier (matches ESP32 device_id)")
+    name: str = Field("", description="Human-friendly name for this node (e.g. 'Garage', 'Rooftop')")
+    lat: float = Field(..., description="Fixed latitude (WGS84 degrees)")
+    lon: float = Field(..., description="Fixed longitude (WGS84 degrees)")
+    alt: float | None = Field(None, description="Fixed altitude in meters MSL")
+
+
+class NodeUpdateRequest(BaseModel):
+    """Request to update a sensor node's position or name."""
+
+    name: str | None = Field(None, description="New name (or None to keep existing)")
+    lat: float | None = Field(None, description="New latitude (or None to keep existing)")
+    lon: float | None = Field(None, description="New longitude (or None to keep existing)")
+    alt: float | None = Field(None, description="New altitude (or None to keep existing)")
+
+
+class NodeResponse(BaseModel):
+    """A registered sensor node."""
+
+    device_id: str
+    name: str = ""
+    lat: float
+    lon: float
+    alt: float | None = None
+    is_fixed: bool = False
+    last_seen: str | None = None
+    created_at: str | None = None
+
+
+class NodeListResponse(BaseModel):
+    """Response for GET /nodes."""
+
+    count: int = Field(..., description="Number of registered nodes")
+    nodes: list[NodeResponse] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Detection history
+# ---------------------------------------------------------------------------
+
+class DetectionHistoryItem(BaseModel):
+    """A historical detection record from PostgreSQL."""
+
+    id: int
+    device_id: str
+    drone_id: str
+    source: str
+    ssid: str | None = None
+    bssid: str | None = None
+    rssi: int | None = None
+    confidence: float = 0.0
+    drone_lat: float | None = None
+    drone_lon: float | None = None
+    sensor_lat: float | None = None
+    sensor_lon: float | None = None
+    manufacturer: str | None = None
+    model: str | None = None
+    timestamp: int
+    received_at: str
+
+
+class DetectionHistoryResponse(BaseModel):
+    """Response for GET /detections/drones/history."""
+
+    count: int = Field(..., description="Number of records returned")
+    total: int = Field(..., description="Total matching records")
+    detections: list[DetectionHistoryItem] = Field(default_factory=list)
+
+
+class DroneTrackPoint(BaseModel):
+    """A single point in a drone's position track over time."""
+
+    lat: float
+    lon: float
+    alt: float | None = None
+    accuracy_m: float | None = None
+    position_source: str
+    sensor_count: int = 1
+    confidence: float = 0.0
+    timestamp: str
+
+
+class DroneTrackResponse(BaseModel):
+    """Response for GET /detections/drones/{drone_id}/track."""
+
+    drone_id: str
+    point_count: int
+    track: list[DroneTrackPoint] = Field(default_factory=list)
