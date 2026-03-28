@@ -1,0 +1,30 @@
+# Friend or Foe — Uplink (Plain ESP32 with OLED) SDK Configuration
+# Dual-UART scanner input + WiFi backhaul + OLED status display
+# Dual-core Xtensa @ 240 MHz
+
+# ── Bluetooth (disabled — scanners handle BLE, uplink is WiFi only) ──────
+CONFIG_BT_ENABLED=n
+
+# ── WiFi (STA + AP mode for config) ─────────────────────────────────────
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=20
+
+# ── FreeRTOS (dual-core Xtensa) ─────────────────────────────────────────
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_UNICORE=n
+
+# ── Watchdog ─────────────────────────────────────────────────────────────
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# ── OLED I2C pins (Heltec/TTGO ESP32 with 0.96" SSD1306) ───────────────
+CONFIG_FOF_OLED_SDA_PIN=4
+CONFIG_FOF_OLED_SCL_PIN=15
+CONFIG_FOF_OLED_RST_PIN=16
+
+# ── Console on USB (UART0 stays as console) ─────────────────────────────
+# UART1 and UART2 used for scanner inputs
+
+# ── Logging ──────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3

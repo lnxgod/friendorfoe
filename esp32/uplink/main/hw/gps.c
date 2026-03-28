@@ -4,10 +4,29 @@
  * Parses NMEA 0183 sentences ($GPGGA, $GNGGA, $GPRMC, $GNRMC) from
  * a UART-connected GPS module.  Converts NMEA coordinates to decimal
  * degrees and stores the latest valid fix.
+ *
+ * Disabled on UPLINK_ESP32 builds (nodes use fixed positions from backend).
  */
 
 #include "gps.h"
 #include "config.h"
+
+#ifdef UPLINK_ESP32
+/* GPS disabled on plain ESP32 uplink — positions are fixed in backend */
+#include "esp_log.h"
+static const char *TAG = "gps";
+void gps_init(void) { ESP_LOGI(TAG, "GPS disabled (fixed node positions via backend)"); }
+void gps_start(void) {}
+bool gps_has_fix(void) { return false; }
+double gps_get_latitude(void) { return 0.0; }
+double gps_get_longitude(void) { return 0.0; }
+float gps_get_altitude(void) { return 0.0f; }
+bool gps_get_position(gps_position_t *pos) {
+    if (pos) { memset(pos, 0, sizeof(*pos)); }
+    return false;
+}
+#include <string.h>
+#else
 
 #include <string.h>
 #include <stdlib.h>
@@ -353,3 +372,5 @@ bool gps_has_fix(void)
     portEXIT_CRITICAL(&s_lock);
     return fix;
 }
+
+#endif /* UPLINK_ESP32 */

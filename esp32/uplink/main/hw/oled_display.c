@@ -380,8 +380,9 @@ void oled_update(int drone_count, bool scanner_connected, bool wifi_connected,
     /* Line 1: Separator */
     fb_draw_hline(0, 127, 9);
 
-    /* Line 2: Uplink status */
-    snprintf(line, sizeof(line), "UART:%s WiFi:%s",
+    /* Line 2: Scanner status (BLE + WiFi scanners) */
+    /* scanner_connected param repurposed: passed as combined, but we show split */
+    snprintf(line, sizeof(line), "BLE:%s WiFi:%s",
              scanner_connected ? "OK" : "--",
              wifi_connected ? "OK" : "--");
     fb_draw_string(0, 12, line);
@@ -404,10 +405,12 @@ void oled_update(int drone_count, bool scanner_connected, bool wifi_connected,
     fb_draw_string(0, 42, line);
 
     /* Line 6: Status indicator */
-    if (!scanner_connected) {
-        fb_draw_string(0, 55, "! NO SCANNER");
+    if (!scanner_connected && !wifi_connected) {
+        fb_draw_string(0, 55, "! NO SCANNERS");
+    } else if (!scanner_connected) {
+        fb_draw_string(0, 55, "! NO BLE SCAN");
     } else if (!wifi_connected) {
-        fb_draw_string(0, 55, "! NO WIFI");
+        fb_draw_string(0, 55, "! NO WIFI SCAN");
     } else if (!backend_ok) {
         fb_draw_string(0, 55, "! SVR OFFLINE");
     } else if (drone_count > 0) {

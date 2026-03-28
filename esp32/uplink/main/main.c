@@ -74,7 +74,9 @@ static void display_task(void *arg)
         prev_detection_count = drone_count;
 
         /* Gather additional state for the new OLED layout */
-        bool scanner_ok  = uart_rx_is_scanner_connected();
+        bool ble_ok      = uart_rx_is_ble_scanner_connected();
+        bool wifi_scan_ok = uart_rx_is_wifi_scanner_connected();
+        bool scanner_ok  = ble_ok || wifi_scan_ok;
         bool backend_ok  = (http_upload_get_success_count() > 0 &&
                            http_upload_get_fail_count() < http_upload_get_success_count());
         uint32_t uptime  = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
@@ -83,8 +85,9 @@ static void display_task(void *arg)
             nvs_config_get_device_id(device_id_buf, sizeof(device_id_buf));
         }
 
-        /* Update status screen, then overlay detection if active */
-        oled_update(drone_count, scanner_ok, wifi_ok, backend_ok,
+        /* Update status screen: pass BLE scanner status as 'scanner_connected',
+           WiFi scanner status as 'wifi_connected' (network status shown via backend_ok) */
+        oled_update(drone_count, ble_ok, wifi_scan_ok, backend_ok,
                     upload_count, gps_fix, battery_pct, uptime, device_id_buf);
 
         if (overlay_ticks > 0) {
