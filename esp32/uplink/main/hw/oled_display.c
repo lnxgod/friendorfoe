@@ -357,8 +357,9 @@ void oled_init(void)
              OLED_SDA_PIN, OLED_SCL_PIN);
 }
 
-void oled_update(int drone_count, bool gps_fix, bool wifi_connected,
-                 float battery_pct, int upload_count)
+void oled_update(int drone_count, bool scanner_connected, bool wifi_connected,
+                 bool backend_ok, int upload_count, bool gps_fix,
+                 float battery_pct, uint32_t uptime_s, const char *device_id)
 {
     if (!s_initialized) {
         return;
@@ -366,28 +367,63 @@ void oled_update(int drone_count, bool gps_fix, bool wifi_connected,
 
     fb_clear();
 
-    /* Line 0: Title */
-    fb_draw_string(0, 0, "FOF Drone Detector");
+    char line[24];
+
+    /* Line 0: Node ID */
+    if (device_id && device_id[0]) {
+        snprintf(line, sizeof(line), "%.21s", device_id);
+    } else {
+        snprintf(line, sizeof(line), "FoF Uplink");
+    }
+    fb_draw_string(0, 0, line);
 
     /* Line 1: Separator */
-    fb_draw_hline(0, 107, 9);
+    fb_draw_hline(0, 127, 9);
 
-    /* Line 2: Drones + GPS */
-    char line[24];
-    snprintf(line, sizeof(line), "Drones:%-3d GPS:%s",
-             drone_count, gps_fix ? "OK" : "--");
+    /* Line 2: Uplink status */
+    snprintf(line, sizeof(line), "UART:%s WiFi:%s",
+             scanner_connected ? "OK" : "--",
+             wifi_connected ? "OK" : "--");
     fb_draw_string(0, 12, line);
 
-    /* Line 3: WiFi + Battery */
-    snprintf(line, sizeof(line), "WiFi:%s  Bat:%d%%",
-             wifi_connected ? "OK" : "--", (int)battery_pct);
+    /* Line 3: Backend + Uploads */
+    snprintf(line, sizeof(line), "Svr:%s  Up:%d",
+             backend_ok ? "OK" : "--", upload_count);
     fb_draw_string(0, 22, line);
 
-    /* Line 4: Upload count */
-    snprintf(line, sizeof(line), "Uploads: %d", upload_count);
+    /* Line 4: Drones + GPS */
+    snprintf(line, sizeof(line), "Drones:%-3d GPS:%s",
+             drone_count, gps_fix ? "OK" : "--");
     fb_draw_string(0, 32, line);
 
+    /* Line 5: Battery + Uptime */
+    uint32_t m = (uptime_s % 3600) / 60;
+    uint32_t s = uptime_s % 60;
+    snprintf(line, sizeof(line), "Bat:%d%% Up:%02lu:%02lu",
+             (int)battery_pct, (unsigned long)m, (unsigned long)s);
+    fb_draw_string(0, 42, line);
+
+    /* Line 6: Status indicator */
+    if (!scanner_connected) {
+        fb_draw_string(0, 55, "! NO SCANNER");
+    } else if (!wifi_connected) {
+        fb_draw_string(0, 55, "! NO WIFI");
+    } else if (!backend_ok) {
+        fb_draw_string(0, 55, "! SVR OFFLINE");
+    } else if (drone_count > 0) {
+        fb_draw_string(0, 55, "* TRACKING");
+    } else {
+        fb_draw_string(0, 55, "  SCANNING...");
+    }
+
     oled_flush();
+}
+
+void oled_update_legacy(int drone_count, bool gps_fix, bool wifi_connected,
+                        float battery_pct, int upload_count)
+{
+    oled_update(drone_count, true, wifi_connected, true, upload_count,
+                gps_fix, battery_pct, 0, NULL);
 }
 
 void oled_show_detection(const char *drone_id, const char *manufacturer,
