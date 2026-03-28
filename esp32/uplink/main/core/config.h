@@ -20,7 +20,7 @@ extern "C" {
 
 /* ── Backend URL ───────────────────────────────────────────────────────── */
 
-#define CONFIG_BACKEND_URL          "http://192.168.1.100:8000"
+#define CONFIG_BACKEND_URL          "http://192.168.42.145:8000"
 #define CONFIG_UPLOAD_ENDPOINT      "/detections/drones"
 
 /* ── Device identity ───────────────────────────────────────────────────── */
