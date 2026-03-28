@@ -38,13 +38,29 @@ extern "C" {
 
 #define CONFIG_DISPLAY_UPDATE_MS    500
 
-/* ── GPS UART ──────────────────────────────────────────────────────────── */
+/* ── Scanner UART inputs ──────────────────────────────────────────────── */
 
-/* GPS uses UART0 — console is redirected to USB-JTAG (see sdkconfig.defaults) */
+#ifdef UPLINK_ESP32
+/* Plain ESP32 (3 hardware UARTs): UART1=BLE scanner, UART2=WiFi scanner */
+#define CONFIG_BLE_SCANNER_UART     UART_NUM_1
+#define CONFIG_BLE_SCANNER_RX_PIN   25
+#define CONFIG_BLE_SCANNER_TX_PIN   26
+#define CONFIG_WIFI_SCANNER_UART    UART_NUM_2
+#define CONFIG_WIFI_SCANNER_RX_PIN  32
+#define CONFIG_WIFI_SCANNER_TX_PIN  33
+#define CONFIG_DUAL_SCANNER         1
+#else
+/* ESP32-C3 (2 hardware UARTs): UART1=single scanner, UART0=GPS */
+#define CONFIG_BLE_SCANNER_UART     UART_NUM_1
+#define CONFIG_BLE_SCANNER_RX_PIN   20
+#define CONFIG_BLE_SCANNER_TX_PIN   21
+#define CONFIG_DUAL_SCANNER         0
+/* GPS uses UART0 on C3 */
 #define CONFIG_GPS_UART_NUM         UART_NUM_0
 #define CONFIG_GPS_TX_PIN           6
 #define CONFIG_GPS_RX_PIN           7
 #define CONFIG_GPS_BAUD             9600
+#endif
 
 /* ── Detection queue ───────────────────────────────────────────────────── */
 

@@ -23,13 +23,13 @@
 
 static const char *TAG = "uart_rx";
 
-#define UART_NUM            UART_NUM_1
 #define LINE_BUF_SIZE       1024
 #define READ_BUF_SIZE       256
 
 /* Scanner connection tracking */
 #define SCANNER_TIMEOUT_MS  5000
-static atomic_int_fast64_t s_last_rx_time = 0;
+static atomic_int_fast64_t s_last_rx_time_ble = 0;
+static atomic_int_fast64_t s_last_rx_time_wifi = 0;
 static bool s_first_status_received = false;
 
 static QueueHandle_t s_detection_queue = NULL;
@@ -209,10 +209,15 @@ static void handle_status(const cJSON *root)
 
 /* ── Process one complete JSON line ────────────────────────────────────── */
 
-static void process_line(const char *line, size_t len)
+static void process_line(const char *line, size_t len, int scanner_id)
 {
-    /* Update last-received timestamp for scanner connection tracking */
-    atomic_store(&s_last_rx_time, (int_fast64_t)(esp_timer_get_time() / 1000));
+    /* Update last-received timestamp for the correct scanner */
+    int_fast64_t now_ms = (int_fast64_t)(esp_timer_get_time() / 1000);
+    if (scanner_id == 0) {
+        atomic_store(&s_last_rx_time_ble, now_ms);
+    } else {
+        atomic_store(&s_last_rx_time_wifi, now_ms);
+    }
 
     cJSON *root = cJSON_ParseWithLength(line, len);
     if (!root) {
@@ -248,18 +253,28 @@ static void process_line(const char *line, size_t len)
     cJSON_Delete(root);
 }
 
-/* ── UART RX task ──────────────────────────────────────────────────────── */
+/* ── UART RX task (parameterized for dual-scanner support) ─────────────── */
+
+typedef struct {
+    int uart_num;
+    int scanner_id;     /* 0=BLE scanner, 1=WiFi scanner */
+    const char *label;
+} uart_rx_task_params_t;
 
 static void uart_rx_task(void *arg)
 {
+    uart_rx_task_params_t *params = (uart_rx_task_params_t *)arg;
+    int uart_num = params->uart_num;
+    int scanner_id = params->scanner_id;
+
     char line_buf[LINE_BUF_SIZE];
     int  line_pos = 0;
     uint8_t read_buf[READ_BUF_SIZE];
 
-    ESP_LOGI(TAG, "UART RX task started");
+    ESP_LOGI(TAG, "UART RX task started: %s (UART%d)", params->label, uart_num);
 
     while (1) {
-        int bytes_read = uart_read_bytes(UART_NUM, read_buf, sizeof(read_buf),
+        int bytes_read = uart_read_bytes(uart_num, read_buf, sizeof(read_buf),
                                          pdMS_TO_TICKS(100));
         if (bytes_read <= 0) {
             continue;
@@ -271,15 +286,14 @@ static void uart_rx_task(void *arg)
             if (c == UART_MSG_DELIMITER) {
                 if (line_pos > 0) {
                     line_buf[line_pos] = '\0';
-                    process_line(line_buf, line_pos);
+                    process_line(line_buf, line_pos, scanner_id);
                     line_pos = 0;
                 }
             } else {
                 if (line_pos < LINE_BUF_SIZE - 1) {
                     line_buf[line_pos++] = c;
                 } else {
-                    /* Line too long -- discard and reset */
-                    ESP_LOGW(TAG, "Line buffer overflow, discarding");
+                    ESP_LOGW(TAG, "[%s] Line buffer overflow, discarding", params->label);
                     line_pos = 0;
                 }
             }
@@ -287,12 +301,16 @@ static void uart_rx_task(void *arg)
     }
 }
 
+/* Static params (must outlive the tasks) */
+static uart_rx_task_params_t s_ble_task_params = { .uart_num = 0, .scanner_id = 0, .label = "BLE" };
+#if CONFIG_DUAL_SCANNER
+static uart_rx_task_params_t s_wifi_task_params = { .uart_num = 0, .scanner_id = 1, .label = "WiFi" };
+#endif
+
 /* ── Public API ────────────────────────────────────────────────────────── */
 
-void uart_rx_init(QueueHandle_t detection_queue)
+static void init_uart_port(int uart_num, int rx_pin, int tx_pin, const char *label)
 {
-    s_detection_queue = detection_queue;
-
     const uart_config_t uart_config = {
         .baud_rate  = UART_BAUD_RATE,
         .data_bits  = UART_DATA_8_BITS,
@@ -302,23 +320,44 @@ void uart_rx_init(QueueHandle_t detection_queue)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(UART_NUM, UPLINK_UART_TX_PIN,
-                                 UPLINK_UART_RX_PIN,
+    ESP_ERROR_CHECK(uart_param_config(uart_num, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(uart_num, tx_pin, rx_pin,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, UART_BUF_SIZE * 2,
+    ESP_ERROR_CHECK(uart_driver_install(uart_num, UART_BUF_SIZE * 2,
                                         UART_BUF_SIZE * 2, 0, NULL, 0));
 
-    ESP_LOGI(TAG, "UART%d initialized: %d baud, RX=GPIO%d, TX=GPIO%d",
-             UART_NUM, UART_BAUD_RATE, UPLINK_UART_RX_PIN, UPLINK_UART_TX_PIN);
+    ESP_LOGI(TAG, "%s scanner UART%d: %d baud, RX=GPIO%d, TX=GPIO%d",
+             label, uart_num, UART_BAUD_RATE, rx_pin, tx_pin);
+}
+
+void uart_rx_init(QueueHandle_t detection_queue)
+{
+    s_detection_queue = detection_queue;
+
+    /* BLE scanner on UART1 (always) */
+    s_ble_task_params.uart_num = CONFIG_BLE_SCANNER_UART;
+    init_uart_port(CONFIG_BLE_SCANNER_UART,
+                   CONFIG_BLE_SCANNER_RX_PIN, CONFIG_BLE_SCANNER_TX_PIN, "BLE");
+
+#if CONFIG_DUAL_SCANNER
+    /* WiFi scanner on UART2 (plain ESP32 only) */
+    s_wifi_task_params.uart_num = CONFIG_WIFI_SCANNER_UART;
+    init_uart_port(CONFIG_WIFI_SCANNER_UART,
+                   CONFIG_WIFI_SCANNER_RX_PIN, CONFIG_WIFI_SCANNER_TX_PIN, "WiFi");
+#endif
 }
 
 void uart_rx_start(void)
 {
-    xTaskCreate(uart_rx_task, "uart_rx", CONFIG_UART_RX_STACK,
-                NULL, CONFIG_UART_RX_PRIORITY, NULL);
-    ESP_LOGI(TAG, "UART RX task created (priority=%d, stack=%d)",
-             CONFIG_UART_RX_PRIORITY, CONFIG_UART_RX_STACK);
+    xTaskCreate(uart_rx_task, "uart_rx_ble", CONFIG_UART_RX_STACK,
+                &s_ble_task_params, CONFIG_UART_RX_PRIORITY, NULL);
+    ESP_LOGI(TAG, "BLE scanner RX task created");
+
+#if CONFIG_DUAL_SCANNER
+    xTaskCreate(uart_rx_task, "uart_rx_wifi", CONFIG_UART_RX_STACK,
+                &s_wifi_task_params, CONFIG_UART_RX_PRIORITY, NULL);
+    ESP_LOGI(TAG, "WiFi scanner RX task created");
+#endif
 }
 
 int uart_rx_get_detection_count(void)
@@ -344,12 +383,33 @@ int uart_rx_get_recent_detections(detection_summary_t *out, int max)
     return copied;
 }
 
-bool uart_rx_is_scanner_connected(void)
+static bool _check_connected(atomic_int_fast64_t *ts)
 {
-    int_fast64_t last = atomic_load(&s_last_rx_time);
-    if (last == 0) {
-        return false;  /* Never received anything */
-    }
+    int_fast64_t last = atomic_load(ts);
+    if (last == 0) return false;
     int_fast64_t now_ms = (int_fast64_t)(esp_timer_get_time() / 1000);
     return (now_ms - last) < SCANNER_TIMEOUT_MS;
+}
+
+bool uart_rx_is_scanner_connected(void)
+{
+    return _check_connected(&s_last_rx_time_ble)
+#if CONFIG_DUAL_SCANNER
+        || _check_connected(&s_last_rx_time_wifi)
+#endif
+        ;
+}
+
+bool uart_rx_is_ble_scanner_connected(void)
+{
+    return _check_connected(&s_last_rx_time_ble);
+}
+
+bool uart_rx_is_wifi_scanner_connected(void)
+{
+#if CONFIG_DUAL_SCANNER
+    return _check_connected(&s_last_rx_time_wifi);
+#else
+    return false;
+#endif
 }

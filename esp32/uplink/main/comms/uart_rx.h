@@ -3,11 +3,14 @@
 /**
  * Friend or Foe -- Uplink UART RX Module
  *
- * Receives newline-delimited JSON messages from the Scanner board over
- * UART1.  Detection messages are parsed into drone_detection_t structs
- * and pushed onto a FreeRTOS queue for the HTTP upload task to consume.
+ * Receives newline-delimited JSON messages from scanner boards over UART.
  *
- * Hardware: UART1, RX=GPIO20, TX=GPIO21, 921600 baud, 8N1
+ * Dual-scanner mode (plain ESP32 uplink):
+ *   UART1 (RX=GPIO25) — BLE scanner (ESP32-S3)
+ *   UART2 (RX=GPIO32) — WiFi scanner (ESP32-C5)
+ *
+ * Single-scanner mode (ESP32-C3 uplink):
+ *   UART1 (RX=GPIO20) — combined scanner
  */
 
 #include "detection_types.h"
@@ -19,49 +22,40 @@ extern "C" {
 #endif
 
 /**
- * Initialize UART1 hardware for receiving scanner messages.
- * Configures baud rate, pin mapping, and installs the driver.
- *
- * @param detection_queue  FreeRTOS queue to push parsed drone_detection_t items
+ * Initialize UART hardware for receiving scanner messages.
+ * On plain ESP32: initializes both UART1 (BLE) and UART2 (WiFi).
+ * On ESP32-C3: initializes UART1 only.
  */
 void uart_rx_init(QueueHandle_t detection_queue);
 
 /**
- * Start the UART RX FreeRTOS task.
- * The task reads bytes from UART, accumulates lines, parses JSON,
- * and enqueues detections.
+ * Start the UART RX FreeRTOS task(s).
  */
 void uart_rx_start(void);
 
-/**
- * Get the total number of detection messages received since boot.
- */
+/** Total detections received since boot. */
 int uart_rx_get_detection_count(void);
 
-/**
- * Summary of a recent detection for the status page.
- */
+/** Summary of a recent detection for display. */
 typedef struct {
     char    drone_id[64];
     uint8_t source;
     float   confidence;
     int8_t  rssi;
-    int64_t timestamp_ms;   /* esp_timer_get_time() / 1000 at detection time */
+    int64_t timestamp_ms;
 } detection_summary_t;
 
-/**
- * Copy the most recent detections into the caller's buffer.
- *
- * @param out  Output array
- * @param max  Maximum entries to copy
- * @return Number of entries written (0..max), newest first
- */
+/** Copy most recent detections into caller's buffer (newest first). */
 int uart_rx_get_recent_detections(detection_summary_t *out, int max);
 
-/**
- * Check if the scanner board is connected (sent a message within the last 5s).
- */
+/** True if ANY scanner is connected (sent data within 5s). */
 bool uart_rx_is_scanner_connected(void);
+
+/** True if the BLE scanner (UART1) is connected. */
+bool uart_rx_is_ble_scanner_connected(void);
+
+/** True if the WiFi scanner (UART2) is connected. */
+bool uart_rx_is_wifi_scanner_connected(void);
 
 #ifdef __cplusplus
 }
