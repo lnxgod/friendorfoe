@@ -22,6 +22,10 @@ extern "C" {
 #define SCANNER_S3_UART_TX_PIN      17
 #define SCANNER_S3_UART_RX_PIN      18
 
+/* Scanner (plain ESP32) pin assignment */
+#define SCANNER_ESP32_UART_TX_PIN   17
+#define SCANNER_ESP32_UART_RX_PIN   16
+
 /* Scanner (ESP32-C5) pin assignment */
 #define SCANNER_C5_UART_TX_PIN      4
 #define SCANNER_C5_UART_RX_PIN      5
@@ -30,6 +34,9 @@ extern "C" {
 #if defined(CONFIG_IDF_TARGET_ESP32C5)
 #define SCANNER_UART_TX_PIN         SCANNER_C5_UART_TX_PIN
 #define SCANNER_UART_RX_PIN         SCANNER_C5_UART_RX_PIN
+#elif defined(WIFI_SCANNER_ONLY)
+#define SCANNER_UART_TX_PIN         SCANNER_ESP32_UART_TX_PIN
+#define SCANNER_UART_RX_PIN         SCANNER_ESP32_UART_RX_PIN
 #else
 #define SCANNER_UART_TX_PIN         SCANNER_S3_UART_TX_PIN
 #define SCANNER_UART_RX_PIN         SCANNER_S3_UART_RX_PIN
