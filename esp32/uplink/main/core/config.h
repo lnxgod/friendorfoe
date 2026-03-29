@@ -25,7 +25,9 @@ extern "C" {
 
 /* ── Device identity ───────────────────────────────────────────────────── */
 
+#ifndef CONFIG_DEVICE_ID
 #define CONFIG_DEVICE_ID            "uplink_1"
+#endif
 
 /* ── Upload settings ───────────────────────────────────────────────────── */
 
