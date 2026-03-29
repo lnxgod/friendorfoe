@@ -81,6 +81,35 @@ void wifi_ap_init(void)
              s_ap_ssid, CONFIG_AP_CHANNEL, CONFIG_AP_MAX_CONNECTIONS);
 }
 
+void wifi_ap_stop(void)
+{
+    /* Hide AP by setting SSID to empty and disabling beacon */
+    wifi_config_t ap_config = {0};
+    ap_config.ap.ssid_hidden = 1;
+    ap_config.ap.ssid_len = 0;
+    ap_config.ap.max_connection = 0;
+    esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+    ESP_LOGI(TAG, "WiFi AP stopped (STA connected, AP not needed)");
+}
+
+void wifi_ap_start(void)
+{
+    /* Restore AP with original SSID */
+    char password[65] = {0};
+    nvs_config_get_ap_password(password, sizeof(password));
+
+    wifi_config_t ap_config = {0};
+    strncpy((char *)ap_config.ap.ssid, s_ap_ssid, sizeof(ap_config.ap.ssid) - 1);
+    ap_config.ap.ssid_len = strlen(s_ap_ssid);
+    strncpy((char *)ap_config.ap.password, password, sizeof(ap_config.ap.password) - 1);
+    ap_config.ap.channel = CONFIG_AP_CHANNEL;
+    ap_config.ap.max_connection = CONFIG_AP_MAX_CONNECTIONS;
+    ap_config.ap.authmode = strlen(password) > 0 ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    ap_config.ap.pmf_cfg.required = false;
+    esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+    ESP_LOGI(TAG, "WiFi AP restarted: SSID='%s' (STA disconnected, AP needed for setup)", s_ap_ssid);
+}
+
 int wifi_ap_get_station_count(void)
 {
     return s_station_count;

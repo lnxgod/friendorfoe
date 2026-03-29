@@ -27,7 +27,7 @@ static const char *TAG = "uart_rx";
 #define READ_BUF_SIZE       256
 
 /* Scanner connection tracking */
-#define SCANNER_TIMEOUT_MS  5000
+#define SCANNER_TIMEOUT_MS  15000
 static atomic_int_fast64_t s_last_rx_time_ble = 0;
 static atomic_int_fast64_t s_last_rx_time_wifi = 0;
 static bool s_first_status_received = false;
@@ -273,11 +273,23 @@ static void uart_rx_task(void *arg)
 
     ESP_LOGI(TAG, "UART RX task started: %s (UART%d)", params->label, uart_num);
 
+    int debug_dumps = 3;  /* dump first 3 reads for diagnostics */
+
     while (1) {
         int bytes_read = uart_read_bytes(uart_num, read_buf, sizeof(read_buf),
                                          pdMS_TO_TICKS(100));
         if (bytes_read <= 0) {
             continue;
+        }
+
+        if (debug_dumps > 0) {
+            debug_dumps--;
+            char hex[128];
+            int hlen = 0;
+            for (int j = 0; j < bytes_read && hlen < 120; j++) {
+                hlen += snprintf(hex + hlen, sizeof(hex) - hlen, "%02X ", read_buf[j]);
+            }
+            ESP_LOGI(TAG, "[%s] RX %d bytes: %s", params->label, bytes_read, hex);
         }
 
         for (int i = 0; i < bytes_read; i++) {
@@ -293,7 +305,14 @@ static void uart_rx_task(void *arg)
                 if (line_pos < LINE_BUF_SIZE - 1) {
                     line_buf[line_pos++] = c;
                 } else {
-                    ESP_LOGW(TAG, "[%s] Line buffer overflow, discarding", params->label);
+                    /* Dump first 20 bytes for diagnostics */
+                    char hex[64];
+                    int hlen = 0;
+                    for (int j = 0; j < 20 && j < LINE_BUF_SIZE; j++) {
+                        hlen += snprintf(hex + hlen, sizeof(hex) - hlen, "%02X ", (uint8_t)line_buf[j]);
+                    }
+                    ESP_LOGW(TAG, "[%s] Line buffer overflow (%d bytes, no newline). First 20: %s",
+                             params->label, line_pos, hex);
                     line_pos = 0;
                 }
             }

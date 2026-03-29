@@ -31,7 +31,7 @@ static int             s_success_count     = 0;
 static int             s_fail_count        = 0;
 
 /* Maximum JSON payload size for a batch */
-#define MAX_PAYLOAD_SIZE    8192
+#define MAX_PAYLOAD_SIZE    4096
 
 /* Exponential backoff base delay */
 #define BACKOFF_BASE_MS     1000
@@ -44,15 +44,35 @@ static const char *source_to_string(uint8_t src)
         case DETECTION_SRC_BLE_RID:     return "ble_rid";
         case DETECTION_SRC_WIFI_SSID:   return "wifi_ssid";
         case DETECTION_SRC_WIFI_DJI_IE: return "wifi_dji_ie";
-        case DETECTION_SRC_WIFI_BEACON: return "wifi_beacon";
+        case DETECTION_SRC_WIFI_BEACON: return "wifi_beacon_rid";
         case DETECTION_SRC_WIFI_OUI:    return "wifi_oui";
         default:                        return "unknown";
     }
 }
 
+static size_t estimate_detection_json_size(const drone_detection_t *det)
+{
+    size_t estimate = 120; /* fixed keys + punctuation */
+
+    if (det->drone_id[0] != '\0') estimate += strlen(det->drone_id);
+    if (det->manufacturer[0] != '\0') estimate += strlen(det->manufacturer);
+    if (det->model[0] != '\0') estimate += strlen(det->model);
+    if (det->ssid[0] != '\0') estimate += strlen(det->ssid);
+    if (det->bssid[0] != '\0') estimate += strlen(det->bssid);
+    if (det->operator_id[0] != '\0') estimate += strlen(det->operator_id);
+
+    if (det->latitude != 0.0 || det->longitude != 0.0) estimate += 32;
+    if (det->operator_lat != 0.0 || det->operator_lon != 0.0) estimate += 32;
+    if (det->altitude_m != 0.0) estimate += 12;
+    if (det->speed_mps != 0.0) estimate += 10;
+    if (det->heading_deg != 0.0) estimate += 10;
+    if (det->last_updated_ms > 0) estimate += 18;
+    return estimate;
+}
+
 /* ── Build JSON payload from a batch of detections ─────────────────────── */
 
-static char *build_payload(const drone_detection_t *batch, int count)
+static char *build_payload(const drone_detection_t *batch, int count, int64_t scan_ts_ms)
 {
     /* Get device identity */
     char device_id[32] = {0};
@@ -62,8 +82,8 @@ static char *build_payload(const drone_detection_t *batch, int count)
     gps_position_t gps_pos = {0};
     gps_get_position(&gps_pos);
 
-    /* Get current timestamp */
-    int64_t now_ms = time_sync_get_epoch_ms();
+    /* Use scan timestamp if provided, else current time */
+    int64_t ts_ms = (scan_ts_ms > 0) ? scan_ts_ms : time_sync_get_epoch_ms();
 
     cJSON *root = cJSON_CreateObject();
     if (!root) {
@@ -74,7 +94,7 @@ static char *build_payload(const drone_detection_t *batch, int count)
     cJSON_AddNumberToObject(root, "device_lat", gps_pos.latitude);
     cJSON_AddNumberToObject(root, "device_lon", gps_pos.longitude);
     cJSON_AddNumberToObject(root, "device_alt", gps_pos.altitude_m);
-    cJSON_AddNumberToObject(root, "timestamp", (double)(now_ms / 1000));
+    cJSON_AddNumberToObject(root, "timestamp", (double)(ts_ms / 1000));
 
     cJSON *detections = cJSON_AddArrayToObject(root, "detections");
     if (!detections) {
@@ -92,17 +112,14 @@ static char *build_payload(const drone_detection_t *batch, int count)
         cJSON_AddStringToObject(det, "drone_id", d->drone_id);
         cJSON_AddStringToObject(det, "source", source_to_string(d->source));
         cJSON_AddNumberToObject(det, "confidence", d->confidence);
-        cJSON_AddNumberToObject(det, "lat", d->latitude);
-        cJSON_AddNumberToObject(det, "lon", d->longitude);
-        cJSON_AddNumberToObject(det, "alt", d->altitude_m);
+        cJSON_AddNumberToObject(det, "latitude", d->latitude);
+        cJSON_AddNumberToObject(det, "longitude", d->longitude);
+        cJSON_AddNumberToObject(det, "altitude_m", d->altitude_m);
         cJSON_AddNumberToObject(det, "rssi", d->rssi);
-        cJSON_AddNumberToObject(det, "speed", d->speed_mps);
-        cJSON_AddNumberToObject(det, "heading", d->heading_deg);
-        cJSON_AddNumberToObject(det, "vertical_speed", d->vertical_speed_mps);
-        cJSON_AddNumberToObject(det, "distance", d->estimated_distance_m);
+        cJSON_AddNumberToObject(det, "speed_mps", d->speed_mps);
+        cJSON_AddNumberToObject(det, "heading_deg", d->heading_deg);
         cJSON_AddStringToObject(det, "manufacturer", d->manufacturer);
         cJSON_AddStringToObject(det, "model", d->model);
-        cJSON_AddNumberToObject(det, "fused_confidence", d->fused_confidence);
 
         /* Operator info if present */
         if (d->operator_lat != 0.0 || d->operator_lon != 0.0) {
@@ -293,7 +310,11 @@ static void http_upload_task(void *arg)
 {
     drone_detection_t batch[CONFIG_MAX_BATCH_SIZE];
     int batch_count = 0;
-    TickType_t batch_start = xTaskGetTickCount();
+    size_t estimated_payload_bytes = 0;
+    TickType_t first_item_tick = 0;
+    TickType_t last_item_tick = 0;
+    TickType_t last_send   = 0;  /* tick count of last successful send */
+    int64_t scan_ts_ms     = 0;  /* timestamp of first detection in batch */
 
     ESP_LOGI(TAG, "HTTP upload task started");
 
@@ -312,29 +333,54 @@ static void http_upload_task(void *arg)
 
         /* Collect detections into batch */
         drone_detection_t det;
-        TickType_t wait_ticks = pdMS_TO_TICKS(100);
+        TickType_t wait_ticks = (batch_count > 0)
+            ? pdMS_TO_TICKS(25)
+            : pdMS_TO_TICKS(100);
 
         if (xQueueReceive(s_detection_queue, &det, wait_ticks) == pdTRUE) {
+            if (batch_count == 0) {
+                /* Start the batch age clock with the first detection. */
+                first_item_tick = xTaskGetTickCount();
+                estimated_payload_bytes = 64; /* batch envelope */
+                scan_ts_ms = det.last_updated_ms > 0 ? det.last_updated_ms : time_sync_get_epoch_ms();
+            }
+            last_item_tick = xTaskGetTickCount();
             batch[batch_count++] = det;
+            estimated_payload_bytes += estimate_detection_json_size(&det);
+            if (det.last_updated_ms > 0 &&
+                (scan_ts_ms == 0 || det.last_updated_ms < scan_ts_ms)) {
+                scan_ts_ms = det.last_updated_ms;
+            }
         }
 
         /* Check if batch is ready to send */
-        TickType_t elapsed = xTaskGetTickCount() - batch_start;
-        bool time_elapsed = (elapsed >= pdMS_TO_TICKS(CONFIG_BATCH_INTERVAL_MS));
+        TickType_t now_tick = xTaskGetTickCount();
+        TickType_t age = (batch_count > 0) ? (now_tick - first_item_tick) : 0;
+        TickType_t idle = (batch_count > 0) ? (now_tick - last_item_tick) : 0;
+        bool time_elapsed = (batch_count > 0 &&
+                             age >= pdMS_TO_TICKS(CONFIG_BATCH_INTERVAL_MS));
+        bool idle_flush = (batch_count > 0 &&
+                           idle >= pdMS_TO_TICKS(CONFIG_BATCH_IDLE_FLUSH_MS));
         bool batch_full   = (batch_count >= CONFIG_MAX_BATCH_SIZE);
+        bool payload_full = (estimated_payload_bytes >= CONFIG_TARGET_BATCH_BYTES);
 
-        if (batch_count > 0 && (time_elapsed || batch_full)) {
-            ESP_LOGI(TAG, "Sending batch of %d detections", batch_count);
+        if (batch_count > 0 && (time_elapsed || idle_flush || batch_full || payload_full)) {
+            ESP_LOGI(TAG,
+                     "Sending batch count=%d age=%" PRIu32 "ms idle=%" PRIu32 "ms bytes=%u",
+                     batch_count,
+                     (uint32_t)(age * portTICK_PERIOD_MS),
+                     (uint32_t)(idle * portTICK_PERIOD_MS),
+                     (unsigned)estimated_payload_bytes);
 
-            char *payload = build_payload(batch, batch_count);
+            char *payload = build_payload(batch, batch_count, scan_ts_ms);
             if (payload) {
                 if (wifi_sta_is_connected()) {
                     if (!upload_with_retry(payload)) {
-                        /* Upload failed -- store offline */
                         buffer_batch_offline(payload);
+                    } else {
+                        last_send = xTaskGetTickCount();
                     }
                 } else {
-                    /* WiFi down -- buffer for later */
                     buffer_batch_offline(payload);
                 }
                 cJSON_free(payload);
@@ -344,7 +390,25 @@ static void http_upload_task(void *arg)
 
             /* Reset batch */
             batch_count = 0;
-            batch_start = xTaskGetTickCount();
+            estimated_payload_bytes = 0;
+            scan_ts_ms = 0;
+            first_item_tick = 0;
+            last_item_tick = 0;
+        }
+
+        /* ── Heartbeat: send empty batch if idle for 60s ────────────── */
+        TickType_t now = xTaskGetTickCount();
+        if (batch_count == 0 && wifi_sta_is_connected() &&
+            (now - last_send) >= pdMS_TO_TICKS(CONFIG_HEARTBEAT_INTERVAL_MS)) {
+            ESP_LOGI(TAG, "Sending heartbeat (no detections for %ds)",
+                     CONFIG_HEARTBEAT_INTERVAL_MS / 1000);
+            char *payload = build_payload(NULL, 0, 0);
+            if (payload) {
+                if (upload_with_retry(payload)) {
+                    last_send = xTaskGetTickCount();
+                }
+                cJSON_free(payload);
+            }
         }
     }
 }
@@ -361,8 +425,9 @@ void http_upload_init(QueueHandle_t detection_queue)
     }
 
     ESP_LOGI(TAG, "HTTP upload initialized (batch=%d, interval=%dms, "
-             "offline_cap=%d)",
+             "idle_flush=%dms, target_bytes=%d, offline_cap=%d)",
              CONFIG_MAX_BATCH_SIZE, CONFIG_BATCH_INTERVAL_MS,
+             CONFIG_BATCH_IDLE_FLUSH_MS, CONFIG_TARGET_BATCH_BYTES,
              CONFIG_MAX_OFFLINE_BATCHES);
 }
 

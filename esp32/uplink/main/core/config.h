@@ -15,8 +15,8 @@ extern "C" {
 
 /* ── WiFi credentials (override via NVS) ───────────────────────────────── */
 
-#define CONFIG_WIFI_SSID            "YourSSID"
-#define CONFIG_WIFI_PASSWORD        "YourPassword"
+#define CONFIG_WIFI_SSID            "CasaChomp_2g"
+#define CONFIG_WIFI_PASSWORD        "CHANGE_ME_PASSWORD"
 
 /* ── Backend URL ───────────────────────────────────────────────────────── */
 
@@ -25,14 +25,17 @@ extern "C" {
 
 /* ── Device identity ───────────────────────────────────────────────────── */
 
-#define CONFIG_DEVICE_ID            "fof_esp32_001"
+#define CONFIG_DEVICE_ID            "uplink_1"
 
 /* ── Upload settings ───────────────────────────────────────────────────── */
 
-#define CONFIG_BATCH_INTERVAL_MS    5000
+#define CONFIG_BATCH_INTERVAL_MS    200
+#define CONFIG_BATCH_IDLE_FLUSH_MS  75
 #define CONFIG_MAX_BATCH_SIZE       10
-#define CONFIG_MAX_OFFLINE_BATCHES  100
+#define CONFIG_TARGET_BATCH_BYTES   1400
+#define CONFIG_MAX_OFFLINE_BATCHES  10
 #define CONFIG_MAX_RETRY_DELAY_MS   60000
+#define CONFIG_HEARTBEAT_INTERVAL_MS 60000
 
 /* ── Display refresh interval ──────────────────────────────────────────── */
 
@@ -41,13 +44,15 @@ extern "C" {
 /* ── Scanner UART inputs ──────────────────────────────────────────────── */
 
 #ifdef UPLINK_ESP32
-/* Plain ESP32 (3 hardware UARTs): UART1=BLE scanner, UART2=WiFi scanner */
-#define CONFIG_BLE_SCANNER_UART     UART_NUM_1
-#define CONFIG_BLE_SCANNER_RX_PIN   25
-#define CONFIG_BLE_SCANNER_TX_PIN   26
-#define CONFIG_WIFI_SCANNER_UART    UART_NUM_2
-#define CONFIG_WIFI_SCANNER_RX_PIN  32
-#define CONFIG_WIFI_SCANNER_TX_PIN  33
+/* ideaspark ESP32 OLED — match physical wiring:
+ *   GPIO17 = BLE scanner (S3)    RX input
+ *   GPIO25 = WiFi scanner (C5)   RX input */
+#define CONFIG_BLE_SCANNER_UART     UART_NUM_2
+#define CONFIG_BLE_SCANNER_RX_PIN   16
+#define CONFIG_BLE_SCANNER_TX_PIN   17
+#define CONFIG_WIFI_SCANNER_UART    UART_NUM_1
+#define CONFIG_WIFI_SCANNER_RX_PIN  25
+#define CONFIG_WIFI_SCANNER_TX_PIN  26
 #define CONFIG_DUAL_SCANNER         1
 #else
 /* ESP32-C3 (2 hardware UARTs): UART1=single scanner, UART0=GPS */
@@ -69,7 +74,7 @@ extern "C" {
 /* ── Task stack sizes (bytes) ──────────────────────────────────────────── */
 
 #define CONFIG_UART_RX_STACK        4096
-#define CONFIG_HTTP_UPLOAD_STACK    8192
+#define CONFIG_HTTP_UPLOAD_STACK   16384
 #define CONFIG_GPS_STACK            4096
 #define CONFIG_DISPLAY_STACK        4096
 #define CONFIG_LED_STACK            2048

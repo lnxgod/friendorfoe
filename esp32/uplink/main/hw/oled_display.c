@@ -31,7 +31,7 @@ static const char *TAG = "oled";
 #define OLED_PAGES      (OLED_HEIGHT / 8)
 #define OLED_BUF_SIZE   (OLED_WIDTH * OLED_PAGES)  /* 1024 bytes */
 
-#define I2C_FREQ_HZ     400000
+#define I2C_FREQ_HZ     100000   /* 100 kHz — some OLED boards unreliable at 400 kHz */
 
 /* SSD1306 commands */
 #define SSD1306_CMD_DISPLAY_OFF         0xAE
@@ -167,25 +167,24 @@ static const uint8_t font_5x7[][5] = {
 static esp_err_t oled_send_cmd(uint8_t cmd)
 {
     uint8_t buf[2] = { OLED_CTRL_CMD, cmd };
-    return i2c_master_transmit(s_dev_handle, buf, sizeof(buf), 100);
+    return i2c_master_transmit(s_dev_handle, buf, sizeof(buf), 500);
 }
 
 static esp_err_t oled_send_data(const uint8_t *data, size_t len)
 {
     /*
      * I2C transmission: [control_byte] [data0] [data1] ...
-     * We need a temporary buffer with the control byte prepended.
+     * Stack-local buffer avoids heap fragmentation from repeated malloc/free.
+     * Max len is OLED_WIDTH (128), so 129 bytes on stack is safe.
      */
-    uint8_t *buf = malloc(len + 1);
-    if (!buf) {
-        return ESP_ERR_NO_MEM;
+    uint8_t buf[OLED_WIDTH + 1];
+    if (len > OLED_WIDTH) {
+        len = OLED_WIDTH;
     }
     buf[0] = OLED_CTRL_DATA;
     memcpy(buf + 1, data, len);
 
-    esp_err_t err = i2c_master_transmit(s_dev_handle, buf, len + 1, 100);
-    free(buf);
-    return err;
+    return i2c_master_transmit(s_dev_handle, buf, len + 1, 500);
 }
 
 /* ── Frame buffer operations ───────────────────────────────────────────── */
@@ -272,6 +271,64 @@ static void oled_flush(void)
 
 /* ── Public API ────────────────────────────────────────────────────────── */
 
+/*
+ * Common ESP32 OLED I2C pin combinations to try:
+ *   Heltec WiFi Kit 32 V2: SDA=4,  SCL=15
+ *   TTGO LoRa32 V2:        SDA=21, SCL=22
+ *   Generic / default:     SDA=21, SCL=22
+ *   Heltec V3 / some:      SDA=17, SCL=18
+ */
+typedef struct { int sda; int scl; const char *board; } i2c_pin_combo_t;
+
+static const i2c_pin_combo_t s_pin_combos[] = {
+    { OLED_SDA_PIN, OLED_SCL_PIN, "configured" },
+    { 21, 22, "default/TTGO" },
+    { 17, 18, "Heltec V3" },
+    { 5,  4,  "alt wiring" },
+};
+#define NUM_PIN_COMBOS (sizeof(s_pin_combos) / sizeof(s_pin_combos[0]))
+
+static bool try_i2c_scan(int sda, int scl, const char *label, uint8_t *out_addr)
+{
+    /* Release any previous bus */
+    if (s_dev_handle) {
+        i2c_master_bus_rm_device(s_dev_handle);
+        s_dev_handle = NULL;
+    }
+    if (s_bus_handle) {
+        i2c_del_master_bus(s_bus_handle);
+        s_bus_handle = NULL;
+    }
+
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port   = I2C_NUM_0,
+        .sda_io_num = sda,
+        .scl_io_num = scl,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus_handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "  I2C bus init failed on SDA=%d SCL=%d: %s",
+                 sda, scl, esp_err_to_name(err));
+        return false;
+    }
+
+    /* Probe for SSD1306 at 0x3C and 0x3D */
+    for (uint8_t addr = 0x3C; addr <= 0x3D; addr++) {
+        err = i2c_master_probe(s_bus_handle, addr, 100);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "  OLED found at 0x%02X on SDA=%d SCL=%d (%s)",
+                     addr, sda, scl, label);
+            *out_addr = addr;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void oled_init(void)
 {
     /* Toggle hardware reset pin if configured */
@@ -287,35 +344,47 @@ void oled_init(void)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    /* Initialize I2C master bus */
-    i2c_master_bus_config_t bus_cfg = {
-        .i2c_port   = I2C_NUM_0,
-        .sda_io_num = OLED_SDA_PIN,
-        .scl_io_num = OLED_SCL_PIN,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "I2C bus init failed: %s", esp_err_to_name(err));
+    /* Try each pin combo until we find the OLED */
+    ESP_LOGI(TAG, "Scanning for OLED display...");
+    uint8_t found_addr = 0;
+    bool found = false;
+    int found_sda = 0, found_scl = 0;
+
+    for (int i = 0; i < (int)NUM_PIN_COMBOS; i++) {
+        const i2c_pin_combo_t *combo = &s_pin_combos[i];
+        if (try_i2c_scan(combo->sda, combo->scl, combo->board, &found_addr)) {
+            found = true;
+            found_sda = combo->sda;
+            found_scl = combo->scl;
+            break;
+        }
+    }
+
+    if (!found) {
+        ESP_LOGE(TAG, "No OLED found on any I2C pin combination!");
+        ESP_LOGE(TAG, "Tried: SDA/SCL = 4/15, 21/22, 17/18, 5/4");
         return;
     }
 
-    /* Add SSD1306 device */
+    /* Add the SSD1306 device at the found address */
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address  = OLED_ADDR,
+        .device_address  = found_addr,
         .scl_speed_hz    = I2C_FREQ_HZ,
     };
-    err = i2c_master_bus_add_device(s_bus_handle, &dev_cfg, &s_dev_handle);
+    esp_err_t err = i2c_master_bus_add_device(s_bus_handle, &dev_cfg, &s_dev_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "I2C device add failed: %s", esp_err_to_name(err));
         return;
     }
 
     /* SSD1306 initialization sequence */
-    oled_send_cmd(SSD1306_CMD_DISPLAY_OFF);
+    err = oled_send_cmd(SSD1306_CMD_DISPLAY_OFF);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "First SSD1306 command failed: %s — display not responding",
+                 esp_err_to_name(err));
+        return;
+    }
 
     oled_send_cmd(SSD1306_CMD_SET_MUX_RATIO);
     oled_send_cmd(0x3F);                         /* 64 lines */
@@ -353,12 +422,12 @@ void oled_init(void)
     oled_flush();
 
     s_initialized = true;
-    ESP_LOGI(TAG, "OLED initialized (SSD1306 128x64, SDA=%d SCL=%d)",
-             OLED_SDA_PIN, OLED_SCL_PIN);
+    ESP_LOGI(TAG, "OLED initialized (SSD1306 128x64, addr=0x%02X, SDA=%d SCL=%d)",
+             found_addr, found_sda, found_scl);
 }
 
-void oled_update(int drone_count, bool scanner_connected, bool wifi_connected,
-                 bool backend_ok, int upload_count, bool gps_fix,
+void oled_update(int drone_count, bool ble_scanner_ok, bool wifi_scanner_ok,
+                 bool backend_ok, int upload_count, bool wifi_network_ok,
                  float battery_pct, uint32_t uptime_s, const char *device_id)
 {
     if (!s_initialized) {
@@ -380,39 +449,37 @@ void oled_update(int drone_count, bool scanner_connected, bool wifi_connected,
     /* Line 1: Separator */
     fb_draw_hline(0, 127, 9);
 
-    /* Line 2: Scanner status (BLE + WiFi scanners) */
-    /* scanner_connected param repurposed: passed as combined, but we show split */
-    snprintf(line, sizeof(line), "BLE:%s WiFi:%s",
-             scanner_connected ? "OK" : "--",
-             wifi_connected ? "OK" : "--");
+    /* Line 2: WiFi network + Backend server status */
+    snprintf(line, sizeof(line), "Net:%s Svr:%s",
+             wifi_network_ok ? "OK" : "--",
+             backend_ok ? "OK" : "--");
     fb_draw_string(0, 12, line);
 
-    /* Line 3: Backend + Uploads */
-    snprintf(line, sizeof(line), "Svr:%s  Up:%d",
-             backend_ok ? "OK" : "--", upload_count);
+    /* Line 3: Scanner connections (BLE + WiFi) */
+    snprintf(line, sizeof(line), "BLE:%s WiFi:%s",
+             ble_scanner_ok ? "OK" : "--",
+             wifi_scanner_ok ? "OK" : "--");
     fb_draw_string(0, 22, line);
 
-    /* Line 4: Drones + GPS */
-    snprintf(line, sizeof(line), "Drones:%-3d GPS:%s",
-             drone_count, gps_fix ? "OK" : "--");
+    /* Line 4: Drones + Uploads */
+    snprintf(line, sizeof(line), "Drones:%-3d Up:%d",
+             drone_count, upload_count);
     fb_draw_string(0, 32, line);
 
     /* Line 5: Battery + Uptime */
     uint32_t m = (uptime_s % 3600) / 60;
     uint32_t s = uptime_s % 60;
-    snprintf(line, sizeof(line), "Bat:%d%% Up:%02lu:%02lu",
+    snprintf(line, sizeof(line), "Bat:%d%% %02lu:%02lu",
              (int)battery_pct, (unsigned long)m, (unsigned long)s);
     fb_draw_string(0, 42, line);
 
-    /* Line 6: Status indicator */
-    if (!scanner_connected && !wifi_connected) {
-        fb_draw_string(0, 55, "! NO SCANNERS");
-    } else if (!scanner_connected) {
-        fb_draw_string(0, 55, "! NO BLE SCAN");
-    } else if (!wifi_connected) {
-        fb_draw_string(0, 55, "! NO WIFI SCAN");
-    } else if (!backend_ok) {
+    /* Line 6: Status indicator — prioritized */
+    if (!wifi_network_ok) {
+        fb_draw_string(0, 55, "! NO NETWORK");
+    } else if (!backend_ok && upload_count == 0) {
         fb_draw_string(0, 55, "! SVR OFFLINE");
+    } else if (!ble_scanner_ok && !wifi_scanner_ok) {
+        fb_draw_string(0, 55, "! NO SCANNERS");
     } else if (drone_count > 0) {
         fb_draw_string(0, 55, "* TRACKING");
     } else {
@@ -425,8 +492,8 @@ void oled_update(int drone_count, bool scanner_connected, bool wifi_connected,
 void oled_update_legacy(int drone_count, bool gps_fix, bool wifi_connected,
                         float battery_pct, int upload_count)
 {
-    oled_update(drone_count, true, wifi_connected, true, upload_count,
-                gps_fix, battery_pct, 0, NULL);
+    oled_update(drone_count, false, false, true, upload_count,
+                wifi_connected, battery_pct, 0, NULL);
 }
 
 void oled_show_detection(const char *drone_id, const char *manufacturer,
@@ -436,17 +503,19 @@ void oled_show_detection(const char *drone_id, const char *manufacturer,
         return;
     }
 
-    /* Draw detection info on the lower portion of the screen */
+    /* Clear bottom portion of framebuffer (pages 5-7, y=40..63) */
+    memset(&s_framebuf[5 * OLED_WIDTH], 0, 3 * OLED_WIDTH);
+
     char line[24];
 
-    /* Line 5: Separator */
-    fb_draw_hline(0, 127, 42);
+    /* Separator at y=41 */
+    fb_draw_hline(0, 127, 41);
 
-    /* Line 6: Drone ID (truncated) */
+    /* Drone ID (truncated) */
     snprintf(line, sizeof(line), "ID:%.17s", drone_id ? drone_id : "???");
-    fb_draw_string(0, 45, line);
+    fb_draw_string(0, 44, line);
 
-    /* Line 7: Manufacturer + RSSI */
+    /* Manufacturer + RSSI */
     snprintf(line, sizeof(line), "%.8s %ddBm %.0f%%",
              (manufacturer && manufacturer[0]) ? manufacturer : "Unknown",
              rssi, confidence * 100.0f);

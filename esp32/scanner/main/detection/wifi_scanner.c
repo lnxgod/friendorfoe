@@ -25,6 +25,7 @@
 #include "detection_types.h"
 #include "core/task_priorities.h"
 
+#include <stdlib.h>
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -44,24 +45,24 @@
 static const char *TAG = "wifi_scan";
 
 #ifdef CONFIG_SCANNER_5GHZ_ENABLED
-#define CHANNEL_DWELL_MS            200   /* Dual-band: faster sweep needed */
+#define CHANNEL_DWELL_MS            2000  /* 2s dwell — C5 radio needs settle time */
 #else
-#define CHANNEL_DWELL_MS            100
+#define CHANNEL_DWELL_MS            250
 #endif
 
 /* ── Channel tables ────────────────────────────────────────────────────────── */
 
 static const uint16_t s_channels_24ghz[] = {
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+    1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13   /* popular channels first */
 };
 #define NUM_CHANNELS_24GHZ  (sizeof(s_channels_24ghz) / sizeof(s_channels_24ghz[0]))
 
 #ifdef CONFIG_SCANNER_5GHZ_ENABLED
 static const uint16_t s_channels_5ghz[] = {
-    36,  40,  44,  48,                                     /* UNII-1 */
-    52,  56,  60,  64,                                     /* UNII-2 */
-    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, /* UNII-2 Ext */
-    149, 153, 157, 161, 165                                /* UNII-3 */
+    36,  40,  44,  48,                             /* UNII-1 (most common) */
+    149, 153, 157, 161, 165,                       /* UNII-3 (common) */
+    52,  56,  60,  64,                             /* UNII-2 */
+    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144  /* UNII-2 Ext */
 };
 #define NUM_CHANNELS_5GHZ   (sizeof(s_channels_5ghz) / sizeof(s_channels_5ghz[0]))
 #endif
@@ -380,6 +381,27 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
         }
     }
 
+    /* Log every SSID starting with F, and all unique SSIDs */
+    static char seen_ssids[50][33];
+    static int seen_count = 0;
+    if (ssid[0] != '\0') {
+        /* Always log F-starting SSIDs */
+        if (ssid[0] == 'F' || ssid[0] == 'f') {
+            ESP_LOGI(TAG, "F-SSID: \"%s\" RSSI=%d ch=%d", ssid, rssi, s_current_channel);
+        }
+        /* Log new unique SSIDs */
+        bool already = false;
+        for (int si = 0; si < seen_count; si++) {
+            if (strcmp(seen_ssids[si], ssid) == 0) { already = true; break; }
+        }
+        if (!already && seen_count < 50) {
+            strncpy(seen_ssids[seen_count], ssid, 32);
+            seen_ssids[seen_count][32] = '\0';
+            seen_count++;
+            ESP_LOGI(TAG, "NEW[%d]: \"%s\" RSSI=%d ch=%d", seen_count, ssid, rssi, s_current_channel);
+        }
+    }
+
     /* Priority 3: SSID pattern match */
     if (ssid[0] != '\0') {
         const drone_ssid_pattern_t *pattern = wifi_ssid_match(ssid);
@@ -545,47 +567,226 @@ static uint16_t advance_channel(void)
 #endif
 }
 
-/* ── WiFi scan task (channel hopping) ──────────────────────────────────────── */
+/* ── WiFi scan task (active scan + promiscuous hybrid) ──────────────────────── */
+
+/*
+ * The ESP32-C5's promiscuous mode has poor frame capture after channel switches.
+ * Hybrid approach: run periodic active scans (esp_wifi_scan_start) to reliably
+ * discover all APs, then feed matching SSIDs into the detection pipeline.
+ * Promiscuous mode still runs in parallel for DJI IEs and beacon RID.
+ */
+
+/* ── Scan configuration ─────────────────────────────────────────────────────── */
+
+#define FULL_SCAN_INTERVAL_MS    2000   /* Rediscover new emitters at least every 2s */
+#define FAST_RESCAN_INTERVAL_MS  150    /* Revisit hot channels ~6-7 Hz */
+#define MAX_AP_RECORDS           64
+#define MAX_HOT_CHANNELS         3      /* Keep the hot set small for low latency */
+#define HOT_CHANNEL_TTL_MS       4000   /* Drop stale channels quickly */
+
+/* Hot channel tracking — channels where interesting targets were last seen */
+typedef struct {
+    uint16_t channel;
+    int64_t  last_seen_ms;
+    uint16_t hits;
+} hot_channel_t;
+
+static hot_channel_t s_hot_channels[MAX_HOT_CHANNELS];
+static int      s_hot_channel_count = 0;
+
+static void prune_hot_channels(int64_t ts_ms)
+{
+    int write_idx = 0;
+    for (int i = 0; i < s_hot_channel_count; i++) {
+        if ((ts_ms - s_hot_channels[i].last_seen_ms) <= HOT_CHANNEL_TTL_MS) {
+            if (write_idx != i) {
+                s_hot_channels[write_idx] = s_hot_channels[i];
+            }
+            write_idx++;
+        }
+    }
+    s_hot_channel_count = write_idx;
+}
+
+static void update_hot_channel(uint16_t ch)
+{
+    int64_t ts_ms = now_ms();
+
+    /* Check if already tracked */
+    for (int i = 0; i < s_hot_channel_count; i++) {
+        if (s_hot_channels[i].channel == ch) {
+            hot_channel_t slot = s_hot_channels[i];
+            slot.last_seen_ms = ts_ms;
+            if (slot.hits < UINT16_MAX) {
+                slot.hits++;
+            }
+
+            /* Move most-recent channels to the end for rescans. */
+            for (int j = i; j < s_hot_channel_count - 1; j++) {
+                s_hot_channels[j] = s_hot_channels[j + 1];
+            }
+            s_hot_channels[s_hot_channel_count - 1] = slot;
+            return;
+        }
+    }
+
+    prune_hot_channels(ts_ms);
+
+    hot_channel_t slot = {
+        .channel = ch,
+        .last_seen_ms = ts_ms,
+        .hits = 1,
+    };
+
+    /* Add or replace oldest */
+    if (s_hot_channel_count < MAX_HOT_CHANNELS) {
+        s_hot_channels[s_hot_channel_count++] = slot;
+    } else {
+        /* Shift and add at end */
+        for (int i = 0; i < MAX_HOT_CHANNELS - 1; i++) {
+            s_hot_channels[i] = s_hot_channels[i + 1];
+        }
+        s_hot_channels[MAX_HOT_CHANNELS - 1] = slot;
+    }
+}
+
+/* ── Process scan results ──────────────────────────────────────────────────── */
+
+static void process_scan_results(void)
+{
+    uint16_t ap_count = 0;
+    esp_wifi_scan_get_ap_num(&ap_count);
+    if (ap_count == 0) return;
+    if (ap_count > MAX_AP_RECORDS) ap_count = MAX_AP_RECORDS;
+
+    wifi_ap_record_t *ap_list = malloc(ap_count * sizeof(wifi_ap_record_t));
+    if (!ap_list) return;
+
+    esp_wifi_scan_get_ap_records(&ap_count, ap_list);
+    s_beacon_frames += ap_count;
+    s_total_frames += ap_count;
+
+    for (int i = 0; i < ap_count; i++) {
+        const char *ssid = (const char *)ap_list[i].ssid;
+        int8_t rssi = ap_list[i].rssi;
+        uint8_t *bssid = ap_list[i].bssid;
+        uint16_t ch = ap_list[i].primary;
+
+        if (ssid[0] == '\0') continue;
+
+        /* Build detection for every AP — backend handles filtering */
+        drone_detection_t det;
+        init_detection(&det, bssid, rssi, ssid);
+        det.freq_mhz = (ch <= 13) ? (2407 + ch * 5) : (5000 + ch * 5);
+
+        /* Classify: drone pattern match, soft match, or unmatched */
+        const drone_ssid_pattern_t *pattern = wifi_ssid_match(ssid);
+        bool soft = (!pattern && wifi_ssid_match_soft(ssid));
+
+        if (pattern) {
+            det.source = DETECTION_SRC_WIFI_SSID;
+            det.confidence = 0.30f;
+            strncpy(det.manufacturer, pattern->manufacturer,
+                    sizeof(det.manufacturer) - 1);
+            strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
+            update_hot_channel(ch);
+        } else if (soft) {
+            det.source = DETECTION_SRC_WIFI_SSID;
+            det.confidence = 0.15f;
+            strncpy(det.manufacturer, "Drone Likely", sizeof(det.manufacturer) - 1);
+            strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
+            update_hot_channel(ch);
+        } else {
+            det.source = DETECTION_SRC_WIFI_OUI;
+            det.confidence = 0.05f;
+            strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
+        }
+
+        if (s_detection_queue) {
+            xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(5));
+        }
+    }
+
+    free(ap_list);
+}
+
+/* ── Full discovery scan (all channels) ────────────────────────────────────── */
+
+static void do_full_scan(void)
+{
+    wifi_scan_config_t cfg = {
+        .ssid        = NULL,
+        .bssid       = NULL,
+        .channel     = 0,           /* all channels */
+        .show_hidden = true,
+        .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time.active = { .min = 30, .max = 80 },
+    };
+
+    esp_err_t err = esp_wifi_scan_start(&cfg, true);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Full scan failed: %s", esp_err_to_name(err));
+        return;
+    }
+    process_scan_results();
+}
+
+/* ── Fast targeted rescan (hot channels only) ──────────────────────────────── */
+
+static void do_fast_rescan(void)
+{
+    prune_hot_channels(now_ms());
+    if (s_hot_channel_count == 0) return;
+
+    for (int i = 0; i < s_hot_channel_count; i++) {
+        wifi_scan_config_t cfg = {
+            .ssid        = NULL,
+            .bssid       = NULL,
+            .channel     = s_hot_channels[i].channel,  /* single hot channel */
+            .show_hidden = true,
+            .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
+            .scan_time.active = { .min = 8, .max = 24 },
+        };
+
+        esp_err_t err = esp_wifi_scan_start(&cfg, true);
+        if (err != ESP_OK) continue;
+        process_scan_results();
+    }
+}
+
+/* ── WiFi scan task ────────────────────────────────────────────────────────── */
 
 static void wifi_scan_task(void *arg)
 {
     ESP_LOGI(TAG, "WiFi scan task started on core %d", xPortGetCoreID());
-#ifdef CONFIG_SCANNER_5GHZ_ENABLED
-    ESP_LOGI(TAG, "Dual-band: %d channels (2.4 GHz: %d, 5 GHz: %d)",
-             (int)(NUM_CHANNELS_24GHZ + NUM_CHANNELS_5GHZ),
-             (int)NUM_CHANNELS_24GHZ, (int)NUM_CHANNELS_5GHZ);
-#else
-    ESP_LOGI(TAG, "2.4 GHz only: %d channels", (int)NUM_CHANNELS_24GHZ);
-#endif
+    ESP_LOGI(TAG, "Adaptive scan: full every %dms, fast rescan every %dms on hot channels",
+             FULL_SCAN_INTERVAL_MS, FAST_RESCAN_INTERVAL_MS);
 
+    TickType_t last_full_scan = 0;
     TickType_t last_heartbeat = xTaskGetTickCount();
 
     while (1) {
-        /* Sweep all channels */
-        int num_channels = NUM_CHANNELS_24GHZ;
-#ifdef CONFIG_SCANNER_5GHZ_ENABLED
-        num_channels += NUM_CHANNELS_5GHZ;
-#endif
-        for (int i = 0; i < num_channels; i++) {
-            s_current_channel = advance_channel();
+        TickType_t now = xTaskGetTickCount();
 
-            esp_err_t err = esp_wifi_set_channel(s_current_channel, WIFI_SECOND_CHAN_NONE);
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "Failed to set channel %d: %s",
-                         s_current_channel, esp_err_to_name(err));
-            }
-
-            vTaskDelay(pdMS_TO_TICKS(CHANNEL_DWELL_MS));
+        /* Full discovery scan periodically */
+        if ((now - last_full_scan) >= pdMS_TO_TICKS(FULL_SCAN_INTERVAL_MS)) {
+            do_full_scan();
+            last_full_scan = now;
+        } else if (s_hot_channel_count > 0) {
+            /* Fast rescan hot channels between full scans */
+            do_fast_rescan();
         }
 
-        /* Heartbeat every ~10 seconds */
-        if ((xTaskGetTickCount() - last_heartbeat) >= pdMS_TO_TICKS(10000)) {
-            last_heartbeat = xTaskGetTickCount();
-            ESP_LOGI(TAG, "ch=%d tot=%lu bcn=%lu",
-                     s_current_channel,
+        /* Heartbeat */
+        if ((now - last_heartbeat) >= pdMS_TO_TICKS(10000)) {
+            last_heartbeat = now;
+            ESP_LOGI(TAG, "scan: tot=%lu bcn=%lu hot_ch=%d",
                      (unsigned long)s_total_frames,
-                     (unsigned long)s_beacon_frames);
+                     (unsigned long)s_beacon_frames,
+                     s_hot_channel_count);
         }
+
+        vTaskDelay(pdMS_TO_TICKS(FAST_RESCAN_INTERVAL_MS));
     }
 }
 
@@ -595,11 +796,11 @@ void wifi_scanner_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
 
-    /* Initialize WiFi in NULL mode (no STA/AP, just promiscuous) */
+    /* Initialize WiFi in STA mode (needed for active scan + promiscuous) */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
 
     /* Capture management frames (beacons, probe responses contain drone IEs) */

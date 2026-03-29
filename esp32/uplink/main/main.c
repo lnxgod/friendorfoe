@@ -85,10 +85,9 @@ static void display_task(void *arg)
             nvs_config_get_device_id(device_id_buf, sizeof(device_id_buf));
         }
 
-        /* Update status screen: pass BLE scanner status as 'scanner_connected',
-           WiFi scanner status as 'wifi_connected' (network status shown via backend_ok) */
+        /* OLED: BLE scanner, WiFi scanner, backend, uploads, WiFi network, battery, uptime, ID */
         oled_update(drone_count, ble_ok, wifi_scan_ok, backend_ok,
-                    upload_count, gps_fix, battery_pct, uptime, device_id_buf);
+                    upload_count, wifi_ok, battery_pct, uptime, device_id_buf);
 
         if (overlay_ticks > 0) {
             oled_show_detection(last_det.drone_id, NULL,
@@ -99,9 +98,12 @@ static void display_task(void *arg)
         /* Update LED pattern based on system state */
         bool standalone  = wifi_sta_is_standalone();
 
+#ifndef UPLINK_ESP32
         if (!gps_fix) {
             led_set_pattern(LED_NO_GPS);
-        } else if (!standalone && !wifi_ok) {
+        } else
+#endif
+        if (!standalone && !wifi_ok) {
             led_set_pattern(LED_ERROR);
         } else if (!scanner_ok) {
             led_set_pattern(LED_NO_SCANNER);
@@ -123,7 +125,11 @@ static void display_task(void *arg)
 static void print_banner(void)
 {
     ESP_LOGI(TAG, "=============================================");
+#ifdef UPLINK_ESP32
+    ESP_LOGI(TAG, "  Friend or Foe -- Uplink (ESP32)");
+#else
     ESP_LOGI(TAG, "  Friend or Foe -- Uplink (ESP32-C3)");
+#endif
     ESP_LOGI(TAG, "  Drone Detection Backend Relay");
     ESP_LOGI(TAG, "=============================================");
 
@@ -203,7 +209,7 @@ void app_main(void)
 
     /* ── 9. Initialize OLED display ───────────────────────────────────── */
     oled_init();
-    oled_update(0, false, wifi_sta_is_connected(), false, 0, false, 0.0f, 0, NULL);
+    oled_update(0, false, false, false, 0, wifi_sta_is_connected(), 0.0f, 0, NULL);
 
     /* ── 10. Initialize battery monitor ───────────────────────────────── */
     battery_init();

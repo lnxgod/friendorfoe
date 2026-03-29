@@ -14,6 +14,7 @@
  */
 
 #include "ble_remote_id.h"
+#include "ble_fingerprint.h"
 #include "open_drone_id_parser.h"
 #include "constants.h"
 #include "detection_types.h"
@@ -339,10 +340,145 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         break;
     }
 
+    case BLE_GAP_EVENT_EXT_DISC: {
+        /* Extended discovery event (BLE 5) — same processing as legacy */
+        const struct ble_gap_ext_disc_desc *ext = &event->ext_disc;
+
+        static uint32_t s_ext_adv_rx = 0;
+        s_ext_adv_rx++;
+        if (s_ext_adv_rx % 500 == 1) {
+            ESP_LOGI(TAG, "BLE ext_adv (total=%lu rssi=%d len=%d legacy=%d)",
+                     (unsigned long)s_ext_adv_rx, ext->rssi,
+                     ext->length_data,
+                     (ext->props & BLE_HCI_ADV_LEGACY_MASK) ? 1 : 0);
+        }
+
+        /* Process ODID service data from ext_disc payload */
+        if (ext->data != NULL && ext->length_data > 0) {
+            int pos = 0;
+            while (pos + 1 < ext->length_data) {
+                uint8_t ad_len = ext->data[pos];
+                if (ad_len == 0 || pos + 1 + ad_len > ext->length_data) break;
+                uint8_t ad_type = ext->data[pos + 1];
+
+                if (ad_type == 0x16 && ad_len >= 3) {
+                    uint16_t uuid16 = (uint16_t)ext->data[pos + 2] |
+                                      ((uint16_t)ext->data[pos + 3] << 8);
+                    if (uuid16 == ODID_SERVICE_UUID_16) {
+                        process_odid_service_data(
+                            ext->addr.val,
+                            &ext->data[pos + 4],
+                            ad_len - 3,
+                            ext->rssi
+                        );
+                    }
+                }
+                pos += 1 + ad_len;
+            }
+        }
+
+        /* Send BLE devices to detection queue, deduplicated by fingerprint hash */
+        if (s_detection_queue != NULL) {
+            int64_t now_ms = esp_timer_get_time() / 1000;
+
+            /* Compute fingerprint first to dedup by hash, not MAC */
+            ble_fingerprint_t fp;
+            ble_fingerprint_compute(ext->data, ext->length_data,
+                                    ext->addr.type,
+                                    (uint8_t)(ext->props & 0xFF), &fp);
+
+            /* Rate limit: trackers every 2s, others every 5s */
+            static uint32_t last_hashes[30];
+            static int64_t  last_times[30];
+            static int      hash_idx = 0;
+            int rate_limit_ms = fp.is_tracker ? 2000 : 10000;
+
+            bool recently_sent = false;
+            for (int i = 0; i < 30; i++) {
+                if (last_hashes[i] == fp.hash &&
+                    (now_ms - last_times[i]) < rate_limit_ms) {
+                    recently_sent = true;
+                    break;
+                }
+            }
+
+            if (!recently_sent) {
+                last_hashes[hash_idx] = fp.hash;
+                last_times[hash_idx] = now_ms;
+                hash_idx = (hash_idx + 1) % 30;
+
+                drone_detection_t det = {0};
+                det.source = DETECTION_SRC_BLE_RID;
+                det.rssi = ext->rssi;
+                det.last_updated_ms = now_ms;
+                det.first_seen_ms = now_ms;
+
+                /* Confidence based on device classification */
+                if (fp.is_tracker) {
+                    det.confidence = 0.50f;  /* Trackers are high interest */
+                } else if (fp.device_type == BLE_DEV_DRONE_CONTROLLER) {
+                    det.confidence = 0.60f;
+                } else if (fp.device_type != BLE_DEV_UNKNOWN) {
+                    det.confidence = 0.05f;  /* Known type, low interest */
+                } else {
+                    det.confidence = 0.02f;  /* Unknown */
+                }
+
+                /* Use fingerprint hash + type as drone_id for backend tracking */
+                snprintf(det.drone_id, sizeof(det.drone_id),
+                         "BLE:%08lX:%s",
+                         (unsigned long)fp.hash, fp.type_name);
+
+                snprintf(det.bssid, sizeof(det.bssid),
+                         "%02X:%02X:%02X:%02X:%02X:%02X",
+                         ext->addr.val[5], ext->addr.val[4], ext->addr.val[3],
+                         ext->addr.val[2], ext->addr.val[1], ext->addr.val[0]);
+
+                /* Store device type in manufacturer field */
+                snprintf(det.manufacturer, sizeof(det.manufacturer),
+                         "%s", fp.type_name);
+
+                /* Store fingerprint hash in model field for backend correlation */
+                snprintf(det.model, sizeof(det.model),
+                         "FP:%08lX", (unsigned long)fp.hash);
+
+                xQueueSend(s_detection_queue, &det, 0);
+            }
+        }
+
+#if CONFIG_FOF_GLASSES_DETECTION
+        if (s_glasses_queue != NULL && glasses_detection_is_enabled()) {
+            struct ble_hs_adv_fields fields;
+            int parse_rc = ble_hs_adv_parse_fields(&fields, ext->data, ext->length_data);
+            if (parse_rc == 0) {
+                const char *adv_name = NULL;
+                int adv_name_len = 0;
+                const uint8_t *mfr_data = NULL;
+                int mfr_data_len = 0;
+                uint16_t svc_uuids[8];
+                int svc_uuid_count = 0;
+                uint16_t appearance = 0;
+
+                if (fields.name) { adv_name = (const char *)fields.name; adv_name_len = fields.name_len; }
+                if (fields.mfg_data && fields.mfg_data_len >= 2) { mfr_data = fields.mfg_data; mfr_data_len = fields.mfg_data_len; }
+                if (fields.appearance_is_present) appearance = fields.appearance;
+
+                glasses_detection_t gdet;
+                if (glasses_check_advertisement(ext->addr.val, adv_name, adv_name_len,
+                        mfr_data, mfr_data_len, svc_uuids, svc_uuid_count,
+                        appearance, ext->rssi, &gdet)) {
+                    xQueueSend(s_glasses_queue, &gdet, pdMS_TO_TICKS(5));
+                }
+            }
+        }
+#endif
+
+        break;
+    }
+
     case BLE_GAP_EVENT_DISC_COMPLETE:
         ESP_LOGI(TAG, "BLE scan complete, restarting...");
         if (s_scanning) {
-            /* Restart scanning */
             ble_remote_id_start_scan_internal();
         }
         break;
@@ -358,27 +494,51 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
 static void ble_remote_id_start_scan_internal(void)
 {
-    struct ble_gap_disc_params scan_params = {
-        .passive = 0,           /* Active scanning to get scan responses */
-        .itvl = 0x0010,         /* Scan interval (10ms in 0.625ms units = 10ms) */
-        .window = 0x0010,       /* Scan window = interval = continuous scanning */
-        .filter_duplicates = 0, /* Don't filter: we want every advertisement */
-        .limited = 0,
-        .filter_policy = 0,  /* Accept all (no whitelist filtering) */
+    /*
+     * Use ble_gap_ext_disc for BLE 5 extended discovery on ESP32-S3.
+     * Passive scanning with 100% duty cycle (window == interval) to catch
+     * every advertisement without missing any while sending SCAN_REQ.
+     * Handles both legacy (4.x) and extended (5.x) advertising.
+     */
+    struct ble_gap_ext_disc_params uncoded_params = {
+        .itvl = 0x0060,        /* 60ms scan interval (96 * 0.625ms) */
+        .window = 0x0060,      /* 60ms window = 100% duty cycle */
+        .passive = 1,          /* Passive: never miss adverts while sending SCAN_REQ */
     };
 
-    int rc = ble_gap_disc(
+    int rc = ble_gap_ext_disc(
         BLE_OWN_ADDR_PUBLIC,
-        BLE_HS_FOREVER,         /* Scan indefinitely */
-        &scan_params,
+        0,                     /* duration: 0 = forever */
+        0,                     /* period: 0 = continuous */
+        0,                     /* filter_duplicates: 0 = report every packet */
+        0,                     /* filter_policy: 0 = accept all */
+        0,                     /* limited: 0 = general discovery */
+        &uncoded_params,       /* 1M PHY params */
+        NULL,                  /* coded PHY params (NULL = don't scan coded) */
         ble_gap_event_cb,
         NULL
     );
 
     if (rc != 0) {
-        ESP_LOGE(TAG, "ble_gap_disc() failed: %d", rc);
+        ESP_LOGE(TAG, "ble_gap_ext_disc() failed: %d, falling back to legacy", rc);
+        /* Fallback to legacy discovery */
+        struct ble_gap_disc_params legacy_params = {
+            .passive = 1,
+            .itvl = 0x0060,
+            .window = 0x0060,
+            .filter_duplicates = 0,
+            .limited = 0,
+            .filter_policy = 0,
+        };
+        rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER,
+                          &legacy_params, ble_gap_event_cb, NULL);
+        if (rc != 0) {
+            ESP_LOGE(TAG, "ble_gap_disc() also failed: %d", rc);
+        } else {
+            ESP_LOGI(TAG, "BLE scanning started (legacy passive, continuous)");
+        }
     } else {
-        ESP_LOGI(TAG, "BLE scanning started (active, continuous)");
+        ESP_LOGI(TAG, "BLE scanning started (ext_disc passive, 100%% duty)");
     }
 }
 

@@ -357,7 +357,7 @@ static void uart_tx_task(void *arg)
                                 s_current_channel, uptime_s);
             led_set_pattern(LED_SCANNING);
 
-            ESP_LOGD(TAG, "Status: ble=%d wifi=%d ch=%d uptime=%lus",
+            ESP_LOGI(TAG, "Status TX: ble=%d wifi=%d ch=%d uptime=%lus",
                      s_ble_count, s_wifi_count,
                      s_current_channel, (unsigned long)uptime_s);
         }
