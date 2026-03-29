@@ -1,0 +1,10 @@
+# Friend or Foe — Scanner sdkconfig defaults for plain ESP32 (no PSRAM)
+
+# ── Disable PSRAM (plain ESP32 dev boards don't have it) ─────────────────────
+# CONFIG_SPIRAM is not set
+
+# ── Flash size (2MB boards) ──────────────────────────────────────────────────
+CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
+
+# ── Console UART at 115200 ──────────────────────────────────────────────────
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
