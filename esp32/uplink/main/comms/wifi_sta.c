@@ -6,6 +6,7 @@
  */
 
 #include "wifi_sta.h"
+#include "wifi_ap.h"
 #include "nvs_config.h"
 #include "config.h"
 
@@ -14,6 +15,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
@@ -24,6 +26,7 @@ static const char *TAG = "wifi_sta";
 #define WIFI_FAIL_BIT       BIT1
 
 static EventGroupHandle_t s_wifi_event_group = NULL;
+static esp_timer_handle_t s_reconnect_timer  = NULL;
 static bool               s_is_connected     = false;
 static bool               s_standalone       = false;
 static int                s_retry_count      = 0;
@@ -44,6 +47,15 @@ static int backoff_delay_ms(int retry)
     return delay;
 }
 
+/* ── Reconnect timer callback (runs outside event loop) ───────────────── */
+
+static void reconnect_timer_cb(void *arg)
+{
+    ESP_LOGI(TAG, "Reconnect timer fired, attempting connection...");
+    s_retry_count++;
+    esp_wifi_connect();
+}
+
 /* ── Event handlers ────────────────────────────────────────────────────── */
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -61,9 +73,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGW(TAG, "Disconnected (retry=%d), reconnecting in %dms...",
                  s_retry_count, delay);
 
-        vTaskDelay(pdMS_TO_TICKS(delay));
-        s_retry_count++;
-        esp_wifi_connect();
+        /* Re-enable AP for setup when STA is disconnected */
+        wifi_ap_start();
+
+        /* Schedule reconnect via timer — don't block the event loop */
+        esp_timer_start_once(s_reconnect_timer, (uint64_t)delay * 1000);
     }
 }
 
@@ -76,6 +90,9 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
 
         s_is_connected = true;
         s_retry_count  = 0;
+
+        /* Disable AP — STA is connected, AP not needed */
+        wifi_ap_stop();
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
@@ -85,6 +102,13 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
 void wifi_sta_init(void)
 {
     s_wifi_event_group = xEventGroupCreate();
+
+    /* Create reconnect timer (one-shot, used for non-blocking backoff) */
+    const esp_timer_create_args_t timer_args = {
+        .callback = reconnect_timer_cb,
+        .name     = "wifi_reconn",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_reconnect_timer));
 
     /* Initialize TCP/IP stack */
     ESP_ERROR_CHECK(esp_netif_init());

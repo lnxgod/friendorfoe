@@ -24,6 +24,18 @@ extern "C" {
 void wifi_ap_init(void);
 
 /**
+ * Stop the SoftAP (hide SSID, disable beacon).
+ * Called when WiFi STA connects successfully — AP is only needed for setup.
+ */
+void wifi_ap_stop(void);
+
+/**
+ * Start/restart the SoftAP.
+ * Called when WiFi STA disconnects — re-enable AP for reconfiguration.
+ */
+void wifi_ap_start(void);
+
+/**
  * Get the number of stations currently connected to the AP.
  */
 int wifi_ap_get_station_count(void);

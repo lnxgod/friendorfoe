@@ -281,6 +281,22 @@
         <div class="desc">Connect your ESP32-S3 via USB, then click to flash. That's it.</div>
       </div>
       <div class="flash-card no-config">
+        <h3>WiFi Scanner (ESP32)</h3>
+        <div class="chip">Plain ESP32 DevKit — 2.4 GHz WiFi only, no config needed</div>
+        <ul>
+          <li>WiFi promiscuous capture (2.4 GHz)</li>
+          <li>DJI DroneID IE parsing</li>
+          <li>WiFi Beacon RID + French DRI</li>
+          <li>SSID pattern matching (104 patterns)</li>
+          <li>Bayesian sensor fusion</li>
+        </ul>
+        <esp-web-install-button manifest="manifest-scanner-esp32.json">
+          <button slot="activate">Flash WiFi Scanner (ESP32)</button>
+          <span slot="not-allowed">Your browser does not support Web Serial</span>
+        </esp-web-install-button>
+        <div class="desc">Cheapest option (~$5). WiFi detection only, no BLE. Connect via USB and flash.</div>
+      </div>
+      <div class="flash-card no-config">
         <h3>Scanner Board (C5)</h3>
         <div class="chip">ESP32-C5-DevKitC-1 — dual-band 2.4 + 5 GHz, no config needed</div>
         <ul>

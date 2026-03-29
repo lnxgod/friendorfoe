@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -166,3 +167,25 @@ async def get_node_detections(
     ]
 
     return DetectionHistoryResponse(count=len(items), total=total, detections=items)
+
+
+# ---------------------------------------------------------------------------
+# GET /nodes/{device_id}/live — proxy to ESP32 status page (avoids CORS)
+# ---------------------------------------------------------------------------
+
+@router.get("/{device_id}/live")
+async def get_node_live_status(device_id: str):
+    """Proxy to an ESP32 node's /api/status endpoint. Avoids browser CORS issues."""
+    from app.routers.detections import _node_heartbeats
+
+    node_info = _node_heartbeats.get(device_id)
+    if not node_info or not node_info.get("ip"):
+        raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP known")
+
+    ip = node_info["ip"]
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"http://{ip}/api/status")
+            return r.json()
+    except Exception as e:
+        return {"error": str(e), "device_id": device_id, "ip": ip}

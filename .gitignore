@@ -41,3 +41,6 @@ esp32/**/sdkconfig.ble-scanner-*
 *.iml
 esp32/**/platformio_override.ini
 esp32/**/local_coords.h
+
+# Backend local dashboard
+backend/app/static/

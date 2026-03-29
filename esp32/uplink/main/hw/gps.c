@@ -13,6 +13,7 @@
 
 #ifdef UPLINK_ESP32
 /* GPS disabled on plain ESP32 uplink — positions are fixed in backend */
+#include <string.h>
 #include "esp_log.h"
 static const char *TAG = "gps";
 void gps_init(void) { ESP_LOGI(TAG, "GPS disabled (fixed node positions via backend)"); }
@@ -25,7 +26,6 @@ bool gps_get_position(gps_position_t *pos) {
     if (pos) { memset(pos, 0, sizeof(*pos)); }
     return false;
 }
-#include <string.h>
 #else
 
 #include <string.h>

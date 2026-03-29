@@ -293,7 +293,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    /* ── 1b. Initialize TCP/IP network interface (required before WiFi) ── */
+    /* ── 1b. Initialize TCP/IP network interface (required for radio subsystem) ── */
     ESP_ERROR_CHECK(esp_netif_init());
 
     /* ── 2. Initialize default event loop ─────────────────────────────── */
@@ -336,10 +336,15 @@ void app_main(void)
     /* ── 6. Initialize UART TX (hardware setup, no task yet) ──────────── */
     uart_tx_init();
 
+#ifndef BLE_SCANNER_ONLY
     /* ── 7. Initialize WiFi scanner (sets up promiscuous mode) ────────── */
     wifi_scanner_init(detection_queue);
     ESP_LOGI(TAG, "WiFi scanner initialised");
+#else
+    ESP_LOGI(TAG, "WiFi scanner DISABLED (BLE-only mode)");
+#endif
 
+#ifndef WIFI_SCANNER_ONLY
     /* ── 7b. Initialize BLE scanner (NimBLE) ─────────────────────────── */
     ble_remote_id_init(detection_queue);
     ESP_LOGI(TAG, "BLE Remote ID scanner initialised");
@@ -353,18 +358,25 @@ void app_main(void)
         ESP_LOGI(TAG, "Glasses detection queue created (10 slots)");
     }
 #endif
+#else
+    ESP_LOGI(TAG, "BLE scanner DISABLED (WiFi-only mode)");
+#endif
 
     /* ── 8. Start UART TX task on Core 1 (processing core) ──────────────── */
     uart_tx_start(detection_queue);
 
+#ifndef BLE_SCANNER_ONLY
     /* ── 9. Start WiFi scanner task on Core 0 (radio core) ───────────── */
     wifi_scanner_start();
     ESP_LOGI(TAG, "WiFi scanner started on core %d, priority %d",
              WIFI_SCAN_TASK_CORE, WIFI_SCAN_TASK_PRIORITY);
+#endif
 
+#ifndef WIFI_SCANNER_ONLY
     /* ── 9b. Start BLE scanner ───────────────────────────────────────── */
     ble_remote_id_start();
     ESP_LOGI(TAG, "BLE scanner started");
+#endif
 
     /* ── 10. Start LED task ───────────────────────────────────────────── */
     led_start();

@@ -17,7 +17,11 @@
 
 static const char *TAG = "led";
 
-#define LED_GPIO    GPIO_NUM_8
+#ifdef UPLINK_ESP32
+#define LED_GPIO    GPIO_NUM_2    /* Built-in LED on most ESP32 devkit boards */
+#else
+#define LED_GPIO    GPIO_NUM_8    /* ESP32-C3 devkit */
+#endif
 
 /*
  * Pattern definitions: arrays of {on_ms, off_ms} pairs.

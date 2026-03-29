@@ -41,6 +41,9 @@ jobs:
       - name: Build Scanner firmware (ESP32-S3)
         run: cd esp32/scanner && pio run -e scanner
 
+      - name: Build WiFi Scanner firmware (ESP32)
+        run: cd esp32/scanner && pio run -e scanner-esp32
+
       - name: Build Scanner firmware (ESP32-C5)
         run: cd esp32/scanner && pio run -e scanner-c5
 
@@ -52,11 +55,15 @@ jobs:
 
       - name: Package firmware binaries
         run: |
-          mkdir -p firmware/scanner firmware/scanner-c5 firmware/ble-scanner firmware/uplink
+          mkdir -p firmware/scanner firmware/scanner-esp32 firmware/scanner-c5 firmware/ble-scanner firmware/uplink
 
           cp esp32/scanner/.pio/build/scanner/bootloader.bin firmware/scanner/
           cp esp32/scanner/.pio/build/scanner/partitions.bin firmware/scanner/partition-table.bin
           cp esp32/scanner/.pio/build/scanner/firmware.bin   firmware/scanner/
+
+          cp esp32/scanner/.pio/build/scanner-esp32/bootloader.bin firmware/scanner-esp32/
+          cp esp32/scanner/.pio/build/scanner-esp32/partitions.bin firmware/scanner-esp32/partition-table.bin
+          cp esp32/scanner/.pio/build/scanner-esp32/firmware.bin   firmware/scanner-esp32/
 
           cp esp32/scanner/.pio/build/scanner-c5/bootloader.bin firmware/scanner-c5/
           cp esp32/scanner/.pio/build/scanner-c5/partitions.bin firmware/scanner-c5/partition-table.bin
@@ -86,12 +93,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG=${{ github.event.release.tag_name }}
-          cd firmware/scanner      && tar czf /tmp/scanner-firmware-${TAG}.tar.gz *.bin && cd -
-          cd firmware/scanner-c5   && tar czf /tmp/scanner-c5-firmware-${TAG}.tar.gz *.bin && cd -
-          cd firmware/ble-scanner  && tar czf /tmp/ble-scanner-firmware-${TAG}.tar.gz *.bin && cd -
-          cd firmware/uplink       && tar czf /tmp/uplink-firmware-${TAG}.tar.gz *.bin && cd -
+          cd firmware/scanner        && tar czf /tmp/scanner-firmware-${TAG}.tar.gz *.bin && cd -
+          cd firmware/scanner-esp32  && tar czf /tmp/scanner-esp32-firmware-${TAG}.tar.gz *.bin && cd -
+          cd firmware/scanner-c5     && tar czf /tmp/scanner-c5-firmware-${TAG}.tar.gz *.bin && cd -
+          cd firmware/ble-scanner    && tar czf /tmp/ble-scanner-firmware-${TAG}.tar.gz *.bin && cd -
+          cd firmware/uplink         && tar czf /tmp/uplink-firmware-${TAG}.tar.gz *.bin && cd -
           gh release upload "$TAG" \
             /tmp/scanner-firmware-${TAG}.tar.gz \
+            /tmp/scanner-esp32-firmware-${TAG}.tar.gz \
             /tmp/ble-scanner-firmware-${TAG}.tar.gz \
             /tmp/scanner-c5-firmware-${TAG}.tar.gz \
             /tmp/uplink-firmware-${TAG}.tar.gz \
@@ -115,14 +124,15 @@ jobs:
 
       - name: Assemble site
         run: |
-          mkdir -p _site/firmware/scanner _site/firmware/scanner-c5 _site/firmware/ble-scanner _site/firmware/uplink
+          mkdir -p _site/firmware/scanner _site/firmware/scanner-esp32 _site/firmware/scanner-c5 _site/firmware/ble-scanner _site/firmware/uplink
 
           # Web flasher page + manifests
-          cp esp32/web-flasher/index.html                  _site/
-          cp esp32/web-flasher/manifest-scanner.json        _site/
-          cp esp32/web-flasher/manifest-scanner-c5.json     _site/
-          cp esp32/web-flasher/manifest-ble-scanner.json    _site/
-          cp esp32/web-flasher/manifest-uplink.json         _site/
+          cp esp32/web-flasher/index.html                    _site/
+          cp esp32/web-flasher/manifest-scanner.json          _site/
+          cp esp32/web-flasher/manifest-scanner-esp32.json    _site/
+          cp esp32/web-flasher/manifest-scanner-c5.json       _site/
+          cp esp32/web-flasher/manifest-ble-scanner.json      _site/
+          cp esp32/web-flasher/manifest-uplink.json           _site/
 
       - name: Download firmware artifact
         uses: actions/download-artifact@v4
@@ -140,6 +150,12 @@ jobs:
             echo "Scanner S3 firmware: OK"
           else
             echo "Scanner S3 firmware: MISSING (build may have failed)"
+          fi
+
+          if [ -f _site/firmware/scanner-esp32/firmware.bin ]; then
+            echo "WiFi Scanner ESP32 firmware: OK"
+          else
+            echo "WiFi Scanner ESP32 firmware: MISSING (build may have failed)"
           fi
 
           if [ -f _site/firmware/scanner-c5/firmware.bin ]; then

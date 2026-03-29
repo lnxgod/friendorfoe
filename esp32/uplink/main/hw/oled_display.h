@@ -25,17 +25,17 @@ void oled_init(void);
  * Redraw the main status screen with uplink + node + drone info.
  *
  * @param drone_count       Number of currently tracked drones
- * @param scanner_connected Whether a scanner board is connected via UART
- * @param wifi_connected    Whether WiFi STA is connected to the network
- * @param backend_ok        Whether last HTTP upload to backend succeeded
+ * @param ble_scanner_ok    Whether BLE scanner board is connected via UART
+ * @param wifi_scanner_ok   Whether WiFi scanner board is connected via UART
+ * @param backend_ok        Whether backend server is reachable
  * @param upload_count      Total successful uploads
- * @param gps_fix           Whether GPS has a valid fix
+ * @param wifi_network_ok   Whether WiFi STA is connected to the network
  * @param battery_pct       Battery level 0.0-100.0
  * @param uptime_s          System uptime in seconds
  * @param device_id         This node's device ID (e.g. "fof_node_1")
  */
-void oled_update(int drone_count, bool scanner_connected, bool wifi_connected,
-                 bool backend_ok, int upload_count, bool gps_fix,
+void oled_update(int drone_count, bool ble_scanner_ok, bool wifi_scanner_ok,
+                 bool backend_ok, int upload_count, bool wifi_network_ok,
                  float battery_pct, uint32_t uptime_s, const char *device_id);
 
 /**

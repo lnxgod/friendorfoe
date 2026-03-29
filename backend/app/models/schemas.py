@@ -1,5 +1,7 @@
 """Pydantic v2 models for API request/response schemas."""
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -125,6 +127,7 @@ class DroneDetectionItem(BaseModel):
     operator_id: str | None = Field(None, description="Operator registration ID")
     ssid: str | None = Field(None, description="WiFi SSID if detected via WiFi")
     bssid: str | None = Field(None, description="WiFi BSSID (MAC address)")
+    channel: int | None = Field(None, description="WiFi channel if available from the scanner")
 
 
 class DroneDetectionBatch(BaseModel):
@@ -163,6 +166,32 @@ class RecentDetectionsResponse(BaseModel):
     count: int = Field(..., description="Number of detections returned")
     max_stored: int = Field(..., description="Maximum ring buffer capacity")
     detections: list[StoredDetection] = Field(default_factory=list)
+
+
+class AnomalyAlertItem(BaseModel):
+    """Single RF anomaly alert emitted by the in-memory detector."""
+
+    anomaly_type: str
+    severity: str
+    entity_key: str
+    title: str
+    message: str
+    detected_at: float
+    device_id: str
+    source: str
+    drone_id: str | None = None
+    ssid: str | None = None
+    bssid: str | None = None
+    manufacturer: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RecentAnomalyAlertsResponse(BaseModel):
+    """Response for GET /detections/anomalies/recent."""
+
+    count: int = Field(..., description="Number of alerts returned")
+    max_stored: int = Field(..., description="Maximum in-memory alert capacity")
+    alerts: list[AnomalyAlertItem] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

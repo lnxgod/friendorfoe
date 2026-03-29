@@ -11,6 +11,10 @@
 #include <strings.h>  /* strncasecmp */
 
 static const drone_ssid_pattern_t PATTERNS[] = {
+    /* ── Test / Debug ──────────────────────────────────────────────────────── */
+    { "FOF-",       "FriendOrFoe" },
+    { "FOF_",       "FriendOrFoe" },
+
     /* ── DJI ───────────────────────────────────────────────────────────────── */
     { "DJI-",       "DJI" },
     { "TELLO-",     "Ryze/DJI" },
