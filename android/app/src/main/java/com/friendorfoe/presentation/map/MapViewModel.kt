@@ -93,7 +93,7 @@ class MapViewModel @Inject constructor(
     // --- Sensor map (ESP32 backend triangulation) ---
 
     private val _sensorDrones = MutableStateFlow<List<LocatedDroneDto>>(emptyList())
-    /** Drones detected by remote ESP32 sensors, with triangulated/estimated positions. */
+    /** Drones detected by remote ESP32 sensors — only confirmed/likely drones, not trackers or unknown BLE. */
     val sensorDrones: StateFlow<List<LocatedDroneDto>> = _sensorDrones.asStateFlow()
 
     private val _remoteSensors = MutableStateFlow<List<SensorDto>>(emptyList())
@@ -104,6 +104,15 @@ class MapViewModel @Inject constructor(
     /** True when the backend sensor map API is reachable. */
     val sensorMapOnline: StateFlow<Boolean> = _sensorMapOnline.asStateFlow()
 
+    private val _droneAlertCount = MutableStateFlow(0)
+    /** Number of active drone alerts from the backend. */
+    val droneAlertCount: StateFlow<Int> = _droneAlertCount.asStateFlow()
+
+    /** Classifications that represent actual drones or test devices (not phones/trackers/APs). */
+    private val DRONE_CLASSIFICATIONS = setOf(
+        "confirmed_drone", "likely_drone", "test_drone", "wifi_device"
+    )
+
     private var sensorPollJob: kotlinx.coroutines.Job? = null
 
     /** Start polling the backend sensor map endpoint every 5 seconds. */
@@ -113,13 +122,27 @@ class MapViewModel @Inject constructor(
             while (isActive) {
                 try {
                     val response = sensorMapApiService.getDroneMap()
-                    _sensorDrones.value = response.drones
+                    // Filter to only real drones — no trackers, unknown BLE, known APs
+                    _sensorDrones.value = response.drones.filter { drone ->
+                        drone.classification in DRONE_CLASSIFICATIONS ||
+                        drone.droneId.startsWith("rid_") ||
+                        drone.droneId.startsWith("FOF") ||
+                        drone.droneId.startsWith("FoF") ||
+                        drone.positionSource == "gps"  // Remote ID with GPS = real drone
+                    }
                     _remoteSensors.value = response.sensors
                     _sensorMapOnline.value = true
                 } catch (e: Exception) {
                     Log.d(TAG, "Sensor map poll failed: ${e.message}")
                     _sensorMapOnline.value = false
                 }
+
+                // Also fetch drone alerts
+                try {
+                    val alerts = sensorMapApiService.getDroneAlerts()
+                    _droneAlertCount.value = alerts.activeDroneCount
+                } catch (_: Exception) {}
+
                 delay(5000L)
             }
         }

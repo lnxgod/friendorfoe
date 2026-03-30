@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
+    <!-- Allow cleartext HTTP for local backends (ESP32 sensor network) -->
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

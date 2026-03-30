@@ -35,7 +35,8 @@ object NetworkModule {
     private const val ADSB_ONE_BASE_URL = "https://api.adsb.one/"
     private const val HEXDB_BASE_URL = "https://hexdb.io/"
     private const val OPEN_METEO_BASE_URL = "https://api.open-meteo.com/"
-    private const val BACKEND_BASE_URL = "http://10.0.2.2:8000/"  // Android emulator → host localhost
+    // Backend URL: local sensor network
+    private const val BACKEND_BASE_URL = "http://192.168.42.145:8000/"
 
     @Provides
     @Singleton
