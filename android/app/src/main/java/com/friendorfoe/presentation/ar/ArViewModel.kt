@@ -18,6 +18,7 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.friendorfoe.data.remote.SensorMapApiService
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.data.repository.WeatherRepository
 import com.friendorfoe.detection.AcousticDetector
@@ -98,6 +99,7 @@ class ArViewModel @Inject constructor(
     private val weatherRepository: WeatherRepository,
     private val darkTargetScorer: DarkTargetScorer,
     private val acousticDetector: AcousticDetector,
+    private val sensorMapApiService: SensorMapApiService,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
@@ -1080,6 +1082,33 @@ class ArViewModel @Inject constructor(
     val emergencyCount: StateFlow<Int> = skyObjectRepository.skyObjects
         .map { objects -> objects.count { it.category == ObjectCategory.EMERGENCY } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    // --- Sensor backend (ESP32 network) ---
+
+    private val _sensorBackendOnline = MutableStateFlow(false)
+    val sensorBackendOnline: StateFlow<Boolean> = _sensorBackendOnline.asStateFlow()
+
+    private val _sensorDroneCount = MutableStateFlow(0)
+    val sensorDroneCount: StateFlow<Int> = _sensorDroneCount.asStateFlow()
+
+    private val DRONE_CLASSIFICATIONS = setOf("confirmed_drone", "likely_drone", "test_drone")
+
+    init {
+        // Poll sensor backend every 5 seconds
+        viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                try {
+                    val alerts = sensorMapApiService.getDroneAlerts()
+                    _sensorBackendOnline.value = true
+                    _sensorDroneCount.value = alerts.activeDroneCount
+                } catch (_: Exception) {
+                    _sensorBackendOnline.value = false
+                    _sensorDroneCount.value = 0
+                }
+                delay(5000L)
+            }
+        }
+    }
 
     // --- Data source status ---
 
