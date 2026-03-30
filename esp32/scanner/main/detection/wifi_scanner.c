@@ -27,6 +27,7 @@
 
 #include <stdlib.h>
 #include "esp_wifi.h"
+#include "esp_mac.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -45,9 +46,9 @@
 static const char *TAG = "wifi_scan";
 
 #ifdef CONFIG_SCANNER_5GHZ_ENABLED
-#define CHANNEL_DWELL_MS            2000  /* 2s dwell — C5 radio needs settle time */
+#define CHANNEL_DWELL_MS            300   /* C5: slightly longer for dual-band (was 2000 — way too slow) */
 #else
-#define CHANNEL_DWELL_MS            250
+#define CHANNEL_DWELL_MS            200   /* ESP32: fast hop for 2.4 GHz only */
 #endif
 
 /* ── Channel tables ────────────────────────────────────────────────────────── */
@@ -91,6 +92,10 @@ static size_t        s_idx_24ghz = 0;
 static size_t        s_idx_5ghz = 0;
 static bool          s_next_is_5ghz = false; /* interleave toggle */
 #endif
+
+/* ── Forward declarations ─────────────────────────────────────────────────── */
+static void add_channel_heat(uint16_t ch, uint8_t points);
+static void decay_channel_heat(void);
 
 /* ── Diagnostic counters ──────────────────────────────────────────────────── */
 static uint32_t s_total_frames = 0;
@@ -296,6 +301,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
 
             ESP_LOGI(TAG, "DJI DroneID: BSSID=%s lat=%.6f lon=%.6f alt=%.0fm",
                      det.bssid, det.latitude, det.longitude, det.altitude_m);
+            add_channel_heat(s_current_channel, 8);  /* DJI IE = high heat */
 
             if (s_detection_queue) {
                 xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
@@ -526,13 +532,53 @@ static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     process_beacon_frame(frame, frame_len, rssi);
 }
 
+/* ── Affine channel hopping (sensor diversity) ─────────────────────────────── */
+
+/*
+ * Deterministic channel schedule: channel_index = (hop * STRIDE + phase) % 13
+ * With stride=5 (coprime to 13), each sensor visits all 13 channels before repeat.
+ * Different sensors use different phase offsets so they're always on different channels.
+ */
+#define AFFINE_STRIDE       5
+static uint8_t  s_device_phase = 0;   /* Set from device MAC at init */
+static uint32_t s_hop_counter = 0;
+
+/* Per-channel heat tracking for adaptive dwell (packed nibbles — 7 bytes) */
+static uint8_t  s_channel_heat[13] = {0};
+
+static void add_channel_heat(uint16_t ch, uint8_t points)
+{
+    if (ch >= 1 && ch <= 13) {
+        uint8_t cur = s_channel_heat[ch - 1];
+        uint8_t nv = cur + points;
+        s_channel_heat[ch - 1] = (nv > 15) ? 15 : nv;  /* Cap at 15 (4-bit) */
+    }
+}
+
+static void decay_channel_heat(void)
+{
+    for (int i = 0; i < 13; i++) {
+        if (s_channel_heat[i] > 0) s_channel_heat[i]--;
+    }
+}
+
+static uint16_t get_adaptive_dwell_ms(uint16_t ch)
+{
+    if (ch < 1 || ch > 13) return CHANNEL_DWELL_MS;
+    uint8_t heat = s_channel_heat[ch - 1];
+    /* Base 90ms + 12ms per heat point, max 200ms */
+    uint16_t dwell = 90 + (heat * 12);
+    return (dwell > 200) ? 200 : dwell;
+}
+
 /* ── Channel advance helpers ────────────────────────────────────────────────── */
 
 static uint16_t next_channel_24ghz(void)
 {
-    uint16_t ch = s_channels_24ghz[s_idx_24ghz];
-    s_idx_24ghz = (s_idx_24ghz + 1) % NUM_CHANNELS_24GHZ;
-    return ch;
+    /* Affine hop: deterministic, coprime stride ensures full coverage */
+    uint16_t idx = (s_hop_counter * AFFINE_STRIDE + s_device_phase) % NUM_CHANNELS_24GHZ;
+    s_hop_counter++;
+    return s_channels_24ghz[idx];
 }
 
 #ifdef CONFIG_SCANNER_5GHZ_ENABLED
@@ -578,11 +624,11 @@ static uint16_t advance_channel(void)
 
 /* ── Scan configuration ─────────────────────────────────────────────────────── */
 
-#define FULL_SCAN_INTERVAL_MS    2000   /* Rediscover new emitters at least every 2s */
-#define FAST_RESCAN_INTERVAL_MS  150    /* Revisit hot channels ~6-7 Hz */
-#define MAX_AP_RECORDS           64
-#define MAX_HOT_CHANNELS         3      /* Keep the hot set small for low latency */
-#define HOT_CHANNEL_TTL_MS       4000   /* Drop stale channels quickly */
+#define FULL_SCAN_INTERVAL_MS    1500   /* Full discovery every 1.5s (was 2s) */
+#define FAST_RESCAN_INTERVAL_MS  100    /* Hot channel rescan ~10 Hz (was 150ms) */
+#define MAX_AP_RECORDS           96     /* Capture more APs per scan (was 64) */
+#define MAX_HOT_CHANNELS         5      /* Track more hot channels (was 3) */
+#define HOT_CHANNEL_TTL_MS       6000   /* Keep hot channels longer (was 4s) */
 
 /* Hot channel tracking — channels where interesting targets were last seen */
 typedef struct {
@@ -690,12 +736,14 @@ static void process_scan_results(void)
                     sizeof(det.manufacturer) - 1);
             strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
             update_hot_channel(ch);
+            add_channel_heat(ch, 4);  /* SSID match = medium heat */
         } else if (soft) {
             det.source = DETECTION_SRC_WIFI_SSID;
             det.confidence = 0.15f;
             strncpy(det.manufacturer, "Drone Likely", sizeof(det.manufacturer) - 1);
             strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
             update_hot_channel(ch);
+            add_channel_heat(ch, 2);  /* Soft match = low heat */
         } else {
             det.source = DETECTION_SRC_WIFI_OUI;
             det.confidence = 0.05f;
@@ -720,7 +768,7 @@ static void do_full_scan(void)
         .channel     = 0,           /* all channels */
         .show_hidden = true,
         .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
-        .scan_time.active = { .min = 30, .max = 80 },
+        .scan_time.active = { .min = 20, .max = 60 },  /* Faster per-channel (was 30/80) */
     };
 
     esp_err_t err = esp_wifi_scan_start(&cfg, true);
@@ -745,7 +793,7 @@ static void do_fast_rescan(void)
             .channel     = s_hot_channels[i].channel,  /* single hot channel */
             .show_hidden = true,
             .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
-            .scan_time.active = { .min = 8, .max = 24 },
+            .scan_time.active = { .min = 5, .max = 15 },  /* Ultra-fast hot channel (was 8/24) */
         };
 
         esp_err_t err = esp_wifi_scan_start(&cfg, true);
@@ -772,6 +820,7 @@ static void wifi_scan_task(void *arg)
         if ((now - last_full_scan) >= pdMS_TO_TICKS(FULL_SCAN_INTERVAL_MS)) {
             do_full_scan();
             last_full_scan = now;
+            decay_channel_heat();  /* Decay heat once per full scan cycle */
         } else if (s_hot_channel_count > 0) {
             /* Fast rescan hot channels between full scans */
             do_fast_rescan();
@@ -795,6 +844,16 @@ static void wifi_scan_task(void *arg)
 void wifi_scanner_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
+
+    /* Set device phase from MAC address for affine channel hopping diversity.
+     * Each sensor gets a different phase so they scan different channels. */
+    {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        s_device_phase = (mac[4] ^ mac[5]) % NUM_CHANNELS_24GHZ;
+        ESP_LOGI(TAG, "Affine hop phase=%d (from MAC ...%02X:%02X)",
+                 s_device_phase, mac[4], mac[5]);
+    }
 
     /* Initialize WiFi in STA mode (needed for active scan + promiscuous) */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();

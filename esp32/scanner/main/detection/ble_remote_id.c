@@ -387,14 +387,21 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                                     ext->addr.type,
                                     (uint8_t)(ext->props & 0xFF), &fp);
 
-            /* Rate limit: trackers every 2s, others every 5s */
-            static uint32_t last_hashes[30];
-            static int64_t  last_times[30];
+            /* Rate limit: drones/trackers fast, others moderate */
+            static uint32_t last_hashes[50];
+            static int64_t  last_times[50];
             static int      hash_idx = 0;
-            int rate_limit_ms = fp.is_tracker ? 2000 : 10000;
+            int rate_limit_ms;
+            if (fp.device_type == BLE_DEV_DRONE_CONTROLLER) {
+                rate_limit_ms = 1000;   /* Drones: every 1s */
+            } else if (fp.is_tracker) {
+                rate_limit_ms = 1500;   /* Trackers: every 1.5s */
+            } else {
+                rate_limit_ms = 5000;   /* Others: every 5s (was 10s) */
+            }
 
             bool recently_sent = false;
-            for (int i = 0; i < 30; i++) {
+            for (int i = 0; i < 50; i++) {
                 if (last_hashes[i] == fp.hash &&
                     (now_ms - last_times[i]) < rate_limit_ms) {
                     recently_sent = true;
@@ -405,7 +412,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             if (!recently_sent) {
                 last_hashes[hash_idx] = fp.hash;
                 last_times[hash_idx] = now_ms;
-                hash_idx = (hash_idx + 1) % 30;
+                hash_idx = (hash_idx + 1) % 50;
 
                 drone_detection_t det = {0};
                 det.source = DETECTION_SRC_BLE_RID;

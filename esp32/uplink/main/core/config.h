@@ -31,11 +31,11 @@ extern "C" {
 
 /* ── Upload settings ───────────────────────────────────────────────────── */
 
-#define CONFIG_BATCH_INTERVAL_MS    200
-#define CONFIG_BATCH_IDLE_FLUSH_MS  75
-#define CONFIG_MAX_BATCH_SIZE       10
-#define CONFIG_TARGET_BATCH_BYTES   1400
-#define CONFIG_MAX_OFFLINE_BATCHES  10
+#define CONFIG_BATCH_INTERVAL_MS    150     /* Faster batch send (was 200ms) */
+#define CONFIG_BATCH_IDLE_FLUSH_MS  50      /* Faster idle flush (was 75ms) */
+#define CONFIG_MAX_BATCH_SIZE       15      /* More detections per POST (was 10) */
+#define CONFIG_TARGET_BATCH_BYTES   2000    /* Larger payload target (was 1400) */
+#define CONFIG_MAX_OFFLINE_BATCHES  20      /* More offline buffer (was 10) */
 #define CONFIG_MAX_RETRY_DELAY_MS   60000
 #define CONFIG_HEARTBEAT_INTERVAL_MS 60000
 
