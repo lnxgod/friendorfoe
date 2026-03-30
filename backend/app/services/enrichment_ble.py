@@ -302,6 +302,7 @@ class EnrichedDevice:
     ble_ad_type_count: int = 0      # Number of AD types
     ble_payload_len: int = 0        # Advertisement payload length
     ble_addr_type: int = 0          # Address type (public/random)
+    ble_ja3: str = ""               # BLE-JA3 structural profile hash
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +433,10 @@ class BLEEnricher:
             company_name, category = lookup_company(cid)
             if company_name != "Unknown" and dev.manufacturer in ("Unknown", ""):
                 dev.manufacturer = company_name
+        # Store JA3 hash
+        ja3 = kwargs.get("ble_ja3") or ""
+        if ja3 and not dev.ble_ja3:
+            dev.ble_ja3 = ja3
 
     def _infer_device_category(self, dev: EnrichedDevice) -> str:
         """Infer device category from behavior when type is Unknown.
@@ -679,6 +684,9 @@ class BLEEnricher:
                 "seen_by": list(dev.seen_by),
                 "sensor_count": len(dev.seen_by),
                 "mac_rotations": len(dev.bssids_seen),
+                "ble_ja3": dev.ble_ja3 or None,
+                "ble_company_id": dev.ble_company_id or None,
+                "ble_apple_type": dev.ble_apple_type or None,
             })
 
         # Sort: trackers first, then by RSSI (strongest first)
