@@ -19,6 +19,7 @@
 #include <inttypes.h>
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -30,11 +31,18 @@ static ring_buffer_t  *s_offline_buffer    = NULL;
 static int             s_success_count     = 0;
 static int             s_fail_count        = 0;
 
+/* Persistent HTTP client handle (avoids socket exhaustion from rapid open/close) */
+static esp_http_client_handle_t s_http_client = NULL;
+
 /* Maximum JSON payload size for a batch */
 #define MAX_PAYLOAD_SIZE    4096
 
-/* Exponential backoff base delay */
-#define BACKOFF_BASE_MS     1000
+/* Retry config — keep total blocking time well under 30s WDT timeout */
+#define HTTP_TIMEOUT_MS     3000    /* 3s per attempt (was 10s) */
+#define MAX_RETRIES         1       /* 1 retry max — fail fast, try next batch */
+#define BACKOFF_BASE_MS     500     /* 500ms base (was 1000) */
+#define MAX_DRAIN_PER_CYCLE 1       /* drain 1 offline batch per loop — don't block */
+#define HEALTH_RESET_SEC    30      /* force reset client if no success for 30s */
 
 /* ── Source integer to string mapping ──────────────────────────────────── */
 
@@ -146,6 +154,23 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
             cJSON_AddStringToObject(det, "bssid", d->bssid);
         }
 
+        /* BLE fingerprinting fields */
+        if (d->ble_company_id != 0) {
+            cJSON_AddNumberToObject(det, "ble_company_id", d->ble_company_id);
+        }
+        if (d->ble_apple_type != 0) {
+            cJSON_AddNumberToObject(det, "ble_apple_type", d->ble_apple_type);
+        }
+        if (d->ble_ad_type_count != 0) {
+            cJSON_AddNumberToObject(det, "ble_ad_type_count", d->ble_ad_type_count);
+        }
+        if (d->ble_payload_len != 0) {
+            cJSON_AddNumberToObject(det, "ble_payload_len", d->ble_payload_len);
+        }
+        if (d->ble_addr_type != 0) {
+            cJSON_AddNumberToObject(det, "ble_addr_type", d->ble_addr_type);
+        }
+
         /* Timestamps */
         if (d->last_updated_ms > 0) {
             cJSON_AddNumberToObject(det, "last_updated",
@@ -162,13 +187,16 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
 
 /* ── HTTP POST with retry ──────────────────────────────────────────────── */
 
-static bool http_post_payload(const char *payload)
+/**
+ * Ensure the persistent HTTP client is initialized.
+ * Reuses the same TCP connection (keep-alive) to avoid socket exhaustion.
+ */
+static bool ensure_http_client(void)
 {
-    if (!wifi_sta_is_connected()) {
-        return false;
+    if (s_http_client) {
+        return true;
     }
 
-    /* Build full URL */
     char backend_url[128] = {0};
     nvs_config_get_backend_url(backend_url, sizeof(backend_url));
 
@@ -176,39 +204,81 @@ static bool http_post_payload(const char *payload)
     snprintf(url, sizeof(url), "%s%s", backend_url, CONFIG_UPLOAD_ENDPOINT);
 
     esp_http_client_config_t config = {
-        .url            = url,
-        .method         = HTTP_METHOD_POST,
-        .timeout_ms     = 10000,
-        .buffer_size    = 2048,
+        .url              = url,
+        .method           = HTTP_METHOD_POST,
+        .timeout_ms       = HTTP_TIMEOUT_MS,
+        .buffer_size      = 2048,
+        .keep_alive_enable = true,
     };
 
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
+    s_http_client = esp_http_client_init(&config);
+    if (!s_http_client) {
         ESP_LOGE(TAG, "Failed to init HTTP client");
         return false;
     }
 
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_post_field(client, payload, strlen(payload));
+    esp_http_client_set_header(s_http_client, "Content-Type", "application/json");
+    ESP_LOGI(TAG, "HTTP client created: %s (timeout=%dms, keep-alive)", url, HTTP_TIMEOUT_MS);
+    return true;
+}
 
-    esp_err_t err = esp_http_client_perform(client);
-    bool success = false;
+/**
+ * Destroy and recreate the HTTP client (call after persistent errors).
+ */
+static void reset_http_client(void)
+{
+    if (s_http_client) {
+        esp_http_client_close(s_http_client);
+        esp_http_client_cleanup(s_http_client);
+        s_http_client = NULL;
+    }
+}
 
-    if (err == ESP_OK) {
-        int status = esp_http_client_get_status_code(client);
-        if (status >= 200 && status < 300) {
-            ESP_LOGD(TAG, "Upload OK (HTTP %d, %" PRId64 " bytes)",
-                     status, (int64_t)esp_http_client_get_content_length(client));
-            success = true;
-        } else {
-            ESP_LOGW(TAG, "Upload failed: HTTP %d", status);
-        }
-    } else {
-        ESP_LOGW(TAG, "HTTP request failed: %s", esp_err_to_name(err));
+/**
+ * POST payload to backend using persistent keep-alive connection.
+ *
+ * If the connection is stale (server closed keep-alive), we reset the
+ * client and retry ONCE with a fresh connection.  This handles the
+ * common case where uvicorn's keep-alive timeout expires between batches.
+ */
+static bool http_post_payload(const char *payload)
+{
+    if (!wifi_sta_is_connected()) {
+        return false;
     }
 
-    esp_http_client_cleanup(client);
-    return success;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (!ensure_http_client()) {
+            return false;
+        }
+
+        esp_http_client_set_post_field(s_http_client, payload, strlen(payload));
+        esp_err_t err = esp_http_client_perform(s_http_client);
+
+        if (err == ESP_OK) {
+            int status = esp_http_client_get_status_code(s_http_client);
+            if (status >= 200 && status < 300) {
+                ESP_LOGD(TAG, "Upload OK (HTTP %d)", status);
+                return true;
+            }
+            /* Server error (5xx) — don't reset client, just fail this attempt */
+            ESP_LOGW(TAG, "Upload failed: HTTP %d", status);
+            return false;
+        }
+
+        /* Connection error — reset client and retry once with fresh socket */
+        if (attempt == 0) {
+            ESP_LOGW(TAG, "Connection error: %s — reconnecting", esp_err_to_name(err));
+            reset_http_client();
+            /* Immediate retry with fresh client (stale keep-alive recovery) */
+            continue;
+        }
+
+        ESP_LOGW(TAG, "HTTP failed after reconnect: %s", esp_err_to_name(err));
+        reset_http_client();
+    }
+
+    return false;
 }
 
 /* ── Upload a payload with exponential backoff retry ───────────────────── */
@@ -217,7 +287,11 @@ static bool upload_with_retry(const char *payload)
 {
     int retry_delay_ms = BACKOFF_BASE_MS;
 
-    for (int attempt = 0; attempt < 5; attempt++) {
+    for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        if (!wifi_sta_is_connected()) {
+            return false;
+        }
+
         if (http_post_payload(payload)) {
             s_success_count++;
             return true;
@@ -225,17 +299,13 @@ static bool upload_with_retry(const char *payload)
 
         s_fail_count++;
 
-        if (!wifi_sta_is_connected()) {
-            /* WiFi is down -- no point retrying now */
-            return false;
-        }
-
-        ESP_LOGW(TAG, "Retry %d in %dms...", attempt + 1, retry_delay_ms);
-        vTaskDelay(pdMS_TO_TICKS(retry_delay_ms));
-
-        retry_delay_ms *= 2;
-        if (retry_delay_ms > CONFIG_MAX_RETRY_DELAY_MS) {
-            retry_delay_ms = CONFIG_MAX_RETRY_DELAY_MS;
+        if (attempt < MAX_RETRIES) {
+            ESP_LOGW(TAG, "Retry %d/%d in %dms...", attempt + 1, MAX_RETRIES, retry_delay_ms);
+            vTaskDelay(pdMS_TO_TICKS(retry_delay_ms));
+            retry_delay_ms *= 2;
+            if (retry_delay_ms > 4000) {
+                retry_delay_ms = 4000;  /* cap at 4s to stay under WDT */
+            }
         }
     }
 
@@ -271,37 +341,38 @@ static void buffer_batch_offline(const char *payload)
     }
 }
 
+/**
+ * Drain at most MAX_DRAIN_PER_CYCLE batches from the offline buffer.
+ * Non-blocking: yields back to the main loop quickly to avoid WDT timeout.
+ */
 static void drain_offline_buffer(void)
 {
     if (!s_offline_buffer || ring_buffer_is_empty(s_offline_buffer)) {
         return;
     }
 
-    int count = ring_buffer_count(s_offline_buffer);
-    ESP_LOGI(TAG, "Draining %d offline batches...", count);
+    int remaining = ring_buffer_count(s_offline_buffer);
+    int drained = 0;
 
     offline_batch_t batch;
-    while (ring_buffer_pop(s_offline_buffer, &batch)) {
+    while (drained < MAX_DRAIN_PER_CYCLE && ring_buffer_pop(s_offline_buffer, &batch)) {
         if (!wifi_sta_is_connected()) {
-            /* WiFi went down again -- re-buffer and stop */
             ring_buffer_push(s_offline_buffer, &batch);
-            ESP_LOGW(TAG, "WiFi lost during drain, %d batches remaining",
-                     ring_buffer_count(s_offline_buffer));
             return;
         }
 
         if (!upload_with_retry(batch.json)) {
-            /* Failed even with retry -- put it back */
             ring_buffer_push(s_offline_buffer, &batch);
-            ESP_LOGW(TAG, "Drain upload failed, stopping");
             return;
         }
 
-        ESP_LOGD(TAG, "Drained offline batch, %d remaining",
-                 ring_buffer_count(s_offline_buffer));
+        drained++;
     }
 
-    ESP_LOGI(TAG, "Offline buffer drained successfully");
+    if (drained > 0) {
+        ESP_LOGI(TAG, "Drained %d offline batches (%d remaining)",
+                 drained, ring_buffer_count(s_offline_buffer));
+    }
 }
 
 /* ── Upload task ───────────────────────────────────────────────────────── */
@@ -317,6 +388,9 @@ static void http_upload_task(void *arg)
     int64_t scan_ts_ms     = 0;  /* timestamp of first detection in batch */
 
     ESP_LOGI(TAG, "HTTP upload task started");
+    bool was_connected = false;
+    TickType_t last_success_tick = xTaskGetTickCount();
+    int consecutive_fails = 0;
 
     while (1) {
         /* In standalone mode, just drain the queue without uploading */
@@ -326,8 +400,34 @@ static void http_upload_task(void *arg)
             continue;
         }
 
-        /* Try to drain offline buffer first when WiFi is up */
-        if (wifi_sta_is_connected() && !ring_buffer_is_empty(s_offline_buffer)) {
+        /* Reset HTTP client on WiFi reconnect (old socket is dead) */
+        bool connected_now = wifi_sta_is_connected();
+        if (connected_now && !was_connected) {
+            ESP_LOGI(TAG, "WiFi reconnected — resetting HTTP client");
+            reset_http_client();
+            consecutive_fails = 0;
+        }
+        was_connected = connected_now;
+
+        /* ── Health watchdog: force reset if stalled ─────────────────── */
+        if (connected_now) {
+            TickType_t since_success = xTaskGetTickCount() - last_success_tick;
+            if (since_success >= pdMS_TO_TICKS(HEALTH_RESET_SEC * 1000)) {
+                ESP_LOGW(TAG, "HEALTH RESET: no success for %ds, resetting client + clearing offline buffer",
+                         HEALTH_RESET_SEC);
+                reset_http_client();
+                /* Clear stale offline batches — they're probably the cause */
+                if (s_offline_buffer) {
+                    offline_batch_t discard;
+                    while (ring_buffer_pop(s_offline_buffer, &discard)) {}
+                }
+                consecutive_fails = 0;
+                last_success_tick = xTaskGetTickCount();  /* prevent rapid re-triggers */
+            }
+        }
+
+        /* Try to drain offline buffer when WiFi is up (non-blocking, max 1) */
+        if (connected_now && consecutive_fails == 0 && !ring_buffer_is_empty(s_offline_buffer)) {
             drain_offline_buffer();
         }
 
@@ -377,8 +477,11 @@ static void http_upload_task(void *arg)
                 if (wifi_sta_is_connected()) {
                     if (!upload_with_retry(payload)) {
                         buffer_batch_offline(payload);
+                        consecutive_fails++;
                     } else {
                         last_send = xTaskGetTickCount();
+                        last_success_tick = last_send;
+                        consecutive_fails = 0;
                     }
                 } else {
                     buffer_batch_offline(payload);
@@ -400,12 +503,16 @@ static void http_upload_task(void *arg)
         TickType_t now = xTaskGetTickCount();
         if (batch_count == 0 && wifi_sta_is_connected() &&
             (now - last_send) >= pdMS_TO_TICKS(CONFIG_HEARTBEAT_INTERVAL_MS)) {
-            ESP_LOGI(TAG, "Sending heartbeat (no detections for %ds)",
-                     CONFIG_HEARTBEAT_INTERVAL_MS / 1000);
+            ESP_LOGI(TAG, "Heartbeat (idle %ds) heap=%lu ok=%d fail=%d",
+                     CONFIG_HEARTBEAT_INTERVAL_MS / 1000,
+                     (unsigned long)esp_get_free_heap_size(),
+                     s_success_count, s_fail_count);
             char *payload = build_payload(NULL, 0, 0);
             if (payload) {
                 if (upload_with_retry(payload)) {
                     last_send = xTaskGetTickCount();
+                    last_success_tick = last_send;
+                    consecutive_fails = 0;
                 }
                 cJSON_free(payload);
             }

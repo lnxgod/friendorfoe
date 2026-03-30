@@ -179,6 +179,13 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
     /* Fused confidence */
     det->fused_confidence = (float)json_get_double(root, JSON_KEY_FUSED_CONFIDENCE, 0.0);
 
+    /* BLE fingerprinting fields */
+    det->ble_company_id = (uint16_t)json_get_double(root, JSON_KEY_BLE_COMPANY_ID, 0);
+    det->ble_apple_type = (uint8_t)json_get_double(root, JSON_KEY_BLE_APPLE_TYPE, 0);
+    det->ble_ad_type_count = (uint8_t)json_get_double(root, JSON_KEY_BLE_AD_TYPES, 0);
+    det->ble_payload_len = (uint8_t)json_get_double(root, JSON_KEY_BLE_PAYLOAD_LEN, 0);
+    det->ble_addr_type = (uint8_t)json_get_double(root, JSON_KEY_BLE_ADDR_TYPE, 0);
+
     /* Timestamp fallback */
     if (det->last_updated_ms == 0) {
         det->last_updated_ms = (int64_t)json_get_double(root, JSON_KEY_TIMESTAMP, 0.0);

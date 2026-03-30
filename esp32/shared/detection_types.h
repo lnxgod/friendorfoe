@@ -75,6 +75,15 @@ typedef struct {
     int32_t     freq_mhz;              /* centre frequency */
     int32_t     channel_width_mhz;     /* channel width */
 
+    /* BLE-specific (for device fingerprinting / JA3-style grouping) */
+    uint16_t    ble_company_id;         /* BT SIG company ID from mfr-specific data */
+    uint8_t     ble_apple_type;         /* Apple Continuity sub-type (0x07=AirPods, 0x10=NearbyInfo, 0x12=FindMy) */
+    uint16_t    ble_service_uuids[4];   /* Up to 4 16-bit service UUIDs */
+    uint8_t     ble_svc_uuid_count;     /* Number of service UUIDs captured */
+    uint8_t     ble_ad_type_count;      /* Number of distinct AD types */
+    uint8_t     ble_payload_len;        /* Raw advertisement payload length */
+    uint8_t     ble_addr_type;          /* 0=public, 1=random static, 2=RPA, 3=non-resolvable */
+
     /* Timestamps */
     int64_t     first_seen_ms;          /* epoch milliseconds */
     int64_t     last_updated_ms;        /* epoch milliseconds */

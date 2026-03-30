@@ -209,6 +209,23 @@ void uart_tx_send_detection(const drone_detection_t *detection)
         cJSON_AddNumberToObject(root, JSON_KEY_CHANNEL_WIDTH, detection->channel_width_mhz);
     }
 
+    /* BLE fingerprinting fields */
+    if (detection->ble_company_id != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_COMPANY_ID, detection->ble_company_id);
+    }
+    if (detection->ble_apple_type != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_APPLE_TYPE, detection->ble_apple_type);
+    }
+    if (detection->ble_ad_type_count != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_AD_TYPES, detection->ble_ad_type_count);
+    }
+    if (detection->ble_payload_len != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_PAYLOAD_LEN, detection->ble_payload_len);
+    }
+    if (detection->ble_addr_type != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_ADDR_TYPE, detection->ble_addr_type);
+    }
+
     /* Timestamps */
     if (detection->first_seen_ms != 0) {
         cJSON_AddNumberToObject(root, JSON_KEY_FIRST_SEEN, (double)detection->first_seen_ms);
