@@ -72,7 +72,7 @@ class DetectionPrefs @Inject constructor(
 
     /** Backend-only mode — disable all local detection, rely solely on ESP32 sensors */
     var backendOnlyMode: Boolean
-        get() = prefs.getBoolean(KEY_BACKEND_ONLY, false)
+        get() = prefs.getBoolean(KEY_BACKEND_ONLY, true)  // ON by default
         set(value) = prefs.edit().putBoolean(KEY_BACKEND_ONLY, value).apply()
 
     /** MACs the user has dismissed / marked as not a threat. Cached in memory for hot-path BLE checks. */
