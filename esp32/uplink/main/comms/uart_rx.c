@@ -186,6 +186,12 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
     det->ble_payload_len = (uint8_t)json_get_double(root, JSON_KEY_BLE_PAYLOAD_LEN, 0);
     det->ble_addr_type = (uint8_t)json_get_double(root, JSON_KEY_BLE_ADDR_TYPE, 0);
 
+    /* BLE-JA3 structural profile hash */
+    const char *ja3_str = json_get_string(root, JSON_KEY_BLE_JA3, NULL);
+    if (ja3_str) {
+        det->ble_ja3_hash = (uint32_t)strtoul(ja3_str, NULL, 16);
+    }
+
     /* Timestamp fallback */
     if (det->last_updated_ms == 0) {
         det->last_updated_ms = (int64_t)json_get_double(root, JSON_KEY_TIMESTAMP, 0.0);

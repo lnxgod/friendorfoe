@@ -170,6 +170,11 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
         if (d->ble_addr_type != 0) {
             cJSON_AddNumberToObject(det, "ble_addr_type", d->ble_addr_type);
         }
+        if (d->ble_ja3_hash != 0) {
+            char ja3_hex[9];
+            snprintf(ja3_hex, sizeof(ja3_hex), "%08lx", (unsigned long)d->ble_ja3_hash);
+            cJSON_AddStringToObject(det, "ble_ja3", ja3_hex);
+        }
 
         /* Timestamps */
         if (d->last_updated_ms > 0) {
