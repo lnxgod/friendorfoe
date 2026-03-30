@@ -71,7 +71,7 @@ extern "C" {
 
 /* ── Detection queue ───────────────────────────────────────────────────── */
 
-#define CONFIG_DETECTION_QUEUE_SIZE 50
+#define CONFIG_DETECTION_QUEUE_SIZE 100   /* Doubled for faster BLE report rates */
 
 /* ── Task stack sizes (bytes) ──────────────────────────────────────────── */
 

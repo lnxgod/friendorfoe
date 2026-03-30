@@ -394,11 +394,13 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             static int      hash_idx = 0;
             int rate_limit_ms;
             if (fp.device_type == BLE_DEV_DRONE_CONTROLLER) {
-                rate_limit_ms = 1000;   /* Drones: every 1s */
+                rate_limit_ms = 500;    /* Drones: every 0.5s — fastest */
             } else if (fp.is_tracker) {
-                rate_limit_ms = 1500;   /* Trackers: every 1.5s */
+                rate_limit_ms = 1000;   /* Trackers: every 1s */
+            } else if (fp.device_type != BLE_DEV_UNKNOWN) {
+                rate_limit_ms = 2000;   /* Known devices: every 2s */
             } else {
-                rate_limit_ms = 5000;   /* Others: every 5s (was 10s) */
+                rate_limit_ms = 3000;   /* Unknown: every 3s (was 10s) */
             }
 
             bool recently_sent = false;
