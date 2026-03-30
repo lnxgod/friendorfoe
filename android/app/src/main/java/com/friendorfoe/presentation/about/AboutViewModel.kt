@@ -19,6 +19,9 @@ class AboutViewModel @Inject constructor(
     val stalkerEnabled: Boolean get() = detectionPrefs.stalkerDetectionEnabled
     val ultrasonicEnabled: Boolean get() = detectionPrefs.ultrasonicEnabled
     val wifiAnomalyEnabled: Boolean get() = detectionPrefs.wifiAnomalyEnabled
+    val sensorBackendEnabled: Boolean get() = detectionPrefs.sensorBackendEnabled
+    val backendUrl: String get() = detectionPrefs.backendUrl
+    val backendOnlyMode: Boolean get() = detectionPrefs.backendOnlyMode
 
     fun setAdsbEnabled(enabled: Boolean) { detectionPrefs.adsbEnabled = enabled }
     fun setBleRidEnabled(enabled: Boolean) { detectionPrefs.bleRidEnabled = enabled }
@@ -29,4 +32,7 @@ class AboutViewModel @Inject constructor(
     fun setStalkerEnabled(enabled: Boolean) { detectionPrefs.stalkerDetectionEnabled = enabled }
     fun setUltrasonicEnabled(enabled: Boolean) { detectionPrefs.ultrasonicEnabled = enabled }
     fun setWifiAnomalyEnabled(enabled: Boolean) { detectionPrefs.wifiAnomalyEnabled = enabled }
+    fun setSensorBackendEnabled(enabled: Boolean) { detectionPrefs.sensorBackendEnabled = enabled }
+    fun setBackendUrl(url: String) { detectionPrefs.backendUrl = url }
+    fun setBackendOnlyMode(enabled: Boolean) { detectionPrefs.backendOnlyMode = enabled }
 }
