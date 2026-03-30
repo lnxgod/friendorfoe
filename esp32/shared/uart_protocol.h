@@ -98,6 +98,7 @@ extern "C" {
 #define JSON_KEY_BLE_AD_TYPES       "ble_adt"
 #define JSON_KEY_BLE_PAYLOAD_LEN    "ble_pl"
 #define JSON_KEY_BLE_ADDR_TYPE      "ble_atype"
+#define JSON_KEY_BLE_JA3            "ble_ja3"
 
 /* ── Framing ─────────────────────────────────────────────────────────────── */
 

@@ -225,6 +225,11 @@ void uart_tx_send_detection(const drone_detection_t *detection)
     if (detection->ble_addr_type != 0) {
         cJSON_AddNumberToObject(root, JSON_KEY_BLE_ADDR_TYPE, detection->ble_addr_type);
     }
+    if (detection->ble_ja3_hash != 0) {
+        char ja3_hex[9];
+        snprintf(ja3_hex, sizeof(ja3_hex), "%08lx", (unsigned long)detection->ble_ja3_hash);
+        cJSON_AddStringToObject(root, JSON_KEY_BLE_JA3, ja3_hex);
+    }
 
     /* Timestamps */
     if (detection->first_seen_ms != 0) {

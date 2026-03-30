@@ -20,6 +20,7 @@ if(NOT WIFI_SCANNER_ONLY)
     list(APPEND SRCS
         "detection/ble_remote_id.c"
         "detection/ble_fingerprint.c"
+        "detection/ble_ja3.c"
         "detection/glasses_detector.c"
     )
     list(APPEND REQUIRES bt)

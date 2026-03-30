@@ -83,6 +83,7 @@ typedef struct {
     uint8_t     ble_ad_type_count;      /* Number of distinct AD types */
     uint8_t     ble_payload_len;        /* Raw advertisement payload length */
     uint8_t     ble_addr_type;          /* 0=public, 1=random static, 2=RPA, 3=non-resolvable */
+    uint32_t    ble_ja3_hash;           /* BLE-JA3 structural profile hash (same for all devices of same model) */
 
     /* Timestamps */
     int64_t     first_seen_ms;          /* epoch milliseconds */
