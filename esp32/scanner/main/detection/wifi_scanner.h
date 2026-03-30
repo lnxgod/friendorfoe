@@ -62,6 +62,28 @@ uint16_t wifi_scanner_get_channel(void);
  */
 bool wifi_scanner_is_5ghz_enabled(void);
 
+/**
+ * Lock onto a specific channel for intensive data capture.
+ * During lock-on, the scanner stops channel hopping and captures
+ * all frames on the target channel.
+ *
+ * @param channel     WiFi channel to lock onto (1-13)
+ * @param bssid       Target BSSID to focus on (NULL = capture all)
+ * @param duration_s  Lock-on duration: 30, 60, or 90 seconds
+ * @return true if lock-on activated
+ */
+bool wifi_scanner_lockon(uint8_t channel, const char *bssid, int duration_s);
+
+/**
+ * Cancel an active lock-on and resume normal scanning.
+ */
+void wifi_scanner_lockon_cancel(void);
+
+/**
+ * Check if lock-on mode is currently active.
+ */
+bool wifi_scanner_is_locked_on(void);
+
 #ifdef __cplusplus
 }
 #endif
