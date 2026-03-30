@@ -15,6 +15,7 @@
 
 #include "ble_remote_id.h"
 #include "ble_fingerprint.h"
+#include "ble_ja3.h"
 #include "open_drone_id_parser.h"
 #include "constants.h"
 #include "detection_types.h"
@@ -455,6 +456,12 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 det.ble_ad_type_count = fp.ad_type_count;
                 det.ble_payload_len = fp.payload_len;
                 det.ble_addr_type = ext->addr.type;
+
+                /* BLE-JA3 structural profile hash (same for all devices of same model) */
+                ble_ja3_hash_t ja3;
+                if (ble_ja3_from_gap_event(event, &ja3)) {
+                    det.ble_ja3_hash = ja3.value;
+                }
 
                 xQueueSend(s_detection_queue, &det, 0);
             }
