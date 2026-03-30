@@ -34,6 +34,7 @@ from app.services.rf_anomaly import RFAnomalyDetector, RFDetectionEvent
 from app.services.signal_tracker import SignalEvent, SignalTracker
 from app.services.triangulation import SensorTracker
 from app.services.anomaly_detector import AnomalyDetector
+from app.services.classifier import classify_detection
 from app.services.enrichment_ble import BLEEnricher
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,17 @@ _recent_detections: deque[StoredDetection] = deque(maxlen=_MAX_RECENT)
 
 _node_heartbeats: dict[str, dict] = {}
 
+# Position dedup cache: drone_id → (lat, lon) of last logged position
+_position_dedup: dict[str, tuple[float, float]] = {}
+
+# GPS-RSSI spoof detector: drone_id → {gps_positions: [(lat,lon,t)], rssi_values: [(rssi,t)]}
+_spoof_tracker: dict[str, dict] = {}
+
+# Drone alert tracker: drone_id → last_seen timestamp
+_known_drones: dict[str, float] = {}
+_drone_alerts: list[dict] = []  # Persistent drone-specific alerts
+_DRONE_REAPPEAR_SEC = 300  # Re-alert if drone gone >5min and comes back
+
 # ---------------------------------------------------------------------------
 # Multi-sensor tracker (triangulation engine)
 # ---------------------------------------------------------------------------
@@ -70,10 +82,11 @@ async def _resolve_sensor_position(
     device_lon: float | None,
     device_alt: float | None,
     db: AsyncSession | None,
-) -> tuple[float | None, float | None, float | None]:
+) -> tuple[float | None, float | None, float | None, str]:
     """
     Look up sensor node in DB. If it's a registered fixed node, use the
     registered position (ignoring GPS from payload). Otherwise use GPS.
+    Returns (lat, lon, alt, sensor_type).
     """
     if db:
         try:
@@ -82,23 +95,21 @@ async def _resolve_sensor_position(
             )
             node = result.scalar_one_or_none()
             if node and node.is_fixed:
-                # Update last_seen timestamp
                 node.last_seen = datetime.now(timezone.utc)
                 await db.commit()
-                return node.lat, node.lon, node.alt
+                return node.lat, node.lon, node.alt, node.sensor_type
             elif node and not node.is_fixed:
-                # Dynamic node — update position from GPS
                 if device_lat is not None and device_lon is not None:
                     node.lat = device_lat
                     node.lon = device_lon
                     node.alt = device_alt
                     node.last_seen = datetime.now(timezone.utc)
                     await db.commit()
-                return device_lat, device_lon, device_alt
+                return device_lat, device_lon, device_alt, node.sensor_type
         except Exception as e:
             logger.warning("DB lookup failed for %s: %s", device_id, e)
 
-    return device_lat, device_lon, device_alt
+    return device_lat, device_lon, device_alt, "outdoor"
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +152,7 @@ async def ingest_drone_detections(
     }
 
     # Resolve sensor position (fixed node overrides GPS)
-    sensor_lat, sensor_lon, sensor_alt = await _resolve_sensor_position(
+    sensor_lat, sensor_lon, sensor_alt, sensor_type = await _resolve_sensor_position(
         batch.device_id, batch.device_lat, batch.device_lon, batch.device_alt, db
     )
 
@@ -154,15 +165,56 @@ async def ingest_drone_detections(
     db_detections = []
 
     for det in batch.detections:
+        # Classify the detection
+        classification, adj_confidence = classify_detection(
+            source=det.source,
+            confidence=det.confidence,
+            ssid=det.ssid,
+            manufacturer=det.manufacturer,
+            drone_id=det.drone_id,
+            model=det.model,
+        )
+
         # Ring buffer
         stored = StoredDetection(
             device_id=batch.device_id,
             device_lat=sensor_lat,
             device_lon=sensor_lon,
             received_at=received_at,
+            classification=classification,
             **det.model_dump(),
         )
         _recent_detections.append(stored)
+
+        # ── Drone-specific alert ─────────────────────────────────────
+        if classification in ("confirmed_drone", "likely_drone", "test_drone"):
+            last_seen = _known_drones.get(det.drone_id, 0)
+            is_new = last_seen == 0 or (received_at - last_seen) > _DRONE_REAPPEAR_SEC
+            _known_drones[det.drone_id] = received_at
+            if is_new:
+                sev_map = {"confirmed_drone": "critical", "likely_drone": "warning", "test_drone": "info"}
+                severity = sev_map.get(classification, "info")
+                alert = {
+                    "alert_type": "drone_detected",
+                    "severity": severity,
+                    "drone_id": det.drone_id,
+                    "classification": classification,
+                    "source": det.source,
+                    "ssid": det.ssid,
+                    "bssid": det.bssid,
+                    "rssi": det.rssi,
+                    "manufacturer": det.manufacturer,
+                    "device_id": batch.device_id,
+                    "latitude": det.latitude,
+                    "longitude": det.longitude,
+                    "timestamp": received_at,
+                    "message": f"DRONE DETECTED: {det.drone_id} ({classification.replace('_',' ')}) via {det.source} on {batch.device_id} RSSI={det.rssi}",
+                }
+                _drone_alerts.append(alert)
+                if len(_drone_alerts) > 200:
+                    _drone_alerts.pop(0)
+                logger.warning("DRONE ALERT [%s]: %s via %s on %s rssi=%s",
+                               severity.upper(), det.drone_id, det.source, batch.device_id, det.rssi)
 
         # Anomaly detection (fingerprint-aware, whitelisted, mesh-aware)
         _anomaly_detector.ingest(
@@ -180,6 +232,11 @@ async def ingest_drone_detections(
             bssid=det.bssid or "", manufacturer=det.manufacturer or "",
             model=det.model or "", device_id=batch.device_id,
             received_at=received_at,
+            ble_company_id=det.ble_company_id,
+            ble_apple_type=det.ble_apple_type,
+            ble_ad_type_count=det.ble_ad_type_count,
+            ble_payload_len=det.ble_payload_len,
+            ble_addr_type=det.ble_addr_type,
         )
 
         alerts = _rf_anomaly_detector.process_event(
@@ -237,6 +294,7 @@ async def ingest_drone_detections(
             bssid=det.bssid,
             rssi=det.rssi,
             confidence=det.confidence,
+            classification=classification,
             drone_lat=det.latitude,
             drone_lon=det.longitude,
             drone_alt=det.altitude_m,
@@ -254,7 +312,7 @@ async def ingest_drone_detections(
         )
         db_detections.append(db_det)
 
-        # Triangulation engine
+        # Triangulation engine (use adjusted confidence for test drones)
         _sensor_tracker.ingest(
             device_id=batch.device_id,
             device_lat=sensor_lat,
@@ -267,7 +325,7 @@ async def ingest_drone_detections(
             drone_alt=det.altitude_m,
             heading_deg=det.heading_deg,
             speed_mps=det.speed_mps,
-            confidence=det.confidence,
+            confidence=adj_confidence,
             source=det.source,
             manufacturer=det.manufacturer,
             model=det.model,
@@ -276,16 +334,62 @@ async def ingest_drone_detections(
             operator_lat=det.operator_lat,
             operator_lon=det.operator_lon,
             operator_id=det.operator_id,
+            sensor_type=sensor_type,
         )
+
+        # ── GPS-RSSI spoof detection ────────────────────────────────
+        # Track per-sensor RSSI stability vs GPS movement over time
+        if det.latitude and det.longitude and det.latitude != 0 and det.rssi:
+            spoof_key = f"{det.drone_id}_{batch.device_id}"
+            st = _spoof_tracker.get(spoof_key)
+            if st is None:
+                st = {"gps": [], "rssi": [], "flagged": False}
+                _spoof_tracker[spoof_key] = st
+            st["gps"].append((det.latitude, det.longitude, received_at))
+            st["rssi"].append((det.rssi, received_at))
+            # Keep last 30 from THIS sensor
+            if len(st["gps"]) > 30:
+                st["gps"] = st["gps"][-30:]
+                st["rssi"] = st["rssi"][-30:]
+            # Check: GPS moved >50m but THIS sensor's RSSI range <6dB = spoof
+            if len(st["gps"]) >= 8 and not st["flagged"]:
+                lats = [g[0] for g in st["gps"]]
+                lons = [g[1] for g in st["gps"]]
+                rssis = [r[0] for r in st["rssi"]]
+                gps_spread_m = (((max(lats)-min(lats))*111320)**2 + ((max(lons)-min(lons))*111320*0.78)**2)**0.5
+                rssi_range = max(rssis) - min(rssis)
+                if gps_spread_m > 50 and rssi_range < 6:
+                    st["flagged"] = True
+                    logger.warning(
+                        "SPOOF: %s on %s — GPS moved %.0fm but RSSI range %ddB (stationary transmitter spoofing GPS)",
+                        det.drone_id, batch.device_id, gps_spread_m, rssi_range
+                    )
+
         accepted += 1
 
     # Bulk insert to PostgreSQL
     try:
         db.add_all(db_detections)
 
-        # Also store triangulated positions
+        # Store triangulated positions — skip range_only, deduplicate
         located = _sensor_tracker.get_located_drones()
         for d in located:
+            # Skip single-sensor range_only (just sensor position, no real data)
+            if d.position_source == "range_only":
+                continue
+            # Skip if position hasn't moved >1m from last logged position
+            last_key = f"_last_pos_{d.drone_id}"
+            last_pos = _position_dedup.get(last_key)
+            if last_pos:
+                dlat = (d.lat - last_pos[0]) * 111320
+                dlon = (d.lon - last_pos[1]) * 111320 * 0.78  # cos(37°)
+                moved = (dlat**2 + dlon**2) ** 0.5
+                if moved < 1.0:
+                    continue
+            _position_dedup[last_key] = (d.lat, d.lon)
+
+            # Get best observation's SSID
+            best_obs = max(d.observations, key=lambda o: o.confidence) if d.observations else None
             tri = TriangulatedPosition(
                 drone_id=d.drone_id,
                 lat=d.lat,
@@ -297,9 +401,18 @@ async def ingest_drone_detections(
                 confidence=d.confidence,
                 manufacturer=d.manufacturer,
                 model=d.model,
-                ssid=getattr(d, 'ssid', None),
+                ssid=best_obs.ssid if best_obs else None,
+                classification=classify_detection(
+                    source=best_obs.source if best_obs else "",
+                    confidence=d.confidence,
+                    ssid=best_obs.ssid if best_obs else None,
+                    manufacturer=d.manufacturer,
+                    drone_id=d.drone_id,
+                    model=d.model,
+                )[0] if best_obs else None,
                 observations_json=json.dumps([
-                    {"device_id": o.device_id, "rssi": o.rssi, "distance_m": o.estimated_distance_m}
+                    {"device_id": o.device_id, "rssi": o.rssi, "distance_m": o.estimated_distance_m,
+                     "sensor_lat": o.sensor_lat, "sensor_lon": o.sensor_lon, "ssid": o.ssid}
                     for o in d.observations
                 ]),
             )
@@ -319,13 +432,29 @@ async def ingest_drone_detections(
 # ---------------------------------------------------------------------------
 
 @router.get("/drones/map", response_model=DroneMapResponse)
-async def get_drone_map() -> DroneMapResponse:
+async def get_drone_map(
+    classification: Annotated[str | None, Query(description="Filter by classification")] = None,
+) -> DroneMapResponse:
     """Return all currently-tracked drones with estimated positions."""
     located = _sensor_tracker.get_located_drones()
     sensors = _sensor_tracker.get_active_sensors()
 
     drone_items = []
     for d in located:
+        # Classify using the best observation's data
+        best_obs = max(d.observations, key=lambda o: o.confidence) if d.observations else None
+        cls, _ = classify_detection(
+            source=best_obs.source if best_obs else "",
+            confidence=d.confidence,
+            ssid=best_obs.ssid if best_obs else None,
+            manufacturer=d.manufacturer,
+            drone_id=d.drone_id,
+            model=d.model,
+        ) if best_obs else ("unknown_device", d.confidence)
+
+        if classification and cls != classification:
+            continue
+
         obs_items = [
             SensorObservation(
                 device_id=o.device_id,
@@ -335,6 +464,7 @@ async def get_drone_map() -> DroneMapResponse:
                 estimated_distance_m=o.estimated_distance_m,
                 confidence=o.confidence,
                 source=o.source,
+                ssid=o.ssid,
             )
             for o in d.observations
         ]
@@ -356,11 +486,13 @@ async def get_drone_map() -> DroneMapResponse:
             operator_lon=d.operator_lon,
             operator_id=d.operator_id,
             observations=obs_items,
+            classification=cls,
         ))
 
     sensor_items = [
         SensorItem(
             device_id=s.device_id, lat=s.lat, lon=s.lon, alt=s.alt, last_seen=s.last_seen,
+            online=_sensor_tracker.is_sensor_online(s.device_id),
         )
         for s in sensors
     ]
@@ -374,15 +506,18 @@ async def get_drone_map() -> DroneMapResponse:
 
 
 # ---------------------------------------------------------------------------
-# GET /detections/sensors — active sensor nodes
+# GET /detections/sensors — sensor nodes (includes offline)
 # ---------------------------------------------------------------------------
 
 @router.get("/sensors", response_model=SensorsResponse)
 async def get_active_sensors() -> SensorsResponse:
-    """Return all active ESP32 sensor nodes with their positions."""
-    sensors = _sensor_tracker.get_active_sensors()
+    """Return all known ESP32 sensor nodes with their positions and online status."""
+    sensors = _sensor_tracker.get_active_sensors(include_offline=True)
     items = [
-        SensorItem(device_id=s.device_id, lat=s.lat, lon=s.lon, alt=s.alt, last_seen=s.last_seen)
+        SensorItem(
+            device_id=s.device_id, lat=s.lat, lon=s.lon, alt=s.alt, last_seen=s.last_seen,
+            online=_sensor_tracker.is_sensor_online(s.device_id),
+        )
         for s in sensors
     ]
     return SensorsResponse(count=len(items), sensors=items)
@@ -416,19 +551,109 @@ async def get_live_devices(
 
 
 @router.get("/nodes/status")
-async def get_node_status():
-    """Return all nodes that have reported in, with heartbeat info."""
+async def get_node_status(db: AsyncSession = Depends(get_db)):
+    """Return all nodes that have reported in, with heartbeat info and registered GPS positions."""
     now = time.time()
+
+    # Load registered GPS positions from DB
+    db_positions: dict[str, dict] = {}
+    try:
+        from app.models.db_models import SensorNode
+        result = await db.execute(select(SensorNode))
+        for sn in result.scalars().all():
+            db_positions[sn.device_id] = {
+                "lat": sn.lat, "lon": sn.lon, "alt": sn.alt,
+                "name": sn.name, "is_fixed": sn.is_fixed,
+            }
+    except Exception:
+        pass  # DB unavailable, use heartbeat data only
+
     nodes = []
     for node in _node_heartbeats.values():
         age = now - node["last_seen"]
-        nodes.append({
-            **node,
-            "age_s": round(age, 1),
-            "online": age < 120,
-        })
+        entry = {**node, "age_s": round(age, 1), "online": age < 120}
+        # Override lat/lon with registered DB position if available
+        db_pos = db_positions.get(node["device_id"])
+        if db_pos and db_pos.get("is_fixed"):
+            entry["lat"] = db_pos["lat"]
+            entry["lon"] = db_pos["lon"]
+            entry["alt"] = db_pos.get("alt", 0)
+            entry["name"] = db_pos.get("name", "")
+            entry["gps_registered"] = True
+        else:
+            entry["gps_registered"] = False
+        nodes.append(entry)
     nodes.sort(key=lambda n: n["last_seen"], reverse=True)
     return {"count": len(nodes), "nodes": nodes}
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# GET /detections/drone-alerts — drone-specific alerts (high priority)
+# ---------------------------------------------------------------------------
+
+@router.get("/drone-alerts")
+async def get_drone_alerts():
+    """Return drone-specific alerts — confirmed drones, likely drones, test drones.
+
+    These are top-priority alerts that should be prominently displayed.
+    """
+    now = time.time()
+    # Active drones = seen in last 120s
+    active_drones = {did: ts for did, ts in _known_drones.items() if now - ts < 120}
+    # Build active drone info from current map data
+    located = _sensor_tracker.get_located_drones()
+    active_info = []
+    for did, last_ts in sorted(active_drones.items(), key=lambda x: -x[1]):
+        drone = next((d for d in located if d.drone_id == did), None)
+        info = {
+            "drone_id": did,
+            "last_seen": last_ts,
+            "age_s": round(now - last_ts, 1),
+            "active": True,
+        }
+        if drone:
+            best_obs = max(drone.observations, key=lambda o: o.confidence) if drone.observations else None
+            info.update({
+                "lat": drone.lat, "lon": drone.lon,
+                "position_source": drone.position_source,
+                "sensor_count": drone.sensor_count,
+                "accuracy_m": drone.accuracy_m,
+                "classification": classify_detection(
+                    source=best_obs.source if best_obs else "",
+                    confidence=drone.confidence,
+                    ssid=best_obs.ssid if best_obs else None,
+                    manufacturer=drone.manufacturer,
+                    drone_id=did,
+                    model=drone.model,
+                )[0] if best_obs else "unknown",
+                "observations": [
+                    {"device_id": o.device_id, "rssi": o.rssi, "distance_m": o.estimated_distance_m}
+                    for o in drone.observations
+                ],
+            })
+        active_info.append(info)
+
+    return {
+        "active_drone_count": len(active_info),
+        "active_drones": active_info,
+        "recent_alerts": _drone_alerts[-50:],
+        "total_alerts": len(_drone_alerts),
+    }
+
+
+# GET /detections/trails — position history for devices that have moved
+# ---------------------------------------------------------------------------
+
+@router.get("/trails")
+async def get_position_trails():
+    """Return position history trails for all devices with movement."""
+    trails = _sensor_tracker._ekf.get_all_trails()
+    return {
+        "count": len(trails),
+        "trails": trails,
+        "stats": _sensor_tracker.get_ekf_stats(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +718,7 @@ async def get_recent_detections(
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     min_confidence: Annotated[float, Query(ge=0.0, le=1.0, description="Min confidence filter (0=show all)")] = 0.0,
     source: Annotated[str | None, Query(description="Filter by source type")] = None,
+    classification: Annotated[str | None, Query(description="Filter by classification: confirmed_drone, likely_drone, test_drone, possible_drone, unknown_device, known_ap, tracker")] = None,
 ) -> RecentDetectionsResponse:
     """Return the most recent drone detections from the in-memory ring buffer.
 
@@ -504,9 +730,176 @@ async def get_recent_detections(
         items = [d for d in items if d.confidence >= min_confidence]
     if source:
         items = [d for d in items if d.source == source]
+    if classification:
+        items = [d for d in items if d.classification == classification]
     items = items[-limit:]
     items.reverse()
     return RecentDetectionsResponse(count=len(items), max_stored=_MAX_RECENT, detections=items)
+
+
+# ---------------------------------------------------------------------------
+# GET /detections/sensor/{device_id}/stats — per-sensor breakdown
+# ---------------------------------------------------------------------------
+
+@router.get("/sensor/{device_id}/stats")
+async def get_sensor_stats(device_id: str):
+    """Return detailed stats for a single sensor: source breakdown, SSIDs, BLE types, recent activity."""
+    now = time.time()
+    items = [d for d in _recent_detections if d.device_id == device_id]
+
+    # Source breakdown
+    source_counts: dict[str, int] = {}
+    classification_counts: dict[str, int] = {}
+    ssids: dict[str, dict] = {}
+    ble_types: dict[str, int] = {}
+    newest = 0.0
+    oldest = now
+
+    for d in items:
+        src = d.source or "unknown"
+        source_counts[src] = source_counts.get(src, 0) + 1
+
+        cls = d.classification or "unknown"
+        classification_counts[cls] = classification_counts.get(cls, 0) + 1
+
+        if d.received_at > newest:
+            newest = d.received_at
+        if d.received_at < oldest:
+            oldest = d.received_at
+
+        # WiFi SSID tracking
+        if d.ssid and "ble" not in src:
+            if d.ssid not in ssids:
+                ssids[d.ssid] = {"count": 0, "best_rssi": -999, "classification": d.classification, "bssid": d.bssid}
+            ssids[d.ssid]["count"] += 1
+            if d.rssi and d.rssi > ssids[d.ssid]["best_rssi"]:
+                ssids[d.ssid]["best_rssi"] = d.rssi
+
+        # BLE device type tracking
+        if "ble" in src and d.drone_id:
+            parts = d.drone_id.split(":")
+            dtype = ":".join(parts[2:]).strip() if len(parts) >= 3 else "Unknown"
+            ble_types[dtype] = ble_types.get(dtype, 0) + 1
+
+    # Heartbeat info
+    hb = _node_heartbeats.get(device_id, {})
+
+    wifi_ssid_list = [
+        {"ssid": k, "count": v["count"], "best_rssi": v["best_rssi"] if v["best_rssi"] != -999 else None,
+         "classification": v["classification"], "bssid": v["bssid"]}
+        for k, v in sorted(ssids.items(), key=lambda x: x[1]["count"], reverse=True)
+    ]
+
+    ble_type_list = [{"type": k, "count": v} for k, v in sorted(ble_types.items(), key=lambda x: x[1], reverse=True)]
+
+    return {
+        "device_id": device_id,
+        "online": hb.get("last_seen", 0) > now - 120 if hb else False,
+        "ip": hb.get("ip"),
+        "total_in_buffer": len(items),
+        "total_batches": hb.get("total_batches", 0),
+        "total_detections": hb.get("total_detections", 0),
+        "source_breakdown": source_counts,
+        "classification_breakdown": classification_counts,
+        "wifi_ssids": wifi_ssid_list,
+        "ble_device_types": ble_type_list,
+        "wifi_count": sum(v for k, v in source_counts.items() if "ble" not in k),
+        "ble_count": sum(v for k, v in source_counts.items() if "ble" in k),
+        "unique_ssids": len(ssids),
+        "newest_detection": newest if newest > 0 else None,
+        "oldest_detection": oldest if oldest < now else None,
+        "age_span_s": round(newest - oldest, 1) if newest > 0 and oldest < now else 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /detections/grouped — deduplicated view grouped by drone_id
+# ---------------------------------------------------------------------------
+
+@router.get("/grouped")
+async def get_grouped_detections(
+    classification: Annotated[str | None, Query(description="Filter by classification")] = None,
+    exclude_known_ap: Annotated[bool, Query(description="Hide known APs (default true)")] = True,
+    max_age_s: Annotated[int, Query(ge=1, le=3600, description="Max age in seconds")] = 120,
+):
+    """Return detections grouped by drone_id — one row per device, showing all sensors that see it.
+
+    This is the clean view for comparing multi-sensor coverage.
+    """
+    now = time.time()
+    items = list(_recent_detections)
+
+    # Filter by age
+    items = [d for d in items if (now - d.received_at) <= max_age_s]
+
+    # Filter out known APs by default
+    if exclude_known_ap:
+        items = [d for d in items if d.classification != "known_ap"]
+
+    # Filter by classification
+    if classification:
+        items = [d for d in items if d.classification == classification]
+
+    # Group by drone_id
+    groups: dict[str, dict] = {}
+    for d in items:
+        key = d.drone_id
+        if key not in groups:
+            groups[key] = {
+                "drone_id": d.drone_id,
+                "classification": d.classification,
+                "ssid": d.ssid,
+                "source": d.source,
+                "manufacturer": d.manufacturer,
+                "model": d.model,
+                "best_rssi": d.rssi or -999,
+                "best_confidence": d.confidence,
+                "sensors": set(),
+                "sensor_rssi": {},
+                "last_seen": d.received_at,
+                "first_seen": d.received_at,
+                "count": 0,
+                "bssid": d.bssid,
+            }
+        g = groups[key]
+        g["count"] += 1
+        if d.device_id:
+            g["sensors"].add(d.device_id)
+            # Track best RSSI per sensor
+            prev = g["sensor_rssi"].get(d.device_id, -999)
+            if d.rssi and d.rssi > prev:
+                g["sensor_rssi"][d.device_id] = d.rssi
+        if d.rssi and d.rssi > g["best_rssi"]:
+            g["best_rssi"] = d.rssi
+        if d.confidence > g["best_confidence"]:
+            g["best_confidence"] = d.confidence
+        if d.received_at > g["last_seen"]:
+            g["last_seen"] = d.received_at
+        if d.received_at < g["first_seen"]:
+            g["first_seen"] = d.received_at
+
+    # Build response
+    result = []
+    for g in sorted(groups.values(), key=lambda x: x["last_seen"], reverse=True):
+        result.append({
+            "drone_id": g["drone_id"],
+            "classification": g["classification"],
+            "ssid": g["ssid"],
+            "source": g["source"],
+            "manufacturer": g["manufacturer"],
+            "bssid": g["bssid"],
+            "best_rssi": g["best_rssi"] if g["best_rssi"] != -999 else None,
+            "best_confidence": g["best_confidence"],
+            "sensor_count": len(g["sensors"]),
+            "sensors": sorted(g["sensors"]),
+            "sensor_rssi": g["sensor_rssi"],
+            "detection_count": g["count"],
+            "last_seen": g["last_seen"],
+            "first_seen": g["first_seen"],
+            "age_s": round(now - g["last_seen"], 1),
+        })
+
+    return {"count": len(result), "devices": result}
 
 
 # ---------------------------------------------------------------------------
@@ -634,8 +1027,11 @@ async def get_drone_track(
     )
     positions = result.scalars().all()
 
-    track = [
-        DroneTrackPoint(
+    track = []
+    total_distance = 0.0
+    prev_lat, prev_lon = None, None
+    for p in positions:
+        pt = DroneTrackPoint(
             lat=p.lat,
             lon=p.lon,
             alt=p.alt,
@@ -644,8 +1040,25 @@ async def get_drone_track(
             sensor_count=p.sensor_count,
             confidence=p.confidence,
             timestamp=p.timestamp.isoformat() if p.timestamp else "",
+            observations_json=p.observations_json,
+            classification=p.classification,
+            ssid=p.ssid,
         )
-        for p in positions
-    ]
+        track.append(pt)
+        # Calculate total distance traveled
+        if prev_lat is not None:
+            dlat = (p.lat - prev_lat) * 111320
+            dlon = (p.lon - prev_lon) * 111320 * 0.78
+            total_distance += (dlat**2 + dlon**2) ** 0.5
+        prev_lat, prev_lon = p.lat, p.lon
 
-    return DroneTrackResponse(drone_id=drone_id, point_count=len(track), track=track)
+    avg_accuracy = sum(p.accuracy_m or 0 for p in positions) / max(1, len(positions))
+
+    return DroneTrackResponse(
+        drone_id=drone_id,
+        point_count=len(track),
+        track=track,
+        total_distance_m=round(total_distance, 1),
+        avg_accuracy_m=round(avg_accuracy, 1),
+        hours_queried=hours,
+    )

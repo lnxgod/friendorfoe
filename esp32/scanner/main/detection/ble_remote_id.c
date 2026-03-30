@@ -442,6 +442,13 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 snprintf(det.model, sizeof(det.model),
                          "FP:%08lX", (unsigned long)fp.hash);
 
+                /* BLE-specific fields for backend device fingerprinting */
+                det.ble_company_id = fp.company_id;
+                det.ble_apple_type = fp.apple_type;
+                det.ble_ad_type_count = fp.ad_type_count;
+                det.ble_payload_len = fp.payload_len;
+                det.ble_addr_type = ext->addr.type;
+
                 xQueueSend(s_detection_queue, &det, 0);
             }
         }

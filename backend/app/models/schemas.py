@@ -128,6 +128,12 @@ class DroneDetectionItem(BaseModel):
     ssid: str | None = Field(None, description="WiFi SSID if detected via WiFi")
     bssid: str | None = Field(None, description="WiFi BSSID (MAC address)")
     channel: int | None = Field(None, description="WiFi channel if available from the scanner")
+    # BLE fingerprinting fields (from ESP32 scanner)
+    ble_company_id: int | None = Field(None, description="BLE company ID (0x004C=Apple, 0x0075=Samsung, etc.)")
+    ble_apple_type: int | None = Field(None, description="Apple Continuity sub-type (0x07=AirPods, 0x10=NearbyInfo, 0x12=FindMy)")
+    ble_ad_type_count: int | None = Field(None, description="Number of distinct AD types in advertisement")
+    ble_payload_len: int | None = Field(None, description="Raw BLE advertisement payload length")
+    ble_addr_type: int | None = Field(None, description="BLE address type (0=public, 1=random static, 2=RPA)")
 
 
 class DroneDetectionBatch(BaseModel):
@@ -158,6 +164,7 @@ class StoredDetection(DroneDetectionItem):
     device_lat: float | None = Field(None, description="Source device latitude")
     device_lon: float | None = Field(None, description="Source device longitude")
     received_at: float = Field(..., description="Server receive timestamp (epoch seconds)")
+    classification: str | None = Field(None, description="Device classification: confirmed_drone, likely_drone, test_drone, possible_drone, unknown_device, known_ap, tracker")
 
 
 class RecentDetectionsResponse(BaseModel):
@@ -208,6 +215,7 @@ class SensorObservation(BaseModel):
     estimated_distance_m: float | None = None
     confidence: float = 0.0
     source: str = ""
+    ssid: str | None = None
 
 
 class LocatedDroneItem(BaseModel):
@@ -235,16 +243,18 @@ class LocatedDroneItem(BaseModel):
     operator_lon: float | None = None
     operator_id: str | None = None
     observations: list[SensorObservation] = Field(default_factory=list)
+    classification: str | None = Field(None, description="Device classification: confirmed_drone, likely_drone, test_drone, possible_drone, unknown_device, known_ap, tracker")
 
 
 class SensorItem(BaseModel):
-    """An active ESP32 sensor node."""
+    """An ESP32 sensor node."""
 
     device_id: str = Field(..., description="Unique sensor identifier")
     lat: float = Field(..., description="Sensor latitude")
     lon: float = Field(..., description="Sensor longitude")
     alt: float | None = Field(None, description="Sensor altitude in meters")
     last_seen: float = Field(..., description="Last heartbeat epoch seconds")
+    online: bool = Field(True, description="True if reported within the last 120s")
 
 
 class DroneMapResponse(BaseModel):
@@ -275,6 +285,7 @@ class NodeCreateRequest(BaseModel):
     lat: float = Field(..., description="Fixed latitude (WGS84 degrees)")
     lon: float = Field(..., description="Fixed longitude (WGS84 degrees)")
     alt: float | None = Field(None, description="Fixed altitude in meters MSL")
+    sensor_type: str = Field("outdoor", description="Sensor environment: 'indoor' or 'outdoor'. Indoor uses higher path loss.")
 
 
 class NodeUpdateRequest(BaseModel):
@@ -295,6 +306,7 @@ class NodeResponse(BaseModel):
     lon: float
     alt: float | None = None
     is_fixed: bool = False
+    sensor_type: str = "outdoor"
     last_seen: str | None = None
     created_at: str | None = None
 
@@ -350,6 +362,9 @@ class DroneTrackPoint(BaseModel):
     sensor_count: int = 1
     confidence: float = 0.0
     timestamp: str
+    observations_json: str | None = None
+    classification: str | None = None
+    ssid: str | None = None
 
 
 class DroneTrackResponse(BaseModel):
@@ -358,3 +373,6 @@ class DroneTrackResponse(BaseModel):
     drone_id: str
     point_count: int
     track: list[DroneTrackPoint] = Field(default_factory=list)
+    total_distance_m: float = 0.0
+    avg_accuracy_m: float = 0.0
+    hours_queried: float = 1.0
