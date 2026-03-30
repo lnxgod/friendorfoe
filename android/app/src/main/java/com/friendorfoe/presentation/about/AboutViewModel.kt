@@ -1,15 +1,23 @@
 package com.friendorfoe.presentation.about
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.DetectionPrefs
+import com.friendorfoe.data.remote.SensorMapApiService
 import com.friendorfoe.data.repository.SkyObjectRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
 class AboutViewModel @Inject constructor(
     private val detectionPrefs: DetectionPrefs,
-    private val skyObjectRepository: SkyObjectRepository
+    private val skyObjectRepository: SkyObjectRepository,
+    private val sensorMapApiService: SensorMapApiService
 ) : ViewModel() {
 
     val adsbEnabled: Boolean get() = detectionPrefs.adsbEnabled
@@ -35,4 +43,20 @@ class AboutViewModel @Inject constructor(
     fun setSensorBackendEnabled(enabled: Boolean) { detectionPrefs.sensorBackendEnabled = enabled }
     fun setBackendUrl(url: String) { detectionPrefs.backendUrl = url }
     fun setBackendOnlyMode(enabled: Boolean) { detectionPrefs.backendOnlyMode = enabled }
+
+    // Connection test
+    private val _connectionStatus = MutableStateFlow<String?>(null)
+    val connectionStatus: StateFlow<String?> = _connectionStatus.asStateFlow()
+
+    fun testConnection() {
+        _connectionStatus.value = "Testing..."
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val health = sensorMapApiService.getHealth()
+                _connectionStatus.value = "Connected — v${health.version} DB:${health.database}"
+            } catch (e: Exception) {
+                _connectionStatus.value = "Failed: ${e.message?.take(50)}"
+            }
+        }
+    }
 }

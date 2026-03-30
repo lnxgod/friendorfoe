@@ -35,6 +35,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -206,7 +207,68 @@ fun AboutScreen(
             // Detection Settings
             if (viewModel != null) {
                 item {
-                    SectionCard(title = "Detection Sources") {
+                    SectionCard(title = "Sensor Backend (ESP32 Network)") {
+                        SettingsToggle(
+                            title = "Backend-Only Mode",
+                            description = "Use ESP32 sensor network only — disables local phone detection for lower battery use",
+                            initialValue = viewModel.backendOnlyMode,
+                            onToggle = { viewModel.setBackendOnlyMode(it) }
+                        )
+                        SettingsToggle(
+                            title = "Sensor Backend Connection",
+                            description = "Connect to ESP32 sensors for Remote ID, WiFi drone detection, and triangulation",
+                            initialValue = viewModel.sensorBackendEnabled,
+                            onToggle = { viewModel.setSensorBackendEnabled(it) }
+                        )
+
+                        // Backend URL + Test Connection
+                        var urlText by remember { mutableStateOf(viewModel.backendUrl) }
+                        val connectionStatus by viewModel.connectionStatus.collectAsStateWithLifecycle()
+                        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            Text(
+                                "Backend URL",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = urlText,
+                                onValueChange = { urlText = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                singleLine = true,
+                                placeholder = { Text("http://192.168.x.x:8000/") }
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(onClick = {
+                                    viewModel.setBackendUrl(urlText)
+                                }) { Text("Save URL") }
+                                TextButton(onClick = {
+                                    viewModel.setBackendUrl(urlText)
+                                    viewModel.testConnection()
+                                }) { Text("Test Connection") }
+                            }
+                            connectionStatus?.let { status ->
+                                val isOk = status.startsWith("Connected")
+                                Text(
+                                    text = status,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isOk) Color(0xFF4CAF50) else Color(0xFFF44336),
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+                item {
+                    // Local detection sources — grayed out description when backend-only
+                    val backendOnly = viewModel.backendOnlyMode
+                    SectionCard(title = if (backendOnly) "Local Detection (Disabled — Backend-Only Mode)" else "Local Detection Sources") {
                         SettingsToggle(
                             title = "ADS-B Aircraft",
                             description = "Commercial flights, GA, military via transponder data",
@@ -253,56 +315,6 @@ fun AboutScreen(
                             initialValue = viewModel.ultrasonicEnabled,
                             onToggle = { viewModel.setUltrasonicEnabled(it) }
                         )
-                    }
-                }
-                item {
-                    SectionCard(title = "Sensor Backend (ESP32 Network)") {
-                        SettingsToggle(
-                            title = "Sensor Backend",
-                            description = "Connect to ESP32 sensor network for Remote ID, WiFi drone detection, and triangulation",
-                            initialValue = viewModel.sensorBackendEnabled,
-                            onToggle = { viewModel.setSensorBackendEnabled(it) }
-                        )
-                        SettingsToggle(
-                            title = "Backend-Only Mode",
-                            description = "Disable local phone detection (ADS-B, BLE, WiFi) and rely solely on the ESP32 sensor network",
-                            initialValue = viewModel.backendOnlyMode,
-                            onToggle = { viewModel.setBackendOnlyMode(it) }
-                        )
-
-                        // Backend URL input
-                        var urlText by remember { mutableStateOf(viewModel.backendUrl) }
-                        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                            Text(
-                                "Backend URL",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            OutlinedTextField(
-                                value = urlText,
-                                onValueChange = { urlText = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                textStyle = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace
-                                ),
-                                singleLine = true,
-                                placeholder = { Text("http://192.168.42.145:8000/") },
-                                trailingIcon = {
-                                    TextButton(onClick = {
-                                        viewModel.setBackendUrl(urlText)
-                                    }) {
-                                        Text("Save", fontSize = 12.sp)
-                                    }
-                                }
-                            )
-                            Text(
-                                "IP address of your sensor backend server",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                            )
-                        }
                     }
                 }
                 item {
