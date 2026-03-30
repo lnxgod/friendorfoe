@@ -525,6 +525,59 @@ static void http_upload_task(void *arg)
                 cJSON_free(payload);
             }
         }
+
+        /* ── Poll lock-on command from backend every 10s ─────────────── */
+        {
+            static TickType_t last_lockon_poll = 0;
+            static bool lockon_was_active = false;
+            TickType_t now2 = xTaskGetTickCount();
+
+            if (wifi_sta_is_connected() &&
+                (now2 - last_lockon_poll) >= pdMS_TO_TICKS(10000)) {
+                last_lockon_poll = now2;
+
+                /* Build lock-on poll URL */
+                char backend_url[128] = {0};
+                nvs_config_get_backend_url(backend_url, sizeof(backend_url));
+                char url[256];
+                snprintf(url, sizeof(url), "%s/detections/lockon", backend_url);
+
+                esp_http_client_config_t cfg = {
+                    .url = url,
+                    .method = HTTP_METHOD_GET,
+                    .timeout_ms = 3000,
+                };
+                esp_http_client_handle_t client = esp_http_client_init(&cfg);
+                if (client) {
+                    esp_err_t err = esp_http_client_perform(client);
+                    if (err == ESP_OK) {
+                        int len = esp_http_client_get_content_length(client);
+                        if (len > 0 && len < 512) {
+                            char buf[512] = {0};
+                            esp_http_client_read(client, buf, sizeof(buf) - 1);
+                            /* Parse lock-on response */
+                            cJSON *resp = cJSON_Parse(buf);
+                            if (resp) {
+                                cJSON *active = cJSON_GetObjectItem(resp, "active");
+                                if (active && cJSON_IsTrue(active) && !lockon_was_active) {
+                                    cJSON *ch = cJSON_GetObjectItem(resp, "channel");
+                                    cJSON *dur = cJSON_GetObjectItem(resp, "duration_s");
+                                    ESP_LOGW(TAG, "LOCK-ON command from backend: ch=%d dur=%ds",
+                                             ch ? ch->valueint : 0, dur ? dur->valueint : 60);
+                                    lockon_was_active = true;
+                                    /* TODO: Forward to scanner via UART TX */
+                                } else if (active && !cJSON_IsTrue(active) && lockon_was_active) {
+                                    ESP_LOGI(TAG, "LOCK-ON cancelled by backend");
+                                    lockon_was_active = false;
+                                }
+                                cJSON_Delete(resp);
+                            }
+                        }
+                    }
+                    esp_http_client_cleanup(client);
+                }
+            }
+        }
     }
 }
 
