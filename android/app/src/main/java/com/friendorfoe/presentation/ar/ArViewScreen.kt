@@ -157,6 +157,8 @@ fun ArViewScreen(
     val nearbyCandidates by detailViewModel.nearbyCandidates.collectAsStateWithLifecycle()
     val positionTrail by detailViewModel.positionTrail.collectAsStateWithLifecycle()
     val dataSourceStatus by viewModel.dataSourceStatus.collectAsStateWithLifecycle()
+    val sensorBackendOnline by viewModel.sensorBackendOnline.collectAsStateWithLifecycle()
+    val sensorDroneCount by viewModel.sensorDroneCount.collectAsStateWithLifecycle()
     val detectionLog by viewModel.detectionLog.collectAsStateWithLifecycle()
     val detectionLogExpanded by viewModel.detectionLogExpanded.collectAsStateWithLifecycle()
     val orientation by viewModel.orientation.collectAsStateWithLifecycle()
@@ -629,6 +631,8 @@ fun ArViewScreen(
                 rangeOverride = rangeOverride,
                 isDarkMode = isDarkMode,
                 strobeCount = strobeCount,
+                sensorBackendOnline = sensorBackendOnline,
+                sensorDroneCount = sensorDroneCount,
                 onRangeOverrideChange = { viewModel.setRangeOverride(it) },
                 onTap = { viewModel.toggleDetectionLog() },
                 modifier = Modifier.fillMaxWidth()
@@ -1930,6 +1934,8 @@ private fun StatusBar(
     rangeOverride: Float?,
     isDarkMode: Boolean,
     strobeCount: Int,
+    sensorBackendOnline: Boolean = false,
+    sensorDroneCount: Int = 0,
     onRangeOverrideChange: (Float?) -> Unit,
     onTap: () -> Unit,
     modifier: Modifier = Modifier
@@ -2134,6 +2140,15 @@ private fun StatusBar(
                 DataSourceStatus.OFFLINE -> {
                     StatusItem(label = "Offline", color = Color(0xFFF44336))
                 }
+            }
+
+            // Sensor backend indicator
+            if (sensorBackendOnline) {
+                val sensorLabel = if (sensorDroneCount > 0) "SEN: $sensorDroneCount" else "SEN"
+                StatusItem(
+                    label = sensorLabel,
+                    color = if (sensorDroneCount > 0) Color(0xFFBF00FF) else Color(0xFF4CAF50)
+                )
             }
 
             // GPS indicator
