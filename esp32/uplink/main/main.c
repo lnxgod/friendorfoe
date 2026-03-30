@@ -20,6 +20,8 @@
 #include "nvs_flash.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 
 /* Core */
 #include "config.h"
@@ -244,5 +246,72 @@ void app_main(void)
 
     ESP_LOGI(TAG, "All tasks started. Uplink is operational.");
 
-    /* app_main returns; FreeRTOS scheduler continues running tasks */
+    /* ── 17. Connectivity watchdog ───────────────────────────────────── */
+    /*
+     * Hard reboot if:
+     *   - WiFi disconnected for > 60 seconds
+     *   - No successful HTTP upload for > 120 seconds (after first success)
+     *
+     * This catches all edge cases: WiFi driver stuck, HTTP client frozen,
+     * DHCP lease expired, router rebooted, etc.
+     */
+    {
+        int64_t last_wifi_connected_ms = esp_timer_get_time() / 1000;
+        int64_t boot_ms = last_wifi_connected_ms;
+        bool had_first_upload = false;
+
+        while (1) {
+            vTaskDelay(pdMS_TO_TICKS(30000));  /* Check every 30s */
+
+            int64_t now_ms = esp_timer_get_time() / 1000;
+            bool wifi_ok = wifi_sta_is_connected();
+
+            if (wifi_ok) {
+                last_wifi_connected_ms = now_ms;
+            }
+
+            /* Check HTTP upload health */
+            int64_t last_upload_ms = http_upload_get_last_success_ms();
+            if (last_upload_ms > 0) {
+                had_first_upload = true;
+            }
+
+            int64_t wifi_down_s = (now_ms - last_wifi_connected_ms) / 1000;
+            int64_t upload_age_s = had_first_upload ? (now_ms - last_upload_ms) / 1000 : 0;
+            int64_t uptime_s = (now_ms - boot_ms) / 1000;
+
+            ESP_LOGI(TAG, "WATCHDOG: wifi=%s down=%llds upload_age=%llds heap=%lu uptime=%llds ok=%d fail=%d",
+                     wifi_ok ? "OK" : "DOWN",
+                     (long long)wifi_down_s,
+                     (long long)upload_age_s,
+                     (unsigned long)esp_get_free_heap_size(),
+                     (long long)uptime_s,
+                     http_upload_get_success_count(),
+                     http_upload_get_fail_count());
+
+            /* WiFi dead for >60s → hard reboot */
+            if (!wifi_ok && wifi_down_s > 60) {
+                ESP_LOGE(TAG, "WATCHDOG REBOOT: WiFi disconnected for %llds — rebooting",
+                         (long long)wifi_down_s);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                esp_restart();
+            }
+
+            /* No upload success for >120s (after first success) → hard reboot */
+            if (had_first_upload && upload_age_s > 120) {
+                ESP_LOGE(TAG, "WATCHDOG REBOOT: No successful upload for %llds — rebooting",
+                         (long long)upload_age_s);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                esp_restart();
+            }
+
+            /* No upload at all after 180s of uptime → something is very wrong */
+            if (!had_first_upload && uptime_s > 180) {
+                ESP_LOGE(TAG, "WATCHDOG REBOOT: Never uploaded after %llds uptime — rebooting",
+                         (long long)uptime_s);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                esp_restart();
+            }
+        }
+    }
 }

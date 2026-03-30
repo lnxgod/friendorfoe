@@ -40,6 +40,12 @@ int http_upload_get_success_count(void);
  */
 int http_upload_get_fail_count(void);
 
+/**
+ * Get the timestamp of the last successful upload (milliseconds since boot).
+ * Returns 0 if no successful upload has occurred yet.
+ */
+int64_t http_upload_get_last_success_ms(void);
+
 #ifdef __cplusplus
 }
 #endif

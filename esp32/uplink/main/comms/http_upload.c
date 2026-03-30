@@ -20,6 +20,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -30,6 +31,7 @@ static QueueHandle_t   s_detection_queue   = NULL;
 static ring_buffer_t  *s_offline_buffer    = NULL;
 static int             s_success_count     = 0;
 static int             s_fail_count        = 0;
+static int64_t         s_last_success_epoch_ms = 0;
 
 /* Persistent HTTP client handle (avoids socket exhaustion from rapid open/close) */
 static esp_http_client_handle_t s_http_client = NULL;
@@ -486,6 +488,7 @@ static void http_upload_task(void *arg)
                     } else {
                         last_send = xTaskGetTickCount();
                         last_success_tick = last_send;
+                        s_last_success_epoch_ms = esp_timer_get_time() / 1000;
                         consecutive_fails = 0;
                     }
                 } else {
@@ -559,4 +562,9 @@ int http_upload_get_success_count(void)
 int http_upload_get_fail_count(void)
 {
     return s_fail_count;
+}
+
+int64_t http_upload_get_last_success_ms(void)
+{
+    return s_last_success_epoch_ms;
 }
