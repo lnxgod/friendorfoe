@@ -279,6 +279,64 @@ static void display_task(void *arg)
     }
 }
 
+/* ── UART command listener (lock-on from uplink) ──────────────────────── */
+
+#ifndef BLE_SCANNER_ONLY
+#include "driver/uart.h"
+#include "cJSON.h"
+
+static void uart_cmd_listener_task(void *arg)
+{
+    uint8_t buf[256];
+    char line[256];
+    int line_pos = 0;
+
+    ESP_LOGI(TAG, "UART cmd listener on UART1 (receives lock-on from uplink)");
+
+    while (1) {
+        int len = uart_read_bytes(UART_NUM_1, buf, sizeof(buf), pdMS_TO_TICKS(500));
+        if (len <= 0) continue;
+
+        for (int i = 0; i < len; i++) {
+            if (buf[i] == '\n') {
+                if (line_pos > 0) {
+                    line[line_pos] = '\0';
+                    /* Parse JSON command */
+                    cJSON *root = cJSON_Parse(line);
+                    if (root) {
+                        const char *type = NULL;
+                        cJSON *t = cJSON_GetObjectItem(root, "type");
+                        if (t && t->valuestring) type = t->valuestring;
+
+                        if (type && strcmp(type, "lockon") == 0) {
+                            cJSON *ch = cJSON_GetObjectItem(root, "ch");
+                            cJSON *dur = cJSON_GetObjectItem(root, "dur");
+                            cJSON *bssid = cJSON_GetObjectItem(root, "bssid");
+                            int channel = ch ? ch->valueint : 6;
+                            int duration = dur ? dur->valueint : 60;
+                            const char *bssid_str = (bssid && bssid->valuestring) ? bssid->valuestring : NULL;
+
+                            ESP_LOGW(TAG, "LOCK-ON received via UART: ch=%d dur=%ds bssid=%s",
+                                     channel, duration, bssid_str ? bssid_str : "*");
+                            wifi_scanner_lockon((uint8_t)channel, bssid_str, duration);
+
+                        } else if (type && strcmp(type, "lockon_cancel") == 0) {
+                            ESP_LOGI(TAG, "LOCK-ON cancel received via UART");
+                            wifi_scanner_lockon_cancel();
+                        }
+
+                        cJSON_Delete(root);
+                    }
+                    line_pos = 0;
+                }
+            } else if (line_pos < (int)sizeof(line) - 1) {
+                line[line_pos++] = (char)buf[i];
+            }
+        }
+    }
+}
+#endif /* BLE_SCANNER_ONLY */
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void app_main(void)
@@ -409,6 +467,20 @@ void app_main(void)
     ESP_LOGI(TAG, "  Detection queue: %d slots", DETECTION_QUEUE_LEN);
     ESP_LOGI(TAG, "  BOOT button: tap=scroll, 2x=privacy view");
     ESP_LOGI(TAG, "============================================");
+
+    /* ── 13. UART command listener (receives lock-on from uplink) ────── */
+#ifndef BLE_SCANNER_ONLY
+    xTaskCreatePinnedToCore(
+        uart_cmd_listener_task,
+        "uart_cmd",
+        4096,
+        NULL,
+        1,  /* Low priority */
+        NULL,
+        DISPLAY_TASK_CORE
+    );
+    ESP_LOGI(TAG, "UART command listener started");
+#endif
 
     /* app_main returns; FreeRTOS scheduler keeps tasks running. */
 }

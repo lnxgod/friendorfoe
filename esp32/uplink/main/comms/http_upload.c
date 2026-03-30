@@ -7,6 +7,7 @@
  */
 
 #include "http_upload.h"
+#include "uart_rx.h"
 #include "wifi_sta.h"
 #include "ring_buffer.h"
 #include "nvs_config.h"
@@ -562,13 +563,24 @@ static void http_upload_task(void *arg)
                                 if (active && cJSON_IsTrue(active) && !lockon_was_active) {
                                     cJSON *ch = cJSON_GetObjectItem(resp, "channel");
                                     cJSON *dur = cJSON_GetObjectItem(resp, "duration_s");
+                                    int lock_ch = ch ? ch->valueint : 6;
+                                    int lock_dur = dur ? dur->valueint : 60;
                                     ESP_LOGW(TAG, "LOCK-ON command from backend: ch=%d dur=%ds",
-                                             ch ? ch->valueint : 0, dur ? dur->valueint : 60);
+                                             lock_ch, lock_dur);
                                     lockon_was_active = true;
-                                    /* TODO: Forward to scanner via UART TX */
+
+                                    /* Forward to scanner via UART TX */
+                                    char cmd[128];
+                                    cJSON *bssid_j = cJSON_GetObjectItem(resp, "bssid");
+                                    snprintf(cmd, sizeof(cmd),
+                                             "{\"type\":\"lockon\",\"ch\":%d,\"dur\":%d,\"bssid\":\"%s\"}",
+                                             lock_ch, lock_dur,
+                                             (bssid_j && bssid_j->valuestring) ? bssid_j->valuestring : "");
+                                    uart_rx_send_command(cmd);
                                 } else if (active && !cJSON_IsTrue(active) && lockon_was_active) {
                                     ESP_LOGI(TAG, "LOCK-ON cancelled by backend");
                                     lockon_was_active = false;
+                                    uart_rx_send_command("{\"type\":\"lockon_cancel\"}");
                                 }
                                 cJSON_Delete(resp);
                             }
