@@ -6,6 +6,7 @@ idf_component_register(
          "detection/wifi_privacy_scanner.c"
          "../../scanner/main/detection/ble_remote_id.c"
          "../../scanner/main/detection/ble_fingerprint.c"
+         "../../scanner/main/detection/ble_ja3.c"
          "../../scanner/main/detection/open_drone_id_parser.c"
          "../../scanner/main/detection/bayesian_fusion.c"
          "../../scanner/main/detection/glasses_detector.c"
