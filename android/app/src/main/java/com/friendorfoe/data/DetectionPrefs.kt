@@ -26,6 +26,10 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_ULTRASONIC = "detection_ultrasonic_enabled"
         private const val KEY_WIFI_ANOMALY = "detection_wifi_anomaly_enabled"
         private const val KEY_IGNORED_MACS = "privacy_ignored_macs"
+        private const val KEY_SENSOR_BACKEND = "sensor_backend_enabled"
+        private const val KEY_BACKEND_URL = "sensor_backend_url"
+        private const val KEY_BACKEND_ONLY = "sensor_backend_only_mode"
+        private const val DEFAULT_BACKEND_URL = "http://192.168.42.145:8000/"
     }
 
     var adsbEnabled: Boolean
@@ -55,6 +59,21 @@ class DetectionPrefs @Inject constructor(
     var wifiAnomalyEnabled: Boolean
         get() = prefs.getBoolean(KEY_WIFI_ANOMALY, true)
         set(value) = prefs.edit().putBoolean(KEY_WIFI_ANOMALY, value).apply()
+
+    /** Sensor backend (ESP32 network) — enabled by default */
+    var sensorBackendEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SENSOR_BACKEND, true)
+        set(value) = prefs.edit().putBoolean(KEY_SENSOR_BACKEND, value).apply()
+
+    /** Backend URL — configurable */
+    var backendUrl: String
+        get() = prefs.getString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL) ?: DEFAULT_BACKEND_URL
+        set(value) = prefs.edit().putString(KEY_BACKEND_URL, value).apply()
+
+    /** Backend-only mode — disable all local detection, rely solely on ESP32 sensors */
+    var backendOnlyMode: Boolean
+        get() = prefs.getBoolean(KEY_BACKEND_ONLY, false)
+        set(value) = prefs.edit().putBoolean(KEY_BACKEND_ONLY, value).apply()
 
     /** MACs the user has dismissed / marked as not a threat. Cached in memory for hot-path BLE checks. */
     @Volatile private var cachedIgnoredMacs: Set<String>? = null

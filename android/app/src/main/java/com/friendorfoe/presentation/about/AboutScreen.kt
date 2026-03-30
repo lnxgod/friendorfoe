@@ -27,8 +27,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -40,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
@@ -250,6 +253,56 @@ fun AboutScreen(
                             initialValue = viewModel.ultrasonicEnabled,
                             onToggle = { viewModel.setUltrasonicEnabled(it) }
                         )
+                    }
+                }
+                item {
+                    SectionCard(title = "Sensor Backend (ESP32 Network)") {
+                        SettingsToggle(
+                            title = "Sensor Backend",
+                            description = "Connect to ESP32 sensor network for Remote ID, WiFi drone detection, and triangulation",
+                            initialValue = viewModel.sensorBackendEnabled,
+                            onToggle = { viewModel.setSensorBackendEnabled(it) }
+                        )
+                        SettingsToggle(
+                            title = "Backend-Only Mode",
+                            description = "Disable local phone detection (ADS-B, BLE, WiFi) and rely solely on the ESP32 sensor network",
+                            initialValue = viewModel.backendOnlyMode,
+                            onToggle = { viewModel.setBackendOnlyMode(it) }
+                        )
+
+                        // Backend URL input
+                        var urlText by remember { mutableStateOf(viewModel.backendUrl) }
+                        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            Text(
+                                "Backend URL",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = urlText,
+                                onValueChange = { urlText = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                textStyle = MaterialTheme.typography.bodySmall.copy(
+                                    fontFamily = FontFamily.Monospace
+                                ),
+                                singleLine = true,
+                                placeholder = { Text("http://192.168.42.145:8000/") },
+                                trailingIcon = {
+                                    TextButton(onClick = {
+                                        viewModel.setBackendUrl(urlText)
+                                    }) {
+                                        Text("Save", fontSize = 12.sp)
+                                    }
+                                }
+                            )
+                            Text(
+                                "IP address of your sensor backend server",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
                     }
                 }
                 item {
