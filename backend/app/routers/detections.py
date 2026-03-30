@@ -65,6 +65,9 @@ _known_drones: dict[str, float] = {}
 _drone_alerts: list[dict] = []  # Persistent drone-specific alerts
 _DRONE_REAPPEAR_SEC = 300  # Re-alert if drone gone >5min and comes back
 
+# Lock-on command (polled by uplinks)
+_lockon_command: dict = {"active": False, "channel": 0, "bssid": "", "duration_s": 0, "issued_at": 0}
+
 # ---------------------------------------------------------------------------
 # Multi-sensor tracker (triangulation engine)
 # ---------------------------------------------------------------------------
@@ -589,6 +592,56 @@ async def get_node_status(db: AsyncSession = Depends(get_db)):
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# POST /detections/lockon — tell sensors to lock onto a target
+# ---------------------------------------------------------------------------
+
+@router.post("/lockon")
+async def lockon_target(
+    channel: int = 6,
+    bssid: str | None = None,
+    duration_s: int = 60,
+):
+    """Tell all sensor nodes to lock onto a specific WiFi channel for intensive capture.
+
+    The backend stores the lock-on command; uplinks poll for it and forward to scanners.
+    Duration: 30, 60, or 90 seconds.
+    """
+    if duration_s not in (30, 60, 90):
+        duration_s = 60
+    if channel < 1 or channel > 13:
+        return {"error": "Channel must be 1-13"}
+
+    _lockon_command.update({
+        "active": True,
+        "channel": channel,
+        "bssid": bssid or "",
+        "duration_s": duration_s,
+        "issued_at": time.time(),
+    })
+
+    logger.warning("LOCK-ON issued: ch=%d bssid=%s duration=%ds", channel, bssid or "*", duration_s)
+    return {"status": "ok", "lockon": _lockon_command}
+
+
+@router.delete("/lockon")
+async def cancel_lockon():
+    """Cancel any active lock-on command."""
+    _lockon_command["active"] = False
+    return {"status": "cancelled"}
+
+
+@router.get("/lockon")
+async def get_lockon_status():
+    """Check current lock-on status (polled by uplinks)."""
+    # Auto-expire
+    if _lockon_command.get("active"):
+        elapsed = time.time() - _lockon_command.get("issued_at", 0)
+        if elapsed > _lockon_command.get("duration_s", 60):
+            _lockon_command["active"] = False
+    return _lockon_command
+
+
 # GET /detections/drone-alerts — drone-specific alerts (high priority)
 # ---------------------------------------------------------------------------
 

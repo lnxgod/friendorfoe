@@ -16,7 +16,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#ifdef CONFIG_BT_NIMBLE_ENABLED
 #include "host/ble_gap.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,8 +38,10 @@ typedef struct {
  * @param out    Output hash structure
  * @return true on success
  */
+#ifdef CONFIG_BT_NIMBLE_ENABLED
 bool ble_ja3_from_gap_event(const struct ble_gap_event *event,
                             ble_ja3_hash_t *out);
+#endif
 
 #ifdef __cplusplus
 }

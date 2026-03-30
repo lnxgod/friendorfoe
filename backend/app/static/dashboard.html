@@ -1,0 +1,1236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Friend or Foe - Sensor Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'DM Sans', sans-serif; background: #0d1117; color: #c9d1d9; font-size: 13px; }
+  .header { background: #161b22; border-bottom: 1px solid #30363d; padding: 10px 24px; display: flex; justify-content: space-between; align-items: center; }
+  .header h1 { color: #58a6ff; font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
+  .header h1 span { color: #8b949e; font-weight: 400; font-size: 12px; margin-left: 8px; }
+  .header .status { font-size: 11px; color: #8b949e; font-family: 'JetBrains Mono', monospace; }
+  .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .status-dot.ok { background: #3fb950; box-shadow: 0 0 6px #3fb95066; }
+  .status-dot.warn { background: #d29922; }
+  .status-dot.err { background: #f85149; box-shadow: 0 0 6px #f8514966; }
+  .tabs { background: #161b22; border-bottom: 1px solid #30363d; padding: 0 24px; display: flex; gap: 0; overflow-x: auto; }
+  .tab { padding: 9px 18px; color: #8b949e; cursor: pointer; border-bottom: 2px solid transparent; font-size: 12px; font-weight: 600; white-space: nowrap; transition: color 0.15s; }
+  .tab:hover { color: #c9d1d9; }
+  .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+  .tab.wifi { color: #ff9500; border-bottom-color: #ff9500; }
+  .tab.ble { color: #00ff88; border-bottom-color: #00ff88; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 24px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; padding: 12px 24px; }
+  .grid4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; padding: 12px 24px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; }
+  .card h2 { color: #8b949e; font-size: 11px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; }
+  .card.full { grid-column: 1 / -1; }
+  .card.wifi-accent { border-left: 3px solid #ff9500; }
+  .card.ble-accent { border-left: 3px solid #00ff88; }
+  .card.alert { border-color: #f85149; }
+  .metric { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 12px; }
+  .metric:last-child { border-bottom: none; }
+  .metric .val { font-weight: 700; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+  .val.ok { color: #3fb950; } .val.warn { color: #d29922; } .val.err { color: #f85149; } .val.blue { color: #58a6ff; }
+  .val.wifi-col { color: #ff9500; } .val.ble-col { color: #00ff88; }
+  .node { background: #1c2333; border: 1px solid #30363d; border-radius: 6px; padding: 10px; margin-bottom: 8px; }
+  .node-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .node-name { font-weight: 700; color: #58a6ff; font-size: 13px; }
+  .pill { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 700; letter-spacing: 0.3px; }
+  .pill.on { background: #238636; color: #fff; }
+  .pill.off { background: #da3633; color: #fff; }
+  .node-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; font-size: 11px; }
+  .nstat { text-align: center; padding: 4px; background: #0d1117; border-radius: 4px; }
+  .nstat .nl { color: #8b949e; font-size: 9px; text-transform: uppercase; }
+  .nstat .nv { font-weight: 700; margin-top: 1px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+  .map-placeholder { background: #0d1117; border: 1px dashed #30363d; border-radius: 6px; padding: 30px; text-align: center; color: #484f58; }
+  .map-placeholder h3 { color: #8b949e; margin-bottom: 8px; font-size: 14px; }
+  .map-placeholder .coords { font-family: 'JetBrains Mono', monospace; font-size: 11px; margin: 3px 0; color: #58a6ff; }
+  .drone-card { background: #1c2333; border-left: 3px solid #d29922; border-radius: 4px; padding: 10px; margin-bottom: 6px; }
+  .drone-card.located { border-left-color: #3fb950; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th { text-align: left; color: #484f58; padding: 4px 6px; border-bottom: 1px solid #30363d; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; }
+  td { padding: 4px 6px; border-bottom: 1px solid #1c2333; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+  tr:hover { background: #1c233388; }
+  tr.multi-sensor { background: #3fb95008; }
+  tr.multi-sensor:hover { background: #3fb95015; }
+  tr.test-drone { background: #58a6ff08; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-weight: 700; letter-spacing: 0.3px; font-family: 'DM Sans', sans-serif; }
+  .badge.ble { background: #00ff8818; color: #00ff88; border: 1px solid #00ff8833; }
+  .badge.wifi { background: #ff950018; color: #ff9500; border: 1px solid #ff950033; }
+  .rssi { font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+  .rssi.close { color: #3fb950; } .rssi.mid { color: #d29922; } .rssi.far { color: #f85149; }
+  .empty { color: #484f58; text-align: center; padding: 16px; font-style: italic; font-size: 12px; }
+  .footer { text-align: center; color: #30363d; font-size: 10px; padding: 6px; font-family: 'JetBrains Mono', monospace; }
+  .section-title { font-size: 11px; color: #484f58; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #21262d; }
+  .summary-bar { display: flex; gap: 16px; padding: 8px 12px; background: #0d1117; border-radius: 4px; margin-bottom: 8px; font-size: 11px; }
+  .summary-bar .sb-item { display: flex; align-items: center; gap: 4px; }
+  .summary-bar .sb-val { font-family: 'JetBrains Mono', monospace; font-weight: 700; }
+  @media (max-width: 800px) { .grid,.grid3,.grid4 { grid-template-columns: 1fr; } .node-stats { grid-template-columns: repeat(2, 1fr); } }
+  /* Leaflet map dark theme */
+  #map-container { height: 500px; border-radius: 6px; border: 1px solid #30363d; overflow: hidden; }
+  .leaflet-container { background: #0d1117 !important; }
+  .leaflet-control-zoom a { background: #161b22 !important; color: #c9d1d9 !important; border-color: #30363d !important; }
+  .leaflet-control-zoom a:hover { background: #1c2333 !important; }
+  .leaflet-control-layers { background: #161b22 !important; color: #c9d1d9 !important; border-color: #30363d !important; }
+  .leaflet-control-layers-selector { accent-color: #58a6ff; }
+  .leaflet-popup-content-wrapper { background: #161b22 !important; color: #c9d1d9 !important; border: 1px solid #30363d !important; border-radius: 6px !important; box-shadow: 0 4px 12px #00000088 !important; }
+  .leaflet-popup-tip { background: #161b22 !important; border: 1px solid #30363d !important; }
+  .leaflet-popup-content { font-family: 'JetBrains Mono', monospace !important; font-size: 11px !important; margin: 8px 10px !important; }
+  .leaflet-popup-content .popup-title { font-family: 'DM Sans', sans-serif; font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+  .leaflet-popup-content .popup-row { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; border-bottom: 1px solid #21262d; }
+  .leaflet-popup-content .popup-row:last-child { border-bottom: none; }
+  .leaflet-popup-close-button { color: #8b949e !important; }
+  .sensor-label { font-family: 'DM Sans', sans-serif; font-size: 10px; font-weight: 700; color: #58a6ff; text-shadow: 0 0 4px #0d1117, 0 0 8px #0d1117; white-space: nowrap; }
+  .map-no-gps { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 1000; text-align: center; color: #484f58; padding: 20px; }
+  .map-no-gps h3 { color: #8b949e; margin-bottom: 6px; }
+  @keyframes pulse-ring { 0% { opacity: 0.6; } 50% { opacity: 0.2; } 100% { opacity: 0.6; } }
+  .test-marker-pulse { animation: pulse-ring 2s ease-in-out infinite; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Friend or Foe <span id="health-text">...</span></h1>
+  <div class="status">
+    <span class="status-dot" id="health-dot"></span>
+    <span id="sensor-summary" style="color:#8b949e">...</span>
+  </div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('overview')">Overview</div>
+  <div class="tab" onclick="switchTab('wifi')" id="tab-btn-wifi">WiFi</div>
+  <div class="tab" onclick="switchTab('ble')" id="tab-btn-ble">BLE</div>
+  <div class="tab" onclick="switchTab('map')">Map</div>
+  <div class="tab" onclick="switchTab('anomalies')">Anomalies</div>
+  <div class="tab" onclick="switchTab('detections')">All Detections</div>
+  <div class="tab" onclick="switchTab('nodes')">Sensors</div>
+</div>
+
+<!-- OVERVIEW TAB -->
+<div id="tab-overview" class="tab-content active">
+  <div id="drone-alert-banner" style="display:none;margin:8px 24px;padding:10px 16px;background:#f8514922;border:2px solid #f85149;border-radius:6px;font-size:13px;font-weight:700;color:#f85149;animation:pulse-ring 2s ease-in-out infinite"></div>
+  <div class="grid4">
+    <div class="card">
+      <h2>Sensors Online</h2>
+      <div id="ov-sensors"><div class="empty">...</div></div>
+    </div>
+    <div class="card wifi-accent">
+      <h2>WiFi Detections</h2>
+      <div id="ov-wifi"><div class="empty">...</div></div>
+    </div>
+    <div class="card ble-accent">
+      <h2>BLE Detections</h2>
+      <div id="ov-ble"><div class="empty">...</div></div>
+    </div>
+    <div class="card">
+      <h2>System</h2>
+      <div id="ov-system"><div class="empty">...</div></div>
+    </div>
+  </div>
+  <div class="grid">
+    <div class="card full">
+      <h2>Recent Activity (excl. known APs)</h2>
+      <div id="ov-recent"><div class="empty">Waiting for data...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- WIFI TAB -->
+<div id="tab-wifi" class="tab-content">
+  <div class="grid">
+    <div class="card full wifi-accent">
+      <h2>WiFi Devices</h2>
+      <div style="margin-bottom:6px"><label style="font-size:11px;color:#8b949e;cursor:pointer"><input type="checkbox" id="wifi-show-ap" onchange="refreshWifi()" style="margin-right:4px"> Show known APs</label></div>
+      <div class="summary-bar" id="wifi-summary"></div>
+      <div id="wifi-feed"><div class="empty">Waiting for WiFi data...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- BLE TAB -->
+<div id="tab-ble" class="tab-content">
+  <div class="grid">
+    <div class="card full ble-accent">
+      <h2>BLE Devices</h2>
+      <div class="summary-bar" id="ble-summary"></div>
+      <div id="ble-feed"><div class="empty">Waiting for BLE data...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- MAP / TRIANGULATION TAB -->
+<div id="tab-map" class="tab-content">
+  <div class="grid">
+    <div class="card full" style="padding:0;overflow:hidden;position:relative">
+      <div style="display:flex;gap:10px;align-items:center;padding:8px 12px;background:#161b22;border-bottom:1px solid #30363d;flex-wrap:wrap;font-size:11px">
+        <select id="map-radio" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-size:11px">
+          <option value="wifi" selected>WiFi Only</option>
+          <option value="ble">BLE Only</option>
+          <option value="rid">Remote ID Drones</option>
+          <option value="all">All</option>
+        </select>
+        <select id="map-cls" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-size:11px">
+          <option value="">All classes</option>
+          <option value="test_drone">FOF- Test Only</option>
+          <option value="confirmed_drone">Drones</option>
+          <option value="likely_drone">Likely</option>
+          <option value="tracker">Trackers</option>
+          <option value="wifi_device">WiFi devices</option>
+          <option value="known_ap">Known APs</option>
+        </select>
+        <label style="color:#8b949e;cursor:pointer"><input type="range" id="map-sensors" min="1" max="4" value="1" style="width:60px;vertical-align:middle"> <span id="map-sensors-label">1+</span> sensors</label>
+        <label style="color:#8b949e;cursor:pointer"><input type="checkbox" id="map-hide-range" checked style="margin-right:3px">Hide range-only</label>
+        <label style="color:#8b949e;cursor:pointer"><input type="checkbox" id="map-hide-unknown" checked style="margin-right:3px">Hide unknown</label>
+        <label style="color:#8b949e;cursor:pointer"><input type="checkbox" id="map-trails" checked style="margin-right:3px">Trails</label>
+        <label style="color:#8b949e;cursor:pointer"><input type="range" id="map-rssi" min="-100" max="-30" value="-100" style="width:60px;vertical-align:middle"> RSSI &ge; <span id="map-rssi-label">-100</span></label>
+        <span id="map-count" style="color:#484f58;margin-left:auto"></span>
+      </div>
+      <div id="map-container"></div>
+      <div style="display:flex;gap:8px;align-items:center;padding:6px 12px;background:#161b22;border-top:1px solid #30363d;font-size:11px">
+        <span style="color:#8b949e">History:</span>
+        <select id="hist-device" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-size:11px;min-width:120px">
+          <option value="">Select device...</option>
+        </select>
+        <select id="hist-hours" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-size:11px">
+          <option value="0.17">10 min</option>
+          <option value="1" selected>1 hour</option>
+          <option value="3">3 hours</option>
+          <option value="24">24 hours</option>
+          <option value="168">7 days</option>
+        </select>
+        <button onclick="loadHistory()" style="background:#58a6ff;color:#000;border:none;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">Load Trail</button>
+        <button onclick="clearHistory()" style="background:#30363d;color:#c9d1d9;border:none;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px">Clear</button>
+        <span id="hist-status" style="color:#484f58"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Triangulation Status</h2>
+      <div id="tri-status"><div class="empty">...</div></div>
+    </div>
+    <div class="card">
+      <h2>Position Estimates</h2>
+      <div id="tri-estimates"><div class="empty">No positioned drones</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ANOMALIES TAB -->
+<div id="tab-anomalies" class="tab-content">
+  <div class="grid3">
+    <div class="card"><h2>Anomaly Stats</h2><div id="anom-stats"><div class="empty">...</div></div></div>
+    <div class="card"><h2>Alert Breakdown</h2><div id="anom-breakdown"><div class="empty">...</div></div></div>
+    <div class="card"><h2>RF Environment</h2><div id="anom-env"><div class="empty">...</div></div></div>
+  </div>
+  <div class="grid">
+    <div class="card full">
+      <h2>Alert Feed</h2>
+      <div style="margin-bottom:8px">
+        <select id="anom-filter" onchange="refreshAnomalies()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:11px">
+          <option value="">All Alerts</option><option value="critical">Critical</option><option value="warning">Warning+</option>
+        </select>
+        <select id="anom-type" onchange="refreshAnomalies()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:11px;margin-left:4px">
+          <option value="">All Types</option><option value="rssi_spike">RSSI Spikes</option><option value="new_device">New Devices</option>
+          <option value="disappearance">Disappearances</option><option value="velocity">Velocity</option><option value="spoofing">Spoofing</option><option value="signal_anomaly">Signal</option>
+        </select>
+      </div>
+      <div id="anom-feed"><div class="empty">No anomalies detected yet...</div></div>
+    </div>
+    <div class="card full"><h2>Tracked Devices (RSSI)</h2><div id="anom-devices"><div class="empty">...</div></div></div>
+  </div>
+</div>
+
+<!-- ALL DETECTIONS TAB -->
+<div id="tab-detections" class="tab-content">
+  <div class="grid">
+    <div class="card full">
+      <h2>All Detections (Grouped)</h2>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+        <select id="det-filter" onchange="refreshDetections()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:11px">
+          <option value="0">All (Debug)</option><option value="0.05">Low+</option><option value="0.1">Medium+</option>
+          <option value="0.15" selected>Likely+</option><option value="0.3">High</option>
+        </select>
+        <select id="det-source" onchange="refreshDetections()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:11px">
+          <option value="">All Sources</option><option value="wifi_ssid">WiFi SSID</option><option value="wifi_oui">WiFi OUI</option>
+          <option value="ble_rid">BLE RID</option><option value="wifi_dji_ie">DJI IE</option><option value="wifi_beacon_rid">Beacon RID</option>
+        </select>
+        <span id="det-count" style="font-size:10px;color:#484f58"></span>
+      </div>
+      <div id="det-feed"><div class="empty">...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- SENSOR NODES TAB -->
+<div id="tab-nodes" class="tab-content">
+  <div class="grid">
+    <div class="card full">
+      <h2>GPS Position Summary</h2>
+      <div id="gps-summary"><div class="empty">Loading...</div></div>
+    </div>
+    <div class="card full"><h2>Sensor Details (click to expand)</h2><div id="node-list"><div class="empty">...</div></div></div>
+    <div class="card full">
+      <h2>Node Configuration</h2>
+      <div style="background:#0d1117;border-radius:6px;padding:12px">
+        <div style="font-size:12px;color:#8b949e;margin-bottom:8px">Set GPS position for a sensor node (required for triangulation)</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
+          <div><label style="font-size:10px;color:#484f58;display:block">Device</label>
+            <select id="cfg-device" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:12px;min-width:120px"><option value="">Loading...</option></select></div>
+          <div><label style="font-size:10px;color:#484f58;display:block">Name</label>
+            <input id="cfg-name" type="text" placeholder="Front Yard" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:12px;width:110px"></div>
+          <div><label style="font-size:10px;color:#484f58;display:block">Lat</label>
+            <input id="cfg-lat" type="number" step="any" placeholder="37.7749" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:12px;width:110px"></div>
+          <div><label style="font-size:10px;color:#484f58;display:block">Lon</label>
+            <input id="cfg-lon" type="number" step="any" placeholder="-122.4194" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:12px;width:110px"></div>
+          <div><label style="font-size:10px;color:#484f58;display:block">Alt</label>
+            <input id="cfg-alt" type="number" step="any" placeholder="0" value="0" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:12px;width:70px"></div>
+          <button onclick="registerNode()" style="background:#238636;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:700">Set Position</button>
+          <button onclick="useMyLocation()" style="background:#1f6feb;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px">My Location</button>
+        </div>
+        <div id="cfg-result" style="margin-top:6px;font-size:11px"></div>
+      </div>
+    </div>
+    <div class="card full"><h2>Scanner Diagnostics</h2><div id="scanner-diag"><div class="empty">Connect to uplink to see scanner stats...</div></div></div>
+  </div>
+</div>
+
+<div class="footer" id="footer">auto-refresh 3s</div>
+
+<script>
+const API = window.location.origin;
+let uplinkDeviceId = null;
+let refreshN = 0;
+
+function switchTab(id) {
+  document.querySelectorAll('.tab').forEach(t => { t.classList.remove('active','wifi','ble'); });
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-'+id).classList.add('active');
+  const btn = document.querySelector('[onclick="switchTab(\''+id+'\')"]');
+  btn.classList.add('active');
+  if (id === 'wifi') btn.classList.add('wifi');
+  if (id === 'ble') btn.classList.add('ble');
+  // Leaflet needs invalidateSize when container becomes visible
+  if (id === 'map' && leafletMap) {
+    setTimeout(() => { leafletMap.invalidateSize(); }, 100);
+  }
+}
+
+function rssiClass(r) { return !r?'':r>-50?'close':r>-70?'mid':'far'; }
+function srcBadge(s) { return !s?'':s.includes('ble')?'<span class="badge ble">BLE</span>':'<span class="badge wifi">WiFi</span>'; }
+function clsBadge(c) {
+  const m={confirmed_drone:['#3fb950','DRONE'],likely_drone:['#d29922','LIKELY'],test_drone:['#58a6ff','TEST'],possible_drone:['#8b949e','POSS'],known_ap:['#484f58','AP'],tracker:['#f85149','TRACKER'],wifi_device:['#ff9500','WiFi'],unknown_device:['#30363d','UNK']};
+  if(!c)return'';const[col,lbl]=m[c]||['#30363d',c];return'<span class="badge" style="background:'+col+'22;color:'+col+';border:1px solid '+col+'44">'+lbl+'</span>';
+}
+function fmtUp(s) { if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m'; }
+function ago(e) { const s=Math.floor(Date.now()/1000-e);return s<5?'now':s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h'; }
+function sensorLabel(id) { return id.replace('uplink_','U'); }
+
+async function f(url,ms) {
+  const c=new AbortController();const t=setTimeout(()=>c.abort(),ms||3000);
+  try{const r=await fetch(url,{signal:c.signal});clearTimeout(t);return await r.json();}
+  catch(e){clearTimeout(t);return null;}
+}
+
+// ── Leaflet Map ─────────────────────────────────────────────────────────
+let leafletMap = null;
+let sensorLayerGroup = null;
+let droneLayerGroup = null;
+let lineLayerGroup = null;
+let circleLayerGroup = null;
+let trailLayerGroup = null;
+let historyLayerGroup = null;
+let mapInitialized = false;
+let mapCentered = false;
+
+const CLS_COLORS = {
+  confirmed_drone: '#ff2d55', likely_drone: '#ff9500', test_drone: '#bf00ff',
+  possible_drone: '#c9a0dc', wifi_device: '#ffcc00', known_ap: '#8b949e',
+  tracker: '#ff3b30', unknown_device: '#6e7681'
+};
+
+function initMap() {
+  if (mapInitialized) return;
+  const container = document.getElementById('map-container');
+  if (!container || container.offsetWidth === 0) return; // Don't init if hidden
+  leafletMap = L.map(container, { zoomControl: true, attributionControl: false });
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 20, subdomains: 'abcd'
+  }).addTo(leafletMap);
+  sensorLayerGroup = L.layerGroup().addTo(leafletMap);
+  droneLayerGroup = L.layerGroup().addTo(leafletMap);
+  lineLayerGroup = L.layerGroup().addTo(leafletMap);
+  circleLayerGroup = L.layerGroup().addTo(leafletMap);
+  trailLayerGroup = L.layerGroup().addTo(leafletMap);
+  historyLayerGroup = L.layerGroup().addTo(leafletMap);
+  L.control.layers(null, {
+    'Sensors': sensorLayerGroup,
+    'Devices': droneLayerGroup,
+    'Trails': trailLayerGroup,
+    'History': historyLayerGroup,
+    'Triangulation Lines': lineLayerGroup,
+    'Range Circles': circleLayerGroup
+  }, { collapsed: false, position: 'topright' }).addTo(leafletMap);
+  leafletMap.setView([37.3, -120.6], 16);
+  mapInitialized = true;
+  // Force size recalculation after render
+  setTimeout(() => { leafletMap.invalidateSize(); }, 200);
+}
+
+function updateMap(sensors, drones, nodeList) {
+  initMap();
+  if (!leafletMap) return;
+
+  // Don't redraw if a popup is open — user is reading it
+  const popupOpen = leafletMap._popup && leafletMap._popup.isOpen();
+  if (popupOpen) return;
+
+  sensorLayerGroup.clearLayers();
+  droneLayerGroup.clearLayers();
+  lineLayerGroup.clearLayers();
+  circleLayerGroup.clearLayers();
+
+  const bounds = [];
+
+  // Merge node heartbeat data (has name, gps_registered) with map sensor data
+  const nodeMap = {};
+  (nodeList || []).forEach(n => { nodeMap[n.device_id] = n; });
+
+  // ── Sensors ──────────────────────────────────────────────────────────
+  sensors.forEach(s => {
+    if (s.lat == 0 && s.lon == 0) return;
+    bounds.push([s.lat, s.lon]);
+    const nd = nodeMap[s.device_id] || {};
+    const online = s.online !== false;
+    const name = nd.name || s.device_id;
+    const borderColor = online ? '#3fb950' : '#f85149';
+
+    const sensorIcon = L.divIcon({
+      className: '',
+      html: '<div style="width:18px;height:18px;background:#1a1a2e;border:3px solid '+borderColor+';border-radius:3px;box-shadow:0 0 8px '+borderColor+'66"></div>',
+      iconSize: [18, 18], iconAnchor: [9, 9]
+    });
+    const marker = L.marker([s.lat, s.lon], { icon: sensorIcon });
+    marker.bindPopup(
+      '<div class="popup-title" style="color:#58a6ff">' + s.device_id + '</div>' +
+      (nd.name ? '<div class="popup-row"><span>Name</span><span>' + nd.name + '</span></div>' : '') +
+      '<div class="popup-row"><span>Status</span><span style="color:' + borderColor + '">' + (online?'ONLINE':'OFFLINE') + '</span></div>' +
+      '<div class="popup-row"><span>Position</span><span>' + s.lat.toFixed(6) + ', ' + s.lon.toFixed(6) + '</span></div>' +
+      (nd.ip ? '<div class="popup-row"><span>IP</span><span>' + nd.ip + '</span></div>' : '') +
+      '<div class="popup-row"><span>Last seen</span><span>' + ago(s.last_seen) + '</span></div>'
+    );
+    sensorLayerGroup.addLayer(marker);
+
+    // Label
+    const label = L.divIcon({
+      className: 'sensor-label',
+      html: name,
+      iconSize: null, iconAnchor: [-14, 4]
+    });
+    sensorLayerGroup.addLayer(L.marker([s.lat, s.lon], { icon: label, interactive: false }));
+  });
+
+  // ── Map filters ──────────────────────────────────────────────────────
+  const mapRadio = document.getElementById('map-radio').value;
+  const mapClsFilter = document.getElementById('map-cls').value;
+  const mapMinSensors = parseInt(document.getElementById('map-sensors').value) || 1;
+  const mapHideRange = document.getElementById('map-hide-range').checked;
+  const mapHideUnknown = document.getElementById('map-hide-unknown').checked;
+  const mapRssiMin = parseInt(document.getElementById('map-rssi').value) || -100;
+  document.getElementById('map-sensors-label').textContent = mapMinSensors + '+';
+  document.getElementById('map-rssi-label').textContent = mapRssiMin;
+
+  let mapShown = 0;
+
+  // ── Drones / SSIDs ───────────────────────────────────────────────────
+  drones.forEach(d => {
+    const cls = d.classification || 'unknown_device';
+    const color = CLS_COLORS[cls] || '#6e7681';
+    const hasPosn = d.lat != 0 && d.lon != 0;
+    // Skip garbage positions
+    if (hasPosn && (Math.abs(d.lat) > 90 || Math.abs(d.lon) > 180)) return;
+    if (d.accuracy_m && d.accuracy_m > 10000) return;
+    // Radio type filter
+    const bestSrc = d.observations && d.observations.length > 0 ? d.observations[0].source || '' : '';
+    const isBLE = bestSrc.includes('ble') || (d.drone_id && d.drone_id.startsWith('BLE:')) || (d.drone_id && d.drone_id.startsWith('FP:'));
+    const isRID = d.drone_id && d.drone_id.startsWith('rid_') || bestSrc === 'ble_rid' && cls === 'confirmed_drone';
+    if (mapRadio === 'wifi' && (isBLE || isRID)) return;
+    if (mapRadio === 'ble' && !isBLE && !isRID) return;
+    if (mapRadio === 'rid' && !isRID) return;
+    // Classification filter
+    if (mapClsFilter && cls !== mapClsFilter) return;
+    if (d.sensor_count < mapMinSensors) return;
+    if (mapHideRange && d.position_source === 'range_only') return;
+    if (mapHideUnknown && cls === 'unknown_device') return;
+    const bestRssi = d.observations ? Math.max(...d.observations.map(o => o.rssi || -999)) : -999;
+    if (bestRssi < mapRssiMin) return;
+    mapShown++;
+
+    if (hasPosn) {
+      bounds.push([d.lat, d.lon]);
+
+      // Find SSID from observations
+      const droneSSID = d.observations ? d.observations.reduce((s,o) => s || o.ssid, null) : null;
+      const displayName = droneSSID || d.drone_id || '?';
+      const isTestDrone = cls === 'test_drone';
+
+      // Build observation detail for popup
+      let obsHtml = '';
+      if (d.observations && d.observations.length > 0) {
+        obsHtml = '<div style="margin-top:4px;border-top:1px solid #30363d;padding-top:4px;font-size:10px">' +
+          '<div style="color:#484f58;margin-bottom:2px">SENSOR OBSERVATIONS:</div>';
+        d.observations.forEach(o => {
+          const sName = (nodeMap[o.device_id] || {}).name || o.device_id;
+          obsHtml += '<div class="popup-row"><span>' + sName + '</span>' +
+            '<span>RSSI <span class="rssi ' + rssiClass(o.rssi) + '">' + (o.rssi||'?') + '</span> ~' + Math.round(o.estimated_distance_m||0) + 'm</span></div>';
+        });
+        obsHtml += '</div>';
+      }
+
+      // Build popup content
+      const popupContent =
+        '<div class="popup-title" style="color:' + color + ';font-size:14px">' + displayName + '</div>' +
+        (droneSSID && d.drone_id !== droneSSID ? '<div class="popup-row"><span>ID</span><span style="font-size:9px">' + d.drone_id + '</span></div>' : '') +
+        '<div class="popup-row"><span>Class</span><span style="color:' + color + ';font-weight:700">' + cls.replace('_',' ') + '</span></div>' +
+        '<div class="popup-row"><span>Position</span><span>' + d.position_source + (d.accuracy_m ? ' ±' + Math.round(d.accuracy_m) + 'm' : '') + '</span></div>' +
+        '<div class="popup-row"><span>Coords</span><span>' + d.lat.toFixed(6) + ', ' + d.lon.toFixed(6) + '</span></div>' +
+        '<div class="popup-row"><span>Sensors</span><span style="color:' + (d.sensor_count>=2?'#3fb950':'#8b949e') + '">' + d.sensor_count + '</span></div>' +
+        '<div class="popup-row"><span>Confidence</span><span>' + (d.confidence * 100).toFixed(0) + '%</span></div>' +
+        (d.manufacturer ? '<div class="popup-row"><span>Mfr</span><span>' + d.manufacturer + '</span></div>' : '') +
+        obsHtml;
+
+      let marker;
+      if (isTestDrone) {
+        // Test drones: use a DivIcon marker (large clickable area, always works)
+        const testIcon = L.divIcon({
+          className: '',
+          html: '<div style="width:28px;height:28px;border-radius:50%;background:' + color + ';border:3px solid #fff;box-shadow:0 0 12px ' + color + '88,0 0 24px ' + color + '44;cursor:pointer"></div>' +
+                '<div style="position:absolute;top:32px;left:0;white-space:nowrap;color:' + color + ';font-family:DM Sans,sans-serif;font-size:12px;font-weight:700;text-shadow:0 0 6px #000,0 0 3px #000;pointer-events:none">' + displayName + '</div>',
+          iconSize: [28, 28], iconAnchor: [14, 14]
+        });
+        marker = L.marker([d.lat, d.lon], { icon: testIcon, zIndexOffset: 1000 });
+        // Add glow ring behind (non-interactive)
+        circleLayerGroup.addLayer(L.circleMarker([d.lat, d.lon], {
+          radius: 22, fillColor: color, fillOpacity: 0.1,
+          color: color, weight: 2, opacity: 0.3, interactive: false
+        }));
+      } else {
+        // Regular devices: circle marker
+        marker = L.circleMarker([d.lat, d.lon], {
+          radius: 8, fillColor: color, fillOpacity: 0.9,
+          color: '#fff', weight: 2, opacity: 0.7
+        });
+      }
+
+      // Add lock-on buttons to popup
+      const bestObs = d.observations && d.observations.length > 0 ? d.observations[0] : null;
+      const lockonButtons = bestObs ? (
+        '<div style="margin-top:6px;border-top:1px solid #30363d;padding-top:6px;display:flex;gap:4px">' +
+        '<button onclick="doLockon('+d.observations[0].sensor_lat+','+d.observations[0].sensor_lon+',30)" style="background:#f85149;color:#fff;border:none;padding:3px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:700">LOCK 30s</button>' +
+        '<button onclick="doLockon('+d.observations[0].sensor_lat+','+d.observations[0].sensor_lon+',60)" style="background:#d29922;color:#fff;border:none;padding:3px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:700">LOCK 60s</button>' +
+        '<button onclick="doLockon('+d.observations[0].sensor_lat+','+d.observations[0].sensor_lon+',90)" style="background:#58a6ff;color:#fff;border:none;padding:3px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:700">LOCK 90s</button>' +
+        '</div>'
+      ) : '';
+
+      marker.bindPopup(popupContent + lockonButtons, { maxWidth: 300 });
+      droneLayerGroup.addLayer(marker);
+
+      // Accuracy circle for trilaterated positions (non-interactive so clicks pass through)
+      if (d.accuracy_m && d.accuracy_m > 0 && d.position_source !== 'range_only') {
+        circleLayerGroup.addLayer(L.circle([d.lat, d.lon], {
+          radius: d.accuracy_m, fillColor: color, fillOpacity: 0.08,
+          color: color, weight: 1, opacity: 0.3, dashArray: '4 4',
+          interactive: false
+        }));
+      }
+
+      // Triangulation lines from each observing sensor to drone
+      if (d.observations) {
+        d.observations.forEach(o => {
+          if (o.sensor_lat && o.sensor_lon && o.sensor_lat != 0) {
+            lineLayerGroup.addLayer(L.polyline(
+              [[o.sensor_lat, o.sensor_lon], [d.lat, d.lon]],
+              { color: color, weight: 1.5, opacity: 0.4, dashArray: '6 4', interactive: false }
+            ));
+          }
+        });
+      }
+    }
+
+    // Range circle for single-sensor (range_only) — draw around the sensor
+    if (d.position_source === 'range_only' && d.range_m && d.observations && d.observations.length > 0) {
+      const obs = d.observations[0];
+      if (obs.sensor_lat && obs.sensor_lon && obs.sensor_lat != 0) {
+        circleLayerGroup.addLayer(L.circle([obs.sensor_lat, obs.sensor_lon], {
+          radius: d.range_m, fillColor: color, fillOpacity: 0.05,
+          color: color, weight: 1, opacity: 0.25, dashArray: '3 6',
+          interactive: false
+        }));
+        // Small dot at sensor showing this detection
+        droneLayerGroup.addLayer(L.circleMarker([obs.sensor_lat, obs.sensor_lon], {
+          radius: 3, fillColor: color, fillOpacity: 0.6, color: color, weight: 1, opacity: 0.4
+        }).bindPopup(
+          '<div class="popup-title" style="color:' + color + '">' + d.drone_id + '</div>' +
+          '<div class="popup-row"><span>Range only</span><span>~' + Math.round(d.range_m) + 'm</span></div>' +
+          '<div class="popup-row"><span>RSSI</span><span>' + (obs.rssi || '?') + '</span></div>'
+        ));
+      }
+    }
+
+    // Operator position marker + line
+    if (d.operator_lat && d.operator_lon && d.operator_lat != 0 && hasPosn) {
+      droneLayerGroup.addLayer(L.circleMarker([d.operator_lat, d.operator_lon], {
+        radius: 4, fillColor: '#d29922', fillOpacity: 0.7, color: '#d29922', weight: 1
+      }).bindPopup('Operator: ' + (d.operator_id || 'unknown')));
+      lineLayerGroup.addLayer(L.polyline(
+        [[d.operator_lat, d.operator_lon], [d.lat, d.lon]],
+        { color: '#d29922', weight: 1, opacity: 0.3, dashArray: '2 4' }
+      ));
+    }
+  });
+
+  // ── Trails ──────────────────────────────────────────────────────────
+  trailLayerGroup.clearLayers();
+  if (document.getElementById('map-trails').checked) {
+    f(API + '/detections/trails').then(trailData => {
+      if (!trailData || !trailData.trails) return;
+      for (const [devId, points] of Object.entries(trailData.trails)) {
+        if (points.length < 2) continue;
+        // Match color to device classification if on map, else white
+        const matchDrone = drones.find(dr => dr.drone_id === devId);
+        const cls = matchDrone ? matchDrone.classification : null;
+        const isTest = cls === 'test_drone' || devId.toUpperCase().startsWith('FOF');
+        const trailColor = isTest ? '#bf00ff' : (matchDrone ? (CLS_COLORS[cls] || '#ffffff44') : '#ffffff22');
+        const trailWeight = isTest ? 5 : 2;
+        const trailOpacity = isTest ? 0.9 : 0.3;
+        const dotRadius = isTest ? 5 : 2;
+        const coords = points.map(p => [p.lat, p.lon]);
+        // Trail line
+        trailLayerGroup.addLayer(L.polyline(coords, {
+          color: trailColor, weight: trailWeight, opacity: trailOpacity, interactive: false
+        }));
+        // Dot at each history point
+        points.forEach((p, i) => {
+          const opacity = isTest ? (0.5 + 0.5 * (i / points.length)) : (0.2 + 0.3 * (i / points.length));
+          trailLayerGroup.addLayer(L.circleMarker([p.lat, p.lon], {
+            radius: dotRadius, fillColor: trailColor, fillOpacity: opacity,
+            color: isTest ? '#fff' : trailColor, weight: isTest ? 1 : 0,
+            interactive: false
+          }));
+        });
+        // Label the trail for test drones
+        if (isTest && points.length > 0) {
+          const last = points[points.length - 1];
+          trailLayerGroup.addLayer(L.marker([last.lat, last.lon], {
+            icon: L.divIcon({
+              className: 'sensor-label',
+              html: '<span style="color:#bf00ff;font-size:11px;font-weight:700;text-shadow:0 0 6px #bf00ff88,0 0 3px #000">' + devId + '</span>',
+              iconSize: null, iconAnchor: [-12, 4]
+            }), interactive: false
+          }));
+        }
+      }
+    });
+  }
+
+  document.getElementById('map-count').textContent = mapShown + '/' + drones.length + ' shown';
+
+  // Center map on sensor cluster — only on first load, don't interrupt user panning
+  if (bounds.length > 0 && !mapCentered) {
+    const lats = bounds.map(b => b[0]);
+    const lons = bounds.map(b => b[1]);
+    const centerLat = lats.reduce((a,b)=>a+b,0) / lats.length;
+    const centerLon = lons.reduce((a,b)=>a+b,0) / lons.length;
+    const latSpread = Math.max(...lats) - Math.min(...lats);
+    const lonSpread = Math.max(...lons) - Math.min(...lons);
+    if (latSpread < 0.005 && lonSpread < 0.005) {
+      leafletMap.setView([centerLat, centerLon], 18);
+    } else {
+      leafletMap.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+    }
+    mapCentered = true;
+  }
+}
+
+// ── History device dropdown ──────────────────────────────────────────
+async function populateHistoryDropdown() {
+  const sel = document.getElementById('hist-device');
+  if (!sel) return;
+  // Get known devices from the map data + known_devices
+  const map = await f(API+'/detections/drones/map');
+  if (!map) return;
+  const devices = new Set();
+  map.drones.forEach(d => devices.add(d.drone_id));
+  const opts = ['<option value="">Select device...</option>'];
+  [...devices].sort().forEach(id => {
+    const label = id.length > 25 ? id.substring(0,25)+'...' : id;
+    opts.push('<option value="'+id+'">'+label+'</option>');
+  });
+  sel.innerHTML = opts.join('');
+}
+
+async function loadHistory() {
+  const deviceId = document.getElementById('hist-device').value;
+  const hours = document.getElementById('hist-hours').value;
+  const status = document.getElementById('hist-status');
+  if (!deviceId) { status.textContent = 'Select a device'; return; }
+
+  status.textContent = 'Loading...';
+  const data = await f(API+'/detections/drones/'+encodeURIComponent(deviceId)+'/track?hours='+hours, 10000);
+  if (!data || !data.track || data.track.length === 0) {
+    status.textContent = 'No history found';
+    return;
+  }
+
+  historyLayerGroup.clearLayers();
+  const points = data.track.filter(p => p.lat !== 0 && p.lon !== 0);
+  if (points.length === 0) { status.textContent = 'No valid positions'; return; }
+
+  const coords = points.map(p => [p.lat, p.lon]);
+
+  // Draw trail line with time gradient (old=dim, new=bright)
+  for (let i = 1; i < coords.length; i++) {
+    const progress = i / coords.length;
+    const opacity = 0.2 + 0.8 * progress;
+    historyLayerGroup.addLayer(L.polyline([coords[i-1], coords[i]], {
+      color: '#ff00ff', weight: 4, opacity: opacity, interactive: false
+    }));
+  }
+
+  // Dots at each point with timestamp popup
+  points.forEach((p, i) => {
+    const progress = i / points.length;
+    const dot = L.circleMarker([p.lat, p.lon], {
+      radius: 4, fillColor: '#ff00ff', fillOpacity: 0.3 + 0.7 * progress,
+      color: '#fff', weight: 1, opacity: 0.5
+    });
+    const ts = p.timestamp ? new Date(p.timestamp).toLocaleTimeString() : '?';
+    dot.bindPopup(
+      '<div class="popup-title" style="color:#ff00ff">'+deviceId+'</div>'+
+      '<div class="popup-row"><span>Time</span><span>'+ts+'</span></div>'+
+      '<div class="popup-row"><span>Position</span><span>'+p.lat.toFixed(6)+', '+p.lon.toFixed(6)+'</span></div>'+
+      '<div class="popup-row"><span>Source</span><span>'+p.position_source+'</span></div>'+
+      '<div class="popup-row"><span>Accuracy</span><span>'+(p.accuracy_m?Math.round(p.accuracy_m)+'m':'?')+'</span></div>'+
+      '<div class="popup-row"><span>Sensors</span><span>'+p.sensor_count+'</span></div>'
+    );
+    historyLayerGroup.addLayer(dot);
+  });
+
+  // Start marker (green) and end marker (red)
+  historyLayerGroup.addLayer(L.circleMarker(coords[0], {
+    radius: 8, fillColor: '#3fb950', fillOpacity: 1, color: '#fff', weight: 2
+  }).bindPopup('START: '+new Date(points[0].timestamp).toLocaleTimeString()));
+  historyLayerGroup.addLayer(L.circleMarker(coords[coords.length-1], {
+    radius: 8, fillColor: '#f85149', fillOpacity: 1, color: '#fff', weight: 2
+  }).bindPopup('END: '+new Date(points[points.length-1].timestamp).toLocaleTimeString()));
+
+  // Fit map to history
+  leafletMap.fitBounds(coords, { padding: [40, 40], maxZoom: 19 });
+
+  status.textContent = data.point_count+' points | '+data.total_distance_m+'m traveled | avg acc: '+data.avg_accuracy_m+'m';
+}
+
+function clearHistory() {
+  if (historyLayerGroup) historyLayerGroup.clearLayers();
+  document.getElementById('hist-status').textContent = '';
+}
+
+// ── Lock-on ─────────────────────────────────────────────────────────────
+async function doLockon(lat, lon, duration) {
+  // Find the channel from the detection — for now use channel 6 as default
+  // TODO: extract actual channel from observation data
+  const ch = 6;
+  try {
+    const resp = await fetch(API+'/detections/lockon', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'channel='+ch+'&duration_s='+duration
+    });
+    const data = await resp.json();
+    alert('LOCK-ON: ch='+ch+' for '+duration+'s\n'+JSON.stringify(data.lockon));
+  } catch(e) {
+    alert('Lock-on failed: '+e.message);
+  }
+}
+
+async function findUplink() {
+  const nodes = await f(API+'/detections/nodes/status');
+  if (!nodes || !nodes.nodes.length) return null;
+  const online = nodes.nodes.find(n => n.online);
+  if (!online) return null;
+  uplinkDeviceId = online.device_id;
+  return await f(API+'/nodes/'+uplinkDeviceId+'/live', 3000);
+}
+
+// ── WiFi Tab ────────────────────────────────────────────────────────────
+async function refreshWifi() {
+  const showAP = document.getElementById('wifi-show-ap').checked;
+  const data = await f(API+'/detections/grouped?max_age_s=120&exclude_known_ap='+(showAP?'false':'true'));
+  if (!data) return;
+  const wifi = data.devices.filter(d => d.source && !d.source.includes('ble'));
+  const feed = document.getElementById('wifi-feed');
+  const sum = document.getElementById('wifi-summary');
+
+  const drones = wifi.filter(d => ['confirmed_drone','likely_drone','test_drone'].includes(d.classification));
+  const possible = wifi.filter(d => d.classification === 'possible_drone');
+  const multi = wifi.filter(d => d.sensor_count >= 2);
+
+  sum.innerHTML =
+    '<div class="sb-item"><span style="color:#ff9500">WiFi:</span> <span class="sb-val" style="color:#ff9500">'+wifi.length+'</span></div>'+
+    '<div class="sb-item">Drones: <span class="sb-val val ok">'+drones.length+'</span></div>'+
+    '<div class="sb-item">Possible: <span class="sb-val">'+possible.length+'</span></div>'+
+    '<div class="sb-item">Multi-sensor: <span class="sb-val val '+(multi.length>0?'ok':'')+'">'+multi.length+'</span></div>';
+
+  if (wifi.length > 0) {
+    feed.innerHTML = '<table><tr><th>Age</th><th>Class</th><th>SSID</th><th>Best RSSI</th><th>Sensors</th><th>Per-Sensor RSSI</th><th>Conf</th><th>BSSID</th><th>Mfr</th><th>Hits</th></tr>'+
+      wifi.map(d => {
+        const cls = d.classification || '';
+        const rowCls = d.sensor_count >= 2 ? ' class="multi-sensor"' : cls === 'test_drone' ? ' class="test-drone"' : '';
+        const sRssi = Object.entries(d.sensor_rssi||{}).map(([k,v])=>'<span style="color:#8b949e">'+sensorLabel(k)+'</span>:<span class="rssi '+rssiClass(v)+'">'+v+'</span>').join(' ');
+        return '<tr'+rowCls+'>' +
+          '<td>'+d.age_s+'s</td>' +
+          '<td>'+clsBadge(cls)+'</td>' +
+          '<td style="font-weight:700;color:#c9d1d9">'+(d.ssid || d.drone_id)+'</td>' +
+          '<td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td>' +
+          '<td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td>' +
+          '<td>'+sRssi+'</td>' +
+          '<td>'+(d.best_confidence*100).toFixed(0)+'%</td>' +
+          '<td style="color:#484f58">'+(d.bssid||'-')+'</td>' +
+          '<td style="color:#8b949e">'+(d.manufacturer||'-')+'</td>' +
+          '<td>'+d.detection_count+'</td></tr>';
+      }).join('') + '</table>';
+  } else {
+    feed.innerHTML = '<div class="empty">No WiFi devices detected</div>';
+  }
+}
+
+// ── BLE Tab ─────────────────────────────────────────────────────────────
+async function refreshBLE() {
+  const [devData, grouped] = await Promise.all([
+    f(API+'/detections/devices/live'),
+    f(API+'/detections/grouped?max_age_s=120&exclude_known_ap=true')
+  ]);
+  const feed = document.getElementById('ble-feed');
+  const sum = document.getElementById('ble-summary');
+
+  if (!devData || !devData.devices) { feed.innerHTML = '<div class="empty">No BLE data</div>'; return; }
+
+  const devs = devData.devices;
+  const summary = devData.summary || {};
+  const bleGrouped = grouped ? grouped.devices.filter(d => d.source && d.source.includes('ble')) : [];
+
+  // Build sensor map from grouped data
+  const sensorMap = {};
+  bleGrouped.forEach(d => { sensorMap[d.drone_id] = d; });
+
+  sum.innerHTML =
+    '<div class="sb-item"><span style="color:#00ff88">BLE:</span> <span class="sb-val" style="color:#00ff88">'+(summary.active||0)+'</span> active</div>'+
+    '<div class="sb-item">Trackers: <span class="sb-val val err">'+(summary.trackers_active||0)+'</span></div>'+
+    '<div class="sb-item">Classified: <span class="sb-val">'+(summary.classified||0)+'</span></div>'+
+    '<div class="sb-item">Total tracked: <span class="sb-val">'+(summary.total_tracked||0)+'</span></div>';
+
+  if (devs.length > 0) {
+    feed.innerHTML = '<table><tr><th>Type</th><th>Fingerprint</th><th>Mfr</th><th>RSSI</th><th>Avg</th><th>Min/Max</th><th>Sensors</th><th>Tracker</th><th>MAC Rot</th><th>Idle</th><th>Age</th></tr>'+
+      devs.slice(0, 50).map(d => {
+        const gd = sensorMap[d.fingerprint] || {};
+        const sensorCount = gd.sensor_count || (d.seen_by ? d.seen_by.length : 1);
+        const sensors = d.seen_by ? d.seen_by.map(sensorLabel).join(',') : '-';
+        const trackerBadge = d.is_tracker ? '<span class="badge" style="background:#f8514922;color:#f85149;border:1px solid #f8514944">YES</span>' : '-';
+        const typeColor = d.is_tracker ? '#f85149' : d.device_type !== 'Unknown' ? '#58a6ff' : '#8b949e';
+        return '<tr'+(d.is_tracker?' style="background:#f8514908"':'')+'>' +
+          '<td style="font-weight:700;color:'+typeColor+';font-family:DM Sans,sans-serif">'+d.device_type+'</td>' +
+          '<td style="color:#484f58;font-size:10px">'+d.fingerprint+'</td>' +
+          '<td style="color:#8b949e">'+(d.manufacturer||'-')+'</td>' +
+          '<td><span class="rssi '+rssiClass(d.current_rssi)+'">'+d.current_rssi+'</span></td>' +
+          '<td><span class="rssi '+rssiClass(d.avg_rssi)+'">'+d.avg_rssi.toFixed(0)+'</span></td>' +
+          '<td style="color:#484f58">'+d.min_rssi+'/'+d.max_rssi+'</td>' +
+          '<td><span class="val '+(sensorCount>=2?'ok':'')+'">'+sensorCount+'</span></td>' +
+          '<td>'+trackerBadge+'</td>' +
+          '<td>'+(d.mac_rotations||0)+'</td>' +
+          '<td>'+Math.round(d.idle_s)+'s</td>' +
+          '<td>'+Math.round(d.age_s)+'s</td></tr>';
+      }).join('') + '</table>';
+  } else {
+    feed.innerHTML = '<div class="empty">No BLE devices detected</div>';
+  }
+}
+
+// ── Main refresh ────────────────────────────────────────────────────────
+async function refresh() {
+  refreshN++;
+  try {
+    const [health,nodes,map,recent,uplink] = await Promise.all([
+      f(API+'/health'),
+      f(API+'/detections/nodes/status'),
+      f(API+'/detections/drones/map'),
+      f(API+'/detections/grouped?max_age_s=60&exclude_known_ap=true'),
+      uplinkDeviceId ? f(API+'/nodes/'+uplinkDeviceId+'/live',3000) : findUplink()
+    ]);
+
+    // Health
+    const dot=document.getElementById('health-dot');
+    const htxt=document.getElementById('health-text');
+    if(health){dot.className='status-dot ok';htxt.textContent='v'+health.version;}
+    else{dot.className='status-dot err';htxt.textContent='offline';}
+
+    const nodeList=nodes?nodes.nodes:[];
+    const onlineN=nodeList.filter(n=>n.online).length;
+    document.getElementById('sensor-summary').textContent=onlineN+'/'+nodeList.length+' sensors online';
+
+    // Drone alert banner
+    const droneAlertBanner = document.getElementById('drone-alert-banner');
+    f(API+'/detections/drone-alerts').then(da => {
+      if (da && da.active_drone_count > 0) {
+        const drones = da.active_drones;
+        const lines = drones.map(d => {
+          const cls = d.classification || 'drone';
+          const sensors = d.sensor_count || '?';
+          const rssiList = (d.observations || []).map(o => o.rssi).filter(r=>r).join('/');
+          return d.drone_id + ' (' + cls.replace('_',' ') + ') — ' + sensors + ' sensors RSSI:[' + rssiList + ']';
+        });
+        droneAlertBanner.style.display = 'block';
+        droneAlertBanner.innerHTML = 'DRONE ALERT: ' + lines.join(' | ');
+      } else {
+        droneAlertBanner.style.display = 'none';
+      }
+    });
+
+    // Overview: Sensors
+    document.getElementById('ov-sensors').innerHTML=
+      '<div class="metric"><span>Online</span><span class="val '+(onlineN>0?'ok':'err')+'">'+onlineN+'/'+nodeList.length+'</span></div>'+
+      nodeList.filter(n=>n.online).map(n=>
+        '<div class="metric"><span>'+n.device_id+'</span><span class="val" style="font-size:10px">'+ago(n.last_seen)+'</span></div>'
+      ).join('');
+
+    // Overview: WiFi breakdown
+    const wifiDevices = recent ? recent.devices.filter(d => d.source && !d.source.includes('ble')) : [];
+    const wifiDrones = wifiDevices.filter(d => ['confirmed_drone','likely_drone','test_drone'].includes(d.classification));
+    document.getElementById('ov-wifi').innerHTML=
+      '<div class="metric"><span>Total WiFi</span><span class="val wifi-col">'+wifiDevices.length+'</span></div>'+
+      '<div class="metric"><span>Drones/Test</span><span class="val '+(wifiDrones.length>0?'warn':'')+'">'+wifiDrones.length+'</span></div>'+
+      '<div class="metric"><span>Multi-sensor</span><span class="val '+(wifiDevices.filter(d=>d.sensor_count>=2).length>0?'ok':'')+'">'+wifiDevices.filter(d=>d.sensor_count>=2).length+'</span></div>';
+
+    // Overview: BLE breakdown
+    const devData = await f(API+'/detections/devices/live');
+    const devSum = devData ? devData.summary : {active:0,trackers_active:0,classified:0};
+    document.getElementById('ov-ble').innerHTML=
+      '<div class="metric"><span>Active BLE</span><span class="val ble-col">'+devSum.active+'</span></div>'+
+      '<div class="metric"><span>Trackers</span><span class="val '+(devSum.trackers_active>0?'err':'')+'">'+devSum.trackers_active+'</span></div>'+
+      '<div class="metric"><span>Classified</span><span class="val">'+devSum.classified+'</span></div>';
+
+    // Overview: System
+    const totalBatches=nodeList.reduce((s,n)=>s+n.total_batches,0);
+    const totalDets=nodeList.reduce((s,n)=>s+n.total_detections,0);
+    document.getElementById('ov-system').innerHTML=
+      '<div class="metric"><span>Batches</span><span class="val">'+totalBatches+'</span></div>'+
+      '<div class="metric"><span>Detections</span><span class="val">'+totalDets+'</span></div>'+
+      (uplink?'<div class="metric"><span>Uptime</span><span class="val">'+fmtUp(uplink.uptime_s)+'</span></div>':'');
+
+    // Overview: Recent (non-AP)
+    const rd=document.getElementById('ov-recent');
+    if(recent && recent.count>0){
+      rd.innerHTML='<table><tr><th>Age</th><th>Class</th><th>Device</th><th>Source</th><th>RSSI</th><th>Sensors</th><th>Mfr</th></tr>'+
+        recent.devices.slice(0,20).map(d=>
+          '<tr><td>'+d.age_s+'s</td><td>'+clsBadge(d.classification)+'</td>'+
+          '<td style="font-weight:700">'+(d.ssid||d.drone_id)+'</td>'+
+          '<td>'+srcBadge(d.source)+'</td>'+
+          '<td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td>'+
+          '<td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td>'+
+          '<td style="color:#8b949e">'+(d.manufacturer||'-')+'</td></tr>'
+        ).join('')+'</table>';
+    } else { rd.innerHTML='<div class="empty">No detections yet</div>'; }
+
+    // MAP TAB — Leaflet
+    const sensors=map?map.sensors:[];
+    const drones=map?map.drones:[];
+    const hasSensorPos=sensors.some(s=>s.lat!=0||s.lon!=0);
+    updateMap(sensors, drones, nodeList);
+
+    // Triangulation
+    const ts=document.getElementById('tri-status');
+    const multiSensor=drones.filter(d=>d.sensor_count>=2).length;
+    ts.innerHTML=
+      '<div class="metric"><span>GPS Sensors</span><span class="val '+(hasSensorPos?'ok':'err')+'">'+(hasSensorPos?sensors.filter(s=>s.lat!=0).length+'/'+sensors.length:'0')+'</span></div>'+
+      '<div class="metric"><span>Multi-sensor</span><span class="val '+(multiSensor>0?'ok':'')+'">'+multiSensor+'</span></div>'+
+      '<div class="metric"><span>Positioned</span><span class="val">'+drones.filter(d=>d.lat!=0).length+'</span></div>'+
+      '<div class="metric"><span>Status</span><span class="val '+(hasSensorPos&&multiSensor>0?'ok':'warn')+'">'+(hasSensorPos&&multiSensor>0?'ACTIVE':'STANDBY')+'</span></div>';
+
+    const te=document.getElementById('tri-estimates');
+    // Apply same filters as map to the position list
+    const _radio = document.getElementById('map-radio');
+    const _cls = document.getElementById('map-cls');
+    const _hideUnk = document.getElementById('map-hide-unknown');
+    const _hideRng = document.getElementById('map-hide-range');
+    const _minS = document.getElementById('map-sensors');
+    const tRadio = _radio ? _radio.value : 'all';
+    const tCls = _cls ? _cls.value : '';
+    const tHideUnk = _hideUnk ? _hideUnk.checked : false;
+    const tHideRng = _hideRng ? _hideRng.checked : false;
+    const tMinS = _minS ? parseInt(_minS.value) || 1 : 1;
+    const positioned=drones.filter(d=>{
+      if (d.lat==0 && d.lon==0) return false;
+      const dcls=d.classification||'unknown_device';
+      const dSrc=d.observations&&d.observations.length>0?d.observations[0].source||'':'';
+      const dIsBLE=dSrc.includes('ble')||(d.drone_id||'').startsWith('BLE:')||(d.drone_id||'').startsWith('FP:');
+      const dIsRID=(d.drone_id||'').startsWith('rid_')||dSrc==='ble_rid'&&dcls==='confirmed_drone';
+      if(tRadio==='wifi'&&(dIsBLE||dIsRID))return false;
+      if(tRadio==='ble'&&!dIsBLE&&!dIsRID)return false;
+      if(tRadio==='rid'&&!dIsRID)return false;
+      if(tCls&&dcls!==tCls)return false;
+      if(tHideUnk&&dcls==='unknown_device')return false;
+      if(tHideRng&&d.position_source==='range_only')return false;
+      if(d.sensor_count<tMinS)return false;
+      return true;
+    });
+    te.innerHTML=positioned.length>0?positioned.map(d=>
+      '<div class="metric"><span>'+clsBadge(d.classification)+' '+(d.drone_id||'')+'</span><span class="val ok">'+d.lat.toFixed(5)+', '+d.lon.toFixed(5)+(d.accuracy_m?' ±'+d.accuracy_m.toFixed(0)+'m':'')+'</span></div>'
+    ).join(''):'<div class="empty">No devices match current filters</div>';
+
+    // Refresh sub-tabs
+    refreshWifi();
+    refreshBLE();
+    refreshAnomalies();
+    refreshDetections();
+
+    // NODES TAB — GPS summary
+    const gs=document.getElementById('gps-summary');
+    const gpsSet = nodeList.filter(n => n.lat != 0 || n.lon != 0);
+    gs.innerHTML = '<table><tr><th>Device</th><th>Name</th><th>Status</th><th>Latitude</th><th>Longitude</th><th>IP</th><th>Last Seen</th><th>Batches</th></tr>' +
+      nodeList.map(n => {
+        const on = n.online;
+        const hasGPS = n.lat != 0 || n.lon != 0;
+        return '<tr>' +
+          '<td style="font-weight:700;color:#58a6ff">' + n.device_id + '</td>' +
+          '<td style="color:#c9d1d9">' + (n.name || '-') + '</td>' +
+          '<td><span class="pill ' + (on?'on':'off') + '">' + (on?'ONLINE':'OFFLINE') + '</span></td>' +
+          '<td style="font-family:JetBrains Mono,monospace;color:' + (hasGPS?'#3fb950':'#f85149') + '">' + (hasGPS ? n.lat.toFixed(6) : 'NOT SET') + '</td>' +
+          '<td style="font-family:JetBrains Mono,monospace;color:' + (hasGPS?'#3fb950':'#f85149') + '">' + (hasGPS ? n.lon.toFixed(6) : 'NOT SET') + '</td>' +
+          '<td style="color:#484f58">' + (n.ip || '-') + '</td>' +
+          '<td>' + ago(n.last_seen) + '</td>' +
+          '<td>' + n.total_batches + '</td></tr>';
+      }).join('') + '</table>' +
+      '<div style="margin-top:6px;font-size:11px;color:#8b949e">GPS configured: <span class="val ' + (gpsSet.length>0?'ok':'err') + '">' + gpsSet.length + '/' + nodeList.length + '</span>' +
+      (gpsSet.length < 2 ? ' — <span style="color:#d29922">need 2+ for triangulation</span>' : ' — <span style="color:#3fb950">triangulation ready</span>') + '</div>';
+
+    const nl=document.getElementById('node-list');
+    if(nodeList.length>0){
+      nl.innerHTML=nodeList.map(n=>{
+        const on=n.online;
+        return '<div class="node" style="cursor:pointer" onclick="toggleSensorDetail(\''+n.device_id+'\')">'+
+          '<div class="node-hdr"><span class="node-name">'+n.device_id+(n.name?' <span style="color:#8b949e;font-weight:400;font-size:11px">'+n.name+'</span>':'')+'</span>'+
+            '<span style="display:flex;gap:6px;align-items:center">'+
+              '<span style="font-size:10px;color:#484f58">'+n.ip+'</span>'+
+              '<span class="pill '+(on?'on':'off')+'">'+(on?'ONLINE':'OFFLINE')+'</span>'+
+            '</span></div>'+
+          '<div class="node-stats">'+
+            '<div class="nstat"><div class="nl">Last Seen</div><div class="nv">'+ago(n.last_seen)+'</div></div>'+
+            '<div class="nstat"><div class="nl">Batches</div><div class="nv">'+n.total_batches+'</div></div>'+
+            '<div class="nstat"><div class="nl">Detections</div><div class="nv">'+n.total_detections+'</div></div>'+
+            '<div class="nstat"><div class="nl">Position</div><div class="nv">'+(n.lat!=0?n.lat.toFixed(4)+','+n.lon.toFixed(4):'<span style="color:#f85149">NOT SET</span>')+'</div></div>'+
+          '</div>'+
+          '<div id="sensor-detail-'+n.device_id+'" style="display:none;margin-top:8px;border-top:1px solid #30363d;padding-top:8px"></div>'+
+        '</div>';
+      }).join('');
+    } else { nl.innerHTML='<div class="empty">No nodes have reported in yet</div>'; }
+
+    document.getElementById('footer').textContent=new Date().toLocaleTimeString()+' | #'+refreshN;
+  } catch(e) {
+    document.getElementById('health-dot').className='status-dot err';
+    document.getElementById('health-text').textContent='error: '+e.message;
+  }
+}
+
+async function refreshAnomalies() {
+  const sevFilter = document.getElementById('anom-filter').value;
+  const typeFilter = document.getElementById('anom-type').value;
+  let url = API+'/detections/anomalies?limit=50';
+  if (sevFilter) url += '&severity='+sevFilter;
+  if (typeFilter) url += '&alert_type='+typeFilter;
+
+  const [data, devices] = await Promise.all([f(url), f(API+'/detections/anomalies/devices')]);
+
+  if (data && data.stats) {
+    const s = data.stats;
+    document.getElementById('anom-stats').innerHTML =
+      '<div class="metric"><span>Active</span><span class="val blue">'+s.active_devices+'</span></div>'+
+      '<div class="metric"><span>Tracked</span><span class="val">'+s.total_tracked+'</span></div>'+
+      '<div class="metric"><span>Known BSSIDs</span><span class="val">'+s.known_bssids+'</span></div>'+
+      '<div class="metric"><span>Alerts (5min)</span><span class="val '+(s.alerts_last_5min>0?'warn':'')+'">'+s.alerts_last_5min+'</span></div>';
+
+    const b = s.alert_breakdown;
+    document.getElementById('anom-breakdown').innerHTML = Object.entries(b).map(([k,v])=>
+      '<div class="metric"><span>'+k.replace('_',' ')+'</span><span class="val '+(v>0?'warn':'')+'">'+v+'</span></div>'
+    ).join('');
+  }
+
+  if (devices && devices.devices) {
+    const dd = devices.devices;
+    document.getElementById('anom-env').innerHTML =
+      '<div class="metric"><span>Active Now</span><span class="val ok">'+dd.filter(d=>d.idle_s<30).length+'</span></div>'+
+      '<div class="metric"><span>Approaching</span><span class="val '+(dd.filter(d=>d.rssi_velocity>1).length>0?'warn':'')+'">'+dd.filter(d=>d.rssi_velocity>1).length+'</span></div>'+
+      '<div class="metric"><span>Departing</span><span class="val">'+dd.filter(d=>d.rssi_velocity<-1).length+'</span></div>';
+  }
+
+  const af = document.getElementById('anom-feed');
+  if (data && data.alerts && data.alerts.length > 0) {
+    const sevColor={info:'blue',warning:'warn',critical:'err'};
+    af.innerHTML='<table><tr><th>Time</th><th>Sev</th><th>Type</th><th>Device</th><th>Message</th></tr>'+
+      data.alerts.map(a=>'<tr><td>'+ago(a.timestamp)+'</td><td><span class="val '+sevColor[a.severity]+'">'+a.severity+'</span></td><td><span class="badge">'+a.alert_type+'</span></td><td>'+a.ssid+'</td><td>'+a.message+'</td></tr>').join('')+'</table>';
+  } else { af.innerHTML='<div class="empty">No anomalies — monitoring RF</div>'; }
+
+  const dd = document.getElementById('anom-devices');
+  if (devices && devices.devices && devices.devices.length > 0) {
+    dd.innerHTML='<table><tr><th>SSID</th><th>BSSID</th><th>RSSI</th><th>Avg</th><th>Vel</th><th>Age</th><th>Idle</th><th>Rds</th></tr>'+
+      devices.devices.slice(0,30).map(d=>{
+        const vc=d.rssi_velocity>1?'warn':d.rssi_velocity<-1?'blue':'';
+        return '<tr><td style="font-weight:700">'+d.ssid+'</td><td style="color:#484f58">'+d.bssid+'</td><td><span class="rssi '+rssiClass(d.last_rssi)+'">'+d.last_rssi+'</span></td><td><span class="rssi '+rssiClass(d.avg_rssi)+'">'+d.avg_rssi+'</span></td><td><span class="val '+vc+'">'+d.rssi_velocity.toFixed(1)+'</span></td><td>'+Math.round(d.age_s)+'s</td><td>'+Math.round(d.idle_s)+'s</td><td>'+d.reading_count+'</td></tr>';
+      }).join('')+'</table>';
+  } else { dd.innerHTML='<div class="empty">No devices tracked yet</div>'; }
+}
+
+async function refreshDetections() {
+  const grouped = await f(API+'/detections/grouped?max_age_s=120&exclude_known_ap=false');
+  const df = document.getElementById('det-feed');
+  const dc = document.getElementById('det-count');
+  if (grouped && grouped.count > 0) {
+    dc.textContent = grouped.count + ' unique devices';
+    df.innerHTML = '<table><tr><th>Age</th><th>Class</th><th>Device</th><th>Src</th><th>RSSI</th><th>Sensors</th><th>Sensor RSSI</th><th>Hits</th><th>Mfr</th></tr>'+
+      grouped.devices.map(d => {
+        const sRssi = Object.entries(d.sensor_rssi||{}).map(([k,v])=>sensorLabel(k)+':'+v).join(' ');
+        return '<tr><td>'+d.age_s+'s</td><td>'+clsBadge(d.classification)+'</td><td style="font-weight:700">'+(d.ssid||d.drone_id)+'</td><td>'+srcBadge(d.source)+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td><td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td><td style="font-size:10px">'+sRssi+'</td><td>'+d.detection_count+'</td><td style="color:#8b949e">'+(d.manufacturer||'-')+'</td></tr>';
+      }).join('') + '</table>';
+  } else { dc.textContent=''; df.innerHTML='<div class="empty">No detections</div>'; }
+}
+
+async function registerNode() {
+  const device_id=document.getElementById('cfg-device').value;
+  const name=document.getElementById('cfg-name').value;
+  const lat=parseFloat(document.getElementById('cfg-lat').value);
+  const lon=parseFloat(document.getElementById('cfg-lon').value);
+  const alt=parseFloat(document.getElementById('cfg-alt').value)||0;
+  const result=document.getElementById('cfg-result');
+  if(!device_id){result.innerHTML='<span style="color:#f85149">Select a device</span>';return;}
+  if(isNaN(lat)||isNaN(lon)){result.innerHTML='<span style="color:#f85149">Enter valid coords</span>';return;}
+  result.innerHTML='<span style="color:#d29922">Saving...</span>';
+  try{
+    const r=await fetch(API+'/nodes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id,name:name||device_id,lat,lon,alt})});
+    if(r.ok){const d=await r.json();result.innerHTML='<span style="color:#3fb950">Saved: '+d.device_id+' at '+lat.toFixed(6)+', '+lon.toFixed(6)+'</span>';}
+    else{const e=await r.text();result.innerHTML='<span style="color:#f85149">Error: '+e+'</span>';}
+  }catch(e){result.innerHTML='<span style="color:#f85149">Failed: '+e.message+'</span>';}
+}
+
+function useMyLocation() {
+  const result=document.getElementById('cfg-result');
+  if(!navigator.geolocation){result.innerHTML='<span style="color:#f85149">Geolocation not supported</span>';return;}
+  result.innerHTML='<span style="color:#d29922">Getting location...</span>';
+  navigator.geolocation.getCurrentPosition(
+    pos=>{document.getElementById('cfg-lat').value=pos.coords.latitude.toFixed(8);document.getElementById('cfg-lon').value=pos.coords.longitude.toFixed(8);if(pos.coords.altitude)document.getElementById('cfg-alt').value=pos.coords.altitude.toFixed(1);result.innerHTML='<span style="color:#3fb950">Location filled — click Set Position</span>';},
+    err=>{result.innerHTML='<span style="color:#f85149">'+err.message+'</span>';},
+    {enableHighAccuracy:true,timeout:10000}
+  );
+}
+
+async function updateNodeDropdown() {
+  const sel=document.getElementById('cfg-device');
+  const nodes=await f(API+'/detections/nodes/status');
+  if(!nodes||!nodes.nodes.length)return;
+  sel.innerHTML=nodes.nodes.map(n=>'<option value="'+n.device_id+'">'+n.device_id+'</option>').join('');
+}
+
+async function updateScannerDiag() {
+  const div=document.getElementById('scanner-diag');
+  const uplink=uplinkDeviceId?await f(API+'/nodes/'+uplinkDeviceId+'/live',3000):await findUplink();
+  if(!uplink){div.innerHTML='<div class="empty">Uplink not reachable</div>';return;}
+  div.innerHTML=
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
+      '<div class="node" style="border-left:3px solid #00ff88"><div class="node-hdr"><span class="node-name">BLE Scanner</span><span class="pill '+(uplink.scanner_connected?'on':'off')+'">'+(uplink.scanner_connected?'ON':'OFF')+'</span></div>'+
+        '<div class="metric"><span>Status</span><span class="val '+(uplink.scanner_connected?'ok':'err')+'">'+(uplink.scanner_connected?'Scanning':'Down')+'</span></div></div>'+
+      '<div class="node" style="border-left:3px solid #ff9500"><div class="node-hdr"><span class="node-name">WiFi Scanner</span><span class="pill on">ON</span></div>'+
+        '<div class="metric"><span>Detections</span><span class="val blue">'+uplink.detections+'</span></div>'+
+        '<div class="metric"><span>Uploads</span><span class="val ok">'+uplink.uploads_ok+'</span></div></div>'+
+    '</div>';
+}
+
+async function toggleSensorDetail(deviceId) {
+  const el = document.getElementById('sensor-detail-'+deviceId);
+  if (!el) return;
+  if (el.style.display !== 'none') { el.style.display='none'; return; }
+  el.style.display='block';
+  el.innerHTML='<div style="color:#d29922;font-size:11px">Loading...</div>';
+
+  const stats = await f(API+'/detections/sensor/'+deviceId+'/stats', 5000);
+  if (!stats) { el.innerHTML='<div style="color:#f85149;font-size:11px">Failed to load stats</div>'; return; }
+
+  let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
+
+  // Source breakdown
+  html += '<div style="background:#0d1117;border-radius:4px;padding:8px"><div class="section-title">Source Breakdown</div>';
+  const srcEntries = Object.entries(stats.source_breakdown || {});
+  if (srcEntries.length > 0) {
+    const total = srcEntries.reduce((s,[,v])=>s+v, 0);
+    html += srcEntries.map(([k,v]) => {
+      const pct = total > 0 ? Math.round(v/total*100) : 0;
+      const color = k.includes('ble') ? '#00ff88' : '#ff9500';
+      return '<div class="metric"><span>'+srcBadge(k)+' '+k+'</span><span class="val" style="color:'+color+'">'+v+' <span style="color:#484f58;font-weight:400">('+pct+'%)</span></span></div>';
+    }).join('');
+  } else { html += '<div class="empty">No data</div>'; }
+  html += '<div class="metric" style="margin-top:4px;border-top:1px solid #30363d;padding-top:4px"><span style="font-weight:700">WiFi total</span><span class="val wifi-col">'+stats.wifi_count+'</span></div>';
+  html += '<div class="metric"><span style="font-weight:700">BLE total</span><span class="val ble-col">'+stats.ble_count+'</span></div>';
+  html += '</div>';
+
+  // Classification breakdown
+  html += '<div style="background:#0d1117;border-radius:4px;padding:8px"><div class="section-title">Classification</div>';
+  const clsEntries = Object.entries(stats.classification_breakdown || {});
+  if (clsEntries.length > 0) {
+    html += clsEntries.map(([k,v]) => '<div class="metric"><span>'+clsBadge(k)+'</span><span class="val">'+v+'</span></div>').join('');
+  } else { html += '<div class="empty">No data</div>'; }
+  html += '</div>';
+  html += '</div>';
+
+  // WiFi SSIDs table
+  if (stats.wifi_ssids && stats.wifi_ssids.length > 0) {
+    html += '<div style="margin-top:8px;background:#0d1117;border-radius:4px;padding:8px"><div class="section-title" style="color:#ff9500">WiFi SSIDs ('+stats.unique_ssids+')</div>';
+    html += '<table><tr><th>SSID</th><th>Class</th><th>RSSI</th><th>Hits</th><th>BSSID</th></tr>';
+    html += stats.wifi_ssids.map(s =>
+      '<tr><td style="font-weight:700;color:#c9d1d9">'+s.ssid+'</td><td>'+clsBadge(s.classification)+'</td>'+
+      '<td><span class="rssi '+rssiClass(s.best_rssi)+'">'+(s.best_rssi||'-')+'</span></td>'+
+      '<td>'+s.count+'</td><td style="color:#484f58">'+(s.bssid||'-')+'</td></tr>'
+    ).join('');
+    html += '</table></div>';
+  }
+
+  // BLE device types
+  if (stats.ble_device_types && stats.ble_device_types.length > 0) {
+    html += '<div style="margin-top:8px;background:#0d1117;border-radius:4px;padding:8px"><div class="section-title" style="color:#00ff88">BLE Device Types</div>';
+    html += '<table><tr><th>Type</th><th>Count</th></tr>';
+    html += stats.ble_device_types.map(t =>
+      '<tr><td style="font-weight:700">'+t.type+'</td><td>'+t.count+'</td></tr>'
+    ).join('');
+    html += '</table></div>';
+  }
+
+  // Summary
+  html += '<div style="margin-top:6px;font-size:10px;color:#484f58">Buffer: '+stats.total_in_buffer+' detections | Span: '+stats.age_span_s+'s | IP: '+(stats.ip||'?')+'</div>';
+
+  el.innerHTML = html;
+}
+
+updateNodeDropdown();
+populateHistoryDropdown();
+refresh();
+setInterval(refresh, 3000);
+setInterval(updateNodeDropdown, 30000);
+setInterval(populateHistoryDropdown, 30000);
+setInterval(updateScannerDiag, 5000);
+updateScannerDiag();
+</script>
+</body>
+</html>

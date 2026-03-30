@@ -97,6 +97,19 @@ static bool          s_next_is_5ghz = false; /* interleave toggle */
 static void add_channel_heat(uint16_t ch, uint8_t points);
 static void decay_channel_heat(void);
 
+/* ── Lock-on mode ─────────────────────────────────────────────────────────── */
+
+typedef struct {
+    bool     active;
+    uint8_t  channel;               /* Channel to lock onto */
+    char     target_bssid[18];      /* Target BSSID (empty = capture all on channel) */
+    int64_t  start_ms;
+    int64_t  duration_ms;           /* 30000, 60000, or 90000 */
+    uint32_t frames_captured;
+} lockon_state_t;
+
+static lockon_state_t s_lockon = {0};
+
 /* ── Diagnostic counters ──────────────────────────────────────────────────── */
 static uint32_t s_total_frames = 0;
 static uint32_t s_mgmt_frames = 0;
@@ -816,6 +829,14 @@ static void wifi_scan_task(void *arg)
     while (1) {
         TickType_t now = xTaskGetTickCount();
 
+        /* Lock-on mode: stay on target channel, no hopping */
+        if (wifi_scanner_is_locked_on()) {
+            /* Just dwell — promiscuous callback handles frame capture */
+            s_lockon.frames_captured += s_beacon_frames;  /* Approximate */
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
         /* Full discovery scan periodically */
         if ((now - last_full_scan) >= pdMS_TO_TICKS(FULL_SCAN_INTERVAL_MS)) {
             do_full_scan();
@@ -924,4 +945,57 @@ bool wifi_scanner_is_5ghz_enabled(void)
 #else
     return false;
 #endif
+}
+
+/* ── Lock-on implementation ──────────────────────────────────────────────── */
+
+bool wifi_scanner_lockon(uint8_t channel, const char *bssid, int duration_s)
+{
+    if (channel < 1 || channel > 13) return false;
+    if (duration_s != 30 && duration_s != 60 && duration_s != 90) duration_s = 60;
+
+    s_lockon.active = true;
+    s_lockon.channel = channel;
+    s_lockon.start_ms = now_ms();
+    s_lockon.duration_ms = (int64_t)duration_s * 1000;
+    s_lockon.frames_captured = 0;
+
+    if (bssid && bssid[0]) {
+        strncpy(s_lockon.target_bssid, bssid, sizeof(s_lockon.target_bssid) - 1);
+    } else {
+        s_lockon.target_bssid[0] = '\0';
+    }
+
+    /* Immediately switch to target channel */
+    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    s_current_channel = channel;
+
+    ESP_LOGW(TAG, "LOCK-ON: ch=%d bssid=%s duration=%ds",
+             channel, s_lockon.target_bssid[0] ? s_lockon.target_bssid : "*",
+             duration_s);
+    return true;
+}
+
+void wifi_scanner_lockon_cancel(void)
+{
+    if (s_lockon.active) {
+        ESP_LOGI(TAG, "LOCK-ON cancelled after %lu frames",
+                 (unsigned long)s_lockon.frames_captured);
+        s_lockon.active = false;
+    }
+}
+
+bool wifi_scanner_is_locked_on(void)
+{
+    if (!s_lockon.active) return false;
+
+    /* Auto-expire */
+    if ((now_ms() - s_lockon.start_ms) >= s_lockon.duration_ms) {
+        ESP_LOGI(TAG, "LOCK-ON expired after %lu frames in %llds",
+                 (unsigned long)s_lockon.frames_captured,
+                 (long long)(s_lockon.duration_ms / 1000));
+        s_lockon.active = false;
+        return false;
+    }
+    return true;
 }

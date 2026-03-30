@@ -56,6 +56,8 @@ extern "C" {
 #define MSG_TYPE_STATUS             "status"
 #define MSG_TYPE_CONFIG             "config"
 #define MSG_TYPE_ACK                "ack"
+#define MSG_TYPE_LOCKON             "lockon"
+#define MSG_TYPE_LOCKON_CANCEL      "lockon_cancel"
 
 /* ── JSON key names (short to save bandwidth at 921600 baud) ─────────────── */
 
