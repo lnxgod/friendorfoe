@@ -57,6 +57,12 @@ bool uart_rx_is_ble_scanner_connected(void);
 /** True if the WiFi scanner (UART2) is connected. */
 bool uart_rx_is_wifi_scanner_connected(void);
 
+/**
+ * Send a JSON command to all connected scanners via UART TX.
+ * Used for lock-on commands from the backend.
+ */
+void uart_rx_send_command(const char *json_cmd);
+
 #ifdef __cplusplus
 }
 #endif

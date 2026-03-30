@@ -445,3 +445,21 @@ bool uart_rx_is_wifi_scanner_connected(void)
     return false;
 #endif
 }
+
+void uart_rx_send_command(const char *json_cmd)
+{
+    if (!json_cmd) return;
+    size_t len = strlen(json_cmd);
+
+    /* Send to BLE scanner UART */
+    uart_write_bytes(CONFIG_BLE_SCANNER_UART, json_cmd, len);
+    uart_write_bytes(CONFIG_BLE_SCANNER_UART, "\n", 1);
+
+#if CONFIG_DUAL_SCANNER
+    /* Also send to WiFi scanner UART */
+    uart_write_bytes(CONFIG_WIFI_SCANNER_UART, json_cmd, len);
+    uart_write_bytes(CONFIG_WIFI_SCANNER_UART, "\n", 1);
+#endif
+
+    ESP_LOGI("uart_tx_cmd", "Sent command to scanners (%d bytes)", (int)len);
+}
