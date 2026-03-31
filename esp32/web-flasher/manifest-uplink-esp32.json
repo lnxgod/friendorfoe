@@ -1,0 +1,14 @@
+{
+  "name": "Friend or Foe Uplink (Plain ESP32 OLED)",
+  "version": "0.34.0",
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "firmware/uplink-esp32/bootloader.bin", "offset": 4096 },
+        { "path": "firmware/uplink-esp32/partition-table.bin", "offset": 32768 },
+        { "path": "firmware/uplink-esp32/firmware.bin", "offset": 65536 }
+      ]
+    }
+  ]
+}
