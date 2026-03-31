@@ -1402,19 +1402,23 @@ async function refresh() {
     // NODES TAB — GPS summary
     const gs=document.getElementById('gps-summary');
     const gpsSet = nodeList.filter(n => n.lat != 0 || n.lon != 0);
-    gs.innerHTML = '<table><tr><th>Device</th><th>Name</th><th>Status</th><th>Latitude</th><th>Longitude</th><th>IP</th><th>Last Seen</th><th>Batches</th></tr>' +
+    gs.innerHTML = '<table><tr><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Name</th><th>Status</th><th onclick="sortTable(this)">Firmware</th><th>Latitude</th><th>Longitude</th><th onclick="sortTable(this)">IP</th><th onclick="sortTable(this)">Last Seen</th><th onclick="sortTable(this)">Batches</th><th>OTA</th></tr>' +
       nodeList.map(n => {
         const on = n.online;
         const hasGPS = n.lat != 0 || n.lon != 0;
+        const fw = n.firmware_version || '?';
+        const did = n.device_id;
         return '<tr>' +
-          '<td style="font-weight:700;color:#58a6ff">' + n.device_id + '</td>' +
+          '<td style="font-weight:700;color:#58a6ff">' + did + '</td>' +
           '<td style="color:#c9d1d9">' + (n.name || '-') + '</td>' +
           '<td><span class="pill ' + (on?'on':'off') + '">' + (on?'ONLINE':'OFFLINE') + '</span></td>' +
+          '<td style="font-family:JetBrains Mono,monospace;color:#e040fb">' + fw + '</td>' +
           '<td style="font-family:JetBrains Mono,monospace;color:' + (hasGPS?'#3fb950':'#f85149') + '">' + (hasGPS ? n.lat.toFixed(6) : 'NOT SET') + '</td>' +
           '<td style="font-family:JetBrains Mono,monospace;color:' + (hasGPS?'#3fb950':'#f85149') + '">' + (hasGPS ? n.lon.toFixed(6) : 'NOT SET') + '</td>' +
           '<td style="color:#484f58">' + (n.ip || '-') + '</td>' +
           '<td>' + ago(n.last_seen) + '</td>' +
-          '<td>' + n.total_batches + '</td></tr>';
+          '<td>' + n.total_batches + '</td>' +
+          '<td>' + (on ? '<button onclick="showOtaDialog(\''+did+'\')" style="background:#1f6feb22;border:1px solid #1f6feb44;color:#1f6feb;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Update</button>' : '-') + '</td></tr>';
       }).join('') + '</table>' +
       '<div style="margin-top:6px;font-size:11px;color:#8b949e">GPS configured: <span class="val ' + (gpsSet.length>0?'ok':'err') + '">' + gpsSet.length + '/' + nodeList.length + '</span>' +
       (gpsSet.length < 2 ? ' — <span style="color:#d29922">need 2+ for triangulation</span>' : ' — <span style="color:#3fb950">triangulation ready</span>') + '</div>';
@@ -1423,9 +1427,11 @@ async function refresh() {
     if(nodeList.length>0){
       nl.innerHTML=nodeList.map(n=>{
         const on=n.online;
+        const fw=n.firmware_version||'?';
         return '<div class="node" style="cursor:pointer" onclick="toggleSensorDetail(\''+n.device_id+'\')">'+
           '<div class="node-hdr"><span class="node-name">'+n.device_id+(n.name?' <span style="color:#8b949e;font-weight:400;font-size:11px">'+n.name+'</span>':'')+'</span>'+
             '<span style="display:flex;gap:6px;align-items:center">'+
+              '<span style="font-size:10px;color:#e040fb;font-family:JetBrains Mono,monospace">v'+fw+'</span>'+
               '<span style="font-size:10px;color:#484f58">'+n.ip+'</span>'+
               '<span class="pill '+(on?'on':'off')+'">'+(on?'ONLINE':'OFFLINE')+'</span>'+
             '</span></div>'+
@@ -1434,6 +1440,8 @@ async function refresh() {
             '<div class="nstat"><div class="nl">Batches</div><div class="nv">'+n.total_batches+'</div></div>'+
             '<div class="nstat"><div class="nl">Detections</div><div class="nv">'+n.total_detections+'</div></div>'+
             '<div class="nstat"><div class="nl">Position</div><div class="nv">'+(n.lat!=0?n.lat.toFixed(4)+','+n.lon.toFixed(4):'<span style="color:#f85149">NOT SET</span>')+'</div></div>'+
+            '<div class="nstat"><div class="nl">Firmware</div><div class="nv" style="color:#e040fb">'+fw+'</div></div>'+
+            '<div class="nstat"><div class="nl">Setup</div><div class="nv">'+(on&&n.ip?'<a href="http://'+n.ip+'/setup" target="_blank" style="color:#58a6ff;text-decoration:none;font-size:10px">Open</a>':'—')+'</div></div>'+
           '</div>'+
           '<div id="sensor-detail-'+n.device_id+'" style="display:none;margin-top:8px;border-top:1px solid #30363d;padding-top:8px"></div>'+
         '</div>';
@@ -1620,6 +1628,62 @@ async function toggleSensorDetail(deviceId) {
   html += '<div style="margin-top:6px;font-size:10px;color:#484f58">Buffer: '+stats.total_in_buffer+' detections | Span: '+stats.age_span_s+'s | IP: '+(stats.ip||'?')+'</div>';
 
   el.innerHTML = html;
+}
+
+// ── OTA Dialog ────────────────────────────────────────────────────────
+async function showOtaDialog(deviceId) {
+  const catalog = await f(API+'/nodes/firmware/catalog', 5000);
+  if (!catalog || !catalog.firmware) { alert('Failed to load firmware catalog'); return; }
+  const available = catalog.firmware.filter(fw => fw.available);
+  if (available.length === 0) { alert('No firmware available. Upload one or check GitHub releases.'); return; }
+
+  const options = available.map(fw =>
+    '<option value="'+fw.name+'">'+fw.name+' ('+fw.source+', '+(fw.size/1024).toFixed(0)+'KB'+(fw.version?' v'+fw.version:'')+')</option>'
+  ).join('');
+
+  const el = document.getElementById('sensor-detail-'+deviceId);
+  if (!el) return;
+  el.style.display = 'block';
+  el.innerHTML =
+    '<div style="background:#0d1117;border-radius:6px;padding:10px">' +
+    '<div style="font-size:12px;font-weight:700;color:#1f6feb;margin-bottom:6px">OTA Firmware Update — '+deviceId+'</div>' +
+    '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
+      '<select id="ota-fw-'+deviceId+'" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:11px">'+options+'</select>' +
+      '<select id="ota-target-'+deviceId+'" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:11px">' +
+        '<option value="uplink">Uplink (self)</option>' +
+        '<option value="ble">Scanner (BLE UART)</option>' +
+        '<option value="wifi">Scanner (WiFi UART)</option>' +
+      '</select>' +
+      '<button onclick="doOtaPush(\''+deviceId+'\')" style="background:#238636;color:#fff;border:none;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">Flash</button>' +
+    '</div>' +
+    '<div id="ota-status-'+deviceId+'" style="margin-top:6px;font-size:11px"></div>' +
+    '</div>';
+}
+
+async function doOtaPush(deviceId) {
+  const fw = document.getElementById('ota-fw-'+deviceId).value;
+  const target = document.getElementById('ota-target-'+deviceId).value;
+  const status = document.getElementById('ota-status-'+deviceId);
+  status.innerHTML = '<span style="color:#d29922">Pushing '+fw+' to '+deviceId+' ('+target+')... this takes ~15s</span>';
+
+  let url;
+  if (target === 'uplink') {
+    url = API+'/nodes/'+deviceId+'/ota/'+fw;
+  } else {
+    url = API+'/nodes/'+deviceId+'/ota/scanner/'+fw+'?uart='+target;
+  }
+
+  try {
+    const r = await fetch(url, {method:'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      status.innerHTML = '<span style="color:#3fb950">Success! '+fw+' pushed ('+((d.size||0)/1024).toFixed(0)+'KB). Node rebooting...</span>';
+    } else {
+      status.innerHTML = '<span style="color:#f85149">Failed: '+(d.error||d.detail||'unknown')+'</span>';
+    }
+  } catch(e) {
+    status.innerHTML = '<span style="color:#3fb950">Firmware sent — node likely rebooting</span>';
+  }
 }
 
 updateNodeDropdown();
