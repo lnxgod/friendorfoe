@@ -15,7 +15,8 @@ import httpx
 logger = logging.getLogger(__name__)
 
 GITHUB_REPO = "lnxgod/friendorfoe"
-GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+# Use /releases (not /releases/latest) to include prereleases
+GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 CACHE_DIR = Path("/tmp/fof-firmware")
 CACHE_TTL_S = 1800  # Re-check GitHub every 30 minutes
 
@@ -82,7 +83,13 @@ class FirmwareManager:
                     logger.warning("GitHub API returned %d", r.status_code)
                     return
 
-                data = r.json()
+                releases = r.json()
+                if not isinstance(releases, list) or len(releases) == 0:
+                    logger.warning("No GitHub releases found")
+                    return
+
+                # Use the first release (most recent, includes prereleases)
+                data = releases[0]
                 tag = data.get("tag_name", "")
                 if tag == self.release_tag and self.assets:
                     return  # No change
