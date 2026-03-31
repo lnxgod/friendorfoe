@@ -35,6 +35,10 @@ static bool s_first_status_received = false;
 static QueueHandle_t s_detection_queue = NULL;
 static int           s_detection_count = 0;
 
+/* Scanner identity (populated from scanner_info UART messages) */
+static scanner_info_t s_ble_scanner_info = {0};
+static scanner_info_t s_wifi_scanner_info = {0};
+
 /* ── Recent detections ring buffer ─────────────────────────────────────── */
 
 #define RECENT_RING_SIZE  8
@@ -269,6 +273,20 @@ static void process_line(const char *line, size_t len, int scanner_id)
         }
     } else if (strcmp(msg_type, MSG_TYPE_STATUS) == 0) {
         handle_status(root);
+    } else if (strcmp(msg_type, "scanner_info") == 0) {
+        /* Scanner identity: version, board type, chip, capabilities */
+        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        const char *ver = json_get_string(root, "ver", "?");
+        const char *board = json_get_string(root, "board", "?");
+        const char *chip = json_get_string(root, "chip", "?");
+        const char *caps = json_get_string(root, "caps", "?");
+        strncpy(info->version, ver, sizeof(info->version) - 1);
+        strncpy(info->board, board, sizeof(info->board) - 1);
+        strncpy(info->chip, chip, sizeof(info->chip) - 1);
+        strncpy(info->caps, caps, sizeof(info->caps) - 1);
+        info->received = true;
+        ESP_LOGI(TAG, "Scanner[%d] identity: %s v%s (%s) chip=%s",
+                 scanner_id, board, ver, caps, chip);
     } else {
         ESP_LOGD(TAG, "Ignoring message type: %s", msg_type);
     }
@@ -472,4 +490,14 @@ void uart_rx_send_command(const char *json_cmd)
 #endif
 
     ESP_LOGI("uart_tx_cmd", "Sent command to scanners (%d bytes)", (int)len);
+}
+
+const scanner_info_t *uart_rx_get_ble_scanner_info(void)
+{
+    return s_ble_scanner_info.received ? &s_ble_scanner_info : NULL;
+}
+
+const scanner_info_t *uart_rx_get_wifi_scanner_info(void)
+{
+    return s_wifi_scanner_info.received ? &s_wifi_scanner_info : NULL;
 }

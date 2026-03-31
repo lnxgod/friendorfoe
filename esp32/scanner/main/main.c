@@ -295,22 +295,43 @@ static void uart_cmd_listener_task(void *arg)
 
     ESP_LOGI(TAG, "UART cmd listener on UART1 (commands + OTA from uplink)");
 
-    /* Send version on boot */
+    /* Determine board identity at compile time — matches firmware catalog names */
+#if defined(BLE_SCANNER_ONLY)
+    static const char *s_board_name = "scanner-s3-ble";
+    static const char *s_chip_name = "esp32s3";
+    static const char *s_caps = "ble";
+#elif defined(WIFI_SCANNER_ONLY) && defined(CONFIG_IDF_TARGET_ESP32C5)
+    static const char *s_board_name = "scanner-c5";
+    static const char *s_chip_name = "esp32c5";
+    static const char *s_caps = "wifi,5ghz";
+#elif defined(WIFI_SCANNER_ONLY)
+    static const char *s_board_name = "scanner-esp32";
+    static const char *s_chip_name = "esp32";
+    static const char *s_caps = "wifi";
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+    static const char *s_board_name = "scanner-s3-combo";
+    static const char *s_chip_name = "esp32s3";
+    static const char *s_caps = "ble,wifi";
+#else
+    static const char *s_board_name = "scanner-esp32";
+    static const char *s_chip_name = "esp32";
+    static const char *s_caps = "wifi";
+#endif
+
+    /* Send scanner identity on boot */
     {
         const esp_app_desc_t *app = esp_app_get_description();
-        char ver_msg[96];
+        char ver_msg[160];
         snprintf(ver_msg, sizeof(ver_msg),
-                 "{\"type\":\"status\",\"ver\":\"%s\",\"board\":\""
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
-                 "s3"
-#elif defined(CONFIG_IDF_TARGET_ESP32C5)
-                 "c5"
-#else
-                 "esp32"
-#endif
-                 "\"}\n", app ? app->version : "?");
+                 "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
+                 "\"chip\":\"%s\",\"caps\":\"%s\"}\n",
+                 app ? app->version : "?", s_board_name, s_chip_name, s_caps);
         uart_write_bytes(UART_NUM_1, ver_msg, strlen(ver_msg));
+        ESP_LOGI(TAG, "Scanner identity: %s v%s (%s)", s_board_name,
+                 app ? app->version : "?", s_caps);
     }
+
+    TickType_t last_info_send = xTaskGetTickCount();
 
     while (1) {
         int len = uart_read_bytes(UART_NUM_1, buf, sizeof(buf), pdMS_TO_TICKS(500));
@@ -395,6 +416,18 @@ static void uart_cmd_listener_task(void *arg)
             } else if (line_pos < (int)sizeof(line) - 1) {
                 line[line_pos++] = (char)buf[i];
             }
+        }
+
+        /* Resend scanner_info every 60s so uplink always has it */
+        if ((xTaskGetTickCount() - last_info_send) >= pdMS_TO_TICKS(60000)) {
+            last_info_send = xTaskGetTickCount();
+            const esp_app_desc_t *app2 = esp_app_get_description();
+            char info[160];
+            snprintf(info, sizeof(info),
+                     "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
+                     "\"chip\":\"%s\",\"caps\":\"%s\"}\n",
+                     app2 ? app2->version : "?", s_board_name, s_chip_name, s_caps);
+            uart_write_bytes(UART_NUM_1, info, strlen(info));
         }
     }
 }

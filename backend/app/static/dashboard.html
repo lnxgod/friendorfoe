@@ -1452,9 +1452,24 @@ async function refresh() {
             '<div class="nstat"><div class="nl">Batches</div><div class="nv">'+n.total_batches+'</div></div>'+
             '<div class="nstat"><div class="nl">Detections</div><div class="nv">'+n.total_detections+'</div></div>'+
             '<div class="nstat"><div class="nl">Position</div><div class="nv">'+(n.lat!=0?n.lat.toFixed(4)+','+n.lon.toFixed(4):'<span style="color:#f85149">NOT SET</span>')+'</div></div>'+
-            '<div class="nstat"><div class="nl">Firmware</div><div class="nv" style="color:#e040fb">'+fw+'</div></div>'+
-            '<div class="nstat"><div class="nl">Setup</div><div class="nv">'+(on&&n.ip?'<a href="http://'+n.ip+'/setup" target="_blank" style="color:#58a6ff;text-decoration:none;font-size:10px">Open</a>':'—')+'</div></div>'+
+            '<div class="nstat"><div class="nl">Uplink FW</div><div class="nv" style="color:#e040fb">'+fw+'</div></div>'+
+            '<div class="nstat"><div class="nl">Board</div><div class="nv" style="color:#58a6ff;font-size:9px">'+(n.board_type||'?')+'</div></div>'+
           '</div>'+
+          /* Scanner info cards */
+          (n.scanners && n.scanners.length > 0 ?
+            '<div style="margin-top:6px;border-top:1px solid #21262d;padding-top:6px">'+
+            n.scanners.map(function(sc) {
+              return '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:11px">'+
+                '<span style="color:#8b949e">'+sc.uart.toUpperCase()+' Scanner</span>'+
+                '<span style="font-family:JetBrains Mono,monospace">'+
+                  '<span style="color:#58a6ff">'+sc.board+'</span> '+
+                  '<span style="color:#e040fb">v'+sc.ver+'</span> '+
+                  '<span style="color:#484f58">('+sc.caps+')</span>'+
+                '</span>'+
+                '<button onclick="event.stopPropagation();showOtaDialog(\''+n.device_id+'\')" style="background:#1f6feb22;border:1px solid #1f6feb44;color:#1f6feb;padding:1px 6px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Update</button>'+
+              '</div>';
+            }).join('') + '</div>' : '') +
+          (on&&n.ip?'<div style="margin-top:4px;text-align:right"><a href="http://'+n.ip+'/setup" target="_blank" style="color:#484f58;font-size:10px;text-decoration:none">Setup Page</a></div>':'') +
           '<div id="sensor-detail-'+n.device_id+'" style="display:none;margin-top:8px;border-top:1px solid #30363d;padding-top:8px"></div>'+
         '</div>';
       }).join('');
@@ -1690,11 +1705,24 @@ async function showOtaDialog(deviceId) {
     '<option value="'+fw.name+'"'+(i===autoIdx?' selected':'')+'>'+fw.name+' ('+fw.source+', '+(fw.size/1024).toFixed(0)+'KB'+(fw.version?' '+fw.version:'')+')</option>'
   ).join('');
 
+  // Build scanner info display
+  const scanners = node ? (node.scanners || []) : [];
+  let scannerHtml = '';
+  if (scanners.length > 0) {
+    scannerHtml = '<div style="margin-top:4px;padding-top:4px;border-top:1px solid #21262d">';
+    scanners.forEach(function(sc) {
+      scannerHtml += '<div class="metric"><span>'+sc.uart.toUpperCase()+' Scanner</span>' +
+        '<span class="val"><span style="color:#58a6ff">'+sc.board+'</span> <span style="color:#e040fb">v'+sc.ver+'</span></span></div>';
+    });
+    scannerHtml += '</div>';
+  }
+
   body.innerHTML =
     '<div style="margin-bottom:10px">' +
-      '<div class="metric"><span>Current firmware</span><span class="val" style="color:#e040fb">'+currentFw+'</span></div>' +
+      '<div class="metric"><span>Uplink firmware</span><span class="val" style="color:#e040fb">'+currentFw+'</span></div>' +
       '<div class="metric"><span>Board type</span><span class="val" style="color:#58a6ff">'+(boardType||'unknown')+'</span></div>' +
       '<div class="metric"><span>IP</span><span class="val" style="color:#484f58">'+(node?node.ip:'?')+'</span></div>' +
+      scannerHtml +
     '</div>' +
     '<div style="margin-bottom:8px">' +
       '<label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">Firmware</label>' +
@@ -1703,9 +1731,13 @@ async function showOtaDialog(deviceId) {
     '<div style="margin-bottom:12px">' +
       '<label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">Target</label>' +
       '<select id="ota-target" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:6px 8px;border-radius:4px;font-size:12px">' +
-        '<option value="uplink"'+(boardType.startsWith('uplink')?' selected':'')+'>Uplink (self)</option>' +
-        '<option value="ble">Scanner via BLE UART</option>' +
-        '<option value="wifi">Scanner via WiFi UART</option>' +
+        '<option value="uplink"'+(boardType.startsWith('uplink')?' selected':'')+'>Uplink (self) — '+boardType+' v'+currentFw+'</option>' +
+        (scanners.filter(function(s){return s.uart==='ble'}).map(function(s) {
+          return '<option value="ble">BLE Scanner — '+s.board+' v'+s.ver+'</option>';
+        }).join('') || '<option value="ble">BLE Scanner (not detected)</option>') +
+        (scanners.filter(function(s){return s.uart==='wifi'}).map(function(s) {
+          return '<option value="wifi">WiFi Scanner — '+s.board+' v'+s.ver+'</option>';
+        }).join('') || '<option value="wifi">WiFi Scanner (not detected)</option>') +
       '</select>' +
     '</div>' +
     '<button onclick="doOtaPush()" style="background:#238636;color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;width:100%">Flash Firmware</button>' +

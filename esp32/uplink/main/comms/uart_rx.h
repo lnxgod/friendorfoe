@@ -63,6 +63,21 @@ bool uart_rx_is_wifi_scanner_connected(void);
  */
 void uart_rx_send_command(const char *json_cmd);
 
+/** Scanner identity info (received via UART scanner_info message). */
+typedef struct {
+    char version[16];
+    char board[24];     /* firmware catalog name: "scanner-s3-combo" */
+    char chip[12];      /* "esp32s3", "esp32", "esp32c5" */
+    char caps[32];      /* "ble,wifi", "wifi", "ble" */
+    bool received;
+} scanner_info_t;
+
+/** Get scanner info for the BLE scanner (UART slot). */
+const scanner_info_t *uart_rx_get_ble_scanner_info(void);
+
+/** Get scanner info for the WiFi scanner (UART slot). */
+const scanner_info_t *uart_rx_get_wifi_scanner_info(void);
+
 #ifdef __cplusplus
 }
 #endif
