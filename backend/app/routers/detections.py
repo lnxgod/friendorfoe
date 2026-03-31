@@ -793,6 +793,99 @@ async def get_recent_detections(
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# GET /detections/probes/history — persistent probe request history from DB
+# ---------------------------------------------------------------------------
+
+@router.get("/probes/history")
+async def get_probe_history(
+    hours: Annotated[float, Query(ge=0.1, le=720)] = 24.0,
+    device: Annotated[str | None, Query(description="Filter by device MAC (probe_XX:XX:XX:XX:XX:XX)")] = None,
+    ssid: Annotated[str | None, Query(description="Filter by probed SSID")] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return historical probe request data from the database.
+
+    Shows all devices that have probed for WiFi networks, what SSIDs they
+    searched for, how often, and from which sensors. Useful for identifying
+    devices with broken WiFi configs or tracking device movement patterns.
+    """
+    import datetime as dt
+
+    cutoff = datetime.now(timezone.utc) - dt.timedelta(hours=hours)
+
+    query = select(DroneDetection).where(
+        DroneDetection.source == "wifi_probe_request",
+        DroneDetection.received_at >= cutoff,
+    )
+    if device:
+        query = query.where(DroneDetection.drone_id == device)
+    if ssid:
+        query = query.where(DroneDetection.ssid == ssid)
+
+    query = query.order_by(DroneDetection.received_at.desc()).limit(5000)
+
+    result = await db.execute(query)
+    detections = result.scalars().all()
+
+    # Group by device
+    devices: dict[str, dict] = {}
+    all_ssids: dict[str, int] = {}
+
+    for d in detections:
+        did = d.drone_id or "unknown"
+        if did not in devices:
+            devices[did] = {
+                "device": did,
+                "mac": did.replace("probe_", ""),
+                "ssids": {},
+                "sensors": set(),
+                "best_rssi": -999,
+                "total_probes": 0,
+                "first_seen": d.received_at.isoformat() if d.received_at else "",
+                "last_seen": d.received_at.isoformat() if d.received_at else "",
+            }
+
+        dev = devices[did]
+        dev["total_probes"] += 1
+        if d.ssid:
+            dev["ssids"][d.ssid] = dev["ssids"].get(d.ssid, 0) + 1
+            all_ssids[d.ssid] = all_ssids.get(d.ssid, 0) + 1
+        if d.device_id:
+            dev["sensors"].add(d.device_id)
+        if d.rssi and d.rssi > dev["best_rssi"]:
+            dev["best_rssi"] = d.rssi
+        if d.received_at:
+            ts = d.received_at.isoformat()
+            if ts > dev["last_seen"]:
+                dev["last_seen"] = ts
+            if ts < dev["first_seen"]:
+                dev["first_seen"] = ts
+
+    # Build response
+    device_list = []
+    for dev in sorted(devices.values(), key=lambda x: x["total_probes"], reverse=True):
+        dev["sensors"] = sorted(dev["sensors"])
+        dev["sensor_count"] = len(dev["sensors"])
+        dev["ssids"] = [{"ssid": k, "count": v} for k, v in sorted(dev["ssids"].items(), key=lambda x: -x[1])]
+        dev["unique_ssids"] = len(dev["ssids"])
+        if dev["best_rssi"] == -999:
+            dev["best_rssi"] = None
+        device_list.append(dev)
+
+    # Hot SSIDs ranking
+    hot_ssids = [{"ssid": k, "device_count": v} for k, v in sorted(all_ssids.items(), key=lambda x: -x[1])][:30]
+
+    return {
+        "hours_queried": hours,
+        "total_probes": len(detections),
+        "unique_devices": len(device_list),
+        "unique_ssids": len(all_ssids),
+        "devices": device_list,
+        "hot_ssids": hot_ssids,
+    }
+
+
 # GET /detections/probes — WiFi probe request device summary
 # ---------------------------------------------------------------------------
 

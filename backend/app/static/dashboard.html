@@ -179,18 +179,46 @@
 
 <!-- PROBES TAB -->
 <div id="tab-probes" class="tab-content">
-  <div class="grid">
-    <div class="card full probe-accent">
-      <h2>WiFi Probe Requests</h2>
-      <div style="margin-bottom:6px"><label style="font-size:11px;color:#8b949e;cursor:pointer"><input type="checkbox" id="probes-auto-refresh" checked style="margin-right:4px"> Auto-refresh</label></div>
-      <div class="summary-bar" id="probes-summary"></div>
-      <div style="display:grid;grid-template-columns:1fr 240px;gap:10px">
-        <div id="probes-feed"><div class="empty">Waiting for probe data...</div></div>
-        <div style="background:#0d1117;border-radius:4px;padding:8px;align-self:start">
-          <div class="section-title" style="color:#e040fb">Hot SSIDs</div>
-          <div id="probes-hot-ssids"><div class="empty" style="font-size:10px">No data</div></div>
-        </div>
-      </div>
+  <!-- Probe summary cards -->
+  <div class="grid4" style="padding-bottom:0">
+    <div class="card" style="border-left:3px solid #e040fb">
+      <h2 style="color:#e040fb">Total Probes</h2>
+      <div id="probes-stat-total" style="font-size:28px;font-weight:700;font-family:JetBrains Mono,monospace;color:#e040fb">—</div>
+    </div>
+    <div class="card" style="border-left:3px solid #c9d1d9">
+      <h2>Unique Devices</h2>
+      <div id="probes-stat-devices" style="font-size:28px;font-weight:700;font-family:JetBrains Mono,monospace;color:#c9d1d9">—</div>
+    </div>
+    <div class="card" style="border-left:3px solid #58a6ff">
+      <h2>SSIDs Searched</h2>
+      <div id="probes-stat-ssids" style="font-size:28px;font-weight:700;font-family:JetBrains Mono,monospace;color:#58a6ff">—</div>
+    </div>
+    <div class="card" style="border-left:3px solid #f85149">
+      <h2>Drone-Related</h2>
+      <div id="probes-stat-drones" style="font-size:28px;font-weight:700;font-family:JetBrains Mono,monospace;color:#f85149">—</div>
+    </div>
+  </div>
+  <!-- Controls -->
+  <div style="padding:6px 24px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <div style="display:flex;gap:2px;background:#0d1117;border-radius:4px;border:1px solid #30363d;overflow:hidden" id="probes-time-btns">
+      <button onclick="setProbeWindow(1)" style="padding:4px 12px;background:transparent;border:none;color:#8b949e;cursor:pointer;font-size:11px;font-weight:700">1h</button>
+      <button onclick="setProbeWindow(3)" style="padding:4px 12px;background:transparent;border:none;color:#8b949e;cursor:pointer;font-size:11px;font-weight:700">3h</button>
+      <button onclick="setProbeWindow(24)" class="probe-time-active" style="padding:4px 12px;background:#e040fb22;border:none;color:#e040fb;cursor:pointer;font-size:11px;font-weight:700">24h</button>
+      <button onclick="setProbeWindow(168)" style="padding:4px 12px;background:transparent;border:none;color:#8b949e;cursor:pointer;font-size:11px;font-weight:700">7d</button>
+    </div>
+    <label style="font-size:11px;color:#8b949e;cursor:pointer"><input type="checkbox" id="probes-auto-refresh" checked style="margin-right:3px">Auto-refresh</label>
+    <label style="font-size:11px;color:#8b949e;cursor:pointer"><input type="checkbox" id="probes-drone-only" style="margin-right:3px">Drone SSIDs only</label>
+    <span id="probes-status" style="font-size:10px;color:#484f58;margin-left:auto"></span>
+  </div>
+  <!-- Main content: device table + hot SSIDs -->
+  <div style="display:grid;grid-template-columns:1fr 280px;gap:10px;padding:0 24px 12px">
+    <div class="card probe-accent" style="overflow:hidden">
+      <h2>Probing Devices</h2>
+      <div id="probes-feed" style="max-height:500px;overflow-y:auto"><div class="empty">Loading probe history...</div></div>
+    </div>
+    <div class="card" style="background:#0d111788;align-self:start">
+      <h2 style="color:#e040fb">Most Searched Networks</h2>
+      <div id="probes-hot-ssids" style="max-height:500px;overflow-y:auto"><div class="empty" style="font-size:10px">Loading...</div></div>
     </div>
   </div>
 </div>
@@ -895,82 +923,115 @@ async function refreshBLE() {
 const DRONE_SSID_RE = /^(DJI|TELLO|SKYDIO|AUTEL|PARROT|FIMI|HUBSAN|EACHINE|HOLY.?STONE|SYMA|POTENSIC|SNAPTAIN|RUKO|FOF-)/i;
 function isDroneSSID(ssid) { return DRONE_SSID_RE.test(ssid || ''); }
 
+let probeHours = 24;
+function setProbeWindow(h) {
+  probeHours = h;
+  document.querySelectorAll('#probes-time-btns button').forEach(b => {
+    b.style.background = 'transparent'; b.style.color = '#8b949e';
+  });
+  event.target.style.background = '#e040fb22'; event.target.style.color = '#e040fb';
+  refreshProbes();
+}
+
 async function refreshProbes() {
   if (!document.getElementById('probes-auto-refresh').checked) return;
-  const data = await f(API + '/detections/probes');
+  const droneOnly = document.getElementById('probes-drone-only').checked;
+  const url = API + '/detections/probes/history?hours=' + probeHours + (droneOnly ? '&drone_only=true' : '');
+  const data = await f(url, 8000);
   const feed = document.getElementById('probes-feed');
-  const sum = document.getElementById('probes-summary');
   const hotDiv = document.getElementById('probes-hot-ssids');
+  const statusEl = document.getElementById('probes-status');
 
-  if (!data || !data.devices) {
-    feed.innerHTML = '<div class="empty">No probe data available</div>';
-    sum.innerHTML = '';
-    hotDiv.innerHTML = '<div class="empty" style="font-size:10px">No data</div>';
+  if (!data) {
+    feed.innerHTML = '<div class="empty">Failed to load probe data</div>';
     return;
   }
 
-  const devices = data.devices;
-  const droneDevices = devices.filter(d => d.classification === 'likely_drone');
-  // Collect all unique probed SSIDs
-  const allSSIDs = new Set();
-  devices.forEach(d => (d.probed_ssids || []).forEach(s => allSSIDs.add(s)));
+  // Summary cards
+  document.getElementById('probes-stat-total').textContent = data.total_probes || 0;
+  document.getElementById('probes-stat-devices').textContent = data.unique_devices || 0;
+  document.getElementById('probes-stat-ssids').textContent = data.unique_ssids || 0;
 
-  // Summary bar
-  sum.innerHTML =
-    '<div class="sb-item"><span style="color:#e040fb">Probing:</span> <span class="sb-val" style="color:#e040fb">' + devices.length + '</span></div>' +
-    '<div class="sb-item">Drone-related: <span class="sb-val val ' + (droneDevices.length > 0 ? 'warn' : '') + '">' + droneDevices.length + '</span></div>' +
-    '<div class="sb-item">Unique SSIDs: <span class="sb-val">' + allSSIDs.size + '</span></div>';
+  const devices = data.devices || [];
+  const droneCount = devices.filter(d => {
+    const ssids = (d.ssids || []).map(s => s.ssid);
+    return ssids.some(s => isDroneSSID(s));
+  }).length;
+  document.getElementById('probes-stat-drones').textContent = droneCount;
 
-  // Main table
+  statusEl.textContent = 'Last ' + probeHours + 'h — ' + devices.length + ' devices — updated ' + new Date().toLocaleTimeString();
+
+  // Device table with expandable SSID details
   if (devices.length > 0) {
-    feed.innerHTML = '<table><tr><th>Device MAC</th><th>Probed SSIDs</th><th>Count</th><th>Best RSSI</th><th>Classification</th><th>Sensors</th><th>Age</th></tr>' +
-      devices.map(d => {
-        const isDrone = d.classification === 'likely_drone';
-        const rowStyle = isDrone ? ' style="background:#f8514908"' : '';
-        const ssidHtml = (d.probed_ssids || []).map(s => {
-          const droneMatch = isDroneSSID(s);
-          return '<span class="' + (droneMatch ? 'probe-ssid-drone' : 'probe-ssid-generic') + '">' + s + '</span>';
-        }).join(', ') || '-';
-        const sensorList = (d.sensors || []).map(sensorLabel).join(', ') || '-';
-        return '<tr' + rowStyle + '>' +
-          '<td style="color:#e040fb">' + (d.mac || '-') + '</td>' +
-          '<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + ssidHtml + '</td>' +
-          '<td>' + (d.probe_count || 0) + '</td>' +
-          '<td><span class="rssi ' + rssiClass(d.best_rssi) + '">' + (d.best_rssi || '-') + '</span></td>' +
-          '<td>' + clsBadge(d.classification) + '</td>' +
-          '<td><span class="val ' + ((d.sensor_count || 0) >= 2 ? 'ok' : '') + '">' + (d.sensor_count || 0) + '</span> <span style="color:#484f58;font-size:9px">' + sensorList + '</span></td>' +
-          '<td>' + (d.age_s != null ? (d.age_s < 5 ? 'now' : d.age_s < 60 ? Math.round(d.age_s) + 's' : Math.round(d.age_s/60) + 'm') : '-') + '</td></tr>';
+    feed.innerHTML = '<table><tr><th>Device MAC</th><th>SSIDs Probed</th><th>Probes</th><th>RSSI</th><th>Sensors</th><th>First Seen</th><th>Last Seen</th></tr>' +
+      devices.map((d, idx) => {
+        const ssids = d.ssids || [];
+        const hasDrone = ssids.some(s => isDroneSSID(s.ssid));
+        const rowBg = hasDrone ? 'background:#f8514910;' : '';
+
+        // Main row
+        let html = '<tr style="cursor:pointer;' + rowBg + '" onclick="toggleProbeDetail(\'pd' + idx + '\')">' +
+          '<td style="color:#e040fb;font-weight:700">' + (d.mac || '?') + '</td>' +
+          '<td>' + ssids.slice(0, 3).map(s => {
+            const dr = isDroneSSID(s.ssid);
+            return '<span style="color:' + (dr ? '#f85149' : '#c9d1d9') + ';font-size:10px">' + s.ssid + '</span>';
+          }).join(', ') + (ssids.length > 3 ? ' <span style="color:#484f58">+' + (ssids.length - 3) + '</span>' : '') + '</td>' +
+          '<td style="color:#e040fb;font-weight:700">' + (d.total_probes || 0) + '</td>' +
+          '<td><span class="rssi ' + rssiClass(d.best_rssi) + '">' + (d.best_rssi || '?') + '</span></td>' +
+          '<td><span class="val ' + (d.sensor_count >= 2 ? 'ok' : '') + '">' + d.sensor_count + '</span></td>' +
+          '<td style="color:#484f58;font-size:10px">' + (d.first_seen ? new Date(d.first_seen).toLocaleTimeString() : '?') + '</td>' +
+          '<td style="font-size:10px">' + (d.last_seen ? new Date(d.last_seen).toLocaleTimeString() : '?') + '</td></tr>';
+
+        // Expandable detail row (hidden by default)
+        html += '<tr id="pd' + idx + '" style="display:none;background:#0d111788">' +
+          '<td colspan="7" style="padding:8px 12px">' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
+          '<div><div style="font-size:10px;color:#e040fb;font-weight:700;margin-bottom:4px">PROBED SSIDS</div>' +
+          ssids.map(s => {
+            const dr = isDroneSSID(s.ssid);
+            return '<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #21262d">' +
+              '<span style="color:' + (dr ? '#f85149' : '#c9d1d9') + ';font-size:10px">' + (dr ? '&#x26a0; ' : '') + s.ssid + '</span>' +
+              '<span style="color:#e040fb;font-size:10px;font-weight:700">' + s.count + 'x</span></div>';
+          }).join('') + '</div>' +
+          '<div><div style="font-size:10px;color:#8b949e;font-weight:700;margin-bottom:4px">DETAILS</div>' +
+          '<div class="metric"><span>Sensors</span><span class="val">' + (d.sensors || []).join(', ') + '</span></div>' +
+          '<div class="metric"><span>Unique SSIDs</span><span class="val">' + d.unique_ssids + '</span></div>' +
+          '<div class="metric"><span>Total probes</span><span class="val probe-col">' + d.total_probes + '</span></div>' +
+          '</div></div></td></tr>';
+
+        return html;
       }).join('') + '</table>';
   } else {
-    feed.innerHTML = '<div class="empty">No probing devices detected</div>';
+    feed.innerHTML = '<div class="empty">No probing devices found in last ' + probeHours + ' hours</div>';
   }
 
-  // Hot SSIDs panel — count frequency of each probed SSID
-  const ssidFreq = {};
-  devices.forEach(d => {
-    (d.probed_ssids || []).forEach(s => {
-      ssidFreq[s] = (ssidFreq[s] || 0) + 1;
-    });
-  });
-  const sorted = Object.entries(ssidFreq).sort((a, b) => b[1] - a[1]);
-  const maxFreq = sorted.length > 0 ? sorted[0][1] : 1;
+  // Hot SSIDs panel from history data
+  const hotSsids = data.hot_ssids || [];
+  const maxCount = hotSsids.length > 0 ? hotSsids[0].device_count : 1;
 
-  if (sorted.length > 0) {
-    hotDiv.innerHTML = sorted.slice(0, 15).map(([ssid, count]) => {
-      const droneMatch = isDroneSSID(ssid);
-      const barColor = droneMatch ? '#f85149' : '#e040fb';
-      const textColor = droneMatch ? '#f85149' : '#c9d1d9';
-      const pct = Math.round(count / maxFreq * 100);
-      return '<div class="hot-ssid-bar">' +
-        '<span style="flex:1;color:' + textColor + ';font-family:JetBrains Mono,monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + ssid + '">' +
-          (droneMatch ? '&#x26a0; ' : '') + ssid + '</span>' +
-        '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:' + barColor + ';font-weight:700;min-width:20px;text-align:right">' + count + '</span>' +
-        '<div style="width:40px"><div class="hot-ssid-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>' +
-      '</div>';
+  if (hotSsids.length > 0) {
+    hotDiv.innerHTML = hotSsids.slice(0, 20).map(s => {
+      const dr = isDroneSSID(s.ssid);
+      const barColor = dr ? '#f85149' : '#e040fb';
+      const pct = Math.max(5, Math.round(s.device_count / maxCount * 100));
+      return '<div style="padding:4px 0;border-bottom:1px solid #21262d">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">' +
+          '<span style="color:' + (dr ? '#f85149' : '#c9d1d9') + ';font-family:JetBrains Mono,monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1" title="' + s.ssid + '">' +
+            (dr ? '&#x26a0; ' : '') + s.ssid + '</span>' +
+          '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:' + barColor + ';font-weight:700;min-width:30px;text-align:right">' + s.device_count + '</span>' +
+        '</div>' +
+        '<div style="background:#21262d;border-radius:2px;height:3px;overflow:hidden">' +
+          '<div style="width:' + pct + '%;height:100%;background:' + barColor + ';border-radius:2px;transition:width 0.3s"></div>' +
+        '</div></div>';
     }).join('');
   } else {
-    hotDiv.innerHTML = '<div class="empty" style="font-size:10px">No SSIDs yet</div>';
+    hotDiv.innerHTML = '<div class="empty" style="font-size:10px">No SSIDs in this window</div>';
   }
+}
+
+function toggleProbeDetail(id) {
+  const row = document.getElementById(id);
+  if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
 }
 
 // ── Main refresh ────────────────────────────────────────────────────────
