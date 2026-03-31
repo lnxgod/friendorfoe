@@ -349,6 +349,8 @@ static void uart_cmd_listener_task(void *arg)
                             ESP_LOGI(TAG, "WiFi LOCK-ON cancel");
                             wifi_scanner_lockon_cancel();
 
+
+#ifndef WIFI_SCANNER_ONLY
                         } else if (type && strcmp(type, "ble_lockon") == 0) {
                             cJSON *mac_j = cJSON_GetObjectItem(root, "mac");
                             cJSON *dur = cJSON_GetObjectItem(root, "dur");
@@ -368,6 +370,7 @@ static void uart_cmd_listener_task(void *arg)
                             ESP_LOGI(TAG, "BLE FOCUS cancel");
                             extern void ble_rid_lockon_cancel(void);
                             ble_rid_lockon_cancel();
+#endif /* !WIFI_SCANNER_ONLY */
 
                         } else if (type && strcmp(type, MSG_TYPE_OTA_BEGIN) == 0) {
                             /* UART OTA: receive firmware from uplink */
