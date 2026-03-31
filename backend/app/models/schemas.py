@@ -147,6 +147,7 @@ class DroneDetectionBatch(BaseModel):
     device_alt: float | None = Field(None, description="Sensor device altitude in meters")
     timestamp: int = Field(..., description="Batch timestamp (epoch seconds)")
     firmware_version: str | None = Field(None, description="Firmware version (e.g. 0.35.0)")
+    board_type: str | None = Field(None, description="Board type (uplink-esp32, uplink-c3)")
     detections: list[DroneDetectionItem] = Field(
         ..., description="List of drone detections in this batch"
     )
