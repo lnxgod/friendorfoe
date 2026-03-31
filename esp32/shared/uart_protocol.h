@@ -61,6 +61,21 @@ extern "C" {
 #define MSG_TYPE_BLE_LOCKON         "ble_lockon"
 #define MSG_TYPE_BLE_LOCKON_CANCEL  "ble_lockon_cancel"
 
+/* OTA relay messages (uplink → scanner) */
+#define MSG_TYPE_OTA_BEGIN          "ota_begin"
+#define MSG_TYPE_OTA_END            "ota_end"
+#define MSG_TYPE_OTA_ABORT          "ota_abort"
+/* OTA relay messages (scanner → uplink) */
+#define MSG_TYPE_OTA_ACK            "ota_ack"
+#define MSG_TYPE_OTA_PROGRESS       "ota_progress"
+#define MSG_TYPE_OTA_DONE           "ota_done"
+#define MSG_TYPE_OTA_ERROR          "ota_error"
+
+/* Binary OTA chunk header: [0xF0][seq_hi][seq_lo][len_hi][len_lo] + data */
+#define OTA_CHUNK_MAGIC             0xF0
+#define OTA_CHUNK_MAX_DATA          1024
+#define OTA_ACK_INTERVAL_CHUNKS     16   /* ACK every 16 chunks = 16KB */
+
 /* ── JSON key names (short to save bandwidth at 921600 baud) ─────────────── */
 
 #define JSON_KEY_TYPE               "type"

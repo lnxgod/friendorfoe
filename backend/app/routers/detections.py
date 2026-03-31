@@ -156,6 +156,7 @@ async def ingest_drone_detections(
         "lat": batch.device_lat,
         "lon": batch.device_lon,
         "ip": source_ip,
+        "firmware_version": batch.firmware_version or _node_heartbeats.get(batch.device_id, {}).get("firmware_version"),
     }
 
     # Resolve sensor position (fixed node overrides GPS)
@@ -280,8 +281,9 @@ async def ingest_drone_detections(
         _drone_tracker.on_detection(
             drone_id=det.drone_id, source=det.source,
             confidence=det.confidence, rssi=det.rssi or 0,
-            device_id=batch.device_id, ssid=det.ssid or "",
-            bssid=det.bssid or "", channel=det.channel or 0,
+            device_id=batch.device_id, classification=classification,
+            ssid=det.ssid or "", bssid=det.bssid or "",
+            channel=det.channel or 0,
             drone_lat=det.latitude or 0, drone_lon=det.longitude or 0,
             drone_alt=det.altitude_m or 0,
         )

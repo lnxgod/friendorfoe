@@ -22,6 +22,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_ota_ops.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -107,6 +108,12 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     cJSON_AddNumberToObject(root, "device_lon", gps_pos.longitude);
     cJSON_AddNumberToObject(root, "device_alt", gps_pos.altitude_m);
     cJSON_AddNumberToObject(root, "timestamp", (double)(ts_ms / 1000));
+
+    /* Firmware version from esp_app_desc (set via PROJECT_VER in CMakeLists) */
+    const esp_app_desc_t *app = esp_app_get_description();
+    if (app) {
+        cJSON_AddStringToObject(root, "firmware_version", app->version);
+    }
 
     cJSON *detections = cJSON_AddArrayToObject(root, "detections");
     if (!detections) {

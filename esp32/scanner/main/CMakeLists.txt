@@ -9,11 +9,12 @@ set(SRCS
     "detection/open_drone_id_parser.c"
     "detection/bayesian_fusion.c"
     "comms/uart_tx.c"
+    "comms/uart_ota.c"
     "hw/led_status.c"
     "hw/oled_display.c"
 )
 
-set(REQUIRES esp_wifi driver nvs_flash esp_timer json esp_event esp_netif)
+set(REQUIRES esp_wifi driver nvs_flash esp_timer json esp_event esp_netif app_update esp_partition)
 
 # BLE sources only when not WiFi-only mode
 if(NOT WIFI_SCANNER_ONLY)

@@ -284,6 +284,8 @@ static void display_task(void *arg)
 #ifndef BLE_SCANNER_ONLY
 #include "driver/uart.h"
 #include "cJSON.h"
+#include "comms/uart_ota.h"
+#include "esp_ota_ops.h"
 
 static void uart_cmd_listener_task(void *arg)
 {
@@ -291,11 +293,34 @@ static void uart_cmd_listener_task(void *arg)
     char line[256];
     int line_pos = 0;
 
-    ESP_LOGI(TAG, "UART cmd listener on UART1 (receives lock-on from uplink)");
+    ESP_LOGI(TAG, "UART cmd listener on UART1 (commands + OTA from uplink)");
+
+    /* Send version on boot */
+    {
+        const esp_app_desc_t *app = esp_app_get_description();
+        char ver_msg[96];
+        snprintf(ver_msg, sizeof(ver_msg),
+                 "{\"type\":\"status\",\"ver\":\"%s\",\"board\":\""
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+                 "s3"
+#elif defined(CONFIG_IDF_TARGET_ESP32C5)
+                 "c5"
+#else
+                 "esp32"
+#endif
+                 "\"}\n", app ? app->version : "?");
+        uart_write_bytes(UART_NUM_1, ver_msg, strlen(ver_msg));
+    }
 
     while (1) {
         int len = uart_read_bytes(UART_NUM_1, buf, sizeof(buf), pdMS_TO_TICKS(500));
         if (len <= 0) continue;
+
+        /* During OTA: route raw bytes to OTA receiver */
+        if (uart_ota_is_active()) {
+            uart_ota_process_data(buf, len);
+            continue;
+        }
 
         for (int i = 0; i < len; i++) {
             if (buf[i] == '\n') {
@@ -325,12 +350,10 @@ static void uart_cmd_listener_task(void *arg)
                             wifi_scanner_lockon_cancel();
 
                         } else if (type && strcmp(type, "ble_lockon") == 0) {
-                            /* BLE focus mode: prioritize a specific MAC */
                             cJSON *mac_j = cJSON_GetObjectItem(root, "mac");
                             cJSON *dur = cJSON_GetObjectItem(root, "dur");
                             int duration = dur ? dur->valueint : 45;
                             if (mac_j && mac_j->valuestring && strlen(mac_j->valuestring) >= 17) {
-                                /* Parse "AA:BB:CC:DD:EE:FF" → 6 bytes */
                                 uint8_t mac[6];
                                 unsigned int m[6];
                                 if (sscanf(mac_j->valuestring, "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -345,6 +368,21 @@ static void uart_cmd_listener_task(void *arg)
                             ESP_LOGI(TAG, "BLE FOCUS cancel");
                             extern void ble_rid_lockon_cancel(void);
                             ble_rid_lockon_cancel();
+
+                        } else if (type && strcmp(type, MSG_TYPE_OTA_BEGIN) == 0) {
+                            /* UART OTA: receive firmware from uplink */
+                            cJSON *sz = cJSON_GetObjectItem(root, "size");
+                            uint32_t total = sz ? (uint32_t)sz->valueint : 0;
+                            if (total > 0) {
+                                ESP_LOGW(TAG, "UART OTA begin: %lu bytes", (unsigned long)total);
+                                uart_ota_begin(total, UART_NUM_1);
+                            }
+                        } else if (type && strcmp(type, MSG_TYPE_OTA_END) == 0) {
+                            ESP_LOGI(TAG, "UART OTA finalize");
+                            uart_ota_finalize();
+                        } else if (type && strcmp(type, MSG_TYPE_OTA_ABORT) == 0) {
+                            ESP_LOGW(TAG, "UART OTA abort");
+                            uart_ota_abort();
                         }
 
                         cJSON_Delete(root);

@@ -54,12 +54,20 @@ class DroneTracker:
         self._max_history = 100
 
     def on_detection(self, drone_id: str, source: str, confidence: float,
-                     rssi: int, device_id: str, ssid: str = "",
-                     bssid: str = "", channel: int = 0,
+                     rssi: int, device_id: str, classification: str = "",
+                     ssid: str = "", bssid: str = "", channel: int = 0,
                      drone_lat: float = 0, drone_lon: float = 0,
                      drone_alt: float = 0, **kwargs):
-        """Called on every detection during ingestion. Manages tracking lifecycle."""
+        """Called on every detection during ingestion. Manages tracking lifecycle.
+
+        Only triggers on detections classified as confirmed_drone from RID sources.
+        Regular BLE devices (phones, trackers) are ignored even though their
+        source is ble_rid.
+        """
         if source not in CONFIRMED_DRONE_SOURCES:
+            return
+        # Must be classified as an actual drone, not a phone/tracker
+        if classification not in ("confirmed_drone", "likely_drone", "test_drone"):
             return
 
         now = time.time()
