@@ -1,13 +1,13 @@
 {
   "name": "Friend or Foe WiFi Scanner (ESP32)",
-  "version": "0.32.0-beta",
+  "version": "0.35.1",
   "builds": [
     {
       "chipFamily": "ESP32",
       "parts": [
         { "path": "firmware/scanner-esp32/bootloader.bin", "offset": 4096 },
         { "path": "firmware/scanner-esp32/partition-table.bin", "offset": 32768 },
-        { "path": "firmware/scanner-esp32/firmware.bin", "offset": 65536 }
+        { "path": "firmware/scanner-esp32/firmware.bin", "offset": 131072 }
       ]
     }
   ]
