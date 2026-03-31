@@ -44,3 +44,5 @@ esp32/**/local_coords.h
 
 # Backend local dashboard
 backend/app/static/
+backend/friendorfoe.db
+*.png

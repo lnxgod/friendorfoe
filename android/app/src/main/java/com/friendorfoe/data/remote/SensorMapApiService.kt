@@ -53,7 +53,8 @@ data class LocatedDroneDto(
     @SerializedName("operator_lon") val operatorLon: Double? = null,
     @SerializedName("operator_id") val operatorId: String? = null,
     val observations: List<SensorObservationDto> = emptyList(),
-    val classification: String? = null
+    val classification: String? = null,
+    @SerializedName("probed_ssids") val probedSsids: List<String>? = null
 )
 
 data class SensorObservationDto(
@@ -63,7 +64,8 @@ data class SensorObservationDto(
     val rssi: Int? = null,
     @SerializedName("estimated_distance_m") val estimatedDistanceM: Double? = null,
     val confidence: Float = 0f,
-    val source: String = ""
+    val source: String = "",
+    val ssid: String? = null
 )
 
 data class SensorDto(

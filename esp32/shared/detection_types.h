@@ -20,6 +20,7 @@ extern "C" {
 #define DETECTION_SRC_WIFI_DJI_IE   2   /* DJI vendor-specific IE in beacon */
 #define DETECTION_SRC_WIFI_BEACON   3   /* WiFi Beacon Remote ID (NAN/Action) */
 #define DETECTION_SRC_WIFI_OUI      4   /* Known drone manufacturer OUI */
+#define DETECTION_SRC_WIFI_PROBE_REQUEST 5  /* WiFi probe request (device searching for SSID) */
 
 /* ── Full drone detection state ──────────────────────────────────────────── */
 

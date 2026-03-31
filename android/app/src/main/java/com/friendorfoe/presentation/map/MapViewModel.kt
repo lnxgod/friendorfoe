@@ -126,6 +126,7 @@ class MapViewModel @Inject constructor(
                     _sensorDrones.value = response.drones.filter { drone ->
                         drone.classification in DRONE_CLASSIFICATIONS ||
                         drone.droneId.startsWith("rid_") ||
+                        drone.droneId.startsWith("probe_") ||
                         drone.droneId.startsWith("FOF") ||
                         drone.droneId.startsWith("FoF") ||
                         drone.positionSource == "gps"  // Remote ID with GPS = real drone

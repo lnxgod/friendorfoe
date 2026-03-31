@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     cache_ttl_seconds: int = 10
 
-    # PostgreSQL
-    database_url: str = "postgresql+asyncpg://friendorfoe:friendorfoe@localhost:5432/friendorfoe"
+    # Database (SQLite default, override with DATABASE_URL env var for PostgreSQL)
+    database_url: str = "sqlite+aiosqlite:///friendorfoe.db"
 
     # ADS-B data sources (fallback chain)
     adsbfi_base_url: str = "https://opendata.adsb.fi/api"

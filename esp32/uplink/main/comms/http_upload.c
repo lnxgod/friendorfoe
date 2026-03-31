@@ -52,12 +52,13 @@ static esp_http_client_handle_t s_http_client = NULL;
 static const char *source_to_string(uint8_t src)
 {
     switch (src) {
-        case DETECTION_SRC_BLE_RID:     return "ble_rid";
-        case DETECTION_SRC_WIFI_SSID:   return "wifi_ssid";
-        case DETECTION_SRC_WIFI_DJI_IE: return "wifi_dji_ie";
-        case DETECTION_SRC_WIFI_BEACON: return "wifi_beacon_rid";
-        case DETECTION_SRC_WIFI_OUI:    return "wifi_oui";
-        default:                        return "unknown";
+        case DETECTION_SRC_BLE_RID:            return "ble_rid";
+        case DETECTION_SRC_WIFI_SSID:          return "wifi_ssid";
+        case DETECTION_SRC_WIFI_DJI_IE:        return "wifi_dji_ie";
+        case DETECTION_SRC_WIFI_BEACON:        return "wifi_beacon_rid";
+        case DETECTION_SRC_WIFI_OUI:           return "wifi_oui";
+        case DETECTION_SRC_WIFI_PROBE_REQUEST: return "wifi_probe_request";
+        default:                               return "unknown";
     }
 }
 
@@ -155,6 +156,14 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
         }
         if (d->bssid[0] != '\0') {
             cJSON_AddStringToObject(det, "bssid", d->bssid);
+        }
+
+        /* Probe request: include probed_ssids array for backend */
+        if (d->source == DETECTION_SRC_WIFI_PROBE_REQUEST && d->ssid[0] != '\0') {
+            cJSON *probed = cJSON_AddArrayToObject(det, "probed_ssids");
+            if (probed) {
+                cJSON_AddItemToArray(probed, cJSON_CreateString(d->ssid));
+            }
         }
 
         /* BLE fingerprinting fields */

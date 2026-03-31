@@ -492,6 +492,153 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
     }
 }
 
+/* ── Probe request rate-limit cache ───────────────────────────────────────── */
+
+#define PROBE_CACHE_SLOTS       16
+#define PROBE_RATE_LIMIT_MS     5000    /* 1 detection per MAC+SSID pair per 5s */
+
+typedef struct {
+    uint8_t  mac[6];
+    char     ssid[33];
+    int64_t  last_seen_ms;
+} probe_cache_entry_t;
+
+static probe_cache_entry_t s_probe_cache[PROBE_CACHE_SLOTS];
+static int s_probe_cache_idx = 0;  /* circular write index */
+
+/**
+ * Check if a probe from this MAC+SSID was recently seen (within 5s).
+ * If not, record it and return true (allow). If yes, return false (suppress).
+ */
+static bool probe_rate_limit_allow(const uint8_t *mac, const char *ssid, int64_t ts_ms)
+{
+    /* Search for existing entry */
+    for (int i = 0; i < PROBE_CACHE_SLOTS; i++) {
+        if (memcmp(s_probe_cache[i].mac, mac, 6) == 0 &&
+            strcmp(s_probe_cache[i].ssid, ssid) == 0) {
+            if ((ts_ms - s_probe_cache[i].last_seen_ms) < PROBE_RATE_LIMIT_MS) {
+                return false;  /* rate-limited */
+            }
+            /* Expired — update timestamp and allow */
+            s_probe_cache[i].last_seen_ms = ts_ms;
+            return true;
+        }
+    }
+
+    /* Not found — insert at circular index */
+    probe_cache_entry_t *slot = &s_probe_cache[s_probe_cache_idx];
+    memcpy(slot->mac, mac, 6);
+    strncpy(slot->ssid, ssid, sizeof(slot->ssid) - 1);
+    slot->ssid[sizeof(slot->ssid) - 1] = '\0';
+    slot->last_seen_ms = ts_ms;
+    s_probe_cache_idx = (s_probe_cache_idx + 1) % PROBE_CACHE_SLOTS;
+    return true;
+}
+
+/* ── Probe request frame parser ──────────────────────────────────────────── */
+
+/**
+ * Process a WiFi probe request frame.
+ *
+ * Probe request layout (NO 12-byte fixed params unlike beacons):
+ *   [0-1]   Frame Control (0x40 = probe request)
+ *   [2-3]   Duration
+ *   [4-9]   Destination Address (broadcast)
+ *   [10-15] Source Address (transmitter = probing device)
+ *   [16-21] BSSID (broadcast or target)
+ *   [22-23] Sequence Control
+ *   [24+]   Tagged Parameters (IEs) — SSID is typically the first IE
+ */
+static void process_probe_request(const uint8_t *frame, int frame_len,
+                                  int8_t rssi, uint16_t channel)
+{
+    /* Minimum: 24-byte header + at least 2-byte IE header */
+    if (frame_len < 26) {
+        return;
+    }
+
+    /* Source MAC (transmitter address) at bytes 10-15 */
+    const uint8_t *src_mac = &frame[10];
+
+    /* Parse IEs starting at byte 24 (right after 802.11 header, NO fixed params) */
+    char ssid[33] = {0};
+    int offset = 24;  /* BEACON_HEADER_LEN, but no fixed params */
+
+    while (offset + 2 <= frame_len) {
+        uint8_t tag_id  = frame[offset];
+        uint8_t tag_len = frame[offset + 1];
+        int tag_data_offset = offset + 2;
+
+        if (tag_data_offset + tag_len > frame_len) {
+            break;  /* truncated IE */
+        }
+
+        if (tag_id == IE_TAG_SSID && tag_len > 0 && tag_len <= 32) {
+            memcpy(ssid, &frame[tag_data_offset], tag_len);
+            ssid[tag_len] = '\0';
+            break;  /* SSID found, no need to parse further */
+        }
+
+        offset = tag_data_offset + tag_len;
+    }
+
+    /* Skip broadcast probes (empty SSID / wildcard) */
+    if (ssid[0] == '\0') {
+        return;
+    }
+
+    /* Rate-limit: 1 per MAC+SSID pair per 5 seconds */
+    int64_t ts = now_ms();
+    if (!probe_rate_limit_allow(src_mac, ssid, ts)) {
+        return;
+    }
+
+    /* Check SSID against drone patterns */
+    const drone_ssid_pattern_t *pattern = wifi_ssid_match(ssid);
+    bool soft = (!pattern && wifi_ssid_match_soft(ssid));
+
+    float conf;
+    const char *mfr;
+    if (pattern) {
+        conf = 0.50f;
+        mfr = pattern->manufacturer;
+    } else if (soft) {
+        conf = 0.15f;
+        mfr = "Drone Likely";
+    } else {
+        conf = 0.05f;
+        mfr = "Unknown";
+    }
+
+    /* Build detection */
+    drone_detection_t det;
+    init_detection(&det, src_mac, rssi, ssid);
+    det.source = DETECTION_SRC_WIFI_PROBE_REQUEST;
+    det.confidence = conf;
+    det.freq_mhz = (channel <= 13) ? (2407 + channel * 5) : (5000 + channel * 5);
+
+    strncpy(det.manufacturer, mfr, sizeof(det.manufacturer) - 1);
+
+    /* drone_id format: "probe_XX:XX:XX:XX:XX:XX" */
+    snprintf(det.drone_id, sizeof(det.drone_id),
+             "probe_%02X:%02X:%02X:%02X:%02X:%02X",
+             src_mac[0], src_mac[1], src_mac[2],
+             src_mac[3], src_mac[4], src_mac[5]);
+
+    if (pattern) {
+        add_channel_heat(channel, 4);  /* Drone SSID probe = medium heat */
+    } else if (soft) {
+        add_channel_heat(channel, 2);  /* Soft match probe = low heat */
+    }
+
+    ESP_LOGI(TAG, "Probe req: MAC=%s SSID=\"%s\" RSSI=%d conf=%.2f",
+             det.bssid, ssid, rssi, conf);
+
+    if (s_detection_queue) {
+        xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
+    }
+}
+
 /* ── Promiscuous mode callback ─────────────────────────────────────────────── */
 
 /**
@@ -542,7 +689,13 @@ static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     }
     s_beacon_frames++;
 
-    process_beacon_frame(frame, frame_len, rssi);
+    if (frame_ctrl == 0x40) {
+        /* Probe requests have NO 12-byte fixed params -- use dedicated parser */
+        process_probe_request(frame, frame_len, rssi, s_current_channel);
+    } else {
+        /* Beacons and probe responses share the same frame layout */
+        process_beacon_frame(frame, frame_len, rssi);
+    }
 }
 
 /* ── Affine channel hopping (sensor diversity) ─────────────────────────────── */

@@ -26,6 +26,14 @@
 #include <stdlib.h>
 #include <math.h>
 
+/* Weak stub for NimBLE linker issue on plain ESP32 — ble_hs_resolv.c
+ * references ble_sm_alg_encrypt but the SM object doesn't always link.
+ * Weak attribute means it's only used if the real one isn't found. */
+int __attribute__((weak)) ble_sm_alg_encrypt(const void *k, const void *d, void *out) {
+    (void)k; (void)d; (void)out;
+    return -1;
+}
+
 /* Include local coordinate overrides if available */
 #if __has_include("sim/local_coords.h")
 #include "sim/local_coords.h"
