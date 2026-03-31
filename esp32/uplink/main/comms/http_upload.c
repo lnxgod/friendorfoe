@@ -109,11 +109,16 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     cJSON_AddNumberToObject(root, "device_alt", gps_pos.altitude_m);
     cJSON_AddNumberToObject(root, "timestamp", (double)(ts_ms / 1000));
 
-    /* Firmware version from esp_app_desc (set via PROJECT_VER in CMakeLists) */
+    /* Firmware version + board type */
     const esp_app_desc_t *app = esp_app_get_description();
     if (app) {
         cJSON_AddStringToObject(root, "firmware_version", app->version);
     }
+#ifdef UPLINK_ESP32
+    cJSON_AddStringToObject(root, "board_type", "uplink-esp32");
+#else
+    cJSON_AddStringToObject(root, "board_type", "uplink-c3");
+#endif
 
     cJSON *detections = cJSON_AddArrayToObject(root, "detections");
     if (!detections) {

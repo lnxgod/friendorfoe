@@ -395,7 +395,18 @@
   </div>
 </div>
 
-<div class="footer" id="footer">auto-refresh 3s</div>
+<!-- OTA Modal Overlay (lives outside tab content, never destroyed by refresh) -->
+<div id="ota-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:#00000088;z-index:9999;display:none;align-items:center;justify-content:center">
+  <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;max-width:500px;width:90%;box-shadow:0 8px 32px #000">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-size:14px;font-weight:700;color:#58a6ff" id="ota-modal-title">OTA Update</div>
+      <button onclick="closeOtaModal()" style="background:none;border:none;color:#8b949e;font-size:18px;cursor:pointer">&times;</button>
+    </div>
+    <div id="ota-modal-body"></div>
+  </div>
+</div>
+
+<div class="footer" id="footer">auto-refresh 5s</div>
 
 <script>
 const API = window.location.origin;
@@ -1399,11 +1410,8 @@ async function refresh() {
     refreshAnomalies();
     refreshDetections();
 
-    // NODES TAB — skip rebuild if user is interacting
-    if (pausedFeeds.has('nodes')) {
-      document.getElementById('footer').textContent=new Date().toLocaleTimeString()+' | #'+refreshN;
-      return;
-    }
+    // NODES TAB — skip rebuild if user is interacting (but don't exit refresh)
+    if (!pausedFeeds.has('nodes')) {
     const gs=document.getElementById('gps-summary');
     const gpsSet = nodeList.filter(n => n.lat != 0 || n.lon != 0);
     gs.innerHTML = '<table><tr><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Name</th><th>Status</th><th onclick="sortTable(this)">Firmware</th><th>Latitude</th><th>Longitude</th><th onclick="sortTable(this)">IP</th><th onclick="sortTable(this)">Last Seen</th><th onclick="sortTable(this)">Batches</th><th>OTA</th></tr>' +
@@ -1451,6 +1459,7 @@ async function refresh() {
         '</div>';
       }).join('');
     } else { nl.innerHTML='<div class="empty">No nodes have reported in yet</div>'; }
+    } // end if (!pausedFeeds.has('nodes'))
 
     document.getElementById('footer').textContent=new Date().toLocaleTimeString()+' | #'+refreshN;
   } catch(e) {
@@ -1635,42 +1644,81 @@ async function toggleSensorDetail(deviceId) {
   el.innerHTML = html;
 }
 
-// ── OTA Dialog ────────────────────────────────────────────────────────
-async function showOtaDialog(deviceId) {
-  pausedFeeds.add('nodes');  // Pause refresh while OTA dialog is open
-  const catalog = await f(API+'/nodes/firmware/catalog', 5000);
-  if (!catalog || !catalog.firmware) { alert('Failed to load firmware catalog'); return; }
-  const available = catalog.firmware.filter(fw => fw.available);
-  if (available.length === 0) { alert('No firmware available. Upload one or check GitHub releases.'); return; }
+// ── OTA Modal ─────────────────────────────────────────────────────────
+let otaDeviceId = '';
 
-  const options = available.map(fw =>
-    '<option value="'+fw.name+'">'+fw.name+' ('+fw.source+', '+(fw.size/1024).toFixed(0)+'KB'+(fw.version?' v'+fw.version:'')+')</option>'
-  ).join('');
-
-  const el = document.getElementById('sensor-detail-'+deviceId);
-  if (!el) return;
-  el.style.display = 'block';
-  el.innerHTML =
-    '<div style="background:#0d1117;border-radius:6px;padding:10px">' +
-    '<div style="font-size:12px;font-weight:700;color:#1f6feb;margin-bottom:6px">OTA Firmware Update — '+deviceId+'</div>' +
-    '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
-      '<select id="ota-fw-'+deviceId+'" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:11px">'+options+'</select>' +
-      '<select id="ota-target-'+deviceId+'" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:11px">' +
-        '<option value="uplink">Uplink (self)</option>' +
-        '<option value="ble">Scanner (BLE UART)</option>' +
-        '<option value="wifi">Scanner (WiFi UART)</option>' +
-      '</select>' +
-      '<button onclick="doOtaPush(\''+deviceId+'\')" style="background:#238636;color:#fff;border:none;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">Flash</button>' +
-    '</div>' +
-    '<div id="ota-status-'+deviceId+'" style="margin-top:6px;font-size:11px"></div>' +
-    '</div>';
+function closeOtaModal() {
+  document.getElementById('ota-modal').style.display = 'none';
+  pausedFeeds.delete('nodes');
 }
 
-async function doOtaPush(deviceId) {
-  const fw = document.getElementById('ota-fw-'+deviceId).value;
-  const target = document.getElementById('ota-target-'+deviceId).value;
-  const status = document.getElementById('ota-status-'+deviceId);
-  status.innerHTML = '<span style="color:#d29922">Pushing '+fw+' to '+deviceId+' ('+target+')... this takes ~15s</span>';
+async function showOtaDialog(deviceId) {
+  otaDeviceId = deviceId;
+  pausedFeeds.add('nodes');
+
+  const modal = document.getElementById('ota-modal');
+  const body = document.getElementById('ota-modal-body');
+  document.getElementById('ota-modal-title').textContent = 'OTA Update — ' + deviceId;
+  body.innerHTML = '<div style="color:#d29922">Loading firmware catalog...</div>';
+  modal.style.display = 'flex';
+
+  // Get node info for auto-detect
+  const nodes = await f(API+'/detections/nodes/status', 3000);
+  const node = nodes ? (nodes.nodes||[]).find(n => n.device_id === deviceId) : null;
+  const boardType = node ? (node.board_type || '') : '';
+  const currentFw = node ? (node.firmware_version || '?') : '?';
+
+  const catalog = await f(API+'/nodes/firmware/catalog', 5000);
+  if (!catalog || !catalog.firmware) {
+    body.innerHTML = '<div style="color:#f85149">Failed to load firmware catalog</div>';
+    return;
+  }
+  const available = catalog.firmware.filter(fw => fw.available);
+  if (available.length === 0) {
+    body.innerHTML = '<div style="color:#f85149">No firmware available. Upload via API or publish a GitHub release with .bin assets.</div>';
+    return;
+  }
+
+  // Auto-select the right firmware for this board
+  let autoIdx = 0;
+  if (boardType) {
+    const match = available.findIndex(fw => fw.name === boardType);
+    if (match >= 0) autoIdx = match;
+  }
+
+  const options = available.map((fw, i) =>
+    '<option value="'+fw.name+'"'+(i===autoIdx?' selected':'')+'>'+fw.name+' ('+fw.source+', '+(fw.size/1024).toFixed(0)+'KB'+(fw.version?' '+fw.version:'')+')</option>'
+  ).join('');
+
+  body.innerHTML =
+    '<div style="margin-bottom:10px">' +
+      '<div class="metric"><span>Current firmware</span><span class="val" style="color:#e040fb">'+currentFw+'</span></div>' +
+      '<div class="metric"><span>Board type</span><span class="val" style="color:#58a6ff">'+(boardType||'unknown')+'</span></div>' +
+      '<div class="metric"><span>IP</span><span class="val" style="color:#484f58">'+(node?node.ip:'?')+'</span></div>' +
+    '</div>' +
+    '<div style="margin-bottom:8px">' +
+      '<label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">Firmware</label>' +
+      '<select id="ota-fw" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:6px 8px;border-radius:4px;font-size:12px">'+options+'</select>' +
+    '</div>' +
+    '<div style="margin-bottom:12px">' +
+      '<label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">Target</label>' +
+      '<select id="ota-target" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:6px 8px;border-radius:4px;font-size:12px">' +
+        '<option value="uplink"'+(boardType.startsWith('uplink')?' selected':'')+'>Uplink (self)</option>' +
+        '<option value="ble">Scanner via BLE UART</option>' +
+        '<option value="wifi">Scanner via WiFi UART</option>' +
+      '</select>' +
+    '</div>' +
+    '<button onclick="doOtaPush()" style="background:#238636;color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;width:100%">Flash Firmware</button>' +
+    '<div id="ota-status" style="margin-top:8px;font-size:12px"></div>';
+}
+
+async function doOtaPush() {
+  const fw = document.getElementById('ota-fw').value;
+  const target = document.getElementById('ota-target').value;
+  const status = document.getElementById('ota-status');
+  const deviceId = otaDeviceId;
+
+  status.innerHTML = '<div style="color:#d29922;padding:8px;background:#3d2e00;border:1px solid #d29922;border-radius:4px">Pushing <b>'+fw+'</b> to <b>'+deviceId+'</b> ('+target+')...<br>This takes ~15 seconds. Do not close this dialog.</div>';
 
   let url;
   if (target === 'uplink') {
@@ -1683,12 +1731,15 @@ async function doOtaPush(deviceId) {
     const r = await fetch(url, {method:'POST'});
     const d = await r.json();
     if (d.ok) {
-      status.innerHTML = '<span style="color:#3fb950">Success! '+fw+' pushed ('+((d.size||0)/1024).toFixed(0)+'KB). Node rebooting...</span>';
+      status.innerHTML = '<div style="color:#3fb950;padding:8px;background:#0d2818;border:1px solid #238636;border-radius:4px">'+
+        'Success! <b>'+fw+'</b> pushed ('+((d.size||0)/1024).toFixed(0)+'KB).<br>Node is rebooting...' +
+        (d.message ? '<br><span style="color:#8b949e">'+d.message+'</span>' : '') +
+        '</div>';
     } else {
-      status.innerHTML = '<span style="color:#f85149">Failed: '+(d.error||d.detail||'unknown')+'</span>';
+      status.innerHTML = '<div style="color:#f85149;padding:8px;background:#2d0a0e;border:1px solid #da3633;border-radius:4px">Failed: '+(d.error||d.detail||'unknown')+'</div>';
     }
   } catch(e) {
-    status.innerHTML = '<span style="color:#3fb950">Firmware sent — node likely rebooting</span>';
+    status.innerHTML = '<div style="color:#3fb950;padding:8px;background:#0d2818;border:1px solid #238636;border-radius:4px">Firmware sent — node likely rebooting. Close this dialog and check version in a few seconds.</div>';
   }
 }
 
