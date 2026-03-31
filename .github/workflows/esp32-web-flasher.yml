@@ -38,8 +38,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pio-
 
-      - name: Build Scanner firmware (ESP32-S3)
-        run: cd esp32/scanner && pio run -e scanner
+      - name: Build Scanner firmware (ESP32-S3 combo)
+        run: cd esp32/scanner && pio run -e scanner-s3-combo
 
       - name: Build WiFi Scanner firmware (ESP32)
         run: cd esp32/scanner && pio run -e scanner-esp32
@@ -60,9 +60,9 @@ jobs:
         run: |
           mkdir -p firmware/scanner firmware/scanner-esp32 firmware/scanner-c5 firmware/ble-scanner firmware/uplink
 
-          cp esp32/scanner/.pio/build/scanner/bootloader.bin firmware/scanner/
-          cp esp32/scanner/.pio/build/scanner/partitions.bin firmware/scanner/partition-table.bin
-          cp esp32/scanner/.pio/build/scanner/firmware.bin   firmware/scanner/
+          cp esp32/scanner/.pio/build/scanner-s3-combo/bootloader.bin firmware/scanner/
+          cp esp32/scanner/.pio/build/scanner-s3-combo/partitions.bin firmware/scanner/partition-table.bin
+          cp esp32/scanner/.pio/build/scanner-s3-combo/firmware.bin   firmware/scanner/
 
           cp esp32/scanner/.pio/build/scanner-esp32/bootloader.bin firmware/scanner-esp32/
           cp esp32/scanner/.pio/build/scanner-esp32/partitions.bin firmware/scanner-esp32/partition-table.bin

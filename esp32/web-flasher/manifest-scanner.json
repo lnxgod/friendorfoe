@@ -1,13 +1,13 @@
 {
-  "name": "Friend or Foe Scanner (ESP32-S3)",
-  "version": "0.10.0-beta",
+  "name": "Friend or Foe Scanner (ESP32-S3 BLE+WiFi)",
+  "version": "0.35.1",
   "builds": [
     {
       "chipFamily": "ESP32-S3",
       "parts": [
         { "path": "firmware/scanner/bootloader.bin", "offset": 0 },
         { "path": "firmware/scanner/partition-table.bin", "offset": 32768 },
-        { "path": "firmware/scanner/firmware.bin", "offset": 65536 }
+        { "path": "firmware/scanner/firmware.bin", "offset": 131072 }
       ]
     }
   ]
