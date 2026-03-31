@@ -13,14 +13,22 @@
 extern "C" {
 #endif
 
-/* ── WiFi credentials (override via NVS) ───────────────────────────────── */
+/* ── WiFi credential struct (used by multi-SSID list) ─────────────────── */
 
-#define CONFIG_WIFI_SSID            "CasaChomp_2g"
-#define CONFIG_WIFI_PASSWORD        "CHANGE_ME_PASSWORD"
+typedef struct {
+    const char *ssid;
+    const char *password;
+} wifi_credential_t;
+
+/* ── WiFi credentials — loaded from local-only file (gitignored) ──────── */
+#include "wifi_credentials.h"
 
 /* ── Backend URL ───────────────────────────────────────────────────────── */
 
-#define CONFIG_BACKEND_URL          "http://192.168.42.145:8000"
+/* Primary: direct IP (fastest, most reliable) */
+#define CONFIG_BACKEND_URL          "http://192.168.42.252:8000"
+/* Fallback: mDNS hostname (works if IP changes) */
+#define CONFIG_BACKEND_URL_FALLBACK "http://fof-server.local:8000"
 #define CONFIG_UPLOAD_ENDPOINT      "/detections/drones"
 
 /* ── Device identity ───────────────────────────────────────────────────── */

@@ -208,6 +208,8 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
  * Ensure the persistent HTTP client is initialized.
  * Reuses the same TCP connection (keep-alive) to avoid socket exhaustion.
  */
+static bool s_using_fallback_url = false;
+
 static bool ensure_http_client(void)
 {
     if (s_http_client) {
@@ -215,7 +217,12 @@ static bool ensure_http_client(void)
     }
 
     char backend_url[128] = {0};
-    nvs_config_get_backend_url(backend_url, sizeof(backend_url));
+    if (s_using_fallback_url) {
+        strncpy(backend_url, CONFIG_BACKEND_URL_FALLBACK, sizeof(backend_url) - 1);
+        ESP_LOGI(TAG, "Using fallback backend URL: %s", backend_url);
+    } else {
+        nvs_config_get_backend_url(backend_url, sizeof(backend_url));
+    }
 
     char url[256];
     snprintf(url, sizeof(url), "%s%s", backend_url, CONFIG_UPLOAD_ENDPOINT);
@@ -495,6 +502,18 @@ static void http_upload_task(void *arg)
                     if (!upload_with_retry(payload)) {
                         buffer_batch_offline(payload);
                         consecutive_fails++;
+                        /* After 5 consecutive failures, try the other URL */
+                        if (consecutive_fails >= 5 && consecutive_fails % 5 == 0) {
+                            s_using_fallback_url = !s_using_fallback_url;
+                            ESP_LOGW(TAG, "Switching to %s URL after %d failures",
+                                     s_using_fallback_url ? "fallback" : "primary",
+                                     consecutive_fails);
+                            /* Force client recreation with new URL */
+                            if (s_http_client) {
+                                esp_http_client_cleanup(s_http_client);
+                                s_http_client = NULL;
+                            }
+                        }
                     } else {
                         last_send = xTaskGetTickCount();
                         last_success_tick = last_send;
@@ -546,11 +565,18 @@ static void http_upload_task(void *arg)
                 (now2 - last_lockon_poll) >= pdMS_TO_TICKS(10000)) {
                 last_lockon_poll = now2;
 
-                /* Build lock-on poll URL */
+                /* Build lock-on poll URL (per-node: includes device_id) */
                 char backend_url[128] = {0};
-                nvs_config_get_backend_url(backend_url, sizeof(backend_url));
+                if (s_using_fallback_url) {
+                    strncpy(backend_url, CONFIG_BACKEND_URL_FALLBACK, sizeof(backend_url) - 1);
+                } else {
+                    nvs_config_get_backend_url(backend_url, sizeof(backend_url));
+                }
+                char dev_id[32] = {0};
+                nvs_config_get_device_id(dev_id, sizeof(dev_id));
                 char url[256];
-                snprintf(url, sizeof(url), "%s/detections/lockon", backend_url);
+                snprintf(url, sizeof(url), "%s/detections/lockon?device_id=%s",
+                         backend_url, dev_id);
 
                 esp_http_client_config_t cfg = {
                     .url = url,
@@ -572,24 +598,36 @@ static void http_upload_task(void *arg)
                                 if (active && cJSON_IsTrue(active) && !lockon_was_active) {
                                     cJSON *ch = cJSON_GetObjectItem(resp, "channel");
                                     cJSON *dur = cJSON_GetObjectItem(resp, "duration_s");
-                                    int lock_ch = ch ? ch->valueint : 6;
-                                    int lock_dur = dur ? dur->valueint : 60;
-                                    ESP_LOGW(TAG, "LOCK-ON command from backend: ch=%d dur=%ds",
-                                             lock_ch, lock_dur);
-                                    lockon_was_active = true;
-
-                                    /* Forward to scanner via UART TX */
-                                    char cmd[128];
                                     cJSON *bssid_j = cJSON_GetObjectItem(resp, "bssid");
-                                    snprintf(cmd, sizeof(cmd),
-                                             "{\"type\":\"lockon\",\"ch\":%d,\"dur\":%d,\"bssid\":\"%s\"}",
-                                             lock_ch, lock_dur,
-                                             (bssid_j && bssid_j->valuestring) ? bssid_j->valuestring : "");
+                                    cJSON *type_j = cJSON_GetObjectItem(resp, "type");
+                                    int lock_ch = ch ? ch->valueint : 6;
+                                    int lock_dur = dur ? dur->valueint : 45;
+                                    const char *lock_type = (type_j && type_j->valuestring) ? type_j->valuestring : "wifi";
+                                    const char *lock_bssid = (bssid_j && bssid_j->valuestring) ? bssid_j->valuestring : "";
+
+                                    lockon_was_active = true;
+                                    char cmd[160];
+
+                                    if (strcmp(lock_type, "ble") == 0) {
+                                        /* BLE lock-on: focus on specific MAC */
+                                        ESP_LOGW(TAG, "BLE LOCK-ON: mac=%s dur=%ds", lock_bssid, lock_dur);
+                                        snprintf(cmd, sizeof(cmd),
+                                                 "{\"type\":\"ble_lockon\",\"mac\":\"%s\",\"dur\":%d}",
+                                                 lock_bssid, lock_dur);
+                                    } else {
+                                        /* WiFi lock-on: fix channel */
+                                        ESP_LOGW(TAG, "WiFi LOCK-ON: ch=%d bssid=%s dur=%ds",
+                                                 lock_ch, lock_bssid, lock_dur);
+                                        snprintf(cmd, sizeof(cmd),
+                                                 "{\"type\":\"lockon\",\"ch\":%d,\"dur\":%d,\"bssid\":\"%s\"}",
+                                                 lock_ch, lock_dur, lock_bssid);
+                                    }
                                     uart_rx_send_command(cmd);
                                 } else if (active && !cJSON_IsTrue(active) && lockon_was_active) {
                                     ESP_LOGI(TAG, "LOCK-ON cancelled by backend");
                                     lockon_was_active = false;
                                     uart_rx_send_command("{\"type\":\"lockon_cancel\"}");
+                                    uart_rx_send_command("{\"type\":\"ble_lockon_cancel\"}");
                                 }
                                 cJSON_Delete(resp);
                             }

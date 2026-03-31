@@ -42,6 +42,9 @@ esp32/**/sdkconfig.ble-scanner-*
 esp32/**/platformio_override.ini
 esp32/**/local_coords.h
 
+# WiFi credentials (NEVER commit — contains SSIDs and passwords)
+esp32/**/wifi_credentials.h
+
 # Backend local dashboard
 backend/app/static/
 backend/friendorfoe.db

@@ -1,7 +1,9 @@
 /**
  * Friend or Foe -- Uplink WiFi Station Implementation
  *
- * WiFi STA with automatic reconnection and exponential backoff.
+ * WiFi STA with multi-SSID scanning and automatic reconnection.
+ * On boot: scans for available networks, connects to the strongest
+ * known SSID. On disconnect: tries next known SSID with backoff.
  * Connection state is signaled via an event group for synchronization.
  */
 
@@ -31,6 +33,11 @@ static bool               s_is_connected     = false;
 static bool               s_standalone       = false;
 static int                s_retry_count      = 0;
 
+/* Multi-SSID credential list */
+static const wifi_credential_t s_wifi_creds[] = CONFIG_WIFI_CREDENTIALS;
+static int  s_current_cred_idx  = 0;    /* Index into s_wifi_creds */
+static int  s_scan_attempts     = 0;
+
 /* Exponential backoff parameters */
 #define BACKOFF_BASE_MS     1000
 #define BACKOFF_MAX_MS      60000
@@ -47,13 +54,93 @@ static int backoff_delay_ms(int retry)
     return delay;
 }
 
+/* ── Try connecting with a specific credential index ──────────────────── */
+
+static void connect_with_cred(int idx)
+{
+    if (idx < 0 || idx >= CONFIG_WIFI_CREDENTIAL_COUNT) idx = 0;
+    s_current_cred_idx = idx;
+
+    wifi_config_t wifi_config = {0};
+    strncpy((char *)wifi_config.sta.ssid, s_wifi_creds[idx].ssid,
+            sizeof(wifi_config.sta.ssid) - 1);
+    strncpy((char *)wifi_config.sta.password, s_wifi_creds[idx].password,
+            sizeof(wifi_config.sta.password) - 1);
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    wifi_config.sta.sae_pwe_h2e       = WPA3_SAE_PWE_BOTH;
+
+    ESP_LOGI(TAG, "Trying SSID '%s' (idx=%d)", s_wifi_creds[idx].ssid, idx);
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    esp_wifi_connect();
+}
+
+/* ── Scan for best known SSID ─────────────────────────────────────────── */
+
+static int find_best_ssid(void)
+{
+    /* Do a quick scan */
+    wifi_scan_config_t scan_cfg = {
+        .show_hidden = false,
+        .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time   = { .active = { .min = 100, .max = 300 } },
+    };
+
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, true /* block */);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "WiFi scan failed: %s", esp_err_to_name(err));
+        return 0;
+    }
+
+    uint16_t ap_count = 0;
+    esp_wifi_scan_get_ap_num(&ap_count);
+    if (ap_count == 0) {
+        esp_wifi_scan_get_ap_records(&ap_count, NULL);
+        ESP_LOGW(TAG, "No APs found in scan");
+        return 0;
+    }
+    if (ap_count > 20) ap_count = 20;
+
+    wifi_ap_record_t *ap_list = calloc(ap_count, sizeof(wifi_ap_record_t));
+    if (!ap_list) return 0;
+    esp_wifi_scan_get_ap_records(&ap_count, ap_list);
+
+    /* Find the strongest known SSID */
+    int best_idx  = -1;
+    int best_rssi = -999;
+    for (int i = 0; i < ap_count; i++) {
+        for (int j = 0; j < CONFIG_WIFI_CREDENTIAL_COUNT; j++) {
+            if (strcmp((char *)ap_list[i].ssid, s_wifi_creds[j].ssid) == 0) {
+                ESP_LOGI(TAG, "  Found '%s' RSSI=%d (cred %d)",
+                         ap_list[i].ssid, ap_list[i].rssi, j);
+                if (ap_list[i].rssi > best_rssi) {
+                    best_rssi = ap_list[i].rssi;
+                    best_idx  = j;
+                }
+            }
+        }
+    }
+    free(ap_list);
+
+    if (best_idx >= 0) {
+        ESP_LOGI(TAG, "Best SSID: '%s' (RSSI=%d)", s_wifi_creds[best_idx].ssid, best_rssi);
+    } else {
+        ESP_LOGW(TAG, "No known SSIDs found in %d APs", ap_count);
+    }
+    return best_idx >= 0 ? best_idx : 0;
+}
+
 /* ── Reconnect timer callback (runs outside event loop) ───────────────── */
 
 static void reconnect_timer_cb(void *arg)
 {
-    ESP_LOGI(TAG, "Reconnect timer fired, attempting connection...");
     s_retry_count++;
-    esp_wifi_connect();
+    /* After 3 failures on same SSID, try next one */
+    if (s_retry_count > 3) {
+        s_current_cred_idx = (s_current_cred_idx + 1) % CONFIG_WIFI_CREDENTIAL_COUNT;
+        s_retry_count = 0;
+        ESP_LOGI(TAG, "Cycling to next SSID: '%s'", s_wifi_creds[s_current_cred_idx].ssid);
+    }
+    connect_with_cred(s_current_cred_idx);
 }
 
 /* ── Event handlers ────────────────────────────────────────────────────── */
@@ -125,35 +212,29 @@ void wifi_sta_init(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler, NULL, NULL));
 
-    /* Load WiFi credentials */
-    char ssid[33]     = {0};
-    char password[65] = {0};
-    nvs_config_get_wifi_ssid(ssid, sizeof(ssid));
-    nvs_config_get_wifi_password(password, sizeof(password));
+    /* Check if NVS has a manually-configured SSID first */
+    char nvs_ssid[33] = {0};
+    nvs_config_get_wifi_ssid(nvs_ssid, sizeof(nvs_ssid));
 
-    /* Check if SSID is unconfigured */
-    if (ssid[0] == '\0' || strcmp(ssid, "YourSSID") == 0) {
+    if (nvs_ssid[0] == '\0' || strcmp(nvs_ssid, "YourSSID") == 0) {
         s_standalone = true;
         ESP_LOGI(TAG, "No WiFi SSID configured -- standalone mode (AP-only)");
-
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
         ESP_ERROR_CHECK(esp_wifi_start());
         return;
     }
 
-    /* Configure and start */
-    wifi_config_t wifi_config = {0};
-    strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
-    strncpy((char *)wifi_config.sta.password, password,
-            sizeof(wifi_config.sta.password) - 1);
-    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-    wifi_config.sta.sae_pwe_h2e       = WPA3_SAE_PWE_BOTH;
-
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi STA initialized, SSID='%s'", ssid);
+    /* Scan for best known SSID from the multi-SSID list */
+    ESP_LOGI(TAG, "Scanning for known WiFi networks (%d configured)...",
+             CONFIG_WIFI_CREDENTIAL_COUNT);
+    int best = find_best_ssid();
+    connect_with_cred(best);
+
+    ESP_LOGI(TAG, "WiFi STA initialized, trying SSID='%s'",
+             s_wifi_creds[best].ssid);
 }
 
 bool wifi_sta_is_connected(void)

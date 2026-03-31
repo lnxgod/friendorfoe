@@ -58,6 +58,8 @@ extern "C" {
 #define MSG_TYPE_ACK                "ack"
 #define MSG_TYPE_LOCKON             "lockon"
 #define MSG_TYPE_LOCKON_CANCEL      "lockon_cancel"
+#define MSG_TYPE_BLE_LOCKON         "ble_lockon"
+#define MSG_TYPE_BLE_LOCKON_CANCEL  "ble_lockon_cancel"
 
 /* ── JSON key names (short to save bandwidth at 921600 baud) ─────────────── */
 

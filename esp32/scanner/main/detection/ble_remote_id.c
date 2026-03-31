@@ -72,6 +72,54 @@ static QueueHandle_t    s_glasses_queue = NULL;
 static ble_device_slot_t s_devices[MAX_BLE_DEVICES];
 static bool             s_scanning = false;
 
+/* ── BLE Focus Mode (lock-on to specific MAC for Remote ID tracking) ───────── */
+
+static struct {
+    bool     active;
+    uint8_t  target_mac[6];
+    int64_t  start_ms;
+    int64_t  duration_ms;           /* 45000 default */
+    uint32_t target_adv_count;      /* how many ads from target during focus */
+} s_ble_focus = {0};
+
+void ble_rid_lockon(const uint8_t *mac, int duration_s)
+{
+    memcpy(s_ble_focus.target_mac, mac, 6);
+    s_ble_focus.start_ms = esp_timer_get_time() / 1000;
+    s_ble_focus.duration_ms = (int64_t)duration_s * 1000;
+    s_ble_focus.target_adv_count = 0;
+    s_ble_focus.active = true;
+    ESP_LOGW("ble_rid", "BLE FOCUS: tracking %02X:%02X:%02X:%02X:%02X:%02X for %ds",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], duration_s);
+}
+
+void ble_rid_lockon_cancel(void)
+{
+    if (s_ble_focus.active) {
+        ESP_LOGI("ble_rid", "BLE FOCUS cancelled after %lu ads from target",
+                 (unsigned long)s_ble_focus.target_adv_count);
+    }
+    s_ble_focus.active = false;
+}
+
+static bool ble_rid_is_focused(void)
+{
+    if (!s_ble_focus.active) return false;
+    int64_t elapsed = (esp_timer_get_time() / 1000) - s_ble_focus.start_ms;
+    if (elapsed >= s_ble_focus.duration_ms) {
+        ESP_LOGI("ble_rid", "BLE FOCUS expired after %lu ads",
+                 (unsigned long)s_ble_focus.target_adv_count);
+        s_ble_focus.active = false;
+        return false;
+    }
+    return true;
+}
+
+static bool ble_rid_is_target(const uint8_t *mac)
+{
+    return s_ble_focus.active && memcmp(mac, s_ble_focus.target_mac, 6) == 0;
+}
+
 /* ── Helper: get current time in milliseconds ──────────────────────────────── */
 
 static int64_t now_ms(void)
@@ -388,19 +436,30 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                                     ext->addr.type,
                                     (uint8_t)(ext->props & 0xFF), &fp);
 
-            /* Rate limit: drones/trackers fast, others moderate */
+            /* BLE Focus mode: if this MAC is the tracking target, bypass rate limit */
+            bool is_focus_target = ble_rid_is_focused() && ble_rid_is_target(ext->addr.val);
+            if (is_focus_target) {
+                s_ble_focus.target_adv_count++;
+            }
+
+            /* Rate limit: drones/trackers fast, others moderate
+             * Focus target: 200ms (5 reports/sec for maximum resolution) */
             static uint32_t last_hashes[50];
             static int64_t  last_times[50];
             static int      hash_idx = 0;
             int rate_limit_ms;
-            if (fp.device_type == BLE_DEV_DRONE_CONTROLLER) {
-                rate_limit_ms = 500;    /* Drones: every 0.5s — fastest */
+            if (is_focus_target) {
+                rate_limit_ms = 200;    /* Focus target: max resolution */
+            } else if (fp.device_type == BLE_DEV_DRONE_CONTROLLER) {
+                rate_limit_ms = 500;    /* Drones: every 0.5s */
             } else if (fp.is_tracker) {
                 rate_limit_ms = 1000;   /* Trackers: every 1s */
+            } else if (ble_rid_is_focused()) {
+                rate_limit_ms = 5000;   /* Non-target during focus: slow down */
             } else if (fp.device_type != BLE_DEV_UNKNOWN) {
                 rate_limit_ms = 2000;   /* Known devices: every 2s */
             } else {
-                rate_limit_ms = 3000;   /* Unknown: every 3s (was 10s) */
+                rate_limit_ms = 3000;   /* Unknown: every 3s */
             }
 
             bool recently_sent = false;

@@ -438,6 +438,19 @@ class BLEEnricher:
         if ja3 and not dev.ble_ja3:
             dev.ble_ja3 = ja3
 
+    # Apple Continuity sub-type → descriptive label
+    _APPLE_CONTINUITY_TYPES = {
+        0x02: "iBeacon",
+        0x05: "AirDrop",
+        0x06: "HomeKit",
+        0x07: "AirPods",
+        0x09: "AirPlay",
+        0x0C: "Handoff",
+        0x0F: "iPhone",       # Nearby Info
+        0x10: "iPhone",       # Nearby Action
+        0x12: "FindMy",       # AirTag / FindMy accessory
+    }
+
     def _infer_device_category(self, dev: EnrichedDevice) -> str:
         """Infer device category from behavior when type is Unknown.
 
@@ -446,6 +459,10 @@ class BLEEnricher:
         """
         if dev.device_type != "Unknown":
             return dev.device_type
+
+        # Apple Continuity sub-type gives precise identification
+        if dev.ble_apple_type and dev.ble_apple_type in self._APPLE_CONTINUITY_TYPES:
+            return self._APPLE_CONTINUITY_TYPES[dev.ble_apple_type]
 
         mfr = dev.manufacturer
         rotations = len(dev.bssids_seen)
@@ -645,10 +662,18 @@ class BLEEnricher:
 
     def get_live_devices(self, min_confidence: float = 0.0,
                          active_only: bool = True,
-                         trackers_only: bool = False) -> list[dict]:
-        """Return enriched device list for dashboard display."""
+                         trackers_only: bool = False,
+                         group_by_ja3: bool = True,
+                         min_readings: int = 2) -> list[dict]:
+        """Return enriched device list for dashboard display.
+
+        When group_by_ja3=True, devices sharing the same BLE-JA3 hash
+        are merged into a single entry (MAC rotation → same physical device).
+        Devices with fewer than min_readings at weak RSSI are filtered out
+        (one-off distant blips that add noise).
+        """
         now = time.time()
-        result = []
+        raw = []
 
         for fp, dev in self.devices.items():
             idle = now - dev.last_seen
@@ -658,13 +683,16 @@ class BLEEnricher:
                 continue
             if trackers_only and not dev.is_tracker:
                 continue
+            # Skip weak one-off blips (1 reading, RSSI < -85)
+            if dev.rssi_readings < min_readings and dev.max_rssi < -85:
+                continue
 
             inferred_type = self._infer_device_category(dev)
             # Learn from successful classifications
             if inferred_type != "Unknown":
                 self._learn_profile(dev, inferred_type)
 
-            result.append({
+            raw.append({
                 "fingerprint": dev.fingerprint,
                 "device_type": inferred_type,
                 "manufacturer": dev.manufacturer,
@@ -689,9 +717,81 @@ class BLEEnricher:
                 "ble_apple_type": dev.ble_apple_type or None,
             })
 
+        # JA3 super-grouping: merge devices with same JA3 hash
+        if group_by_ja3:
+            raw = self._merge_by_ja3(raw, now)
+
         # Sort: trackers first, then by RSSI (strongest first)
-        result.sort(key=lambda d: (not d["is_tracker"], d["current_rssi"]))
-        return result
+        raw.sort(key=lambda d: (not d["is_tracker"], d["current_rssi"]))
+        return raw
+
+    @staticmethod
+    def _merge_by_ja3(devices: list[dict], now: float) -> list[dict]:
+        """Merge devices sharing the same BLE-JA3 hash into single entries.
+
+        Devices with rotating MACs but identical advertisement structure
+        (same JA3) are likely the same physical device. Merge them:
+        combine sensors, pick best RSSI, earliest first_seen, etc.
+        """
+        ja3_groups: dict[str, list[dict]] = defaultdict(list)
+        no_ja3 = []
+
+        for d in devices:
+            ja3 = d.get("ble_ja3")
+            if ja3:
+                ja3_groups[ja3].append(d)
+            else:
+                no_ja3.append(d)
+
+        merged = list(no_ja3)
+        for ja3, group in ja3_groups.items():
+            if len(group) == 1:
+                merged.append(group[0])
+                continue
+
+            # Merge: pick the entry with strongest RSSI as base
+            group.sort(key=lambda x: x["current_rssi"], reverse=True)
+            base = dict(group[0])
+
+            # Combine data from all entries
+            all_sensors = set()
+            all_fps = []
+            total_readings = 0
+            earliest = base["first_seen"]
+            latest = base["last_seen"]
+
+            for d in group:
+                all_sensors.update(d["seen_by"])
+                all_fps.append(d["fingerprint"])
+                total_readings += d["rssi_readings"]
+                if d["first_seen"] < earliest:
+                    earliest = d["first_seen"]
+                if d["last_seen"] > latest:
+                    latest = d["last_seen"]
+                if d["min_rssi"] < base["min_rssi"]:
+                    base["min_rssi"] = d["min_rssi"]
+                if d["max_rssi"] > base["max_rssi"]:
+                    base["max_rssi"] = d["max_rssi"]
+                # Prefer non-Unknown type
+                if base["device_type"] == "Unknown" and d["device_type"] != "Unknown":
+                    base["device_type"] = d["device_type"]
+                if base["manufacturer"] == "Unknown" and d["manufacturer"] != "Unknown":
+                    base["manufacturer"] = d["manufacturer"]
+
+            base["seen_by"] = list(all_sensors)
+            base["sensor_count"] = len(all_sensors)
+            base["rssi_readings"] = total_readings
+            base["first_seen"] = earliest
+            base["last_seen"] = latest
+            base["idle_s"] = round(now - latest, 1)
+            base["age_s"] = round(now - earliest, 1)
+            base["mac_rotations"] = len(group)  # Each entry = different MAC
+            base["merged_fingerprints"] = all_fps
+            base["merged_count"] = len(group)
+
+            merged.append(base)
+
+        return merged
 
     def get_summary(self) -> dict:
         """Quick stats for the dashboard header."""
@@ -701,12 +801,28 @@ class BLEEnricher:
         trackers = [d for d in active if d.is_tracker]
         classified = [d for d in active if self._infer_device_category(d) != "Unknown"]
 
+        # Count unique JA3 hashes among active devices (physical device estimate)
+        ja3_hashes = set()
+        no_ja3_count = 0
+        for d in active:
+            if d.ble_ja3:
+                ja3_hashes.add(d.ble_ja3)
+            else:
+                no_ja3_count += 1
+        physical_estimate = len(ja3_hashes) + no_ja3_count
+
+        # New devices: first_seen within last hour
+        new_devices = [d for d in active
+                       if (now - d.first_seen) < 3600]
+
         return {
             "total_tracked": len(self.devices),
             "active": len(active),
+            "physical_devices": physical_estimate,
             "trackers_active": len(trackers),
             "classified": len(classified),
             "unclassified": len(active) - len(classified),
+            "new_last_hour": len(new_devices),
             "learned_profiles": len(self._learned_profiles),
         }
 

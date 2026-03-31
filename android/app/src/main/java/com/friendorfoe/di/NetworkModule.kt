@@ -1,6 +1,7 @@
 package com.friendorfoe.di
 
 import com.friendorfoe.BuildConfig
+import com.friendorfoe.data.DetectionPrefs
 import com.friendorfoe.data.remote.AdsbFiApiService
 import com.friendorfoe.data.remote.AdsbLolApiService
 import com.friendorfoe.data.remote.AdsbOneApiService
@@ -13,6 +14,8 @@ import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -35,8 +38,8 @@ object NetworkModule {
     private const val ADSB_ONE_BASE_URL = "https://api.adsb.one/"
     private const val HEXDB_BASE_URL = "https://hexdb.io/"
     private const val OPEN_METEO_BASE_URL = "https://api.open-meteo.com/"
-    // Backend URL: local sensor network
-    private const val BACKEND_BASE_URL = "http://192.168.42.145:8000/"
+    // Backend URL: placeholder — actual URL is read from DetectionPrefs at request time
+    private const val BACKEND_BASE_URL = "http://localhost:8000/"
 
     @Provides
     @Singleton
@@ -193,10 +196,52 @@ object NetworkModule {
         return retrofit.create(OpenMeteoApiService::class.java)
     }
 
+    /**
+     * Interceptor that rewrites every request's base URL to the value
+     * currently stored in DetectionPrefs. This means changing the backend
+     * URL in settings takes effect immediately — no app restart needed.
+     */
+    @Provides
+    @Singleton
+    @Named("backendUrlInterceptor")
+    fun provideBackendUrlInterceptor(detectionPrefs: DetectionPrefs): Interceptor {
+        return Interceptor { chain ->
+            val original = chain.request()
+            val configuredUrl = detectionPrefs.backendUrl.trimEnd('/')
+            val newBase = configuredUrl.toHttpUrlOrNull()
+            if (newBase != null) {
+                val newUrl = original.url.newBuilder()
+                    .scheme(newBase.scheme)
+                    .host(newBase.host)
+                    .port(newBase.port)
+                    .build()
+                chain.proceed(original.newBuilder().url(newUrl).build())
+            } else {
+                chain.proceed(original)
+            }
+        }
+    }
+
+    @Provides
+    @Singleton
+    @Named("backendClient")
+    fun provideBackendOkHttpClient(
+        loggingInterceptor: HttpLoggingInterceptor,
+        @Named("backendUrlInterceptor") urlInterceptor: Interceptor
+    ): OkHttpClient {
+        return OkHttpClient.Builder()
+            .addInterceptor(urlInterceptor)
+            .addInterceptor(loggingInterceptor)
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .writeTimeout(8, TimeUnit.SECONDS)
+            .build()
+    }
+
     @Provides
     @Singleton
     @Named("backend")
-    fun provideBackendRetrofit(okHttpClient: OkHttpClient): Retrofit {
+    fun provideBackendRetrofit(@Named("backendClient") okHttpClient: OkHttpClient): Retrofit {
         return Retrofit.Builder()
             .baseUrl(BACKEND_BASE_URL)
             .client(okHttpClient)
