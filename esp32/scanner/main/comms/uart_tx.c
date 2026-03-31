@@ -209,6 +209,15 @@ void uart_tx_send_detection(const drone_detection_t *detection)
         cJSON_AddNumberToObject(root, JSON_KEY_CHANNEL_WIDTH, detection->channel_width_mhz);
     }
 
+    /* Probe request: include probed SSID as a JSON array */
+    if (detection->source == DETECTION_SRC_WIFI_PROBE_REQUEST &&
+        detection->ssid[0] != '\0') {
+        cJSON *probed = cJSON_AddArrayToObject(root, JSON_KEY_PROBED_SSIDS);
+        if (probed) {
+            cJSON_AddItemToArray(probed, cJSON_CreateString(detection->ssid));
+        }
+    }
+
     /* BLE fingerprinting fields */
     if (detection->ble_company_id != 0) {
         cJSON_AddNumberToObject(root, JSON_KEY_BLE_COMPANY_ID, detection->ble_company_id);

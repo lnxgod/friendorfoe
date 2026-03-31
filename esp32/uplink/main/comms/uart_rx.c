@@ -66,12 +66,13 @@ static void push_recent(const drone_detection_t *det)
 static uint8_t parse_source(int src_int)
 {
     switch (src_int) {
-        case DETECTION_SRC_BLE_RID:     return DETECTION_SRC_BLE_RID;
-        case DETECTION_SRC_WIFI_SSID:   return DETECTION_SRC_WIFI_SSID;
-        case DETECTION_SRC_WIFI_DJI_IE: return DETECTION_SRC_WIFI_DJI_IE;
-        case DETECTION_SRC_WIFI_BEACON: return DETECTION_SRC_WIFI_BEACON;
-        case DETECTION_SRC_WIFI_OUI:    return DETECTION_SRC_WIFI_OUI;
-        default:                        return DETECTION_SRC_BLE_RID;
+        case DETECTION_SRC_BLE_RID:            return DETECTION_SRC_BLE_RID;
+        case DETECTION_SRC_WIFI_SSID:          return DETECTION_SRC_WIFI_SSID;
+        case DETECTION_SRC_WIFI_DJI_IE:        return DETECTION_SRC_WIFI_DJI_IE;
+        case DETECTION_SRC_WIFI_BEACON:        return DETECTION_SRC_WIFI_BEACON;
+        case DETECTION_SRC_WIFI_OUI:           return DETECTION_SRC_WIFI_OUI;
+        case DETECTION_SRC_WIFI_PROBE_REQUEST: return DETECTION_SRC_WIFI_PROBE_REQUEST;
+        default:                               return DETECTION_SRC_BLE_RID;
     }
 }
 
@@ -171,6 +172,15 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
     strncpy(det->bssid, bssid, sizeof(det->bssid) - 1);
     det->freq_mhz          = json_get_int(root, JSON_KEY_FREQ, 0);
     det->channel_width_mhz = json_get_int(root, JSON_KEY_CHANNEL_WIDTH, 0);
+
+    /* Probe request: extract first probed SSID into ssid if not already set */
+    const cJSON *probed = cJSON_GetObjectItemCaseSensitive(root, JSON_KEY_PROBED_SSIDS);
+    if (cJSON_IsArray(probed) && cJSON_GetArraySize(probed) > 0) {
+        const cJSON *first = cJSON_GetArrayItem(probed, 0);
+        if (cJSON_IsString(first) && first->valuestring && det->ssid[0] == '\0') {
+            strncpy(det->ssid, first->valuestring, sizeof(det->ssid) - 1);
+        }
+    }
 
     /* Timestamps */
     det->first_seen_ms    = (int64_t)json_get_double(root, JSON_KEY_FIRST_SEEN, 0.0);

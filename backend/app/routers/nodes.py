@@ -32,6 +32,7 @@ def _node_to_response(node: SensorNode) -> NodeResponse:
         lon=node.lon,
         alt=node.alt,
         is_fixed=node.is_fixed,
+        sensor_type=node.sensor_type,
         last_seen=node.last_seen.isoformat() if node.last_seen else None,
         created_at=node.created_at.isoformat() if node.created_at else None,
     )
@@ -54,10 +55,11 @@ async def register_node(req: NodeCreateRequest, db: AsyncSession = Depends(get_d
         existing.lon = req.lon
         existing.alt = req.alt
         existing.is_fixed = True
+        existing.sensor_type = req.sensor_type
         existing.last_seen = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(existing)
-        logger.info("Updated fixed node: %s at (%f, %f)", req.device_id, req.lat, req.lon)
+        logger.info("Updated fixed node: %s at (%f, %f) type=%s", req.device_id, req.lat, req.lon, req.sensor_type)
         return _node_to_response(existing)
 
     node = SensorNode(
@@ -67,6 +69,7 @@ async def register_node(req: NodeCreateRequest, db: AsyncSession = Depends(get_d
         lon=req.lon,
         alt=req.alt,
         is_fixed=True,
+        sensor_type=req.sensor_type,
         last_seen=datetime.now(timezone.utc),
     )
     db.add(node)

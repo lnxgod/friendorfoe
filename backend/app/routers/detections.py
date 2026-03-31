@@ -312,6 +312,7 @@ async def ingest_drone_detections(
             sensor_lat=sensor_lat,
             sensor_lon=sensor_lon,
             sensor_alt=sensor_alt,
+            probed_ssids=json.dumps(det.probed_ssids) if det.probed_ssids else None,
             timestamp=batch.timestamp,
         )
         db_detections.append(db_det)
@@ -789,6 +790,108 @@ async def get_recent_detections(
     items = items[-limit:]
     items.reverse()
     return RecentDetectionsResponse(count=len(items), max_stored=_MAX_RECENT, detections=items)
+
+
+# ---------------------------------------------------------------------------
+# GET /detections/probes — WiFi probe request device summary
+# ---------------------------------------------------------------------------
+
+@router.get("/probes")
+async def get_probe_devices(
+    drone_only: Annotated[bool, Query(description="Only return devices classified as likely_drone or confirmed_drone")] = False,
+    max_age_s: Annotated[int, Query(ge=1, le=3600, description="Max age in seconds")] = 120,
+):
+    """Return WiFi probe request devices grouped by probing MAC (BSSID).
+
+    Scans the in-memory ring buffer for source=='wifi_probe_request',
+    groups by BSSID (probing device MAC), and returns aggregated info
+    per device including all probed SSIDs, best RSSI, sensor count,
+    and classification.
+    """
+    now = time.time()
+
+    # Filter to probe request detections within age window
+    probe_items = [
+        d for d in _recent_detections
+        if d.source == "wifi_probe_request" and (now - d.received_at) <= max_age_s
+    ]
+
+    # Group by BSSID (probing device MAC)
+    groups: dict[str, dict] = {}
+    for d in probe_items:
+        mac = d.bssid or d.drone_id or "unknown"
+        # Normalize: strip "probe_" prefix from drone_id if used as fallback
+        if mac.startswith("probe_"):
+            mac = mac[6:]
+
+        if mac not in groups:
+            groups[mac] = {
+                "mac": mac,
+                "probed_ssids": set(),
+                "probe_count": 0,
+                "best_rssi": -999,
+                "sensors": set(),
+                "last_seen": 0.0,
+                "classification": "wifi_device",
+                "lat": None,
+                "lon": None,
+            }
+        g = groups[mac]
+        g["probe_count"] += 1
+
+        # Collect probed SSIDs from individual detection SSID field
+        if d.ssid:
+            g["probed_ssids"].add(d.ssid)
+
+        # Also collect from probed_ssids list if present
+        if d.probed_ssids:
+            for s in d.probed_ssids:
+                g["probed_ssids"].add(s)
+
+        if d.rssi is not None and d.rssi > g["best_rssi"]:
+            g["best_rssi"] = d.rssi
+        if d.device_id:
+            g["sensors"].add(d.device_id)
+        if d.received_at > g["last_seen"]:
+            g["last_seen"] = d.received_at
+
+        # Use the strongest classification (likely_drone > wifi_device)
+        if d.classification in ("confirmed_drone", "likely_drone"):
+            g["classification"] = d.classification
+
+    # Try to get triangulated positions for probe devices
+    located = _sensor_tracker.get_located_drones()
+    located_by_id = {d.drone_id: d for d in located}
+
+    devices = []
+    for mac, g in groups.items():
+        cls = g["classification"]
+        if drone_only and cls not in ("likely_drone", "confirmed_drone"):
+            continue
+
+        # Check for triangulated position
+        probe_drone_id = f"probe_{mac}"
+        loc = located_by_id.get(probe_drone_id)
+
+        device_entry = {
+            "mac": mac,
+            "probed_ssids": sorted(g["probed_ssids"]),
+            "probe_count": g["probe_count"],
+            "best_rssi": g["best_rssi"] if g["best_rssi"] != -999 else None,
+            "classification": cls,
+            "sensor_count": len(g["sensors"]),
+            "sensors": sorted(g["sensors"]),
+            "last_seen": g["last_seen"],
+            "age_s": round(now - g["last_seen"], 1),
+            "lat": loc.lat if loc else None,
+            "lon": loc.lon if loc else None,
+        }
+        devices.append(device_entry)
+
+    # Sort by last_seen descending
+    devices.sort(key=lambda x: x["last_seen"], reverse=True)
+
+    return {"count": len(devices), "devices": devices}
 
 
 # ---------------------------------------------------------------------------

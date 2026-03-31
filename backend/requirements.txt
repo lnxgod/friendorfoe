@@ -10,8 +10,9 @@ httpx==0.28.1
 # Redis (async)
 redis[hiredis]==5.2.1
 
-# PostgreSQL (async)
+# Database (async)
 asyncpg==0.30.0
+aiosqlite==0.22.1
 sqlalchemy[asyncio]==2.0.36
 
 # Utilities

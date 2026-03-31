@@ -26,12 +26,17 @@ logger = logging.getLogger(__name__)
 
 EARTH_RADIUS_M = 6_371_000.0
 
-# RSSI → distance model (matches ESP32 firmware constants.h)
+# RSSI → distance model
+# ESP32 firmware uses 2.5 (open air). Backend uses 3.0 for mixed
+# indoor/outdoor environment (walls, obstacles attenuate more).
 RSSI_REF = -40          # dBm at 1 meter
-PATH_LOSS_EXPONENT = 2.5
+PATH_LOSS_EXPONENT = 3.0
 
-# Observation staleness: discard observations older than this
-OBSERVATION_TTL_SEC = 30.0
+# Observation staleness: must be long enough for all sensors to report
+# the same device. WiFi active scans run every 2-3s but some SSIDs only
+# appear every 30-60s. BLE scan cycles can take 10-30s per sensor.
+# 5 minutes keeps SSIDs visible even if they skip a few scan cycles.
+OBSERVATION_TTL_SEC = 300.0
 
 # Sensor staleness: consider a sensor offline after this
 SENSOR_TTL_SEC = 120.0
@@ -39,6 +44,10 @@ SENSOR_TTL_SEC = 120.0
 # Maximum iterations for Gauss-Newton solver
 MAX_ITERATIONS = 20
 CONVERGENCE_M = 1.0  # stop when update < 1 meter
+
+# Maximum distance from sensor centroid for a valid position (meters)
+# Rejects garbage trilateration results that land on the other side of the planet
+MAX_RESULT_DISTANCE_M = 10000.0  # 10 km
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +62,7 @@ class SensorInfo:
     lon: float
     alt: float | None = None
     last_seen: float = 0.0  # epoch seconds
+    sensor_type: str = "outdoor"  # "indoor" or "outdoor"
 
 
 @dataclass
@@ -141,9 +151,19 @@ def _destination_point(lat: float, lon: float, bearing_rad: float, dist_m: float
 # RSSI → distance
 # ---------------------------------------------------------------------------
 
-def rssi_to_distance_m(rssi: int) -> float:
-    """Estimate distance from RSSI using log-distance path loss model."""
-    exponent = (RSSI_REF - rssi) / (10.0 * PATH_LOSS_EXPONENT)
+# Path loss exponents by environment
+PATH_LOSS_OUTDOOR = 3.0   # Open air / outdoor sensors
+PATH_LOSS_INDOOR = 3.5    # Through walls / indoor sensors
+
+
+def rssi_to_distance_m(rssi: int, indoor: bool = False) -> float:
+    """Estimate distance from RSSI using log-distance path loss model.
+
+    Indoor sensors use higher path loss exponent (3.5) because walls
+    attenuate signal — same RSSI indoors means closer actual distance.
+    """
+    n = PATH_LOSS_INDOOR if indoor else PATH_LOSS_OUTDOOR
+    exponent = (RSSI_REF - rssi) / (10.0 * n)
     d = 10.0 ** exponent
     return max(0.5, min(d, 5000.0))
 
@@ -319,6 +339,11 @@ class SensorTracker:
         self.sensors: dict[str, SensorInfo] = {}
         # drone_id -> {device_id -> DroneObservation}
         self.observations: dict[str, dict[str, DroneObservation]] = {}
+        # RSSI smoothing: (drone_id, device_id) -> [rssi_values]
+        self._rssi_history: dict[tuple[str, str], list[int]] = {}
+        # EKF position filter
+        from app.services.position_filter import PositionFilterManager
+        self._ekf = PositionFilterManager(stale_timeout=OBSERVATION_TTL_SEC)
 
     def ingest(
         self,
@@ -330,6 +355,7 @@ class SensorTracker:
         *,
         rssi: int | None = None,
         estimated_distance_m: float | None = None,
+        sensor_type: str = "outdoor",
         drone_lat: float | None = None,
         drone_lon: float | None = None,
         drone_alt: float | None = None,
@@ -356,12 +382,35 @@ class SensorTracker:
                 lon=device_lon,
                 alt=device_alt,
                 last_seen=now,
+                sensor_type=sensor_type,
             )
+            # Update EKF origin from sensor centroid
+            if not self._ekf._origin_set:
+                self._ekf.set_origin(device_lat, device_lon)
 
-        # Compute distance from RSSI if not provided
+        # Use fingerprint as grouping key for BLE (handles MAC rotation)
+        tracking_id = drone_id
+        if model and model.startswith("FP:"):
+            tracking_id = model  # Use fingerprint instead of rotating drone_id
+
+        # RSSI smoothing — EMA over last 10 values per (device, sensor)
         dist = estimated_distance_m
-        if dist is None and rssi is not None:
-            dist = rssi_to_distance_m(rssi)
+        if rssi is not None:
+            history_key = (tracking_id, device_id)
+            history = self._rssi_history.get(history_key)
+            if history is None:
+                history = []
+                self._rssi_history[history_key] = history
+            history.append(rssi)
+            if len(history) > 20:
+                history.pop(0)
+            # EMA: heavy smoothing — most things are stationary
+            smoothed = history[0]
+            alpha = 0.15
+            for v in history[1:]:
+                smoothed = smoothed * (1 - alpha) + v * alpha
+            is_indoor = sensor_type == "indoor"
+            dist = rssi_to_distance_m(int(round(smoothed)), indoor=is_indoor)
 
         obs = DroneObservation(
             device_id=device_id,
@@ -386,9 +435,15 @@ class SensorTracker:
             timestamp=now,
         )
 
-        if drone_id not in self.observations:
-            self.observations[drone_id] = {}
-        self.observations[drone_id][device_id] = obs
+        if tracking_id not in self.observations:
+            self.observations[tracking_id] = {}
+
+        # Always update observation (smoothed RSSI handles history now)
+        self.observations[tracking_id][device_id] = obs
+
+        # Feed EKF with smoothed distance
+        if dist is not None and device_lat and device_lon and device_lat != 0:
+            self._ekf.update(tracking_id, device_lat, device_lon, dist)
 
     def prune(self) -> None:
         """Remove stale observations and sensors."""
@@ -405,15 +460,33 @@ class SensorTracker:
         for drone_id in to_remove:
             del self.observations[drone_id]
 
-        # Prune old sensors
-        expired_sensors = [sid for sid, s in self.sensors.items() if now - s.last_seen > SENSOR_TTL_SEC]
-        for sid in expired_sensors:
+        # Remove sensors that haven't been seen in over 24 hours
+        dead_sensors = [sid for sid, s in self.sensors.items() if now - s.last_seen > 86400]
+        for sid in dead_sensors:
             del self.sensors[sid]
 
-    def get_active_sensors(self) -> list[SensorInfo]:
-        """Return currently active sensors."""
+        # Clean RSSI history for pruned drones
+        stale_keys = [k for k in self._rssi_history if k[0] not in self.observations]
+        for k in stale_keys:
+            del self._rssi_history[k]
+
+    def get_active_sensors(self, include_offline: bool = True) -> list[SensorInfo]:
+        """Return sensors. If include_offline=True, returns all known sensors."""
         self.prune()
-        return list(self.sensors.values())
+        if include_offline:
+            return list(self.sensors.values())
+        return [s for s in self.sensors.values() if time.time() - s.last_seen <= SENSOR_TTL_SEC]
+
+    def is_sensor_online(self, device_id: str) -> bool:
+        """Check if a sensor has reported within the TTL window."""
+        s = self.sensors.get(device_id)
+        if not s:
+            return False
+        return time.time() - s.last_seen <= SENSOR_TTL_SEC
+
+    def get_ekf_stats(self) -> dict:
+        """Return EKF position filter statistics."""
+        return self._ekf.get_stats()
 
     def get_located_drones(self) -> list[LocatedDrone]:
         """
@@ -421,11 +494,13 @@ class SensorTracker:
 
         Priority:
         1. If ANY observation has drone GPS (Remote ID / DJI IE) → use it directly
-        2. If 3+ sensors → multilaterate from RSSI distances
-        3. If 2 sensors → circle intersection
+        1.5. If EKF has a converged position (3+ updates) → use smoothed EKF position
+        2. If 3+ sensors → multilaterate from RSSI distances (fallback)
+        3. If 2 sensors → circle intersection (fallback)
         4. If 1 sensor → sensor position + range circle
         """
         self.prune()
+        self._ekf.prune()
         results: list[LocatedDrone] = []
 
         for drone_id, obs_map in self.observations.items():
@@ -437,15 +512,37 @@ class SensorTracker:
             best_obs = max(observations, key=lambda o: o.confidence)
 
             # --- Priority 1: Direct GPS from drone ---
+            # Smooth GPS by averaging last N reports (weighted by recency)
             gps_obs = [o for o in observations if o.drone_lat and o.drone_lon
                        and o.drone_lat != 0.0 and o.drone_lon != 0.0]
             if gps_obs:
-                best_gps = max(gps_obs, key=lambda o: o.timestamp)
+                # Sort by time, use exponential weighting for smooth position
+                gps_sorted = sorted(gps_obs, key=lambda o: o.timestamp)
+                if len(gps_sorted) >= 3:
+                    # Weighted average: recent positions count more
+                    total_w = 0
+                    avg_lat = avg_lon = avg_alt = 0.0
+                    for i, g in enumerate(gps_sorted):
+                        w = 2.0 ** i  # Exponential: newest gets highest weight
+                        avg_lat += g.drone_lat * w
+                        avg_lon += g.drone_lon * w
+                        avg_alt += (g.drone_alt or 0) * w
+                        total_w += w
+                    smooth_lat = avg_lat / total_w
+                    smooth_lon = avg_lon / total_w
+                    smooth_alt = avg_alt / total_w
+                else:
+                    best_gps = gps_sorted[-1]
+                    smooth_lat = best_gps.drone_lat
+                    smooth_lon = best_gps.drone_lon
+                    smooth_alt = best_gps.drone_alt
+
+                best_gps = gps_sorted[-1]  # Use newest for metadata
                 results.append(LocatedDrone(
                     drone_id=drone_id,
-                    lat=best_gps.drone_lat,
-                    lon=best_gps.drone_lon,
-                    alt=best_gps.drone_alt,
+                    lat=smooth_lat,
+                    lon=smooth_lon,
+                    alt=smooth_alt,
                     heading_deg=best_gps.heading_deg,
                     speed_mps=best_gps.speed_mps,
                     position_source="gps",
@@ -461,28 +558,23 @@ class SensorTracker:
                 ))
                 continue
 
-            # --- Collect sensors with valid positions and distance estimates ---
-            usable = [
-                o for o in observations
-                if o.sensor_lat != 0.0 and o.sensor_lon != 0.0 and o.estimated_distance_m is not None
-            ]
-
-            if len(usable) >= 3:
-                # --- Priority 2: Trilateration (3+ sensors) ---
-                sensors_pos = [(o.sensor_lat, o.sensor_lon) for o in usable]
-                distances = [o.estimated_distance_m for o in usable]
-                result = _trilaterate(sensors_pos, distances)
-                if result:
-                    lat, lon, accuracy = result
+            # --- Priority 1.5: EKF smoothed position ---
+            ekf_filter = self._ekf.filters.get(drone_id)
+            if ekf_filter and ekf_filter.update_count >= 3:
+                from app.services.position_filter import local_to_gps
+                x, y = ekf_filter.get_position()
+                ekf_lat, ekf_lon = local_to_gps(x, y, self._ekf.origin_lat, self._ekf.origin_lon)
+                ekf_acc = ekf_filter.get_accuracy()
+                if abs(ekf_lat) <= 90 and abs(ekf_lon) <= 180 and ekf_acc < 5000:
                     results.append(LocatedDrone(
                         drone_id=drone_id,
-                        lat=lat,
-                        lon=lon,
+                        lat=ekf_lat,
+                        lon=ekf_lon,
                         heading_deg=best_obs.heading_deg,
                         speed_mps=best_obs.speed_mps,
-                        position_source="trilateration",
-                        accuracy_m=accuracy,
-                        sensor_count=len(usable),
+                        position_source="kalman",
+                        accuracy_m=ekf_acc,
+                        sensor_count=len(observations),
                         observations=observations,
                         confidence=best_obs.confidence,
                         manufacturer=best_obs.manufacturer,
@@ -493,6 +585,55 @@ class SensorTracker:
                     ))
                     continue
 
+            # --- Collect sensors with valid positions and distance estimates ---
+            usable = [
+                o for o in observations
+                if o.sensor_lat != 0.0 and o.sensor_lon != 0.0 and o.estimated_distance_m is not None
+            ]
+
+            # Compute sensor centroid for result validation
+            if usable:
+                centroid_lat = sum(o.sensor_lat for o in usable) / len(usable)
+                centroid_lon = sum(o.sensor_lon for o in usable) / len(usable)
+            else:
+                centroid_lat = centroid_lon = 0.0
+
+            def _result_valid(lat: float, lon: float) -> bool:
+                """Reject results too far from sensor centroid or outside valid range."""
+                if lat < -90 or lat > 90 or lon < -180 or lon > 180:
+                    return False
+                if centroid_lat == 0 and centroid_lon == 0:
+                    return False
+                dist = _haversine_m(centroid_lat, centroid_lon, lat, lon)
+                return dist < MAX_RESULT_DISTANCE_M
+
+            if len(usable) >= 3:
+                # --- Priority 2: Trilateration (3+ sensors) ---
+                sensors_pos = [(o.sensor_lat, o.sensor_lon) for o in usable]
+                distances = [o.estimated_distance_m for o in usable]
+                result = _trilaterate(sensors_pos, distances)
+                if result:
+                    lat, lon, accuracy = result
+                    if _result_valid(lat, lon):
+                        results.append(LocatedDrone(
+                            drone_id=drone_id,
+                            lat=lat,
+                            lon=lon,
+                            heading_deg=best_obs.heading_deg,
+                            speed_mps=best_obs.speed_mps,
+                            position_source="trilateration",
+                            accuracy_m=accuracy,
+                            sensor_count=len(usable),
+                            observations=observations,
+                            confidence=best_obs.confidence,
+                            manufacturer=best_obs.manufacturer,
+                            model=best_obs.model,
+                            operator_lat=best_obs.operator_lat,
+                            operator_lon=best_obs.operator_lon,
+                            operator_id=best_obs.operator_id,
+                        ))
+                        continue
+
             if len(usable) == 2:
                 # --- Priority 3: Two-circle intersection ---
                 s1 = (usable[0].sensor_lat, usable[0].sensor_lon)
@@ -500,6 +641,10 @@ class SensorTracker:
                 d1 = usable[0].estimated_distance_m
                 d2 = usable[1].estimated_distance_m
                 result = _intersect_two(s1, d1, s2, d2)
+                if result:
+                    lat, lon, accuracy = result
+                    if not _result_valid(lat, lon):
+                        result = None  # fall through to range_only
                 if result:
                     lat, lon, accuracy = result
                     results.append(LocatedDrone(

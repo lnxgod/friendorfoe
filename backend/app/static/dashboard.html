@@ -25,6 +25,7 @@
   .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
   .tab.wifi { color: #ff9500; border-bottom-color: #ff9500; }
   .tab.ble { color: #00ff88; border-bottom-color: #00ff88; }
+  .tab.probes { color: #e040fb; border-bottom-color: #e040fb; }
   .tab-content { display: none; }
   .tab-content.active { display: block; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 24px; }
@@ -35,12 +36,13 @@
   .card.full { grid-column: 1 / -1; }
   .card.wifi-accent { border-left: 3px solid #ff9500; }
   .card.ble-accent { border-left: 3px solid #00ff88; }
+  .card.probe-accent { border-left: 3px solid #e040fb; }
   .card.alert { border-color: #f85149; }
   .metric { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 12px; }
   .metric:last-child { border-bottom: none; }
   .metric .val { font-weight: 700; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
   .val.ok { color: #3fb950; } .val.warn { color: #d29922; } .val.err { color: #f85149; } .val.blue { color: #58a6ff; }
-  .val.wifi-col { color: #ff9500; } .val.ble-col { color: #00ff88; }
+  .val.wifi-col { color: #ff9500; } .val.ble-col { color: #00ff88; } .val.probe-col { color: #e040fb; }
   .node { background: #1c2333; border: 1px solid #30363d; border-radius: 6px; padding: 10px; margin-bottom: 8px; }
   .node-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   .node-name { font-weight: 700; color: #58a6ff; font-size: 13px; }
@@ -66,6 +68,12 @@
   .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-weight: 700; letter-spacing: 0.3px; font-family: 'DM Sans', sans-serif; }
   .badge.ble { background: #00ff8818; color: #00ff88; border: 1px solid #00ff8833; }
   .badge.wifi { background: #ff950018; color: #ff9500; border: 1px solid #ff950033; }
+  .badge.probe { background: #e040fb18; color: #e040fb; border: 1px solid #e040fb33; }
+  .probe-ssid-drone { color: #f85149; font-weight: 700; }
+  .probe-ssid-generic { color: #8b949e; }
+  .hot-ssid-bar { display: flex; align-items: center; gap: 6px; padding: 3px 0; border-bottom: 1px solid #21262d; font-size: 11px; }
+  .hot-ssid-bar:last-child { border-bottom: none; }
+  .hot-ssid-fill { height: 4px; border-radius: 2px; background: #e040fb; min-width: 2px; }
   .rssi { font-family: 'JetBrains Mono', monospace; font-size: 11px; }
   .rssi.close { color: #3fb950; } .rssi.mid { color: #d29922; } .rssi.far { color: #f85149; }
   .empty { color: #484f58; text-align: center; padding: 16px; font-style: italic; font-size: 12px; }
@@ -110,6 +118,7 @@
   <div class="tab active" onclick="switchTab('overview')">Overview</div>
   <div class="tab" onclick="switchTab('wifi')" id="tab-btn-wifi">WiFi</div>
   <div class="tab" onclick="switchTab('ble')" id="tab-btn-ble">BLE</div>
+  <div class="tab" onclick="switchTab('probes')" id="tab-btn-probes">Probes</div>
   <div class="tab" onclick="switchTab('map')">Map</div>
   <div class="tab" onclick="switchTab('anomalies')">Anomalies</div>
   <div class="tab" onclick="switchTab('detections')">All Detections</div>
@@ -164,6 +173,24 @@
       <h2>BLE Devices</h2>
       <div class="summary-bar" id="ble-summary"></div>
       <div id="ble-feed"><div class="empty">Waiting for BLE data...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- PROBES TAB -->
+<div id="tab-probes" class="tab-content">
+  <div class="grid">
+    <div class="card full probe-accent">
+      <h2>WiFi Probe Requests</h2>
+      <div style="margin-bottom:6px"><label style="font-size:11px;color:#8b949e;cursor:pointer"><input type="checkbox" id="probes-auto-refresh" checked style="margin-right:4px"> Auto-refresh</label></div>
+      <div class="summary-bar" id="probes-summary"></div>
+      <div style="display:grid;grid-template-columns:1fr 240px;gap:10px">
+        <div id="probes-feed"><div class="empty">Waiting for probe data...</div></div>
+        <div style="background:#0d1117;border-radius:4px;padding:8px;align-self:start">
+          <div class="section-title" style="color:#e040fb">Hot SSIDs</div>
+          <div id="probes-hot-ssids"><div class="empty" style="font-size:10px">No data</div></div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -311,13 +338,14 @@ let uplinkDeviceId = null;
 let refreshN = 0;
 
 function switchTab(id) {
-  document.querySelectorAll('.tab').forEach(t => { t.classList.remove('active','wifi','ble'); });
+  document.querySelectorAll('.tab').forEach(t => { t.classList.remove('active','wifi','ble','probes'); });
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
   document.getElementById('tab-'+id).classList.add('active');
   const btn = document.querySelector('[onclick="switchTab(\''+id+'\')"]');
   btn.classList.add('active');
   if (id === 'wifi') btn.classList.add('wifi');
   if (id === 'ble') btn.classList.add('ble');
+  if (id === 'probes') btn.classList.add('probes');
   // Leaflet needs invalidateSize when container becomes visible
   if (id === 'map' && leafletMap) {
     setTimeout(() => { leafletMap.invalidateSize(); }, 100);
@@ -863,6 +891,88 @@ async function refreshBLE() {
   }
 }
 
+// ── Probes Tab ─────────────────────────────────────────────────────────
+const DRONE_SSID_RE = /^(DJI|TELLO|SKYDIO|AUTEL|PARROT|FIMI|HUBSAN|EACHINE|HOLY.?STONE|SYMA|POTENSIC|SNAPTAIN|RUKO|FOF-)/i;
+function isDroneSSID(ssid) { return DRONE_SSID_RE.test(ssid || ''); }
+
+async function refreshProbes() {
+  if (!document.getElementById('probes-auto-refresh').checked) return;
+  const data = await f(API + '/detections/probes');
+  const feed = document.getElementById('probes-feed');
+  const sum = document.getElementById('probes-summary');
+  const hotDiv = document.getElementById('probes-hot-ssids');
+
+  if (!data || !data.devices) {
+    feed.innerHTML = '<div class="empty">No probe data available</div>';
+    sum.innerHTML = '';
+    hotDiv.innerHTML = '<div class="empty" style="font-size:10px">No data</div>';
+    return;
+  }
+
+  const devices = data.devices;
+  const droneDevices = devices.filter(d => d.classification === 'likely_drone');
+  // Collect all unique probed SSIDs
+  const allSSIDs = new Set();
+  devices.forEach(d => (d.probed_ssids || []).forEach(s => allSSIDs.add(s)));
+
+  // Summary bar
+  sum.innerHTML =
+    '<div class="sb-item"><span style="color:#e040fb">Probing:</span> <span class="sb-val" style="color:#e040fb">' + devices.length + '</span></div>' +
+    '<div class="sb-item">Drone-related: <span class="sb-val val ' + (droneDevices.length > 0 ? 'warn' : '') + '">' + droneDevices.length + '</span></div>' +
+    '<div class="sb-item">Unique SSIDs: <span class="sb-val">' + allSSIDs.size + '</span></div>';
+
+  // Main table
+  if (devices.length > 0) {
+    feed.innerHTML = '<table><tr><th>Device MAC</th><th>Probed SSIDs</th><th>Count</th><th>Best RSSI</th><th>Classification</th><th>Sensors</th><th>Age</th></tr>' +
+      devices.map(d => {
+        const isDrone = d.classification === 'likely_drone';
+        const rowStyle = isDrone ? ' style="background:#f8514908"' : '';
+        const ssidHtml = (d.probed_ssids || []).map(s => {
+          const droneMatch = isDroneSSID(s);
+          return '<span class="' + (droneMatch ? 'probe-ssid-drone' : 'probe-ssid-generic') + '">' + s + '</span>';
+        }).join(', ') || '-';
+        const sensorList = (d.sensors || []).map(sensorLabel).join(', ') || '-';
+        return '<tr' + rowStyle + '>' +
+          '<td style="color:#e040fb">' + (d.mac || '-') + '</td>' +
+          '<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + ssidHtml + '</td>' +
+          '<td>' + (d.probe_count || 0) + '</td>' +
+          '<td><span class="rssi ' + rssiClass(d.best_rssi) + '">' + (d.best_rssi || '-') + '</span></td>' +
+          '<td>' + clsBadge(d.classification) + '</td>' +
+          '<td><span class="val ' + ((d.sensor_count || 0) >= 2 ? 'ok' : '') + '">' + (d.sensor_count || 0) + '</span> <span style="color:#484f58;font-size:9px">' + sensorList + '</span></td>' +
+          '<td>' + (d.age_s != null ? (d.age_s < 5 ? 'now' : d.age_s < 60 ? Math.round(d.age_s) + 's' : Math.round(d.age_s/60) + 'm') : '-') + '</td></tr>';
+      }).join('') + '</table>';
+  } else {
+    feed.innerHTML = '<div class="empty">No probing devices detected</div>';
+  }
+
+  // Hot SSIDs panel — count frequency of each probed SSID
+  const ssidFreq = {};
+  devices.forEach(d => {
+    (d.probed_ssids || []).forEach(s => {
+      ssidFreq[s] = (ssidFreq[s] || 0) + 1;
+    });
+  });
+  const sorted = Object.entries(ssidFreq).sort((a, b) => b[1] - a[1]);
+  const maxFreq = sorted.length > 0 ? sorted[0][1] : 1;
+
+  if (sorted.length > 0) {
+    hotDiv.innerHTML = sorted.slice(0, 15).map(([ssid, count]) => {
+      const droneMatch = isDroneSSID(ssid);
+      const barColor = droneMatch ? '#f85149' : '#e040fb';
+      const textColor = droneMatch ? '#f85149' : '#c9d1d9';
+      const pct = Math.round(count / maxFreq * 100);
+      return '<div class="hot-ssid-bar">' +
+        '<span style="flex:1;color:' + textColor + ';font-family:JetBrains Mono,monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + ssid + '">' +
+          (droneMatch ? '&#x26a0; ' : '') + ssid + '</span>' +
+        '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:' + barColor + ';font-weight:700;min-width:20px;text-align:right">' + count + '</span>' +
+        '<div style="width:40px"><div class="hot-ssid-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>' +
+      '</div>';
+    }).join('');
+  } else {
+    hotDiv.innerHTML = '<div class="empty" style="font-size:10px">No SSIDs yet</div>';
+  }
+}
+
 // ── Main refresh ────────────────────────────────────────────────────────
 async function refresh() {
   refreshN++;
@@ -997,6 +1107,7 @@ async function refresh() {
     // Refresh sub-tabs
     refreshWifi();
     refreshBLE();
+    refreshProbes();
     refreshAnomalies();
     refreshDetections();
 

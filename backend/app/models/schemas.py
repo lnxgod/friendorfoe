@@ -135,6 +135,7 @@ class DroneDetectionItem(BaseModel):
     ble_payload_len: int | None = Field(None, description="Raw BLE advertisement payload length")
     ble_addr_type: int | None = Field(None, description="BLE address type (0=public, 1=random static, 2=RPA)")
     ble_ja3: str | None = Field(None, description="BLE-JA3 structural profile hash (same for all devices of same model)")
+    probed_ssids: list[str] | None = Field(None, description="SSIDs this device is probing for (from probe requests)")
 
 
 class DroneDetectionBatch(BaseModel):

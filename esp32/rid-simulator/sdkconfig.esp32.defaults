@@ -1,0 +1,47 @@
+# Friend or Foe — RID Simulator (plain ESP32) SDK Configuration
+# BLE broadcaster — transmits OpenDroneID advertisements
+# Dual-core Xtensa 240 MHz, BLE 4.2 (legacy advertising only)
+
+# ── Bluetooth / NimBLE ───────────────────────────────────────────────────────
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=0
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+# Plain ESP32 does NOT support extended advertising
+# CONFIG_BT_NIMBLE_EXT_ADV is not set
+# Security Manager — needed for address resolution linker deps
+CONFIG_BT_NIMBLE_SECURITY_ENABLE=y
+CONFIG_BT_NIMBLE_SM_LEGACY=y
+CONFIG_BT_NIMBLE_SM_SC=y
+# Disable privacy/RPA since we're broadcaster-only (avoids ble_hs_resolv link issues)
+CONFIG_BT_NIMBLE_ENABLE_PRIVACY=n
+CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY=n
+
+# ── PSRAM (not available on most plain ESP32 dev boards) ─────────────────────
+# CONFIG_SPIRAM is not set
+
+# ── WiFi (disabled) ─────────────────────────────────────────────────────────
+CONFIG_ESP_WIFI_ENABLED=n
+
+# ── Coexistence (disabled — BLE only) ───────────────────────────────────────
+CONFIG_SW_COEXIST_ENABLE=n
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=n
+
+# ── FreeRTOS ────────────────────────────────────────────────────────────────
+CONFIG_FREERTOS_HZ=1000
+
+# ── Watchdog ─────────────────────────────────────────────────────────────────
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# ── Flash size (2MB boards) ─────────────────────────────────────────────────
+CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
+
+# ── Console ──────────────────────────────────────────────────────────────────
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3

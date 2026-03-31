@@ -94,6 +94,8 @@ extern "C" {
 #define JSON_KEY_FIRST_SEEN         "first"
 #define JSON_KEY_LAST_UPDATED       "last"
 #define JSON_KEY_SEQ                "seq"
+/* WiFi probe request fields */
+#define JSON_KEY_PROBED_SSIDS       "probed"
 /* BLE fingerprinting fields */
 #define JSON_KEY_BLE_COMPANY_ID     "ble_cid"
 #define JSON_KEY_BLE_APPLE_TYPE     "ble_at"
