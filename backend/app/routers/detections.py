@@ -158,6 +158,7 @@ async def ingest_drone_detections(
         "ip": source_ip,
         "firmware_version": batch.firmware_version or _node_heartbeats.get(batch.device_id, {}).get("firmware_version"),
         "board_type": batch.board_type or _node_heartbeats.get(batch.device_id, {}).get("board_type"),
+        "scanners": batch.scanners or _node_heartbeats.get(batch.device_id, {}).get("scanners"),
     }
 
     # Resolve sensor position (fixed node overrides GPS)

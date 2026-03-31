@@ -120,6 +120,33 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     cJSON_AddStringToObject(root, "board_type", "uplink-c3");
 #endif
 
+    /* Connected scanner identity (from UART scanner_info messages) */
+    cJSON *scanners = cJSON_AddArrayToObject(root, "scanners");
+    if (scanners) {
+        const scanner_info_t *ble_info = uart_rx_get_ble_scanner_info();
+        if (ble_info) {
+            cJSON *s = cJSON_CreateObject();
+            cJSON_AddStringToObject(s, "uart", "ble");
+            cJSON_AddStringToObject(s, "ver", ble_info->version);
+            cJSON_AddStringToObject(s, "board", ble_info->board);
+            cJSON_AddStringToObject(s, "chip", ble_info->chip);
+            cJSON_AddStringToObject(s, "caps", ble_info->caps);
+            cJSON_AddItemToArray(scanners, s);
+        }
+#if CONFIG_DUAL_SCANNER
+        const scanner_info_t *wifi_info = uart_rx_get_wifi_scanner_info();
+        if (wifi_info) {
+            cJSON *s = cJSON_CreateObject();
+            cJSON_AddStringToObject(s, "uart", "wifi");
+            cJSON_AddStringToObject(s, "ver", wifi_info->version);
+            cJSON_AddStringToObject(s, "board", wifi_info->board);
+            cJSON_AddStringToObject(s, "chip", wifi_info->chip);
+            cJSON_AddStringToObject(s, "caps", wifi_info->caps);
+            cJSON_AddItemToArray(scanners, s);
+        }
+#endif
+    }
+
     cJSON *detections = cJSON_AddArrayToObject(root, "detections");
     if (!detections) {
         cJSON_Delete(root);
