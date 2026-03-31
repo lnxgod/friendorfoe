@@ -1,10 +1,10 @@
-"""Sensor node management endpoints — register, update, list, delete."""
+"""Sensor node management endpoints — register, update, list, delete, OTA."""
 
 import logging
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,9 +19,13 @@ from app.models.schemas import (
 )
 from app.services.database import get_db
 
+from app.services.firmware_manager import FirmwareManager
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/nodes", tags=["nodes"])
+
+_firmware_mgr = FirmwareManager()
 
 
 def _node_to_response(node: SensorNode) -> NodeResponse:
@@ -192,3 +196,192 @@ async def get_node_live_status(device_id: str):
             return r.json()
     except Exception as e:
         return {"error": str(e), "device_id": device_id, "ip": ip}
+
+
+# ---------------------------------------------------------------------------
+# POST /nodes/{device_id}/ota — push firmware update to a node
+# ---------------------------------------------------------------------------
+
+@router.post("/{device_id}/ota")
+async def push_ota_update(device_id: str, firmware: UploadFile = File(...)):
+    """Push a firmware .bin file to a specific node via HTTP OTA.
+
+    The backend reads the uploaded file and POSTs it to the node's /api/ota endpoint.
+    The node writes it to the inactive OTA partition and reboots.
+    """
+    from app.routers.detections import _node_heartbeats
+
+    node_info = _node_heartbeats.get(device_id)
+    if not node_info or not node_info.get("ip"):
+        raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP")
+
+    ip = node_info["ip"]
+    fw_data = await firmware.read()
+    fw_size = len(fw_data)
+
+    if fw_size < 1024 or fw_size > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail=f"Invalid firmware size: {fw_size} bytes")
+
+    logger.warning("OTA push to %s (%s): %d bytes (%s)", device_id, ip, fw_size, firmware.filename)
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(
+                f"http://{ip}/api/ota",
+                content=fw_data,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": str(fw_size),
+                },
+            )
+            if r.status_code == 200:
+                result = r.json()
+                logger.info("OTA to %s success: %s", device_id, result)
+                return {"ok": True, "device_id": device_id, "size": fw_size, "response": result}
+            else:
+                logger.error("OTA to %s failed: %d %s", device_id, r.status_code, r.text)
+                return {"ok": False, "device_id": device_id, "error": r.text, "status": r.status_code}
+    except (httpx.TimeoutException, httpx.RemoteProtocolError, httpx.ReadError):
+        # Expected — the node reboots after OTA, killing the connection
+        logger.info("OTA to %s: connection closed (node likely rebooting)", device_id)
+        return {"ok": True, "device_id": device_id, "size": fw_size, "message": "Node rebooting"}
+    except Exception as e:
+        logger.error("OTA to %s failed: %s", device_id, e)
+        raise HTTPException(status_code=502, detail=f"OTA failed: {e}")
+
+
+@router.get("/{device_id}/ota/info")
+async def get_node_ota_info(device_id: str):
+    """Get OTA partition info from a node."""
+    from app.routers.detections import _node_heartbeats
+
+    node_info = _node_heartbeats.get(device_id)
+    if not node_info or not node_info.get("ip"):
+        raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP")
+
+    ip = node_info["ip"]
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(f"http://{ip}/api/ota/info")
+            return r.json()
+    except Exception as e:
+        return {"error": str(e), "device_id": device_id}
+
+
+# ---------------------------------------------------------------------------
+# Firmware catalog endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/firmware/catalog")
+async def get_firmware_catalog():
+    """List available firmware types with versions and sources."""
+    return {"firmware": await _firmware_mgr.get_catalog()}
+
+
+@router.post("/firmware/upload/{name}")
+async def upload_custom_firmware(name: str, firmware: UploadFile = File(...)):
+    """Upload a custom firmware .bin for testing (overrides GitHub release)."""
+    data = await firmware.read()
+    if len(data) < 1024 or len(data) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail=f"Invalid size: {len(data)} bytes")
+    _firmware_mgr.set_custom_firmware(name, data)
+    return {"ok": True, "name": name, "size": len(data), "source": "custom"}
+
+
+@router.delete("/firmware/upload/{name}")
+async def clear_custom_firmware(name: str):
+    """Clear a custom firmware override (revert to GitHub release)."""
+    _firmware_mgr.clear_custom_firmware(name)
+    return {"ok": True, "name": name, "source": "github"}
+
+
+@router.post("/{device_id}/ota/{firmware_name}")
+async def push_firmware_by_name(device_id: str, firmware_name: str):
+    """Push a firmware from the catalog to a specific node.
+
+    Fetches the firmware binary (from GitHub or custom upload) and
+    POSTs it to the node's /api/ota endpoint.
+    """
+    from app.routers.detections import _node_heartbeats
+
+    node_info = _node_heartbeats.get(device_id)
+    if not node_info or not node_info.get("ip"):
+        raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP")
+
+    fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
+    if not fw_data:
+        raise HTTPException(status_code=404, detail=f"Firmware '{firmware_name}' not available")
+
+    ip = node_info["ip"]
+    logger.warning("OTA push %s to %s (%s): %d bytes", firmware_name, device_id, ip, len(fw_data))
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(
+                f"http://{ip}/api/ota",
+                content=fw_data,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": str(len(fw_data)),
+                },
+            )
+            if r.status_code == 200:
+                return {"ok": True, "device_id": device_id, "firmware": firmware_name, "size": len(fw_data)}
+            else:
+                return {"ok": False, "error": r.text, "status": r.status_code}
+    except (httpx.TimeoutException, httpx.RemoteProtocolError, httpx.ReadError):
+        return {"ok": True, "device_id": device_id, "firmware": firmware_name,
+                "size": len(fw_data), "message": "Node rebooting"}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"OTA failed: {e}")
+
+
+@router.post("/{device_id}/ota/scanner/{firmware_name}")
+async def push_scanner_firmware(
+    device_id: str,
+    firmware_name: str,
+    uart: str = "ble",
+):
+    """Push firmware to a UART-connected scanner through the uplink node.
+
+    The backend sends the firmware to the uplink's /api/ota/relay endpoint,
+    which relays it to the scanner over UART. The scanner writes it to its
+    OTA partition and reboots.
+
+    uart: "ble" for the BLE scanner UART, "wifi" for the WiFi scanner UART.
+    """
+    from app.routers.detections import _node_heartbeats
+
+    node_info = _node_heartbeats.get(device_id)
+    if not node_info or not node_info.get("ip"):
+        raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP")
+
+    fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
+    if not fw_data:
+        raise HTTPException(status_code=404, detail=f"Firmware '{firmware_name}' not available")
+
+    ip = node_info["ip"]
+    logger.warning("Scanner OTA: %s → %s via %s (uart=%s, %d bytes)",
+                    firmware_name, device_id, ip, uart, len(fw_data))
+
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            r = await client.post(
+                f"http://{ip}/api/ota/relay?uart={uart}",
+                content=fw_data,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": str(len(fw_data)),
+                },
+            )
+            if r.status_code == 200:
+                result = r.json()
+                return {"ok": True, "device_id": device_id, "firmware": firmware_name,
+                        "size": len(fw_data), "uart": uart, "relay_response": result}
+            else:
+                return {"ok": False, "error": r.text, "status": r.status_code}
+    except httpx.TimeoutException:
+        return {"ok": True, "device_id": device_id, "firmware": firmware_name,
+                "size": len(fw_data), "message": "Scanner rebooting via relay"}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Scanner OTA relay failed: {e}")

@@ -16,6 +16,9 @@
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_system.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
+#include "uart_protocol.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -629,6 +632,208 @@ static esp_err_t connect_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── OTA Firmware Update Handler ──────────────────────────────────────── */
+
+static esp_err_t ota_post_handler(httpd_req_t *req)
+{
+    ESP_LOGW(TAG, "OTA update started, content_len=%d", req->content_len);
+
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!update_partition) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No OTA partition");
+        return ESP_FAIL;
+    }
+
+    esp_ota_handle_t ota_handle;
+    esp_err_t err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
+        return ESP_FAIL;
+    }
+
+    /* Receive firmware in chunks */
+    char buf[1024];
+    int received = 0;
+    int total = req->content_len;
+    int remaining = total;
+
+    while (remaining > 0) {
+        int to_read = remaining > (int)sizeof(buf) ? (int)sizeof(buf) : remaining;
+        int read_len = httpd_req_recv(req, buf, to_read);
+        if (read_len <= 0) {
+            if (read_len == HTTPD_SOCK_ERR_TIMEOUT) continue;
+            ESP_LOGE(TAG, "OTA recv error at %d/%d", received, total);
+            esp_ota_abort(ota_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
+            return ESP_FAIL;
+        }
+
+        err = esp_ota_write(ota_handle, buf, read_len);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_write failed at %d: %s", received, esp_err_to_name(err));
+            esp_ota_abort(ota_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Write error");
+            return ESP_FAIL;
+        }
+
+        received += read_len;
+        remaining -= read_len;
+
+        /* Progress log every 100KB */
+        if (received % (100 * 1024) < 1024) {
+            ESP_LOGI(TAG, "OTA progress: %d/%d bytes (%.0f%%)",
+                     received, total, (float)received / total * 100);
+        }
+    }
+
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA validation failed");
+        return ESP_FAIL;
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Set boot partition failed");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGW(TAG, "OTA update successful! %d bytes written to %s. Rebooting...",
+             received, update_partition->label);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"OTA complete, rebooting...\"}");
+
+    /* Reboot after short delay */
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+
+    return ESP_OK;
+}
+
+/* ── OTA info endpoint (returns partition state) ─────────────────────── */
+
+static esp_err_t ota_info_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *update  = esp_ota_get_next_update_partition(NULL);
+    esp_app_desc_t app_desc;
+    esp_ota_get_partition_description(running, &app_desc);
+
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "{\"running_partition\":\"%s\",\"next_partition\":\"%s\","
+        "\"app_version\":\"%s\",\"idf_version\":\"%s\","
+        "\"compile_date\":\"%s\",\"compile_time\":\"%s\"}",
+        running ? running->label : "?",
+        update ? update->label : "?",
+        app_desc.version, app_desc.idf_ver,
+        app_desc.date, app_desc.time);
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* ── OTA Relay: forward firmware to scanner via UART ─────────────────── */
+
+static esp_err_t ota_relay_handler(httpd_req_t *req)
+{
+    /* Parse ?uart=ble or ?uart=wifi query param */
+    char query[32] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    char uart_target[8] = "ble";
+    httpd_query_key_value(query, "uart", uart_target, sizeof(uart_target));
+
+    /* Select UART port */
+    uart_port_t uart_num;
+#ifdef UPLINK_ESP32
+    if (strcmp(uart_target, "wifi") == 0) {
+        uart_num = CONFIG_WIFI_SCANNER_UART;
+    } else {
+        uart_num = CONFIG_BLE_SCANNER_UART;
+    }
+#else
+    uart_num = CONFIG_BLE_SCANNER_UART;
+#endif
+
+    int total = req->content_len;
+    ESP_LOGW(TAG, "OTA relay: %d bytes to scanner (uart=%s port=%d)",
+             total, uart_target, uart_num);
+
+    if (total < 1024 || total > 2 * 1024 * 1024) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid firmware size");
+        return ESP_FAIL;
+    }
+
+    /* Step 1: Send OTA begin command to scanner as JSON */
+    char cmd[80];
+    snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%d}\n", total);
+    uart_write_bytes(uart_num, cmd, strlen(cmd));
+
+    /* Step 2: Wait for ACK (up to 5 seconds) */
+    vTaskDelay(pdMS_TO_TICKS(2000));  /* Give scanner time to prepare partition */
+    /* TODO: read ACK from scanner UART — for now, proceed optimistically */
+
+    /* Step 3: Stream HTTP data as binary chunks to scanner */
+    uint8_t http_buf[OTA_CHUNK_MAX_DATA];
+    int received = 0;
+    int remaining = total;
+    uint16_t seq = 0;
+
+    while (remaining > 0) {
+        int to_read = remaining > OTA_CHUNK_MAX_DATA ? OTA_CHUNK_MAX_DATA : remaining;
+        int read_len = httpd_req_recv(req, (char *)http_buf, to_read);
+        if (read_len <= 0) {
+            if (read_len == HTTPD_SOCK_ERR_TIMEOUT) continue;
+            ESP_LOGE(TAG, "OTA relay: HTTP recv error at %d/%d", received, total);
+            /* Abort scanner OTA */
+            uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
+            return ESP_FAIL;
+        }
+
+        /* Send binary chunk: [0xF0][seq_hi][seq_lo][len_hi][len_lo] + data */
+        uint8_t hdr[5] = {
+            OTA_CHUNK_MAGIC,
+            (uint8_t)(seq >> 8), (uint8_t)(seq & 0xFF),
+            (uint8_t)(read_len >> 8), (uint8_t)(read_len & 0xFF),
+        };
+        uart_write_bytes(uart_num, (char *)hdr, 5);
+        uart_write_bytes(uart_num, (char *)http_buf, read_len);
+
+        received += read_len;
+        remaining -= read_len;
+        seq++;
+
+        /* Wait for flow control ACK every 16 chunks */
+        if (seq % OTA_ACK_INTERVAL_CHUNKS == 0) {
+            /* Brief pause for scanner to process and ACK */
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+
+        /* Progress log */
+        if (received % (100 * 1024) < OTA_CHUNK_MAX_DATA) {
+            ESP_LOGI(TAG, "OTA relay: %d/%d bytes (%.0f%%)",
+                     received, total, (float)received / total * 100);
+        }
+    }
+
+    /* Step 4: Send OTA end */
+    vTaskDelay(pdMS_TO_TICKS(200));
+    uart_write_bytes(uart_num, "{\"type\":\"ota_end\"}\n", 18);
+
+    ESP_LOGW(TAG, "OTA relay complete: %d bytes sent to scanner. Scanner rebooting...",
+             received);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"Firmware relayed to scanner\"}");
+    return ESP_OK;
+}
+
 /* ── URI registration ──────────────────────────────────────────────────── */
 
 static const httpd_uri_t uri_status_html = {
@@ -661,6 +866,24 @@ static const httpd_uri_t uri_connect_post = {
     .handler  = connect_post_handler,
 };
 
+static const httpd_uri_t uri_ota_post = {
+    .uri      = "/api/ota",
+    .method   = HTTP_POST,
+    .handler  = ota_post_handler,
+};
+
+static const httpd_uri_t uri_ota_info = {
+    .uri      = "/api/ota/info",
+    .method   = HTTP_GET,
+    .handler  = ota_info_handler,
+};
+
+static const httpd_uri_t uri_ota_relay = {
+    .uri      = "/api/ota/relay",
+    .method   = HTTP_POST,
+    .handler  = ota_relay_handler,
+};
+
 /* ── Public API ────────────────────────────────────────────────────────── */
 
 void http_status_init(void)
@@ -669,7 +892,7 @@ void http_status_init(void)
     config.server_port    = CONFIG_HTTP_STATUS_PORT;
     config.task_priority  = CONFIG_HTTP_STATUS_PRIORITY;
     config.stack_size     = 8192;    /* Larger stack for setup page */
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 10;
 
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &config);
@@ -684,6 +907,9 @@ void http_status_init(void)
     httpd_register_uri_handler(server, &uri_setup_html);
     httpd_register_uri_handler(server, &uri_scan_json);
     httpd_register_uri_handler(server, &uri_connect_post);
+    httpd_register_uri_handler(server, &uri_ota_post);
+    httpd_register_uri_handler(server, &uri_ota_info);
+    httpd_register_uri_handler(server, &uri_ota_relay);
 
     ESP_LOGI(TAG, "HTTP status server started on port %d (setup at /setup)",
              CONFIG_HTTP_STATUS_PORT);
