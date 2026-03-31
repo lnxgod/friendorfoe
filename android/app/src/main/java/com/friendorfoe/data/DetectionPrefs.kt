@@ -29,7 +29,7 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_SENSOR_BACKEND = "sensor_backend_enabled"
         private const val KEY_BACKEND_URL = "sensor_backend_url"
         private const val KEY_BACKEND_ONLY = "sensor_backend_only_mode"
-        private const val DEFAULT_BACKEND_URL = "http://192.168.42.145:8000/"
+        private const val DEFAULT_BACKEND_URL = "http://192.168.42.235:8000/"
     }
 
     var adsbEnabled: Boolean

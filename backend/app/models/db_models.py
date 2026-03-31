@@ -149,3 +149,20 @@ class OuiEntry(Base):
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class WhitelistedSSID(Base):
+    """SSID whitelist — marks networks as friendly/known (not drones).
+
+    Patterns use glob syntax: CasaChomp* matches CasaChomp_2g, CasaChomp_5g, etc.
+    Managed via dashboard UI.
+    """
+
+    __tablename__ = "whitelisted_ssids"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pattern: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)  # "Home WiFi", "Neighbor", etc.
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

@@ -49,13 +49,14 @@ class AboutViewModel @Inject constructor(
     val connectionStatus: StateFlow<String?> = _connectionStatus.asStateFlow()
 
     fun testConnection() {
-        _connectionStatus.value = "Testing..."
+        val url = detectionPrefs.backendUrl
+        _connectionStatus.value = "Testing $url ..."
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val health = sensorMapApiService.getHealth()
-                _connectionStatus.value = "Connected — v${health.version} DB:${health.database}"
+                _connectionStatus.value = "Connected to $url — v${health.version} DB:${health.database}"
             } catch (e: Exception) {
-                _connectionStatus.value = "Failed: ${e.message?.take(50)}"
+                _connectionStatus.value = "Failed ($url): ${e.message?.take(80)}"
             }
         }
     }

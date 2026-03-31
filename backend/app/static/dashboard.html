@@ -59,7 +59,10 @@
   .drone-card { background: #1c2333; border-left: 3px solid #d29922; border-radius: 4px; padding: 10px; margin-bottom: 6px; }
   .drone-card.located { border-left-color: #3fb950; }
   table { width: 100%; border-collapse: collapse; font-size: 11px; }
-  th { text-align: left; color: #484f58; padding: 4px 6px; border-bottom: 1px solid #30363d; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; }
+  th { text-align: left; color: #484f58; padding: 4px 6px; border-bottom: 1px solid #30363d; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; cursor: pointer; user-select: none; position: relative; }
+  th:hover { color: #8b949e; }
+  th.sort-asc::after { content: ' \u25B2'; font-size: 8px; color: #58a6ff; }
+  th.sort-desc::after { content: ' \u25BC'; font-size: 8px; color: #58a6ff; }
   td { padding: 4px 6px; border-bottom: 1px solid #1c2333; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
   tr:hover { background: #1c233388; }
   tr.multi-sensor { background: #3fb95008; }
@@ -114,12 +117,20 @@
   </div>
 </div>
 
+<div id="lockon-banner" style="display:none;background:#f8514922;border-bottom:1px solid #f85149;padding:6px 24px;font-size:12px;font-weight:700;color:#f85149;font-family:JetBrains Mono,monospace;display:flex;align-items:center;gap:10px">
+  <span>LOCK-ON ACTIVE</span>
+  <span id="lockon-info" style="color:#c9d1d9;font-weight:400"></span>
+  <span id="lockon-timer" style="color:#d29922"></span>
+  <button onclick="cancelLockon()" style="margin-left:auto;background:#f8514933;border:1px solid #f85149;color:#f85149;padding:2px 10px;border-radius:3px;cursor:pointer;font-size:11px;font-weight:700">Cancel</button>
+</div>
+
 <div class="tabs">
   <div class="tab active" onclick="switchTab('overview')">Overview</div>
   <div class="tab" onclick="switchTab('wifi')" id="tab-btn-wifi">WiFi</div>
   <div class="tab" onclick="switchTab('ble')" id="tab-btn-ble">BLE</div>
   <div class="tab" onclick="switchTab('probes')" id="tab-btn-probes">Probes</div>
   <div class="tab" onclick="switchTab('map')">Map</div>
+  <div class="tab" onclick="switchTab('whitelist')">Whitelist</div>
   <div class="tab" onclick="switchTab('anomalies')">Anomalies</div>
   <div class="tab" onclick="switchTab('detections')">All Detections</div>
   <div class="tab" onclick="switchTab('nodes')">Sensors</div>
@@ -171,6 +182,12 @@
   <div class="grid">
     <div class="card full ble-accent">
       <h2>BLE Devices</h2>
+      <div style="margin-bottom:6px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:11px;color:#8b949e;cursor:pointer"><input type="checkbox" id="ble-hide-noise" onchange="refreshBLE()" style="margin-right:3px" checked> Hide noise</label>
+        <label style="font-size:11px;color:#8b949e;cursor:pointer"><input type="checkbox" id="ble-new-only" onchange="refreshBLE()" style="margin-right:3px"> New only (last 1h)</label>
+        <label style="font-size:11px;color:#8b949e;cursor:pointer"><input type="checkbox" id="ble-trackers-only" onchange="refreshBLE()" style="margin-right:3px"> Trackers only</label>
+        <span id="ble-noise-count" style="font-size:10px;color:#484f58"></span>
+      </div>
       <div class="summary-bar" id="ble-summary"></div>
       <div id="ble-feed"><div class="empty">Waiting for BLE data...</div></div>
     </div>
@@ -279,6 +296,26 @@
   </div>
 </div>
 
+<!-- WHITELIST TAB -->
+<div id="tab-whitelist" class="tab-content">
+  <div class="grid">
+    <div class="card full">
+      <h2>SSID Whitelist</h2>
+      <div style="margin-bottom:10px;font-size:12px;color:#8b949e">
+        SSIDs matching these patterns are classified as <span style="color:#3fb950;font-weight:700">known_ap</span> (not drones).
+        Use glob patterns: <code style="background:#0d1117;padding:1px 4px;border-radius:3px">CasaChomp*</code> matches CasaChomp_2g, CasaChomp_5g, etc.
+      </div>
+      <!-- Add form -->
+      <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center">
+        <input type="text" id="wl-pattern" placeholder="SSID or pattern (e.g. MyNetwork*)" style="flex:1;padding:5px 8px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;font-family:JetBrains Mono,monospace">
+        <input type="text" id="wl-label" placeholder="Label (optional)" style="width:180px;padding:5px 8px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px">
+        <button onclick="addWhitelistEntry()" style="padding:5px 14px;background:#238636;border:none;color:#fff;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;white-space:nowrap">Add Pattern</button>
+      </div>
+      <div id="wl-feed" style="max-height:400px;overflow-y:auto"><div class="empty">Loading whitelist...</div></div>
+    </div>
+  </div>
+</div>
+
 <!-- ANOMALIES TAB -->
 <div id="tab-anomalies" class="tab-content">
   <div class="grid3">
@@ -365,6 +402,98 @@ const API = window.location.origin;
 let uplinkDeviceId = null;
 let refreshN = 0;
 
+// Pause-on-hover: tabs pause auto-refresh when user is interacting
+const pausedFeeds = new Set();
+function setupPauseOnHover(feedId, tabKey) {
+  const el = document.getElementById(feedId);
+  if (!el) return;
+  el.addEventListener('mouseenter', () => pausedFeeds.add(tabKey));
+  el.addEventListener('mouseleave', () => pausedFeeds.delete(tabKey));
+}
+// Scroll-preserving innerHTML update
+function updateFeed(feedId, html) {
+  const el = document.getElementById(feedId);
+  if (!el) return;
+  const pos = el.scrollTop;
+  el.innerHTML = html;
+  el.scrollTop = pos;
+}
+
+// ── Sortable tables ───────────────────────────────────────────────────
+function sortTable(th) {
+  const table = th.closest('table');
+  if (!table) return;
+  const idx = Array.from(th.parentNode.children).indexOf(th);
+  const tbody = table.querySelector('tbody') || table;
+  const rows = Array.from(tbody.querySelectorAll('tr')).filter(r => !r.querySelector('th'));
+  // Determine sort direction
+  const isAsc = th.classList.contains('sort-asc');
+  table.querySelectorAll('th').forEach(h => h.classList.remove('sort-asc','sort-desc'));
+  th.classList.add(isAsc ? 'sort-desc' : 'sort-asc');
+  const dir = isAsc ? -1 : 1;
+  rows.sort((a, b) => {
+    const aText = (a.children[idx]?.textContent || '').trim();
+    const bText = (b.children[idx]?.textContent || '').trim();
+    // Try numeric sort first
+    const aNum = parseFloat(aText.replace(/[^0-9.\-]/g, ''));
+    const bNum = parseFloat(bText.replace(/[^0-9.\-]/g, ''));
+    if (!isNaN(aNum) && !isNaN(bNum)) return (aNum - bNum) * dir;
+    return aText.localeCompare(bText) * dir;
+  });
+  // Re-append sorted rows (also move following detail rows)
+  rows.forEach(r => {
+    tbody.appendChild(r);
+    // Move expandable detail rows (probe tab)
+    const nextId = r.nextElementSibling?.id;
+    if (nextId && nextId.startsWith('pd')) tbody.appendChild(r.nextElementSibling);
+  });
+}
+// Auto-attach sort handlers to all tables
+function enableTableSort(container) {
+  const el = typeof container === 'string' ? document.getElementById(container) : container;
+  if (!el) return;
+  el.querySelectorAll('th').forEach(th => {
+    if (!th.onclick) th.onclick = function() { sortTable(this); };
+  });
+}
+
+// ── Whitelist management ──────────────────────────────────────────────
+let whitelistCache = [];
+async function loadWhitelist() {
+  const data = await f(API+'/detections/anomalies/whitelist', 5000);
+  if (data && data.ssid_patterns) whitelistCache = data.ssid_patterns;
+  return whitelistCache;
+}
+function isWhitelisted(ssid) {
+  if (!ssid) return false;
+  for (const entry of whitelistCache) {
+    const p = entry.pattern || entry;
+    if (p === ssid) return true;
+    // Simple glob: convert * to regex
+    const re = new RegExp('^' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '.*') + '$', 'i');
+    if (re.test(ssid)) return true;
+  }
+  return false;
+}
+async function whitelistSSID(ssid, label) {
+  if (!ssid) return;
+  const pattern = ssid.includes('*') ? ssid : ssid;
+  await fetch(API+'/detections/anomalies/whitelist', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({pattern, label: label || 'Added from dashboard'})
+  });
+  await loadWhitelist();
+  refreshWifi();
+}
+async function removeWhitelist(pattern) {
+  await fetch(API+'/detections/anomalies/whitelist', {
+    method: 'DELETE', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({pattern, type: 'ssid'})
+  });
+  await loadWhitelist();
+  refreshWhitelistTab();
+}
+
 function switchTab(id) {
   document.querySelectorAll('.tab').forEach(t => { t.classList.remove('active','wifi','ble','probes'); });
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
@@ -378,6 +507,8 @@ function switchTab(id) {
   if (id === 'map' && leafletMap) {
     setTimeout(() => { leafletMap.invalidateSize(); }, 100);
   }
+  // Refresh whitelist tab on switch
+  if (id === 'whitelist') refreshWhitelistTab();
 }
 
 function rssiClass(r) { return !r?'':r>-50?'close':r>-70?'mid':'far'; }
@@ -800,10 +931,8 @@ function clearHistory() {
 }
 
 // ── Lock-on ─────────────────────────────────────────────────────────────
-async function doLockon(lat, lon, duration) {
-  // Find the channel from the detection — for now use channel 6 as default
-  // TODO: extract actual channel from observation data
-  const ch = 6;
+async function doLockon(lat, lon, duration, channel) {
+  const ch = channel || 6;
   try {
     const resp = await fetch(API+'/detections/lockon', {
       method: 'POST',
@@ -811,9 +940,45 @@ async function doLockon(lat, lon, duration) {
       body: 'channel='+ch+'&duration_s='+duration
     });
     const data = await resp.json();
-    alert('LOCK-ON: ch='+ch+' for '+duration+'s\n'+JSON.stringify(data.lockon));
+    updateLockonBanner();
   } catch(e) {
     alert('Lock-on failed: '+e.message);
+  }
+}
+async function cancelLockon() {
+  try { await fetch(API+'/detections/lockon', {method:'DELETE'}); } catch(e) {}
+  document.getElementById('lockon-banner').style.display = 'none';
+}
+async function updateLockonBanner() {
+  try {
+    const data = await f(API+'/detections/lockon');
+    const banner = document.getElementById('lockon-banner');
+    if (data && data.active) {
+      const elapsed = Date.now()/1000 - data.issued_at;
+      const remaining = Math.max(0, data.duration_s - elapsed);
+      document.getElementById('lockon-info').textContent = 'ch' + data.channel + (data.bssid ? ' / ' + data.bssid : '');
+      document.getElementById('lockon-timer').textContent = Math.round(remaining) + 's remaining';
+      banner.style.display = 'flex';
+      if (remaining <= 0) banner.style.display = 'none';
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch(e) { document.getElementById('lockon-banner').style.display = 'none'; }
+}
+// Track device: switch to map tab and highlight
+function trackDevice(deviceId) {
+  if (!deviceId) return;
+  switchTab('map');
+  // Set the history device dropdown if it matches
+  const dropdown = document.getElementById('hist-device');
+  if (dropdown) {
+    for (const opt of dropdown.options) {
+      if (opt.value === deviceId || opt.text.includes(deviceId)) {
+        dropdown.value = opt.value;
+        dropdown.dispatchEvent(new Event('change'));
+        break;
+      }
+    }
   }
 }
 
@@ -828,11 +993,11 @@ async function findUplink() {
 
 // ── WiFi Tab ────────────────────────────────────────────────────────────
 async function refreshWifi() {
+  if (pausedFeeds.has('wifi')) return;
   const showAP = document.getElementById('wifi-show-ap').checked;
   const data = await f(API+'/detections/grouped?max_age_s=120&exclude_known_ap='+(showAP?'false':'true'));
   if (!data) return;
-  const wifi = data.devices.filter(d => d.source && !d.source.includes('ble'));
-  const feed = document.getElementById('wifi-feed');
+  const wifi = data.devices.filter(d => d.source && !d.source.includes('ble') && d.source !== 'wifi_probe_request');
   const sum = document.getElementById('wifi-summary');
 
   const drones = wifi.filter(d => ['confirmed_drone','likely_drone','test_drone'].includes(d.classification));
@@ -846,77 +1011,132 @@ async function refreshWifi() {
     '<div class="sb-item">Multi-sensor: <span class="sb-val val '+(multi.length>0?'ok':'')+'">'+multi.length+'</span></div>';
 
   if (wifi.length > 0) {
-    feed.innerHTML = '<table><tr><th>Age</th><th>Class</th><th>SSID</th><th>Best RSSI</th><th>Sensors</th><th>Per-Sensor RSSI</th><th>Conf</th><th>BSSID</th><th>Mfr</th><th>Hits</th></tr>'+
+    updateFeed('wifi-feed', '<table><tr><th onclick="sortTable(this)">Age</th><th onclick="sortTable(this)">Class</th><th onclick="sortTable(this)">SSID</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th>Per-Sensor</th><th onclick="sortTable(this)">Conf</th><th onclick="sortTable(this)">BSSID</th><th onclick="sortTable(this)">Mfr</th><th onclick="sortTable(this)">Hits</th><th></th></tr>'+
       wifi.map(d => {
         const cls = d.classification || '';
         const rowCls = d.sensor_count >= 2 ? ' class="multi-sensor"' : cls === 'test_drone' ? ' class="test-drone"' : '';
         const sRssi = Object.entries(d.sensor_rssi||{}).map(([k,v])=>'<span style="color:#8b949e">'+sensorLabel(k)+'</span>:<span class="rssi '+rssiClass(v)+'">'+v+'</span>').join(' ');
+        const did = (d.drone_id||'').replace(/'/g,'');
+        const ssid = d.ssid || '';
+        const wl = isWhitelisted(ssid);
+        const ssidEsc = ssid.replace(/'/g, "\\'");
+        const wlBtn = wl ? '<span style="color:#3fb950;font-size:9px" title="Whitelisted">&#x2713;</span>'
+          : ssid ? '<button onclick="whitelistSSID(\''+ssidEsc+'\')" style="background:#23863622;border:1px solid #23863644;color:#3fb950;padding:1px 5px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700" title="Add to whitelist">WL</button>' : '';
         return '<tr'+rowCls+'>' +
           '<td>'+d.age_s+'s</td>' +
           '<td>'+clsBadge(cls)+'</td>' +
-          '<td style="font-weight:700;color:#c9d1d9">'+(d.ssid || d.drone_id)+'</td>' +
+          '<td style="font-weight:700;color:#c9d1d9">'+(ssid || d.drone_id)+'</td>' +
           '<td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td>' +
           '<td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td>' +
           '<td>'+sRssi+'</td>' +
           '<td>'+(d.best_confidence*100).toFixed(0)+'%</td>' +
           '<td style="color:#484f58">'+(d.bssid||'-')+'</td>' +
           '<td style="color:#8b949e">'+(d.manufacturer||'-')+'</td>' +
-          '<td>'+d.detection_count+'</td></tr>';
-      }).join('') + '</table>';
+          '<td>'+d.detection_count+'</td>' +
+          '<td style="display:flex;gap:2px">'+wlBtn+'<button onclick="trackDevice(\''+did+'\')" style="background:#ff950022;border:1px solid #ff950044;color:#ff9500;padding:1px 5px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Track</button></td></tr>';
+      }).join('') + '</table>');
   } else {
-    feed.innerHTML = '<div class="empty">No WiFi devices detected</div>';
+    updateFeed('wifi-feed', '<div class="empty">No WiFi devices detected</div>');
   }
 }
 
 // ── BLE Tab ─────────────────────────────────────────────────────────────
+const NOISE_TYPES = new Set(['Unknown','Transient','Mobile Phone','Mobile Device','Stationary IoT','Stationary Device','Vehicle Passing']);
 async function refreshBLE() {
-  const [devData, grouped] = await Promise.all([
-    f(API+'/detections/devices/live'),
-    f(API+'/detections/grouped?max_age_s=120&exclude_known_ap=true')
-  ]);
-  const feed = document.getElementById('ble-feed');
+  if (pausedFeeds.has('ble')) return;
+  const hideNoise = document.getElementById('ble-hide-noise').checked;
+  const newOnly = document.getElementById('ble-new-only').checked;
+  const trackersOnly = document.getElementById('ble-trackers-only').checked;
+
+  const devData = await f(API+'/detections/devices/live' + (trackersOnly ? '?trackers_only=true' : ''));
   const sum = document.getElementById('ble-summary');
 
-  if (!devData || !devData.devices) { feed.innerHTML = '<div class="empty">No BLE data</div>'; return; }
+  if (!devData || !devData.devices) { updateFeed('ble-feed','<div class="empty">No BLE data</div>'); return; }
 
-  const devs = devData.devices;
+  let allDevs = devData.devices;
   const summary = devData.summary || {};
-  const bleGrouped = grouped ? grouped.devices.filter(d => d.source && d.source.includes('ble')) : [];
 
-  // Build sensor map from grouped data
-  const sensorMap = {};
-  bleGrouped.forEach(d => { sensorMap[d.drone_id] = d; });
+  // Client-side filters
+  let devs = allDevs;
+  let noiseCount = 0;
+  if (hideNoise) {
+    devs = allDevs.filter(d => !NOISE_TYPES.has(d.device_type));
+    noiseCount = allDevs.length - devs.length;
+  }
+  if (newOnly) devs = devs.filter(d => d.age_s < 3600);
+
+  document.getElementById('ble-noise-count').textContent = hideNoise && noiseCount > 0 ? 'Hiding '+noiseCount+' generic devices' : '';
 
   sum.innerHTML =
-    '<div class="sb-item"><span style="color:#00ff88">BLE:</span> <span class="sb-val" style="color:#00ff88">'+(summary.active||0)+'</span> active</div>'+
+    '<div class="sb-item"><span style="color:#00ff88">Physical:</span> <span class="sb-val" style="color:#00ff88">'+(summary.physical_devices||summary.active||0)+'</span></div>'+
+    '<div class="sb-item">Active: <span class="sb-val">'+(summary.active||0)+'</span></div>'+
     '<div class="sb-item">Trackers: <span class="sb-val val err">'+(summary.trackers_active||0)+'</span></div>'+
-    '<div class="sb-item">Classified: <span class="sb-val">'+(summary.classified||0)+'</span></div>'+
-    '<div class="sb-item">Total tracked: <span class="sb-val">'+(summary.total_tracked||0)+'</span></div>';
+    '<div class="sb-item">New (1h): <span class="sb-val" style="color:#e040fb">'+(summary.new_last_hour||0)+'</span></div>'+
+    '<div class="sb-item">Showing: <span class="sb-val">'+devs.length+'</span></div>';
 
   if (devs.length > 0) {
-    feed.innerHTML = '<table><tr><th>Type</th><th>Fingerprint</th><th>Mfr</th><th>RSSI</th><th>Avg</th><th>Min/Max</th><th>Sensors</th><th>Tracker</th><th>MAC Rot</th><th>Idle</th><th>Age</th></tr>'+
-      devs.slice(0, 50).map(d => {
-        const gd = sensorMap[d.fingerprint] || {};
-        const sensorCount = gd.sensor_count || (d.seen_by ? d.seen_by.length : 1);
-        const sensors = d.seen_by ? d.seen_by.map(sensorLabel).join(',') : '-';
-        const trackerBadge = d.is_tracker ? '<span class="badge" style="background:#f8514922;color:#f85149;border:1px solid #f8514944">YES</span>' : '-';
-        const typeColor = d.is_tracker ? '#f85149' : d.device_type !== 'Unknown' ? '#58a6ff' : '#8b949e';
-        return '<tr'+(d.is_tracker?' style="background:#f8514908"':'')+'>' +
-          '<td style="font-weight:700;color:'+typeColor+';font-family:DM Sans,sans-serif">'+d.device_type+'</td>' +
-          '<td style="color:#484f58;font-size:10px">'+d.fingerprint+'</td>' +
+    updateFeed('ble-feed', '<table><tr><th onclick="sortTable(this)">Type</th><th onclick="sortTable(this)">Mfr</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Avg</th><th onclick="sortTable(this)">Sensors</th><th onclick="sortTable(this)">JA3</th><th onclick="sortTable(this)">MACs</th><th onclick="sortTable(this)">Idle</th><th onclick="sortTable(this)">Age</th><th></th></tr>'+
+      devs.slice(0, 80).map(d => {
+        const sensorCount = d.sensor_count || (d.seen_by ? d.seen_by.length : 1);
+        const sensors = d.seen_by ? d.seen_by.map(sensorLabel).join(', ') : '-';
+        const isNew = d.age_s < 3600;
+        const trackerBg = d.is_tracker ? 'background:#f8514908;' : '';
+        const newBg = isNew && !d.is_tracker ? 'background:#e040fb08;' : '';
+        const typeColor = d.is_tracker ? '#f85149' : d.device_type !== 'Unknown' ? '#00ff88' : '#484f58';
+        const merged = d.merged_count || 1;
+        const ja3Short = d.ble_ja3 ? d.ble_ja3.substring(0, 8) : '-';
+        const ja3Color = d.ble_ja3 ? (merged > 1 ? '#e040fb' : '#484f58') : '#30363d';
+        const ageStr = d.age_s < 60 ? Math.round(d.age_s)+'s' : d.age_s < 3600 ? Math.round(d.age_s/60)+'m' : Math.round(d.age_s/3600)+'h';
+        const idleStr = d.idle_s < 60 ? Math.round(d.idle_s)+'s' : Math.round(d.idle_s/60)+'m';
+        const fp = d.fingerprint || '';
+        return '<tr style="'+trackerBg+newBg+'">' +
+          '<td style="font-weight:700;color:'+typeColor+';font-family:DM Sans,sans-serif">'+(isNew?'<span style="color:#e040fb;font-size:9px;margin-right:3px">NEW</span>':'')+d.device_type+'</td>' +
           '<td style="color:#8b949e">'+(d.manufacturer||'-')+'</td>' +
           '<td><span class="rssi '+rssiClass(d.current_rssi)+'">'+d.current_rssi+'</span></td>' +
           '<td><span class="rssi '+rssiClass(d.avg_rssi)+'">'+d.avg_rssi.toFixed(0)+'</span></td>' +
-          '<td style="color:#484f58">'+d.min_rssi+'/'+d.max_rssi+'</td>' +
-          '<td><span class="val '+(sensorCount>=2?'ok':'')+'">'+sensorCount+'</span></td>' +
-          '<td>'+trackerBadge+'</td>' +
+          '<td title="'+sensors+'"><span class="val '+(sensorCount>=2?'ok':'')+'">'+sensorCount+'</span></td>' +
+          '<td style="color:'+ja3Color+';font-size:10px" title="JA3: '+(d.ble_ja3||'none')+(merged>1?' ('+merged+' MACs merged)':'')+'">'+ja3Short+(merged>1?' <span style="color:#e040fb">&times;'+merged+'</span>':'')+'</td>' +
           '<td>'+(d.mac_rotations||0)+'</td>' +
-          '<td>'+Math.round(d.idle_s)+'s</td>' +
-          '<td>'+Math.round(d.age_s)+'s</td></tr>';
-      }).join('') + '</table>';
+          '<td>'+idleStr+'</td>' +
+          '<td>'+ageStr+'</td>' +
+          '<td><button onclick="trackDevice(\''+fp+'\')" style="background:#58a6ff22;border:1px solid #58a6ff44;color:#58a6ff;padding:1px 6px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Track</button></td></tr>';
+      }).join('') + '</table>');
   } else {
-    feed.innerHTML = '<div class="empty">No BLE devices detected</div>';
+    updateFeed('ble-feed', '<div class="empty">No BLE devices matching filters</div>');
   }
+}
+
+// ── Whitelist Tab ──────────────────────────────────────────────────────
+async function refreshWhitelistTab() {
+  const entries = await loadWhitelist();
+  const feed = document.getElementById('wl-feed');
+  if (!feed) return;
+  if (entries.length === 0) {
+    feed.innerHTML = '<div class="empty">No whitelist entries. Add SSID patterns above.</div>';
+    return;
+  }
+  feed.innerHTML = '<table><tr><th onclick="sortTable(this)">Pattern</th><th onclick="sortTable(this)">Label</th><th onclick="sortTable(this)">Added</th><th></th></tr>' +
+    entries.map(e => {
+      const p = e.pattern || e;
+      const l = e.label || '';
+      const d = e.added_at ? new Date(e.added_at).toLocaleDateString() : '';
+      return '<tr>' +
+        '<td style="font-weight:700;color:#3fb950;font-family:JetBrains Mono,monospace">' + p + '</td>' +
+        '<td style="color:#8b949e">' + l + '</td>' +
+        '<td style="color:#484f58;font-size:10px">' + d + '</td>' +
+        '<td><button onclick="removeWhitelist(\'' + p.replace(/'/g, "\\'") + '\')" style="background:#f8514922;border:1px solid #f8514944;color:#f85149;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Remove</button></td>' +
+        '</tr>';
+    }).join('') + '</table>';
+}
+async function addWhitelistEntry() {
+  const patternEl = document.getElementById('wl-pattern');
+  const labelEl = document.getElementById('wl-label');
+  const pattern = patternEl.value.trim();
+  if (!pattern) return;
+  await whitelistSSID(pattern, labelEl.value.trim());
+  patternEl.value = '';
+  labelEl.value = '';
+  refreshWhitelistTab();
 }
 
 // ── Probes Tab ─────────────────────────────────────────────────────────
@@ -935,6 +1155,7 @@ function setProbeWindow(h) {
 
 async function refreshProbes() {
   if (!document.getElementById('probes-auto-refresh').checked) return;
+  if (pausedFeeds.has('probes')) return;
   const droneOnly = document.getElementById('probes-drone-only').checked;
   const url = API + '/detections/probes/history?hours=' + probeHours + (droneOnly ? '&drone_only=true' : '');
   const data = await f(url, 8000);
@@ -943,7 +1164,7 @@ async function refreshProbes() {
   const statusEl = document.getElementById('probes-status');
 
   if (!data) {
-    feed.innerHTML = '<div class="empty">Failed to load probe data</div>';
+    updateFeed('probes-feed', '<div class="empty">Failed to load probe data</div>');
     return;
   }
 
@@ -963,7 +1184,7 @@ async function refreshProbes() {
 
   // Device table with expandable SSID details
   if (devices.length > 0) {
-    feed.innerHTML = '<table><tr><th>Device MAC</th><th>SSIDs Probed</th><th>Probes</th><th>RSSI</th><th>Sensors</th><th>First Seen</th><th>Last Seen</th></tr>' +
+    updateFeed('probes-feed', '<table><tr><th onclick="sortTable(this)">Device MAC</th><th onclick="sortTable(this)">SSIDs Probed</th><th onclick="sortTable(this)">Probes</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th onclick="sortTable(this)">First Seen</th><th onclick="sortTable(this)">Last Seen</th></tr>' +
       devices.map((d, idx) => {
         const ssids = d.ssids || [];
         const hasDrone = ssids.some(s => isDroneSSID(s.ssid));
@@ -1000,26 +1221,31 @@ async function refreshProbes() {
           '</div></div></td></tr>';
 
         return html;
-      }).join('') + '</table>';
+      }).join('') + '</table>');
   } else {
-    feed.innerHTML = '<div class="empty">No probing devices found in last ' + probeHours + ' hours</div>';
+    updateFeed('probes-feed', '<div class="empty">No probing devices found in last ' + probeHours + ' hours</div>');
   }
 
-  // Hot SSIDs panel from history data
+  // Hot SSIDs panel from history data (now with richer data)
   const hotSsids = data.hot_ssids || [];
-  const maxCount = hotSsids.length > 0 ? hotSsids[0].device_count : 1;
+  const maxProbes = hotSsids.length > 0 ? Math.max(...hotSsids.map(s => s.total_probes || s.device_count || 1)) : 1;
 
   if (hotSsids.length > 0) {
     hotDiv.innerHTML = hotSsids.slice(0, 20).map(s => {
       const dr = isDroneSSID(s.ssid);
       const barColor = dr ? '#f85149' : '#e040fb';
-      const pct = Math.max(5, Math.round(s.device_count / maxCount * 100));
-      return '<div style="padding:4px 0;border-bottom:1px solid #21262d">' +
+      const probes = s.total_probes || s.device_count || 0;
+      const devCount = s.device_count || 0;
+      const pct = Math.max(5, Math.round(probes / maxProbes * 100));
+      const sensorsStr = s.sensors ? s.sensors.map(sensorLabel).join(', ') : '';
+      return '<div style="padding:5px 0;border-bottom:1px solid #21262d">' +
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">' +
           '<span style="color:' + (dr ? '#f85149' : '#c9d1d9') + ';font-family:JetBrains Mono,monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1" title="' + s.ssid + '">' +
             (dr ? '&#x26a0; ' : '') + s.ssid + '</span>' +
-          '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:' + barColor + ';font-weight:700;min-width:30px;text-align:right">' + s.device_count + '</span>' +
+          '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:' + barColor + ';font-weight:700;min-width:50px;text-align:right">' +
+            probes + '<span style="color:#484f58;font-weight:400"> / ' + devCount + 'd</span></span>' +
         '</div>' +
+        (sensorsStr ? '<div style="font-size:9px;color:#484f58;margin-bottom:2px">Sensors: ' + sensorsStr + '</div>' : '') +
         '<div style="background:#21262d;border-radius:2px;height:3px;overflow:hidden">' +
           '<div style="width:' + pct + '%;height:100%;background:' + barColor + ';border-radius:2px;transition:width 0.3s"></div>' +
         '</div></div>';
@@ -1169,6 +1395,7 @@ async function refresh() {
     refreshWifi();
     refreshBLE();
     refreshProbes();
+    refreshWhitelistTab();
     refreshAnomalies();
     refreshDetections();
 
@@ -1269,17 +1496,17 @@ async function refreshAnomalies() {
 }
 
 async function refreshDetections() {
+  if (pausedFeeds.has('detections')) return;
   const grouped = await f(API+'/detections/grouped?max_age_s=120&exclude_known_ap=false');
-  const df = document.getElementById('det-feed');
   const dc = document.getElementById('det-count');
   if (grouped && grouped.count > 0) {
     dc.textContent = grouped.count + ' unique devices';
-    df.innerHTML = '<table><tr><th>Age</th><th>Class</th><th>Device</th><th>Src</th><th>RSSI</th><th>Sensors</th><th>Sensor RSSI</th><th>Hits</th><th>Mfr</th></tr>'+
+    updateFeed('det-feed', '<table><tr><th onclick="sortTable(this)">Age</th><th onclick="sortTable(this)">Class</th><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Src</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th>Sensor RSSI</th><th onclick="sortTable(this)">Hits</th><th onclick="sortTable(this)">Mfr</th></tr>'+
       grouped.devices.map(d => {
         const sRssi = Object.entries(d.sensor_rssi||{}).map(([k,v])=>sensorLabel(k)+':'+v).join(' ');
         return '<tr><td>'+d.age_s+'s</td><td>'+clsBadge(d.classification)+'</td><td style="font-weight:700">'+(d.ssid||d.drone_id)+'</td><td>'+srcBadge(d.source)+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td><td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td><td style="font-size:10px">'+sRssi+'</td><td>'+d.detection_count+'</td><td style="color:#8b949e">'+(d.manufacturer||'-')+'</td></tr>';
-      }).join('') + '</table>';
-  } else { dc.textContent=''; df.innerHTML='<div class="empty">No detections</div>'; }
+      }).join('') + '</table>');
+  } else { dc.textContent=''; updateFeed('det-feed','<div class="empty">No detections</div>'); }
 }
 
 async function registerNode() {
@@ -1397,12 +1624,20 @@ async function toggleSensorDetail(deviceId) {
 
 updateNodeDropdown();
 populateHistoryDropdown();
-refresh();
-setInterval(refresh, 3000);
+loadWhitelist().then(() => refresh());
+setInterval(refresh, 5000);
 setInterval(updateNodeDropdown, 30000);
 setInterval(populateHistoryDropdown, 30000);
 setInterval(updateScannerDiag, 5000);
+setInterval(updateLockonBanner, 5000);
 updateScannerDiag();
+updateLockonBanner();
+
+// Setup pause-on-hover for all feed containers
+setupPauseOnHover('wifi-feed', 'wifi');
+setupPauseOnHover('ble-feed', 'ble');
+setupPauseOnHover('probes-feed', 'probes');
+setupPauseOnHover('det-feed', 'detections');
 </script>
 </body>
 </html>

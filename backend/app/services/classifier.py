@@ -5,6 +5,7 @@ as confirmed_drone, likely_drone, test_drone, possible_drone, tracker,
 known_ap, or unknown_device.
 """
 
+import logging
 from fnmatch import fnmatch
 
 try:
@@ -12,24 +13,52 @@ try:
 except ImportError:
     match_drone_wifi_ssid = None
 
-# SSIDs that are known infrastructure / neighbor APs (not drones)
-WHITELIST_SSID_PATTERNS = {
-    "CasaChomp*",
-    "casachomp*",
-    "Hyrule*",
-    "hyrule*",
-    "xfinitywifi",
-    "Xfinitywifi",
-    "XFINITY*",
-    "Miramontes*",
-    "Lorule*",
-    "lorule*",
-    "TeamCharityCase*",
-    "Kristamas*",
-    "Lights_New*",
-    "HinksPix*",
-    "TeslaGW_*",
-}
+logger = logging.getLogger(__name__)
+
+# SSIDs that are known infrastructure (loaded from DB at startup, refreshed periodically)
+# Only FoF-* is hardcoded — everything else comes from the whitelist table
+WHITELIST_SSID_PATTERNS: set[str] = {"FoF-*"}
+
+
+def load_whitelist_from_db(db_session) -> int:
+    """Load SSID whitelist patterns from the database. Called at startup and on changes."""
+    global WHITELIST_SSID_PATTERNS
+    try:
+        from app.models.db_models import WhitelistedSSID
+        result = db_session.execute(
+            db_session.query(WhitelistedSSID.pattern) if hasattr(db_session, 'query')
+            else __import__('sqlalchemy').select(WhitelistedSSID.pattern)
+        )
+        patterns = {"FoF-*"}
+        for row in result:
+            p = row[0] if isinstance(row, tuple) else row.pattern
+            if p:
+                patterns.add(p)
+        WHITELIST_SSID_PATTERNS = patterns
+        logger.info("Loaded %d SSID whitelist patterns from DB", len(patterns))
+        return len(patterns)
+    except Exception as e:
+        logger.warning("Failed to load SSID whitelist from DB: %s", e)
+        return 0
+
+
+async def async_load_whitelist(async_session) -> int:
+    """Async version for FastAPI startup."""
+    global WHITELIST_SSID_PATTERNS
+    try:
+        from sqlalchemy import select
+        from app.models.db_models import WhitelistedSSID
+        result = await async_session.execute(select(WhitelistedSSID.pattern))
+        patterns = {"FoF-*"}
+        for row in result.scalars().all():
+            if row:
+                patterns.add(row)
+        WHITELIST_SSID_PATTERNS = patterns
+        logger.info("Loaded %d SSID whitelist patterns from DB", len(patterns))
+        return len(patterns)
+    except Exception as e:
+        logger.warning("Failed to load SSID whitelist from DB: %s", e)
+        return 0
 
 # BLE device types that are trackers
 TRACKER_TYPES = {

@@ -65,8 +65,12 @@ _known_drones: dict[str, float] = {}
 _drone_alerts: list[dict] = []  # Persistent drone-specific alerts
 _DRONE_REAPPEAR_SEC = 300  # Re-alert if drone gone >5min and comes back
 
-# Lock-on command (polled by uplinks)
+# Lock-on command (polled by uplinks) — legacy global + per-node via drone_tracker
 _lockon_command: dict = {"active": False, "channel": 0, "bssid": "", "duration_s": 0, "issued_at": 0}
+
+# Automated drone tracking orchestrator
+from app.services.drone_tracker import DroneTracker
+_drone_tracker = DroneTracker()
 
 # ---------------------------------------------------------------------------
 # Multi-sensor tracker (triangulation engine)
@@ -270,6 +274,16 @@ async def ingest_drone_detections(
                 received_at=received_at,
                 channel=det.channel,
             )
+        )
+
+        # Automated drone tracking — assigns one node to lock on to confirmed drones
+        _drone_tracker.on_detection(
+            drone_id=det.drone_id, source=det.source,
+            confidence=det.confidence, rssi=det.rssi or 0,
+            device_id=batch.device_id, ssid=det.ssid or "",
+            bssid=det.bssid or "", channel=det.channel or 0,
+            drone_lat=det.latitude or 0, drone_lon=det.longitude or 0,
+            drone_alt=det.altitude_m or 0,
         )
         for alert in alerts:
             logger.info(
@@ -634,14 +648,32 @@ async def cancel_lockon():
 
 
 @router.get("/lockon")
-async def get_lockon_status():
-    """Check current lock-on status (polled by uplinks)."""
-    # Auto-expire
+async def get_lockon_status(
+    device_id: Annotated[str | None, Query(description="Node ID for per-node lock-on")] = None,
+):
+    """Check current lock-on status (polled by uplinks).
+
+    If device_id is provided, returns per-node auto-tracking command from the
+    drone tracker. Falls back to the global manual lock-on command.
+    """
+    # Per-node auto-tracking (from drone_tracker)
+    if device_id:
+        cmd = _drone_tracker.get_node_command(device_id)
+        if cmd.get("active"):
+            return cmd
+
+    # Fallback: global manual lock-on
     if _lockon_command.get("active"):
         elapsed = time.time() - _lockon_command.get("issued_at", 0)
         if elapsed > _lockon_command.get("duration_s", 60):
             _lockon_command["active"] = False
     return _lockon_command
+
+
+@router.get("/tracking")
+async def get_tracking_status():
+    """Return automated drone tracking status — active sessions, history."""
+    return _drone_tracker.get_status()
 
 
 # GET /detections/drone-alerts — drone-specific alerts (high priority)
@@ -730,29 +762,62 @@ async def get_anomalies(
 
 
 @router.get("/anomalies/whitelist")
-async def get_whitelist():
-    """Return current whitelist (SSID patterns + BSSIDs)."""
-    return _anomaly_detector.get_whitelist()
+async def get_whitelist(db: AsyncSession = Depends(get_db)):
+    """Return current whitelist (SSID patterns from DB + BSSIDs from memory)."""
+    from app.models.db_models import WhitelistedSSID
+    result = await db.execute(select(WhitelistedSSID).order_by(WhitelistedSSID.pattern))
+    entries = [{"pattern": r.pattern, "label": r.label, "added_at": r.added_at.isoformat()} for r in result.scalars().all()]
+    return {
+        "ssid_patterns": entries,
+        "bssids": sorted(_anomaly_detector.whitelist_bssids),
+    }
 
 
 @router.post("/anomalies/whitelist")
-async def add_whitelist(body: dict):
-    """Add an entry to the whitelist. Body: {"pattern": "...", "type": "ssid"|"bssid"}"""
-    pattern = body.get("pattern", "")
+async def add_whitelist(body: dict, db: AsyncSession = Depends(get_db)):
+    """Add an SSID pattern to whitelist. Body: {"pattern": "CasaChomp*", "label": "Home WiFi"}"""
+    pattern = body.get("pattern", "").strip()
+    label = body.get("label", "").strip() or None
     wl_type = body.get("type", "ssid")
     if not pattern:
         return {"error": "pattern is required"}
-    _anomaly_detector.add_whitelist(pattern, wl_type)
-    return {"ok": True, "whitelist": _anomaly_detector.get_whitelist()}
+
+    if wl_type == "bssid":
+        _anomaly_detector.add_whitelist(pattern, "bssid")
+    else:
+        # Save to DB
+        from app.models.db_models import WhitelistedSSID
+        existing = await db.execute(select(WhitelistedSSID).where(WhitelistedSSID.pattern == pattern))
+        if not existing.scalar_one_or_none():
+            db.add(WhitelistedSSID(pattern=pattern, label=label))
+            await db.commit()
+        # Reload in-memory whitelist
+        from app.services.classifier import async_load_whitelist
+        await async_load_whitelist(db)
+
+    return {"ok": True}
 
 
 @router.delete("/anomalies/whitelist")
-async def remove_whitelist(body: dict):
+async def remove_whitelist(body: dict, db: AsyncSession = Depends(get_db)):
     """Remove an entry from the whitelist."""
-    pattern = body.get("pattern", "")
+    pattern = body.get("pattern", "").strip()
     wl_type = body.get("type", "ssid")
-    _anomaly_detector.remove_whitelist(pattern, wl_type)
-    return {"ok": True, "whitelist": _anomaly_detector.get_whitelist()}
+
+    if wl_type == "bssid":
+        _anomaly_detector.remove_whitelist(pattern, "bssid")
+    else:
+        from app.models.db_models import WhitelistedSSID
+        result = await db.execute(select(WhitelistedSSID).where(WhitelistedSSID.pattern == pattern))
+        entry = result.scalar_one_or_none()
+        if entry:
+            await db.delete(entry)
+            await db.commit()
+        # Reload in-memory whitelist
+        from app.services.classifier import async_load_whitelist
+        await async_load_whitelist(db)
+
+    return {"ok": True}
 
 
 @router.get("/anomalies/devices")
@@ -830,7 +895,8 @@ async def get_probe_history(
 
     # Group by device
     devices: dict[str, dict] = {}
-    all_ssids: dict[str, int] = {}
+    # SSID-centric tracking: for each SSID, which MACs + sensors + probe counts
+    ssid_groups: dict[str, dict] = {}
 
     for d in detections:
         did = d.drone_id or "unknown"
@@ -850,7 +916,30 @@ async def get_probe_history(
         dev["total_probes"] += 1
         if d.ssid:
             dev["ssids"][d.ssid] = dev["ssids"].get(d.ssid, 0) + 1
-            all_ssids[d.ssid] = all_ssids.get(d.ssid, 0) + 1
+            # SSID-centric grouping
+            if d.ssid not in ssid_groups:
+                ssid_groups[d.ssid] = {
+                    "ssid": d.ssid,
+                    "device_macs": set(),
+                    "sensors": set(),
+                    "total_probes": 0,
+                    "best_rssi": -999,
+                    "first_seen": d.received_at.isoformat() if d.received_at else "",
+                    "last_seen": d.received_at.isoformat() if d.received_at else "",
+                }
+            sg = ssid_groups[d.ssid]
+            sg["device_macs"].add(did.replace("probe_", ""))
+            sg["total_probes"] += 1
+            if d.device_id:
+                sg["sensors"].add(d.device_id)
+            if d.rssi and d.rssi > sg["best_rssi"]:
+                sg["best_rssi"] = d.rssi
+            if d.received_at:
+                ts = d.received_at.isoformat()
+                if ts > sg["last_seen"]:
+                    sg["last_seen"] = ts
+                if ts < sg["first_seen"]:
+                    sg["first_seen"] = ts
         if d.device_id:
             dev["sensors"].add(d.device_id)
         if d.rssi and d.rssi > dev["best_rssi"]:
@@ -862,7 +951,7 @@ async def get_probe_history(
             if ts < dev["first_seen"]:
                 dev["first_seen"] = ts
 
-    # Build response
+    # Build device response
     device_list = []
     for dev in sorted(devices.values(), key=lambda x: x["total_probes"], reverse=True):
         dev["sensors"] = sorted(dev["sensors"])
@@ -873,14 +962,24 @@ async def get_probe_history(
             dev["best_rssi"] = None
         device_list.append(dev)
 
-    # Hot SSIDs ranking
-    hot_ssids = [{"ssid": k, "device_count": v} for k, v in sorted(all_ssids.items(), key=lambda x: -x[1])][:30]
+    # Hot SSIDs ranking (SSID-centric view)
+    hot_ssids = []
+    for sg in sorted(ssid_groups.values(), key=lambda x: x["total_probes"], reverse=True)[:30]:
+        hot_ssids.append({
+            "ssid": sg["ssid"],
+            "device_count": len(sg["device_macs"]),
+            "total_probes": sg["total_probes"],
+            "sensors": sorted(sg["sensors"]),
+            "best_rssi": sg["best_rssi"] if sg["best_rssi"] != -999 else None,
+            "first_seen": sg["first_seen"],
+            "last_seen": sg["last_seen"],
+        })
 
     return {
         "hours_queried": hours,
         "total_probes": len(detections),
         "unique_devices": len(device_list),
-        "unique_ssids": len(all_ssids),
+        "unique_ssids": len(ssid_groups),
         "devices": device_list,
         "hot_ssids": hot_ssids,
     }
@@ -1018,7 +1117,7 @@ async def get_sensor_stats(device_id: str):
             oldest = d.received_at
 
         # WiFi SSID tracking
-        if d.ssid and "ble" not in src:
+        if d.ssid and "ble" not in src and src != "wifi_probe_request":
             if d.ssid not in ssids:
                 ssids[d.ssid] = {"count": 0, "best_rssi": -999, "classification": d.classification, "bssid": d.bssid}
             ssids[d.ssid]["count"] += 1

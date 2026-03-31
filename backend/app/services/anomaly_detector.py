@@ -80,29 +80,31 @@ class AnomalyDetector:
         self.alerts: deque[AnomalyAlert] = deque(maxlen=self.MAX_ALERTS)
         self._last_prune = time.time()
 
-        # Whitelist: SSID patterns (glob) and exact BSSIDs
-        self.whitelist_ssid_patterns: set = {
-            "FoF-*",            # Our own uplink APs
-            "CasaChomp*",       # Home mesh
-            "Hyrule*",          # Neighbor mesh
-            "hyrule*",
-            "xfinitywifi",      # ISP hotspot
-        }
+        # Whitelist: uses shared classifier whitelist (loaded from DB)
+        # Import at use-time to get the live set
         self.whitelist_bssids: set = set()
 
     # ── Whitelist management ─────────────────────────────────────────────
+
+    @property
+    def whitelist_ssid_patterns(self):
+        """Use the shared classifier whitelist (loaded from DB)."""
+        from app.services.classifier import WHITELIST_SSID_PATTERNS
+        return WHITELIST_SSID_PATTERNS
 
     def add_whitelist(self, pattern: str, wl_type: str = "ssid"):
         if wl_type == "bssid":
             self.whitelist_bssids.add(pattern.upper())
         else:
-            self.whitelist_ssid_patterns.add(pattern)
+            from app.services.classifier import WHITELIST_SSID_PATTERNS
+            WHITELIST_SSID_PATTERNS.add(pattern)
 
     def remove_whitelist(self, pattern: str, wl_type: str = "ssid"):
         if wl_type == "bssid":
             self.whitelist_bssids.discard(pattern.upper())
         else:
-            self.whitelist_ssid_patterns.discard(pattern)
+            from app.services.classifier import WHITELIST_SSID_PATTERNS
+            WHITELIST_SSID_PATTERNS.discard(pattern)
 
     def get_whitelist(self) -> dict:
         return {

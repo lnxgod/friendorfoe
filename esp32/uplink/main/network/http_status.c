@@ -14,6 +14,10 @@
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_wifi.h"
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 /* Subsystem headers for status getters */
 #include "uart_rx.h"
@@ -114,8 +118,14 @@ static esp_err_t status_html_handler(httpd_req_t *req)
             "<div style=\"background:#3d2e00;border:1px solid #d29922;"
             "border-radius:8px;padding:.6rem .8rem;margin:.75rem 0;"
             "color:#d29922;font-size:.85rem\">"
-            "Standalone Mode &mdash; connect STA WiFi via web flasher "
-            "to enable backend uploads</div>",
+            "Standalone Mode &mdash; "
+            "<a href=\"/setup\" style=\"color:#58a6ff;font-weight:700\">"
+            "Configure WiFi</a> to connect to your network</div>",
+            HTTPD_RESP_USE_STRLEN);
+    } else {
+        httpd_resp_send_chunk(req,
+            "<div style=\"text-align:right;margin:.5rem 0;font-size:.8rem\">"
+            "<a href=\"/setup\" style=\"color:#484f58\">Setup</a></div>",
             HTTPD_RESP_USE_STRLEN);
     }
 
@@ -341,6 +351,284 @@ static esp_err_t status_json_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── WiFi Setup Page ─────────────────────────────────────────────────── */
+
+static esp_err_t setup_html_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+
+    char cur_ssid[33] = {0};
+    nvs_config_get_wifi_ssid(cur_ssid, sizeof(cur_ssid));
+    char cur_url[128] = {0};
+    nvs_config_get_backend_url(cur_url, sizeof(cur_url));
+    char dev_id[32] = {0};
+    nvs_config_get_device_id(dev_id, sizeof(dev_id));
+
+    httpd_resp_send_chunk(req,
+        "<!DOCTYPE html><html><head>"
+        "<meta charset=\"UTF-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>FoF Setup</title>"
+        "<style>"
+        "*{box-sizing:border-box;margin:0;padding:0}"
+        "body{font-family:-apple-system,system-ui,sans-serif;"
+        "background:#0d1117;color:#e6edf3;padding:1rem}"
+        ".c{max-width:500px;margin:0 auto}"
+        "h1{font-size:1.3rem;margin-bottom:.3rem;color:#58a6ff}"
+        "h2{font-size:1rem;margin:1rem 0 .5rem;color:#8b949e;"
+        "border-bottom:1px solid #30363d;padding-bottom:.25rem}"
+        ".card{background:#161b22;border:1px solid #30363d;border-radius:8px;"
+        "padding:.8rem;margin-bottom:.75rem}"
+        "label{display:block;font-size:.8rem;color:#8b949e;margin-bottom:.2rem}"
+        "input[type=text],input[type=password]{width:100%;padding:.5rem;"
+        "background:#0d1117;border:1px solid #30363d;border-radius:6px;"
+        "color:#e6edf3;font-size:.9rem;margin-bottom:.5rem}"
+        "input:focus{border-color:#58a6ff;outline:none}"
+        "button{padding:.5rem 1rem;border:none;border-radius:6px;"
+        "font-weight:600;cursor:pointer;font-size:.85rem;margin-right:.5rem}"
+        ".btn-scan{background:#1f6feb;color:#fff}"
+        ".btn-save{background:#238636;color:#fff}"
+        ".btn-sec{background:#30363d;color:#c9d1d9}"
+        ".net{display:flex;justify-content:space-between;align-items:center;"
+        "padding:.4rem .6rem;border-bottom:1px solid #21262d;cursor:pointer}"
+        ".net:hover{background:#1c2333}.net:last-child{border:none}"
+        ".rssi{font-size:.75rem;font-weight:700}"
+        ".ok{color:#3fb950}.warn{color:#d29922}.err{color:#f85149}"
+        "#scan-list{max-height:250px;overflow-y:auto}"
+        "#msg{margin-top:.5rem;padding:.4rem .6rem;border-radius:6px;font-size:.85rem;"
+        "display:none}"
+        ".msg-ok{background:#0d2818;border:1px solid #238636;color:#3fb950;display:block}"
+        ".msg-err{background:#2d0a0e;border:1px solid #da3633;color:#f85149;display:block}"
+        ".msg-info{background:#0d1d30;border:1px solid #1f6feb;color:#58a6ff;display:block}"
+        "</style></head><body><div class=\"c\">",
+        HTTPD_RESP_USE_STRLEN);
+
+    httpd_resp_send_chunk(req,
+        "<h1>Friend or Foe</h1>"
+        "<div style=\"font-size:.8rem;color:#8b949e;margin-bottom:.5rem\">"
+        "WiFi &amp; Network Setup</div>",
+        HTTPD_RESP_USE_STRLEN);
+
+    /* WiFi scan + select */
+    httpd_resp_send_chunk(req,
+        "<div class=\"card\">"
+        "<h2 style=\"margin-top:0\">WiFi Network</h2>"
+        "<button class=\"btn-scan\" onclick=\"doScan()\">Scan Networks</button>"
+        "<div id=\"scan-list\" style=\"margin-top:.5rem\"></div>"
+        "<label style=\"margin-top:.5rem\">SSID</label>"
+        "<input type=\"text\" id=\"ssid\" placeholder=\"Select from scan or type\""
+        , HTTPD_RESP_USE_STRLEN);
+
+    char buf[256];
+    snprintf(buf, sizeof(buf), " value=\"%s\">", cur_ssid);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    httpd_resp_send_chunk(req,
+        "<label>Password</label>"
+        "<input type=\"password\" id=\"pass\" placeholder=\"WiFi password\">"
+        "</div>",
+        HTTPD_RESP_USE_STRLEN);
+
+    /* Backend URL */
+    snprintf(buf, sizeof(buf),
+        "<div class=\"card\">"
+        "<h2 style=\"margin-top:0\">Backend Server</h2>"
+        "<label>URL</label>"
+        "<input type=\"text\" id=\"url\" value=\"%s\">"
+        "</div>", cur_url);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    /* Device ID */
+    snprintf(buf, sizeof(buf),
+        "<div class=\"card\">"
+        "<h2 style=\"margin-top:0\">Device</h2>"
+        "<label>Device ID</label>"
+        "<input type=\"text\" id=\"devid\" value=\"%s\">"
+        "</div>", dev_id);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    /* Save + status */
+    httpd_resp_send_chunk(req,
+        "<button class=\"btn-save\" onclick=\"doSave()\">Save &amp; Connect</button>"
+        "<button class=\"btn-sec\" onclick=\"location.href='/'\">Status Page</button>"
+        "<div id=\"msg\"></div>",
+        HTTPD_RESP_USE_STRLEN);
+
+    /* JavaScript */
+    httpd_resp_send_chunk(req,
+        "<script>"
+        "function msg(t,c){var m=document.getElementById('msg');"
+        "m.className=c;m.textContent=t;m.style.display='block'}"
+        "function doScan(){"
+        "msg('Scanning...','msg-info');"
+        "fetch('/api/scan').then(r=>r.json()).then(d=>{"
+        "var h='';d.networks.forEach(n=>{"
+        "var rc=n.rssi>-50?'ok':n.rssi>-70?'warn':'err';"
+        "h+='<div class=\"net\" onclick=\"document.getElementById(\\'ssid\\').value=\\''+n.ssid+'\\'\">'"
+        "+'<span>'+n.ssid+(n.secure?' &#x1f512;':'')+'</span>'"
+        "+'<span class=\"rssi '+rc+'\">'+n.rssi+'</span></div>';"
+        "});document.getElementById('scan-list').innerHTML=h||'<div style=\"color:#484f58;padding:.5rem\">No networks found</div>';"
+        "msg('Found '+d.networks.length+' networks','msg-ok');"
+        "}).catch(e=>msg('Scan failed: '+e,'msg-err'))}"
+        "function doSave(){"
+        "var s=document.getElementById('ssid').value;"
+        "var p=document.getElementById('pass').value;"
+        "var u=document.getElementById('url').value;"
+        "var d=document.getElementById('devid').value;"
+        "if(!s){msg('SSID required','msg-err');return;}"
+        "msg('Saving...','msg-info');"
+        "fetch('/api/connect',{method:'POST',"
+        "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+        "body:'ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent(p)"
+        "+'&url='+encodeURIComponent(u)+'&devid='+encodeURIComponent(d)"
+        "}).then(r=>r.json()).then(d=>{"
+        "if(d.ok){msg('Saved! Rebooting to connect to '+s+'...','msg-ok');"
+        "setTimeout(()=>location.reload(),5000);}"
+        "else msg('Error: '+(d.error||'unknown'),'msg-err');"
+        "}).catch(e=>msg('Failed: '+e,'msg-err'))}"
+        "</script>",
+        HTTPD_RESP_USE_STRLEN);
+
+    httpd_resp_send_chunk(req,
+        "</div></body></html>",
+        HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* ── WiFi Scan API ────────────────────────────────────────────────────── */
+
+static esp_err_t scan_json_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+
+    wifi_scan_config_t scan_cfg = {
+        .show_hidden = false,
+        .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time   = { .active = { .min = 100, .max = 500 } },
+    };
+
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
+    if (err != ESP_OK) {
+        httpd_resp_sendstr(req, "{\"error\":\"scan_failed\",\"networks\":[]}");
+        return ESP_OK;
+    }
+
+    uint16_t ap_count = 0;
+    esp_wifi_scan_get_ap_num(&ap_count);
+    if (ap_count > 30) ap_count = 30;
+
+    wifi_ap_record_t *ap_list = calloc(ap_count, sizeof(wifi_ap_record_t));
+    if (!ap_list) {
+        esp_wifi_scan_get_ap_records(&ap_count, NULL);
+        httpd_resp_sendstr(req, "{\"error\":\"oom\",\"networks\":[]}");
+        return ESP_OK;
+    }
+    esp_wifi_scan_get_ap_records(&ap_count, ap_list);
+
+    /* Deduplicate by SSID (keep strongest) */
+    char buf[128];
+    httpd_resp_send_chunk(req, "{\"networks\":[", HTTPD_RESP_USE_STRLEN);
+
+    int sent = 0;
+    for (int i = 0; i < ap_count; i++) {
+        if (ap_list[i].ssid[0] == '\0') continue;
+
+        /* Skip if we already sent a stronger copy of this SSID */
+        bool dup = false;
+        for (int j = 0; j < i; j++) {
+            if (strcmp((char *)ap_list[i].ssid, (char *)ap_list[j].ssid) == 0) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) continue;
+
+        snprintf(buf, sizeof(buf),
+            "%s{\"ssid\":\"%s\",\"rssi\":%d,\"secure\":%s}",
+            sent > 0 ? "," : "",
+            (char *)ap_list[i].ssid,
+            ap_list[i].rssi,
+            ap_list[i].authmode != WIFI_AUTH_OPEN ? "true" : "false");
+        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+        sent++;
+    }
+
+    free(ap_list);
+    httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* ── WiFi Connect API (save creds + reboot) ──────────────────────────── */
+
+static esp_err_t connect_post_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+
+    char body[512] = {0};
+    int received = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (received <= 0) {
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"no body\"}");
+        return ESP_OK;
+    }
+
+    /* Parse URL-encoded form: ssid=X&pass=Y&url=Z&devid=W */
+    char ssid[33] = {0}, pass[65] = {0}, url[128] = {0}, devid[32] = {0};
+
+    /* Simple URL-decode parser */
+    char *p = body;
+    while (p && *p) {
+        char *eq = strchr(p, '=');
+        if (!eq) break;
+        *eq = '\0';
+        char *val = eq + 1;
+        char *amp = strchr(val, '&');
+        if (amp) *amp = '\0';
+
+        /* URL-decode value in-place (just handle %XX and +) */
+        char *r = val, *w = val;
+        while (*r) {
+            if (*r == '+') { *w++ = ' '; r++; }
+            else if (*r == '%' && r[1] && r[2]) {
+                unsigned int ch;
+                sscanf(r + 1, "%2x", &ch);
+                *w++ = (char)ch;
+                r += 3;
+            } else { *w++ = *r++; }
+        }
+        *w = '\0';
+
+        if (strcmp(p, "ssid") == 0) strncpy(ssid, val, sizeof(ssid) - 1);
+        else if (strcmp(p, "pass") == 0) strncpy(pass, val, sizeof(pass) - 1);
+        else if (strcmp(p, "url") == 0) strncpy(url, val, sizeof(url) - 1);
+        else if (strcmp(p, "devid") == 0) strncpy(devid, val, sizeof(devid) - 1);
+
+        p = amp ? amp + 1 : NULL;
+    }
+
+    if (ssid[0] == '\0') {
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"ssid required\"}");
+        return ESP_OK;
+    }
+
+    /* Save to NVS */
+    nvs_config_set_string("wifi_ssid", ssid);
+    if (pass[0]) nvs_config_set_string("wifi_pass", pass);
+    if (url[0]) nvs_config_set_string("backend_url", url);
+    if (devid[0]) nvs_config_set_string("device_id", devid);
+
+    ESP_LOGI(TAG, "WiFi config saved: SSID='%s' URL='%s' ID='%s'", ssid, url, devid);
+
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+
+    /* Reboot after short delay to apply new WiFi config */
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+
+    return ESP_OK;
+}
+
 /* ── URI registration ──────────────────────────────────────────────────── */
 
 static const httpd_uri_t uri_status_html = {
@@ -355,6 +643,24 @@ static const httpd_uri_t uri_status_json = {
     .handler  = status_json_handler,
 };
 
+static const httpd_uri_t uri_setup_html = {
+    .uri      = "/setup",
+    .method   = HTTP_GET,
+    .handler  = setup_html_handler,
+};
+
+static const httpd_uri_t uri_scan_json = {
+    .uri      = "/api/scan",
+    .method   = HTTP_GET,
+    .handler  = scan_json_handler,
+};
+
+static const httpd_uri_t uri_connect_post = {
+    .uri      = "/api/connect",
+    .method   = HTTP_POST,
+    .handler  = connect_post_handler,
+};
+
 /* ── Public API ────────────────────────────────────────────────────────── */
 
 void http_status_init(void)
@@ -362,8 +668,8 @@ void http_status_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port    = CONFIG_HTTP_STATUS_PORT;
     config.task_priority  = CONFIG_HTTP_STATUS_PRIORITY;
-    config.stack_size     = CONFIG_HTTP_STATUS_STACK;
-    config.max_uri_handlers = 4;
+    config.stack_size     = 8192;    /* Larger stack for setup page */
+    config.max_uri_handlers = 8;
 
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &config);
@@ -375,7 +681,10 @@ void http_status_init(void)
 
     httpd_register_uri_handler(server, &uri_status_html);
     httpd_register_uri_handler(server, &uri_status_json);
+    httpd_register_uri_handler(server, &uri_setup_html);
+    httpd_register_uri_handler(server, &uri_scan_json);
+    httpd_register_uri_handler(server, &uri_connect_post);
 
-    ESP_LOGI(TAG, "HTTP status server started on port %d",
+    ESP_LOGI(TAG, "HTTP status server started on port %d (setup at /setup)",
              CONFIG_HTTP_STATUS_PORT);
 }

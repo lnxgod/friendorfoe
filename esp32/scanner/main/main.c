@@ -316,13 +316,35 @@ static void uart_cmd_listener_task(void *arg)
                             int duration = dur ? dur->valueint : 60;
                             const char *bssid_str = (bssid && bssid->valuestring) ? bssid->valuestring : NULL;
 
-                            ESP_LOGW(TAG, "LOCK-ON received via UART: ch=%d dur=%ds bssid=%s",
+                            ESP_LOGW(TAG, "WiFi LOCK-ON: ch=%d dur=%ds bssid=%s",
                                      channel, duration, bssid_str ? bssid_str : "*");
                             wifi_scanner_lockon((uint8_t)channel, bssid_str, duration);
 
                         } else if (type && strcmp(type, "lockon_cancel") == 0) {
-                            ESP_LOGI(TAG, "LOCK-ON cancel received via UART");
+                            ESP_LOGI(TAG, "WiFi LOCK-ON cancel");
                             wifi_scanner_lockon_cancel();
+
+                        } else if (type && strcmp(type, "ble_lockon") == 0) {
+                            /* BLE focus mode: prioritize a specific MAC */
+                            cJSON *mac_j = cJSON_GetObjectItem(root, "mac");
+                            cJSON *dur = cJSON_GetObjectItem(root, "dur");
+                            int duration = dur ? dur->valueint : 45;
+                            if (mac_j && mac_j->valuestring && strlen(mac_j->valuestring) >= 17) {
+                                /* Parse "AA:BB:CC:DD:EE:FF" → 6 bytes */
+                                uint8_t mac[6];
+                                unsigned int m[6];
+                                if (sscanf(mac_j->valuestring, "%02x:%02x:%02x:%02x:%02x:%02x",
+                                           &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6) {
+                                    for (int j = 0; j < 6; j++) mac[j] = (uint8_t)m[j];
+                                    ESP_LOGW(TAG, "BLE FOCUS: %s dur=%ds", mac_j->valuestring, duration);
+                                    extern void ble_rid_lockon(const uint8_t *mac, int duration_s);
+                                    ble_rid_lockon(mac, duration);
+                                }
+                            }
+                        } else if (type && strcmp(type, "ble_lockon_cancel") == 0) {
+                            ESP_LOGI(TAG, "BLE FOCUS cancel");
+                            extern void ble_rid_lockon_cancel(void);
+                            ble_rid_lockon_cancel();
                         }
 
                         cJSON_Delete(root);
