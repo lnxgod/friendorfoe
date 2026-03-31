@@ -339,10 +339,26 @@
           <li>Offline ring buffer (100 batches)</li>
         </ul>
         <esp-web-install-button manifest="manifest-uplink.json">
-          <button slot="activate">Flash Uplink Firmware</button>
+          <button slot="activate">Flash Uplink (C3)</button>
           <span slot="not-allowed">Your browser does not support Web Serial</span>
         </esp-web-install-button>
-        <div class="desc">Flash first, then configure WiFi in Step 2 below.</div>
+        <div class="desc">For ESP32-C3 boards. Config (WiFi/URL) is preserved across updates.</div>
+      </div>
+      <div class="flash-card">
+        <h3>Uplink (Plain ESP32 OLED)</h3>
+        <div class="chip">ESP32 with OLED — needs WiFi config (Step 2)</div>
+        <ul>
+          <li>WiFi STA + backend upload</li>
+          <li>Dual UART (BLE + WiFi scanner)</li>
+          <li>OLED status display</li>
+          <li>Connectivity watchdog (auto-reboot)</li>
+          <li>Lock-on command forwarding</li>
+        </ul>
+        <esp-web-install-button manifest="manifest-uplink-esp32.json">
+          <button slot="activate">Flash Uplink (ESP32 OLED)</button>
+          <span slot="not-allowed">Your browser does not support Web Serial</span>
+        </esp-web-install-button>
+        <div class="desc">For ideaspark ESP32 OLED boards. Config is preserved across updates.</div>
       </div>
     </div>
 
