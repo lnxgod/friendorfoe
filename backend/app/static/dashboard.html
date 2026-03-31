@@ -1399,7 +1399,11 @@ async function refresh() {
     refreshAnomalies();
     refreshDetections();
 
-    // NODES TAB — GPS summary
+    // NODES TAB — skip rebuild if user is interacting
+    if (pausedFeeds.has('nodes')) {
+      document.getElementById('footer').textContent=new Date().toLocaleTimeString()+' | #'+refreshN;
+      return;
+    }
     const gs=document.getElementById('gps-summary');
     const gpsSet = nodeList.filter(n => n.lat != 0 || n.lon != 0);
     gs.innerHTML = '<table><tr><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Name</th><th>Status</th><th onclick="sortTable(this)">Firmware</th><th>Latitude</th><th>Longitude</th><th onclick="sortTable(this)">IP</th><th onclick="sortTable(this)">Last Seen</th><th onclick="sortTable(this)">Batches</th><th>OTA</th></tr>' +
@@ -1569,7 +1573,8 @@ async function updateScannerDiag() {
 async function toggleSensorDetail(deviceId) {
   const el = document.getElementById('sensor-detail-'+deviceId);
   if (!el) return;
-  if (el.style.display !== 'none') { el.style.display='none'; return; }
+  if (el.style.display !== 'none') { el.style.display='none'; pausedFeeds.delete('nodes'); return; }
+  pausedFeeds.add('nodes');  // Pause refresh while detail is open
   el.style.display='block';
   el.innerHTML='<div style="color:#d29922;font-size:11px">Loading...</div>';
 
@@ -1632,6 +1637,7 @@ async function toggleSensorDetail(deviceId) {
 
 // ── OTA Dialog ────────────────────────────────────────────────────────
 async function showOtaDialog(deviceId) {
+  pausedFeeds.add('nodes');  // Pause refresh while OTA dialog is open
   const catalog = await f(API+'/nodes/firmware/catalog', 5000);
   if (!catalog || !catalog.firmware) { alert('Failed to load firmware catalog'); return; }
   const available = catalog.firmware.filter(fw => fw.available);
@@ -1702,6 +1708,8 @@ setupPauseOnHover('wifi-feed', 'wifi');
 setupPauseOnHover('ble-feed', 'ble');
 setupPauseOnHover('probes-feed', 'probes');
 setupPauseOnHover('det-feed', 'detections');
+setupPauseOnHover('gps-summary', 'nodes');
+setupPauseOnHover('node-list', 'nodes');
 </script>
 </body>
 </html>
