@@ -303,6 +303,8 @@ class EnrichedDevice:
     ble_payload_len: int = 0        # Advertisement payload length
     ble_addr_type: int = 0          # Address type (public/random)
     ble_ja3: str = ""               # BLE-JA3 structural profile hash
+    ble_adv_interval: float = 0     # Advertisement interval in ms
+    ble_apple_auth: str = ""        # Apple auth tag hex (entity linking)
 
 
 # ---------------------------------------------------------------------------
@@ -318,9 +320,10 @@ class BLEEnricher:
     def __init__(self):
         self.devices: dict[str, EnrichedDevice] = {}
         # Profile learning: maps behavioral signature → category
-        # Signature = (manufacturer, rotation_bucket, rssi_stability_bucket)
-        # Learned from high-confidence behavioral classifications
-        self._learned_profiles: dict[tuple, dict] = {}  # signature → {category, count, confidence}
+        self._learned_profiles: dict[tuple, dict] = {}
+        # Apple auth tag → fingerprint mapping (for MAC rotation linking)
+        self._auth_tag_cache: dict[str, str] = {}  # auth_tag_hex → fingerprint
+        self._auth_tag_links: dict[str, set] = {}  # fingerprint → set of linked fingerprints
 
     def ingest(self, drone_id: str, source: str, confidence: float,
                rssi: int, bssid: str, manufacturer: str, model: str,
@@ -437,6 +440,27 @@ class BLEEnricher:
         ja3 = kwargs.get("ble_ja3") or ""
         if ja3 and not dev.ble_ja3:
             dev.ble_ja3 = ja3
+
+        # Apple auth tag entity resolution
+        auth_tag = kwargs.get("ble_apple_auth") or ""
+        if auth_tag and auth_tag != "000000":
+            existing_fp = self._auth_tag_cache.get(auth_tag)
+            if existing_fp and existing_fp != fp:
+                # Same auth tag, different fingerprint → MAC rotation detected!
+                # Link these two fingerprints as the same physical device
+                if fp not in self._auth_tag_links:
+                    self._auth_tag_links[fp] = set()
+                if existing_fp not in self._auth_tag_links:
+                    self._auth_tag_links[existing_fp] = set()
+                self._auth_tag_links[fp].add(existing_fp)
+                self._auth_tag_links[existing_fp].add(fp)
+                logger.debug("Auth tag link: %s ↔ %s (tag=%s)", fp, existing_fp, auth_tag)
+            self._auth_tag_cache[auth_tag] = fp
+
+        # Store advertisement interval
+        adv_interval = kwargs.get("ble_adv_interval")
+        if adv_interval and adv_interval > 0:
+            dev.ble_adv_interval = adv_interval
 
     # Apple Continuity sub-type → descriptive label
     _APPLE_CONTINUITY_TYPES = {

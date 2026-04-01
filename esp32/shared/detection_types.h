@@ -86,6 +86,16 @@ typedef struct {
     uint8_t     ble_addr_type;          /* 0=public, 1=random static, 2=RPA, 3=non-resolvable */
     uint32_t    ble_ja3_hash;           /* BLE-JA3 structural profile hash (same for all devices of same model) */
 
+    /* Apple Continuity deep fields */
+    uint8_t     ble_apple_auth[3];      /* Auth tag (rotates slower than MAC — entity resolution key) */
+    uint8_t     ble_apple_activity;     /* Activity: 0=idle, 1=audio, 2=phone, 3=video, 4=driving */
+    uint8_t     ble_apple_info;         /* Status/info byte (device model hints, screen state) */
+    uint8_t     ble_raw_mfr[20];       /* First 20 bytes of manufacturer-specific data */
+    uint8_t     ble_raw_mfr_len;       /* Actual length captured (0-20) */
+
+    /* Advertisement timing */
+    int64_t     ble_adv_interval_us;   /* Microseconds since last ad from same MAC (0 = first sighting) */
+
     /* Timestamps */
     int64_t     first_seen_ms;          /* epoch milliseconds */
     int64_t     last_updated_ms;        /* epoch milliseconds */

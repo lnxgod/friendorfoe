@@ -16,7 +16,7 @@
  *
  * Known device signatures:
  *   Apple:    Company 0x004C, Continuity types: 0x12=FindMy, 0x07=AirPods,
- *             0x10=NearbyAction, 0x0F=NearbyInfo, 0x05=AirDrop, 0x09=AirPlay
+ *             0x0F=NearbyAction, 0x10=NearbyInfo, 0x05=AirDrop, 0x09=AirPlay
  *   Samsung:  Company 0x0075
  *   Tile:     Service UUID 0xFEED or 0xFEEC
  *   Google:   Company 0x00E0 (Google), FastPair service 0xFE2C
@@ -33,8 +33,8 @@
 #define APPLE_TYPE_HOMEKIT      0x06
 #define APPLE_TYPE_AIRPODS      0x07
 #define APPLE_TYPE_AIRPLAY      0x09
-#define APPLE_TYPE_NEARBY_INFO  0x0F
-#define APPLE_TYPE_NEARBY_ACT   0x10
+#define APPLE_TYPE_NEARBY_ACT   0x0F
+#define APPLE_TYPE_NEARBY_INFO  0x10
 #define APPLE_TYPE_FINDMY       0x12  /* AirTag + Find My accessories */
 #define APPLE_TYPE_HANDOFF      0x0C
 
@@ -193,7 +193,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 /* Hash: company ID */
                 hash = fnv1a_u16(hash, company_id);
 
-                /* Apple Continuity: byte after company ID is the type */
+                /* Apple Continuity: deep field extraction */
                 if (company_id == APPLE_COMPANY_ID && ad_data_len >= 3) {
                     apple_type = ad_data[2];
                     fp->apple_type = apple_type;
@@ -203,6 +203,31 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                     if (ad_data_len >= 4) {
                         hash = fnv1a_byte(hash, ad_data[3]);
                     }
+
+                    /* Auth tag: bytes +3..+5 for Nearby Info (0x10) and Nearby Action (0x0F)
+                     * This tag rotates SLOWER than the MAC address — key for entity resolution */
+                    if ((apple_type == 0x10 || apple_type == 0x0F) && ad_data_len >= 6) {
+                        fp->apple_auth[0] = ad_data[3];
+                        fp->apple_auth[1] = ad_data[4];
+                        fp->apple_auth[2] = ad_data[5];
+                    }
+
+                    /* Activity byte: offset varies by type but typically at +6 for 0x10/0x0F */
+                    if ((apple_type == 0x10 || apple_type == 0x0F) && ad_data_len >= 7) {
+                        fp->apple_activity = ad_data[6];
+                    }
+
+                    /* Info/status byte: at +7 for 0x10 */
+                    if (apple_type == 0x10 && ad_data_len >= 8) {
+                        fp->apple_info = ad_data[7];
+                    }
+                }
+
+                /* Capture raw manufacturer data (first 20 bytes) for any device */
+                {
+                    int copy_len = ad_data_len > 20 ? 20 : ad_data_len;
+                    memcpy(fp->raw_mfr, ad_data, copy_len);
+                    fp->raw_mfr_len = (uint8_t)copy_len;
                 }
 
                 /* DJI: hash first few bytes of manufacturer data */

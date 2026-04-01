@@ -248,6 +248,28 @@ void uart_tx_send_detection(const drone_detection_t *detection)
         cJSON_AddStringToObject(root, JSON_KEY_BLE_JA3, ja3_hex);
     }
 
+    /* Apple Continuity deep fields */
+    if (detection->ble_apple_auth[0] || detection->ble_apple_auth[1] || detection->ble_apple_auth[2]) {
+        char auth_hex[7];
+        snprintf(auth_hex, sizeof(auth_hex), "%02x%02x%02x",
+                 detection->ble_apple_auth[0], detection->ble_apple_auth[1], detection->ble_apple_auth[2]);
+        cJSON_AddStringToObject(root, JSON_KEY_BLE_APPLE_AUTH, auth_hex);
+    }
+    if (detection->ble_apple_activity != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_ACTIVITY, detection->ble_apple_activity);
+    }
+    if (detection->ble_raw_mfr_len > 0) {
+        char mfr_hex[41];  /* 20 bytes * 2 + null */
+        for (int i = 0; i < detection->ble_raw_mfr_len && i < 20; i++) {
+            snprintf(&mfr_hex[i*2], 3, "%02x", detection->ble_raw_mfr[i]);
+        }
+        mfr_hex[detection->ble_raw_mfr_len * 2] = '\0';
+        cJSON_AddStringToObject(root, JSON_KEY_BLE_RAW_MFR, mfr_hex);
+    }
+    if (detection->ble_adv_interval_us > 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_ADV_INTERVAL, (double)(detection->ble_adv_interval_us / 1000));  /* ms */
+    }
+
     /* Timestamps */
     if (detection->first_seen_ms != 0) {
         cJSON_AddNumberToObject(root, JSON_KEY_FIRST_SEEN, (double)detection->first_seen_ms);
