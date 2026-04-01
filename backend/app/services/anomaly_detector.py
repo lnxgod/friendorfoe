@@ -32,6 +32,8 @@ class DeviceTrack:
     seen_by: set = field(default_factory=set)
     bssids_seen: set = field(default_factory=set)   # MAC rotation tracking
     alert_suppressed_until: float = 0.0
+    hour_counts: dict = field(default_factory=dict)  # {hour: count} for temporal patterns
+    seen_days: set = field(default_factory=set)       # Set of date ordinals
 
     @property
     def avg_rssi(self) -> float:
@@ -186,6 +188,23 @@ class AnomalyDetector:
         track.seen_by.add(device_id)
         if bssid:
             track.bssids_seen.add(bssid)
+
+        # Temporal tracking
+        from datetime import datetime
+        dt = datetime.fromtimestamp(now)
+        current_hour = dt.hour
+        current_day = dt.toordinal()
+
+        # Check for unusual time BEFORE incrementing (so we detect first-ever appearance at this hour)
+        if len(track.seen_days) >= 3 and track.hour_counts.get(current_hour, 0) == 0:
+            sev = "warning" if 0 <= current_hour <= 5 else "info"
+            self._emit_alert("unusual_time", sev, track.track_key,
+                             f"Device seen at hour {current_hour}:00 for first time "
+                             f"(tracked {len(track.seen_days)} days)",
+                             ssid=ssid, device_id=device_id)
+
+        track.hour_counts[current_hour] = track.hour_counts.get(current_hour, 0) + 1
+        track.seen_days.add(current_day)
         if ssid:
             track.ssid = ssid
             self.ssid_bssids[ssid].add(bssid)

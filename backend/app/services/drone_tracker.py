@@ -44,7 +44,7 @@ class TrackingSession:
 class DroneTracker:
     """Manages automated drone tracking sessions across sensor nodes."""
 
-    def __init__(self):
+    def __init__(self, sensor_tracker=None):
         # Active tracking sessions: drone_id → TrackingSession
         self.sessions: dict[str, TrackingSession] = {}
         # Per-node lock-on commands (polled by uplinks)
@@ -52,6 +52,7 @@ class DroneTracker:
         # History of completed sessions for dashboard
         self.history: list[dict] = []
         self._max_history = 100
+        self._sensor_tracker = sensor_tracker
 
     def on_detection(self, drone_id: str, source: str, confidence: float,
                      rssi: int, device_id: str, classification: str = "",
@@ -192,12 +193,42 @@ class DroneTracker:
         if session.drone_lat == 0 or session.drone_lon == 0:
             return
         if len(session.rssi_by_node) < 2:
-            return  # Need at least 2 nodes for meaningful cross-check
+            return
+        if not self._sensor_tracker:
+            return
 
-        # TODO: integrate with position_filter.py EKF for actual triangulated position
-        # For now, flag if we have multiple nodes seeing it (basic sanity)
-        # A real spoof check would compare RID-reported GPS vs EKF-estimated position
-        session.spoof_score = 0.0
+        # Get triangulated positions from RSSI
+        located = self._sensor_tracker.get_located_drones()
+        match = None
+        for d in located:
+            if d.drone_id == session.drone_id and d.lat != 0 and d.lon != 0:
+                # Only compare if triangulated (not just GPS passthrough)
+                if getattr(d, 'position_source', '') != 'gps':
+                    match = d
+                    break
+
+        if not match:
+            return
+
+        # Compare drone-reported GPS vs RSSI-estimated position
+        dist_m = self._haversine_m(
+            session.drone_lat, session.drone_lon,
+            match.lat, match.lon
+        )
+
+        if dist_m > 1000:
+            session.spoof_score = 1.0
+            session.spoof_reason = f"GPS severely mismatched ({dist_m:.0f}m from RSSI estimate)"
+            logger.warning("SPOOF ALERT: %s reports GPS %.4f,%.4f but RSSI estimates %.4f,%.4f (%.0fm)",
+                           session.drone_id, session.drone_lat, session.drone_lon,
+                           match.lat, match.lon, dist_m)
+        elif dist_m > 500:
+            session.spoof_score = 0.8
+            session.spoof_reason = f"GPS mismatch ({dist_m:.0f}m from RSSI estimate)"
+            logger.warning("SPOOF WARNING: %s GPS mismatch %.0fm", session.drone_id, dist_m)
+        else:
+            session.spoof_score = 0.0
+            session.spoof_reason = ""
 
     def get_node_command(self, device_id: str) -> dict:
         """Get the lock-on command for a specific node (polled by uplinks)."""

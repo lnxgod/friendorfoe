@@ -70,13 +70,13 @@ _lockon_command: dict = {"active": False, "channel": 0, "bssid": "", "duration_s
 
 # Automated drone tracking orchestrator
 from app.services.drone_tracker import DroneTracker
-_drone_tracker = DroneTracker()
 
 # ---------------------------------------------------------------------------
 # Multi-sensor tracker (triangulation engine)
 # ---------------------------------------------------------------------------
 
 _sensor_tracker = SensorTracker()
+_drone_tracker = DroneTracker(sensor_tracker=_sensor_tracker)
 _rf_anomaly_detector = RFAnomalyDetector()
 _anomaly_detector = AnomalyDetector()
 _ble_enricher = BLEEnricher()
@@ -594,6 +594,13 @@ async def get_live_devices(
     )
     summary = _ble_enricher.get_summary()
     return {"devices": devices, "summary": summary}
+
+
+@router.get("/devices/{fingerprint}/associated")
+async def get_associated_devices(fingerprint: str):
+    """Find devices likely carried by the same person (entity resolution)."""
+    associated = _ble_enricher.find_associated_devices(fingerprint)
+    return {"fingerprint": fingerprint, "associated": associated, "count": len(associated)}
 
 
 @router.get("/nodes/status")

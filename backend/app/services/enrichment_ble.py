@@ -444,12 +444,43 @@ class BLEEnricher:
         0x05: "AirDrop",
         0x06: "HomeKit",
         0x07: "AirPods",
+        0x08: "Hey Siri",
         0x09: "AirPlay",
+        0x0B: "Apple Watch",
         0x0C: "Handoff",
-        0x0F: "iPhone",       # Nearby Info
-        0x10: "iPhone",       # Nearby Action
+        0x0D: "WiFi Settings",
+        0x0E: "Instant Hotspot",
+        0x0F: "iPhone",       # Nearby Info (locked)
+        0x10: "iPhone",       # Nearby Action (unlocked)
         0x12: "FindMy",       # AirTag / FindMy accessory
     }
+
+    # Apple Continuity state decoding — what each type tells us about the device
+    # "likely_unlocked" only applies to devices that HAVE a lock screen (iPhone/iPad/Mac)
+    _APPLE_STATE_INFO = {
+        0x02: {"activity": "ibeacon", "device_class": "beacon"},
+        0x05: {"activity": "airdrop", "likely_unlocked": True, "device_class": "iphone"},       # AirDrop requires unlocked screen
+        0x06: {"activity": "homekit", "device_class": "homekit_accessory"},                       # HomeKit accessory advertising
+        0x07: {"activity": "audio_connected", "device_class": "airpods"},                         # AirPods nearby / connected
+        0x08: {"activity": "hey_siri", "likely_unlocked": True, "device_class": "iphone"},       # Siri active = user interacting
+        0x09: {"activity": "airplay_target", "device_class": "appletv"},                          # AirPlay receiver advertising
+        0x0B: {"activity": "watch_nearby", "device_class": "watch"},                              # Watch auto-unlock proximity
+        0x0C: {"activity": "handoff", "likely_unlocked": True, "device_class": "mac_or_iphone"}, # Handoff = user actively using device
+        0x0D: {"activity": "wifi_sharing", "likely_unlocked": True, "device_class": "iphone"},   # Sharing WiFi password = unlocked
+        0x0E: {"activity": "hotspot", "device_class": "iphone"},                                  # Instant Hotspot advertising
+        0x0F: {"activity": "nearby_info", "likely_unlocked": False, "device_class": "iphone"},   # Locked — passive nearby broadcast
+        0x10: {"activity": "nearby_action", "likely_unlocked": True, "device_class": "iphone"},  # Unlocked — active nearby broadcast
+        0x12: {"activity": "findmy_beacon", "device_class": "airtag"},                            # FindMy network beacon
+    }
+
+    def _decode_apple_state(self, dev: 'EnrichedDevice') -> dict | None:
+        """Decode Apple Continuity state from the advertisement type."""
+        if not dev.ble_apple_type:
+            return None
+        state = self._APPLE_STATE_INFO.get(dev.ble_apple_type)
+        if not state:
+            return None
+        return dict(state)  # Return a copy
 
     def _infer_device_category(self, dev: EnrichedDevice) -> str:
         """Infer device category from behavior when type is Unknown.
@@ -715,6 +746,7 @@ class BLEEnricher:
                 "ble_ja3": dev.ble_ja3 or None,
                 "ble_company_id": dev.ble_company_id or None,
                 "ble_apple_type": dev.ble_apple_type or None,
+                "apple_state": self._decode_apple_state(dev),
             })
 
         # JA3 super-grouping: merge devices with same JA3 hash
@@ -833,6 +865,74 @@ class BLEEnricher:
                  if (now - dev.last_seen) > 600]
         for fp in stale:
             del self.devices[fp]
+
+    # ── Entity Resolution (cross-device association) ────────────────────
+
+    def _association_score(self, dev_a: EnrichedDevice, dev_b: EnrichedDevice) -> float:
+        """Score how likely two devices belong to the same person. 0-1."""
+        score = 0.0
+
+        # 1. Shared sensors = same physical area
+        shared = dev_a.seen_by & dev_b.seen_by
+        if shared:
+            score += 0.2 * min(len(shared) / 2.0, 1.0)
+
+        # 2. RSSI similarity = similar distance from sensors
+        rssi_diff = abs(dev_a.avg_rssi - dev_b.avg_rssi)
+        if rssi_diff < 10:
+            score += 0.25 * (1.0 - rssi_diff / 10.0)
+
+        # 3. Temporal overlap = appeared at similar times
+        overlap = min(dev_a.last_seen, dev_b.last_seen) - max(dev_a.first_seen, dev_b.first_seen)
+        if overlap > 0:
+            lifespan = max(dev_a.last_seen - dev_a.first_seen,
+                           dev_b.last_seen - dev_b.first_seen, 1)
+            score += 0.25 * min(overlap / lifespan, 1.0)
+
+        # 4. Same manufacturer = likely same ecosystem
+        if dev_a.manufacturer == dev_b.manufacturer and dev_a.manufacturer != "Unknown":
+            score += 0.1
+
+        # 5. Complementary device types (phone + watch, phone + earbuds)
+        types = frozenset([self._infer_device_category(dev_a),
+                           self._infer_device_category(dev_b)])
+        complementary = [
+            frozenset(["iPhone", "Apple Watch"]),
+            frozenset(["iPhone", "AirPods"]),
+            frozenset(["iPhone", "FindMy"]),
+            frozenset(["Samsung Phone", "Samsung Device"]),
+            frozenset(["iPhone", "Apple Device"]),
+        ]
+        if any(types == p for p in complementary):
+            score += 0.2
+
+        return min(score, 1.0)
+
+    def find_associated_devices(self, target_fp: str, max_results: int = 5) -> list[dict]:
+        """Find devices likely carried by the same person as target_fp."""
+        target = self.devices.get(target_fp)
+        if not target:
+            return []
+
+        now = time.time()
+        candidates = []
+        for fp, dev in self.devices.items():
+            if fp == target_fp:
+                continue
+            if (now - dev.last_seen) > self.STALE_TIMEOUT_S:
+                continue
+            score = self._association_score(target, dev)
+            if score > 0.5:
+                candidates.append({
+                    "fingerprint": fp,
+                    "device_type": self._infer_device_category(dev),
+                    "manufacturer": dev.manufacturer,
+                    "score": round(score, 2),
+                    "rssi": dev.current_rssi,
+                    "seen_by": list(dev.seen_by),
+                })
+
+        return sorted(candidates, key=lambda x: x["score"], reverse=True)[:max_results]
 
     # ── Persistence ──────────────────────────────────────────────────────
 
