@@ -535,6 +535,19 @@ static void http_upload_task(void *arg)
                      (uint32_t)(idle * portTICK_PERIOD_MS),
                      (unsigned)estimated_payload_bytes);
 
+            /* Heap guard: if running low, drop batch instead of crashing */
+            size_t free_heap = esp_get_free_heap_size();
+            if (free_heap < 10000) {
+                ESP_LOGW(TAG, "LOW HEAP (%u bytes) — dropping batch of %d to recover",
+                         (unsigned)free_heap, batch_count);
+                reset_http_client();  /* Free HTTP client resources */
+                batch_count = 0;
+                estimated_payload_bytes = 0;
+                scan_ts_ms = 0;
+                first_item_tick = 0;
+                continue;
+            }
+
             char *payload = build_payload(batch, batch_count, scan_ts_ms);
             if (payload) {
                 if (wifi_sta_is_connected()) {

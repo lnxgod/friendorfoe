@@ -41,9 +41,9 @@ typedef struct {
 
 #define CONFIG_BATCH_INTERVAL_MS    150     /* Faster batch send (was 200ms) */
 #define CONFIG_BATCH_IDLE_FLUSH_MS  50      /* Faster idle flush (was 75ms) */
-#define CONFIG_MAX_BATCH_SIZE       15      /* More detections per POST (was 10) */
-#define CONFIG_TARGET_BATCH_BYTES   2000    /* Larger payload target (was 1400) */
-#define CONFIG_MAX_OFFLINE_BATCHES  20      /* More offline buffer (was 10) */
+#define CONFIG_MAX_BATCH_SIZE       8       /* Smaller batches = less heap per POST */
+#define CONFIG_TARGET_BATCH_BYTES   1200    /* Smaller payloads for heap stability */
+#define CONFIG_MAX_OFFLINE_BATCHES  10      /* Reduced offline buffer */
 #define CONFIG_MAX_RETRY_DELAY_MS   60000
 #define CONFIG_HEARTBEAT_INTERVAL_MS 60000
 
@@ -79,12 +79,12 @@ typedef struct {
 
 /* ── Detection queue ───────────────────────────────────────────────────── */
 
-#define CONFIG_DETECTION_QUEUE_SIZE 100   /* Doubled for faster BLE report rates */
+#define CONFIG_DETECTION_QUEUE_SIZE 30    /* Reduced for heap stability on plain ESP32 */
 
 /* ── Task stack sizes (bytes) ──────────────────────────────────────────── */
 
-#define CONFIG_UART_RX_STACK        4096
-#define CONFIG_HTTP_UPLOAD_STACK   16384
+#define CONFIG_UART_RX_STACK        4096  /* Needs room for cJSON parsing + scanner_info */
+#define CONFIG_HTTP_UPLOAD_STACK   16384  /* cJSON + HTTP client + scanners array needs this */
 #define CONFIG_GPS_STACK            4096
 #define CONFIG_DISPLAY_STACK        4096
 #define CONFIG_LED_STACK            2048
