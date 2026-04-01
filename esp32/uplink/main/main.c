@@ -291,24 +291,24 @@ void app_main(void)
                      http_upload_get_success_count(),
                      http_upload_get_fail_count());
 
-            /* WiFi dead for >60s → hard reboot */
-            if (!wifi_ok && wifi_down_s > 60) {
+            /* WiFi dead for >120s → hard reboot (was 60s, too aggressive for weak signal) */
+            if (!wifi_ok && wifi_down_s > 120) {
                 ESP_LOGE(TAG, "WATCHDOG REBOOT: WiFi disconnected for %llds — rebooting",
                          (long long)wifi_down_s);
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 esp_restart();
             }
 
-            /* No upload success for >120s (after first success) → hard reboot */
-            if (had_first_upload && upload_age_s > 120) {
+            /* No upload success for >300s (after first success) → hard reboot */
+            if (had_first_upload && upload_age_s > 300) {
                 ESP_LOGE(TAG, "WATCHDOG REBOOT: No successful upload for %llds — rebooting",
                          (long long)upload_age_s);
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 esp_restart();
             }
 
-            /* No upload at all after 180s of uptime → something is very wrong */
-            if (!had_first_upload && uptime_s > 180) {
+            /* No upload at all after 300s of uptime → something is very wrong */
+            if (!had_first_upload && uptime_s > 300) {
                 ESP_LOGE(TAG, "WATCHDOG REBOOT: Never uploaded after %llds uptime — rebooting",
                          (long long)uptime_s);
                 vTaskDelay(pdMS_TO_TICKS(1000));
