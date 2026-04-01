@@ -1414,7 +1414,7 @@ async function refresh() {
     if (!pausedFeeds.has('nodes')) {
     const gs=document.getElementById('gps-summary');
     const gpsSet = nodeList.filter(n => n.lat != 0 || n.lon != 0);
-    gs.innerHTML = '<table><tr><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Name</th><th>Status</th><th>Firmware Stack</th><th>Latitude</th><th>Longitude</th><th onclick="sortTable(this)">IP</th><th onclick="sortTable(this)">Last Seen</th><th>OTA</th></tr>' +
+    gs.innerHTML = '<table><tr><th>Device</th><th>Name</th><th>Status</th><th>Firmware Stack</th><th>Latitude</th><th>Longitude</th><th>IP</th><th>Last Seen</th><th>OTA</th></tr>' +
       nodeList.map(n => {
         const on = n.online;
         const hasGPS = n.lat != 0 || n.lon != 0;
