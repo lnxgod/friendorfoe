@@ -66,6 +66,13 @@ typedef struct {
     int64_t timestamp_ms;
 } scanner_detection_summary_t;
 
+/**
+ * Send scanner identity info over UART (thread-safe, uses mutex).
+ * Called at boot and periodically so the uplink always knows what's connected.
+ */
+void uart_tx_send_scanner_info(const char *ver, const char *board,
+                                const char *chip, const char *caps);
+
 /** Get cumulative BLE detection count. */
 int uart_tx_get_ble_count(void);
 

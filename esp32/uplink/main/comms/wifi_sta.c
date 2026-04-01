@@ -31,6 +31,7 @@ static EventGroupHandle_t s_wifi_event_group = NULL;
 static esp_timer_handle_t s_reconnect_timer  = NULL;
 static bool               s_is_connected     = false;
 static bool               s_standalone       = false;
+static bool               s_scanning         = false;  /* true during initial multi-SSID scan */
 static int                s_retry_count      = 0;
 
 /* Multi-SSID credential list */
@@ -149,12 +150,20 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        if (s_scanning) {
+            ESP_LOGI(TAG, "WiFi STA started (scanning for networks, skip auto-connect)");
+            return;
+        }
         ESP_LOGI(TAG, "WiFi STA started, connecting...");
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT &&
                event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_is_connected = false;
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+
+        if (s_scanning) {
+            return;  /* Don't reconnect during initial multi-SSID scan */
+        }
 
         int delay = backoff_delay_ms(s_retry_count);
         ESP_LOGW(TAG, "Disconnected (retry=%d), reconnecting in %dms...",
@@ -224,14 +233,26 @@ void wifi_sta_init(void)
         return;
     }
 
+    s_scanning = true;  /* Suppress auto-connect/reconnect during scan */
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    /* Let WiFi radio fully initialize before scanning */
+    vTaskDelay(pdMS_TO_TICKS(500));
 
     /* Scan for best known SSID from the multi-SSID list */
     ESP_LOGI(TAG, "Scanning for known WiFi networks (%d configured)...",
              CONFIG_WIFI_CREDENTIAL_COUNT);
     int best = find_best_ssid();
-    connect_with_cred(best);
+    s_scanning = false;
+
+    if (best >= 0) {
+        connect_with_cred(best);
+    } else {
+        /* No known networks found — try primary SSID as fallback */
+        ESP_LOGW(TAG, "No known SSIDs found in scan, trying primary: %s", nvs_ssid);
+        connect_with_cred(0);
+    }
 
     ESP_LOGI(TAG, "WiFi STA initialized, trying SSID='%s'",
              s_wifi_creds[best].ssid);

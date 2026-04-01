@@ -23,6 +23,7 @@
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 
 #include <string.h>
 #include <math.h>
@@ -45,6 +46,9 @@ static int s_ble_count  = 0;
 static int s_wifi_count = 0;
 static uint8_t s_current_channel = 0;
 static uint32_t s_seq = 0;
+
+/* UART write mutex — prevents interleaved writes from multiple tasks */
+static SemaphoreHandle_t s_uart_mutex = NULL;
 
 /* ── Detection cache for OLED scoreboard ────────────────────────────────── */
 
@@ -113,14 +117,18 @@ static void cjson_add_string_if(cJSON *obj, const char *key, const char *val)
 static void uart_send_line(const char *json_str)
 {
     size_t len = strlen(json_str);
+    if (s_uart_mutex) xSemaphoreTake(s_uart_mutex, portMAX_DELAY);
     uart_write_bytes(UART_PORT_NUM, json_str, len);
     uart_write_bytes(UART_PORT_NUM, "\n", 1);
+    if (s_uart_mutex) xSemaphoreGive(s_uart_mutex);
 }
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
 void uart_tx_init(void)
 {
+    s_uart_mutex = xSemaphoreCreateMutex();
+
     uart_config_t uart_config = {
         .baud_rate  = UART_BAUD_RATE,
         .data_bits  = UART_DATA_8_BITS,
@@ -258,6 +266,12 @@ void uart_tx_send_detection(const drone_detection_t *detection)
     }
 }
 
+/* Scanner identity — set by uart_tx_send_scanner_info, included in every status */
+static const char *s_scanner_ver   = NULL;
+static const char *s_scanner_board = NULL;
+static const char *s_scanner_chip  = NULL;
+static const char *s_scanner_caps  = NULL;
+
 void uart_tx_send_status(int ble_count, int wifi_count,
                          uint8_t current_channel, uint32_t uptime_s)
 {
@@ -274,6 +288,14 @@ void uart_tx_send_status(int ble_count, int wifi_count,
     cJSON_AddNumberToObject(root, "uptime_s",   uptime_s);
     cJSON_AddNumberToObject(root, JSON_KEY_SEQ, s_seq++);
 
+    /* Include scanner identity in every status message */
+    if (s_scanner_ver) {
+        cJSON_AddStringToObject(root, "ver", s_scanner_ver);
+        cJSON_AddStringToObject(root, "board", s_scanner_board);
+        cJSON_AddStringToObject(root, "chip", s_scanner_chip);
+        cJSON_AddStringToObject(root, "caps", s_scanner_caps);
+    }
+
     char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
 
@@ -281,6 +303,26 @@ void uart_tx_send_status(int ble_count, int wifi_count,
         uart_send_line(json_str);
         cJSON_free(json_str);
     }
+}
+
+void uart_tx_send_scanner_info(const char *ver, const char *board,
+                                const char *chip, const char *caps)
+{
+    /* Store for inclusion in every future status message */
+    s_scanner_ver   = ver;
+    s_scanner_board = board;
+    s_scanner_chip  = chip;
+    s_scanner_caps  = caps;
+
+    /* Also send as standalone message */
+    char buf[160];
+    snprintf(buf, sizeof(buf),
+             "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
+             "\"chip\":\"%s\",\"caps\":\"%s\"}",
+             ver ? ver : "?", board ? board : "?",
+             chip ? chip : "?", caps ? caps : "?");
+    uart_send_line(buf);
+    ESP_LOGI(TAG, "Scanner info TX: %s v%s (%s)", board, ver, caps);
 }
 
 /* ── UART TX Task ───────────────────────────────────────────────────────── */
