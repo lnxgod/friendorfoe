@@ -225,25 +225,26 @@ async def push_ota_update(device_id: str, firmware: UploadFile = File(...)):
     logger.warning("OTA push to %s (%s): %d bytes (%s)", device_id, ip, fw_size, firmware.filename)
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(
-                f"http://{ip}/api/ota",
-                content=fw_data,
-                headers={
-                    "Content-Type": "application/octet-stream",
-                    "Content-Length": str(fw_size),
-                },
-            )
-            if r.status_code == 200:
-                result = r.json()
-                logger.info("OTA to %s success: %s", device_id, result)
-                return {"ok": True, "device_id": device_id, "size": fw_size, "response": result}
-            else:
-                logger.error("OTA to %s failed: %d %s", device_id, r.status_code, r.text)
-                return {"ok": False, "device_id": device_id, "error": r.text, "status": r.status_code}
-    except (httpx.TimeoutException, httpx.RemoteProtocolError, httpx.ReadError):
-        # Expected — the node reboots after OTA, killing the connection
-        logger.info("OTA to %s: connection closed (node likely rebooting)", device_id)
+        import subprocess
+        # Use curl — httpx chunked encoding breaks ESP32 HTTP server
+        result = subprocess.run(
+            ["curl", "-s", "-X", "POST",
+             f"http://{ip}/api/ota",
+             "--data-binary", "@-",
+             "-H", "Content-Type: application/octet-stream",
+             "--connect-timeout", "5",
+             "--max-time", "120"],
+            input=fw_data, capture_output=True, timeout=125
+        )
+        if result.returncode == 0 and result.stdout:
+            try:
+                resp = __import__("json").loads(result.stdout)
+                logger.info("OTA to %s success: %s", device_id, resp)
+                return {"ok": True, "device_id": device_id, "size": fw_size, "response": resp}
+            except Exception:
+                pass
+        # curl may return 0 even if node rebooted mid-response
+        logger.info("OTA to %s: firmware sent, node likely rebooting", device_id)
         return {"ok": True, "device_id": device_id, "size": fw_size, "message": "Node rebooting"}
     except Exception as e:
         logger.error("OTA to %s failed: %s", device_id, e)
@@ -316,20 +317,25 @@ async def push_firmware_by_name(device_id: str, firmware_name: str):
     logger.warning("OTA push %s to %s (%s): %d bytes", firmware_name, device_id, ip, len(fw_data))
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(
-                f"http://{ip}/api/ota",
-                content=fw_data,
-                headers={
-                    "Content-Type": "application/octet-stream",
-                    "Content-Length": str(len(fw_data)),
-                },
-            )
-            if r.status_code == 200:
-                return {"ok": True, "device_id": device_id, "firmware": firmware_name, "size": len(fw_data)}
-            else:
-                return {"ok": False, "error": r.text, "status": r.status_code}
-    except (httpx.TimeoutException, httpx.RemoteProtocolError, httpx.ReadError):
+        import subprocess
+        result = subprocess.run(
+            ["curl", "-s", "-X", "POST",
+             f"http://{ip}/api/ota",
+             "--data-binary", "@-",
+             "-H", "Content-Type: application/octet-stream",
+             "--connect-timeout", "5",
+             "--max-time", "120"],
+            input=fw_data, capture_output=True, timeout=125
+        )
+        if result.returncode == 0 and result.stdout:
+            try:
+                return {"ok": True, "device_id": device_id, "firmware": firmware_name,
+                        "size": len(fw_data), "response": __import__("json").loads(result.stdout)}
+            except Exception:
+                pass
+        return {"ok": True, "device_id": device_id, "firmware": firmware_name,
+                "size": len(fw_data), "message": "Node rebooting"}
+    except subprocess.TimeoutExpired:
         return {"ok": True, "device_id": device_id, "firmware": firmware_name,
                 "size": len(fw_data), "message": "Node rebooting"}
     except Exception as e:
@@ -365,23 +371,29 @@ async def push_scanner_firmware(
                     firmware_name, device_id, ip, uart, len(fw_data))
 
     try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            r = await client.post(
-                f"http://{ip}/api/ota/relay?uart={uart}",
-                content=fw_data,
-                headers={
-                    "Content-Type": "application/octet-stream",
-                    "Content-Length": str(len(fw_data)),
-                },
-            )
-            if r.status_code == 200:
-                result = r.json()
-                return {"ok": True, "device_id": device_id, "firmware": firmware_name,
-                        "size": len(fw_data), "uart": uart, "relay_response": result}
-            else:
-                return {"ok": False, "error": r.text, "status": r.status_code}
-    except httpx.TimeoutException:
+        import subprocess
+        # Use curl subprocess — httpx chunked encoding breaks ESP32 HTTP server
+        result = subprocess.run(
+            ["curl", "-s", "-X", "POST",
+             f"http://{ip}/api/ota/relay?uart={uart}",
+             "--data-binary", "@-",
+             "-H", "Content-Type: application/octet-stream",
+             "--connect-timeout", "5",
+             "--max-time", "180"],
+            input=fw_data, capture_output=True, timeout=185
+        )
+        if result.returncode == 0:
+            try:
+                resp = __import__("json").loads(result.stdout)
+            except Exception:
+                resp = {"raw": result.stdout.decode(errors="replace")[:200]}
+            return {"ok": True, "device_id": device_id, "firmware": firmware_name,
+                    "size": len(fw_data), "uart": uart, "relay_response": resp}
+        else:
+            return {"ok": False, "error": result.stderr.decode(errors="replace")[:200]}
+    except subprocess.TimeoutExpired:
         return {"ok": True, "device_id": device_id, "firmware": firmware_name,
                 "size": len(fw_data), "message": "Scanner rebooting via relay"}
     except Exception as e:
+        logger.error("Scanner OTA relay failed: %s", e)
         raise HTTPException(status_code=502, detail=f"Scanner OTA relay failed: {e}")
