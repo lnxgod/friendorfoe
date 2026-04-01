@@ -761,8 +761,8 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
 #endif
 
     int total = req->content_len;
-    ESP_LOGW(TAG, "OTA relay: %d bytes to scanner (uart=%s port=%d)",
-             total, uart_target, uart_num);
+    ESP_LOGW(TAG, "OTA relay: %d bytes to scanner (uart=%s port=%d) heap=%lu",
+             total, uart_target, uart_num, (unsigned long)esp_get_free_heap_size());
 
     if (total < 1024 || total > 2 * 1024 * 1024) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid firmware size");
@@ -779,13 +779,13 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
     /* TODO: read ACK from scanner UART — for now, proceed optimistically */
 
     /* Step 3: Stream HTTP data as binary chunks to scanner */
-    uint8_t http_buf[OTA_CHUNK_MAX_DATA];
+    uint8_t http_buf[512];  /* Smaller chunks to reduce stack/heap pressure during relay */
     int received = 0;
     int remaining = total;
     uint16_t seq = 0;
 
     while (remaining > 0) {
-        int to_read = remaining > OTA_CHUNK_MAX_DATA ? OTA_CHUNK_MAX_DATA : remaining;
+        int to_read = remaining > (int)sizeof(http_buf) ? (int)sizeof(http_buf) : remaining;
         int read_len = httpd_req_recv(req, (char *)http_buf, to_read);
         if (read_len <= 0) {
             if (read_len == HTTPD_SOCK_ERR_TIMEOUT) continue;
@@ -809,10 +809,12 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
         remaining -= read_len;
         seq++;
 
-        /* Wait for flow control ACK every 16 chunks */
+        /* Yield to RTOS every chunk — prevents watchdog + lets WiFi/upload tasks breathe */
+        vTaskDelay(pdMS_TO_TICKS(1));
+
+        /* Longer pause every 16 chunks for scanner flow control */
         if (seq % OTA_ACK_INTERVAL_CHUNKS == 0) {
-            /* Brief pause for scanner to process and ACK */
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(20));
         }
 
         /* Progress log */
