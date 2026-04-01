@@ -518,6 +518,36 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 det.ble_payload_len = fp.payload_len;
                 det.ble_addr_type = ext->addr.type;
 
+                /* Apple Continuity deep fields */
+                memcpy(det.ble_apple_auth, fp.apple_auth, 3);
+                det.ble_apple_activity = fp.apple_activity;
+                det.ble_apple_info = fp.apple_info;
+                memcpy(det.ble_raw_mfr, fp.raw_mfr, fp.raw_mfr_len);
+                det.ble_raw_mfr_len = fp.raw_mfr_len;
+
+                /* Advertisement interval tracking (per-MAC timing) */
+                {
+                    static struct { uint8_t mac[6]; int64_t last_us; } ival_cache[64];
+                    static int ival_idx = 0;
+                    int64_t now_us = esp_timer_get_time();
+                    int found = -1;
+                    for (int k = 0; k < 64; k++) {
+                        if (memcmp(ival_cache[k].mac, ext->addr.val, 6) == 0) {
+                            found = k;
+                            break;
+                        }
+                    }
+                    if (found >= 0) {
+                        det.ble_adv_interval_us = now_us - ival_cache[found].last_us;
+                        ival_cache[found].last_us = now_us;
+                    } else {
+                        det.ble_adv_interval_us = 0;
+                        memcpy(ival_cache[ival_idx].mac, ext->addr.val, 6);
+                        ival_cache[ival_idx].last_us = now_us;
+                        ival_idx = (ival_idx + 1) % 64;
+                    }
+                }
+
                 /* BLE-JA3 structural profile hash (same for all devices of same model) */
                 ble_ja3_hash_t ja3;
                 if (ble_ja3_from_gap_event(event, &ja3)) {

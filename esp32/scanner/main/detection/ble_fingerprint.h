@@ -47,6 +47,13 @@ typedef struct {
     bool                is_tracker;     /* True if likely a tracking device */
     uint8_t             ad_type_count;  /* Number of AD structures */
     uint8_t             payload_len;    /* Total adv payload length */
+
+    /* Apple Continuity deep fields */
+    uint8_t             apple_auth[3];  /* Auth tag — rotates slower than MAC (entity linking key) */
+    uint8_t             apple_activity; /* Activity code: 0=idle, 1=audio, 2=phone, 3=video */
+    uint8_t             apple_info;     /* Status/info byte */
+    uint8_t             raw_mfr[20];    /* First 20 bytes of manufacturer data (for analysis) */
+    uint8_t             raw_mfr_len;    /* Captured length */
 } ble_fingerprint_t;
 
 /**

@@ -271,6 +271,8 @@ async def ingest_drone_detections(
             ble_payload_len=det.ble_payload_len,
             ble_addr_type=det.ble_addr_type,
             ble_ja3=det.ble_ja3,
+            ble_apple_auth=det.ble_apple_auth,
+            ble_adv_interval=det.ble_adv_interval,
         )
 
         alerts = _rf_anomaly_detector.process_event(

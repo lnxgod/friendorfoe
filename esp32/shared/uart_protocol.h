@@ -58,6 +58,12 @@ extern "C" {
 #define MSG_TYPE_ACK                "ack"
 #define MSG_TYPE_LOCKON             "lockon"
 #define MSG_TYPE_LOCKON_CANCEL      "lockon_cancel"
+/* Apple Continuity deep fields */
+#define JSON_KEY_BLE_APPLE_AUTH     "ble_auth"   /* hex string "a1b2c3" */
+#define JSON_KEY_BLE_ACTIVITY       "ble_act"    /* uint8 activity code */
+#define JSON_KEY_BLE_RAW_MFR        "ble_mfr"    /* hex string (first 20 bytes of mfr data) */
+#define JSON_KEY_BLE_ADV_INTERVAL   "ble_ival"   /* uint32 microseconds between advertisements */
+
 #define MSG_TYPE_BLE_LOCKON         "ble_lockon"
 #define MSG_TYPE_BLE_LOCKON_CANCEL  "ble_lockon_cancel"
 
