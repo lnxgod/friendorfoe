@@ -1289,7 +1289,9 @@ async function refresh() {
     if(health){dot.className='status-dot ok';htxt.textContent='v'+health.version;}
     else{dot.className='status-dot err';htxt.textContent='offline';}
 
-    const nodeList=nodes?nodes.nodes:[];
+    // Keep previous node list if API call failed (prevents flash to empty)
+    if (nodes && nodes.nodes) { window._lastNodeList = nodes.nodes; }
+    const nodeList = window._lastNodeList || [];
     const onlineN=nodeList.filter(n=>n.online).length;
     document.getElementById('sensor-summary').textContent=onlineN+'/'+nodeList.length+' sensors online';
 
