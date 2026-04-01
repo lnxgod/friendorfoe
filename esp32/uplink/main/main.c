@@ -229,6 +229,18 @@ void app_main(void)
     /* ── 14. Start all tasks ──────────────────────────────────────────── */
     ESP_LOGI(TAG, "Starting tasks...");
 
+    /* Send OTA abort to all scanners at boot — unsticks any scanner stuck in OTA mode.
+     * Uses 4x 0xFF binary sequence because JSON commands are dropped during OTA mode. */
+    {
+        const uint8_t abort_seq[] = {0xFF, 0xFF, 0xFF, 0xFF};
+        uart_write_bytes(CONFIG_BLE_SCANNER_UART, (const char *)abort_seq, 4);
+#if CONFIG_DUAL_SCANNER
+        uart_write_bytes(CONFIG_WIFI_SCANNER_UART, (const char *)abort_seq, 4);
+#endif
+        ESP_LOGI(TAG, "Sent OTA abort sequence to all scanners");
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
     uart_rx_start();
     http_upload_start();
     gps_start();
