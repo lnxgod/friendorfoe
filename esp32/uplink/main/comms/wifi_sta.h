@@ -9,6 +9,7 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,6 +40,12 @@ void wifi_sta_wait_connected(int timeout_ms);
  * Standalone mode is entered when no WiFi SSID has been configured.
  */
 bool wifi_sta_is_standalone(void);
+
+/** Get current WiFi RSSI (signal strength). Returns 0 if not connected. */
+int8_t wifi_sta_get_rssi(void);
+
+/** Get connected SSID. Returns "" if not connected. */
+const char *wifi_sta_get_ssid(void);
 
 #ifdef __cplusplus
 }

@@ -291,3 +291,25 @@ void wifi_sta_wait_connected(int timeout_ms)
         ESP_LOGW(TAG, "WiFi connection timeout after %dms", timeout_ms);
     }
 }
+
+int8_t wifi_sta_get_rssi(void)
+{
+    if (!s_is_connected) return 0;
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        return ap_info.rssi;
+    }
+    return 0;
+}
+
+const char *wifi_sta_get_ssid(void)
+{
+    static char ssid_buf[33] = {0};
+    if (!s_is_connected) return "";
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        strncpy(ssid_buf, (char *)ap_info.ssid, sizeof(ssid_buf) - 1);
+        return ssid_buf;
+    }
+    return "";
+}

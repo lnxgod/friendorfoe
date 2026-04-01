@@ -120,6 +120,13 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     cJSON_AddStringToObject(root, "board_type", "uplink-c3");
 #endif
 
+    /* WiFi signal info */
+    const char *wifi_ssid = wifi_sta_get_ssid();
+    if (wifi_ssid[0]) {
+        cJSON_AddStringToObject(root, "wifi_ssid", wifi_ssid);
+        cJSON_AddNumberToObject(root, "wifi_rssi", wifi_sta_get_rssi());
+    }
+
     /* Connected scanner identity (from UART scanner_info messages) */
     cJSON *scanners = cJSON_AddArrayToObject(root, "scanners");
     if (scanners) {

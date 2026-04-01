@@ -1465,7 +1465,7 @@ async function refresh() {
             '<div class="nstat"><div class="nl">Detections</div><div class="nv">'+n.total_detections+'</div></div>'+
             '<div class="nstat"><div class="nl">Position</div><div class="nv">'+(n.lat!=0?n.lat.toFixed(4)+','+n.lon.toFixed(4):'<span style="color:#f85149">NOT SET</span>')+'</div></div>'+
             '<div class="nstat"><div class="nl">Uplink FW</div><div class="nv" style="color:#e040fb">'+fw+'</div></div>'+
-            '<div class="nstat"><div class="nl">Board</div><div class="nv" style="color:#58a6ff;font-size:9px">'+(n.board_type||'?')+'</div></div>'+
+            '<div class="nstat"><div class="nl">WiFi</div><div class="nv" style="font-size:9px">'+(n.wifi_ssid||'?')+' <span class="rssi '+(n.wifi_rssi>-50?'close':n.wifi_rssi>-70?'mid':'far')+'">'+(n.wifi_rssi||'?')+'</span></div></div>'+
           '</div>'+
           /* Scanner info cards */
           (n.scanners && n.scanners.length > 0 ?

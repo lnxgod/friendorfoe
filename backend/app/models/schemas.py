@@ -149,6 +149,8 @@ class DroneDetectionBatch(BaseModel):
     firmware_version: str | None = Field(None, description="Firmware version (e.g. 0.35.0)")
     board_type: str | None = Field(None, description="Board type (uplink-esp32, uplink-c3)")
     scanners: list[dict] | None = Field(None, description="Connected scanner identities [{uart, ver, board, chip, caps}]")
+    wifi_ssid: str | None = Field(None, description="Connected WiFi SSID")
+    wifi_rssi: int | None = Field(None, description="WiFi RSSI (signal strength in dBm)")
     detections: list[DroneDetectionItem] = Field(
         ..., description="List of drone detections in this batch"
     )
