@@ -822,7 +822,11 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
         }
     }
 
-    /* Step 4: Send OTA end */
+    /* Step 4: Finalize — send abort sequence to exit OTA binary mode,
+     * then send ota_end JSON which the cmd listener can now parse */
+    vTaskDelay(pdMS_TO_TICKS(500));
+    const uint8_t abort_seq[] = {0xFF, 0xFF, 0xFF, 0xFF};
+    uart_write_bytes(uart_num, (const char *)abort_seq, 4);
     vTaskDelay(pdMS_TO_TICKS(200));
     uart_write_bytes(uart_num, "{\"type\":\"ota_end\"}\n", 18);
 

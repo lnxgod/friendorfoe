@@ -21,6 +21,7 @@
 #include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -46,6 +47,7 @@ static struct {
     uint16_t                 chunk_len;      /* expected data length */
     uint16_t                 chunk_pos;      /* bytes received so far */
     bool                     in_chunk;       /* receiving chunk data */
+    int64_t                  start_ms;       /* session start time for timeout */
 } s_ota = {0};
 
 /* ── Send JSON response back to uplink ─────────────────────────────────── */
@@ -107,6 +109,7 @@ bool uart_ota_begin(uint32_t total_size, uart_port_t uart_num)
 
     memset(&s_ota, 0, sizeof(s_ota));
     s_ota.active = true;
+    s_ota.start_ms = esp_timer_get_time() / 1000;
     s_ota.uart_num = uart_num;
     s_ota.handle = handle;
     s_ota.partition = update;
@@ -265,5 +268,16 @@ void uart_ota_abort(void)
 
 bool uart_ota_is_active(void)
 {
-    return s_ota.active;
+    if (!s_ota.active) return false;
+
+    /* Failsafe #2: timeout — if OTA has been active >90s, abort and reboot.
+     * Prevents permanent stuck state if finalize never arrives. */
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    if (s_ota.start_ms > 0 && (now_ms - s_ota.start_ms) > 90000) {
+        ESP_LOGE("uart_ota", "OTA TIMEOUT after 90s — aborting to prevent stuck state");
+        uart_ota_abort();
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
+    }
+    return true;
 }
