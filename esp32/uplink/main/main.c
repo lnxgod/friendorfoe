@@ -239,7 +239,9 @@ void app_main(void)
                 NULL, CONFIG_DISPLAY_PRIORITY, NULL);
 
     /* ── 15. Start HTTP status server ────────────────────────────────── */
+    ESP_LOGW(TAG, "HEAP before HTTP server: %lu bytes", (unsigned long)esp_get_free_heap_size());
     http_status_init();
+    ESP_LOGW(TAG, "HEAP after HTTP server: %lu bytes", (unsigned long)esp_get_free_heap_size());
 
     /* ── 16. Print startup banner ─────────────────────────────────────── */
     print_banner();

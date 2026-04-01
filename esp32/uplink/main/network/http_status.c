@@ -891,9 +891,9 @@ void http_status_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port    = CONFIG_HTTP_STATUS_PORT;
     config.task_priority  = CONFIG_HTTP_STATUS_PRIORITY;
-    config.stack_size     = 8192;
+    config.stack_size     = 6144;  /* Reduced for heap savings */
     config.max_uri_handlers = 8;
-    config.max_open_sockets = 3;  /* Reduce from default 7 to save RAM */
+    config.max_open_sockets = 2;  /* Minimize — only 1-2 concurrent requests */
 
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &config);
