@@ -127,6 +127,18 @@ bool uart_ota_process_data(const uint8_t *data, int len)
         uint8_t b = data[i];
 
         if (!s_ota.in_chunk) {
+            /* Abort sequence: 4x 0xFF in a row = force abort OTA */
+            static uint8_t ff_count = 0;
+            if (b == 0xFF) {
+                if (++ff_count >= 4) {
+                    ESP_LOGW(TAG, "OTA abort sequence received (4x 0xFF)");
+                    uart_ota_abort();
+                    return false;
+                }
+            } else {
+                ff_count = 0;
+            }
+
             /* Accumulating 5-byte header: [0xF0][seq_hi][seq_lo][len_hi][len_lo] */
             if (s_ota.hdr_pos == 0 && b != OTA_CHUNK_MAGIC) {
                 continue;  /* Skip non-chunk bytes (e.g., stray JSON newlines) */
@@ -182,6 +194,14 @@ bool uart_ota_process_data(const uint8_t *data, int len)
                              (unsigned long)s_ota.received,
                              (unsigned long)s_ota.total_size,
                              (float)s_ota.received / s_ota.total_size * 100);
+                }
+
+                /* Auto-finalize when all bytes received */
+                if (s_ota.received >= s_ota.total_size) {
+                    ESP_LOGI(TAG, "All %lu bytes received — auto-finalizing",
+                             (unsigned long)s_ota.received);
+                    uart_ota_finalize();
+                    return false;  /* OTA done, exit processing */
                 }
 
                 /* ACK every N chunks for flow control */
