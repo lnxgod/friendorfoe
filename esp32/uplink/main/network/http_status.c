@@ -891,8 +891,9 @@ void http_status_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port    = CONFIG_HTTP_STATUS_PORT;
     config.task_priority  = CONFIG_HTTP_STATUS_PRIORITY;
-    config.stack_size     = 8192;    /* Larger stack for setup page */
-    config.max_uri_handlers = 10;
+    config.stack_size     = 8192;
+    config.max_uri_handlers = 8;
+    config.max_open_sockets = 3;  /* Reduce from default 7 to save RAM */
 
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &config);
@@ -902,14 +903,15 @@ void http_status_init(void)
         return;
     }
 
-    httpd_register_uri_handler(server, &uri_status_html);
-    httpd_register_uri_handler(server, &uri_status_json);
-    httpd_register_uri_handler(server, &uri_setup_html);
-    httpd_register_uri_handler(server, &uri_scan_json);
-    httpd_register_uri_handler(server, &uri_connect_post);
-    httpd_register_uri_handler(server, &uri_ota_post);
-    httpd_register_uri_handler(server, &uri_ota_info);
-    httpd_register_uri_handler(server, &uri_ota_relay);
+    esp_err_t r;
+    r = httpd_register_uri_handler(server, &uri_status_html);  if (r != ESP_OK) ESP_LOGE(TAG, "Failed /: %s", esp_err_to_name(r));
+    r = httpd_register_uri_handler(server, &uri_status_json);  if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/status: %s", esp_err_to_name(r));
+    r = httpd_register_uri_handler(server, &uri_setup_html);   if (r != ESP_OK) ESP_LOGE(TAG, "Failed /setup: %s", esp_err_to_name(r));
+    r = httpd_register_uri_handler(server, &uri_scan_json);    if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/scan: %s", esp_err_to_name(r));
+    r = httpd_register_uri_handler(server, &uri_connect_post); if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/connect: %s", esp_err_to_name(r));
+    r = httpd_register_uri_handler(server, &uri_ota_post);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota: %s", esp_err_to_name(r));
+    r = httpd_register_uri_handler(server, &uri_ota_info);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota/info: %s", esp_err_to_name(r));
+    r = httpd_register_uri_handler(server, &uri_ota_relay);    if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota/relay: %s", esp_err_to_name(r));
 
     ESP_LOGI(TAG, "HTTP status server started on port %d (setup at /setup)",
              CONFIG_HTTP_STATUS_PORT);

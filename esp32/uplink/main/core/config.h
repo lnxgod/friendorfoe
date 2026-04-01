@@ -26,7 +26,7 @@ typedef struct {
 /* ── Backend URL ───────────────────────────────────────────────────────── */
 
 /* Primary: direct IP (fastest, most reliable) */
-#define CONFIG_BACKEND_URL          "http://192.168.42.252:8000"
+#define CONFIG_BACKEND_URL          "http://192.168.42.235:8000"
 /* Fallback: mDNS hostname (works if IP changes) */
 #define CONFIG_BACKEND_URL_FALLBACK "http://fof-server.local:8000"
 #define CONFIG_UPLOAD_ENDPOINT      "/detections/drones"
@@ -34,7 +34,7 @@ typedef struct {
 /* ── Device identity ───────────────────────────────────────────────────── */
 
 #ifndef CONFIG_DEVICE_ID
-#define CONFIG_DEVICE_ID            "uplink_1"
+#define CONFIG_DEVICE_ID            "auto"   /* MAC-based: uplink_XXYYZZ */
 #endif
 
 /* ── Upload settings ───────────────────────────────────────────────────── */

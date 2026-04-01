@@ -119,6 +119,14 @@ bool nvs_config_get_backend_url(char *buf, size_t buf_size)
 bool nvs_config_get_device_id(char *buf, size_t buf_size)
 {
     get_with_default("device_id", CONFIG_DEVICE_ID, buf, buf_size);
+
+    /* Auto-generate MAC-based device ID if default or empty */
+    if (buf[0] == '\0' || strcmp(buf, "auto") == 0) {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        snprintf(buf, buf_size, "uplink_%02X%02X%02X", mac[3], mac[4], mac[5]);
+        ESP_LOGI(TAG, "Auto device_id from MAC: %s", buf);
+    }
     return true;
 }
 

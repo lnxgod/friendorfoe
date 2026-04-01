@@ -318,23 +318,26 @@ static void uart_cmd_listener_task(void *arg)
     static const char *s_caps = "wifi";
 #endif
 
-    /* Send scanner identity on boot */
+    /* Send scanner identity on boot (via mutex-protected uart_tx) */
     {
         const esp_app_desc_t *app = esp_app_get_description();
-        char ver_msg[160];
-        snprintf(ver_msg, sizeof(ver_msg),
-                 "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
-                 "\"chip\":\"%s\",\"caps\":\"%s\"}\n",
-                 app ? app->version : "?", s_board_name, s_chip_name, s_caps);
-        uart_write_bytes(UART_NUM_1, ver_msg, strlen(ver_msg));
-        ESP_LOGI(TAG, "Scanner identity: %s v%s (%s)", s_board_name,
-                 app ? app->version : "?", s_caps);
+        const char *ver = app ? app->version : "?";
+        uart_tx_send_scanner_info(ver, s_board_name, s_chip_name, s_caps);
     }
 
     TickType_t last_info_send = xTaskGetTickCount();
 
     while (1) {
         int len = uart_read_bytes(UART_NUM_1, buf, sizeof(buf), pdMS_TO_TICKS(500));
+
+        /* Resend scanner_info every 10s (even when no data received) */
+        if ((xTaskGetTickCount() - last_info_send) >= pdMS_TO_TICKS(10000)) {
+            last_info_send = xTaskGetTickCount();
+            const esp_app_desc_t *app2 = esp_app_get_description();
+            uart_tx_send_scanner_info(app2 ? app2->version : "?",
+                                      s_board_name, s_chip_name, s_caps);
+        }
+
         if (len <= 0) continue;
 
         /* During OTA: route raw bytes to OTA receiver */
@@ -418,17 +421,6 @@ static void uart_cmd_listener_task(void *arg)
             }
         }
 
-        /* Resend scanner_info every 60s so uplink always has it */
-        if ((xTaskGetTickCount() - last_info_send) >= pdMS_TO_TICKS(60000)) {
-            last_info_send = xTaskGetTickCount();
-            const esp_app_desc_t *app2 = esp_app_get_description();
-            char info[160];
-            snprintf(info, sizeof(info),
-                     "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
-                     "\"chip\":\"%s\",\"caps\":\"%s\"}\n",
-                     app2 ? app2->version : "?", s_board_name, s_chip_name, s_caps);
-            uart_write_bytes(UART_NUM_1, info, strlen(info));
-        }
     }
 }
 #endif /* BLE_SCANNER_ONLY */
@@ -516,7 +508,24 @@ void app_main(void)
     ESP_LOGI(TAG, "BLE scanner DISABLED (WiFi-only mode)");
 #endif
 
-    /* ── 8. Start UART TX task on Core 1 (processing core) ──────────────── */
+    /* ── 8. Set scanner identity BEFORE starting TX task ──────────────── */
+    {
+#if defined(BLE_SCANNER_ONLY)
+        const char *bname = "scanner-s3-ble", *cname = "esp32s3", *caps = "ble";
+#elif defined(WIFI_SCANNER_ONLY) && defined(CONFIG_IDF_TARGET_ESP32C5)
+        const char *bname = "scanner-c5", *cname = "esp32c5", *caps = "wifi,5ghz";
+#elif defined(WIFI_SCANNER_ONLY)
+        const char *bname = "scanner-esp32", *cname = "esp32", *caps = "wifi";
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+        const char *bname = "scanner-s3-combo", *cname = "esp32s3", *caps = "ble,wifi";
+#else
+        const char *bname = "scanner-esp32", *cname = "esp32", *caps = "wifi";
+#endif
+        const esp_app_desc_t *app = esp_app_get_description();
+        uart_tx_send_scanner_info(app ? app->version : "?", bname, cname, caps);
+    }
+
+    /* Start UART TX task on Core 1 (processing core) */
     uart_tx_start(detection_queue);
 
 #ifndef BLE_SCANNER_ONLY

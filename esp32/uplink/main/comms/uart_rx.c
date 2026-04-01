@@ -216,15 +216,33 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
 
 /* ── Handle a parsed status message ────────────────────────────────────── */
 
-static void handle_status(const cJSON *root)
+static void handle_status(const cJSON *root, int scanner_id)
 {
     int ble_count  = json_get_int(root, "ble_count", 0);
     int wifi_count = json_get_int(root, "wifi_count", 0);
     int channel    = json_get_int(root, "ch", 0);
     int uptime     = json_get_int(root, "uptime_s", 0);
 
-    ESP_LOGI(TAG, "Scanner status: BLE=%d WiFi=%d ch=%d uptime=%ds",
-             ble_count, wifi_count, channel, uptime);
+    ESP_LOGI(TAG, "Scanner[%d] status: BLE=%d WiFi=%d ch=%d uptime=%ds",
+             scanner_id, ble_count, wifi_count, channel, uptime);
+
+    /* Extract scanner identity if present (piggybacks on status message) */
+    const char *ver = json_get_string(root, "ver", NULL);
+    if (ver) {
+        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        const char *board = json_get_string(root, "board", "?");
+        const char *chip = json_get_string(root, "chip", "?");
+        const char *caps = json_get_string(root, "caps", "?");
+        strncpy(info->version, ver, sizeof(info->version) - 1);
+        strncpy(info->board, board, sizeof(info->board) - 1);
+        strncpy(info->chip, chip, sizeof(info->chip) - 1);
+        strncpy(info->caps, caps, sizeof(info->caps) - 1);
+        if (!info->received) {
+            info->received = true;
+            ESP_LOGI(TAG, "Scanner[%d] identity from status: %s v%s (%s)",
+                     scanner_id, board, ver, caps);
+        }
+    }
 
     /* First status message from scanner: flash "connected!" */
     if (!s_first_status_received) {
@@ -272,7 +290,7 @@ static void process_line(const char *line, size_t len, int scanner_id)
             push_recent(&det);
         }
     } else if (strcmp(msg_type, MSG_TYPE_STATUS) == 0) {
-        handle_status(root);
+        handle_status(root, scanner_id);
     } else if (strcmp(msg_type, "scanner_info") == 0) {
         /* Scanner identity: version, board type, chip, capabilities */
         scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
