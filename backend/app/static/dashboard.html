@@ -1414,22 +1414,31 @@ async function refresh() {
     if (!pausedFeeds.has('nodes')) {
     const gs=document.getElementById('gps-summary');
     const gpsSet = nodeList.filter(n => n.lat != 0 || n.lon != 0);
-    gs.innerHTML = '<table><tr><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Name</th><th>Status</th><th onclick="sortTable(this)">Firmware</th><th>Latitude</th><th>Longitude</th><th onclick="sortTable(this)">IP</th><th onclick="sortTable(this)">Last Seen</th><th onclick="sortTable(this)">Batches</th><th>OTA</th></tr>' +
+    gs.innerHTML = '<table><tr><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Name</th><th>Status</th><th>Firmware Stack</th><th>Latitude</th><th>Longitude</th><th onclick="sortTable(this)">IP</th><th onclick="sortTable(this)">Last Seen</th><th>OTA</th></tr>' +
       nodeList.map(n => {
         const on = n.online;
         const hasGPS = n.lat != 0 || n.lon != 0;
         const fw = n.firmware_version || '?';
         const did = n.device_id;
+        const bt = n.board_type || '?';
+        const sc = n.scanners || [];
+        // Build firmware stack display
+        let fwStack = '<div style="font-family:JetBrains Mono,monospace;font-size:10px;line-height:1.5">' +
+          '<span style="color:#e040fb" title="'+bt+'">'+bt+' <b>v'+fw+'</b></span>';
+        sc.forEach(function(s) {
+          fwStack += '<br><span style="color:#58a6ff" title="'+s.board+' ('+s.caps+')">'+s.uart.toUpperCase()+': '+s.board+' <b>v'+s.ver+'</b></span>';
+        });
+        if (sc.length === 0 && on) fwStack += '<br><span style="color:#484f58">no scanners detected</span>';
+        fwStack += '</div>';
         return '<tr>' +
           '<td style="font-weight:700;color:#58a6ff">' + did + '</td>' +
           '<td style="color:#c9d1d9">' + (n.name || '-') + '</td>' +
           '<td><span class="pill ' + (on?'on':'off') + '">' + (on?'ONLINE':'OFFLINE') + '</span></td>' +
-          '<td style="font-family:JetBrains Mono,monospace;color:#e040fb">' + fw + '</td>' +
+          '<td>' + fwStack + '</td>' +
           '<td style="font-family:JetBrains Mono,monospace;color:' + (hasGPS?'#3fb950':'#f85149') + '">' + (hasGPS ? n.lat.toFixed(6) : 'NOT SET') + '</td>' +
           '<td style="font-family:JetBrains Mono,monospace;color:' + (hasGPS?'#3fb950':'#f85149') + '">' + (hasGPS ? n.lon.toFixed(6) : 'NOT SET') + '</td>' +
           '<td style="color:#484f58">' + (n.ip || '-') + '</td>' +
           '<td>' + ago(n.last_seen) + '</td>' +
-          '<td>' + n.total_batches + '</td>' +
           '<td>' + (on ? '<button onclick="showOtaDialog(\''+did+'\')" style="background:#1f6feb22;border:1px solid #1f6feb44;color:#1f6feb;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Update</button>' : '-') + '</td></tr>';
       }).join('') + '</table>' +
       '<div style="margin-top:6px;font-size:11px;color:#8b949e">GPS configured: <span class="val ' + (gpsSet.length>0?'ok':'err') + '">' + gpsSet.length + '/' + nodeList.length + '</span>' +

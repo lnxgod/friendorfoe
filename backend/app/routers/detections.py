@@ -161,6 +161,27 @@ async def ingest_drone_detections(
         "scanners": batch.scanners or _node_heartbeats.get(batch.device_id, {}).get("scanners"),
     }
 
+    # Auto-register new nodes in DB if they have GPS and aren't registered yet
+    try:
+        result = await db.execute(select(SensorNode).where(SensorNode.device_id == batch.device_id))
+        existing_node = result.scalar_one_or_none()
+        if not existing_node and batch.device_lat and batch.device_lon and \
+           abs(batch.device_lat) > 0.1 and abs(batch.device_lon) > 0.1:
+            new_node = SensorNode(
+                device_id=batch.device_id,
+                name=batch.device_id,
+                lat=batch.device_lat,
+                lon=batch.device_lon,
+                alt=batch.device_alt or 0,
+                is_fixed=False,
+            )
+            db.add(new_node)
+            await db.commit()
+            logger.info("Auto-registered new node: %s at (%.6f, %.6f)",
+                        batch.device_id, batch.device_lat, batch.device_lon)
+    except Exception:
+        pass  # Don't break ingestion if auto-register fails
+
     # Resolve sensor position (fixed node overrides GPS)
     sensor_lat, sensor_lon, sensor_alt, sensor_type = await _resolve_sensor_position(
         batch.device_id, batch.device_lat, batch.device_lon, batch.device_alt, db
