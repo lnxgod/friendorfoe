@@ -1291,7 +1291,8 @@ async function refresh() {
 
     // Keep previous node list if API call failed (prevents flash to empty)
     if (nodes && nodes.nodes) { window._lastNodeList = nodes.nodes; }
-    const nodeList = window._lastNodeList || [];
+    // Filter out nodes not seen in 10 hours (36000s)
+    const nodeList = (window._lastNodeList || []).filter(n => n.age_s < 36000);
     const onlineN=nodeList.filter(n=>n.online).length;
     document.getElementById('sensor-summary').textContent=onlineN+'/'+nodeList.length+' sensors online';
 
