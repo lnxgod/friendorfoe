@@ -769,17 +769,20 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    /* Step 1: Send OTA begin command to scanner as JSON */
-    char cmd[80];
-    snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%d}\n", total);
+    /* Step 1: Drop UART baud rate for reliable OTA transfer */
+    uart_set_baudrate(uart_num, OTA_BAUD_RATE);
+    ESP_LOGI(TAG, "OTA relay: dropped baud to %d for transfer", OTA_BAUD_RATE);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    /* Step 2: Send OTA begin command (includes baud rate so scanner can match) */
+    char cmd[100];
+    snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%d,\"baud\":%d}\n",
+             total, OTA_BAUD_RATE);
     uart_write_bytes(uart_num, cmd, strlen(cmd));
+    vTaskDelay(pdMS_TO_TICKS(2000));  /* Give scanner time to prepare partition + switch baud */
 
-    /* Step 2: Wait for ACK (up to 5 seconds) */
-    vTaskDelay(pdMS_TO_TICKS(2000));  /* Give scanner time to prepare partition */
-    /* TODO: read ACK from scanner UART — for now, proceed optimistically */
-
-    /* Step 3: Stream HTTP data as binary chunks to scanner */
-    uint8_t http_buf[512];  /* Smaller chunks to reduce stack/heap pressure during relay */
+    /* Step 3: Stream HTTP data as CRC32-protected binary chunks */
+    uint8_t http_buf[OTA_CHUNK_MAX_DATA];
     int received = 0;
     int remaining = total;
     uint16_t seq = 0;
@@ -790,47 +793,57 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
         if (read_len <= 0) {
             if (read_len == HTTPD_SOCK_ERR_TIMEOUT) continue;
             ESP_LOGE(TAG, "OTA relay: HTTP recv error at %d/%d", received, total);
-            /* Abort scanner OTA */
             uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
+            uart_set_baudrate(uart_num, UART_BAUD_RATE);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
             return ESP_FAIL;
         }
 
-        /* Send binary chunk: [0xF0][seq_hi][seq_lo][len_hi][len_lo] + data */
-        uint8_t hdr[5] = {
+        /* Compute CRC32 over data bytes */
+        uint32_t crc = 0xFFFFFFFF;
+        for (int k = 0; k < read_len; k++) {
+            crc ^= http_buf[k];
+            for (int b = 0; b < 8; b++) {
+                crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+            }
+        }
+        crc ^= 0xFFFFFFFF;
+
+        /* Send chunk: [0xF0][seq(2)][len(2)][crc32(4)] + data */
+        uint8_t hdr[OTA_CHUNK_HEADER_SIZE] = {
             OTA_CHUNK_MAGIC,
             (uint8_t)(seq >> 8), (uint8_t)(seq & 0xFF),
             (uint8_t)(read_len >> 8), (uint8_t)(read_len & 0xFF),
+            (uint8_t)(crc >> 24), (uint8_t)(crc >> 16),
+            (uint8_t)(crc >> 8), (uint8_t)(crc & 0xFF),
         };
-        uart_write_bytes(uart_num, (char *)hdr, 5);
+        uart_write_bytes(uart_num, (char *)hdr, OTA_CHUNK_HEADER_SIZE);
         uart_write_bytes(uart_num, (char *)http_buf, read_len);
 
         received += read_len;
         remaining -= read_len;
         seq++;
 
-        /* Yield to RTOS every chunk — prevents watchdog + lets WiFi/upload tasks breathe */
+        /* Yield every chunk */
         vTaskDelay(pdMS_TO_TICKS(1));
 
-        /* Longer pause every 16 chunks for scanner flow control */
+        /* Longer pause every 16 chunks */
         if (seq % OTA_ACK_INTERVAL_CHUNKS == 0) {
-            vTaskDelay(pdMS_TO_TICKS(20));
+            vTaskDelay(pdMS_TO_TICKS(10));
         }
 
-        /* Progress log */
+        /* Progress log every 100KB */
         if (received % (100 * 1024) < OTA_CHUNK_MAX_DATA) {
-            ESP_LOGI(TAG, "OTA relay: %d/%d bytes (%.0f%%)",
-                     received, total, (float)received / total * 100);
+            ESP_LOGI(TAG, "OTA relay: %d/%d bytes (%.0f%%) seq=%d",
+                     received, total, (float)received / total * 100, seq);
         }
     }
 
-    /* Step 4: Finalize — send abort sequence to exit OTA binary mode,
-     * then send ota_end JSON which the cmd listener can now parse */
+    /* Step 4: Restore baud rate */
     vTaskDelay(pdMS_TO_TICKS(500));
-    const uint8_t abort_seq[] = {0xFF, 0xFF, 0xFF, 0xFF};
-    uart_write_bytes(uart_num, (const char *)abort_seq, 4);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    uart_write_bytes(uart_num, "{\"type\":\"ota_end\"}\n", 18);
+    uart_set_baudrate(uart_num, UART_BAUD_RATE);
+    ESP_LOGW(TAG, "OTA relay complete: %d bytes, %d chunks. Baud restored to %d",
+             received, seq, UART_BAUD_RATE);
 
     ESP_LOGW(TAG, "OTA relay complete: %d bytes sent to scanner. Scanner rebooting...",
              received);

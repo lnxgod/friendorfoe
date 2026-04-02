@@ -399,8 +399,15 @@ static void uart_cmd_listener_task(void *arg)
                         } else if (type && strcmp(type, MSG_TYPE_OTA_BEGIN) == 0) {
                             /* UART OTA: receive firmware from uplink */
                             cJSON *sz = cJSON_GetObjectItem(root, "size");
+                            cJSON *baud_j = cJSON_GetObjectItem(root, "baud");
                             uint32_t total = sz ? (uint32_t)sz->valueint : 0;
                             if (total > 0) {
+                                /* Switch baud rate if specified */
+                                if (baud_j && baud_j->valueint > 0) {
+                                    uart_set_baudrate(UART_NUM_1, baud_j->valueint);
+                                    ESP_LOGI(TAG, "OTA baud switched to %d", baud_j->valueint);
+                                    vTaskDelay(pdMS_TO_TICKS(50));
+                                }
                                 ESP_LOGW(TAG, "UART OTA begin: %lu bytes", (unsigned long)total);
                                 uart_ota_begin(total, UART_NUM_1);
                             }

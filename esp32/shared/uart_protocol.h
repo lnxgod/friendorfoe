@@ -77,10 +77,13 @@ extern "C" {
 #define MSG_TYPE_OTA_DONE           "ota_done"
 #define MSG_TYPE_OTA_ERROR          "ota_error"
 
-/* Binary OTA chunk header: [0xF0][seq_hi][seq_lo][len_hi][len_lo] + data */
+/* Binary OTA chunk header: [0xF0][seq_hi][seq_lo][len_hi][len_lo][crc32 (4 bytes)] + data
+ * CRC32 covers the data bytes only (not the header) */
 #define OTA_CHUNK_MAGIC             0xF0
-#define OTA_CHUNK_MAX_DATA          1024
-#define OTA_ACK_INTERVAL_CHUNKS     16   /* ACK every 16 chunks = 16KB */
+#define OTA_CHUNK_HEADER_SIZE       9    /* magic(1) + seq(2) + len(2) + crc32(4) */
+#define OTA_CHUNK_MAX_DATA          512  /* Smaller chunks for reliability */
+#define OTA_ACK_INTERVAL_CHUNKS     16   /* ACK every 16 chunks */
+#define OTA_BAUD_RATE               460800  /* Half speed for OTA reliability */
 
 /* ── JSON key names (short to save bandwidth at 921600 baud) ─────────────── */
 
