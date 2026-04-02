@@ -8,6 +8,7 @@
  */
 
 #include "oled_display.h"
+#include "uart_rx.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -455,10 +456,14 @@ void oled_update(int drone_count, bool ble_scanner_ok, bool wifi_scanner_ok,
              backend_ok ? "OK" : "--");
     fb_draw_string(0, 12, line);
 
-    /* Line 3: Scanner connections (BLE + WiFi) */
-    snprintf(line, sizeof(line), "BLE:%s WiFi:%s",
-             ble_scanner_ok ? "OK" : "--",
-             wifi_scanner_ok ? "OK" : "--");
+    /* Line 3: Scanner versions (or connection status) */
+    {
+        const scanner_info_t *ble_info = uart_rx_get_ble_scanner_info();
+        const scanner_info_t *wifi_info = uart_rx_get_wifi_scanner_info();
+        snprintf(line, sizeof(line), "B:%s W:%s",
+                 ble_info ? ble_info->version : (ble_scanner_ok ? "ok" : "--"),
+                 wifi_info ? wifi_info->version : (wifi_scanner_ok ? "ok" : "--"));
+    }
     fb_draw_string(0, 22, line);
 
     /* Line 4: Drones + Uploads */
