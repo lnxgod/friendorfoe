@@ -48,6 +48,7 @@ static struct {
     uint16_t                 chunk_pos;      /* bytes received so far */
     bool                     in_chunk;       /* receiving chunk data */
     int64_t                  start_ms;       /* session start time for timeout */
+    uint32_t                 expected_crc;   /* CRC32 from chunk header (validated after data) */
 } s_ota = {0};
 
 /* ── Send JSON response back to uplink ─────────────────────────────────── */
@@ -84,6 +85,18 @@ static void send_error(const char *msg)
 }
 
 /* ── Public API ────────────────────────────────────────────────────────── */
+
+static uint32_t compute_crc32(const uint8_t *data, int len)
+{
+    uint32_t crc = 0xFFFFFFFF;
+    for (int i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; b++) {
+            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+        }
+    }
+    return crc ^ 0xFFFFFFFF;
+}
 
 bool uart_ota_begin(uint32_t total_size, uart_port_t uart_num)
 {
@@ -142,22 +155,26 @@ bool uart_ota_process_data(const uint8_t *data, int len)
                 ff_count = 0;
             }
 
-            /* Accumulating 5-byte header: [0xF0][seq_hi][seq_lo][len_hi][len_lo] */
+            /* Accumulating 9-byte header: [0xF0][seq(2)][len(2)][crc32(4)] */
             if (s_ota.hdr_pos == 0 && b != OTA_CHUNK_MAGIC) {
-                continue;  /* Skip non-chunk bytes (e.g., stray JSON newlines) */
+                continue;  /* Skip non-chunk bytes */
             }
             s_ota.hdr_buf[s_ota.hdr_pos++] = b;
 
-            if (s_ota.hdr_pos >= 5) {
+            if (s_ota.hdr_pos >= OTA_CHUNK_HEADER_SIZE) {
                 /* Header complete — parse */
                 uint16_t seq = ((uint16_t)s_ota.hdr_buf[1] << 8) | s_ota.hdr_buf[2];
                 uint16_t clen = ((uint16_t)s_ota.hdr_buf[3] << 8) | s_ota.hdr_buf[4];
+                uint32_t expected_crc = ((uint32_t)s_ota.hdr_buf[5] << 24) |
+                                        ((uint32_t)s_ota.hdr_buf[6] << 16) |
+                                        ((uint32_t)s_ota.hdr_buf[7] << 8) |
+                                        (uint32_t)s_ota.hdr_buf[8];
 
                 if (clen > OTA_CHUNK_MAX_DATA) {
-                    ESP_LOGE(TAG, "Chunk too large: %d", clen);
-                    send_error("chunk_too_large");
-                    uart_ota_abort();
-                    return false;
+                    ESP_LOGE(TAG, "Chunk too large: %d (seq %d)", clen, seq);
+                    /* Don't abort — might be a corrupted header. Reset and look for next magic. */
+                    s_ota.hdr_pos = 0;
+                    continue;
                 }
 
                 s_ota.chunk_len = clen;
@@ -165,7 +182,9 @@ bool uart_ota_process_data(const uint8_t *data, int len)
                 s_ota.in_chunk = true;
                 s_ota.hdr_pos = 0;
 
-                /* Sequence check (warn but don't abort — UART may reorder) */
+                /* Store expected CRC for validation after data arrives */
+                s_ota.expected_crc = expected_crc;
+
                 if (seq != s_ota.expected_seq) {
                     ESP_LOGW(TAG, "Seq mismatch: expected %d got %d", s_ota.expected_seq, seq);
                 }
@@ -176,7 +195,21 @@ bool uart_ota_process_data(const uint8_t *data, int len)
             s_ota.chunk_buf[s_ota.chunk_pos++] = b;
 
             if (s_ota.chunk_pos >= s_ota.chunk_len) {
-                /* Chunk complete — write to OTA partition */
+                /* Chunk complete — validate CRC32 before writing */
+                uint32_t actual_crc = compute_crc32(s_ota.chunk_buf, s_ota.chunk_len);
+                if (actual_crc != s_ota.expected_crc && s_ota.expected_crc != 0) {
+                    ESP_LOGW(TAG, "CRC mismatch seq=%d: expected=%08lx got=%08lx — skipping",
+                             s_ota.expected_seq - 1,
+                             (unsigned long)s_ota.expected_crc, (unsigned long)actual_crc);
+                    /* Don't write corrupted data — skip this chunk.
+                     * The received count won't reach total_size, so auto-finalize
+                     * won't trigger, and the 90s timeout will abort + reboot.
+                     * On the next attempt, this chunk might come through clean. */
+                    s_ota.in_chunk = false;
+                    continue;
+                }
+
+                /* CRC valid — write to OTA partition */
                 esp_err_t err = esp_ota_write(s_ota.handle,
                                               s_ota.chunk_buf, s_ota.chunk_len);
                 if (err != ESP_OK) {
@@ -261,7 +294,10 @@ void uart_ota_abort(void)
 {
     if (s_ota.active) {
         esp_ota_abort(s_ota.handle);
-        ESP_LOGW(TAG, "UART OTA aborted at %lu bytes", (unsigned long)s_ota.received);
+        /* Restore normal baud rate */
+        uart_set_baudrate(s_ota.uart_num, UART_BAUD_RATE);
+        ESP_LOGW(TAG, "UART OTA aborted at %lu bytes, baud restored to %d",
+                 (unsigned long)s_ota.received, UART_BAUD_RATE);
     }
     s_ota.active = false;
 }
