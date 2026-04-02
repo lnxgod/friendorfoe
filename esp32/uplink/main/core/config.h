@@ -25,10 +25,10 @@ typedef struct {
 
 /* ── Backend URL ───────────────────────────────────────────────────────── */
 
-/* Primary: direct IP (fastest, most reliable) */
-#define CONFIG_BACKEND_URL          "http://192.168.42.235:8000"
-/* Fallback: mDNS hostname (works if IP changes) */
-#define CONFIG_BACKEND_URL_FALLBACK "http://fof-server.local:8000"
+/* Primary: mDNS hostname (works regardless of DHCP IP changes) */
+#define CONFIG_BACKEND_URL          "http://fof-server.local:8000"
+/* Fallback: last known static IP */
+#define CONFIG_BACKEND_URL_FALLBACK "http://192.168.42.145:8000"
 #define CONFIG_UPLOAD_ENDPOINT      "/detections/drones"
 
 /* ── Device identity ───────────────────────────────────────────────────── */
