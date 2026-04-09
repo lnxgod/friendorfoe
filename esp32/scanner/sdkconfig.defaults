@@ -1,5 +1,6 @@
-# Friend or Foe — WiFi Scanner (ESP32-S3) SDK Configuration
-# Dedicated WiFi promiscuous scanning — no BLE, no coex
+# Friend or Foe — Scanner (ESP32-S3) SDK Configuration
+# Console config is per-variant: scanner-s3.defaults sets USB-JTAG,
+# scanner-s3-legacy uses UART default (via cached sdkconfig)
 
 # ── Bluetooth (disabled — BLE runs on separate board) ────────────────────────
 CONFIG_BT_ENABLED=n

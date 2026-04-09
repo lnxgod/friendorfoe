@@ -53,10 +53,10 @@ typedef struct {
 
 /* ── Scanner UART inputs ──────────────────────────────────────────────── */
 
-#ifdef UPLINK_ESP32
+#if defined(UPLINK_ESP32)
 /* ideaspark ESP32 OLED — match physical wiring:
- *   GPIO17 = BLE scanner (S3)    RX input
- *   GPIO25 = WiFi scanner (C5)   RX input */
+ *   UART2: GPIO16(RX)/17(TX) = BLE scanner (S3)
+ *   UART1: GPIO25(RX)/26(TX) = WiFi scanner (C5) */
 #define CONFIG_BLE_SCANNER_UART     UART_NUM_2
 #define CONFIG_BLE_SCANNER_RX_PIN   16
 #define CONFIG_BLE_SCANNER_TX_PIN   17
@@ -64,6 +64,21 @@ typedef struct {
 #define CONFIG_WIFI_SCANNER_RX_PIN  25
 #define CONFIG_WIFI_SCANNER_TX_PIN  26
 #define CONFIG_DUAL_SCANNER         1
+
+#elif defined(UPLINK_ESP32S3)
+/* ESP32-S3 uplink — straight-through wiring (same pin# both sides):
+ *   Scanner A TX(17) → Uplink GPIO17 (RX)   UART1
+ *   Scanner A RX(18) ← Uplink GPIO18 (TX)   UART1
+ *   Scanner B TX(17) → Uplink GPIO15 (RX)   UART2
+ *   Scanner B RX(18) ← Uplink GPIO16 (TX)   UART2 */
+#define CONFIG_BLE_SCANNER_UART     UART_NUM_1
+#define CONFIG_BLE_SCANNER_RX_PIN   17
+#define CONFIG_BLE_SCANNER_TX_PIN   18
+#define CONFIG_WIFI_SCANNER_UART    UART_NUM_2
+#define CONFIG_WIFI_SCANNER_RX_PIN  15
+#define CONFIG_WIFI_SCANNER_TX_PIN  16
+#define CONFIG_DUAL_SCANNER         1
+
 #else
 /* ESP32-C3 (2 hardware UARTs): UART1=single scanner, UART0=GPS */
 #define CONFIG_BLE_SCANNER_UART     UART_NUM_1

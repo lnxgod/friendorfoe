@@ -42,7 +42,8 @@
 
 static const char *TAG = "fof_ble_scanner";
 
-#define FIRMWARE_VERSION    "0.27.0-beta"
+#include "version.h"
+#define FIRMWARE_NAME "ble-scanner"
 #define DETECTION_QUEUE_LEN 50
 #define DISPLAY_UPDATE_MS   500
 
@@ -459,6 +460,9 @@ static void display_task(void *arg)
 
 void app_main(void)
 {
+    /* ── 0. Machine-readable firmware identification ──────────────────── */
+    FOF_PRINT_IDENT(TAG, FIRMWARE_NAME);
+
     /* ── 1. Initialize NVS flash ──────────────────────────────────────── */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -490,7 +494,7 @@ void app_main(void)
 
     /* ── 5. Initialize OLED display ─────────────────────────────────── */
     oled_init();
-    oled_set_version(FIRMWARE_VERSION);
+    oled_set_version(FOF_VERSION);
     oled_update(0, 0, 0, 0, 0, 0);
 
     /* ── 6. Initialize BLE Remote ID scanner ──────────────────────────── */
@@ -545,7 +549,7 @@ void app_main(void)
 
     /* ── 11. Startup banner ───────────────────────────────────────────── */
     ESP_LOGI(TAG, "============================================");
-    ESP_LOGI(TAG, "  Friend or Foe — BLE Scanner v%s", FIRMWARE_VERSION);
+    ESP_LOGI(TAG, "  Friend or Foe — %s v%s", FIRMWARE_NAME, FOF_VERSION);
 #if CONFIG_IDF_TARGET_ESP32S3
     ESP_LOGI(TAG, "  ESP32-S3 dual-core @ 240 MHz");
 #elif CONFIG_IDF_TARGET_ESP32C5

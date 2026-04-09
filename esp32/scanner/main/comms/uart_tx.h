@@ -73,6 +73,13 @@ typedef struct {
 void uart_tx_send_scanner_info(const char *ver, const char *board,
                                 const char *chip, const char *caps);
 
+/**
+ * Store scanner identity for deferred sending after TX startup delay.
+ * Call this before uart_tx_start(). The TX task sends it after its
+ * 10s delay to avoid flooding the uplink during boot.
+ */
+void uart_tx_set_identity(const char *board, const char *chip, const char *caps);
+
 /** Get cumulative BLE detection count. */
 int uart_tx_get_ble_count(void);
 

@@ -42,11 +42,15 @@ private val AVAILABLE_PHOTOS: Set<String> = setOf(
     "AS50", "A109", "A139",
     "B06", "B407", "B429",
     "S76", "S92", "BK17",
-    "UH60", "H60", "H47", "CH47", // Military helicopters
+    "UH60", "H60", "CH47", "CH53", // Military helicopters
+    "MI8", "MI24", "MI28", "KA52", // Russian helicopters
     "V22", // V-22 Osprey
     // Fighter / military
-    "F16", "F15", "F18", "FA18", "F22", "F35",
-    "EUFI", "RFAL",
+    "F14", "F16", "F15", "F18", "FA18", "F22", "F35",
+    "EUFI", "RFAL", "GRF4", "GR4", "MIR2", "KFIR", // NATO/allied fighters
+    "SU27", "SU30", "SU34", "SU35", "MIG29", "MIG31", // Russian fighters
+    "J10", "J20", "JF17", // Chinese/Pakistani fighters
+    "TU95", "TU160", "TU22", // Russian bombers
     "B1", "B2", "B52",
     "T6", "T38", "T45",
     "A10", "C130H", "F117",
@@ -93,13 +97,36 @@ fun getAircraftPhotoUrl(typeCode: String?): String? {
     // Use AircraftDatabase as single source of truth for photo mapping
     val dbEntry = AircraftDatabase.matchByTypeCode(normalized)
     // Extract just the filename without path/extension from photoAsset (e.g., "aircraft/B738.jpg" → "B738")
-    val photoCode = dbEntry?.photoAsset
+    val rawPhotoCode = dbEntry?.photoAsset
         ?.substringAfterLast("/")
         ?.substringBeforeLast(".")
-        ?: normalized
-    return if (photoCode in AVAILABLE_PHOTOS) {
-        "file:///android_asset/aircraft/$photoCode.jpg"
-    } else {
-        null
+    val photoCode = if (!rawPhotoCode.isNullOrBlank()) rawPhotoCode else normalized
+
+    if (photoCode in AVAILABLE_PHOTOS) {
+        return "file:///android_asset/aircraft/$photoCode.jpg"
     }
+    // Fuzzy match: try stripping trailing variant letter (B39M → B39, then B738 family)
+    val stripped = photoCode.replace(Regex("[A-Z]$"), "")
+    if (stripped != photoCode && stripped in AVAILABLE_PHOTOS) {
+        return "file:///android_asset/aircraft/$stripped.jpg"
+    }
+    // Try common prefix (first 3 chars) — e.g., MH60 matches UH60 family
+    val prefix = photoCode.take(3)
+    val prefixMatch = AVAILABLE_PHOTOS.firstOrNull { it.startsWith(prefix) }
+    if (prefixMatch != null) {
+        return "file:///android_asset/aircraft/$prefixMatch.jpg"
+    }
+    // Try without leading letter for military variants (CH53 → H53 → no, but SH60 → H60 → UH60)
+    if (photoCode.length >= 3) {
+        val noPrefix = photoCode.drop(1)
+        if (noPrefix in AVAILABLE_PHOTOS) {
+            return "file:///android_asset/aircraft/$noPrefix.jpg"
+        }
+        // Try known military helo prefix swaps: MH60/SH60/HH60 → UH60
+        val heloBase = photoCode.replace(Regex("^[MSH]H"), "UH")
+        if (heloBase != photoCode && heloBase in AVAILABLE_PHOTOS) {
+            return "file:///android_asset/aircraft/$heloBase.jpg"
+        }
+    }
+    return null
 }

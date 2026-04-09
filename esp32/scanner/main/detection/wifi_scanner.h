@@ -84,6 +84,35 @@ void wifi_scanner_lockon_cancel(void);
  */
 bool wifi_scanner_is_locked_on(void);
 
+/**
+ * Get current attack/anomaly counters (delta since last reset).
+ * Any output pointer may be NULL to skip that field.
+ */
+void wifi_scanner_get_attack_counters(uint16_t *deauth, uint16_t *disassoc,
+                                       uint16_t *auth, bool *flood,
+                                       bool *bcn_spam);
+
+/**
+ * Reset attack counters to zero (call after reporting).
+ */
+void wifi_scanner_reset_attack_counters(void);
+
+/**
+ * Get the frame control subtype histogram (16 entries, indexed by subtype 0-15).
+ */
+void wifi_scanner_get_fc_histogram(uint32_t out[16]);
+
+/**
+ * Reset the frame control histogram to zero.
+ */
+void wifi_scanner_reset_fc_histogram(void);
+
+/** Pause WiFi scanning (disable promiscuous mode). Used during OTA. */
+void wifi_scanner_pause(void);
+
+/** Resume WiFi scanning (re-enable promiscuous mode). */
+void wifi_scanner_resume(void);
+
 #ifdef __cplusplus
 }
 #endif

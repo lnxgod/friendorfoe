@@ -1,0 +1,41 @@
+# Friend or Foe — Uplink (ESP32-S3 with OLED) SDK Configuration
+# Dual-UART scanner input + WiFi backhaul + OLED status display
+# Dual-core Xtensa LX7 @ 240 MHz
+
+# ── Bluetooth (disabled — scanners handle BLE, uplink is WiFi only) ──────
+CONFIG_BT_ENABLED=n
+
+# ── WiFi (STA + AP mode for config) ─────────────────────────────────────
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
+CONFIG_ESP_WIFI_TX_BUFFER_TYPE=0
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+
+# ── lwIP (reduce TCP/IP memory footprint) ──────────────────────────────
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=6
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=6
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=16
+
+# ── FreeRTOS (dual-core Xtensa LX7) ─────────────────────────────────────
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_UNICORE=n
+
+# ── Watchdog ─────────────────────────────────────────────────────────────
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# ── OLED I2C pins (ESP32-S3 board with 0.96" SSD1306) ──────────────────
+CONFIG_FOF_OLED_SDA_PIN=8
+CONFIG_FOF_OLED_SCL_PIN=9
+CONFIG_FOF_OLED_RST_PIN=-1
+
+# ── Console on USB-JTAG (native USB on S3) ──────────────────────────────
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# ── Logging ──────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3

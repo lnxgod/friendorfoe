@@ -283,8 +283,9 @@ typedef struct { int sda; int scl; const char *board; } i2c_pin_combo_t;
 
 static const i2c_pin_combo_t s_pin_combos[] = {
     { OLED_SDA_PIN, OLED_SCL_PIN, "configured" },
+    { 8,  9,  "ESP32-S3 OLED" },
     { 21, 22, "default/TTGO" },
-    { 17, 18, "Heltec V3" },
+    /* NOTE: 17/18 removed — those are UART pins on S3 uplink */
     { 5,  4,  "alt wiring" },
 };
 #define NUM_PIN_COMBOS (sizeof(s_pin_combos) / sizeof(s_pin_combos[0]))

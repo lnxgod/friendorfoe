@@ -454,8 +454,23 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 rate_limit_ms = 500;    /* Drones: every 0.5s */
             } else if (fp.is_tracker) {
                 rate_limit_ms = 1000;   /* Trackers: every 1s */
+            } else if (fp.device_type == BLE_DEV_FLIPPER_ZERO) {
+                rate_limit_ms = 1000;   /* Security tool: every 1s */
+            } else if (fp.device_type == BLE_DEV_META_GLASSES ||
+                       fp.device_type == BLE_DEV_META_DEVICE) {
+                rate_limit_ms = 2000;   /* Privacy interest: every 2s */
             } else if (ble_rid_is_focused()) {
                 rate_limit_ms = 5000;   /* Non-target during focus: slow down */
+            } else if (fp.device_type == BLE_DEV_DRONE_OTHER) {
+                rate_limit_ms = 500;    /* Non-DJI drones: fast like DJI */
+            } else if (fp.device_type == BLE_DEV_AUDIO_DEVICE ||
+                       fp.device_type == BLE_DEV_SMART_HOME ||
+                       fp.device_type == BLE_DEV_GAMING ||
+                       fp.device_type == BLE_DEV_MEDICAL ||
+                       fp.device_type == BLE_DEV_ESCOOTER ||
+                       fp.device_type == BLE_DEV_VEHICLE ||
+                       fp.device_type == BLE_DEV_CAMERA) {
+                rate_limit_ms = 5000;   /* Low interest: every 5s */
             } else if (fp.device_type != BLE_DEV_UNKNOWN) {
                 rate_limit_ms = 2000;   /* Known devices: every 2s */
             } else {
@@ -485,8 +500,15 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 /* Confidence based on device classification */
                 if (fp.is_tracker) {
                     det.confidence = 0.50f;  /* Trackers are high interest */
-                } else if (fp.device_type == BLE_DEV_DRONE_CONTROLLER) {
+                } else if (fp.device_type == BLE_DEV_DRONE_CONTROLLER ||
+                           fp.device_type == BLE_DEV_DRONE_OTHER) {
                     det.confidence = 0.60f;
+                } else if (fp.device_type == BLE_DEV_FLIPPER_ZERO) {
+                    det.confidence = 0.40f;  /* Security tool: high interest */
+                } else if (fp.device_type == BLE_DEV_META_GLASSES) {
+                    det.confidence = 0.30f;  /* Privacy interest */
+                } else if (fp.device_type == BLE_DEV_META_DEVICE) {
+                    det.confidence = 0.10f;
                 } else if (fp.device_type != BLE_DEV_UNKNOWN) {
                     det.confidence = 0.05f;  /* Known type, low interest */
                 } else {
@@ -524,6 +546,12 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 det.ble_apple_info = fp.apple_info;
                 memcpy(det.ble_raw_mfr, fp.raw_mfr, fp.raw_mfr_len);
                 det.ble_raw_mfr_len = fp.raw_mfr_len;
+
+                /* Service UUIDs from fingerprint */
+                det.ble_svc_uuid_count = fp.svc_uuid_count;
+                for (int u = 0; u < fp.svc_uuid_count && u < 4; u++) {
+                    det.ble_service_uuids[u] = fp.service_uuids[u];
+                }
 
                 /* Advertisement interval tracking (per-MAC timing) */
                 {

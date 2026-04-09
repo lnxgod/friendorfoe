@@ -116,6 +116,42 @@ static uint32_t s_mgmt_frames = 0;
 static uint32_t s_beacon_frames = 0;
 static uint32_t s_fc_histogram[16] = {0};  /* subtype distribution */
 
+/* ── Attack / anomaly counters (delta-reported, reset each status) ────────── */
+
+static uint16_t s_deauth_count  = 0;      /* deauth frames since last status */
+static uint16_t s_disassoc_count = 0;     /* disassoc frames since last status */
+static uint16_t s_auth_count    = 0;      /* auth frames since last status */
+static bool     s_deauth_flood  = false;  /* flood detected in current window */
+
+/* Per-source deauth tracker — detect flood from single source */
+#define DEAUTH_SRC_SLOTS    16
+#define DEAUTH_FLOOD_THRESH  5            /* >5 deauth from one MAC in 10s = flood */
+#define DEAUTH_WINDOW_MS     10000
+
+typedef struct {
+    uint8_t  mac[6];
+    uint16_t count;
+    int64_t  window_start_ms;
+} deauth_src_t;
+
+static deauth_src_t s_deauth_sources[DEAUTH_SRC_SLOTS] = {0};
+
+/* ── Beacon spam tracker — detect Marauder/Flipper beacon floods ──────────── */
+
+#define BEACON_SPAM_SLOTS    8
+#define BEACON_SPAM_SSID_THRESH  10       /* >10 unique SSIDs from 1 BSSID in 30s */
+#define BEACON_SPAM_WINDOW_MS    30000
+
+typedef struct {
+    uint8_t  bssid[6];
+    uint16_t unique_ssid_count;
+    uint32_t ssid_hashes[16];             /* FNV-1a of recent SSIDs */
+    int64_t  window_start_ms;
+} beacon_spam_tracker_t;
+
+static beacon_spam_tracker_t s_beacon_spam[BEACON_SPAM_SLOTS] = {0};
+static bool s_beacon_spam_active = false;
+
 /* ── RSSI movement tracker (for soft-match confidence boost) ─────────────── */
 
 #define RSSI_TRACK_SLOTS    16
@@ -277,6 +313,63 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
         }
 
         offset = tag_data_offset + tag_len;
+    }
+
+    /* ── Beacon spam detection ────────────────────────────────────────────── */
+    if (ssid[0] != '\0') {
+        int64_t now_ms = esp_timer_get_time() / 1000;
+
+        /* FNV-1a hash of SSID for compact tracking */
+        uint32_t ssid_hash = 0x811c9dc5;
+        for (const char *p = ssid; *p; p++) {
+            ssid_hash ^= (uint8_t)*p;
+            ssid_hash *= 0x01000193;
+        }
+
+        /* Find or allocate tracker for this BSSID */
+        int bslot = -1;
+        for (int i = 0; i < BEACON_SPAM_SLOTS; i++) {
+            if (memcmp(s_beacon_spam[i].bssid, bssid, 6) == 0) {
+                bslot = i;
+                break;
+            }
+        }
+        if (bslot < 0) {
+            /* Find empty or oldest slot */
+            int oldest = 0;
+            for (int i = 0; i < BEACON_SPAM_SLOTS; i++) {
+                if (s_beacon_spam[i].unique_ssid_count == 0) { oldest = i; break; }
+                if (s_beacon_spam[i].window_start_ms <
+                    s_beacon_spam[oldest].window_start_ms) {
+                    oldest = i;
+                }
+            }
+            bslot = oldest;
+            memset(&s_beacon_spam[bslot], 0, sizeof(s_beacon_spam[bslot]));
+            memcpy(s_beacon_spam[bslot].bssid, bssid, 6);
+            s_beacon_spam[bslot].window_start_ms = now_ms;
+        }
+
+        beacon_spam_tracker_t *bst = &s_beacon_spam[bslot];
+
+        /* Reset window if expired */
+        if ((now_ms - bst->window_start_ms) > BEACON_SPAM_WINDOW_MS) {
+            bst->unique_ssid_count = 0;
+            bst->window_start_ms = now_ms;
+        }
+
+        /* Check if this SSID hash is new for this BSSID */
+        bool ssid_seen = false;
+        for (int i = 0; i < bst->unique_ssid_count && i < 16; i++) {
+            if (bst->ssid_hashes[i] == ssid_hash) { ssid_seen = true; break; }
+        }
+        if (!ssid_seen && bst->unique_ssid_count < 16) {
+            bst->ssid_hashes[bst->unique_ssid_count] = ssid_hash;
+            bst->unique_ssid_count++;
+        }
+        if (bst->unique_ssid_count >= BEACON_SPAM_SSID_THRESH) {
+            s_beacon_spam_active = true;
+        }
     }
 
     /* ── Detection pipeline ───────────────────────────────────────────────── */
@@ -677,6 +770,56 @@ static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     uint8_t subtype = (frame_ctrl >> 4) & 0x0F;
     if (subtype < 16) {
         s_fc_histogram[subtype]++;
+    }
+
+    /* ── Deauth / disassoc / auth frame counting ─────────────────────────── */
+    if (frame_ctrl == 0xC0 /* deauth */ || frame_ctrl == 0xA0 /* disassoc */) {
+        if (frame_ctrl == 0xC0) {
+            s_deauth_count++;
+        } else {
+            s_disassoc_count++;
+        }
+        /* Track per-source flood: src MAC at offset 10 in mgmt frame header */
+        if (frame_len >= 16) {
+            const uint8_t *src_mac = &frame[10];
+            int64_t now_ms = esp_timer_get_time() / 1000;
+            int slot = -1;
+            for (int i = 0; i < DEAUTH_SRC_SLOTS; i++) {
+                if (memcmp(s_deauth_sources[i].mac, src_mac, 6) == 0) {
+                    slot = i;
+                    break;
+                }
+            }
+            if (slot < 0) {
+                /* Find empty or oldest slot */
+                int oldest = 0;
+                for (int i = 0; i < DEAUTH_SRC_SLOTS; i++) {
+                    if (s_deauth_sources[i].count == 0) { oldest = i; break; }
+                    if (s_deauth_sources[i].window_start_ms <
+                        s_deauth_sources[oldest].window_start_ms) {
+                        oldest = i;
+                    }
+                }
+                slot = oldest;
+                memcpy(s_deauth_sources[slot].mac, src_mac, 6);
+                s_deauth_sources[slot].count = 0;
+                s_deauth_sources[slot].window_start_ms = now_ms;
+            }
+            /* Reset window if expired */
+            if ((now_ms - s_deauth_sources[slot].window_start_ms) > DEAUTH_WINDOW_MS) {
+                s_deauth_sources[slot].count = 0;
+                s_deauth_sources[slot].window_start_ms = now_ms;
+            }
+            s_deauth_sources[slot].count++;
+            if (s_deauth_sources[slot].count > DEAUTH_FLOOD_THRESH) {
+                s_deauth_flood = true;
+            }
+        }
+        return;  /* Don't process deauth/disassoc as beacon */
+    }
+    if (frame_ctrl == 0xB0 /* authentication */) {
+        s_auth_count++;
+        return;
     }
 
     /* Process beacons, probe responses, AND probe requests.
@@ -1151,4 +1294,51 @@ bool wifi_scanner_is_locked_on(void)
         return false;
     }
     return true;
+}
+
+/* ── Attack / anomaly counter API ──────────────────────────────────────────── */
+
+void wifi_scanner_get_attack_counters(uint16_t *deauth, uint16_t *disassoc,
+                                       uint16_t *auth, bool *flood,
+                                       bool *bcn_spam)
+{
+    if (deauth)    *deauth    = s_deauth_count;
+    if (disassoc)  *disassoc  = s_disassoc_count;
+    if (auth)      *auth      = s_auth_count;
+    if (flood)     *flood     = s_deauth_flood;
+    if (bcn_spam)  *bcn_spam  = s_beacon_spam_active;
+}
+
+void wifi_scanner_reset_attack_counters(void)
+{
+    s_deauth_count  = 0;
+    s_disassoc_count = 0;
+    s_auth_count    = 0;
+    s_deauth_flood  = false;
+    s_beacon_spam_active = false;
+    for (int i = 0; i < DEAUTH_SRC_SLOTS; i++) {
+        s_deauth_sources[i].count = 0;
+    }
+}
+
+void wifi_scanner_get_fc_histogram(uint32_t out[16])
+{
+    memcpy(out, s_fc_histogram, sizeof(s_fc_histogram));
+}
+
+void wifi_scanner_reset_fc_histogram(void)
+{
+    memset(s_fc_histogram, 0, sizeof(s_fc_histogram));
+}
+
+void wifi_scanner_pause(void)
+{
+    esp_wifi_set_promiscuous(false);
+    ESP_LOGW(TAG, "WiFi scanning PAUSED (OTA in progress)");
+}
+
+void wifi_scanner_resume(void)
+{
+    esp_wifi_set_promiscuous(true);
+    ESP_LOGW(TAG, "WiFi scanning RESUMED");
 }

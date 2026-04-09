@@ -70,6 +70,14 @@ typedef struct {
     char chip[12];      /* "esp32s3", "esp32", "esp32c5" */
     char caps[32];      /* "ble,wifi", "wifi", "ble" */
     bool received;
+
+    /* Attack / anomaly counters (latest delta from scanner status) */
+    uint16_t deauth_count;
+    uint16_t disassoc_count;
+    uint16_t auth_count;
+    bool     deauth_flood;
+    bool     beacon_spam;
+    char     fc_hist[128];   /* comma-separated frame subtype histogram */
 } scanner_info_t;
 
 /** Get scanner info for the BLE scanner (UART slot). */
@@ -77,6 +85,26 @@ const scanner_info_t *uart_rx_get_ble_scanner_info(void);
 
 /** Get scanner info for the WiFi scanner (UART slot). */
 const scanner_info_t *uart_rx_get_wifi_scanner_info(void);
+
+/** Last OTA response received from a scanner (for relay diagnostics). */
+typedef struct {
+    char type[20];      /* "ota_ack", "ota_ok", "ota_nack", "ota_error", "ota_done" */
+    char error[64];     /* error message if type==ota_error */
+    uint32_t received;  /* bytes received (from progress/done) */
+    int64_t timestamp;  /* when response was received (esp_timer) */
+    int32_t seq;        /* chunk seq number (from ota_ok/ota_nack), -1 if N/A */
+} ota_response_t;
+
+/** Get the last OTA response from any scanner. Resets after read. */
+ota_response_t uart_rx_get_last_ota_response(void);
+
+/** Clear the OTA response buffer (call before starting relay). */
+void uart_rx_clear_ota_response(void);
+
+/** Pause/resume the UART RX task for a specific scanner during OTA relay.
+ *  When paused, the relay handler can read ACKs directly from the UART. */
+void uart_rx_pause_scanner(int scanner_id);
+void uart_rx_resume_scanner(int scanner_id);
 
 #ifdef __cplusplus
 }

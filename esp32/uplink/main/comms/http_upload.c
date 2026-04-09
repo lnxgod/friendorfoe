@@ -114,7 +114,9 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     if (app) {
         cJSON_AddStringToObject(root, "firmware_version", app->version);
     }
-#ifdef UPLINK_ESP32
+#if defined(UPLINK_ESP32S3)
+    cJSON_AddStringToObject(root, "board_type", "uplink-s3");
+#elif defined(UPLINK_ESP32)
     cJSON_AddStringToObject(root, "board_type", "uplink-esp32");
 #else
     cJSON_AddStringToObject(root, "board_type", "uplink-c3");
@@ -138,6 +140,19 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
             cJSON_AddStringToObject(s, "board", ble_info->board);
             cJSON_AddStringToObject(s, "chip", ble_info->chip);
             cJSON_AddStringToObject(s, "caps", ble_info->caps);
+            /* Attack counters */
+            if (ble_info->deauth_count > 0)
+                cJSON_AddNumberToObject(s, "deauth", ble_info->deauth_count);
+            if (ble_info->disassoc_count > 0)
+                cJSON_AddNumberToObject(s, "disassoc", ble_info->disassoc_count);
+            if (ble_info->auth_count > 0)
+                cJSON_AddNumberToObject(s, "auth_fr", ble_info->auth_count);
+            if (ble_info->deauth_flood)
+                cJSON_AddTrueToObject(s, "flood");
+            if (ble_info->beacon_spam)
+                cJSON_AddTrueToObject(s, "bcn_spam");
+            if (ble_info->fc_hist[0])
+                cJSON_AddStringToObject(s, "fc_hist", ble_info->fc_hist);
             cJSON_AddItemToArray(scanners, s);
         }
 #if CONFIG_DUAL_SCANNER
@@ -149,6 +164,18 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
             cJSON_AddStringToObject(s, "board", wifi_info->board);
             cJSON_AddStringToObject(s, "chip", wifi_info->chip);
             cJSON_AddStringToObject(s, "caps", wifi_info->caps);
+            if (wifi_info->deauth_count > 0)
+                cJSON_AddNumberToObject(s, "deauth", wifi_info->deauth_count);
+            if (wifi_info->disassoc_count > 0)
+                cJSON_AddNumberToObject(s, "disassoc", wifi_info->disassoc_count);
+            if (wifi_info->auth_count > 0)
+                cJSON_AddNumberToObject(s, "auth_fr", wifi_info->auth_count);
+            if (wifi_info->deauth_flood)
+                cJSON_AddTrueToObject(s, "flood");
+            if (wifi_info->beacon_spam)
+                cJSON_AddTrueToObject(s, "bcn_spam");
+            if (wifi_info->fc_hist[0])
+                cJSON_AddStringToObject(s, "fc_hist", wifi_info->fc_hist);
             cJSON_AddItemToArray(scanners, s);
         }
 #endif
@@ -232,6 +259,44 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
             char ja3_hex[9];
             snprintf(ja3_hex, sizeof(ja3_hex), "%08lx", (unsigned long)d->ble_ja3_hash);
             cJSON_AddStringToObject(det, "ble_ja3", ja3_hex);
+        }
+
+        /* Apple Continuity deep fields */
+        if (d->ble_apple_auth[0] || d->ble_apple_auth[1] || d->ble_apple_auth[2]) {
+            char auth_hex[7];
+            snprintf(auth_hex, sizeof(auth_hex), "%02x%02x%02x",
+                     d->ble_apple_auth[0], d->ble_apple_auth[1], d->ble_apple_auth[2]);
+            cJSON_AddStringToObject(det, "ble_apple_auth", auth_hex);
+        }
+        if (d->ble_apple_activity != 0) {
+            cJSON_AddNumberToObject(det, "ble_activity", d->ble_apple_activity);
+        }
+        if (d->ble_apple_info != 0) {
+            cJSON_AddNumberToObject(det, "ble_apple_info", d->ble_apple_info);
+        }
+        if (d->ble_raw_mfr_len > 0) {
+            char mfr_hex[41];
+            for (int i = 0; i < d->ble_raw_mfr_len && i < 20; i++) {
+                snprintf(&mfr_hex[i*2], 3, "%02x", d->ble_raw_mfr[i]);
+            }
+            mfr_hex[d->ble_raw_mfr_len * 2] = '\0';
+            cJSON_AddStringToObject(det, "ble_raw_mfr", mfr_hex);
+        }
+        if (d->ble_adv_interval_us > 0) {
+            cJSON_AddNumberToObject(det, "ble_adv_interval",
+                                    (double)(d->ble_adv_interval_us / 1000));
+        }
+
+        /* BLE Service UUIDs */
+        if (d->ble_svc_uuid_count > 0) {
+            char svc_buf[36];
+            int off = 0;
+            for (int i = 0; i < d->ble_svc_uuid_count && i < 4; i++) {
+                if (i > 0) svc_buf[off++] = ',';
+                off += snprintf(&svc_buf[off], sizeof(svc_buf) - off,
+                                "%04x", d->ble_service_uuids[i]);
+            }
+            cJSON_AddStringToObject(det, "ble_svc_uuids", svc_buf);
         }
 
         /* Timestamps */

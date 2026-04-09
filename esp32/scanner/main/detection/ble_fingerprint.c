@@ -45,6 +45,33 @@
 #define MICROSOFT_COMPANY_ID    0x0006
 #define DJI_COMPANY_ID          0x2CA5
 #define TILE_COMPANY_ID         0x0059  /* Tile Inc */
+#define META_COMPANY_ID         0x01AB  /* Meta Platforms, Inc. */
+#define META_TECH_COMPANY_ID    0x058E  /* Meta Platforms Technologies */
+#define FLIPPER_COMPANY_ID      0x0E29  /* Flipper Devices Inc. */
+#define BOSE_COMPANY_ID         0x009E  /* Bose Corporation */
+#define JBL_COMPANY_ID          0x0057  /* Harman International (JBL) */
+#define SONY_COMPANY_ID         0x012D  /* Sony Group Corporation */
+#define FITBIT_COMPANY_ID       0x0108  /* Fitbit, Inc. */
+#define GARMIN_COMPANY_ID       0x0087  /* Garmin International */
+#define XIAOMI_COMPANY_ID       0x038F  /* Anhui Huami (Xiaomi wearables) */
+#define HUAWEI_COMPANY_ID       0x027D  /* Huawei Technologies */
+#define AMAZON_COMPANY_ID       0x0171  /* Amazon.com Services */
+#define SONOS_COMPANY_ID        0x0236  /* Sonos, Inc. */
+#define IKEA_COMPANY_ID         0x0311  /* IKEA of Sweden */
+/* Vehicles */
+#define TESLA_COMPANY_ID        0x04F6  /* Tesla, Inc. */
+/* Cameras & Drones */
+#define GOPRO_COMPANY_ID        0x02DF  /* GoPro */
+#define PARROT_COMPANY_ID       0x0289  /* Parrot Drones SAS */
+#define AUTEL_COMPANY_ID        0x0986  /* Autel Robotics */
+/* Gaming */
+#define NINTENDO_COMPANY_ID     0x0578  /* Nintendo Co., Ltd. */
+/* Security */
+#define AXON_COMPANY_ID         0x04D8  /* Axon Enterprise (body cams) */
+/* E-Scooters */
+#define SEGWAY_COMPANY_ID       0x06A1  /* Segway-Ninebot */
+/* Medical */
+#define DEXCOM_COMPANY_ID       0x0267  /* Dexcom, Inc. */
 
 /* ── Service UUIDs for known trackers ───────────────────────────────────── */
 
@@ -56,6 +83,9 @@
 #define SAMSUNG_SMARTTAG_SVC1   0xFD59  /* SmartTag factory/non-registered */
 #define SAMSUNG_SMARTTAG_SVC2   0xFD5A  /* SmartTag registered */
 #define SAMSUNG_SMARTTAG_LOST   0xFD69  /* SmartTag offline finding / lost mode */
+#define META_RAYBANGEN2_SVC     0xFD5F  /* Meta Ray-Ban Gen 2 */
+#define META_SVC_UUID1          0xFEB7  /* Meta Platforms, Inc. */
+#define META_SVC_UUID2          0xFEB8  /* Meta Platforms, Inc. */
 
 /* ── FNV-1a hash ────────────────────────────────────────────────────────── */
 
@@ -95,6 +125,17 @@ static const char *s_type_names[] = {
     [BLE_DEV_SMARTWATCH]       = "Smartwatch",
     [BLE_DEV_BEACON]           = "Beacon",
     [BLE_DEV_TRACKER_GENERIC]  = "Tracker (Generic)",
+    [BLE_DEV_META_GLASSES]    = "Meta Glasses",
+    [BLE_DEV_META_DEVICE]     = "Meta Device",
+    [BLE_DEV_FLIPPER_ZERO]    = "Flipper Zero",
+    [BLE_DEV_AUDIO_DEVICE]    = "Audio Device",
+    [BLE_DEV_SMART_HOME]      = "Smart Home",
+    [BLE_DEV_VEHICLE]         = "Vehicle",
+    [BLE_DEV_CAMERA]          = "Camera",
+    [BLE_DEV_ESCOOTER]        = "E-Scooter",
+    [BLE_DEV_MEDICAL]         = "Medical",
+    [BLE_DEV_GAMING]          = "Gaming",
+    [BLE_DEV_DRONE_OTHER]     = "Drone",
 };
 
 const char *ble_device_type_name(ble_device_type_t type)
@@ -168,6 +209,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     bool has_tile_svc = false;
     bool has_fastpair_svc = false;
     bool has_smarttag_svc = false;
+    bool has_meta_svc = false;
 
     int pos = 0;
     while (pos + 1 < length) {
@@ -248,6 +290,12 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 if (uuid == TILE_SVC_UUID || uuid == TILE_SVC_UUID2) has_tile_svc = true;
                 if (uuid == GOOGLE_FASTPAIR_UUID || uuid == GOOGLE_FMDN_UUID) has_fastpair_svc = true;
                 if (uuid == SAMSUNG_SMARTTAG_SVC1 || uuid == SAMSUNG_SMARTTAG_SVC2 || uuid == SAMSUNG_SMARTTAG_LOST) has_smarttag_svc = true;
+                if (uuid == META_RAYBANGEN2_SVC || uuid == META_SVC_UUID1 || uuid == META_SVC_UUID2) has_meta_svc = true;
+
+                /* Collect service UUIDs for UART serialization */
+                if (fp->svc_uuid_count < 4) {
+                    fp->service_uuids[fp->svc_uuid_count++] = uuid;
+                }
             }
             break;
 
@@ -259,6 +307,11 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 if (svc_uuid == APPLE_FINDMY_SVC) has_findmy_svc = true;
                 if (svc_uuid == TILE_SVC_UUID || svc_uuid == TILE_SVC_UUID2) has_tile_svc = true;
                 if (svc_uuid == SAMSUNG_SMARTTAG_SVC1 || svc_uuid == SAMSUNG_SMARTTAG_SVC2 || svc_uuid == SAMSUNG_SMARTTAG_LOST) has_smarttag_svc = true;
+                if (svc_uuid == META_RAYBANGEN2_SVC || svc_uuid == META_SVC_UUID1 || svc_uuid == META_SVC_UUID2) has_meta_svc = true;
+
+                if (fp->svc_uuid_count < 4) {
+                    fp->service_uuids[fp->svc_uuid_count++] = svc_uuid;
+                }
             }
             break;
 
@@ -308,9 +361,43 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     } else if (has_fastpair_svc || company_id == GOOGLE_COMPANY_ID) {
         fp->device_type = BLE_DEV_GOOGLE_FINDMY;
         fp->is_tracker = (mfr_data_len <= 12);
+    } else if (company_id == META_COMPANY_ID || company_id == META_TECH_COMPANY_ID || has_meta_svc) {
+        /* Meta: Ray-Ban glasses have service UUID 0xFD5F; Quest uses 0x058E company ID
+         * with longer payloads. Default to glasses (more common in the wild). */
+        if (has_meta_svc || company_id == META_TECH_COMPANY_ID) {
+            fp->device_type = BLE_DEV_META_GLASSES;
+        } else {
+            fp->device_type = BLE_DEV_META_DEVICE;
+        }
+    } else if (company_id == FLIPPER_COMPANY_ID) {
+        fp->device_type = BLE_DEV_FLIPPER_ZERO;
     } else if (company_id == DJI_COMPANY_ID) {
         fp->device_type = BLE_DEV_DRONE_CONTROLLER;
         fp->is_tracker = false;
+    } else if (company_id == BOSE_COMPANY_ID || company_id == JBL_COMPANY_ID ||
+               company_id == SONY_COMPANY_ID) {
+        fp->device_type = BLE_DEV_AUDIO_DEVICE;
+    } else if (company_id == AMAZON_COMPANY_ID || company_id == SONOS_COMPANY_ID ||
+               company_id == IKEA_COMPANY_ID) {
+        fp->device_type = BLE_DEV_SMART_HOME;
+    } else if (company_id == TESLA_COMPANY_ID) {
+        fp->device_type = BLE_DEV_VEHICLE;
+    } else if (company_id == GOPRO_COMPANY_ID) {
+        fp->device_type = BLE_DEV_CAMERA;
+    } else if (company_id == PARROT_COMPANY_ID || company_id == AUTEL_COMPANY_ID) {
+        fp->device_type = BLE_DEV_DRONE_OTHER;
+    } else if (company_id == NINTENDO_COMPANY_ID) {
+        fp->device_type = BLE_DEV_GAMING;
+    } else if (company_id == AXON_COMPANY_ID) {
+        fp->device_type = BLE_DEV_CAMERA;  /* Body camera */
+    } else if (company_id == SEGWAY_COMPANY_ID) {
+        fp->device_type = BLE_DEV_ESCOOTER;
+    } else if (company_id == DEXCOM_COMPANY_ID) {
+        fp->device_type = BLE_DEV_MEDICAL;
+    } else if (company_id == FITBIT_COMPANY_ID || company_id == GARMIN_COMPANY_ID) {
+        fp->device_type = BLE_DEV_FITNESS_TRACKER;
+    } else if (company_id == XIAOMI_COMPANY_ID || company_id == HUAWEI_COMPANY_ID) {
+        fp->device_type = BLE_DEV_SMARTWATCH;
     } else if (company_id == MICROSOFT_COMPANY_ID) {
         fp->device_type = BLE_DEV_UNKNOWN;  /* Could be Xbox controller, etc */
     } else {

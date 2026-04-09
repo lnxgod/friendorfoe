@@ -34,6 +34,17 @@ typedef enum {
     BLE_DEV_SMARTWATCH,
     BLE_DEV_BEACON,             /* iBeacon, Eddystone */
     BLE_DEV_TRACKER_GENERIC,    /* Unknown tracker type */
+    BLE_DEV_META_GLASSES,       /* Meta Ray-Ban / Oakley smart glasses */
+    BLE_DEV_META_DEVICE,        /* Meta Quest VR headset, Portal, etc. */
+    BLE_DEV_FLIPPER_ZERO,       /* Flipper Zero hacking tool */
+    BLE_DEV_AUDIO_DEVICE,       /* Bose, JBL, Sony headphones/speakers */
+    BLE_DEV_SMART_HOME,         /* Amazon Echo, Sonos, smart home devices */
+    BLE_DEV_VEHICLE,            /* Tesla, BMW, etc. */
+    BLE_DEV_CAMERA,             /* GoPro, Canon, Nikon */
+    BLE_DEV_ESCOOTER,           /* Segway, Ninebot */
+    BLE_DEV_MEDICAL,            /* Dexcom, Medtronic */
+    BLE_DEV_GAMING,             /* Nintendo, PlayStation */
+    BLE_DEV_DRONE_OTHER,        /* Parrot, Autel, Skydio (non-DJI drones) */
     BLE_DEV_COUNT
 } ble_device_type_t;
 
@@ -54,6 +65,10 @@ typedef struct {
     uint8_t             apple_info;     /* Status/info byte */
     uint8_t             raw_mfr[20];    /* First 20 bytes of manufacturer data (for analysis) */
     uint8_t             raw_mfr_len;    /* Captured length */
+
+    /* Collected service UUIDs (for UART serialization) */
+    uint16_t            service_uuids[4];
+    uint8_t             svc_uuid_count;
 } ble_fingerprint_t;
 
 /**

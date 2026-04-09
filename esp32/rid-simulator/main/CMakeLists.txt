@@ -5,6 +5,6 @@ idf_component_register(
          "comms/ble_advertiser.c"
          "hw/led_status.c"
          "hw/oled_display.c"
-    INCLUDE_DIRS "." "sim" "comms" "core" "hw"
+    INCLUDE_DIRS "." "sim" "comms" "core" "hw" "../../shared"
     REQUIRES bt nvs_flash esp_timer
 )

@@ -1,19 +1,25 @@
 /**
- * Friend or Foe — Scanner UART OTA Receiver
- *
- * Receives firmware from the uplink node over UART.
+ * Friend or Foe — Scanner UART OTA Receiver (v2: CRC32 + per-chunk ACK)
  *
  * Protocol:
  *   1. Uplink sends JSON: {"type":"ota_begin","size":N}
  *   2. Scanner ACKs: {"type":"ota_ack"}
- *   3. Uplink sends binary chunks: [0xF0][seq_hi][seq_lo][len_hi][len_lo] + data
- *   4. Scanner ACKs every 16 chunks: {"type":"ota_progress","received":N}
- *   5. Uplink sends JSON: {"type":"ota_end"}
- *   6. Scanner validates, sets boot partition, reboots
+ *   3. Uplink sends binary chunks:
+ *        [0xF0][seq_hi][seq_lo][len_hi][len_lo] + data + [CRC32 (4 bytes)]
+ *   4. Scanner verifies CRC32, writes to flash, sends per-chunk ACK/NACK:
+ *        {"type":"ota_ok","seq":N}   or   {"type":"ota_nack","seq":N}
+ *   5. On NACK, uplink retransmits the chunk
+ *   6. When all bytes received, scanner validates and reboots
  */
 
 #include "uart_ota.h"
 #include "uart_protocol.h"
+#ifndef BLE_SCANNER_ONLY
+#include "wifi_scanner.h"
+#endif
+#ifndef WIFI_SCANNER_ONLY
+#include "ble_remote_id.h"
+#endif
 
 #include <string.h>
 #include <stdio.h>
@@ -22,6 +28,7 @@
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_rom_crc.h"
 #include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -38,17 +45,19 @@ static struct {
     uint32_t                 total_size;
     uint32_t                 received;
     uint16_t                 expected_seq;
-    uint16_t                 chunks_since_ack;
 
-    /* Partial chunk accumulator (handles UART fragmentation) */
-    uint8_t                  hdr_buf[5];     /* 5-byte header */
+    /* Chunk accumulator (handles UART byte fragmentation) */
+    uint8_t                  hdr_buf[OTA_CHUNK_HEADER_SIZE];
     uint8_t                  hdr_pos;
     uint8_t                  chunk_buf[OTA_CHUNK_MAX_DATA];
-    uint16_t                 chunk_len;      /* expected data length */
-    uint16_t                 chunk_pos;      /* bytes received so far */
-    bool                     in_chunk;       /* receiving chunk data */
-    int64_t                  start_ms;       /* session start time for timeout */
-    uint32_t                 expected_crc;   /* CRC32 from chunk header (validated after data) */
+    uint16_t                 chunk_len;      /* expected data length from header */
+    uint16_t                 chunk_pos;      /* data bytes received so far */
+    uint8_t                  crc_buf[OTA_CHUNK_CRC_SIZE];
+    uint8_t                  crc_pos;        /* CRC bytes received */
+    uint16_t                 chunk_seq;      /* sequence number of current chunk */
+    enum { PHASE_HEADER, PHASE_DATA, PHASE_CRC } phase;
+
+    int64_t                  start_ms;
 } s_ota = {0};
 
 /* ── Send JSON response back to uplink ─────────────────────────────────── */
@@ -57,22 +66,6 @@ static void send_json(const char *json)
 {
     uart_write_bytes(s_ota.uart_num, json, strlen(json));
     uart_write_bytes(s_ota.uart_num, "\n", 1);
-}
-
-static void send_ack(void)
-{
-    char buf[64];
-    snprintf(buf, sizeof(buf), "{\"type\":\"ota_ack\"}");
-    send_json(buf);
-}
-
-static void send_progress(void)
-{
-    char buf[80];
-    snprintf(buf, sizeof(buf),
-             "{\"type\":\"ota_progress\",\"received\":%lu}",
-             (unsigned long)s_ota.received);
-    send_json(buf);
 }
 
 static void send_error(const char *msg)
@@ -84,19 +77,21 @@ static void send_error(const char *msg)
     send_json(buf);
 }
 
-/* ── Public API ────────────────────────────────────────────────────────── */
-
-static uint32_t compute_crc32(const uint8_t *data, int len)
+static void send_chunk_ack(uint16_t seq)
 {
-    uint32_t crc = 0xFFFFFFFF;
-    for (int i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int b = 0; b < 8; b++) {
-            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
-        }
-    }
-    return crc ^ 0xFFFFFFFF;
+    char buf[48];
+    snprintf(buf, sizeof(buf), "{\"type\":\"ota_ok\",\"seq\":%u}", seq);
+    send_json(buf);
 }
+
+static void send_chunk_nack(uint16_t seq)
+{
+    char buf[48];
+    snprintf(buf, sizeof(buf), "{\"type\":\"ota_nack\",\"seq\":%u}", seq);
+    send_json(buf);
+}
+
+/* ── Public API ────────────────────────────────────────────────────────── */
 
 bool uart_ota_begin(uint32_t total_size, uart_port_t uart_num)
 {
@@ -127,11 +122,23 @@ bool uart_ota_begin(uint32_t total_size, uart_port_t uart_num)
     s_ota.handle = handle;
     s_ota.partition = update;
     s_ota.total_size = total_size;
+    s_ota.phase = PHASE_HEADER;
 
     ESP_LOGW(TAG, "UART OTA started: %lu bytes → partition '%s'",
              (unsigned long)total_size, update->label);
 
-    send_ack();
+    /* Pause all scanning to give OTA full CPU + UART bandwidth */
+#ifndef BLE_SCANNER_ONLY
+    wifi_scanner_pause();
+#endif
+#ifndef WIFI_SCANNER_ONLY
+    ble_remote_id_stop();
+#endif
+
+    /* ACK: tell uplink we're ready */
+    char buf[48];
+    snprintf(buf, sizeof(buf), "{\"type\":\"ota_ack\"}");
+    send_json(buf);
     return true;
 }
 
@@ -142,76 +149,70 @@ bool uart_ota_process_data(const uint8_t *data, int len)
     for (int i = 0; i < len; i++) {
         uint8_t b = data[i];
 
-        if (!s_ota.in_chunk) {
-            /* Abort sequence: 4x 0xFF in a row = force abort OTA */
-            static uint8_t ff_count = 0;
-            if (b == 0xFF) {
-                if (++ff_count >= 4) {
-                    ESP_LOGW(TAG, "OTA abort sequence received (4x 0xFF)");
-                    uart_ota_abort();
-                    return false;
-                }
-            } else {
-                ff_count = 0;
-            }
+        switch (s_ota.phase) {
 
-            /* Accumulating 9-byte header: [0xF0][seq(2)][len(2)][crc32(4)] */
+        case PHASE_HEADER:
+            /* Accumulating 5-byte header: [0xF0][seq(2)][len(2)] */
             if (s_ota.hdr_pos == 0 && b != OTA_CHUNK_MAGIC) {
-                continue;  /* Skip non-chunk bytes */
+                continue;  /* Skip non-magic bytes between chunks */
             }
             s_ota.hdr_buf[s_ota.hdr_pos++] = b;
 
             if (s_ota.hdr_pos >= OTA_CHUNK_HEADER_SIZE) {
-                /* Header complete — parse */
-                uint16_t seq = ((uint16_t)s_ota.hdr_buf[1] << 8) | s_ota.hdr_buf[2];
+                uint16_t seq  = ((uint16_t)s_ota.hdr_buf[1] << 8) | s_ota.hdr_buf[2];
                 uint16_t clen = ((uint16_t)s_ota.hdr_buf[3] << 8) | s_ota.hdr_buf[4];
-                uint32_t expected_crc = ((uint32_t)s_ota.hdr_buf[5] << 24) |
-                                        ((uint32_t)s_ota.hdr_buf[6] << 16) |
-                                        ((uint32_t)s_ota.hdr_buf[7] << 8) |
-                                        (uint32_t)s_ota.hdr_buf[8];
 
                 if (clen > OTA_CHUNK_MAX_DATA) {
                     ESP_LOGE(TAG, "Chunk too large: %d (seq %d)", clen, seq);
-                    /* Don't abort — might be a corrupted header. Reset and look for next magic. */
                     s_ota.hdr_pos = 0;
                     continue;
                 }
 
+                s_ota.chunk_seq = seq;
                 s_ota.chunk_len = clen;
                 s_ota.chunk_pos = 0;
-                s_ota.in_chunk = true;
+                s_ota.crc_pos = 0;
                 s_ota.hdr_pos = 0;
-
-                /* Store expected CRC for validation after data arrives */
-                s_ota.expected_crc = expected_crc;
-
-                if (seq != s_ota.expected_seq) {
-                    ESP_LOGW(TAG, "Seq mismatch: expected %d got %d", s_ota.expected_seq, seq);
-                }
-                s_ota.expected_seq = seq + 1;
+                s_ota.phase = PHASE_DATA;
             }
-        } else {
-            /* Accumulating chunk data */
-            s_ota.chunk_buf[s_ota.chunk_pos++] = b;
+            break;
 
+        case PHASE_DATA:
+            s_ota.chunk_buf[s_ota.chunk_pos++] = b;
             if (s_ota.chunk_pos >= s_ota.chunk_len) {
-                /* Chunk complete — validate CRC32 before writing */
-                uint32_t actual_crc = compute_crc32(s_ota.chunk_buf, s_ota.chunk_len);
-                if (actual_crc != s_ota.expected_crc && s_ota.expected_crc != 0) {
-                    ESP_LOGW(TAG, "CRC mismatch seq=%d: expected=%08lx got=%08lx — skipping",
-                             s_ota.expected_seq - 1,
-                             (unsigned long)s_ota.expected_crc, (unsigned long)actual_crc);
-                    /* Don't write corrupted data — skip this chunk.
-                     * The received count won't reach total_size, so auto-finalize
-                     * won't trigger, and the 90s timeout will abort + reboot.
-                     * On the next attempt, this chunk might come through clean. */
-                    s_ota.in_chunk = false;
-                    continue;
+                s_ota.phase = PHASE_CRC;
+            }
+            break;
+
+        case PHASE_CRC:
+            s_ota.crc_buf[s_ota.crc_pos++] = b;
+            if (s_ota.crc_pos >= OTA_CHUNK_CRC_SIZE) {
+                /* CRC32 complete — verify data integrity */
+                uint32_t expected_crc =
+                    ((uint32_t)s_ota.crc_buf[0] << 24) |
+                    ((uint32_t)s_ota.crc_buf[1] << 16) |
+                    ((uint32_t)s_ota.crc_buf[2] <<  8) |
+                    ((uint32_t)s_ota.crc_buf[3]);
+                uint32_t actual_crc = esp_rom_crc32_le(0,
+                    s_ota.chunk_buf, s_ota.chunk_len);
+
+                if (actual_crc != expected_crc) {
+                    ESP_LOGW(TAG, "CRC FAIL seq=%d (exp=%08lX got=%08lX)",
+                             s_ota.chunk_seq,
+                             (unsigned long)expected_crc,
+                             (unsigned long)actual_crc);
+                    send_chunk_nack(s_ota.chunk_seq);
+                    s_ota.phase = PHASE_HEADER;
+                    break;
                 }
 
-                /* CRC valid — write to OTA partition */
+                /* CRC OK — write to flash */
+                uint32_t write_len = s_ota.chunk_len;
+                uint32_t space_left = s_ota.total_size - s_ota.received;
+                if (write_len > space_left) write_len = space_left;
+
                 esp_err_t err = esp_ota_write(s_ota.handle,
-                                              s_ota.chunk_buf, s_ota.chunk_len);
+                                              s_ota.chunk_buf, write_len);
                 if (err != ESP_OK) {
                     ESP_LOGE(TAG, "esp_ota_write failed at %lu: %s",
                              (unsigned long)s_ota.received, esp_err_to_name(err));
@@ -220,9 +221,12 @@ bool uart_ota_process_data(const uint8_t *data, int len)
                     return false;
                 }
 
-                s_ota.received += s_ota.chunk_len;
-                s_ota.in_chunk = false;
-                s_ota.chunks_since_ack++;
+                s_ota.received += write_len;
+                s_ota.expected_seq = s_ota.chunk_seq + 1;
+                s_ota.phase = PHASE_HEADER;
+
+                /* ACK this chunk */
+                send_chunk_ack(s_ota.chunk_seq);
 
                 /* Progress log every 100KB */
                 if (s_ota.received % (100 * 1024) < OTA_CHUNK_MAX_DATA) {
@@ -237,15 +241,10 @@ bool uart_ota_process_data(const uint8_t *data, int len)
                     ESP_LOGI(TAG, "All %lu bytes received — auto-finalizing",
                              (unsigned long)s_ota.received);
                     uart_ota_finalize();
-                    return false;  /* OTA done, exit processing */
-                }
-
-                /* ACK every N chunks for flow control */
-                if (s_ota.chunks_since_ack >= OTA_ACK_INTERVAL_CHUNKS) {
-                    send_progress();
-                    s_ota.chunks_since_ack = 0;
+                    return false;
                 }
             }
+            break;
         }
     }
 
@@ -294,10 +293,11 @@ void uart_ota_abort(void)
 {
     if (s_ota.active) {
         esp_ota_abort(s_ota.handle);
-        /* Restore normal baud rate */
-        uart_set_baudrate(s_ota.uart_num, UART_BAUD_RATE);
-        ESP_LOGW(TAG, "UART OTA aborted at %lu bytes, baud restored to %d",
-                 (unsigned long)s_ota.received, UART_BAUD_RATE);
+        ESP_LOGW(TAG, "UART OTA aborted at %lu bytes",
+                 (unsigned long)s_ota.received);
+#ifndef BLE_SCANNER_ONLY
+        wifi_scanner_resume();
+#endif
     }
     s_ota.active = false;
 }
@@ -306,11 +306,11 @@ bool uart_ota_is_active(void)
 {
     if (!s_ota.active) return false;
 
-    /* Failsafe #2: timeout — if OTA has been active >90s, abort and reboot.
-     * Prevents permanent stuck state if finalize never arrives. */
+    /* Timeout: abort after 600s to prevent permanent stuck state.
+     * Per-chunk ACK + retransmit can be slow; 10 min is generous. */
     int64_t now_ms = esp_timer_get_time() / 1000;
-    if (s_ota.start_ms > 0 && (now_ms - s_ota.start_ms) > 90000) {
-        ESP_LOGE("uart_ota", "OTA TIMEOUT after 90s — aborting to prevent stuck state");
+    if (s_ota.start_ms > 0 && (now_ms - s_ota.start_ms) > 600000) {
+        ESP_LOGE(TAG, "OTA TIMEOUT after 600s — aborting");
         uart_ota_abort();
         vTaskDelay(pdMS_TO_TICKS(500));
         esp_restart();

@@ -36,6 +36,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+#include "esp_app_desc.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
@@ -48,7 +49,13 @@
 
 static const char *TAG = "fof_scanner";
 
-#define FIRMWARE_VERSION    "0.32.0-beta"
+#include "version.h"
+
+#ifdef WIFI_SCANNER_ONLY
+#define FIRMWARE_NAME "wifi-scanner"
+#else
+#define FIRMWARE_NAME "scanner"
+#endif
 #define DETECTION_QUEUE_LEN 50
 #define DISPLAY_UPDATE_MS   250
 
@@ -340,6 +347,10 @@ static void uart_cmd_listener_task(void *arg)
 
         if (len <= 0) continue;
 
+        /* Log any received data for debugging */
+        ESP_LOGI(TAG, "UART CMD RX: %d bytes [%02X %02X %02X %02X...]",
+                 len, buf[0], len > 1 ? buf[1] : 0, len > 2 ? buf[2] : 0, len > 3 ? buf[3] : 0);
+
         /* During OTA: route raw bytes to OTA receiver */
         if (uart_ota_is_active()) {
             uart_ota_process_data(buf, len);
@@ -351,11 +362,17 @@ static void uart_cmd_listener_task(void *arg)
                 if (line_pos > 0) {
                     line[line_pos] = '\0';
                     /* Parse JSON command */
+                    ESP_LOGW(TAG, "UART CMD LINE (%d chars): [%02X %02X %02X %02X] '%.*s'",
+                             line_pos,
+                             (uint8_t)line[0], line_pos > 1 ? (uint8_t)line[1] : 0,
+                             line_pos > 2 ? (uint8_t)line[2] : 0, line_pos > 3 ? (uint8_t)line[3] : 0,
+                             line_pos > 40 ? 40 : line_pos, line);
                     cJSON *root = cJSON_Parse(line);
                     if (root) {
                         const char *type = NULL;
                         cJSON *t = cJSON_GetObjectItem(root, "type");
                         if (t && t->valuestring) type = t->valuestring;
+                        ESP_LOGW(TAG, "UART CMD TYPE: '%s'", type ? type : "(null)");
 
                         if (type && strcmp(type, "lockon") == 0) {
                             cJSON *ch = cJSON_GetObjectItem(root, "ch");
@@ -399,15 +416,8 @@ static void uart_cmd_listener_task(void *arg)
                         } else if (type && strcmp(type, MSG_TYPE_OTA_BEGIN) == 0) {
                             /* UART OTA: receive firmware from uplink */
                             cJSON *sz = cJSON_GetObjectItem(root, "size");
-                            cJSON *baud_j = cJSON_GetObjectItem(root, "baud");
                             uint32_t total = sz ? (uint32_t)sz->valueint : 0;
                             if (total > 0) {
-                                /* Switch baud rate if specified */
-                                if (baud_j && baud_j->valueint > 0) {
-                                    uart_set_baudrate(UART_NUM_1, baud_j->valueint);
-                                    ESP_LOGI(TAG, "OTA baud switched to %d", baud_j->valueint);
-                                    vTaskDelay(pdMS_TO_TICKS(50));
-                                }
                                 ESP_LOGW(TAG, "UART OTA begin: %lu bytes", (unsigned long)total);
                                 uart_ota_begin(total, UART_NUM_1);
                             }
@@ -425,6 +435,10 @@ static void uart_cmd_listener_task(void *arg)
                 }
             } else if (line_pos < (int)sizeof(line) - 1) {
                 line[line_pos++] = (char)buf[i];
+            } else {
+                /* Buffer overflow — reset to prevent corruption */
+                ESP_LOGW(TAG, "UART CMD line overflow at %d bytes, resetting (byte=0x%02X)", line_pos, buf[i]);
+                line_pos = 0;
             }
         }
 
@@ -436,6 +450,9 @@ static void uart_cmd_listener_task(void *arg)
 
 void app_main(void)
 {
+    /* ── 0. Machine-readable firmware identification ──────────────────── */
+    FOF_PRINT_IDENT(TAG, FIRMWARE_NAME);
+
     /* ── 1. Initialize NVS flash ──────────────────────────────────────── */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -472,7 +489,7 @@ void app_main(void)
 
     /* ── 5b. Initialize OLED display ─────────────────────────────────── */
     oled_init();
-    oled_set_version(FIRMWARE_VERSION);
+    oled_set_version(FOF_VERSION);
     oled_update(0, 0, 0, 0, 0, 0);
 
     /* ── 5c. Initialize BOOT button GPIO ─────────────────────────────── */
@@ -515,7 +532,11 @@ void app_main(void)
     ESP_LOGI(TAG, "BLE scanner DISABLED (WiFi-only mode)");
 #endif
 
-    /* ── 8. Set scanner identity BEFORE starting TX task ──────────────── */
+    /* Start UART TX task on Core 1 (processing core).
+     * The TX task has a 10s startup delay to let the uplink boot first. */
+    uart_tx_start(detection_queue);
+
+    /* ── 8. Set scanner identity — sent by TX task after startup delay ── */
     {
 #if defined(BLE_SCANNER_ONLY)
         const char *bname = "scanner-s3-ble", *cname = "esp32s3", *caps = "ble";
@@ -528,12 +549,9 @@ void app_main(void)
 #else
         const char *bname = "scanner-esp32", *cname = "esp32", *caps = "wifi";
 #endif
-        const esp_app_desc_t *app = esp_app_get_description();
-        uart_tx_send_scanner_info(app ? app->version : "?", bname, cname, caps);
+        /* Store identity — TX task will send it after its startup delay */
+        uart_tx_set_identity(bname, cname, caps);
     }
-
-    /* Start UART TX task on Core 1 (processing core) */
-    uart_tx_start(detection_queue);
 
 #ifndef BLE_SCANNER_ONLY
     /* ── 9. Start WiFi scanner task on Core 0 (radio core) ───────────── */
@@ -550,7 +568,7 @@ void app_main(void)
 
     /* ── 10. Start LED task ───────────────────────────────────────────── */
     led_start();
-    led_set_pattern(LED_SCANNING);
+    led_set_pattern(LED_UPLINK_OK);   /* purple — UART active, connected to uplink */
 
     /* ── 11. Start display task ──────────────────────────────────────── */
     xTaskCreatePinnedToCore(
@@ -567,13 +585,16 @@ void app_main(void)
 
     /* ── 12. Startup banner ───────────────────────────────────────────── */
     ESP_LOGI(TAG, "============================================");
-    ESP_LOGI(TAG, "  Friend or Foe — Scanner v%s", FIRMWARE_VERSION);
+    ESP_LOGI(TAG, "  Friend or Foe — %s v%s", FIRMWARE_NAME, FOF_VERSION);
 #if CONFIG_IDF_TARGET_ESP32C5
     ESP_LOGI(TAG, "  ESP32-C5 single-core RISC-V @ 240 MHz");
     ESP_LOGI(TAG, "  WiFi 6 dual-band + BLE 5");
-#else
+#elif CONFIG_IDF_TARGET_ESP32S3
     ESP_LOGI(TAG, "  ESP32-S3 dual-core @ 240 MHz");
     ESP_LOGI(TAG, "  WiFi + BLE 5");
+#elif CONFIG_IDF_TARGET_ESP32
+    ESP_LOGI(TAG, "  ESP32 dual-core Xtensa @ 240 MHz");
+    ESP_LOGI(TAG, "  WiFi promiscuous scanner");
 #endif
     ESP_LOGI(TAG, "  UART1 -> Uplink @ %d baud", UART_BAUD_RATE);
     ESP_LOGI(TAG, "  Detection queue: %d slots", DETECTION_QUEUE_LEN);
@@ -585,9 +606,9 @@ void app_main(void)
     xTaskCreatePinnedToCore(
         uart_cmd_listener_task,
         "uart_cmd",
-        4096,
+        8192,   /* Increased from 4096: esp_ota_write needs ~2-3KB stack */
         NULL,
-        1,  /* Low priority */
+        3,      /* Raised from 1: must compete with WiFi/BLE scan tasks during OTA */
         NULL,
         DISPLAY_TASK_CORE
     );
