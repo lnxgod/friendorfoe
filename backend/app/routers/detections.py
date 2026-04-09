@@ -273,6 +273,8 @@ async def ingest_drone_detections(
             ble_ja3=det.ble_ja3,
             ble_apple_auth=det.ble_apple_auth,
             ble_adv_interval=det.ble_adv_interval,
+            ble_svc_uuids=det.ble_svc_uuids,
+            ble_apple_info=det.ble_apple_info,
         )
 
         alerts = _rf_anomaly_detector.process_event(
@@ -596,6 +598,20 @@ async def get_live_devices(
     )
     summary = _ble_enricher.get_summary()
     return {"devices": devices, "summary": summary}
+
+
+@router.post("/devices/{fingerprint}/mark-known")
+async def mark_tracker_known(fingerprint: str):
+    """Mark a tracker as 'mine' — suppresses lingering alerts."""
+    _anomaly_detector.mark_tracker_known(fingerprint)
+    return {"ok": True, "fingerprint": fingerprint, "status": "known"}
+
+
+@router.delete("/devices/{fingerprint}/mark-known")
+async def unmark_tracker_known(fingerprint: str):
+    """Remove a tracker from the known list — re-enables lingering alerts."""
+    _anomaly_detector.unmark_tracker_known(fingerprint)
+    return {"ok": True, "fingerprint": fingerprint, "status": "unknown"}
 
 
 @router.get("/devices/{fingerprint}/associated")

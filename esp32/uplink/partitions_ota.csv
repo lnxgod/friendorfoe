@@ -1,8 +1,10 @@
 # Friend or Foe — Uplink OTA Partition Table (4MB flash)
+# Includes fw_store partition for scanner firmware staging (UART OTA relay)
 # Name,    Type, SubType, Offset,   Size,     Flags
 nvs,       data, nvs,     0x9000,   0x6000,
 otadata,   data, ota,     0xf000,   0x2000,
 phy_init,  data, phy,     0x11000,  0x1000,
-ota_0,     app,  ota_0,   0x20000,  0x180000,
-ota_1,     app,  ota_1,   0x1A0000, 0x180000,
-storage,   data, nvs,     0x320000, 0x10000,
+ota_0,     app,  ota_0,   0x20000,  0x140000,
+ota_1,     app,  ota_1,   0x160000, 0x140000,
+fw_store,  data, 0x40,    0x2A0000, 0x150000,
+storage,   data, nvs,     0x3F0000, 0x10000,

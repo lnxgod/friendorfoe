@@ -104,6 +104,7 @@
   .map-no-gps { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 1000; text-align: center; color: #484f58; padding: 20px; }
   .map-no-gps h3 { color: #8b949e; margin-bottom: 6px; }
   @keyframes pulse-ring { 0% { opacity: 0.6; } 50% { opacity: 0.2; } 100% { opacity: 0.6; } }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
   .test-marker-pulse { animation: pulse-ring 2s ease-in-out infinite; }
 </style>
 </head>
@@ -977,6 +978,19 @@ async function updateLockonBanner() {
   } catch(e) { document.getElementById('lockon-banner').style.display = 'none'; }
 }
 // Track device: switch to map tab and highlight
+async function markTrackerKnown(fp) {
+  if (!fp) return;
+  try {
+    await fetch(API+'/detections/devices/'+encodeURIComponent(fp)+'/mark-known', {method:'POST'});
+    // Visual feedback
+    const btn = event.target;
+    btn.textContent = 'Marked';
+    btn.style.background = '#238636';
+    btn.style.color = '#fff';
+    btn.disabled = true;
+  } catch(e) { console.error('Mark known failed:', e); }
+}
+
 function trackDevice(deviceId) {
   if (!deviceId) return;
   switchTab('map');
@@ -1093,15 +1107,28 @@ async function refreshBLE() {
         const isNew = d.age_s < 3600;
         const trackerBg = d.is_tracker ? 'background:#f8514908;' : '';
         const newBg = isNew && !d.is_tracker ? 'background:#e040fb08;' : '';
-        const typeColor = d.is_tracker ? '#f85149' : d.device_type !== 'Unknown' ? '#00ff88' : '#484f58';
+        const typeColor = d.is_tracker ? '#f85149'
+          : /Flipper/.test(d.device_type) ? '#ff6b00'
+          : /Meta/.test(d.device_type) ? '#0668E1'
+          : /Drone/.test(d.device_type) ? '#ff79c6'
+          : /Vehicle/.test(d.device_type) ? '#bd93f9'
+          : /E-Scooter/.test(d.device_type) ? '#8be9fd'
+          : /Medical/.test(d.device_type) ? '#ff5555'
+          : /Body Camera|Axon/.test(d.device_type) ? '#ffb86c'
+          : d.device_type !== 'Unknown' ? '#00ff88' : '#484f58';
         const merged = d.merged_count || 1;
         const ja3Short = d.ble_ja3 ? d.ble_ja3.substring(0, 8) : '-';
         const ja3Color = d.ble_ja3 ? (merged > 1 ? '#e040fb' : '#484f58') : '#30363d';
         const ageStr = d.age_s < 60 ? Math.round(d.age_s)+'s' : d.age_s < 3600 ? Math.round(d.age_s/60)+'m' : Math.round(d.age_s/3600)+'h';
         const idleStr = d.idle_s < 60 ? Math.round(d.idle_s)+'s' : Math.round(d.idle_s/60)+'m';
         const fp = d.fingerprint || '';
+        // Dwell alert badge for trackers
+        let dwellBadge = '';
+        if (d.dwell_alert === 'stalker') dwellBadge = '<span style="background:#f85149;color:#fff;padding:1px 4px;border-radius:3px;font-size:8px;font-weight:700;margin-left:4px;animation:pulse 1s infinite">STALKER</span>';
+        else if (d.dwell_alert === 'lingering') dwellBadge = '<span style="background:#d29922;color:#fff;padding:1px 4px;border-radius:3px;font-size:8px;font-weight:700;margin-left:4px">LINGERING</span>';
+        else if (d.dwell_alert === 'watching') dwellBadge = '<span style="background:#58a6ff;color:#fff;padding:1px 4px;border-radius:3px;font-size:8px;font-weight:700;margin-left:4px">WATCHING</span>';
         return '<tr style="'+trackerBg+newBg+'">' +
-          '<td style="font-weight:700;color:'+typeColor+';font-family:DM Sans,sans-serif">'+(isNew?'<span style="color:#e040fb;font-size:9px;margin-right:3px">NEW</span>':'')+d.device_type+'</td>' +
+          '<td style="font-weight:700;color:'+typeColor+';font-family:DM Sans,sans-serif">'+(isNew?'<span style="color:#e040fb;font-size:9px;margin-right:3px">NEW</span>':'')+d.device_type+dwellBadge+'</td>' +
           '<td style="color:#8b949e">'+(d.manufacturer||'-')+'</td>' +
           '<td><span class="rssi '+rssiClass(d.current_rssi)+'">'+d.current_rssi+'</span></td>' +
           '<td><span class="rssi '+rssiClass(d.avg_rssi)+'">'+d.avg_rssi.toFixed(0)+'</span></td>' +
@@ -1110,7 +1137,9 @@ async function refreshBLE() {
           '<td>'+(d.mac_rotations||0)+'</td>' +
           '<td>'+idleStr+'</td>' +
           '<td>'+ageStr+'</td>' +
-          '<td><button onclick="trackDevice(\''+fp+'\')" style="background:#58a6ff22;border:1px solid #58a6ff44;color:#58a6ff;padding:1px 6px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Track</button></td></tr>';
+          '<td><button onclick="trackDevice(\''+fp+'\')" style="background:#58a6ff22;border:1px solid #58a6ff44;color:#58a6ff;padding:1px 6px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Track</button>'+
+          (d.is_tracker ? ' <button onclick="markTrackerKnown(\''+fp+'\')" style="background:#23862622;border:1px solid #23862644;color:#238636;padding:1px 6px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700" title="Mark as your own tracker (suppresses alerts)">Mine</button>' : '')+
+          '</td></tr>';
       }).join('') + '</table>');
   } else {
     updateFeed('ble-feed', '<div class="empty">No BLE devices matching filters</div>');
@@ -1723,8 +1752,16 @@ async function showOtaDialog(deviceId) {
   if (scanners.length > 0) {
     scannerHtml = '<div style="margin-top:4px;padding-top:4px;border-top:1px solid #21262d">';
     scanners.forEach(function(sc) {
+      let alerts = '';
+      if (sc.flood) alerts += '<span style="background:#f85149;color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;margin-left:4px">DEAUTH FLOOD</span>';
+      if (sc.bcn_spam) alerts += '<span style="background:#d29922;color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;margin-left:4px">BEACON SPAM</span>';
+      let stats = '';
+      if (sc.deauth > 0) stats += ' deauth:'+sc.deauth;
+      if (sc.disassoc > 0) stats += ' disassoc:'+sc.disassoc;
+      if (sc.auth_fr > 0) stats += ' auth:'+sc.auth_fr;
       scannerHtml += '<div class="metric"><span>'+sc.uart.toUpperCase()+' Scanner</span>' +
-        '<span class="val"><span style="color:#58a6ff">'+sc.board+'</span> <span style="color:#e040fb">v'+sc.ver+'</span></span></div>';
+        '<span class="val"><span style="color:#58a6ff">'+sc.board+'</span> <span style="color:#e040fb">v'+sc.ver+'</span>'+alerts+'</span></div>';
+      if (stats) scannerHtml += '<div class="metric"><span style="color:#484f58;font-size:10px">Frame stats</span><span class="val" style="color:#8b949e;font-size:10px">'+stats.trim()+'</span></div>';
     });
     scannerHtml += '</div>';
   }

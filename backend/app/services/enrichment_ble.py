@@ -156,7 +156,7 @@ _BLE_OUI = {
     # ── Autel (drones) ──────────────────────────────────────────────────
     "2C:DC:AD": "Autel", "78:8C:B5": "Autel",
     # ── More DJI (from drone reference) ──────────────────────────────────
-    "08:D4:6A": "DJI", "D0:32:9A": "DJI", "C4:2F:90": "DJI",
+    "08:D4:6A": "DJI", "D0:32:9A": "DJI",
     # ── Hikvision (surveillance cameras — 30 most common of 82 known blocks)
     "C0:56:E3": "Hikvision", "28:57:BE": "Hikvision", "44:19:B6": "Hikvision",
     "54:C4:15": "Hikvision", "4C:BD:8F": "Hikvision", "00:BC:99": "Hikvision",
@@ -257,6 +257,22 @@ _BLE_OUI = {
     "B0:44:9C": "Yale",
     # ── Govee (more blocks) ──────────────────────────────────────────────
     "D4:AD:FC": "Govee",
+    # ── Meta / Oculus Quest ─────────────────────────────────────────────
+    "2C:26:17": "Meta", "A8:E4:70": "Meta",
+    # ── Pebblebee ───────────────────────────────────────────────────────
+    "D4:F5:13": "Pebblebee",
+    # ── Segway / Ninebot ────────────────────────────────────────────────
+    "7C:7A:91": "Segway",
+    # ── Snap (Spectacles) ──────────────────────────────────────────────
+    "F8:E4:E3": "Snap",
+    # ── GoPro ───────────────────────────────────────────────────────────
+    "D8:96:85": "GoPro", "06:41:69": "GoPro",
+    # ── Logitech ────────────────────────────────────────────────────────
+    "00:04:44": "Logitech", "6C:F3:7F": "Logitech",
+    # ── eufy (Anker security) ──────────────────────────────────────────
+    "98:C7:D1": "eufy",
+    # ── Dexcom (CGM) ────────────────────────────────────────────────────
+    "00:CD:59": "Dexcom",
 }
 
 
@@ -305,6 +321,8 @@ class EnrichedDevice:
     ble_ja3: str = ""               # BLE-JA3 structural profile hash
     ble_adv_interval: float = 0     # Advertisement interval in ms
     ble_apple_auth: str = ""        # Apple auth tag hex (entity linking)
+    ble_svc_uuids: str = ""         # Comma-separated service UUIDs (hex)
+    ble_apple_info: int = 0         # Apple info/status byte
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +480,14 @@ class BLEEnricher:
         if adv_interval and adv_interval > 0:
             dev.ble_adv_interval = adv_interval
 
+        # Store service UUIDs and Apple info byte
+        svc = kwargs.get("ble_svc_uuids")
+        if svc and not dev.ble_svc_uuids:
+            dev.ble_svc_uuids = svc
+        ainfo = kwargs.get("ble_apple_info")
+        if ainfo and ainfo > 0:
+            dev.ble_apple_info = ainfo
+
     # Apple Continuity sub-type → descriptive label
     _APPLE_CONTINUITY_TYPES = {
         0x02: "iBeacon",
@@ -514,6 +540,26 @@ class BLEEnricher:
         """
         if dev.device_type != "Unknown":
             return dev.device_type
+
+        # Scanner-assigned device types come through manufacturer field
+        dt = dev.device_type
+        mfr_raw = dev.manufacturer
+        if mfr_raw == "Meta Glasses":
+            return "Meta Smart Glasses"
+        if mfr_raw == "Meta Device":
+            return "Meta VR/Device"
+        if mfr_raw == "Flipper Zero":
+            return "Flipper Zero"
+        if mfr_raw in ("Vehicle", "Vehicle (Tesla)"):
+            return mfr_raw
+        if mfr_raw == "Camera":
+            return "Action Camera"
+        if mfr_raw == "E-Scooter":
+            return "E-Scooter"
+        if mfr_raw == "Gaming":
+            return "Gaming Device"
+        if mfr_raw == "Medical":
+            return "Medical Device"
 
         # Apple Continuity sub-type gives precise identification
         if dev.ble_apple_type and dev.ble_apple_type in self._APPLE_CONTINUITY_TYPES:
@@ -593,6 +639,22 @@ class BLEEnricher:
             return "Tile Tracker"
         if mfr == "Chipolo":
             return "Chipolo Tracker"
+        if mfr == "Pebblebee":
+            return "Pebblebee Tracker"
+        if mfr == "Meta":
+            return "Meta Device"
+        if mfr == "Snap":
+            return "Smart Glasses"
+        if mfr == "GoPro":
+            return "Action Camera"
+        if mfr == "Segway":
+            return "E-Scooter"
+        if mfr == "Logitech":
+            return "Peripheral"
+        if mfr == "eufy":
+            return "Security Cam"
+        if mfr == "Dexcom":
+            return "Medical Device (CGM)"
         if mfr in ("Nordic Semi", "TI", "Dialog Semi", "Silicon Labs", "Broadcom"):
             return "IoT (BLE Chip)"
         if mfr == "Raspberry Pi":
@@ -747,7 +809,7 @@ class BLEEnricher:
             if inferred_type != "Unknown":
                 self._learn_profile(dev, inferred_type)
 
-            raw.append({
+            entry = {
                 "fingerprint": dev.fingerprint,
                 "device_type": inferred_type,
                 "manufacturer": dev.manufacturer,
@@ -770,8 +832,26 @@ class BLEEnricher:
                 "ble_ja3": dev.ble_ja3 or None,
                 "ble_company_id": dev.ble_company_id or None,
                 "ble_apple_type": dev.ble_apple_type or None,
+                "ble_svc_uuids": dev.ble_svc_uuids or None,
+                "ble_apple_info": dev.ble_apple_info or None,
                 "apple_state": self._decode_apple_state(dev),
-            })
+            }
+
+            # Add dwell info for trackers
+            if entry["is_tracker"]:
+                age = now - dev.first_seen
+                dwell_min = int(age / 60)
+                entry["dwell_minutes"] = dwell_min
+                if dwell_min >= 480:
+                    entry["dwell_alert"] = "stalker"
+                elif dwell_min >= 120:
+                    entry["dwell_alert"] = "lingering"
+                elif dwell_min >= 30:
+                    entry["dwell_alert"] = "watching"
+                else:
+                    entry["dwell_alert"] = "new"
+
+            raw.append(entry)
 
         # JA3 super-grouping: merge devices with same JA3 hash
         if group_by_ja3:

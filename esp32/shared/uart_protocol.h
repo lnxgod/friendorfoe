@@ -18,9 +18,16 @@ extern "C" {
 
 #define UART_BAUD_RATE              921600
 
-/* Scanner (ESP32-S3) pin assignment */
+/* Scanner (ESP32-S3) pin assignment.
+ * Production (all-S3 node): TX=17 RX=18 (uplink S3 receives on 17+15)
+ * Legacy (with ESP32 uplink): TX=17 RX=16 (uplink ESP32 UART2: RX=D16, TX=D17) */
+#if defined(LEGACY_SCANNER_PINS)
+#define SCANNER_S3_UART_TX_PIN      17
+#define SCANNER_S3_UART_RX_PIN      16
+#else
 #define SCANNER_S3_UART_TX_PIN      17
 #define SCANNER_S3_UART_RX_PIN      18
+#endif
 
 /* Scanner (plain ESP32) pin assignment */
 #define SCANNER_ESP32_UART_TX_PIN   17
@@ -77,13 +84,14 @@ extern "C" {
 #define MSG_TYPE_OTA_DONE           "ota_done"
 #define MSG_TYPE_OTA_ERROR          "ota_error"
 
-/* Binary OTA chunk header: [0xF0][seq_hi][seq_lo][len_hi][len_lo][crc32 (4 bytes)] + data
- * CRC32 covers the data bytes only (not the header) */
+/* Binary OTA chunk: [0xF0][seq(2)][len(2)] + data + [CRC32(4)]
+ * CRC32 covers data bytes only (not header). Scanner verifies CRC
+ * and ACKs/NACKs each chunk for reliable retransmission. */
 #define OTA_CHUNK_MAGIC             0xF0
-#define OTA_CHUNK_HEADER_SIZE       9    /* magic(1) + seq(2) + len(2) + crc32(4) */
-#define OTA_CHUNK_MAX_DATA          512  /* Smaller chunks for reliability */
-#define OTA_ACK_INTERVAL_CHUNKS     16   /* ACK every 16 chunks */
-#define OTA_BAUD_RATE               460800  /* Half speed for OTA reliability */
+#define OTA_CHUNK_HEADER_SIZE       5
+#define OTA_CHUNK_CRC_SIZE          4       /* CRC32 trailer */
+#define OTA_CHUNK_MAX_DATA          512     /* smaller chunks = faster retransmit */
+#define OTA_ACK_INTERVAL_CHUNKS     16      /* legacy, unused with per-chunk ACK */
 
 /* ── JSON key names (short to save bandwidth at 921600 baud) ─────────────── */
 
@@ -129,6 +137,8 @@ extern "C" {
 #define JSON_KEY_BLE_PAYLOAD_LEN    "ble_pl"
 #define JSON_KEY_BLE_ADDR_TYPE      "ble_atype"
 #define JSON_KEY_BLE_JA3            "ble_ja3"
+#define JSON_KEY_BLE_SVC_UUIDS      "ble_svc"    /* comma-separated hex UUIDs */
+#define JSON_KEY_BLE_APPLE_INFO     "ble_ainfo"  /* Apple status/info byte */
 
 /* ── Framing ─────────────────────────────────────────────────────────────── */
 

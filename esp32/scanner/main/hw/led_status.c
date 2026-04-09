@@ -43,12 +43,14 @@ typedef struct {
 } rgb_t;
 
 static const rgb_t s_colours[] = {
-    [LED_BOOT]      = {  0,   0,  30 },   /* blue   */
-    [LED_IDLE]      = {  0,  15,   0 },   /* dim green */
-    [LED_SCANNING]  = {  0,  30,   0 },   /* green  */
-    [LED_DETECTION] = { 30,   0,   0 },   /* red    */
-    [LED_UART_OK]   = {  0,  15,  15 },   /* cyan   */
-    [LED_ERROR]     = { 30,   0,   0 },   /* red    */
+    [LED_BOOT]       = {  0,   0,  30 },   /* blue   */
+    [LED_IDLE]       = {  0,  15,   0 },   /* dim green */
+    [LED_SCANNING]   = {  0,  30,   0 },   /* green  */
+    [LED_DETECTION]  = { 30,   0,  30 },   /* bright purple — drone detected */
+    [LED_UART_OK]    = {  0,  15,  15 },   /* cyan   */
+    [LED_ERROR]      = { 30,   0,   0 },   /* red    */
+    [LED_UPLINK_OK]  = { 15,   0,  20 },   /* dim purple — connected to uplink */
+    [LED_NO_UPLINK]  = { 25,   0,   0 },   /* red — no uplink connection   */
 };
 
 /* ── Pattern timing (same structure as before) ────────────────────────── */
@@ -68,7 +70,7 @@ static const led_step_t pattern_scanning[] = {
     { 125, 125 }, { 0, 0 },
 };
 static const led_step_t pattern_detection[] = {
-    { 2000, 100 }, { 0, 0 },
+    { 150, 50 }, { 0, 0 },   /* quick bright flash per detection */
 };
 static const led_step_t pattern_uart_ok[] = {
     { 100, 1900 }, { 0, 0 },
@@ -76,14 +78,22 @@ static const led_step_t pattern_uart_ok[] = {
 static const led_step_t pattern_error[] = {
     { 100, 100 }, { 100, 100 }, { 100, 700 }, { 0, 0 },
 };
+static const led_step_t pattern_uplink_ok[] = {
+    { 1500, 500 }, { 0, 0 },
+};
+static const led_step_t pattern_no_uplink[] = {
+    { 500, 500 }, { 0, 0 },
+};
 
 static const led_step_t *const s_patterns[] = {
-    [LED_BOOT]      = pattern_boot,
-    [LED_IDLE]      = pattern_idle,
-    [LED_SCANNING]  = pattern_scanning,
-    [LED_DETECTION] = pattern_detection,
-    [LED_UART_OK]   = pattern_uart_ok,
-    [LED_ERROR]     = pattern_error,
+    [LED_BOOT]       = pattern_boot,
+    [LED_IDLE]       = pattern_idle,
+    [LED_SCANNING]   = pattern_scanning,
+    [LED_DETECTION]  = pattern_detection,
+    [LED_UART_OK]    = pattern_uart_ok,
+    [LED_ERROR]      = pattern_error,
+    [LED_UPLINK_OK]  = pattern_uplink_ok,
+    [LED_NO_UPLINK]  = pattern_no_uplink,
 };
 
 static atomic_int s_current_pattern = LED_IDLE;

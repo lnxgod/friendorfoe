@@ -43,7 +43,8 @@ int __attribute__((weak)) ble_sm_alg_encrypt(const void *k, const void *d, void 
 
 static const char *TAG = "fof_rid_sim";
 
-#define FIRMWARE_VERSION     "0.1.0"
+#include "version.h"
+#define FIRMWARE_NAME        "rid-simulator"
 #define SIM_OPERATOR_ID      "FOF-TEST-OP"
 #define SIM_UA_TYPE          2    /* Rotorcraft */
 #define SIM_ID_TYPE          1    /* Serial number */
@@ -140,6 +141,9 @@ static void sim_task(void *arg)
 
 void app_main(void)
 {
+    /* ── 0. Machine-readable firmware identification ──────────────────── */
+    FOF_PRINT_IDENT(TAG, FIRMWARE_NAME);
+
     /* ── 1. Initialize NVS flash ──────────────────────────────────────── */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -200,7 +204,7 @@ void app_main(void)
 
     /* ── 9. Startup banner ─────────────────────────────────────────── */
     ESP_LOGI(TAG, "============================================");
-    ESP_LOGI(TAG, "  Friend or Foe — RID Simulator v%s", FIRMWARE_VERSION);
+    ESP_LOGI(TAG, "  Friend or Foe — %s v%s", FIRMWARE_NAME, FOF_VERSION);
 #if CONFIG_IDF_TARGET_ESP32S3
     ESP_LOGI(TAG, "  ESP32-S3 dual-core @ 240 MHz");
 #elif CONFIG_IDF_TARGET_ESP32C5

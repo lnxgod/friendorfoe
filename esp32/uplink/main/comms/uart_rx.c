@@ -39,6 +39,14 @@ static int           s_detection_count = 0;
 static scanner_info_t s_ble_scanner_info = {0};
 static scanner_info_t s_wifi_scanner_info = {0};
 
+/* OTA response tracking (set by UART RX, read by relay handler) */
+static volatile ota_response_t s_last_ota_response = {0};
+static portMUX_TYPE s_ota_response_lock = portMUX_INITIALIZER_UNLOCKED;
+
+/* Pause flags for OTA relay — lets relay handler read UART directly */
+static volatile bool s_rx_paused_ble = false;
+static volatile bool s_rx_paused_wifi = false;
+
 /* ── Recent detections ring buffer ─────────────────────────────────────── */
 
 #define RECENT_RING_SIZE  8
@@ -206,6 +214,51 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
         det->ble_ja3_hash = (uint32_t)strtoul(ja3_str, NULL, 16);
     }
 
+    /* Apple Continuity deep fields (previously dropped — fixes entity resolution) */
+    const char *auth_str = json_get_string(root, JSON_KEY_BLE_APPLE_AUTH, NULL);
+    if (auth_str && strlen(auth_str) == 6) {
+        for (int i = 0; i < 3; i++) {
+            char hex2[3] = { auth_str[i*2], auth_str[i*2+1], '\0' };
+            det->ble_apple_auth[i] = (uint8_t)strtoul(hex2, NULL, 16);
+        }
+    }
+    det->ble_apple_activity = (uint8_t)json_get_int(root, JSON_KEY_BLE_ACTIVITY, 0);
+    det->ble_apple_info = (uint8_t)json_get_int(root, JSON_KEY_BLE_APPLE_INFO, 0);
+
+    /* Raw manufacturer data (hex string → byte array) */
+    const char *mfr_hex = json_get_string(root, JSON_KEY_BLE_RAW_MFR, NULL);
+    if (mfr_hex) {
+        int hex_len = strlen(mfr_hex);
+        int byte_count = hex_len / 2;
+        if (byte_count > 20) byte_count = 20;
+        for (int i = 0; i < byte_count; i++) {
+            char hex2[3] = { mfr_hex[i*2], mfr_hex[i*2+1], '\0' };
+            det->ble_raw_mfr[i] = (uint8_t)strtoul(hex2, NULL, 16);
+        }
+        det->ble_raw_mfr_len = (uint8_t)byte_count;
+    }
+
+    /* Advertisement interval */
+    double ival_ms = json_get_double(root, JSON_KEY_BLE_ADV_INTERVAL, 0.0);
+    if (ival_ms > 0) {
+        det->ble_adv_interval_us = (int64_t)(ival_ms * 1000);
+    }
+
+    /* BLE Service UUIDs (comma-separated hex → uint16 array) */
+    const char *svc_str = json_get_string(root, JSON_KEY_BLE_SVC_UUIDS, NULL);
+    if (svc_str) {
+        char svc_buf[36];
+        strncpy(svc_buf, svc_str, sizeof(svc_buf) - 1);
+        svc_buf[sizeof(svc_buf) - 1] = '\0';
+        char *tok = svc_buf;
+        while (*tok && det->ble_svc_uuid_count < 4) {
+            det->ble_service_uuids[det->ble_svc_uuid_count++] =
+                (uint16_t)strtoul(tok, NULL, 16);
+            char *comma = strchr(tok, ',');
+            if (comma) { tok = comma + 1; } else { break; }
+        }
+    }
+
     /* Timestamp fallback */
     if (det->last_updated_ms == 0) {
         det->last_updated_ms = (int64_t)json_get_double(root, JSON_KEY_TIMESTAMP, 0.0);
@@ -241,6 +294,34 @@ static void handle_status(const cJSON *root, int scanner_id)
             info->received = true;
             ESP_LOGI(TAG, "Scanner[%d] identity from status: %s v%s (%s)",
                      scanner_id, board, ver, caps);
+        }
+    }
+
+    /* Attack / anomaly counters */
+    {
+        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        info->deauth_count  = (uint16_t)json_get_int(root, "deauth", 0);
+        info->disassoc_count = (uint16_t)json_get_int(root, "disassoc", 0);
+        info->auth_count    = (uint16_t)json_get_int(root, "auth_fr", 0);
+
+        const cJSON *flood_item = cJSON_GetObjectItemCaseSensitive(root, "flood");
+        info->deauth_flood = (flood_item && cJSON_IsTrue(flood_item));
+
+        const cJSON *spam_item = cJSON_GetObjectItemCaseSensitive(root, "bcn_spam");
+        info->beacon_spam = (spam_item && cJSON_IsTrue(spam_item));
+
+        const char *hist = json_get_string(root, "fc_hist", NULL);
+        if (hist) {
+            strncpy(info->fc_hist, hist, sizeof(info->fc_hist) - 1);
+            info->fc_hist[sizeof(info->fc_hist) - 1] = '\0';
+        }
+
+        if (info->deauth_flood) {
+            ESP_LOGW(TAG, "Scanner[%d] DEAUTH FLOOD detected! deauth=%d",
+                     scanner_id, info->deauth_count);
+        }
+        if (info->beacon_spam) {
+            ESP_LOGW(TAG, "Scanner[%d] BEACON SPAM detected!", scanner_id);
         }
     }
 
@@ -305,8 +386,20 @@ static void process_line(const char *line, size_t len, int scanner_id)
         info->received = true;
         ESP_LOGI(TAG, "Scanner[%d] identity: %s v%s (%s) chip=%s",
                  scanner_id, board, ver, caps, chip);
+    } else if (strncmp(msg_type, "ota_", 4) == 0) {
+        /* OTA response from scanner — capture for relay diagnostics */
+        portENTER_CRITICAL(&s_ota_response_lock);
+        strncpy((char *)s_last_ota_response.type, msg_type, sizeof(s_last_ota_response.type) - 1);
+        const char *err = json_get_string(root, "error", "");
+        strncpy((char *)s_last_ota_response.error, err, sizeof(s_last_ota_response.error) - 1);
+        cJSON *rcv = cJSON_GetObjectItem(root, "received");
+        s_last_ota_response.received = rcv ? (uint32_t)rcv->valuedouble : 0;
+        cJSON *seq_j = cJSON_GetObjectItem(root, "seq");
+        s_last_ota_response.seq = seq_j ? seq_j->valueint : -1;
+        s_last_ota_response.timestamp = esp_timer_get_time() / 1000;
+        portEXIT_CRITICAL(&s_ota_response_lock);
     } else {
-        ESP_LOGD(TAG, "Ignoring message type: %s", msg_type);
+        ESP_LOGW(TAG, "Scanner[%d] msg type='%s' (unhandled)", scanner_id, msg_type);
     }
 
     cJSON_Delete(root);
@@ -333,13 +426,29 @@ static void uart_rx_task(void *arg)
     ESP_LOGI(TAG, "UART RX task started: %s (UART%d)", params->label, uart_num);
 
     int debug_dumps = 3;  /* dump first 3 reads for diagnostics */
+    int64_t last_heartbeat_ms = esp_timer_get_time() / 1000;
+    int total_bytes = 0;
 
     while (1) {
+        /* Periodic heartbeat so we know the task is alive */
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        if (now_ms - last_heartbeat_ms > 5000) {
+            ESP_LOGI(TAG, "[%s] heartbeat: %d total bytes received", params->label, total_bytes);
+            last_heartbeat_ms = now_ms;
+        }
+        /* During OTA relay, pause reading so relay handler can read ACKs directly */
+        volatile bool *paused = (scanner_id == 0) ? &s_rx_paused_ble : &s_rx_paused_wifi;
+        if (*paused) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
         int bytes_read = uart_read_bytes(uart_num, read_buf, sizeof(read_buf),
                                          pdMS_TO_TICKS(100));
         if (bytes_read <= 0) {
             continue;
         }
+        total_bytes += bytes_read;
 
         if (debug_dumps > 0) {
             debug_dumps--;
@@ -418,7 +527,7 @@ void uart_rx_init(QueueHandle_t detection_queue)
                    CONFIG_BLE_SCANNER_RX_PIN, CONFIG_BLE_SCANNER_TX_PIN, "BLE");
 
 #if CONFIG_DUAL_SCANNER
-    /* WiFi scanner on UART2 (plain ESP32 only) */
+    /* WiFi scanner on UART2 */
     s_wifi_task_params.uart_num = CONFIG_WIFI_SCANNER_UART;
     init_uart_port(CONFIG_WIFI_SCANNER_UART,
                    CONFIG_WIFI_SCANNER_RX_PIN, CONFIG_WIFI_SCANNER_TX_PIN, "WiFi");
@@ -518,4 +627,34 @@ const scanner_info_t *uart_rx_get_ble_scanner_info(void)
 const scanner_info_t *uart_rx_get_wifi_scanner_info(void)
 {
     return s_wifi_scanner_info.received ? &s_wifi_scanner_info : NULL;
+}
+
+ota_response_t uart_rx_get_last_ota_response(void)
+{
+    ota_response_t copy;
+    portENTER_CRITICAL(&s_ota_response_lock);
+    copy = *(const ota_response_t *)&s_last_ota_response;
+    portEXIT_CRITICAL(&s_ota_response_lock);
+    return copy;
+}
+
+void uart_rx_clear_ota_response(void)
+{
+    portENTER_CRITICAL(&s_ota_response_lock);
+    memset((void *)&s_last_ota_response, 0, sizeof(s_last_ota_response));
+    portEXIT_CRITICAL(&s_ota_response_lock);
+}
+
+void uart_rx_pause_scanner(int scanner_id)
+{
+    if (scanner_id == 0) s_rx_paused_ble = true;
+    else s_rx_paused_wifi = true;
+    ESP_LOGW(TAG, "UART RX paused for scanner %d (OTA relay)", scanner_id);
+}
+
+void uart_rx_resume_scanner(int scanner_id)
+{
+    if (scanner_id == 0) s_rx_paused_ble = false;
+    else s_rx_paused_wifi = false;
+    ESP_LOGW(TAG, "UART RX resumed for scanner %d", scanner_id);
 }

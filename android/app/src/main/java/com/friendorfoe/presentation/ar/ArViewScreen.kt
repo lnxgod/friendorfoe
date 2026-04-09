@@ -921,16 +921,19 @@ private fun ArOverlay(
         screenPositions.filter { it.isInView }
     }
 
-    // Build lookup for classified unknowns by tracking ID
+    // Build lookup for classified unknowns by tracking ID (skip null IDs)
     val classifiedMap = remember(classifiedUnknowns) {
-        classifiedUnknowns.associateBy { it.detection.trackingId }
+        classifiedUnknowns.filter { it.detection.trackingId != null }
+            .associateBy { it.detection.trackingId }
     }
 
-    // Build lookup for dark target scores by tracking ID (parallel to classifiedUnknowns)
+    // Build lookup for dark target scores by tracking ID (skip null IDs)
     val darkTargetMap = remember(darkTargetScores, classifiedUnknowns) {
-        classifiedUnknowns.zip(darkTargetScores).associate { (classified, score) ->
-            classified.detection.trackingId to score
-        }
+        classifiedUnknowns.zip(darkTargetScores)
+            .filter { (classified, _) -> classified.detection.trackingId != null }
+            .associate { (classified, score) ->
+                classified.detection.trackingId to score
+            }
     }
 
     // Pulsing animation for ALERT-level detections
@@ -986,7 +989,8 @@ private fun ArOverlay(
                                 return@detectTapGestures
                             }
                         }
-                        // Check if tap hit any label
+                        // Check if tap hit any label (exact hit first)
+                        var handled = false
                         labelRects.forEach { target ->
                             if (target.rect.contains(offset)) {
                                 if (target.objectId.startsWith("visual_")) {
@@ -999,10 +1003,38 @@ private fun ArOverlay(
                                 } else {
                                     onLabelTapped(target.objectId)
                                 }
+                                handled = true
                                 return@detectTapGestures
                             }
                         }
-                        // No direct hit — user tapped empty space
+                        // No exact hit — find nearest label within 120px
+                        if (!handled && labelRects.isNotEmpty()) {
+                            val nearest = labelRects.minByOrNull { target ->
+                                val cx = target.rect.center.x
+                                val cy = target.rect.center.y
+                                val dx = offset.x - cx
+                                val dy = offset.y - cy
+                                dx * dx + dy * dy
+                            }
+                            if (nearest != null) {
+                                val cx = nearest.rect.center.x
+                                val cy = nearest.rect.center.y
+                                val dx = offset.x - cx
+                                val dy = offset.y - cy
+                                val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                                if (dist < 120f) {
+                                    if (nearest.objectId.startsWith("visual_")) {
+                                        val detection = visualHitDetections[nearest.objectId]
+                                        if (detection != null) onVisualTapped(detection)
+                                        else onEmptySpaceTapped()
+                                    } else {
+                                        onLabelTapped(nearest.objectId)
+                                    }
+                                    return@detectTapGestures
+                                }
+                            }
+                        }
+                        // Nothing nearby — user tapped empty space
                         onEmptySpaceTapped()
                     },
                     onLongPress = { offset ->

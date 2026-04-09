@@ -45,6 +45,16 @@
 #include "wifi_ap.h"
 #include "http_status.h"
 
+#include "version.h"
+
+#if defined(UPLINK_ESP32S3)
+#define FIRMWARE_NAME "uplink-s3"
+#elif defined(UPLINK_ESP32)
+#define FIRMWARE_NAME "uplink-esp32"
+#else
+#define FIRMWARE_NAME "uplink"
+#endif
+
 static const char *TAG = "main";
 
 /* ── Display update task ───────────────────────────────────────────────── */
@@ -99,19 +109,22 @@ static void display_task(void *arg)
 
         /* Update LED pattern based on system state */
         bool standalone  = wifi_sta_is_standalone();
+        bool server_ok   = !standalone &&
+                           http_upload_get_fail_count() <= http_upload_get_success_count();
 
-#ifndef UPLINK_ESP32
+#if !defined(UPLINK_ESP32) && !defined(UPLINK_ESP32S3)
         if (!gps_fix) {
             led_set_pattern(LED_NO_GPS);
         } else
 #endif
         if (!standalone && !wifi_ok) {
-            led_set_pattern(LED_ERROR);
+            led_set_pattern(LED_WIFI_DOWN);         /* red/yellow flash */
         } else if (!scanner_ok) {
-            led_set_pattern(LED_NO_SCANNER);
-        } else if (!standalone &&
-                   http_upload_get_fail_count() > http_upload_get_success_count()) {
-            led_set_pattern(LED_ERROR);
+            led_set_pattern(LED_NO_SCANNER);        /* blue blink */
+        } else if (!standalone && !server_ok) {
+            led_set_pattern(LED_NO_SERVER);          /* yellow pulse */
+        } else if (wifi_ok && scanner_ok && (standalone || server_ok)) {
+            led_set_pattern(LED_ALL_GOOD);           /* solid green */
         } else if (drone_count > 0) {
             led_set_pattern(LED_SCANNING);
         } else {
@@ -127,10 +140,12 @@ static void display_task(void *arg)
 static void print_banner(void)
 {
     ESP_LOGI(TAG, "=============================================");
-#ifdef UPLINK_ESP32
-    ESP_LOGI(TAG, "  Friend or Foe -- Uplink (ESP32)");
+#if defined(UPLINK_ESP32S3)
+    ESP_LOGI(TAG, "  Friend or Foe — %s v%s (ESP32-S3)", FIRMWARE_NAME, FOF_VERSION);
+#elif defined(UPLINK_ESP32)
+    ESP_LOGI(TAG, "  Friend or Foe — %s v%s (ESP32)", FIRMWARE_NAME, FOF_VERSION);
 #else
-    ESP_LOGI(TAG, "  Friend or Foe -- Uplink (ESP32-C3)");
+    ESP_LOGI(TAG, "  Friend or Foe — %s v%s (ESP32-C3)", FIRMWARE_NAME, FOF_VERSION);
 #endif
     ESP_LOGI(TAG, "  Drone Detection Backend Relay");
     ESP_LOGI(TAG, "=============================================");
@@ -159,7 +174,8 @@ static void print_banner(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Starting Friend or Foe Uplink...");
+    /* ── 0. Machine-readable firmware identification ──────────────────── */
+    FOF_PRINT_IDENT(TAG, FIRMWARE_NAME);
 
     /* ── 1. Initialize NVS flash ──────────────────────────────────────── */
     esp_err_t ret = nvs_flash_init();
@@ -230,12 +246,15 @@ void app_main(void)
     ESP_LOGI(TAG, "Starting tasks...");
 
     /* Send OTA abort to all scanners at boot — unsticks any scanner stuck in OTA mode.
-     * Uses 4x 0xFF binary sequence because JSON commands are dropped during OTA mode. */
+     * Uses 4x 0xFF binary sequence because JSON commands are dropped during OTA mode.
+     * Follow with \n to flush the scanner's line buffer so it doesn't pollute
+     * future JSON commands (the 0xFF bytes are non-newline and would sit in
+     * the line accumulator forever). */
     {
-        const uint8_t abort_seq[] = {0xFF, 0xFF, 0xFF, 0xFF};
-        uart_write_bytes(CONFIG_BLE_SCANNER_UART, (const char *)abort_seq, 4);
+        const uint8_t abort_seq[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, '\n'};
+        uart_write_bytes(CONFIG_BLE_SCANNER_UART, (const char *)abort_seq, 5);
 #if CONFIG_DUAL_SCANNER
-        uart_write_bytes(CONFIG_WIFI_SCANNER_UART, (const char *)abort_seq, 4);
+        uart_write_bytes(CONFIG_WIFI_SCANNER_UART, (const char *)abort_seq, 5);
 #endif
         ESP_LOGI(TAG, "Sent OTA abort sequence to all scanners");
         vTaskDelay(pdMS_TO_TICKS(100));

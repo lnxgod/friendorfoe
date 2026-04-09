@@ -592,7 +592,7 @@ class ArViewModel @Inject constructor(
         val screenBitmap = captureScreenBitmap(context)
 
         captureDualPhoto(context, capture, label, screenBitmap, panelInfo) { cleanUri, _ ->
-            // After clean + annotated saved, trigger AI-aimed zoom capture
+            // After normal + annotated saved, try smart zoom capture if there's a visual target
             captureSmartZoomedPhoto(context, capture, label, timestamp) { _ ->
                 onResult(cleanUri != null)
             }
@@ -628,7 +628,7 @@ class ArViewModel @Inject constructor(
             .format(java.util.Date())
 
         captureDualPhoto(context, capture, label, screenBitmap, panelInfo) { cleanUri, _ ->
-            // After clean + annotated saved, trigger AI-aimed zoom capture
+            // After normal + annotated saved, try smart zoom capture if there's a visual target
             captureSmartZoomedPhoto(context, capture, label, timestamp) { _ ->
                 onResult(cleanUri)
             }
@@ -648,15 +648,31 @@ class ArViewModel @Inject constructor(
 
     /**
      * Find the best visual detection target for smart zoom capture.
-     * Priority: locked object's matched detection > nearest visually confirmed in-view object.
+     * Priority: locked object's ML Kit detection > locked object's screen position
+     * (synthetic target) > nearest visually confirmed in-view object.
      */
     private fun findSmartZoomTarget(): VisualDetection? {
         val positions = screenPositions.value
-        // Try locked object first
         val lockedId = _lockedObjectId.value
         if (lockedId != null) {
             val lockedPos = positions.firstOrNull { it.skyObject.id == lockedId }
-            if (lockedPos?.matchedDetection != null) return lockedPos.matchedDetection
+            if (lockedPos != null) {
+                // Use ML Kit detection if available (has accurate bounding box)
+                if (lockedPos.matchedDetection != null) return lockedPos.matchedDetection
+                // Otherwise create a synthetic target from the locked object's screen position
+                // so we still zoom toward it even without ML Kit visual confirmation
+                if (lockedPos.isInView) {
+                    return VisualDetection(
+                        trackingId = null,
+                        centerX = lockedPos.screenX,
+                        centerY = lockedPos.screenY,
+                        width = 0.08f,  // assume small target — zoom aggressively
+                        height = 0.06f,
+                        labels = emptyList(),
+                        timestampMs = System.currentTimeMillis()
+                    )
+                }
+            }
         }
         // Fall back to nearest visually confirmed in-view object
         return positions
@@ -746,14 +762,35 @@ class ArViewModel @Inject constructor(
      * Capture the current screen as a Bitmap (camera preview + AR overlay).
      * Uses the DecorView draw method for simplicity.
      */
+    /**
+     * Capture the current screen as a Bitmap using PixelCopy.
+     * Unlike DecorView.draw(), PixelCopy captures everything visible on screen
+     * including Compose-rendered AR overlays, compass, labels, and bounding boxes.
+     */
     private fun captureScreenBitmap(context: Context): Bitmap? {
         return try {
             val activity = context as? Activity ?: return null
-            val view = activity.window.decorView.rootView
+            val window = activity.window
+            val view = window.decorView.rootView
             val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
-            val canvas = android.graphics.Canvas(bitmap)
-            view.draw(canvas)
-            bitmap
+
+            val latch = java.util.concurrent.CountDownLatch(1)
+            var success = false
+
+            android.view.PixelCopy.request(
+                window, bitmap,
+                { result ->
+                    success = (result == android.view.PixelCopy.SUCCESS)
+                    if (!success) {
+                        Log.w(TAG, "PixelCopy failed with result: $result")
+                    }
+                    latch.countDown()
+                },
+                android.os.Handler(android.os.Looper.getMainLooper())
+            )
+
+            latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
+            if (success) bitmap else null
         } catch (e: Exception) {
             Log.w(TAG, "Screen capture failed", e)
             null
@@ -957,9 +994,10 @@ class ArViewModel @Inject constructor(
         visualDetectionAnalyzer.vFovDeg = cameraFovCalculator.verticalFovDegrees.toFloat()
 
         if (userPos.latitude == 0.0 && userPos.longitude == 0.0) {
-            // No GPS fix yet, return empty
-            _unmatchedVisuals.value = emptyList()
-            _classifiedUnknowns.value = emptyList()
+            // No GPS fix — still show visual detections, just skip radio correlation
+            val scored = visualDetectionAnalyzer.scoredDetections.value
+            val visuals = visualDetections.filter { it.skyScore > 0.2f || it.motionScore > 0.3f }
+            _unmatchedVisuals.value = visuals
             emptyList()
         } else {
             // Apply compass bias correction from visual-radio calibration
@@ -996,8 +1034,8 @@ class ArViewModel @Inject constructor(
                 }
             }
 
-            // Suppress visual detections when phone points below horizon (ground clutter)
-            val effectiveVisualDetections = if (orient.pitchDegrees < -10f) {
+            // Suppress visual detections only when phone points steeply downward (ground clutter)
+            val effectiveVisualDetections = if (orient.pitchDegrees < -35f) {
                 emptyList()
             } else {
                 visualDetections

@@ -1776,7 +1776,7 @@ object AircraftDatabase {
             category = AircraftCategory.HELICOPTER,
             description = "A massive heavy-lift transport helicopter for the US Marine Corps, excelling at deploying heavy equipment and large troop contingents.",
             specs = "Crew: 3 | Range: 1,000km | Cruise: 278km/h | Engines: 2x GE T64-GE-413 turboshafts",
-            photoAsset = "aircraft/CH47.jpg", icaoTypeCodes = listOf("CH53")
+            photoAsset = "", icaoTypeCodes = listOf("CH53")
         ),
         AircraftReference(
             id = "ch46", name = "Boeing CH-46 Sea Knight", manufacturer = "Boeing Vertol",

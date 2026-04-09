@@ -11,8 +11,8 @@
 #include "gps.h"
 #include "config.h"
 
-#ifdef UPLINK_ESP32
-/* GPS disabled on plain ESP32 uplink — positions are fixed in backend */
+#if defined(UPLINK_ESP32) || defined(UPLINK_ESP32S3)
+/* GPS disabled on ESP32/S3 uplink — positions are fixed in backend */
 #include <string.h>
 #include "esp_log.h"
 static const char *TAG = "gps";

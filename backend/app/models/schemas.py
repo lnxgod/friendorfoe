@@ -139,6 +139,8 @@ class DroneDetectionItem(BaseModel):
     ble_activity: int | None = Field(None, description="Apple activity code (0=idle, 1=audio, 2=phone, 3=video)")
     ble_raw_mfr: str | None = Field(None, description="Raw manufacturer data hex (first 20 bytes)")
     ble_adv_interval: float | None = Field(None, description="BLE advertisement interval in ms")
+    ble_svc_uuids: str | None = Field(None, description="Comma-separated 16-bit BLE service UUIDs (hex)")
+    ble_apple_info: int | None = Field(None, description="Apple info/status byte (device model hints, screen state)")
     probed_ssids: list[str] | None = Field(None, description="SSIDs this device is probing for (from probe requests)")
 
 

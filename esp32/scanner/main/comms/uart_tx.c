@@ -13,9 +13,11 @@
 #include "detection_types.h"
 #include "uart_protocol.h"
 #include "task_priorities.h"
+#include "wifi_scanner.h"
 #include "led_status.h"
 
 #include "cJSON.h"
+#include "esp_app_desc.h"
 
 #include "driver/uart.h"
 #include "esp_log.h"
@@ -55,6 +57,11 @@ static SemaphoreHandle_t s_uart_mutex = NULL;
 static scanner_detection_summary_t s_det_cache[DETECTION_CACHE_SIZE];
 static int s_det_cache_count = 0;
 static portMUX_TYPE s_cache_lock = portMUX_INITIALIZER_UNLOCKED;
+
+/* Deferred identity — set before TX task starts, sent after startup delay */
+static char s_identity_board[24] = {0};
+static char s_identity_chip[16]  = {0};
+static char s_identity_caps[16]  = {0};
 
 /* ── Detection cache helpers ────────────────────────────────────────────── */
 
@@ -144,8 +151,9 @@ void uart_tx_init(void)
                                  SCANNER_UART_RX_PIN,
                                  UART_PIN_NO_CHANGE,
                                  UART_PIN_NO_CHANGE));
+    /* RX buffer 4KB (was 2KB) to handle OTA relay bursts without overflow */
     ESP_ERROR_CHECK(uart_driver_install(UART_PORT_NUM,
-                                        RX_BUF_SIZE,
+                                        RX_BUF_SIZE * 2,
                                         TX_BUF_SIZE,
                                         0, NULL, 0));
 
@@ -270,6 +278,23 @@ void uart_tx_send_detection(const drone_detection_t *detection)
         cJSON_AddNumberToObject(root, JSON_KEY_BLE_ADV_INTERVAL, (double)(detection->ble_adv_interval_us / 1000));  /* ms */
     }
 
+    /* BLE Service UUIDs */
+    if (detection->ble_svc_uuid_count > 0) {
+        char svc_buf[36];  /* "ffff,ffff,ffff,ffff" = max 19 chars + null */
+        int svc_off = 0;
+        for (int i = 0; i < detection->ble_svc_uuid_count && i < 4; i++) {
+            if (i > 0) svc_buf[svc_off++] = ',';
+            svc_off += snprintf(&svc_buf[svc_off], sizeof(svc_buf) - svc_off,
+                                "%04x", detection->ble_service_uuids[i]);
+        }
+        cJSON_AddStringToObject(root, JSON_KEY_BLE_SVC_UUIDS, svc_buf);
+    }
+
+    /* Apple info/status byte */
+    if (detection->ble_apple_info != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_APPLE_INFO, detection->ble_apple_info);
+    }
+
     /* Timestamps */
     if (detection->first_seen_ms != 0) {
         cJSON_AddNumberToObject(root, JSON_KEY_FIRST_SEEN, (double)detection->first_seen_ms);
@@ -316,6 +341,35 @@ void uart_tx_send_status(int ble_count, int wifi_count,
         cJSON_AddStringToObject(root, "board", s_scanner_board);
         cJSON_AddStringToObject(root, "chip", s_scanner_chip);
         cJSON_AddStringToObject(root, "caps", s_scanner_caps);
+    }
+
+    /* Attack / anomaly counters (delta since last status) */
+    {
+        uint16_t deauth = 0, disassoc = 0, auth = 0;
+        bool flood = false, bcn_spam = false;
+        wifi_scanner_get_attack_counters(&deauth, &disassoc, &auth,
+                                          &flood, &bcn_spam);
+        if (deauth > 0)  cJSON_AddNumberToObject(root, "deauth",  deauth);
+        if (disassoc > 0) cJSON_AddNumberToObject(root, "disassoc", disassoc);
+        if (auth > 0)    cJSON_AddNumberToObject(root, "auth_fr",  auth);
+        if (flood)       cJSON_AddTrueToObject(root, "flood");
+        if (bcn_spam)    cJSON_AddTrueToObject(root, "bcn_spam");
+        wifi_scanner_reset_attack_counters();
+    }
+
+    /* Frame control subtype histogram (comma-separated 16 values) */
+    {
+        uint32_t hist[16];
+        wifi_scanner_get_fc_histogram(hist);
+        char hist_str[128];
+        int off = 0;
+        for (int i = 0; i < 16; i++) {
+            if (i > 0) hist_str[off++] = ',';
+            off += snprintf(&hist_str[off], sizeof(hist_str) - off,
+                            "%lu", (unsigned long)hist[i]);
+        }
+        cJSON_AddStringToObject(root, "fc_hist", hist_str);
+        wifi_scanner_reset_fc_histogram();
     }
 
     char *json_str = cJSON_PrintUnformatted(root);
@@ -366,6 +420,48 @@ static void uart_tx_task(void *arg)
     const TickType_t queue_timeout  = pdMS_TO_TICKS(QUEUE_RX_TIMEOUT_MS);
 
     ESP_LOGI(TAG, "UART TX task started (prune every %d ms)", PRUNE_INTERVAL_MS);
+
+    /* Wait for "ready" message from uplink before sending any data.
+     * This prevents flooding the uplink during boot (crashes plain ESP32).
+     * Falls back to 60s timeout if no ready message received. */
+    {
+        uint8_t rx_buf[64];
+        bool ready = false;
+        int waited = 0;
+        ESP_LOGI(TAG, "Waiting for uplink ready signal (or 60s timeout)...");
+        led_set_pattern(LED_IDLE);
+
+        while (!ready && waited < 60) {
+            int n = uart_read_bytes(UART_PORT_NUM, rx_buf, sizeof(rx_buf) - 1,
+                                    pdMS_TO_TICKS(1000));
+            if (n > 0) {
+                rx_buf[n] = '\0';
+                /* Any valid data from uplink means it's alive */
+                if (strstr((char *)rx_buf, "ready") ||
+                    strstr((char *)rx_buf, "ota_") ||
+                    strstr((char *)rx_buf, "{")) {
+                    ready = true;
+                    ESP_LOGI(TAG, "Uplink ready signal received!");
+                }
+            }
+            waited++;
+            if (waited % 10 == 0) {
+                ESP_LOGI(TAG, "Still waiting for uplink... (%ds)", waited);
+            }
+        }
+
+        if (!ready) {
+            ESP_LOGW(TAG, "No uplink ready signal after 60s — starting TX anyway");
+        }
+
+        /* Send scanner identity now that uplink is ready */
+        if (s_identity_board[0]) {
+            const esp_app_desc_t *app = esp_app_get_description();
+            uart_tx_send_scanner_info(app ? app->version : "?",
+                                      s_identity_board, s_identity_chip, s_identity_caps);
+        }
+        led_set_pattern(LED_UPLINK_OK);
+    }
 
     for (;;) {
         /* Block on detection queue with a short timeout so we can do
@@ -450,7 +546,7 @@ static void uart_tx_task(void *arg)
 
             uart_tx_send_status(s_ble_count, s_wifi_count,
                                 s_current_channel, uptime_s);
-            led_set_pattern(LED_SCANNING);
+            led_set_pattern(LED_UPLINK_OK);  /* purple — UART flowing */
 
             ESP_LOGI(TAG, "Status TX: ble=%d wifi=%d ch=%d uptime=%lus",
                      s_ble_count, s_wifi_count,
@@ -459,6 +555,13 @@ static void uart_tx_task(void *arg)
     }
     /* Task should never return; if it does, clean up. */
     vTaskDelete(NULL);
+}
+
+void uart_tx_set_identity(const char *board, const char *chip, const char *caps)
+{
+    strncpy(s_identity_board, board, sizeof(s_identity_board) - 1);
+    strncpy(s_identity_chip,  chip,  sizeof(s_identity_chip) - 1);
+    strncpy(s_identity_caps,  caps,  sizeof(s_identity_caps) - 1);
 }
 
 void uart_tx_start(QueueHandle_t detection_queue)

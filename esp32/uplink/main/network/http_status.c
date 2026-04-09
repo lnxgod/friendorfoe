@@ -7,6 +7,7 @@
  */
 
 #include "http_status.h"
+#include "fw_store.h"
 #include "config.h"
 
 #include <string.h>
@@ -441,12 +442,13 @@ static esp_err_t setup_html_handler(httpd_req_t *req)
         "</div>", cur_url);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
-    /* Device ID */
+    /* Device ID (read-only, MAC-based) */
     snprintf(buf, sizeof(buf),
         "<div class=\"card\">"
         "<h2 style=\"margin-top:0\">Device</h2>"
-        "<label>Device ID</label>"
-        "<input type=\"text\" id=\"devid\" value=\"%s\">"
+        "<label>Device ID (auto from MAC)</label>"
+        "<input type=\"text\" id=\"devid\" value=\"%s\" readonly "
+        "style=\"opacity:0.6;cursor:not-allowed\">"
         "</div>", dev_id);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
@@ -619,7 +621,7 @@ static esp_err_t connect_post_handler(httpd_req_t *req)
     nvs_config_set_string("wifi_ssid", ssid);
     if (pass[0]) nvs_config_set_string("wifi_pass", pass);
     if (url[0]) nvs_config_set_string("backend_url", url);
-    if (devid[0]) nvs_config_set_string("device_id", devid);
+    /* device_id is always MAC-based — ignore any devid from form */
 
     ESP_LOGI(TAG, "WiFi config saved: SSID='%s' URL='%s' ID='%s'", ssid, url, devid);
 
@@ -750,7 +752,7 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
 
     /* Select UART port */
     uart_port_t uart_num;
-#ifdef UPLINK_ESP32
+#if defined(UPLINK_ESP32) || defined(UPLINK_ESP32S3)
     if (strcmp(uart_target, "wifi") == 0) {
         uart_num = CONFIG_WIFI_SCANNER_UART;
     } else {
@@ -769,23 +771,48 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    /* Step 1: Drop UART baud rate for reliable OTA transfer */
-    uart_set_baudrate(uart_num, OTA_BAUD_RATE);
-    ESP_LOGI(TAG, "OTA relay: dropped baud to %d for transfer", OTA_BAUD_RATE);
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    /* Step 2: Send OTA begin command (includes baud rate so scanner can match) */
-    char cmd[100];
-    snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%d,\"baud\":%d}\n",
-             total, OTA_BAUD_RATE);
+    /* Step 1: Send OTA begin command.
+     * Flush scanner's line buffer first with \n in case stale bytes are lingering. */
+    uart_rx_clear_ota_response();  /* Clear any stale OTA response */
+    uart_write_bytes(uart_num, "\n", 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%d}\n", total);
+    ESP_LOGI(TAG, "OTA relay: sending ota_begin (%d bytes) to UART%d", total, uart_num);
     uart_write_bytes(uart_num, cmd, strlen(cmd));
-    vTaskDelay(pdMS_TO_TICKS(2000));  /* Give scanner time to prepare partition + switch baud */
+    vTaskDelay(pdMS_TO_TICKS(2000));  /* Give scanner time to prepare partition */
 
-    /* Step 3: Stream HTTP data as CRC32-protected binary chunks */
-    uint8_t http_buf[OTA_CHUNK_MAX_DATA];
+    /* Check if scanner acknowledged the OTA begin */
+    ota_response_t ota_resp = uart_rx_get_last_ota_response();
+    if (ota_resp.type[0]) {
+        ESP_LOGW(TAG, "OTA relay: scanner responded: type=%s error=%s",
+                 ota_resp.type, ota_resp.error);
+        if (strcmp(ota_resp.type, "ota_error") == 0) {
+            char err_msg[128];
+            snprintf(err_msg, sizeof(err_msg),
+                     "{\"ok\":false,\"error\":\"scanner_error\",\"detail\":\"%s\"}", ota_resp.error);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, err_msg);
+            return ESP_OK;
+        }
+    } else {
+        ESP_LOGW(TAG, "OTA relay: no response from scanner after ota_begin (scanner may not support OTA)");
+    }
+
+    /* Keep native 921600 baud — baud switching causes sync issues.
+     * Rely on pacing + scanner-side scan pause + 4KB RX buffer. */
+
+    /* Step 2: Stream HTTP→UART with accumulation and pacing.
+     * Accumulate HTTP fragments into full 512-byte chunks before sending
+     * to UART. This ensures predictable chunk count and timing. */
+    #define RELAY_CHUNK_SIZE  512
+    static uint8_t http_buf[2048];
+    static uint8_t accum_buf[RELAY_CHUNK_SIZE];
+    static uint8_t uart_frame[5 + RELAY_CHUNK_SIZE];
     int received = 0;
     int remaining = total;
     uint16_t seq = 0;
+    int accum_pos = 0;
 
     while (remaining > 0) {
         int to_read = remaining > (int)sizeof(http_buf) ? (int)sizeof(http_buf) : remaining;
@@ -794,62 +821,86 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
             if (read_len == HTTPD_SOCK_ERR_TIMEOUT) continue;
             ESP_LOGE(TAG, "OTA relay: HTTP recv error at %d/%d", received, total);
             uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
-            uart_set_baudrate(uart_num, UART_BAUD_RATE);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
             return ESP_FAIL;
         }
 
-        /* Compute CRC32 over data bytes */
-        uint32_t crc = 0xFFFFFFFF;
-        for (int k = 0; k < read_len; k++) {
-            crc ^= http_buf[k];
-            for (int b = 0; b < 8; b++) {
-                crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+        int buf_off = 0;
+        while (buf_off < read_len) {
+            int space = RELAY_CHUNK_SIZE - accum_pos;
+            int copy_len = read_len - buf_off;
+            if (copy_len > space) copy_len = space;
+            memcpy(accum_buf + accum_pos, http_buf + buf_off, copy_len);
+            accum_pos += copy_len;
+            buf_off += copy_len;
+
+            if (accum_pos >= RELAY_CHUNK_SIZE) {
+                uart_frame[0] = OTA_CHUNK_MAGIC;
+                uart_frame[1] = (uint8_t)(seq >> 8);
+                uart_frame[2] = (uint8_t)(seq & 0xFF);
+                uart_frame[3] = (uint8_t)(accum_pos >> 8);
+                uart_frame[4] = (uint8_t)(accum_pos & 0xFF);
+                memcpy(uart_frame + 5, accum_buf, accum_pos);
+                uart_write_bytes(uart_num, (char *)uart_frame, 5 + accum_pos);
+                uart_wait_tx_done(uart_num, pdMS_TO_TICKS(500));
+
+                received += accum_pos;
+                seq++;
+                accum_pos = 0;
+
+                /* 30ms per chunk + extra pause every 32 chunks for flash writes.
+                 * Gives scanner time to drain RX buffer + write to flash. */
+                vTaskDelay(pdMS_TO_TICKS(30));
+                if (seq % 32 == 0) {
+                    vTaskDelay(pdMS_TO_TICKS(200));  /* Extra flash-erase headroom */
+                }
             }
         }
-        crc ^= 0xFFFFFFFF;
-
-        /* Send chunk: [0xF0][seq(2)][len(2)][crc32(4)] + data */
-        uint8_t hdr[OTA_CHUNK_HEADER_SIZE] = {
-            OTA_CHUNK_MAGIC,
-            (uint8_t)(seq >> 8), (uint8_t)(seq & 0xFF),
-            (uint8_t)(read_len >> 8), (uint8_t)(read_len & 0xFF),
-            (uint8_t)(crc >> 24), (uint8_t)(crc >> 16),
-            (uint8_t)(crc >> 8), (uint8_t)(crc & 0xFF),
-        };
-        uart_write_bytes(uart_num, (char *)hdr, OTA_CHUNK_HEADER_SIZE);
-        uart_write_bytes(uart_num, (char *)http_buf, read_len);
-
-        received += read_len;
         remaining -= read_len;
-        seq++;
 
-        /* Yield every chunk */
-        vTaskDelay(pdMS_TO_TICKS(1));
-
-        /* Longer pause every 16 chunks */
-        if (seq % OTA_ACK_INTERVAL_CHUNKS == 0) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-        }
-
-        /* Progress log every 100KB */
-        if (received % (100 * 1024) < OTA_CHUNK_MAX_DATA) {
+        if (received > 0 && received % (100 * 1024) < RELAY_CHUNK_SIZE) {
             ESP_LOGI(TAG, "OTA relay: %d/%d bytes (%.0f%%) seq=%d",
                      received, total, (float)received / total * 100, seq);
         }
     }
 
-    /* Step 4: Restore baud rate */
-    vTaskDelay(pdMS_TO_TICKS(500));
-    uart_set_baudrate(uart_num, UART_BAUD_RATE);
-    ESP_LOGW(TAG, "OTA relay complete: %d bytes, %d chunks. Baud restored to %d",
-             received, seq, UART_BAUD_RATE);
+    /* Flush remaining partial chunk */
+    if (accum_pos > 0) {
+        uart_frame[0] = OTA_CHUNK_MAGIC;
+        uart_frame[1] = (uint8_t)(seq >> 8);
+        uart_frame[2] = (uint8_t)(seq & 0xFF);
+        uart_frame[3] = (uint8_t)(accum_pos >> 8);
+        uart_frame[4] = (uint8_t)(accum_pos & 0xFF);
+        memcpy(uart_frame + 5, accum_buf, accum_pos);
+        uart_write_bytes(uart_num, (char *)uart_frame, 5 + accum_pos);
+        uart_wait_tx_done(uart_num, pdMS_TO_TICKS(500));
+        received += accum_pos;
+        seq++;
+    }
 
-    ESP_LOGW(TAG, "OTA relay complete: %d bytes sent to scanner. Scanner rebooting...",
-             received);
+    /* Wait for scanner to process final chunks and finalize */
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    ESP_LOGI(TAG, "OTA relay complete: %d bytes, %d chunks to UART%d",
+             received, seq, uart_num);
+
+    /* Check final OTA response from scanner */
+    vTaskDelay(pdMS_TO_TICKS(1000));  /* Give scanner time to finalize */
+    ota_response_t final_resp = uart_rx_get_last_ota_response();
+
+    char resp_buf[256];
+    snprintf(resp_buf, sizeof(resp_buf),
+             "{\"ok\":true,\"message\":\"Firmware relayed to scanner\","
+             "\"bytes\":%d,\"chunks\":%d,"
+             "\"scanner_response\":\"%s\",\"scanner_error\":\"%s\","
+             "\"scanner_received\":%lu}",
+             received, seq,
+             final_resp.type[0] ? final_resp.type : "none",
+             final_resp.error[0] ? final_resp.error : "",
+             (unsigned long)final_resp.received);
 
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"Firmware relayed to scanner\"}");
+    httpd_resp_sendstr(req, resp_buf);
     return ESP_OK;
 }
 
@@ -910,9 +961,11 @@ void http_status_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port    = CONFIG_HTTP_STATUS_PORT;
     config.task_priority  = CONFIG_HTTP_STATUS_PRIORITY;
-    config.stack_size     = 6144;  /* Reduced for heap savings */
-    config.max_uri_handlers = 8;
+    config.stack_size     = 8192;  /* Increased for OTA relay handler */
+    config.max_uri_handlers = 12;
     config.max_open_sockets = 2;  /* Minimize — only 1-2 concurrent requests */
+    config.recv_wait_timeout  = 60;  /* 60s timeout for large OTA uploads */
+    config.send_wait_timeout  = 60;
 
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &config);
@@ -931,6 +984,9 @@ void http_status_init(void)
     r = httpd_register_uri_handler(server, &uri_ota_post);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_ota_info);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota/info: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_ota_relay);    if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota/relay: %s", esp_err_to_name(r));
+
+    /* Scanner firmware store + relay endpoints */
+    fw_store_register(server);
 
     ESP_LOGI(TAG, "HTTP status server started on port %d (setup at /setup)",
              CONFIG_HTTP_STATUS_PORT);

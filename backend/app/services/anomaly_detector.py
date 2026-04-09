@@ -75,9 +75,20 @@ class AnomalyDetector:
     STRONG_SIGNAL_DB = -30
     MAX_ALERTS = 200
 
+    # Lingering tracker thresholds (seconds, severity)
+    TRACKER_DWELL_THRESHOLDS = [
+        (1800, "info"),       # 30 min
+        (7200, "warning"),    # 2 hours
+        (28800, "critical"),  # 8 hours
+    ]
+    _TRACKER_KEYWORDS = {"AirTag", "FindMy", "Tile Tracker", "SmartTag",
+                         "Google Tracker", "Tracker", "Chipolo", "Pebblebee"}
+
     def __init__(self):
         self.tracks: dict[str, DeviceTrack] = {}
         self.ssid_bssids: dict[str, set] = defaultdict(set)
+        self._tracker_alert_level: dict[str, int] = {}  # key → highest threshold index alerted
+        self._known_trackers: set[str] = set()  # fingerprints marked as "mine"
         self.known_keys: set = set()
         self.alerts: deque[AnomalyAlert] = deque(maxlen=self.MAX_ALERTS)
         self._last_prune = time.time()
@@ -261,6 +272,24 @@ class AnomalyDetector:
                             f"{track.ssid} rotated MAC {len(track.bssids_seen)} times (tracker behavior)",
                             now, {"rotation_count": len(track.bssids_seen)})
 
+        # 6. Lingering tracker detection
+        if self._is_tracker_id(drone_id) and key not in self._known_trackers:
+            age = now - track.first_seen
+            idle = now - track.last_seen
+            if idle < 120:  # still active
+                prev_level = self._tracker_alert_level.get(key, -1)
+                for i, (threshold_s, sev) in enumerate(self.TRACKER_DWELL_THRESHOLDS):
+                    if age >= threshold_s and i > prev_level:
+                        mins = int(age / 60)
+                        hours = mins // 60
+                        time_str = f"{hours}h {mins % 60}m" if hours > 0 else f"{mins}m"
+                        self._alert("lingering_tracker", sev, key, track.ssid,
+                                    f"Tracker lingering {time_str}: {track.ssid} RSSI={rssi}",
+                                    now, {"dwell_s": round(age), "dwell_minutes": mins,
+                                          "rssi": rssi, "tracker_type": drone_id.split(":")[-1] if ":" in drone_id else "unknown"})
+                        self._tracker_alert_level[key] = i
+                        break  # one escalation per ingestion
+
         # Periodic prune
         if now - self._last_prune > 30:
             self._prune(now)
@@ -287,6 +316,25 @@ class AnomalyDetector:
 
         for key in stale:
             del self.tracks[key]
+            self._tracker_alert_level.pop(key, None)
+
+    def _is_tracker_id(self, drone_id: str) -> bool:
+        """Check if drone_id looks like a tracker (e.g., BLE:HASH:AirTag)."""
+        if not drone_id:
+            return False
+        for kw in self._TRACKER_KEYWORDS:
+            if kw in drone_id:
+                return True
+        return False
+
+    def mark_tracker_known(self, fingerprint: str):
+        """Mark a tracker as 'mine' — suppresses lingering alerts."""
+        self._known_trackers.add(fingerprint)
+        self._tracker_alert_level.pop(fingerprint, None)
+
+    def unmark_tracker_known(self, fingerprint: str):
+        """Remove a tracker from the known list."""
+        self._known_trackers.discard(fingerprint)
 
     def _alert(self, alert_type, severity, device_id, ssid, message, timestamp, details=None):
         alert = AnomalyAlert(
@@ -347,5 +395,7 @@ class AnomalyDetector:
                 "spoofing": sum(1 for a in self.alerts if a.alert_type == "spoofing"),
                 "signal_anomaly": sum(1 for a in self.alerts if a.alert_type == "signal_anomaly"),
                 "mac_rotation": sum(1 for a in self.alerts if a.alert_type == "mac_rotation"),
+                "lingering_tracker": sum(1 for a in self.alerts if a.alert_type == "lingering_tracker"),
             },
+            "known_trackers": len(self._known_trackers),
         }
