@@ -84,8 +84,9 @@ private val TYPE_CODE_MAP: Map<String, SilhouetteCategory> = buildMap {
     for (code in listOf(
         "AT72", "AT76", "AT43",
         "DH8A", "DH8B", "DH8C", "DH8D",
-        "BE20", "BE30", "C208", "PC12", "SW4",
-        "TBM7", "TBM8", "TBM9", "PC6", "P46T"
+        "BE20", "BE30", "B200", "B300", "B350", "BE9L", "BE99", "B190",
+        "C208", "PC12", "SW4", "SW3", "P180",
+        "TBM7", "TBM8", "TBM9", "PC6", "P46T", "PA46", "M600", "DHC6"
     )) put(code, SilhouetteCategory.TURBOPROP)
 
     // Bizjet

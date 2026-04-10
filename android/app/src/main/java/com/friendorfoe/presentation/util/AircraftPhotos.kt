@@ -62,6 +62,8 @@ private val AVAILABLE_PHOTOS: Set<String> = setOf(
     "C130", "C17", "C17A", "C5", "C5M",
     "A400", "A400M", "IL76", "AN124", "C295",
     "C30J", "C295W", // C-130J / C-295 variants
+    // Turboprop
+    "B350", "DHC6", "P180", // King Air 350, Twin Otter, Avanti
     // Lightplane
     "C172", "C182", "C152",
     "P28A", "PA28", "PA32",
@@ -70,15 +72,17 @@ private val AVAILABLE_PHOTOS: Set<String> = setOf(
     "DA40", "DA42",
     "SR20", "SR22", "M20P",
     "P46T", // Piper Malibu/Meridian
+    "SF50", "EA50", // Cirrus Vision, Eclipse 500
     // GA twins & singles
     "BE55", "BE76", "PA44", "PA34", "C310", "C340",
     "C414", "C421", "C150", "PA18", "M20T",
     // Bizjets
     "CL30", "G280", "F900", "F2TH", "H25B", "BE40", "PRM1", "E545",
+    "C750", // Citation X
     // Military
     "AC130", "U2", "SR71", "AH64", "UH1", "C12",
     // Regional jets
-    "E135", "E145", "SF34", "SB20",
+    "E135", "E145", "E175", "SF34", "SB20",
     // Airliners
     "B734", "B735", "A318", "A342", "A343", "A345", "A346"
 )
