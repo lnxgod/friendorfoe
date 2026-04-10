@@ -135,6 +135,8 @@ static const name_pattern_entry_t s_name_db[] = {
     { "Ray-Ban Stories", "Meta",            "Smart Glasses", 0.95f, true,  false },
     { "Oakley Meta",     "Meta",            "Smart Glasses", 0.95f, true,  false },
     { "Meta Neural",     "Meta",            "Smart Glasses", 0.90f, false, false },
+    { "Meta Quest",      "Meta",            "VR Headset",   0.95f, false, false },
+    { "Oculus Quest",    "Meta",            "VR Headset",   0.95f, false, false },
     { "Spectacles",      "Snap",            "Smart Glasses", 0.90f, true,  false },
     { "Echo Frames",     "Amazon",          "Smart Glasses", 0.90f, false, true  },
     { "Vuzix",           "Vuzix",           "Smart Glasses", 0.90f, true,  false },

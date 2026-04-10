@@ -81,6 +81,9 @@ private val AVAILABLE_PHOTOS: Set<String> = setOf(
     "C750", // Citation X
     // Military
     "AC130", "U2", "SR71", "AH64", "UH1", "C12",
+    "F4", "F5", "SU25", "SU57", "MQ1", "RQ4", // Fighters + UAVs
+    "CV22", "NH90", "CH46", "MI26", // Helicopters + tiltrotor
+    "PC24", // Bizjet/turboprop
     // Regional jets
     "E135", "E145", "E175", "SF34", "SB20",
     // Airliners
