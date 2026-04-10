@@ -259,8 +259,8 @@ class ArViewModel @Inject constructor(
         }
 
         autoCaptureJob = viewModelScope.launch {
-            // Phase 1: Track for 2 seconds (let zoom settle + ML Kit refine bounding box)
-            delay(2000L)
+            // Phase 1: Quick stabilization (zoom settles in ~300ms, add buffer)
+            delay(500L)
 
             // Check target is still in view
             val currentPos = screenPositions.value.firstOrNull { it.skyObject.id == objectId }
@@ -302,11 +302,12 @@ class ArViewModel @Inject constructor(
 
                     _autoCapturePhase.value = AutoCaptureState.DONE
 
-                    // Auto-dismiss after brief confirmation
+                    // Stay locked on — user can take more photos or unlock manually
                     viewModelScope.launch {
                         delay(1500L)
                         _autoCapturePhase.value = AutoCaptureState.IDLE
-                        _lockedObjectId.value = null
+                        // Don't unlock — keep tracking the target
+                        // Restore zoom to pre-capture level
                         setZoomRatio(previousZoom)
                     }
                 }
@@ -383,22 +384,39 @@ class ArViewModel @Inject constructor(
             is Drone -> obj.droneId.take(16)
         }
 
-        // Zoom → stabilize → capture → restore
+        // Lock on → zoom → stabilize → triple capture → restore
+        _lockedObjectId.value = candidate.skyObject.id
+
         viewModelScope.launch {
             val previousZoom = _currentZoomRatio.value
             setZoomRatio(candidate.suggestedZoom)
-            delay(300L) // wait for zoom to settle
+            delay(500L) // wait for zoom to settle
+
             val capture = imageCaptureRef
             if (capture != null) {
-                capturePhotoToGallery(context, capture, "auto_$label") { uri ->
-                    if (uri != null) {
-                        Log.i(TAG, "Auto-captured $label at ${candidate.distanceMeters.roundToInt()}m")
+                val currentPos = screenPositions.value.firstOrNull {
+                    it.skyObject.id == candidate.skyObject.id
+                }
+                val panelInfo = buildPanelInfo(candidate.skyObject, currentPos)
+                val screenBitmap = captureScreenBitmap(context)
+                val timestamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                    .format(java.util.Date())
+
+                captureDualPhoto(context, capture, "auto_$label", screenBitmap, panelInfo) { cleanUri, _ ->
+                    captureSmartZoomedPhoto(context, capture, "auto_$label", timestamp) { _ ->
+                        Log.i(TAG, "Auto-captured $label at ${candidate.distanceMeters.roundToInt()}m (triple)")
                         _lastAutoCapture.value = "Auto-captured $label"
+                        viewModelScope.launch {
+                            delay(500L)
+                            setZoomRatio(previousZoom)
+                            _lockedObjectId.value = null
+                        }
                     }
                 }
+            } else {
+                setZoomRatio(previousZoom)
+                _lockedObjectId.value = null
             }
-            delay(200L)
-            setZoomRatio(previousZoom)
         }
     }
 
@@ -820,14 +838,14 @@ class ArViewModel @Inject constructor(
                 skyObject.aircraftType?.let { info.add("Type" to it) }
                 info.add("Altitude" to "${(skyObject.position.altitudeMeters * 3.281).toInt()} ft")
                 skyObject.position.speedMps?.let {
-                    info.add("Speed" to "${(it * 1.944).toInt()} kts")
+                    info.add("Speed" to "${(it * 2.237).toInt()} mph")
                 }
                 skyObject.position.heading?.let {
                     info.add("Heading" to "${it.toInt()}°")
                 }
                 info.add("Source" to skyObject.source.name)
                 screenPos?.let {
-                    info.add("Distance" to "%.1f km".format(it.distanceMeters / 1000.0))
+                    info.add("Distance" to "%.1f mi".format(it.distanceMeters / 1609.344))
                 }
                 info.add("Category" to skyObject.category.name)
             }

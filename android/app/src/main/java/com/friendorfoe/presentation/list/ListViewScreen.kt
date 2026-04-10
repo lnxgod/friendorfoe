@@ -285,12 +285,12 @@ private fun formatAltitude(altitudeMeters: Double): String {
  */
 private fun formatDistance(distanceMeters: Double?): String {
     if (distanceMeters == null) return "--"
-    val nm = distanceMeters / 1852.0
-    return if (nm >= 1.0) {
-        "${"%.0f".format(nm)}nm"
+    return if (distanceMeters > 800.0) {
+        val miles = distanceMeters / 1609.344
+        if (miles >= 10.0) "${"%.0f".format(miles)} mi"
+        else "${"%.1f".format(miles)} mi"
     } else {
-        val km = distanceMeters / 1000.0
-        "${"%.1f".format(km)}km"
+        "${distanceMeters.toInt()} m"
     }
 }
 
