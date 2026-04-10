@@ -210,6 +210,8 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     bool has_fastpair_svc = false;
     bool has_smarttag_svc = false;
     bool has_meta_svc = false;
+    bool has_meta_rayban_svc = false;  /* 0xFD5F = Ray-Ban specific */
+    bool has_meta_quest_svc = false;   /* 0xFEB8 without 0xFD5F = Quest */
 
     int pos = 0;
     while (pos + 1 < length) {
@@ -291,6 +293,8 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 if (uuid == GOOGLE_FASTPAIR_UUID || uuid == GOOGLE_FMDN_UUID) has_fastpair_svc = true;
                 if (uuid == SAMSUNG_SMARTTAG_SVC1 || uuid == SAMSUNG_SMARTTAG_SVC2 || uuid == SAMSUNG_SMARTTAG_LOST) has_smarttag_svc = true;
                 if (uuid == META_RAYBANGEN2_SVC || uuid == META_SVC_UUID1 || uuid == META_SVC_UUID2) has_meta_svc = true;
+                if (uuid == META_RAYBANGEN2_SVC) has_meta_rayban_svc = true;
+                if (uuid == META_SVC_UUID2 && !has_meta_rayban_svc) has_meta_quest_svc = true;
 
                 /* Collect service UUIDs for UART serialization */
                 if (fp->svc_uuid_count < 4) {
@@ -308,6 +312,8 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 if (svc_uuid == TILE_SVC_UUID || svc_uuid == TILE_SVC_UUID2) has_tile_svc = true;
                 if (svc_uuid == SAMSUNG_SMARTTAG_SVC1 || svc_uuid == SAMSUNG_SMARTTAG_SVC2 || svc_uuid == SAMSUNG_SMARTTAG_LOST) has_smarttag_svc = true;
                 if (svc_uuid == META_RAYBANGEN2_SVC || svc_uuid == META_SVC_UUID1 || svc_uuid == META_SVC_UUID2) has_meta_svc = true;
+                if (svc_uuid == META_RAYBANGEN2_SVC) has_meta_rayban_svc = true;
+                if (svc_uuid == META_SVC_UUID2 && !has_meta_rayban_svc) has_meta_quest_svc = true;
 
                 if (fp->svc_uuid_count < 4) {
                     fp->service_uuids[fp->svc_uuid_count++] = svc_uuid;
@@ -362,10 +368,18 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
         fp->device_type = BLE_DEV_GOOGLE_FINDMY;
         fp->is_tracker = (mfr_data_len <= 12);
     } else if (company_id == META_COMPANY_ID || company_id == META_TECH_COMPANY_ID || has_meta_svc) {
-        /* Meta: Ray-Ban glasses have service UUID 0xFD5F; Quest uses 0x058E company ID
-         * with longer payloads. Default to glasses (more common in the wild). */
-        if (has_meta_svc || company_id == META_TECH_COMPANY_ID) {
+        /* Meta device classification:
+         * - Ray-Ban glasses: service UUID 0xFD5F, or local name contains "Ray-Ban"/"RB Meta"
+         * - Quest headset: service UUID 0xFEB8 without 0xFD5F, or local name contains "Quest"
+         * - Other Meta: fallback for portals, controllers, etc. */
+        if (has_meta_rayban_svc) {
             fp->device_type = BLE_DEV_META_GLASSES;
+        } else if (has_meta_quest_svc) {
+            fp->device_type = BLE_DEV_META_DEVICE;
+        } else if (has_meta_svc) {
+            /* Generic Meta service — check payload size heuristic.
+             * Quest tends to have larger advertisements than glasses. */
+            fp->device_type = (fp->payload_len > 20) ? BLE_DEV_META_DEVICE : BLE_DEV_META_GLASSES;
         } else {
             fp->device_type = BLE_DEV_META_DEVICE;
         }
