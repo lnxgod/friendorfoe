@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 42
-        versionName = "0.42.2"
+        versionCode = 43
+        versionName = "0.42.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
