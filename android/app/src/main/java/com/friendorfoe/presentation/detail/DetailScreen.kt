@@ -238,11 +238,12 @@ internal fun AircraftDetailContent(
         // Current stats
         SectionCard(title = "Current Position") {
             val altFeet = (aircraft.position.altitudeMeters * 3.281).roundToInt()
-            DetailRow("Altitude", "$altFeet ft (${aircraft.position.altitudeMeters.roundToInt()} m)")
+            DetailRow("Altitude", if (altFeet >= 18000) "FL${altFeet / 100}" else "$altFeet ft")
 
             aircraft.position.speedMps?.let { speedMps ->
                 val speedKnots = (speedMps * 1.944).roundToInt()
-                DetailRow("Speed", "$speedKnots kts (${speedMps.roundToInt()} m/s)")
+                val speedMph = (speedMps * 2.237).roundToInt()
+                DetailRow("Speed", "$speedMph mph ($speedKnots kts)")
             }
 
             aircraft.position.verticalRateMps?.let { vr ->
@@ -1185,10 +1186,12 @@ private fun formatSquawk(squawk: String): String {
  * Format distance in meters to human-readable string.
  */
 private fun formatDistance(meters: Double): String {
-    return when {
-        meters < 1000 -> "${meters.roundToInt()} m"
-        meters < 10_000 -> String.format("%.1f km", meters / 1000)
-        else -> "${(meters / 1000).roundToInt()} km"
+    return if (meters > 800.0) {
+        val miles = meters / 1609.344
+        if (miles >= 10.0) "${"%.0f".format(miles)} mi"
+        else "${"%.1f".format(miles)} mi"
+    } else {
+        "${meters.roundToInt()} m"
     }
 }
 
