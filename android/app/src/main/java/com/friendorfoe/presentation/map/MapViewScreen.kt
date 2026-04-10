@@ -58,7 +58,9 @@ import com.friendorfoe.presentation.util.categoryColorArgb
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
+import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.MapEventsOverlay
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polygon
 import kotlin.math.cos
@@ -84,6 +86,9 @@ fun MapViewScreen(
     val compassHeading by viewModel.compassHeading.collectAsStateWithLifecycle()
     val sensorDrones by viewModel.sensorDrones.collectAsStateWithLifecycle()
     val remoteSensors by viewModel.remoteSensors.collectAsStateWithLifecycle()
+    val remoteSearchResults by viewModel.remoteSearchResults.collectAsStateWithLifecycle()
+    val remoteSearchCenter by viewModel.remoteSearchCenter.collectAsStateWithLifecycle()
+    val remoteSearching by viewModel.remoteSearching.collectAsStateWithLifecycle()
 
     // Configure osmdroid
     LaunchedEffect(Unit) {
@@ -139,6 +144,17 @@ fun MapViewScreen(
                 }
                 false  // Don't consume — let the map handle it
             }
+            // Long-press: search 250 NM radius at tapped point (ocean search)
+            overlays.add(0, MapEventsOverlay(object : MapEventsReceiver {
+                override fun singleTapConfirmedHelper(p: org.osmdroid.util.GeoPoint): Boolean = false
+                override fun longPressHelper(p: org.osmdroid.util.GeoPoint): Boolean {
+                    viewModel.searchRemoteArea(p.latitude, p.longitude)
+                    android.widget.Toast.makeText(context,
+                        "Searching 250 NM around ${String.format("%.2f", p.latitude)}, ${String.format("%.2f", p.longitude)}…",
+                        android.widget.Toast.LENGTH_SHORT).show()
+                    return true
+                }
+            }))
         }
     }
 
@@ -176,12 +192,28 @@ fun MapViewScreen(
                 if (userPosition.latitude != 0.0 || userPosition.longitude != 0.0) {
                     val userGeoPoint = GeoPoint(userPosition.latitude, userPosition.longitude)
 
-                    // Clear existing overlays and re-add
+                    // Clear overlays but preserve the long-press event handler
+                    val eventsOverlay = map.overlays.filterIsInstance<MapEventsOverlay>().firstOrNull()
                     map.overlays.clear()
+                    if (eventsOverlay != null) map.overlays.add(eventsOverlay)
 
                     // Distance rings at 10 NM and 25 NM
                     addDistanceRing(map, userGeoPoint, 10.0)
                     addDistanceRing(map, userGeoPoint, 25.0)
+
+                    // Remote search ring (250 NM) if active
+                    if (remoteSearchCenter != null) {
+                        val searchGeo = GeoPoint(remoteSearchCenter!!.latitude, remoteSearchCenter!!.longitude)
+                        addDistanceRing(map, searchGeo, 250.0)
+                        // Search center pin
+                        val pin = Marker(map).apply {
+                            position = searchGeo
+                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                            title = "Search area (250 NM)"
+                            snippet = "${remoteSearchResults.size} aircraft found"
+                        }
+                        map.overlays.add(pin)
+                    }
 
                     // FOV cone showing camera direction (only when following compass)
                     if (followCompass) {
@@ -300,10 +332,44 @@ fun MapViewScreen(
                         }
                     }
 
+                    // Remote search results (different color — cyan markers)
+                    for (obj in remoteSearchResults) {
+                        if (obj.position.latitude == 0.0 && obj.position.longitude == 0.0) continue
+                        // Skip if already in local skyObjects
+                        if (skyObjects.any { it.id == obj.id }) continue
+                        val geoPoint = GeoPoint(obj.position.latitude, obj.position.longitude)
+                        val marker = Marker(map).apply {
+                            position = geoPoint
+                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                            title = getMarkerTitle(obj)
+                            snippet = "Remote: ${getMarkerSnippet(obj)}"
+                            icon = createCategoryMarkerDrawable(context, obj.category, 0xFF00BCD4.toInt(), getHeading(obj))
+                            setOnMarkerClickListener { _, _ ->
+                                viewModel.selectObject(obj.id)
+                                onObjectTapped(obj.id)
+                                true
+                            }
+                        }
+                        map.overlays.add(marker)
+                    }
+
                     map.invalidate()
                 }
             }
         )
+
+        // Remote search indicator
+        if (remoteSearching) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = androidx.compose.ui.Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(48.dp),
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
 
         // Filter bar overlay
         FilterBar(

@@ -10,7 +10,9 @@ import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.remote.LocatedDroneDto
 import com.friendorfoe.data.remote.SensorDto
 import com.friendorfoe.data.remote.SensorMapApiService
+import com.friendorfoe.data.repository.AircraftRepository
 import com.friendorfoe.data.repository.SkyObjectRepository
+import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
@@ -33,6 +35,7 @@ import javax.inject.Inject
 @HiltViewModel
 class MapViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
+    private val aircraftRepository: AircraftRepository,
     private val locationManager: LocationManager,
     private val sensorFusionEngine: SensorFusionEngine,
     private val sensorMapApiService: SensorMapApiService
@@ -42,6 +45,47 @@ class MapViewModel @Inject constructor(
         private const val TAG = "MapViewModel"
         private const val LOCATION_UPDATE_INTERVAL_MS = 5000L
         private const val LOCATION_UPDATE_DISTANCE_M = 10f
+        private const val REMOTE_SEARCH_RADIUS_NM = 250
+    }
+
+    /** Remote search results — aircraft found at a tapped location */
+    private val _remoteSearchResults = MutableStateFlow<List<SkyObject>>(emptyList())
+    val remoteSearchResults: StateFlow<List<SkyObject>> = _remoteSearchResults.asStateFlow()
+
+    private val _remoteSearchCenter = MutableStateFlow<Position?>(null)
+    val remoteSearchCenter: StateFlow<Position?> = _remoteSearchCenter.asStateFlow()
+
+    private val _remoteSearching = MutableStateFlow(false)
+    val remoteSearching: StateFlow<Boolean> = _remoteSearching.asStateFlow()
+
+    /**
+     * Search for aircraft at a remote location (long-press on map).
+     * Uses 250 NM radius to cover ocean routes, shuttle chase planes, etc.
+     */
+    fun searchRemoteArea(lat: Double, lon: Double) {
+        _remoteSearchCenter.value = Position(lat, lon, 0.0)
+        _remoteSearching.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val result = aircraftRepository.getNearbyAircraft(lat, lon, REMOTE_SEARCH_RADIUS_NM)
+                result.onSuccess { nearby ->
+                    _remoteSearchResults.value = nearby.aircraft
+                    Log.i(TAG, "Remote search at ($lat, $lon): ${nearby.aircraft.size} aircraft in ${REMOTE_SEARCH_RADIUS_NM}NM")
+                }.onFailure {
+                    Log.w(TAG, "Remote search failed: ${it.message}")
+                    _remoteSearchResults.value = emptyList()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Remote search error: ${e.message}")
+                _remoteSearchResults.value = emptyList()
+            }
+            _remoteSearching.value = false
+        }
+    }
+
+    fun clearRemoteSearch() {
+        _remoteSearchResults.value = emptyList()
+        _remoteSearchCenter.value = null
     }
 
     private val _filterState = MutableStateFlow(FilterState())
