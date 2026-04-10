@@ -464,7 +464,7 @@ object AircraftDatabase {
             description = "Best-selling turboprop family in history with 7,600+ delivered since 1964. Used by military, medical, cargo, and executive operators worldwide. PT6A engines are legendarily reliable.",
             specs = "Passengers: 7-15 | Range: 3,185km | Cruise: 536km/h | Engines: 2x PT6A",
             photoAsset = "aircraft/BE20.jpg",
-            icaoTypeCodes = listOf("BE20", "BE30")
+            icaoTypeCodes = listOf("BE20", "BE30", "B200", "B300", "B350", "BE9L", "BE99", "B190")
         ),
         AircraftReference(
             id = "c208",
