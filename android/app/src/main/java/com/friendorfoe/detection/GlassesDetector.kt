@@ -738,10 +738,18 @@ class GlassesDetector @Inject constructor(
     private fun categorize(deviceType: String): PrivacyCategory = categorizeDeviceType(deviceType)
 
     private val detectedDevices = java.util.concurrent.ConcurrentHashMap<String, GlassesDetection>()
+    /** MAC addresses of devices bonded to THIS phone — used to tag "your device" vs "nearby threat" */
+    private val myBondedAddresses = java.util.concurrent.CopyOnWriteArraySet<String>()
     private var bleScanner: BluetoothLeScanner? = null
     private var activeScanCallback: ScanCallback? = null
     @Volatile var isScanRunning = false
         private set
+
+    /** Clear all cached detections — used by refresh button in UI */
+    fun clearAllDetections() {
+        detectedDevices.clear()
+        Log.i(TAG, "All cached detections cleared (manual refresh)")
+    }
 
     /**
      * Start scanning for smart glasses / privacy devices.
@@ -754,7 +762,7 @@ class GlassesDetector @Inject constructor(
      */
     @SuppressLint("MissingPermission")
     fun startScanning(): Flow<GlassesDetection> = callbackFlow {
-        val SCAN_RESTART_INTERVAL_MS = 30_000L // Restart scan every 30s to catch slow advertisers
+        val SCAN_RESTART_INTERVAL_MS = 15_000L // Restart scan every 15s — resets Android dedup
         val SCAN_FAILURE_RETRY_MS = 5_000L     // Wait 5s before retrying after failure
         val MAX_RETRIES = 3
 
@@ -852,66 +860,100 @@ class GlassesDetector @Inject constructor(
         }
 
         // Check bonded/paired BLE devices — catches glasses that are already
-        // connected and no longer advertising (e.g., Meta Ray-Ban, Quest after pairing).
-        // These devices switch to directed advertising after bonding,
-        // invisible to normal BLE scans.
-        suspend fun checkBondedDevices() {
+        // Build set of YOUR bonded device addresses — used to tag BLE scan
+        // results as "your device" vs "someone else's nearby device"
+        fun refreshBondedList() {
             try {
                 val adapter = bluetoothManager.adapter ?: return
-                val bonded = adapter.bondedDevices ?: return
-                for (device in bonded) {
+                myBondedAddresses.clear()
+                adapter.bondedDevices?.forEach { myBondedAddresses.add(it.address) }
+            } catch (_: SecurityException) {}
+        }
+        refreshBondedList()
+
+        // Check ACTIVELY CONNECTED devices — Android suppresses BLE ads from
+        // devices connected to THIS phone, so the scanner never sees them.
+        // This catches YOUR Meta glasses, Quest, etc. that are connected right now.
+        suspend fun checkConnectedDevices() {
+            try {
+                val profiles = listOf(
+                    android.bluetooth.BluetoothProfile.GATT,
+                    android.bluetooth.BluetoothProfile.HEADSET,
+                    7  // A2DP = BluetoothProfile.A2DP
+                )
+                val connectedDevices = mutableMapOf<String, android.bluetooth.BluetoothDevice>()
+                for (profile in profiles) {
+                    try {
+                        bluetoothManager.getConnectedDevices(profile).forEach { device ->
+                            connectedDevices[device.address] = device
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                for ((address, device) in connectedDevices) {
                     val name = device.name ?: continue
-                    // Check name against our database
                     val nameMatch = nameDatabase.firstOrNull { entry ->
                         if (entry.exact) name.equals(entry.prefix, ignoreCase = true)
                         else name.contains(entry.prefix, ignoreCase = true)
                     }
                     if (nameMatch != null && nameMatch.confidence >= 0.70f) {
-                        val key = "bonded_${device.address}"
-                        if (!detectedDevices.containsKey(key)) {
-                            val now = java.time.Instant.now()
-                            val detection = GlassesDetection(
-                                mac = device.address,
-                                deviceName = name,
-                                manufacturer = nameMatch.manufacturer,
-                                deviceType = nameMatch.deviceType,
-                                confidence = nameMatch.confidence,
-                                rssi = -50, // Bonded = nearby
-                                hasCamera = nameMatch.hasCamera,
-                                matchReason = "bonded:$name",
-                                category = categorize(nameMatch.deviceType),
-                                firstSeen = now,
-                                lastSeen = now,
-                                isBonded = true
-                            )
-                            detectedDevices[key] = detection
-                            trySend(detection)
-                            Log.i(TAG, "Detected bonded device: $name (${nameMatch.deviceType}) addr=${device.address}")
-                        } else {
-                            // Update last seen
-                            detectedDevices[key]?.let { existing ->
-                                val updated = existing.copy(lastSeen = java.time.Instant.now())
-                                detectedDevices[key] = updated
-                                trySend(updated)
-                            }
+                        val key = "connected_${address}"
+                        val now = java.time.Instant.now()
+                        val existing = detectedDevices[key]
+                        val detection = GlassesDetection(
+                            mac = address,
+                            deviceName = name,
+                            manufacturer = nameMatch.manufacturer,
+                            deviceType = nameMatch.deviceType,
+                            confidence = nameMatch.confidence,
+                            rssi = -30, // Connected = very close
+                            hasCamera = nameMatch.hasCamera,
+                            matchReason = "connected:$name",
+                            category = categorize(nameMatch.deviceType),
+                            firstSeen = existing?.firstSeen ?: now,
+                            lastSeen = now,
+                            isBonded = true // It's YOUR connected device
+                        )
+                        detectedDevices[key] = detection
+                        trySend(detection)
+                        if (existing == null) {
+                            Log.i(TAG, "Connected device detected: $name (${nameMatch.deviceType})")
                         }
                     }
                 }
+
+                // Remove stale connected entries (device disconnected)
+                val connectedAddrs = connectedDevices.keys.map { "connected_$it" }.toSet()
+                detectedDevices.keys.filter { it.startsWith("connected_") && it !in connectedAddrs }
+                    .forEach { key ->
+                        val det = detectedDevices[key]
+                        val age = det?.let { java.time.Duration.between(it.lastSeen, java.time.Instant.now()).seconds } ?: 999
+                        if (age > 30) {
+                            detectedDevices.remove(key)
+                            Log.d(TAG, "Connected device gone: ${det?.deviceName}")
+                        }
+                    }
             } catch (e: SecurityException) {
-                Log.w(TAG, "No permission to check bonded devices")
+                Log.w(TAG, "No permission to check connected devices")
             }
         }
 
-        // Check bonded devices immediately on start
-        checkBondedDevices()
+        // Check connected devices immediately
+        checkConnectedDevices()
 
-        // Periodic scan restart to catch slow-advertising devices.
-        // Also re-checks bonded devices each cycle.
+        // Periodic: restart BLE scan + check connected devices + Classic BT discovery
         val restartJob = CoroutineScope(Dispatchers.Default).launch {
             while (true) {
                 delay(SCAN_RESTART_INTERVAL_MS)
-                Log.d(TAG, "Periodic scan restart + bonded device check")
-                checkBondedDevices()
+                refreshBondedList()
+                checkConnectedDevices()
+                try {
+                    val adapter = bluetoothManager.adapter
+                    if (adapter?.isDiscovering == false) {
+                        adapter.startDiscovery()
+                    }
+                } catch (_: SecurityException) {}
+                Log.d(TAG, "Scan cycle: ${myBondedAddresses.size} bonded, ${detectedDevices.size} detected")
                 doStartScan()
             }
         }
@@ -1093,6 +1135,9 @@ class GlassesDetector @Inject constructor(
 
         val now = Instant.now()
         val existing = detectedDevices[mac]
+        // Tag whether this is YOUR device or someone else's
+        val isMyDevice = myBondedAddresses.contains(mac)
+
         val detection = GlassesDetection(
             mac = mac,
             deviceName = deviceName,
@@ -1101,11 +1146,12 @@ class GlassesDetector @Inject constructor(
             hasCamera = bestCamera,
             rssi = rssi,
             confidence = bestConf,
-            matchReason = bestReason,
+            matchReason = if (isMyDevice) "own_device:$bestReason" else bestReason,
             firstSeen = existing?.firstSeen ?: now,
             lastSeen = now,
             details = parsedDetails,
-            category = category
+            category = category,
+            isBonded = isMyDevice
         )
         detectedDevices[mac] = detection
 
