@@ -333,9 +333,9 @@ class GlassesDetector @Inject constructor(
     )
 
     private val mfrDatabase = listOf(
-        // Smart Glasses
+        // Meta — 0x01AB is general Meta, 0x058E is Meta Technologies (Quest headsets)
         MfrEntry(0x01AB, "Meta", "Smart Glasses", 0.90f, true),
-        MfrEntry(0x058E, "Meta", "Smart Glasses", 0.90f, true),
+        MfrEntry(0x058E, "Meta", "VR Headset", 0.90f, true),  // Quest 2/3/Pro
         MfrEntry(0x03C2, "Snap", "Smart Glasses", 0.85f, true),
         // Google CID 0x00E0 removed — too broad, matches Nest/Chromecast/Pixel
         MfrEntry(0x060C, "Vuzix", "Smart Glasses", 0.85f, true),
@@ -351,8 +351,16 @@ class GlassesDetector @Inject constructor(
         MfrEntry(0x067C, "Tile", "BLE Tracker", 0.85f, false),
         // Samsung CID 0x0075 removed — matches ALL Samsung devices (phones, watches, buds)
         // SmartTag detected by UUID 0xFD5A/0xFD59 instead (much more specific)
+        // Wearables with cameras/sensors
+        MfrEntry(0x0B1A, "Humane", "AI Pin", 0.85f, true),
+        MfrEntry(0x0E3C, "Rabbit", "AI Device", 0.70f, false),
+        MfrEntry(0x0B14, "XREAL", "Smart Glasses", 0.85f, true),
+        // Action cameras
+        MfrEntry(0x0413, "DJI", "Action Camera", 0.80f, true),
+        MfrEntry(0x08A9, "Insta360", "Action Camera", 0.85f, true),
         // IoT / Camera ecosystems
         MfrEntry(0x07D0, "Tuya", "IoT Camera", 0.65f, true),
+        MfrEntry(0x02D3, "Ring", "Doorbell Camera", 0.75f, true),
     )
 
     // ── 16-bit Service UUID database ──
@@ -366,8 +374,10 @@ class GlassesDetector @Inject constructor(
     )
 
     private val uuidDatabase = listOf(
-        // Smart Glasses
-        UuidEntry(0xFD5F, "Meta", "Smart Glasses", 0.95f, true),
+        // Meta devices
+        UuidEntry(0xFD5F, "Meta", "Smart Glasses", 0.95f, true),  // Ray-Ban Meta
+        UuidEntry(0xFEB8, "Meta", "VR Headset", 0.90f, true),     // Quest companion
+        UuidEntry(0xFEB7, "Meta", "Meta Device", 0.85f, true),    // General Meta
         UuidEntry(0xFDD2, "Bose", "Audio Glasses", 0.85f, false),
         UuidEntry(0xFE45, "Snap", "Smart Glasses", 0.80f, true),
         UuidEntry(0xFE15, "Amazon", "Smart Glasses", 0.70f, false),
@@ -378,6 +388,11 @@ class GlassesDetector @Inject constructor(
         UuidEntry(0xFEEC, "Tile", "BLE Tracker", 0.85f, false),
         UuidEntry(0xFCB2, "DULT", "BLE Tracker", 0.90f, false),
         UuidEntry(0xFE2C, "Google", "Fast Pair", 0.50f, false), // below threshold
+        // Action cameras
+        UuidEntry(0xFEA6, "GoPro", "Action Camera", 0.90f, true),
+        // Samsung wearables
+        UuidEntry(0xFD6A, "Samsung", "Galaxy Ring", 0.85f, false),
+        UuidEntry(0xFD69, "Samsung", "Galaxy Ring", 0.85f, false),
         // Retail Tracking — below threshold, informational only
         UuidEntry(0xFEAA, "Google", "Eddystone Beacon", 0.50f, false),
         // IoT ecosystems
@@ -401,6 +416,11 @@ class GlassesDetector @Inject constructor(
         NameEntry("Ray-Ban Stories", "Meta", "Smart Glasses", 0.95f, true),
         NameEntry("Oakley Meta", "Meta", "Smart Glasses", 0.95f, true),
         NameEntry("Meta Neural", "Meta", "Smart Glasses", 0.90f, false),
+        NameEntry("Meta Quest", "Meta", "VR Headset", 0.95f, true),
+        NameEntry("Quest 2", "Meta", "VR Headset", 0.95f, true),
+        NameEntry("Quest 3", "Meta", "VR Headset", 0.95f, true),
+        NameEntry("Quest Pro", "Meta", "VR Headset", 0.95f, true),
+        NameEntry("Oculus Quest", "Meta", "VR Headset", 0.95f, true),
         NameEntry("Spectacles", "Snap", "Smart Glasses", 0.90f, true),
         NameEntry("Echo Frames", "Amazon", "Smart Glasses", 0.90f, false, exact = true),
         NameEntry("Vuzix", "Vuzix", "Smart Glasses", 0.90f, true),
@@ -412,6 +432,9 @@ class GlassesDetector @Inject constructor(
         NameEntry("Even Realities", "Even Realities", "Smart Glasses", 0.80f, true),
         NameEntry("INMO", "INMO", "Smart Glasses", 0.80f, true),
         NameEntry("IMA0", "INMO", "Smart Glasses", 0.80f, true),
+        NameEntry("Humane", "Humane", "AI Pin", 0.90f, true),
+        NameEntry("Vision Pro", "Apple", "VR Headset", 0.95f, true),
+        NameEntry("Galaxy Ring", "Samsung", "Smart Ring", 0.85f, false),
         NameEntry("Solos AirGo", "Solos", "Smart Glasses", 0.80f, false),
         NameEntry("Glass EE", "Google", "Smart Glasses", 0.85f, true),
         NameEntry("Bose Frames", "Bose", "Audio Glasses", 0.90f, false),
@@ -441,6 +464,107 @@ class GlassesDetector @Inject constructor(
         // Police / fleet cameras
         NameEntry("Axon Fleet", "Axon", "Police Camera", 0.90f, true),
         NameEntry("WatchGuard", "Motorola", "Police Camera", 0.85f, true),
+        // Action cameras (bonded for remote control)
+        NameEntry("GoPro ", "GoPro", "Action Camera", 0.90f, true),
+        NameEntry("GoPro Hero", "GoPro", "Action Camera", 0.90f, true),
+        NameEntry("GoPro MAX", "GoPro", "Action Camera", 0.90f, true),
+        NameEntry("Insta360", "Insta360", "Action Camera", 0.90f, true),
+        NameEntry("ONE X", "Insta360", "Action Camera", 0.85f, true),
+        NameEntry("Osmo Action", "DJI", "Action Camera", 0.90f, true),
+        NameEntry("DJI Action", "DJI", "Action Camera", 0.90f, true),
+        NameEntry("Osmo Pocket", "DJI", "Action Camera", 0.90f, true),
+        // Audio recorders / smart pens
+        NameEntry("ICD-", "Sony", "Voice Recorder", 0.85f, false),
+        NameEntry("PCM-", "Sony", "Voice Recorder", 0.85f, false),
+        NameEntry("Livescribe", "Livescribe", "Smart Pen", 0.85f, false),
+        // OBD2 / vehicle trackers (bonded for data)
+        NameEntry("OBDII", "Generic", "OBD Tracker", 0.75f, false),
+        NameEntry("OBD2", "Generic", "OBD Tracker", 0.75f, false),
+        NameEntry("ELM327", "Generic", "OBD Tracker", 0.75f, false),
+        NameEntry("OBDLink", "OBDLink", "OBD Tracker", 0.80f, false),
+        NameEntry("Vgate", "Vgate", "OBD Tracker", 0.75f, false),
+        // GPS trackers (bonded for config)
+        NameEntry("Tracki", "Tracki", "GPS Tracker", 0.90f, false),
+        NameEntry("Spytec", "Spytec", "GPS Tracker", 0.90f, false),
+        // Drones (bonded for QuickTransfer/app pairing/RID)
+        NameEntry("DJI Mini", "DJI", "Drone", 0.90f, true),
+        NameEntry("DJI-Mini", "DJI", "Drone", 0.90f, true),
+        NameEntry("DJI-Mavic", "DJI", "Drone", 0.90f, true),
+        NameEntry("DJI-Avata", "DJI", "Drone", 0.90f, true),
+        NameEntry("DJI Neo", "DJI", "Drone", 0.90f, true),
+        NameEntry("DJI RC", "DJI", "Drone Controller", 0.90f, true),
+        NameEntry("DJI Goggles", "DJI", "FPV Goggles", 0.90f, true),
+        NameEntry("RC-N1", "DJI", "Drone Controller", 0.85f, true),
+        NameEntry("RC Pro", "DJI", "Drone Controller", 0.85f, true),
+        NameEntry("Autel-", "Autel", "Drone", 0.85f, true),
+        NameEntry("EVO-", "Autel", "Drone", 0.85f, true),
+        NameEntry("Anafi", "Parrot", "Drone", 0.85f, true),
+        NameEntry("Skycontroller", "Parrot", "Drone Controller", 0.85f, true),
+        NameEntry("Skydio", "Skydio", "Drone", 0.90f, true),
+        NameEntry("FIMI-", "FIMI", "Drone", 0.80f, true),
+        NameEntry("Tello", "Ryze", "Drone", 0.80f, true),
+        // Smart locks (bonded = access to physical location)
+        NameEntry("August", "August", "Smart Lock", 0.85f, false),
+        NameEntry("Yale-", "Yale", "Smart Lock", 0.85f, false),
+        NameEntry("Yale Assure", "Yale", "Smart Lock", 0.85f, false),
+        NameEntry("Schlage", "Schlage", "Smart Lock", 0.85f, false),
+        // Vehicle digital keys
+        NameEntry("Tesla ", "Tesla", "Vehicle Key", 0.90f, true),
+        // Personal / child / pet trackers
+        NameEntry("Jiobit", "Jiobit", "Child Tracker", 0.85f, false),
+        NameEntry("Tractive", "Tractive", "Pet Tracker", 0.75f, false),
+        NameEntry("Whistle", "Whistle", "Pet Tracker", 0.75f, false),
+        // FPV radio controllers
+        NameEntry("ExpressLRS", "ELRS", "FPV Controller", 0.80f, false),
+        NameEntry("TBS Crossfire", "TBS", "FPV Controller", 0.80f, false),
+        // Dash cameras (bonded for media/GPS sync)
+        NameEntry("Garmin Dash", "Garmin", "Dash Camera", 0.90f, true),
+        NameEntry("DC 67W", "Garmin", "Dash Camera", 0.85f, true),
+        NameEntry("Nexar", "Nexar", "Dash Camera", 0.85f, true),
+        NameEntry("BlackVue", "BlackVue", "Dash Camera", 0.85f, true),
+        NameEntry("Thinkware", "Thinkware", "Dash Camera", 0.80f, true),
+        NameEntry("Vantrue", "Vantrue", "Dash Camera", 0.80f, true),
+        // Hearing aids (bonded, have microphones — medical privacy)
+        NameEntry("Phonak", "Phonak", "Hearing Aid", 0.90f, false),
+        NameEntry("R-Phonak", "Phonak", "Hearing Aid", 0.90f, false),
+        NameEntry("L-Phonak", "Phonak", "Hearing Aid", 0.90f, false),
+        NameEntry("ReSound", "ReSound", "Hearing Aid", 0.85f, false),
+        NameEntry("Oticon", "Oticon", "Hearing Aid", 0.85f, false),
+        NameEntry("Starkey", "Starkey", "Hearing Aid", 0.85f, false),
+        NameEntry("Signia", "Signia", "Hearing Aid", 0.85f, false),
+        NameEntry("Widex", "Widex", "Hearing Aid", 0.85f, false),
+        NameEntry("Cochlear", "Cochlear", "Cochlear Implant", 0.90f, false),
+        // Medical devices (bonded — extreme privacy)
+        NameEntry("DXCM", "Dexcom", "CGM Sensor", 0.90f, false),
+        NameEntry("Dexcom", "Dexcom", "CGM Sensor", 0.90f, false),
+        NameEntry("NovoPen", "Novo Nordisk", "Insulin Pen", 0.85f, false),
+        NameEntry("InPen", "Medtronic", "Insulin Pen", 0.85f, false),
+        // Smart rings
+        NameEntry("Oura", "Oura", "Smart Ring", 0.85f, false),
+        NameEntry("Ultrahuman", "Ultrahuman", "Smart Ring", 0.80f, false),
+        // Satellite communicators (bonded, GPS tracking)
+        NameEntry("inReach", "Garmin", "Satellite Tracker", 0.90f, false),
+        NameEntry("ZOLEO", "Zoleo", "Satellite Tracker", 0.85f, false),
+        // Adult / intimate devices (EXTREME privacy)
+        NameEntry("Lovense", "Lovense", "Personal Device", 0.90f, false),
+        NameEntry("Lush", "Lovense", "Personal Device", 0.85f, false),
+        NameEntry("We-Vibe", "We-Vibe", "Personal Device", 0.90f, false),
+        // Smart gun safes (reveals firearm presence)
+        NameEntry("VAULTEK", "Vaultek", "Gun Safe", 0.90f, false),
+        // E-bikes / scooters
+        NameEntry("VanMoof", "VanMoof", "E-Bike", 0.80f, false),
+        NameEntry("Cowboy", "Cowboy", "E-Bike", 0.80f, false),
+        NameEntry("Ninebot", "Segway", "E-Scooter", 0.80f, false),
+        NameEntry("Segway", "Segway", "E-Scooter", 0.80f, false),
+        // Smart pens (capture handwriting)
+        NameEntry("Neo Smartpen", "NeoLAB", "Smart Pen", 0.85f, false),
+        NameEntry("Pen+", "Moleskine", "Smart Pen", 0.80f, false),
+        // Smart displays with cameras
+        NameEntry("Echo Show", "Amazon", "Smart Display", 0.85f, true),
+        NameEntry("Portal", "Meta", "Smart Display", 0.80f, true),
+        // Smart home (bonded during setup)
+        NameEntry("Ring Setup", "Ring", "Doorbell Camera", 0.80f, true),
+        NameEntry("Echo-", "Amazon", "Smart Speaker", 0.70f, false),
         // Hidden cameras / spy cameras
         NameEntry("V380_", "Generic", "Spy Camera", 0.75f, true),
         NameEntry("IPC_", "Generic", "Spy Camera", 0.70f, true),
@@ -632,6 +756,7 @@ class GlassesDetector @Inject constructor(
 
             val scanSettings = ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
                 .setReportDelay(0)
                 .build()
 
@@ -706,14 +831,66 @@ class GlassesDetector @Inject constructor(
             return@callbackFlow
         }
 
+        // Check bonded/paired BLE devices — catches glasses that are already
+        // connected and no longer advertising (e.g., Meta Ray-Ban, Quest after pairing).
+        // These devices switch to directed advertising after bonding,
+        // invisible to normal BLE scans.
+        suspend fun checkBondedDevices() {
+            try {
+                val adapter = bluetoothManager.adapter ?: return
+                val bonded = adapter.bondedDevices ?: return
+                for (device in bonded) {
+                    val name = device.name ?: continue
+                    // Check name against our database
+                    val nameMatch = nameDatabase.firstOrNull { entry ->
+                        if (entry.exact) name.equals(entry.prefix, ignoreCase = true)
+                        else name.contains(entry.prefix, ignoreCase = true)
+                    }
+                    if (nameMatch != null && nameMatch.confidence >= 0.70f) {
+                        val key = "bonded_${device.address}"
+                        if (!detectedDevices.containsKey(key)) {
+                            val now = java.time.Instant.now()
+                            val detection = GlassesDetection(
+                                mac = device.address,
+                                deviceName = name,
+                                manufacturer = nameMatch.manufacturer,
+                                deviceType = nameMatch.deviceType,
+                                confidence = nameMatch.confidence,
+                                rssi = -50, // Bonded = nearby
+                                hasCamera = nameMatch.hasCamera,
+                                matchReason = "bonded:$name",
+                                category = categorize(nameMatch.deviceType),
+                                firstSeen = now,
+                                lastSeen = now
+                            )
+                            detectedDevices[key] = detection
+                            trySend(detection)
+                            Log.i(TAG, "Detected bonded device: $name (${nameMatch.deviceType}) addr=${device.address}")
+                        } else {
+                            // Update last seen
+                            detectedDevices[key]?.let { existing ->
+                                val updated = existing.copy(lastSeen = java.time.Instant.now())
+                                detectedDevices[key] = updated
+                                trySend(updated)
+                            }
+                        }
+                    }
+                }
+            } catch (e: SecurityException) {
+                Log.w(TAG, "No permission to check bonded devices")
+            }
+        }
+
+        // Check bonded devices immediately on start
+        checkBondedDevices()
+
         // Periodic scan restart to catch slow-advertising devices.
-        // Meta glasses in connected mode advertise at ~10s intervals.
-        // Android may internally deduplicate some advertisements.
-        // Restarting the scan resets Android's internal dedup state.
+        // Also re-checks bonded devices each cycle.
         val restartJob = CoroutineScope(Dispatchers.Default).launch {
             while (true) {
                 delay(SCAN_RESTART_INTERVAL_MS)
-                Log.d(TAG, "Periodic scan restart to catch slow advertisers")
+                Log.d(TAG, "Periodic scan restart + bonded device check")
+                checkBondedDevices()
                 doStartScan()
             }
         }
