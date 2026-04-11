@@ -873,6 +873,17 @@ private fun CameraPreview(
                         imageAnalysis,
                         imageCapture
                     )
+
+                    // Sky optimization: slight negative exposure for better aircraft contrast
+                    // Makes silhouettes more distinct against bright sky
+                    val cameraControl = camera.cameraControl
+                    val cameraInfo = camera.cameraInfo
+                    val exposureRange = cameraInfo.exposureState.exposureCompensationRange
+                    if (exposureRange.contains(-2)) {
+                        cameraControl.setExposureCompensationIndex(-1)
+                        Log.d("CameraPreview", "Sky mode: exposure compensation -1 EV")
+                    }
+
                     onCameraReady(camera)
                     onImageCaptureReady(imageCapture)
                 } catch (e: Exception) {
