@@ -105,6 +105,9 @@ dependencies {
     // ML Kit - Visual Object Detection
     implementation(libs.mlkit.objectdetection)
 
+    // ML Kit - Image Labeling for AI classification of cropped detections
+    implementation("com.google.mlkit:image-labeling:17.0.9")
+
     // Hilt - Dependency Injection
     implementation(libs.hilt.android)
     ksp(libs.hilt.android.compiler)

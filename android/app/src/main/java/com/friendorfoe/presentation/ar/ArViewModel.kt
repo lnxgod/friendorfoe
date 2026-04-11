@@ -22,6 +22,8 @@ import com.friendorfoe.data.remote.SensorMapApiService
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.data.repository.WeatherRepository
 import com.friendorfoe.detection.AcousticDetector
+import com.friendorfoe.detection.AiClassifier
+import com.friendorfoe.detection.TrainingDataCollector
 import com.friendorfoe.detection.AcousticResult
 import com.friendorfoe.detection.AlertLevel
 import com.friendorfoe.detection.AutoCaptureEngine
@@ -100,6 +102,8 @@ class ArViewModel @Inject constructor(
     private val darkTargetScorer: DarkTargetScorer,
     private val acousticDetector: AcousticDetector,
     private val sensorMapApiService: SensorMapApiService,
+    val aiClassifier: AiClassifier,
+    val trainingDataCollector: TrainingDataCollector,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
@@ -113,7 +117,16 @@ class ArViewModel @Inject constructor(
         private const val LOCATION_UPDATE_DISTANCE_M = 10f
     }
 
+    /** AI classification result for current visual detection */
+    private val _aiClassification = MutableStateFlow<String?>(null)
+    val aiClassification: StateFlow<String?> = _aiClassification.asStateFlow()
+
     init {
+        // Initialize AI classifier and training data collector
+        aiClassifier.initialize(appContext)
+        trainingDataCollector.initialize(appContext)
+        Log.i(TAG, "AI classifier available: ${aiClassifier.isAvailable()}")
+
         // Auto-unlock if target disappears from sky objects for >30 seconds
         viewModelScope.launch {
             var missingStartMs: Long? = null
