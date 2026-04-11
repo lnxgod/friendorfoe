@@ -73,7 +73,9 @@ data class GlassesDetection(
     val firstSeen: Instant,
     val lastSeen: Instant,
     val details: Map<String, String> = emptyMap(),
-    val category: PrivacyCategory = PrivacyCategory.INFORMATIONAL
+    val category: PrivacyCategory = PrivacyCategory.INFORMATIONAL,
+    /** True if detected from phone's bonded/paired device list (not BLE scan) */
+    val isBonded: Boolean = false
 )
 
 /**
@@ -517,13 +519,31 @@ class GlassesDetector @Inject constructor(
         // FPV radio controllers
         NameEntry("ExpressLRS", "ELRS", "FPV Controller", 0.80f, false),
         NameEntry("TBS Crossfire", "TBS", "FPV Controller", 0.80f, false),
-        // Dash cameras (bonded for media/GPS sync)
+        // Dash cameras — many advertise BLE continuously for app wake-up
         NameEntry("Garmin Dash", "Garmin", "Dash Camera", 0.90f, true),
-        NameEntry("DC 67W", "Garmin", "Dash Camera", 0.85f, true),
-        NameEntry("Nexar", "Nexar", "Dash Camera", 0.85f, true),
-        NameEntry("BlackVue", "BlackVue", "Dash Camera", 0.85f, true),
-        NameEntry("Thinkware", "Thinkware", "Dash Camera", 0.80f, true),
-        NameEntry("Vantrue", "Vantrue", "Dash Camera", 0.80f, true),
+        NameEntry("DC 67W", "Garmin", "Dash Camera", 0.90f, true),
+        NameEntry("DC Mini", "Garmin", "Dash Camera", 0.90f, true),
+        NameEntry("DC Live", "Garmin", "Dash Camera", 0.85f, true),
+        NameEntry("DC Tandem", "Garmin", "Dash Camera", 0.90f, true),  // interior cabin cam
+        NameEntry("Nexar", "Nexar", "Dash Camera", 0.90f, true),      // continuous BLE advertiser
+        NameEntry("nexarOne", "Nexar", "Dash Camera", 0.90f, true),
+        NameEntry("BlackVue", "BlackVue", "Dash Camera", 0.90f, true), // continuous BLE advertiser
+        NameEntry("Thinkware", "Thinkware", "Dash Camera", 0.85f, true),
+        NameEntry("U3000", "Thinkware", "Dash Camera", 0.85f, true),
+        NameEntry("Vantrue", "Vantrue", "Dash Camera", 0.85f, true),
+        NameEntry("VIOFO", "VIOFO", "Dash Camera", 0.80f, true),
+        NameEntry("70mai", "70mai", "Dash Camera", 0.80f, true),
+        NameEntry("Rexing", "Rexing", "Dash Camera", 0.75f, true),
+        NameEntry("Owlcam", "Owl", "Dash Camera", 0.85f, true),       // continuous BLE advertiser
+        NameEntry("DDPai", "DDPai", "Dash Camera", 0.75f, true),
+        NameEntry("DDP", "DDPai", "Dash Camera", 0.75f, true),
+        // Fleet / commercial vehicle cameras
+        NameEntry("Samsara", "Samsara", "Fleet Camera", 0.85f, true),  // continuous BLE
+        NameEntry("Dash-", "Lytx", "Fleet Camera", 0.75f, true),      // Surfsight/DriveCam
+        NameEntry("Motive", "Motive", "Fleet Camera", 0.80f, true),
+        NameEntry("Ring Car", "Ring", "Car Camera", 0.85f, true),
+        // Rideshare tablet cameras
+        NameEntry("Vugo", "Vugo", "Rideshare Display", 0.80f, true),
         // Hearing aids (bonded, have microphones — medical privacy)
         NameEntry("Phonak", "Phonak", "Hearing Aid", 0.90f, false),
         NameEntry("R-Phonak", "Phonak", "Hearing Aid", 0.90f, false),
@@ -861,7 +881,8 @@ class GlassesDetector @Inject constructor(
                                 matchReason = "bonded:$name",
                                 category = categorize(nameMatch.deviceType),
                                 firstSeen = now,
-                                lastSeen = now
+                                lastSeen = now,
+                                isBonded = true
                             )
                             detectedDevices[key] = detection
                             trySend(detection)
