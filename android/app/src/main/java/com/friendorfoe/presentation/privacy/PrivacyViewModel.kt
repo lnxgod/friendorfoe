@@ -63,6 +63,11 @@ class PrivacyViewModel @Inject constructor(
         skyObjectRepository.ignorePrivacyDevice(mac)
     }
 
+    /** Clear all detections and rescan fresh */
+    fun refreshDetections() {
+        skyObjectRepository.refreshPrivacyDetections()
+    }
+
     fun startDirectionScan(mac: String) {
         bleTracker.startDirectionScan(mac)
     }
