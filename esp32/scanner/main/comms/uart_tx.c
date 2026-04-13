@@ -58,10 +58,20 @@ static scanner_detection_summary_t s_det_cache[DETECTION_CACHE_SIZE];
 static int s_det_cache_count = 0;
 static portMUX_TYPE s_cache_lock = portMUX_INITIALIZER_UNLOCKED;
 
-/* Deferred identity — set before TX task starts, sent after startup delay */
+/* Deferred identity — set before TX task starts, sent after uplink ready */
 static char s_identity_board[24] = {0};
 static char s_identity_chip[16]  = {0};
 static char s_identity_caps[16]  = {0};
+
+/* TX enable flag — controlled by uplink start/stop commands.
+ * Scanner starts DISABLED, enabled when uplink sends "ready" or "start". */
+static volatile bool s_tx_enabled = false;
+
+bool uart_tx_is_enabled(void) { return s_tx_enabled; }
+void uart_tx_set_enabled(bool enabled) {
+    s_tx_enabled = enabled;
+    ESP_LOGI("fof_uart_tx", "TX %s by uplink command", enabled ? "ENABLED" : "DISABLED");
+}
 
 /* ── Detection cache helpers ────────────────────────────────────────────── */
 
@@ -421,49 +431,35 @@ static void uart_tx_task(void *arg)
 
     ESP_LOGI(TAG, "UART TX task started (prune every %d ms)", PRUNE_INTERVAL_MS);
 
-    /* Wait for "ready" message from uplink before sending any data.
-     * This prevents flooding the uplink during boot (crashes plain ESP32).
-     * Falls back to 60s timeout if no ready message received. */
-    {
-        uint8_t rx_buf[64];
-        bool ready = false;
-        int waited = 0;
-        ESP_LOGI(TAG, "Waiting for uplink ready signal (or 60s timeout)...");
-        led_set_pattern(LED_IDLE);
+    /* Wait for uplink to enable TX via the "ready"/"start" command.
+     * The main task's command loop handles UART RX and sets s_tx_enabled.
+     * We just wait here until it's set. */
+    ESP_LOGI(TAG, "TX paused — waiting for uplink start command...");
+    led_set_pattern(LED_IDLE);
 
-        while (!ready && waited < 60) {
-            int n = uart_read_bytes(UART_PORT_NUM, rx_buf, sizeof(rx_buf) - 1,
-                                    pdMS_TO_TICKS(1000));
-            if (n > 0) {
-                rx_buf[n] = '\0';
-                /* Any valid data from uplink means it's alive */
-                if (strstr((char *)rx_buf, "ready") ||
-                    strstr((char *)rx_buf, "ota_") ||
-                    strstr((char *)rx_buf, "{")) {
-                    ready = true;
-                    ESP_LOGI(TAG, "Uplink ready signal received!");
-                }
-            }
-            waited++;
-            if (waited % 10 == 0) {
-                ESP_LOGI(TAG, "Still waiting for uplink... (%ds)", waited);
-            }
-        }
-
-        if (!ready) {
-            ESP_LOGW(TAG, "No uplink ready signal after 60s — starting TX anyway");
-        }
-
-        /* Send scanner identity now that uplink is ready */
-        if (s_identity_board[0]) {
-            const esp_app_desc_t *app = esp_app_get_description();
-            uart_tx_send_scanner_info(app ? app->version : "?",
-                                      s_identity_board, s_identity_chip, s_identity_caps);
-        }
-        led_set_pattern(LED_UPLINK_OK);
+    while (!s_tx_enabled) {
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 
+    /* Send scanner identity now that uplink enabled us */
+    if (s_identity_board[0]) {
+        const esp_app_desc_t *app = esp_app_get_description();
+        uart_tx_send_scanner_info(app ? app->version : "?",
+                                  s_identity_board, s_identity_chip, s_identity_caps);
+    }
+    led_set_pattern(LED_UPLINK_OK);
+    ESP_LOGI(TAG, "TX enabled — transmitting detections.");
+
     for (;;) {
+        /* If uplink sent stop command, pause TX until re-enabled */
+        if (!s_tx_enabled) {
+            led_set_pattern(LED_IDLE);
+            ESP_LOGI(TAG, "TX paused by uplink stop command");
+            while (!s_tx_enabled) vTaskDelay(pdMS_TO_TICKS(500));
+            led_set_pattern(LED_UPLINK_OK);
+            ESP_LOGI(TAG, "TX resumed by uplink start command");
+        }
+
         /* Block on detection queue with a short timeout so we can do
          * periodic maintenance even when no detections are flowing. */
         if (xQueueReceive(detection_queue, &det, queue_timeout) == pdTRUE) {

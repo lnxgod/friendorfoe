@@ -194,6 +194,14 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
     ESP_LOGW(TAG, "Reliable relay: %lu bytes to UART%d (uart=%s)",
              (unsigned long)fw_size, uart_num, uart_target);
 
+    /* Step 0: Stop scanner TX before OTA — prevents data collision during flash */
+    {
+        const char *stop_cmd = "{\"type\":\"stop\"}\n";
+        uart_write_bytes(uart_num, stop_cmd, strlen(stop_cmd));
+        ESP_LOGI(TAG, "Sent stop command to scanner before OTA");
+        vTaskDelay(pdMS_TO_TICKS(500));  /* Let scanner drain its TX queue */
+    }
+
     /* Step 1: Send ota_begin at normal baud */
     uart_rx_clear_ota_response();
     uart_write_bytes(uart_num, "\n", 1);
@@ -329,6 +337,13 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
 relay_done:;
     /* Resume UART RX task */
     uart_rx_resume_scanner(scanner_id);
+
+    /* Re-enable scanner TX after OTA (whether success or failure) */
+    {
+        const char *start_cmd = "{\"type\":\"start\"}\n";
+        uart_write_bytes(uart_num, start_cmd, strlen(start_cmd));
+        ESP_LOGI(TAG, "Sent start command to scanner after OTA");
+    }
 
     int64_t elapsed_s = ((esp_timer_get_time() / 1000) - start_ms) / 1000;
 

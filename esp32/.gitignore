@@ -1,0 +1,5 @@
+# Cached sdkconfigs — PlatformIO generates these from menuconfig
+# They override sdkconfig.defaults and cause heap issues on ESP32
+**/sdkconfig.uplink-esp32
+**/sdkconfig.uplink
+**/sdkconfig.scanner-s3-legacy

@@ -80,6 +80,12 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
  */
 void uart_tx_set_identity(const char *board, const char *chip, const char *caps);
 
+/** Check if TX is enabled (uplink sent start/ready command) */
+bool uart_tx_is_enabled(void);
+
+/** Enable/disable TX — called by main command handler on start/stop from uplink */
+void uart_tx_set_enabled(bool enabled);
+
 /** Get cumulative BLE detection count. */
 int uart_tx_get_ble_count(void);
 

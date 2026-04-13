@@ -325,11 +325,15 @@ static void uart_cmd_listener_task(void *arg)
     static const char *s_caps = "wifi";
 #endif
 
-    /* Send scanner identity on boot (via mutex-protected uart_tx) */
+    /* Send scanner identity immediately on boot — uplink needs this to know
+     * what's connected, even before sending "ready". This is a small JSON
+     * message, not a data flood. */
     {
         const esp_app_desc_t *app = esp_app_get_description();
         const char *ver = app ? app->version : "?";
         uart_tx_send_scanner_info(ver, s_board_name, s_chip_name, s_caps);
+        ESP_LOGI(TAG, "Sent identity: %s v%s (%s) — waiting for uplink start command",
+                 s_board_name, ver, s_caps);
     }
 
     TickType_t last_info_send = xTaskGetTickCount();
@@ -337,12 +341,18 @@ static void uart_cmd_listener_task(void *arg)
     while (1) {
         int len = uart_read_bytes(UART_NUM_1, buf, sizeof(buf), pdMS_TO_TICKS(500));
 
-        /* Resend scanner_info every 10s (even when no data received) */
+        /* Resend scanner_info every 10s — always, even when TX is stopped.
+         * This lets the uplink see us and know our version/capabilities.
+         * Also sends TX state so uplink knows if we're waiting or active. */
         if ((xTaskGetTickCount() - last_info_send) >= pdMS_TO_TICKS(10000)) {
             last_info_send = xTaskGetTickCount();
             const esp_app_desc_t *app2 = esp_app_get_description();
             uart_tx_send_scanner_info(app2 ? app2->version : "?",
                                       s_board_name, s_chip_name, s_caps);
+            /* Send status even when stopped — uplink can see we're alive */
+            if (!uart_tx_is_enabled()) {
+                ESP_LOGI(TAG, "Scanner waiting for start command (TX disabled)");
+            }
         }
 
         if (len <= 0) continue;
@@ -374,7 +384,19 @@ static void uart_cmd_listener_task(void *arg)
                         if (t && t->valuestring) type = t->valuestring;
                         ESP_LOGW(TAG, "UART CMD TYPE: '%s'", type ? type : "(null)");
 
-                        if (type && strcmp(type, "lockon") == 0) {
+                        if (type && (strcmp(type, "ready") == 0 || strcmp(type, "start") == 0)) {
+                            /* Uplink tells scanner to start transmitting */
+                            extern void uart_tx_set_enabled(bool enabled);
+                            uart_tx_set_enabled(true);
+                            ESP_LOGI(TAG, "Uplink sent START — TX enabled");
+
+                        } else if (type && strcmp(type, "stop") == 0) {
+                            /* Uplink tells scanner to stop transmitting */
+                            extern void uart_tx_set_enabled(bool enabled);
+                            uart_tx_set_enabled(false);
+                            ESP_LOGI(TAG, "Uplink sent STOP — TX disabled");
+
+                        } else if (type && strcmp(type, "lockon") == 0) {
                             cJSON *ch = cJSON_GetObjectItem(root, "ch");
                             cJSON *dur = cJSON_GetObjectItem(root, "dur");
                             cJSON *bssid = cJSON_GetObjectItem(root, "bssid");
