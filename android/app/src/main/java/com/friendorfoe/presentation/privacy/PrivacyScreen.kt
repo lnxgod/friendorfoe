@@ -75,8 +75,43 @@ fun PrivacyScreen(
     var selectedDetail by remember { mutableStateOf<GlassesDetection?>(null) }
     var trackingTarget by remember { mutableStateOf<GlassesDetection?>(null) }
     val ultrasonicAlerts by viewModel.ultrasonicAlerts.collectAsStateWithLifecycle()
+    val wifiAnomalies by viewModel.wifiAnomalies.collectAsStateWithLifecycle()
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // WiFi anomaly banner (Pwnagotchi, evil twin, karma attack)
+        if (wifiAnomalies.isNotEmpty()) {
+            val worst = wifiAnomalies.maxByOrNull { it.threatLevel } ?: wifiAnomalies.first()
+            val (emoji, title) = when (worst.type) {
+                "pwnagotchi"   -> "\u26A0\uFE0F" to "Pwnagotchi Detected!"
+                "evil_twin"    -> "\uD83D\uDEA8" to "Evil Twin AP Detected!"
+                "karma_attack" -> "\uD83D\uDEA8" to "Karma Attack Detected!"
+                "rogue_ap"     -> "\u26A0\uFE0F" to "Rogue AP Detected!"
+                else           -> "\u26A0\uFE0F" to "WiFi Anomaly"
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFFD32F2F).copy(alpha = 0.15f))
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = emoji, modifier = Modifier.width(28.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFD32F2F)
+                    )
+                    Text(
+                        text = worst.details,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
         // Ultrasonic beacon alert banner (high priority, above everything)
         if (ultrasonicAlerts.isNotEmpty()) {
             val alert = ultrasonicAlerts.last()

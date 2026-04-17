@@ -24,6 +24,108 @@ class BleFeatureExtractor @Inject constructor() {
 
     companion object {
         private const val TAG = "BleFeatures"
+
+        /**
+         * Compute the 32-bit BLE-JA3 structural fingerprint hash.
+         *
+         * Byte-for-byte port of `ble_fingerprint_compute()` in
+         * esp32/scanner/main/detection/ble_fingerprint.c (lines 222–377). Same
+         * FNV-1a seeds, same field ordering, same per-AD-type handling. The
+         * hash survives MAC rotation because it only mixes invariant
+         * structure (address type, advertising props, AD-type sequence,
+         * company ID, Apple sub-type, service UUIDs, payload length class).
+         *
+         * Output matches what a v0.58+ scanner emits for the same
+         * advertisement so a future Android-to-backend forwarding PRD can
+         * correlate phone observations with fleet observations directly.
+         *
+         * Static: called from the BLE scan callback hot path — no instantiation.
+         *
+         * @param addrType 0=public, 1=random.
+         * @param props    advertising properties byte (legacy/ext, connectable,
+         *                 scannable). Pass 0 if unavailable.
+         */
+        fun computeJa3Hash(result: ScanResult, addrType: Int, props: Int): UInt {
+            val bytes = result.scanRecord?.bytes ?: return 0u
+            return computeJa3HashBytes(bytes, addrType, props)
+        }
+
+        /** Pure-bytes variant of [computeJa3Hash] — exported for unit tests
+         *  and for callers that don't have a `ScanResult`. */
+        fun computeJa3HashBytes(bytes: ByteArray, addrType: Int, props: Int): UInt {
+            var hash: UInt = BleSignatures.FNV1A_OFFSET_32.toUInt()
+
+            fun mix(b: Int) {
+                hash = (hash xor (b.toUInt() and 0xFFu))
+                hash = hash * BleSignatures.FNV1A_PRIME_32.toUInt()
+            }
+            fun mixU16(v: Int) { mix(v and 0xFF); mix((v ushr 8) and 0xFF) }
+
+            mix(addrType)
+            mix(props)
+
+            var pos = 0
+            var totalLen = 0
+            while (pos + 1 < bytes.size) {
+                val adLen = bytes[pos].toInt() and 0xFF
+                if (adLen == 0 || pos + 1 + adLen > bytes.size) break
+                val adType = bytes[pos + 1].toInt() and 0xFF
+                val adDataStart = pos + 2
+                val adDataLen = adLen - 1
+
+                mix(adType)
+                totalLen += 1 + adLen
+
+                when (adType) {
+                    BleSignatures.AD_MANUFACTURER_SPECIFIC -> {
+                        if (adDataLen >= 2) {
+                            val cid = (bytes[adDataStart].toInt() and 0xFF) or
+                                      ((bytes[adDataStart + 1].toInt() and 0xFF) shl 8)
+                            mixU16(cid)
+                            if (cid == BleSignatures.CID_APPLE && adDataLen >= 3) {
+                                mix(bytes[adDataStart + 2].toInt() and 0xFF)
+                                if (adDataLen >= 4) {
+                                    mix(bytes[adDataStart + 3].toInt() and 0xFF)
+                                }
+                            }
+                            if (cid == BleSignatures.CID_DJI && adDataLen >= 4) {
+                                mix(bytes[adDataStart + 2].toInt() and 0xFF)
+                                mix(bytes[adDataStart + 3].toInt() and 0xFF)
+                            }
+                        }
+                    }
+                    BleSignatures.AD_COMPLETE_UUID16,
+                    BleSignatures.AD_INCOMPLETE_UUID16 -> {
+                        var i = 0
+                        while (i + 1 < adDataLen) {
+                            val uuid = (bytes[adDataStart + i].toInt() and 0xFF) or
+                                       ((bytes[adDataStart + i + 1].toInt() and 0xFF) shl 8)
+                            mixU16(uuid)
+                            i += 2
+                        }
+                    }
+                    BleSignatures.AD_SERVICE_DATA_UUID16 -> {
+                        if (adDataLen >= 2) {
+                            val uuid = (bytes[adDataStart].toInt() and 0xFF) or
+                                       ((bytes[adDataStart + 1].toInt() and 0xFF) shl 8)
+                            mixU16(uuid)
+                        }
+                    }
+                    BleSignatures.AD_FLAGS,
+                    BleSignatures.AD_TX_POWER -> {
+                        if (adDataLen >= 1) mix(bytes[adDataStart].toInt() and 0xFF)
+                    }
+                    else -> {
+                        mix(adDataLen and 0xF0)
+                    }
+                }
+
+                pos += 1 + adLen
+            }
+
+            mix((totalLen shr 2) shl 2)
+            return hash
+        }
     }
 
     data class BleFeatureVector(

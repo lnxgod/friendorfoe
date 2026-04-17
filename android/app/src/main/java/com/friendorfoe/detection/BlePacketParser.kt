@@ -254,6 +254,131 @@ object BlePacketParser {
     }
 
     /**
+     * Walk every AD structure in the raw advertisement and return a canonical
+     * [BleAdvertisement]. Mirrors the `ble_fingerprint_compute()` loop in the
+     * ESP32 scanner firmware so Android + firmware classification stay in sync.
+     *
+     * Dispatches to [AppleContinuityDecoder] / [MicrosoftSwiftPairDecoder]
+     * when the manufacturer-specific CID matches.
+     */
+    fun parseAdvertisement(result: ScanResult): BleAdvertisement {
+        val record = result.scanRecord
+        val bytes = record?.bytes
+
+        val adTypes = mutableListOf<Int>()
+        val serviceUuids16 = mutableListOf<Int>()
+        var advFlags: Int? = null
+        var localName: String? = null
+        var appearance: Int? = null
+        var txPower: Int? = null
+        var companyId: Int? = null
+        var rawMfr: ByteArray? = null
+        var structHash = 0
+
+        if (bytes != null) {
+            var pos = 0
+            while (pos + 1 < bytes.size) {
+                val adLen = u(bytes[pos])
+                if (adLen == 0 || pos + 1 + adLen > bytes.size) break
+                val adType = u(bytes[pos + 1])
+                val adDataStart = pos + 2
+                val adDataLen = adLen - 1
+
+                adTypes.add(adType)
+                structHash = structHash * 31 + (adType shl 8 or adLen)
+
+                when (adType) {
+                    BleSignatures.AD_FLAGS -> {
+                        if (adDataLen >= 1) advFlags = u(bytes[adDataStart])
+                    }
+                    BleSignatures.AD_INCOMPLETE_UUID16,
+                    BleSignatures.AD_COMPLETE_UUID16 -> {
+                        var i = 0
+                        while (i + 1 < adDataLen) {
+                            val uuid = u(bytes[adDataStart + i]) or (u(bytes[adDataStart + i + 1]) shl 8)
+                            if (serviceUuids16.size < 4) serviceUuids16.add(uuid)
+                            i += 2
+                        }
+                    }
+                    BleSignatures.AD_SHORTENED_LOCAL_NAME,
+                    BleSignatures.AD_COMPLETE_LOCAL_NAME -> {
+                        if (adDataLen > 0 && localName == null) {
+                            val raw = bytes.copyOfRange(adDataStart, adDataStart + adDataLen)
+                            localName = raw.toString(Charsets.UTF_8)
+                                .map { if (it.code in 0x20..0x7E) it else '?' }
+                                .joinToString("")
+                                .take(23)
+                        }
+                    }
+                    BleSignatures.AD_APPEARANCE -> {
+                        if (adDataLen >= 2) {
+                            appearance = u(bytes[adDataStart]) or (u(bytes[adDataStart + 1]) shl 8)
+                        }
+                    }
+                    BleSignatures.AD_TX_POWER -> {
+                        if (adDataLen >= 1) txPower = bytes[adDataStart].toInt()  // signed
+                    }
+                    BleSignatures.AD_SERVICE_DATA_UUID16 -> {
+                        if (adDataLen >= 2) {
+                            val uuid = u(bytes[adDataStart]) or (u(bytes[adDataStart + 1]) shl 8)
+                            if (uuid !in serviceUuids16 && serviceUuids16.size < 4) {
+                                serviceUuids16.add(uuid)
+                            }
+                        }
+                    }
+                    BleSignatures.AD_MANUFACTURER_SPECIFIC -> {
+                        if (adDataLen >= 2) {
+                            companyId = u(bytes[adDataStart]) or (u(bytes[adDataStart + 1]) shl 8)
+                            val rawEnd = minOf(adDataStart + adDataLen, bytes.size)
+                            val mfrStart = adDataStart + 2
+                            if (mfrStart < rawEnd) {
+                                val copyLen = minOf(rawEnd - mfrStart, 20)
+                                rawMfr = bytes.copyOfRange(mfrStart, mfrStart + copyLen)
+                            }
+                        }
+                    }
+                }
+
+                pos += 1 + adLen
+            }
+        }
+
+        // If raw byte walk didn't find Apple/MS data but ScanRecord has it, recover.
+        val mfrSparse = record?.manufacturerSpecificData
+        if (rawMfr == null && mfrSparse != null && mfrSparse.size() > 0) {
+            companyId = mfrSparse.keyAt(0)
+            rawMfr = mfrSparse.valueAt(0)?.copyOfRange(0, minOf(mfrSparse.valueAt(0)?.size ?: 0, 20))
+        }
+
+        val apple = if (companyId == BleSignatures.CID_APPLE && rawMfr != null) {
+            AppleContinuityDecoder.decode(rawMfr)
+        } else null
+        val microsoft = if (companyId == BleSignatures.CID_MICROSOFT && rawMfr != null) {
+            MicrosoftSwiftPairDecoder.decode(rawMfr)
+        } else null
+
+        val dualMode = advFlags?.let { (it and BleSignatures.ADV_FLAG_SIMUL_LE_BR_EDR_HOST) != 0 } ?: false
+
+        return BleAdvertisement(
+            mac = result.device.address,
+            rssi = result.rssi,
+            totalLength = bytes?.size ?: 0,
+            adTypes = adTypes,
+            payloadStructHash = structHash,
+            companyId = companyId,
+            rawMfr = rawMfr,
+            advFlags = advFlags,
+            dualModeHost = dualMode,
+            localName = localName ?: record?.deviceName,
+            appearance = appearance,
+            txPower = txPower,
+            serviceUuids16 = serviceUuids16,
+            apple = apple,
+            microsoft = microsoft
+        )
+    }
+
+    /**
      * Parse all available details from a scan result into a key-value map.
      * Tries all parsers and returns whatever data is available.
      */

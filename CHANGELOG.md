@@ -4,6 +4,38 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.59.0-android-alpha] - 2026-04-17
+
+### Android detection parity — Marauder + furiousMAC port
+
+**Alpha release. Backend and ESP32 firmware v0.58.0 remain UNTESTED and NOT YET FLASHED on the fleet — this release only adds Android-side BLE detection improvements. The Privacy screen enrichments are phone-local and don't depend on backend-forwarding yet.**
+
+### Added — Android
+- **`BleSignatures` central registry** — single source of truth for 30+ BLE company IDs, 12 service UUIDs, all Apple Continuity sub-types, data-flags bit semantics, Nearby Action sub-types, Microsoft Swift Pair scenarios, FNV-1a constants, and Marauder Pwnagotchi BSSID. Mirrors the ESP32 scanner firmware byte-for-byte.
+- **`AppleContinuityDecoder`** — full Kotlin port of `classify_apple()` + furiousMAC deep-field extraction: auth tag (3 bytes), activity code, data-flags byte, iOS major version nibble, Nearby Action sub-type. Preserves the v0.58 honest-Apple stance (only type 0x0D Tether Source can honestly say "iPhone"; 0x0F/0x10/0x05 stay "Apple Device").
+- **`MicrosoftSwiftPairDecoder`** — Surface Pen / Xbox Controller / Precision Mouse / Surface Headphones / Surface Earbuds / Surface Laptop classifier (CID 0x0006 was silently `UNKNOWN` before).
+- **BLE-JA3 structural hash** — `BleFeatureExtractor.computeJa3Hash()` — same FNV-1a seeds, same field ordering as the ESP32 firmware. Output is a MAC-rotation-surviving device-model identifier. The Android-to-backend forwarding PRD (out of scope this release) will correlate phone observations with fleet observations via this hash.
+- **`BlePacketParser.parseAdvertisement()`** — new full-AD walk that captures AD types, service UUIDs, advertising flags byte (bit 0x08 = dual-mode host), appearance, local name, raw manufacturer data.
+- **Pwnagotchi detection** — BSSID `DE:AD:BE:EF:DE:AD` now fires the WiFi anomaly detector as an ATTACK_TOOL threat with 0.95 confidence. Matches Marauder's signature.
+- **Privacy screen WiFi anomaly banner** — new red banner for Pwnagotchi / Evil Twin / Karma Attack / Rogue AP detections. 15-second ticker polls `WifiAnomalyDetector.analyze()` and decays stale alerts after 60 s.
+- **Drone / GlassesDetection enrichment fields** — 11+ optional BLE fields (`bleCompanyId`, `bleAppleType`, `bleAppleFlags`, `bleAppleAction`, `bleAppleIosVersion`, `bleAdvFlags`, `bleDualModeHost`, `bleJa3Hash`, `bleServiceUuids`, `bleAppearance`, `bleLocalName`) propagate through to the Privacy screen card details.
+
+### Fixed — Android
+- **Meta glasses detection parity** — `GlassesDetector` now matches Luxottica CID `0x0D53` (the frame-manufacturer ID on every Ray-Ban Meta / Oakley Meta unit) with 0.95 confidence → SMART_GLASSES. Marauder matches this CID; firmware v0.58 matches this CID; the Android app did not until now. This was the headline user-reported gap.
+- **Flipper Zero detection** — added Flipper Devices CID `0x0E29` → ATTACK_TOOL classification (previously silent).
+
+### Tests
+- 4 new unit test classes: `BleSignaturesTest` (constant drift guards), `AppleContinuityDecoderTest` (fixture-driven Continuity decode — AirTag, AirPods, Handoff, Tether Source, Nearby Info + data-flags, Nearby Action sub-type), `MicrosoftSwiftPairDecoderTest`, `BleJa3HashTest` (deterministic hash, CID / address-type / props sensitivity).
+
+### Not in this release (queued follow-ons)
+- Android-to-backend forwarding (phone as fleet sensor node).
+- iBeacon UUID + Major + Minor retail-network database.
+- Eddystone TLM battery / temperature decode.
+- Pwnagotchi vendor-IE JSON decode (`pwnd_tot`, `name`).
+
+### Firmware status
+v0.58.0 firmware binaries (scanner-s3-combo, uplink-s3, uplink-esp32) are built and committed (commit `341cab6`) but **NOT yet flashed on the fleet and NOT yet validated on-device**. Android v0.59.0 enrichment is Android-local only and does not require the new firmware.
+
 ## [0.58.0] - 2026-04-16
 
 ### Firmware cleanup v2 — Honest Continuity + probe-IE grouping
