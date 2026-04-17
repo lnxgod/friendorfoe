@@ -48,7 +48,9 @@ static const char *TAG = "fof_rid_sim";
 #define SIM_OPERATOR_ID      "FOF-TEST-OP"
 #define SIM_UA_TYPE          2    /* Rotorcraft */
 #define SIM_ID_TYPE          1    /* Serial number */
-#define DRONE_SWITCH_TICKS   8    /* Switch broadcast drone every 8 ticks (2 seconds) */
+/* No drone-switch logic — both drones broadcast simultaneously on their own
+ * extended advertising instances (see ble_advertiser.c). Basic ID is encoded
+ * once per drone; Location is re-encoded every tick so GPS stays live. */
 
 /* Home coordinates loaded from KConfig at runtime (set via menuconfig) */
 static double s_home_lat;
@@ -90,49 +92,52 @@ static void display_task(void *arg)
 
 static void sim_task(void *arg)
 {
-    ESP_LOGI(TAG, "Sim task started — %d drones", SIM_DRONE_COUNT);
+    ESP_LOGI(TAG, "Sim task started — %d drones broadcasting in parallel", SIM_DRONE_COUNT);
 
-    uint8_t basic_id_msg[25];
+    /* Per-drone message buffers. Basic ID and System are set once; Location
+     * is re-encoded every tick so scanners always see fresh GPS for each drone. */
+    uint8_t basic_id_msg[SIM_DRONE_COUNT][25];
     uint8_t location_msg[25];
     uint8_t system_msg[25];
     uint8_t operator_msg[25];
 
-    /* Encode static operator message (shared by all drones) */
+    /* Shared operator message (one operator running multiple drones) */
     odid_encode_system(system_msg, s_home_lat, s_home_lon, 1, 100.0);
     odid_encode_operator_id(operator_msg, SIM_OPERATOR_ID);
 
+    /* One-time Basic ID per drone (serial number doesn't change) */
+    for (int d = 0; d < SIM_DRONE_COUNT; d++) {
+        odid_encode_basic_id(basic_id_msg[d], flight_sim_get_serial(d),
+                             SIM_UA_TYPE, SIM_ID_TYPE);
+    }
+
     uint32_t tick_count = 0;
-    int active_drone = 0;
 
     while (1) {
         flight_sim_tick();
 
-        /* Switch which drone we're broadcasting every DRONE_SWITCH_TICKS */
-        if (tick_count % DRONE_SWITCH_TICKS == 0) {
-            active_drone = (active_drone + 1) % SIM_DRONE_COUNT;
+        /* Push fresh Location into every drone's advertising slot. Each drone
+         * gets its own extended-advertising instance, so both go out on-air
+         * simultaneously — no alternation gap. */
+        for (int d = 0; d < SIM_DRONE_COUNT; d++) {
+            double lat = flight_sim_get_lat(d);
+            double lon = flight_sim_get_lon(d);
+            double alt = flight_sim_get_alt(d);
+            float heading = flight_sim_get_heading(d);
+            float speed = flight_sim_get_speed(d);
 
-            /* Re-encode Basic ID for the new active drone */
-            const char *serial = flight_sim_get_serial(active_drone);
-            odid_encode_basic_id(basic_id_msg, serial, SIM_UA_TYPE, SIM_ID_TYPE);
-        }
-
-        double lat = flight_sim_get_lat(active_drone);
-        double lon = flight_sim_get_lon(active_drone);
-        double alt = flight_sim_get_alt(active_drone);
-        float heading = flight_sim_get_heading(active_drone);
-        float speed = flight_sim_get_speed(active_drone);
-
-        odid_encode_location(location_msg, lat, lon, alt, heading, speed, 0.0f);
-        ble_advertiser_update_messages(basic_id_msg, location_msg,
+            odid_encode_location(location_msg, lat, lon, alt, heading, speed, 0.0f);
+            ble_advertiser_update_drone(d, basic_id_msg[d], location_msg,
                                         system_msg, operator_msg);
 
-        tick_count++;
-        if (tick_count % 20 == 0) {
-            ESP_LOGI(TAG, "ADV[%d/%s]: lat=%.4f lon=%.4f alt=%.0f hdg=%.0f spd=%.1f",
-                     active_drone, flight_sim_get_serial(active_drone),
-                     lat, lon, alt, heading, speed);
+            if (tick_count % 40 == 0) {
+                ESP_LOGI(TAG, "ADV[%d/%s]: lat=%.4f lon=%.4f alt=%.0f hdg=%.0f spd=%.1f",
+                         d, flight_sim_get_serial(d),
+                         lat, lon, alt, heading, speed);
+            }
         }
 
+        tick_count++;
         vTaskDelay(pdMS_TO_TICKS(SIM_TICK_MS));
     }
 }
@@ -175,10 +180,10 @@ void app_main(void)
     ESP_LOGI(TAG, "Flight sim initialized (orbit around %.4f, %.4f)",
              s_home_lat, s_home_lon);
 
-    /* ── 5. Initialize BLE advertiser ───────────────────────────────── */
-    ble_advertiser_init();
+    /* ── 5. Initialize BLE advertiser with one instance per drone ────── */
+    ble_advertiser_init(SIM_DRONE_COUNT);
     ble_advertiser_start();
-    ESP_LOGI(TAG, "BLE ODID advertiser started");
+    ESP_LOGI(TAG, "BLE ODID advertiser started (%d parallel instance(s))", SIM_DRONE_COUNT);
 
     /* ── 6. Start LED with simulating pattern ───────────────────────── */
     led_start();

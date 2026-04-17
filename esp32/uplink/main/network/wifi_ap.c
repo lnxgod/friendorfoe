@@ -13,11 +13,39 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "wifi_ap";
 
 static int  s_station_count = 0;
 static char s_ap_ssid[33]   = {0};
+static esp_timer_handle_t s_ap_mode_timer = NULL;
+static volatile bool s_ap_desired_state = true;  /* true=APSTA, false=STA-only */
+
+/* Deferred mode switch — runs from timer task, safe to call esp_wifi_set_mode */
+static void ap_mode_switch_cb(void *arg)
+{
+    (void)arg;
+    if (s_ap_desired_state) {
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
+        /* Now apply AP config after mode includes AP */
+        char password[65] = {0};
+        nvs_config_get_ap_password(password, sizeof(password));
+        wifi_config_t ap_config = {0};
+        strncpy((char *)ap_config.ap.ssid, s_ap_ssid, sizeof(ap_config.ap.ssid) - 1);
+        ap_config.ap.ssid_len = strlen(s_ap_ssid);
+        strncpy((char *)ap_config.ap.password, password, sizeof(ap_config.ap.password) - 1);
+        ap_config.ap.channel = CONFIG_AP_CHANNEL;
+        ap_config.ap.max_connection = CONFIG_AP_MAX_CONNECTIONS;
+        ap_config.ap.authmode = strlen(password) > 0 ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+        ap_config.ap.pmf_cfg.required = false;
+        esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+        ESP_LOGI(TAG, "WiFi mode → APSTA (AP enabled: SSID='%s')", s_ap_ssid);
+    } else {
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        ESP_LOGI(TAG, "WiFi mode → STA only (AP fully disabled)");
+    }
+}
 
 /* ── Event handlers ────────────────────────────────────────────────────── */
 
@@ -45,6 +73,13 @@ static void ap_event_handler(void *arg, esp_event_base_t event_base,
 
 void wifi_ap_init(void)
 {
+    /* Create deferred mode switch timer */
+    const esp_timer_create_args_t timer_args = {
+        .callback = ap_mode_switch_cb,
+        .name = "ap_mode",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_ap_mode_timer));
+
     /* Load AP credentials from NVS */
     char password[65] = {0};
     nvs_config_get_ap_ssid(s_ap_ssid, sizeof(s_ap_ssid));
@@ -83,31 +118,22 @@ void wifi_ap_init(void)
 
 void wifi_ap_stop(void)
 {
-    /* Hide AP by setting SSID to empty and disabling beacon */
-    wifi_config_t ap_config = {0};
-    ap_config.ap.ssid_hidden = 1;
-    ap_config.ap.ssid_len = 0;
-    ap_config.ap.max_connection = 0;
-    esp_wifi_set_config(WIFI_IF_AP, &ap_config);
-    ESP_LOGI(TAG, "WiFi AP stopped (STA connected, AP not needed)");
+    /* Fully disable AP by switching to STA-only mode.
+     * Deferred via timer — esp_wifi_set_mode is too heavy for event handler context. */
+    s_ap_desired_state = false;
+    esp_timer_stop(s_ap_mode_timer);
+    esp_timer_start_once(s_ap_mode_timer, 200 * 1000);  /* 200ms delay */
+    ESP_LOGI(TAG, "WiFi AP stop scheduled (switching to STA-only)");
 }
 
 void wifi_ap_start(void)
 {
-    /* Restore AP with original SSID */
-    char password[65] = {0};
-    nvs_config_get_ap_password(password, sizeof(password));
-
-    wifi_config_t ap_config = {0};
-    strncpy((char *)ap_config.ap.ssid, s_ap_ssid, sizeof(ap_config.ap.ssid) - 1);
-    ap_config.ap.ssid_len = strlen(s_ap_ssid);
-    strncpy((char *)ap_config.ap.password, password, sizeof(ap_config.ap.password) - 1);
-    ap_config.ap.channel = CONFIG_AP_CHANNEL;
-    ap_config.ap.max_connection = CONFIG_AP_MAX_CONNECTIONS;
-    ap_config.ap.authmode = strlen(password) > 0 ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-    ap_config.ap.pmf_cfg.required = false;
-    esp_wifi_set_config(WIFI_IF_AP, &ap_config);
-    ESP_LOGI(TAG, "WiFi AP restarted: SSID='%s' (STA disconnected, AP needed for setup)", s_ap_ssid);
+    /* Switch to APSTA mode first via deferred timer, then config will be set
+     * by the timer callback after mode switch completes. */
+    s_ap_desired_state = true;
+    esp_timer_stop(s_ap_mode_timer);
+    esp_timer_start_once(s_ap_mode_timer, 100 * 1000);  /* 100ms delay */
+    ESP_LOGI(TAG, "WiFi AP starting: SSID='%s' (STA disconnected)", s_ap_ssid);
 }
 
 int wifi_ap_get_station_count(void)

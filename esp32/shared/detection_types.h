@@ -89,7 +89,10 @@ typedef struct {
     /* Apple Continuity deep fields */
     uint8_t     ble_apple_auth[3];      /* Auth tag (rotates slower than MAC — entity resolution key) */
     uint8_t     ble_apple_activity;     /* Activity: 0=idle, 1=audio, 2=phone, 3=video, 4=driving */
-    uint8_t     ble_apple_info;         /* Status/info byte (device model hints, screen state) */
+    uint8_t     ble_apple_flags;        /* Nearby-Info/Action data-flags byte — see
+                                           uart_protocol.h JSON_KEY_BLE_APPLE_FLAGS
+                                           for bit layout. Renamed from ble_apple_info
+                                           in v0.58 (cold switch; dropped non-zero guard). */
     uint8_t     ble_raw_mfr[20];       /* First 20 bytes of manufacturer-specific data */
     uint8_t     ble_raw_mfr_len;       /* Actual length captured (0-20) */
 
@@ -102,6 +105,11 @@ typedef struct {
 
     /* Post-fusion */
     float       fused_confidence;       /* after Bayesian sensor fusion */
+
+    /* WiFi probe request fingerprinting */
+    char        probed_ssids[128];      /* Comma-separated SSIDs being probed for */
+    uint32_t    probe_ie_hash;          /* FNV1a hash of IE type sequence (device fingerprint) */
+    uint8_t     wifi_generation;        /* 0=legacy, 4=802.11n, 5=802.11ac, 6=802.11ax */
 } drone_detection_t;
 
 #ifdef __cplusplus

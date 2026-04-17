@@ -47,6 +47,7 @@
 #define TILE_COMPANY_ID         0x0059  /* Tile Inc */
 #define META_COMPANY_ID         0x01AB  /* Meta Platforms, Inc. */
 #define META_TECH_COMPANY_ID    0x058E  /* Meta Platforms Technologies */
+#define META_LUXOTTICA_CID      0x0D53  /* Luxottica — Ray-Ban / Oakley Meta frames */
 #define FLIPPER_COMPANY_ID      0x0E29  /* Flipper Devices Inc. */
 #define BOSE_COMPANY_ID         0x009E  /* Bose Corporation */
 #define JBL_COMPANY_ID          0x0057  /* Harman International (JBL) */
@@ -112,6 +113,7 @@ static const char *s_type_names[] = {
     [BLE_DEV_APPLE_IPHONE]     = "iPhone",
     [BLE_DEV_APPLE_IPAD]       = "iPad",
     [BLE_DEV_APPLE_MACBOOK]    = "MacBook",
+    [BLE_DEV_APPLE_GENERIC]    = "Apple Device",
     [BLE_DEV_APPLE_WATCH]      = "Apple Watch",
     [BLE_DEV_APPLE_AIRPODS]    = "AirPods",
     [BLE_DEV_APPLE_AIRTAG]     = "AirTag",
@@ -151,8 +153,22 @@ static ble_device_type_t classify_apple(uint8_t continuity_type,
 {
     switch (continuity_type) {
     case APPLE_TYPE_FINDMY:
-        /* Find My payload: if length is small (≤6 bytes after type),
-         * it's likely an AirTag. Longer payloads = Find My accessory. */
+        /* Find My — distinguish AirTag from other FindMy accessories.
+         *
+         * Marauder uses the tighter signature: after the company_id (4C 00)
+         * and type byte (0x12), AirTags broadcast a length/status byte of
+         * 0x19 (25 bytes of opaque payload). Other FindMy accessories
+         * (AirPods case, branded tags) use a different length. This is
+         * more reliable than the old `mfr_len <= 8` heuristic, which was
+         * wrong — AirTag advertisements are ~30 bytes, not short.
+         *
+         * Buffer layout when we get here:
+         *   mfr_data[0..1] = 0x4C 0x00 (Apple company ID)
+         *   mfr_data[2]    = 0x12 (FindMy continuity type)
+         *   mfr_data[3]    = 0x19 for AirTag, other values for non-AirTag FindMy
+         */
+        if (mfr_len >= 4 && mfr_data[3] == 0x19) return BLE_DEV_APPLE_AIRTAG;
+        /* Legacy fallback — very short FindMy payload is almost always AirTag. */
         if (mfr_len <= 8) return BLE_DEV_APPLE_AIRTAG;
         return BLE_DEV_APPLE_FINDMY;
 
@@ -161,21 +177,30 @@ static ble_device_type_t classify_apple(uint8_t continuity_type,
 
     case APPLE_TYPE_NEARBY_INFO:
     case APPLE_TYPE_NEARBY_ACT:
-        /* Nearby Info/Action — could be iPhone, iPad, or Mac.
-         * Device model is encoded but obfuscated. Default to iPhone. */
-        return BLE_DEV_APPLE_IPHONE;
+        /* Nearby Info (0x10) / Nearby Action (0x0F) — the device MODEL is
+         * NOT broadcast (iPhone, iPad, and Mac all use these). Previous
+         * v0.57 default of IPHONE invented ~22 phantom iPhones on a typical
+         * home fleet. Emit the honest "Apple Device" and let the backend
+         * enrich via the data-flags byte (apple_flags). */
+        return BLE_DEV_APPLE_GENERIC;
 
     case APPLE_TYPE_HANDOFF:
+        /* Handoff advertises from the currently-foregrounded device when
+         * the user is actively using something — reliably Mac / iPhone
+         * while the user is interacting. We keep the MacBook label because
+         * Handoff-as-source is more commonly Mac/Mac-mini. */
         return BLE_DEV_APPLE_MACBOOK;
 
     case APPLE_TYPE_AIRDROP:
-        return BLE_DEV_APPLE_IPHONE;
+        /* AirDrop requires unlocked screen but doesn't reveal device kind. */
+        return BLE_DEV_APPLE_GENERIC;
 
     case APPLE_TYPE_AIRPLAY:
+        /* AirPlay source is almost always a Mac / Apple TV. */
         return BLE_DEV_APPLE_MACBOOK;
 
     default:
-        return BLE_DEV_APPLE_IPHONE;  /* Generic Apple */
+        return BLE_DEV_APPLE_GENERIC;
     }
 }
 
@@ -261,9 +286,13 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                         fp->apple_activity = ad_data[6];
                     }
 
-                    /* Info/status byte: at +7 for 0x10 */
-                    if (apple_type == 0x10 && ad_data_len >= 8) {
-                        fp->apple_info = ad_data[7];
+                    /* Data-flags byte (renamed from apple_info in v0.58).
+                     * Nearby Info (0x10) and Nearby Action (0x0F) share the
+                     * same data-flags layout at offset +7. Previously we
+                     * only read it for 0x10. Bit semantics documented in
+                     * shared/uart_protocol.h next to JSON_KEY_BLE_APPLE_FLAGS. */
+                    if ((apple_type == 0x10 || apple_type == 0x0F) && ad_data_len >= 8) {
+                        fp->apple_flags = ad_data[7];
                     }
                 }
 
@@ -367,17 +396,24 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     } else if (has_fastpair_svc || company_id == GOOGLE_COMPANY_ID) {
         fp->device_type = BLE_DEV_GOOGLE_FINDMY;
         fp->is_tracker = (mfr_data_len <= 12);
-    } else if (company_id == META_COMPANY_ID || company_id == META_TECH_COMPANY_ID || has_meta_svc) {
-        /* Meta device classification:
-         * - Ray-Ban glasses: service UUID 0xFD5F, or local name contains "Ray-Ban"/"RB Meta"
-         * - Quest headset: service UUID 0xFEB8 without 0xFD5F, or local name contains "Quest"
-         * - Other Meta: fallback for portals, controllers, etc. */
-        if (has_meta_rayban_svc) {
+    } else if (company_id == META_COMPANY_ID || company_id == META_TECH_COMPANY_ID
+               || company_id == META_LUXOTTICA_CID || has_meta_svc) {
+        /* Meta device classification. Luxottica (0x0D53) is the *frame*
+         * manufacturer for Ray-Ban Meta + Oakley Meta glasses and is the
+         * signal Marauder's Meta scanner relies on most (not Meta's own
+         * 0x01AB/0x058E which many beacons don't carry). So we treat it
+         * as a Meta Glasses CID with the same weight as 0xFD5F svc UUID.
+         *
+         * - Ray-Ban / Oakley frames: Luxottica CID, 0xFD5F svc UUID, or
+         *   local name contains "Ray-Ban" / "RB Meta" / "Oakley Meta"
+         * - Quest headset: 0xFEB8 without 0xFD5F, or name contains "Quest"
+         * - Other Meta: portals, controllers, Neural Band, etc. */
+        if (has_meta_rayban_svc || company_id == META_LUXOTTICA_CID) {
             fp->device_type = BLE_DEV_META_GLASSES;
         } else if (has_meta_quest_svc) {
             fp->device_type = BLE_DEV_META_DEVICE;
         } else if (has_meta_svc) {
-            /* Generic Meta service — check payload size heuristic.
+            /* Generic Meta service — payload size heuristic.
              * Quest tends to have larger advertisements than glasses. */
             fp->device_type = (fp->payload_len > 20) ? BLE_DEV_META_DEVICE : BLE_DEV_META_GLASSES;
         } else {

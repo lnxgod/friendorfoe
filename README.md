@@ -29,7 +29,7 @@ Friend or Foe is an open-source **privacy awareness** and **airspace detection**
 | **Ultrasonic Beacons** | SilverPush, Lisnr, Shopkick tracking tones | Microphone FFT (18-22 kHz) |
 | **Hidden Electronics** | Cameras behind walls, concealed recorders | Magnetometer EMF sweep |
 | **Night Vision Cameras** | IR LED arrays from hidden cameras | Front camera IR detection |
-| **Drones** | DJI, Skydio, Parrot, Autel + 190 SSID patterns | BLE Remote ID + WiFi + visual ML |
+| **Drones** | DJI, Skydio, Parrot, Autel + 190+ SSID patterns | BLE Remote ID + WiFi + visual ML |
 | **Aircraft** | Commercial, military, GA, helicopter, cargo, emergency | ADS-B transponder + AR overlay |
 
 This project was **built with AI** — Claude, Codex, Gemini, and Grok working together. Released by [GAMECHANGERSai](https://gamechangersai.org). See the [CHANGELOG](CHANGELOG.md) for version history.
@@ -46,12 +46,13 @@ Install the APK, grant permissions — privacy scanning and aircraft detection s
 
 ### ESP32 Hardware Edition — Deploy and Walk Away
 
-Always-on, unattended detection. Build for ~$25-40:
+Always-on, unattended detection. Build for ~$25-40 per node:
 
-- **Scanner** (ESP32-S3 or ESP32-C5) — BLE Remote ID + WiFi promiscuous frame capture, Bayesian fusion. C5 runs dual-mode BLE 5 + WiFi 6 with privacy device detection on OLED (double-tap BOOT to switch views)
-- **BLE Scanner** (ESP32-S3/ESP32) — Standalone BLE detector with OLED display. Detects drones AND smart glasses / privacy devices with on-screen alerts
-- **Uplink** (ESP32-C3) — GPS, OLED status display, WiFi backhaul to backend
-- **ESP32-C5 variant** — dual-band WiFi 6 scans 2.4 + 5 GHz (38 channels)
+- **Scanner** (ESP32-S3 or ESP32-C5) — BLE Remote ID + WiFi promiscuous frame capture, Bayesian fusion, BLE fingerprinting. C5 runs dual-mode BLE 5 + WiFi 6 with privacy device detection on OLED
+- **Uplink** (ESP32-C3 or ESP32) — GPS, OLED status display, WiFi backhaul to backend, OTA firmware relay
+- **Multi-node sensor network** — Deploy 2-4 nodes for triangulated device positioning on the real-time map
+- **Inter-node RF calibration** — Automated calibration measures RSSI between all node pairs to compute path loss model for accurate triangulation
+- **Real-time dashboard** — 12-tab web UI with map, device tracking, alerts, entity correlation, anomaly detection, probe analysis, and sensor management
 - **Flash from your browser** — no toolchain needed: [**ESP32 Web Flasher**](https://lnxgod.github.io/friendorfoe/)
 - Hardware setup: [INSTALL.md](esp32/INSTALL.md)
 
@@ -59,7 +60,7 @@ Always-on, unattended detection. Build for ~$25-40:
 
 ## Privacy Detection
 
-Friend or Foe passively monitors BLE advertisements and WiFi networks around you, matching against a database of **90+ known surveillance device signatures**:
+Friend or Foe passively monitors BLE advertisements and WiFi networks around you, matching against a database of **300+ known surveillance device signatures**:
 
 ### BLE Detection (Android + ESP32)
 - **16 smart glasses brands** — Meta Ray-Ban, Oakley Meta, Meta Neural Band, Snap Spectacles, Google Glass, Vuzix, Bose Frames, Amazon Echo Frames, Xreal, Brilliant Labs, TCL RayNeo, Rokid, INMO, Even Realities, Solos
@@ -164,20 +165,27 @@ The app fuses accelerometer, magnetometer, and gyroscope data to determine exact
         (primary)     (fallback)      (fallback)
 
 ┌──────────────────────────────────────────────────┐
-│  ESP32 Hardware Edition                          │
+│  ESP32 Sensor Network (deploy 2-4 nodes)         │
 │                                                  │
 │  ┌──────────────────┐    UART     ┌───────────┐ │
 │  │  Scanner (S3/C5) │───921600───→│  Uplink   │ │
-│  │  • BLE Remote ID │   baud      │  (C3)     │ │
+│  │  • BLE Remote ID │   baud      │  (C3/S3)  │ │
 │  │  • WiFi Promisc  │            │  • GPS    │ │
-│  │  • Bayesian      │            │  • OLED   │ │
-│  │    Fusion        │            │  • WiFi   │ │
+│  │  • BLE Fingerpr  │            │  • OLED   │ │
+│  │  • Bayesian      │            │  • WiFi   │ │
+│  │    Fusion        │            │  • OTA    │ │
 │  └──────────────────┘            └─────┬─────┘ │
 │                                        │        │
 └────────────────────────────────────────┼────────┘
                                          │ HTTP POST
                                ┌─────────┴─────────┐
                                │  Backend (FastAPI) │
+                               │  • Triangulation   │
+                               │  • Classification  │
+                               │  • Calibration     │
+                               │  • Entity Tracking │
+                               │  • Anomaly Detect  │
+                               │  • Web Dashboard   │
                                └───────────────────┘
 ```
 
@@ -207,9 +215,13 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 Or download the latest pre-built APK from [**GitHub Releases**](https://github.com/lnxgod/friendorfoe/releases).
 
-### Backend Setup (Optional — enables enrichment)
+### Backend Setup (Optional for Android — required for ESP32 sensor network)
 
-The backend adds aircraft photos, airline names, registration lookups, and route information. **Requires Python 3.11+ and optionally Redis for caching.**
+The backend serves two roles:
+1. **Aircraft enrichment** (Android) — Photos, airline names, registration lookups
+2. **Sensor platform** (ESP32) — Detection ingestion, triangulation, entity tracking, anomaly detection, real-time dashboard
+
+**Requires Python 3.11+ and optionally Redis for caching.**
 
 ```bash
 cd backend
@@ -223,7 +235,6 @@ pip install -r requirements.txt
 
 # Copy environment config
 cp .env.example .env
-# Edit .env if you want to add OpenSky credentials (optional, increases rate limits)
 
 # Run the server
 uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -236,7 +247,7 @@ cd backend
 docker compose up
 ```
 
-The API will be available at `http://localhost:8000`. Health check: `http://localhost:8000/health`
+The API and dashboard will be available at `http://localhost:8000`. Health check: `http://localhost:8000/health`. Real-time sensor dashboard: `http://localhost:8000/dashboard.html`
 
 ### Connecting the App to Your Backend
 
@@ -309,10 +320,20 @@ friendorfoe/
 │   └── app/
 │       ├── main.py                    # FastAPI entry point
 │       ├── config.py                  # Environment configuration
-│       ├── routers/aircraft.py        # API endpoints
-│       └── services/
-│           ├── adsb.py                # Multi-source ADS-B fetching
-│           └── enrichment.py          # Aircraft data enrichment
+│       ├── routers/
+│       │   ├── aircraft.py            # Aircraft API endpoints
+│       │   ├── detections.py          # ESP32 detection ingestion + dashboard APIs
+│       │   └── nodes.py               # Sensor node management
+│       ├── services/
+│       │   ├── adsb.py                # Multi-source ADS-B fetching
+│       │   ├── enrichment.py          # Aircraft data enrichment
+│       │   ├── classifier.py          # Detection classification engine
+│       │   ├── triangulation.py       # Multilateration + EKF positioning
+│       │   ├── calibration.py         # Inter-node RF calibration
+│       │   ├── anomaly_detector.py    # RF anomaly detection
+│       │   ├── entity_tracker.py      # Entity correlation (MAC grouping)
+│       │   └── enrichment_ble.py      # BLE manufacturer database (~500 OUIs)
+│       └── static/dashboard.html      # Real-time sensor dashboard (12 tabs)
 ├── esp32/                             # ESP32 hardware edition
 │   ├── scanner/                       # Scanner firmware (S3 + C5)
 │   ├── uplink/                        # Uplink firmware (C3)
@@ -328,11 +349,28 @@ friendorfoe/
 
 ## API Endpoints
 
+### Aircraft (Android app)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/health` | Health check (Redis, DB status) |
 | `GET` | `/aircraft/nearby?lat=&lon=&radius_nm=` | Aircraft near a position |
 | `GET` | `/aircraft/{icao_hex}/detail` | Enriched aircraft details |
+
+### Sensor Network (ESP32 nodes)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/detections/drones` | Batch ingestion from ESP32 nodes |
+| `GET` | `/detections/drones/map` | Triangulated device positions for map |
+| `GET` | `/detections/grouped` | Grouped detections with classification |
+| `GET` | `/detections/devices/live` | Live BLE device fingerprints |
+| `GET` | `/detections/entities` | Correlated entity list |
+| `GET` | `/detections/anomalies` | RF anomaly alerts |
+| `GET` | `/detections/drone-alerts` | Active drone alerts |
+| `POST` | `/detections/calibrate` | Start inter-node RF calibration |
+| `GET` | `/detections/calibrate/matrix` | Node-pair RSSI/distance matrix |
+| `GET` | `/detections/nodes/status` | Sensor node health and firmware info |
+| `POST` | `/nodes` | Register sensor node with GPS position |
+| `PUT` | `/nodes/{device_id}` | Update node position/name |
 
 ---
 
@@ -364,9 +402,13 @@ This project wasn't built with just one AI — it was built with **all of them**
 
 | Date | What Happened |
 |------|--------------|
-| **March 12** |  13 commits had landed — **8,500+ lines of code** written in ~2 hours of AI pair-programming. The result: a build-ready APK with AR viewfinder, four detection sources, Bayesian sensor fusion, map view, and history tracking. |
-| **March 14** | Open-source release. Added 120+ aircraft silhouettes, styled map markers with category shapes, permission handling polish, and security review. Later: bundled 134 aircraft photos as offline assets, added welcome screen with update checker, and Coil image loading. |
-| **Total** | **23,000+ lines** of Kotlin, Python, and XML. Confirmed real-world detections of commercial aircraft and drones on device. |
+| **March 12** | 13 commits — **8,500+ lines** in ~2 hours. Build-ready APK with AR viewfinder, four detection sources, Bayesian sensor fusion, map view, and history tracking. |
+| **March 14** | Open-source release. 120+ aircraft silhouettes, 134 bundled photos, welcome screen, security review. |
+| **March 18-21** | ESP32 hardware edition: Scanner + Uplink firmware, UART protocol, web flasher, 27 unit tests. |
+| **March 25-27** | Privacy detection: 303 BLE rules, surveillance cameras, ALPR readers, trackers, ultrasonic beacons. PostgreSQL backend. |
+| **March 27-April 6** | Sensor platform: 3-board nodes, OTA updates, BLE fingerprinting, lock-on system, dashboard with 12 tabs. |
+| **April 6-15** | Detection engine: Anomaly detection, entity correlation, triangulation + EKF, RF calibration, heap stability, raw socket HTTP. |
+| **Total** | **40,000+ lines** of Kotlin, Python, C, and HTML across 200+ commits. 4-node sensor network deployed and operational. |
 
 ### AI Roles
 

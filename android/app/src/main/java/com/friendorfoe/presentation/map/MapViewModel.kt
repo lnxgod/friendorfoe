@@ -171,8 +171,8 @@ class MapViewModel @Inject constructor(
                         drone.classification in DRONE_CLASSIFICATIONS ||
                         drone.droneId.startsWith("rid_") ||
                         drone.droneId.startsWith("probe_") ||
-                        drone.droneId.startsWith("FOF") ||
-                        drone.droneId.startsWith("FoF") ||
+                        drone.droneId.startsWith("FOF-Drone-") ||
+                        drone.droneId.startsWith("FoF-Drone-") ||
                         drone.positionSource == "gps"  // Remote ID with GPS = real drone
                     }
                     _remoteSensors.value = response.sensors

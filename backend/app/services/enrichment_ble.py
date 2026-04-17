@@ -273,15 +273,147 @@ _BLE_OUI = {
     "98:C7:D1": "eufy",
     # ── Dexcom (CGM) ────────────────────────────────────────────────────
     "00:CD:59": "Dexcom",
+    # ══════════════════════════════════════════════════════════════════════
+    # Extended OUI database (v0.55.0 — ~300 entries from BLE SIG + IEEE)
+    # ══════════════════════════════════════════════════════════════════════
+    # ── Netgear ─────────────────────────────────────────────────────────
+    "00:09:5B": "Netgear", "00:14:6C": "Netgear", "04:A1:51": "Netgear",
+    "08:BD:43": "Netgear", "10:06:B6": "Netgear", "14:59:C0": "Netgear",
+    "20:0C:C8": "Netgear", "28:C6:8E": "Netgear", "34:98:B5": "Netgear",
+    "A0:63:91": "Netgear",
+    # ── TP-Link ─────────────────────────────────────────────────────────
+    "00:0A:EB": "TP-Link", "04:36:B1": "TP-Link", "08:1F:71": "TP-Link",
+    "10:AE:60": "TP-Link", "14:CC:20": "TP-Link", "18:A6:F7": "TP-Link",
+    "28:EE:52": "TP-Link", "30:B5:C2": "TP-Link", "00:5F:67": "TP-Link",
+    # ── Ubiquiti ────────────────────────────────────────────────────────
+    "00:15:6D": "Ubiquiti", "00:27:22": "Ubiquiti", "04:18:D6": "Ubiquiti",
+    "18:E8:29": "Ubiquiti", "24:5A:4C": "Ubiquiti", "44:D9:E7": "Ubiquiti",
+    "60:22:32": "Ubiquiti", "68:D7:9A": "Ubiquiti", "74:83:C2": "Ubiquiti",
+    "78:8A:20": "Ubiquiti", "FC:EC:DA": "Ubiquiti",
+    # ── Cisco / Linksys ─────────────────────────────────────────────────
+    "00:00:0C": "Cisco", "00:14:BF": "Linksys", "00:16:B6": "Linksys",
+    # ── Aruba / Meraki / Ruckus ─────────────────────────────────────────
+    "00:0B:86": "Aruba", "E0:CB:4E": "Meraki", "00:24:82": "Ruckus",
+    # ── Asus ────────────────────────────────────────────────────────────
+    "00:0C:6E": "Asus", "04:D9:F5": "Asus", "08:60:6E": "Asus",
+    "10:BF:48": "Asus", "14:DD:A9": "Asus", "2C:56:DC": "Asus",
+    # ── D-Link / Belkin / MikroTik ──────────────────────────────────────
+    "00:05:5D": "D-Link", "00:11:95": "D-Link", "14:D6:4D": "D-Link",
+    "00:11:50": "Belkin", "08:86:3B": "Belkin",
+    "00:0C:42": "MikroTik", "4C:5E:0C": "MikroTik",
+    # ── Eero / Google Nest WiFi ─────────────────────────────────────────
+    "5C:A1:CB": "Eero", "5C:A3:CE": "Eero",
+    "18:89:5B": "Google Nest WiFi", "F4:03:04": "Google Nest WiFi",
+    # ── OnePlus ─────────────────────────────────────────────────────────
+    "70:4A:0E": "OnePlus", "94:65:2D": "OnePlus", "C0:EE:FB": "OnePlus",
+    # ── Xiaomi ──────────────────────────────────────────────────────────
+    "00:9E:C8": "Xiaomi", "14:F6:5A": "Xiaomi", "18:59:36": "Xiaomi",
+    "28:E3:1F": "Xiaomi", "34:CE:00": "Xiaomi", "38:2B:78": "Xiaomi",
+    # ── Huawei ──────────────────────────────────────────────────────────
+    "00:18:82": "Huawei", "00:25:68": "Huawei", "0C:96:E6": "Huawei",
+    # ── Motorola / LG / Nokia / Oppo / Vivo ─────────────────────────────
+    "00:0E:C6": "Motorola", "40:78:6A": "Motorola", "5C:51:88": "Motorola",
+    "00:1C:62": "LG", "34:FC:EF": "LG",
+    "00:0F:BB": "Nokia", "00:11:3E": "Nokia",
+    "0C:1E:2E": "Oppo", "10:D0:7A": "Oppo",
+    "10:4E:89": "Vivo", "18:22:90": "Vivo",
+    # ── Nothing / ZTE ───────────────────────────────────────────────────
+    "38:4F:A1": "Nothing", "D4:9B:F4": "Nothing",
+    "00:19:C6": "ZTE", "34:E0:CF": "ZTE",
+    # ── Dell / HP / Lenovo / Acer / Microsoft ───────────────────────────
+    "00:14:22": "Dell", "14:FE:B5": "Dell", "18:66:DA": "Dell", "34:E6:D7": "Dell",
+    "00:0E:7F": "HP", "10:E7:C6": "HP", "14:B3:1F": "HP", "30:8D:99": "HP",
+    "00:12:FE": "Lenovo", "20:7C:8F": "Lenovo", "50:3E:AA": "Lenovo",
+    "00:0F:B0": "Acer", "38:59:F9": "Acer",
+    "00:15:5D": "Microsoft", "04:A6:CB": "Microsoft",
+    # ── Intel (WiFi chips) ──────────────────────────────────────────────
+    "00:0C:F1": "Intel", "08:11:96": "Intel", "0C:8B:FD": "Intel",
+    "10:0B:A9": "Intel", "14:4F:8A": "Intel", "18:5E:0F": "Intel",
+    "24:77:03": "Intel", "24:FD:52": "Intel",
+    # ── Amazon (Echo, Ring, Kindle) ─────────────────────────────────────
+    "0C:47:C9": "Amazon", "18:74:2E": "Amazon", "28:EF:01": "Amazon",
+    "34:D2:70": "Amazon", "38:F7:3D": "Amazon", "44:65:0D": "Amazon",
+    "50:F5:DA": "Amazon", "68:37:E9": "Amazon", "84:D6:D0": "Amazon",
+    "A0:02:DC": "Amazon", "B4:7C:9C": "Amazon",
+    # ── Sonos ───────────────────────────────────────────────────────────
+    "00:0E:58": "Sonos", "34:7E:5C": "Sonos", "48:A6:B8": "Sonos",
+    "54:2A:1B": "Sonos", "78:28:CA": "Sonos",
+    # ── IKEA ────────────────────────────────────────────────────────────
+    "00:0B:57": "IKEA", "28:56:5A": "IKEA", "58:8E:81": "IKEA",
+    # ── Tuya / Shelly (IoT) ────────────────────────────────────────────
+    "10:D5:61": "Tuya", "14:2D:40": "Tuya", "30:8A:2A": "Tuya", "40:33:1A": "Tuya",
+    "34:94:54": "Shelly", "48:55:19": "Shelly",
+    # ── Raspberry Pi ────────────────────────────────────────────────────
+    "B8:27:EB": "Raspberry Pi", "DC:A6:32": "Raspberry Pi",
+    "E4:5F:01": "Raspberry Pi", "D8:3A:DD": "Raspberry Pi",
+    # ── Tesla ───────────────────────────────────────────────────────────
+    "1C:1B:0D": "Tesla", "20:BB:76": "Tesla", "4C:24:98": "Tesla",
+    "98:2D:3E": "Tesla", "98:ED:5C": "Tesla", "58:2B:0A": "Tesla",
+    # ── BMW / Mercedes / Audi / Ford / GM / Toyota / VW ─────────────────
+    "00:01:A6": "BMW", "9C:B6:D0": "BMW", "D0:71:C4": "BMW",
+    "00:26:38": "Mercedes", "44:FC:97": "Mercedes",
+    "00:1B:D4": "Audi", "B4:EE:B4": "Audi",
+    "00:00:87": "Ford", "60:F4:3B": "Ford",
+    "00:19:12": "GM", "E4:E5:A9": "GM",
+    "00:11:A4": "Toyota", "F0:B5:D1": "Toyota",
+    "00:22:6C": "Volkswagen", "D4:3B:04": "Volkswagen",
+    "34:B3:2C": "Rivian",
+    # ── DJI (drones) ────────────────────────────────────────────────────
+    "00:1E:58": "DJI", "88:2F:5D": "DJI", "E8:13:CD": "DJI",
+    # ── Parrot / Autel / Skydio (drones) ────────────────────────────────
+    "00:12:1C": "Parrot", "90:03:B7": "Parrot", "A0:14:3D": "Parrot",
+    "24:15:B5": "Autel", "54:AE:D7": "Autel",
+    "10:A1:A7": "Skydio", "74:9A:8C": "Skydio",
+    # ── Fitbit / Garmin (wearables) ─────────────────────────────────────
+    "00:0B:82": "Fitbit", "0C:7C:1E": "Fitbit", "F4:0B:CB": "Fitbit",
+    "00:09:A6": "Garmin", "10:1A:10": "Garmin", "38:8D:1D": "Garmin",
+    "64:25:FC": "Garmin", "94:83:C4": "Garmin",
+    # ── Bose / JBL / Beats (audio) ──────────────────────────────────────
+    "00:0C:8A": "Bose", "04:52:C7": "Bose", "28:11:A5": "Bose",
+    "00:12:F3": "JBL", "44:90:BB": "JBL",
+    "04:88:5F": "Beats", "1C:D2:C6": "Beats", "40:ED:98": "Beats",
+    # ── Tile (trackers) ─────────────────────────────────────────────────
+    "2C:DC:CD": "Tile", "D8:51:2B": "Tile", "E0:70:E4": "Tile", "F8:86:17": "Tile",
+    # ── Cameras (Ring, Arlo, Wyze, Hikvision, Reolink) ──────────────────
+    "3C:E1:A1": "Ring Camera", "88:6A:B1": "Ring Camera",
+    "40:5D:82": "Arlo", "A0:04:60": "Arlo", "CC:40:D0": "Arlo",
+    "2C:AA:8E": "Wyze", "7C:78:3F": "Wyze", "D4:12:43": "Wyze",
+    "04:D8:00": "Hikvision", "10:D8:B5": "Hikvision",
+    "E0:E8:E6": "Reolink", "38:AF:29": "Dahua",
+    # ── Gaming (Nintendo, PlayStation, Xbox, Steam) ─────────────────────
+    "00:17:AB": "Nintendo", "00:19:FD": "Nintendo", "00:1E:35": "Nintendo",
+    "34:AF:2C": "Nintendo", "40:F4:07": "Nintendo",
+    "00:04:1F": "PlayStation", "00:1D:BA": "PlayStation",
+    "50:1A:A5": "Xbox", "C8:D5:FE": "Xbox", "98:5F:D3": "Xbox",
+    "00:25:21": "Valve/Steam",
+    # ── ChargePoint (EV chargers) ───────────────────────────────────────
+    "00:24:B1": "ChargePoint", "28:09:5A": "ChargePoint",
 }
 
 
 def oui_lookup(mac: str) -> str | None:
-    """Look up manufacturer from MAC address (colon-separated)."""
+    """Look up manufacturer from MAC address (colon-separated).
+
+    Delegates to services.oui_db which wraps the Wireshark manuf file
+    (~56k entries, longest-prefix match, randomized-MAC short-circuit).
+    Falls back to the legacy hand-curated _BLE_OUI dict only for the
+    handful of entries that carry friendlier names (e.g., "Ring Camera"
+    vs the registry's "Amazon Technologies Inc.").
+    """
     if not mac or len(mac) < 8:
         return None
-    prefix3 = mac[:8].upper()  # XX:XX:XX
-    prefix1 = mac[:2].upper()  # XX (for Apple which uses many prefixes)
+
+    from app.services.oui_db import oui_lookup as _authoritative_lookup
+    hit = _authoritative_lookup(mac)
+    if hit is not None:
+        short, _long = hit
+        return short
+
+    # Legacy overrides — friendlier names for a few devices where the
+    # registry's raw company name doesn't say what the product IS (e.g.,
+    # "Ring Camera" is clearer than "Amazon Technologies Inc.").
+    prefix3 = mac[:8].upper()
+    prefix1 = mac[:2].upper()
     if prefix3 in _BLE_OUI:
         return _BLE_OUI[prefix3]
     if prefix1 in _BLE_OUI:
@@ -342,6 +474,17 @@ class BLEEnricher:
         # Apple auth tag → fingerprint mapping (for MAC rotation linking)
         self._auth_tag_cache: dict[str, str] = {}  # auth_tag_hex → fingerprint
         self._auth_tag_links: dict[str, set] = {}  # fingerprint → set of linked fingerprints
+
+    def get_linked_fingerprints(self, fp: str) -> set:
+        """Return the set of fingerprints linked to `fp` via Apple auth-tag
+        detection (same physical device across MAC rotations).
+
+        Used by EntityTracker to merge entities that are actually one device
+        appearing under multiple BLE fingerprints.
+        """
+        if not fp:
+            return set()
+        return set(self._auth_tag_links.get(fp, ()))
 
     def ingest(self, drone_id: str, source: str, confidence: float,
                rssi: int, bssid: str, manufacturer: str, model: str,
@@ -488,40 +631,64 @@ class BLEEnricher:
         if ainfo and ainfo > 0:
             dev.ble_apple_info = ainfo
 
-    # Apple Continuity sub-type → descriptive label
+    # Apple Continuity sub-type → descriptive label.
+    # NOTE 2026-04-16: Per the furiousMAC reverse-engineering of Nearby Info
+    # (0x10) and Nearby Action (0x0F), Apple does NOT broadcast iPhone/iPad/
+    # Mac. Defaulting those to "iPhone" gave us a 22-phantom-iPhones problem
+    # on a fleet where the user actually has iPads + Macs. We now label them
+    # "Apple Device" and let the flag decoder + Handoff/AirPlay paths refine.
     _APPLE_CONTINUITY_TYPES = {
         0x02: "iBeacon",
         0x05: "AirDrop",
         0x06: "HomeKit",
         0x07: "AirPods",
         0x08: "Hey Siri",
-        0x09: "AirPlay",
+        0x09: "AirPlay",        # → refined to "Apple Mac/TV"
         0x0B: "Apple Watch",
-        0x0C: "Handoff",
+        0x0C: "Handoff",        # → refined to "Apple Mac/TV"
         0x0D: "WiFi Settings",
         0x0E: "Instant Hotspot",
-        0x0F: "iPhone",       # Nearby Info (locked)
-        0x10: "iPhone",       # Nearby Action (unlocked)
-        0x12: "FindMy",       # AirTag / FindMy accessory
+        0x0F: "Apple Device",   # Nearby Info — was "iPhone"
+        0x10: "Apple Device",   # Nearby Action — was "iPhone"
+        0x12: "FindMy",
     }
 
     # Apple Continuity state decoding — what each type tells us about the device
-    # "likely_unlocked" only applies to devices that HAVE a lock screen (iPhone/iPad/Mac)
     _APPLE_STATE_INFO = {
         0x02: {"activity": "ibeacon", "device_class": "beacon"},
-        0x05: {"activity": "airdrop", "likely_unlocked": True, "device_class": "iphone"},       # AirDrop requires unlocked screen
-        0x06: {"activity": "homekit", "device_class": "homekit_accessory"},                       # HomeKit accessory advertising
-        0x07: {"activity": "audio_connected", "device_class": "airpods"},                         # AirPods nearby / connected
-        0x08: {"activity": "hey_siri", "likely_unlocked": True, "device_class": "iphone"},       # Siri active = user interacting
-        0x09: {"activity": "airplay_target", "device_class": "appletv"},                          # AirPlay receiver advertising
-        0x0B: {"activity": "watch_nearby", "device_class": "watch"},                              # Watch auto-unlock proximity
-        0x0C: {"activity": "handoff", "likely_unlocked": True, "device_class": "mac_or_iphone"}, # Handoff = user actively using device
-        0x0D: {"activity": "wifi_sharing", "likely_unlocked": True, "device_class": "iphone"},   # Sharing WiFi password = unlocked
-        0x0E: {"activity": "hotspot", "device_class": "iphone"},                                  # Instant Hotspot advertising
-        0x0F: {"activity": "nearby_info", "likely_unlocked": False, "device_class": "iphone"},   # Locked — passive nearby broadcast
-        0x10: {"activity": "nearby_action", "likely_unlocked": True, "device_class": "iphone"},  # Unlocked — active nearby broadcast
-        0x12: {"activity": "findmy_beacon", "device_class": "airtag"},                            # FindMy network beacon
+        0x05: {"activity": "airdrop", "likely_unlocked": True, "device_class": "apple"},
+        0x06: {"activity": "homekit", "device_class": "homekit_accessory"},
+        0x07: {"activity": "audio_connected", "device_class": "airpods"},
+        0x08: {"activity": "hey_siri", "likely_unlocked": True, "device_class": "apple"},
+        0x09: {"activity": "airplay_target", "device_class": "mac_or_tv"},
+        0x0B: {"activity": "watch_nearby", "device_class": "watch"},
+        0x0C: {"activity": "handoff", "likely_unlocked": True, "device_class": "mac_or_tv"},
+        0x0D: {"activity": "wifi_sharing", "likely_unlocked": True, "device_class": "apple"},
+        0x0E: {"activity": "hotspot", "device_class": "apple"},                 # iPhones can hotspot; so can iPads
+        0x0F: {"activity": "nearby_info", "likely_unlocked": False, "device_class": "apple"},
+        0x10: {"activity": "nearby_action", "likely_unlocked": True, "device_class": "apple"},
+        0x12: {"activity": "findmy_beacon", "device_class": "airtag"},
     }
+
+    # Nearby Info / Nearby Action "data flags" byte (ble_apple_info) — known
+    # bit semantics from furiousMAC reverse engineering. We decode as hints,
+    # not certainties, since Apple keeps re-assigning these across iOS
+    # versions. Used to enrich the label ("Apple (AirPods in)") rather than
+    # pretend we can distinguish iPhone from iPad.
+    @staticmethod
+    def _decode_apple_nearby_flags(apple_info: int | None) -> dict:
+        """Return a dict of human-readable booleans gleaned from the
+        data-flags byte. All None/unknown if byte isn't available."""
+        if not apple_info:
+            return {}
+        return {
+            "airpods_connected": bool(apple_info & 0x01),
+            "wifi_on":           bool(apple_info & 0x02),
+            "watch_paired":      bool(apple_info & 0x04),
+            "primary_icloud":    bool(apple_info & 0x08),
+            "auth_tag_present":  bool(apple_info & 0x10),
+            "screen_on":         bool(apple_info & 0x20),
+        }
 
     def _decode_apple_state(self, dev: 'EnrichedDevice') -> dict | None:
         """Decode Apple Continuity state from the advertisement type."""
@@ -548,6 +715,10 @@ class BLEEnricher:
             return "Meta Smart Glasses"
         if mfr_raw == "Meta Device":
             return "Meta VR/Device"
+        # Luxottica is Meta's frame manufacturer for Ray-Ban Meta and Oakley
+        # Meta glasses. Any BLE advertisement with CID 0x0D53 is one of those.
+        if mfr_raw.startswith("Luxottica"):
+            return "Meta Smart Glasses"
         if mfr_raw == "Flipper Zero":
             return "Flipper Zero"
         if mfr_raw in ("Vehicle", "Vehicle (Tesla)"):
@@ -561,9 +732,29 @@ class BLEEnricher:
         if mfr_raw == "Medical":
             return "Medical Device"
 
-        # Apple Continuity sub-type gives precise identification
-        if dev.ble_apple_type and dev.ble_apple_type in self._APPLE_CONTINUITY_TYPES:
-            return self._APPLE_CONTINUITY_TYPES[dev.ble_apple_type]
+        # Apple Continuity sub-type gives a starting label. Most types are
+        # precise (AirPods, AirTag, Watch). But 0x10/0x0F/0x05 are generic
+        # "some Apple device" and get enriched below with the data-flags
+        # byte. Handoff (0x0C) and AirPlay (0x09) reliably imply Mac/TV.
+        if dev.ble_apple_type:
+            at = dev.ble_apple_type
+            if at in (0x0C, 0x09):
+                # Handoff / AirPlay source → Mac or Apple TV
+                return "Apple Mac/TV"
+            if at in (0x10, 0x0F, 0x05, 0x08, 0x0D, 0x0E):
+                # Generic "Apple device" signals — refine with data flags
+                flags = self._decode_apple_nearby_flags(dev.ble_apple_info)
+                bits = []
+                if flags.get("airpods_connected"): bits.append("AirPods in")
+                if flags.get("watch_paired"):      bits.append("Watch paired")
+                if flags.get("screen_on"):         bits.append("active")
+                if bits:
+                    return "Apple (" + ", ".join(bits) + ")"
+                return "Apple Device"
+            # Everything else (AirPods, Watch, AirTag, HomeKit, iBeacon) is
+            # already precise — use the static table.
+            if at in self._APPLE_CONTINUITY_TYPES:
+                return self._APPLE_CONTINUITY_TYPES[at]
 
         mfr = dev.manufacturer
         rotations = len(dev.bssids_seen)
@@ -588,11 +779,11 @@ class BLEEnricher:
 
         # ── Known manufacturers ──────────────────────────────────────
         if mfr == "Apple":
-            if rotations >= 3 and rot_per_hour > 3:
-                return "iPhone/Watch"
-            if rotations >= 1:
-                return "Apple Device"
-            return "Apple Accessory"
+            # Honest default — "Apple Device" until a stronger signal
+            # (Handoff/AirPlay/AirPods/AirTag) refines it. Previously we
+            # defaulted high-rotation Apple to "iPhone/Watch", which turned
+            # every Mac and iPad into a phantom iPhone.
+            return "Apple Device"
         if mfr == "Samsung":
             if rotations >= 2:
                 return "Samsung Phone"
@@ -641,7 +832,7 @@ class BLEEnricher:
             return "Chipolo Tracker"
         if mfr == "Pebblebee":
             return "Pebblebee Tracker"
-        if mfr == "Meta":
+        if mfr == "Meta" or mfr.startswith("Luxottica"):
             return "Meta Device"
         if mfr == "Snap":
             return "Smart Glasses"

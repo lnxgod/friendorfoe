@@ -46,6 +46,22 @@ int http_upload_get_fail_count(void);
  */
 int64_t http_upload_get_last_success_ms(void);
 
+/**
+ * Pause the HTTP upload task.
+ * Releases the HTTP client and stops consuming the detection queue.
+ * Used during firmware relay to free heap and prevent WiFi contention.
+ */
+void http_upload_pause(void);
+
+/**
+ * Resume the HTTP upload task after a pause.
+ * HTTP client will be recreated on next upload attempt.
+ */
+void http_upload_resume(void);
+
+/** True if the upload task is currently paused. */
+bool http_upload_is_paused(void);
+
 #ifdef __cplusplus
 }
 #endif

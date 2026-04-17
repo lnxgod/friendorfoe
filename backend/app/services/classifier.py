@@ -72,20 +72,93 @@ TRACKER_TYPES = {
 }
 
 # BLE device types that are known non-drone devices (phones, computers, etc.)
+# Must match type names from ESP32 ble_fingerprint.c
 KNOWN_DEVICE_TYPES = {
+    # Apple
     "iphone",
     "macbook",
     "ipad",
     "apple watch",
+    "airpods",
+    # Android / Samsung
     "samsung phone",
     "samsung tablet",
     "pixel",
     "android",
+    # Consumer electronics
+    "audio device",
+    "smart home",
+    "vehicle",
+    "camera",
+    "e-scooter",
+    "medical",
+    "gaming",
+    "fitness tracker",
+    "smartwatch",
+    "beacon",
+    # Security / novelty
+    "meta glasses",
+    "meta device",
+    "flipper zero",
+    # Fallback
     "unknown",
+}
+
+# BLE device types that are actual drones or drone controllers
+BLE_DRONE_TYPES = {
+    "drone controller",
+    "drone",
 }
 
 # Drone protocol sources — if the detection came from a real drone protocol
 CONFIRMED_DRONE_SOURCES = {"ble_rid", "wifi_beacon_rid", "wifi_dji_ie"}
+
+# Minimum confidence required to *trust* a CONFIRMED_DRONE_SOURCES detection
+# and label it `confirmed_drone`. Below this, we downgrade to `likely_drone`
+# so an alert is still raised but without the "critical" severity.
+# A genuine Remote ID frame from a drone parses cleanly and the scanner
+# reports >= 0.85; confidences below 0.30 almost always come from fingerprint
+# mis-matches (e.g., a random BLE advertisement tagged ble_rid).
+CONFIRMED_DRONE_MIN_CONFIDENCE = 0.30
+
+# SSID patterns that indicate mobile hotspots, not infrastructure APs
+MOBILE_HOTSPOT_KEYWORDS = {
+    "iphone", "ipad", "galaxy", "pixel", "oneplus", "nothing phone",
+    "motorola", "moto g", "moto e", "redmi", "poco", "realme", "oppo",
+    "vivo", "huawei", "nokia", "tcl", "zte", "samsung",
+    "androidap", "mobile hotspot", "my hotspot", "portable hotspot",
+    "personal hotspot",
+}
+MOBILE_HOTSPOT_PREFIXES = ("DIRECT-", "AndroidAP")
+
+
+def _is_locally_administered_mac(bssid: str | None) -> bool:
+    """Check if BSSID has the locally administered bit set (randomized MAC).
+    Infrastructure APs use burned-in MACs; phones/hotspots randomize."""
+    if not bssid or len(bssid) < 2:
+        return False
+    try:
+        first_byte = int(bssid.split(":")[0], 16)
+        return (first_byte & 0x02) != 0
+    except (ValueError, IndexError):
+        return False
+
+
+def _is_mobile_hotspot_ssid(ssid: str | None) -> bool:
+    """Check if SSID looks like a mobile phone hotspot."""
+    if not ssid:
+        return False
+    ssid_lower = ssid.lower()
+    for prefix in MOBILE_HOTSPOT_PREFIXES:
+        if ssid.startswith(prefix):
+            return True
+    for keyword in MOBILE_HOTSPOT_KEYWORDS:
+        if keyword in ssid_lower:
+            return True
+    # SSIDs with possessive names like "John's iPhone" or "Hannah's Galaxy"
+    if "'s " in ssid and any(kw in ssid_lower for kw in ("phone", "galaxy", "iphone", "ipad", "pixel")):
+        return True
+    return False
 
 
 def classify_detection(
@@ -95,6 +168,7 @@ def classify_detection(
     manufacturer: str | None = None,
     drone_id: str | None = None,
     model: str | None = None,
+    bssid: str | None = None,
 ) -> tuple[str, float]:
     """Classify a detection and optionally adjust confidence.
 
@@ -119,7 +193,11 @@ def classify_detection(
         dt_lower = device_type_str.lower()
         if dt_lower in TRACKER_TYPES:
             return "tracker", confidence
-        if dt_lower in KNOWN_DEVICE_TYPES:
+        if dt_lower in BLE_DRONE_TYPES:
+            return "confirmed_drone", confidence
+        # "unknown" type should NOT suppress drone classification —
+        # a BLE Remote ID drone with unrecognized fingerprint is still a drone.
+        if dt_lower != "unknown" and dt_lower in KNOWN_DEVICE_TYPES:
             return "unknown_device", confidence
 
     # 2. Fingerprint-grouped BLE (FP:XXXXXXXX) — these are generic BLE devices
@@ -127,13 +205,39 @@ def classify_detection(
     if drone_id and drone_id.startswith("FP:"):
         return "unknown_device", confidence
 
-    # 3. Real drone protocols → confirmed_drone (only for non-FP grouped)
+    # 3. Pwnagotchi — scanner detected the DE:AD:BE:EF:DE:AD hardcoded beacon
+    #    source MAC. This is a known hostile-WiFi-scanner signature (Marauder
+    #    reference). Promote to its own "hostile_tool" class so alerts fire.
+    if manufacturer == "Pwnagotchi" or (drone_id or "").lower() == "pwnagotchi":
+        return "hostile_tool", max(confidence, 0.90)
+
+    # 4. Real drone protocols → confirmed_drone.
+    #    For ble_rid: the ESP32 reports ALL BLE devices as ble_rid source,
+    #    not just actual Remote ID. Use confidence + device_type to distinguish.
     if source in CONFIRMED_DRONE_SOURCES:
+        if source == "ble_rid":
+            if device_type_str and device_type_str.lower() != "unknown":
+                # Has a specific non-drone type — not a drone
+                return "unknown_device", confidence
+            if confidence < 0.15:
+                # Low confidence + unknown type = generic BLE device, not a drone
+                return "unknown_device", confidence
+        # Weak-confidence drone-protocol frames get downgraded to likely_drone
+        # so an alert still fires, but at warning (not critical) severity.
+        if confidence < CONFIRMED_DRONE_MIN_CONFIDENCE:
+            return "likely_drone", confidence
         return "confirmed_drone", confidence
 
-    # 3. FOF- test drones (case-insensitive)
-    if ssid and ssid.upper().startswith("FOF-"):
+    # 3. FOF-Drone- test drones (case-insensitive)
+    if ssid and ssid.upper().startswith("FOF-DRONE-"):
         return "test_drone", max(confidence, 0.70)
+
+    # 3.4. Mobile hotspot detection — phone acting as AP, not infrastructure
+    # Only match if SSID contains phone/device keywords (Galaxy, iPhone, DIRECT-, etc.)
+    # Don't use locally-administered MAC alone — mesh nodes also use randomized MACs
+    if source in ("wifi_oui", "wifi_ssid") and ssid:
+        if _is_mobile_hotspot_ssid(ssid):
+            return "mobile_hotspot", confidence
 
     # 3.5. WiFi probe requests — classify by probed SSID
     if source == "wifi_probe_request":
@@ -163,8 +267,9 @@ def classify_detection(
     if source == "wifi_ssid" and confidence >= 0.25:
         return ("known_ap" if is_whitelisted else "likely_drone"), confidence
 
-    # 6. Soft SSID match (possible drone) — whitelist overrides
-    if source == "wifi_ssid" and confidence >= 0.10:
+    # 6. Soft SSID match (possible drone) — whitelist overrides.
+    # 0.10 was too permissive; consumer hotspots matched through.
+    if source == "wifi_ssid" and confidence >= 0.20:
         return ("known_ap" if is_whitelisted else "possible_drone"), confidence
 
     # 7. OUI match — these are generic WiFi APs detected by OUI

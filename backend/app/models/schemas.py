@@ -140,8 +140,16 @@ class DroneDetectionItem(BaseModel):
     ble_raw_mfr: str | None = Field(None, description="Raw manufacturer data hex (first 20 bytes)")
     ble_adv_interval: float | None = Field(None, description="BLE advertisement interval in ms")
     ble_svc_uuids: str | None = Field(None, description="Comma-separated 16-bit BLE service UUIDs (hex)")
-    ble_apple_info: int | None = Field(None, description="Apple info/status byte (device model hints, screen state)")
+    ble_apple_info: int | None = Field(None, description="Legacy alias for ble_apple_flags (v0.57 and earlier scanners). Retained one release for back-compat.")
+    ble_apple_flags: int | None = Field(None, description="Apple Nearby Info data-flags byte (v0.58+ scanners, always emitted — 0 ≠ absent).")
     probed_ssids: list[str] | None = Field(None, description="SSIDs this device is probing for (from probe requests)")
+    ie_hash: str | None = Field(
+        None,
+        description="Hex FNV1a hash of WiFi probe-request Information Elements — "
+                    "a stable identity across MAC rotations (phones reuse the same "
+                    "IE ordering + capability bits after rotating MACs). Populated "
+                    "by the scanner for probe_request sources when firmware supports it.",
+    )
 
 
 class DroneDetectionBatch(BaseModel):
@@ -257,6 +265,19 @@ class LocatedDroneItem(BaseModel):
     operator_id: str | None = None
     observations: list[SensorObservation] = Field(default_factory=list)
     classification: str | None = Field(None, description="Device classification: confirmed_drone, likely_drone, test_drone, possible_drone, unknown_device, known_ap, tracker")
+    approach_speed_mps: float | None = Field(None, description="Approach/departure speed: positive=approaching, negative=departing")
+    rssi_trend: str | None = Field(None, description="Signal trend: approaching, departing, stationary, or null")
+    age_s: float | None = Field(None, description="Seconds since last detection")
+    first_seen: float | None = Field(None, description="First detection timestamp (epoch)")
+    last_seen: float | None = Field(None, description="Most recent detection timestamp (epoch)")
+    bssid: str | None = Field(None, description="Best observation BSSID/MAC")
+    ssid: str | None = Field(None, description="SSID if WiFi source")
+    identity_source: str | None = Field(
+        None,
+        description="How the drone_id was derived: 'rid' = ASTM Remote ID UAS serial; "
+                    "'fingerprint' = BLE content hash (identity inferred, not verified); "
+                    "'mac' = raw MAC address (typically probe-request sources)",
+    )
 
 
 class SensorItem(BaseModel):
@@ -389,3 +410,53 @@ class DroneTrackResponse(BaseModel):
     total_distance_m: float = 0.0
     avg_accuracy_m: float = 0.0
     hours_queried: float = 1.0
+
+
+# ── First-seen Event responses (services/event_detector.py) ──────────────
+
+class EventItem(BaseModel):
+    """A persistent first-seen event row."""
+
+    id: int
+    event_type: str = Field(..., description="new_probe_mac, new_probed_ssid, new_rid_drone, new_hostile_tool, new_glasses, new_tracker, new_ap")
+    identifier: str = Field(..., description="Stable key for the thing that was seen (MAC, SSID, UAS serial, fingerprint)")
+    severity: str = Field(..., description="info | warning | critical")
+    title: str
+    message: str
+    first_seen_at: str
+    last_seen_at: str
+    sighting_count: int = 1
+    sensor_count: int = 1
+    sensor_ids: list[str] = Field(default_factory=list)
+    best_rssi: int | None = None
+    metadata: dict = Field(default_factory=dict)
+    acknowledged: bool = False
+    acknowledged_at: str | None = None
+
+
+class EventsResponse(BaseModel):
+    """GET /detections/events — paginated event feed."""
+
+    count: int
+    events: list[EventItem] = Field(default_factory=list)
+
+
+class EventStatsResponse(BaseModel):
+    """GET /detections/events/stats — counts for dashboard badge."""
+
+    total: int
+    unacknowledged: int
+    by_type: dict[str, int] = Field(default_factory=dict)
+    by_severity: dict[str, int] = Field(default_factory=dict)
+    critical_unacked: int = 0
+
+
+class MacWhitelistItem(BaseModel):
+    mac: str
+    label: str | None = None
+    added_at: str
+
+
+class MacWhitelistResponse(BaseModel):
+    count: int
+    entries: list[MacWhitelistItem] = Field(default_factory=list)

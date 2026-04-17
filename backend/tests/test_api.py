@@ -52,7 +52,7 @@ class TestHealth:
         assert "version" in data
         assert "redis" in data
         assert data["status"] == "ok"
-        assert data["version"] == "0.32.0"
+        assert data["version"] == "0.58.0"
 
     @pytest.mark.asyncio
     async def test_root_returns_200(self, client: AsyncClient):

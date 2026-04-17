@@ -17,6 +17,18 @@ logger = logging.getLogger(__name__)
 # Earth radius for coordinate conversion
 EARTH_RADIUS_M = 6_371_000.0
 
+# Diagnostic threshold: velocities above this (m/s) for a tracked device
+# are treated as "implausibly fast" and logged. 30 m/s ≈ 108 km/h — faster
+# than any realistic pedestrian and most consumer drones sustain.
+_IMPLAUSIBLE_VELOCITY_MPS = 30.0
+
+# Module-level counters surfaced by GET /detections/tracking/diagnostics.
+EKF_HEALTH: dict = {
+    "velocity_warnings": 0,
+    "covariance_errors": 0,
+    "update_rejects": 0,
+}
+
 
 class DeviceEKF:
     """Extended Kalman Filter for a single tracked device.
@@ -120,15 +132,17 @@ class DeviceEKF:
         h0 = dx / expected_dist
         h1 = dy / expected_dist
 
-        # Measurement noise R — high because RSSI is noisy through walls
-        # Scales with distance: close readings more trusted than far ones
-        r = (15.0 + measured_distance * 0.5) ** 2
+        # Measurement noise R — very high because RSSI distance estimates are noisy.
+        # A 3dB RSSI fluctuation at 50m can shift distance estimate by 30-50%.
+        # Increased from (15+d*0.5)^2 to reduce position wiggling for stationary devices.
+        r = (30.0 + measured_distance * 2.0) ** 2  # Aggressive: far readings have very low weight
 
         # Innovation covariance S = H*P*H' + R
         s = (h0 * (h0 * self.P00 + h1 * self.P01) +
              h1 * (h0 * self.P10 + h1 * self.P11) + r)
 
         if abs(s) < 1e-10:
+            EKF_HEALTH["update_rejects"] += 1
             return
 
         si = 1.0 / s
@@ -144,6 +158,16 @@ class DeviceEKF:
         self.y += k1 * innov
         self.vx += k2 * innov
         self.vy += k3 * innov
+
+        # Diagnostic: implausibly fast velocity suggests a bad measurement
+        # drove vx/vy out of bounds. We only log; we don't clamp yet.
+        speed = math.sqrt(self.vx * self.vx + self.vy * self.vy)
+        if speed > _IMPLAUSIBLE_VELOCITY_MPS:
+            EKF_HEALTH["velocity_warnings"] += 1
+            logger.warning(
+                "ekf.velocity speed=%.1fm/s innov=%.1f meas=%.1f expected=%.1f vx=%.2f vy=%.2f",
+                speed, innov, measured_distance, expected_dist, self.vx, self.vy,
+            )
 
         # Covariance update (Joseph form for stability)
         # P = (I - K*H) * P * (I - K*H)' + K*R*K'
@@ -166,11 +190,28 @@ class DeviceEKF:
         self.P33 -= k3 * s * k3
 
         self.update_count += 1
-        self.last_accuracy = math.sqrt(self.P00 + self.P11)
+
+        # Covariance health: the simplified update (P -= k·s·kᵀ) can drive
+        # the diagonal slightly negative under numerical noise. When that
+        # happens we silently poisoned the filter — the sqrt below would
+        # produce NaN and the caller's `ekf_acc < 5000` guard would drop
+        # us into the trilateration/range_only fallback chain.
+        if self.P00 < 0 or self.P11 < 0 or self.P22 < 0 or self.P33 < 0:
+            EKF_HEALTH["covariance_errors"] += 1
+            logger.error(
+                "ekf.covariance_negative P00=%.3e P11=%.3e P22=%.3e P33=%.3e — accuracy set to inf",
+                self.P00, self.P11, self.P22, self.P33,
+            )
+            self.last_accuracy = float("inf")
+        else:
+            self.last_accuracy = math.sqrt(self.P00 + self.P11)
 
         # Record position history when movement exceeds 3m from last point
         if self.update_count >= 3:
-            now = time.time() if not hasattr(self, '_last_update_time') else self.last_time
+            # Use the filter's own clock (last_time) so history timestamps match
+            # the measurement timestamps fed via predict(). The original guard
+            # on _last_update_time always fell through to wall time.
+            now = self.last_time
             if not self.history:
                 self.history.append((now, self.x, self.y, self.last_accuracy))
             else:
@@ -178,8 +219,9 @@ class DeviceEKF:
                 dx = self.x - last_x
                 dy = self.y - last_y
                 moved = math.sqrt(dx * dx + dy * dy)
-                # Record if moved > 2m or > 10s since last record
-                if moved > 2.0 or (now - last_t) > 10.0:
+                # Record if moved > 10m or > 30s since last record.
+                # RSSI-based positioning has 10-30m noise — don't trail jitter.
+                if moved > 10.0 or (now - last_t) > 30.0:
                     self.history.append((now, self.x, self.y, self.last_accuracy))
                     # Keep max 500 history points (~80 min at 10s intervals)
                     if len(self.history) > 500:
@@ -260,12 +302,17 @@ class PositionFilterManager:
                 self._pending[device_id].append((sx, sy, measured_distance, now))
                 if len(self._pending[device_id]) < 2:
                     return None
-                # Initialize at RSSI-weighted centroid of pending observations
+                # Initialize at inverse-variance-weighted centroid of pending
+                # observations. Variance of the distance measurement scales as
+                # (30 + 2*d)^2 (same model used by update()); weight = 1/variance
+                # so sensors with confident short-range readings dominate the
+                # initial position instead of distant sensors pulling it off.
                 obs_list = self._pending[device_id]
-                total_w = 0
+                total_w = 0.0
                 cx, cy = 0.0, 0.0
                 for ox, oy, od, _ in obs_list:
-                    w = 1.0 / max(od, 1.0)  # Closer sensors get more weight
+                    sigma = 30.0 + 2.0 * max(od, 1.0)
+                    w = 1.0 / (sigma * sigma)
                     cx += ox * w
                     cy += oy * w
                     total_w += w

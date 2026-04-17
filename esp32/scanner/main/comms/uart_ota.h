@@ -19,11 +19,14 @@ extern "C" {
  * Start a UART OTA session.
  * Called when the scanner receives an "ota_begin" JSON command.
  *
- * @param total_size  Expected firmware size in bytes
- * @param uart_num    UART port to use for communication
+ * @param total_size    Expected firmware size in bytes
+ * @param expected_crc  Expected CRC32 of the complete firmware image (0 if unknown)
+ * @param has_crc       true if uplink provided a CRC32 for verification
+ * @param uart_num      UART port to use for communication
  * @return true if OTA partition is ready
  */
-bool uart_ota_begin(uint32_t total_size, uart_port_t uart_num);
+bool uart_ota_begin(uint32_t total_size, uint32_t expected_crc,
+                    bool has_crc, uart_port_t uart_num);
 
 /**
  * Process incoming UART data during an active OTA session.

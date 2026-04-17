@@ -12,8 +12,8 @@
 
 static const drone_ssid_pattern_t PATTERNS[] = {
     /* ── Test / Debug ──────────────────────────────────────────────────────── */
-    { "FOF-",       "FriendOrFoe" },
-    { "FOF_",       "FriendOrFoe" },
+    { "FOF-Drone-", "FriendOrFoe" },
+    { "FOF_Drone_", "FriendOrFoe" },
 
     /* ── DJI ───────────────────────────────────────────────────────────────── */
     { "DJI-",       "DJI" },
@@ -59,7 +59,9 @@ static const drone_ssid_pattern_t PATTERNS[] = {
     { "X1 PRO",     "HOVERAir" },
 
     /* ── Holy Stone ────────────────────────────────────────────────────────── */
-    { "HOLY",       "Holy Stone" },
+    /* "HOLY" alone was too broad — caught SSIDs like "HolyCow", "Holyfield",
+     * etc. The specific Holy Stone prefixes "HS-", "HolyStoneEIS-", and
+     * "HolyStoneFPV_" (further below) cover real devices without the noise. */
     { "HS-",        "Holy Stone" },
 
     /* ── Other known brands ────────────────────────────────────────────────── */
@@ -120,7 +122,9 @@ static const drone_ssid_pattern_t PATTERNS[] = {
     { "RCDrone",       "Generic" },
     { "RC-DRONE",      "Generic" },
     { "RCTOY",         "Generic" },
-    { "UFO-",          "Generic" },
+    /* "UFO-" alone tripped on commercial electronics and nightclub SSIDs;
+     * drone-specific WiFi UFO SSIDs are covered by the more-specific
+     * "WiFiUFO-", "Wi-Fi UFO-", "WIFI UFO-", "GM-WiFiUFO" below. */
 
     /* ── Chinese brands using WiFi UAV-type apps ───────────────────────────── */
     { "JJRC-",         "JJRC" },

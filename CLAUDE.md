@@ -31,18 +31,23 @@ docker compose up                                   # Full stack (API + Redis + 
 
 ### ESP32 (PlatformIO + ESP-IDF, requires Python 3.12 venv — 3.14 breaks pydantic-core)
 ```bash
-cd esp32/scanner && pio run                    # Build scanner (ESP32-S3)
-cd esp32/uplink && pio run                     # Build uplink (ESP32-C3)
+cd esp32/scanner && pio run                    # Build scanner (ESP32-S3 combo: WiFi + BLE)
+cd esp32/uplink && pio run                     # Build uplink (ESP32-C3 or legacy ESP32)
+cd esp32/ble-scanner && pio run                # BLE-only variant
+cd esp32/rid-simulator && pio run              # Remote ID simulator
 cd esp32 && pio test -e native                 # Run unit tests (27 tests, no hardware needed)
 cd esp32/web-flasher && python3 -m http.server 8080  # Local web flasher
+./esp32/update_legacy_nodes.sh                 # OTA-update deployed legacy ESP32 nodes
 ```
+
+**Never** run `erase_flash` on ESP32 hardware — it permanently kills WiFi on legacy boards (see memory).
 
 ## Architecture
 
 ### Platforms
 - **`android/`** — Kotlin + Jetpack Compose, Clean Architecture. AR viewfinder with multi-source detection.
-- **`backend/`** — Python FastAPI. ADS-B aggregation with three-source fallback chain, aircraft enrichment via planespotters.net, Redis caching.
-- **`esp32/`** — Two-board ESP-IDF system: Scanner (ESP32-S3, promiscuous WiFi + BLE) and Uplink (ESP32-C3, HTTP upload + GPS + OLED). Communicates via UART at 921,600 baud with newline-delimited JSON.
+- **`backend/`** — Python FastAPI. ADS-B aggregation, drone detection ingest from sensor nodes, multi-sensor triangulation, entity tracking, RF anomaly alerts, web dashboard, OTA firmware hosting.
+- **`esp32/`** — ESP-IDF firmware with 5 build targets (scanner, wifi-scanner, ble-scanner, uplink, rid-simulator) across ESP32-S3 / ESP32-C3 / legacy ESP32. Scanner↔Uplink communicate via UART at 921,600 baud with newline-delimited JSON. Unified version in `esp32/shared/version.h`.
 - **`macos/`** — Swift companion app (early stage, not production).
 
 ### Android Clean Architecture Layers
@@ -55,11 +60,18 @@ cd esp32/web-flasher && python3 -m http.server 8080  # Local web flasher
 - **`di/`** — Hilt modules: `NetworkModule` (named Retrofit instances per API), `DatabaseModule`, `SensorModule`
 
 ### Backend Structure
-- **`app/main.py`** — FastAPI with lifespan management, request logging middleware
-- **`app/services/adsb.py`** — Multi-source ADS-B with Redis caching (30s TTL), bounding box queries, unit conversion helpers
-- **`app/services/enrichment.py`** — ICAO hex → country, callsign → airline, planespotters.net photo lookup
-- **`app/routers/`** — `aircraft.py` (GET /aircraft/nearby, GET /aircraft/{icao_hex}/detail), `detections.py` (POST /detections/drones from ESP32, GET /detections/drones/recent)
-- **`app/models/schemas.py`** — Pydantic v2 models for all API requests/responses
+- **`app/main.py`** — FastAPI with lifespan management (creates Postgres tables if reachable, falls back to no-persistence), request logging middleware, mounts `static/dashboard.html`
+- **`app/services/adsb.py`** — Multi-source ADS-B with Redis caching (30s TTL), bounding box queries
+- **`app/services/enrichment.py` / `enrichment_ble.py`** — ICAO→country/airline/photo lookup; BLE company-ID + signature enrichment
+- **`app/services/triangulation.py`** — Multi-node drone localization: 3+ sensors via Gauss-Newton NLLS, 2 sensors via circle-circle intersection, 1 sensor via RSSI range circle. Log-distance path loss model shared with ESP32 firmware.
+- **`app/services/position_filter.py`** — EKF smoothing of triangulated positions (tuning notes in user memory)
+- **`app/services/calibration.py`** — Inter-node RSSI calibration: nodes take turns broadcasting AP at max/min power; regression on (distance, RSSI) sets `path_loss_exponent` and `RSSI_REF`. Persisted to disk, manual-trigger only.
+- **`app/services/entity_tracker.py`** — Correlates BLE fingerprints, WiFi probes, and hotspots into logical entities. Entity marked "gone" only when ALL sensors lose it.
+- **`app/services/anomaly_detector.py` / `rf_anomaly.py`** — RF anomaly alerts with whitelisting, fingerprint-based BLE tracking, mesh-aware spoofing detection
+- **`app/services/classifier.py`** — Drone signature classification
+- **`app/services/firmware_manager.py`** — Firmware upload/storage for OTA delivery to nodes
+- **`app/routers/`** — `aircraft.py` (nearby/detail), `detections.py` (POST from ESP32 uplinks, recent), `nodes.py` (register/update/list/delete sensor nodes + OTA upload)
+- **`app/models/schemas.py`** and **`app/models/db_models.py`** — Pydantic v2 schemas; SQLAlchemy models (`SensorNode`, `DroneDetection`)
 
 ### ESP32 Detection Pipeline
 Scanner captures raw 802.11 frames (channel hopping 1-13) and BLE advertisements, runs 5 parsers (BLE Remote ID, DJI DroneID IE, WiFi Beacon RID, SSID pattern, OUI lookup), fuses via Bayesian engine, serializes to JSON over UART → Uplink batches and POSTs to backend.

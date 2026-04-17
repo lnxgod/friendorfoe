@@ -39,11 +39,11 @@ typedef struct {
 
 /* ── Upload settings ───────────────────────────────────────────────────── */
 
-#define CONFIG_BATCH_INTERVAL_MS    150     /* Faster batch send (was 200ms) */
-#define CONFIG_BATCH_IDLE_FLUSH_MS  50      /* Faster idle flush (was 75ms) */
-#define CONFIG_MAX_BATCH_SIZE       8       /* Smaller batches = less heap per POST */
-#define CONFIG_TARGET_BATCH_BYTES   1200    /* Smaller payloads for heap stability */
-#define CONFIG_MAX_OFFLINE_BATCHES  10      /* Reduced offline buffer */
+#define CONFIG_BATCH_INTERVAL_MS    80      /* Fast drain to keep queue from filling */
+#define CONFIG_BATCH_IDLE_FLUSH_MS  25      /* Quick idle flush */
+#define CONFIG_MAX_BATCH_SIZE       6       /* Small batches = less heap per POST */
+#define CONFIG_TARGET_BATCH_BYTES   1000    /* Conservative payload size for heap safety */
+#define CONFIG_MAX_OFFLINE_BATCHES  1       /* Minimal offline buffer (1 batch only) */
 #define CONFIG_MAX_RETRY_DELAY_MS   60000
 #define CONFIG_HEARTBEAT_INTERVAL_MS 60000
 
@@ -94,15 +94,15 @@ typedef struct {
 
 /* ── Detection queue ───────────────────────────────────────────────────── */
 
-#define CONFIG_DETECTION_QUEUE_SIZE 30    /* Reduced for heap stability on plain ESP32 */
+#define CONFIG_DETECTION_QUEUE_SIZE 20    /* Reduced from 60 to save ~23KB heap */
 
 /* ── Task stack sizes (bytes) ──────────────────────────────────────────── */
 
-#define CONFIG_UART_RX_STACK        4096  /* Needs room for cJSON parsing + scanner_info */
-#define CONFIG_HTTP_UPLOAD_STACK   16384  /* cJSON + HTTP client + scanners array needs this */
-#define CONFIG_GPS_STACK            4096
-#define CONFIG_DISPLAY_STACK        4096
-#define CONFIG_LED_STACK            2048
+#define CONFIG_UART_RX_STACK        5120  /* Needs headroom for cJSON parsing + backpressure logic */
+#define CONFIG_HTTP_UPLOAD_STACK   16384  /* Needs full 16KB for raw socket + DNS + error paths */
+#define CONFIG_GPS_STACK            3072  /* Reduced from 4096 */
+#define CONFIG_DISPLAY_STACK        3072  /* Reduced from 4096 */
+#define CONFIG_LED_STACK            2048  /* Can't reduce — RGB LED driver needs this */
 
 /* ── WiFi AP defaults (override via NVS) ──────────────────────────────── */
 

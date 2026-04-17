@@ -24,6 +24,10 @@ extern "C" {
 /** Register firmware store HTTP endpoints on the given server. */
 void fw_store_register(httpd_handle_t server);
 
+/** True if a firmware upload or relay operation is currently active.
+ *  Used by the watchdog to skip upload-age reboot during relay. */
+bool fw_store_is_relay_active(void);
+
 #ifdef __cplusplus
 }
 #endif

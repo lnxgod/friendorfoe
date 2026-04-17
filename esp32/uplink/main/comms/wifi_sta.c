@@ -187,6 +187,9 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
         s_is_connected = true;
         s_retry_count  = 0;
 
+        /* Max TX power for best range to router */
+        esp_wifi_set_max_tx_power(80);  /* 80 = 20dBm (units of 0.25dBm) */
+
         /* Disable AP — STA is connected, AP not needed */
         wifi_ap_stop();
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);

@@ -2,7 +2,9 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, func
+from sqlalchemy import (
+    Boolean, DateTime, Float, Index, Integer, String, Text, UniqueConstraint, func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.services.database import Base
@@ -151,6 +153,36 @@ class OuiEntry(Base):
     )
 
 
+class TrackedEntityRecord(Base):
+    """Persistent snapshot of an EntityTracker entity — survives restart.
+
+    EntityTracker holds its correlation indexes in memory; on restart those
+    are empty and previously-seen devices reappear as brand-new entities,
+    inflating the "unique entity" count on the dashboard. This table lets
+    the tracker rehydrate its indexes from the last 24 h.
+    """
+
+    __tablename__ = "tracked_entities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
+    label: Mapped[str] = mapped_column(String(128), nullable=False, default="Unknown")
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="visitor")
+    first_seen: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    last_seen: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, index=True)
+    # Serialized JSON blobs — set-like collections stored as arrays for compactness.
+    fingerprints_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    identifiers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manufacturers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    probed_ssids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    components_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    peak_rssi: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        server_default=func.now(), onupdate=func.now(),
+    )
+
+
 class WhitelistedSSID(Base):
     """SSID whitelist — marks networks as friendly/known (not drones).
 
@@ -164,5 +196,101 @@ class WhitelistedSSID(Base):
     pattern: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     label: Mapped[str | None] = mapped_column(String(64), nullable=True)  # "Home WiFi", "Neighbor", etc.
     added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class WhitelistedMAC(Base):
+    """MAC-prefix whitelist — suppresses new_probe_mac and related events for
+    known-friendly devices (user's own phone, laptop, etc.).
+
+    Entries may be a full 17-character MAC (AA:BB:CC:DD:EE:FF) or an OUI
+    prefix (first 8 chars, e.g. "AA:BB:CC"). Matching is case-insensitive
+    prefix; both forms compared in upper-case.
+    """
+
+    __tablename__ = "whitelisted_macs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mac: Mapped[str] = mapped_column(String(20), unique=True, nullable=False, index=True)
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class IdentityLink(Base):
+    """Cross-layer identity link — couples a BLE fingerprint with the WiFi
+    MAC / probe-IE hash of what we believe is the SAME physical device.
+
+    Populated by services/identity_correlator.py when it sees a BLE FP and
+    a WiFi observation on the same sensor within a short time window with
+    similar RSSI. On subsequent observations of either key, the partner is
+    looked up and the entities are merged in EntityTracker.
+    """
+
+    __tablename__ = "identity_links"
+    __table_args__ = (
+        UniqueConstraint("ble_fp", "wifi_key", name="uq_ident_ble_wifi"),
+        Index("idx_ident_ble", "ble_fp"),
+        Index("idx_ident_wifi", "wifi_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ble_fp: Mapped[str] = mapped_column(String(16), nullable=False)        # "FP:xxxxxxxx"
+    wifi_key: Mapped[str] = mapped_column(String(40), nullable=False)      # BSSID or "ieh:<hex>" probe-IE hash
+    sensor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    confirm_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    best_rssi_delta: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class Event(Base):
+    """Persistent first-seen event log.
+
+    Each row fires once per unique (event_type, identifier). Subsequent
+    sightings update last_seen_at + sighting_count via a debounced path
+    rather than creating duplicate rows. See services/event_detector.py for
+    debounce rules and the in-memory seen-cache.
+    """
+
+    __tablename__ = "events"
+    __table_args__ = (
+        UniqueConstraint("event_type", "identifier", name="uq_event_type_identifier"),
+        Index("idx_event_type_time", "event_type", "first_seen_at"),
+        Index("idx_event_ack_time", "acknowledged", "first_seen_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    identifier: Mapped[str] = mapped_column(String(128), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
+    title: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    message: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+    )
+    sighting_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    sensor_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    sensor_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    best_rssi: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Rich context frozen at creation time — manufacturer, device_type,
+    # probed_ssids, lat/lon, related drone_id, fingerprint, etc.
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    acknowledged: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

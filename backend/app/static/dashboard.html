@@ -127,10 +127,14 @@
 
 <div class="tabs">
   <div class="tab active" onclick="switchTab('overview')">Overview</div>
-  <div class="tab" onclick="switchTab('wifi')" id="tab-btn-wifi">WiFi</div>
+  <div class="tab" onclick="switchTab('wifi')" id="tab-btn-wifi">WiFi APs</div>
   <div class="tab" onclick="switchTab('ble')" id="tab-btn-ble">BLE</div>
+  <div class="tab" onclick="switchTab('mobile')" id="tab-btn-mobile" style="color:#e040fb">Mobile</div>
   <div class="tab" onclick="switchTab('probes')" id="tab-btn-probes">Probes</div>
   <div class="tab" onclick="switchTab('map')">Map</div>
+  <div class="tab" onclick="switchTab('alerts')" id="tab-btn-alerts" style="color:#f85149">Alerts</div>
+  <div class="tab" onclick="switchTab('events')" id="tab-btn-events" style="color:#ff9500">Events <span id="events-badge" style="display:none;margin-left:4px;background:#ff9500;color:#000;border-radius:8px;padding:1px 6px;font-size:10px;font-weight:800"></span></div>
+  <div class="tab" onclick="switchTab('entities')" id="tab-btn-entities" style="color:#3fb950">Entities</div>
   <div class="tab" onclick="switchTab('whitelist')">Whitelist</div>
   <div class="tab" onclick="switchTab('anomalies')">Anomalies</div>
   <div class="tab" onclick="switchTab('detections')">All Detections</div>
@@ -195,6 +199,21 @@
   </div>
 </div>
 
+<!-- MOBILE DEVICES TAB -->
+<div id="tab-mobile" class="tab-content">
+  <div class="grid">
+    <div class="card full" style="border:1px solid #e040fb44">
+      <h2 style="color:#e040fb">Mobile Hotspots</h2>
+      <div id="mobile-hotspots"><div class="empty">No mobile hotspots detected</div></div>
+    </div>
+    <div class="card full">
+      <h2>Nearby Mobile Devices (by Probe Activity)</h2>
+      <div style="font-size:11px;color:#8b949e;margin-bottom:8px">Phones/devices detected via WiFi probe requests — grouped by device MAC showing which networks they're searching for</div>
+      <div id="mobile-probe-devices"><div class="empty">Loading probe data...</div></div>
+    </div>
+  </div>
+</div>
+
 <!-- PROBES TAB -->
 <div id="tab-probes" class="tab-content">
   <!-- Probe summary cards -->
@@ -246,29 +265,57 @@
   <div class="grid">
     <div class="card full" style="padding:0;overflow:hidden;position:relative">
       <div style="display:flex;gap:10px;align-items:center;padding:8px 12px;background:#161b22;border-bottom:1px solid #30363d;flex-wrap:wrap;font-size:11px">
-        <select id="map-radio" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-size:11px">
-          <option value="wifi" selected>WiFi Only</option>
-          <option value="ble">BLE Only</option>
-          <option value="rid">Remote ID Drones</option>
-          <option value="all">All</option>
-        </select>
-        <select id="map-cls" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-size:11px">
-          <option value="">All classes</option>
-          <option value="test_drone">FOF- Test Only</option>
-          <option value="confirmed_drone">Drones</option>
-          <option value="likely_drone">Likely</option>
-          <option value="tracker">Trackers</option>
-          <option value="wifi_device">WiFi devices</option>
-          <option value="known_ap">Known APs</option>
-        </select>
-        <label style="color:#8b949e;cursor:pointer"><input type="range" id="map-sensors" min="1" max="4" value="1" style="width:60px;vertical-align:middle"> <span id="map-sensors-label">1+</span> sensors</label>
-        <label style="color:#8b949e;cursor:pointer"><input type="checkbox" id="map-hide-range" checked style="margin-right:3px">Hide range-only</label>
-        <label style="color:#8b949e;cursor:pointer"><input type="checkbox" id="map-hide-unknown" checked style="margin-right:3px">Hide unknown</label>
-        <label style="color:#8b949e;cursor:pointer"><input type="checkbox" id="map-trails" checked style="margin-right:3px">Trails</label>
-        <label style="color:#8b949e;cursor:pointer"><input type="range" id="map-rssi" min="-100" max="-30" value="-100" style="width:60px;vertical-align:middle"> RSSI &ge; <span id="map-rssi-label">-100</span></label>
+        <button id="btn-move-sensors" onclick="toggleSensorMoveMode()" style="background:#1f6feb22;border:1px solid #1f6feb44;color:#1f6feb;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:10px;font-weight:700">Move Sensors</button>
+        <span style="color:#8b949e;font-size:10px">Filters in the panel on the right →</span>
         <span id="map-count" style="color:#484f58;margin-left:auto"></span>
       </div>
-      <div id="map-container"></div>
+      <div style="position:relative">
+        <div id="map-container"></div>
+        <!-- Collapsible filter side panel ─────────────────────────────── -->
+        <div id="map-filter-panel" style="position:absolute;top:8px;right:8px;z-index:500;background:#0d1117ee;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:11px;width:200px;max-height:calc(100% - 16px);display:flex;flex-direction:column;backdrop-filter:blur(4px);box-shadow:0 4px 16px #00000099">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-bottom:1px solid #30363d;cursor:pointer" onclick="toggleMapFilterPanel()">
+            <span style="font-weight:700;letter-spacing:0.5px">FILTERS</span>
+            <span id="map-filter-chevron" style="color:#8b949e">▼</span>
+          </div>
+          <div id="map-filter-body" style="overflow-y:auto;padding:8px 10px;display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;gap:6px">
+              <button onclick="setAllMapCls(true)"  style="flex:1;background:#1f6feb22;border:1px solid #1f6feb44;color:#1f6feb;padding:3px 6px;border-radius:4px;cursor:pointer;font-size:10px">All</button>
+              <button onclick="setAllMapCls(false)" style="flex:1;background:#30363d;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;cursor:pointer;font-size:10px">None</button>
+            </div>
+            <div id="map-cls-checkboxes" style="display:flex;flex-direction:column;gap:3px"></div>
+            <div style="height:1px;background:#30363d;margin:4px 0"></div>
+            <div style="color:#8b949e;font-size:10px;letter-spacing:0.5px">IDENTITY</div>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="map-only-rid">RID-confirmed only</label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="map-hide-fp">Hide BLE fingerprints</label>
+            <div style="height:1px;background:#30363d;margin:4px 0"></div>
+            <div style="color:#8b949e;font-size:10px;letter-spacing:0.5px">LAYERS</div>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="map-layer-sensors" checked>Sensors</label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="map-layer-lines">Triangulation lines</label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="map-layer-circles">Accuracy circles</label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="map-layer-history">History</label>
+            <div style="display:flex;gap:4px;margin-top:2px">
+              <button id="map-tile-dark" onclick="setMapTile('dark')" style="flex:1;background:#1f6feb22;border:1px solid #1f6feb44;color:#1f6feb;padding:3px 6px;border-radius:4px;cursor:pointer;font-size:10px">Dark</button>
+              <button id="map-tile-sat"  onclick="setMapTile('sat')"  style="flex:1;background:#30363d;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;cursor:pointer;font-size:10px">Satellite</button>
+            </div>
+            <div style="height:1px;background:#30363d;margin:4px 0"></div>
+            <div style="color:#8b949e;font-size:10px;letter-spacing:0.5px">DISPLAY</div>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="map-hide-range" checked>Hide range-only</label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="map-hide-unknown" checked>Hide unknown</label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="map-show-probes">Show WiFi probes</label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="map-hide-random" checked>Hide randomized MACs</label>
+            <label id="map-trails-row" style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="map-trails">Trails (tracked only)</label>
+            <div style="color:#8b949e;font-size:10px;letter-spacing:0.5px;margin-top:4px">SIGNAL</div>
+            <label style="display:flex;align-items:center;gap:6px">
+              <input type="range" id="map-sensors" min="1" max="4" value="1" style="flex:1">
+              <span style="min-width:28px;text-align:right;color:#8b949e"><span id="map-sensors-label">1+</span></span>
+            </label>
+            <label style="display:flex;align-items:center;gap:6px">
+              <input type="range" id="map-rssi" min="-100" max="-30" value="-100" style="flex:1">
+              <span style="min-width:40px;text-align:right;color:#8b949e">≥ <span id="map-rssi-label">-100</span></span>
+            </label>
+          </div>
+        </div>
+      </div>
       <div style="display:flex;gap:8px;align-items:center;padding:6px 12px;background:#161b22;border-top:1px solid #30363d;font-size:11px">
         <span style="color:#8b949e">History:</span>
         <select id="hist-device" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-size:11px;min-width:120px">
@@ -293,6 +340,98 @@
     <div class="card">
       <h2>Position Estimates</h2>
       <div id="tri-estimates"><div class="empty">No positioned drones</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ALERTS TAB -->
+<div id="tab-alerts" class="tab-content">
+  <div class="grid">
+    <div class="card full" style="border:1px solid #f8514944">
+      <h2 style="color:#f85149">Active Drone Alerts</h2>
+      <div id="alert-drones"><div class="empty">No active drone alerts</div></div>
+    </div>
+    <div class="card full" style="border:1px solid #d2992244">
+      <h2 style="color:#d29922">Trackers Nearby</h2>
+      <div id="alert-trackers"><div class="empty">No trackers detected</div></div>
+    </div>
+    <div class="card full" style="border:1px solid #58a6ff44">
+      <h2 style="color:#58a6ff">BLE Device Fingerprints</h2>
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap">
+        <label style="color:#8b949e;font-size:11px;cursor:pointer"><input type="checkbox" id="alert-hide-unknown" checked style="margin-right:3px">Hide Unknown</label>
+        <label style="color:#8b949e;font-size:11px;cursor:pointer"><input type="checkbox" id="alert-show-macs" style="margin-right:3px">Show MACs</label>
+        <span id="alert-device-count" style="font-size:10px;color:#484f58"></span>
+      </div>
+      <div id="alert-devices"><div class="empty">Loading BLE devices...</div></div>
+    </div>
+    <div class="card full" style="border:1px solid #ff950044">
+      <h2 style="color:#ff9500">WiFi Probe Activity</h2>
+      <div id="alert-probes"><div class="empty">Loading probe data...</div></div>
+    </div>
+    <div class="card full">
+      <h2>Alert History</h2>
+      <div id="alert-history"><div class="empty">No alerts yet</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- EVENTS TAB — first-seen feed (services/event_detector.py) -->
+<div id="tab-events" class="tab-content">
+  <div class="grid">
+    <div class="card full" style="border:1px solid #ff950044">
+      <h2 style="color:#ff9500">First-seen Events</h2>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;font-size:11px">
+        <span style="color:#8b949e">Type:</span>
+        <select id="ev-type-filter" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px">
+          <option value="">All types</option>
+          <option value="new_rid_drone">New RID drone</option>
+          <option value="new_hostile_tool">New hostile tool</option>
+          <option value="new_glasses">New glasses</option>
+          <option value="new_tracker">New tracker</option>
+          <option value="new_probe_mac">New probe MAC</option>
+          <option value="new_probed_ssid">New probed SSID</option>
+          <option value="new_ap">New WiFi AP</option>
+        </select>
+        <span style="color:#8b949e">Severity:</span>
+        <select id="ev-sev-filter" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px">
+          <option value="">All</option>
+          <option value="critical">Critical</option>
+          <option value="warning">Warning</option>
+          <option value="info">Info</option>
+        </select>
+        <label style="color:#8b949e;cursor:pointer">
+          <input type="checkbox" id="ev-unacked-only" checked> Unacknowledged only
+        </label>
+        <label style="color:#8b949e;cursor:pointer;margin-left:8px">
+          <input type="checkbox" id="ev-sound" checked> Sound on critical
+        </label>
+        <button onclick="ackAllEvents()" style="background:#1f6feb22;border:1px solid #1f6feb44;color:#1f6feb;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">Ack all visible</button>
+        <span id="ev-count" style="color:#484f58;margin-left:auto"></span>
+      </div>
+      <div id="events-list" style="display:flex;flex-direction:column;gap:6px"><div class="empty">No events yet</div></div>
+    </div>
+    <div class="card" style="border:1px solid #1f6feb44">
+      <h3 style="color:#1f6feb;font-size:13px">MAC whitelist — suppress new_probe_mac / new_ap</h3>
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <input id="ev-mac-wl-input" placeholder="AA:BB:CC or AA:BB:CC:DD:EE:FF" style="flex:1;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:11px;font-family:monospace">
+        <input id="ev-mac-wl-label" placeholder="label (optional)" style="flex:1;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:11px">
+        <button onclick="addMacWhitelist()" style="background:#1f6feb22;border:1px solid #1f6feb44;color:#1f6feb;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">Add</button>
+      </div>
+      <div id="mac-wl-list" style="font-size:10px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ENTITIES TAB -->
+<div id="tab-entities" class="tab-content">
+  <div class="grid">
+    <div class="card full" style="border:1px solid #3fb95044">
+      <h2 style="color:#3fb950">Tracked Entities</h2>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <span id="entity-stats" style="font-size:11px;color:#8b949e"></span>
+        <label style="color:#8b949e;font-size:11px;cursor:pointer"><input type="checkbox" id="entity-active-only" checked style="margin-right:3px">Active only</label>
+      </div>
+      <div id="entity-list"><div class="empty">Loading entities...</div></div>
     </div>
   </div>
 </div>
@@ -353,8 +492,8 @@
           <option value="0.15" selected>Likely+</option><option value="0.3">High</option>
         </select>
         <select id="det-source" onchange="refreshDetections()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:11px">
-          <option value="">All Sources</option><option value="wifi_ssid">WiFi SSID</option><option value="wifi_oui">WiFi OUI</option>
-          <option value="ble_rid">BLE RID</option><option value="wifi_dji_ie">DJI IE</option><option value="wifi_beacon_rid">Beacon RID</option>
+          <option value="">All Sources</option><option value="wifi_ssid">WiFi SSID</option><option value="wifi_oui">WiFi AP</option>
+          <option value="wifi_probe_request">WiFi Probe</option><option value="ble_rid">BLE</option><option value="wifi_dji_ie">DJI IE</option><option value="wifi_beacon_rid">Beacon RID</option>
         </select>
         <span id="det-count" style="font-size:10px;color:#484f58"></span>
       </div>
@@ -390,7 +529,36 @@
           <button onclick="useMyLocation()" style="background:#1f6feb;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px">My Location</button>
         </div>
         <div id="cfg-result" style="margin-top:6px;font-size:11px"></div>
+        <div id="placement-map-container" style="height:350px;margin-top:12px;border-radius:6px;border:1px solid #30363d;overflow:hidden"></div>
+        <div style="font-size:10px;color:#484f58;margin-top:4px">Drag the marker to set sensor position. Click "Set Position" to save.</div>
       </div>
+    </div>
+    <div class="card full" style="border:1px solid #58a6ff44">
+      <h2 style="color:#58a6ff">RF Calibration</h2>
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+        <button id="cal-run-btn" onclick="runCalibration()" style="background:#1f6feb;color:#fff;border:none;padding:8px 18px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700">Run Calibration</button>
+        <span id="cal-progress" style="font-size:12px;color:#8b949e"></span>
+      </div>
+      <div class="grid4" style="margin-bottom:12px">
+        <div class="card" style="padding:8px">
+          <div style="font-size:10px;color:#484f58">RSSI Reference</div>
+          <div id="cal-rssi-ref" style="font-size:18px;font-weight:700;color:#58a6ff">—</div>
+        </div>
+        <div class="card" style="padding:8px">
+          <div style="font-size:10px;color:#484f58">Path Loss (n)</div>
+          <div id="cal-path-loss" style="font-size:18px;font-weight:700;color:#58a6ff">—</div>
+        </div>
+        <div class="card" style="padding:8px">
+          <div style="font-size:10px;color:#484f58">R² Quality</div>
+          <div id="cal-r-squared" style="font-size:18px;font-weight:700;color:#3fb950">—</div>
+        </div>
+        <div class="card" style="padding:8px">
+          <div style="font-size:10px;color:#484f58">Status</div>
+          <div id="cal-status" style="font-size:14px;font-weight:700;color:#8b949e">Default</div>
+        </div>
+      </div>
+      <div id="cal-measurements"><div class="empty">No calibration data — click Run Calibration to measure RF environment between nodes</div></div>
+      <div id="cal-history" style="margin-top:8px"></div>
     </div>
     <div class="card full"><h2>Scanner Diagnostics</h2><div id="scanner-diag"><div class="empty">Connect to uplink to see scanner stats...</div></div></div>
   </div>
@@ -521,12 +689,28 @@ function switchTab(id) {
   }
   // Refresh whitelist tab on switch
   if (id === 'whitelist') refreshWhitelistTab();
+  if (id === 'alerts') refreshAlerts();
+  if (id === 'mobile') refreshMobile();
+  if (id === 'entities') refreshEntities();
+  if (id === 'nodes') refreshCalibration();
 }
 
 function rssiClass(r) { return !r?'':r>-50?'close':r>-70?'mid':'far'; }
-function srcBadge(s) { return !s?'':s.includes('ble')?'<span class="badge ble">BLE</span>':'<span class="badge wifi">WiFi</span>'; }
+function srcBadge(s) {
+  if(!s) return '';
+  const map = {
+    'ble_rid':           ['#a371f7','BLE'],
+    'wifi_ssid':         ['#ff9500','WiFi SSID'],
+    'wifi_oui':          ['#8b949e','WiFi AP'],
+    'wifi_dji_ie':       ['#f85149','DJI IE'],
+    'wifi_beacon_rid':   ['#3fb950','Beacon RID'],
+    'wifi_probe_request':['#d29922','Probe'],
+  };
+  const [col,lbl] = map[s] || (s.includes('ble') ? ['#a371f7','BLE'] : ['#ff9500','WiFi']);
+  return '<span class="badge" style="background:'+col+'22;color:'+col+';border:1px solid '+col+'44">'+lbl+'</span>';
+}
 function clsBadge(c) {
-  const m={confirmed_drone:['#3fb950','DRONE'],likely_drone:['#d29922','LIKELY'],test_drone:['#58a6ff','TEST'],possible_drone:['#8b949e','POSS'],known_ap:['#484f58','AP'],tracker:['#f85149','TRACKER'],wifi_device:['#ff9500','WiFi'],unknown_device:['#30363d','UNK']};
+  const m={confirmed_drone:['#3fb950','DRONE'],likely_drone:['#d29922','LIKELY'],test_drone:['#58a6ff','TEST'],possible_drone:['#8b949e','POSS'],known_ap:['#484f58','AP'],tracker:['#f85149','TRACKER'],wifi_device:['#6e7681','WiFi Dev'],mobile_hotspot:['#e040fb','HOTSPOT'],unknown_device:['#30363d','UNK']};
   if(!c)return'';const[col,lbl]=m[c]||['#30363d',c];return'<span class="badge" style="background:'+col+'22;color:'+col+';border:1px solid '+col+'44">'+lbl+'</span>';
 }
 function fmtUp(s) { if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m'; }
@@ -553,44 +737,269 @@ let mapCentered = false;
 const CLS_COLORS = {
   confirmed_drone: '#ff2d55', likely_drone: '#ff9500', test_drone: '#bf00ff',
   possible_drone: '#c9a0dc', wifi_device: '#ffcc00', known_ap: '#8b949e',
-  tracker: '#ff3b30', unknown_device: '#6e7681'
+  mobile_hotspot: '#58a6ff', tracker: '#ff3b30', unknown_device: '#6e7681',
+  hostile_tool: '#f85149'
 };
+
+// Ordered list drives the side-panel checkboxes; labels can differ from the
+// enum names in CLS_COLORS.
+const CLS_ORDER = [
+  ['confirmed_drone', 'Confirmed drones'],
+  ['likely_drone',    'Likely drones'],
+  ['test_drone',      'FOF- test drones'],
+  ['possible_drone',  'Possible drones'],
+  ['hostile_tool',    'Hostile tools'],
+  ['tracker',         'Trackers'],
+  ['mobile_hotspot',  'Mobile hotspots'],
+  ['wifi_device',     'WiFi devices'],
+  ['known_ap',        'Known APs'],
+  ['unknown_device',  'Unknown'],
+];
+
+// Accuracy circles only make sense for drones you actually care about.
+// Everything else (WiFi APs, hotspots, probes, unknown devices) drew huge
+// yellow/grey circles that drowned out the actual drones on the map.
+const ACCURACY_CIRCLE_CLASSES = new Set([
+  "confirmed_drone", "likely_drone", "test_drone", "tracker", "hostile_tool",
+]);
+
+// In-memory filter state. Loaded from localStorage on init, persisted on change.
+let mapClsEnabled = new Set(CLS_ORDER.map(([c])=>c));  // default: all on
+let mapOnlyRid   = false;
+let mapHideFp    = false;
+let mapFilterOpen = true;
+// Layer visibility (merged from the old Leaflet layer-control widget)
+let mapLayers = { sensors: true, lines: false, circles: false, history: false };
+let mapTile = 'dark';  // 'dark' | 'sat'
+
+const _FOF_MAP_FILTERS_KEY = 'fof.mapFilters';
+const _FOF_MAP_FILTER_OPEN_KEY = 'fof.mapFiltersOpen';
+
+function _loadMapFilterState() {
+  try {
+    const raw = localStorage.getItem(_FOF_MAP_FILTERS_KEY);
+    if (raw) {
+      const o = JSON.parse(raw);
+      if (Array.isArray(o.cls))  mapClsEnabled = new Set(o.cls);
+      if (typeof o.onlyRid === 'boolean') mapOnlyRid = o.onlyRid;
+      if (typeof o.hideFp  === 'boolean') mapHideFp  = o.hideFp;
+      if (o.layers && typeof o.layers === 'object') {
+        mapLayers = {...mapLayers, ...o.layers};
+      }
+      if (o.tile === 'dark' || o.tile === 'sat') mapTile = o.tile;
+    }
+    const open = localStorage.getItem(_FOF_MAP_FILTER_OPEN_KEY);
+    if (open !== null) mapFilterOpen = open === '1';
+  } catch (e) {}
+}
+function _saveMapFilterState() {
+  try {
+    localStorage.setItem(_FOF_MAP_FILTERS_KEY, JSON.stringify({
+      cls: [...mapClsEnabled], onlyRid: mapOnlyRid, hideFp: mapHideFp,
+      layers: mapLayers, tile: mapTile,
+    }));
+  } catch (e) {}
+}
+
+function _applyLayerVisibility() {
+  if (!leafletMap) return;
+  const pairs = [
+    ['sensors', sensorLayerGroup],
+    ['lines',   lineLayerGroup],
+    ['circles', circleLayerGroup],
+    ['history', historyLayerGroup],
+  ];
+  pairs.forEach(([key, group]) => {
+    if (!group) return;
+    const want = !!mapLayers[key];
+    const has  = leafletMap.hasLayer(group);
+    if (want && !has)  leafletMap.addLayer(group);
+    if (!want && has)  leafletMap.removeLayer(group);
+  });
+}
+
+function setMapTile(which) {
+  if (!leafletMap || !leafletMap._fofDarkTile || !leafletMap._fofSatTile) return;
+  mapTile = (which === 'sat') ? 'sat' : 'dark';
+  const dark = leafletMap._fofDarkTile;
+  const sat  = leafletMap._fofSatTile;
+  if (mapTile === 'dark') {
+    if (leafletMap.hasLayer(sat))  leafletMap.removeLayer(sat);
+    if (!leafletMap.hasLayer(dark)) leafletMap.addLayer(dark);
+  } else {
+    if (leafletMap.hasLayer(dark)) leafletMap.removeLayer(dark);
+    if (!leafletMap.hasLayer(sat))  leafletMap.addLayer(sat);
+  }
+  // Visual feedback on the two tile buttons
+  const btnDark = document.getElementById('map-tile-dark');
+  const btnSat  = document.getElementById('map-tile-sat');
+  const active  = 'background:#1f6feb22;border:1px solid #1f6feb44;color:#1f6feb;padding:3px 6px;border-radius:4px;cursor:pointer;font-size:10px;flex:1';
+  const idle    = 'background:#30363d;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:4px;cursor:pointer;font-size:10px;flex:1';
+  if (btnDark) btnDark.style.cssText = (mapTile === 'dark') ? active : idle;
+  if (btnSat)  btnSat.style.cssText  = (mapTile === 'sat')  ? active : idle;
+  _saveMapFilterState();
+}
+
+function setAllMapCls(on) {
+  if (on) mapClsEnabled = new Set(CLS_ORDER.map(([c])=>c));
+  else    mapClsEnabled = new Set();
+  CLS_ORDER.forEach(([c])=>{
+    const cb = document.getElementById('map-cls-'+c);
+    if (cb) cb.checked = mapClsEnabled.has(c);
+  });
+  _saveMapFilterState();
+  _refreshMapFromCache();
+}
+
+function toggleMapFilterPanel() {
+  mapFilterOpen = !mapFilterOpen;
+  const body = document.getElementById('map-filter-body');
+  const chev = document.getElementById('map-filter-chevron');
+  if (body)  body.style.display = mapFilterOpen ? '' : 'none';
+  if (chev)  chev.textContent   = mapFilterOpen ? '▼' : '▶';
+  try { localStorage.setItem(_FOF_MAP_FILTER_OPEN_KEY, mapFilterOpen ? '1' : '0'); } catch (e) {}
+}
+
+function _renderMapClsCheckboxes() {
+  const host = document.getElementById('map-cls-checkboxes');
+  if (!host) return;
+  host.innerHTML = '';
+  CLS_ORDER.forEach(([cls, label]) => {
+    const color = CLS_COLORS[cls] || '#6e7681';
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer';
+    row.innerHTML =
+      '<input type="checkbox" id="map-cls-'+cls+'" ' + (mapClsEnabled.has(cls)?'checked':'') + '>' +
+      '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:'+color+';flex:0 0 auto"></span>' +
+      '<span style="flex:1">'+label+'</span>' +
+      '<span id="map-cls-count-'+cls+'" style="color:#484f58;font-size:10px">0</span>';
+    host.appendChild(row);
+    const cb = row.querySelector('input');
+    cb.addEventListener('change', () => {
+      if (cb.checked) mapClsEnabled.add(cls); else mapClsEnabled.delete(cls);
+      _saveMapFilterState();
+      _refreshMapFromCache();
+    });
+  });
+}
+
+// Cached last map response so checkbox toggles re-render immediately without
+// waiting for the next 5s poll. updateMap() fills this on each call.
+let _lastMapResp = null;
+function _refreshMapFromCache() {
+  if (!_lastMapResp || typeof updateMap !== 'function') return;
+  try {
+    updateMap(_lastMapResp.sensors, _lastMapResp.drones, _lastMapResp.nodeList);
+  } catch (e) { /* first tick before updateMap cached anything */ }
+}
 
 function initMap() {
   if (mapInitialized) return;
   const container = document.getElementById('map-container');
   if (!container || container.offsetWidth === 0) return; // Don't init if hidden
-  leafletMap = L.map(container, { zoomControl: true, attributionControl: false });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    maxZoom: 20, subdomains: 'abcd'
-  }).addTo(leafletMap);
+  // maxZoom 22 on the map lets users scroll in further than any tile provider
+  // natively serves; each layer's maxNativeZoom caps tile fetches and Leaflet
+  // upsamples for closer views. Tiles get blurry past maxNativeZoom but marker
+  // precision is worth it at street/building scale.
+  leafletMap = L.map(container, { zoomControl: true, attributionControl: false, maxZoom: 22 });
+
+  // Tile layers: dark (default) + satellite
+  const darkTile = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 22, maxNativeZoom: 20, subdomains: 'abcd'
+  });
+  const satTile = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 22, maxNativeZoom: 19, attribution: 'Esri'
+  });
+  darkTile.addTo(leafletMap);
+
   sensorLayerGroup = L.layerGroup().addTo(leafletMap);
   droneLayerGroup = L.layerGroup().addTo(leafletMap);
   lineLayerGroup = L.layerGroup().addTo(leafletMap);
   circleLayerGroup = L.layerGroup().addTo(leafletMap);
   trailLayerGroup = L.layerGroup().addTo(leafletMap);
   historyLayerGroup = L.layerGroup().addTo(leafletMap);
-  L.control.layers(null, {
-    'Sensors': sensorLayerGroup,
-    'Devices': droneLayerGroup,
-    'Trails': trailLayerGroup,
-    'History': historyLayerGroup,
-    'Triangulation Lines': lineLayerGroup,
-    'Range Circles': circleLayerGroup
-  }, { collapsed: false, position: 'topright' }).addTo(leafletMap);
-  leafletMap.setView([37.3, -120.6], 16);
+
+  // Expose the base tile layers so the side-panel tile-style buttons can
+  // swap them without needing Leaflet's built-in layer-control widget.
+  leafletMap._fofDarkTile = darkTile;
+  leafletMap._fofSatTile  = satTile;
+
+  leafletMap.setView([37.77, -122.42], 16);
   mapInitialized = true;
   // Force size recalculation after render
   setTimeout(() => { leafletMap.invalidateSize(); }, 200);
+}
+
+// ── Sensor move mode state ─────────────────────────────────────────────
+let sensorMoveMode = false;
+let pendingSensorMoves = {};  // {device_id: {lat, lon}}
+
+function toggleSensorMoveMode() {
+  sensorMoveMode = !sensorMoveMode;
+  const btn = document.getElementById('btn-move-sensors');
+  if (sensorMoveMode) {
+    btn.style.background = '#f8514933';
+    btn.style.borderColor = '#f85149';
+    btn.style.color = '#f85149';
+    btn.textContent = 'Save Positions (' + Object.keys(pendingSensorMoves).length + ')';
+    pendingSensorMoves = {};
+    // Enable dragging on all sensor markers
+    sensorLayerGroup.eachLayer(layer => {
+      if (layer._fofDeviceId && layer.dragging) {
+        layer.dragging.enable();
+        layer.on('dragend', function(e) {
+          const pos = e.target.getLatLng();
+          pendingSensorMoves[layer._fofDeviceId] = { lat: pos.lat, lon: pos.lng };
+          btn.textContent = 'Save Positions (' + Object.keys(pendingSensorMoves).length + ')';
+          // Update label position too
+          layer.setLatLng(pos);
+        });
+      }
+    });
+  } else {
+    // Save pending moves
+    const moves = Object.entries(pendingSensorMoves);
+    if (moves.length > 0) {
+      let saved = 0;
+      moves.forEach(([did, pos]) => {
+        fetch(API + '/nodes/' + did, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({lat: pos.lat, lon: pos.lon})
+        }).then(r => r.json()).then(d => {
+          saved++;
+          if (saved === moves.length) {
+            console.log('All sensor positions saved');
+          }
+        }).catch(e => console.error('Failed to save', did, e));
+      });
+    }
+    // Disable dragging
+    sensorLayerGroup.eachLayer(layer => {
+      if (layer._fofDeviceId && layer.dragging) {
+        layer.dragging.disable();
+        layer.off('dragend');
+      }
+    });
+    btn.style.background = '#1f6feb22';
+    btn.style.borderColor = '#1f6feb44';
+    btn.style.color = '#1f6feb';
+    btn.textContent = 'Move Sensors';
+    pendingSensorMoves = {};
+  }
 }
 
 function updateMap(sensors, drones, nodeList) {
   initMap();
   if (!leafletMap) return;
 
-  // Don't redraw if a popup is open — user is reading it
+  // Cache for instant re-render on filter toggle
+  _lastMapResp = { sensors, drones, nodeList };
+
+  // Don't redraw if a popup is open or in move mode (preserve drag state)
   const popupOpen = leafletMap._popup && leafletMap._popup.isOpen();
   if (popupOpen) return;
+  if (sensorMoveMode) return;  // Don't redraw while dragging sensors
 
   sensorLayerGroup.clearLayers();
   droneLayerGroup.clearLayers();
@@ -599,32 +1008,46 @@ function updateMap(sensors, drones, nodeList) {
 
   const bounds = [];
 
-  // Merge node heartbeat data (has name, gps_registered) with map sensor data
+  // Merge node heartbeat data with sensor data — show ALL registered nodes (seen <12h)
   const nodeMap = {};
   (nodeList || []).forEach(n => { nodeMap[n.device_id] = n; });
 
+  // Build sensor list: merge API sensors + registered nodes with GPS
+  const sensorSet = {};
+  sensors.forEach(s => { if (s.lat && s.lon) sensorSet[s.device_id] = s; });
+  // Add registered nodes that have GPS but aren't in the live sensor list
+  (nodeList || []).forEach(n => {
+    if (n.lat && n.lon && n.lat != 0 && !sensorSet[n.device_id]) {
+      sensorSet[n.device_id] = { device_id: n.device_id, lat: n.lat, lon: n.lon, online: n.online, last_seen: n.last_seen };
+    }
+  });
+
   // ── Sensors ──────────────────────────────────────────────────────────
-  sensors.forEach(s => {
+  Object.values(sensorSet).forEach(s => {
     if (s.lat == 0 && s.lon == 0) return;
     bounds.push([s.lat, s.lon]);
     const nd = nodeMap[s.device_id] || {};
-    const online = s.online !== false;
-    const name = nd.name || s.device_id;
-    const borderColor = online ? '#3fb950' : '#f85149';
+    const online = s.online !== false && nd.online !== false;
+    const name = nd.name || s.device_id.replace('uplink_', '');
+    const borderColor = online ? '#3fb950' : '#6e7681';
 
     const sensorIcon = L.divIcon({
       className: '',
       html: '<div style="width:18px;height:18px;background:#1a1a2e;border:3px solid '+borderColor+';border-radius:3px;box-shadow:0 0 8px '+borderColor+'66"></div>',
       iconSize: [18, 18], iconAnchor: [9, 9]
     });
-    const marker = L.marker([s.lat, s.lon], { icon: sensorIcon });
+    const marker = L.marker([s.lat, s.lon], { icon: sensorIcon, draggable: true });
+    marker._fofDeviceId = s.device_id;  // Tag for move mode
+    if (!sensorMoveMode && marker.dragging) marker.dragging.disable();  // Only draggable in move mode
+
     marker.bindPopup(
-      '<div class="popup-title" style="color:#58a6ff">' + s.device_id + '</div>' +
-      (nd.name ? '<div class="popup-row"><span>Name</span><span>' + nd.name + '</span></div>' : '') +
+      '<div class="popup-title" style="color:#58a6ff">' + name + '</div>' +
+      '<div class="popup-row"><span>ID</span><span style="font-size:10px">' + s.device_id + '</span></div>' +
       '<div class="popup-row"><span>Status</span><span style="color:' + borderColor + '">' + (online?'ONLINE':'OFFLINE') + '</span></div>' +
       '<div class="popup-row"><span>Position</span><span>' + s.lat.toFixed(6) + ', ' + s.lon.toFixed(6) + '</span></div>' +
       (nd.ip ? '<div class="popup-row"><span>IP</span><span>' + nd.ip + '</span></div>' : '') +
-      '<div class="popup-row"><span>Last seen</span><span>' + ago(s.last_seen) + '</span></div>'
+      (nd.firmware_version ? '<div class="popup-row"><span>FW</span><span style="color:#e040fb">v' + nd.firmware_version + '</span></div>' : '') +
+      '<div class="popup-row"><span>Last seen</span><span>' + ago(s.last_seen || nd.last_seen) + '</span></div>'
     );
     sensorLayerGroup.addLayer(marker);
 
@@ -638,40 +1061,70 @@ function updateMap(sensors, drones, nodeList) {
   });
 
   // ── Map filters ──────────────────────────────────────────────────────
-  const mapRadio = document.getElementById('map-radio').value;
-  const mapClsFilter = document.getElementById('map-cls').value;
+  // Classification + identity filters come from the side panel's live state
+  // (mapClsEnabled / mapOnlyRid / mapHideFp). The remaining sliders/checkboxes
+  // were moved into the panel too but keep their original IDs.
+  mapOnlyRid = !!(document.getElementById('map-only-rid') && document.getElementById('map-only-rid').checked);
+  mapHideFp  = !!(document.getElementById('map-hide-fp')  && document.getElementById('map-hide-fp').checked);
+  _saveMapFilterState();
   const mapMinSensors = parseInt(document.getElementById('map-sensors').value) || 1;
   const mapHideRange = document.getElementById('map-hide-range').checked;
   const mapHideUnknown = document.getElementById('map-hide-unknown').checked;
+  const mapHideRandom = (document.getElementById('map-hide-random') || {checked: true}).checked;
   const mapRssiMin = parseInt(document.getElementById('map-rssi').value) || -100;
   document.getElementById('map-sensors-label').textContent = mapMinSensors + '+';
   document.getElementById('map-rssi-label').textContent = mapRssiMin;
 
+  // Per-type counts for the side-panel legend.
+  const clsCounts = {};
+  drones.forEach(d => {
+    const c = d.classification || 'unknown_device';
+    clsCounts[c] = (clsCounts[c] || 0) + 1;
+  });
+  CLS_ORDER.forEach(([cls]) => {
+    const el = document.getElementById('map-cls-count-'+cls);
+    if (el) el.textContent = clsCounts[cls] || 0;
+  });
+
   let mapShown = 0;
+  const visibleDroneIds = new Set();
 
   // ── Drones / SSIDs ───────────────────────────────────────────────────
   drones.forEach(d => {
     const cls = d.classification || 'unknown_device';
-    const color = CLS_COLORS[cls] || '#6e7681';
+    const isTracked = trackedDevices.has(d.drone_id) ||
+      [...trackedDevices].some(t => d.drone_id.includes(t) || t.includes(d.drone_id));
+    const color = isTracked ? TRACK_COLOR : (CLS_COLORS[cls] || '#6e7681');
+
     const hasPosn = d.lat != 0 && d.lon != 0;
     // Skip garbage positions
     if (hasPosn && (Math.abs(d.lat) > 90 || Math.abs(d.lon) > 180)) return;
     if (d.accuracy_m && d.accuracy_m > 10000) return;
-    // Radio type filter
+
+    // Source type detection (needed for popup)
     const bestSrc = d.observations && d.observations.length > 0 ? d.observations[0].source || '' : '';
-    const isBLE = bestSrc.includes('ble') || (d.drone_id && d.drone_id.startsWith('BLE:')) || (d.drone_id && d.drone_id.startsWith('FP:'));
-    const isRID = d.drone_id && d.drone_id.startsWith('rid_') || bestSrc === 'ble_rid' && cls === 'confirmed_drone';
-    if (mapRadio === 'wifi' && (isBLE || isRID)) return;
-    if (mapRadio === 'ble' && !isBLE && !isRID) return;
-    if (mapRadio === 'rid' && !isRID) return;
-    // Classification filter
-    if (mapClsFilter && cls !== mapClsFilter) return;
-    if (d.sensor_count < mapMinSensors) return;
-    if (mapHideRange && d.position_source === 'range_only') return;
-    if (mapHideUnknown && cls === 'unknown_device') return;
-    const bestRssi = d.observations ? Math.max(...d.observations.map(o => o.rssi || -999)) : -999;
-    if (bestRssi < mapRssiMin) return;
+    const did = d.drone_id || '';
+    const identitySource = d.identity_source || (did.startsWith('rid_') ? 'rid'
+      : (did.startsWith('FP:') || did.startsWith('BLE:')) ? 'fingerprint'
+      : 'mac');
+    const isRID = identitySource === 'rid';
+    const isFP  = identitySource === 'fingerprint';
+    const isProbe = bestSrc === 'wifi_probe_request' || did.startsWith('probe_');
+
+    // Tracked devices bypass ALL filters — always shown in magenta
+    if (!isTracked) {
+      if (!mapClsEnabled.has(cls)) return;
+      if (mapOnlyRid && !isRID) return;
+      if (mapHideFp && isFP) return;
+      if (d.sensor_count < mapMinSensors) return;
+      if (mapHideRange && d.position_source === 'range_only') return;
+      if (mapHideUnknown && cls === 'unknown_device') return;
+      if (mapHideRandom && (d.manufacturer || '') === 'Randomized MAC') return;
+      const bestRssi = d.observations ? Math.max(...d.observations.map(o => o.rssi || -999)) : -999;
+      if (bestRssi < mapRssiMin) return;
+    }
     mapShown++;
+    visibleDroneIds.add(d.drone_id);
 
     if (hasPosn) {
       bounds.push([d.lat, d.lon]);
@@ -694,20 +1147,85 @@ function updateMap(sensors, drones, nodeList) {
         obsHtml += '</div>';
       }
 
+      // Approach/departure indicator
+      const trendIcon = d.rssi_trend === 'approaching' ? '&#x2B06; APPROACHING' : d.rssi_trend === 'departing' ? '&#x2B07; DEPARTING' : '';
+      const trendColor = d.rssi_trend === 'approaching' ? '#f85149' : d.rssi_trend === 'departing' ? '#3fb950' : '#8b949e';
+
+      // Device type extraction from drone_id (BLE:HASH:TypeName)
+      let devType = '';
+      if (d.drone_id && d.drone_id.startsWith('BLE:')) {
+        const pts = d.drone_id.split(':');
+        if (pts.length >= 3) devType = pts.slice(2).join(':');
+      } else if (isProbe) { devType = 'WiFi Probe Device'; }
+      else if (d.ssid) { devType = 'WiFi AP'; }
+
+      // MAC randomization check
+      const macAddr = d.bssid || '';
+      let macLabel = '';
+      if (macAddr) {
+        const fb = parseInt(macAddr.split(':')[0], 16);
+        macLabel = (fb & 0x02) ? ' (random)' : ' (static)';
+      }
+
+      // Duration
+      let duration = '';
+      if (d.first_seen && d.last_seen) {
+        const dur = d.last_seen - d.first_seen;
+        duration = dur < 60 ? Math.round(dur)+'s' : Math.floor(dur/60)+'m '+Math.round(dur%60)+'s';
+      }
+
+      // Identity-source header: RID drones get a prominent REMOTE ID pill +
+      // their UAS serial; fingerprint-derived identities get a muted
+      // "identity inferred" subtitle so it's unambiguous how the ID came to be.
+      let identityHeader = '';
+      if (isRID) {
+        const uasId = did.substring(4);  // strip 'rid_' prefix
+        identityHeader =
+          '<div style="display:inline-block;background:#ff2d55;color:#fff;font-size:9px;font-weight:800;padding:2px 6px;border-radius:3px;letter-spacing:0.5px;margin-bottom:4px">REMOTE ID</div>' +
+          '<div style="font-family:monospace;font-size:11px;color:#fff;word-break:break-all;margin-bottom:4px">' + uasId + '</div>';
+      } else if (isFP) {
+        identityHeader =
+          '<div style="color:#8b949e;font-size:9px;font-style:italic;margin-bottom:2px">BLE fingerprint — identity inferred</div>';
+      }
+      const opRow = (isRID && d.operator_id)
+        ? '<div class="popup-row"><span>Operator</span><span style="font-family:monospace;font-size:10px">' + d.operator_id + '</span></div>'
+        : '';
+
       // Build popup content
       const popupContent =
+        identityHeader +
         '<div class="popup-title" style="color:' + color + ';font-size:14px">' + displayName + '</div>' +
+        (devType ? '<div class="popup-row"><span>Type</span><span style="color:#8b949e">' + devType + '</span></div>' : '') +
         (droneSSID && d.drone_id !== droneSSID ? '<div class="popup-row"><span>ID</span><span style="font-size:9px">' + d.drone_id + '</span></div>' : '') +
         '<div class="popup-row"><span>Class</span><span style="color:' + color + ';font-weight:700">' + cls.replace('_',' ') + '</span></div>' +
+        opRow +
+        (trendIcon ? '<div class="popup-row"><span>Movement</span><span style="color:' + trendColor + ';font-weight:700">' + trendIcon + (d.approach_speed_mps ? ' ' + Math.abs(d.approach_speed_mps).toFixed(1) + ' m/s' : '') + '</span></div>' : '') +
+        (d.age_s !== null && d.age_s !== undefined ? '<div class="popup-row"><span>Last Seen</span><span>' + (d.age_s < 10 ? 'just now' : Math.round(d.age_s)+'s ago') + '</span></div>' : '') +
+        (duration ? '<div class="popup-row"><span>Duration</span><span>' + duration + '</span></div>' : '') +
         '<div class="popup-row"><span>Position</span><span>' + d.position_source + (d.accuracy_m ? ' ±' + Math.round(d.accuracy_m) + 'm' : '') + '</span></div>' +
         '<div class="popup-row"><span>Coords</span><span>' + d.lat.toFixed(6) + ', ' + d.lon.toFixed(6) + '</span></div>' +
         '<div class="popup-row"><span>Sensors</span><span style="color:' + (d.sensor_count>=2?'#3fb950':'#8b949e') + '">' + d.sensor_count + '</span></div>' +
         '<div class="popup-row"><span>Confidence</span><span>' + (d.confidence * 100).toFixed(0) + '%</span></div>' +
-        (d.manufacturer ? '<div class="popup-row"><span>Mfr</span><span>' + d.manufacturer + '</span></div>' : '') +
+        (d.manufacturer ? '<div class="popup-row"><span>Manufacturer</span><span>' + d.manufacturer + '</span></div>' : '') +
+        (macAddr ? '<div class="popup-row"><span>MAC</span><span style="font-family:monospace;font-size:10px">' + macAddr + '<span style="color:#484f58">' + macLabel + '</span></span></div>' : '') +
+        (d.ssid && d.ssid !== displayName ? '<div class="popup-row"><span>SSID</span><span style="color:#ff9500">' + d.ssid + '</span></div>' : '') +
         obsHtml;
 
       let marker;
-      if (isTestDrone) {
+      if (isTracked) {
+        // Tracked devices: large magenta marker with glow + label
+        const trackIcon = L.divIcon({
+          className: '',
+          html: '<div style="width:22px;height:22px;border-radius:50%;background:' + TRACK_COLOR + ';border:3px solid #fff;box-shadow:0 0 16px ' + TRACK_COLOR + 'aa,0 0 32px ' + TRACK_COLOR + '55;cursor:pointer;animation:pulse-ring 1.5s ease-in-out infinite"></div>' +
+                '<div style="position:absolute;top:26px;left:-10px;white-space:nowrap;color:' + TRACK_COLOR + ';font-family:monospace;font-size:10px;font-weight:700;text-shadow:0 0 4px #000;pointer-events:none">TRACKING: ' + displayName.substring(0,20) + '</div>',
+          iconSize: [22, 22], iconAnchor: [11, 11]
+        });
+        marker = L.marker([d.lat, d.lon], { icon: trackIcon, zIndexOffset: 2000 });
+        circleLayerGroup.addLayer(L.circleMarker([d.lat, d.lon], {
+          radius: 30, fillColor: TRACK_COLOR, fillOpacity: 0.08,
+          color: TRACK_COLOR, weight: 2, opacity: 0.5, interactive: false
+        }));
+      } else if (isTestDrone) {
         // Test drones: use a DivIcon marker (large clickable area, always works)
         const testIcon = L.divIcon({
           className: '',
@@ -721,6 +1239,33 @@ function updateMap(sensors, drones, nodeList) {
           radius: 22, fillColor: color, fillOpacity: 0.1,
           color: color, weight: 2, opacity: 0.3, interactive: false
         }));
+      } else if (isRID) {
+        // ASTM Remote ID drone: quadcopter glyph + red RID badge.
+        // Inline SVG body (4 rotors + central hub, 22×22 viewport).
+        const svg =
+          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">' +
+            '<g stroke="#fff" stroke-width="1.2" fill="'+color+'" stroke-linecap="round">' +
+              '<line x1="3" y1="3" x2="8" y2="8"/>' +
+              '<line x1="19" y1="3" x2="14" y2="8"/>' +
+              '<line x1="3" y1="19" x2="8" y2="14"/>' +
+              '<line x1="19" y1="19" x2="14" y2="14"/>' +
+              '<circle cx="3" cy="3" r="2.2"/>' +
+              '<circle cx="19" cy="3" r="2.2"/>' +
+              '<circle cx="3" cy="19" r="2.2"/>' +
+              '<circle cx="19" cy="19" r="2.2"/>' +
+              '<rect x="8" y="8" width="6" height="6" rx="1"/>' +
+            '</g>' +
+          '</svg>';
+        const ridIcon = L.divIcon({
+          className: '',
+          html:
+            '<div style="position:relative;width:22px;height:22px;cursor:pointer;filter:drop-shadow(0 0 3px '+color+'aa)">' +
+              svg +
+              '<div style="position:absolute;right:-4px;bottom:-4px;background:#ff2d55;color:#fff;font-size:7px;font-weight:900;padding:1px 3px;border-radius:2px;letter-spacing:0.3px;line-height:1;border:1px solid #fff">RID</div>' +
+            '</div>',
+          iconSize: [22, 22], iconAnchor: [11, 11]
+        });
+        marker = L.marker([d.lat, d.lon], { icon: ridIcon, zIndexOffset: 1500 });
       } else {
         // Regular devices: circle marker
         marker = L.circleMarker([d.lat, d.lon], {
@@ -740,10 +1285,17 @@ function updateMap(sensors, drones, nodeList) {
       ) : '';
 
       marker.bindPopup(popupContent + lockonButtons, { maxWidth: 300 });
+      marker._fofDroneId = d.drone_id;  // Tag for locate feature
       droneLayerGroup.addLayer(marker);
 
-      // Accuracy circle for trilaterated positions (non-interactive so clicks pass through)
-      if (d.accuracy_m && d.accuracy_m > 0 && d.position_source !== 'range_only') {
+      // Accuracy circle — only drawn for devices the user actually cares to
+      // see uncertainty on (RID drones, real-drone classes, or anything the
+      // user has explicitly selected). WiFi APs, hotspots, and unknowns used
+      // to spray big yellow circles across the map.
+      const drawAcc = d.accuracy_m && d.accuracy_m > 0
+                      && d.position_source !== 'range_only'
+                      && (isTracked || isRID || ACCURACY_CIRCLE_CLASSES.has(cls));
+      if (drawAcc) {
         circleLayerGroup.addLayer(L.circle([d.lat, d.lon], {
           radius: d.accuracy_m, fillColor: color, fillOpacity: 0.08,
           color: color, weight: 1, opacity: 0.3, dashArray: '4 4',
@@ -797,19 +1349,27 @@ function updateMap(sensors, drones, nodeList) {
   });
 
   // ── Trails ──────────────────────────────────────────────────────────
+  // Default: off. When on, we still only render trails for drones the user
+  // has explicitly tracked (via Lock/Track) — the whole point of a trail is
+  // to answer "has this specific device moved" after you've pinned it.
   trailLayerGroup.clearLayers();
-  if (document.getElementById('map-trails').checked) {
+  const trailsRow = document.getElementById('map-trails-row');
+  if (trailsRow) trailsRow.style.opacity = (trackedDevices.size === 0) ? '0.5' : '1';
+  if (document.getElementById('map-trails').checked && trackedDevices.size > 0) {
     f(API + '/detections/trails').then(trailData => {
       if (!trailData || !trailData.trails) return;
       for (const [devId, points] of Object.entries(trailData.trails)) {
         if (points.length < 2) continue;
-        // Match color to device classification if on map, else white
+        // Only tracked devices get a trail
+        if (!(trackedDevices.has(devId) ||
+              [...trackedDevices].some(t => devId.includes(t) || t.includes(devId)))) continue;
+        if (!visibleDroneIds.has(devId)) continue;
         const matchDrone = drones.find(dr => dr.drone_id === devId);
-        const cls = matchDrone ? matchDrone.classification : null;
-        const isTest = cls === 'test_drone' || devId.toUpperCase().startsWith('FOF');
-        const trailColor = isTest ? '#bf00ff' : (matchDrone ? (CLS_COLORS[cls] || '#ffffff44') : '#ffffff22');
+        const cls = matchDrone ? matchDrone.classification : '';
+        const isTest = cls === 'test_drone' || devId.toUpperCase().startsWith('FOF-DRONE-');
+        const trailColor = isTest ? '#bf00ff' : (CLS_COLORS[cls] || '#3fb950');
         const trailWeight = isTest ? 5 : 2;
-        const trailOpacity = isTest ? 0.9 : 0.3;
+        const trailOpacity = isTest ? 0.9 : 0.5;
         const dotRadius = isTest ? 5 : 2;
         const coords = points.map(p => [p.lat, p.lon]);
         // Trail line
@@ -840,7 +1400,13 @@ function updateMap(sensors, drones, nodeList) {
     });
   }
 
-  document.getElementById('map-count').textContent = mapShown + '/' + drones.length + ' shown';
+  const trackingInfo = trackedDevices.size > 0 ? ' | TRACKING: ' + trackedDevices.size : '';
+  document.getElementById('map-count').textContent = mapShown + '/' + drones.length + ' shown' + trackingInfo;
+  if (trackedDevices.size > 0) {
+    document.getElementById('map-count').style.color = '#ff00ff';
+  } else {
+    document.getElementById('map-count').style.color = '#484f58';
+  }
 
   // Center map on sensor cluster — only on first load, don't interrupt user panning
   if (bounds.length > 0 && !mapCentered) {
@@ -851,9 +1417,9 @@ function updateMap(sensors, drones, nodeList) {
     const latSpread = Math.max(...lats) - Math.min(...lats);
     const lonSpread = Math.max(...lons) - Math.min(...lons);
     if (latSpread < 0.005 && lonSpread < 0.005) {
-      leafletMap.setView([centerLat, centerLon], 18);
+      leafletMap.setView([centerLat, centerLon], 20);
     } else {
-      leafletMap.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+      leafletMap.fitBounds(bounds, { padding: [40, 40], maxZoom: 20 });
     }
     mapCentered = true;
   }
@@ -864,7 +1430,7 @@ async function populateHistoryDropdown() {
   const sel = document.getElementById('hist-device');
   if (!sel) return;
   // Get known devices from the map data + known_devices
-  const map = await f(API+'/detections/drones/map');
+  const map = await f(API+'/detections/drones/map?exclude_known=false');
   if (!map) return;
   const devices = new Set();
   map.drones.forEach(d => devices.add(d.drone_id));
@@ -932,7 +1498,7 @@ async function loadHistory() {
   }).bindPopup('END: '+new Date(points[points.length-1].timestamp).toLocaleTimeString()));
 
   // Fit map to history
-  leafletMap.fitBounds(coords, { padding: [40, 40], maxZoom: 19 });
+  leafletMap.fitBounds(coords, { padding: [40, 40], maxZoom: 20 });
 
   status.textContent = data.point_count+' points | '+data.total_distance_m+'m traveled | avg acc: '+data.avg_accuracy_m+'m';
 }
@@ -991,20 +1557,105 @@ async function markTrackerKnown(fp) {
   } catch(e) { console.error('Mark known failed:', e); }
 }
 
+/* Tracked devices — highlighted in magenta on the map */
+const trackedDevices = new Set();
+const TRACK_COLOR = '#ff00ff';  // Magenta for tracked devices
+
 function trackDevice(deviceId) {
   if (!deviceId) return;
+
+  // Toggle tracking
+  if (trackedDevices.has(deviceId)) {
+    trackedDevices.delete(deviceId);
+  } else {
+    trackedDevices.add(deviceId);
+  }
+
+  // Auto-enable trails so the user can see motion as soon as they track a device
+  const trails = document.getElementById('map-trails');
+  if (trails && trackedDevices.size > 0 && !trails.checked) trails.checked = true;
+
+  // Show all devices on map
+  const hideUnk = document.getElementById('map-hide-unknown');
+  if (hideUnk) hideUnk.checked = false;
+  const hideRange = document.getElementById('map-hide-range');
+  if (hideRange) hideRange.checked = false;
+  const showProbes = document.getElementById('map-show-probes');
+  if (showProbes) showProbes.checked = true;
+
   switchTab('map');
-  // Set the history device dropdown if it matches
+
+  // Re-render immediately so the trail appears/disappears without waiting
+  // for the next 5 s poll.
+  _refreshMapFromCache();
+
+  // After map refreshes, find and highlight the device
+  // Try multiple times since map data refreshes every 5s
+  let found = false;
+  const tryFind = () => {
+    if (found) return;
+    // Normalize: extract fingerprint hash from BLE:HASH:Type format
+    const searchTerms = [deviceId];
+    if (deviceId.startsWith('BLE:')) {
+      const parts = deviceId.split(':');
+      if (parts.length >= 2) searchTerms.push('FP:' + parts[1]);
+    }
+    if (deviceId.startsWith('FP:')) searchTerms.push(deviceId);
+    if (deviceId.startsWith('probe_')) searchTerms.push(deviceId);
+
+    if (droneLayerGroup) {
+      droneLayerGroup.eachLayer(layer => {
+        if (found) return;
+        const lid = layer._fofDroneId || '';
+        const popup = layer.getPopup ? layer.getPopup() : null;
+        const popContent = popup ? popup.getContent() : '';
+        const match = searchTerms.some(t => lid === t || lid.includes(t) || popContent.includes(t));
+        if (match) {
+          const ll = layer.getLatLng();
+          if (ll && leafletMap) {
+            leafletMap.setView(ll, 20);
+            layer.openPopup();
+            found = true;
+          }
+        }
+      });
+    }
+    if (!found && sensorLayerGroup) {
+      sensorLayerGroup.eachLayer(layer => {
+        if (found) return;
+        if (layer._fofDeviceId && searchTerms.some(t => layer._fofDeviceId === t || t.includes(layer._fofDeviceId))) {
+          const ll = layer.getLatLng();
+          if (ll && leafletMap) { leafletMap.setView(ll, 20); layer.openPopup(); found = true; }
+        }
+      });
+    }
+  };
+  // Try immediately, then again after map refreshes
+  setTimeout(tryFind, 500);
+  setTimeout(tryFind, 2000);
+  setTimeout(tryFind, 5000);
+
+  // Set history dropdown
   const dropdown = document.getElementById('hist-device');
   if (dropdown) {
     for (const opt of dropdown.options) {
       if (opt.value === deviceId || opt.text.includes(deviceId)) {
         dropdown.value = opt.value;
-        dropdown.dispatchEvent(new Event('change'));
         break;
       }
     }
   }
+}
+
+/* Locate button HTML helper — use in any tab to add a clickable locate icon */
+function locateBtn(deviceId) {
+  const esc = (deviceId || '').replace(/'/g, "\\'");
+  const isTracked = trackedDevices.has(deviceId);
+  const bg = isTracked ? '#ff00ff22' : '#1f6feb22';
+  const border = isTracked ? '#ff00ff44' : '#1f6feb44';
+  const col = isTracked ? '#ff00ff' : '#1f6feb';
+  const label = isTracked ? '&#x2716; UNTRACK' : '&#x1F4CD;';
+  return '<button onclick="trackDevice(\''+esc+'\')" style="background:'+bg+';border:1px solid '+border+';color:'+col+';padding:1px 5px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700" title="'+(isTracked?'Stop tracking':'Track on map')+'">'+label+'</button>';
 }
 
 async function findUplink() {
@@ -1020,9 +1671,18 @@ async function findUplink() {
 async function refreshWifi() {
   if (pausedFeeds.has('wifi')) return;
   const showAP = document.getElementById('wifi-show-ap').checked;
-  const data = await f(API+'/detections/grouped?max_age_s=120&exclude_known_ap='+(showAP?'false':'true'));
+  const [data, probeData] = await Promise.all([
+    f(API+'/detections/grouped?max_age_s=120&exclude_known_ap='+(showAP?'false':'true')),
+    f(API+'/detections/probes/history?hours=1')
+  ]);
   if (!data) return;
-  const wifi = data.devices.filter(d => d.source && !d.source.includes('ble') && d.source !== 'wifi_probe_request');
+  const wifi = data.devices.filter(d => d.source && !d.source.includes('ble') && d.source !== 'wifi_probe_request' && d.classification !== 'mobile_hotspot');
+
+  // Build probe count map: SSID → number of devices probing for it
+  const probeCountBySSID = {};
+  if (probeData && probeData.hot_ssids) {
+    probeData.hot_ssids.forEach(s => { probeCountBySSID[s.ssid] = s.device_count; });
+  }
   const sum = document.getElementById('wifi-summary');
 
   const drones = wifi.filter(d => ['confirmed_drone','likely_drone','test_drone'].includes(d.classification));
@@ -1036,7 +1696,7 @@ async function refreshWifi() {
     '<div class="sb-item">Multi-sensor: <span class="sb-val val '+(multi.length>0?'ok':'')+'">'+multi.length+'</span></div>';
 
   if (wifi.length > 0) {
-    updateFeed('wifi-feed', '<table><tr><th onclick="sortTable(this)">Age</th><th onclick="sortTable(this)">Class</th><th onclick="sortTable(this)">SSID</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th>Per-Sensor</th><th onclick="sortTable(this)">Conf</th><th onclick="sortTable(this)">BSSID</th><th onclick="sortTable(this)">Mfr</th><th onclick="sortTable(this)">Hits</th><th></th></tr>'+
+    updateFeed('wifi-feed', '<table><tr><th onclick="sortTable(this)">Age</th><th onclick="sortTable(this)">Class</th><th onclick="sortTable(this)">SSID</th><th>Probing</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th>Per-Sensor</th><th onclick="sortTable(this)">BSSID</th><th onclick="sortTable(this)">Mfr</th><th onclick="sortTable(this)">Hits</th><th></th></tr>'+
       wifi.map(d => {
         const cls = d.classification || '';
         const rowCls = d.sensor_count >= 2 ? ' class="multi-sensor"' : cls === 'test_drone' ? ' class="test-drone"' : '';
@@ -1051,6 +1711,7 @@ async function refreshWifi() {
           '<td>'+d.age_s+'s</td>' +
           '<td>'+clsBadge(cls)+'</td>' +
           '<td style="font-weight:700;color:#c9d1d9">'+(ssid || d.drone_id)+'</td>' +
+          '<td>'+(probeCountBySSID[ssid] ? '<span style="color:#d29922;font-weight:700">'+probeCountBySSID[ssid]+' devices</span>' : '<span style="color:#484f58">—</span>')+'</td>' +
           '<td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td>' +
           '<td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td>' +
           '<td>'+sRssi+'</td>' +
@@ -1193,6 +1854,111 @@ function setProbeWindow(h) {
   refreshProbes();
 }
 
+async function refreshEntities() {
+  if (pausedFeeds.has('entities')) return;
+  const activeOnly = document.getElementById('entity-active-only').checked;
+  const data = await f(API+'/detections/entities?active_only='+activeOnly+'&limit=50');
+  const el = document.getElementById('entity-list');
+  const statsEl = document.getElementById('entity-stats');
+
+  if (data && data.stats) {
+    statsEl.textContent = data.stats.active_entities+' active / '+data.stats.total_entities+' total entities, '+data.stats.total_components+' signals correlated';
+  }
+
+  if (data && data.entities && data.entities.length > 0) {
+    el.innerHTML = data.entities.map(e => {
+      const isNew = (Date.now()/1000 - e.first_seen) < 3600;
+      const trendIcon = e.rssi_trend === 'approaching' ? '<span style="color:#f85149">&#x2B06; APPROACHING</span>' :
+                        e.rssi_trend === 'departing' ? '<span style="color:#3fb950">&#x2B07; DEPARTING</span>' :
+                        e.rssi_trend === 'stationary' ? '<span style="color:#8b949e">&#x25CF; STATIONARY</span>' : '';
+      const statusColor = e.status === 'active' ? '#3fb950' : '#484f58';
+      const dur = e.duration_s < 60 ? e.duration_s+'s' : Math.floor(e.duration_s/60)+'m '+e.duration_s%60+'s';
+
+      // Components
+      const comps = e.components.map(c => {
+        const typeColor = c.type === 'ble' ? '#a371f7' : c.type === 'wifi_probe' ? '#d29922' : c.type === 'hotspot' ? '#e040fb' : '#8b949e';
+        const ssids = c.probed_ssids && c.probed_ssids.length > 0 ?
+          c.probed_ssids.filter(s=>s!=='(broadcast)').map(s=>'<span style="background:#1f6feb22;color:#58a6ff;padding:0 4px;border-radius:2px;font-size:9px;margin:0 1px">'+s+'</span>').join(' ') : '';
+        return '<div style="display:flex;gap:6px;align-items:center;padding:2px 0">' +
+          '<span class="badge" style="background:'+typeColor+'22;color:'+typeColor+';border:1px solid '+typeColor+'44;font-size:9px">'+c.type+'</span>' +
+          '<span style="font-family:monospace;font-size:10px;color:#c9d1d9">'+c.identifier.substring(0,25)+'</span>' +
+          (c.device_type && c.device_type !== 'Unknown' ? '<span style="color:#8b949e;font-size:10px">'+c.device_type+'</span>' : '') +
+          '<span class="rssi '+rssiClass(c.rssi)+'">'+c.rssi+'</span>' +
+          ssids + '</div>';
+      }).join('');
+
+      // Timeline (last 5 events)
+      const timeline = e.timeline.slice(-5).map(t =>
+        '<div style="font-size:9px;color:#484f58;padding:1px 0"><span style="color:#8b949e">'+ago(t.time)+'</span> '+t.event+'</div>'
+      ).join('');
+
+      // Sensors
+      const sensors = e.sensors_active.map(s => sensorLabel(s)).join(', ');
+
+      return '<div style="background:#161b22;border:1px solid '+(isNew?'#d29922':'#30363d')+';border-radius:8px;padding:12px;margin-bottom:8px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">' +
+          '<div style="font-size:14px;font-weight:700;color:#c9d1d9">' + (isNew ? '<span style="color:#d29922;font-size:10px;margin-right:6px">NEW</span>' : '') + e.label + '</div>' +
+          '<div style="display:flex;gap:8px;align-items:center">' + trendIcon +
+            '<span style="color:'+statusColor+';font-size:11px;font-weight:700">'+e.status.toUpperCase()+'</span>' +
+            locateBtn(e.components[0]?.identifier || e.entity_id) +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:16px;font-size:11px;color:#8b949e;margin-bottom:8px">' +
+          '<span>Duration: <b>'+dur+'</b></span>' +
+          '<span>Sensors: <b>'+sensors+'</b></span>' +
+          '<span>RSSI: <span class="rssi '+rssiClass(e.current_rssi)+'">'+e.current_rssi+'</span> (peak '+e.peak_rssi+')</span>' +
+          '<span>Signals: <b>'+e.component_count+'</b></span>' +
+          (e.probed_ssids.length > 0 ? '<span>Probing: <b>'+e.probed_ssids.filter(s=>s!=='(broadcast)').length+' SSIDs</b></span>' : '') +
+        '</div>' +
+        '<div style="margin-bottom:6px">'+comps+'</div>' +
+        (timeline ? '<div style="border-top:1px solid #21262d;padding-top:4px;margin-top:4px">'+timeline+'</div>' : '') +
+      '</div>';
+    }).join('');
+  } else {
+    el.innerHTML = '<div class="empty">No entities tracked yet — detections are being correlated...</div>';
+  }
+}
+
+async function refreshMobile() {
+  if (pausedFeeds.has('mobile')) return;
+
+  // 1. Mobile hotspots from grouped endpoint
+  const grouped = await f(API+'/detections/grouped?max_age_s=120&exclude_known_ap=false');
+  const hotspotEl = document.getElementById('mobile-hotspots');
+  if (grouped) {
+    const hotspots = grouped.devices.filter(d => d.classification === 'mobile_hotspot');
+    if (hotspots.length > 0) {
+      hotspotEl.innerHTML = '<table><tr><th>SSID</th><th>BSSID</th><th>RSSI</th><th>Sensors</th><th>Age</th><th></th></tr>' +
+        hotspots.map(d => '<tr><td style="font-weight:700;color:#e040fb">'+d.ssid+'</td><td style="color:#484f58;font-size:10px">'+d.bssid+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+d.best_rssi+'</span></td><td>'+d.sensor_count+'</td><td>'+d.age_s.toFixed(0)+'s</td><td>'+locateBtn(d.drone_id)+'</td></tr>').join('') + '</table>';
+    } else {
+      hotspotEl.innerHTML = '<div class="empty">No mobile hotspots detected</div>';
+    }
+  }
+
+  // 2. Probe device profiles — group by MAC showing probed SSIDs
+  const probes = await f(API+'/detections/probes/history?hours=1');
+  const devEl = document.getElementById('mobile-probe-devices');
+  if (probes && probes.devices && probes.devices.length > 0) {
+    // Filter out broadcast-only devices
+    const realDevs = probes.devices.filter(d => d.ssids.some(s => s.ssid !== '(broadcast)'));
+    if (realDevs.length > 0) {
+      devEl.innerHTML = '<table><tr><th>Device MAC</th><th>Networks Searching For</th><th>Probes</th><th>RSSI</th><th>Sensors</th><th>Last Seen</th><th></th></tr>' +
+        realDevs.slice(0, 30).map(d => {
+          const ssidList = d.ssids.filter(s => s.ssid !== '(broadcast)').map(s =>
+            '<span style="background:#1f6feb22;color:#58a6ff;padding:1px 5px;border-radius:3px;font-size:10px;margin:1px">'+s.ssid+' <span style="color:#484f58">×'+s.count+'</span></span>'
+          ).join(' ');
+          const broadcastCount = d.ssids.filter(s => s.ssid === '(broadcast)').reduce((sum,s) => sum + s.count, 0);
+          return '<tr><td style="font-family:monospace;font-size:10px">'+d.mac+'</td><td>'+ssidList+(broadcastCount > 0 ? ' <span style="color:#484f58;font-size:9px">+'+broadcastCount+' broadcast</span>' : '')+'</td><td>'+d.total_probes+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+d.best_rssi+'</span></td><td>'+d.sensors.length+'</td><td style="font-size:10px;color:#8b949e">'+new Date(d.last_seen).toLocaleTimeString()+'</td><td>'+locateBtn(d.device)+'</td></tr>';
+        }).join('') + '</table>' +
+        '<div style="margin-top:6px;font-size:10px;color:#484f58">'+realDevs.length+' devices with targeted probes / '+probes.unique_devices+' total probe devices</div>';
+    } else {
+      devEl.innerHTML = '<div class="empty">No targeted probe requests (only broadcasts)</div>';
+    }
+  } else {
+    devEl.innerHTML = '<div class="empty">No probe data in the last hour</div>';
+  }
+}
+
 async function refreshProbes() {
   if (!document.getElementById('probes-auto-refresh').checked) return;
   if (pausedFeeds.has('probes')) return;
@@ -1307,7 +2073,7 @@ async function refresh() {
     const [health,nodes,map,recent,uplink] = await Promise.all([
       f(API+'/health'),
       f(API+'/detections/nodes/status'),
-      f(API+'/detections/drones/map'),
+      f(API+'/detections/drones/map?exclude_known=false&include_probes=' + (document.getElementById('map-show-probes')&&document.getElementById('map-show-probes').checked ? 'true' : 'false')),
       f(API+'/detections/grouped?max_age_s=60&exclude_known_ap=true'),
       uplinkDeviceId ? f(API+'/nodes/'+uplinkDeviceId+'/live',3000) : findUplink()
     ]);
@@ -1320,8 +2086,9 @@ async function refresh() {
 
     // Keep previous node list if API call failed (prevents flash to empty)
     if (nodes && nodes.nodes) { window._lastNodeList = nodes.nodes; }
-    // Filter out nodes not seen in 10 hours (36000s)
-    const nodeList = (window._lastNodeList || []).filter(n => n.age_s < 36000);
+    // Filter out nodes not seen in 10 hours (36000s), sort by device_id for stable order
+    const nodeList = (window._lastNodeList || []).filter(n => n.age_s < 36000)
+      .sort((a, b) => a.device_id.localeCompare(b.device_id));
     const onlineN=nodeList.filter(n=>n.online).length;
     document.getElementById('sensor-summary').textContent=onlineN+'/'+nodeList.length+' sensors online';
 
@@ -1344,11 +2111,13 @@ async function refresh() {
     });
 
     // Overview: Sensors
-    document.getElementById('ov-sensors').innerHTML=
+    const ovSensorsHtml=
       '<div class="metric"><span>Online</span><span class="val '+(onlineN>0?'ok':'err')+'">'+onlineN+'/'+nodeList.length+'</span></div>'+
       nodeList.filter(n=>n.online).map(n=>
-        '<div class="metric"><span>'+n.device_id+'</span><span class="val" style="font-size:10px">'+ago(n.last_seen)+'</span></div>'
+        '<div class="metric"><span>'+(n.name||n.device_id)+'</span><span class="val" style="font-size:10px">'+ago(n.last_seen)+'</span></div>'
       ).join('');
+    const ovEl=document.getElementById('ov-sensors');
+    if(ovEl.innerHTML!==ovSensorsHtml) ovEl.innerHTML=ovSensorsHtml;
 
     // Overview: WiFi breakdown
     const wifiDevices = recent ? recent.devices.filter(d => d.source && !d.source.includes('ble')) : [];
@@ -1438,9 +2207,12 @@ async function refresh() {
     refreshWifi();
     refreshBLE();
     refreshProbes();
+    refreshMobile();
+    refreshEntities();
     refreshWhitelistTab();
     refreshAnomalies();
     refreshDetections();
+    refreshAlerts();
 
     // NODES TAB — skip rebuild if user is interacting (but don't exit refresh)
     if (!pausedFeeds.has('nodes')) {
@@ -1478,7 +2250,7 @@ async function refresh() {
 
     const nl=document.getElementById('node-list');
     if(nodeList.length>0){
-      nl.innerHTML=nodeList.map(n=>{
+      const newHtml=nodeList.map(n=>{
         const on=n.online;
         const fw=n.firmware_version||'?';
         return '<div class="node" style="cursor:pointer" onclick="toggleSensorDetail(\''+n.device_id+'\')">'+
@@ -1514,7 +2286,9 @@ async function refresh() {
           '<div id="sensor-detail-'+n.device_id+'" style="display:none;margin-top:8px;border-top:1px solid #30363d;padding-top:8px"></div>'+
         '</div>';
       }).join('');
-    } else { nl.innerHTML='<div class="empty">No nodes have reported in yet</div>'; }
+      // Only update DOM if content actually changed — prevents flicker
+      if (nl.innerHTML !== newHtml) { nl.innerHTML = newHtml; }
+    } else if (nl.innerHTML.indexOf('No nodes') === -1) { nl.innerHTML='<div class="empty">No nodes have reported in yet</div>'; }
     } // end if (!pausedFeeds.has('nodes'))
 
     document.getElementById('footer').textContent=new Date().toLocaleTimeString()+' | #'+refreshN;
@@ -1559,7 +2333,7 @@ async function refreshAnomalies() {
   if (data && data.alerts && data.alerts.length > 0) {
     const sevColor={info:'blue',warning:'warn',critical:'err'};
     af.innerHTML='<table><tr><th>Time</th><th>Sev</th><th>Type</th><th>Device</th><th>Message</th></tr>'+
-      data.alerts.map(a=>'<tr><td>'+ago(a.timestamp)+'</td><td><span class="val '+sevColor[a.severity]+'">'+a.severity+'</span></td><td><span class="badge">'+a.alert_type+'</span></td><td>'+a.ssid+'</td><td>'+a.message+'</td></tr>').join('')+'</table>';
+      data.alerts.map(a=>'<tr><td>'+ago(a.timestamp)+'</td><td><span class="val '+sevColor[a.severity]+'">'+a.severity+'</span></td><td><span class="badge">'+a.alert_type+'</span></td><td>'+a.ssid+'</td><td>'+a.message+'</td><td>'+locateBtn(a.device_id||a.ssid)+'</td></tr>').join('')+'</table>';
   } else { af.innerHTML='<div class="empty">No anomalies — monitoring RF</div>'; }
 
   const dd = document.getElementById('anom-devices');
@@ -1567,7 +2341,7 @@ async function refreshAnomalies() {
     dd.innerHTML='<table><tr><th>SSID</th><th>BSSID</th><th>RSSI</th><th>Avg</th><th>Vel</th><th>Age</th><th>Idle</th><th>Rds</th></tr>'+
       devices.devices.slice(0,30).map(d=>{
         const vc=d.rssi_velocity>1?'warn':d.rssi_velocity<-1?'blue':'';
-        return '<tr><td style="font-weight:700">'+d.ssid+'</td><td style="color:#484f58">'+d.bssid+'</td><td><span class="rssi '+rssiClass(d.last_rssi)+'">'+d.last_rssi+'</span></td><td><span class="rssi '+rssiClass(d.avg_rssi)+'">'+d.avg_rssi+'</span></td><td><span class="val '+vc+'">'+d.rssi_velocity.toFixed(1)+'</span></td><td>'+Math.round(d.age_s)+'s</td><td>'+Math.round(d.idle_s)+'s</td><td>'+d.reading_count+'</td></tr>';
+        return '<tr><td style="font-weight:700">'+d.ssid+'</td><td style="color:#484f58">'+d.bssid+'</td><td><span class="rssi '+rssiClass(d.last_rssi)+'">'+d.last_rssi+'</span></td><td><span class="rssi '+rssiClass(d.avg_rssi)+'">'+d.avg_rssi+'</span></td><td><span class="val '+vc+'">'+d.rssi_velocity.toFixed(1)+'</span></td><td>'+Math.round(d.age_s)+'s</td><td>'+Math.round(d.idle_s)+'s</td><td>'+d.reading_count+'</td><td>'+locateBtn(d.ssid||d.bssid)+'</td></tr>';
       }).join('')+'</table>';
   } else { dd.innerHTML='<div class="empty">No devices tracked yet</div>'; }
 }
@@ -1577,13 +2351,137 @@ async function refreshDetections() {
   const grouped = await f(API+'/detections/grouped?max_age_s=120&exclude_known_ap=false');
   const dc = document.getElementById('det-count');
   if (grouped && grouped.count > 0) {
-    dc.textContent = grouped.count + ' unique devices';
-    updateFeed('det-feed', '<table><tr><th onclick="sortTable(this)">Age</th><th onclick="sortTable(this)">Class</th><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Src</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th>Sensor RSSI</th><th onclick="sortTable(this)">Hits</th><th onclick="sortTable(this)">Mfr</th></tr>'+
-      grouped.devices.map(d => {
+    const srcFilter = document.getElementById('det-source').value;
+    const confFilter = parseFloat(document.getElementById('det-filter').value) || 0;
+    let devs = grouped.devices;
+    if (srcFilter) devs = devs.filter(d => d.source === srcFilter);
+    if (confFilter > 0) devs = devs.filter(d => d.best_confidence >= confFilter);
+    dc.textContent = devs.length + ' / ' + grouped.count + ' devices';
+    updateFeed('det-feed', '<table><tr><th onclick="sortTable(this)">Age</th><th onclick="sortTable(this)">Class</th><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Type</th><th onclick="sortTable(this)">Src</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th>Sensor RSSI</th><th onclick="sortTable(this)">Hits</th><th onclick="sortTable(this)">Mfr</th></tr>'+
+      devs.map(d => {
         const sRssi = Object.entries(d.sensor_rssi||{}).map(([k,v])=>sensorLabel(k)+':'+v).join(' ');
-        return '<tr><td>'+d.age_s+'s</td><td>'+clsBadge(d.classification)+'</td><td style="font-weight:700">'+(d.ssid||d.drone_id)+'</td><td>'+srcBadge(d.source)+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td><td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td><td style="font-size:10px">'+sRssi+'</td><td>'+d.detection_count+'</td><td style="color:#8b949e">'+(d.manufacturer||'-')+'</td></tr>';
+        // Extract device type from BLE drone_id (BLE:HASH:TypeName)
+        let devType = '';
+        if (d.drone_id && d.drone_id.startsWith('BLE:')) {
+          const parts = d.drone_id.split(':');
+          if (parts.length >= 3) devType = parts.slice(2).join(':');
+        } else if (d.source === 'wifi_probe_request') {
+          devType = 'Probe Req';
+        } else if (d.source === 'wifi_oui') {
+          devType = 'Access Point';
+        } else if (d.source === 'wifi_ssid') {
+          devType = 'SSID Match';
+        }
+        // Show SSID for WiFi, drone_id for BLE (without type suffix)
+        let devName = d.ssid || d.drone_id || '?';
+        if (d.source && d.source.startsWith('wifi') && d.ssid) {
+          devName = d.ssid;
+        }
+        // Mfr: use manufacturer, or extract from BSSID OUI for WiFi
+        const mfr = d.manufacturer || '';
+        const bssid = d.bssid || '';
+        const mfrDisplay = mfr || (bssid ? '<span style="color:#484f58" title="'+bssid+'">'+bssid.substring(0,8)+'</span>' : '-');
+        return '<tr><td>'+d.age_s+'s</td><td>'+clsBadge(d.classification)+'</td><td style="font-weight:700">'+devName+'</td><td style="font-size:10px;color:#8b949e">'+devType+'</td><td>'+srcBadge(d.source)+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td><td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td><td style="font-size:10px">'+sRssi+'</td><td>'+d.detection_count+'</td><td style="color:#8b949e">'+mfrDisplay+'</td></tr>';
       }).join('') + '</table>');
   } else { dc.textContent=''; updateFeed('det-feed','<div class="empty">No detections</div>'); }
+}
+
+async function refreshAlerts() {
+  if (pausedFeeds.has('alerts')) return;
+
+  // 1. Active Drones
+  const da = await f(API+'/detections/drone-alerts');
+  const droneEl = document.getElementById('alert-drones');
+  if (da && da.active_drone_count > 0) {
+    droneEl.innerHTML = '<table><tr><th>Drone</th><th>Class</th><th>Sensors</th><th>Position</th><th>RSSI</th><th>Age</th></tr>' +
+      da.active_drones.map(d => {
+        const rssiList = (d.observations||[]).map(o=>'<span class="rssi '+rssiClass(o.rssi)+'">'+o.rssi+'</span>').join('/');
+        const pos = d.lat ? d.lat.toFixed(5)+', '+d.lon.toFixed(5) : 'unknown';
+        return '<tr style="background:#f8514911"><td style="font-weight:700;color:#f85149">'+d.drone_id+'</td><td>'+clsBadge(d.classification)+'</td><td>'+d.sensor_count+'</td><td>'+pos+'</td><td>'+rssiList+'</td><td>'+d.age_s.toFixed(0)+'s</td><td>'+locateBtn(d.drone_id)+'</td></tr>';
+      }).join('') + '</table>' +
+      (da.recent_alerts.length > 0 ? '<div style="margin-top:8px;font-size:11px;color:#8b949e">Recent: ' +
+        da.recent_alerts.slice(-5).map(a => '<span style="color:#f85149">'+a.drone_id+'</span> ('+ago(a.timestamp)+')').join(' | ') + '</div>' : '');
+  } else {
+    droneEl.innerHTML = '<div class="empty" style="color:#3fb950">No active drone alerts — airspace clear</div>';
+  }
+
+  // 2. Trackers
+  const devData = await f(API+'/detections/devices/live?trackers_only=true');
+  const trackerEl = document.getElementById('alert-trackers');
+  if (devData && devData.devices && devData.devices.length > 0) {
+    trackerEl.innerHTML = '<table><tr><th>Device</th><th>Type</th><th>RSSI</th><th>MACs</th><th>Sensors</th><th>Age</th></tr>' +
+      devData.devices.map(d => {
+        const macCount = d.bssids_seen ? d.bssids_seen.length : 1;
+        return '<tr><td style="font-weight:700;color:#d29922">'+d.fingerprint+'</td><td>'+d.device_type+'</td><td><span class="rssi '+rssiClass(d.rssi)+'">'+d.rssi+'</span></td><td>'+macCount+'</td><td>'+d.sensor_count+'</td><td>'+d.age_s.toFixed(0)+'s</td><td>'+locateBtn(d.fingerprint)+'</td></tr>';
+      }).join('') + '</table>';
+  } else {
+    trackerEl.innerHTML = '<div class="empty">No trackers detected</div>';
+  }
+
+  // 3. BLE Device Fingerprints (interesting ones)
+  const allDevs = await f(API+'/detections/devices/live');
+  const bleEl = document.getElementById('alert-devices');
+  const countEl = document.getElementById('alert-device-count');
+  const hideUnk = document.getElementById('alert-hide-unknown').checked;
+  const showMacs = document.getElementById('alert-show-macs').checked;
+  if (allDevs && allDevs.devices && allDevs.devices.length > 0) {
+    let devs = allDevs.devices;
+    if (hideUnk) devs = devs.filter(d => d.device_type !== 'Unknown' && d.device_type !== 'Transient');
+    countEl.textContent = devs.length + ' / ' + allDevs.devices.length + ' devices';
+    if (devs.length > 0) {
+      bleEl.innerHTML = '<table><tr><th>Fingerprint</th><th>Type</th><th>Mfr</th><th>RSSI</th><th>MACs Seen</th><th>Sensors</th><th>Age</th>' + (showMacs ? '<th>MAC Addresses</th>' : '') + '</tr>' +
+        devs.slice(0, 50).map(d => {
+          const macCount = d.bssids_seen ? d.bssids_seen.length : 1;
+          const macList = showMacs && d.bssids_seen ? d.bssids_seen.slice(0,5).join(', ') + (d.bssids_seen.length > 5 ? ' +' + (d.bssids_seen.length-5) + ' more' : '') : '';
+          const typeColor = d.is_tracker ? '#d29922' : d.device_type === 'Drone Controller' || d.device_type === 'Drone' ? '#f85149' : '#c9d1d9';
+          return '<tr><td style="font-family:monospace;font-size:10px">'+d.fingerprint+'</td><td style="color:'+typeColor+';font-weight:700">'+d.device_type+'</td><td style="color:#8b949e">'+d.manufacturer+'</td><td><span class="rssi '+rssiClass(d.rssi)+'">'+d.rssi+'</span></td><td>'+(macCount > 1 ? '<span style="color:#d29922">'+macCount+'</span>' : macCount)+'</td><td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td><td>'+d.age_s.toFixed(0)+'s</td>' + (showMacs ? '<td style="font-size:9px;color:#484f58">'+macList+'</td>' : '') + '<td>'+locateBtn(d.fingerprint)+'</td></tr>';
+        }).join('') + '</table>';
+    } else {
+      bleEl.innerHTML = '<div class="empty">All devices are Unknown type (uncheck filter to see)</div>';
+    }
+  }
+
+  // 4. WiFi Probe Activity
+  const probes = await f(API+'/detections/probes/history?hours=1');
+  const probeEl = document.getElementById('alert-probes');
+  if (probes && probes.devices && probes.devices.length > 0) {
+    probeEl.innerHTML =
+      '<div style="margin-bottom:8px;font-size:11px;color:#8b949e">' + probes.unique_devices + ' devices probing for ' + probes.unique_ssids + ' SSIDs in the last hour</div>' +
+      '<table><tr><th>Device MAC</th><th>SSIDs Probed</th><th>Count</th><th>Best RSSI</th><th>Sensors</th></tr>' +
+      probes.devices.slice(0, 20).map(d => {
+        const ssids = d.ssids.slice(0, 5).map(s => s.ssid).join(', ') + (d.ssids.length > 5 ? ' +' + (d.ssids.length-5) + ' more' : '');
+        return '<tr><td style="font-family:monospace;font-size:10px">'+d.mac+'</td><td style="font-size:11px">'+ssids+'</td><td>'+d.total_probes+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+d.best_rssi+'</span></td><td>'+d.sensors.length+'</td><td>'+locateBtn(d.device)+'</td></tr>';
+      }).join('') + '</table>' +
+      (probes.hot_ssids && probes.hot_ssids.length > 0 ? '<div style="margin-top:12px"><div style="font-size:12px;font-weight:700;color:#ff9500;margin-bottom:6px">Hot SSIDs (probed by multiple devices)</div>' +
+        '<table><tr><th>SSID</th><th>Devices</th><th>Probes</th><th>Best RSSI</th></tr>' +
+        probes.hot_ssids.slice(0,10).map(s => '<tr><td style="font-weight:700">'+s.ssid+'</td><td>'+s.device_count+'</td><td>'+s.total_probes+'</td><td><span class="rssi '+rssiClass(s.best_rssi)+'">'+s.best_rssi+'</span></td></tr>').join('') + '</table></div>' : '');
+  } else {
+    probeEl.innerHTML = '<div class="empty">No probe data in the last hour</div>';
+  }
+
+  // 5. Alert History (drone + anomaly combined)
+  const anomalies = await f(API+'/detections/anomalies?limit=20');
+  const histEl = document.getElementById('alert-history');
+  const allAlerts = [];
+  if (da && da.recent_alerts) {
+    da.recent_alerts.forEach(a => allAlerts.push({...a, category: 'drone', time: a.timestamp}));
+  }
+  if (anomalies && anomalies.alerts) {
+    anomalies.alerts.forEach(a => allAlerts.push({...a, category: 'anomaly', time: a.timestamp}));
+  }
+  allAlerts.sort((a,b) => b.time - a.time);
+  if (allAlerts.length > 0) {
+    const sevColor = {critical:'#f85149',warning:'#d29922',info:'#8b949e',medium:'#d29922',high:'#f85149'};
+    histEl.innerHTML = '<table><tr><th>Time</th><th>Severity</th><th>Type</th><th>Message</th></tr>' +
+      allAlerts.slice(0, 30).map(a => {
+        const col = sevColor[a.severity] || '#8b949e';
+        const timeStr = a.age_s !== undefined ? a.age_s.toFixed(0)+'s ago' : ago(a.time);
+        const alertId = a.drone_id || a.device_id || a.ssid || '';
+        return '<tr><td>'+timeStr+'</td><td><span class="badge" style="background:'+col+'22;color:'+col+';border:1px solid '+col+'44">'+a.severity+'</span></td><td style="color:#58a6ff">'+(a.alert_type||a.classification||'drone')+'</td><td style="font-size:11px">'+(a.message||a.drone_id)+'</td><td>'+(alertId ? locateBtn(alertId) : '')+'</td></tr>';
+      }).join('') + '</table>';
+  } else {
+    histEl.innerHTML = '<div class="empty">No alerts recorded</div>';
+  }
 }
 
 async function registerNode() {
@@ -1614,11 +2512,89 @@ function useMyLocation() {
   );
 }
 
+let placementMap = null;
+let placementMarker = null;
+let placementNodes = [];
+
+function initPlacementMap() {
+  if (placementMap) return;
+  const container = document.getElementById('placement-map-container');
+  if (!container) return;
+  placementMap = L.map(container, { zoomControl: true }).setView([37.7749, -122.4194], 18);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Esri', maxZoom: 20
+  }).addTo(placementMap);
+  // Add all existing sensors as non-draggable gray markers
+  placementMap._fofSensorMarkers = [];
+}
+
+function updatePlacementMap(deviceId) {
+  if (!placementMap) initPlacementMap();
+  if (!placementMap) return;
+
+  // Find selected device
+  const node = placementNodes.find(n => n.device_id === deviceId);
+  const lat = node && node.lat ? node.lat : 37.7749;
+  const lon = node && node.lon ? node.lon : -122.4194;
+
+  // Remove old placement marker
+  if (placementMarker) { placementMap.removeLayer(placementMarker); placementMarker = null; }
+
+  // Remove old sensor markers
+  (placementMap._fofSensorMarkers || []).forEach(m => placementMap.removeLayer(m));
+  placementMap._fofSensorMarkers = [];
+
+  // Add all sensors as small gray markers (context)
+  placementNodes.forEach(n => {
+    if (n.lat && n.lon && n.lat !== 0 && n.device_id !== deviceId) {
+      const m = L.circleMarker([n.lat, n.lon], {
+        radius: 6, fillColor: '#3fb950', fillOpacity: 0.5, color: '#fff', weight: 1
+      }).bindTooltip(n.name || n.device_id, { permanent: true, direction: 'right', offset: [8, 0],
+        className: 'sensor-label' });
+      m.addTo(placementMap);
+      placementMap._fofSensorMarkers.push(m);
+    }
+  });
+
+  // Add draggable placement marker
+  const placeIcon = L.divIcon({
+    className: '',
+    html: '<div style="width:24px;height:24px;background:#f85149;border:3px solid #fff;border-radius:50%;box-shadow:0 0 12px #f8514988;cursor:grab"></div>' +
+          '<div style="position:absolute;top:28px;left:-20px;white-space:nowrap;color:#f85149;font-size:11px;font-weight:700;text-shadow:0 0 4px #000">' + (node ? (node.name || deviceId) : deviceId) + '</div>',
+    iconSize: [24, 24], iconAnchor: [12, 12]
+  });
+  placementMarker = L.marker([lat, lon], { icon: placeIcon, draggable: true }).addTo(placementMap);
+  placementMarker.on('dragend', function() {
+    const pos = placementMarker.getLatLng();
+    document.getElementById('cfg-lat').value = pos.lat.toFixed(8);
+    document.getElementById('cfg-lon').value = pos.lng.toFixed(8);
+    document.getElementById('cfg-result').innerHTML = '<span style="color:#d29922">Marker moved — click Set Position to save</span>';
+  });
+
+  // Fill form fields
+  if (node) {
+    document.getElementById('cfg-name').value = node.name || '';
+    document.getElementById('cfg-lat').value = lat.toFixed(8);
+    document.getElementById('cfg-lon').value = lon.toFixed(8);
+  }
+
+  placementMap.setView([lat, lon], 19);
+  setTimeout(() => placementMap.invalidateSize(), 100);
+}
+
 async function updateNodeDropdown() {
   const sel=document.getElementById('cfg-device');
   const nodes=await f(API+'/detections/nodes/status');
   if(!nodes||!nodes.nodes.length)return;
-  sel.innerHTML=nodes.nodes.map(n=>'<option value="'+n.device_id+'">'+n.device_id+'</option>').join('');
+  placementNodes = nodes.nodes;
+  const prev = sel.value;
+  sel.innerHTML=nodes.nodes.map(n=>'<option value="'+n.device_id+'">'+(n.name||n.device_id)+'</option>').join('');
+  if (prev) sel.value = prev;
+  sel.onchange = function() { updatePlacementMap(sel.value); };
+  // Init placement map on first load
+  if (!placementMap && nodes.nodes.length > 0) {
+    setTimeout(() => updatePlacementMap(sel.value), 200);
+  }
 }
 
 async function updateScannerDiag() {
@@ -1824,8 +2800,199 @@ async function doOtaPush() {
   }
 }
 
+// ── Calibration (manual only — no auto-refresh) ─────────────────────
+let calPolling = false;
+
+async function runCalibration() {
+  const btn = document.getElementById('cal-run-btn');
+  btn.disabled = true;
+  btn.textContent = 'Starting...';
+  try {
+    const resp = await fetch(API + '/detections/calibrate', { method: 'POST' });
+    const data = await resp.json();
+    btn.textContent = 'Running...';
+    document.getElementById('cal-progress').textContent = data.progress || 'Calibration started...';
+    // Poll progress until complete
+    if (!calPolling) {
+      calPolling = true;
+      const poll = setInterval(async () => {
+        const s = await f(API + '/detections/calibrate/status');
+        if (!s) return;
+        document.getElementById('cal-progress').textContent = s.progress || '';
+        if (!s.running) {
+          clearInterval(poll);
+          calPolling = false;
+          btn.disabled = false;
+          btn.textContent = 'Run Calibration';
+          refreshCalibration();
+        }
+      }, 2000);
+    }
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Run Calibration';
+    document.getElementById('cal-progress').textContent = 'Error: ' + e.message;
+  }
+}
+
+async function refreshCalibration() {
+  const [model, status, history, matrix] = await Promise.all([
+    f(API + '/detections/calibrate/model'),
+    f(API + '/detections/calibrate/status'),
+    f(API + '/detections/calibrate/history'),
+    f(API + '/detections/calibrate/matrix'),
+  ]);
+
+  if (model) {
+    document.getElementById('cal-rssi-ref').textContent = model.rssi_ref.toFixed(1) + ' dBm';
+    document.getElementById('cal-path-loss').textContent = model.path_loss_exponent.toFixed(2);
+    document.getElementById('cal-r-squared').textContent = model.r_squared != null ? model.r_squared.toFixed(3) : '—';
+    document.getElementById('cal-r-squared').style.color = model.r_squared >= 0.7 ? '#3fb950' : model.r_squared >= 0.4 ? '#d29922' : '#f85149';
+    document.getElementById('cal-status').textContent = model.is_calibrated ? 'Calibrated' : 'Default';
+    document.getElementById('cal-status').style.color = model.is_calibrated ? '#3fb950' : '#8b949e';
+  }
+
+  if (status && status.running) {
+    document.getElementById('cal-progress').textContent = status.progress || 'Running...';
+    document.getElementById('cal-run-btn').disabled = true;
+    document.getElementById('cal-run-btn').textContent = 'Running...';
+  }
+
+  // Node-pair matrix — the main calibration visualization
+  const calMeas = document.getElementById('cal-measurements');
+  if (matrix && matrix.nodes && matrix.nodes.length > 0) {
+    const nodes = matrix.nodes;
+    const m = matrix.matrix;
+    const short = id => (id || '').replace('uplink_','').slice(-6);
+
+    // Build NxN grid header
+    let html = '<div style="font-size:11px;color:#8b949e;margin-bottom:6px">Node-Pair RSSI Matrix (broadcaster → listener)</div>';
+    html += '<table style="font-size:11px"><tr><th style="text-align:left">From \\ To</th>';
+    nodes.forEach(n => { html += '<th style="color:#58a6ff">' + short(n) + '</th>'; });
+    html += '<th style="color:#8b949e">Avg</th></tr>';
+
+    // Each row = one broadcaster
+    nodes.forEach(src => {
+      html += '<tr><td style="font-weight:700;color:#e040fb">' + short(src) + '</td>';
+      let rowRssi = [];
+      nodes.forEach(dst => {
+        if (src === dst) {
+          html += '<td style="color:#30363d;text-align:center">—</td>';
+        } else if (m[src] && m[src][dst]) {
+          const cell = m[src][dst];
+          const cls = rssiClass(cell.rssi);
+          rowRssi.push(cell.rssi);
+          html += '<td style="text-align:center" title="' + cell.distance_m.toFixed(1) + 'm, ' + cell.samples + ' samples">' +
+            '<span class="rssi ' + cls + '">' + cell.rssi.toFixed(0) + '</span>' +
+            '<div style="font-size:9px;color:#484f58">' + cell.distance_m.toFixed(0) + 'm</div></td>';
+        } else {
+          html += '<td style="color:#484f58;text-align:center">n/a</td>';
+        }
+      });
+      const avg = rowRssi.length > 0 ? (rowRssi.reduce((a,b)=>a+b,0)/rowRssi.length) : 0;
+      html += '<td style="text-align:center;color:#8b949e">' + (rowRssi.length > 0 ? avg.toFixed(0) : '—') + '</td></tr>';
+    });
+    html += '</table>';
+
+    // Per-pair detail with path loss estimates
+    if (matrix.pairs && matrix.pairs.length > 0) {
+      html += '<div style="margin-top:10px;font-size:11px;color:#8b949e;margin-bottom:4px">Per-Pair Path Loss Estimates</div>';
+      html += '<table style="font-size:11px"><tr><th>From</th><th>To</th><th>Distance</th><th>RSSI</th><th>Path Loss (n)</th><th>Samples</th></tr>';
+      matrix.pairs.forEach(p => {
+        const nColor = p.path_loss >= 2 && p.path_loss <= 4 ? '#3fb950' : '#d29922';
+        html += '<tr><td style="color:#e040fb">' + short(p.from) + '</td>' +
+          '<td style="color:#58a6ff">' + short(p.to) + '</td>' +
+          '<td>' + p.distance_m.toFixed(1) + 'm</td>' +
+          '<td><span class="rssi ' + rssiClass(p.rssi) + '">' + p.rssi.toFixed(1) + '</span></td>' +
+          '<td style="font-weight:700;color:' + nColor + '">' + p.path_loss.toFixed(2) + '</td>' +
+          '<td>' + p.samples + '</td></tr>';
+      });
+      html += '</table>';
+    }
+
+    calMeas.innerHTML = html;
+  } else if (!status || !status.running) {
+    // Only show empty state if not currently running
+    if (status && status.last_result && status.last_result.measurements && status.last_result.measurements.length > 0) {
+      // Fallback: show raw measurements if matrix isn't available yet
+      const ms = status.last_result.measurements;
+      calMeas.innerHTML =
+        '<div style="font-size:11px;color:#8b949e;margin-bottom:4px">' + ms.length + ' measurements from ' + status.last_result.node_count + ' nodes</div>' +
+        '<table><tr><th>Broadcaster</th><th>Listener</th><th>Distance</th><th>RSSI</th><th>Samples</th></tr>' +
+        ms.map(r =>
+          '<tr><td style="color:#e040fb;font-size:10px">' + (r.broadcaster||'').slice(-8) + '</td>' +
+          '<td style="color:#58a6ff;font-size:10px">' + (r.listener||'').slice(-8) + '</td>' +
+          '<td>' + r.distance_m.toFixed(1) + 'm</td>' +
+          '<td><span class="rssi ' + rssiClass(r.avg_rssi) + '">' + r.avg_rssi.toFixed(1) + '</span></td>' +
+          '<td>' + r.samples + '</td></tr>'
+        ).join('') + '</table>';
+    }
+  }
+
+  // Calibration history
+  if (history && history.history && history.history.length > 0) {
+    document.getElementById('cal-history').innerHTML =
+      '<div style="font-size:11px;color:#8b949e;margin-bottom:4px">Calibration History</div>' +
+      '<table><tr><th>Time</th><th>n</th><th>RSSI Ref</th><th>R²</th><th>Nodes</th><th>Measurements</th></tr>' +
+      history.history.map(h =>
+        '<tr><td style="font-size:10px">' + new Date(h.timestamp * 1000).toLocaleString() + '</td>' +
+        '<td style="font-weight:700;color:#58a6ff">' + h.path_loss_exponent.toFixed(2) + '</td>' +
+        '<td>' + h.rssi_ref.toFixed(1) + '</td>' +
+        '<td style="color:' + (h.r_squared >= 0.7 ? '#3fb950' : h.r_squared >= 0.4 ? '#d29922' : '#f85149') + '">' + h.r_squared.toFixed(3) + '</td>' +
+        '<td>' + h.node_count + '</td>' +
+        '<td>' + h.measurement_count + '</td></tr>'
+      ).join('') + '</table>';
+  }
+}
+
 updateNodeDropdown();
 populateHistoryDropdown();
+
+// Initialize the map filter side-panel from localStorage and wire up events.
+_loadMapFilterState();
+_renderMapClsCheckboxes();
+(function _initMapFilterPanel() {
+  const chev = document.getElementById('map-filter-chevron');
+  const body = document.getElementById('map-filter-body');
+  if (body) body.style.display = mapFilterOpen ? '' : 'none';
+  if (chev) chev.textContent   = mapFilterOpen ? '▼' : '▶';
+  const rid = document.getElementById('map-only-rid');
+  if (rid) { rid.checked = mapOnlyRid; rid.addEventListener('change', () => { mapOnlyRid = rid.checked; _saveMapFilterState(); _refreshMapFromCache(); }); }
+  const fp = document.getElementById('map-hide-fp');
+  if (fp) { fp.checked = mapHideFp; fp.addEventListener('change', () => { mapHideFp = fp.checked; _saveMapFilterState(); _refreshMapFromCache(); }); }
+  ['map-hide-range','map-hide-unknown','map-show-probes','map-trails','map-sensors','map-rssi','map-hide-random'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input',  _refreshMapFromCache);
+    if (el) el.addEventListener('change', _refreshMapFromCache);
+  });
+  // Layer checkboxes: toggle the corresponding layerGroup on/off the map.
+  const layerPairs = [
+    ['map-layer-sensors', 'sensors'],
+    ['map-layer-lines',   'lines'],
+    ['map-layer-circles', 'circles'],
+    ['map-layer-history', 'history'],
+  ];
+  layerPairs.forEach(([id, key]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.checked = !!mapLayers[key];
+    el.addEventListener('change', () => {
+      mapLayers[key] = el.checked;
+      _saveMapFilterState();
+      _applyLayerVisibility();
+      _refreshMapFromCache();
+    });
+  });
+  // Apply initial layer visibility + tile style once the map is up. The map
+  // may not be initialized yet when this IIFE runs (tab not shown), so defer.
+  function _applyOnce() {
+    if (!leafletMap || !leafletMap._fofDarkTile) { setTimeout(_applyOnce, 200); return; }
+    _applyLayerVisibility();
+    setMapTile(mapTile);  /* also styles the tile buttons */
+  }
+  _applyOnce();
+})();
+
 loadWhitelist().then(() => refresh());
 setInterval(refresh, 5000);
 setInterval(updateNodeDropdown, 30000);
@@ -1842,6 +3009,232 @@ setupPauseOnHover('probes-feed', 'probes');
 setupPauseOnHover('det-feed', 'detections');
 setupPauseOnHover('gps-summary', 'nodes');
 setupPauseOnHover('node-list', 'nodes');
+
+// ═════════════════════════════════════════════════════════════════════
+// First-seen events — tab feed, badge, sound, MAC whitelist
+// ═════════════════════════════════════════════════════════════════════
+
+const EV_COLORS = {
+  critical: '#f85149', warning: '#ff9500', info: '#58a6ff',
+};
+const EV_TYPE_LABEL = {
+  new_rid_drone:    'RID drone',
+  new_hostile_tool: 'Hostile tool',
+  new_glasses:      'Smart glasses',
+  new_tracker:      'Tracker',
+  new_probe_mac:    'Probe MAC',
+  new_probed_ssid:  'Probed SSID',
+  new_ap:           'WiFi AP',
+};
+
+let _evSeenIds = new Set();  // ids we've already rendered; used to detect fresh events for sound
+let _evFirstPoll = true;
+let _evSoundCtx = null;
+
+function _evSoundEnabled() {
+  const el = document.getElementById('ev-sound');
+  return !!(el && el.checked);
+}
+function _playDing() {
+  // Web Audio soft ding — no external asset, single oscillator blip.
+  try {
+    _evSoundCtx = _evSoundCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _evSoundCtx;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'sine'; o.frequency.value = 880;
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(); o.stop(ctx.currentTime + 0.36);
+  } catch (e) {}
+}
+
+function _fmtAge(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  const sec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.round(sec / 60) + 'm';
+  if (sec < 86400) return Math.round(sec / 3600) + 'h';
+  return Math.round(sec / 86400) + 'd';
+}
+
+function _renderEventCard(ev) {
+  const color = EV_COLORS[ev.severity] || '#8b949e';
+  const typeLabel = EV_TYPE_LABEL[ev.event_type] || ev.event_type;
+  const age = _fmtAge(ev.first_seen_at);
+  const rssi = ev.best_rssi != null ? ev.best_rssi + ' dBm' : '';
+  const sensors = ev.sensor_count + ' sensor' + (ev.sensor_count !== 1 ? 's' : '');
+  const wlBtn = (ev.event_type === 'new_probe_mac' || ev.event_type === 'new_ap')
+    ? '<button onclick="whitelistFromEvent(\'' + ev.identifier + '\',\'mac\')" title="Whitelist this MAC" style="background:#30363d;border:1px solid #30363d;color:#c9d1d9;padding:3px 8px;border-radius:3px;cursor:pointer;font-size:10px">⊘ Whitelist</button>'
+    : ev.event_type === 'new_probed_ssid'
+      ? '<button onclick="whitelistFromEvent(\'' + ev.identifier + '\',\'ssid\')" title="Whitelist this SSID pattern" style="background:#30363d;border:1px solid #30363d;color:#c9d1d9;padding:3px 8px;border-radius:3px;cursor:pointer;font-size:10px">⊘ Whitelist</button>'
+      : '';
+  return (
+    '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 12px;background:#0d1117;border-left:3px solid ' + color + ';border-radius:3px">' +
+      '<div style="flex:0 0 auto;background:' + color + ';color:#000;padding:2px 6px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:0.3px;text-transform:uppercase">' + typeLabel + '</div>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="color:' + color + ';font-weight:700;font-size:12px">' + (ev.title || '') + '</div>' +
+        '<div style="color:#c9d1d9;font-size:11px;margin-top:2px">' + (ev.message || '') + '</div>' +
+        '<div style="color:#484f58;font-size:10px;margin-top:4px">' +
+          (ev.identifier.length > 40 ? ev.identifier.substring(0,40) + '…' : ev.identifier) +
+          ' · ' + sensors + (rssi ? ' · ' + rssi : '') + ' · ' + ev.sighting_count + ' sightings · ' + age + ' ago' +
+        '</div>' +
+      '</div>' +
+      '<div style="flex:0 0 auto;display:flex;gap:4px;align-items:center">' +
+        wlBtn +
+        '<button onclick="ackEvent(' + ev.id + ')" style="background:#1f6feb22;border:1px solid #1f6feb44;color:#1f6feb;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:700">Ack</button>' +
+      '</div>' +
+    '</div>'
+  );
+}
+
+async function refreshEvents() {
+  try {
+    const type = document.getElementById('ev-type-filter').value;
+    const sev  = document.getElementById('ev-sev-filter').value;
+    const unackOnly = document.getElementById('ev-unacked-only').checked;
+    const params = new URLSearchParams({ limit: '200', since_hours: '24' });
+    if (type) params.set('type', type);
+    if (sev)  params.set('severity', sev);
+    if (unackOnly) params.set('acknowledged', 'false');
+    const resp = await fetch(API + '/detections/events?' + params.toString());
+    const data = await resp.json();
+    const list = document.getElementById('events-list');
+    const count = document.getElementById('ev-count');
+    count.textContent = data.count + ' events';
+    if (!data.events || data.events.length === 0) {
+      list.innerHTML = '<div class="empty">No events matching filters</div>';
+      return;
+    }
+    list.innerHTML = data.events.map(_renderEventCard).join('');
+    // Sound on fresh critical events (skip the first-ever poll)
+    if (!_evFirstPoll && _evSoundEnabled()) {
+      const freshCrit = data.events.filter(e => e.severity === 'critical' && !_evSeenIds.has(e.id));
+      if (freshCrit.length > 0) _playDing();
+    }
+    data.events.forEach(e => _evSeenIds.add(e.id));
+    _evFirstPoll = false;
+  } catch (e) {
+    console.error('refreshEvents', e);
+  }
+}
+
+async function refreshEventStats() {
+  try {
+    const data = await (await fetch(API + '/detections/events/stats')).json();
+    const badge = document.getElementById('events-badge');
+    const unack = data.unacknowledged || 0;
+    if (unack > 0) {
+      badge.style.display = '';
+      badge.textContent = unack > 99 ? '99+' : unack;
+      badge.style.background = (data.critical_unacked > 0) ? '#f85149' : '#ff9500';
+      badge.style.color = '#fff';
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch (e) {}
+}
+
+async function ackEvent(id) {
+  try {
+    await fetch(API + '/detections/events/' + id + '/ack', { method: 'POST' });
+    refreshEvents();
+    refreshEventStats();
+  } catch (e) {}
+}
+
+async function ackAllEvents() {
+  if (!confirm('Acknowledge all currently-visible events?')) return;
+  try {
+    const type = document.getElementById('ev-type-filter').value;
+    const url = API + '/detections/events/ack-all' + (type ? '?type=' + encodeURIComponent(type) : '');
+    await fetch(url, { method: 'POST' });
+    refreshEvents();
+    refreshEventStats();
+  } catch (e) {}
+}
+
+async function refreshMacWhitelist() {
+  try {
+    const data = await (await fetch(API + '/detections/whitelist/mac')).json();
+    const el = document.getElementById('mac-wl-list');
+    if (!data.entries || data.entries.length === 0) {
+      el.innerHTML = '<span style="color:#484f58">(no MACs whitelisted)</span>';
+      return;
+    }
+    el.innerHTML = data.entries.map(e =>
+      '<div style="display:flex;gap:8px;align-items:center;padding:3px 6px;border-bottom:1px solid #161b22">' +
+        '<code style="flex:1;color:#58a6ff;font-family:monospace">' + e.mac + '</code>' +
+        '<span style="flex:1;color:#8b949e">' + (e.label || '') + '</span>' +
+        '<button onclick="removeMacWhitelist(\'' + e.mac + '\')" style="background:#30363d;border:1px solid #30363d;color:#f85149;padding:2px 6px;border-radius:3px;cursor:pointer;font-size:9px">Remove</button>' +
+      '</div>'
+    ).join('');
+  } catch (e) {}
+}
+
+async function addMacWhitelist() {
+  const mac = document.getElementById('ev-mac-wl-input').value.trim().toUpperCase();
+  const label = document.getElementById('ev-mac-wl-label').value.trim();
+  if (!mac) return;
+  try {
+    await fetch(API + '/detections/whitelist/mac', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mac, label }),
+    });
+    document.getElementById('ev-mac-wl-input').value = '';
+    document.getElementById('ev-mac-wl-label').value = '';
+    refreshMacWhitelist();
+  } catch (e) {}
+}
+
+async function removeMacWhitelist(mac) {
+  try {
+    await fetch(API + '/detections/whitelist/mac', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mac }),
+    });
+    refreshMacWhitelist();
+  } catch (e) {}
+}
+
+async function whitelistFromEvent(identifier, kind) {
+  if (!confirm('Whitelist ' + identifier + '?')) return;
+  if (kind === 'mac') {
+    document.getElementById('ev-mac-wl-input').value = identifier;
+    await addMacWhitelist();
+  } else if (kind === 'ssid') {
+    try {
+      await fetch(API + '/detections/anomalies/whitelist', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pattern: identifier, label: 'auto from event' }),
+      });
+    } catch (e) {}
+  }
+  refreshEvents();
+}
+
+// Wire filter-change re-renders
+['ev-type-filter', 'ev-sev-filter', 'ev-unacked-only'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', refreshEvents);
+});
+// Persist sound preference in localStorage
+(function _initEvSoundPref() {
+  const cb = document.getElementById('ev-sound');
+  if (!cb) return;
+  const v = localStorage.getItem('fof.evSound');
+  if (v !== null) cb.checked = (v === '1');
+  cb.addEventListener('change', () => localStorage.setItem('fof.evSound', cb.checked ? '1' : '0'));
+})();
+
+refreshEvents();
+refreshEventStats();
+refreshMacWhitelist();
+setInterval(refreshEvents, 10000);       // feed refresh
+setInterval(refreshEventStats, 5000);    // badge refresh
 </script>
 </body>
 </html>

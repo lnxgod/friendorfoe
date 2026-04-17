@@ -470,11 +470,11 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                        fp.device_type == BLE_DEV_ESCOOTER ||
                        fp.device_type == BLE_DEV_VEHICLE ||
                        fp.device_type == BLE_DEV_CAMERA) {
-                rate_limit_ms = 5000;   /* Low interest: every 5s */
+                rate_limit_ms = 10000;  /* Low interest: every 10s */
             } else if (fp.device_type != BLE_DEV_UNKNOWN) {
-                rate_limit_ms = 2000;   /* Known devices: every 2s */
+                rate_limit_ms = 5000;   /* Known devices: every 5s */
             } else {
-                rate_limit_ms = 3000;   /* Unknown: every 3s */
+                rate_limit_ms = 10000;  /* Unknown: every 10s (was 3s — floods UART) */
             }
 
             bool recently_sent = false;
@@ -543,7 +543,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 /* Apple Continuity deep fields */
                 memcpy(det.ble_apple_auth, fp.apple_auth, 3);
                 det.ble_apple_activity = fp.apple_activity;
-                det.ble_apple_info = fp.apple_info;
+                det.ble_apple_flags = fp.apple_flags;
                 memcpy(det.ble_raw_mfr, fp.raw_mfr, fp.raw_mfr_len);
                 det.ble_raw_mfr_len = fp.raw_mfr_len;
 

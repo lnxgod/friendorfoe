@@ -174,6 +174,14 @@ void uart_tx_init(void)
 
 void uart_tx_send_detection(const drone_detection_t *detection)
 {
+    /* Drop low-value BLE noise at the source — saves UART bandwidth.
+     * The uplink drops these anyway (confidence < 0.04 filter).
+     * Reduces UART traffic ~50-70% on dense BLE environments. */
+    if (detection->confidence < 0.04f &&
+        detection->source == DETECTION_SRC_BLE_RID) {
+        return;
+    }
+
     cJSON *root = cJSON_CreateObject();
     if (!root) {
         ESP_LOGE(TAG, "cJSON alloc failed for detection");
@@ -300,9 +308,23 @@ void uart_tx_send_detection(const drone_detection_t *detection)
         cJSON_AddStringToObject(root, JSON_KEY_BLE_SVC_UUIDS, svc_buf);
     }
 
-    /* Apple info/status byte */
-    if (detection->ble_apple_info != 0) {
-        cJSON_AddNumberToObject(root, JSON_KEY_BLE_APPLE_INFO, detection->ble_apple_info);
+    /* Apple Nearby Info data-flags byte — always emitted (even when 0) so
+     * the backend can distinguish "all flags false" from "field absent".
+     * Cold-renamed in v0.58 from ble_apple_info / "ble_ainfo". */
+    cJSON_AddNumberToObject(root, JSON_KEY_BLE_APPLE_FLAGS, detection->ble_apple_flags);
+
+    /* WiFi probe fingerprint — only add if not already added as array above */
+    if (detection->probed_ssids[0] != '\0' &&
+        detection->source != DETECTION_SRC_WIFI_PROBE_REQUEST) {
+        cJSON_AddStringToObject(root, JSON_KEY_PROBED_SSIDS, detection->probed_ssids);
+    }
+    if (detection->probe_ie_hash != 0) {
+        char ie_hex[9];
+        snprintf(ie_hex, sizeof(ie_hex), "%08lx", (unsigned long)detection->probe_ie_hash);
+        cJSON_AddStringToObject(root, "ie_hash", ie_hex);
+    }
+    if (detection->wifi_generation != 0) {
+        cJSON_AddNumberToObject(root, "wifi_gen", detection->wifi_generation);
     }
 
     /* Timestamps */
@@ -432,13 +454,19 @@ static void uart_tx_task(void *arg)
     ESP_LOGI(TAG, "UART TX task started (prune every %d ms)", PRUNE_INTERVAL_MS);
 
     /* Wait for uplink to enable TX via the "ready"/"start" command.
-     * The main task's command loop handles UART RX and sets s_tx_enabled.
-     * We just wait here until it's set. */
-    ESP_LOGI(TAG, "TX paused — waiting for uplink start command...");
+     * Auto-start after 30s if no command received (handles wiring issues
+     * where uplink→scanner UART direction doesn't work). */
+    ESP_LOGI(TAG, "TX paused — waiting for uplink start command (30s timeout)...");
     led_set_pattern(LED_IDLE);
 
+    int wait_count = 0;
     while (!s_tx_enabled) {
         vTaskDelay(pdMS_TO_TICKS(500));
+        wait_count++;
+        if (wait_count >= 60) {  /* 60 x 500ms = 30 seconds */
+            ESP_LOGW(TAG, "No start command after 30s — auto-enabling TX");
+            s_tx_enabled = true;
+        }
     }
 
     /* Send scanner identity now that uplink enabled us */
