@@ -75,7 +75,19 @@ data class GlassesDetection(
     val details: Map<String, String> = emptyMap(),
     val category: PrivacyCategory = PrivacyCategory.INFORMATIONAL,
     /** True if detected from phone's bonded/paired device list (not BLE scan) */
-    val isBonded: Boolean = false
+    val isBonded: Boolean = false,
+    // ── v0.59 BLE enrichment — populated when BlePacketParser.parseAdvertisement runs ──
+    val bleCompanyId: Int? = null,
+    val bleAppleType: Int? = null,
+    val bleAppleFlags: Int? = null,
+    val bleAppleAction: Int? = null,
+    val bleAppleIosVersion: Int? = null,
+    val bleAdvFlags: Int? = null,
+    val bleDualModeHost: Boolean = false,
+    val bleJa3Hash: UInt? = null,
+    val bleServiceUuids: List<Int> = emptyList(),
+    val bleAppearance: Int? = null,
+    val bleLocalName: String? = null
 )
 
 /**
@@ -336,9 +348,15 @@ class GlassesDetector @Inject constructor(
 
     private val mfrDatabase = listOf(
         // Meta — 0x01AB is general Meta, 0x058E is Meta Technologies (Quest headsets)
-        MfrEntry(0x01AB, "Meta", "Smart Glasses", 0.90f, true),
-        MfrEntry(0x058E, "Meta", "VR Headset", 0.90f, true),  // Quest 2/3/Pro
-        MfrEntry(0x03C2, "Snap", "Smart Glasses", 0.85f, true),
+        MfrEntry(BleSignatures.CID_META, "Meta", "Smart Glasses", 0.90f, true),
+        MfrEntry(BleSignatures.CID_META_TECH, "Meta", "VR Headset", 0.90f, true),  // Quest 2/3/Pro
+        // Luxottica — frame-manufacturer CID on every Ray-Ban Meta / Oakley Meta unit.
+        // This is the headline Meta-detection fix: Marauder matches on this CID,
+        // firmware v0.58 matches on this CID, and the Android app did NOT until v0.59.
+        MfrEntry(BleSignatures.CID_LUXOTTICA, "Meta", "Smart Glasses", 0.95f, true),
+        // Flipper Zero — attack / hacking tool
+        MfrEntry(BleSignatures.CID_FLIPPER, "Flipper Zero", "Attack Tool", 0.95f, false),
+        MfrEntry(BleSignatures.CID_SNAP, "Snap", "Smart Glasses", 0.85f, true),
         // Google CID 0x00E0 removed — too broad, matches Nest/Chromecast/Pixel
         MfrEntry(0x060C, "Vuzix", "Smart Glasses", 0.85f, true),
         MfrEntry(0x009E, "Bose", "Audio Glasses", 0.75f, false),
@@ -1128,7 +1146,32 @@ class GlassesDetector @Inject constructor(
         if (bestConf < 0.60f) return null
 
         // Parse rich details from the raw packet
-        val parsedDetails = BlePacketParser.parseAllDetails(result)
+        val parsedDetails = BlePacketParser.parseAllDetails(result).toMutableMap()
+
+        // Full v0.59 advertisement walk — Apple / Microsoft deep decode,
+        // service UUIDs, advertising flags, appearance, local name.
+        val adv = BlePacketParser.parseAdvertisement(result)
+
+        // Prefer the Apple enriched label when available — folds in
+        // "AirPods in, Watch paired" / "Wi-Fi Password Share" / iOS version.
+        adv.apple?.let { ac ->
+            ac.flagLabel()?.let { parsedDetails["Apple State"] = it }
+            ac.nearbyActionSubType?.let { sub ->
+                BleSignatures.nearbyActionName(sub)?.let { parsedDetails["Apple Action"] = it }
+            }
+            ac.iosVersionNibble?.let { if (it >= 10) parsedDetails["iOS"] = it.toString() }
+            ac.authTag?.let {
+                parsedDetails["Auth Tag"] = "%02x%02x%02x".format(
+                    it[0].toInt() and 0xFF, it[1].toInt() and 0xFF, it[2].toInt() and 0xFF)
+            }
+        }
+        adv.microsoft?.label?.let { parsedDetails["Swift Pair"] = it }
+        if (adv.advFlags != null) {
+            parsedDetails["Dual-mode BT"] = if (adv.dualModeHost) "yes" else "no"
+        }
+        adv.appearance?.takeIf { it != 0 }?.let {
+            parsedDetails["Appearance"] = "0x%04x".format(it)
+        }
 
         // Assign category based on device type
         val category = categorize(bestType)
@@ -1137,6 +1180,14 @@ class GlassesDetector @Inject constructor(
         val existing = detectedDevices[mac]
         // Tag whether this is YOUR device or someone else's
         val isMyDevice = myBondedAddresses.contains(mac)
+
+        // Compute BLE-JA3 structural hash — same output as the firmware for
+        // the same advertisement, so future backend-forwarding can correlate.
+        val ja3 = BleFeatureExtractor.computeJa3Hash(
+            result,
+            addrType = if (result.device.type == android.bluetooth.BluetoothDevice.DEVICE_TYPE_LE) 1 else 0,
+            props = 0
+        )
 
         val detection = GlassesDetection(
             mac = mac,
@@ -1149,9 +1200,20 @@ class GlassesDetector @Inject constructor(
             matchReason = if (isMyDevice) "own_device:$bestReason" else bestReason,
             firstSeen = existing?.firstSeen ?: now,
             lastSeen = now,
-            details = parsedDetails,
+            details = parsedDetails.toMap(),
             category = category,
-            isBonded = isMyDevice
+            isBonded = isMyDevice,
+            bleCompanyId = adv.companyId,
+            bleAppleType = adv.apple?.subType,
+            bleAppleFlags = adv.apple?.flagsByte,
+            bleAppleAction = adv.apple?.nearbyActionSubType,
+            bleAppleIosVersion = adv.apple?.iosVersionNibble,
+            bleAdvFlags = adv.advFlags,
+            bleDualModeHost = adv.dualModeHost,
+            bleJa3Hash = ja3,
+            bleServiceUuids = adv.serviceUuids16,
+            bleAppearance = adv.appearance,
+            bleLocalName = adv.localName
         )
         detectedDevices[mac] = detection
 

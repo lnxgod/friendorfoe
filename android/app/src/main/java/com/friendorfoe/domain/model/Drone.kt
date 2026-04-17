@@ -57,7 +57,23 @@ data class Drone(
     val geodeticAltitudeMeters: Double? = null,
     val horizontalAccuracyMeters: Float? = null,
     val verticalAccuracyMeters: Float? = null,
-    val idType: Int? = null
+    val idType: Int? = null,
+    // BLE enrichment (v0.59+) — only populated for BLE-sourced detections.
+    // Mirror the firmware's `drone_detection_t` BLE fields so the backend-forwarding
+    // follow-on PRD can serialize without schema changes.
+    val bleCompanyId: Int? = null,
+    val bleAppleType: Int? = null,
+    val bleAppleFlags: Int? = null,
+    val bleAppleAuth: ByteArray? = null,
+    val bleAppleActivity: Int? = null,
+    val bleAppleIosVersion: Int? = null,
+    val bleAppleAction: Int? = null,
+    val bleAdvFlags: Int? = null,
+    val bleJa3Hash: UInt? = null,
+    val bleServiceUuids: List<Int> = emptyList(),
+    val bleLocalName: String? = null,
+    val bleAppearance: Int? = null,
+    val bleDualModeHost: Boolean = false
 ) : SkyObject() {
 
     fun idTypeLabel(): String? = when (idType) {

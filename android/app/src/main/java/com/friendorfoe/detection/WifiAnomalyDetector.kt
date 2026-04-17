@@ -48,6 +48,23 @@ class WifiAnomalyDetector @Inject constructor(
         val anomalies = mutableListOf<WifiAnomaly>()
         val now = Instant.now()
 
+        // Pwnagotchi default BSSID — deliberately attention-getting. Marauder
+        // matches on this; any hit on our LAN is a deliberate pen-test beacon.
+        for (result in scanResults) {
+            if (result.BSSID?.equals(BleSignatures.PWNAGOTCHI_BSSID, ignoreCase = true) == true) {
+                anomalies.add(WifiAnomaly(
+                    type = "pwnagotchi",
+                    ssid = result.SSID ?: "(hidden)",
+                    details = "Pwnagotchi device detected — source MAC ${result.BSSID} is the default " +
+                        "Pwnagotchi pen-test beacon. It attempts to capture WPA handshakes passively.",
+                    threatLevel = 3,
+                    bssids = listOf(result.BSSID),
+                    timestamp = now
+                ))
+                Log.w(TAG, "PWNAGOTCHI: ${result.BSSID} (ssid=${result.SSID})")
+            }
+        }
+
         // Group by SSID
         val bySSID = scanResults
             .filter { it.SSID?.isNotBlank() == true }
