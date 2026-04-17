@@ -138,7 +138,21 @@ extern "C" {
 #define JSON_KEY_BLE_ADDR_TYPE      "ble_atype"
 #define JSON_KEY_BLE_JA3            "ble_ja3"
 #define JSON_KEY_BLE_SVC_UUIDS      "ble_svc"    /* comma-separated hex UUIDs */
-#define JSON_KEY_BLE_APPLE_INFO     "ble_ainfo"  /* Apple status/info byte */
+/* Apple Nearby Info (Continuity type 0x10) / Nearby Action (0x0F) data-flags
+ * byte. Always emitted by v0.58+ scanners — even when 0, so the backend can
+ * distinguish "all flags false" from "field absent". Bit semantics (per
+ * furiousMAC `nearby_info.md` reverse engineering):
+ *     0x01 = AirPods connected
+ *     0x02 = WiFi on
+ *     0x04 = Watch paired
+ *     0x08 = Primary iCloud account
+ *     0x10 = Auth tag present
+ *     0x20 = Screen on / active
+ * Other bits reserved. Bit meanings drift across iOS versions — treat as
+ * hints, not certainties. v0.57 and earlier used key "ble_ainfo" with a
+ * non-zero-only emit; cold-renamed here (legacy uplinks drop the byte
+ * until reflashed). */
+#define JSON_KEY_BLE_APPLE_FLAGS    "ble_apple_flags"
 
 /* ── Framing ─────────────────────────────────────────────────────────────── */
 

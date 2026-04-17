@@ -47,6 +47,9 @@ static portMUX_TYPE s_ota_response_lock = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool s_rx_paused_ble = false;
 static volatile bool s_rx_paused_wifi = false;
 
+/* Backpressure flag — prevents stop/start oscillation between RX tasks */
+static _Atomic bool s_backpressure_active = false;
+
 /* ── Recent detections ring buffer ─────────────────────────────────────── */
 
 #define RECENT_RING_SIZE  8
@@ -185,14 +188,16 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
     det->freq_mhz          = json_get_int(root, JSON_KEY_FREQ, 0);
     det->channel_width_mhz = json_get_int(root, JSON_KEY_CHANNEL_WIDTH, 0);
 
-    /* Probe request: extract first probed SSID into ssid if not already set */
-    const cJSON *probed = cJSON_GetObjectItemCaseSensitive(root, JSON_KEY_PROBED_SSIDS);
-    if (cJSON_IsArray(probed) && cJSON_GetArraySize(probed) > 0) {
-        const cJSON *first = cJSON_GetArrayItem(probed, 0);
-        if (cJSON_IsString(first) && first->valuestring && det->ssid[0] == '\0') {
-            strncpy(det->ssid, first->valuestring, sizeof(det->ssid) - 1);
-        }
+    /* Probe request: extract probed SSIDs and fingerprint */
+    const char *probed_str = json_get_string(root, JSON_KEY_PROBED_SSIDS, NULL);
+    if (probed_str) {
+        strncpy(det->probed_ssids, probed_str, sizeof(det->probed_ssids) - 1);
     }
+    const char *ie_hash_str = json_get_string(root, "ie_hash", NULL);
+    if (ie_hash_str) {
+        det->probe_ie_hash = (uint32_t)strtoul(ie_hash_str, NULL, 16);
+    }
+    det->wifi_generation = (uint8_t)json_get_int(root, "wifi_gen", 0);
 
     /* Timestamps */
     det->first_seen_ms    = (int64_t)json_get_double(root, JSON_KEY_FIRST_SEEN, 0.0);
@@ -223,7 +228,7 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
         }
     }
     det->ble_apple_activity = (uint8_t)json_get_int(root, JSON_KEY_BLE_ACTIVITY, 0);
-    det->ble_apple_info = (uint8_t)json_get_int(root, JSON_KEY_BLE_APPLE_INFO, 0);
+    det->ble_apple_flags = (uint8_t)json_get_int(root, JSON_KEY_BLE_APPLE_FLAGS, 0);
 
     /* Raw manufacturer data (hex string → byte array) */
     const char *mfr_hex = json_get_string(root, JSON_KEY_BLE_RAW_MFR, NULL);
@@ -361,10 +366,41 @@ static void process_line(const char *line, size_t len, int scanner_id)
     if (strcmp(msg_type, MSG_TYPE_DETECTION) == 0) {
         drone_detection_t det;
         if (parse_detection(root, &det)) {
+            /* Skip BLE background noise (0.02 confidence) to reduce queue pressure.
+             * WiFi APs (0.05) and phones (0.05) are still useful for the backend. */
+            if (det.confidence < 0.04f) {
+                push_recent(&det);  /* Still show in recent list */
+                return;
+            }
+
+            /* Backpressure: if queue is nearly full, tell scanners to pause.
+             * Resume when queue drops below 40%. Uses module-level atomics
+             * to avoid data races between BLE and WiFi RX tasks. */
+            UBaseType_t queue_count = uxQueueMessagesWaiting(s_detection_queue);
+            if (queue_count >= (CONFIG_DETECTION_QUEUE_SIZE * 8 / 10)) {
+                if (!s_backpressure_active) {
+                    const char *stop_cmd = "{\"type\":\"stop\"}\n";
+                    uart_write_bytes(CONFIG_BLE_SCANNER_UART, stop_cmd, strlen(stop_cmd));
+#if CONFIG_DUAL_SCANNER
+                    uart_write_bytes(CONFIG_WIFI_SCANNER_UART, stop_cmd, strlen(stop_cmd));
+#endif
+                    ESP_LOGW(TAG, "Queue pressure %d/%d — throttling scanners",
+                             (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE);
+                    s_backpressure_active = true;
+                }
+            } else if (s_backpressure_active && queue_count <= (CONFIG_DETECTION_QUEUE_SIZE * 4 / 10)) {
+                const char *start_cmd = "{\"type\":\"start\"}\n";
+                uart_write_bytes(CONFIG_BLE_SCANNER_UART, start_cmd, strlen(start_cmd));
+#if CONFIG_DUAL_SCANNER
+                uart_write_bytes(CONFIG_WIFI_SCANNER_UART, start_cmd, strlen(start_cmd));
+#endif
+                ESP_LOGI(TAG, "Queue drained %d/%d — resuming scanners",
+                         (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE);
+                s_backpressure_active = false;
+            }
+
             if (xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10)) == pdTRUE) {
                 s_detection_count++;
-                ESP_LOGD(TAG, "Enqueued detection: %s (src=%d conf=%.2f)",
-                         det.drone_id, det.source, det.confidence);
             } else {
                 ESP_LOGW(TAG, "Detection queue full, dropping: %s", det.drone_id);
             }
@@ -601,22 +637,69 @@ bool uart_rx_is_wifi_scanner_connected(void)
 #endif
 }
 
+/* Route a command to only one UART by scanning the JSON for markers.
+ *
+ * Scanner delegation rule (default operating mode):
+ *   - BLE-specific commands (ble_lockon / ble_lockon_cancel) → BLE UART only.
+ *     While the BLE scanner focuses on an RID drone, the WiFi scanner keeps
+ *     doing wide passive scanning for other detections.
+ *   - WiFi-specific commands (lockon / lockon_cancel, which carry a "ch"
+ *     field) → WiFi UART only. Symmetric.
+ *   - Everything else (start/stop/ready/ota_*) still broadcasts to both.
+ *
+ * The backend also passes "type":"ble" / "type":"wifi" hints in per-node
+ * lockon commands (see drone_tracker._issue_lockon); we honor those too as
+ * a primary signal, falling back to the command-type string.
+ */
+static bool cmd_is_ble_only(const char *json_cmd)
+{
+    if (!json_cmd) return false;
+    if (strstr(json_cmd, "\"type\":\"ble\"")) return true;           /* backend hint */
+    if (strstr(json_cmd, "\"type\":\"ble_lockon\"")) return true;
+    if (strstr(json_cmd, "\"type\":\"ble_lockon_cancel\"")) return true;
+    return false;
+}
+
+static bool cmd_is_wifi_only(const char *json_cmd)
+{
+    if (!json_cmd) return false;
+    if (strstr(json_cmd, "\"type\":\"wifi\"")) return true;          /* backend hint */
+    /* Plain "lockon" / "lockon_cancel" commands are WiFi channel locks. */
+    if (strstr(json_cmd, "\"type\":\"lockon\"")) return true;
+    if (strstr(json_cmd, "\"type\":\"lockon_cancel\"")) return true;
+    return false;
+}
+
 void uart_rx_send_command(const char *json_cmd)
 {
     if (!json_cmd) return;
     size_t len = strlen(json_cmd);
 
-    /* Send to BLE scanner UART */
-    uart_write_bytes(CONFIG_BLE_SCANNER_UART, json_cmd, len);
-    uart_write_bytes(CONFIG_BLE_SCANNER_UART, "\n", 1);
-
+    const bool ble_only  = cmd_is_ble_only(json_cmd);
 #if CONFIG_DUAL_SCANNER
-    /* Also send to WiFi scanner UART */
-    uart_write_bytes(CONFIG_WIFI_SCANNER_UART, json_cmd, len);
-    uart_write_bytes(CONFIG_WIFI_SCANNER_UART, "\n", 1);
+    const bool wifi_only = cmd_is_wifi_only(json_cmd);
+#else
+    const bool wifi_only = false;  /* single-scanner build: always the BLE UART */
 #endif
 
-    ESP_LOGI("uart_tx_cmd", "Sent command to scanners (%d bytes)", (int)len);
+    /* BLE scanner: gets the command unless it's WiFi-specific. */
+    if (!wifi_only) {
+        uart_write_bytes(CONFIG_BLE_SCANNER_UART, json_cmd, len);
+        uart_write_bytes(CONFIG_BLE_SCANNER_UART, "\n", 1);
+    }
+
+#if CONFIG_DUAL_SCANNER
+    /* WiFi scanner: gets the command unless it's BLE-specific. */
+    if (!ble_only) {
+        uart_write_bytes(CONFIG_WIFI_SCANNER_UART, json_cmd, len);
+        uart_write_bytes(CONFIG_WIFI_SCANNER_UART, "\n", 1);
+    }
+#endif
+
+    ESP_LOGI("uart_tx_cmd", "cmd → %s (%d bytes)",
+             ble_only  ? "BLE only"  :
+             wifi_only ? "WiFi only" : "broadcast",
+             (int)len);
 }
 
 const scanner_info_t *uart_rx_get_ble_scanner_info(void)

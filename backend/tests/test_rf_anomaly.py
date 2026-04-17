@@ -19,6 +19,10 @@ def make_detector(**overrides) -> RFAnomalyDetector:
         new_device_window_s=20.0,
         velocity_min_speed_mps=2.0,
         velocity_min_rssi_delta_db=5,
+        velocity_min_window_s=3.0,   # test scenarios span ~10s; production default is 15s
+        velocity_min_samples=2,      # production default is 5
+        velocity_cooldown_s=0.0,
+        rssi_spike_cooldown_s=0.0,
         signal_baseline_min_samples=5,
         signal_min_abs_delta_db=10,
         signal_zscore_threshold=2.0,

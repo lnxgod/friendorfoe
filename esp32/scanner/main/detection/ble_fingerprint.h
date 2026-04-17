@@ -21,6 +21,11 @@ typedef enum {
     BLE_DEV_APPLE_IPHONE,
     BLE_DEV_APPLE_IPAD,
     BLE_DEV_APPLE_MACBOOK,
+    /* Catch-all for Apple Continuity messages whose type doesn't reveal
+     * the device model (0x10 Nearby Info, 0x0F Nearby Action, 0x05 AirDrop).
+     * Apple does not broadcast iPhone-vs-iPad-vs-Mac in those — labelling
+     * everything "iPhone" fabricated a phantom-device problem in v0.57. */
+    BLE_DEV_APPLE_GENERIC,
     BLE_DEV_APPLE_WATCH,
     BLE_DEV_APPLE_AIRPODS,
     BLE_DEV_APPLE_AIRTAG,
@@ -62,7 +67,7 @@ typedef struct {
     /* Apple Continuity deep fields */
     uint8_t             apple_auth[3];  /* Auth tag — rotates slower than MAC (entity linking key) */
     uint8_t             apple_activity; /* Activity code: 0=idle, 1=audio, 2=phone, 3=video */
-    uint8_t             apple_info;     /* Status/info byte */
+    uint8_t             apple_flags;    /* Nearby Info/Action data-flags byte (was apple_info) */
     uint8_t             raw_mfr[20];    /* First 20 bytes of manufacturer data (for analysis) */
     uint8_t             raw_mfr_len;    /* Captured length */
 

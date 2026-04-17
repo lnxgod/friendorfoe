@@ -106,8 +106,10 @@ async def update_node(device_id: str, req: NodeUpdateRequest, db: AsyncSession =
         node.name = req.name
     if req.lat is not None:
         node.lat = req.lat
+        node.is_fixed = True  # Manual position = fixed
     if req.lon is not None:
         node.lon = req.lon
+        node.is_fixed = True
     if req.alt is not None:
         node.alt = req.alt
     node.last_seen = datetime.now(timezone.utc)

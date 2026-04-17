@@ -17,8 +17,14 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <inttypes.h>
-#include "esp_http_client.h"
+#include <sys/socket.h>
+#include <netdb.h>
+#include <unistd.h>
+#if defined(UPLINK_ESP32S3)
+#include "esp_http_client.h"  /* Only for S3 lockon polling */
+#endif
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -26,6 +32,8 @@
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <netdb.h>
+#include "lwip/inet.h"
 
 static const char *TAG = "http_up";
 
@@ -36,13 +44,16 @@ static int             s_fail_count        = 0;
 static int64_t         s_last_success_epoch_ms = 0;
 
 /* Persistent HTTP client handle (avoids socket exhaustion from rapid open/close) */
-static esp_http_client_handle_t s_http_client = NULL;
+/* esp_http_client removed — using raw sockets for zero heap allocation */
+
+/* Pause flag — set during firmware relay to free heap */
+static volatile bool s_upload_paused = false;
 
 /* Maximum JSON payload size for a batch */
 #define MAX_PAYLOAD_SIZE    4096
 
 /* Retry config — keep total blocking time well under 30s WDT timeout */
-#define HTTP_TIMEOUT_MS     3000    /* 3s per attempt (was 10s) */
+#define HTTP_TIMEOUT_MS     5000    /* 5s per attempt — 3s caused EAGAIN on slow WiFi */
 #define MAX_RETRIES         1       /* 1 retry max — fail fast, try next batch */
 #define BACKOFF_BASE_MS     500     /* 500ms base (was 1000) */
 #define MAX_DRAIN_PER_CYCLE 1       /* drain 1 offline batch per loop — don't block */
@@ -85,232 +96,133 @@ static size_t estimate_detection_json_size(const drone_detection_t *det)
 
 /* ── Build JSON payload from a batch of detections ─────────────────────── */
 
+/* Static payload buffer — ZERO heap allocation for JSON building.
+ * This eliminates the cJSON malloc/free storm that fragments ESP32 heap. */
+#define PAYLOAD_BUF_SIZE 4096
+static char s_payload_buf[PAYLOAD_BUF_SIZE];
+
+/* Helper: append to buffer with bounds checking */
+#define BUF_APPEND(fmt, ...) do { \
+    int _n = snprintf(&s_payload_buf[off], PAYLOAD_BUF_SIZE - off, fmt, ##__VA_ARGS__); \
+    if (_n > 0 && off + _n < PAYLOAD_BUF_SIZE) off += _n; \
+} while(0)
+
+/* Helper: append scanner info object */
+static int append_scanner_info(char *buf, int off, int max, const char *uart_name, const scanner_info_t *info)
+{
+    int n = snprintf(&buf[off], max - off,
+        "{\"uart\":\"%s\",\"ver\":\"%s\",\"board\":\"%s\",\"chip\":\"%s\",\"caps\":\"%s\"",
+        uart_name, info->version, info->board, info->chip, info->caps);
+    if (n > 0) off += n;
+    if (info->auth_count > 0) { n = snprintf(&buf[off], max-off, ",\"auth_fr\":%d", info->auth_count); if(n>0) off+=n; }
+    if (info->fc_hist[0]) { n = snprintf(&buf[off], max-off, ",\"fc_hist\":\"%s\"", info->fc_hist); if(n>0) off+=n; }
+    n = snprintf(&buf[off], max-off, "}"); if(n>0) off+=n;
+    return off;
+}
+
 static char *build_payload(const drone_detection_t *batch, int count, int64_t scan_ts_ms)
 {
-    /* Get device identity */
     char device_id[32] = {0};
     nvs_config_get_device_id(device_id, sizeof(device_id));
-
-    /* Get device GPS position */
     gps_position_t gps_pos = {0};
     gps_get_position(&gps_pos);
-
-    /* Use scan timestamp if provided, else current time */
     int64_t ts_ms = (scan_ts_ms > 0) ? scan_ts_ms : time_sync_get_epoch_ms();
-
-    cJSON *root = cJSON_CreateObject();
-    if (!root) {
-        return NULL;
-    }
-
-    cJSON_AddStringToObject(root, "device_id", device_id);
-    cJSON_AddNumberToObject(root, "device_lat", gps_pos.latitude);
-    cJSON_AddNumberToObject(root, "device_lon", gps_pos.longitude);
-    cJSON_AddNumberToObject(root, "device_alt", gps_pos.altitude_m);
-    cJSON_AddNumberToObject(root, "timestamp", (double)(ts_ms / 1000));
-
-    /* Firmware version + board type */
     const esp_app_desc_t *app = esp_app_get_description();
-    if (app) {
-        cJSON_AddStringToObject(root, "firmware_version", app->version);
-    }
-#if defined(UPLINK_ESP32S3)
-    cJSON_AddStringToObject(root, "board_type", "uplink-s3");
-#elif defined(UPLINK_ESP32)
-    cJSON_AddStringToObject(root, "board_type", "uplink-esp32");
-#else
-    cJSON_AddStringToObject(root, "board_type", "uplink-c3");
-#endif
-
-    /* WiFi signal info */
     const char *wifi_ssid = wifi_sta_get_ssid();
-    if (wifi_ssid[0]) {
-        cJSON_AddStringToObject(root, "wifi_ssid", wifi_ssid);
-        cJSON_AddNumberToObject(root, "wifi_rssi", wifi_sta_get_rssi());
-    }
 
-    /* Connected scanner identity (from UART scanner_info messages) */
-    cJSON *scanners = cJSON_AddArrayToObject(root, "scanners");
-    if (scanners) {
-        const scanner_info_t *ble_info = uart_rx_get_ble_scanner_info();
-        if (ble_info) {
-            cJSON *s = cJSON_CreateObject();
-            cJSON_AddStringToObject(s, "uart", "ble");
-            cJSON_AddStringToObject(s, "ver", ble_info->version);
-            cJSON_AddStringToObject(s, "board", ble_info->board);
-            cJSON_AddStringToObject(s, "chip", ble_info->chip);
-            cJSON_AddStringToObject(s, "caps", ble_info->caps);
-            /* Attack counters */
-            if (ble_info->deauth_count > 0)
-                cJSON_AddNumberToObject(s, "deauth", ble_info->deauth_count);
-            if (ble_info->disassoc_count > 0)
-                cJSON_AddNumberToObject(s, "disassoc", ble_info->disassoc_count);
-            if (ble_info->auth_count > 0)
-                cJSON_AddNumberToObject(s, "auth_fr", ble_info->auth_count);
-            if (ble_info->deauth_flood)
-                cJSON_AddTrueToObject(s, "flood");
-            if (ble_info->beacon_spam)
-                cJSON_AddTrueToObject(s, "bcn_spam");
-            if (ble_info->fc_hist[0])
-                cJSON_AddStringToObject(s, "fc_hist", ble_info->fc_hist);
-            cJSON_AddItemToArray(scanners, s);
-        }
-#if CONFIG_DUAL_SCANNER
-        const scanner_info_t *wifi_info = uart_rx_get_wifi_scanner_info();
-        if (wifi_info) {
-            cJSON *s = cJSON_CreateObject();
-            cJSON_AddStringToObject(s, "uart", "wifi");
-            cJSON_AddStringToObject(s, "ver", wifi_info->version);
-            cJSON_AddStringToObject(s, "board", wifi_info->board);
-            cJSON_AddStringToObject(s, "chip", wifi_info->chip);
-            cJSON_AddStringToObject(s, "caps", wifi_info->caps);
-            if (wifi_info->deauth_count > 0)
-                cJSON_AddNumberToObject(s, "deauth", wifi_info->deauth_count);
-            if (wifi_info->disassoc_count > 0)
-                cJSON_AddNumberToObject(s, "disassoc", wifi_info->disassoc_count);
-            if (wifi_info->auth_count > 0)
-                cJSON_AddNumberToObject(s, "auth_fr", wifi_info->auth_count);
-            if (wifi_info->deauth_flood)
-                cJSON_AddTrueToObject(s, "flood");
-            if (wifi_info->beacon_spam)
-                cJSON_AddTrueToObject(s, "bcn_spam");
-            if (wifi_info->fc_hist[0])
-                cJSON_AddStringToObject(s, "fc_hist", wifi_info->fc_hist);
-            cJSON_AddItemToArray(scanners, s);
-        }
+    int off = 0;
+
+    /* Header */
+    BUF_APPEND("{\"device_id\":\"%s\",\"device_lat\":%.6f,\"device_lon\":%.6f,\"device_alt\":%.1f,\"timestamp\":%lld",
+               device_id, gps_pos.latitude, gps_pos.longitude, gps_pos.altitude_m, (long long)(ts_ms / 1000));
+    if (app) BUF_APPEND(",\"firmware_version\":\"%s\"", app->version);
+#if defined(UPLINK_ESP32S3)
+    BUF_APPEND(",\"board_type\":\"uplink-s3\"");
+#elif defined(UPLINK_ESP32)
+    BUF_APPEND(",\"board_type\":\"uplink-esp32\"");
+#else
+    BUF_APPEND(",\"board_type\":\"uplink-c3\"");
 #endif
-    }
+    if (wifi_ssid[0]) BUF_APPEND(",\"wifi_ssid\":\"%s\",\"wifi_rssi\":%d", wifi_ssid, wifi_sta_get_rssi());
 
-    cJSON *detections = cJSON_AddArrayToObject(root, "detections");
-    if (!detections) {
-        cJSON_Delete(root);
-        return NULL;
+    /* Scanners array */
+    BUF_APPEND(",\"scanners\":[");
+    bool has_scanner = false;
+    const scanner_info_t *ble_info = uart_rx_get_ble_scanner_info();
+    if (ble_info) {
+        off = append_scanner_info(s_payload_buf, off, PAYLOAD_BUF_SIZE, "ble", ble_info);
+        has_scanner = true;
     }
+#if CONFIG_DUAL_SCANNER
+    const scanner_info_t *wifi_info = uart_rx_get_wifi_scanner_info();
+    if (wifi_info) {
+        if (has_scanner) BUF_APPEND(",");
+        off = append_scanner_info(s_payload_buf, off, PAYLOAD_BUF_SIZE, "wifi", wifi_info);
+    }
+#endif
+    BUF_APPEND("]");
 
+    /* Detections array */
+    BUF_APPEND(",\"detections\":[");
     for (int i = 0; i < count; i++) {
         const drone_detection_t *d = &batch[i];
-        cJSON *det = cJSON_CreateObject();
-        if (!det) {
-            continue;
-        }
+        if (i > 0) BUF_APPEND(",");
 
-        cJSON_AddStringToObject(det, "drone_id", d->drone_id);
-        cJSON_AddStringToObject(det, "source", source_to_string(d->source));
-        cJSON_AddNumberToObject(det, "confidence", d->confidence);
-        cJSON_AddNumberToObject(det, "latitude", d->latitude);
-        cJSON_AddNumberToObject(det, "longitude", d->longitude);
-        cJSON_AddNumberToObject(det, "altitude_m", d->altitude_m);
-        cJSON_AddNumberToObject(det, "rssi", d->rssi);
-        cJSON_AddNumberToObject(det, "speed_mps", d->speed_mps);
-        cJSON_AddNumberToObject(det, "heading_deg", d->heading_deg);
-        cJSON_AddStringToObject(det, "manufacturer", d->manufacturer);
-        cJSON_AddStringToObject(det, "model", d->model);
+        BUF_APPEND("{\"drone_id\":\"%s\",\"source\":\"%s\",\"confidence\":%.8f,\"rssi\":%d",
+                   d->drone_id, source_to_string(d->source), d->confidence, d->rssi);
+        if (d->latitude != 0.0 || d->longitude != 0.0)
+            BUF_APPEND(",\"latitude\":%.7f,\"longitude\":%.7f", d->latitude, d->longitude);
+        if (d->altitude_m != 0.0) BUF_APPEND(",\"altitude_m\":%.1f", d->altitude_m);
+        if (d->manufacturer[0]) BUF_APPEND(",\"manufacturer\":\"%s\"", d->manufacturer);
+        if (d->model[0]) BUF_APPEND(",\"model\":\"%s\"", d->model);
+        if (d->ssid[0]) BUF_APPEND(",\"ssid\":\"%s\"", d->ssid);
+        if (d->bssid[0]) BUF_APPEND(",\"bssid\":\"%s\"", d->bssid);
+        if (d->freq_mhz != 0) BUF_APPEND(",\"channel\":%d", d->freq_mhz);
+        if (d->operator_lat != 0.0 || d->operator_lon != 0.0)
+            BUF_APPEND(",\"operator_lat\":%.7f,\"operator_lon\":%.7f", d->operator_lat, d->operator_lon);
+        if (d->operator_id[0]) BUF_APPEND(",\"operator_id\":\"%s\"", d->operator_id);
 
-        /* Operator info if present */
-        if (d->operator_lat != 0.0 || d->operator_lon != 0.0) {
-            cJSON_AddNumberToObject(det, "operator_lat", d->operator_lat);
-            cJSON_AddNumberToObject(det, "operator_lon", d->operator_lon);
-        }
-        if (d->operator_id[0] != '\0') {
-            cJSON_AddStringToObject(det, "operator_id", d->operator_id);
-        }
+        /* Probe request SSIDs */
+        if (d->source == DETECTION_SRC_WIFI_PROBE_REQUEST && d->ssid[0])
+            BUF_APPEND(",\"probed_ssids\":[\"%s\"]", d->ssid);
 
-        /* ASTM fields if present */
-        if (d->ua_type != 0) {
-            cJSON_AddNumberToObject(det, "ua_type", d->ua_type);
-        }
-        if (d->height_agl_m != 0.0) {
-            cJSON_AddNumberToObject(det, "height_agl", d->height_agl_m);
-        }
-
-        /* WiFi fields if present */
-        if (d->ssid[0] != '\0') {
-            cJSON_AddStringToObject(det, "ssid", d->ssid);
-        }
-        if (d->bssid[0] != '\0') {
-            cJSON_AddStringToObject(det, "bssid", d->bssid);
-        }
-
-        /* Probe request: include probed_ssids array for backend */
-        if (d->source == DETECTION_SRC_WIFI_PROBE_REQUEST && d->ssid[0] != '\0') {
-            cJSON *probed = cJSON_AddArrayToObject(det, "probed_ssids");
-            if (probed) {
-                cJSON_AddItemToArray(probed, cJSON_CreateString(d->ssid));
-            }
-        }
-
-        /* BLE fingerprinting fields */
-        if (d->ble_company_id != 0) {
-            cJSON_AddNumberToObject(det, "ble_company_id", d->ble_company_id);
-        }
-        if (d->ble_apple_type != 0) {
-            cJSON_AddNumberToObject(det, "ble_apple_type", d->ble_apple_type);
-        }
-        if (d->ble_ad_type_count != 0) {
-            cJSON_AddNumberToObject(det, "ble_ad_type_count", d->ble_ad_type_count);
-        }
-        if (d->ble_payload_len != 0) {
-            cJSON_AddNumberToObject(det, "ble_payload_len", d->ble_payload_len);
-        }
-        if (d->ble_addr_type != 0) {
-            cJSON_AddNumberToObject(det, "ble_addr_type", d->ble_addr_type);
-        }
-        if (d->ble_ja3_hash != 0) {
-            char ja3_hex[9];
-            snprintf(ja3_hex, sizeof(ja3_hex), "%08lx", (unsigned long)d->ble_ja3_hash);
-            cJSON_AddStringToObject(det, "ble_ja3", ja3_hex);
-        }
-
-        /* Apple Continuity deep fields */
-        if (d->ble_apple_auth[0] || d->ble_apple_auth[1] || d->ble_apple_auth[2]) {
-            char auth_hex[7];
-            snprintf(auth_hex, sizeof(auth_hex), "%02x%02x%02x",
-                     d->ble_apple_auth[0], d->ble_apple_auth[1], d->ble_apple_auth[2]);
-            cJSON_AddStringToObject(det, "ble_apple_auth", auth_hex);
-        }
-        if (d->ble_apple_activity != 0) {
-            cJSON_AddNumberToObject(det, "ble_activity", d->ble_apple_activity);
-        }
-        if (d->ble_apple_info != 0) {
-            cJSON_AddNumberToObject(det, "ble_apple_info", d->ble_apple_info);
-        }
+        /* BLE fingerprinting fields (only non-zero) */
+        if (d->ble_company_id) BUF_APPEND(",\"ble_company_id\":%u", d->ble_company_id);
+        if (d->ble_apple_type) BUF_APPEND(",\"ble_apple_type\":%u", d->ble_apple_type);
+        if (d->ble_ad_type_count) BUF_APPEND(",\"ble_ad_type_count\":%u", d->ble_ad_type_count);
+        if (d->ble_payload_len) BUF_APPEND(",\"ble_payload_len\":%u", d->ble_payload_len);
+        if (d->ble_addr_type) BUF_APPEND(",\"ble_addr_type\":%u", d->ble_addr_type);
+        if (d->ble_ja3_hash) BUF_APPEND(",\"ble_ja3\":\"%08lx\"", (unsigned long)d->ble_ja3_hash);
+        if (d->ble_apple_auth[0] || d->ble_apple_auth[1] || d->ble_apple_auth[2])
+            BUF_APPEND(",\"ble_apple_auth\":\"%02x%02x%02x\"", d->ble_apple_auth[0], d->ble_apple_auth[1], d->ble_apple_auth[2]);
+        if (d->ble_apple_activity) BUF_APPEND(",\"ble_activity\":%u", d->ble_apple_activity);
+        /* Apple Nearby Info data-flags byte — always emitted (even when 0) so
+         * the backend can distinguish "all flags false" from "field absent". */
+        BUF_APPEND(",\"ble_apple_flags\":%u", d->ble_apple_flags);
+        if (d->probe_ie_hash) BUF_APPEND(",\"ie_hash\":\"%08lx\"", (unsigned long)d->probe_ie_hash);
         if (d->ble_raw_mfr_len > 0) {
-            char mfr_hex[41];
-            for (int i = 0; i < d->ble_raw_mfr_len && i < 20; i++) {
-                snprintf(&mfr_hex[i*2], 3, "%02x", d->ble_raw_mfr[i]);
-            }
-            mfr_hex[d->ble_raw_mfr_len * 2] = '\0';
-            cJSON_AddStringToObject(det, "ble_raw_mfr", mfr_hex);
+            BUF_APPEND(",\"ble_raw_mfr\":\"");
+            for (int j = 0; j < d->ble_raw_mfr_len && j < 20; j++)
+                BUF_APPEND("%02x", d->ble_raw_mfr[j]);
+            BUF_APPEND("\"");
         }
-        if (d->ble_adv_interval_us > 0) {
-            cJSON_AddNumberToObject(det, "ble_adv_interval",
-                                    (double)(d->ble_adv_interval_us / 1000));
-        }
-
-        /* BLE Service UUIDs */
         if (d->ble_svc_uuid_count > 0) {
-            char svc_buf[36];
-            int off = 0;
-            for (int i = 0; i < d->ble_svc_uuid_count && i < 4; i++) {
-                if (i > 0) svc_buf[off++] = ',';
-                off += snprintf(&svc_buf[off], sizeof(svc_buf) - off,
-                                "%04x", d->ble_service_uuids[i]);
+            BUF_APPEND(",\"ble_svc_uuids\":\"");
+            for (int j = 0; j < d->ble_svc_uuid_count && j < 4; j++) {
+                if (j > 0) BUF_APPEND(",");
+                BUF_APPEND("%04x", d->ble_service_uuids[j]);
             }
-            cJSON_AddStringToObject(det, "ble_svc_uuids", svc_buf);
+            BUF_APPEND("\"");
         }
 
-        /* Timestamps */
-        if (d->last_updated_ms > 0) {
-            cJSON_AddNumberToObject(det, "last_updated",
-                                    (double)(d->last_updated_ms / 1000));
-        }
+        BUF_APPEND("}");
 
-        cJSON_AddItemToArray(detections, det);
+        /* Safety: stop if buffer nearly full */
+        if (off > PAYLOAD_BUF_SIZE - 200) break;
     }
+    BUF_APPEND("]}");
 
-    char *payload = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    return payload;
+    return s_payload_buf;
 }
 
 /* ── HTTP POST with retry ──────────────────────────────────────────────── */
@@ -320,8 +232,64 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
  * Reuses the same TCP connection (keep-alive) to avoid socket exhaustion.
  */
 static bool s_using_fallback_url = false;
+static char s_resolved_url[256] = {0};  /* Cached resolved URL (IP instead of hostname) */
 
-static bool ensure_http_client(void)
+/**
+ * Resolve mDNS/hostname to IP and cache it.
+ * Falls back to original URL if resolution fails.
+ */
+static void resolve_and_cache_url(const char *backend_url)
+{
+    /* Already resolved? */
+    if (s_resolved_url[0]) return;
+
+    /* Extract hostname from URL like "http://fof-server.local:8000" */
+    const char *host_start = strstr(backend_url, "://");
+    if (!host_start) {
+        snprintf(s_resolved_url, sizeof(s_resolved_url), "%s%s", backend_url, CONFIG_UPLOAD_ENDPOINT);
+        return;
+    }
+    host_start += 3;
+
+    char hostname[64] = {0};
+    const char *port_start = strchr(host_start, ':');
+    const char *path_start = strchr(host_start, '/');
+    int host_len;
+    if (port_start && (!path_start || port_start < path_start))
+        host_len = port_start - host_start;
+    else if (path_start)
+        host_len = path_start - host_start;
+    else
+        host_len = strlen(host_start);
+    if (host_len >= (int)sizeof(hostname)) host_len = sizeof(hostname) - 1;
+    memcpy(hostname, host_start, host_len);
+
+    /* Try DNS/mDNS resolution */
+    struct addrinfo hints = { .ai_family = AF_INET };
+    struct addrinfo *res = NULL;
+    int err = getaddrinfo(hostname, NULL, &hints, &res);
+    if (err == 0 && res) {
+        struct sockaddr_in *addr = (struct sockaddr_in *)res->ai_addr;
+        char ip_str[16];
+        inet_ntoa_r(addr->sin_addr, ip_str, sizeof(ip_str));
+        freeaddrinfo(res);
+
+        /* Build URL with resolved IP instead of hostname */
+        const char *after_host = host_start + host_len;  /* ":8000/..." */
+        snprintf(s_resolved_url, sizeof(s_resolved_url), "http://%s%s%s",
+                 ip_str, after_host, CONFIG_UPLOAD_ENDPOINT);
+        ESP_LOGW(TAG, "Resolved %s → %s (cached)", hostname, ip_str);
+    } else {
+        /* Resolution failed — use original URL */
+        snprintf(s_resolved_url, sizeof(s_resolved_url), "%s%s", backend_url, CONFIG_UPLOAD_ENDPOINT);
+        ESP_LOGW(TAG, "mDNS resolve failed for %s — using as-is", hostname);
+        s_resolved_url[0] = '\0';  /* Don't cache failure — retry next time */
+    }
+}
+
+/* Dead code — replaced by raw_socket_connect() above */
+#if 0
+static bool ensure_http_client_UNUSED(void)
 {
     if (s_http_client) {
         return true;
@@ -335,15 +303,22 @@ static bool ensure_http_client(void)
         nvs_config_get_backend_url(backend_url, sizeof(backend_url));
     }
 
+    /* Resolve hostname to IP and cache */
+    resolve_and_cache_url(backend_url);
+
     char url[256];
-    snprintf(url, sizeof(url), "%s%s", backend_url, CONFIG_UPLOAD_ENDPOINT);
+    if (s_resolved_url[0]) {
+        strncpy(url, s_resolved_url, sizeof(url) - 1);
+    } else {
+        snprintf(url, sizeof(url), "%s%s", backend_url, CONFIG_UPLOAD_ENDPOINT);
+    }
 
     esp_http_client_config_t config = {
         .url              = url,
         .method           = HTTP_METHOD_POST,
         .timeout_ms       = HTTP_TIMEOUT_MS,
-        .buffer_size      = 2048,
-        .keep_alive_enable = true,
+        .buffer_size      = 1024,          /* Must fit HTTP response headers from uvicorn */
+        .keep_alive_enable = true,         /* Reuse TCP connection to avoid alloc churn */
     };
 
     s_http_client = esp_http_client_init(&config);
@@ -362,55 +337,191 @@ static bool ensure_http_client(void)
  */
 static void reset_http_client(void)
 {
-    if (s_http_client) {
-        esp_http_client_close(s_http_client);
-        esp_http_client_cleanup(s_http_client);
-        s_http_client = NULL;
+    raw_socket_close();
+}
+#endif  /* dead code */
+
+/* ── Raw socket HTTP POST — ZERO heap allocation ─────────────────────────
+ * Uses a persistent TCP socket with static buffers instead of esp_http_client.
+ * This eliminates all malloc/free during uploads, preventing heap fragmentation
+ * that causes legacy ESP32 nodes to crash every 30 seconds.
+ */
+
+static int s_sock = -1;
+static char s_http_header[256];  /* Static buffer for HTTP request header */
+static char s_http_resp[256];    /* Static buffer for HTTP response */
+static struct sockaddr_in s_cached_addr = {0};  /* Cached resolved address — avoid getaddrinfo heap alloc */
+static bool s_addr_cached = false;
+
+static bool raw_socket_connect(void)
+{
+    if (s_sock >= 0) return true;  /* Already connected */
+
+    char backend_url[128] = {0};
+    if (s_using_fallback_url) {
+        strncpy(backend_url, CONFIG_BACKEND_URL_FALLBACK, sizeof(backend_url) - 1);
+    } else {
+        nvs_config_get_backend_url(backend_url, sizeof(backend_url));
+    }
+
+    /* Parse host and port from URL like "http://192.0.2.1:8000" */
+    const char *host_start = strstr(backend_url, "://");
+    if (!host_start) host_start = backend_url; else host_start += 3;
+
+    char host[64] = {0};
+    int port = 8000;
+    const char *colon = strchr(host_start, ':');
+    if (colon) {
+        int hlen = colon - host_start;
+        if (hlen > 0 && hlen < (int)sizeof(host)) {
+            strncpy(host, host_start, hlen);
+        }
+        port = atoi(colon + 1);
+    } else {
+        strncpy(host, host_start, sizeof(host) - 1);
+    }
+    /* Strip trailing path */
+    char *slash = strchr(host, '/');
+    if (slash) *slash = '\0';
+
+    /* Resolve hostname — use cached address to avoid getaddrinfo heap allocation */
+    if (!s_addr_cached) {
+        struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+        struct addrinfo *res = NULL;
+        char port_str[8];
+        snprintf(port_str, sizeof(port_str), "%d", port);
+
+        int err = getaddrinfo(host, port_str, &hints, &res);
+        if (err != 0 || !res) {
+            ESP_LOGE(TAG, "DNS resolve failed for %s: %d", host, err);
+            return false;
+        }
+        memcpy(&s_cached_addr, res->ai_addr, sizeof(s_cached_addr));
+        freeaddrinfo(res);
+        s_addr_cached = true;
+        ESP_LOGI(TAG, "Resolved %s:%d → %d.%d.%d.%d", host, port,
+                 (s_cached_addr.sin_addr.s_addr) & 0xFF,
+                 (s_cached_addr.sin_addr.s_addr >> 8) & 0xFF,
+                 (s_cached_addr.sin_addr.s_addr >> 16) & 0xFF,
+                 (s_cached_addr.sin_addr.s_addr >> 24) & 0xFF);
+    }
+
+    s_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (s_sock < 0) {
+        ESP_LOGE(TAG, "Socket create failed");
+        return false;
+    }
+
+    /* Set timeouts */
+    struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+    setsockopt(s_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(s_sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (connect(s_sock, (struct sockaddr *)&s_cached_addr, sizeof(s_cached_addr)) != 0) {
+        ESP_LOGE(TAG, "Connect failed");
+        close(s_sock);
+        s_sock = -1;
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Raw socket connected (fd=%d)", s_sock);
+    return true;
+}
+
+static void raw_socket_close(void)
+{
+    if (s_sock >= 0) {
+        close(s_sock);
+        s_sock = -1;
     }
 }
 
-/**
- * POST payload to backend using persistent keep-alive connection.
- *
- * If the connection is stale (server closed keep-alive), we reset the
- * client and retry ONCE with a fresh connection.  This handles the
- * common case where uvicorn's keep-alive timeout expires between batches.
- */
 static bool http_post_payload(const char *payload)
 {
     if (!wifi_sta_is_connected()) {
         return false;
     }
 
+    int payload_len = strlen(payload);
+
     for (int attempt = 0; attempt < 2; attempt++) {
-        if (!ensure_http_client()) {
+        if (!raw_socket_connect()) {
             return false;
         }
 
-        esp_http_client_set_post_field(s_http_client, payload, strlen(payload));
-        esp_err_t err = esp_http_client_perform(s_http_client);
+        /* Build HTTP request header into static buffer */
+        int hdr_len = snprintf(s_http_header, sizeof(s_http_header),
+            "POST %s HTTP/1.1\r\n"
+            "Host: fof-server.local\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: %d\r\n"
+            "Connection: keep-alive\r\n"
+            "\r\n",
+            CONFIG_UPLOAD_ENDPOINT, payload_len);
 
-        if (err == ESP_OK) {
-            int status = esp_http_client_get_status_code(s_http_client);
-            if (status >= 200 && status < 300) {
-                ESP_LOGD(TAG, "Upload OK (HTTP %d)", status);
-                return true;
-            }
-            /* Server error (5xx) — don't reset client, just fail this attempt */
-            ESP_LOGW(TAG, "Upload failed: HTTP %d", status);
-            return false;
+        /* Send header + payload */
+        int sent = send(s_sock, s_http_header, hdr_len, 0);
+        if (sent != hdr_len) {
+            ESP_LOGW(TAG, "Header send failed (%d/%d)", sent, hdr_len);
+            raw_socket_close();
+            continue;  /* Retry with fresh socket */
         }
 
-        /* Connection error — reset client and retry once with fresh socket */
-        if (attempt == 0) {
-            ESP_LOGW(TAG, "Connection error: %s — reconnecting", esp_err_to_name(err));
-            reset_http_client();
-            /* Immediate retry with fresh client (stale keep-alive recovery) */
+        sent = send(s_sock, payload, payload_len, 0);
+        if (sent != payload_len) {
+            ESP_LOGW(TAG, "Payload send failed (%d/%d)", sent, payload_len);
+            raw_socket_close();
             continue;
         }
 
-        ESP_LOGW(TAG, "HTTP failed after reconnect: %s", esp_err_to_name(err));
-        reset_http_client();
+        /* Read response — drain everything to keep socket clean for reuse */
+        int recvd = recv(s_sock, s_http_resp, sizeof(s_http_resp) - 1, 0);
+        if (recvd <= 0) {
+            ESP_LOGW(TAG, "Response recv failed (%d)", recvd);
+            raw_socket_close();
+            continue;
+        }
+        s_http_resp[recvd] = '\0';
+
+        /* Parse HTTP status code from "HTTP/1.1 200 OK" */
+        int status = 0;
+        if (recvd > 12 && strncmp(s_http_resp, "HTTP/", 5) == 0) {
+            status = atoi(s_http_resp + 9);
+        }
+
+        /* Drain remaining response body if not fully read.
+         * Parse Content-Length from headers to know how much to drain. */
+        char *cl = strstr(s_http_resp, "content-length:");
+        if (!cl) cl = strstr(s_http_resp, "Content-Length:");
+        if (cl) {
+            int content_len = atoi(cl + 16);
+            /* Find end of headers (\r\n\r\n) */
+            char *body = strstr(s_http_resp, "\r\n\r\n");
+            if (body) {
+                int hdr_len = (body + 4) - s_http_resp;
+                int body_read = recvd - hdr_len;
+                int remaining = content_len - body_read;
+                /* Drain remaining body into discard buffer */
+                while (remaining > 0) {
+                    char discard[128];
+                    int n = recv(s_sock, discard, remaining > 128 ? 128 : remaining, 0);
+                    if (n <= 0) { raw_socket_close(); break; }
+                    remaining -= n;
+                }
+            }
+        }
+
+        if (status >= 200 && status < 300) {
+            return true;
+        }
+
+        ESP_LOGW(TAG, "Upload failed: HTTP %d", status);
+        if (status == 400 || status == 422) {
+            /* Client error — don't retry, payload is bad */
+            return false;
+        }
+        /* Server error or unknown — close and retry */
+        raw_socket_close();
     }
 
     return false;
@@ -528,6 +639,17 @@ static void http_upload_task(void *arg)
     int consecutive_fails = 0;
 
     while (1) {
+        /* Paused during firmware relay — release resources and wait */
+        if (s_upload_paused) {
+            raw_socket_close();  /* Free HTTP socket + buffers */
+            drone_detection_t discard;
+            while (xQueueReceive(s_detection_queue, &discard, 0) == pdTRUE) {}
+            batch_count = 0;
+            estimated_payload_bytes = 0;
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
         /* In standalone mode, just drain the queue without uploading */
         if (wifi_sta_is_standalone()) {
             drone_detection_t det;
@@ -539,7 +661,7 @@ static void http_upload_task(void *arg)
         bool connected_now = wifi_sta_is_connected();
         if (connected_now && !was_connected) {
             ESP_LOGI(TAG, "WiFi reconnected — resetting HTTP client");
-            reset_http_client();
+            raw_socket_close();
             consecutive_fails = 0;
         }
         was_connected = connected_now;
@@ -550,7 +672,7 @@ static void http_upload_task(void *arg)
             if (since_success >= pdMS_TO_TICKS(HEALTH_RESET_SEC * 1000)) {
                 ESP_LOGW(TAG, "HEALTH RESET: no success for %ds, resetting client + clearing offline buffer",
                          HEALTH_RESET_SEC);
-                reset_http_client();
+                raw_socket_close();
                 /* Clear stale offline batches — they're probably the cause */
                 if (s_offline_buffer) {
                     offline_batch_t discard;
@@ -612,7 +734,7 @@ static void http_upload_task(void *arg)
             if (free_heap < 10000) {
                 ESP_LOGW(TAG, "LOW HEAP (%u bytes) — dropping batch of %d to recover",
                          (unsigned)free_heap, batch_count);
-                reset_http_client();  /* Free HTTP client resources */
+                raw_socket_close();  /* Free HTTP client resources */
                 batch_count = 0;
                 estimated_payload_bytes = 0;
                 scan_ts_ms = 0;
@@ -632,11 +754,8 @@ static void http_upload_task(void *arg)
                             ESP_LOGW(TAG, "Switching to %s URL after %d failures",
                                      s_using_fallback_url ? "fallback" : "primary",
                                      consecutive_fails);
-                            /* Force client recreation with new URL */
-                            if (s_http_client) {
-                                esp_http_client_cleanup(s_http_client);
-                                s_http_client = NULL;
-                            }
+                            /* Force socket recreation with new URL */
+                            raw_socket_close();
                         }
                     } else {
                         last_send = xTaskGetTickCount();
@@ -647,7 +766,7 @@ static void http_upload_task(void *arg)
                 } else {
                     buffer_batch_offline(payload);
                 }
-                cJSON_free(payload);
+                /* payload is static buffer — no free needed */
             } else {
                 ESP_LOGE(TAG, "Failed to build JSON payload");
             }
@@ -675,7 +794,7 @@ static void http_upload_task(void *arg)
                     last_success_tick = last_send;
                     consecutive_fails = 0;
                 }
-                cJSON_free(payload);
+                /* payload is static buffer — no free needed */
             }
         }
 
@@ -689,6 +808,8 @@ static void http_upload_task(void *arg)
                 (now2 - last_lockon_poll) >= pdMS_TO_TICKS(10000)) {
                 last_lockon_poll = now2;
 
+#if defined(UPLINK_ESP32S3)
+                /* Lock-on polling — only on S3 (ESP32 has too little heap for extra HTTP client) */
                 /* Build lock-on poll URL (per-node: includes device_id) */
                 char backend_url[128] = {0};
                 if (s_using_fallback_url) {
@@ -759,6 +880,7 @@ static void http_upload_task(void *arg)
                     }
                     esp_http_client_cleanup(client);
                 }
+#endif  /* UPLINK_ESP32S3 — lockon polling */
             }
         }
     }
@@ -803,4 +925,21 @@ int http_upload_get_fail_count(void)
 int64_t http_upload_get_last_success_ms(void)
 {
     return s_last_success_epoch_ms;
+}
+
+void http_upload_pause(void)
+{
+    s_upload_paused = true;
+    ESP_LOGW(TAG, "HTTP upload PAUSED (firmware relay)");
+}
+
+void http_upload_resume(void)
+{
+    s_upload_paused = false;
+    ESP_LOGW(TAG, "HTTP upload RESUMED");
+}
+
+bool http_upload_is_paused(void)
+{
+    return s_upload_paused;
 }

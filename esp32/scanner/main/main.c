@@ -344,7 +344,10 @@ static void uart_cmd_listener_task(void *arg)
         /* Resend scanner_info every 10s — always, even when TX is stopped.
          * This lets the uplink see us and know our version/capabilities.
          * Also sends TX state so uplink knows if we're waiting or active. */
-        if ((xTaskGetTickCount() - last_info_send) >= pdMS_TO_TICKS(10000)) {
+        /* Suppress all UART TX during OTA — scanner must be silent so the
+         * UART is fully dedicated to receiving firmware chunks. */
+        if (!uart_ota_is_active() &&
+            (xTaskGetTickCount() - last_info_send) >= pdMS_TO_TICKS(10000)) {
             last_info_send = xTaskGetTickCount();
             const esp_app_desc_t *app2 = esp_app_get_description();
             uart_tx_send_scanner_info(app2 ? app2->version : "?",
@@ -438,10 +441,16 @@ static void uart_cmd_listener_task(void *arg)
                         } else if (type && strcmp(type, MSG_TYPE_OTA_BEGIN) == 0) {
                             /* UART OTA: receive firmware from uplink */
                             cJSON *sz = cJSON_GetObjectItem(root, "size");
+                            cJSON *crc_j = cJSON_GetObjectItem(root, "crc");
                             uint32_t total = sz ? (uint32_t)sz->valueint : 0;
+                            uint32_t expected_crc = crc_j ? (uint32_t)crc_j->valuedouble : 0;
+                            bool has_crc = (crc_j != NULL);
                             if (total > 0) {
-                                ESP_LOGW(TAG, "UART OTA begin: %lu bytes", (unsigned long)total);
-                                uart_ota_begin(total, UART_NUM_1);
+                                ESP_LOGW(TAG, "UART OTA begin: %lu bytes, crc=%s%08lX",
+                                         (unsigned long)total,
+                                         has_crc ? "" : "none/",
+                                         (unsigned long)expected_crc);
+                                uart_ota_begin(total, expected_crc, has_crc, UART_NUM_1);
                             }
                         } else if (type && strcmp(type, MSG_TYPE_OTA_END) == 0) {
                             ESP_LOGI(TAG, "UART OTA finalize");

@@ -4,6 +4,195 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.58.0] - 2026-04-16
+
+### Firmware cleanup v2 — Honest Continuity + probe-IE grouping
+
+v0.57 fixed phantom-iPhone counts at ingest (22 → 0) and disappearance dedup (185 → 0). This release moves the fixes up into the firmware so the wire data is honest end-to-end, and plumbs `probe_ie_hash` through the uplink HTTP payload so identity grouping actually activates.
+
+### Changed — ESP32 scanner firmware (v0.58.0)
+- **Honest Apple Continuity classification** — New `BLE_DEV_APPLE_GENERIC` ("Apple Device") replaces `BLE_DEV_APPLE_IPHONE` as the default for Nearby Info (0x10), Nearby Action (0x0F), and AirDrop (0x05). Apple doesn't broadcast iPhone-vs-iPad-vs-Mac in those — scanner stops guessing. Handoff/AirPlay still classify as MacBook; AirPods and AirTag unchanged.
+- **Apple data-flags always emitted** — `ble_apple_flags` (was `ble_apple_info` / `ble_ainfo`) is emitted on every Nearby Info / Nearby Action advertisement, even when zero, so the backend can distinguish "flags all false" from "field absent". Cold rename — legacy uplinks drop the byte until reflashed. Nearby Action (0x0F) now extracts the flag byte too (previously only 0x10).
+- **Enriched `probe_ie_hash`** — FNV1a hash now folds in payload bytes of identity-stable IEs (Supported Rates, HT Cap, Ext Cap, VHT Cap) plus first 4 bytes of each vendor IE body. Per PETS-2017, these survive random-MAC rotation. One-time reset of the probe-IE identity space; groupings rebuild within minutes of observation.
+- **`SCANNER_S3_COMBO=1` build flag** — Added to the `scanner-s3-combo` platformio env to enable S3-combo-only features in future passes.
+
+### Changed — ESP32 uplink firmware (v0.58.0)
+- **`ie_hash` forwarded to backend** — Uplink was parsing `probe_ie_hash` off UART but silently dropping it in the HTTP payload. Now emitted as `ie_hash` per detection, so `identity_correlator.find_identity()` finally has data to work with.
+- **`ble_apple_flags` cold switch** — Uplink now reads the new UART key and forwards it as `ble_apple_flags` in the HTTP payload (always emitted, matches scanner contract).
+
+### Changed — Backend
+- **`ble_apple_flags` as first-class field** — `DroneDetectionItem` accepts the new key; legacy `ble_apple_info` retained as an alias for one release.
+- **Skip iPhone→Apple-Device translation when scanner is already honest** — If the incoming manufacturer string is `"Apple Device"`, ingest stops rewriting it.
+- **EntityTracker probe-IE grouping** — `_correlate_by_probes` now consults `identity_correlator.find_identity(ie_hash)` before falling back to SSID-Jaccard; known entities are linked directly without a Jaccard threshold dance.
+
+### Notes
+- `probe_ie_hash` values change under the new scheme. Devices observed across the v0.57 → v0.58 scanner upgrade appear as new identities in the correlator until re-seen a few times.
+- Firmware artifacts built but not flashed. User flashes locally tomorrow; legacy uplinks not-yet-reflashed continue to work, they simply drop `ble_apple_flags` and `ie_hash` until updated.
+
+## [0.57.0] - 2026-04-16
+
+### False-positive & grouping cleanup — Backend + Scanner
+
+Pipeline audit surfaced three classes of noise: stationary devices triggering motion anomalies, low-confidence BLE frames classified as confirmed drones, and one physical device appearing as many separate entities. This release addresses all three layers.
+
+### Fixed — Backend
+- **Duplicate anomaly ingest** — `_anomaly_detector.ingest()` was being called twice per detection in the router, doubling every RSSI sample and inflating velocity/spike deltas. Single call now.
+- **Per-sensor velocity false positives** — Velocity alerts now require ≥2 sensors to independently agree on a monotonic RSSI slope; a stationary transmitter seen at different distances by different sensors no longer registers as motion.
+- **RF anomaly monotonic check** — The 3-point monotonic-rise trip (`rssi[0]<=rssi[1]<=rssi[2]`) was vulnerable to normal multipath noise. Replaced with full-history monotonicity over 5+ samples spanning ≥15 s, total delta ≥18 dB.
+- **Strong-signal spam** — `STRONG_SIGNAL_DB` tightened from -15 to -10 dBm and gated to first 30 s after first-seen so close legitimate devices don't keep re-alerting.
+- **Per-alert-type cooldown** — Added 600 s cooldown per `(track, alert_type)` in anomaly_detector so the same device can't re-alert every batch.
+- **Low-confidence BLE RID → confirmed_drone** — Any `ble_rid` source was classified `confirmed_drone` with no confidence floor. Now requires ≥0.30; weaker frames downgrade to `likely_drone`.
+- **Fuzzy WiFi SSID floor** — Soft-match classification floor raised 0.10 → 0.20 so household hotspots stop clearing the bar.
+- **EKF init weighting** — Position filter now inverse-variance weights sensor observations at cold start instead of inverse-distance, so weak-signal distant sensors don't pull the initial position off.
+- **`_last_update_time` bug** — Position filter's history timestamps always fell back to wall time because the guard attribute was never set. Now uses the filter clock consistently.
+
+### Added — Backend
+- **Ingest dedup** — 30 s LRU on `(drone_id, source, bssid, 10 s bucket)` in the detections router drops duplicates from scanner re-emission and uplink offline-replay before they hit the classifier / anomaly detectors / DB.
+- **Apple auth-tag entity merge** — EntityTracker now consults the BLEEnricher's `_auth_tag_links` table (built from Apple Nearby auth tags) and merges entities when MAC rotation is detected. One iPhone no longer fragments into many entities over its rotation cycle.
+- **Cross-source / single-SSID correlation** — EntityTracker probe correlation now admits strong co-location + manufacturer match + any shared SSID as a link, fixing the over-splitting case where a phone with one dominant home network never re-associated across MAC rotations.
+- **Persistent entity store** — New `tracked_entities` table; EntityTracker checkpoints dirty entities every ~30 s and rehydrates from the last 24 h on backend startup, so the dashboard entity count survives a restart.
+- **`/detections/grouped` by entity** — The grouped view now keys by EntityTracker entity_id when known and falls back to drone_id otherwise; the best classification across all of an entity's detections is surfaced.
+
+### Changed — Backend
+- **Triangulation sensor TTL** — Lowered from 24 h to 30 min so offline sensors drop in sync with EntityTracker.
+
+### Changed — ESP32 scanner firmware (v0.57.0)
+- **Broad SSID prefixes removed** — `HOLY` (caught "HolyCow", etc.) and `UFO-` (caught nightclubs and consumer gear) removed. Specific Holy Stone / UFO drone prefixes still match.
+- **Soft SSID matches gated on motion** — `WIFI_xxx` / `FPV_xxx` / `CAMERA_xxx` soft matches are now only emitted when the transmitter's RSSI has moved recently. Static APs with drone-like names are dropped. Minimum confidence 0.25.
+- **Probe-request soft matches dropped** — Probe requests reflect what a client is *searching for*, not what a drone is broadcasting. Soft-match probes no longer escalate to "Drone Likely"; classified as generic wifi_device.
+- **Per-BSSID beacon rate limit** — 128-slot LRU suppresses re-reports of the same BSSID within 30 s unless RSSI shifted ≥5 dB. Applied to hard SSID match, OUI match, and scan-result paths (drone-protocol sources intentionally exempt).
+
+### Notes
+- Scanner firmware changes only; uplink firmware untouched.
+- Version bumped across `esp32/shared/version.h` and `backend/app/main.py`.
+
+## [0.56.0] - 2026-04-15
+
+### Platform Release — ESP32 + Backend + Dashboard
+
+This release unifies the ESP32 firmware (v0.56.0) and backend (v0.56.0) version numbers, reflecting a major evolution from the sensor node prototype into a full detection platform with triangulation, calibration, entity tracking, and a comprehensive real-time dashboard.
+
+### Added — Backend
+- **Inter-node RF calibration system** — Orchestrates sequential AP broadcasting across sensor nodes at two power levels (20dBm + 11dBm), measures RSSI between all node pairs, computes path loss model via linear regression, persists results to disk
+- **Calibration API** — `POST /detections/calibrate`, `GET /detections/calibrate/status`, `GET /detections/calibrate/model`, `GET /detections/calibrate/history`, `GET /detections/calibrate/matrix`
+- **Entity correlation engine** — Groups random-MAC BLE devices and WiFi probes into tracked entities using Jaccard SSID overlap scoring, BLE fingerprint clustering, and timeline events for sensor handoffs
+- **Entity API** — `GET /detections/entities` with locate buttons per entity
+- **Anomaly detection** — RF anomaly engine with configurable thresholds for RSSI spikes, disappearances, velocity anomalies, channel hopping, and rogue AP detection
+- **Device classifier** — 25+ known device types, BLE drone type filtering, mobile hotspot detection by SSID keywords, locally-administered MAC detection
+- **BLE manufacturer database** — Expanded from ~200 to ~500 OUI entries covering networking, phones, IoT, vehicles, drones, wearables, cameras, gaming
+- **Triangulation engine** — Multilateration from 2+ sensor observations with Extended Kalman Filter position smoothing, mutable RSSI model updated by calibration
+- **Dashboard overhaul** — 12 tabs: Overview, WiFi APs, BLE, Mobile Devices, Probes, Map, Alerts, Entities, Whitelist, Anomalies, All Detections, Sensors
+- **Map features** — Satellite Leaflet map with draggable sensor markers, device tracking (magenta pulsing markers), triangulation lines, range circles, trail filtering, per-sensor RSSI display in popups
+- **Sensor management** — GPS position editor with placement map, OTA firmware update dialog, scanner diagnostics, firmware stack display
+- **Probe tracking** — WiFi probe requests grouped by source MAC with SSID lists, probe history, mobile device profiles
+- **Alert system** — Drone alerts, tracker alerts, BLE fingerprint alerts, probe activity monitoring with alert history
+
+### Added — ESP32 Firmware (v0.56.0)
+- **Calibration handlers** — AP enable/disable, TX power control, passive RSSI measurement, reboot-to-free-RAM on calibration stop
+- **CRC32 firmware verification** — Full-image CRC32 replaces additive checksum for OTA relay integrity
+- **Raw socket HTTP client** — Replaced esp_http_client with zero-alloc LWIP sockets to eliminate heap fragmentation on legacy ESP32 nodes
+- **Static WiFi TX buffers** — Prevents LWIP malloc storms that caused heap exhaustion crash loops
+- **UART backpressure** — Stop/start flow control between scanner and uplink at 80%/40% queue thresholds
+- **Confidence filtering** — BLE unknowns below 0.04 confidence dropped at scanner before UART transmission
+- **BLE rate limiting** — Unknown devices: 10s, known: 5s, low-interest: 10s (Remote ID drones bypass all limits)
+- **Passive WiFi scanning** — Reduced from active to passive scanning to avoid interfering with AP connections
+- **Broadcast probe drop** — Empty-SSID probe requests (broadcast) dropped immediately at scanner
+- **Deferred AP mode switch** — WiFi AP disabled via esp_timer callback when STA connects, preventing watchdog crashes
+
+### Fixed — ESP32 Firmware
+- **OTA abort sequence truncated** — Was sending 5 bytes instead of 9; the `\n` flush never reached the scanner, causing line buffer pollution and 30s detection delay after every reboot
+- **SSID JSON injection** — WiFi scan results now properly escape `"` and `\` in SSIDs for the setup UI
+- **Atomic backpressure flag** — `s_backpressure_active` changed from `volatile bool` to `_Atomic bool` for thread safety on dual-core S3
+- **Heap exhaustion crash loop** — Legacy ESP32 uplinks (320KB RAM) crashed from cJSON + esp_http_client fragmentation; replaced with static buffers and raw sockets
+- **Scanner UART flood** — BLE unknowns at 0.02 confidence caused JSON parse errors and heap exhaustion on uplink
+
+### Changed
+- Backend version bumped from 0.32.0 to 0.56.0 (unified with firmware)
+- ESP32 firmware version bumped from 0.55.0 to 0.56.0
+- RSSI reference changed from -40 to -50 dBm (better match for ESP32 PCB antennas)
+- Triangulation distance clamp reduced from 5000m to 200m
+- EKF measurement noise increased to `(30 + d*2)^2` for more stable positioning
+- Anomaly detection thresholds raised to eliminate residential WiFi noise
+
+## [0.51.0] - 2026-04-06
+
+### ESP32 Firmware
+- Fix legacy node crash from cJSON/HTTP heap fragmentation
+- Scanner start/stop protocol improvements
+- Delete cached sdkconfigs from repository
+
+## [0.50.0] - 2026-04-04
+
+### Added
+- **AI detection engine** — ML Kit object labeling for visual drone detection, training data collector, camera optimization
+- **Complete BLE privacy scanner overhaul** — Restructured BLE detection pipeline on ESP32
+
+## [0.47.0] - 2026-03-31
+
+### Fixed
+- Meta glasses detection — connected device scanner with refresh cycle
+
+## [0.46.0] - 2026-03-30
+
+### Added
+- 303 BLE detection rules (up from 288)
+- Dash cam detection via WiFi SSID patterns
+- `isBonded` flag for BLE device classification
+
+## [0.45.0] - 2026-03-30
+
+### Added
+- 287 BLE device detection rules
+- Bonded device scanner for Android
+- Meta Quest detection fix
+
+## [0.44.0] - 2026-03-29
+
+### Added
+- **Ocean search** — Long-press map to scan 250 NM radius anywhere in the world
+
+## [0.43.0] - 2026-03-29
+
+### Fixed
+- Meta Quest BLE detection
+- Unit normalization to miles/feet/mph
+- 40 new aircraft photos added
+
+## [0.42.0] - 2026-03-28
+
+### Added
+- All-S3 production sensor node architecture
+- Android AR viewfinder fixes
+- 22 new aircraft reference photos
+- UART relay OTA with CRC32 verification
+
+## [0.37.0] - 2026-03-28
+
+### Added
+- **OTA firmware updates** — Over-the-air updates via UART relay from uplink to scanner
+- **Apple Continuity deep parsing** — Decode AirDrop, Handoff, and other Apple BLE messages
+- **Entity resolution** — Group related BLE advertisements into logical devices
+- **Dashboard overhaul** — Probes tab, WiFi probe tracking, firmware version display, OTA update buttons
+- **Lock-on system** — Dashboard to backend to uplink to scanner directed scanning chain
+- **BLE-JA3 fingerprinting** — Fingerprint BLE devices by advertisement structure
+- **Multi-SSID WiFi** — Uplink tries multiple saved WiFi networks
+- **Setup portal** — Web-based WiFi configuration at 192.168.4.1
+
+### Fixed
+- OLED scanner version display
+- mDNS default backend URL
+- OTA relay crash (smaller chunks + RTOS yield)
+- Uplink heap stability (stack overflow fixes)
+- Dashboard flashing empty sensors
+
+## [0.35.0] - 2026-03-27
+
+### Added
+- 3-board sensor node architecture (S3 BLE + C5 WiFi + ESP32 OLED Uplink)
+- Plain ESP32 WiFi scanner build
+- Android sensor backend settings with connection test
+- Uplink connectivity watchdog with auto-reboot
+
 ## [0.33.0-beta] - 2026-03-27
 
 ### Added

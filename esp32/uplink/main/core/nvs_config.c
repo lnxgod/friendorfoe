@@ -87,6 +87,39 @@ bool nvs_config_set_string(const char *key, const char *value)
     return true;
 }
 
+bool nvs_config_set_u32(const char *key, uint32_t value)
+{
+    if (!s_initialized || !key) return false;
+
+    esp_err_t err = nvs_set_u32(s_nvs_handle, key, value);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS set_u32 '%s' failed: %s", key, esp_err_to_name(err));
+        return false;
+    }
+    err = nvs_commit(s_nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS commit failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    ESP_LOGI(TAG, "NVS set '%s' = %lu", key, (unsigned long)value);
+    return true;
+}
+
+bool nvs_config_get_u32(const char *key, uint32_t *value)
+{
+    if (!s_initialized || !key || !value) return false;
+
+    esp_err_t err = nvs_get_u32(s_nvs_handle, key, value);
+    if (err == ESP_OK) return true;
+
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGD(TAG, "NVS key '%s' not found", key);
+    } else {
+        ESP_LOGW(TAG, "NVS get_u32 '%s' error: %s", key, esp_err_to_name(err));
+    }
+    return false;
+}
+
 /* ── Convenience getters with defaults ─────────────────────────────────── */
 
 static void get_with_default(const char *nvs_key, const char *default_val,

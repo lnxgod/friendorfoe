@@ -19,7 +19,7 @@ _CATEGORY_KEYWORDS = {
                    "tuya", "govee", "meross", "shelly", "chamberlain", "august", "yale",
                    "lutron", "honeywell", "lifx", "rachio", "irobot", "neato"],
     "Wearable": ["fitbit", "garmin", "polar electro", "suunto", "whoop", "oura", "amazfit",
-                 "huami", "peloton", "coros"],
+                 "huami", "peloton", "coros", "luxottica"],
     "Audio": ["bose", "harman", "jbl", "sennheiser", "jabra", "beats electronics",
               "sonos", "bang & olufsen", "skullcandy", "anker innovations", "soundcore",
               "sony ", "marshall"],

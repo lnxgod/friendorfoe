@@ -183,22 +183,26 @@ class RFAnomalyConfig:
     state_ttl_s: float = 7 * 24 * 3600.0
     recent_window_s: float = 180.0
 
-    rssi_spike_db: int = 12
+    rssi_spike_db: int = 25           # 12 was residential noise
     rssi_spike_window_s: float = 15.0
-    rssi_spike_min_samples: int = 2
+    rssi_spike_min_samples: int = 4   # Need more samples before alerting
 
-    disappearance_min_seen: int = 5
-    disappearance_min_presence_s: float = 30.0
-    disappearance_grace_s: float = 90.0
+    disappearance_min_seen: int = 10  # Must be seen 10+ times to matter
+    disappearance_min_presence_s: float = 300.0  # 5 min presence before we care
+    disappearance_grace_s: float = 300.0         # 5 min grace before alerting
 
-    new_device_confirmations: int = 2
+    new_device_confirmations: int = 3  # Need 3 confirmations, not 2
     new_device_window_s: float = 30.0
 
     reference_rssi_dbm: float = -45.0
     path_loss_exponent: float = 2.2
     velocity_window_s: float = 20.0
+    velocity_min_window_s: float = 15.0  # require span before trusting slope
+    velocity_min_samples: int = 5        # 3 was vulnerable to multipath noise
     velocity_min_speed_mps: float = 8.0
-    velocity_min_rssi_delta_db: int = 6
+    velocity_min_rssi_delta_db: int = 18  # 12 still tripped on noise
+    velocity_cooldown_s: float = 600.0    # don't re-alert the same track for 10 min
+    rssi_spike_cooldown_s: float = 600.0
 
     channel_hop_window_s: float = 10.0
     channel_hop_distinct_channels: int = 3
@@ -208,7 +212,7 @@ class RFAnomalyConfig:
     signal_zscore_threshold: float = 2.8
 
     spoofing_window_s: float = 120.0
-    spoofing_distinct_bssids: int = 3
+    spoofing_distinct_bssids: int = 6
 
     time_pattern_min_hits: int = 8
     time_pattern_min_days: int = 3
@@ -267,6 +271,17 @@ class RFAnomalyDetector:
         now = now or datetime.now().timestamp()
         alerts: list[RFAnomalyAlert] = []
 
+        # Entity-gate import — the EntityTracker singleton lives in the
+        # router module. If the lookup fails (e.g. running outside FastAPI
+        # in a test), fall back to legacy per-bssid sweep. Otherwise only
+        # emit when the WHOLE entity is gone, not when this bssid is gone.
+        _entity_tracker = None
+        try:
+            from app.routers.detections import _entity_tracker as _et
+            _entity_tracker = _et
+        except Exception:
+            _entity_tracker = None
+
         for entity_key, state in list(self.device_states.items()):
             if state.disappearance_reported:
                 continue
@@ -277,6 +292,18 @@ class RFAnomalyDetector:
             age = now - state.last_seen
             if age < self.config.disappearance_grace_s:
                 continue
+
+            # Gate: if the entity this bssid belongs to still has any
+            # active sensor, SKIP. The entity-level EventDetector will
+            # emit the authoritative device_departed event when the
+            # whole entity goes silent.
+            if _entity_tracker is not None and entity_key.startswith("bssid:"):
+                bssid = entity_key[len("bssid:"):]
+                eid = _entity_tracker.get_entity_id(bssid)
+                if eid:
+                    ent = _entity_tracker.get_entity(eid)
+                    if ent and ent.is_active:
+                        continue  # entity still has a live sensor; suppress
 
             alert = self._emit_alert(
                 anomaly_type="device_disappearance",
@@ -439,6 +466,7 @@ class RFAnomalyDetector:
                 "previous_rssi": previous_rssi,
                 "current_rssi": event.rssi,
             },
+            cooldown_s=self.config.rssi_spike_cooldown_s,
         )
         return [alert] if alert else []
 
@@ -452,23 +480,28 @@ class RFAnomalyDetector:
             return []
 
         history = state.rssi_by_sensor.get(event.device_id)
-        if not history or len(history) < 2:
+        if not history or len(history) < self.config.velocity_min_samples - 1:
             return []
 
         self._trim_deque(history, event.received_at, self.config.velocity_window_s)
-        if len(history) < 2:
+        # Include the current reading in the sample-count check.
+        if len(history) + 1 < self.config.velocity_min_samples:
             return []
 
-        recent = list(history)[-2:]
-        recent_points = recent + [(event.received_at, event.rssi)]
-        rssi_values = [value for _, value in recent_points]
-        monotonic = rssi_values[0] <= rssi_values[1] <= rssi_values[2] or rssi_values[0] >= rssi_values[1] >= rssi_values[2]
-        if not monotonic:
+        # Require the RSSI trend to be monotonic across ALL recent samples, not
+        # just the last three — three ascending readings can easily be noise
+        # (multipath), but a sustained monotonic trajectory over 5+ samples
+        # spanning >= velocity_min_window_s is much stronger evidence of motion.
+        all_points = list(history) + [(event.received_at, event.rssi)]
+        values = [v for _, v in all_points]
+        non_decreasing = all(values[i] <= values[i + 1] for i in range(len(values) - 1))
+        non_increasing = all(values[i] >= values[i + 1] for i in range(len(values) - 1))
+        if not (non_decreasing or non_increasing):
             return []
 
         oldest_ts, oldest_rssi = history[0]
         dt = event.received_at - oldest_ts
-        if dt <= 0:
+        if dt < self.config.velocity_min_window_s:
             return []
 
         rssi_delta = event.rssi - oldest_rssi
@@ -512,6 +545,7 @@ class RFAnomalyDetector:
                 "current_distance_m": round(current_distance, 2),
                 "window_s": round(dt, 2),
             },
+            cooldown_s=self.config.velocity_cooldown_s,
         )
         return [alert] if alert else []
 

@@ -16,6 +16,7 @@ with the same parameters as the ESP32 firmware.
 import logging
 import math
 import time
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -29,14 +30,36 @@ EARTH_RADIUS_M = 6_371_000.0
 # RSSI → distance model
 # ESP32 firmware uses 2.5 (open air). Backend uses 3.0 for mixed
 # indoor/outdoor environment (walls, obstacles attenuate more).
-RSSI_REF = -40          # dBm at 1 meter
+# Mutable calibration values — updated by CalibrationManager
+RSSI_REF = -50          # dBm at 1 meter (ESP32 PCB antenna realistic reference)
 PATH_LOSS_EXPONENT = 3.0
+
+def update_calibration(rssi_ref: float, path_loss: float):
+    """Update the RSSI model with calibrated values."""
+    global RSSI_REF, PATH_LOSS_EXPONENT, PATH_LOSS_OUTDOOR
+    RSSI_REF = rssi_ref
+    PATH_LOSS_EXPONENT = path_loss
+    PATH_LOSS_OUTDOOR = path_loss
+    import logging
+    logging.getLogger(__name__).info(
+        "Calibration applied: RSSI_REF=%.1f PATH_LOSS=%.2f", rssi_ref, path_loss)
 
 # Observation staleness: must be long enough for all sensors to report
 # the same device. WiFi active scans run every 2-3s but some SSIDs only
 # appear every 30-60s. BLE scan cycles can take 10-30s per sensor.
 # 5 minutes keeps SSIDs visible even if they skip a few scan cycles.
 OBSERVATION_TTL_SEC = 300.0
+
+# Drone-protocol observations (ASTM Remote ID / DJI IE / Beacon RID) carry
+# the drone's own GPS fix. Unlike RSSI-derived distance, GPS only makes
+# sense when it's FRESH — a 30 s old Location message may have the drone
+# hundreds of meters from its current position. When averaging GPS across
+# sensors, drop samples older than this window so a sensor that briefly
+# heard the drone minutes ago doesn't anchor the aggregated position.
+# Tune upward if sensors routinely take longer than this to deliver a
+# batch; downward if the map feels laggy. 5 s balances typical scanner
+# latency (~1-3 s end-to-end) with responsiveness to real drone motion.
+RID_GPS_MAX_AGE_SEC = 5.0
 
 # Sensor staleness: consider a sensor offline after this
 SENSOR_TTL_SEC = 120.0
@@ -89,6 +112,26 @@ class DroneObservation:
     operator_lon: float | None = None
     operator_id: str | None = None
     timestamp: float = 0.0  # epoch seconds
+
+
+@dataclass
+class EmitRecord:
+    """Diagnostic snapshot of a single position emit.
+
+    Captured by SensorTracker.get_located_drones() for every LocatedDrone
+    returned. Used by GET /detections/tracking/diagnostics to let us see
+    why a marker appeared at a given place: which position_source fired,
+    how many sensors contributed, and how far it moved from the previous
+    emit. Not used to drive any behavior — pure observability.
+    """
+    timestamp: float
+    position_source: str
+    sensor_count: int
+    accuracy_m: float | None
+    lat: float
+    lon: float
+    jump_m: float
+    used_sensors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -165,7 +208,7 @@ def rssi_to_distance_m(rssi: int, indoor: bool = False) -> float:
     n = PATH_LOSS_INDOOR if indoor else PATH_LOSS_OUTDOOR
     exponent = (RSSI_REF - rssi) / (10.0 * n)
     d = 10.0 ** exponent
-    return max(0.5, min(d, 5000.0))
+    return max(1.0, min(d, 200.0))  # Clamp to 200m max — property scale
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +378,12 @@ class SensorTracker:
     to get the current map view with triangulated positions.
     """
 
+    # How far a position must move between consecutive emits before we log
+    # a WARNING-level "jump" — tuned for "did a marker teleport?" triage.
+    LARGE_JUMP_THRESHOLD_M = 50.0
+    # Emit history depth per drone_id (roughly 3–5 min at 1 Hz polling).
+    EMIT_HISTORY_MAX = 200
+
     def __init__(self) -> None:
         self.sensors: dict[str, SensorInfo] = {}
         # drone_id -> {device_id -> DroneObservation}
@@ -344,6 +393,57 @@ class SensorTracker:
         # EKF position filter
         from app.services.position_filter import PositionFilterManager
         self._ekf = PositionFilterManager(stale_timeout=OBSERVATION_TTL_SEC)
+
+        # ── Diagnostics (populated by get_located_drones via _emit) ─────
+        # drone_id -> ring buffer of recent emits
+        self._emit_history: dict[str, deque] = defaultdict(
+            lambda: deque(maxlen=self.EMIT_HISTORY_MAX)
+        )
+        # drone_id -> {"prev_source→new_source": count}
+        self._source_flip_counts: dict[str, dict[str, int]] = defaultdict(
+            lambda: defaultdict(int)
+        )
+        # (drone_id, position_source) -> emit count
+        self._emit_counters: Counter = Counter()
+        # Global counter of large-jump WARNINGs for the dashboard summary.
+        self._large_jump_count: int = 0
+
+    def _record_emit(self, located: "LocatedDrone") -> None:
+        """Record one emit decision for diagnostics. Pure side-effect."""
+        drone_id = located.drone_id
+        source = located.position_source or "unknown"
+        hist = self._emit_history[drone_id]
+        prev = hist[-1] if hist else None
+        jump_m = 0.0
+        if prev is not None:
+            jump_m = _haversine_m(prev.lat, prev.lon, located.lat, located.lon)
+        used_sensors = [o.device_id for o in located.observations]
+        record = EmitRecord(
+            timestamp=time.time(),
+            position_source=source,
+            sensor_count=located.sensor_count,
+            accuracy_m=located.accuracy_m,
+            lat=located.lat,
+            lon=located.lon,
+            jump_m=jump_m,
+            used_sensors=used_sensors,
+        )
+        hist.append(record)
+        self._emit_counters[(drone_id, source)] += 1
+        if prev is not None and prev.position_source != source:
+            key = f"{prev.position_source}→{source}"
+            self._source_flip_counts[drone_id][key] += 1
+        if jump_m >= self.LARGE_JUMP_THRESHOLD_M:
+            self._large_jump_count += 1
+            prev_source = prev.position_source if prev else "(none)"
+            prev_sensors = prev.sensor_count if prev else 0
+            logger.warning(
+                "tracking.jump drone=%s %s→%s jump=%.0fm sensors=%d→%d acc=%s used=%s",
+                drone_id, prev_source, source, jump_m,
+                prev_sensors, located.sensor_count,
+                f"{located.accuracy_m:.0f}" if located.accuracy_m is not None else "?",
+                used_sensors,
+            )
 
     def ingest(
         self,
@@ -404,9 +504,9 @@ class SensorTracker:
             history.append(rssi)
             if len(history) > 20:
                 history.pop(0)
-            # EMA: heavy smoothing — most things are stationary
+            # EMA: very heavy smoothing to reduce position wiggling
             smoothed = history[0]
-            alpha = 0.15
+            alpha = 0.08
             for v in history[1:]:
                 smoothed = smoothed * (1 - alpha) + v * alpha
             is_indoor = sensor_type == "indoor"
@@ -460,8 +560,10 @@ class SensorTracker:
         for drone_id in to_remove:
             del self.observations[drone_id]
 
-        # Remove sensors that haven't been seen in over 24 hours
-        dead_sensors = [sid for sid, s in self.sensors.items() if now - s.last_seen > 86400]
+        # Drop sensor registry entries after 30 min of silence (matches
+        # entity_tracker.STALE_TIMEOUT_S so the two subsystems expire state
+        # on the same cadence). Sensors re-register on their next heartbeat.
+        dead_sensors = [sid for sid, s in self.sensors.items() if now - s.last_seen > 1800]
         for sid in dead_sensors:
             del self.sensors[sid]
 
@@ -512,9 +614,18 @@ class SensorTracker:
             best_obs = max(observations, key=lambda o: o.confidence)
 
             # --- Priority 1: Direct GPS from drone ---
-            # Smooth GPS by averaging last N reports (weighted by recency)
-            gps_obs = [o for o in observations if o.drone_lat and o.drone_lon
-                       and o.drone_lat != 0.0 and o.drone_lon != 0.0]
+            # Smooth GPS by averaging last N reports (weighted by recency).
+            # Only count observations whose drone-reported GPS is fresh —
+            # stale per-sensor caches can drag a live drone's position
+            # backward toward wherever the drone was when that sensor last
+            # heard a Location message.
+            now_ts = time.time()
+            gps_obs = [
+                o for o in observations
+                if o.drone_lat and o.drone_lon
+                and o.drone_lat != 0.0 and o.drone_lon != 0.0
+                and (now_ts - o.timestamp) <= RID_GPS_MAX_AGE_SEC
+            ]
             if gps_obs:
                 # Sort by time, use exponential weighting for smooth position
                 gps_sorted = sorted(gps_obs, key=lambda o: o.timestamp)
@@ -556,6 +667,7 @@ class SensorTracker:
                     operator_lon=best_obs.operator_lon,
                     operator_id=best_obs.operator_id,
                 ))
+                self._record_emit(results[-1])
                 continue
 
             # --- Priority 1.5: EKF smoothed position ---
@@ -583,6 +695,7 @@ class SensorTracker:
                         operator_lon=best_obs.operator_lon,
                         operator_id=best_obs.operator_id,
                     ))
+                    self._record_emit(results[-1])
                     continue
 
             # --- Collect sensors with valid positions and distance estimates ---
@@ -632,6 +745,7 @@ class SensorTracker:
                             operator_lon=best_obs.operator_lon,
                             operator_id=best_obs.operator_id,
                         ))
+                        self._record_emit(results[-1])
                         continue
 
             if len(usable) == 2:
@@ -664,6 +778,7 @@ class SensorTracker:
                         operator_lon=best_obs.operator_lon,
                         operator_id=best_obs.operator_id,
                     ))
+                    self._record_emit(results[-1])
                     continue
 
             # --- Priority 4: Single sensor with range estimate ---
@@ -686,6 +801,7 @@ class SensorTracker:
                     operator_lon=obs.operator_lon,
                     operator_id=obs.operator_id,
                 ))
+                self._record_emit(results[-1])
             elif observations:
                 # No distance estimate at all — just show sensor position
                 obs = observations[0]
@@ -701,5 +817,6 @@ class SensorTracker:
                         manufacturer=obs.manufacturer,
                         model=obs.model,
                     ))
+                    self._record_emit(results[-1])
 
         return results

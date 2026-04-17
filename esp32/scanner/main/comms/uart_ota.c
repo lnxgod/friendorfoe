@@ -46,6 +46,11 @@ static struct {
     uint32_t                 received;
     uint16_t                 expected_seq;
 
+    /* Full-image CRC32 verification */
+    uint32_t                 expected_image_crc;  /* From ota_begin JSON */
+    uint32_t                 running_image_crc;   /* Computed as chunks are written */
+    bool                     has_expected_crc;    /* Whether uplink provided a CRC */
+
     /* Chunk accumulator (handles UART byte fragmentation) */
     uint8_t                  hdr_buf[OTA_CHUNK_HEADER_SIZE];
     uint8_t                  hdr_pos;
@@ -93,12 +98,16 @@ static void send_chunk_nack(uint16_t seq)
 
 /* ── Public API ────────────────────────────────────────────────────────── */
 
-bool uart_ota_begin(uint32_t total_size, uart_port_t uart_num)
+bool uart_ota_begin(uint32_t total_size, uint32_t expected_crc,
+                    bool has_crc, uart_port_t uart_num)
 {
     if (s_ota.active) {
         ESP_LOGW(TAG, "OTA already active, aborting previous");
         uart_ota_abort();
     }
+
+    /* Set uart_num early so send_error uses the correct port */
+    s_ota.uart_num = uart_num;
 
     const esp_partition_t *update = esp_ota_get_next_update_partition(NULL);
     if (!update) {
@@ -122,10 +131,14 @@ bool uart_ota_begin(uint32_t total_size, uart_port_t uart_num)
     s_ota.handle = handle;
     s_ota.partition = update;
     s_ota.total_size = total_size;
+    s_ota.expected_image_crc = expected_crc;
+    s_ota.has_expected_crc = has_crc;
+    s_ota.running_image_crc = 0;
     s_ota.phase = PHASE_HEADER;
 
-    ESP_LOGW(TAG, "UART OTA started: %lu bytes → partition '%s'",
-             (unsigned long)total_size, update->label);
+    ESP_LOGW(TAG, "UART OTA started: %lu bytes → partition '%s' (image CRC: %s%08lX)",
+             (unsigned long)total_size, update->label,
+             has_crc ? "" : "none/", (unsigned long)expected_crc);
 
     /* Pause all scanning to give OTA full CPU + UART bandwidth */
 #ifndef BLE_SCANNER_ONLY
@@ -201,7 +214,8 @@ bool uart_ota_process_data(const uint8_t *data, int len)
                              s_ota.chunk_seq,
                              (unsigned long)expected_crc,
                              (unsigned long)actual_crc);
-                    send_chunk_nack(s_ota.chunk_seq);
+                    /* Don't send NACK — stay silent to avoid UART contention.
+                     * The full-image CRC will catch any missing/corrupted chunks. */
                     s_ota.phase = PHASE_HEADER;
                     break;
                 }
@@ -221,12 +235,16 @@ bool uart_ota_process_data(const uint8_t *data, int len)
                     return false;
                 }
 
+                /* Update running image CRC32 */
+                s_ota.running_image_crc = esp_rom_crc32_le(
+                    s_ota.running_image_crc, s_ota.chunk_buf, write_len);
+
                 s_ota.received += write_len;
                 s_ota.expected_seq = s_ota.chunk_seq + 1;
                 s_ota.phase = PHASE_HEADER;
 
-                /* ACK this chunk */
-                send_chunk_ack(s_ota.chunk_seq);
+                /* No per-chunk ACK — scanner stays silent during transfer
+                 * to avoid UART contention. Image-level CRC verifies integrity. */
 
                 /* Progress log every 100KB */
                 if (s_ota.received % (100 * 1024) < OTA_CHUNK_MAX_DATA) {
@@ -257,11 +275,38 @@ bool uart_ota_finalize(void)
 
     ESP_LOGI(TAG, "Finalizing OTA: %lu bytes received", (unsigned long)s_ota.received);
 
+    /* Verify full-image CRC32 before applying */
+    if (s_ota.has_expected_crc) {
+        if (s_ota.running_image_crc != s_ota.expected_image_crc) {
+            ESP_LOGE(TAG, "IMAGE CRC MISMATCH: expected=%08lX computed=%08lX — aborting",
+                     (unsigned long)s_ota.expected_image_crc,
+                     (unsigned long)s_ota.running_image_crc);
+            send_error("image_crc_mismatch");
+            esp_ota_abort(s_ota.handle);
+            s_ota.active = false;
+#ifndef BLE_SCANNER_ONLY
+            wifi_scanner_resume();
+#endif
+#ifndef WIFI_SCANNER_ONLY
+            ble_remote_id_start();
+#endif
+            return false;
+        }
+        ESP_LOGI(TAG, "Image CRC32 verified: %08lX (%lu bytes)",
+                 (unsigned long)s_ota.running_image_crc, (unsigned long)s_ota.received);
+    }
+
     esp_err_t err = esp_ota_end(s_ota.handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
         send_error("validate_failed");
         s_ota.active = false;
+#ifndef BLE_SCANNER_ONLY
+        wifi_scanner_resume();
+#endif
+#ifndef WIFI_SCANNER_ONLY
+        ble_remote_id_start();
+#endif
         return false;
     }
 
@@ -270,6 +315,12 @@ bool uart_ota_finalize(void)
         ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
         send_error("set_boot_failed");
         s_ota.active = false;
+#ifndef BLE_SCANNER_ONLY
+        wifi_scanner_resume();
+#endif
+#ifndef WIFI_SCANNER_ONLY
+        ble_remote_id_start();
+#endif
         return false;
     }
 
@@ -297,6 +348,9 @@ void uart_ota_abort(void)
                  (unsigned long)s_ota.received);
 #ifndef BLE_SCANNER_ONLY
         wifi_scanner_resume();
+#endif
+#ifndef WIFI_SCANNER_ONLY
+        ble_remote_id_start();
 #endif
     }
     s_ota.active = false;

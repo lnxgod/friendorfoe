@@ -22,6 +22,7 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.venv*/
 
 # ESP32 / PlatformIO
 .pio/
@@ -45,7 +46,20 @@ esp32/**/local_coords.h
 # WiFi credentials (NEVER commit — contains SSIDs and passwords)
 esp32/**/wifi_credentials.h
 
-# Backend local dashboard
-backend/app/static/
+# Backend data (calibration results, may contain node GPS)
+backend/app/data/
 backend/friendorfoe.db
 *.png
+
+# Claude Code / MCP tooling
+.claude/
+.playwright-mcp/
+
+# ESP32 debug and test tools (may contain credentials)
+esp32/wifi-test/
+esp32/uart-diag/
+esp32/uart-diag-uplink/
+
+# Personal notes
+map-filters.md
+map-snapshot.md

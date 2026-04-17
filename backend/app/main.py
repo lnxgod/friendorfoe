@@ -3,7 +3,12 @@
 import logging
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.cache import close_redis, redis_ping
 from app.config import settings
@@ -28,6 +33,18 @@ async def lifespan(app: FastAPI):
         logger.info("PostgreSQL tables ready")
     except Exception as e:
         logger.warning("PostgreSQL not available (will run without persistence): %s", e)
+
+    # Rehydrate EntityTracker + EventDetector from DB so known devices /
+    # previously-emitted first-seen events survive a restart.
+    try:
+        from app.services.database import async_session
+        from app.routers.detections import _entity_tracker, _event_detector
+        async with async_session() as session:
+            await _entity_tracker.rehydrate_from_db(session)
+            await _event_detector.hydrate_from_db(session)
+    except Exception as e:
+        logger.warning("EntityTracker / EventDetector rehydrate failed: %s", e)
+
     yield
     logger.info("Shutting down")
     await close_redis()
@@ -37,7 +54,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     description="Backend proxy & enrichment layer for the Friend or Foe aircraft/drone identification app.",
-    version="0.32.0",
+    version="0.58.0",
     lifespan=lifespan,
 )
 
@@ -56,6 +73,23 @@ async def log_requests(request: Request, call_next):
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
+# Serve dashboard static files (must be before routers to avoid catch-all conflicts)
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_static_dir), html=True), name="static")
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    """Log validation errors with the rejected body for debugging."""
+    body = exc.body
+    errors = exc.errors()
+    # Compact: just the field paths and error types
+    err_summary = "; ".join(f"{'.'.join(str(p) for p in e.get('loc', []))}: {e.get('msg', '')}" for e in errors[:3])
+    logger.warning("Validation 400 from %s on %s: %s", request.client.host if request.client else "?", request.url.path, err_summary)
+    if body and isinstance(body, dict):
+        logger.debug("Rejected payload keys: %s device_id=%s", list(body.keys()), body.get("device_id") or body.get("dev"))
+    return JSONResponse(status_code=400, content={"detail": errors})
+
 app.include_router(aircraft.router)
 app.include_router(detections.router)
 app.include_router(nodes.router)
@@ -87,7 +121,7 @@ async def health_check() -> HealthResponse:
 
     return HealthResponse(
         status="ok",
-        version="0.32.0",
+        version="0.58.0",
         redis="ok" if redis_ok else "unavailable",
         database=db_status,
     )

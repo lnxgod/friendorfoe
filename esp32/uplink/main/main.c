@@ -44,6 +44,7 @@
 #include "time_sync.h"
 #include "wifi_ap.h"
 #include "http_status.h"
+#include "fw_store.h"
 
 #include "version.h"
 
@@ -252,9 +253,9 @@ void app_main(void)
      * the line accumulator forever). */
     {
         const uint8_t abort_seq[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, '\n'};
-        uart_write_bytes(CONFIG_BLE_SCANNER_UART, (const char *)abort_seq, 5);
+        uart_write_bytes(CONFIG_BLE_SCANNER_UART, (const char *)abort_seq, sizeof(abort_seq));
 #if CONFIG_DUAL_SCANNER
-        uart_write_bytes(CONFIG_WIFI_SCANNER_UART, (const char *)abort_seq, 5);
+        uart_write_bytes(CONFIG_WIFI_SCANNER_UART, (const char *)abort_seq, sizeof(abort_seq));
 #endif
         ESP_LOGI(TAG, "Sent OTA abort sequence to all scanners");
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -278,6 +279,17 @@ void app_main(void)
     print_banner();
 
     ESP_LOGI(TAG, "All tasks started. Uplink is operational.");
+
+    /* ── 16b. Tell scanners to start transmitting ────────────────────── */
+    /* Scanners boot silent (start/stop protocol) and wait for this signal. */
+    {
+        const char *ready_msg = "{\"type\":\"ready\"}\n";
+        uart_write_bytes(CONFIG_BLE_SCANNER_UART, ready_msg, strlen(ready_msg));
+#if CONFIG_DUAL_SCANNER
+        uart_write_bytes(CONFIG_WIFI_SCANNER_UART, ready_msg, strlen(ready_msg));
+#endif
+        ESP_LOGW(TAG, "Sent ready signal to all scanners — detections enabled");
+    }
 
     /* ── 17. Connectivity watchdog ───────────────────────────────────── */
     /*
@@ -313,14 +325,26 @@ void app_main(void)
             int64_t upload_age_s = had_first_upload ? (now_ms - last_upload_ms) / 1000 : 0;
             int64_t uptime_s = (now_ms - boot_ms) / 1000;
 
-            ESP_LOGI(TAG, "WATCHDOG: wifi=%s down=%llds upload_age=%llds heap=%lu uptime=%llds ok=%d fail=%d",
+            ESP_LOGI(TAG, "WATCHDOG: wifi=%s down=%llds upload_age=%llds heap=%lu uptime=%llds ok=%d fail=%d det=%d",
                      wifi_ok ? "OK" : "DOWN",
                      (long long)wifi_down_s,
                      (long long)upload_age_s,
                      (unsigned long)esp_get_free_heap_size(),
                      (long long)uptime_s,
                      http_upload_get_success_count(),
-                     http_upload_get_fail_count());
+                     http_upload_get_fail_count(),
+                     uart_rx_get_detection_count());
+
+            /* Re-send ready signal every watchdog cycle (30s).
+             * Ensures scanners get the start command even if they
+             * missed it during boot or rebooted independently. */
+            {
+                const char *ready_msg = "{\"type\":\"ready\"}\n";
+                uart_write_bytes(CONFIG_BLE_SCANNER_UART, ready_msg, strlen(ready_msg));
+#if CONFIG_DUAL_SCANNER
+                uart_write_bytes(CONFIG_WIFI_SCANNER_UART, ready_msg, strlen(ready_msg));
+#endif
+            }
 
             /* WiFi dead for >120s → hard reboot (was 60s, too aggressive for weak signal) */
             if (!wifi_ok && wifi_down_s > 120) {
@@ -330,8 +354,9 @@ void app_main(void)
                 esp_restart();
             }
 
-            /* No upload success for >300s (after first success) → hard reboot */
-            if (had_first_upload && upload_age_s > 300) {
+            /* No upload success for >300s (after first success) → hard reboot
+             * Skip during firmware relay — uploads are intentionally paused. */
+            if (had_first_upload && upload_age_s > 300 && !fw_store_is_relay_active()) {
                 ESP_LOGE(TAG, "WATCHDOG REBOOT: No successful upload for %llds — rebooting",
                          (long long)upload_age_s);
                 vTaskDelay(pdMS_TO_TICKS(1000));
@@ -339,10 +364,20 @@ void app_main(void)
             }
 
             /* No upload at all after 300s of uptime → something is very wrong */
-            if (!had_first_upload && uptime_s > 300) {
+            if (!had_first_upload && uptime_s > 300 && !fw_store_is_relay_active()) {
                 ESP_LOGE(TAG, "WATCHDOG REBOOT: Never uploaded after %llds uptime — rebooting",
                          (long long)uptime_s);
                 vTaskDelay(pdMS_TO_TICKS(1000));
+                esp_restart();
+            }
+
+            /* Heap critically low → reboot before stack overflow crash.
+             * Legacy ESP32 heap fragments over time with HTTP traffic. */
+            uint32_t free_heap = esp_get_free_heap_size();
+            if (free_heap < 4000 && uptime_s > 20 && !fw_store_is_relay_active()) {
+                ESP_LOGE(TAG, "WATCHDOG REBOOT: heap=%lu — rebooting to recover",
+                         (unsigned long)free_heap);
+                vTaskDelay(pdMS_TO_TICKS(500));
                 esp_restart();
             }
         }
