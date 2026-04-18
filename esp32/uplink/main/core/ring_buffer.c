@@ -3,10 +3,14 @@
  */
 
 #include "ring_buffer.h"
+#include "psram_alloc.h"
 #include <stdlib.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
+#include "esp_log.h"
+
+static const char *RB_TAG = "ring_buf";
 
 struct ring_buffer {
     uint8_t       *storage;
@@ -33,6 +37,47 @@ ring_buffer_t *ring_buffer_create(int capacity, size_t item_size)
     if (!rb->storage) {
         free(rb);
         return NULL;
+    }
+
+    rb->capacity  = capacity;
+    rb->item_size = item_size;
+    rb->head      = 0;
+    rb->tail      = 0;
+    rb->count     = 0;
+    portMUX_INITIALIZE(&rb->lock);
+
+    return rb;
+}
+
+ring_buffer_t *ring_buffer_create_psram(int capacity, size_t item_size)
+{
+    if (capacity <= 0 || item_size == 0) {
+        return NULL;
+    }
+
+    /* Header stays in internal SRAM — it's tiny and touched from IRQ-ish
+     * spinlock paths. Only storage moves to PSRAM. */
+    ring_buffer_t *rb = calloc(1, sizeof(ring_buffer_t));
+    if (!rb) {
+        return NULL;
+    }
+
+    size_t bytes = (size_t)capacity * item_size;
+    rb->storage = psram_alloc_strict(bytes);
+    if (rb->storage) {
+        memset(rb->storage, 0, bytes);
+        ESP_LOGW(RB_TAG, "Ring buffer %u bytes in PSRAM (%d × %u)",
+                 (unsigned)bytes, capacity, (unsigned)item_size);
+    } else {
+        /* PSRAM unavailable/exhausted — fall back to internal heap so the
+         * caller still gets a usable (smaller-intent, larger-impact) buffer. */
+        rb->storage = calloc(capacity, item_size);
+        if (!rb->storage) {
+            free(rb);
+            return NULL;
+        }
+        ESP_LOGW(RB_TAG, "Ring buffer %u bytes in SRAM (PSRAM unavailable)",
+                 (unsigned)bytes);
     }
 
     rb->capacity  = capacity;

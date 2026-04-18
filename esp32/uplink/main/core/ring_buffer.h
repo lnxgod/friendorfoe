@@ -28,6 +28,17 @@ typedef struct ring_buffer ring_buffer_t;
 ring_buffer_t *ring_buffer_create(int capacity, size_t item_size);
 
 /**
+ * Create a ring buffer with its storage in external PSRAM when available.
+ * Falls back to internal SRAM (same as [ring_buffer_create]) when PSRAM
+ * isn't present or the allocation fails.
+ *
+ * The header struct always lives in internal SRAM; only the data array
+ * moves to PSRAM. Use for large offline queues and buffers where the
+ * capacity would exhaust internal heap.
+ */
+ring_buffer_t *ring_buffer_create_psram(int capacity, size_t item_size);
+
+/**
  * Push an item into the ring buffer.
  * If full, the oldest item is overwritten.
  *

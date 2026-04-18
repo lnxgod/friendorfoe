@@ -627,7 +627,16 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
 
 /* ── Beacon/scan-result rate-limit cache (per-BSSID) ───────────────────── */
 
+/* S3-combo has plenty of internal SRAM — growing this from 128 to 1024 slots
+ * reduces LRU wrap in dense RF environments (16 KB BSS, all internal: stays
+ * out of PSRAM per policy rule 7 because this cache is iterated per packet).
+ * Drone-protocol sources (BLE RID, DJI IE, Beacon RID) are exempt from this
+ * rate limit anyway — see feedback_rid_top_priority.md. */
+#if defined(SCANNER_S3_COMBO) || defined(UPLINK_ESP32S3)
+#define BEACON_CACHE_SLOTS        1024
+#else
 #define BEACON_CACHE_SLOTS        128
+#endif
 #define BEACON_RATE_LIMIT_MS      30000   /* re-report each BSSID at most every 30s */
 #define BEACON_RSSI_DELTA_DB      5       /* unless RSSI shifted by >= 5 dB */
 
@@ -673,7 +682,13 @@ static bool beacon_rate_limit_allow(const uint8_t *bssid, int8_t rssi, int64_t t
 
 /* ── Probe request rate-limit cache ───────────────────────────────────────── */
 
+/* Bumped from 16 to 128 on S3 — crowded networks have far more than 16
+ * concurrent probers, causing the LRU to overwrite before entries expire. */
+#if defined(SCANNER_S3_COMBO) || defined(UPLINK_ESP32S3)
+#define PROBE_CACHE_SLOTS       128
+#else
 #define PROBE_CACHE_SLOTS       16
+#endif
 #define PROBE_RATE_LIMIT_MS     5000    /* 1 detection per MAC+SSID pair per 5s */
 
 typedef struct {

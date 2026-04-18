@@ -56,6 +56,13 @@ CONFIG_FOF_OLED_RST_PIN=-1
 # ── Console on USB-JTAG (native USB on S3) ──────────────────────────────
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
+# ── OTA rollback ─────────────────────────────────────────────────────────
+# Self-OTA images boot as PENDING_VERIFY. app_main detects this and marks
+# the image valid only after the first successful backend upload. A failure
+# to verify within the connectivity watchdog triggers rollback to the
+# previous slot, removing the USB-rescue requirement for bad uplink OTA.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
 # ── Logging ──────────────────────────────────────────────────────────────
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_DEFAULT_LEVEL=3

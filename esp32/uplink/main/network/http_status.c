@@ -334,6 +334,7 @@ static esp_err_t status_json_handler(httpd_req_t *req)
         "\"battery\":{\"percent\":%.1f,\"voltage\":%.2f},"
         "\"heap\":{\"internal_free\":%u,\"internal_total\":%u,"
                   "\"psram_free\":%u,\"psram_total\":%u},"
+        "\"offline_queue\":{\"depth\":%d,\"capacity\":%d},"
         "\"detections\":%d,\"uploads_ok\":%d,\"uploads_fail\":%d,",
         device_id, (long long)uptime_sec,
         gps_fix ? "true" : "false", gps.latitude, gps.longitude, gps.satellites,
@@ -343,6 +344,7 @@ static esp_err_t status_json_handler(httpd_req_t *req)
         batt_pct, batt_v,
         (unsigned)heap_internal_free, (unsigned)heap_internal_total,
         (unsigned)psram_free, (unsigned)psram_total,
+        http_upload_get_offline_count(), http_upload_get_offline_capacity(),
         det_count, upload_ok, upload_fail);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
@@ -1318,7 +1320,7 @@ void http_status_init(void)
     config.server_port    = CONFIG_HTTP_STATUS_PORT;
     config.task_priority  = CONFIG_HTTP_STATUS_PRIORITY;
     config.stack_size     = 6144;   /* Minimal — relay uses static buffers, not stack */
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 20;   /* 15 active (status/setup/scan/connect/ota*3/fw*3/cal*4) + headroom */
     config.max_open_sockets = 1;  /* Single connection only — saves ~4KB per socket */
     config.lru_purge_enable = true; /* Close idle connections aggressively */
     config.recv_wait_timeout  = 60;  /* 60s timeout for large OTA uploads */

@@ -62,6 +62,16 @@ void http_upload_resume(void);
 /** True if the upload task is currently paused. */
 bool http_upload_is_paused(void);
 
+/**
+ * Current depth of the offline ring buffer (batches queued while WiFi was
+ * down or uploads were failing). Capped at CONFIG_MAX_OFFLINE_BATCHES.
+ * Exposed via /api/status for Phase-2 PSRAM queue observability.
+ */
+int http_upload_get_offline_count(void);
+
+/** Capacity of the offline ring buffer (= CONFIG_MAX_OFFLINE_BATCHES). */
+int http_upload_get_offline_capacity(void);
+
 #ifdef __cplusplus
 }
 #endif
