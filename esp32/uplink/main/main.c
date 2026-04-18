@@ -23,6 +23,8 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "psram_alloc.h"
 
 /* Core */
@@ -59,6 +61,73 @@
 #endif
 
 static const char *TAG = "main";
+
+/* ── Self-OTA rollback state ─────────────────────────────────────────────
+ * When true, the running image is an OTA that hasn't been verified yet:
+ *   - On first successful HTTP upload we call esp_ota_mark_app_valid_
+ *     cancel_rollback() and clear the flag.
+ *   - If the connectivity watchdog would otherwise esp_restart() while
+ *     the flag is still set, we call esp_ota_mark_app_invalid_rollback_
+ *     and_reboot() instead, which boots the previous slot.
+ * Flag is only meaningful on S3 builds — legacy ESP32 rollback is gated
+ * behind UPLINK_ESP32S3 because the sdkconfig flag lives in the S3 defaults.
+ */
+static volatile bool s_ota_pending_verify = false;
+
+#if defined(UPLINK_ESP32S3)
+static void rollback_check_at_boot(void)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return;
+
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    if (esp_ota_get_state_partition(running, &state) != ESP_OK) return;
+
+    if (state == ESP_OTA_IMG_PENDING_VERIFY) {
+        s_ota_pending_verify = true;
+        ESP_LOGW(TAG, "OTA: running from PENDING_VERIFY partition '%s' — "
+                      "will mark valid on first successful upload",
+                 running->label);
+    } else {
+        ESP_LOGI(TAG, "OTA: running partition '%s' state=%d (already verified)",
+                 running->label, state);
+    }
+}
+
+static void rollback_mark_valid(void)
+{
+    if (!s_ota_pending_verify) return;
+    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err == ESP_OK) {
+        s_ota_pending_verify = false;
+        ESP_LOGW(TAG, "OTA: image marked VALID (rollback cancelled)");
+    } else {
+        ESP_LOGE(TAG, "OTA: mark_valid failed: %s — will retry", esp_err_to_name(err));
+    }
+}
+
+static void rollback_and_reboot_or_restart(const char *reason)
+{
+    if (s_ota_pending_verify) {
+        ESP_LOGE(TAG, "OTA ROLLBACK: %s while PENDING_VERIFY — reverting to previous slot", reason);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_ota_mark_app_invalid_rollback_and_reboot();
+        /* Does not return on success. If it does fall through (e.g. no valid
+         * fallback partition), fall back to a normal restart. */
+    }
+    ESP_LOGE(TAG, "WATCHDOG REBOOT: %s", reason);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+}
+#else  /* legacy ESP32 — no rollback */
+#  define rollback_check_at_boot()         ((void)0)
+#  define rollback_mark_valid()            ((void)0)
+#  define rollback_and_reboot_or_restart(r) do { \
+        ESP_LOGE(TAG, "WATCHDOG REBOOT: %s", (r)); \
+        vTaskDelay(pdMS_TO_TICKS(1000));           \
+        esp_restart();                              \
+    } while (0)
+#endif
 
 /* ── Display update task ───────────────────────────────────────────────── */
 
@@ -179,6 +248,12 @@ void app_main(void)
 {
     /* ── 0. Machine-readable firmware identification ──────────────────── */
     FOF_PRINT_IDENT(TAG, FIRMWARE_NAME);
+
+    /* ── 0b. OTA rollback state detection ─────────────────────────────── */
+    /* Must run before any subsystem that might crash/panic — a rollback
+     * from this boot only happens if we haven't marked the image valid,
+     * which only happens after a successful HTTP upload below. */
+    rollback_check_at_boot();
 
     /* Report PSRAM presence up front so it's obvious in serial + /api/status
      * whether the board booted with external memory. On N16R8 hardware this
@@ -339,6 +414,12 @@ void app_main(void)
             /* Check HTTP upload health */
             int64_t last_upload_ms = http_upload_get_last_success_ms();
             if (last_upload_ms > 0) {
+                if (!had_first_upload) {
+                    /* First successful upload — current image is known good.
+                     * Cancel any pending OTA rollback so we don't revert on
+                     * the next reboot. */
+                    rollback_mark_valid();
+                }
                 had_first_upload = true;
             }
 
@@ -367,39 +448,42 @@ void app_main(void)
 #endif
             }
 
-            /* WiFi dead for >120s → hard reboot (was 60s, too aggressive for weak signal) */
+            /* WiFi dead for >120s → hard reboot (was 60s, too aggressive for weak signal).
+             * If the running image is still PENDING_VERIFY, rollback_and_reboot
+             * reverts to the previous slot instead of restarting in place. */
+            char reason[96];
             if (!wifi_ok && wifi_down_s > 120) {
-                ESP_LOGE(TAG, "WATCHDOG REBOOT: WiFi disconnected for %llds — rebooting",
+                snprintf(reason, sizeof(reason), "WiFi disconnected for %llds",
                          (long long)wifi_down_s);
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                esp_restart();
+                rollback_and_reboot_or_restart(reason);
             }
 
             /* No upload success for >300s (after first success) → hard reboot
              * Skip during firmware relay — uploads are intentionally paused. */
             if (had_first_upload && upload_age_s > 300 && !fw_store_is_relay_active()) {
-                ESP_LOGE(TAG, "WATCHDOG REBOOT: No successful upload for %llds — rebooting",
+                snprintf(reason, sizeof(reason), "no successful upload for %llds",
                          (long long)upload_age_s);
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                esp_restart();
+                rollback_and_reboot_or_restart(reason);
             }
 
-            /* No upload at all after 300s of uptime → something is very wrong */
+            /* No upload at all after 300s of uptime → something is very wrong.
+             * This is the primary rollback trigger for a bad OTA: if the new
+             * firmware can't reach the backend in its first 5 minutes, revert. */
             if (!had_first_upload && uptime_s > 300 && !fw_store_is_relay_active()) {
-                ESP_LOGE(TAG, "WATCHDOG REBOOT: Never uploaded after %llds uptime — rebooting",
+                snprintf(reason, sizeof(reason), "never uploaded after %llds uptime",
                          (long long)uptime_s);
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                esp_restart();
+                rollback_and_reboot_or_restart(reason);
             }
 
             /* Heap critically low → reboot before stack overflow crash.
-             * Legacy ESP32 heap fragments over time with HTTP traffic. */
+             * Legacy ESP32 heap fragments over time with HTTP traffic. A memory
+             * leak this severe in the first 20s is a strong bad-OTA signal, so
+             * a PENDING_VERIFY image rolls back rather than restarts-in-place. */
             uint32_t free_heap = esp_get_free_heap_size();
             if (free_heap < 4000 && uptime_s > 20 && !fw_store_is_relay_active()) {
-                ESP_LOGE(TAG, "WATCHDOG REBOOT: heap=%lu — rebooting to recover",
+                snprintf(reason, sizeof(reason), "heap=%lu critically low",
                          (unsigned long)free_heap);
-                vTaskDelay(pdMS_TO_TICKS(500));
-                esp_restart();
+                rollback_and_reboot_or_restart(reason);
             }
         }
     }

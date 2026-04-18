@@ -2,6 +2,37 @@
 
 All notable changes to the ESP32 hardware edition of Friend or Foe.
 
+## [0.59.2] - 2026-04-18
+
+### Phase-2 firmware — offline queue, OTA rollback, URI headroom
+
+Finishes the Phase-2 items flagged deferred in v0.59.1. S3 targets only; legacy envs are frozen at 0.59.0 per the S3-only fleet direction.
+
+### Added — Uplink (uplink-s3)
+- **Offline detection queue in PSRAM** — `ring_buffer_create_psram()` in `esp32/uplink/main/core/ring_buffer.{c,h}`. Storage goes to PSRAM (`psram_alloc_strict`), header stays in internal SRAM, auto-falls-back to calloc on boards without PSRAM. `CONFIG_MAX_OFFLINE_BATCHES` bumped from `1` to `512` on `UPLINK_ESP32S3`, giving ≈ 2 MB / ~10 min of steady traffic buffered through WiFi outages.
+- **OTA rollback** — `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` in `sdkconfig.esp32s3.defaults`. New `rollback_check_at_boot()` / `rollback_mark_valid()` / `rollback_and_reboot_or_restart()` in `main.c`. Images that boot `ESP_OTA_IMG_PENDING_VERIFY` are marked valid on first successful HTTP upload; the connectivity watchdog rolls back to the previous slot (instead of `esp_restart()`) on no-upload / no-WiFi / low-heap if verification never happened.
+
+### Changed — Uplink
+- `config.max_uri_handlers` in `http_status.c` 12 → 20 (15 handlers active today + headroom).
+- Heap-low watchdog in `main.c` now goes through the rollback path — a memory leak in the first 20 s of uptime is a strong bad-OTA signal, so PENDING_VERIFY reverts instead of restarting in place.
+- **OTA upload staging buffer (P4)** — `/api/fw/upload` in `fw_store.c` now stages through a lazily-allocated 64 KB PSRAM buffer instead of a 4 KB static. 16× fewer `httpd_req_recv`/`esp_ota_write` iterations per 1.1 MB scanner firmware. 4 KB internal fallback preserved for non-PSRAM boards.
+- **`/api/status` exposes `offline_queue`** — new `{"depth", "capacity"}` object so the dashboard can see how full the 512-batch PSRAM queue is getting (adds `http_upload_get_offline_count` / `_capacity` accessors).
+
+### Changed — Scanner (scanner-s3-combo)
+- `BEACON_CACHE_SLOTS` 128 → 1024 on S3 (internal SRAM, policy rule 7). Reduces LRU wrap in dense beacon environments.
+- `PROBE_CACHE_SLOTS` 16 → 128 on S3. Previous 16-slot cache overflowed in minutes in any multi-device household.
+- Drone-protocol sources (BLE RID, DJI IE, Beacon RID) remain exempt from rate-limit caches per `feedback_rid_top_priority`.
+
+### Deferred — Phase 3 (not implemented in 0.59.2)
+- On-scanner BLE-JA3 entity table emission (needs uplink schema).
+- LittleFS-backed offline queue persistence across reboots (PSRAM is volatile; a reboot still drops the queue).
+- Android-to-backend detection forwarding.
+
+### Notes
+- **Rollback activation requires a new bootloader.** `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` lives in the bootloader binary. An app-only OTA (including the v0.59.1 → v0.59.2 path on existing Pool) does NOT replace the bootloader, so rollback stays latent until the node is USB-flashed with the v0.59.2 bootloader. The app-side code (`rollback_check_at_boot`) safely no-ops when the current bootloader doesn't mark images PENDING_VERIFY, so v0.59.2 runs correctly on both old and new bootloaders — rollback simply doesn't fire on pre-flag bootloaders. This means Pool gets rollback only after its next USB session; new fleet S3 hardware has it from day 1.
+- Legacy (`uplink-esp32`, `scanner-esp32`, `scanner-c5`, `scanner-s3-wifi`) intentionally left at 0.59.0. They are retiring, not upgrading — see `project_s3_only_direction`.
+- Scanner rollback NOT enabled. Scanners don't have a clear "boot good" signal (no outbound HTTP), and bad scanner OTAs are already recoverable via `scripts/fof_flash.py` from the healthy uplink. Cheaper to keep scanner boot deterministic than to design a proof-of-boot protocol.
+
 ## [0.59.1] - 2026-04-18
 
 ### Remote UART flash reliability — staged handshake + store-then-flash scanner OTA

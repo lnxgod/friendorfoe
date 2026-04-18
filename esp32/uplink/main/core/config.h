@@ -43,7 +43,14 @@ typedef struct {
 #define CONFIG_BATCH_IDLE_FLUSH_MS  25      /* Quick idle flush */
 #define CONFIG_MAX_BATCH_SIZE       6       /* Small batches = less heap per POST */
 #define CONFIG_TARGET_BATCH_BYTES   1000    /* Conservative payload size for heap safety */
-#define CONFIG_MAX_OFFLINE_BATCHES  1       /* Minimal offline buffer (1 batch only) */
+#if defined(UPLINK_ESP32S3)
+/* S3 stores the offline queue in PSRAM — 512 × 4 KB = 2 MB ≈ 10 min of
+ * steady uplink traffic. See esp32/shared/psram_policy.md §5. */
+#define CONFIG_MAX_OFFLINE_BATCHES  512
+#else
+/* Legacy ESP32 (no PSRAM) — keep 1 batch to preserve heap stability. */
+#define CONFIG_MAX_OFFLINE_BATCHES  1
+#endif
 #define CONFIG_MAX_RETRY_DELAY_MS   60000
 #define CONFIG_HEARTBEAT_INTERVAL_MS 60000
 

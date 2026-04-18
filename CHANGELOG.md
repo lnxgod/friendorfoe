@@ -4,6 +4,30 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.59.2] - 2026-04-18
+
+### Phase-2 firmware — offline queue, rollback, URI headroom
+
+Closes out the remaining PRD Phase-2 items from v0.59.1 so S3 nodes are ready for fleet rollout. S3-only per `project_s3_only_direction`; legacy variants are frozen at 0.59.0.
+
+### Added — Uplink (uplink-s3)
+- **PSRAM-backed offline detection queue** — `CONFIG_MAX_OFFLINE_BATCHES` bumped from 1 to 512 on S3 (≈ 2 MB in PSRAM, ~10 min of steady detection traffic buffered through a WiFi outage). `ring_buffer_create_psram()` allocates storage from external RAM with SRAM fallback.
+- **Self-OTA rollback watchdog** — `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`. On boot from a `PENDING_VERIFY` OTA slot the image is marked valid only after the first successful backend upload. If the connectivity watchdog (no-upload / no-WiFi / low-heap) fires before verification, the uplink rolls back to the previous slot instead of restarting in place — removing the USB-rescue requirement for a bad self-OTA.
+
+### Changed — Uplink
+- URI handler table 12 → 20 slots. Prior cap silently dropped three registrations (two of the three `/api/fw/*` + one of the four `/api/calibrate/*`). All 15 handlers now register cleanly with headroom for Phase-3 additions.
+- **PSRAM-backed OTA upload staging** (P4) — 4 KB → 64 KB buffer for `/api/fw/upload`. Visibly faster scanner firmware staging with 16× fewer recv/write iterations.
+- **`/api/status` exposes `offline_queue.depth` / `.capacity`** for dashboard visibility into the new 512-batch PSRAM queue.
+
+### Changed — Scanner (scanner-s3-combo)
+- Beacon rate-limit LRU enlarged: 128 → 1024 slots on S3 (16 KB internal SRAM; stays out of PSRAM per policy rule 7 — cache is iterated every packet). Reduces wrap in dense RF environments so legitimate state changes don't get suppressed behind unrelated BSSID churn.
+- Probe-request rate-limit LRU enlarged: 16 → 128 slots on S3. Crowded venues easily exceed 16 concurrent probers.
+
+### Deferred — Phase 3
+- On-scanner BLE-JA3 entity table (PSRAM). Depends on uplink-side schema work.
+- LittleFS persistence for the offline queue across reboots (PSRAM is volatile — a reboot still drops the queue).
+- Android-to-backend detection forwarding.
+
 ## [0.59.1] - 2026-04-18
 
 ### Remote UART flash reliability — scanner OTA finally works first-try

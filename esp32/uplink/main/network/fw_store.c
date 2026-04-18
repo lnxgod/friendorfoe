@@ -26,6 +26,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_http_server.h"
+#include "psram_alloc.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -36,6 +37,35 @@ static const char *TAG = "fw_store";
 /* ── State ───────────────────────────────────────────────────────────────── */
 
 static volatile bool s_operation_active = false;  /* Prevents concurrent upload/relay */
+
+/* ── OTA upload staging buffer (P4) ──────────────────────────────────────
+ * Lazily allocated on first upload. 64 KB on PSRAM collapses the
+ * recv/esp_ota_write loop from ~280 iterations per 1.1 MB scanner firmware
+ * down to ~18, visibly cutting upload latency. Falls back to a 4 KB static
+ * on boards without PSRAM — matches the heap-stability baseline. */
+#define FW_STAGE_BUF_PSRAM   (64 * 1024)
+#define FW_STAGE_BUF_FALLBACK 4096
+
+static uint8_t  s_fw_stage_fallback[FW_STAGE_BUF_FALLBACK];
+static uint8_t *s_fw_stage_buf = NULL;     /* resolved on first use */
+static size_t   s_fw_stage_cap = 0;
+
+static void fw_stage_buf_ensure(void)
+{
+    if (s_fw_stage_buf) return;
+    uint8_t *p = (uint8_t *)psram_alloc_strict(FW_STAGE_BUF_PSRAM);
+    if (p) {
+        s_fw_stage_buf = p;
+        s_fw_stage_cap = FW_STAGE_BUF_PSRAM;
+        ESP_LOGW(TAG, "OTA upload stage buffer: %u KB in PSRAM",
+                 (unsigned)(FW_STAGE_BUF_PSRAM / 1024));
+    } else {
+        s_fw_stage_buf = s_fw_stage_fallback;
+        s_fw_stage_cap = FW_STAGE_BUF_FALLBACK;
+        ESP_LOGI(TAG, "OTA upload stage buffer: %u KB internal (no PSRAM)",
+                 (unsigned)(FW_STAGE_BUF_FALLBACK / 1024));
+    }
+}
 
 bool fw_store_is_relay_active(void) { return s_operation_active; }
 
@@ -173,14 +203,16 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    static uint8_t buf[4096];
+    fw_stage_buf_ensure();
+    uint8_t *buf = s_fw_stage_buf;
+    const size_t buf_cap = s_fw_stage_cap;
     int received = 0;
     uint32_t checksum = 0;
     int consecutive_timeouts = 0;
 
     while (received < total) {
         int to_read = total - received;
-        if (to_read > (int)sizeof(buf)) to_read = sizeof(buf);
+        if (to_read > (int)buf_cap) to_read = (int)buf_cap;
 
         int len = httpd_req_recv(req, (char *)buf, to_read);
         if (len <= 0) {
@@ -219,7 +251,7 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
         checksum = esp_rom_crc32_le(checksum, buf, len);
         received += len;
 
-        if (received % (100 * 1024) < (int)sizeof(buf)) {
+        if (received % (100 * 1024) < (int)buf_cap) {
             ESP_LOGI(TAG, "Upload: %d/%d (%.0f%%) heap=%lu",
                      received, total, (float)received / total * 100,
                      (unsigned long)esp_get_free_heap_size());

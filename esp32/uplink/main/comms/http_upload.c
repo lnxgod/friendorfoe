@@ -920,8 +920,12 @@ void http_upload_init(QueueHandle_t detection_queue)
                  PAYLOAD_BUF_FALLBACK_SIZE / 1024);
     }
 
-    s_offline_buffer  = ring_buffer_create(CONFIG_MAX_OFFLINE_BATCHES,
-                                           sizeof(offline_batch_t));
+    /* Offline queue: PSRAM on S3 (2 MB / 512 batches), internal heap on legacy.
+     * Storage-in-PSRAM + header-in-SRAM is handled by ring_buffer_create_psram;
+     * it silently falls back to calloc if PSRAM is absent, so the same call
+     * works on every build target. */
+    s_offline_buffer  = ring_buffer_create_psram(CONFIG_MAX_OFFLINE_BATCHES,
+                                                 sizeof(offline_batch_t));
     if (!s_offline_buffer) {
         ESP_LOGE(TAG, "Failed to create offline ring buffer");
     }
@@ -971,4 +975,14 @@ void http_upload_resume(void)
 bool http_upload_is_paused(void)
 {
     return s_upload_paused;
+}
+
+int http_upload_get_offline_count(void)
+{
+    return s_offline_buffer ? ring_buffer_count(s_offline_buffer) : 0;
+}
+
+int http_upload_get_offline_capacity(void)
+{
+    return CONFIG_MAX_OFFLINE_BATCHES;
 }
