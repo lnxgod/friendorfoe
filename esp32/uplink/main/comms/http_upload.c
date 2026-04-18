@@ -14,6 +14,7 @@
 #include "config.h"
 #include "gps.h"
 #include "time_sync.h"
+#include "version.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -96,15 +97,29 @@ static size_t estimate_detection_json_size(const drone_detection_t *det)
 
 /* ── Build JSON payload from a batch of detections ─────────────────────── */
 
-/* Static payload buffer — ZERO heap allocation for JSON building.
- * This eliminates the cJSON malloc/free storm that fragments ESP32 heap. */
-#define PAYLOAD_BUF_SIZE 4096
-static char s_payload_buf[PAYLOAD_BUF_SIZE];
+/* Payload buffer for building detection batch JSON.
+ *
+ * On S3 (N16R8) this is a 64 KB PSRAM-backed buffer, allowing much larger
+ * batches per HTTP round-trip. On legacy ESP32 (no PSRAM) or if PSRAM init
+ * failed, we fall back to the original 4 KB static buffer — preserving the
+ * heap-stability guarantees from project_heap_stability_solution.md.
+ *
+ * The buffer pointer and size are set once in http_upload_init() and never
+ * reallocated, matching the original "ZERO heap allocation in hot path"
+ * design of the raw-socket HTTP uploader. */
+#include "psram_alloc.h"
 
-/* Helper: append to buffer with bounds checking */
+#define PAYLOAD_BUF_FALLBACK_SIZE 4096
+#define PAYLOAD_BUF_PSRAM_SIZE    (64 * 1024)
+
+static char  s_payload_buf_fallback[PAYLOAD_BUF_FALLBACK_SIZE];
+static char *s_payload_buf      = s_payload_buf_fallback;
+static int   s_payload_buf_size = PAYLOAD_BUF_FALLBACK_SIZE;
+
+/* Helper: append to buffer with bounds checking (size now runtime-determined) */
 #define BUF_APPEND(fmt, ...) do { \
-    int _n = snprintf(&s_payload_buf[off], PAYLOAD_BUF_SIZE - off, fmt, ##__VA_ARGS__); \
-    if (_n > 0 && off + _n < PAYLOAD_BUF_SIZE) off += _n; \
+    int _n = snprintf(&s_payload_buf[off], s_payload_buf_size - off, fmt, ##__VA_ARGS__); \
+    if (_n > 0 && off + _n < s_payload_buf_size) off += _n; \
 } while(0)
 
 /* Helper: append scanner info object */
@@ -135,7 +150,7 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     /* Header */
     BUF_APPEND("{\"device_id\":\"%s\",\"device_lat\":%.6f,\"device_lon\":%.6f,\"device_alt\":%.1f,\"timestamp\":%lld",
                device_id, gps_pos.latitude, gps_pos.longitude, gps_pos.altitude_m, (long long)(ts_ms / 1000));
-    if (app) BUF_APPEND(",\"firmware_version\":\"%s\"", app->version);
+    BUF_APPEND(",\"firmware_version\":\"%s\"", FOF_VERSION);
 #if defined(UPLINK_ESP32S3)
     BUF_APPEND(",\"board_type\":\"uplink-s3\"");
 #elif defined(UPLINK_ESP32)
@@ -150,14 +165,14 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     bool has_scanner = false;
     const scanner_info_t *ble_info = uart_rx_get_ble_scanner_info();
     if (ble_info) {
-        off = append_scanner_info(s_payload_buf, off, PAYLOAD_BUF_SIZE, "ble", ble_info);
+        off = append_scanner_info(s_payload_buf, off, s_payload_buf_size, "ble", ble_info);
         has_scanner = true;
     }
 #if CONFIG_DUAL_SCANNER
     const scanner_info_t *wifi_info = uart_rx_get_wifi_scanner_info();
     if (wifi_info) {
         if (has_scanner) BUF_APPEND(",");
-        off = append_scanner_info(s_payload_buf, off, PAYLOAD_BUF_SIZE, "wifi", wifi_info);
+        off = append_scanner_info(s_payload_buf, off, s_payload_buf_size, "wifi", wifi_info);
     }
 #endif
     BUF_APPEND("]");
@@ -218,7 +233,7 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
         BUF_APPEND("}");
 
         /* Safety: stop if buffer nearly full */
-        if (off > PAYLOAD_BUF_SIZE - 200) break;
+        if (off > s_payload_buf_size - 200) break;
     }
     BUF_APPEND("]}");
 
@@ -891,6 +906,20 @@ static void http_upload_task(void *arg)
 void http_upload_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
+
+    /* Try to relocate the payload buffer into PSRAM (64 KB) on S3 boards
+     * with external memory. Silently stays on the 4 KB static buffer when
+     * PSRAM isn't available, preserving the legacy ESP32 path unchanged. */
+    char *psram_buf = (char *)psram_alloc_strict(PAYLOAD_BUF_PSRAM_SIZE);
+    if (psram_buf) {
+        s_payload_buf      = psram_buf;
+        s_payload_buf_size = PAYLOAD_BUF_PSRAM_SIZE;
+        ESP_LOGW(TAG, "Payload buffer: %d KB in PSRAM", PAYLOAD_BUF_PSRAM_SIZE / 1024);
+    } else {
+        ESP_LOGI(TAG, "Payload buffer: %d KB internal (no PSRAM)",
+                 PAYLOAD_BUF_FALLBACK_SIZE / 1024);
+    }
+
     s_offline_buffer  = ring_buffer_create(CONFIG_MAX_OFFLINE_BATCHES,
                                            sizeof(offline_batch_t));
     if (!s_offline_buffer) {

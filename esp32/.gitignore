@@ -2,4 +2,9 @@
 # They override sdkconfig.defaults and cause heap issues on ESP32
 **/sdkconfig.uplink-esp32
 **/sdkconfig.uplink
+**/sdkconfig.uplink-s3
+**/sdkconfig.scanner-s3-combo
 **/sdkconfig.scanner-s3-legacy
+**/sdkconfig.scanner-s3-wifi
+**/sdkconfig.scanner-c5
+**/sdkconfig.scanner-esp32

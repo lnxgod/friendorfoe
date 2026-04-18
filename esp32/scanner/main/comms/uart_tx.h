@@ -86,6 +86,13 @@ bool uart_tx_is_enabled(void);
 /** Enable/disable TX — called by main command handler on start/stop from uplink */
 void uart_tx_set_enabled(bool enabled);
 
+/**
+ * Send a raw JSON line over UART (adds trailing newline). Thread-safe.
+ * Used for protocol control messages emitted outside the normal TX loop:
+ * stop_ack, ota_nack, etc. Caller must provide valid null-terminated JSON.
+ */
+void uart_tx_send_raw_json(const char *json_str);
+
 /** Get cumulative BLE detection count. */
 int uart_tx_get_ble_count(void);
 
