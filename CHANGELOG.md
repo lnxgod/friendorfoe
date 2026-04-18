@@ -4,6 +4,35 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.59.1] - 2026-04-18
+
+### Remote UART flash reliability — scanner OTA finally works first-try
+
+The PRD goal that had been chasing us all week: `POST /api/fw/relay?uart=ble` flashes a scanner end-to-end on first try, no retries, no manual intervention. Proven on Pool today: both the WiFi-slot scanner (`0.59.0 → 0.59.1`, 2112 chunks, 0 NACKs, 136 s) AND the BLE-slot scanner (after one bench-flash to get it onto v0.59+, then a remote proof flash: 2112 chunks, 0 NACKs, 115 s).
+
+See `esp32/CHANGELOG.md` for the full firmware-side rewrite. Summary at this layer:
+
+### Added — ESP32 firmware (scanner-s3-combo + uplink-s3, v0.59.1)
+- Staged-handshake relay protocol: `stop_ack` → `ota_begin` → `ota_ack` → chunks + NACK-retransmit → `ota_end` → `ota_done`. Every failure path returns structured JSON with `stage` and `error`.
+- Scanner store-then-flash OTA — image staged in PSRAM before flash writes, radios halted, single `cleanup_and_idle()` recovery path.
+- Watchdogs on scanner OTA state machine — 30 s idle, 15 min overall. Closes the v0.55 "stuck in OTA forever" bug.
+- Uplink self-OTA (`/api/ota`) proven end-to-end on Pool (1.1 MB image, ota_0/ota_1 flip, reboot, new partition active).
+
+### Added — Tools / CLI
+- **`scripts/fof_flash.py`** — headless remote scanner flash. `python3 scripts/fof_flash.py <node> --scanner {s3-combo,esp32,c5} --uart {ble,wifi}`. Stages firmware to node's uplink, triggers relay, reports structured chunks/NACKs/retries/elapsed. Used for Pool's end-to-end proofs today.
+
+### Changed — Partition / PSRAM fleet
+- 16 MB partition table (`partitions_s3_16mb.csv`, `partitions_s3_scanner_16mb.csv`) with 2 MB OTA slots (uplink) and 3 MB OTA slots (scanner, headroom for larger binaries).
+- Octal PSRAM @ 80 MHz enabled on all S3 targets: `CONFIG_SPIRAM=y`, `CONFIG_SPIRAM_MODE_OCT=y`, `CONFIG_SPIRAM_USE_CAPS_ALLOC=y`. ~8 MB of PSRAM available per node via `psram_alloc()` / `psram_alloc_strict()` (shared `esp32/shared/psram_alloc.{h,c}`).
+- Pool's live fleet at end-of-day: uplink + 2× scanner-s3-combo all on v0.59.1. Internal heap 189 KB free, PSRAM 7.9 MB / 8 MB free, `uploads_fail=0` at the uplink.
+
+### Deferred — follow-on pass (non-blocking for rollout)
+- Backend `fw_manager.stage_and_flash()` + `FirmwareOperation` DB model (R7).
+- Backend route `POST /nodes/{device_id}/firmware/flash-scanner` (R8).
+- Dashboard per-node "Flash scanner" button + progress toast (R9).
+  The CLI covers every fleet-rollout workflow today; these three ship in a follow-on PR for dashboard ergonomics.
+- PSRAM-backed offline detection queue (Phase 2).
+
 ## [0.59.0-android-alpha] - 2026-04-17
 
 ### Android detection parity — Marauder + furiousMAC port

@@ -2775,7 +2775,11 @@ async function doOtaPush() {
   const status = document.getElementById('ota-status');
   const deviceId = otaDeviceId;
 
-  status.innerHTML = '<div style="color:#d29922;padding:8px;background:#3d2e00;border:1px solid #d29922;border-radius:4px">Pushing <b>'+fw+'</b> to <b>'+deviceId+'</b> ('+target+')...<br>This takes ~15 seconds. Do not close this dialog.</div>';
+  const isScanner = target !== 'uplink';
+  const expectNote = isScanner
+    ? 'Scanner relay takes ~2–3 min (stage + chunk stream). Do not close this dialog.'
+    : 'Uplink self-OTA takes ~30 s to ~2.5 min depending on load.';
+  status.innerHTML = '<div style="color:#d29922;padding:8px;background:#3d2e00;border:1px solid #d29922;border-radius:4px">Pushing <b>'+fw+'</b> to <b>'+deviceId+'</b> ('+target+')...<br>'+expectNote+'</div>';
 
   let url;
   if (target === 'uplink') {
@@ -2788,15 +2792,28 @@ async function doOtaPush() {
     const r = await fetch(url, {method:'POST'});
     const d = await r.json();
     if (d.ok) {
-      status.innerHTML = '<div style="color:#3fb950;padding:8px;background:#0d2818;border:1px solid #238636;border-radius:4px">'+
-        'Success! <b>'+fw+'</b> pushed ('+((d.size||0)/1024).toFixed(0)+'KB).<br>Node is rebooting...' +
-        (d.message ? '<br><span style="color:#8b949e">'+d.message+'</span>' : '') +
+      let details = '';
+      if (isScanner && d.chunks !== undefined) {
+        details = '<div style="margin-top:6px;font-size:11px;color:#8b949e">' +
+          'Chunks: <b>'+d.chunks+'</b> · NACKs: <b>'+(d.nacks||0)+'</b> · Retries: <b>'+(d.retries||0)+'</b> · Elapsed: <b>'+(d.elapsed_s||0)+'s</b>' +
+          '</div>';
+      }
+      status.innerHTML = '<div style="color:#3fb950;padding:8px;background:#0d2818;border:1px solid #238636;border-radius:4px">' +
+        '✓ Flashed <b>'+fw+'</b> ('+((d.size||0)/1024).toFixed(0)+' KB) to '+target+'.<br>' +
+        (isScanner ? 'Scanner is rebooting into the new firmware.' : 'Node is rebooting.') +
+        (d.op_id ? '<div style="margin-top:4px;font-size:10px;color:#484f58">op='+d.op_id+'</div>' : '') +
+        details +
         '</div>';
     } else {
-      status.innerHTML = '<div style="color:#f85149;padding:8px;background:#2d0a0e;border:1px solid #da3633;border-radius:4px">Failed: '+(d.error||d.detail||'unknown')+'</div>';
+      const stage = d.stage ? ' at <b>stage='+d.stage+'</b>' : '';
+      const stats = (d.chunks !== undefined)
+        ? '<div style="margin-top:4px;font-size:11px;color:#8b949e">chunks='+(d.chunks||0)+' nacks='+(d.nacks||0)+' retries='+(d.retries||0)+' elapsed='+(d.elapsed_s||0)+'s</div>'
+        : '';
+      status.innerHTML = '<div style="color:#f85149;padding:8px;background:#2d0a0e;border:1px solid #da3633;border-radius:4px">' +
+        '✗ Failed'+stage+': '+(d.error||d.detail||'unknown') + stats + '</div>';
     }
   } catch(e) {
-    status.innerHTML = '<div style="color:#3fb950;padding:8px;background:#0d2818;border:1px solid #238636;border-radius:4px">Firmware sent — node likely rebooting. Close this dialog and check version in a few seconds.</div>';
+    status.innerHTML = '<div style="color:#d29922;padding:8px;background:#3d2e00;border:1px solid #d29922;border-radius:4px">Connection closed — node likely rebooting. Check the backend heartbeat in ~30 s for the new version.</div>';
   }
 }
 

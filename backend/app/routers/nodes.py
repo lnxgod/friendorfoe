@@ -352,12 +352,19 @@ async def push_scanner_firmware(
 ):
     """Push firmware to a UART-connected scanner through the uplink node.
 
-    The backend sends the firmware to the uplink's /api/ota/relay endpoint,
-    which relays it to the scanner over UART. The scanner writes it to its
-    OTA partition and reboots.
+    Uses the v0.59+ staged handshake protocol:
+      1. POST binary to uplink's /api/fw/upload — stages into a named partition.
+      2. POST empty body to uplink's /api/fw/relay?uart={ble,wifi} — uplink streams
+         staged firmware to scanner over UART with per-chunk CRC + selective NACK
+         retransmit. Returns structured {ok, chunks, nacks, retries, elapsed_s,
+         stage, error}.
 
-    uart: "ble" for the BLE scanner UART, "wifi" for the WiFi scanner UART.
+    uart: "ble" or "wifi".
     """
+    import json
+    import subprocess
+    import time
+
     from app.routers.detections import _node_heartbeats
 
     node_info = _node_heartbeats.get(device_id)
@@ -369,33 +376,145 @@ async def push_scanner_firmware(
         raise HTTPException(status_code=404, detail=f"Firmware '{firmware_name}' not available")
 
     ip = node_info["ip"]
-    logger.warning("Scanner OTA: %s → %s via %s (uart=%s, %d bytes)",
-                    firmware_name, device_id, ip, uart, len(fw_data))
+    size = len(fw_data)
+    op_id = f"{device_id}-{int(time.time() * 1000)}"
+    op = {
+        "op_id": op_id,
+        "device_id": device_id,
+        "firmware": firmware_name,
+        "uart": uart,
+        "size": size,
+        "status": "staging",
+        "started_at": time.time(),
+    }
+    _firmware_operations[op_id] = op
+    _firmware_operations_log.append(op_id)
+    while len(_firmware_operations_log) > 50:
+        stale = _firmware_operations_log.pop(0)
+        _firmware_operations.pop(stale, None)
 
+    logger.warning("[fw_op %s] stage→relay %s → %s/%s (uart=%s, %d bytes)",
+                   op_id, firmware_name, device_id, ip, uart, size)
+
+    # ── Stage 1: upload firmware to uplink's cache partition ──────────────
     try:
-        import subprocess
-        # Use curl subprocess — httpx chunked encoding breaks ESP32 HTTP server
-        result = subprocess.run(
+        r_stage = subprocess.run(
             ["curl", "-s", "-X", "POST",
-             f"http://{ip}/api/ota/relay?uart={uart}",
+             f"http://{ip}/api/fw/upload?version=v{firmware_name}",
              "--data-binary", "@-",
              "-H", "Content-Type: application/octet-stream",
              "--connect-timeout", "5",
-             "--max-time", "180"],
-            input=fw_data, capture_output=True, timeout=185
+             "--max-time", "240"],
+            input=fw_data, capture_output=True, timeout=245,
         )
-        if result.returncode == 0:
-            try:
-                resp = __import__("json").loads(result.stdout)
-            except Exception:
-                resp = {"raw": result.stdout.decode(errors="replace")[:200]}
-            return {"ok": True, "device_id": device_id, "firmware": firmware_name,
-                    "size": len(fw_data), "uart": uart, "relay_response": resp}
-        else:
-            return {"ok": False, "error": result.stderr.decode(errors="replace")[:200]}
     except subprocess.TimeoutExpired:
-        return {"ok": True, "device_id": device_id, "firmware": firmware_name,
-                "size": len(fw_data), "message": "Scanner rebooting via relay"}
-    except Exception as e:
-        logger.error("Scanner OTA relay failed: %s", e)
-        raise HTTPException(status_code=502, detail=f"Scanner OTA relay failed: {e}")
+        op["status"] = "failed"
+        op["error"] = "stage_timeout"
+        op["finished_at"] = time.time()
+        raise HTTPException(status_code=504, detail="Upload to uplink timed out")
+
+    if r_stage.returncode != 0:
+        err = r_stage.stderr.decode(errors="replace")[:200]
+        op["status"] = "failed"
+        op["error"] = f"stage_curl:{err}"
+        op["finished_at"] = time.time()
+        raise HTTPException(status_code=502, detail=f"Stage failed: {err}")
+
+    try:
+        stage_resp = json.loads(r_stage.stdout)
+    except Exception:
+        stage_resp = {"raw": r_stage.stdout.decode(errors="replace")[:200]}
+    op["stage_response"] = stage_resp
+    if not stage_resp.get("stored"):
+        op["status"] = "failed"
+        op["error"] = "stage_rejected"
+        op["finished_at"] = time.time()
+        return {"ok": False, "op_id": op_id, "stage": "upload",
+                "error": "stage_rejected", "response": stage_resp}
+
+    op["status"] = "flashing"
+
+    # ── Stage 2: trigger relay to scanner over UART ──────────────────────
+    try:
+        r_relay = subprocess.run(
+            ["curl", "-s", "-X", "POST",
+             f"http://{ip}/api/fw/relay?uart={uart}",
+             "--connect-timeout", "5",
+             "--max-time", "420"],
+            capture_output=True, timeout=430,
+        )
+    except subprocess.TimeoutExpired:
+        op["status"] = "failed"
+        op["error"] = "relay_timeout"
+        op["finished_at"] = time.time()
+        raise HTTPException(status_code=504, detail="Relay to scanner timed out")
+
+    if r_relay.returncode != 0:
+        err = r_relay.stderr.decode(errors="replace")[:200]
+        op["status"] = "failed"
+        op["error"] = f"relay_curl:{err}"
+        op["finished_at"] = time.time()
+        raise HTTPException(status_code=502, detail=f"Relay failed: {err}")
+
+    try:
+        relay = json.loads(r_relay.stdout)
+    except Exception:
+        relay = {"raw": r_relay.stdout.decode(errors="replace")[:200]}
+
+    op["status"] = "done" if relay.get("ok") else "failed"
+    op["finished_at"] = time.time()
+    op["relay_response"] = relay
+    op["chunks_sent"] = relay.get("chunks", 0)
+    op["nacks_seen"] = relay.get("nacks", 0)
+    op["retries"] = relay.get("retries", 0)
+    op["elapsed_s"] = relay.get("elapsed_s", 0)
+    if not relay.get("ok"):
+        op["error"] = f"{relay.get('stage','?')}:{relay.get('error','unknown')}"
+
+    return {
+        "ok": bool(relay.get("ok")),
+        "op_id": op_id,
+        "device_id": device_id,
+        "firmware": firmware_name,
+        "uart": uart,
+        "size": size,
+        "chunks": relay.get("chunks", 0),
+        "nacks": relay.get("nacks", 0),
+        "retries": relay.get("retries", 0),
+        "elapsed_s": relay.get("elapsed_s", 0),
+        "stage": relay.get("stage", ""),
+        "error": relay.get("error", "") if not relay.get("ok") else "",
+        "relay_response": relay,
+    }
+
+
+# In-memory firmware operation tracker. Retains the last 50 ops so the dashboard
+# can poll progress. Not persisted — if the backend restarts mid-flash, the
+# operation record is lost (but the actual flash continues on the ESP32 side).
+_firmware_operations: dict[str, dict] = {}
+_firmware_operations_log: list[str] = []
+
+
+@router.get("/firmware/operations")
+async def list_firmware_operations(
+    device_id: str | None = None,
+    status: str | None = None,
+    limit: int = 20,
+):
+    """Return recent firmware-flash operations (in-memory, last 50)."""
+    ops = [_firmware_operations[op_id]
+           for op_id in reversed(_firmware_operations_log)
+           if op_id in _firmware_operations]
+    if device_id:
+        ops = [o for o in ops if o.get("device_id") == device_id]
+    if status:
+        ops = [o for o in ops if o.get("status") == status]
+    return {"count": len(ops[:limit]), "operations": ops[:limit]}
+
+
+@router.get("/firmware/operations/{op_id}")
+async def get_firmware_operation(op_id: str):
+    op = _firmware_operations.get(op_id)
+    if not op:
+        raise HTTPException(status_code=404, detail="Operation not found")
+    return op

@@ -12,9 +12,10 @@ set(SRCS
     "comms/uart_ota.c"
     "hw/led_status.c"
     "hw/oled_display.c"
+    "../../shared/psram_alloc.c"
 )
 
-set(REQUIRES esp_wifi driver nvs_flash esp_timer json esp_event esp_netif app_update esp_partition)
+set(REQUIRES esp_wifi driver nvs_flash esp_timer json esp_event esp_netif app_update esp_partition esp_psram)
 
 # BLE sources only when not WiFi-only mode
 if(NOT WIFI_SCANNER_ONLY)

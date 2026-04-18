@@ -37,6 +37,8 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_app_desc.h"
+#include "esp_heap_caps.h"
+#include "psram_alloc.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
@@ -329,11 +331,12 @@ static void uart_cmd_listener_task(void *arg)
      * what's connected, even before sending "ready". This is a small JSON
      * message, not a data flood. */
     {
-        const esp_app_desc_t *app = esp_app_get_description();
-        const char *ver = app ? app->version : "?";
-        uart_tx_send_scanner_info(ver, s_board_name, s_chip_name, s_caps);
+        /* Use FOF_VERSION (shared/version.h) rather than the ESP-IDF app
+         * version — FOF_VERSION is the single source of truth we bump in
+         * lockstep across uplink + scanner. */
+        uart_tx_send_scanner_info(FOF_VERSION, s_board_name, s_chip_name, s_caps);
         ESP_LOGI(TAG, "Sent identity: %s v%s (%s) — waiting for uplink start command",
-                 s_board_name, ver, s_caps);
+                 s_board_name, FOF_VERSION, s_caps);
     }
 
     TickType_t last_info_send = xTaskGetTickCount();
@@ -349,9 +352,7 @@ static void uart_cmd_listener_task(void *arg)
         if (!uart_ota_is_active() &&
             (xTaskGetTickCount() - last_info_send) >= pdMS_TO_TICKS(10000)) {
             last_info_send = xTaskGetTickCount();
-            const esp_app_desc_t *app2 = esp_app_get_description();
-            uart_tx_send_scanner_info(app2 ? app2->version : "?",
-                                      s_board_name, s_chip_name, s_caps);
+            uart_tx_send_scanner_info(FOF_VERSION, s_board_name, s_chip_name, s_caps);
             /* Send status even when stopped — uplink can see we're alive */
             if (!uart_tx_is_enabled()) {
                 ESP_LOGI(TAG, "Scanner waiting for start command (TX disabled)");
@@ -394,10 +395,15 @@ static void uart_cmd_listener_task(void *arg)
                             ESP_LOGI(TAG, "Uplink sent START — TX enabled");
 
                         } else if (type && strcmp(type, "stop") == 0) {
-                            /* Uplink tells scanner to stop transmitting */
+                            /* Uplink tells scanner to stop transmitting.
+                             * Emit stop_ack so the uplink's relay handler
+                             * knows our TX loop is halted before it starts
+                             * the OTA begin handshake (v0.59+). */
                             extern void uart_tx_set_enabled(bool enabled);
+                            extern void uart_tx_send_raw_json(const char *json_str);
                             uart_tx_set_enabled(false);
-                            ESP_LOGI(TAG, "Uplink sent STOP — TX disabled");
+                            uart_tx_send_raw_json("{\"type\":\"stop_ack\"}");
+                            ESP_LOGI(TAG, "Uplink sent STOP — TX disabled, ack sent");
 
                         } else if (type && strcmp(type, "lockon") == 0) {
                             cJSON *ch = cJSON_GetObjectItem(root, "ch");
@@ -483,6 +489,23 @@ void app_main(void)
 {
     /* ── 0. Machine-readable firmware identification ──────────────────── */
     FOF_PRINT_IDENT(TAG, FIRMWARE_NAME);
+
+    /* Log PSRAM state at boot so it's obvious in serial whether the board
+     * actually initialized external memory (N16R8 scanners → 8 MiB). */
+    {
+        size_t psram_total  = psram_total_size();
+        size_t psram_free   = psram_free_size();
+        size_t heap_int_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        if (psram_total > 0) {
+            ESP_LOGW(TAG, "PSRAM: %u KB total, %u KB free  |  Internal: %u KB free",
+                     (unsigned)(psram_total / 1024),
+                     (unsigned)(psram_free  / 1024),
+                     (unsigned)(heap_int_free / 1024));
+        } else {
+            ESP_LOGW(TAG, "PSRAM: none  |  Internal: %u KB free",
+                     (unsigned)(heap_int_free / 1024));
+        }
+    }
 
     /* ── 1. Initialize NVS flash ──────────────────────────────────────── */
     esp_err_t ret = nvs_flash_init();

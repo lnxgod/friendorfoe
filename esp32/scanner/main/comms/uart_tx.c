@@ -131,6 +131,16 @@ static void cjson_add_string_if(cJSON *obj, const char *key, const char *val)
  * Transmit a raw null-terminated string over UART, appending the newline
  * delimiter.  The caller is responsible for providing valid JSON.
  */
+void uart_tx_send_raw_json(const char *json_str)
+{
+    if (!json_str) return;
+    size_t len = strlen(json_str);
+    if (s_uart_mutex) xSemaphoreTake(s_uart_mutex, portMAX_DELAY);
+    uart_write_bytes(UART_PORT_NUM, json_str, len);
+    uart_write_bytes(UART_PORT_NUM, "\n", 1);
+    if (s_uart_mutex) xSemaphoreGive(s_uart_mutex);
+}
+
 static void uart_send_line(const char *json_str)
 {
     size_t len = strlen(json_str);

@@ -1,6 +1,26 @@
 # Friend or Foe — Uplink (ESP32-S3 with OLED) SDK Configuration
 # Dual-UART scanner input + WiFi backhaul + OLED status display
 # Dual-core Xtensa LX7 @ 240 MHz
+# Production hardware target: ESP32-S3-DevKitC-1-N16R8 (16 MB flash, 8 MB PSRAM)
+
+# ── Flash size (N16R8 production) ─────────────────────────────────────────
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# ── PSRAM — 8 MB octal @ 80 MHz, conservative CAPS_ALLOC policy ──────────
+# Keep regular malloc() on internal SRAM (preserves RID hot path + legacy
+# heap-stability patterns). Opt-in to PSRAM via heap_caps_malloc(SPIRAM)
+# for large/non-critical buffers only. See esp32/shared/psram_policy.md.
+CONFIG_ESP32S3_SPIRAM_SUPPORT=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_SPIRAM_CACHE_WORKAROUND=y
 
 # ── Bluetooth (disabled — scanners handle BLE, uplink is WiFi only) ──────
 CONFIG_BT_ENABLED=n

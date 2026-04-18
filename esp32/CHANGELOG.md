@@ -2,6 +2,45 @@
 
 All notable changes to the ESP32 hardware edition of Friend or Foe.
 
+## [0.59.1] - 2026-04-18
+
+### Remote UART flash reliability — staged handshake + store-then-flash scanner OTA
+
+Closes the PRD failure mode that made `/api/fw/relay?uart=ble` hang at "chunk 0 failed" in 11 s. The relay now completes end-to-end on first try, returns structured JSON on success AND every failure path, and survives a wedged scanner cleanly.
+
+### Added — Scanner (scanner-s3-combo, scanner-s3-legacy, scanner-s3-wifi)
+- **Store-then-flash OTA** — Incoming image is staged in PSRAM (`psram_alloc_strict`) before any flash write. Explicit state machine `IDLE → STAGING → VALIDATING → FLASHING → REBOOTING` with a single `cleanup_and_idle()` recovery path so any failure returns to IDLE.
+- **Scan halt during OTA** — `halt_scans()` stops BLE + WiFi radios at `ota_begin`; always paired with `resume_scans()` on exit so a failed flash no longer wedges the radios.
+- **Watchdogs** — 30 s idle watchdog during STAGING, 15 min overall ceiling. Resolves the v0.55 "poisoned `s_ota.active=true` forever" bug.
+- **`{"type":"stop_ack"}`** — Scanner confirms TX halted after receiving `{"type":"stop"}`, so the uplink can proceed deterministically instead of sleeping 500 ms and hoping.
+- **`{"type":"ota_nack","seq":N}`** — Bad-chunk-CRC frames now request retransmit by seq, capped at 3 retries per chunk.
+- **`uart_wait_tx_done(1000)` after `ota_done`** — Guarantees the final ACK escapes the TX FIFO before the scanner reboots into the new image.
+
+### Added — Uplink (uplink-s3)
+- **Staged-handshake relay** (`fw_relay_handler` rewrite) with explicit stages: Stop → Begin → Chunks (with NACK-poll) → End. Every stage has a single success path and a named failure: `stop_ack_timeout`, `ota_ack_timeout`, `chunk_N_crc_retries_exhausted`, `finalize_timeout`. Structured JSON response: `{"ok":…, "size":…, "chunks":…, "nacks":…, "retries":…, "elapsed_s":…, "stage":…, "error":…}`.
+- **`relay_read_line` drain-overflow** — Long scanner detection JSON (>160 chars with BLE enrichment) no longer returns -1 mid-line and corrupts the relay handshake; lines are drained past the buffer cap.
+- **Stage 3 resilience** — Accepts either `{"type":"ota_done"}` OR a fresh scanner identity line as the implicit "new firmware booted" signal (slow legacy scanners sometimes don't flush the TX FIFO before rebooting).
+- **Legacy scanner leniency** — Missing `stop_ack` falls back to a 1 s delay and continues. Missing `ota_ack` is still a hard abort — v0.55 and earlier scanners must be USB-flashed once to reach v0.59+.
+- **Self-OTA** (`/api/ota`) proven: 1.1 MB uplink image over WiFi → ota_N → reboot → new partition active. ~18 s in quiet conditions, ~140 s under load.
+
+### Added — Shared
+- **`MSG_TYPE_STOP_ACK`**, **`MSG_TYPE_OTA_NACK`**, **`JSON_KEY_OTA_SEQ`**, **`JSON_KEY_OTA_REASON`** constants in `esp32/shared/uart_protocol.h`.
+- **`esp32/shared/psram_alloc.{h,c}`** — opt-in PSRAM helpers (`psram_alloc`, `psram_alloc_strict`, `psram_calloc`, `psram_free`, `psram_available`, `psram_free_size`, `psram_total_size`) with safe fallback on non-PSRAM boards.
+
+### Changed — Partition / PSRAM fleet coverage
+- All three S3 scanner envs (`scanner-s3-combo`, `scanner-s3-legacy`, `scanner-s3-wifi`) now use `partitions_s3_scanner_16mb.csv` (ota_0 @ 0x20000 size 0x300000, ota_1 @ 0x320000 size 0x300000) and `sdkconfig.scanner-s3.defaults` (PSRAM octal @ 80 MHz, `SPIRAM_USE_CAPS_ALLOC=y`, `SPIRAM_BOOT_INIT=y`, `SPIRAM_IGNORE_NOTFOUND=y`).
+- Uplink-s3 partition table (`partitions_s3_16mb.csv`) has named firmware-cache partitions (`fw_scanner_s3`, `fw_scanner_esp32`, `fw_scanner_c5`, `fw_self`) so the uplink can hold every scanner variant binary plus its own next-boot image at once. Relay selects by query param.
+- `CONFIG_ESP32S3_SPIRAM_SUPPORT=y`, `CONFIG_SPIRAM=y`, `CONFIG_SPIRAM_MODE_OCT=y`, `CONFIG_SPIRAM_SPEED_80M=y` active on both scanner-s3 and uplink-s3 binaries.
+
+### Fleet status — Pool (uplink_CC59FC)
+- **Uplink**: `fof_uplink v0.59.1`, PSRAM 7.9 MB / 8 MB free, internal heap 189 KB free, `uploads_fail=0`.
+- **BLE-slot scanner**: `scanner-s3-combo v0.59.1` (USB-flashed once, then remote-flashed end-to-end as PRD proof: 2112 chunks, 0 NACKs, 0 retries, 115 s).
+- **WiFi-slot scanner**: `scanner-s3-combo v0.59.1` (remote-flashed: 2112 chunks, 0 NACKs, 0 retries, 136 s).
+
+### Notes
+- `/api/fw/relay?uart={ble,wifi}&ack=1` — the `ack=1` per-chunk mode is now ignored (never implemented on scanner side). Fire-and-forget + NACK retransmit is the only protocol. Param retained for dashboard backward-compat, will be removed in 0.60.
+- Max URI handler count is currently 12 on uplink — `/api/calibrate/{measure,power,stop}` registrations silently drop. Follow-on bumps this to 16.
+
 ## [0.58.0] - 2026-04-16
 
 ### Firmware cleanup v2 — honest Continuity + probe-IE grouping

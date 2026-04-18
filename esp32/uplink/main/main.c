@@ -22,6 +22,8 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include "psram_alloc.h"
 
 /* Core */
 #include "config.h"
@@ -177,6 +179,25 @@ void app_main(void)
 {
     /* ── 0. Machine-readable firmware identification ──────────────────── */
     FOF_PRINT_IDENT(TAG, FIRMWARE_NAME);
+
+    /* Report PSRAM presence up front so it's obvious in serial + /api/status
+     * whether the board booted with external memory. On N16R8 hardware this
+     * should log ~8 MiB; on non-PSRAM boards we log "none" and fall back to
+     * internal SRAM throughout. */
+    {
+        size_t psram_total  = psram_total_size();
+        size_t psram_free   = psram_free_size();
+        size_t heap_int_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        if (psram_total > 0) {
+            ESP_LOGW(TAG, "PSRAM: %u KB total, %u KB free  |  Internal: %u KB free",
+                     (unsigned)(psram_total / 1024),
+                     (unsigned)(psram_free  / 1024),
+                     (unsigned)(heap_int_free / 1024));
+        } else {
+            ESP_LOGW(TAG, "PSRAM: none  |  Internal: %u KB free",
+                     (unsigned)(heap_int_free / 1024));
+        }
+    }
 
     /* ── 1. Initialize NVS flash ──────────────────────────────────────── */
     esp_err_t ret = nvs_flash_init();

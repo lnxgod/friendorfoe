@@ -1,0 +1,26 @@
+# Friend or Foe — S3 Uplink Partition Table (16 MB flash, N16R8 production)
+#
+# Layout goals:
+#   - 2 MB OTA slots (2x the 4MB-table 1.28 MB slot, headroom for future uplink bloat).
+#   - Named firmware-cache partitions, one per scanner variant + one self-firmware
+#     → uplink can hold every binary any of its attached scanners might need AND its
+#     own next-boot image, all at once. Relay selects by slot=.
+#   - 1 MB LittleFS for persistent offline detection queue + node config.
+#   - Rest reserved for future use (larger classifiers, ML models, logs).
+#
+# Keep NVS + otadata + phy_init at the same offsets as the 4 MB table so
+# existing NVS contents (WiFi creds, calibration, auth-tag cache, etc) survive
+# the partition-table migration performed via USB flash.
+#
+# Name,             Type, SubType,  Offset,    Size,       Flags
+nvs,                data, nvs,      0x9000,    0x6000,
+otadata,            data, ota,      0xf000,    0x2000,
+phy_init,           data, phy,      0x11000,   0x1000,
+ota_0,              app,  ota_0,    0x20000,   0x200000,
+ota_1,              app,  ota_1,    0x220000,  0x200000,
+fw_scanner_s3,      data, 0x40,     0x420000,  0x200000,
+fw_scanner_esp32,   data, 0x40,     0x620000,  0x100000,
+fw_scanner_c5,      data, 0x40,     0x720000,  0x100000,
+fw_self,            data, 0x40,     0x820000,  0x200000,
+storage,            data, spiffs,   0xa20000,  0x100000,
+reserved,           data, fat,      0xb20000,  0x4e0000,

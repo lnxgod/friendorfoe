@@ -9,6 +9,8 @@
 #include "http_status.h"
 #include "fw_store.h"
 #include "config.h"
+#include "psram_alloc.h"
+#include "esp_heap_caps.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -313,7 +315,15 @@ static esp_err_t status_json_handler(httpd_req_t *req)
     bool standalone = wifi_sta_is_standalone();
     bool scanner_ok = uart_rx_is_scanner_connected();
 
-    char buf[512];
+    char buf[640];
+
+    /* Heap / PSRAM snapshot. On S3 N16R8 boards this surfaces how much of
+     * the 8 MB PSRAM is in use; on legacy / non-PSRAM boards both psram_*
+     * values report 0 (graceful degrade per esp32/shared/psram_alloc). */
+    size_t heap_internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t heap_internal_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+    size_t psram_free  = psram_free_size();
+    size_t psram_total = psram_total_size();
 
     /* Open JSON object */
     snprintf(buf, sizeof(buf),
@@ -322,6 +332,8 @@ static esp_err_t status_json_handler(httpd_req_t *req)
         "\"wifi_sta\":%s,\"ap_clients\":%d,"
         "\"standalone\":%s,\"scanner_connected\":%s,"
         "\"battery\":{\"percent\":%.1f,\"voltage\":%.2f},"
+        "\"heap\":{\"internal_free\":%u,\"internal_total\":%u,"
+                  "\"psram_free\":%u,\"psram_total\":%u},"
         "\"detections\":%d,\"uploads_ok\":%d,\"uploads_fail\":%d,",
         device_id, (long long)uptime_sec,
         gps_fix ? "true" : "false", gps.latitude, gps.longitude, gps.satellites,
@@ -329,6 +341,8 @@ static esp_err_t status_json_handler(httpd_req_t *req)
         standalone ? "true" : "false",
         scanner_ok ? "true" : "false",
         batt_pct, batt_v,
+        (unsigned)heap_internal_free, (unsigned)heap_internal_total,
+        (unsigned)psram_free, (unsigned)psram_total,
         det_count, upload_ok, upload_fail);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 

@@ -79,10 +79,19 @@ extern "C" {
 #define MSG_TYPE_OTA_END            "ota_end"
 #define MSG_TYPE_OTA_ABORT          "ota_abort"
 /* OTA relay messages (scanner → uplink) */
+#define MSG_TYPE_STOP_ACK           "stop_ack"      /* scanner confirms TX loop halted (v0.59+) */
 #define MSG_TYPE_OTA_ACK            "ota_ack"
+#define MSG_TYPE_OTA_NACK           "ota_nack"      /* bad CRC — retransmit the named seq */
 #define MSG_TYPE_OTA_PROGRESS       "ota_progress"
 #define MSG_TYPE_OTA_DONE           "ota_done"
 #define MSG_TYPE_OTA_ERROR          "ota_error"
+
+/* OTA sequence number JSON key — ack / nack payloads carry "seq": <u16> so
+ * the uplink knows which chunk succeeded/failed. Additive in v0.59; older
+ * scanners that emit only `ota_ack` without seq still interop (uplink falls
+ * back to its existing ACK-counting timeout behavior). */
+#define JSON_KEY_OTA_SEQ            "seq"
+#define JSON_KEY_OTA_REASON         "reason"        /* free-text reason in ota_error */
 
 /* Binary OTA chunk: [0xF0][seq(2)][len(2)] + data + [CRC32(4)]
  * CRC32 covers data bytes only (not header). Scanner verifies CRC
