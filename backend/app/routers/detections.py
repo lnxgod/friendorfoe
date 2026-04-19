@@ -231,6 +231,31 @@ async def ingest_drone_detections(
         "wifi_rssi": batch.wifi_rssi if batch.wifi_rssi is not None else _node_heartbeats.get(batch.device_id, {}).get("wifi_rssi"),
     }
 
+    # WiFi attack detection (v0.60+) — scanner forwards deauth/disassoc counts
+    # + flood/beacon-spam flags per status report. Emit anomaly alerts when
+    # patterns appear so operators see "deauth attack from MAC X near node Y"
+    # not just a counter rising in /api/status.
+    for sc in (batch.scanners or []):
+        if not isinstance(sc, dict): continue
+        deauth_n = int(sc.get("deauth", 0) or 0)
+        disassoc_n = int(sc.get("disassoc", 0) or 0)
+        flood = bool(sc.get("flood", False))
+        bcn_spam = bool(sc.get("bcn_spam", False))
+        if flood or bcn_spam or deauth_n > 20 or disassoc_n > 20:
+            slot = sc.get("uart", "?")
+            try:
+                _anomaly_detector.record_wifi_attack(
+                    device_id=batch.device_id,
+                    scanner_slot=slot,
+                    deauth_count=deauth_n,
+                    disassoc_count=disassoc_n,
+                    deauth_flood=flood,
+                    beacon_spam=bcn_spam,
+                    timestamp=received_at,
+                )
+            except AttributeError:
+                pass  # method not yet present on older AnomalyDetector
+
     # Auto-register new nodes in DB if they have GPS and aren't registered yet
     try:
         result = await db.execute(select(SensorNode).where(SensorNode.device_id == batch.device_id))
