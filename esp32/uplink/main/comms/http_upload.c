@@ -144,6 +144,14 @@ static int append_scanner_info(char *buf, int off, int max, const char *uart_nam
     if (n > 0) off += n;
     if (info->auth_count > 0) { n = snprintf(&buf[off], max-off, ",\"auth_fr\":%d", info->auth_count); if(n>0) off+=n; }
     if (info->fc_hist[0]) { n = snprintf(&buf[off], max-off, ",\"fc_hist\":\"%s\"", info->fc_hist); if(n>0) off+=n; }
+    /* WiFi attack stats (v0.60+): scanner detects deauth/disassoc/auth-frame
+     * floods + beacon-spam (Pwnagotchi-style fake APs). Always emitted so
+     * the backend can show 0 vs absent — see rf_anomaly.py. */
+    n = snprintf(&buf[off], max-off, ",\"deauth\":%d,\"disassoc\":%d,\"flood\":%s,\"bcn_spam\":%s",
+                 info->deauth_count, info->disassoc_count,
+                 info->deauth_flood ? "true" : "false",
+                 info->beacon_spam ? "true" : "false");
+    if (n > 0) off += n;
     /* v0.60 time-sync diagnostic — surfaces whether scanner has received the
      * uplink's epoch broadcast. tcnt = #broadcasts seen, toff = applied
      * offset (0 means none usable). Visible via /detections/nodes/status. */

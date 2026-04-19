@@ -121,6 +121,70 @@ class AnomalyDetector:
                        duration: float | None = None) -> None:
         self._alert_cooldowns[(key, alert_type)] = now + (duration or self.ALERT_COOLDOWN_S)
 
+    # ── WiFi attack detection (v0.60+) ─────────────────────────────────
+    # Scanner promiscuous mode catches attack-class frames (deauth/disassoc
+    # floods, beacon spam from Pwnagotchi-style fake APs). The scanner does
+    # the per-source-MAC counting; backend just translates the surfaced flag
+    # + counts into an AnomalyAlert that shows up alongside other alerts.
+
+    def record_wifi_attack(self, *, device_id: str, scanner_slot: str,
+                            deauth_count: int, disassoc_count: int,
+                            deauth_flood: bool, beacon_spam: bool,
+                            timestamp: float) -> None:
+        """Translate scanner attack stats into anomaly alerts.
+
+        Per-(node, slot, alert_type) cooldown of ALERT_COOLDOWN_S (10 min)
+        keeps a sustained attack from spamming the alert deque. Severity:
+        - deauth_flood / beacon_spam (single-source pattern detected by
+          scanner per-MAC tracker) → "warning"
+        - deauth/disassoc bulk count > 50 / status interval → "critical"
+          (a station-targeting attack, not just background noise)
+        """
+        key = f"{device_id}:{scanner_slot}"
+
+        if deauth_flood and not self._cooldown_active(key, "wifi_deauth_flood", timestamp):
+            self.alerts.append(AnomalyAlert(
+                alert_type="wifi_deauth_flood",
+                severity="warning",
+                device_id=device_id,
+                ssid="",
+                message=f"Deauth-flood pattern from a single source — node={device_id} slot={scanner_slot} (deauth={deauth_count} disassoc={disassoc_count} in last status window)",
+                timestamp=timestamp,
+                details={"scanner_slot": scanner_slot,
+                         "deauth_count": deauth_count,
+                         "disassoc_count": disassoc_count},
+            ))
+            self._mark_cooldown(key, "wifi_deauth_flood", timestamp)
+
+        if beacon_spam and not self._cooldown_active(key, "wifi_beacon_spam", timestamp):
+            self.alerts.append(AnomalyAlert(
+                alert_type="wifi_beacon_spam",
+                severity="warning",
+                device_id=device_id,
+                ssid="",
+                message=f"Beacon spam (Pwnagotchi-style fake-AP flood) — node={device_id} slot={scanner_slot}",
+                timestamp=timestamp,
+                details={"scanner_slot": scanner_slot},
+            ))
+            self._mark_cooldown(key, "wifi_beacon_spam", timestamp)
+
+        # Bulk volume — even without single-source flood, a high count of
+        # deauth/disassoc in one status window is unusual outside of attacks.
+        bulk = deauth_count + disassoc_count
+        if bulk > 50 and not self._cooldown_active(key, "wifi_attack_volume", timestamp):
+            self.alerts.append(AnomalyAlert(
+                alert_type="wifi_attack_volume",
+                severity="critical" if bulk > 200 else "warning",
+                device_id=device_id,
+                ssid="",
+                message=f"High deauth/disassoc volume ({bulk} frames) — node={device_id} slot={scanner_slot}",
+                timestamp=timestamp,
+                details={"scanner_slot": scanner_slot,
+                         "deauth_count": deauth_count,
+                         "disassoc_count": disassoc_count},
+            ))
+            self._mark_cooldown(key, "wifi_attack_volume", timestamp)
+
     # ── Whitelist management ─────────────────────────────────────────────
 
     @property
