@@ -83,6 +83,8 @@ class EntityTracker:
         "Meta Glasses", "Meta Smart Glasses", "Ray-Ban Meta", "Oakley Meta",
         "Meta Quest", "Meta VR",
         "Flipper", "Pwnagotchi", "Marauder",
+        # v0.62 spooky-device classes from scanner-side name-pattern detection
+        "Card Skimmer", "Hidden Camera", "Flock Surveillance", "Flock Safety",
     )
 
     @classmethod

@@ -131,6 +131,9 @@ static const char *s_type_names[] = {
     [BLE_DEV_TRACKER_GENERIC]  = "Tracker (Generic)",
     [BLE_DEV_PEBBLEBEE]        = "Pebblebee",
     [BLE_DEV_CHIPOLO]          = "Chipolo",
+    [BLE_DEV_CARD_SKIMMER]     = "Card Skimmer (suspect)",
+    [BLE_DEV_HIDDEN_CAMERA]    = "Hidden Camera (suspect)",
+    [BLE_DEV_FLOCK_SAFETY]     = "Flock Surveillance",
     [BLE_DEV_META_GLASSES]    = "Meta Glasses",
     [BLE_DEV_META_DEVICE]     = "Meta Device",
     [BLE_DEV_FLIPPER_ZERO]    = "Flipper Zero",
@@ -241,6 +244,10 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     bool has_meta_svc = false;
     bool has_meta_rayban_svc = false;  /* 0xFD5F = Ray-Ban specific */
     bool has_meta_quest_svc = false;   /* 0xFEB8 without 0xFD5F = Quest */
+
+    /* Local name capture for spooky-device pattern matching (v0.62+) */
+    char    local_name[32]   = {0};
+    int     local_name_len   = 0;
 
     int pos = 0;
     while (pos + 1 < length) {
@@ -366,6 +373,21 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
             }
             break;
 
+        case 0x08:  /* Shortened Local Name */
+        case 0x09:  /* Complete Local Name */
+            /* Capture name for spooky-device pattern matching below.
+             * Cap at 31 chars (BLE name max is technically 248 but most fit < 32). */
+            if (ad_data_len > 0) {
+                int n = ad_data_len > 31 ? 31 : ad_data_len;
+                memcpy(local_name, ad_data, n);
+                local_name[n] = '\0';
+                local_name_len = n;
+            }
+            /* Fall through to default hashing — name length matters but not exact bytes
+             * (since random parts in some product names rotate). */
+            hash = fnv1a_byte(hash, (uint8_t)(ad_data_len & 0xF0));
+            break;
+
         default:
             /* Hash the AD type length class (not exact data, which may contain rotating keys) */
             hash = fnv1a_byte(hash, (uint8_t)(ad_data_len & 0xF0));
@@ -462,6 +484,54 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
         fp->device_type = BLE_DEV_UNKNOWN;  /* Could be Xbox controller, etc */
     } else {
         fp->device_type = BLE_DEV_UNKNOWN;
+    }
+
+    /* ── Spooky-device name-pattern OVERRIDE (v0.62+) ─────────────────────
+     * Run after CID/UUID classification so well-known classes win on tie.
+     * Only flips device_type when current classification is UNKNOWN or
+     * generic — never overrides a confident Apple/Meta/etc classification.
+     * Patterns sourced from ESP32Marauder + public skimmer/spy-cam research.
+     */
+    if (local_name_len > 0 &&
+        (fp->device_type == BLE_DEV_UNKNOWN ||
+         fp->device_type == BLE_DEV_BEACON ||
+         fp->device_type == BLE_DEV_TRACKER_GENERIC)) {
+
+        /* Card skimmers: cheap UART-bridge BLE chipsets used in gas-pump and
+         * ATM skimmers. Names are factory-default and rarely changed by the
+         * skimmer operator. Marauder's "Detect Card Skimmers" matches these. */
+        if (strncmp(local_name, "HC-05", 5) == 0 ||
+            strncmp(local_name, "HC-06", 5) == 0 ||
+            strncmp(local_name, "HC-08", 5) == 0 ||
+            strncmp(local_name, "BT05",  4) == 0 ||
+            strncmp(local_name, "JDY-08", 6) == 0 ||
+            strncmp(local_name, "JDY-10", 6) == 0 ||
+            strncmp(local_name, "HM-10", 5) == 0 ||
+            strncmp(local_name, "HM-11", 5) == 0 ||
+            strncmp(local_name, "MLT-BT05", 8) == 0 ||
+            strncmp(local_name, "AT-09", 5) == 0) {
+            fp->device_type = BLE_DEV_CARD_SKIMMER;
+            fp->is_tracker = true;
+        }
+        /* Hidden cameras / cheap LED-strip controllers commonly used as cover
+         * for spy gear. ELK-BLEDOM is the most-confused-with-camera name on
+         * Reddit because the same chipset shows up in cheap WiFi spy cams. */
+        else if (strncmp(local_name, "ELK-BLEDOM", 10) == 0 ||
+                 strncmp(local_name, "BT_BPM", 6) == 0 ||
+                 strncmp(local_name, "Hidden", 6) == 0 ||
+                 strncmp(local_name, "Spy",    3) == 0 ||
+                 strncmp(local_name, "MELK-",  5) == 0 ||
+                 strncmp(local_name, "QHM-",   4) == 0) {
+            fp->device_type = BLE_DEV_HIDDEN_CAMERA;
+            fp->is_tracker = true;
+        }
+        /* Flock Safety license-plate readers. Marauder has dedicated detection. */
+        else if (strncmp(local_name, "Flock",  5) == 0 ||
+                 strncmp(local_name, "FLOCK",  5) == 0 ||
+                 strncmp(local_name, "FlockOS", 7) == 0) {
+            fp->device_type = BLE_DEV_FLOCK_SAFETY;
+            fp->is_tracker = true;
+        }
     }
 
     fp->type_name = ble_device_type_name(fp->device_type);

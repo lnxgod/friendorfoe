@@ -94,6 +94,8 @@ class AnomalyDetector:
         "Oakley Meta", "Meta Quest", "Meta VR",
         # Hostile / pentest tools
         "Flipper", "Flipper Zero", "Pwnagotchi", "Marauder",
+        # Spooky-device classes (v0.62, name-pattern detection on scanner)
+        "Card Skimmer", "Hidden Camera", "Flock Surveillance", "Flock Safety",
     }
 
     def __init__(self):

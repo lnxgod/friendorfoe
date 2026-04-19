@@ -45,6 +45,15 @@ class CalibrationResult:
     measurements: list
     timestamp: float
     node_count: int
+    # v0.62 per-listener offset (dB) — captures systematic receiver bias from
+    # antenna placement, walls, foliage at each node. Applied to incoming RSSI
+    # before the global model converts to distance:
+    #   corrected = observed_rssi - per_listener_offset[device_id]
+    # If the listener consistently hears 5 dB stronger than the model predicts
+    # (e.g. clear LOS, high gain), offset is +5 → corrected RSSI is 5 dB
+    # weaker → distance estimate increases (the listener was being optimistic).
+    # Default empty (treat as 0 for all listeners) for backwards compat.
+    per_listener_offset_db: dict = field(default_factory=dict)
 
 
 class CalibrationManager:
@@ -382,6 +391,25 @@ class CalibrationManager:
         path_loss = max(1.5, min(slope, 5.0))
         rssi_ref = max(-70.0, min(intercept, -30.0))
 
+        # ── v0.62: per-listener residual offset ────────────────────────
+        # Each listener has a characteristic delta vs the global model
+        # (antenna pattern, RF environment, wall attenuation on its line of
+        # sight). Average residual per listener — applied at runtime as
+        # corrected_rssi = observed_rssi - offset.
+        listener_residuals: dict[str, list[float]] = {}
+        for m in self.measurements:
+            if m.distance_m <= 0 or m.avg_rssi >= 0:
+                continue
+            x = -10.0 * math.log10(m.distance_m)
+            predicted = path_loss * x + rssi_ref
+            residual = m.avg_rssi - predicted
+            listener_residuals.setdefault(m.listener_id, []).append(residual)
+        per_listener = {
+            lid: round(sum(rs) / len(rs), 1)
+            for lid, rs in listener_residuals.items()
+            if len(rs) >= 2  # require >=2 samples to avoid noise
+        }
+
         return CalibrationResult(
             path_loss_exponent=round(path_loss, 2),
             rssi_ref=round(rssi_ref, 1),
@@ -398,6 +426,7 @@ class CalibrationManager:
             ],
             timestamp=time.time(),
             node_count=len(set(m.broadcaster_id for m in self.measurements)),
+            per_listener_offset_db=per_listener,
         )
 
     def get_node_pair_matrix(self) -> dict:
@@ -464,6 +493,8 @@ class CalibrationManager:
                 "node_count": self.last_result.node_count,
                 "measurements": self.last_result.measurements,
                 "timestamp": self.last_result.timestamp,
+                "per_listener_offset_db": getattr(
+                    self.last_result, "per_listener_offset_db", {}),
             } if self.last_result else None,
         }
 

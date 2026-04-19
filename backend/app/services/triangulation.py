@@ -34,15 +34,28 @@ EARTH_RADIUS_M = 6_371_000.0
 RSSI_REF = -50          # dBm at 1 meter (ESP32 PCB antenna realistic reference)
 PATH_LOSS_EXPONENT = 3.0
 
-def update_calibration(rssi_ref: float, path_loss: float):
-    """Update the RSSI model with calibrated values."""
-    global RSSI_REF, PATH_LOSS_EXPONENT, PATH_LOSS_OUTDOOR
+# Per-listener residual offset (dB) — captures systematic bias per receiver.
+# Set by update_calibration() from the calibration result. Looked up at
+# distance-estimation time:
+#   corrected_rssi = observed_rssi - PER_LISTENER_OFFSET_DB.get(device_id, 0)
+# A listener that consistently over-reports RSSI (sees device closer than it
+# really is) gets a positive offset; subtracting flattens the bias.
+PER_LISTENER_OFFSET_DB: dict[str, float] = {}
+
+def update_calibration(rssi_ref: float, path_loss: float,
+                        per_listener_offset_db: dict | None = None):
+    """Update the RSSI model with calibrated values, including per-listener
+    offsets if the calibration produced them (v0.62+)."""
+    global RSSI_REF, PATH_LOSS_EXPONENT, PATH_LOSS_OUTDOOR, PER_LISTENER_OFFSET_DB
     RSSI_REF = rssi_ref
     PATH_LOSS_EXPONENT = path_loss
     PATH_LOSS_OUTDOOR = path_loss
+    if per_listener_offset_db is not None:
+        PER_LISTENER_OFFSET_DB = dict(per_listener_offset_db)
     import logging
     logging.getLogger(__name__).info(
-        "Calibration applied: RSSI_REF=%.1f PATH_LOSS=%.2f", rssi_ref, path_loss)
+        "Calibration applied: RSSI_REF=%.1f PATH_LOSS=%.2f per_listener=%s",
+        rssi_ref, path_loss, PER_LISTENER_OFFSET_DB)
 
 # Observation staleness: must be long enough for all sensors to report
 # the same device. WiFi active scans run every 2-3s but some SSIDs only
@@ -243,7 +256,16 @@ def _trilaterate(sensors: list[tuple[float, float]], distances: list[float]) -> 
         sx.append(dx)
         sy.append(dy)
 
-    # Gauss-Newton iteration
+    # Gauss-Newton iteration with RSSI-distance variance weighting (v0.62+).
+    # Closer measurements are exponentially more reliable than far ones because
+    # log-distance path-loss makes RSSI uncertainty translate to bigger meters
+    # the further you go. Weight: w_i = 1 / σ²(d_i) where
+    #   σ(d) ≈ d * ln(10) / (10·n)  for ±1 dB RSSI noise (n = path loss exp)
+    # Cleanly reduces to: w_i ∝ 1 / d_i²  (drop the constant — it factors out).
+    # This means a 5 m sensor is 36× more influential than a 30 m sensor, which
+    # matches what we want: anchor the solution on the most-trustworthy ranges.
+    weights = [1.0 / max(d * d, 1.0) for d in distances]
+
     x, y = 0.0, 0.0  # initial guess = centroid
 
     for _ in range(MAX_ITERATIONS):
@@ -259,18 +281,19 @@ def _trilaterate(sensors: list[tuple[float, float]], distances: list[float]) -> 
                 d_est = 0.01
 
             residual = d_est - distances[i]
+            w = weights[i]
 
             # Jacobian row: [dx/d_est, dy/d_est]
             jx = dx / d_est
             jy = dy / d_est
 
-            # Accumulate J^T * J and J^T * r
-            jt_j[0][0] += jx * jx
-            jt_j[0][1] += jx * jy
-            jt_j[1][0] += jy * jx
-            jt_j[1][1] += jy * jy
-            jt_r[0] += jx * residual
-            jt_r[1] += jy * residual
+            # Accumulate J^T * W * J and J^T * W * r (weighted normal equations)
+            jt_j[0][0] += w * jx * jx
+            jt_j[0][1] += w * jx * jy
+            jt_j[1][0] += w * jy * jx
+            jt_j[1][1] += w * jy * jy
+            jt_r[0] += w * jx * residual
+            jt_r[1] += w * jy * residual
 
         # Solve 2x2 system: jt_j * delta = -jt_r
         det = jt_j[0][0] * jt_j[1][1] - jt_j[0][1] * jt_j[1][0]
@@ -530,7 +553,11 @@ class SensorTracker:
             for v in history[1:]:
                 smoothed = smoothed * (1 - alpha) + v * alpha
             is_indoor = sensor_type == "indoor"
-            dist = rssi_to_distance_m(int(round(smoothed)), indoor=is_indoor)
+            # v0.62: apply per-listener offset before distance conversion.
+            # Defaults to 0 for listeners not in the calibration table — no
+            # behavior change until a calibration with per-listener data lands.
+            corrected = smoothed - PER_LISTENER_OFFSET_DB.get(device_id, 0.0)
+            dist = rssi_to_distance_m(int(round(corrected)), indoor=is_indoor)
 
         obs = DroneObservation(
             device_id=device_id,
