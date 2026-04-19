@@ -45,6 +45,8 @@
 #define MICROSOFT_COMPANY_ID    0x0006
 #define DJI_COMPANY_ID          0x2CA5
 #define TILE_COMPANY_ID         0x0059  /* Tile Inc */
+#define PEBBLEBEE_COMPANY_ID    0x015E  /* Pebblebee Clip / Card / Tag — Marauder parity */
+#define CHIPOLO_COMPANY_ID      0x033F  /* Chipolo ONE / CARD trackers */
 #define META_COMPANY_ID         0x01AB  /* Meta Platforms, Inc. */
 #define META_TECH_COMPANY_ID    0x058E  /* Meta Platforms Technologies */
 #define META_LUXOTTICA_CID      0x0D53  /* Luxottica — Ray-Ban / Oakley Meta frames */
@@ -127,6 +129,8 @@ static const char *s_type_names[] = {
     [BLE_DEV_SMARTWATCH]       = "Smartwatch",
     [BLE_DEV_BEACON]           = "Beacon",
     [BLE_DEV_TRACKER_GENERIC]  = "Tracker (Generic)",
+    [BLE_DEV_PEBBLEBEE]        = "Pebblebee",
+    [BLE_DEV_CHIPOLO]          = "Chipolo",
     [BLE_DEV_META_GLASSES]    = "Meta Glasses",
     [BLE_DEV_META_DEVICE]     = "Meta Device",
     [BLE_DEV_FLIPPER_ZERO]    = "Flipper Zero",
@@ -386,6 +390,12 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
         fp->is_tracker = true;
     } else if (has_tile_svc || company_id == TILE_COMPANY_ID) {
         fp->device_type = BLE_DEV_TILE_TRACKER;
+        fp->is_tracker = true;
+    } else if (company_id == PEBBLEBEE_COMPANY_ID) {
+        fp->device_type = BLE_DEV_PEBBLEBEE;
+        fp->is_tracker = true;
+    } else if (company_id == CHIPOLO_COMPANY_ID) {
+        fp->device_type = BLE_DEV_CHIPOLO;
         fp->is_tracker = true;
     } else if (has_smarttag_svc) {
         fp->device_type = BLE_DEV_SAMSUNG_SMARTTAG;

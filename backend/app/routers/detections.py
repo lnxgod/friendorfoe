@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
@@ -1093,6 +1093,79 @@ async def start_calibration(background_tasks: BackgroundTasks):
 
     background_tasks.add_task(run_cal)
     return {"status": "started", "nodes": len(nodes), "node_ids": [n["device_id"] for n in nodes]}
+
+
+@router.get("/wardrive")
+async def wardrive_export(
+    format: Annotated[str, Query(description="csv | kml | wigle")] = "csv",
+    hours: Annotated[int, Query(description="Hours of history (max 168)")] = 24,
+    db: AsyncSession = Depends(get_db),
+):
+    """Wardriving export — every WiFi AP this fleet has seen, with GPS.
+
+    csv: timestamp,bssid,ssid,encryption,rssi,channel,lat,lon,manufacturer
+    kml: Google Earth placemarks (one per unique BSSID, strongest sample)
+    wigle: WiGLE.net upload format
+
+    Range capped at 7 days. Empty SSID rows are emitted (hidden APs)."""
+    from fastapi.responses import PlainTextResponse
+    hours = max(1, min(int(hours), 168))
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    result = await db.execute(
+        select(DroneDetection).where(
+            DroneDetection.received_at >= cutoff,
+            DroneDetection.source.in_(("wifi_ssid", "wifi_oui", "wifi_beacon_rid", "wifi_dji_ie")),
+            DroneDetection.bssid.isnot(None),
+        ).order_by(DroneDetection.received_at)
+    )
+    rows = result.scalars().all()
+
+    # Dedupe to strongest sample per BSSID for KML
+    if format == "kml":
+        best: dict[str, "DroneDetection"] = {}
+        for r in rows:
+            cur = best.get(r.bssid)
+            if cur is None or (r.rssi or -200) > (cur.rssi or -200):
+                best[r.bssid] = r
+        body = ['<?xml version="1.0" encoding="UTF-8"?>',
+                '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>',
+                '<name>FoF Wardrive Export</name>']
+        for r in best.values():
+            if not r.sensor_lat or not r.sensor_lon: continue
+            ssid = (r.ssid or "(hidden)").replace("&","&amp;").replace("<","&lt;")
+            mfr = (r.manufacturer or "Unknown").replace("&","&amp;").replace("<","&lt;")
+            body.append(
+                f'<Placemark><name>{ssid}</name>'
+                f'<description>BSSID:{r.bssid} RSSI:{r.rssi}dBm mfr:{mfr}</description>'
+                f'<Point><coordinates>{r.sensor_lon},{r.sensor_lat},0</coordinates></Point>'
+                f'</Placemark>'
+            )
+        body.append('</Document></kml>')
+        return PlainTextResponse("\n".join(body), media_type="application/vnd.google-earth.kml+xml")
+
+    # WiGLE format: WigleWifi-1.4 header + CSV rows
+    if format == "wigle":
+        from io import StringIO
+        out = StringIO()
+        out.write("WigleWifi-1.4,appRelease=FoF-0.60,model=ESP32-S3,release=,device=,display=,board=,brand=\n")
+        out.write("MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type\n")
+        for r in rows:
+            if not r.sensor_lat or not r.sensor_lon: continue
+            ts = r.timestamp or 0
+            tstr = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if ts > 1700000000 else ""
+            ssid = (r.ssid or "").replace(",", "")
+            out.write(f"{r.bssid},{ssid},[ESS],{tstr},{0},{r.rssi or -100},{r.sensor_lat:.6f},{r.sensor_lon:.6f},0,5,WIFI\n")
+        return PlainTextResponse(out.getvalue(), media_type="text/csv")
+
+    # Default CSV
+    from io import StringIO
+    out = StringIO()
+    out.write("timestamp,bssid,ssid,rssi,channel,sensor_lat,sensor_lon,manufacturer,source\n")
+    for r in rows:
+        ssid = (r.ssid or "").replace(",", "")
+        mfr = (r.manufacturer or "").replace(",", "")
+        out.write(f"{r.timestamp or 0},{r.bssid},{ssid},{r.rssi or 0},{0},{r.sensor_lat or 0:.6f},{r.sensor_lon or 0:.6f},{mfr},{r.source}\n")
+    return PlainTextResponse(out.getvalue(), media_type="text/csv")
 
 
 @router.get("/time")

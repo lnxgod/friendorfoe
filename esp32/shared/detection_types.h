@@ -110,6 +110,12 @@ typedef struct {
     char        probed_ssids[128];      /* Comma-separated SSIDs being probed for */
     uint32_t    probe_ie_hash;          /* FNV1a hash of IE type sequence (device fingerprint) */
     uint8_t     wifi_generation;        /* 0=legacy, 4=802.11n, 5=802.11ac, 6=802.11ax */
+
+    /* WiFi AP encryption (v0.61+, Marauder feature parity).
+     * Maps esp-idf wifi_auth_mode_t: 0=open, 1=WEP, 2=WPA-PSK, 3=WPA2-PSK,
+     * 4=WPA/WPA2-PSK, 5=WPA2-Enterprise, 6=WPA3-PSK, 7=WPA2/WPA3-PSK,
+     * 8=WAPI, 9=OWE, 10=WPA3-Ent-192. 0xFF = unknown / not a WiFi AP. */
+    uint8_t     wifi_auth_mode;
 } drone_detection_t;
 
 #ifdef __cplusplus
