@@ -147,8 +147,9 @@ _calibration_mgr = CalibrationManager()
 # Apply persisted calibration to triangulation engine on startup
 if _calibration_mgr.last_result and _calibration_mgr.last_result.r_squared > 0.1:
     from app.services.triangulation import update_calibration as _apply_cal
-    _apply_cal(_calibration_mgr.last_result.rssi_ref,
-               _calibration_mgr.last_result.path_loss_exponent)
+    _lr = _calibration_mgr.last_result
+    _apply_cal(_lr.rssi_ref, _lr.path_loss_exponent,
+               getattr(_lr, "per_listener_offset_db", None))
 
 
 async def _resolve_sensor_position(
@@ -1089,7 +1090,8 @@ async def start_calibration(background_tasks: BackgroundTasks):
         from app.services.triangulation import update_calibration
         result = await _calibration_mgr.run_calibration(nodes)
         if result and result.r_squared > 0.1:
-            update_calibration(result.rssi_ref, result.path_loss_exponent)
+            update_calibration(result.rssi_ref, result.path_loss_exponent,
+                               getattr(result, "per_listener_offset_db", None))
 
     background_tasks.add_task(run_cal)
     return {"status": "started", "nodes": len(nodes), "node_ids": [n["device_id"] for n in nodes]}
