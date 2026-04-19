@@ -19,9 +19,13 @@ extern "C" {
 #define UART_BAUD_RATE              921600
 
 /* Scanner (ESP32-S3) pin assignment.
- * Production (all-S3 node): TX=17 RX=18 (uplink S3 receives on 17+15)
- * Legacy (with ESP32 uplink): TX=17 RX=16 (uplink ESP32 UART2: RX=D16, TX=D17) */
-#if defined(LEGACY_SCANNER_PINS)
+ * ProductionFullSize (all-S3 node, N16R8 carrier): TX=17 RX=18 (uplink S3 receives on 18+16 per config.h)
+ * Seed (mini N8R8 carrier board): TX=1 RX=2 — physical connector only brings out GPIO 1/2.
+ * Legacy (with ESP32 OLED uplink): TX=17 RX=16 (uplink ESP32 UART2: RX=D16, TX=D17) */
+#if defined(SEED_SCANNER_PINS)
+#define SCANNER_S3_UART_TX_PIN      1
+#define SCANNER_S3_UART_RX_PIN      2
+#elif defined(LEGACY_SCANNER_PINS)
 #define SCANNER_S3_UART_TX_PIN      17
 #define SCANNER_S3_UART_RX_PIN      16
 #else
@@ -80,6 +84,8 @@ extern "C" {
 #define MSG_TYPE_OTA_ABORT          "ota_abort"
 /* OTA relay messages (scanner → uplink) */
 #define MSG_TYPE_STOP_ACK           "stop_ack"      /* scanner confirms TX loop halted (v0.59+) */
+#define MSG_TYPE_TIME               "time"          /* uplink → scanner wall-clock broadcast (v0.60+) */
+#define JSON_KEY_EPOCH_MS           "ms"            /* epoch milliseconds in MSG_TYPE_TIME */
 #define MSG_TYPE_OTA_ACK            "ota_ack"
 #define MSG_TYPE_OTA_NACK           "ota_nack"      /* bad CRC — retransmit the named seq */
 #define MSG_TYPE_OTA_PROGRESS       "ota_progress"

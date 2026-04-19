@@ -65,3 +65,22 @@ int64_t time_sync_get_epoch_ms(void)
     gettimeofday(&tv, NULL);
     return (int64_t)tv.tv_sec * 1000LL + (int64_t)tv.tv_usec / 1000LL;
 }
+
+void time_sync_set_from_backend(int64_t epoch_ms)
+{
+    /* SNTP-fallback path for networks that block outbound NTP. Called by
+     * http_upload_task after polling GET /detections/time — the response
+     * is authoritative enough for the fleet's internal correlation needs
+     * (sub-50ms cluster window is what we're after, not atomic-clock
+     * accuracy). Only writes the clock if SNTP hasn't already synced. */
+    if (s_synced || epoch_ms <= 1700000000000LL) {
+        return;
+    }
+    struct timeval tv = {
+        .tv_sec  = (time_t)(epoch_ms / 1000LL),
+        .tv_usec = (suseconds_t)((epoch_ms % 1000LL) * 1000LL),
+    };
+    settimeofday(&tv, NULL);
+    s_synced = true;
+    ESP_LOGW(TAG, "Time synced from BACKEND fallback: epoch_ms=%lld", (long long)epoch_ms);
+}

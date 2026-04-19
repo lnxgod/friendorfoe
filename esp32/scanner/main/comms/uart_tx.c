@@ -205,7 +205,12 @@ void uart_tx_send_detection(const drone_detection_t *detection)
     cJSON_AddNumberToObject(root, JSON_KEY_CONFIDENCE, detection->confidence);
     cJSON_AddNumberToObject(root, JSON_KEY_FUSED_CONFIDENCE, detection->fused_confidence);
     cJSON_AddNumberToObject(root, JSON_KEY_RSSI, detection->rssi);
-    cJSON_AddNumberToObject(root, JSON_KEY_TIMESTAMP, (double)detection->last_updated_ms);
+    /* Emit epoch-ms when synced with uplink (v0.60+); otherwise send uptime-ms
+     * which the backend ignores via the epoch-validity threshold. */
+    extern volatile int64_t g_epoch_offset_ms;
+    int64_t ts_ms = detection->last_updated_ms;
+    if (g_epoch_offset_ms != 0) ts_ms += g_epoch_offset_ms;
+    cJSON_AddNumberToObject(root, JSON_KEY_TIMESTAMP, (double)ts_ms);
     cJSON_AddNumberToObject(root, JSON_KEY_SEQ, s_seq++);
 
     /* Position -- only include if we have a fix */
@@ -432,15 +437,24 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
     s_scanner_chip  = chip;
     s_scanner_caps  = caps;
 
-    /* Also send as standalone message */
-    char buf[160];
+    /* Also send as standalone message. Includes time-sync diagnostic fields
+     * (toff, tcnt) so the uplink can surface them via /api/status — that's
+     * what tells us whether the scanner has actually received uplink's time
+     * broadcasts (tcnt) and whether the value applied (toff). */
+    extern volatile int64_t g_epoch_offset_ms;
+    extern volatile uint32_t g_time_msg_count;
+    char buf[224];
     snprintf(buf, sizeof(buf),
              "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
-             "\"chip\":\"%s\",\"caps\":\"%s\"}",
+             "\"chip\":\"%s\",\"caps\":\"%s\",\"toff\":%lld,\"tcnt\":%lu}",
              ver ? ver : "?", board ? board : "?",
-             chip ? chip : "?", caps ? caps : "?");
+             chip ? chip : "?", caps ? caps : "?",
+             (long long)g_epoch_offset_ms,
+             (unsigned long)g_time_msg_count);
     uart_send_line(buf);
-    ESP_LOGI(TAG, "Scanner info TX: %s v%s (%s)", board, ver, caps);
+    ESP_LOGI(TAG, "Scanner info TX: %s v%s (%s) toff=%lld tcnt=%lu",
+             board, ver, caps, (long long)g_epoch_offset_ms,
+             (unsigned long)g_time_msg_count);
 }
 
 /* ── UART TX Task ───────────────────────────────────────────────────────── */

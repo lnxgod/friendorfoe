@@ -470,9 +470,15 @@ class SensorTracker:
         operator_lat: float | None = None,
         operator_lon: float | None = None,
         operator_id: str | None = None,
+        timestamp: float = 0.0,
     ) -> None:
-        """Record a single drone observation from a sensor."""
-        now = time.time()
+        """Record a single drone observation from a sensor.
+
+        `timestamp` (epoch seconds) should be the scanner's wall-clock
+        capture time so multi-node observations of the same RF frame align
+        to the same instant for triangulation (v0.60+ time-sync feature).
+        Pass 0 / omit to fall back to receive-time."""
+        now = timestamp if timestamp > 0 else time.time()
 
         # Update sensor registry
         if device_lat is not None and device_lon is not None:
@@ -488,10 +494,24 @@ class SensorTracker:
             if not self._ekf._origin_set:
                 self._ekf.set_origin(device_lat, device_lon)
 
-        # Use fingerprint as grouping key for BLE (handles MAC rotation)
+        # Pick a tracking_id that's stable across MAC rotation so the EKF
+        # accumulates observations for the SAME physical device:
+        #   - BLE fingerprints: model starts with "FP:" → use fingerprint
+        #   - WiFi probes: prefer ie_hash (FNV1a of IEs, survives MAC rotation)
+        #   - WiFi APs (SSID/beacon/OUI): use BSSID — it's the AP's stable ID
+        #   - Drones (RID/DJI): use drone_id (already a serial number)
         tracking_id = drone_id
         if model and model.startswith("FP:"):
-            tracking_id = model  # Use fingerprint instead of rotating drone_id
+            tracking_id = model
+        elif source == "wifi_probe_request":
+            # ie_hash isn't passed into ingest yet — try drone_id which is
+            # generated as "WIFI:<ie_hash>" by the scanner for probes.
+            if drone_id and drone_id.startswith(("WIFI:", "PROBE:")):
+                tracking_id = drone_id  # already stable
+            elif bssid:
+                tracking_id = f"PROBE:{bssid}"  # last resort — random MAC
+        elif source in ("wifi_ssid", "wifi_oui", "wifi_beacon_rid", "wifi_dji_ie") and bssid:
+            tracking_id = f"AP:{bssid}"
 
         # RSSI smoothing — EMA over last 10 values per (device, sensor)
         dist = estimated_distance_m
@@ -541,9 +561,11 @@ class SensorTracker:
         # Always update observation (smoothed RSSI handles history now)
         self.observations[tracking_id][device_id] = obs
 
-        # Feed EKF with smoothed distance
+        # Feed EKF with smoothed distance + the scan-time timestamp so dt
+        # for the state-transition matrix reflects real elapsed time between
+        # observations, not arbitrary HTTP arrival jitter.
         if dist is not None and device_lat and device_lon and device_lat != 0:
-            self._ekf.update(tracking_id, device_lat, device_lon, dist)
+            self._ekf.update(tracking_id, device_lat, device_lon, dist, timestamp=now)
 
     def prune(self) -> None:
         """Remove stale observations and sensors."""
@@ -699,9 +721,17 @@ class SensorTracker:
                     continue
 
             # --- Collect sensors with valid positions and distance estimates ---
+            # Enforce a tight staleness window against the newest observation so
+            # trilateration doesn't mix "30-second-old" sensor reads with fresh
+            # ones — that's what was anchoring the EKF to the wrong geometry.
+            # 2s matches v0.60 time-sync cadence: observations within 2s are
+            # genuinely the same target event, anything older is a ghost pull.
+            newest_ts = max((o.timestamp for o in observations), default=0)
             usable = [
                 o for o in observations
-                if o.sensor_lat != 0.0 and o.sensor_lon != 0.0 and o.estimated_distance_m is not None
+                if o.sensor_lat != 0.0 and o.sensor_lon != 0.0
+                and o.estimated_distance_m is not None
+                and (newest_ts == 0 or (newest_ts - o.timestamp) <= 2.0)
             ]
 
             # Compute sensor centroid for result validation

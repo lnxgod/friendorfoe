@@ -85,8 +85,16 @@ class AnomalyDetector:
         (7200, "warning"),    # 2 hours
         (28800, "critical"),  # 8 hours
     ]
-    _TRACKER_KEYWORDS = {"AirTag", "FindMy", "Tile Tracker", "SmartTag",
-                         "Google Tracker", "Tracker", "Chipolo", "Pebblebee"}
+    _TRACKER_KEYWORDS = {
+        # Bluetooth trackers
+        "AirTag", "FindMy", "Tile Tracker", "SmartTag",
+        "Google Tracker", "Tracker", "Chipolo", "Pebblebee",
+        # Privacy / surveillance hardware (Meta glasses + headsets)
+        "Meta Glasses", "Meta Smart Glasses", "Ray-Ban Meta",
+        "Oakley Meta", "Meta Quest", "Meta VR",
+        # Hostile / pentest tools
+        "Flipper", "Flipper Zero", "Pwnagotchi", "Marauder",
+    }
 
     def __init__(self):
         self.tracks: dict[str, DeviceTrack] = {}

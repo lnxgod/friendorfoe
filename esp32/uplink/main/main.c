@@ -411,15 +411,20 @@ void app_main(void)
                 last_wifi_connected_ms = now_ms;
             }
 
+            /* Mark the OTA image valid as soon as WiFi associates — do NOT
+             * wait on a successful backend upload. A long scanner-flash
+             * sequence pauses the upload task for 3–5 min, which was
+             * enough to trip the watchdog and revert a legitimately good
+             * firmware. WiFi association is a weaker but more stable
+             * liveness signal and still catches the bad-OTA case (bricked
+             * WiFi stack → never associates → rollback fires). */
+            if (wifi_ok) {
+                rollback_mark_valid();
+            }
+
             /* Check HTTP upload health */
             int64_t last_upload_ms = http_upload_get_last_success_ms();
             if (last_upload_ms > 0) {
-                if (!had_first_upload) {
-                    /* First successful upload — current image is known good.
-                     * Cancel any pending OTA rollback so we don't revert on
-                     * the next reboot. */
-                    rollback_mark_valid();
-                }
                 had_first_upload = true;
             }
 
@@ -458,17 +463,20 @@ void app_main(void)
                 rollback_and_reboot_or_restart(reason);
             }
 
-            /* No upload success for >300s (after first success) → hard reboot
+            /* No upload success for >900s (15 min after first success) → hard
+             * reboot. Wider than the old 300s because scanner-flash sequences
+             * legitimately pause the upload task for 3–5 min per slot.
              * Skip during firmware relay — uploads are intentionally paused. */
-            if (had_first_upload && upload_age_s > 300 && !fw_store_is_relay_active()) {
+            if (had_first_upload && upload_age_s > 900 && !fw_store_is_relay_active()) {
                 snprintf(reason, sizeof(reason), "no successful upload for %llds",
                          (long long)upload_age_s);
                 rollback_and_reboot_or_restart(reason);
             }
 
-            /* No upload at all after 300s of uptime → something is very wrong.
-             * This is the primary rollback trigger for a bad OTA: if the new
-             * firmware can't reach the backend in its first 5 minutes, revert. */
+            /* Primary rollback trigger: first-boot firmware that never reaches
+             * the backend in its first 5 min. Kept at 300 s since a truly
+             * bricked image never even associates with WiFi (which is why
+             * mark_valid fires on WiFi up, not on upload success). */
             if (!had_first_upload && uptime_s > 300 && !fw_store_is_relay_active()) {
                 snprintf(reason, sizeof(reason), "never uploaded after %llds uptime",
                          (long long)uptime_s);

@@ -8,6 +8,7 @@
 
 #include "http_upload.h"
 #include "uart_rx.h"
+#include "uart_protocol.h"
 #include "wifi_sta.h"
 #include "ring_buffer.h"
 #include "nvs_config.h"
@@ -49,6 +50,18 @@ static int64_t         s_last_success_epoch_ms = 0;
 
 /* Pause flag — set during firmware relay to free heap */
 static volatile bool s_upload_paused = false;
+
+/* Time-sync diagnostic globals (v0.60+). Surfaced via /api/status →
+ * "time_sync":{"last_fetch_ms": N, "last_perf": "ESP_OK", "last_status": 200,
+ * "last_nread": 20} so we can see what the uplink saw when fetching
+ * /detections/time. Without this, debugging the broadcast pipeline requires
+ * serial console access which the deployed nodes don't have. */
+volatile int64_t g_last_backend_epoch_ms = 0;
+volatile int     g_last_time_fetch_perf  = -999;  /* esp_err_t-like */
+volatile int     g_last_time_fetch_status = 0;
+volatile int     g_last_time_fetch_nread = 0;
+volatile int     g_last_time_fetch_clen  = -2;
+volatile uint32_t g_time_broadcast_count = 0;
 
 /* Maximum JSON payload size for a batch */
 #define MAX_PAYLOAD_SIZE    4096
@@ -131,6 +144,11 @@ static int append_scanner_info(char *buf, int off, int max, const char *uart_nam
     if (n > 0) off += n;
     if (info->auth_count > 0) { n = snprintf(&buf[off], max-off, ",\"auth_fr\":%d", info->auth_count); if(n>0) off+=n; }
     if (info->fc_hist[0]) { n = snprintf(&buf[off], max-off, ",\"fc_hist\":\"%s\"", info->fc_hist); if(n>0) off+=n; }
+    /* v0.60 time-sync diagnostic — surfaces whether scanner has received the
+     * uplink's epoch broadcast. tcnt = #broadcasts seen, toff = applied
+     * offset (0 means none usable). Visible via /detections/nodes/status. */
+    n = snprintf(&buf[off], max-off, ",\"toff\":%lld,\"tcnt\":%u",
+                 (long long)info->toff_ms, info->tcnt); if(n>0) off+=n;
     n = snprintf(&buf[off], max-off, "}"); if(n>0) off+=n;
     return off;
 }
@@ -196,6 +214,11 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
         if (d->operator_lat != 0.0 || d->operator_lon != 0.0)
             BUF_APPEND(",\"operator_lat\":%.7f,\"operator_lon\":%.7f", d->operator_lat, d->operator_lon);
         if (d->operator_id[0]) BUF_APPEND(",\"operator_id\":\"%s\"", d->operator_id);
+        /* Per-detection scan timestamp (epoch-ms when scanner is time-synced
+         * with uplink, v0.60+). Backend uses this instead of batch-level
+         * timestamp for cross-node correlation — see triangulation.py. */
+        if (d->last_updated_ms > 0)
+            BUF_APPEND(",\"timestamp\":%lld", (long long)d->last_updated_ms);
 
         /* Probe request SSIDs */
         if (d->source == DETECTION_SRC_WIFI_PROBE_REQUEST && d->ssid[0])
@@ -822,6 +845,81 @@ static void http_upload_task(void *arg)
             if (wifi_sta_is_connected() &&
                 (now2 - last_lockon_poll) >= pdMS_TO_TICKS(10000)) {
                 last_lockon_poll = now2;
+
+                /* Unconditional time sync (v0.60+).
+                 * Every 10s: fetch authoritative epoch-ms from the backend
+                 * and broadcast it to both scanners over UART. No dependency
+                 * on SNTP — the backend's system clock is the source of
+                 * truth for fleet-internal cross-node correlation. Works on
+                 * walled-garden networks that block outbound NTP (CasaChomp
+                 * was hitting this). */
+#if defined(UPLINK_ESP32S3)
+                {
+                    char ts_url[128] = {0};
+                    char backend_url[96] = {0};
+                    if (s_using_fallback_url) {
+                        strncpy(backend_url, CONFIG_BACKEND_URL_FALLBACK, sizeof(backend_url) - 1);
+                    } else {
+                        nvs_config_get_backend_url(backend_url, sizeof(backend_url));
+                    }
+                    snprintf(ts_url, sizeof(ts_url), "%s/detections/time", backend_url);
+                    esp_http_client_config_t ts_cfg = {
+                        .url = ts_url, .method = HTTP_METHOD_GET, .timeout_ms = 3000,
+                    };
+                    esp_http_client_handle_t ts_client = esp_http_client_init(&ts_cfg);
+                    int64_t backend_epoch_ms = 0;
+                    if (ts_client) {
+                        /* Use open/fetch/read pattern instead of perform —
+                         * perform auto-consumes the body when no event handler
+                         * is registered, leaving nothing for read() to return. */
+                        esp_err_t e_open = esp_http_client_open(ts_client, 0);
+                        int ts_status = 0, ts_len = -1, nread = 0;
+                        char tbuf[128] = {0};
+                        if (e_open == ESP_OK) {
+                            ts_len = esp_http_client_fetch_headers(ts_client);
+                            ts_status = esp_http_client_get_status_code(ts_client);
+                            if (ts_len > 0 && ts_len < (int)sizeof(tbuf)) {
+                                nread = esp_http_client_read_response(ts_client, tbuf, sizeof(tbuf) - 1);
+                            }
+                            esp_http_client_close(ts_client);
+                        }
+                        g_last_time_fetch_perf   = (int)e_open;
+                        g_last_time_fetch_status = ts_status;
+                        g_last_time_fetch_clen   = ts_len;
+                        g_last_time_fetch_nread  = nread;
+                        ESP_LOGI(TAG, "TIME FETCH: open=%s status=%d clen=%d nread=%d body='%.*s'",
+                                 esp_err_to_name(e_open), ts_status, ts_len,
+                                 nread, nread > 0 ? nread : 0, tbuf);
+                        if (nread > 0) {
+                            cJSON *tr = cJSON_Parse(tbuf);
+                            if (tr) {
+                                cJSON *ms = cJSON_GetObjectItem(tr, "ms");
+                                if (ms && cJSON_IsNumber(ms)) {
+                                    backend_epoch_ms = (int64_t)ms->valuedouble;
+                                    g_last_backend_epoch_ms = backend_epoch_ms;
+                                    time_sync_set_from_backend(backend_epoch_ms);
+                                }
+                                cJSON_Delete(tr);
+                            }
+                        }
+                        esp_http_client_cleanup(ts_client);
+                    }
+                    /* Broadcast time to scanners. Always send (even if backend
+                     * fetch returned 0) so the scanner side can confirm the
+                     * UART path works regardless of HTTP fetch quirks.
+                     * Scanner guards against epoch_ms <= 1.7e12 itself. */
+                    char time_cmd[64];
+                    int64_t broadcast_ms = backend_epoch_ms > 0 ? backend_epoch_ms : -1;
+                    snprintf(time_cmd, sizeof(time_cmd),
+                             "{\"type\":\"%s\",\"%s\":%lld}",
+                             MSG_TYPE_TIME, JSON_KEY_EPOCH_MS,
+                             (long long)broadcast_ms);
+                    uart_rx_send_command(time_cmd);
+                    g_time_broadcast_count++;
+                    ESP_LOGI(TAG, "TIME BROADCAST: %lld ms to both scanners",
+                             (long long)broadcast_ms);
+                }
+#endif
 
 #if defined(UPLINK_ESP32S3)
                 /* Lock-on polling — only on S3 (ESP32 has too little heap for extra HTTP client) */

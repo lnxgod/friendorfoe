@@ -409,7 +409,7 @@ static void process_line(const char *line, size_t len, int scanner_id)
     } else if (strcmp(msg_type, MSG_TYPE_STATUS) == 0) {
         handle_status(root, scanner_id);
     } else if (strcmp(msg_type, "scanner_info") == 0) {
-        /* Scanner identity: version, board type, chip, capabilities */
+        /* Scanner identity: version, board type, chip, capabilities, time-offset */
         scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
         const char *ver = json_get_string(root, "ver", "?");
         const char *board = json_get_string(root, "board", "?");
@@ -419,9 +419,12 @@ static void process_line(const char *line, size_t len, int scanner_id)
         strncpy(info->board, board, sizeof(info->board) - 1);
         strncpy(info->chip, chip, sizeof(info->chip) - 1);
         strncpy(info->caps, caps, sizeof(info->caps) - 1);
+        info->toff_ms = (int64_t)json_get_double(root, "toff", 0.0);
+        info->tcnt    = (uint32_t)json_get_int(root, "tcnt", 0);
         info->received = true;
-        ESP_LOGI(TAG, "Scanner[%d] identity: %s v%s (%s) chip=%s",
-                 scanner_id, board, ver, caps, chip);
+        ESP_LOGI(TAG, "Scanner[%d] identity: %s v%s (%s) chip=%s toff=%lld tcnt=%u",
+                 scanner_id, board, ver, caps, chip,
+                 (long long)info->toff_ms, info->tcnt);
     } else if (strncmp(msg_type, "ota_", 4) == 0) {
         /* OTA response from scanner — capture for relay diagnostics */
         portENTER_CRITICAL(&s_ota_response_lock);

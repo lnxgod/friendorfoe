@@ -114,6 +114,13 @@ class DroneDetectionItem(BaseModel):
         description="Detection source: ble_rid, wifi_ssid, wifi_dji_ie, wifi_beacon_rid, wifi_oui",
     )
     confidence: float = Field(ge=0.0, le=1.0, description="Raw detection confidence 0.0-1.0")
+    timestamp: int | None = Field(
+        None,
+        description="Per-detection scan timestamp in epoch MILLISECONDS. Set by the scanner "
+                    "after it's time-synced with its uplink (v0.60+). Backend uses this for "
+                    "cross-node correlation instead of the batch-level timestamp. Absent / "
+                    "pre-sync values are below 1.7e12 and the backend falls back to receive time."
+    )
     latitude: float | None = Field(None, description="Drone latitude (WGS84 degrees)")
     longitude: float | None = Field(None, description="Drone longitude (WGS84 degrees)")
     altitude_m: float | None = Field(None, description="Altitude in meters MSL")

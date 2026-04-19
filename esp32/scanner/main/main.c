@@ -77,6 +77,22 @@ static int64_t  s_last_tap_time   = 0;
 static volatile bool s_button_short  = false;
 static volatile bool s_button_double = false;
 
+/* ── Wall-clock time offset (v0.60+) ─────────────────────────────────────
+ * Scanners don't have a network stack and can't NTP themselves. The uplink
+ * pushes its epoch-ms clock over UART every 10 s as {"type":"time","ms":N};
+ * the listener below stores the offset vs local esp_timer_get_time(). The
+ * serializer in uart_tx adds this offset to every detection's ts field so
+ * all nodes emit a common epoch timeline for triangulation clustering.
+ * Stays at 0 until the first sync arrives (detections then carry uptime-ms,
+ * which the backend ignores via the "> 1700000000" validity check). */
+volatile int64_t g_epoch_offset_ms = 0;
+
+/* Counter — increments on every {"type":"time"} message received, regardless
+ * of whether the epoch_ms was usable. Reported via scanner_info → uplink
+ * → /detections/nodes/status to diagnose UART path vs HTTP-fetch failure
+ * without serial console access. */
+volatile uint32_t g_time_msg_count = 0;
+
 /* ── Glasses detection cache ────────────────────────────────────────────── */
 
 #if CONFIG_FOF_GLASSES_DETECTION
@@ -443,6 +459,29 @@ static void uart_cmd_listener_task(void *arg)
                             extern void ble_rid_lockon_cancel(void);
                             ble_rid_lockon_cancel();
 #endif /* !WIFI_SCANNER_ONLY */
+
+                        } else if (type && strcmp(type, MSG_TYPE_TIME) == 0) {
+                            /* Uplink broadcasts its epoch-ms every 10s.
+                             * Use a small flag so /api/status can show that we
+                             * received SOMETHING even if the value was bad —
+                             * helps diagnose UART vs HTTP-fetch failure. */
+                            extern volatile int64_t g_epoch_offset_ms;
+                            extern volatile uint32_t g_time_msg_count;
+                            g_time_msg_count++;
+                            cJSON *ms_j = cJSON_GetObjectItem(root, JSON_KEY_EPOCH_MS);
+                            if (ms_j && cJSON_IsNumber(ms_j)) {
+                                int64_t epoch_ms = (int64_t)ms_j->valuedouble;
+                                if (epoch_ms > 1700000000000LL) {
+                                    int64_t local_ms = esp_timer_get_time() / 1000;
+                                    g_epoch_offset_ms = epoch_ms - local_ms;
+                                    ESP_LOGI(TAG, "TIME SYNC: epoch=%lld local=%lld offset=%lld",
+                                             (long long)epoch_ms, (long long)local_ms,
+                                             (long long)g_epoch_offset_ms);
+                                } else {
+                                    ESP_LOGW(TAG, "TIME SYNC: bad epoch_ms=%lld (uplink hasn't synced)",
+                                             (long long)epoch_ms);
+                                }
+                            }
 
                         } else if (type && strcmp(type, MSG_TYPE_OTA_BEGIN) == 0) {
                             /* UART OTA: receive firmware from uplink */
