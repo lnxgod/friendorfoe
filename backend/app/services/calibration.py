@@ -220,9 +220,14 @@ class CalibrationManager:
                             except Exception:
                                 continue
 
-                        # All listeners measure in parallel
+                        # All listeners measure in parallel.
+                        # Use channel=0 (all-channel scan) because the broadcaster's
+                        # AP is forced to STA's channel when APSTA is active — the
+                        # `channel` param sent to /api/calibrate/start is silently
+                        # ignored by the firmware. Scanning all channels finds the
+                        # AP regardless of which band CasaChomp_2g is on.
                         measure_tasks = [
-                            self._measure_node(client, listener, bssid, channel,
+                            self._measure_node(client, listener, bssid, 0,
                                                self.MEASURE_DURATION_S)
                             for listener in listeners
                         ]
@@ -231,8 +236,17 @@ class CalibrationManager:
 
                         for j, listener in enumerate(listeners):
                             if j >= len(results) or isinstance(results[j], Exception):
+                                if j < len(results):
+                                    logger.warning("  measure %s → %s: exception %s",
+                                                   broadcaster["device_id"][-6:],
+                                                   listener["device_id"][-6:],
+                                                   results[j])
                                 continue
                             result = results[j]
+                            logger.info("  raw measure %s → %s: %s",
+                                        broadcaster["device_id"][-6:],
+                                        listener["device_id"][-6:],
+                                        result)
                             if not result or result.get("samples", 0) == 0:
                                 continue
 
@@ -299,13 +313,20 @@ class CalibrationManager:
 
     async def _measure_node(self, client: httpx.AsyncClient, node: dict,
                              bssid: str, channel: int, duration: int) -> dict | None:
-        """Tell a node to measure RSSI of a specific BSSID for N seconds."""
+        """Tell a node to measure RSSI of a specific BSSID for N seconds.
+
+        NOTE: URL is hand-built with raw colons in the BSSID instead of using
+        `params={}`. httpx URL-encodes colons as %3A which overflows the
+        firmware's 18-char target_bssid buffer in http_status.c:calibrate_
+        measure_handler — the firmware does NOT url-decode, so the full
+        encoded string (29 chars) truncates and the BSSID match always fails.
+        A firmware-side url_decode would be the right long-term fix."""
+        url = (
+            f"http://{node['ip']}/api/calibrate/measure"
+            f"?bssid={bssid}&channel={channel}&duration={duration}"
+        )
         try:
-            resp = await client.post(
-                f"http://{node['ip']}/api/calibrate/measure",
-                params={"bssid": bssid, "channel": channel, "duration": duration},
-                timeout=duration + 15  # Allow extra time for scan completion
-            )
+            resp = await client.post(url, timeout=duration + 15)
             if resp.status_code == 200:
                 return resp.json()
         except Exception as e:

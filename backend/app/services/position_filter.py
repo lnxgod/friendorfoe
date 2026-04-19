@@ -276,17 +276,23 @@ class PositionFilterManager:
         self._origin_set = True
 
     def update(self, device_id: str, sensor_lat: float, sensor_lon: float,
-               measured_distance: float) -> tuple[float, float, float] | None:
+               measured_distance: float,
+               timestamp: float = 0.0) -> tuple[float, float, float] | None:
         """Feed a new distance observation. Returns (lat, lon, accuracy_m) or None.
 
         For new devices, delays EKF initialization until we have 2+ sensor
         observations for a better starting position (weighted centroid).
+
+        `timestamp` (epoch seconds) should be the scanner's wall-clock
+        capture time. The EKF state-transition matrix uses `now - last_update`
+        as dt, so feeding actual scan times instead of receive times is what
+        lets the Kalman filter compute correct velocities across nodes.
         """
         if not self._origin_set or sensor_lat == 0 or sensor_lon == 0:
             return None
 
         sx, sy = gps_to_local(sensor_lat, sensor_lon, self.origin_lat, self.origin_lon)
-        now = time.time()
+        now = timestamp if timestamp > 0 else time.time()
 
         ekf = self.filters.get(device_id)
         if ekf is None:

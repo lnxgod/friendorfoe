@@ -540,7 +540,12 @@ async def ingest_drone_detections(
         )
         db_detections.append(db_det)
 
-        # Triangulation engine (use adjusted confidence for test drones)
+        # Triangulation engine (use adjusted confidence for test drones).
+        # Per-detection timestamp from scanner's epoch-synced clock (v0.60+);
+        # falls back to batch receive time for pre-sync or legacy uplinks.
+        det_ts = (det.timestamp / 1000.0
+                  if det.timestamp and det.timestamp > 1_700_000_000_000
+                  else received_at)
         _sensor_tracker.ingest(
             device_id=batch.device_id,
             device_lat=sensor_lat,
@@ -563,6 +568,7 @@ async def ingest_drone_detections(
             operator_lon=det.operator_lon,
             operator_id=det.operator_id,
             sensor_type=sensor_type,
+            timestamp=det_ts,
         )
 
         # ── GPS-RSSI spoof detection ────────────────────────────────
@@ -1062,6 +1068,18 @@ async def start_calibration(background_tasks: BackgroundTasks):
 
     background_tasks.add_task(run_cal)
     return {"status": "started", "nodes": len(nodes), "node_ids": [n["device_id"] for n in nodes]}
+
+
+@router.get("/time")
+async def server_time():
+    """Epoch-ms from the backend, used by uplinks as an SNTP fallback.
+
+    Pool's SNTP doesn't sync reliably in some network configurations. Uplinks
+    that can reach the backend (which all of them can, otherwise nothing
+    works) poll this endpoint as a last-resort time source. Returned value is
+    integer epoch milliseconds; add a tiny client-side RTT correction if you
+    need sub-100ms accuracy. Cheap + idempotent, no DB touch."""
+    return {"ms": int(time.time() * 1000)}
 
 
 @router.get("/calibrate/status")

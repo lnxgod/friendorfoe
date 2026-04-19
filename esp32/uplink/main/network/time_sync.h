@@ -31,6 +31,13 @@ bool time_sync_is_synced(void);
  */
 int64_t time_sync_get_epoch_ms(void);
 
+/**
+ * Set the system clock from a backend-provided epoch-ms value.
+ * No-op if SNTP has already synced. Used as fallback for networks that
+ * block outbound NTP. See GET /detections/time.
+ */
+void time_sync_set_from_backend(int64_t epoch_ms);
+
 #ifdef __cplusplus
 }
 #endif

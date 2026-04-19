@@ -78,6 +78,15 @@ typedef struct {
     bool     deauth_flood;
     bool     beacon_spam;
     char     fc_hist[128];   /* comma-separated frame subtype histogram */
+
+    /* Time-sync diagnostic (v0.60+): scanner's epoch-ms offset against its
+     * monotonic clock. Stays at 0 until the scanner has received a usable
+     * time broadcast from the uplink. */
+    int64_t  toff_ms;
+    /* Counter — increments on every time message the scanner sees, even
+     * if the value was bad. tcnt > 0 with toff_ms == 0 means UART is fine
+     * but the uplink is sending bogus epochs. Both 0 = UART path broken. */
+    uint32_t tcnt;
 } scanner_info_t;
 
 /** Get scanner info for the BLE scanner (UART slot). */

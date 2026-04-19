@@ -4,6 +4,105 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.60.0] - 2026-04-18
+
+### Cross-node time sync + ambient triangulation + high-risk tracking
+
+Three-part release. The fleet now shares a sub-50 ms epoch timeline, ambient
+WiFi APs / probes / BLE devices get triangulated alongside drones, and
+surveillance / hostile-tool device classes get extended retention + a "threat"
+auto-category.
+
+### Added — Time sync (v0.60+)
+- **Uplink → backend epoch fetch.** Every 10 s the uplink polls
+  `GET /detections/time` (new endpoint returning `{"ms": epoch_ms}`) and
+  applies via `time_sync_set_from_backend()` if SNTP hasn't synced. Works
+  on walled-garden networks that block outbound NTP.
+- **Uplink → scanner epoch broadcast.** Same 10 s cadence sends
+  `{"type":"time","ms":N}` over UART to both scanner slots. Scanners
+  store an offset against `esp_timer_get_time()` and tag every outbound
+  detection with `ts = local_ms + g_epoch_offset_ms`.
+- **Backend uses scanner-tagged timestamps in EKF + trilateration.**
+  `_sensor_tracker.ingest()` now accepts `timestamp` (epoch seconds) →
+  passed through to `PositionFilterManager.update()` so EKF dt reflects
+  real elapsed scan time, not HTTP arrival jitter. Trilateration window
+  tightened to 2.0 s against newest observation per drone.
+- **Diagnostic surfacing.** `/api/status.time_sync` now exposes
+  `{last_epoch_ms, perf, status, clen, nread, bcasts}` so time-sync
+  health is debuggable via HTTP. Scanner `scanner_info` JSON gains
+  `toff` (current offset) + `tcnt` (received broadcasts), forwarded to
+  the backend's `/detections/nodes/status` per-scanner block.
+- **Per-detection `timestamp` field** added to `DroneDetectionItem`
+  schema (`backend/app/models/schemas.py`) and `http_upload.c` payload.
+
+### Added — Ambient device triangulation
+- **Stable tracking IDs for ambient sources** in
+  `triangulation.py:ingest()`: WiFi APs (wifi_ssid / wifi_oui /
+  wifi_beacon_rid / wifi_dji_ie) now group on `AP:<bssid>`; WiFi probe
+  requests group on the scanner-supplied stable ID. Result: AirTags,
+  Tile Trackers, WiFi APs, and other stable-identity ambient devices
+  now accumulate observations across nodes and reach the EKF — visible
+  via `/detections/drones/map` with `position_source=kalman` once 3+
+  observations land.
+
+### Added — High-risk device tracking
+- **Per-class TTL** in `entity_tracker.py`. Default still 300 s
+  gone / 1800 s stale; high-risk classes get **900 s gone / 7200 s stale**
+  so a Meta-glasses / Flipper / AirTag visit doesn't silently drop off
+  mid-session.
+- **Auto "threat" category** for `Meta Glasses`, `Ray-Ban Meta`,
+  `Oakley Meta`, `Meta Quest`, `Meta VR`, `Flipper`, `Pwnagotchi`,
+  `Marauder`, `AirTag`, `FindMy`, `Tile Tracker`, `SmartTag`, `Chipolo`,
+  `Pebblebee`. Doesn't overwrite manual category assignment.
+- **Lingering-tracker alerts cover surveillance hardware.**
+  `anomaly_detector._TRACKER_KEYWORDS` extended from 8 entries to 16 —
+  Meta glasses + headsets and pentest tools now hit the same 30 min /
+  2 hr / 8 hr dwell thresholds as Bluetooth trackers.
+
+### Fixed
+- **`esp_http_client_perform()` auto-consumes response body** — the
+  default-mode perform reads the body internally, leaving nothing for
+  `esp_http_client_read()`. Time-sync HTTP fetch was returning 200 OK
+  with `nread=0` for hours. Fixed by switching to `open` +
+  `fetch_headers` + `read_response` pattern in `http_upload.c`.
+- **EKF `_record_emit` referenced undefined `now`** introduced when
+  the per-detection-timestamp plumbing landed. Fixed in
+  `triangulation.py:422` (use `time.time()` directly).
+- **OTA upload begin failure under PENDING_VERIFY rollback state.** The
+  uplink's rollback feature was protecting the unused OTA slot from
+  being repurposed for scanner firmware staging. Fix: call
+  `rollback_mark_valid()` on WiFi-up rather than waiting for first
+  upload, and widen the no-upload watchdog from 300 s to 900 s so
+  scanner-flash sequences don't trip a false rollback.
+
+### Production pinout (committed alongside)
+- ProductionFullSize S3 uplink↔scanner pinout codified in
+  `esp32/uplink/main/core/config.h`: BLE slot uses uplink GPIO 18 (RX) +
+  17 (TX); WiFi slot uses 16 (RX) + 15 (TX); scanner side fixed at
+  17/18. Every wire crosses to a visibly different pin number on both
+  sides — no more "straight-through by label" cable mistakes that bit
+  Pool / FrontYard's BLE-slot builds.
+- Seed scanner variant — `esp32/scanner/platformio.ini` adds
+  `scanner-s3-combo-seed` env (`SEED_SCANNER_PINS`) targeting an alt
+  carrier with GPIO 1 (TX) / GPIO 2 (RX) on the scanner side and 8 MB
+  flash via `partitions_s3_scanner_8mb.csv`. Same firmware code as
+  full-size combo, just different pin map + smaller partition table.
+  In production at gate.
+
+### Deferred — Phase 3
+- LittleFS persistence for the offline queue across reboots.
+- On-scanner BLE-JA3 entity table emission (needs uplink schema).
+- Android-to-backend detection forwarding.
+
+### Notes
+- All 6 fleet nodes (Pool, FrontYard, area51, Chomper, gate, patio)
+  rolled to v0.60.0 — uplinks via OTA, scanners via UART relay.
+  Verified `toff != 0` and `tcnt > 0` on all 12 scanners.
+- Calibration R² didn't improve from time sync (0.079 → 0.037 — noise
+  band) and that's expected: calibration measures static distance↔RSSI,
+  which doesn't benefit from timestamp alignment. The win shows up in
+  multi-node drone tracking.
+
 ## [0.59.2] - 2026-04-18
 
 ### Phase-2 firmware — offline queue, rollback, URI headroom

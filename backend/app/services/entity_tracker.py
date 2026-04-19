@@ -64,12 +64,39 @@ class TrackedEntity:
 class EntityTracker:
     """Correlates signals into tracked entities."""
 
-    GONE_TIMEOUT_S = 300        # 5 min all-sensor silence → departed
-    STALE_TIMEOUT_S = 1800      # 30 min → remove entity from active tracking
+    GONE_TIMEOUT_S = 300        # 5 min all-sensor silence → departed (default)
+    STALE_TIMEOUT_S = 1800      # 30 min → remove entity from active tracking (default)
+    # High-risk classes (Meta glasses, Flipper, Pwnagotchi, AirTag/Tile/SmartTag)
+    # get extended retention so the surveillance / threat-class device doesn't
+    # silently drop off the dashboard mid-session.
+    GONE_TIMEOUT_HIGH_RISK_S  = 900      # 15 min all-sensor silence → departed
+    STALE_TIMEOUT_HIGH_RISK_S = 7200     # 2 hours → remove
     CORRELATION_THRESHOLD = 55  # Score > 55 → link to entity
     MAX_TIMELINE = 50
     CHECKPOINT_DEBOUNCE_S = 30.0
     REHYDRATE_WINDOW_S = 24 * 3600.0
+
+    # Manufacturer-name substrings that auto-categorize an entity as "threat".
+    # Matched case-insensitively against entity.manufacturers union and label.
+    HIGH_RISK_KEYWORDS = (
+        "AirTag", "FindMy", "Tile Tracker", "SmartTag", "Chipolo", "Pebblebee",
+        "Meta Glasses", "Meta Smart Glasses", "Ray-Ban Meta", "Oakley Meta",
+        "Meta Quest", "Meta VR",
+        "Flipper", "Pwnagotchi", "Marauder",
+    )
+
+    @classmethod
+    def _is_high_risk(cls, entity: "TrackedEntity") -> bool:
+        """Return True for surveillance / threat-class devices that warrant
+        longer tracking + the 'threat' category. Cheap substring match."""
+        candidates = [entity.label or ""]
+        candidates.extend(entity.manufacturers or [])
+        for c in candidates:
+            cl = c.lower() if c else ""
+            for kw in cls.HIGH_RISK_KEYWORDS:
+                if kw.lower() in cl:
+                    return True
+        return False
 
     def __init__(self):
         self.entities: dict[str, TrackedEntity] = {}
@@ -311,6 +338,10 @@ class EntityTracker:
 
         # Update label
         entity.label = self._generate_label(entity)
+        # Auto-categorize as "threat" for surveillance / hostile devices.
+        # Don't overwrite a manually-set category (visitor/neighbor/staff/delivery).
+        if entity.category in ("visitor", "") and self._is_high_risk(entity):
+            entity.category = "threat"
         self._dirty.add(entity_id)
 
         # Timeline: sensor handoff
@@ -451,7 +482,14 @@ class EntityTracker:
             else:
                 idle = now - entity.last_seen
 
-            if idle >= self.GONE_TIMEOUT_S and entity.is_active:
+            # High-risk classes (Meta glasses, Flipper, AirTag/Tile/SmartTag,
+            # Pwnagotchi, etc.) get extended TTLs so a privacy-relevant device
+            # doesn't silently drop off the dashboard mid-session.
+            high_risk = self._is_high_risk(entity)
+            gone_t  = self.GONE_TIMEOUT_HIGH_RISK_S if high_risk else self.GONE_TIMEOUT_S
+            stale_t = self.STALE_TIMEOUT_HIGH_RISK_S if high_risk else self.STALE_TIMEOUT_S
+
+            if idle >= gone_t and entity.is_active:
                 entity.is_active = False
                 self._add_timeline(entity, now, "Departed (all sensors lost)", "", 0)
                 # Fire a single device_departed event per visit. Identifier
@@ -470,7 +508,7 @@ class EntityTracker:
                     except Exception:
                         pass
 
-            if idle >= self.STALE_TIMEOUT_S:
+            if idle >= stale_t:
                 stale.append(eid)
 
         for eid in stale:

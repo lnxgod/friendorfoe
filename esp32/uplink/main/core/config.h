@@ -73,17 +73,27 @@ typedef struct {
 #define CONFIG_DUAL_SCANNER         1
 
 #elif defined(UPLINK_ESP32S3)
-/* ESP32-S3 uplink — straight-through wiring (same pin# both sides):
- *   Scanner A TX(17) → Uplink GPIO17 (RX)   UART1
- *   Scanner A RX(18) ← Uplink GPIO18 (TX)   UART1
- *   Scanner B TX(17) → Uplink GPIO15 (RX)   UART2
- *   Scanner B RX(18) ← Uplink GPIO16 (TX)   UART2 */
+/* ESP32-S3 uplink — PRODUCTION wiring. Crossed cables on both slots; no
+ * pin-number matches between scanner and uplink sides, so ribbon cables
+ * can't be wired "straight-through by label" and end up swapped (what bit
+ * us on Pool / FrontYard BLE-slot builds).
+ *
+ * Scanner-side UART pins are fixed on every scanner board: TX=17, RX=18.
+ * Uplink-side RX/TX are the MIRROR:
+ *
+ *   BLE slot  (UART1):
+ *     Scanner TX(17) → Uplink GPIO 18 (RX)
+ *     Scanner RX(18) ← Uplink GPIO 17 (TX)
+ *   WiFi slot (UART2):
+ *     Scanner TX(17) → Uplink GPIO 16 (RX)
+ *     Scanner RX(18) ← Uplink GPIO 15 (TX)
+ */
 #define CONFIG_BLE_SCANNER_UART     UART_NUM_1
-#define CONFIG_BLE_SCANNER_RX_PIN   17
-#define CONFIG_BLE_SCANNER_TX_PIN   18
+#define CONFIG_BLE_SCANNER_RX_PIN   18
+#define CONFIG_BLE_SCANNER_TX_PIN   17
 #define CONFIG_WIFI_SCANNER_UART    UART_NUM_2
-#define CONFIG_WIFI_SCANNER_RX_PIN  15
-#define CONFIG_WIFI_SCANNER_TX_PIN  16
+#define CONFIG_WIFI_SCANNER_RX_PIN  16
+#define CONFIG_WIFI_SCANNER_TX_PIN  15
 #define CONFIG_DUAL_SCANNER         1
 
 #else

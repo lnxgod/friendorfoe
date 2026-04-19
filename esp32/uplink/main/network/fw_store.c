@@ -196,8 +196,12 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
     esp_ota_handle_t ota_handle = 0;
     esp_err_t err = esp_ota_begin(p, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
+        ESP_LOGE(TAG, "esp_ota_begin failed: %s on partition '%s'",
+                 esp_err_to_name(err), p ? p->label : "?");
+        char msg[96];
+        snprintf(msg, sizeof(msg), "esp_ota_begin: %s on '%s'",
+                 esp_err_to_name(err), p ? p->label : "?");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, msg);
         resume_all_tasks();
         s_operation_active = false;
         return ESP_FAIL;

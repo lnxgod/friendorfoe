@@ -324,6 +324,12 @@ static esp_err_t status_json_handler(httpd_req_t *req)
     size_t heap_internal_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
     size_t psram_free  = psram_free_size();
     size_t psram_total = psram_total_size();
+    extern volatile int64_t g_last_backend_epoch_ms;
+    extern volatile int g_last_time_fetch_perf;
+    extern volatile int g_last_time_fetch_status;
+    extern volatile int g_last_time_fetch_nread;
+    extern volatile int g_last_time_fetch_clen;
+    extern volatile uint32_t g_time_broadcast_count;
 
     /* Open JSON object */
     snprintf(buf, sizeof(buf),
@@ -335,6 +341,7 @@ static esp_err_t status_json_handler(httpd_req_t *req)
         "\"heap\":{\"internal_free\":%u,\"internal_total\":%u,"
                   "\"psram_free\":%u,\"psram_total\":%u},"
         "\"offline_queue\":{\"depth\":%d,\"capacity\":%d},"
+        "\"time_sync\":{\"last_epoch_ms\":%lld,\"perf\":%d,\"status\":%d,\"clen\":%d,\"nread\":%d,\"bcasts\":%u},"
         "\"detections\":%d,\"uploads_ok\":%d,\"uploads_fail\":%d,",
         device_id, (long long)uptime_sec,
         gps_fix ? "true" : "false", gps.latitude, gps.longitude, gps.satellites,
@@ -345,6 +352,10 @@ static esp_err_t status_json_handler(httpd_req_t *req)
         (unsigned)heap_internal_free, (unsigned)heap_internal_total,
         (unsigned)psram_free, (unsigned)psram_total,
         http_upload_get_offline_count(), http_upload_get_offline_capacity(),
+        (long long)g_last_backend_epoch_ms,
+        g_last_time_fetch_perf, g_last_time_fetch_status,
+        g_last_time_fetch_clen, g_last_time_fetch_nread,
+        (unsigned)g_time_broadcast_count,
         det_count, upload_ok, upload_fail);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
