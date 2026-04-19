@@ -416,6 +416,12 @@ class SensorTracker:
         # EKF position filter
         from app.services.position_filter import PositionFilterManager
         self._ekf = PositionFilterManager(stale_timeout=OBSERVATION_TTL_SEC)
+        # v0.62 particle filter — runs alongside EKF, handles multi-modal
+        # posteriors (ambiguous geometry) where EKF collapses to the mean.
+        # Used as a fallback when EKF hasn't yet converged; becomes the
+        # primary source when it has more observations than the EKF.
+        from app.services.particle_filter import ParticleFilterManager
+        self._pf = ParticleFilterManager()
 
         # ── Diagnostics (populated by get_located_drones via _emit) ─────
         # drone_id -> ring buffer of recent emits
@@ -593,6 +599,11 @@ class SensorTracker:
         # observations, not arbitrary HTTP arrival jitter.
         if dist is not None and device_lat and device_lon and device_lat != 0:
             self._ekf.update(tracking_id, device_lat, device_lon, dist, timestamp=now)
+            # Mirror observation into the particle filter. Shares ENU origin
+            # with the EKF. Separate state so we can A/B the two filters.
+            if not self._pf._origin_set and self._ekf._origin_set:
+                self._pf.set_origin(self._ekf.origin_lat, self._ekf.origin_lon)
+            self._pf.update(tracking_id, device_lat, device_lon, dist, timestamp=now)
 
     def prune(self) -> None:
         """Remove stale observations and sensors."""
@@ -720,7 +731,37 @@ class SensorTracker:
                 continue
 
             # --- Priority 1.5: EKF smoothed position ---
+            # Pick the tighter of EKF vs particle filter when both converged.
+            # The EKF is analytically optimal for Gaussian/linear cases; the
+            # particle filter handles multi-modal / nonlinear posteriors.
             ekf_filter = self._ekf.filters.get(drone_id)
+            pf_filter  = self._pf.filters.get(drone_id)
+            ekf_ok = (ekf_filter is not None and ekf_filter.update_count >= 3)
+            pf_ok  = (pf_filter is not None and pf_filter.update_count >= 3 and pf_filter._initialized)
+            # If only PF converged (e.g. EKF rejected observations), use it.
+            if pf_ok and not ekf_ok:
+                from app.services.position_filter import local_to_gps
+                px, py = pf_filter.get_position()
+                pf_lat, pf_lon = local_to_gps(px, py, self._pf.origin_lat, self._pf.origin_lon)
+                pf_acc = pf_filter.get_accuracy()
+                if abs(pf_lat) <= 90 and abs(pf_lon) <= 180 and pf_acc < 5000:
+                    results.append(LocatedDrone(
+                        drone_id=drone_id, lat=pf_lat, lon=pf_lon,
+                        heading_deg=best_obs.heading_deg,
+                        speed_mps=best_obs.speed_mps,
+                        position_source="particle",
+                        accuracy_m=pf_acc,
+                        sensor_count=len(observations),
+                        observations=observations,
+                        confidence=best_obs.confidence,
+                        manufacturer=best_obs.manufacturer,
+                        model=best_obs.model,
+                        operator_lat=best_obs.operator_lat,
+                        operator_lon=best_obs.operator_lon,
+                        operator_id=best_obs.operator_id,
+                    ))
+                    self._record_emit(results[-1])
+                    continue
             if ekf_filter and ekf_filter.update_count >= 3:
                 from app.services.position_filter import local_to_gps
                 x, y = ekf_filter.get_position()
