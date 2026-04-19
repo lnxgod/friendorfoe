@@ -920,9 +920,84 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
  * Called by the WiFi driver for every received frame in promiscuous mode.
  * We filter for management frames (type 0x00) with beacon subtype (0x80).
  */
+/* AP↔STA association tracking (v0.61+, Marauder station-scan parity).
+ * Promiscuous data frames carry BSSID + STA-MAC in the address fields.
+ * We extract the (STA, BSSID) pair, dedupe through an LRU, and emit a
+ * one-shot wifi_assoc detection for each NEW association. Sustained
+ * traffic is not re-emitted — the LRU keeps memory bounded and lets the
+ * EKF group by stable BSSID via tracking_id="AP:<bssid>" on the backend. */
+#define WIFI_ASSOC_LRU_SLOTS  64
+typedef struct {
+    uint8_t  sta[6];
+    uint8_t  bssid[6];
+    int64_t  last_seen_ms;
+} wifi_assoc_entry_t;
+static wifi_assoc_entry_t s_assoc_lru[WIFI_ASSOC_LRU_SLOTS];
+static int s_assoc_lru_idx = 0;
+#define WIFI_ASSOC_REFRESH_MS  60000  /* Re-emit if seen again > 60 s later */
+
+static bool wifi_assoc_seen_recently(const uint8_t *sta, const uint8_t *bssid, int64_t now)
+{
+    for (int i = 0; i < WIFI_ASSOC_LRU_SLOTS; i++) {
+        if (memcmp(s_assoc_lru[i].sta, sta, 6) == 0 &&
+            memcmp(s_assoc_lru[i].bssid, bssid, 6) == 0) {
+            if ((now - s_assoc_lru[i].last_seen_ms) < WIFI_ASSOC_REFRESH_MS) {
+                return true;
+            }
+            s_assoc_lru[i].last_seen_ms = now;
+            return false;  /* expired — re-emit */
+        }
+    }
+    /* New pair — insert at LRU index */
+    wifi_assoc_entry_t *slot = &s_assoc_lru[s_assoc_lru_idx];
+    memcpy(slot->sta, sta, 6);
+    memcpy(slot->bssid, bssid, 6);
+    slot->last_seen_ms = now;
+    s_assoc_lru_idx = (s_assoc_lru_idx + 1) % WIFI_ASSOC_LRU_SLOTS;
+    return false;
+}
+
 static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 {
     s_total_frames++;
+
+    /* Data frames: parse only the 802.11 header for AP↔STA mapping, then
+     * return. Cheap — just memcmp + memcpy on first 24 bytes. */
+    if (type == WIFI_PKT_DATA) {
+        const wifi_promiscuous_pkt_t *p = (const wifi_promiscuous_pkt_t *)buf;
+        const uint8_t *f = p->payload;
+        if (p->rx_ctrl.sig_len < 24) return;
+        uint8_t fc1 = f[1];
+        bool to_ds   = (fc1 & 0x01) != 0;
+        bool from_ds = (fc1 & 0x02) != 0;
+        const uint8_t *bssid_p = NULL;
+        const uint8_t *sta_p   = NULL;
+        if (to_ds && !from_ds) {       /* client → AP: addr1=BSSID, addr2=STA */
+            bssid_p = f + 4;  sta_p = f + 10;
+        } else if (!to_ds && from_ds) { /* AP → client: addr1=STA, addr2=BSSID */
+            sta_p = f + 4;    bssid_p = f + 10;
+        } else {
+            return;  /* IBSS / WDS — skip */
+        }
+        if ((sta_p[0] & 0x01) || (bssid_p[0] & 0x01)) return;  /* skip mcast */
+        int64_t now = now_ms();
+        if (wifi_assoc_seen_recently(sta_p, bssid_p, now)) return;
+        /* Emit one wifi_assoc detection: drone_id = STA MAC, bssid = AP. */
+        if (s_detection_queue) {
+            drone_detection_t det;
+            init_detection(&det, sta_p, p->rx_ctrl.rssi, "");
+            det.source = DETECTION_SRC_WIFI_OUI;  /* re-use OUI source slot */
+            det.confidence = 0.10f;
+            format_bssid(bssid_p, det.bssid, sizeof(det.bssid));
+            snprintf(det.drone_id, sizeof(det.drone_id),
+                     "STA:%02X:%02X:%02X:%02X:%02X:%02X→AP:%02X:%02X:%02X:%02X:%02X:%02X",
+                     sta_p[0], sta_p[1], sta_p[2], sta_p[3], sta_p[4], sta_p[5],
+                     bssid_p[0], bssid_p[1], bssid_p[2], bssid_p[3], bssid_p[4], bssid_p[5]);
+            strncpy(det.manufacturer, "WiFi-Assoc", sizeof(det.manufacturer) - 1);
+            xQueueSend(s_detection_queue, &det, 0);  /* non-blocking */
+        }
+        return;
+    }
 
     if (type != WIFI_PKT_MGMT) {
         return;
@@ -1381,9 +1456,10 @@ void wifi_scanner_init(QueueHandle_t detection_queue)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    /* Capture management frames (beacons, probe responses contain drone IEs) */
+    /* Capture management + data frames. MGMT for drones/probes/beacons,
+     * DATA for AP↔STA association tracking (v0.61+ Marauder parity). */
     wifi_promiscuous_filter_t filter = {
-        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT
+        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
     };
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filter));
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(wifi_promiscuous_cb));
