@@ -135,12 +135,13 @@ class DroneDetectionItem(BaseModel):
     ssid: str | None = Field(None, description="WiFi SSID if detected via WiFi")
     bssid: str | None = Field(None, description="WiFi BSSID (MAC address)")
     channel: int | None = Field(None, description="WiFi channel if available from the scanner")
-    auth: int | None = Field(
+    auth_m: int | None = Field(
         None,
         description="WiFi AP authentication mode (v0.61+, Marauder-parity). "
                     "0=open, 1=WEP, 2=WPA-PSK, 3=WPA2-PSK, 4=WPA/WPA2-PSK, "
                     "5=WPA2-Enterprise, 6=WPA3-PSK, 7=WPA2/WPA3-PSK, 8=WAPI, "
-                    "9=OWE, 10=WPA3-Enterprise-192. Absent for non-WiFi or pre-v0.61."
+                    "9=OWE, 10=WPA3-Enterprise-192. Absent for non-WiFi or pre-v0.61. "
+                    "Key is 'auth_m' (not 'auth') to avoid substring collision with 'auth_fr'."
     )
     # BLE fingerprinting fields (from ESP32 scanner)
     ble_company_id: int | None = Field(None, description="BLE company ID (0x004C=Apple, 0x0075=Samsung, etc.)")
