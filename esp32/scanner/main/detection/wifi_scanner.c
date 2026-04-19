@@ -260,6 +260,7 @@ static void init_detection(drone_detection_t *det, const uint8_t *bssid,
     memset(det, 0, sizeof(*det));
     det->rssi = rssi;
     det->estimated_distance_m = estimate_distance(rssi);
+    det->wifi_auth_mode = 0xFF;  /* unknown unless caller sets it */
 
     format_bssid(bssid, det->bssid, sizeof(det->bssid));
 
@@ -1229,6 +1230,10 @@ static void process_scan_results(void)
         drone_detection_t det;
         init_detection(&det, bssid, rssi, ssid);
         det.freq_mhz = (ch <= 13) ? (2407 + ch * 5) : (5000 + ch * 5);
+        /* Marauder-parity: capture authmode from the scan record (free —
+         * esp_wifi_scan_get_ap_records already populates it). Lets the
+         * backend label "open" / "WPA3" / "WPA2-PSK" etc. */
+        det.wifi_auth_mode = (uint8_t)ap_list[i].authmode;
 
         if (pattern) {
             det.source = DETECTION_SRC_WIFI_SSID;

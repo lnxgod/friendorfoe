@@ -139,6 +139,7 @@ extern "C" {
 #define JSON_KEY_BSSID              "bssid"
 #define JSON_KEY_FREQ               "freq"
 #define JSON_KEY_CHANNEL_WIDTH      "ch_w"
+#define JSON_KEY_WIFI_AUTH_MODE     "auth"           /* WiFi AP encryption mode (v0.61+) */
 #define JSON_KEY_FUSED_CONFIDENCE   "fused"
 #define JSON_KEY_FIRST_SEEN         "first"
 #define JSON_KEY_LAST_UPDATED       "last"

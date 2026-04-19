@@ -39,6 +39,8 @@ typedef enum {
     BLE_DEV_SMARTWATCH,
     BLE_DEV_BEACON,             /* iBeacon, Eddystone */
     BLE_DEV_TRACKER_GENERIC,    /* Unknown tracker type */
+    BLE_DEV_PEBBLEBEE,          /* Pebblebee Clip / Card / Tag (CID 0x015E) */
+    BLE_DEV_CHIPOLO,            /* Chipolo ONE / CARD trackers */
     BLE_DEV_META_GLASSES,       /* Meta Ray-Ban / Oakley smart glasses */
     BLE_DEV_META_DEVICE,        /* Meta Quest VR headset, Portal, etc. */
     BLE_DEV_FLIPPER_ZERO,       /* Flipper Zero hacking tool */

@@ -187,6 +187,7 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
     strncpy(det->bssid, bssid, sizeof(det->bssid) - 1);
     det->freq_mhz          = json_get_int(root, JSON_KEY_FREQ, 0);
     det->channel_width_mhz = json_get_int(root, JSON_KEY_CHANNEL_WIDTH, 0);
+    det->wifi_auth_mode    = (uint8_t)json_get_int(root, JSON_KEY_WIFI_AUTH_MODE, 0xFF);
 
     /* Probe request: extract probed SSIDs and fingerprint */
     const char *probed_str = json_get_string(root, JSON_KEY_PROBED_SSIDS, NULL);

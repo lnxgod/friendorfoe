@@ -257,6 +257,9 @@ void uart_tx_send_detection(const drone_detection_t *detection)
     if (detection->channel_width_mhz != 0) {
         cJSON_AddNumberToObject(root, JSON_KEY_CHANNEL_WIDTH, detection->channel_width_mhz);
     }
+    if (detection->wifi_auth_mode != 0xFF) {
+        cJSON_AddNumberToObject(root, JSON_KEY_WIFI_AUTH_MODE, detection->wifi_auth_mode);
+    }
 
     /* Probe request: include probed SSID as a JSON array */
     if (detection->source == DETECTION_SRC_WIFI_PROBE_REQUEST &&

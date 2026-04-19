@@ -219,6 +219,7 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
         if (d->ssid[0]) BUF_APPEND(",\"ssid\":\"%s\"", d->ssid);
         if (d->bssid[0]) BUF_APPEND(",\"bssid\":\"%s\"", d->bssid);
         if (d->freq_mhz != 0) BUF_APPEND(",\"channel\":%d", d->freq_mhz);
+        if (d->wifi_auth_mode != 0xFF) BUF_APPEND(",\"auth\":%d", d->wifi_auth_mode);
         if (d->operator_lat != 0.0 || d->operator_lon != 0.0)
             BUF_APPEND(",\"operator_lat\":%.7f,\"operator_lon\":%.7f", d->operator_lat, d->operator_lon);
         if (d->operator_id[0]) BUF_APPEND(",\"operator_id\":\"%s\"", d->operator_id);
