@@ -79,6 +79,14 @@ typedef struct {
     /* Collected service UUIDs (for UART serialization) */
     uint16_t            service_uuids[4];
     uint8_t             svc_uuid_count;
+
+    /* 128-bit service UUIDs (AD types 0x06/0x07). Captured as-transmitted
+     * in little-endian byte order; uart_tx reverses to the standard
+     * big-endian hyphenated string on emit. Needed so BLE peripherals
+     * with custom 128-bit services are detectable — including the
+     * phone-driven calibration walk's session UUID (cafe...-...). */
+    uint8_t             service_uuids_128[2][16];
+    uint8_t             svc_uuid_128_count;
 } ble_fingerprint_t;
 
 /**

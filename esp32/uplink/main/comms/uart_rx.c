@@ -250,10 +250,22 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
         det->ble_adv_interval_us = (int64_t)(ival_ms * 1000);
     }
 
-    /* BLE Service UUIDs (comma-separated hex → uint16 array) */
+    /* BLE Service UUIDs — v0.63 the scanner may emit 16-bit hex ("fd5f")
+     * and/or 128-bit hyphenated ("cafe9a86-0000-1000-8000-..."). We
+     * pass the raw string through verbatim via ble_svc_uuids_raw so
+     * the backend sees exactly what the scanner emitted. We also keep
+     * the legacy uint16 parse path for backward compat with any code
+     * path that reads det->ble_service_uuids directly — `strtoul`
+     * stops at a hyphen so 128-bit tokens get harmlessly truncated
+     * to their first 16-bit value in the legacy array. */
     const char *svc_str = json_get_string(root, JSON_KEY_BLE_SVC_UUIDS, NULL);
     if (svc_str) {
-        char svc_buf[36];
+        /* Pass-through raw copy — this is what http_upload actually sends. */
+        strncpy(det->ble_svc_uuids_raw, svc_str, sizeof(det->ble_svc_uuids_raw) - 1);
+        det->ble_svc_uuids_raw[sizeof(det->ble_svc_uuids_raw) - 1] = '\0';
+
+        /* Legacy uint16 parse for backward compat. */
+        char svc_buf[160];
         strncpy(svc_buf, svc_str, sizeof(svc_buf) - 1);
         svc_buf[sizeof(svc_buf) - 1] = '\0';
         char *tok = svc_buf;

@@ -253,7 +253,18 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
                 BUF_APPEND("%02x", d->ble_raw_mfr[j]);
             BUF_APPEND("\"");
         }
-        if (d->ble_svc_uuid_count > 0) {
+        /* v0.63: prefer the pass-through raw string so 128-bit UUIDs
+         * survive intact ("cafe9a86-0000-1000-8000-..."). Fall back to
+         * the legacy uint16-array re-encoding only when the raw field
+         * is empty (e.g. detection built before the raw field existed). */
+        if (d->ble_svc_uuids_raw[0] != '\0') {
+            BUF_APPEND(",\"ble_svc_uuids\":\"");
+            /* The raw string is already valid JSON content except for
+             * quote escaping, and UUID chars (hex + hyphen + comma) are
+             * all safe, so we can append verbatim. */
+            BUF_APPEND("%s", d->ble_svc_uuids_raw);
+            BUF_APPEND("\"");
+        } else if (d->ble_svc_uuid_count > 0) {
             BUF_APPEND(",\"ble_svc_uuids\":\"");
             for (int j = 0; j < d->ble_svc_uuid_count && j < 4; j++) {
                 if (j > 0) BUF_APPEND(",");

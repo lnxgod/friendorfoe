@@ -343,6 +343,33 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
             }
             break;
 
+        case 0x06:  /* Incomplete List of 128-bit Service UUIDs */
+        case 0x07:  /* Complete List of 128-bit Service UUIDs */
+            /* v0.63: capture custom 128-bit service UUIDs so the backend
+             * can detect BLE peripherals that don't use SIG-assigned
+             * 16-bit IDs — including the phone calibration walk beacon
+             * (cafe…-…) and plenty of future surveillance / IoT device
+             * classes. Each UUID is 16 bytes in LE transmission order;
+             * uart_tx reverses to the canonical big-endian hyphenated
+             * string on emit. */
+            {
+                int off = 0;
+                while (ad_data_len - off >= 16 &&
+                       fp->svc_uuid_128_count < 2) {
+                    memcpy(fp->service_uuids_128[fp->svc_uuid_128_count],
+                           ad_data + off, 16);
+                    fp->svc_uuid_128_count++;
+                    /* Hash the UUID bytes for fingerprint stability —
+                     * a device rotating RPAs but keeping the same
+                     * custom service UUID stays identifiable. */
+                    for (int b = 0; b < 16; b++) {
+                        hash = fnv1a_byte(hash, ad_data[off + b]);
+                    }
+                    off += 16;
+                }
+            }
+            break;
+
         case 0x16:  /* Service Data - 16-bit UUID */
             if (ad_data_len >= 2) {
                 uint16_t svc_uuid = (uint16_t)ad_data[0] | ((uint16_t)ad_data[1] << 8);

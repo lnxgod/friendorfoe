@@ -81,6 +81,17 @@ typedef struct {
     uint8_t     ble_apple_type;         /* Apple Continuity sub-type (0x07=AirPods, 0x10=NearbyInfo, 0x12=FindMy) */
     uint16_t    ble_service_uuids[4];   /* Up to 4 16-bit service UUIDs */
     uint8_t     ble_svc_uuid_count;     /* Number of service UUIDs captured */
+    /* v0.63: 128-bit service UUIDs (AD 0x06/0x07). Stored LE as transmitted;
+     * uart_tx reverses to big-endian hyphenated string on emit. Covers
+     * custom service UUIDs that scanners previously dropped silently —
+     * including the phone-driven calibration walk beacon (cafe...-...). */
+    uint8_t     ble_service_uuids_128[2][16];
+    uint8_t     ble_svc_uuid_128_count;
+    /* Pass-through raw ble_svc string so the full formatted list
+     * survives the scanner→uplink→backend hop intact (uplink uart_rx
+     * previously had a 36-char buffer + uint16 re-parse that truncated
+     * 128-bit UUIDs to their first 4 hex chars). */
+    char        ble_svc_uuids_raw[160]; /* "aaaa,bbbb,xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx,..." + NUL */
     uint8_t     ble_ad_type_count;      /* Number of distinct AD types */
     uint8_t     ble_payload_len;        /* Raw advertisement payload length */
     uint8_t     ble_addr_type;          /* 0=public, 1=random static, 2=RPA, 3=non-resolvable */

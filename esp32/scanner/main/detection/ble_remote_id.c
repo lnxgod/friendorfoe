@@ -552,6 +552,12 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 for (int u = 0; u < fp.svc_uuid_count && u < 4; u++) {
                     det.ble_service_uuids[u] = fp.service_uuids[u];
                 }
+                /* v0.63: 128-bit service UUIDs */
+                det.ble_svc_uuid_128_count = fp.svc_uuid_128_count;
+                for (int u = 0; u < fp.svc_uuid_128_count && u < 2; u++) {
+                    memcpy(det.ble_service_uuids_128[u],
+                           fp.service_uuids_128[u], 16);
+                }
 
                 /* Advertisement interval tracking (per-MAC timing) */
                 {
