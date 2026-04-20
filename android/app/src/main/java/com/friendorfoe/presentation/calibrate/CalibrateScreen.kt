@@ -161,6 +161,61 @@ fun CalibrateScreen(
                 }
             }
 
+            // ── WiFi / connectivity banner ────────────────────────────
+            // Property likely spans multiple APs — operator may need to
+            // switch networks mid-walk. Always visible so they can jump
+            // to Settings quickly; shows queued-sample count so they can
+            // see the offline buffer filling/draining during roam.
+            Surface(
+                color = when {
+                    state.queuedCount > 0 -> WARN_AMBER.copy(alpha = 0.15f)
+                    state.backendStatus == BackendStatus.Ok -> OK_GREEN.copy(alpha = 0.12f)
+                    else -> MaterialTheme.colorScheme.surfaceVariant
+                },
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            when {
+                                state.queuedCount > 0 ->
+                                    "Roaming — ${state.queuedCount} queued, will sync when you reach WiFi"
+                                state.backendStatus == BackendStatus.Ok ->
+                                    "Backend reachable · syncing live"
+                                state.backendStatus == BackendStatus.AuthFailed ->
+                                    "Auth failed — check X-Cal-Token"
+                                state.backendStatus == BackendStatus.Unreachable ->
+                                    "Backend unreachable — switch to a closer WiFi network"
+                                else -> "Connectivity unknown"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "WiFi: " + (state.currentSsid ?: "not associated"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                    TextButton(onClick = {
+                        // Drops the operator on Android's WiFi settings
+                        // where they can tap a different saved network.
+                        // NEW_TASK flag isn't needed from a UI context but
+                        // keeps this safe if the call ever hops threads.
+                        val intent = Intent(Settings.ACTION_WIFI_SETTINGS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        try { context.startActivity(intent) }
+                        catch (_: Exception) {
+                            // Some OEMs (rare) hide WIFI_SETTINGS; fall
+                            // back to the global settings index.
+                            context.startActivity(Intent(Settings.ACTION_SETTINGS))
+                        }
+                    }) { Text("Switch WiFi") }
+                }
+            }
+
             // ── Settings ──────────────────────────────────────────────
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant,
@@ -651,6 +706,10 @@ private fun prettyHint(raw: String): String {
 }
 
 private fun prettyWarning(raw: String): String {
+    // Note: fall-through to the original mapper below for older keys.
+    if (raw == "queued_offline_will_sync_when_backend_reachable") {
+        return "Queued offline — will sync when you reach a WiFi AP that can see the backend."
+    }
     // Backend warnings are slug-style ("gps_drift_27m_likely_wrong_coords");
     // make them readable without needing a separate i18n table.
     return when {
