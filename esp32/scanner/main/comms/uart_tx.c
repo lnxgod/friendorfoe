@@ -314,14 +314,29 @@ void uart_tx_send_detection(const drone_detection_t *detection)
         cJSON_AddNumberToObject(root, JSON_KEY_BLE_ADV_INTERVAL, (double)(detection->ble_adv_interval_us / 1000));  /* ms */
     }
 
-    /* BLE Service UUIDs */
-    if (detection->ble_svc_uuid_count > 0) {
-        char svc_buf[36];  /* "ffff,ffff,ffff,ffff" = max 19 chars + null */
+    /* BLE Service UUIDs — v0.63 emits both 16-bit (comma-separated hex)
+     * and 128-bit (canonical big-endian hyphenated) in a single field.
+     * Backend substring-matches on the UUID it's looking for, so it
+     * doesn't need to know the format ordering.
+     *   Sizing: up to 4 × 4-char 16-bit + 2 × 36-char 128-bit + 5 commas
+     *   + NUL = 16 + 72 + 5 + 1 = 94. 128-byte buffer gives headroom. */
+    if (detection->ble_svc_uuid_count > 0 || detection->ble_svc_uuid_128_count > 0) {
+        char svc_buf[128];
         int svc_off = 0;
         for (int i = 0; i < detection->ble_svc_uuid_count && i < 4; i++) {
-            if (i > 0) svc_buf[svc_off++] = ',';
+            if (svc_off > 0) svc_buf[svc_off++] = ',';
             svc_off += snprintf(&svc_buf[svc_off], sizeof(svc_buf) - svc_off,
                                 "%04x", detection->ble_service_uuids[i]);
+        }
+        for (int i = 0; i < detection->ble_svc_uuid_128_count && i < 2; i++) {
+            if (svc_off > 0) svc_buf[svc_off++] = ',';
+            /* UUID bytes are stored LE as transmitted; emit big-endian
+             * hyphenated so downstream matches "cafe9a86-0000-..." etc. */
+            const uint8_t *u = detection->ble_service_uuids_128[i];
+            svc_off += snprintf(&svc_buf[svc_off], sizeof(svc_buf) - svc_off,
+                "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                u[15], u[14], u[13], u[12], u[11], u[10], u[9], u[8],
+                u[7],  u[6],  u[5],  u[4],  u[3],  u[2],  u[1], u[0]);
         }
         cJSON_AddStringToObject(root, JSON_KEY_BLE_SVC_UUIDS, svc_buf);
     }
