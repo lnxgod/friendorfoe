@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.net.wifi.WifiManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.DetectionPrefs
@@ -41,6 +42,7 @@ class CalibrationViewModel @Inject constructor(
     private val api: CalibrationApi,
     private val locationManager: LocationManager,
     private val bluetoothManager: BluetoothManager,
+    private val wifiManager: WifiManager,
 ) : ViewModel() {
 
     /** One sensor as known to the fleet — drives the "tap which sensor
@@ -93,6 +95,21 @@ class CalibrationViewModel @Inject constructor(
     /** Backend reachability indicator shown next to the URL field. */
     enum class BackendStatus { Unknown, Ok, AuthFailed, Unreachable }
 
+    /** A walk GPS sample waiting to be POSTed once the phone has a working
+     *  WiFi route to the backend again. Property spans multiple APs so
+     *  gaps during roaming are expected. */
+    data class QueuedSample(
+        val lat: Double, val lon: Double,
+        val tsMs: Long, val accuracyM: Float?,
+    )
+
+    /** An "I'm here" checkpoint waiting to be POSTed. */
+    data class QueuedCheckpoint(
+        val sensorId: String,
+        val lat: Double, val lon: Double,
+        val tsMs: Long, val accuracyM: Float?,
+    )
+
     data class State(
         val backendUrl: String = "",
         val token: String = "",
@@ -112,6 +129,15 @@ class CalibrationViewModel @Inject constructor(
         val errorMessage: String? = null,
         val infoMessage: String? = null,
         val fitResult: JsonObject? = null,
+        /** Count of samples + checkpoints buffered locally because the
+         *  backend couldn't be reached. Drives the amber "N queued" UI
+         *  indicator so the operator knows the walk is still being
+         *  recorded even when one AP's coverage has dropped. */
+        val queuedCount: Int = 0,
+        /** SSID the phone is currently associated with — surfaces in the
+         *  UI next to the "Switch WiFi" button so operators can see which
+         *  network they're on while roaming across the property. */
+        val currentSsid: String? = null,
         val fitApplied: Boolean? = null,
         val bluetoothEnabled: Boolean = true,
         val backendStatus: BackendStatus = BackendStatus.Unknown,
@@ -124,6 +150,125 @@ class CalibrationViewModel @Inject constructor(
         bluetoothEnabled = bluetoothManager.adapter?.isEnabled == true,
     ))
     val state: StateFlow<State> = _state.asStateFlow()
+
+    // ── Offline queue for wifi roam ─────────────────────────────────
+    // Property routinely spans more than one AP's coverage, so operators
+    // will walk into a dead zone during calibration. Rather than drop
+    // the samples or pause the walk, queue everything locally and flush
+    // as soon as backend connectivity returns. FIFO; sizes capped to keep
+    // memory bounded if connectivity stays out for a long time.
+    private val pendingSamples = ArrayDeque<QueuedSample>()
+    private val pendingCheckpoints = ArrayDeque<QueuedCheckpoint>()
+    private val queueLock = Any()
+    private val MAX_QUEUED_SAMPLES = 600      // 10 min of 1 Hz GPS
+    private val MAX_QUEUED_CHECKPOINTS = 50
+    private var flushJob: Job? = null
+
+    private fun enqueueSample(s: QueuedSample) {
+        synchronized(queueLock) {
+            pendingSamples.addLast(s)
+            while (pendingSamples.size > MAX_QUEUED_SAMPLES) {
+                pendingSamples.removeFirst()    // drop oldest if truly stuck
+            }
+            updateQueuedCountLocked()
+        }
+    }
+
+    private fun enqueueCheckpoint(c: QueuedCheckpoint) {
+        synchronized(queueLock) {
+            pendingCheckpoints.addLast(c)
+            while (pendingCheckpoints.size > MAX_QUEUED_CHECKPOINTS) {
+                pendingCheckpoints.removeFirst()
+            }
+            updateQueuedCountLocked()
+        }
+    }
+
+    /** Must be called while holding queueLock. */
+    private fun updateQueuedCountLocked() {
+        val total = pendingSamples.size + pendingCheckpoints.size
+        _state.value = _state.value.copy(queuedCount = total)
+    }
+
+    private fun startFlushLoop() {
+        flushJob?.cancel()
+        flushJob = viewModelScope.launch {
+            while (true) {
+                val s = _state.value
+                if (!s.isWalking) break
+                val sid = s.sessionId
+                if (sid != null && s.backendUrl.isNotBlank() && s.token.isNotBlank()) {
+                    flushOnce(sid, s.backendUrl, s.token)
+                }
+                refreshCurrentSsid()
+                delay(4000)
+            }
+        }
+    }
+
+    private suspend fun flushOnce(sessionId: String, baseUrl: String, token: String) {
+        // Samples: send in order, stop on first failure (likely still offline).
+        while (true) {
+            val next = synchronized(queueLock) {
+                pendingSamples.firstOrNull()
+            } ?: break
+            val res = api.walkSample(baseUrl, token, sessionId,
+                                     lat = next.lat, lon = next.lon,
+                                     tsMs = next.tsMs, accuracyM = next.accuracyM)
+            if (res.isFailure) return
+            synchronized(queueLock) {
+                if (pendingSamples.firstOrNull() === next) pendingSamples.removeFirst()
+                updateQueuedCountLocked()
+            }
+        }
+        // Checkpoints: same idea. Each flush re-queries its sanity result
+        // so the operator still gets the green/yellow/red feedback.
+        while (true) {
+            val next = synchronized(queueLock) {
+                pendingCheckpoints.firstOrNull()
+            } ?: break
+            val res = api.walkCheckpoint(baseUrl, token, sessionId,
+                                         next.sensorId, next.lat, next.lon,
+                                         next.accuracyM, next.tsMs)
+            if (res.isFailure) return
+            val body = res.getOrNull()
+            if (body != null) {
+                val warnings = body.getAsJsonArray("warnings")?.map { it.asString } ?: emptyList()
+                val cr = CheckpointResult(
+                    sensorId = next.sensorId,
+                    severity = body.get("severity")?.asString ?: "warn",
+                    gpsDriftM = body.get("gps_drift_m")?.takeIf { !it.isJsonNull }?.asDouble,
+                    rssiAtTouch = body.get("rssi_at_touch")?.takeIf { !it.isJsonNull }?.asInt,
+                    strongestAtTouch = body.get("strongest_sensor_at_touch")
+                        ?.takeIf { !it.isJsonNull }?.asString,
+                    warnings = warnings,
+                    tsMs = next.tsMs,
+                )
+                _state.value = _state.value.copy(
+                    checkpointResults = _state.value.checkpointResults + (next.sensorId to cr),
+                )
+            }
+            synchronized(queueLock) {
+                if (pendingCheckpoints.firstOrNull() === next) pendingCheckpoints.removeFirst()
+                updateQueuedCountLocked()
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun refreshCurrentSsid() {
+        try {
+            val info = wifiManager.connectionInfo ?: return
+            val raw = info.ssid ?: return
+            // wifiManager returns "<unknown ssid>" when permission is denied
+            // and quotes real SSIDs as "Name". Strip quotes for display.
+            val ssid = raw.removePrefix("\"").removeSuffix("\"")
+                .takeIf { it.isNotBlank() && it != "<unknown ssid>" }
+            if (ssid != _state.value.currentSsid) {
+                _state.value = _state.value.copy(currentSsid = ssid)
+            }
+        } catch (_: Exception) { /* permission / roaming glitch */ }
+    }
 
     private var feedbackJob: Job? = null
     private var lastSentTraceMs: Long = 0
@@ -276,6 +421,11 @@ class CalibrationViewModel @Inject constructor(
                 return@launch
             }
 
+            // Reset local queue state for the new session
+            synchronized(queueLock) {
+                pendingSamples.clear()
+                pendingCheckpoints.clear()
+            }
             _state.value = _state.value.copy(
                 isWalking = true,
                 sessionId = sid,
@@ -287,10 +437,13 @@ class CalibrationViewModel @Inject constructor(
                 fitResult = null,
                 fitApplied = null,
                 backendStatus = BackendStatus.Ok,
+                queuedCount = 0,
                 infoMessage = "Walking — visit each sensor and tap its 'I'm here' button " +
                               "to anchor the fit + verify the sensor's coordinates.",
             )
+            refreshCurrentSsid()
             startFeedbackPolling(sid)
+            startFlushLoop()
         }
     }
 
@@ -308,16 +461,35 @@ class CalibrationViewModel @Inject constructor(
             return
         }
         val nowMs = System.currentTimeMillis()
+        val accM = s.gpsAccuracyM
         viewModelScope.launch {
             val res = api.walkCheckpoint(
                 baseUrl = s.backendUrl, token = s.token,
                 sessionId = sid, sensorId = sensor.deviceId,
                 lat = lat, lon = lon,
-                accuracyM = s.gpsAccuracyM, tsMs = nowMs,
+                accuracyM = accM, tsMs = nowMs,
             )
             if (res.isFailure) {
+                // Offline — queue the checkpoint so the fit anchor + sanity
+                // result still lands once connectivity returns. Show an
+                // optimistic "queued" card in the UI so the operator can
+                // keep walking without waiting.
+                enqueueCheckpoint(QueuedCheckpoint(
+                    sensorId = sensor.deviceId,
+                    lat = lat, lon = lon,
+                    tsMs = nowMs, accuracyM = accM,
+                ))
                 _state.value = _state.value.copy(
-                    errorMessage = "Checkpoint failed: ${res.exceptionOrNull()?.message}"
+                    checkpointResults = _state.value.checkpointResults + (sensor.deviceId to
+                        CheckpointResult(
+                            sensorId = sensor.deviceId,
+                            severity = "warn",
+                            gpsDriftM = null,
+                            rssiAtTouch = null,
+                            strongestAtTouch = null,
+                            warnings = listOf("queued_offline_will_sync_when_backend_reachable"),
+                            tsMs = nowMs,
+                        )),
                 )
                 return@launch
             }
@@ -345,9 +517,15 @@ class CalibrationViewModel @Inject constructor(
         val sid = s.sessionId ?: return
         feedbackJob?.cancel()
         feedbackJob = null
+        flushJob?.cancel()
+        flushJob = null
         try { locationManager.removeUpdates(gpsListener) } catch (_: Exception) {}
         advertiser.stop()
         viewModelScope.launch {
+            // Last-ditch drain of anything still queued before we end the
+            // session — avoids "you walked past sensor X and got a great
+            // checkpoint, but then lost WiFi, so the fit never anchored".
+            flushOnce(sid, s.backendUrl, s.token)
             val res = api.walkEnd(s.backendUrl, s.token, sid)
             if (res.isFailure) {
                 _state.value = _state.value.copy(
@@ -434,11 +612,20 @@ class CalibrationViewModel @Inject constructor(
             return
         }
         lastSentTraceMs = nowMs
+        val accuracyM = if (loc.hasAccuracy()) loc.accuracy else null
         viewModelScope.launch {
-            api.walkSample(s.backendUrl, s.token, sid,
-                           lat = loc.latitude, lon = loc.longitude,
-                           tsMs = nowMs,
-                           accuracyM = if (loc.hasAccuracy()) loc.accuracy else null)
+            val res = api.walkSample(s.backendUrl, s.token, sid,
+                                     lat = loc.latitude, lon = loc.longitude,
+                                     tsMs = nowMs,
+                                     accuracyM = accuracyM)
+            if (res.isFailure) {
+                // Backend unreachable — queue locally, the flush loop
+                // will drain when the phone reassociates with a nearer AP.
+                enqueueSample(QueuedSample(
+                    lat = loc.latitude, lon = loc.longitude,
+                    tsMs = nowMs, accuracyM = accuracyM,
+                ))
+            }
         }
         _state.value = s.copy(
             phoneLat = loc.latitude, phoneLon = loc.longitude,
@@ -448,6 +635,7 @@ class CalibrationViewModel @Inject constructor(
 
     override fun onCleared() {
         feedbackJob?.cancel()
+        flushJob?.cancel()
         try { locationManager.removeUpdates(gpsListener) } catch (_: Exception) {}
         advertiser.stop()
         super.onCleared()
