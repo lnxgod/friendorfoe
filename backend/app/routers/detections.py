@@ -41,6 +41,45 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/detections", tags=["detections"])
 
+
+# Manufacturer / model substrings whose devices rotate BT Private Resolvable
+# Addresses in ways that defeat MAC-based identity. For these classes we
+# promote the scanner's BLE-JA3 hash to a stable `FP:<ja3>` grouping key so
+# EntityTracker/BLEEnricher/AnomalyDetector/Triangulation see one logical
+# threat instead of a new "device" every RPA rotation (~15 min).
+#
+# Mirror of the Android-side rule in GlassesDetector.computeFingerprintKey —
+# keeping the two lists in sync avoids divergent behaviour between the phone
+# UI and the backend privacy dashboard.
+_FP_ROTATING_MFRS = ("meta", "ray-ban", "rayban", "oakley", "luxottica")
+_FP_ROTATING_MODEL_SUBSTRS = ("meta", "ray-ban", "rayban", "oakley",
+                               "luxottica", "quest", "smart glasses")
+
+
+def _grouping_model(det) -> str:
+    """Return a model string suitable for downstream fingerprint-aware
+    consumers. For MAC-rotating high-risk classes with a non-zero JA3 hash,
+    we return `FP:<ja3>` so every rotated MAC from the same physical device
+    collapses into one entity. For everything else we return the original
+    `det.model` unchanged — AirTags and generic BLE peripherals keep their
+    existing per-MAC identity so two distinct trackers never merge.
+    """
+    orig = (det.model or "").strip()
+    if orig.startswith("FP:"):
+        return orig  # already prefixed upstream (e.g. ASTM Remote ID serials)
+    ja3 = (getattr(det, "ble_ja3", "") or "").strip().lower()
+    if not ja3 or ja3 in ("0", "00000000"):
+        return orig
+    mfr_l = (det.manufacturer or "").lower()
+    model_l = orig.lower()
+    rotating = (
+        any(m in mfr_l for m in _FP_ROTATING_MFRS) or
+        any(s in model_l for s in _FP_ROTATING_MODEL_SUBSTRS)
+    )
+    if not rotating:
+        return orig
+    return f"FP:{ja3}"
+
 # ---------------------------------------------------------------------------
 # In-memory ring buffer for recent detections (fast path, no DB needed)
 # ---------------------------------------------------------------------------
@@ -150,6 +189,36 @@ if _calibration_mgr.last_result and _calibration_mgr.last_result.r_squared > 0.1
     _lr = _calibration_mgr.last_result
     _apply_cal(_lr.rssi_ref, _lr.path_loss_exponent,
                getattr(_lr, "per_listener_offset_db", None))
+
+
+# v0.63: phone-driven walk calibration. The Android app advertises BLE
+# from known GPS positions; backend joins the trace × sensor sightings
+# and fits a per-listener log-distance model.
+from app.services.phone_calibration import PhoneCalibrationManager
+_phone_cal_mgr = PhoneCalibrationManager()
+
+
+# ---------------------------------------------------------------------------
+# Calibration auth — single shared bearer token in the X-Cal-Token header.
+# Set via the FOF_CAL_TOKEN env var; if unset we generate a random one at
+# startup and log it (so dev still works, prod ops sets the env). HMAC is
+# overkill for a property-scale tool whose threat model is "stop neighbors
+# from polluting our calibration", which a static secret over LAN handles.
+# ---------------------------------------------------------------------------
+import os as _os
+import secrets as _secrets
+from fastapi import HTTPException, Header
+
+_CAL_TOKEN = _os.environ.get("FOF_CAL_TOKEN") or _secrets.token_urlsafe(16)
+if not _os.environ.get("FOF_CAL_TOKEN"):
+    logger.warning("FOF_CAL_TOKEN not set — generated dev token: %s", _CAL_TOKEN)
+    logger.warning("Set FOF_CAL_TOKEN in env to pin a stable value")
+
+
+def _require_cal_token(x_cal_token: str | None) -> None:
+    """Reject requests missing or with an incorrect calibration bearer."""
+    if not x_cal_token or not _secrets.compare_digest(x_cal_token, _CAL_TOKEN):
+        raise HTTPException(status_code=401, detail="invalid X-Cal-Token")
 
 
 async def _resolve_sensor_position(
@@ -399,12 +468,40 @@ async def ingest_drone_detections(
                 logger.warning("DRONE ALERT [%s]: %s via %s on %s rssi=%s",
                                severity.upper(), det.drone_id, det.source, batch.device_id, det.rssi)
 
+        # Promote JA3 to a stable FP: grouping key for MAC-rotating high-risk
+        # classes (Meta/Ray-Ban/Oakley/Luxottica/Quest). All downstream
+        # fingerprint-aware consumers key on `model.startswith("FP:")` so
+        # rotating RPAs now collapse into one logical device/entity/threat
+        # instead of producing a fresh identity every ~15 min.
+        grouping_model = _grouping_model(det)
+
+        # Phone-walk calibration hook — if this detection carries a
+        # service UUID matching an active calibration session, forward
+        # (sensor_id, rssi, ts) into the session so the OLS fitter has
+        # data to work with at /walk/end. The svc_uuids field comes
+        # from the scanner's BLE parser.
+        _svc = (getattr(det, "ble_svc_uuids", "") or "").lower()
+        if _svc and "cafe" in _svc and det.rssi is not None:
+            for _u in _svc.split(","):
+                cal_session = _phone_cal_mgr.find_active_for_uuid(_u.strip())
+                if cal_session is not None and sensor_lat and sensor_lon:
+                    _phone_cal_mgr.add_sensor_sample(
+                        session_id=cal_session.session_id,
+                        sensor_id=batch.device_id,
+                        sensor_lat=sensor_lat, sensor_lon=sensor_lon,
+                        rssi=det.rssi,
+                        ts_s=(det.timestamp / 1000.0)
+                              if det.timestamp and det.timestamp > 1e12
+                              else received_at,
+                    )
+                    break
+
         # Anomaly detection (fingerprint-aware, whitelisted, mesh-aware)
         _anomaly_detector.ingest(
             drone_id=det.drone_id, source=det.source,
             confidence=det.confidence, rssi=det.rssi or 0,
             ssid=det.ssid or "", bssid=det.bssid or "",
-            manufacturer=det.manufacturer or "", model=det.model or "",
+            manufacturer=det.manufacturer or "", model=grouping_model,
             device_id=batch.device_id, received_at=received_at,
         )
 
@@ -413,7 +510,7 @@ async def ingest_drone_detections(
             drone_id=det.drone_id, source=det.source,
             confidence=det.confidence, rssi=det.rssi or 0,
             bssid=det.bssid or "", manufacturer=det.manufacturer or "",
-            model=det.model or "", device_id=batch.device_id,
+            model=grouping_model, device_id=batch.device_id,
             received_at=received_at,
             ble_company_id=det.ble_company_id,
             ble_apple_type=det.ble_apple_type,
@@ -471,7 +568,7 @@ async def ingest_drone_detections(
             ssid=det.ssid or "", bssid=det.bssid or "",
             manufacturer=det.manufacturer or "",
             device_id=batch.device_id, received_at=received_at,
-            model=det.model or "",
+            model=grouping_model,
             probed_ssids=det.probed_ssids,
             device_type=_device_type_hint,
             ie_hash=getattr(det, "ie_hash", None),
@@ -484,7 +581,7 @@ async def ingest_drone_detections(
                 source=det.source,
                 drone_id=det.drone_id,
                 bssid=det.bssid,
-                model=det.model,
+                model=grouping_model,
                 ie_hash=getattr(det, "ie_hash", None),
                 sensor_id=batch.device_id,
                 rssi=det.rssi,
@@ -502,7 +599,7 @@ async def ingest_drone_detections(
                 bssid=det.bssid,
                 ssid=det.ssid,
                 manufacturer=det.manufacturer,
-                model=det.model,
+                model=grouping_model,
                 probed_ssids=det.probed_ssids,
                 rssi=det.rssi,
                 confidence=det.confidence,
@@ -587,7 +684,12 @@ async def ingest_drone_detections(
             confidence=adj_confidence,
             source=det.source,
             manufacturer=det.manufacturer,
-            model=det.model,
+            # Passing the JA3-promoted model here too lets the
+            # triangulator key all of a rotating Meta pair's RPAs under
+            # one tracking_id — otherwise the EKF/particle filter would
+            # start over every rotation and never accumulate enough
+            # observations to produce a tight fix.
+            model=grouping_model,
             ssid=det.ssid,
             bssid=det.bssid,
             operator_lat=det.operator_lat,
@@ -1046,6 +1148,290 @@ async def get_entities(
 
 
 # ---------------------------------------------------------------------------
+# GET /detections/threats — unified threat feed for the privacy dashboard
+#
+# Consolidates every "this matters" signal into one flat list, each item
+# carrying a triangulated lat/lon + accuracy when geometry allows. The
+# front-end threats.html page consumes this directly — one endpoint, one
+# render, no cross-referencing four APIs client-side.
+#
+# Sources:
+#   - threat-category entities (Meta / Ray-Ban / Flipper / Pwnagotchi /
+#     AirTag / Flock / Hidden Camera / etc. — auto-classified by
+#     EntityTracker._categorize_entity via HIGH_RISK_KEYWORDS)
+#   - lingering-tracker alerts from AnomalyDetector (dwell > 30min)
+#   - RF anomalies from RFAnomalyDetector (deauth flood, beacon spam,
+#     pwnagotchi, karma, evil-twin, attack volume)
+#   - located drones with confirmed classification
+# ---------------------------------------------------------------------------
+
+_SEVERITY_RANK = {"critical": 3, "warning": 2, "info": 1, "low": 0}
+
+
+def _ident_variants(ident: str):
+    """Yield every key format a single identifier might appear as in the
+    located-drone index. Components surface as `BLE:HASH:Type` or
+    `probe_MAC` or raw MAC, but the triangulator stores them as
+    `FP:HASH`, `PROBE:<ie>`, `AP:<bssid>`, or the raw drone_id. Rather
+    than teach every producer to emit the same key, normalise here.
+    """
+    ident = ident.strip()
+    if not ident:
+        return
+    yield ident
+    parts = ident.split(":")
+    # BLE:HASH:Type → FP:HASH (matches BLEEnricher + triangulation's FP key)
+    if len(parts) >= 2 and parts[0] == "BLE" and len(parts[1]) == 8:
+        yield f"FP:{parts[1]}"
+    # probe_MAC → PROBE:MAC
+    if ident.startswith("probe_"):
+        yield f"PROBE:{ident[6:]}"
+    # Bare BSSID/MAC → AP:<bssid>
+    if ident.count(":") == 5 and len(ident) == 17:
+        yield f"AP:{ident}"
+
+
+def _lookup_located(ident: str, located_by_id: dict) -> tuple | None:
+    for key in _ident_variants(ident):
+        ld = located_by_id.get(key)
+        if ld and ld.lat and ld.lon:
+            return (ld.lat, ld.lon, ld.accuracy_m, ld.drone_id)
+    return None
+
+
+def _find_located_for_entity(entity: dict, located_by_id: dict) -> tuple | None:
+    """Look up a triangulated position for an entity by probing its
+    component identifiers (and common key variants) against the
+    located-drone index. Return (lat, lon, accuracy_m, drone_id) on hit.
+    Picks the tightest accuracy if multiple components match — we trust
+    the best-observed component for the entity's position.
+    """
+    best = None
+    best_acc = float("inf")
+    for comp in entity.get("components", []):
+        hit = _lookup_located(comp.get("identifier") or "", located_by_id)
+        if hit:
+            acc = hit[2] if hit[2] is not None else float("inf")
+            if acc < best_acc:
+                best = hit
+                best_acc = acc
+    return best
+
+
+def _find_located_for_alert(alert: dict, located_by_id: dict) -> tuple | None:
+    """Same lookup for a flat alert dict — tries drone_id, bssid, device_id."""
+    for key in ("drone_id", "bssid", "device_id", "entity_key"):
+        ident = (alert.get(key) or "").strip()
+        hit = _lookup_located(ident, located_by_id)
+        if hit:
+            return hit
+    return None
+
+
+@router.get("/threats")
+async def get_threats(
+    limit: Annotated[int, Query(ge=1, le=500, description="Max items returned")] = 200,
+    include_drone_alerts: Annotated[bool, Query(description="Include confirmed drones")] = True,
+    include_rf_anomalies: Annotated[bool, Query(description="Include WiFi attacks + pwnagotchi")] = True,
+    min_severity: Annotated[str | None, Query(description="info | warning | critical — filter at or above")] = None,
+):
+    """Privacy-focused threat feed. One request gives you everything the
+    dashboard needs to show "what's concerning right now" — threats are
+    already filtered, classified, and positioned. Sorted by severity then
+    recency so the top of the list is always the worst active threat.
+    """
+    now = time.time()
+    min_rank = _SEVERITY_RANK.get((min_severity or "").lower(), -1)
+
+    # Build an O(1) lookup so every threat can be cheaply joined against
+    # its triangulated position without re-scanning the located list.
+    located_list = _sensor_tracker.get_located_drones()
+    located_by_id: dict = {d.drone_id: d for d in located_list}
+
+    threats: list[dict] = []
+
+    # ── 1. Threat-category entities (Meta, Flock, AirTag-as-tracker, etc.)
+    entities = _entity_tracker.get_entities(active_only=True, limit=500)
+    for e in entities:
+        if e.get("category") != "threat":
+            continue
+        pos = _find_located_for_entity(e, located_by_id)
+        lat, lon, acc, tid = pos if pos else (None, None, None, None)
+        # Severity ladder: high-risk entity that's currently approaching the
+        # user is critical; stationary/departing is warning; informational
+        # if RSSI is very weak.
+        trend = e.get("rssi_trend") or ""
+        rssi = e.get("current_rssi") or -100
+        if trend == "approaching" or rssi > -55:
+            sev = "critical"
+        elif rssi > -80:
+            sev = "warning"
+        else:
+            sev = "info"
+        if _SEVERITY_RANK[sev] < min_rank:
+            continue
+        threats.append({
+            "kind": "entity",
+            "subkind": (e.get("label") or "Unknown"),
+            "label": e.get("label") or "Unknown threat device",
+            "severity": sev,
+            "first_seen": e.get("first_seen"),
+            "last_seen": e.get("last_seen"),
+            "age_s": round(now - (e.get("last_seen") or now), 1),
+            "duration_s": e.get("duration_s"),
+            "rssi_trend": trend,
+            "current_rssi": rssi,
+            "peak_rssi": e.get("peak_rssi"),
+            "sensor_count": e.get("sensor_count", 0),
+            "sensors_active": e.get("sensors_active", []),
+            "dominant_sensor": e.get("dominant_sensor"),
+            "mac_rotations": len(e.get("components", [])),
+            "latitude": lat,
+            "longitude": lon,
+            "accuracy_m": acc,
+            "tracking_id": tid,
+            "entity_id": e.get("entity_id"),
+        })
+
+    # ── 2. Lingering-tracker + high-severity anomaly alerts
+    for a in _anomaly_detector.get_alerts(limit=200):
+        sev = a.get("severity") or "info"
+        if _SEVERITY_RANK.get(sev, 0) < min_rank:
+            continue
+        # Skip pure info-level device churn unless explicitly asked for
+        if sev == "info" and a.get("alert_type") not in ("lingering_tracker",):
+            continue
+        pos = _find_located_for_alert(a, located_by_id)
+        lat, lon, acc, tid = pos if pos else (None, None, None, None)
+        threats.append({
+            "kind": "anomaly",
+            "subkind": a.get("alert_type") or "anomaly",
+            "label": a.get("message") or a.get("alert_type") or "Anomaly",
+            "severity": sev,
+            "first_seen": a.get("timestamp"),
+            "last_seen": a.get("timestamp"),
+            "age_s": a.get("age_s", round(now - (a.get("timestamp") or now), 1)),
+            "duration_s": (a.get("details") or {}).get("dwell_s"),
+            "rssi_trend": None,
+            "current_rssi": (a.get("details") or {}).get("rssi"),
+            "peak_rssi": None,
+            "sensor_count": 1,
+            "sensors_active": [a.get("device_id")] if a.get("device_id") else [],
+            "dominant_sensor": a.get("device_id"),
+            "mac_rotations": (a.get("details") or {}).get("mac_rotations", 0),
+            "latitude": lat,
+            "longitude": lon,
+            "accuracy_m": acc,
+            "tracking_id": tid,
+            "drone_id": a.get("device_id"),
+            "ssid": a.get("ssid"),
+        })
+
+    # ── 3. RF anomalies (WiFi attacks, pwnagotchi, karma, evil-twin)
+    if include_rf_anomalies:
+        for a in _rf_anomaly_detector.get_recent_alerts(limit=100):
+            sev = getattr(a, "severity", "info")
+            if _SEVERITY_RANK.get(sev, 0) < min_rank:
+                continue
+            if sev == "info":
+                continue  # skip low-signal RF noise
+            alert_dict = {
+                "drone_id": getattr(a, "drone_id", None) or getattr(a, "entity_key", None),
+                "bssid": getattr(a, "bssid", None),
+                "device_id": getattr(a, "device_id", None),
+                "entity_key": getattr(a, "entity_key", None),
+            }
+            pos = _find_located_for_alert(alert_dict, located_by_id)
+            lat, lon, acc, tid = pos if pos else (None, None, None, None)
+            ts = getattr(a, "detected_at", now)
+            threats.append({
+                "kind": "rf_anomaly",
+                "subkind": getattr(a, "anomaly_type", "rf_anomaly"),
+                "label": getattr(a, "title", "") or getattr(a, "message", "") or "RF anomaly",
+                "severity": sev,
+                "first_seen": ts,
+                "last_seen": ts,
+                "age_s": round(now - ts, 1),
+                "duration_s": None,
+                "rssi_trend": None,
+                "current_rssi": None,
+                "peak_rssi": None,
+                "sensor_count": 1,
+                "sensors_active": [getattr(a, "device_id", "")],
+                "dominant_sensor": getattr(a, "device_id", ""),
+                "mac_rotations": 0,
+                "latitude": lat,
+                "longitude": lon,
+                "accuracy_m": acc,
+                "tracking_id": tid,
+                "ssid": getattr(a, "ssid", None),
+                "manufacturer": getattr(a, "manufacturer", None),
+            })
+
+    # ── 4. Confirmed drones (from the drone-alerts ring buffer)
+    if include_drone_alerts:
+        for a in list(_drone_alerts)[-100:]:
+            sev = a.get("severity") or "warning"
+            if _SEVERITY_RANK.get(sev, 0) < min_rank:
+                continue
+            if sev == "info":
+                continue
+            ld = located_by_id.get(a.get("drone_id", ""))
+            lat = a.get("latitude") if a.get("latitude") else (ld.lat if ld else None)
+            lon = a.get("longitude") if a.get("longitude") else (ld.lon if ld else None)
+            acc = ld.accuracy_m if ld else None
+            threats.append({
+                "kind": "drone",
+                "subkind": a.get("classification") or "drone",
+                "label": f"Drone · {(a.get('classification') or 'unknown').replace('_', ' ')}",
+                "severity": sev,
+                "first_seen": a.get("timestamp"),
+                "last_seen": a.get("timestamp"),
+                "age_s": round(now - (a.get("timestamp") or now), 1),
+                "duration_s": None,
+                "rssi_trend": None,
+                "current_rssi": a.get("rssi"),
+                "peak_rssi": None,
+                "sensor_count": 1,
+                "sensors_active": [a.get("device_id")] if a.get("device_id") else [],
+                "dominant_sensor": a.get("device_id"),
+                "mac_rotations": 0,
+                "latitude": lat,
+                "longitude": lon,
+                "accuracy_m": acc,
+                "tracking_id": a.get("drone_id"),
+                "drone_id": a.get("drone_id"),
+                "manufacturer": a.get("manufacturer"),
+                "ssid": a.get("ssid"),
+            })
+
+    # Sort: worst severity first, newest within severity
+    threats.sort(key=lambda t: (
+        -_SEVERITY_RANK.get(t["severity"], 0),
+        -(t.get("last_seen") or 0),
+    ))
+    threats = threats[:limit]
+
+    # Roll-up counts for the header
+    summary = {
+        "total": len(threats),
+        "by_severity": {
+            "critical": sum(1 for t in threats if t["severity"] == "critical"),
+            "warning":  sum(1 for t in threats if t["severity"] == "warning"),
+            "info":     sum(1 for t in threats if t["severity"] == "info"),
+        },
+        "by_kind": {
+            "entity":     sum(1 for t in threats if t["kind"] == "entity"),
+            "anomaly":    sum(1 for t in threats if t["kind"] == "anomaly"),
+            "rf_anomaly": sum(1 for t in threats if t["kind"] == "rf_anomaly"),
+            "drone":      sum(1 for t in threats if t["kind"] == "drone"),
+        },
+        "triangulated": sum(1 for t in threats if t.get("latitude") is not None),
+    }
+    return {"threats": threats, "summary": summary, "generated_at": now}
+
+
+# ---------------------------------------------------------------------------
 # POST /detections/calibrate — run inter-node RSSI calibration
 # ---------------------------------------------------------------------------
 
@@ -1095,6 +1481,272 @@ async def start_calibration(background_tasks: BackgroundTasks):
 
     background_tasks.add_task(run_cal)
     return {"status": "started", "nodes": len(nodes), "node_ids": [n["device_id"] for n in nodes]}
+
+
+# ---------------------------------------------------------------------------
+# Phone-driven walk calibration (v0.63)
+#
+# Loop: phone POSTs /calibrate/walk/start, gets back a session_id + the
+# BLE service UUID it should advertise. Phone walks the property, POSTing
+# /calibrate/walk/sample at ~1 Hz with current GPS. Sensors hear the
+# advertisement through the normal /detections/drones path; ingest hooks
+# notice the calibration UUID and forward the (sensor_id, rssi, ts) tuple
+# to the active session. Phone POSTs /calibrate/walk/end → backend runs
+# per-listener OLS fit and applies to the triangulation engine.
+#
+# All endpoints require X-Cal-Token (env FOF_CAL_TOKEN). Auth floor is
+# "stop neighbors from polluting our calibration data" — a static bearer
+# is sufficient.
+# ---------------------------------------------------------------------------
+
+@router.post("/calibrate/walk/start")
+async def calibrate_walk_start(
+    body: dict,
+    x_cal_token: str | None = Header(None),
+):
+    """Begin a phone-driven calibration walk session.
+
+    Body: {"operator_label": "Bill's Pixel", "tx_power_dbm": -59 (optional)}
+    Returns: session_id + the BLE service UUID the phone must advertise.
+    """
+    _require_cal_token(x_cal_token)
+    label = (body.get("operator_label") or "phone").strip()[:64]
+    txp = body.get("tx_power_dbm")
+    s = _phone_cal_mgr.start(label, txp)
+    return {
+        "session_id": s.session_id,
+        "advertise_uuid": s.expected_uuid,
+        "tx_power_dbm": s.tx_power_dbm,
+        "started_at": s.started_at,
+        "advice": (
+            "Walk a perimeter + an X across the property. Phone should report "
+            "GPS + ts at ~1 Hz. Aim for 5+ minutes of motion to give each "
+            "sensor enough samples to fit its own path-loss model."
+        ),
+    }
+
+
+@router.post("/calibrate/walk/sample")
+async def calibrate_walk_sample(
+    body: dict,
+    x_cal_token: str | None = Header(None),
+):
+    """Add one phone GPS trace point. Body: {session_id, lat, lon, ts_ms?, accuracy_m?}"""
+    _require_cal_token(x_cal_token)
+    sid = body.get("session_id")
+    lat = body.get("lat")
+    lon = body.get("lon")
+    if not sid or lat is None or lon is None:
+        raise HTTPException(status_code=400, detail="session_id, lat, lon required")
+    ts_ms = body.get("ts_ms")
+    ts_s = (ts_ms / 1000.0) if ts_ms else None
+    ok = _phone_cal_mgr.add_trace_point(
+        session_id=sid,
+        lat=float(lat), lon=float(lon),
+        ts_s=ts_s,
+        accuracy_m=body.get("accuracy_m"),
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="unknown or ended session")
+    return {"ok": True}
+
+
+@router.get("/calibrate/walk/feedback")
+async def calibrate_walk_feedback(
+    session_id: Annotated[str, Query(description="Session ID from /walk/start")],
+    window_s: Annotated[float, Query(ge=1.0, le=60.0)] = 10.0,
+    x_cal_token: str | None = Header(None),
+):
+    """Live "what the fleet is hearing" snapshot — drives the phone UI's
+    real-time list of sensors + RSSI per sensor. Auth-protected because
+    it leaks active session state."""
+    _require_cal_token(x_cal_token)
+    return _phone_cal_mgr.feedback(session_id, window_s=window_s)
+
+
+@router.get("/calibrate/walk/sensors")
+async def calibrate_walk_sensors(
+    db: AsyncSession = Depends(get_db),
+    x_cal_token: str | None = Header(None),
+):
+    """Sensor list for the phone calibration UI — id, label, registered
+    GPS, online flag. Drives the "tap which sensor you're at" cards.
+
+    Combines the SensorNode DB row (registered/fixed positions) with the
+    in-memory _node_heartbeats so newly-deployed sensors that haven't
+    been registered yet still appear (using the GPS they self-reported).
+    """
+    _require_cal_token(x_cal_token)
+    now = time.time()
+    out: dict[str, dict] = {}
+    # 1) DB-registered nodes
+    try:
+        result = await db.execute(select(SensorNode))
+        for n in result.scalars().all():
+            out[n.device_id] = {
+                "device_id": n.device_id,
+                "name": n.name or n.device_id,
+                "lat": n.lat,
+                "lon": n.lon,
+                "is_fixed": bool(n.is_fixed),
+                "online": False,
+                "age_s": None,
+                "ip": None,
+            }
+    except Exception as e:  # DB unavailable — fall back to heartbeats only
+        logger.warning("walk/sensors DB read failed: %s", e)
+    # 2) Overlay live heartbeat info (online status, recent IP, fallback GPS)
+    for hb in _node_heartbeats.values():
+        did = hb.get("device_id")
+        if not did:
+            continue
+        age = now - hb.get("last_seen", 0)
+        existing = out.get(did, {
+            "device_id": did,
+            "name": did,
+            "lat": hb.get("lat", 0.0),
+            "lon": hb.get("lon", 0.0),
+            "is_fixed": False,
+        })
+        existing["online"] = age < 120
+        existing["age_s"] = round(age, 1)
+        existing["ip"] = hb.get("ip")
+        # Backfill GPS for unregistered nodes
+        if not existing.get("lat") and hb.get("lat"):
+            existing["lat"] = hb["lat"]
+            existing["lon"] = hb["lon"]
+        out[did] = existing
+    sensors = sorted(out.values(), key=lambda s: (not s["online"], s["name"]))
+    return {"sensors": sensors, "count": len(sensors)}
+
+
+@router.post("/calibrate/walk/checkpoint")
+async def calibrate_walk_checkpoint(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    x_cal_token: str | None = Header(None),
+):
+    """The operator is standing next to a sensor — anchor the OLS fit
+    and surface mislabeled / misplaced sensors immediately.
+
+    Body: {session_id, sensor_id, lat, lon, accuracy_m?, ts_ms?}
+    Returns the per-checkpoint sanity result so the phone can render
+    a green/yellow/red badge against that sensor right away.
+    """
+    _require_cal_token(x_cal_token)
+    sid = body.get("session_id")
+    sensor_id = body.get("sensor_id")
+    lat = body.get("lat")
+    lon = body.get("lon")
+    if not sid or not sensor_id or lat is None or lon is None:
+        raise HTTPException(status_code=400,
+                            detail="session_id, sensor_id, lat, lon required")
+
+    # Resolve the sensor's claimed position. DB row wins (operator-curated
+    # ground truth); fall back to heartbeat for unregistered nodes.
+    sensor_lat: float | None = None
+    sensor_lon: float | None = None
+    try:
+        result = await db.execute(
+            select(SensorNode).where(SensorNode.device_id == sensor_id)
+        )
+        node = result.scalar_one_or_none()
+        if node and (node.lat or node.lon):
+            sensor_lat, sensor_lon = float(node.lat), float(node.lon)
+    except Exception:
+        pass
+    if sensor_lat is None or sensor_lon is None:
+        hb = _node_heartbeats.get(sensor_id)
+        if hb and (hb.get("lat") or hb.get("lon")):
+            sensor_lat = float(hb["lat"])
+            sensor_lon = float(hb["lon"])
+    if sensor_lat is None or sensor_lon is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"sensor {sensor_id} has no registered position — register it via /nodes first",
+        )
+
+    ts_ms = body.get("ts_ms")
+    ts_s = (ts_ms / 1000.0) if ts_ms else None
+    return _phone_cal_mgr.add_checkpoint(
+        session_id=sid,
+        sensor_id=sensor_id,
+        sensor_lat=sensor_lat, sensor_lon=sensor_lon,
+        phone_lat=float(lat), phone_lon=float(lon),
+        phone_accuracy_m=body.get("accuracy_m"),
+        ts_s=ts_s,
+    )
+
+
+@router.post("/calibrate/walk/end")
+async def calibrate_walk_end(
+    body: dict,
+    x_cal_token: str | None = Header(None),
+):
+    """Close a session, run per-listener OLS, apply if global R² > 0.4.
+
+    Returns the fit result for display. Application is non-destructive:
+    we keep the existing inter-node calibration's per-listener offsets,
+    overwrite/extend the per-listener model dict, and update RSSI_REF +
+    PATH_LOSS_EXPONENT only if the new global fit beats the threshold.
+    """
+    _require_cal_token(x_cal_token)
+    sid = body.get("session_id")
+    if not sid:
+        raise HTTPException(status_code=400, detail="session_id required")
+    s = _phone_cal_mgr.end(sid)
+    if s is None:
+        raise HTTPException(status_code=404, detail="unknown session")
+    fit = s.fit_result or {}
+    applied = False
+    if fit.get("ok") and fit.get("global_r_squared", 0.0) >= 0.4:
+        # Build the per-listener model dict — only include sensors whose
+        # individual fit succeeded. Sensors without a per-listener fit
+        # still benefit from the updated global model.
+        per_listener = {}
+        for sid_, info in (fit.get("per_listener") or {}).items():
+            if info.get("ok"):
+                per_listener[sid_] = (
+                    float(info["rssi_ref"]),
+                    float(info["path_loss_exponent"]),
+                )
+        from app.services.triangulation import update_calibration as _apply
+        _apply(
+            rssi_ref=float(fit["global_rssi_ref"]),
+            path_loss=float(fit["global_path_loss_exponent"]),
+            per_listener_model=per_listener,
+        )
+        applied = True
+        logger.info(
+            "Phone-cal applied: RSSI_REF=%.1f PATH_LOSS=%.2f per_listener=%d sensors r²=%.2f",
+            fit["global_rssi_ref"], fit["global_path_loss_exponent"],
+            len(per_listener), fit["global_r_squared"],
+        )
+    return {"session_id": sid, "applied": applied, "fit": fit}
+
+
+@router.get("/calibrate/walk/{session_id}")
+async def calibrate_walk_status(
+    session_id: str,
+    x_cal_token: str | None = Header(None),
+):
+    """Read-only inspect of an existing session — trace length, sample
+    count, fit result if ended."""
+    _require_cal_token(x_cal_token)
+    s = _phone_cal_mgr.get(session_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail="unknown session")
+    return {
+        "session_id": s.session_id,
+        "operator_label": s.operator_label,
+        "advertise_uuid": s.expected_uuid,
+        "tx_power_dbm": s.tx_power_dbm,
+        "started_at": s.started_at,
+        "ended_at": s.ended_at,
+        "trace_points": len(s.trace),
+        "samples_total": len(s.samples),
+        "fit": s.fit_result,
+    }
 
 
 @router.get("/wardrive")

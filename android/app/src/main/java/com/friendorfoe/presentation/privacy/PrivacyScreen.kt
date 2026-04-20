@@ -400,11 +400,21 @@ private fun DeviceCard(
                 modifier = Modifier.width(22.dp)
             )
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "${detection.manufacturer} ${detection.deviceType}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "${detection.manufacturer} ${detection.deviceType}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (detection.seenMacs.size > 1) {
+                        Text(
+                            text = " \u00B7 ${detection.seenMacs.size} MACs",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        )
+                    }
+                }
                 if (detection.deviceName != null) {
                     Text(
                         text = detection.deviceName,

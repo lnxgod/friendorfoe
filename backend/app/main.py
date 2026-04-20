@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     description="Backend proxy & enrichment layer for the Friend or Foe aircraft/drone identification app.",
-    version="0.58.0",
+    version="0.63.0-calibration",
     lifespan=lifespan,
 )
 
@@ -121,7 +121,7 @@ async def health_check() -> HealthResponse:
 
     return HealthResponse(
         status="ok",
-        version="0.58.0",
+        version="0.63.0-calibration",
         redis="ok" if redis_ok else "unavailable",
         database=db_status,
     )
@@ -134,4 +134,20 @@ async def root():
         "app": settings.app_name,
         "docs": "/docs",
         "health": "/health",
+        "dashboard": "/dashboard",
+        "threats": "/threats",
     }
+
+
+# Convenience shortcuts for the static dashboards so operators don't have
+# to remember the `/static/*.html` path. Both pages live under /static/ too.
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard_page():
+    from fastapi.responses import FileResponse
+    return FileResponse(_static_dir / "dashboard.html")
+
+
+@app.get("/threats", include_in_schema=False)
+async def threats_page():
+    from fastapi.responses import FileResponse
+    return FileResponse(_static_dir / "threats.html")

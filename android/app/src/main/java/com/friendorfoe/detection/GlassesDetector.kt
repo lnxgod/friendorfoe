@@ -87,7 +87,18 @@ data class GlassesDetection(
     val bleJa3Hash: UInt? = null,
     val bleServiceUuids: List<Int> = emptyList(),
     val bleAppearance: Int? = null,
-    val bleLocalName: String? = null
+    val bleLocalName: String? = null,
+    /**
+     * Stable identity across BT Private Resolvable Address (RPA) rotation.
+     * For MAC-rotating high-risk classes (Meta Glasses, Ray-Ban, Oakley, Quest)
+     * this is `fp:<mfr>|<type>|<ja3>|<uuids>|<name>` so one physical device stays
+     * one detection as its RPA cycles. For stable-MAC devices (AirTags, most
+     * generic BLE peripherals) it falls back to `mac:<addr>` so we never
+     * accidentally collapse two separate physical trackers into one.
+     */
+    val fingerprintKey: String = "mac:$mac",
+    /** All MACs seen for this fingerprint since firstSeen — diagnostic + UI badge. */
+    val seenMacs: Set<String> = setOf(mac)
 )
 
 /**
@@ -104,6 +115,47 @@ class GlassesDetector @Inject constructor(
 ) {
     companion object {
         private const val TAG = "GlassesDetector"
+
+        /**
+         * Derive a stable identity key for a BLE detection.
+         *
+         * MAC-rotating high-risk classes (Meta Glasses, Ray-Ban, Oakley,
+         * Luxottica frames, Meta Quest) are keyed on
+         * `fp:<mfr>|<type>|<ja3>|<uuids>|<name-prefix>` — bytes that don't
+         * change when the device's Private Resolvable Address cycles. This
+         * collapses many MACs from one physical pair into a single detection.
+         *
+         * Everything else falls back to `mac:<addr>` so we never collide two
+         * distinct physical peripherals (e.g. two AirTags) into one row.
+         *
+         * Exposed in the companion so unit tests can exercise it without
+         * standing up a full ScanResult.
+         */
+        fun computeFingerprintKey(
+            mac: String,
+            bestMfr: String,
+            bestType: String,
+            ja3: UInt?,
+            serviceUuids16: List<Int>?,
+            deviceName: String?
+        ): String {
+            val m = bestMfr
+            val t = bestType
+            val isRotating = m.contains("Meta", ignoreCase = true) ||
+                m.contains("Ray-Ban", ignoreCase = true) ||
+                m.contains("Oakley", ignoreCase = true) ||
+                m.contains("Luxottica", ignoreCase = true) ||
+                t.contains("Quest", ignoreCase = true) ||
+                t.contains("Smart Glasses", ignoreCase = true)
+            if (!isRotating) return "mac:$mac"
+            val ja3Part = ja3?.toString(16) ?: "noja3"
+            val uuidPart = serviceUuids16
+                ?.sorted()
+                ?.joinToString(",") { it.toString(16) }
+                .orEmpty()
+            val namePart = deviceName?.take(16).orEmpty()
+            return "fp:$m|$t|$ja3Part|$uuidPart|$namePart"
+        }
 
         /** Suspicious WiFi SSID patterns that indicate hidden cameras, attack tools, or spy devices */
         private data class WifiPattern(
@@ -786,6 +838,47 @@ class GlassesDetector @Inject constructor(
 
         var retryCount = 0
 
+        val scanSettings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .setReportDelay(0)
+            .build()
+
+        fun buildScanCallback(): ScanCallback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                val detection = checkScanResult(result)
+                if (detection != null) {
+                    trySend(detection)
+                }
+            }
+
+            override fun onBatchScanResults(results: List<ScanResult>) {
+                for (result in results) {
+                    val detection = checkScanResult(result)
+                    if (detection != null) {
+                        trySend(detection)
+                    }
+                }
+            }
+
+            override fun onScanFailed(errorCode: Int) {
+                val errorName = when (errorCode) {
+                    SCAN_FAILED_ALREADY_STARTED -> "ALREADY_STARTED"
+                    SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> "REGISTRATION_FAILED"
+                    SCAN_FAILED_FEATURE_UNSUPPORTED -> "UNSUPPORTED"
+                    SCAN_FAILED_INTERNAL_ERROR -> "INTERNAL_ERROR"
+                    else -> "UNKNOWN($errorCode)"
+                }
+                Log.e(TAG, "BLE scan failed: $errorName")
+                isScanRunning = false
+
+                // ALREADY_STARTED means a scan is running — that's actually fine
+                if (errorCode == SCAN_FAILED_ALREADY_STARTED) {
+                    isScanRunning = true
+                }
+            }
+        }
+
         suspend fun doStartScan(): Boolean {
             val adapter = bluetoothManager.adapter
             if (adapter == null || !adapter.isEnabled) {
@@ -800,46 +893,7 @@ class GlassesDetector @Inject constructor(
             }
             bleScanner = scanner
 
-            val scanSettings = ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-                .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-                .setReportDelay(0)
-                .build()
-
-            val callback = object : ScanCallback() {
-                override fun onScanResult(callbackType: Int, result: ScanResult) {
-                    val detection = checkScanResult(result)
-                    if (detection != null) {
-                        trySend(detection)
-                    }
-                }
-
-                override fun onBatchScanResults(results: List<ScanResult>) {
-                    for (result in results) {
-                        val detection = checkScanResult(result)
-                        if (detection != null) {
-                            trySend(detection)
-                        }
-                    }
-                }
-
-                override fun onScanFailed(errorCode: Int) {
-                    val errorName = when (errorCode) {
-                        SCAN_FAILED_ALREADY_STARTED -> "ALREADY_STARTED"
-                        SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> "REGISTRATION_FAILED"
-                        SCAN_FAILED_FEATURE_UNSUPPORTED -> "UNSUPPORTED"
-                        SCAN_FAILED_INTERNAL_ERROR -> "INTERNAL_ERROR"
-                        else -> "UNKNOWN($errorCode)"
-                    }
-                    Log.e(TAG, "BLE scan failed: $errorName")
-                    isScanRunning = false
-
-                    // ALREADY_STARTED means a scan is running — that's actually fine
-                    if (errorCode == SCAN_FAILED_ALREADY_STARTED) {
-                        isScanRunning = true
-                    }
-                }
-            }
+            val callback = buildScanCallback()
 
             // Stop any previous scan before starting a new one
             activeScanCallback?.let { old ->
@@ -857,6 +911,38 @@ class GlassesDetector @Inject constructor(
                 Log.e(TAG, "Failed to start BLE scan: ${e.message}")
                 isScanRunning = false
                 return false
+            }
+        }
+
+        /**
+         * Overlap-rotate the scanner to defeat Android's opaque per-ad-data
+         * dedup cache without creating a blind spot.
+         *
+         * The old "stop then start" approach left a ~100 ms window in which
+         * advertisements were dropped — a Meta pair with 2–10 s ad cadence
+         * could be missed for a full cycle. Instead: start a second scan,
+         * wait 2 s for it to deliver, then stop the old one. Android allows
+         * up to 4 concurrent app-level scans, so this is safe.
+         *
+         * Fingerprint-keyed merging in checkScanResult() absorbs the brief
+         * double-delivery window into a single detection per physical device.
+         */
+        suspend fun rotateScannerOverlap() {
+            val scanner = bleScanner ?: run { doStartScan(); return }
+            val oldCallback = activeScanCallback
+            val newCallback = buildScanCallback()
+            try {
+                scanner.startScan(null, scanSettings, newCallback)
+            } catch (e: Exception) {
+                Log.w(TAG, "Overlap scan start failed, falling back to sequential", e)
+                doStartScan()
+                return
+            }
+            activeScanCallback = newCallback
+            isScanRunning = true
+            delay(2000)
+            oldCallback?.let {
+                try { scanner.stopScan(it) } catch (_: Exception) {}
             }
         }
 
@@ -972,7 +1058,7 @@ class GlassesDetector @Inject constructor(
                     }
                 } catch (_: SecurityException) {}
                 Log.d(TAG, "Scan cycle: ${myBondedAddresses.size} bonded, ${detectedDevices.size} detected")
-                doStartScan()
+                rotateScannerOverlap()
             }
         }
 
@@ -1177,7 +1263,6 @@ class GlassesDetector @Inject constructor(
         val category = categorize(bestType)
 
         val now = Instant.now()
-        val existing = detectedDevices[mac]
         // Tag whether this is YOUR device or someone else's
         val isMyDevice = myBondedAddresses.contains(mac)
 
@@ -1188,6 +1273,25 @@ class GlassesDetector @Inject constructor(
             addrType = if (result.device.type == android.bluetooth.BluetoothDevice.DEVICE_TYPE_LE) 1 else 0,
             props = 0
         )
+
+        // Stable identity key across RPA rotation for high-risk classes.
+        // Unknown/low-signal devices keep MAC keying so we never collapse
+        // two distinct physical peripherals into one row.
+        val fingerprintKey = computeFingerprintKey(
+            mac = mac,
+            bestMfr = bestMfr,
+            bestType = bestType,
+            ja3 = ja3,
+            serviceUuids16 = adv.serviceUuids16,
+            deviceName = deviceName
+        )
+
+        val existing = detectedDevices[fingerprintKey]
+        val mergedMacs = (existing?.seenMacs ?: emptySet()) + mac
+        if (existing != null && mac !in existing.seenMacs) {
+            Log.i(TAG, "RPA rotation: $bestMfr $bestType added MAC $mac " +
+                "(now ${mergedMacs.size} MACs, fp=$fingerprintKey)")
+        }
 
         val detection = GlassesDetection(
             mac = mac,
@@ -1213,9 +1317,11 @@ class GlassesDetector @Inject constructor(
             bleJa3Hash = ja3,
             bleServiceUuids = adv.serviceUuids16,
             bleAppearance = adv.appearance,
-            bleLocalName = adv.localName
+            bleLocalName = adv.localName,
+            fingerprintKey = fingerprintKey,
+            seenMacs = mergedMacs
         )
-        detectedDevices[mac] = detection
+        detectedDevices[fingerprintKey] = detection
 
         Log.i(TAG, "Detected $bestType ($bestMfr) RSSI=$rssi conf=$bestConf [$bestReason] cam=$bestCamera details=$parsedDetails")
         return detection

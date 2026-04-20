@@ -29,6 +29,8 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_SENSOR_BACKEND = "sensor_backend_enabled"
         private const val KEY_BACKEND_URL = "sensor_backend_url"
         private const val KEY_BACKEND_ONLY = "sensor_backend_only_mode"
+        private const val KEY_CAL_TOKEN = "fof_calibration_token"
+        private const val KEY_OPERATOR_LABEL = "fof_calibration_operator"
         private const val DEFAULT_BACKEND_URL = "http://192.168.42.235:8000/"
     }
 
@@ -74,6 +76,17 @@ class DetectionPrefs @Inject constructor(
     var backendOnlyMode: Boolean
         get() = prefs.getBoolean(KEY_BACKEND_ONLY, true)  // ON by default
         set(value) = prefs.edit().putBoolean(KEY_BACKEND_ONLY, value).apply()
+
+    /** Bearer token for the calibration walk endpoints.
+     *  Backend rejects requests without a matching X-Cal-Token. */
+    var calibrationToken: String
+        get() = prefs.getString(KEY_CAL_TOKEN, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_CAL_TOKEN, value).apply()
+
+    /** Display name shown to operators reviewing calibration history. */
+    var operatorLabel: String
+        get() = prefs.getString(KEY_OPERATOR_LABEL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_OPERATOR_LABEL, value).apply()
 
     /** MACs the user has dismissed / marked as not a threat. Cached in memory for hot-path BLE checks. */
     @Volatile private var cachedIgnoredMacs: Set<String>? = null

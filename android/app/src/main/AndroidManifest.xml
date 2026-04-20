@@ -15,6 +15,11 @@
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         tools:targetApi="s" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- BLE peripheral mode for phone-driven calibration walks: phone
+         advertises a known service UUID at known TX power so the fleet
+         can fit a per-listener path-loss model from ground-truth GPS. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"
+        tools:targetApi="s" />
 
     <!-- WiFi for drone SSID detection -->
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"

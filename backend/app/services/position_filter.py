@@ -30,6 +30,178 @@ EKF_HEALTH: dict = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Alpha-beta smoother applied to EKF output before the dashboard sees it.
+#
+# Why on top of the EKF? The EKF already does Kalman smoothing internally,
+# but its R is sized for the *whole* RSSI-distance error (tens of metres),
+# so its position output legitimately moves several metres per update when
+# new observations arrive. That's correct math but visually jittery — the
+# user sees a threat marker "popping" between sample windows.
+#
+# An alpha-beta filter is a simple fixed-gain tracker over (position,
+# velocity) that takes an output stream and damps high-frequency motion
+# without re-tuning the EKF's covariance matrices. It also gives us a
+# velocity estimate suitable for short-horizon prediction during gaps.
+#
+# Tuning: α governs how fast position tracks new measurements (higher =
+# more responsive, less smoothing). β governs how fast velocity tracks.
+# Per-class gains let stationary devices smooth aggressively (their EKF
+# really shouldn't move much) while moving threats stay responsive.
+# ─────────────────────────────────────────────────────────────────────────
+
+ALPHA_BETA_GAINS: dict[str, tuple[float, float]] = {
+    "stationary": (0.20, 0.05),
+    "default":    (0.40, 0.10),
+    "moving":     (0.55, 0.15),
+}
+
+
+class AlphaBetaTracker:
+    """Per-device 2-D alpha-beta smoother.
+
+    State: (x, y, vx, vy) in local meters. Each `update(measured_x,
+    measured_y, now)` produces a smoothed (x, y). Velocity is tracked
+    so a brief silence doesn't cause the displayed position to freeze
+    at the last sample — predict() advances the state by elapsed time.
+    """
+
+    __slots__ = ("x", "y", "vx", "vy", "last_t", "alpha", "beta", "_init")
+
+    def __init__(self, alpha: float = 0.4, beta: float = 0.1):
+        self.x = 0.0
+        self.y = 0.0
+        self.vx = 0.0
+        self.vy = 0.0
+        self.last_t = 0.0
+        self.alpha = alpha
+        self.beta = beta
+        self._init = False
+
+    def set_gains(self, alpha: float, beta: float) -> None:
+        self.alpha = alpha
+        self.beta = beta
+
+    def update(self, measured_x: float, measured_y: float, now: float) -> tuple[float, float]:
+        if not self._init:
+            self.x = measured_x
+            self.y = measured_y
+            self.last_t = now
+            self._init = True
+            return (self.x, self.y)
+        dt = max(0.0, now - self.last_t)
+        # Predict
+        px = self.x + self.vx * dt
+        py = self.y + self.vy * dt
+        # Innovation
+        rx = measured_x - px
+        ry = measured_y - py
+        # Update — α scales position correction, β scales velocity
+        self.x = px + self.alpha * rx
+        self.y = py + self.alpha * ry
+        if dt > 0:
+            self.vx = self.vx + (self.beta / dt) * rx
+            self.vy = self.vy + (self.beta / dt) * ry
+        self.last_t = now
+        return (self.x, self.y)
+
+    def peek(self, now: float) -> tuple[float, float]:
+        """Velocity-extrapolated (x, y) at `now` WITHOUT mutating state.
+
+        Used at dashboard read time when no fresh observation has arrived
+        but we want the displayed marker to keep tracking the estimated
+        trajectory instead of freezing on the last sample. Crucially, this
+        does NOT corrupt the velocity estimate — that's only updated when
+        a real observation arrives via update().
+
+        Saturates dt at 5 s so a long observation gap doesn't extrapolate
+        the marker into the next county on a momentary velocity spike.
+        """
+        if not self._init:
+            return (self.x, self.y)
+        dt = max(0.0, min(5.0, now - self.last_t))
+        return (self.x + self.vx * dt, self.y + self.vy * dt)
+
+
+class AlphaBetaManager:
+    """One AlphaBetaTracker per tracking_id, plus per-class gain selection.
+
+    Drop-in: call `smooth(tracking_id, x, y, motion_class, now)` and use
+    the returned (x, y) for downstream conversion to lat/lon.
+    """
+
+    def __init__(self) -> None:
+        self.trackers: dict[str, AlphaBetaTracker] = {}
+        # Tracks the most recent observation timestamp we've folded in
+        # per id, so the read path can detect "no new data since last
+        # smooth" and use peek() instead of feeding stale data back in.
+        self.last_obs_seen: dict[str, float] = {}
+        self._last_prune = time.time()
+
+    def smooth_if_fresh(self, tracking_id: str, observation_time: float,
+                        x: float, y: float, motion_class: str,
+                        now: float | None = None) -> tuple[float, float]:
+        """Fold (x, y) into the smoother only if `observation_time` is
+        newer than what we last folded in. Otherwise return the peek-
+        extrapolated position (velocity carries the marker forward
+        without corrupting the velocity estimate).
+
+        This is the right entry point for read-time display: dashboards
+        can be polled at arbitrary cadence, and we want positions to
+        update smoothly between real RF packets without each poll
+        treating the same stale EKF output as a "new measurement".
+        """
+        if now is None:
+            now = time.time()
+        prev_obs = self.last_obs_seen.get(tracking_id, 0.0)
+        if observation_time > prev_obs + 0.05:  # 50 ms slack for clock noise
+            self.last_obs_seen[tracking_id] = observation_time
+            return self.smooth(tracking_id, x, y, motion_class, now=now)
+        peeked = self.peek(tracking_id, now=now)
+        return peeked if peeked is not None else (x, y)
+
+    def smooth(self, tracking_id: str, x: float, y: float,
+               motion_class: str, now: float | None = None) -> tuple[float, float]:
+        if now is None:
+            now = time.time()
+        t = self.trackers.get(tracking_id)
+        gains = ALPHA_BETA_GAINS.get(motion_class) or ALPHA_BETA_GAINS["default"]
+        if t is None:
+            t = AlphaBetaTracker(alpha=gains[0], beta=gains[1])
+            self.trackers[tracking_id] = t
+        else:
+            # Adapt to the latest motion class — classification can change
+            # as more observations refine the device label.
+            t.set_gains(gains[0], gains[1])
+        return t.update(x, y, now)
+
+    def peek(self, tracking_id: str, now: float | None = None) -> tuple[float, float] | None:
+        """Return velocity-extrapolated (x, y) for a tracker without
+        mutating it. Returns None if we've never smoothed this id —
+        caller should fall back to the raw EKF/trilateration position."""
+        t = self.trackers.get(tracking_id)
+        if t is None or not t._init:
+            return None
+        if now is None:
+            now = time.time()
+        return t.peek(now)
+
+    def get_velocity(self, tracking_id: str) -> tuple[float, float] | None:
+        t = self.trackers.get(tracking_id)
+        if t is None or not t._init:
+            return None
+        return (t.vx, t.vy)
+
+    def prune(self, max_age_s: float = 1800.0) -> None:
+        now = time.time()
+        if now - self._last_prune < 60.0:
+            return
+        self._last_prune = now
+        stale = [k for k, t in self.trackers.items() if now - t.last_t > max_age_s]
+        for k in stale:
+            del self.trackers[k]
+
+
 class DeviceEKF:
     """Extended Kalman Filter for a single tracked device.
 
@@ -43,7 +215,7 @@ class DeviceEKF:
                  'P20', 'P21', 'P22', 'P23',
                  'P30', 'P31', 'P32', 'P33',
                  'q_std', 'last_time', 'update_count',
-                 'last_accuracy', 'history')
+                 'last_accuracy', 'history', 'motion_class')
 
     def __init__(self, x: float, y: float, q_std: float = 0.05):
         self.x = x
@@ -63,6 +235,10 @@ class DeviceEKF:
         # Position history: list of (timestamp, x, y, accuracy)
         # Only record when position moves > 3m from last recorded point
         self.history: list[tuple[float, float, float, float]] = []
+        # Mobility class — "moving" / "stationary" / "default". Drives the
+        # per-class measurement noise in update(). Refreshed each update by
+        # PositionFilterManager so re-classification is applied going forward.
+        self.motion_class = "default"
 
     def predict(self, now: float | None = None) -> None:
         """Predict state forward by elapsed time."""
@@ -132,10 +308,28 @@ class DeviceEKF:
         h0 = dx / expected_dist
         h1 = dy / expected_dist
 
-        # Measurement noise R — very high because RSSI distance estimates are noisy.
-        # A 3dB RSSI fluctuation at 50m can shift distance estimate by 30-50%.
-        # Increased from (15+d*0.5)^2 to reduce position wiggling for stationary devices.
-        r = (30.0 + measured_distance * 2.0) ** 2  # Aggressive: far readings have very low weight
+        # Measurement noise R — class-aware so the filter can be tight when
+        # the device is known stationary and permissive when it's body-worn
+        # or airborne (where RSSI swings 10-15 dB from head rotation, blade
+        # spin, or posture change).
+        #
+        # RSSI→distance error grows ~linearly with distance: a 3 dB fluctuation
+        # at 50 m shifts the estimate by ~30-50 %, so all profiles use a
+        # (offset + slope*d) shape. The offset is the asymptotic noise at
+        # very short range; the slope captures the distance amplification.
+        motion_class = getattr(self, "motion_class", "default")
+        if motion_class == "stationary":
+            # AirTag / Tile / Pebblebee / Chipolo / SmartTag — sit on a table.
+            # Low variance → EKF converges tight + resists outliers.
+            r = (8.0 + measured_distance * 0.5) ** 2
+        elif motion_class == "moving":
+            # Meta Glasses / Ray-Ban / Oakley / Quest / drone — body-absorbed
+            # or airborne. Much higher sample variance, so the EKF shouldn't
+            # over-commit to any single reading.
+            r = (40.0 + measured_distance * 3.0) ** 2
+        else:
+            # Unknown class — historical default (stays backwards compatible).
+            r = (30.0 + measured_distance * 2.0) ** 2
 
         # Innovation covariance S = H*P*H' + R
         s = (h0 * (h0 * self.P00 + h1 * self.P01) +
@@ -277,7 +471,8 @@ class PositionFilterManager:
 
     def update(self, device_id: str, sensor_lat: float, sensor_lon: float,
                measured_distance: float,
-               timestamp: float = 0.0) -> tuple[float, float, float] | None:
+               timestamp: float = 0.0,
+               motion_class: str | None = None) -> tuple[float, float, float] | None:
         """Feed a new distance observation. Returns (lat, lon, accuracy_m) or None.
 
         For new devices, delays EKF initialization until we have 2+ sensor
@@ -325,6 +520,8 @@ class PositionFilterManager:
                 cx /= total_w
                 cy /= total_w
                 ekf = DeviceEKF(cx, cy)
+                if motion_class:
+                    ekf.motion_class = motion_class
                 self.filters[device_id] = ekf
                 # Replay pending observations
                 for ox, oy, od, ot in obs_list:
@@ -332,6 +529,13 @@ class PositionFilterManager:
                     ekf.update(ox, oy, od)
                 del self._pending[device_id]
                 return None  # Not ready yet, need more convergence
+
+        # Refresh the motion class on every update so a re-classification
+        # (e.g. Meta Glasses relabeled after better enrichment arrives)
+        # starts applying tight/wide R on the next measurement instead of
+        # being stuck with whatever class the filter was born with.
+        if motion_class and getattr(ekf, "motion_class", None) != motion_class:
+            ekf.motion_class = motion_class
 
         ekf.predict(now)
         ekf.update(sx, sy, measured_distance)
