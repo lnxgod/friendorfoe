@@ -104,11 +104,20 @@ fun FriendOrFoeNavGraph(
             com.friendorfoe.presentation.privacy.PrivacyScreen()
         }
 
+        composable(Screen.Calibrate.route) {
+            com.friendorfoe.presentation.calibrate.CalibrateScreen(
+                onBack = { navController.popBackStack() }
+            )
+        }
+
         composable(Screen.About.route) {
             val aboutViewModel: com.friendorfoe.presentation.about.AboutViewModel = hiltViewModel()
             AboutScreen(
                 onBack = { navController.popBackStack() },
-                viewModel = aboutViewModel
+                viewModel = aboutViewModel,
+                onNavigateToCalibrate = {
+                    navController.navigate(Screen.Calibrate.route) { launchSingleTop = true }
+                }
             )
         }
 

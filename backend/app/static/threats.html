@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FoF · Threat Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body { font-family: 'DM Sans', sans-serif; background: #0d1117; color: #c9d1d9; font-size: 13px; display: flex; flex-direction: column; }
+a { color: #58a6ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.header { background: #161b22; border-bottom: 1px solid #30363d; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+.header h1 { color: #f85149; font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
+.header h1 .sub { color: #8b949e; font-weight: 400; font-size: 12px; margin-left: 8px; }
+.header .counts { display: flex; gap: 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8b949e; }
+.header .counts span { padding: 3px 8px; background: #0d1117; border: 1px solid #30363d; border-radius: 4px; }
+.header .counts .c-crit { color: #f85149; border-color: #f85149; }
+.header .counts .c-warn { color: #d29922; border-color: #d29922; }
+.header .counts .c-info { color: #58a6ff; border-color: #30363d; }
+.header .counts .c-tri  { color: #3fb950; border-color: #30363d; }
+
+.toolbar { background: #161b22; border-bottom: 1px solid #30363d; padding: 6px 20px; display: flex; gap: 10px; align-items: center; font-size: 11px; color: #8b949e; flex-shrink: 0; }
+.toolbar label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.toolbar select, .toolbar input { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-family: inherit; }
+.toolbar .sep { color: #30363d; }
+.toolbar .age { margin-left: auto; font-family: 'JetBrains Mono', monospace; }
+
+.body { display: grid; grid-template-columns: minmax(360px, 480px) 1fr; gap: 0; flex: 1; min-height: 0; }
+#map { height: 100%; background: #010409; }
+
+.list { overflow-y: auto; border-right: 1px solid #30363d; padding: 0; background: #0d1117; }
+.list:empty::before { content: 'No active threats.'; display: block; padding: 40px 20px; text-align: center; color: #484f58; font-size: 12px; }
+.threat { border-bottom: 1px solid #21262d; padding: 10px 16px; cursor: pointer; transition: background 0.1s; }
+.threat:hover { background: #161b22; }
+.threat.sel { background: #1f2937; border-left: 3px solid #58a6ff; padding-left: 13px; }
+.threat .row1 { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.threat .icon { width: 18px; flex-shrink: 0; text-align: center; }
+.threat .label { flex: 1; font-weight: 600; color: #e6edf3; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.threat .sev { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; padding: 2px 5px; border-radius: 3px; letter-spacing: 0.5px; font-weight: 700; text-transform: uppercase; flex-shrink: 0; }
+.threat .sev.critical { background: #f8514922; color: #f85149; border: 1px solid #f8514966; }
+.threat .sev.warning  { background: #d2992222; color: #d29922; border: 1px solid #d2992266; }
+.threat .sev.info     { background: #58a6ff22; color: #58a6ff; border: 1px solid #58a6ff66; }
+.threat .row2 { display: flex; gap: 10px; font-size: 11px; color: #8b949e; font-family: 'JetBrains Mono', monospace; margin-left: 26px; }
+.threat .row2 .pill { color: #8b949e; }
+.threat .row2 .pill.approach { color: #f85149; font-weight: 600; }
+.threat .row2 .pill.depart   { color: #3fb950; }
+.threat .row2 .pill.rssi-strong { color: #f85149; font-weight: 600; }
+.threat .row2 .pill.rssi-mid    { color: #d29922; }
+.threat .row2 .pill.rssi-weak   { color: #484f58; }
+.threat .row3 { margin-left: 26px; margin-top: 3px; font-size: 10.5px; color: #484f58; font-family: 'JetBrains Mono', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.threat .no-pos { color: #484f58; font-size: 10px; }
+.threat.kind-drone    .icon { color: #e040fb; }
+.threat.kind-anomaly  .icon { color: #d29922; }
+.threat.kind-rfanom   .icon { color: #ff9500; }
+.threat.kind-entity   .icon { color: #f85149; }
+
+.circle-crit { stroke: #f85149; fill: #f8514933; stroke-width: 2; }
+.circle-warn { stroke: #d29922; fill: #d2992233; stroke-width: 2; }
+.circle-info { stroke: #58a6ff; fill: #58a6ff22; stroke-width: 1; }
+.marker-label { background: rgba(10,14,22,0.92); border: 1px solid #30363d; color: #e6edf3; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-family: 'JetBrains Mono', monospace; white-space: nowrap; box-shadow: 0 2px 4px #0008; }
+
+.leaflet-tooltip.marker-label::before { display: none; }
+.leaflet-container { background: #010409 !important; }
+.leaflet-tile { filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9); }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>FoF · Threat Dashboard<span class="sub">privacy-focused · active threats only</span></h1>
+  <div class="counts">
+    <span class="c-crit"  id="cCrit">critical 0</span>
+    <span class="c-warn"  id="cWarn">warning 0</span>
+    <span class="c-info"  id="cInfo">info 0</span>
+    <span class="c-tri"   id="cTri">triangulated 0</span>
+    <span id="cLast">—</span>
+    <a href="/dashboard">full dashboard →</a>
+  </div>
+</div>
+<div class="toolbar">
+  <label>severity ≥
+    <select id="minSev">
+      <option value="">all</option>
+      <option value="info">info</option>
+      <option value="warning" selected>warning</option>
+      <option value="critical">critical</option>
+    </select>
+  </label>
+  <span class="sep">·</span>
+  <label><input type="checkbox" id="cbDrones"     checked> drones</label>
+  <label><input type="checkbox" id="cbEntities"   checked> threat entities</label>
+  <label><input type="checkbox" id="cbAnomalies"  checked> anomalies / trackers</label>
+  <label><input type="checkbox" id="cbRfAnom"     checked> wifi attacks</label>
+  <span class="sep">·</span>
+  <label>refresh
+    <select id="refreshMs">
+      <option value="2000">2s</option>
+      <option value="5000" selected>5s</option>
+      <option value="15000">15s</option>
+      <option value="60000">60s</option>
+    </select>
+  </label>
+  <span class="age" id="age">updated —</span>
+</div>
+<div class="body">
+  <div class="list" id="list"></div>
+  <div id="map"></div>
+</div>
+
+<script>
+'use strict';
+
+const ICONS = {
+  drone: '🛸', entity: '⚠', anomaly: '📡', rf_anomaly: '💥',
+};
+
+// ---- Map setup ---------------------------------------------------------
+// Start with a generic world-ish view; loadNodes() immediately fits
+// bounds to the actual sensor positions on first response. Keeping
+// an operator's property coords out of static assets that would
+// ship in a public GitHub artifact.
+const map = L.map('map', { zoomControl: true, attributionControl: false }).setView([0, 0], 2);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 22 }).addTo(map);
+
+// Node markers are rendered once from /detections/nodes/status.
+const nodeLayer = L.layerGroup().addTo(map);
+const threatLayer = L.layerGroup().addTo(map);
+
+async function loadNodes() {
+  try {
+    const r = await fetch('/detections/nodes/status');
+    const j = await r.json();
+    nodeLayer.clearLayers();
+    const pts = [];
+    for (const n of j.nodes || []) {
+      if (!n.lat || !n.lon) continue;
+      const online = n.online !== false;
+      const color = online ? '#3fb950' : '#484f58';
+      L.circleMarker([n.lat, n.lon], {
+        radius: 5, color: color, fillColor: color, fillOpacity: 0.8, weight: 1,
+      }).bindTooltip(`<b>${n.name || n.device_id}</b><br>v${n.firmware_version || '?'} ${online ? 'online' : 'offline'}`, { className: 'marker-label' })
+        .addTo(nodeLayer);
+      pts.push([n.lat, n.lon]);
+    }
+    if (pts.length && !window._fittedNodes) {
+      map.fitBounds(pts, { padding: [40, 40], maxZoom: 19 });
+      window._fittedNodes = true;
+    }
+  } catch (e) {
+    console.error('loadNodes', e);
+  }
+}
+
+// ---- Threats -----------------------------------------------------------
+let selectedId = null;
+let allThreats = [];
+
+function threatKey(t) {
+  // Stable id for sel tracking across refresh
+  return (t.kind || '') + ':' + (t.entity_id || t.tracking_id || t.drone_id || t.label);
+}
+
+function rssiPill(rssi) {
+  if (rssi == null) return '';
+  let cls = 'rssi-weak';
+  if (rssi > -55) cls = 'rssi-strong';
+  else if (rssi > -80) cls = 'rssi-mid';
+  return `<span class="pill ${cls}">${rssi} dBm</span>`;
+}
+
+function trendPill(trend) {
+  if (!trend) return '';
+  const cls = trend === 'approaching' ? 'approach' : trend === 'departing' ? 'depart' : '';
+  const arrow = trend === 'approaching' ? '↑' : trend === 'departing' ? '↓' : '·';
+  return `<span class="pill ${cls}">${arrow} ${trend}</span>`;
+}
+
+function renderList(threats) {
+  const list = document.getElementById('list');
+  list.innerHTML = '';
+  for (const t of threats) {
+    const k = threatKey(t);
+    const el = document.createElement('div');
+    const kindClass = t.kind === 'rf_anomaly' ? 'kind-rfanom' : 'kind-' + t.kind;
+    el.className = 'threat ' + kindClass + (k === selectedId ? ' sel' : '');
+    el.dataset.key = k;
+    const icon = ICONS[t.kind] || '•';
+    const rssi = rssiPill(t.current_rssi);
+    const trend = trendPill(t.rssi_trend);
+    const ageS = Math.round(t.age_s ?? 0);
+    const ago = ageS < 60 ? `${ageS}s` : ageS < 3600 ? `${Math.round(ageS/60)}m` : `${Math.round(ageS/3600)}h`;
+    const sensors = t.sensor_count ? `<span class="pill">${t.sensor_count} sensors</span>` : '';
+    const macs = t.mac_rotations > 1 ? `<span class="pill">${t.mac_rotations} MACs</span>` : '';
+    const pos = (t.latitude != null && t.longitude != null)
+      ? `<span class="pill">${t.latitude.toFixed(5)}, ${t.longitude.toFixed(5)}${t.accuracy_m ? ` ±${Math.round(t.accuracy_m)}m` : ''}</span>`
+      : `<span class="no-pos">no triangulated position</span>`;
+    el.innerHTML = `
+      <div class="row1">
+        <span class="icon">${icon}</span>
+        <span class="label">${escapeHtml(t.label)}</span>
+        <span class="sev ${t.severity}">${t.severity}</span>
+      </div>
+      <div class="row2">
+        <span class="pill">${ago} ago</span>
+        ${sensors}${rssi}${trend}${macs}
+      </div>
+      <div class="row3">${pos}</div>
+    `;
+    el.addEventListener('click', () => {
+      selectedId = k;
+      if (t.latitude != null && t.longitude != null) {
+        map.setView([t.latitude, t.longitude], Math.max(map.getZoom(), 19));
+      }
+      document.querySelectorAll('.threat').forEach(n => n.classList.toggle('sel', n.dataset.key === selectedId));
+    });
+    list.appendChild(el);
+  }
+}
+
+function sevToCircle(sev) {
+  if (sev === 'critical') return 'circle-crit';
+  if (sev === 'warning')  return 'circle-warn';
+  return 'circle-info';
+}
+
+function renderMap(threats) {
+  threatLayer.clearLayers();
+  for (const t of threats) {
+    if (t.latitude == null || t.longitude == null) continue;
+    const acc = Math.max(t.accuracy_m ?? 30, 10);
+    const cls = sevToCircle(t.severity);
+    const circle = L.circle([t.latitude, t.longitude], {
+      radius: acc,
+      className: cls,
+    });
+    const tipHtml = `<b>${escapeHtml(t.label)}</b><br>±${Math.round(acc)}m · ${t.sensor_count || 0} sensors`;
+    circle.bindTooltip(tipHtml, { className: 'marker-label', direction: 'top' });
+    circle.on('click', () => {
+      selectedId = threatKey(t);
+      document.querySelectorAll('.threat').forEach(n => n.classList.toggle('sel', n.dataset.key === selectedId));
+      const sel = document.querySelector('.threat.sel');
+      if (sel) sel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    circle.addTo(threatLayer);
+  }
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function applyFilters(threats) {
+  const minSev = document.getElementById('minSev').value;
+  const rank = { info: 1, warning: 2, critical: 3 };
+  const minRank = rank[minSev] || 0;
+  const wantDrone = document.getElementById('cbDrones').checked;
+  const wantEntity = document.getElementById('cbEntities').checked;
+  const wantAnom = document.getElementById('cbAnomalies').checked;
+  const wantRf = document.getElementById('cbRfAnom').checked;
+  return threats.filter(t => {
+    if ((rank[t.severity] || 0) < minRank) return false;
+    if (t.kind === 'drone' && !wantDrone) return false;
+    if (t.kind === 'entity' && !wantEntity) return false;
+    if (t.kind === 'anomaly' && !wantAnom) return false;
+    if (t.kind === 'rf_anomaly' && !wantRf) return false;
+    return true;
+  });
+}
+
+async function loadThreats() {
+  try {
+    const minSev = document.getElementById('minSev').value;
+    const qs = minSev ? `?min_severity=${minSev}&limit=300` : '?limit=300';
+    const r = await fetch('/detections/threats' + qs);
+    const j = await r.json();
+    allThreats = j.threats || [];
+    const summary = j.summary || {};
+    document.getElementById('cCrit').textContent = 'critical ' + (summary.by_severity?.critical ?? 0);
+    document.getElementById('cWarn').textContent = 'warning ' + (summary.by_severity?.warning ?? 0);
+    document.getElementById('cInfo').textContent = 'info ' + (summary.by_severity?.info ?? 0);
+    document.getElementById('cTri').textContent  = 'triangulated ' + (summary.triangulated ?? 0);
+    document.getElementById('cLast').textContent = new Date().toLocaleTimeString();
+    const filtered = applyFilters(allThreats);
+    renderList(filtered);
+    renderMap(filtered);
+    document.getElementById('age').textContent = `updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    console.error('loadThreats', e);
+    document.getElementById('age').textContent = `error: ${e.message}`;
+  }
+}
+
+// ---- Boot + schedule ---------------------------------------------------
+let timer = null;
+function scheduleRefresh() {
+  if (timer) clearInterval(timer);
+  const ms = parseInt(document.getElementById('refreshMs').value, 10) || 5000;
+  timer = setInterval(loadThreats, ms);
+}
+document.getElementById('minSev').addEventListener('change', () => loadThreats());
+for (const id of ['cbDrones','cbEntities','cbAnomalies','cbRfAnom']) {
+  document.getElementById(id).addEventListener('change', () => {
+    const filtered = applyFilters(allThreats);
+    renderList(filtered);
+    renderMap(filtered);
+  });
+}
+document.getElementById('refreshMs').addEventListener('change', scheduleRefresh);
+
+loadNodes();
+loadThreats();
+scheduleRefresh();
+setInterval(loadNodes, 30000);
+</script>
+</body>
+</html>

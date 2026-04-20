@@ -55,7 +55,8 @@ import com.friendorfoe.BuildConfig
 @Composable
 fun AboutScreen(
     onBack: () -> Unit,
-    viewModel: AboutViewModel? = null
+    viewModel: AboutViewModel? = null,
+    onNavigateToCalibrate: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
 
@@ -261,6 +262,17 @@ fun AboutScreen(
                                     color = if (isOk) Color(0xFF4CAF50) else Color(0xFFF44336),
                                     modifier = Modifier.padding(top = 4.dp)
                                 )
+                            }
+                            // Triangulation calibration entry. The walk
+                            // emits a known BLE beacon while the phone
+                            // streams GPS so the backend can fit a
+                            // per-sensor path-loss model — meaningful
+                            // accuracy gains for a 5-min walk.
+                            onNavigateToCalibrate?.let { go ->
+                                Spacer(modifier = Modifier.height(4.dp))
+                                TextButton(onClick = go) {
+                                    Text("Calibrate Triangulation (walk)")
+                                }
                             }
                         }
                     }

@@ -42,20 +42,38 @@ PATH_LOSS_EXPONENT = 3.0
 # really is) gets a positive offset; subtracting flattens the bias.
 PER_LISTENER_OFFSET_DB: dict[str, float] = {}
 
+# Per-listener log-distance model (v0.63+, phone-driven calibration). Each
+# sensor that yielded enough samples in a walk session gets its own
+# (RSSI_REF, exponent) tuple. When present this trumps the global model
+# for that sensor — local environment (brick wall, height, antenna gain)
+# dominates accuracy more than per-band differences. Sensors not in the
+# table fall back to the global RSSI_REF/PATH_LOSS_EXPONENT.
+PER_LISTENER_MODEL: dict[str, tuple[float, float]] = {}
+
+
 def update_calibration(rssi_ref: float, path_loss: float,
-                        per_listener_offset_db: dict | None = None):
-    """Update the RSSI model with calibrated values, including per-listener
-    offsets if the calibration produced them (v0.62+)."""
-    global RSSI_REF, PATH_LOSS_EXPONENT, PATH_LOSS_OUTDOOR, PER_LISTENER_OFFSET_DB
+                        per_listener_offset_db: dict | None = None,
+                        per_listener_model: dict | None = None):
+    """Update the RSSI model with calibrated values.
+
+    `per_listener_offset_db` (v0.62 inter-node calibration) and
+    `per_listener_model` (v0.63 phone-walk calibration) are independent
+    knobs — passing one does not clear the other. Pass an explicit empty
+    dict to clear.
+    """
+    global RSSI_REF, PATH_LOSS_EXPONENT, PATH_LOSS_OUTDOOR
+    global PER_LISTENER_OFFSET_DB, PER_LISTENER_MODEL
     RSSI_REF = rssi_ref
     PATH_LOSS_EXPONENT = path_loss
     PATH_LOSS_OUTDOOR = path_loss
     if per_listener_offset_db is not None:
         PER_LISTENER_OFFSET_DB = dict(per_listener_offset_db)
+    if per_listener_model is not None:
+        PER_LISTENER_MODEL = {k: tuple(v) for k, v in per_listener_model.items()}
     import logging
     logging.getLogger(__name__).info(
-        "Calibration applied: RSSI_REF=%.1f PATH_LOSS=%.2f per_listener=%s",
-        rssi_ref, path_loss, PER_LISTENER_OFFSET_DB)
+        "Calibration applied: RSSI_REF=%.1f PATH_LOSS=%.2f per_listener_offset=%s per_listener_model=%d nodes",
+        rssi_ref, path_loss, PER_LISTENER_OFFSET_DB, len(PER_LISTENER_MODEL))
 
 # Observation staleness: must be long enough for all sensors to report
 # the same device. WiFi active scans run every 2-3s but some SSIDs only
@@ -76,6 +94,79 @@ RID_GPS_MAX_AGE_SEC = 5.0
 
 # Sensor staleness: consider a sensor offline after this
 SENSOR_TTL_SEC = 120.0
+
+# Per-class observation TTL — how old an RSSI sample can be before the
+# trilateration solver stops weighting it. Stationary trackers tolerate
+# long gaps (they don't move, the last RSSI is still valid); moving
+# threats have much shorter TTL so the solve reflects the CURRENT geometry
+# rather than where the drone / person / glasses was a minute ago.
+OBS_TTL_STATIONARY_S = 300.0   # AirTag / Tile / Pebblebee / Chipolo / SmartTag
+OBS_TTL_MOVING_S     = 60.0    # Meta / Ray-Ban / Oakley / Quest / drones
+OBS_TTL_DEFAULT_S    = 120.0   # everything else — historical SENSOR_TTL_SEC
+
+# Manufacturer/model substrings that classify a target's mobility profile.
+# Drives per-class EKF measurement noise (position_filter.DeviceEKF.update)
+# and per-class observation TTL (above). Keep synced with the Android
+# GlassesDetector.computeFingerprintKey rotating-device list and the
+# EntityTracker HIGH_RISK_KEYWORDS for consistent cross-layer behaviour.
+_MOTION_MOVING_SUBSTRS = (
+    "meta", "ray-ban", "rayban", "oakley", "luxottica",
+    "quest", "smart glasses",
+)
+_MOTION_STATIONARY_SUBSTRS = (
+    "airtag", "tile", "smarttag", "chipolo", "pebblebee",
+    "findmy", "find my",
+)
+
+
+def _motion_class_for(source: str | None,
+                      manufacturer: str | None,
+                      model: str | None) -> str:
+    """Classify a detection's mobility profile for filter tuning.
+
+    Returns one of: "moving", "stationary", "default".
+
+    Cheap substring match on manufacturer + model + source. The caller
+    (SensorTracker.ingest) invokes this once per observation; `in` on a
+    short lowercased string is ~O(1) for our purposes.
+
+    Priority order:
+      1. Explicit stationary class in manufacturer/model (AirTag, Tile, etc.)
+         — an AirTag is stationary even if it somehow arrives on a ble_rid
+         feed, and we never want its tight noise profile overridden.
+      2. Explicit moving class in manufacturer/model (Meta, Ray-Ban, Quest).
+      3. Drone-specific protocols (wifi_beacon_rid, wifi_dji_ie) → moving.
+         We deliberately do NOT treat `ble_rid` alone as implicit drone —
+         it's the generic BLE scanner source and covers both drones and
+         benign devices.
+      4. Generic WiFi AP beacons (wifi_ssid, wifi_oui) → stationary.
+         Regular APs don't move and deserve the tight noise profile;
+         rogue/evil-twin APs are also physically fixed once they're up.
+      5. Fallback: "default" (historical noise profile).
+    """
+    haystack = f"{manufacturer or ''} {model or ''}".lower()
+    for kw in _MOTION_STATIONARY_SUBSTRS:
+        if kw in haystack:
+            return "stationary"
+    for kw in _MOTION_MOVING_SUBSTRS:
+        if kw in haystack:
+            return "moving"
+    s = (source or "").lower()
+    if s in ("wifi_beacon_rid", "wifi_dji_ie"):
+        return "moving"
+    if s in ("wifi_ssid", "wifi_oui"):
+        return "stationary"
+    return "default"
+
+
+def _obs_ttl_for(motion_class: str) -> float:
+    """Observation freshness window per mobility class."""
+    if motion_class == "moving":
+        return OBS_TTL_MOVING_S
+    if motion_class == "stationary":
+        return OBS_TTL_STATIONARY_S
+    return OBS_TTL_DEFAULT_S
+
 
 # Maximum iterations for Gauss-Newton solver
 MAX_ITERATIONS = 20
@@ -212,14 +303,23 @@ PATH_LOSS_OUTDOOR = 3.0   # Open air / outdoor sensors
 PATH_LOSS_INDOOR = 3.5    # Through walls / indoor sensors
 
 
-def rssi_to_distance_m(rssi: int, indoor: bool = False) -> float:
+def rssi_to_distance_m(rssi: int, indoor: bool = False,
+                       device_id: str | None = None) -> float:
     """Estimate distance from RSSI using log-distance path loss model.
 
-    Indoor sensors use higher path loss exponent (3.5) because walls
-    attenuate signal — same RSSI indoors means closer actual distance.
+    Per-listener model (from phone-walk calibration) takes priority when
+    available — node-by-node fit captures local environment (brick wall,
+    foliage, antenna height) far better than a single global model.
+
+    Indoor sensors fall back to a higher path loss exponent (3.5) because
+    walls attenuate signal — same RSSI indoors means closer actual distance.
     """
-    n = PATH_LOSS_INDOOR if indoor else PATH_LOSS_OUTDOOR
-    exponent = (RSSI_REF - rssi) / (10.0 * n)
+    if device_id and device_id in PER_LISTENER_MODEL:
+        rssi_ref, n = PER_LISTENER_MODEL[device_id]
+    else:
+        rssi_ref = RSSI_REF
+        n = PATH_LOSS_INDOOR if indoor else PATH_LOSS_OUTDOOR
+    exponent = (rssi_ref - rssi) / (10.0 * n)
     d = 10.0 ** exponent
     return max(1.0, min(d, 200.0))  # Clamp to 200m max — property scale
 
@@ -414,7 +514,13 @@ class SensorTracker:
         # RSSI smoothing: (drone_id, device_id) -> [rssi_values]
         self._rssi_history: dict[tuple[str, str], list[int]] = {}
         # EKF position filter
-        from app.services.position_filter import PositionFilterManager
+        from app.services.position_filter import (
+            PositionFilterManager, AlphaBetaManager, gps_to_local, local_to_gps,
+        )
+        # Stash on the instance so get_located_drones can use them without
+        # re-importing every call.
+        self._gps_to_local = gps_to_local
+        self._local_to_gps = local_to_gps
         self._ekf = PositionFilterManager(stale_timeout=OBSERVATION_TTL_SEC)
         # v0.62 particle filter — runs alongside EKF, handles multi-modal
         # posteriors (ambiguous geometry) where EKF collapses to the mean.
@@ -422,6 +528,11 @@ class SensorTracker:
         # primary source when it has more observations than the EKF.
         from app.services.particle_filter import ParticleFilterManager
         self._pf = ParticleFilterManager()
+        # v0.63: alpha-beta smoother applied to triangulated positions
+        # before they leave get_located_drones() — damps the residual
+        # jitter that comes from EKF's distance-scale R, keeps the dash
+        # marker from "popping" between sample windows. Per-class gains.
+        self._smoother = AlphaBetaManager()
 
         # ── Diagnostics (populated by get_located_drones via _emit) ─────
         # drone_id -> ring buffer of recent emits
@@ -553,9 +664,16 @@ class SensorTracker:
             history.append(rssi)
             if len(history) > 20:
                 history.pop(0)
-            # EMA: very heavy smoothing to reduce position wiggling
+            # EMA — α gates how fast the smoothed value tracks raw RSSI.
+            # Per-class so a moving target (drone, body-worn glasses) can
+            # actually follow real RSSI shifts while a stationary tracker
+            # (AirTag on a desk) gets aggressive smoothing that resists
+            # multipath fading. Big enough effect at the property scale
+            # to flatten the per-packet jitter that BLE/WiFi best-effort
+            # delivery causes when scanners report at staggered cadences.
+            mcls_for_alpha = _motion_class_for(source, manufacturer, model)
+            alpha = {"moving": 0.20, "stationary": 0.05}.get(mcls_for_alpha, 0.08)
             smoothed = history[0]
-            alpha = 0.08
             for v in history[1:]:
                 smoothed = smoothed * (1 - alpha) + v * alpha
             is_indoor = sensor_type == "indoor"
@@ -563,7 +681,8 @@ class SensorTracker:
             # Defaults to 0 for listeners not in the calibration table — no
             # behavior change until a calibration with per-listener data lands.
             corrected = smoothed - PER_LISTENER_OFFSET_DB.get(device_id, 0.0)
-            dist = rssi_to_distance_m(int(round(corrected)), indoor=is_indoor)
+            dist = rssi_to_distance_m(int(round(corrected)), indoor=is_indoor,
+                                       device_id=device_id)
 
         obs = DroneObservation(
             device_id=device_id,
@@ -598,21 +717,40 @@ class SensorTracker:
         # for the state-transition matrix reflects real elapsed time between
         # observations, not arbitrary HTTP arrival jitter.
         if dist is not None and device_lat and device_lon and device_lat != 0:
-            self._ekf.update(tracking_id, device_lat, device_lon, dist, timestamp=now)
+            # Tell the filters what kind of target this is — stationary
+            # trackers get tight R, body-worn/airborne targets get wide R,
+            # unknowns fall back to the historical default. See
+            # position_filter.DeviceEKF.update() for the sigma profiles.
+            mcls = _motion_class_for(source, manufacturer, model)
+            self._ekf.update(tracking_id, device_lat, device_lon, dist,
+                             timestamp=now, motion_class=mcls)
             # Mirror observation into the particle filter. Shares ENU origin
             # with the EKF. Separate state so we can A/B the two filters.
             if not self._pf._origin_set and self._ekf._origin_set:
                 self._pf.set_origin(self._ekf.origin_lat, self._ekf.origin_lon)
-            self._pf.update(tracking_id, device_lat, device_lon, dist, timestamp=now)
+            self._pf.update(tracking_id, device_lat, device_lon, dist,
+                            timestamp=now, motion_class=mcls)
 
     def prune(self) -> None:
         """Remove stale observations and sensors."""
         now = time.time()
 
-        # Prune old observations
+        # Prune old observations with a per-class TTL so moving threats
+        # (drones, Meta Glasses, Quest) don't carry stale 2-minute-old
+        # readings into the current solve. Stationary trackers keep the
+        # longer window since their last RSSI is still valid when the
+        # device hasn't moved. Unknown classes use the historical default.
         to_remove = []
         for drone_id, obs_map in self.observations.items():
-            expired = [did for did, obs in obs_map.items() if now - obs.timestamp > OBSERVATION_TTL_SEC]
+            expired = []
+            for did, obs in obs_map.items():
+                mcls = _motion_class_for(
+                    getattr(obs, "source", None),
+                    getattr(obs, "manufacturer", None),
+                    getattr(obs, "model", None),
+                )
+                if now - obs.timestamp > _obs_ttl_for(mcls):
+                    expired.append(did)
             for did in expired:
                 del obs_map[did]
             if not obs_map:
@@ -917,4 +1055,55 @@ class SensorTracker:
                     ))
                     self._record_emit(results[-1])
 
-        return results
+        # Post-EKF alpha-beta smoothing pass — damps the residual jitter
+        # that comes from RSSI-distance error so dashboard markers don't
+        # "pop" between sample windows. Skip for sources where we already
+        # have ground-truth GPS (Remote ID drones report their own pos);
+        # only smooth derived positions where smoothing actually helps.
+        smoothed_results = []
+        now_ts = time.time()
+        for d in results:
+            # Trust drone-reported GPS; only smooth derived positions.
+            if d.position_source in ("gps", "rid_gps", "drone_gps"):
+                smoothed_results.append(d)
+                continue
+            mcls = _motion_class_for(
+                None,
+                d.manufacturer,
+                d.model,
+            )
+            # Smooth in local meters so the alpha/beta scaling is in
+            # physical units rather than degrees-of-arc.
+            x_m, y_m = self._gps_to_local(d.lat, d.lon,
+                                          self._ekf.origin_lat or d.lat,
+                                          self._ekf.origin_lon or d.lon)
+            # smooth_if_fresh folds the EKF position into the smoother
+            # only when the EKF actually has a new observation since the
+            # last call (using ekf.last_time as the freshness signal).
+            # Between real RF packets it returns the peek-extrapolated
+            # position — velocity carries the marker forward without
+            # corrupting the velocity estimate by re-feeding stale data.
+            ekf_filter = self._ekf.filters.get(d.drone_id)
+            ekf_obs_time = ekf_filter.last_time if ekf_filter else now_ts
+            sx, sy = self._smoother.smooth_if_fresh(
+                d.drone_id, ekf_obs_time, x_m, y_m, mcls, now=now_ts,
+            )
+            # Sanity clamp — on the property scale we don't expect any
+            # smoothed position farther than 10 km from the EKF origin.
+            # Larger values would indicate a degenerate smoother state
+            # (which we shouldn't ever produce, but belt-and-suspenders
+            # so a future regression can't blast meters-as-degrees onto
+            # the dashboard).
+            if abs(sx) > 10_000 or abs(sy) > 10_000:
+                sx, sy = x_m, y_m
+            slat, slon = self._local_to_gps(sx, sy,
+                                            self._ekf.origin_lat or d.lat,
+                                            self._ekf.origin_lon or d.lon)
+            # Replace lat/lon while preserving everything else. Dataclass
+            # is mutable so direct assignment is fine and avoids a copy.
+            d.lat = slat
+            d.lon = slon
+            smoothed_results.append(d)
+        self._smoother.prune()
+
+        return smoothed_results

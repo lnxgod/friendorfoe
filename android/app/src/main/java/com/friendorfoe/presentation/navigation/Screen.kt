@@ -48,6 +48,10 @@ sealed class Screen(val route: String) {
     /** Privacy scanner screen */
     data object Privacy : Screen("privacy")
 
+    /** Calibration walk: phone advertises BLE from known GPS so the
+     *  backend can fit a per-listener path-loss model for triangulation. */
+    data object Calibrate : Screen("calibrate")
+
     /** Help / About screen */
     data object About : Screen("about")
 

@@ -130,10 +130,12 @@ class SkyObjectRepository @Inject constructor(
         Log.i(TAG, "Privacy detections cleared — fresh scan starting")
     }
 
-    /** Ignore a privacy device by MAC (removes from list, persists). */
+    /** Ignore a privacy device by MAC (removes from list, persists).
+     *  For MAC-rotating devices we clear every row that has ever surfaced this
+     *  MAC across its RPA rotations. */
     fun ignorePrivacyDevice(mac: String) {
         glassesDetector.ignoreDevice(mac)
-        glassesMap.remove(mac)
+        glassesMap.entries.removeAll { (_, d) -> d.mac == mac || mac in d.seenMacs }
         updateGlassesList(force = true)
     }
 
@@ -325,14 +327,36 @@ class SkyObjectRepository @Inject constructor(
 
     /**
      * Collect smart glasses / privacy device detections from BLE + WiFi.
+     * Keyed on GlassesDetection.fingerprintKey so one physical device stays
+     * one entry as its BT Private Resolvable Address rotates.
      */
     private val glassesMap = java.util.concurrent.ConcurrentHashMap<String, GlassesDetection>()
-    private val GLASSES_STALE_SECONDS = 60L // Remove devices not seen in 60s
+    private val GLASSES_STALE_SECONDS_DEFAULT = 60L
+    // 5 min covers a full RPA rotation cycle for Meta/Ray-Ban/Oakley/Quest, plus
+    // the reduced ad cadence of glasses already paired+connected to another phone.
+    private val GLASSES_STALE_SECONDS_HIGH_RISK = 300L
+
+    private fun staleTtlSeconds(d: GlassesDetection): Long {
+        val m = d.manufacturer
+        val t = d.deviceType
+        val highRisk = m.contains("Meta", ignoreCase = true) ||
+            m.contains("Ray-Ban", ignoreCase = true) ||
+            m.contains("Oakley", ignoreCase = true) ||
+            m.contains("Luxottica", ignoreCase = true) ||
+            t.contains("Quest", ignoreCase = true) ||
+            t.contains("Smart Glasses", ignoreCase = true) ||
+            t.contains("Flipper", ignoreCase = true) ||
+            t.contains("Pwnagotchi", ignoreCase = true) ||
+            t.contains("AirTag", ignoreCase = true) ||
+            t.contains("Tile", ignoreCase = true) ||
+            t.contains("SmartTag", ignoreCase = true)
+        return if (highRisk) GLASSES_STALE_SECONDS_HIGH_RISK else GLASSES_STALE_SECONDS_DEFAULT
+    }
 
     private fun commitGlassesUpdate() {
         val now = Instant.now()
         val staleKeys = glassesMap.filter {
-            Duration.between(it.value.lastSeen, now).seconds > GLASSES_STALE_SECONDS
+            Duration.between(it.value.lastSeen, now).seconds > staleTtlSeconds(it.value)
         }.keys
         staleKeys.forEach { glassesMap.remove(it) }
         _glassesDetections.value = glassesMap.values
@@ -357,7 +381,20 @@ class SkyObjectRepository @Inject constructor(
 
     private suspend fun collectGlasses() {
         glassesDetector.startScanning().collect { detection ->
-            glassesMap[detection.mac] = detection
+            // Merge into the fingerprint-keyed map. For MAC-rotating high-risk
+            // classes (Meta, Ray-Ban, Oakley, Quest) this collapses many RPAs
+            // per physical device into one durable row. For stable-MAC devices
+            // the fingerprintKey is "mac:<addr>" so nothing collapses.
+            val existing = glassesMap[detection.fingerprintKey]
+            val merged = if (existing == null) {
+                detection
+            } else {
+                detection.copy(
+                    firstSeen = existing.firstSeen,
+                    seenMacs = existing.seenMacs + detection.seenMacs
+                )
+            }
+            glassesMap[detection.fingerprintKey] = merged
             updateGlassesList()
 
             // Feed to BLE tracker for stalker detection
@@ -405,7 +442,7 @@ class SkyObjectRepository @Inject constructor(
         val bssid = drone.bssid ?: return
         val rssi = drone.signalStrengthDbm ?: -80
         val detection = GlassesDetector.checkWifiSsid(ssid, bssid, rssi) ?: return
-        glassesMap[detection.mac] = detection
+        glassesMap[detection.fingerprintKey] = detection
         updateGlassesList()
     }
 

@@ -59,11 +59,15 @@ class ParticleFilter:
     # regardless of observation cadence.
     MOTION_SIGMA_MPS = 1.5
 
-    # Measurement-model noise. The RSSI→distance estimate has σ roughly
-    # linear in distance (30 + 2*d m) per our path-loss model. Used to
-    # weight each particle by Gaussian likelihood.
+    # Measurement-model noise. Class-aware mirror of DeviceEKF.update():
+    # stationary trackers are tight, body-worn/airborne targets are wide,
+    # unknowns use the historical default so old callers keep working.
     @staticmethod
-    def _meas_sigma(d_est: float) -> float:
+    def _meas_sigma(d_est: float, motion_class: str = "default") -> float:
+        if motion_class == "stationary":
+            return max(2.0, 0.15 * d_est + 1.5)
+        if motion_class == "moving":
+            return max(5.0, 0.4 * d_est + 4.0)
         return max(3.0, 0.3 * d_est + 2.0)
 
     def __init__(self) -> None:
@@ -107,7 +111,7 @@ class ParticleFilter:
         sensor matching the measured distance. Does NOT resample — that's
         decided after weighting to preserve information across short bursts
         of rapid observations from different sensors."""
-        sigma = self._meas_sigma(d_measured)
+        sigma = self._meas_sigma(d_measured, getattr(self, "motion_class", "default"))
         inv_2sig2 = 1.0 / (2.0 * sigma * sigma)
         for i in range(len(self.xs)):
             dx = self.xs[i] - sx
@@ -217,7 +221,8 @@ class ParticleFilterManager:
 
     def update(self, device_id: str, sensor_lat: float, sensor_lon: float,
                measured_distance: float,
-               timestamp: float = 0.0) -> tuple[float, float, float] | None:
+               timestamp: float = 0.0,
+               motion_class: str | None = None) -> tuple[float, float, float] | None:
         """Feed one range observation. Mirrors PositionFilterManager.update()
         signature so callers can swap without changing call sites.
 
@@ -231,6 +236,11 @@ class ParticleFilterManager:
         if pf is None:
             pf = ParticleFilter()
             self.filters[device_id] = pf
+        # Refresh motion class every update so re-classification takes effect
+        # on the next weighting step (e.g. a device gets relabeled from generic
+        # BLE → "Meta Glasses" once enough ads are fingerprinted).
+        if motion_class:
+            pf.motion_class = motion_class
 
         if not pf._initialized:
             # Seed with a uniform disc around the sensor at the measured distance
