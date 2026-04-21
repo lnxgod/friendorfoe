@@ -84,6 +84,23 @@ fun CalibrateScreen(
         }
     }
 
+    // Proactive permission prompt on screen entry — if they're already
+    // granted this is a no-op; if not, the operator sees the OS dialog
+    // immediately instead of halfway through tapping Start Walk. Runs
+    // once per screen entry via a stable LaunchedEffect key.
+    LaunchedEffect(Unit) {
+        val needed = listOf(
+            android.Manifest.permission.ACCESS_FINE_LOCATION,
+            android.Manifest.permission.BLUETOOTH_ADVERTISE,
+            android.Manifest.permission.BLUETOOTH_SCAN,
+            android.Manifest.permission.BLUETOOTH_CONNECT,
+        )
+        val missing = viewModel.missingPermissions(granted = emptySet())
+        if (missing.isNotEmpty()) {
+            permissionLauncher.launch(needed.toTypedArray())
+        }
+    }
+
     fun requestStart() {
         val granted = mutableSetOf<String>()
         // Build a "currently granted" map by re-asking for everything we

@@ -78,9 +78,11 @@ class DetectionPrefs @Inject constructor(
         set(value) = prefs.edit().putBoolean(KEY_BACKEND_ONLY, value).apply()
 
     /** Bearer token for the calibration walk endpoints.
-     *  Backend rejects requests without a matching X-Cal-Token. */
+     *  Default matches the backend's `_DEV_DEFAULT_CAL_TOKEN` so a
+     *  fresh install + fresh backend Just Work. Operator can overwrite
+     *  via the Calibrate screen if they've pinned FOF_CAL_TOKEN in prod. */
     var calibrationToken: String
-        get() = prefs.getString(KEY_CAL_TOKEN, "") ?: ""
+        get() = prefs.getString(KEY_CAL_TOKEN, "chompchomp") ?: "chompchomp"
         set(value) = prefs.edit().putString(KEY_CAL_TOKEN, value).apply()
 
     /** Display name shown to operators reviewing calibration history. */
