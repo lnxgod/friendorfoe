@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 64
-        versionName = "0.63.1-wifi-roam"
+        versionCode = 65
+        versionName = "0.63.2-nav-calibrate"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
