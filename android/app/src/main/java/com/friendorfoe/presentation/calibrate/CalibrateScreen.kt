@@ -20,6 +20,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -35,6 +36,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.friendorfoe.calibration.CalibrationViewModel
 import com.friendorfoe.calibration.CalibrationViewModel.BackendStatus
 import com.friendorfoe.calibration.CalibrationViewModel.CheckpointResult
+import com.friendorfoe.calibration.CalibrationViewModel.MyPosition
 import com.friendorfoe.calibration.CalibrationViewModel.SensorInfo
 import com.friendorfoe.calibration.CalibrationViewModel.SensorReading
 
@@ -350,6 +352,14 @@ fun CalibrateScreen(
                 }
             }
 
+            // ── Real-time convergence card ───────────────────────────
+            // Shows GPS vs fleet-triangulated position + "stand still
+            // until locked" signal. Tells the operator when they've
+            // stood at a spot long enough for the fleet to pin them down.
+            if (state.isWalking) {
+                ConvergenceCard(state.myPosition)
+            }
+
             // ── Sensors panel: tap "I'm here" at each ─────────────────
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant,
@@ -527,6 +537,129 @@ fun CalibrateScreen(
         }
     }
 }
+
+@Composable
+private fun ConvergenceCard(pos: MyPosition) {
+    // Color the banner based on the most actionable state: green when
+    // fully locked + ok to move, amber while converging / standing still,
+    // red when the fleet can't hear us, grey while waiting for GPS.
+    val color = when {
+        pos.okToMove -> OK_GREEN
+        pos.sensorCount == 0 -> ERROR_RED
+        pos.errorM != null -> WARN_AMBER
+        else -> NEUTRAL_GREY
+    }
+    val headline = when {
+        pos.okToMove -> "OK to move — fleet is locked on you"
+        pos.sensorCount == 0 -> "No sensors hearing you yet"
+        pos.phoneLat == null -> "Waiting for GPS fix"
+        pos.triangulatedLat == null -> "Waiting for triangulation"
+        !pos.standingStill -> "Walking — sampling across positions"
+        pos.errorM != null && pos.errorM >= pos.convergenceTargetM ->
+            "Stand still — converging (error %.0f m, target < %.0f m)".format(
+                pos.errorM, pos.convergenceTargetM)
+        pos.stillS < pos.dwellTargetS ->
+            "Stand still — %.1f s / %.0f s".format(pos.stillS, pos.dwellTargetS)
+        else -> "Holding"
+    }
+    Surface(
+        color = color.copy(alpha = 0.15f),
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val icon = when {
+                    pos.okToMove -> Icons.Default.CheckCircle
+                    pos.sensorCount == 0 -> Icons.Default.Warning
+                    else -> Icons.Default.LocationOn
+                }
+                Icon(icon, contentDescription = null, tint = color)
+                Spacer(Modifier.width(8.dp))
+                Text(headline,
+                     fontWeight = FontWeight.SemiBold,
+                     color = color,
+                     style = MaterialTheme.typography.bodyMedium)
+            }
+            // Progress toward "OK to move": fills as error drops AND dwell
+            // time accumulates. Gives the operator a steady visual that
+            // "something is happening" while they stand still.
+            val errorProgress = if (pos.errorM == null) 0f
+                else (1f - (pos.errorM.toFloat() / (pos.convergenceTargetM.toFloat() * 2))).coerceIn(0f, 1f)
+            val dwellProgress = (pos.stillS / pos.dwellTargetS).coerceIn(0.0, 1.0).toFloat()
+            val combined = if (pos.sensorCount >= pos.minSensors)
+                (errorProgress * 0.6f + dwellProgress * 0.4f).coerceIn(0f, 1f)
+            else 0f
+            LinearProgressIndicator(
+                progress = { combined },
+                color = color,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth().height(6.dp),
+            )
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    pos.errorM?.let { "error ${"%.1f".format(it)} m" } ?: "error —",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                Text("${pos.sensorCount}/${pos.minSensors}+ sensors",
+                     style = MaterialTheme.typography.labelSmall,
+                     fontFamily = FontFamily.Monospace,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (pos.standingStill)
+                        "still ${"%.1f".format(pos.stillS)}s"
+                    else "moving",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            // Miniature XY visualization — phone GPS at center, fleet's
+            // triangulated position offset. Simple Box-layout "map" so
+            // operators can see the divergence without depending on a
+            // heavyweight map widget.
+            if (pos.phoneLat != null && pos.triangulatedLat != null && pos.errorM != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(80.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                ) {
+                    // We don't have pixel-perfect bearings available here
+                    // without extra math; for now place phone-GPS at center
+                    // and put the triangulated dot offset by error magnitude
+                    // along a diagonal. Gives the operator an at-a-glance
+                    // sense of "they agree" vs "they disagree".
+                    val scale = (pos.errorM / (pos.convergenceTargetM * 3))
+                        .coerceIn(0.0, 1.0).toFloat()
+                    Box(modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(12.dp)
+                        .clip(CircleShape)
+                        .background(OK_GREEN))
+                    Box(modifier = Modifier
+                        .align(BiasAlignment(0.6f * scale, -0.6f * scale))
+                        .size(12.dp)
+                        .clip(CircleShape)
+                        .background(color))
+                    Text("GPS · Fleet",
+                         style = MaterialTheme.typography.labelSmall,
+                         fontFamily = FontFamily.Monospace,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                         modifier = Modifier
+                             .align(Alignment.BottomCenter)
+                             .padding(bottom = 4.dp))
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 private fun StatusDot(status: BackendStatus) {

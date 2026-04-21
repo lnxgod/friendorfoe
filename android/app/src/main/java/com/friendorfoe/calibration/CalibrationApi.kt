@@ -87,6 +87,15 @@ class CalibrationApi @Inject constructor() {
     suspend fun walkSensors(baseUrl: String, token: String): Result<JsonObject> =
         call("GET", baseUrl, "/detections/calibrate/walk/sensors", token, null)
 
+    /** Real-time "where does the fleet think I am vs my GPS" snapshot —
+     *  drives the Calibrate screen's convergence card + "OK to move"
+     *  indicator. Backend uses the session's tracking_id (FP:CAL-...)
+     *  so the triangulator gets a clean lock on the phone's BLE beacon. */
+    suspend fun walkMyPosition(baseUrl: String, token: String,
+                                sessionId: String): Result<JsonObject> =
+        call("GET", baseUrl, "/detections/calibrate/walk/my-position?session_id=$sessionId",
+             token, null)
+
     /** Operator stood next to a sensor and tapped its "I'm here" button.
      *  Backend pins the OLS RSSI_REF anchor and returns a sanity result
      *  the UI shows as a green / yellow / red badge for that sensor. */
