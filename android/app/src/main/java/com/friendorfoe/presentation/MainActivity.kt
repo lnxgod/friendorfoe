@@ -14,9 +14,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -103,29 +105,42 @@ fun FriendOrFoeApp() {
         }
     }
 
-    // Hide bottom nav on detail and about screens
+    // Hide bottom nav on detail and about screens.
+    // Calibrate also excluded — active walk needs every vertical pixel
+    // for the sensor-card list + readiness banner + checkpoint feedback.
     val showBottomBar = currentDestination?.route != Screen.Detail.route &&
         currentDestination?.route != Screen.About.route &&
         currentDestination?.route != Screen.Welcome.route &&
         currentDestination?.route != Screen.DroneGuide.route &&
         currentDestination?.route != Screen.AircraftGuide.route &&
-        currentDestination?.route != Screen.ReferenceGuide.route
+        currentDestination?.route != Screen.ReferenceGuide.route &&
+        currentDestination?.route != Screen.Calibrate.route
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         bottomBar = {
             if (showBottomBar) {
                 NavigationBar {
+                    // 7 items — Material 3 NavigationBar handles this by
+                    // shrinking labels; keeps every top-level destination
+                    // one tap away instead of buried in menus.
                     val bottomNavItems = listOf(
-                        BottomNavItem("AR View", Screen.ArView.route, Icons.Default.Visibility),
-                        BottomNavItem("Map", Screen.MapView.route, Icons.Default.Map),
-                        BottomNavItem("List", Screen.ListView.route, Icons.Default.List),
-                        BottomNavItem("Privacy", Screen.Privacy.route, Icons.Default.Shield),
-                        BottomNavItem("History", Screen.History.route, Icons.Default.History)
+                        BottomNavItem("AR",       Screen.ArView.route,    Icons.Default.Visibility),
+                        BottomNavItem("Map",      Screen.MapView.route,   Icons.Default.Map),
+                        BottomNavItem("List",     Screen.ListView.route,  Icons.Default.List),
+                        BottomNavItem("Privacy",  Screen.Privacy.route,   Icons.Default.Shield),
+                        BottomNavItem("Calibrate", Screen.Calibrate.route, Icons.Default.Tune),
+                        BottomNavItem("History",  Screen.History.route,   Icons.Default.History),
+                        BottomNavItem("About",    Screen.About.route,     Icons.Default.Info),
                     )
 
                     bottomNavItems.forEach { item ->
                         NavigationBarItem(
+                            // 7 items would clip fixed labels on narrow
+                            // phones — show the label only on the active
+                            // item. Icon + contentDescription keep the
+                            // destination clear for everything else.
+                            alwaysShowLabel = false,
                             selected = currentDestination?.hierarchy?.any {
                                 it.route == item.route
                             } == true,
