@@ -1749,6 +1749,191 @@ async def calibrate_walk_status(
     }
 
 
+# ---------------------------------------------------------------------------
+# GET /detections/calibrate/audit — passive node-placement sanity check
+#
+# Without requiring a phone walk, audit whether the fleet's sensors are
+# physically where their DB rows claim. Works by cross-referencing
+# triangulated device positions against RSSI observations:
+#
+#   For every device that 2+ sensors heard, the sensor geometrically
+#   closer to the (triangulated) device position SHOULD hear it stronger.
+#   If sensor A claims to be closer than B but hears the device weaker
+#   most of the time, either (a) A and B's identities are swapped, (b)
+#   one of them is misplaced from its registered GPS, or (c) the antenna
+#   is wildly off.
+#
+# Output ranks sensors by suspicion — match_rate below 40% on 20+
+# samples is a strong smoke signal. Not as rigorous as a phone walk
+# (which provides ground truth via touching each sensor), but it tells
+# the operator WHICH pair to focus on first.
+# ---------------------------------------------------------------------------
+
+@router.get("/calibrate/audit")
+async def calibrate_audit(
+    min_shared_samples: Annotated[int, Query(ge=5, le=1000,
+        description="Minimum shared observations per sensor pair")] = 20,
+    x_cal_token: str | None = Header(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Audit deployed-node placement from accumulated detection history.
+
+    Returns suspicion-ranked list of sensors, pairwise match rates, and
+    per-sensor summary stats. Auth-protected because it exposes fleet
+    topology + RSSI correlations that could help an adversary map the
+    property's sensor placements.
+    """
+    _require_cal_token(x_cal_token)
+
+    import math as _math
+
+    # 1) Load registered sensor positions
+    sensors: dict[str, dict] = {}
+    try:
+        result = await db.execute(select(SensorNode))
+        for n in result.scalars().all():
+            if n.lat and n.lon:
+                sensors[n.device_id] = {
+                    "device_id": n.device_id,
+                    "name": n.name or n.device_id,
+                    "lat": float(n.lat),
+                    "lon": float(n.lon),
+                }
+    except Exception as e:
+        logger.warning("audit: DB read failed: %s", e)
+    for hb in _node_heartbeats.values():
+        did = hb.get("device_id")
+        if not did or did in sensors:
+            continue
+        if hb.get("lat") and hb.get("lon"):
+            sensors[did] = {
+                "device_id": did,
+                "name": did,
+                "lat": float(hb["lat"]),
+                "lon": float(hb["lon"]),
+            }
+    if len(sensors) < 2:
+        return {"error": "need at least 2 registered sensors to audit"}
+
+    def haversine(lat1, lon1, lat2, lon2):
+        R = 6_371_000.0
+        p1, p2 = _math.radians(lat1), _math.radians(lat2)
+        dp = _math.radians(lat2 - lat1)
+        dl = _math.radians(lon2 - lon1)
+        a = _math.sin(dp / 2) ** 2 + _math.cos(p1) * _math.cos(p2) * _math.sin(dl / 2) ** 2
+        return 2 * R * _math.asin(_math.sqrt(a))
+
+    # 2) Use the triangulator's per-drone observations directly — each
+    #    LocatedDrone already carries {device_id → RSSI} keyed the right
+    #    way (post-fingerprint-grouping). Saves us reimplementing the
+    #    tracking_id normalization and gives us fresh RSSIs that already
+    #    passed the smoothing + per-listener calibration pipeline.
+    pair_stats: dict[tuple[str, str], dict] = {}
+    total_drones_considered = 0
+    for ld in _sensor_tracker.get_located_drones():
+        if not (ld.lat and ld.lon):
+            continue
+        # Sanity: skip positions in the middle of the ocean
+        if abs(ld.lat) < 0.5 and abs(ld.lon) < 0.5:
+            continue
+        if not ld.observations:
+            continue
+        total_drones_considered += 1
+        # One observation per sensor (LocatedDrone.observations is
+        # already deduped to latest per sensor inside the triangulator).
+        per_sensor: dict[str, float] = {}
+        for o in ld.observations:
+            sid = o.device_id
+            if sid not in sensors or o.rssi is None:
+                continue
+            per_sensor[sid] = float(o.rssi)
+
+        sids = sorted(per_sensor.keys())
+        for i, a in enumerate(sids):
+            for b in sids[i + 1:]:
+                rssi_a, rssi_b = per_sensor[a], per_sensor[b]
+                da = haversine(sensors[a]["lat"], sensors[a]["lon"], ld.lat, ld.lon)
+                dbb = haversine(sensors[b]["lat"], sensors[b]["lon"], ld.lat, ld.lon)
+                # Skip near-equal-distance cases — inside our RSSI noise
+                # floor, geometry gives no reliable expectation.
+                if abs(da - dbb) < 5.0:
+                    continue
+                geom_a_closer = da < dbb
+                rssi_a_stronger = rssi_a > rssi_b
+                key = (a, b)
+                s = pair_stats.setdefault(key, {
+                    "samples": 0, "matches": 0,
+                    "avg_rssi_delta": 0.0, "avg_dist_delta": 0.0,
+                })
+                s["samples"] += 1
+                if geom_a_closer == rssi_a_stronger:
+                    s["matches"] += 1
+                n = s["samples"]
+                s["avg_rssi_delta"] += ((rssi_a - rssi_b) - s["avg_rssi_delta"]) / n
+                s["avg_dist_delta"] += ((da - dbb) - s["avg_dist_delta"]) / n
+
+    # 4) Summarize per pair + per sensor
+    pair_rows = []
+    sensor_scores: dict[str, dict] = {}
+    for (a, b), s in pair_stats.items():
+        if s["samples"] < min_shared_samples:
+            continue
+        match_rate = s["matches"] / s["samples"]
+        verdict = (
+            "possible_swap_or_misplaced" if match_rate < 0.4
+            else "weak_signal" if match_rate < 0.6
+            else "consistent"
+        )
+        pair_rows.append({
+            "sensor_a": a,
+            "name_a": sensors[a]["name"],
+            "sensor_b": b,
+            "name_b": sensors[b]["name"],
+            "samples": s["samples"],
+            "match_rate": round(match_rate, 3),
+            "avg_rssi_delta_db": round(s["avg_rssi_delta"], 1),
+            "avg_dist_delta_m": round(s["avg_dist_delta"], 1),
+            "verdict": verdict,
+        })
+        # Aggregate per-sensor: count pairs where this sensor is on the
+        # wrong side of geometry. Higher = more suspect.
+        for who in (a, b):
+            agg = sensor_scores.setdefault(who, {
+                "device_id": who,
+                "name": sensors[who]["name"],
+                "pair_count": 0,
+                "total_samples": 0,
+                "weighted_mismatch": 0.0,
+            })
+            agg["pair_count"] += 1
+            agg["total_samples"] += s["samples"]
+            agg["weighted_mismatch"] += (1 - match_rate) * s["samples"]
+
+    for sid, agg in sensor_scores.items():
+        agg["suspicion_score"] = round(
+            agg["weighted_mismatch"] / max(agg["total_samples"], 1), 3)
+
+    pair_rows.sort(key=lambda r: r["match_rate"])
+    sensors_ranked = sorted(sensor_scores.values(),
+                            key=lambda r: r["suspicion_score"], reverse=True)
+
+    return {
+        "generated_at": time.time(),
+        "sensor_count": len(sensors),
+        "drones_considered": total_drones_considered,
+        "pair_count": len(pair_rows),
+        "pairs": pair_rows,
+        "sensors_ranked_by_suspicion": sensors_ranked,
+        "interpretation": {
+            "match_rate<0.4": "strong signal that these two sensors are swapped or misplaced",
+            "match_rate<0.6": "weak signal — could be multipath; check with a walk",
+            "match_rate>0.7": "geometry consistent with RSSI",
+            "note": "Triangulated device positions are only as accurate as current calibration. "
+                    "Run a phone walk to confirm any flagged pair.",
+        },
+    }
+
+
 @router.get("/wardrive")
 async def wardrive_export(
     format: Annotated[str, Query(description="csv | kml | wigle")] = "csv",
