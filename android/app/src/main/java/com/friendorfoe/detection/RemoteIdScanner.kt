@@ -5,7 +5,6 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.os.ParcelUuid
@@ -69,10 +68,6 @@ class RemoteIdScanner @Inject constructor(
         }
         bleScanner = scanner
 
-        val scanFilter = ScanFilter.Builder()
-            .setServiceData(ParcelUuid(OpenDroneIdParser.OPEN_DRONE_ID_UUID), null)
-            .build()
-
         val scanSettings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setReportDelay(0) // Immediate callback per result
@@ -109,8 +104,10 @@ class RemoteIdScanner @Inject constructor(
         }
 
         activeScanCallback = callback
-        Log.i(TAG, "Starting BLE Remote ID scan")
-        scanner.startScan(listOf(scanFilter), scanSettings, callback)
+        // Some phones miss ODID packets when service-data filtering is pushed
+        // into the controller. Scan unfiltered and parse the FFFA payload here.
+        Log.i(TAG, "Starting BLE Remote ID scan (unfiltered compatibility mode)")
+        scanner.startScan(null, scanSettings, callback)
 
         awaitClose {
             Log.i(TAG, "Stopping BLE Remote ID scan")

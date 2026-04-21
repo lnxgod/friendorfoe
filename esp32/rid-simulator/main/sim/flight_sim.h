@@ -11,8 +11,10 @@
 extern "C" {
 #endif
 
-/** Number of simulated drones */
+/** Number of simulated drones. Tests can override this with -DSIM_DRONE_COUNT=1. */
+#ifndef SIM_DRONE_COUNT
 #define SIM_DRONE_COUNT 2
+#endif
 
 /** Per-drone state accessible by index (0..SIM_DRONE_COUNT-1) */
 void   flight_sim_init(void);
