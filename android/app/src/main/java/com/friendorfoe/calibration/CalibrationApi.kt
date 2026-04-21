@@ -21,10 +21,23 @@ class CalibrationApi @Inject constructor() {
 
     private val gson = Gson()
     private val client = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
+        // Generous timeouts — operators will be walking through multiple
+        // WiFi APs' coverage with brief routing gaps. Short timeouts
+        // caused the "backend unreachable" banner to flash for every
+        // normal roam; 20 s absorbs the transitions without freezing
+        // the walk UI when the backend is genuinely down.
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
+        // OkHttp defaults to retryOnConnectionFailure = true, which
+        // tries the next route when the cached connection died across a
+        // WiFi switch. Keep it on explicitly so it can't drift.
+        .retryOnConnectionFailure(true)
         .build()
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
+    companion object {
+        const val DEFAULT_TOKEN = "chompchomp"
+    }
 
     private fun buildBase(rawUrl: String): String {
         // Tolerate trailing slash differences; backend uses /detections/...

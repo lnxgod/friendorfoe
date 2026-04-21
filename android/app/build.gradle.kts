@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 67
-        versionName = "0.63.4-smart-walk"
+        versionCode = 68
+        versionName = "0.63.5-token-heal"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

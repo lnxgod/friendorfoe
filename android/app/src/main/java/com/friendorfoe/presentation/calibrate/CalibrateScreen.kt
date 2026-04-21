@@ -282,8 +282,18 @@ fun CalibrateScreen(
                         enabled = !state.isWalking,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    TextButton(onClick = { viewModel.refreshConnectivity() }) {
-                        Text("Test backend connectivity")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { viewModel.refreshConnectivity() }) {
+                            Text("Test connectivity")
+                        }
+                        Spacer(Modifier.width(4.dp))
+                        TextButton(onClick = { viewModel.resetTokenToDefault() }) {
+                            // Manual escape hatch when the auto-recovery
+                            // didn't fire (e.g. backend was briefly down
+                            // during screen entry so the 401 retry never
+                            // ran). Resets to `chompchomp` + re-tests.
+                            Text("Reset token")
+                        }
                     }
                 }
             }

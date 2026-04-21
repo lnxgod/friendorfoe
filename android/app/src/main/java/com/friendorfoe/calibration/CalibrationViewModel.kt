@@ -333,9 +333,28 @@ class CalibrationViewModel @Inject constructor(
         )
     }
 
+    /** Reset the saved token back to the backend's default (`chompchomp`).
+     *  Manual escape hatch if auto-recovery doesn't fire for some reason
+     *  (e.g., backend briefly unreachable when auto-recovery tried). */
+    fun resetTokenToDefault() {
+        val default = CalibrationApi.DEFAULT_TOKEN
+        prefs.calibrationToken = default
+        _state.value = _state.value.copy(
+            token = default,
+            backendStatus = BackendStatus.Unknown,
+            infoMessage = "Token reset to default. Testing…",
+        )
+        refreshConnectivity()
+    }
+
     /** Preflight + sensor list load. Called on screen entry and after
      *  the operator edits backend URL/token. Distinguishes auth failure
-     *  (red dot, "check token") from unreachable backend (gray dot). */
+     *  (red dot, "check token") from unreachable backend (gray dot).
+     *
+     *  Auto-recovery: if the saved token 401s but isn't the default, try
+     *  the default silently and persist it on success. Covers the "old
+     *  APK had a random dev token in prefs that's now stale" upgrade
+     *  path where SharedPreferences survive across installs. */
     fun refreshConnectivity() {
         val s = _state.value
         if (s.backendUrl.isBlank() || s.token.isBlank()) {
@@ -343,12 +362,30 @@ class CalibrationViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
-            val res = api.walkSensors(s.backendUrl, s.token)
+            var res = api.walkSensors(s.backendUrl, s.token)
+            if (res.isFailure) {
+                val firstMsg = res.exceptionOrNull()?.message.orEmpty()
+                val is401 = "401" in firstMsg
+                // Silent retry with the default token if a) the current one
+                // got a 401 AND b) it's not already the default.
+                if (is401 && s.token != CalibrationApi.DEFAULT_TOKEN) {
+                    val recovered = api.walkSensors(s.backendUrl, CalibrationApi.DEFAULT_TOKEN)
+                    if (recovered.isSuccess) {
+                        prefs.calibrationToken = CalibrationApi.DEFAULT_TOKEN
+                        _state.value = _state.value.copy(
+                            token = CalibrationApi.DEFAULT_TOKEN,
+                            infoMessage = "Stored token was stale — reset to default.",
+                        )
+                        res = recovered
+                    }
+                }
+            }
             if (res.isFailure) {
                 val msg = res.exceptionOrNull()?.message.orEmpty()
                 _state.value = _state.value.copy(
                     backendStatus = if ("401" in msg) BackendStatus.AuthFailed
                                     else BackendStatus.Unreachable,
+                    errorMessage = "Backend check failed: $msg",
                 )
                 return@launch
             }
