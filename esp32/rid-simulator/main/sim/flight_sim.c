@@ -29,12 +29,16 @@ typedef struct {
     const char *serial;
 } drone_config_t;
 
-static const drone_config_t DRONE_CONFIGS[SIM_DRONE_COUNT] = {
+static const drone_config_t DRONE_CONFIGS[] = {
     { .radius_m = 80.0,  .alt_m = 30.0, .speed_mps = 15.0,
       .start_angle = 0.0,        .clockwise = 1,  .serial = "FOF-SIM-001" },
     { .radius_m = 120.0, .alt_m = 50.0, .speed_mps = 10.0,
       .start_angle = M_PI,       .clockwise = -1, .serial = "FOF-SIM-002" },
 };
+
+enum { AVAILABLE_SIM_DRONES = (int)(sizeof(DRONE_CONFIGS) / sizeof(DRONE_CONFIGS[0])) };
+_Static_assert(SIM_DRONE_COUNT >= 1 && SIM_DRONE_COUNT <= AVAILABLE_SIM_DRONES,
+               "SIM_DRONE_COUNT must be between 1 and AVAILABLE_SIM_DRONES");
 
 /* ── Per-drone runtime state ─────────────────────────────────────────── */
 
