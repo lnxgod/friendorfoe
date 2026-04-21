@@ -209,10 +209,18 @@ import os as _os
 import secrets as _secrets
 from fastapi import HTTPException, Header
 
-_CAL_TOKEN = _os.environ.get("FOF_CAL_TOKEN") or _secrets.token_urlsafe(16)
+# Default token matches the Android app's DetectionPrefs.calibrationToken
+# default so a fresh-install phone + fresh-start backend just work with
+# zero paste. FOF_CAL_TOKEN env still overrides for prod deployments.
+# Change both sides together if you rotate the default.
+_DEV_DEFAULT_CAL_TOKEN = "chompchomp"
+_CAL_TOKEN = _os.environ.get("FOF_CAL_TOKEN") or _DEV_DEFAULT_CAL_TOKEN
 if not _os.environ.get("FOF_CAL_TOKEN"):
-    logger.warning("FOF_CAL_TOKEN not set — generated dev token: %s", _CAL_TOKEN)
-    logger.warning("Set FOF_CAL_TOKEN in env to pin a stable value")
+    logger.warning(
+        "FOF_CAL_TOKEN not set — using dev default '%s'. "
+        "Pin FOF_CAL_TOKEN env for production.",
+        _CAL_TOKEN,
+    )
 
 
 def _require_cal_token(x_cal_token: str | None) -> None:
