@@ -54,6 +54,16 @@ class CalibrationResult:
     # weaker → distance estimate increases (the listener was being optimistic).
     # Default empty (treat as 0 for all listeners) for backwards compat.
     per_listener_offset_db: dict = field(default_factory=dict)
+    # v0.63.6 per-listener diagnostic rollup. Each entry is a dict with:
+    #   {"mean_db": float, "std_db": float, "samples": int,
+    #    "abs_max_db": float, "is_suspect": bool, "reason": str}
+    # `is_suspect=True` flags listeners whose RSSI reporting is
+    # systematically biased — see _compute_calibration for criteria.
+    per_listener_diagnostics: dict = field(default_factory=dict)
+    # Short-list of device_ids flagged as likely reporting wrong
+    # (mislabeled, misplaced, bad antenna, or corroded connector).
+    # Ranked by severity. Empty when calibration is clean.
+    suspect_listeners: list = field(default_factory=list)
 
 
 class CalibrationManager:
@@ -65,8 +75,22 @@ class CalibrationManager:
     # per node pair at the same distance, validating the path loss model.
     # Units of 0.25dBm: 80=20dBm (max), 44=11dBm (min safe, below drops STA)
     POWER_LEVELS = [80, 44]  # 20dBm, 11dBm
-    MEASURE_DURATION_S = 15  # 15 seconds per power level = 30s per node
+    # v0.63.6: 30s per power level = 60s per node = 1 minute each.
+    # The extended pulse gives every listener dozens of RSSI samples
+    # across the window, so a single bad packet can't skew the result
+    # and per-listener residuals stabilise enough to flag the "this
+    # sensor consistently reports wrong" case with confidence.
+    MEASURE_DURATION_S = 30
     CALIBRATION_CHANNEL = 6
+
+    # Suspect-listener thresholds. A consistent bias that's large
+    # relative to RSSI noise (~3-6 dB std) and doesn't vary much across
+    # broadcasters points at a physical issue — mislabel, misplacement,
+    # bad antenna, corroded connector. Random noise shows up as large
+    # std_db with small mean_db and is NOT flagged.
+    SUSPECT_MEAN_DB = 8.0        # |mean residual| > 8 dB
+    SUSPECT_STD_DB  = 6.0        # std dev < 6 dB (consistent, not jittery)
+    SUSPECT_MIN_SAMPLES = 4      # need at least 4 broadcasters for stable stats
 
     def __init__(self, data_dir: str | None = None):
         self.is_running = False
@@ -86,26 +110,21 @@ class CalibrationManager:
         """Persist last result + history to JSON file."""
         try:
             os.makedirs(self._data_dir, exist_ok=True)
+            def _dump(r: CalibrationResult) -> dict:
+                return {
+                    "path_loss_exponent": r.path_loss_exponent,
+                    "rssi_ref": r.rssi_ref,
+                    "r_squared": r.r_squared,
+                    "measurements": r.measurements,
+                    "timestamp": r.timestamp,
+                    "node_count": r.node_count,
+                    "per_listener_offset_db": r.per_listener_offset_db,
+                    "per_listener_diagnostics": r.per_listener_diagnostics,
+                    "suspect_listeners": r.suspect_listeners,
+                }
             data = {
-                "last_result": {
-                    "path_loss_exponent": self.last_result.path_loss_exponent,
-                    "rssi_ref": self.last_result.rssi_ref,
-                    "r_squared": self.last_result.r_squared,
-                    "measurements": self.last_result.measurements,
-                    "timestamp": self.last_result.timestamp,
-                    "node_count": self.last_result.node_count,
-                } if self.last_result else None,
-                "history": [
-                    {
-                        "path_loss_exponent": r.path_loss_exponent,
-                        "rssi_ref": r.rssi_ref,
-                        "r_squared": r.r_squared,
-                        "measurements": r.measurements,
-                        "timestamp": r.timestamp,
-                        "node_count": r.node_count,
-                    }
-                    for r in self.history
-                ],
+                "last_result": _dump(self.last_result) if self.last_result else None,
+                "history": [_dump(r) for r in self.history],
             }
             with open(self._cal_file, "w") as fp:
                 json.dump(data, fp, indent=2)
@@ -120,29 +139,26 @@ class CalibrationManager:
         try:
             with open(self._cal_file) as fp:
                 data = json.load(fp)
-            if data.get("last_result"):
-                r = data["last_result"]
-                self.last_result = CalibrationResult(
+            def _revive(r: dict) -> CalibrationResult:
+                return CalibrationResult(
                     path_loss_exponent=r["path_loss_exponent"],
                     rssi_ref=r["rssi_ref"],
                     r_squared=r["r_squared"],
                     measurements=r.get("measurements", []),
                     timestamp=r["timestamp"],
                     node_count=r["node_count"],
+                    per_listener_offset_db=r.get("per_listener_offset_db") or {},
+                    per_listener_diagnostics=r.get("per_listener_diagnostics") or {},
+                    suspect_listeners=r.get("suspect_listeners") or [],
                 )
+            if data.get("last_result"):
+                self.last_result = _revive(data["last_result"])
                 self.progress = (
                     f"Loaded: n={self.last_result.path_loss_exponent:.2f} "
                     f"ref={self.last_result.rssi_ref:.1f}dBm "
                     f"R²={self.last_result.r_squared:.3f}")
             for h in data.get("history", []):
-                self.history.append(CalibrationResult(
-                    path_loss_exponent=h["path_loss_exponent"],
-                    rssi_ref=h["rssi_ref"],
-                    r_squared=h["r_squared"],
-                    measurements=h.get("measurements", []),
-                    timestamp=h["timestamp"],
-                    node_count=h["node_count"],
-                ))
+                self.history.append(_revive(h))
             logger.info("Loaded calibration from disk: n=%.2f ref=%.1f",
                         self.last_result.path_loss_exponent if self.last_result else 0,
                         self.last_result.rssi_ref if self.last_result else 0)
@@ -391,11 +407,14 @@ class CalibrationManager:
         path_loss = max(1.5, min(slope, 5.0))
         rssi_ref = max(-70.0, min(intercept, -30.0))
 
-        # ── v0.62: per-listener residual offset ────────────────────────
+        # ── Per-listener residual analysis ─────────────────────────────
         # Each listener has a characteristic delta vs the global model
-        # (antenna pattern, RF environment, wall attenuation on its line of
-        # sight). Average residual per listener — applied at runtime as
-        # corrected_rssi = observed_rssi - offset.
+        # (antenna pattern, RF environment, wall attenuation on its line
+        # of sight). In v0.62 we captured the MEAN per listener for use
+        # as a runtime offset. v0.63.6 adds variance + suspect detection
+        # so a listener that's systematically wrong (mislabel, misplaced,
+        # bad antenna) gets flagged by name instead of silently biasing
+        # every triangulation.
         listener_residuals: dict[str, list[float]] = {}
         for m in self.measurements:
             if m.distance_m <= 0 or m.avg_rssi >= 0:
@@ -404,11 +423,68 @@ class CalibrationManager:
             predicted = path_loss * x + rssi_ref
             residual = m.avg_rssi - predicted
             listener_residuals.setdefault(m.listener_id, []).append(residual)
+
+        # Offset dict (keeps v0.62 behavior): mean residual per listener
         per_listener = {
             lid: round(sum(rs) / len(rs), 1)
             for lid, rs in listener_residuals.items()
-            if len(rs) >= 2  # require >=2 samples to avoid noise
+            if len(rs) >= 2
         }
+
+        # Diagnostic rollup: mean + std + suspect verdict per listener.
+        # Suspect when the bias is LARGE (|mean| > SUSPECT_MEAN_DB) AND
+        # CONSISTENT (std < SUSPECT_STD_DB). Big mean + big std = just
+        # noisy RSSI; big mean + small std = "every broadcaster tells
+        # us the same story, so it's the listener that's wrong".
+        per_listener_diagnostics: dict = {}
+        suspects: list = []
+        for lid, rs in listener_residuals.items():
+            if len(rs) < self.SUSPECT_MIN_SAMPLES:
+                per_listener_diagnostics[lid] = {
+                    "mean_db": round(sum(rs) / len(rs), 1) if rs else 0.0,
+                    "std_db": 0.0,
+                    "samples": len(rs),
+                    "abs_max_db": round(max(abs(r) for r in rs), 1) if rs else 0.0,
+                    "is_suspect": False,
+                    "reason": f"too_few_samples_{len(rs)}_need_{self.SUSPECT_MIN_SAMPLES}",
+                }
+                continue
+            mean = sum(rs) / len(rs)
+            variance = sum((r - mean) ** 2 for r in rs) / len(rs)
+            std = math.sqrt(variance)
+            abs_max = max(abs(r) for r in rs)
+            is_suspect = abs(mean) > self.SUSPECT_MEAN_DB and std < self.SUSPECT_STD_DB
+            reason = "ok"
+            if is_suspect:
+                # Direction of bias tells the operator what the failure
+                # mode likely is. Too-strong means the listener is
+                # physically closer than it claims, or has abnormally
+                # high antenna gain. Too-weak means the opposite.
+                if mean > 0:
+                    reason = "hears_everything_too_strong_closer_than_registered_or_high_gain"
+                else:
+                    reason = "hears_everything_too_weak_farther_than_registered_or_obstructed"
+            elif abs(mean) > self.SUSPECT_MEAN_DB:
+                reason = "large_mean_but_noisy_std_multipath_or_intermittent"
+            per_listener_diagnostics[lid] = {
+                "mean_db": round(mean, 1),
+                "std_db": round(std, 1),
+                "samples": len(rs),
+                "abs_max_db": round(abs_max, 1),
+                "is_suspect": is_suspect,
+                "reason": reason,
+            }
+            if is_suspect:
+                suspects.append({
+                    "listener_id": lid,
+                    "mean_db": round(mean, 1),
+                    "std_db": round(std, 1),
+                    "samples": len(rs),
+                    "reason": reason,
+                })
+        # Rank by severity (absolute mean, tie-break by samples) so the
+        # operator's eye lands on the worst one first.
+        suspects.sort(key=lambda s: (-abs(s["mean_db"]), -s["samples"]))
 
         return CalibrationResult(
             path_loss_exponent=round(path_loss, 2),
@@ -427,6 +503,8 @@ class CalibrationManager:
             timestamp=time.time(),
             node_count=len(set(m.broadcaster_id for m in self.measurements)),
             per_listener_offset_db=per_listener,
+            per_listener_diagnostics=per_listener_diagnostics,
+            suspect_listeners=suspects,
         )
 
     def get_node_pair_matrix(self) -> dict:
@@ -486,6 +564,13 @@ class CalibrationManager:
             "running": self.is_running,
             "progress": self.progress,
             "measurement_count": len(self.measurements),
+            "pulse_duration_s": self.MEASURE_DURATION_S,
+            "power_levels_dbm": [p / 4.0 for p in self.POWER_LEVELS],
+            "suspect_thresholds": {
+                "mean_db_gate": self.SUSPECT_MEAN_DB,
+                "std_db_ceiling": self.SUSPECT_STD_DB,
+                "min_samples": self.SUSPECT_MIN_SAMPLES,
+            },
             "last_result": {
                 "path_loss_exponent": self.last_result.path_loss_exponent,
                 "rssi_ref": self.last_result.rssi_ref,
@@ -495,6 +580,13 @@ class CalibrationManager:
                 "timestamp": self.last_result.timestamp,
                 "per_listener_offset_db": getattr(
                     self.last_result, "per_listener_offset_db", {}),
+                # v0.63.6 diagnostics — tells the operator *which* sensor
+                # is reporting wrong instead of only applying a silent
+                # offset under the hood.
+                "per_listener_diagnostics": getattr(
+                    self.last_result, "per_listener_diagnostics", {}),
+                "suspect_listeners": getattr(
+                    self.last_result, "suspect_listeners", []),
             } if self.last_result else None,
         }
 
