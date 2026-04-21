@@ -502,6 +502,14 @@ async def ingest_drone_detections(
                               if det.timestamp and det.timestamp > 1e12
                               else received_at,
                     )
+                    # Override the grouping_model so downstream triangulation
+                    # accumulates this phone's BLE beacon under a stable
+                    # tracking_id (the session). Without this the triangulator
+                    # would key off the phone's (rotating) BLE MAC and never
+                    # produce a converged position for the operator. Enables
+                    # the /walk/my-position "am I where GPS says I am?"
+                    # real-time feedback loop.
+                    grouping_model = f"FP:CAL-{cal_session.session_id}"
                     break
 
         # Anomaly detection (fingerprint-aware, whitelisted, mesh-aware)
@@ -1570,6 +1578,140 @@ async def calibrate_walk_feedback(
     it leaks active session state."""
     _require_cal_token(x_cal_token)
     return _phone_cal_mgr.feedback(session_id, window_s=window_s)
+
+
+# Smart stand-still detector state. Keyed per session_id; values track:
+#   last_error_m : the haversine error we last computed
+#   still_since  : epoch seconds when the phone's GPS went stationary (None
+#                  when the phone is moving). Resets on movement > 3 m.
+#   last_gps     : (lat, lon) of the last trace point we checked movement
+#                  against.
+_my_pos_state: dict[str, dict] = {}
+_STILL_MOVEMENT_THRESHOLD_M = 3.0     # GPS jitter — below is "standing"
+_STILL_DWELL_S = 5.0                   # stand this long before "OK to move"
+_CONVERGENCE_ERROR_OK_M = 10.0         # triangulated within 10m of GPS
+_CONVERGENCE_MIN_SENSORS = 3           # need 3+ contributing sensors
+
+
+@router.get("/calibrate/walk/my-position")
+async def calibrate_walk_my_position(
+    session_id: Annotated[str, Query(description="Walk session ID")],
+    x_cal_token: str | None = Header(None),
+):
+    """Real-time "where I think I am vs where the fleet thinks I am" for
+    the Calibrate screen's convergence card.
+
+    Returns:
+      - phone_lat / phone_lon       : the phone's last GPS fix
+      - triangulated_lat / _lon / _acc : where the fleet locates the phone's
+        BLE beacon via standard EKF + trilateration (keyed by session_id
+        so the triangulator accumulates observations cleanly across the
+        phone's own RPA rotations)
+      - error_m                     : haversine between the two
+      - sensor_count                : sensors contributing to the current fix
+      - standing_still              : phone hasn't moved > 3 m in recent trace
+      - still_s                     : how long the phone has been stationary
+      - ok_to_move                  : error_m < 10 AND sensors >= 3 AND
+                                      still_s >= 5 — the "move on" signal
+    """
+    _require_cal_token(x_cal_token)
+    s = _phone_cal_mgr.get(session_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail="unknown session")
+    if s.ended_at is not None:
+        return {"error": "session_ended"}
+
+    import math as _math
+
+    def _haversine(lat1, lon1, lat2, lon2):
+        R = 6_371_000.0
+        p1, p2 = _math.radians(lat1), _math.radians(lat2)
+        dp = _math.radians(lat2 - lat1)
+        dl = _math.radians(lon2 - lon1)
+        a = _math.sin(dp/2)**2 + _math.cos(p1)*_math.cos(p2)*_math.sin(dl/2)**2
+        return 2 * R * _math.asin(_math.sqrt(a))
+
+    now = time.time()
+    phone = (s.trace[-1].lat, s.trace[-1].lon) if s.trace else None
+    gps_acc = s.trace[-1].accuracy_m if s.trace else None
+
+    # Locate the phone via the triangulator using the session's tracking_id
+    tracking_id = f"FP:CAL-{session_id}"
+    tri = None
+    for d in _sensor_tracker.get_located_drones():
+        if d.drone_id == tracking_id and d.lat and d.lon:
+            tri = d
+            break
+
+    error_m = None
+    if phone and tri:
+        error_m = _haversine(phone[0], phone[1], tri.lat, tri.lon)
+
+    # Stand-still tracker — phone moves > threshold → reset still timer.
+    # Uses wall-clock "now" so GPS loss doesn't freeze the still_s counter
+    # at an old trace timestamp.
+    st = _my_pos_state.setdefault(session_id, {
+        "still_since": None, "last_gps": None,
+    })
+    if phone:
+        last = st["last_gps"]
+        if last is None:
+            st["last_gps"] = phone
+            st["still_since"] = now
+        else:
+            moved = _haversine(last[0], last[1], phone[0], phone[1])
+            if moved > _STILL_MOVEMENT_THRESHOLD_M:
+                st["last_gps"] = phone
+                st["still_since"] = now
+            # else: still at same spot, don't update anything
+    still_since = st.get("still_since")
+    still_s = (now - still_since) if still_since else 0.0
+    standing_still = still_s >= 1.0   # need 1s of stability to call it still
+
+    sensor_count = tri.sensor_count if tri else 0
+    ok_to_move = bool(
+        error_m is not None and error_m < _CONVERGENCE_ERROR_OK_M
+        and sensor_count >= _CONVERGENCE_MIN_SENSORS
+        and still_s >= _STILL_DWELL_S
+    )
+
+    # Status hint for the UI — tells the operator what's holding back
+    # "OK to move" so they know whether to wait or reposition.
+    if not phone:
+        status = "waiting_for_phone_gps"
+    elif sensor_count == 0:
+        status = "no_sensors_hearing_you_yet"
+    elif sensor_count < _CONVERGENCE_MIN_SENSORS:
+        status = f"only_{sensor_count}_sensor_need_{_CONVERGENCE_MIN_SENSORS}"
+    elif not standing_still:
+        status = "moving_keep_walking_or_stand_still"
+    elif error_m is not None and error_m >= _CONVERGENCE_ERROR_OK_M:
+        status = f"converging_error_{error_m:.0f}m_target_{_CONVERGENCE_ERROR_OK_M:.0f}m"
+    elif still_s < _STILL_DWELL_S:
+        status = f"hold_still_{still_s:.1f}s_of_{_STILL_DWELL_S:.0f}s"
+    elif ok_to_move:
+        status = "ok_to_move"
+    else:
+        status = "holding"
+
+    return {
+        "session_id": session_id,
+        "phone_lat": phone[0] if phone else None,
+        "phone_lon": phone[1] if phone else None,
+        "phone_accuracy_m": gps_acc,
+        "triangulated_lat": tri.lat if tri else None,
+        "triangulated_lon": tri.lon if tri else None,
+        "triangulated_accuracy_m": tri.accuracy_m if tri else None,
+        "error_m": round(error_m, 1) if error_m is not None else None,
+        "sensor_count": sensor_count,
+        "standing_still": standing_still,
+        "still_s": round(still_s, 1),
+        "ok_to_move": ok_to_move,
+        "status": status,
+        "convergence_target_m": _CONVERGENCE_ERROR_OK_M,
+        "dwell_target_s": _STILL_DWELL_S,
+        "min_sensors": _CONVERGENCE_MIN_SENSORS,
+    }
 
 
 @router.get("/calibrate/walk/sensors")

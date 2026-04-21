@@ -81,6 +81,26 @@ class CalibrationViewModel @Inject constructor(
         val minRequired: Int = 4,
     )
 
+    /** Real-time convergence state — phone GPS vs triangulated position,
+     *  plus the smart "stand still until locked, then move on" signal. */
+    data class MyPosition(
+        val phoneLat: Double? = null,
+        val phoneLon: Double? = null,
+        val phoneAccuracyM: Float? = null,
+        val triangulatedLat: Double? = null,
+        val triangulatedLon: Double? = null,
+        val triangulatedAccuracyM: Double? = null,
+        val errorM: Double? = null,
+        val sensorCount: Int = 0,
+        val standingStill: Boolean = false,
+        val stillS: Double = 0.0,
+        val okToMove: Boolean = false,
+        val status: String = "",
+        val convergenceTargetM: Double = 10.0,
+        val dwellTargetS: Double = 5.0,
+        val minSensors: Int = 3,
+    )
+
     /** Result of a "I'm here" checkpoint touch — green/yellow/red badge. */
     data class CheckpointResult(
         val sensorId: String,
@@ -123,6 +143,9 @@ class CalibrationViewModel @Inject constructor(
         val availableSensors: List<SensorInfo> = emptyList(),
         val checkpointResults: Map<String, CheckpointResult> = emptyMap(),
         val sessionReadiness: SessionReadiness = SessionReadiness(),
+        /** Live "phone GPS vs fleet's triangulated position" + convergence
+         *  telemetry. Updated by a ~1 Hz poll during the walk. */
+        val myPosition: MyPosition = MyPosition(),
         val phoneLat: Double? = null,
         val phoneLon: Double? = null,
         val gpsAccuracyM: Float? = null,
@@ -271,6 +294,7 @@ class CalibrationViewModel @Inject constructor(
     }
 
     private var feedbackJob: Job? = null
+    private var myPositionJob: Job? = null
     private var lastSentTraceMs: Long = 0
     private val gpsListener = object : LocationListener {
         override fun onLocationChanged(loc: Location) { onLocation(loc) }
@@ -444,6 +468,45 @@ class CalibrationViewModel @Inject constructor(
             refreshCurrentSsid()
             startFeedbackPolling(sid)
             startFlushLoop()
+            startMyPositionPolling(sid)
+        }
+    }
+
+    private fun startMyPositionPolling(sessionId: String) {
+        myPositionJob?.cancel()
+        myPositionJob = viewModelScope.launch {
+            while (true) {
+                val s = _state.value
+                if (!s.isWalking) break
+                val res = api.walkMyPosition(s.backendUrl, s.token, sessionId)
+                if (res.isSuccess) {
+                    val body = res.getOrNull()
+                    if (body != null && !body.has("error")) {
+                        _state.value = _state.value.copy(myPosition = MyPosition(
+                            phoneLat = body.get("phone_lat")?.takeIf { !it.isJsonNull }?.asDouble,
+                            phoneLon = body.get("phone_lon")?.takeIf { !it.isJsonNull }?.asDouble,
+                            phoneAccuracyM = body.get("phone_accuracy_m")
+                                ?.takeIf { !it.isJsonNull }?.asFloat,
+                            triangulatedLat = body.get("triangulated_lat")
+                                ?.takeIf { !it.isJsonNull }?.asDouble,
+                            triangulatedLon = body.get("triangulated_lon")
+                                ?.takeIf { !it.isJsonNull }?.asDouble,
+                            triangulatedAccuracyM = body.get("triangulated_accuracy_m")
+                                ?.takeIf { !it.isJsonNull }?.asDouble,
+                            errorM = body.get("error_m")?.takeIf { !it.isJsonNull }?.asDouble,
+                            sensorCount = body.get("sensor_count")?.asInt ?: 0,
+                            standingStill = body.get("standing_still")?.asBoolean ?: false,
+                            stillS = body.get("still_s")?.asDouble ?: 0.0,
+                            okToMove = body.get("ok_to_move")?.asBoolean ?: false,
+                            status = body.get("status")?.asString ?: "",
+                            convergenceTargetM = body.get("convergence_target_m")?.asDouble ?: 10.0,
+                            dwellTargetS = body.get("dwell_target_s")?.asDouble ?: 5.0,
+                            minSensors = body.get("min_sensors")?.asInt ?: 3,
+                        ))
+                    }
+                }
+                delay(1000)
+            }
         }
     }
 
@@ -519,6 +582,8 @@ class CalibrationViewModel @Inject constructor(
         feedbackJob = null
         flushJob?.cancel()
         flushJob = null
+        myPositionJob?.cancel()
+        myPositionJob = null
         try { locationManager.removeUpdates(gpsListener) } catch (_: Exception) {}
         advertiser.stop()
         viewModelScope.launch {
@@ -636,6 +701,7 @@ class CalibrationViewModel @Inject constructor(
     override fun onCleared() {
         feedbackJob?.cancel()
         flushJob?.cancel()
+        myPositionJob?.cancel()
         try { locationManager.removeUpdates(gpsListener) } catch (_: Exception) {}
         advertiser.stop()
         super.onCleared()

@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 66
-        versionName = "0.63.3-chomp"
+        versionCode = 67
+        versionName = "0.63.4-smart-walk"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
