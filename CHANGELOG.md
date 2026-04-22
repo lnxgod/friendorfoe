@@ -4,6 +4,58 @@ All notable changes to Friend or Foe will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Android calibrate operator console** — The existing `Calibrate` route is
+  now a three-tab operator workflow: `Walk`, `Nodes`, and `Probes`. Operators
+  can keep the phone BLE advertiser running during a walk, see calibration
+  model truth and phone-vs-fleet position drift, inspect node/scanner pressure,
+  and review probe-first intelligence without leaving the app.
+- **Probe-first event contract** — Backend events now support stable
+  `new_probe_identity` alerts, `probe_activity_spike` warnings, repeated or
+  comma-separated event-type filtering, and `unack_by_type` counts for
+  in-app badging.
+- **Probe diagnostics API expansion** — `/detections/probes` now returns
+  first/last seen timing, 24-hour activity counts, sensor spread, and recent
+  probe event types keyed by stable identity (`PROBE:<ie_hash>` first, MAC
+  fallback second).
+- **TDD + live-code playbook** — `docs/tdd-live-playbook.md` now defines the
+  default workflow for backend, firmware, and Android changes: failing test
+  first, live-target verification, changelog updates in the same change, and
+  canary proof before fleet rollout.
+- **Local preflight runner** — `python3 scripts/preflight.py` runs the backend
+  pytest suite, ESP32 native unit tests, and the live fleet firmware builds
+  (`scanner-s3-combo`, `scanner-s3-combo-seed`, `uplink-s3`) so risky changes
+  can be checked the same way every time.
+- **Backend CI** — new GitHub Actions workflow runs `pytest tests -q` on backend
+  pushes and pull requests instead of relying on manual verification.
+
+### Changed
+- **Calibration debugging is now app-native.** Android consumes
+  `/detections/calibrate/model`, `/detections/nodes/status`, `/detections/probes`,
+  and `/detections/events` directly so queue pressure, UART drops, probe-drop
+  reasons, recent source fixups, and model trust state are visible during a
+  live walk instead of hidden in the dashboard.
+- **ESP32 CI now follows the live fleet.** The firmware workflow now runs on
+  pull requests, executes the native `pio test -e test` suite, and builds the
+  actual deployed targets including `scanner-s3-combo-seed` and `uplink-s3`.
+- **Release artifacts now include live S3 binaries.** GitHub release packaging
+  now exports the seed scanner and S3 uplink firmware so the firmware catalog
+  can track the same targets the fleet is using.
+
+### Fixed
+- **Native ESP32 test harness actually compiles firmware logic again.** The root
+  PlatformIO test config now sets `src_dir`/`test_dir` at the right scope, so
+  the parser/fusion unit tests link the production sources instead of silently
+  skipping them.
+- **OpenDroneID parser regression coverage now protects advertiser MAC
+  propagation.** The native test suite now asserts that parsed BLE Remote ID
+  detections keep the originating advertiser MAC in `bssid`.
+- **Backend test suite matches the current API contract.** Health-version and
+  validation-status expectations were updated to reflect the current backend
+  behavior, turning the suite back into a useful guardrail.
+
 ## [0.60.0] - 2026-04-18
 
 ### Cross-node time sync + ambient triangulation + high-risk tracking
