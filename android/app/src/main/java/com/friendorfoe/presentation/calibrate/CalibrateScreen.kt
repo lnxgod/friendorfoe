@@ -39,21 +39,34 @@ import com.friendorfoe.calibration.CalibrationViewModel.CheckpointResult
 import com.friendorfoe.calibration.CalibrationViewModel.MyPosition
 import com.friendorfoe.calibration.CalibrationViewModel.SensorInfo
 import com.friendorfoe.calibration.CalibrationViewModel.SensorReading
+import com.friendorfoe.data.remote.CalibrationModelDto
+import com.friendorfoe.data.remote.EventDto
+import com.friendorfoe.data.remote.NodeDto
+import com.friendorfoe.data.remote.ProbeDeviceDto
 
 private val OK_GREEN     = Color(0xFF4CAF50)
 private val WARN_AMBER   = Color(0xFFFFB300)
 private val ERROR_RED    = Color(0xFFE53935)
 private val NEUTRAL_GREY = Color(0xFF616161)
 
+private enum class CalibrateTab(val label: String) {
+    Walk("Walk"),
+    Nodes("Nodes"),
+    Probes("Probes"),
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CalibrateScreen(
     onBack: () -> Unit,
     viewModel: CalibrationViewModel = hiltViewModel(),
+    consoleViewModel: CalibrateConsoleViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
+    val consoleState by consoleViewModel.state.collectAsState()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    var selectedTab by remember { mutableStateOf(CalibrateTab.Walk) }
 
     // Refresh BT state + reach connectivity check whenever the screen
     // returns to the foreground (operator may have just enabled BT or
@@ -63,10 +76,16 @@ fun CalibrateScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshBluetoothState()
                 viewModel.refreshConnectivity()
+                consoleViewModel.startPolling()
+            } else if (event == Lifecycle.Event.ON_PAUSE) {
+                consoleViewModel.stopPolling()
             }
         }
         lifecycleOwner.lifecycle.addObserver(obs)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(obs)
+            consoleViewModel.stopPolling()
+        }
     }
 
     // Cache the granted-permissions set so we don't rebuild the launcher
@@ -132,7 +151,10 @@ fun CalibrateScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.refreshConnectivity() }) {
+                    IconButton(onClick = {
+                        viewModel.refreshConnectivity()
+                        consoleViewModel.refreshNow()
+                    }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
                 },
@@ -155,6 +177,16 @@ fun CalibrateScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            TabRow(selectedTabIndex = selectedTab.ordinal) {
+                CalibrateTab.entries.forEach { tab ->
+                    Tab(
+                        selected = selectedTab == tab,
+                        onClick = { selectedTab = tab },
+                        text = { Text(tab.label) }
+                    )
+                }
+            }
 
             // ── Bluetooth-off banner ─────────────────────────────────
             if (!state.bluetoothEnabled) {
@@ -298,229 +330,266 @@ fun CalibrateScreen(
                 }
             }
 
-            // ── Walk control ──────────────────────────────────────────
-            Row(verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (!state.isWalking) {
-                    Button(
-                        onClick = { requestStart() },
-                        enabled = state.bluetoothEnabled,
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Start walk") }
-                } else {
-                    Button(
-                        onClick = { viewModel.endWalk() },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (state.sessionReadiness.readyOverall) OK_GREEN
-                                             else MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError,
-                        ),
-                        modifier = Modifier.weight(1f),
+            when (selectedTab) {
+                CalibrateTab.Walk -> {
+                    // ── Walk control ──────────────────────────────────
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text(if (state.sessionReadiness.readyOverall)
-                                 "Session ready — finish + apply fit"
-                             else "Stop walk + apply fit")
+                        if (!state.isWalking) {
+                            Button(
+                                onClick = { requestStart() },
+                                enabled = state.bluetoothEnabled,
+                                modifier = Modifier.weight(1f),
+                            ) { Text("Start walk") }
+                        } else {
+                            Button(
+                                onClick = { viewModel.endWalk() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (state.sessionReadiness.readyOverall) OK_GREEN
+                                    else MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError,
+                                ),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(
+                                    if (state.sessionReadiness.readyOverall)
+                                        "Session ready — finish + apply fit"
+                                    else "Stop walk + apply fit"
+                                )
+                            }
+                        }
                     }
-                }
-            }
 
-            // ── Overall session readiness ─────────────────────────────
-            if (state.isWalking) {
-                val sr = state.sessionReadiness
-                val pctReady = if (sr.sensorsTotal > 0)
-                    sr.sensorsReady.toFloat() / sr.sensorsTotal else 0f
-                val bannerColor = when {
-                    sr.readyOverall -> OK_GREEN.copy(alpha = 0.18f)
-                    sr.sensorsReady > 0 -> WARN_AMBER.copy(alpha = 0.15f)
-                    else -> NEUTRAL_GREY.copy(alpha = 0.15f)
-                }
-                Surface(color = bannerColor,
+                    if (state.isWalking) {
+                        val sr = state.sessionReadiness
+                        val pctReady = if (sr.sensorsTotal > 0) {
+                            sr.sensorsReady.toFloat() / sr.sensorsTotal
+                        } else 0f
+                        val bannerColor = when {
+                            sr.readyOverall -> OK_GREEN.copy(alpha = 0.18f)
+                            sr.sensorsReady > 0 -> WARN_AMBER.copy(alpha = 0.15f)
+                            else -> NEUTRAL_GREY.copy(alpha = 0.15f)
+                        }
+                        Surface(
+                            color = bannerColor,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(
+                                Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    val icon = if (sr.readyOverall) Icons.Default.CheckCircle else Icons.Default.Warning
+                                    val iconColor = if (sr.readyOverall) OK_GREEN else WARN_AMBER
+                                    Icon(icon, contentDescription = null, tint = iconColor)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        if (sr.readyOverall) "Ready — you can stop any time"
+                                        else "Keep walking — ${sr.sensorsReady}/${sr.sensorsTotal} sensors ready (need ${sr.minRequired})",
+                                        fontWeight = FontWeight.SemiBold,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                }
+                                LinearProgressIndicator(
+                                    progress = { pctReady },
+                                    color = if (sr.readyOverall) OK_GREEN else WARN_AMBER,
+                                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    modifier = Modifier.fillMaxWidth().height(6.dp),
+                                )
+                            }
+                        }
+                    }
+
+                    CalibrationModelCard(consoleState.calibrationModel)
+
+                    if (state.isWalking) {
+                        ConvergenceCard(state.myPosition)
+                    }
+
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
                         shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp),
-                           verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            val icon = if (sr.readyOverall) Icons.Default.CheckCircle
-                                       else Icons.Default.Warning
-                            val iconColor = if (sr.readyOverall) OK_GREEN else WARN_AMBER
-                            Icon(icon, contentDescription = null, tint = iconColor)
-                            Spacer(Modifier.width(8.dp))
+                    ) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "Sensors — walk to each + tap 'I'm here'",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (state.checkpointResults.isNotEmpty()) {
+                                    Text(
+                                        "${state.checkpointResults.size}/${state.availableSensors.size} touched",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            if (state.availableSensors.isEmpty()) {
+                                Text(
+                                    "No sensors loaded. Configure backend + token, then tap Refresh ↻ above.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            } else {
+                                val readingById = state.sensorsHearingMe.associateBy { it.sensorId }
+                                val sortedSensors = state.availableSensors.sortedWith(
+                                    compareBy<SensorInfo> {
+                                        readingById[it.deviceId]?.gpsDistanceM ?: Double.MAX_VALUE
+                                    }.thenByDescending {
+                                        readingById[it.deviceId]?.rssi ?: Int.MIN_VALUE
+                                    }.thenBy { it.name }
+                                )
+                                val candidateId = sortedSensors.firstOrNull()?.deviceId
+                                sortedSensors.forEach { sensor ->
+                                    SensorCard(
+                                        sensor = sensor,
+                                        reading = readingById[sensor.deviceId],
+                                        result = state.checkpointResults[sensor.deviceId],
+                                        walking = state.isWalking,
+                                        highlighted = sensor.deviceId == candidateId,
+                                        onMarkHere = { viewModel.markAtSensor(sensor) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Live status", style = MaterialTheme.typography.labelLarge)
+                            InfoRow("Walking", if (state.isWalking) "yes" else "no")
+                            InfoRow("Session", state.sessionId ?: "—")
+                            InfoRow("BLE UUID", state.advertiseUuid?.take(13)?.plus("…") ?: "—")
+                            InfoRow(
+                                "Phone GPS",
+                                state.phoneLat?.let {
+                                    "%.5f, %.5f ±%.0f m".format(
+                                        it,
+                                        state.phoneLon ?: 0.0,
+                                        state.gpsAccuracyM ?: 0f,
+                                    )
+                                } ?: "no fix"
+                            )
+                            InfoRow("Trace points", state.tracePoints.toString())
+                            InfoRow("Sensor samples", state.samplesTotal.toString())
+                            InfoRow(
+                                "Model source",
+                                consoleState.calibrationModel?.activeModelSource ?: "defaults"
+                            )
+                            InfoRow(
+                                "Model trust",
+                                when {
+                                    consoleState.calibrationModel?.isTrusted == true -> "trusted"
+                                    consoleState.calibrationModel?.isActive == true -> "active, untrusted"
+                                    else -> "defaults only"
+                                }
+                            )
+                        }
+                    }
+
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(
-                                if (sr.readyOverall) "Ready — you can stop any time"
-                                else "Keep walking — ${sr.sensorsReady}/${sr.sensorsTotal} sensors ready (need ${sr.minRequired})",
-                                fontWeight = FontWeight.SemiBold,
-                                style = MaterialTheme.typography.bodyMedium,
+                                "Sensors hearing this phone (last 10 s)",
+                                style = MaterialTheme.typography.labelLarge,
                             )
-                        }
-                        LinearProgressIndicator(
-                            progress = { pctReady },
-                            color = if (sr.readyOverall) OK_GREEN else WARN_AMBER,
-                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.fillMaxWidth().height(6.dp),
-                        )
-                    }
-                }
-            }
-
-            // ── Real-time convergence card ───────────────────────────
-            // Shows GPS vs fleet-triangulated position + "stand still
-            // until locked" signal. Tells the operator when they've
-            // stood at a spot long enough for the fleet to pin them down.
-            if (state.isWalking) {
-                ConvergenceCard(state.myPosition)
-            }
-
-            // ── Sensors panel: tap "I'm here" at each ─────────────────
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(8.dp),
-            ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Sensors — walk to each + tap 'I'm here'",
-                             style = MaterialTheme.typography.labelLarge,
-                             modifier = Modifier.weight(1f))
-                        if (state.checkpointResults.isNotEmpty()) {
-                            Text("${state.checkpointResults.size}/${state.availableSensors.size} touched",
-                                 style = MaterialTheme.typography.labelSmall,
-                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                    if (state.availableSensors.isEmpty()) {
-                        Text("No sensors loaded. Configure backend + token, then tap Refresh ↻ above.",
-                             style = MaterialTheme.typography.bodySmall,
-                             color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    } else {
-                        val readingByid = state.sensorsHearingMe.associateBy { it.sensorId }
-                        for (sensor in state.availableSensors) {
-                            SensorCard(
-                                sensor = sensor,
-                                reading = readingByid[sensor.deviceId],
-                                result = state.checkpointResults[sensor.deviceId],
-                                walking = state.isWalking,
-                                onMarkHere = { viewModel.markAtSensor(sensor) },
-                            )
-                        }
-                    }
-                }
-            }
-
-            // ── Live status ───────────────────────────────────────────
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(8.dp),
-            ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Live status", style = MaterialTheme.typography.labelLarge)
-                    InfoRow("Walking", if (state.isWalking) "yes" else "no")
-                    InfoRow("Session", state.sessionId ?: "—")
-                    InfoRow("BLE UUID", state.advertiseUuid?.take(13)?.plus("…") ?: "—")
-                    InfoRow("Phone GPS", state.phoneLat?.let {
-                        "%.5f, %.5f ±%.0f m".format(it, state.phoneLon ?: 0.0, state.gpsAccuracyM ?: 0f)
-                    } ?: "no fix")
-                    InfoRow("Trace points", state.tracePoints.toString())
-                    InfoRow("Sensor samples", state.samplesTotal.toString())
-                }
-            }
-
-            // ── Sensors hearing me (live RSSI) ─────────────────────────
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(8.dp),
-            ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Sensors hearing this phone (last 10 s)",
-                         style = MaterialTheme.typography.labelLarge)
-                    if (state.sensorsHearingMe.isEmpty()) {
-                        Text(if (state.isWalking) "No sensor sightings yet — keep walking."
-                             else "Start a walk to see live sensor RSSI.",
-                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                             style = MaterialTheme.typography.bodySmall)
-                    } else {
-                        for (sensor in state.sensorsHearingMe) {
-                            val rssiVal = sensor.rssi
-                            val rssiColor = when {
-                                rssiVal == null -> MaterialTheme.colorScheme.onSurfaceVariant
-                                rssiVal > -55 -> ERROR_RED
-                                rssiVal > -75 -> WARN_AMBER
-                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            if (state.sensorsHearingMe.isEmpty()) {
+                                Text(
+                                    if (state.isWalking) "No sensor sightings yet — keep walking."
+                                    else "Start a walk to see live sensor RSSI.",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            } else {
+                                state.sensorsHearingMe.sortedWith(
+                                    compareBy<SensorReading> { it.gpsDistanceM ?: Double.MAX_VALUE }
+                                        .thenByDescending { it.rssi ?: Int.MIN_VALUE }
+                                ).forEach { sensor ->
+                                    val rssiVal = sensor.rssi
+                                    val rssiColor = when {
+                                        rssiVal == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                                        rssiVal > -55 -> ERROR_RED
+                                        rssiVal > -75 -> WARN_AMBER
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text(
+                                            sensor.sensorId,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        Text(
+                                            rssiVal?.let { "$it dBm" } ?: "—",
+                                            color = rssiColor,
+                                            fontWeight = FontWeight.SemiBold,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            "${sensor.samplesInWindow} smp",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            sensor.gpsDistanceM?.let { "%.0fm".format(it) } ?: "—",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                        )
+                                    }
+                                }
                             }
-                            Row(verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()) {
-                                Text(sensor.sensorId,
-                                     style = MaterialTheme.typography.bodySmall,
-                                     fontFamily = FontFamily.Monospace,
-                                     modifier = Modifier.weight(1f))
-                                Text(rssiVal?.let { "$it dBm" } ?: "—",
-                                     color = rssiColor,
-                                     fontWeight = FontWeight.SemiBold,
-                                     style = MaterialTheme.typography.bodySmall,
-                                     fontFamily = FontFamily.Monospace)
-                                Spacer(Modifier.width(8.dp))
-                                Text("${sensor.samplesInWindow} smp",
-                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                     style = MaterialTheme.typography.bodySmall,
-                                     fontFamily = FontFamily.Monospace)
-                                Spacer(Modifier.width(8.dp))
-                                Text(sensor.gpsDistanceM?.let { "%.0fm".format(it) } ?: "—",
-                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                     style = MaterialTheme.typography.bodySmall,
-                                     fontFamily = FontFamily.Monospace)
+                        }
+                    }
+
+                    state.fitResult?.let { fit ->
+                        Surface(
+                            color = if (state.fitApplied == true) {
+                                Color(0xFF1B5E20).copy(alpha = 0.20f)
+                            } else MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    if (state.fitApplied == true) "Calibration applied"
+                                    else "Calibration NOT applied (fit too weak)",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = if (state.fitApplied == true) OK_GREEN else MaterialTheme.colorScheme.error,
+                                )
+                                InfoRow("Global RSSI_REF", fit.get("global_rssi_ref")?.toString() ?: "—")
+                                InfoRow("Global path-loss n", fit.get("global_path_loss_exponent")?.toString() ?: "—")
+                                InfoRow("Global R²", fit.get("global_r_squared")?.toString() ?: "—")
+                                InfoRow("Trace points", fit.get("trace_points")?.toString() ?: "—")
+                                InfoRow("Total samples", fit.get("samples_total")?.toString() ?: "—")
+                                InfoRow("Sensors checkpointed", fit.get("checkpointed_sensor_count")?.toString() ?: "—")
                             }
                         }
                     }
                 }
-            }
 
-            // ── Fit result ────────────────────────────────────────────
-            state.fitResult?.let { fit ->
-                Surface(
-                    color = if (state.fitApplied == true)
-                        Color(0xFF1B5E20).copy(alpha = 0.20f)
-                    else MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(8.dp),
-                ) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            if (state.fitApplied == true) "Calibration applied"
-                            else "Calibration NOT applied (fit too weak)",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (state.fitApplied == true) OK_GREEN else MaterialTheme.colorScheme.error,
-                        )
-                        InfoRow("Global RSSI_REF", fit.get("global_rssi_ref")?.toString() ?: "—")
-                        InfoRow("Global path-loss n",
-                                fit.get("global_path_loss_exponent")?.toString() ?: "—")
-                        InfoRow("Global R²", fit.get("global_r_squared")?.toString() ?: "—")
-                        InfoRow("Trace points", fit.get("trace_points")?.toString() ?: "—")
-                        InfoRow("Total samples", fit.get("samples_total")?.toString() ?: "—")
-                        InfoRow("Sensors checkpointed",
-                                fit.get("checkpointed_sensor_count")?.toString() ?: "—")
-                        Text("Per-sensor fits:", style = MaterialTheme.typography.bodySmall,
-                             modifier = Modifier.padding(top = 8.dp))
-                        fit.getAsJsonObject("per_listener")?.entrySet()?.forEach { (sid, info) ->
-                            val obj = info.asJsonObject
-                            val ok = obj.get("ok")?.asBoolean ?: false
-                            val n = obj.get("path_loss_exponent")?.asString ?: "—"
-                            val rref = obj.get("rssi_ref")?.asString ?: "—"
-                            val r2 = obj.get("r_squared")?.asString ?: "—"
-                            val samples = obj.get("samples")?.asString ?: "—"
-                            val drift = obj.get("gps_drift_m")?.takeIf { !it.isJsonNull }?.asString
-                            Row(modifier = Modifier.fillMaxWidth()) {
-                                Text(sid,
-                                     style = MaterialTheme.typography.bodySmall,
-                                     fontFamily = FontFamily.Monospace,
-                                     color = if (ok) MaterialTheme.colorScheme.onSurface
-                                             else MaterialTheme.colorScheme.error,
-                                     modifier = Modifier.weight(1f))
-                                Text(if (ok) "n=$n  ref=$rref  R²=$r2  ($samples)" + (drift?.let { "  drift=${it}m" } ?: "")
-                                     else "skip ($samples)",
-                                     style = MaterialTheme.typography.bodySmall,
-                                     fontFamily = FontFamily.Monospace,
-                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
+                CalibrateTab.Nodes -> NodesTabContent(consoleState.nodes, consoleState.lastRefreshMs)
+                CalibrateTab.Probes -> ProbesTabContent(
+                    probes = consoleState.probes,
+                    events = consoleState.events,
+                    onAckEvent = consoleViewModel::ackEvent,
+                )
             }
 
             // ── Messages ──────────────────────────────────────────────
@@ -542,6 +611,20 @@ fun CalibrateScreen(
                     Text(msg, modifier = Modifier.padding(12.dp),
                          color = MaterialTheme.colorScheme.onTertiaryContainer,
                          style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            consoleState.errorMessage?.let { msg ->
+                Surface(
+                    color = WARN_AMBER.copy(alpha = 0.18f),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        msg,
+                        modifier = Modifier.padding(12.dp),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             }
         }
@@ -670,6 +753,337 @@ private fun ConvergenceCard(pos: MyPosition) {
     }
 }
 
+@Composable
+private fun CalibrationModelCard(model: CalibrationModelDto?) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Model truth", style = MaterialTheme.typography.labelLarge)
+            if (model == null) {
+                Text(
+                    "Waiting for backend calibration model…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                InfoRow("Source", model.activeModelSource ?: "defaults")
+                InfoRow("Trusted", if (model.isTrusted) "yes" else "no")
+                InfoRow("Active", if (model.isActive) "yes" else "no")
+                InfoRow("Per-listener", model.appliedListenerCount.toString())
+                InfoRow("RSSI ref", model.rssiRef?.let { "%.1f dBm".format(it) } ?: "—")
+                InfoRow("Path-loss n", model.pathLossExponent?.let { "%.2f".format(it) } ?: "—")
+                InfoRow("R²", model.rSquared?.let { "%.3f".format(it) } ?: "—")
+            }
+        }
+    }
+}
+
+@Composable
+private fun NodesTabContent(
+    nodes: List<NodeDto>,
+    lastRefreshMs: Long?,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Node diagnostics", style = MaterialTheme.typography.labelLarge)
+            Text(
+                "Queue pressure, UART drops, probe shedding, and recent source repairs per node.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            lastRefreshMs?.let {
+                Text(
+                    "Last refresh ${formatRelativeAgeSeconds((System.currentTimeMillis() - it) / 1000.0)} ago",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+
+    if (nodes.isEmpty()) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Text(
+                "No node heartbeats yet.",
+                modifier = Modifier.padding(12.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+
+    nodes.forEach { node ->
+        val pressure = maxScannerPressure(node.scanners)
+        val pressured = pressure >= 50
+        Surface(
+            color = when {
+                !node.online -> MaterialTheme.colorScheme.errorContainer
+                pressured -> WARN_AMBER.copy(alpha = 0.14f)
+                else -> MaterialTheme.colorScheme.surfaceVariant
+            },
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        (node.name ?: node.deviceId).ifBlank { node.deviceId },
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    val statusText = when {
+                        !node.online -> "offline"
+                        pressured -> "pressured"
+                        else -> "healthy"
+                    }
+                    Text(
+                        statusText,
+                        color = when {
+                            !node.online -> ERROR_RED
+                            pressured -> WARN_AMBER
+                            else -> OK_GREEN
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                Text(
+                    "${node.deviceId} · ${node.firmwareVersion ?: "?"} · ${node.boardType ?: "?"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                )
+                InfoRow("Age", "%.1fs".format(node.ageS))
+                InfoRow("WiFi", listOfNotNull(node.wifiSsid, node.wifiRssi?.let { "${it} dBm" }).joinToString(" · ").ifBlank { "—" })
+                InfoRow("Recent fixups", node.sourceFixupsRecent.toString())
+                if (node.scanners.isEmpty()) {
+                    Text(
+                        "No scanner diagnostics reported.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    node.scanners.forEach { scanner ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface,
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    "${scanner.uart ?: "?"} · ${scanner.board ?: "scanner"} · ${scanner.ver ?: "?"}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                InfoRow("Queue", "${scanner.txQueueDepth ?: 0}/${scanner.txQueueCapacity ?: 0} (${scanner.txQueuePressurePct ?: maxScannerPressure(listOf(scanner))}%)")
+                                InfoRow("UART dropped", (scanner.uartTxDropped ?: 0).toString())
+                                InfoRow("Probe sent/seen", "${scanner.probeSent ?: 0}/${scanner.probeSeen ?: 0}")
+                                InfoRow(
+                                    "Probe drops",
+                                    listOf(
+                                        "low=${scanner.probeDropLowValue ?: 0}",
+                                        "rate=${scanner.probeDropRateLimit ?: 0}",
+                                        "pressure=${scanner.probeDropPressure ?: 0}",
+                                    ).joinToString(" ")
+                                )
+                                InfoRow(
+                                    "Noise drops",
+                                    "ble=${scanner.noiseDropBle ?: 0} wifi=${scanner.noiseDropWifi ?: 0}"
+                                )
+                                InfoRow("Time sync", "${scanner.tcnt ?: 0} ticks")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProbesTabContent(
+    probes: List<ProbeDeviceDto>,
+    events: List<EventDto>,
+    onAckEvent: (Int) -> Unit,
+) {
+    val newIdentityEvents = probeEventsForSection(events, PROBE_IDENTITY_EVENT_TYPES)
+    val newSsidEvents = probeEventsForSection(events, setOf("new_probed_ssid"))
+    val activityEvents = probeEventsForSection(events, setOf("probe_activity_spike"))
+    val activeNow = activeNowProbes(probes)
+
+    ProbeSection(
+        title = "New probe identities",
+        subtitle = "First seen within the last 24 hours.",
+        emptyText = "No new probe identities in the last 24 hours.",
+        itemCount = newIdentityEvents.size,
+    ) {
+        newIdentityEvents.forEach { event ->
+            ProbeEventCard(event = event, onAckEvent = onAckEvent)
+        }
+    }
+
+    ProbeSection(
+        title = "New probed SSIDs",
+        subtitle = "Fresh SSIDs nearby devices started asking for.",
+        emptyText = "No new probed SSIDs in the last 24 hours.",
+        itemCount = newSsidEvents.size,
+    ) {
+        newSsidEvents.forEach { event ->
+            ProbeEventCard(event = event, onAckEvent = onAckEvent)
+        }
+    }
+
+    ProbeSection(
+        title = "Activity spikes",
+        subtitle = "Probe identities that suddenly got loud or multi-sensor.",
+        emptyText = "No probe activity spikes in the last 24 hours.",
+        itemCount = activityEvents.size,
+    ) {
+        activityEvents.forEach { event ->
+            ProbeEventCard(event = event, onAckEvent = onAckEvent)
+        }
+    }
+
+    ProbeSection(
+        title = "Active now",
+        subtitle = "Probe devices seen in roughly the last 5 minutes.",
+        emptyText = "No active probes right now.",
+        itemCount = activeNow.size,
+    ) {
+        activeNow.forEach { probe ->
+            ProbeDeviceCard(probe = probe)
+        }
+    }
+}
+
+@Composable
+private fun ProbeSection(
+    title: String,
+    subtitle: String,
+    emptyText: String,
+    itemCount: Int,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(title, style = MaterialTheme.typography.labelLarge)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (itemCount == 0) {
+                Text(
+                    emptyText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                content()
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProbeEventCard(
+    event: EventDto,
+    onAckEvent: (Int) -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(6.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(event.title.ifBlank { event.eventType }, modifier = Modifier.weight(1f))
+                Text(
+                    event.severity.uppercase(),
+                    color = if (event.severity == "warning") WARN_AMBER else MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Text(
+                event.message.ifBlank { event.identifier },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "First ${event.firstSeenAt.take(19)} · Sensors ${event.sensorCount} · Best RSSI ${event.bestRssi ?: "—"}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontFamily = FontFamily.Monospace,
+            )
+            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                TextButton(onClick = { onAckEvent(event.id) }) {
+                    Text("Acknowledge")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProbeDeviceCard(probe: ProbeDeviceDto) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(6.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                probe.identity,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                fontFamily = FontFamily.Monospace,
+            )
+            Text(
+                probe.probedSsids.joinToString().ifBlank { "No probed SSIDs captured" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "First ${probe.firstSeenAgeS?.let { formatRelativeAgeSeconds(it) } ?: "—"} ago · " +
+                    "Last ${probe.ageS?.let { formatRelativeAgeSeconds(it) } ?: "—"} ago · " +
+                    "24h ${probe.seen24hCount} hits / ${probe.sensorCount24h} sensors",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontFamily = FontFamily.Monospace,
+            )
+            Text(
+                "RSSI ${probe.bestRssi ?: "—"} · Activity ${probe.activityLevel ?: "low"} · " +
+                    probe.latestEventTypes.joinToString().ifBlank { "no events" },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+    }
+}
+
+private fun formatRelativeAgeSeconds(ageS: Double): String {
+    val secs = ageS.toInt()
+    return when {
+        secs < 60 -> "${secs}s"
+        secs < 3600 -> "${secs / 60}m"
+        secs < 86400 -> "${secs / 3600}h"
+        else -> "${secs / 86400}d"
+    }
+}
+
 
 @Composable
 private fun StatusDot(status: BackendStatus) {
@@ -693,6 +1107,7 @@ private fun SensorCard(
     reading: SensorReading?,
     result: CheckpointResult?,
     walking: Boolean,
+    highlighted: Boolean = false,
     onMarkHere: () -> Unit,
 ) {
     val sevColor = when (result?.severity) {
@@ -723,6 +1138,15 @@ private fun SensorCard(
                         Text(sensor.name, fontWeight = FontWeight.SemiBold,
                              style = MaterialTheme.typography.bodyMedium,
                              modifier = Modifier.weight(1f, fill = false))
+                        if (highlighted) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "candidate",
+                                color = WARN_AMBER,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
                         if (reading?.ready == true) {
                             Spacer(Modifier.width(6.dp))
                             Text("ready", color = OK_GREEN,

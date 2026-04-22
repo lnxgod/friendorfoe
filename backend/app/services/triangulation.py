@@ -18,6 +18,9 @@ import math
 import time
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
+from statistics import median
+
+from app.services.probe_identity import normalize_probe_identity
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +31,10 @@ logger = logging.getLogger(__name__)
 EARTH_RADIUS_M = 6_371_000.0
 
 # RSSI → distance model
-# ESP32 firmware uses 2.5 (open air). Backend uses 3.0 for mixed
-# indoor/outdoor environment (walls, obstacles attenuate more).
-# Mutable calibration values — updated by CalibrationManager
-RSSI_REF = -50          # dBm at 1 meter (ESP32 PCB antenna realistic reference)
-PATH_LOSS_EXPONENT = 3.0
+# Match the ESP32 firmware defaults until calibration overrides them.
+# Mutable calibration values — updated by CalibrationManager.
+RSSI_REF = -40          # dBm at 1 meter (firmware default)
+PATH_LOSS_EXPONENT = 2.5
 
 # Per-listener residual offset (dB) — captures systematic bias per receiver.
 # Set by update_calibration() from the calibration result. Looked up at
@@ -104,6 +106,14 @@ OBS_TTL_STATIONARY_S = 300.0   # AirTag / Tile / Pebblebee / Chipolo / SmartTag
 OBS_TTL_MOVING_S     = 60.0    # Meta / Ray-Ban / Oakley / Quest / drones
 OBS_TTL_DEFAULT_S    = 120.0   # everything else — historical SENSOR_TTL_SEC
 
+# Stationary privacy targets such as WiFi cameras, doorbells, and AP-like
+# devices are scanned at much slower cadences than moving drones. Aggregate
+# over a longer window and use a robust per-sensor summary instead of the
+# latest sample so staggered 25-30 s scans can still localize together.
+STATIONARY_AGG_WINDOW_S = 60.0
+STATIONARY_HISTORY_MAX = 32
+STATIONARY_INTERSECTION_MAX_ACCURACY_M = 35.0
+
 # Manufacturer/model substrings that classify a target's mobility profile.
 # Drives per-class EKF measurement noise (position_filter.DeviceEKF.update)
 # and per-class observation TTL (above). Keep synced with the Android
@@ -117,6 +127,18 @@ _MOTION_STATIONARY_SUBSTRS = (
     "airtag", "tile", "smarttag", "chipolo", "pebblebee",
     "findmy", "find my",
 )
+
+_DIAGNOSTIC_SOURCES = frozenset({
+    "wifi_assoc",
+    "ble_fingerprint",
+    "wifi_oui",
+})
+_DRONE_LIKE_CLASSIFICATIONS = frozenset({
+    "confirmed_drone",
+    "likely_drone",
+    "test_drone",
+    "possible_drone",
+})
 
 
 def _motion_class_for(source: str | None,
@@ -132,13 +154,13 @@ def _motion_class_for(source: str | None,
 
     Priority order:
       1. Explicit stationary class in manufacturer/model (AirTag, Tile, etc.)
-         — an AirTag is stationary even if it somehow arrives on a ble_rid
+         — an AirTag is stationary even if it somehow arrives on a BLE
          feed, and we never want its tight noise profile overridden.
       2. Explicit moving class in manufacturer/model (Meta, Ray-Ban, Quest).
       3. Drone-specific protocols (wifi_beacon_rid, wifi_dji_ie) → moving.
-         We deliberately do NOT treat `ble_rid` alone as implicit drone —
-         it's the generic BLE scanner source and covers both drones and
-         benign devices.
+         We deliberately do NOT treat BLE alone as implicit drone. `ble_rid`
+         and `ble_fingerprint` must stay distinct from the WiFi RID-only
+         paths because both can carry benign nearby devices.
       4. Generic WiFi AP beacons (wifi_ssid, wifi_oui) → stationary.
          Regular APs don't move and deserve the tight noise profile;
          rogue/evil-twin APs are also physically fixed once they're up.
@@ -166,6 +188,17 @@ def _obs_ttl_for(motion_class: str) -> float:
     if motion_class == "stationary":
         return OBS_TTL_STATIONARY_S
     return OBS_TTL_DEFAULT_S
+
+
+def _source_policy_for_observation(obs: "DroneObservation") -> str:
+    """Classify whether an observation is map-grade or diagnostic-only."""
+    source = (getattr(obs, "source", "") or "").lower()
+    if source in _DIAGNOSTIC_SOURCES:
+        return "diagnostic"
+    if source == "wifi_probe_request":
+        classification = (getattr(obs, "classification", "") or "").lower()
+        return "drone_grade" if classification in _DRONE_LIKE_CLASSIFICATIONS else "diagnostic"
+    return "drone_grade"
 
 
 # Maximum iterations for Gauss-Newton solver
@@ -200,6 +233,10 @@ class DroneObservation:
     sensor_lon: float
     rssi: int | None = None
     estimated_distance_m: float | None = None
+    scanner_estimated_distance_m: float | None = None
+    backend_estimated_distance_m: float | None = None
+    distance_source: str | None = None
+    range_model: str | None = None
     # If the drone itself reported GPS (Remote ID / DJI IE)
     drone_lat: float | None = None
     drone_lon: float | None = None
@@ -210,8 +247,10 @@ class DroneObservation:
     source: str = ""
     manufacturer: str | None = None
     model: str | None = None
+    classification: str | None = None
     ssid: str | None = None
     bssid: str | None = None
+    ie_hash: str | None = None
     operator_lat: float | None = None
     operator_lon: float | None = None
     operator_id: str | None = None
@@ -299,8 +338,24 @@ def _destination_point(lat: float, lon: float, bearing_rad: float, dist_m: float
 # ---------------------------------------------------------------------------
 
 # Path loss exponents by environment
-PATH_LOSS_OUTDOOR = 3.0   # Open air / outdoor sensors
+PATH_LOSS_OUTDOOR = PATH_LOSS_EXPONENT   # Open air / outdoor sensors
 PATH_LOSS_INDOOR = 3.5    # Through walls / indoor sensors
+
+
+def _normalize_distance_m(distance_m: float | None) -> float | None:
+    """Drop missing/invalid scanner distances before they enter the solver."""
+    if distance_m is None:
+        return None
+    if not math.isfinite(distance_m) or distance_m <= 0.0:
+        return None
+    return float(distance_m)
+
+
+def _median_or_none(values: list[float]) -> float | None:
+    """Median helper that tolerates empty input."""
+    if not values:
+        return None
+    return float(median(values))
 
 
 def rssi_to_distance_m(rssi: int, indoor: bool = False,
@@ -511,6 +566,10 @@ class SensorTracker:
         self.sensors: dict[str, SensorInfo] = {}
         # drone_id -> {device_id -> DroneObservation}
         self.observations: dict[str, dict[str, DroneObservation]] = {}
+        # drone_id -> {device_id -> recent DroneObservation deque}
+        self._observation_history: dict[str, dict[str, deque[DroneObservation]]] = defaultdict(
+            lambda: defaultdict(lambda: deque(maxlen=STATIONARY_HISTORY_MAX))
+        )
         # RSSI smoothing: (drone_id, device_id) -> [rssi_values]
         self._rssi_history: dict[tuple[str, str], list[int]] = {}
         # EKF position filter
@@ -605,8 +664,10 @@ class SensorTracker:
         source: str = "",
         manufacturer: str | None = None,
         model: str | None = None,
+        classification: str | None = None,
         ssid: str | None = None,
         bssid: str | None = None,
+        ie_hash: str | None = None,
         operator_lat: float | None = None,
         operator_lon: float | None = None,
         operator_id: str | None = None,
@@ -644,17 +705,23 @@ class SensorTracker:
         if model and model.startswith("FP:"):
             tracking_id = model
         elif source == "wifi_probe_request":
-            # ie_hash isn't passed into ingest yet — try drone_id which is
-            # generated as "WIFI:<ie_hash>" by the scanner for probes.
-            if drone_id and drone_id.startswith(("WIFI:", "PROBE:")):
-                tracking_id = drone_id  # already stable
-            elif bssid:
-                tracking_id = f"PROBE:{bssid}"  # last resort — random MAC
+            tracking_id = normalize_probe_identity(
+                ie_hash=ie_hash,
+                drone_id=drone_id,
+                bssid=bssid,
+            ).identity
         elif source in ("wifi_ssid", "wifi_oui", "wifi_beacon_rid", "wifi_dji_ie") and bssid:
             tracking_id = f"AP:{bssid}"
 
-        # RSSI smoothing — EMA over last 10 values per (device, sensor)
-        dist = estimated_distance_m
+        # Prefer the scanner's own distance estimate when present so the
+        # backend doesn't silently replace it with a different RSSI model.
+        scanner_dist = _normalize_distance_m(estimated_distance_m)
+        backend_dist = None
+        dist = scanner_dist
+        distance_source = "scanner" if scanner_dist is not None else None
+        range_model = None
+
+        # RSSI smoothing — EMA over recent values per (target, sensor)
         if rssi is not None:
             history_key = (tracking_id, device_id)
             history = self._rssi_history.get(history_key)
@@ -681,8 +748,18 @@ class SensorTracker:
             # Defaults to 0 for listeners not in the calibration table — no
             # behavior change until a calibration with per-listener data lands.
             corrected = smoothed - PER_LISTENER_OFFSET_DB.get(device_id, 0.0)
-            dist = rssi_to_distance_m(int(round(corrected)), indoor=is_indoor,
-                                       device_id=device_id)
+            backend_dist = rssi_to_distance_m(
+                int(round(corrected)),
+                indoor=is_indoor,
+                device_id=device_id,
+            )
+            if device_id in PER_LISTENER_MODEL:
+                range_model = "per_listener"
+            else:
+                range_model = "global_indoor" if is_indoor else "global_outdoor"
+            if dist is None:
+                dist = backend_dist
+                distance_source = "backend_rssi"
 
         obs = DroneObservation(
             device_id=device_id,
@@ -690,6 +767,10 @@ class SensorTracker:
             sensor_lon=device_lon or 0.0,
             rssi=rssi,
             estimated_distance_m=dist,
+            scanner_estimated_distance_m=scanner_dist,
+            backend_estimated_distance_m=backend_dist,
+            distance_source=distance_source,
+            range_model=range_model,
             drone_lat=drone_lat,
             drone_lon=drone_lon,
             drone_alt=drone_alt,
@@ -699,8 +780,10 @@ class SensorTracker:
             source=source,
             manufacturer=manufacturer,
             model=model,
+            classification=classification,
             ssid=ssid,
             bssid=bssid,
+            ie_hash=ie_hash.upper() if ie_hash else None,
             operator_lat=operator_lat,
             operator_lon=operator_lon,
             operator_id=operator_id,
@@ -712,11 +795,13 @@ class SensorTracker:
 
         # Always update observation (smoothed RSSI handles history now)
         self.observations[tracking_id][device_id] = obs
+        self._observation_history[tracking_id][device_id].append(obs)
 
         # Feed EKF with smoothed distance + the scan-time timestamp so dt
         # for the state-transition matrix reflects real elapsed time between
         # observations, not arbitrary HTTP arrival jitter.
-        if dist is not None and device_lat and device_lon and device_lat != 0:
+        if (dist is not None and device_lat and device_lon and device_lat != 0
+                and _source_policy_for_observation(obs) == "drone_grade"):
             # Tell the filters what kind of target this is — stationary
             # trackers get tight R, body-worn/airborne targets get wide R,
             # unknowns fall back to the historical default. See
@@ -758,6 +843,24 @@ class SensorTracker:
         for drone_id in to_remove:
             del self.observations[drone_id]
 
+        # Prune per-sensor observation history used by the stationary
+        # localization path. Keep only recent samples; older history is
+        # not useful once it falls outside the stationary aggregation window.
+        stale_tracking_ids = []
+        for tracking_id, sensor_histories in self._observation_history.items():
+            stale_devices = []
+            for did, samples in sensor_histories.items():
+                while samples and (now - samples[0].timestamp) > OBSERVATION_TTL_SEC:
+                    samples.popleft()
+                if not samples:
+                    stale_devices.append(did)
+            for did in stale_devices:
+                del sensor_histories[did]
+            if not sensor_histories:
+                stale_tracking_ids.append(tracking_id)
+        for tracking_id in stale_tracking_ids:
+            del self._observation_history[tracking_id]
+
         # Drop sensor registry entries after 30 min of silence (matches
         # entity_tracker.STALE_TIMEOUT_S so the two subsystems expire state
         # on the same cadence). Sensors re-register on their next heartbeat.
@@ -788,7 +891,107 @@ class SensorTracker:
         """Return EKF position filter statistics."""
         return self._ekf.get_stats()
 
-    def get_located_drones(self) -> list[LocatedDrone]:
+    def _aggregate_stationary_observations(
+        self,
+        tracking_id: str,
+        observations: list[DroneObservation],
+    ) -> list[DroneObservation]:
+        """Collapse slow stationary scans into one robust sample per sensor."""
+        if not observations:
+            return []
+
+        newest_ts = max((o.timestamp for o in observations), default=0.0)
+        cutoff = newest_ts - STATIONARY_AGG_WINDOW_S
+        history_by_sensor = self._observation_history.get(tracking_id, {})
+        aggregated: list[DroneObservation] = []
+
+        for latest in observations:
+            samples = [
+                s for s in history_by_sensor.get(latest.device_id, ())
+                if s.timestamp >= cutoff
+            ]
+            if not samples:
+                samples = [latest]
+
+            used_distances = [
+                d for d in (_normalize_distance_m(s.estimated_distance_m) for s in samples)
+                if d is not None
+            ]
+            if not used_distances:
+                continue
+
+            scanner_distances = [
+                d for d in (_normalize_distance_m(s.scanner_estimated_distance_m) for s in samples)
+                if d is not None
+            ]
+            backend_distances = [
+                d for d in (_normalize_distance_m(s.backend_estimated_distance_m) for s in samples)
+                if d is not None
+            ]
+            rssi_values = [s.rssi for s in samples if s.rssi is not None]
+            confidence_values = [s.confidence for s in samples]
+            freshest = max(samples, key=lambda s: s.timestamp)
+
+            scanner_distance = _median_or_none(scanner_distances)
+            backend_distance = _median_or_none(backend_distances)
+            if scanner_distance is not None:
+                used_distance = scanner_distance
+                distance_source = "scanner"
+            elif backend_distance is not None:
+                used_distance = backend_distance
+                distance_source = "backend_rssi"
+            else:
+                used_distance = _median_or_none(used_distances)
+                distance_source = freshest.distance_source
+
+            aggregated.append(DroneObservation(
+                device_id=freshest.device_id,
+                sensor_lat=freshest.sensor_lat,
+                sensor_lon=freshest.sensor_lon,
+                rssi=int(round(median(rssi_values))) if rssi_values else freshest.rssi,
+                estimated_distance_m=used_distance,
+                scanner_estimated_distance_m=scanner_distance,
+                backend_estimated_distance_m=backend_distance,
+                distance_source=distance_source,
+                range_model=freshest.range_model,
+                drone_lat=freshest.drone_lat,
+                drone_lon=freshest.drone_lon,
+                drone_alt=freshest.drone_alt,
+                heading_deg=freshest.heading_deg,
+                speed_mps=freshest.speed_mps,
+                confidence=max(confidence_values) if confidence_values else freshest.confidence,
+                source=freshest.source,
+                manufacturer=freshest.manufacturer,
+                model=freshest.model,
+                classification=freshest.classification,
+                ssid=freshest.ssid,
+                bssid=freshest.bssid,
+                ie_hash=freshest.ie_hash,
+                operator_lat=freshest.operator_lat,
+                operator_lon=freshest.operator_lon,
+                operator_id=freshest.operator_id,
+                timestamp=freshest.timestamp,
+            ))
+
+        return aggregated
+
+    @staticmethod
+    def _best_range_anchor(observations: list[DroneObservation]) -> DroneObservation | None:
+        """Pick the strongest single-sensor anchor for conservative range-only output."""
+        usable = [o for o in observations if o.estimated_distance_m is not None]
+        if not usable:
+            return observations[0] if observations else None
+        return min(
+            usable,
+            key=lambda o: (
+                o.estimated_distance_m if o.estimated_distance_m is not None else float("inf"),
+                -o.confidence,
+                -o.timestamp,
+            ),
+        )
+
+    def get_located_drones(self,
+                           include_probe_diagnostics: bool = False) -> list[LocatedDrone]:
         """
         Compute positions for all currently-tracked drones.
 
@@ -810,6 +1013,12 @@ class SensorTracker:
 
             # Pick best metadata from highest-confidence observation
             best_obs = max(observations, key=lambda o: o.confidence)
+            source_policy = _source_policy_for_observation(best_obs)
+            motion_class = _motion_class_for(
+                best_obs.source,
+                best_obs.manufacturer,
+                best_obs.model,
+            )
 
             # --- Priority 1: Direct GPS from drone ---
             # Smooth GPS by averaging last N reports (weighted by recency).
@@ -868,6 +1077,114 @@ class SensorTracker:
                 self._record_emit(results[-1])
                 continue
 
+            # --- Priority 1.25: Stationary privacy solve path ---
+            # WiFi cameras, doorbells, and other stationary privacy targets
+            # report on slow, staggered cadences. Use a long aggregation
+            # window + median per-sensor range instead of the latest sample,
+            # and bypass the moving-target EKF/PF preference entirely.
+            if motion_class == "stationary" and source_policy == "drone_grade":
+                stationary_obs = self._aggregate_stationary_observations(drone_id, observations)
+                stationary_usable = [
+                    o for o in stationary_obs
+                    if o.sensor_lat != 0.0 and o.sensor_lon != 0.0
+                    and o.estimated_distance_m is not None
+                ]
+
+                if stationary_usable:
+                    centroid_lat = sum(o.sensor_lat for o in stationary_usable) / len(stationary_usable)
+                    centroid_lon = sum(o.sensor_lon for o in stationary_usable) / len(stationary_usable)
+
+                    def _stationary_result_valid(lat: float, lon: float) -> bool:
+                        if lat < -90 or lat > 90 or lon < -180 or lon > 180:
+                            return False
+                        dist = _haversine_m(centroid_lat, centroid_lon, lat, lon)
+                        return dist < MAX_RESULT_DISTANCE_M
+
+                    if len(stationary_usable) >= 3:
+                        sensors_pos = [(o.sensor_lat, o.sensor_lon) for o in stationary_usable]
+                        distances = [o.estimated_distance_m for o in stationary_usable]
+                        result = _trilaterate(sensors_pos, distances)
+                        if result:
+                            lat, lon, accuracy = result
+                            if _stationary_result_valid(lat, lon):
+                                results.append(LocatedDrone(
+                                    drone_id=drone_id,
+                                    lat=lat,
+                                    lon=lon,
+                                    heading_deg=best_obs.heading_deg,
+                                    speed_mps=best_obs.speed_mps,
+                                    position_source="stationary_trilateration",
+                                    accuracy_m=accuracy,
+                                    sensor_count=len(stationary_usable),
+                                    observations=stationary_obs,
+                                    confidence=best_obs.confidence,
+                                    manufacturer=best_obs.manufacturer,
+                                    model=best_obs.model,
+                                    operator_lat=best_obs.operator_lat,
+                                    operator_lon=best_obs.operator_lon,
+                                    operator_id=best_obs.operator_id,
+                                ))
+                                self._record_emit(results[-1])
+                                continue
+
+                    if len(stationary_usable) == 2:
+                        s1 = (stationary_usable[0].sensor_lat, stationary_usable[0].sensor_lon)
+                        s2 = (stationary_usable[1].sensor_lat, stationary_usable[1].sensor_lon)
+                        d1 = stationary_usable[0].estimated_distance_m
+                        d2 = stationary_usable[1].estimated_distance_m
+                        result = _intersect_two(s1, d1, s2, d2)
+                        if result:
+                            lat, lon, accuracy = result
+                            if (
+                                _stationary_result_valid(lat, lon)
+                                and accuracy <= STATIONARY_INTERSECTION_MAX_ACCURACY_M
+                            ):
+                                results.append(LocatedDrone(
+                                    drone_id=drone_id,
+                                    lat=lat,
+                                    lon=lon,
+                                    heading_deg=best_obs.heading_deg,
+                                    speed_mps=best_obs.speed_mps,
+                                    position_source="stationary_intersection",
+                                    accuracy_m=accuracy,
+                                    sensor_count=2,
+                                    observations=stationary_obs,
+                                    confidence=best_obs.confidence,
+                                    manufacturer=best_obs.manufacturer,
+                                    model=best_obs.model,
+                                    operator_lat=best_obs.operator_lat,
+                                    operator_lon=best_obs.operator_lon,
+                                    operator_id=best_obs.operator_id,
+                                ))
+                                self._record_emit(results[-1])
+                                continue
+
+                    anchor = self._best_range_anchor(stationary_usable)
+                    if anchor is not None:
+                        results.append(LocatedDrone(
+                            drone_id=drone_id,
+                            lat=anchor.sensor_lat,
+                            lon=anchor.sensor_lon,
+                            heading_deg=anchor.heading_deg,
+                            speed_mps=anchor.speed_mps,
+                            position_source="stationary_range_only",
+                            range_m=anchor.estimated_distance_m,
+                            sensor_count=len(stationary_usable),
+                            observations=stationary_obs,
+                            confidence=best_obs.confidence,
+                            manufacturer=best_obs.manufacturer,
+                            model=best_obs.model,
+                            operator_lat=best_obs.operator_lat,
+                            operator_lon=best_obs.operator_lon,
+                            operator_id=best_obs.operator_id,
+                        ))
+                        self._record_emit(results[-1])
+                        continue
+
+            if source_policy == "diagnostic":
+                if best_obs.source != "wifi_probe_request" or not include_probe_diagnostics:
+                    continue
+
             # --- Priority 1.5: EKF smoothed position ---
             # Pick the tighter of EKF vs particle filter when both converged.
             # The EKF is analytically optimal for Gaussian/linear cases; the
@@ -877,7 +1194,7 @@ class SensorTracker:
             ekf_ok = (ekf_filter is not None and ekf_filter.update_count >= 3)
             pf_ok  = (pf_filter is not None and pf_filter.update_count >= 3 and pf_filter._initialized)
             # If only PF converged (e.g. EKF rejected observations), use it.
-            if pf_ok and not ekf_ok:
+            if source_policy == "drone_grade" and pf_ok and not ekf_ok:
                 from app.services.position_filter import local_to_gps
                 px, py = pf_filter.get_position()
                 pf_lat, pf_lon = local_to_gps(px, py, self._pf.origin_lat, self._pf.origin_lon)
@@ -900,7 +1217,7 @@ class SensorTracker:
                     ))
                     self._record_emit(results[-1])
                     continue
-            if ekf_filter and ekf_filter.update_count >= 3:
+            if source_policy == "drone_grade" and ekf_filter and ekf_filter.update_count >= 3:
                 from app.services.position_filter import local_to_gps
                 x, y = ekf_filter.get_position()
                 ekf_lat, ekf_lon = local_to_gps(x, y, self._ekf.origin_lat, self._ekf.origin_lon)
@@ -1018,7 +1335,7 @@ class SensorTracker:
                     continue
 
             # --- Priority 4: Single sensor with range estimate ---
-            if usable:
+            if usable and source_policy == "drone_grade":
                 obs = usable[0]
                 results.append(LocatedDrone(
                     drone_id=drone_id,
@@ -1038,7 +1355,7 @@ class SensorTracker:
                     operator_id=obs.operator_id,
                 ))
                 self._record_emit(results[-1])
-            elif observations:
+            elif observations and source_policy == "drone_grade":
                 # No distance estimate at all — just show sensor position
                 obs = observations[0]
                 if obs.sensor_lat != 0.0 and obs.sensor_lon != 0.0:
@@ -1067,8 +1384,11 @@ class SensorTracker:
             if d.position_source in ("gps", "rid_gps", "drone_gps"):
                 smoothed_results.append(d)
                 continue
+            if d.observations and _source_policy_for_observation(d.observations[0]) == "diagnostic":
+                smoothed_results.append(d)
+                continue
             mcls = _motion_class_for(
-                None,
+                d.observations[0].source if d.observations else None,
                 d.manufacturer,
                 d.model,
             )

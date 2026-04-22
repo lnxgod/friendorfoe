@@ -24,9 +24,15 @@ import fnmatch
 import json
 import logging
 import time
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+
+from app.services.probe_identity import (
+    mac_from_probe_identity,
+    normalize_probe_identity,
+    probe_identity_from_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +47,10 @@ class DebouncePolicy:
 
 
 DEBOUNCE: dict[str, DebouncePolicy] = {
+    "new_probe_identity": DebouncePolicy(confirmations=2, window_s=300.0),
     "new_probe_mac":    DebouncePolicy(confirmations=2, window_s=300.0),
     "new_probed_ssid":  DebouncePolicy(confirmations=2, window_s=60.0),   # ≥2 distinct probers
+    "probe_activity_spike": DebouncePolicy(confirmations=1),
     "new_rid_drone":    DebouncePolicy(confirmations=1, min_confidence=0.30),
     "new_hostile_tool": DebouncePolicy(confirmations=1),                    # instant
     "new_glasses":      DebouncePolicy(confirmations=2, window_s=60.0),
@@ -54,8 +62,10 @@ DEBOUNCE: dict[str, DebouncePolicy] = {
 
 # Severity per event type
 SEVERITY: dict[str, str] = {
+    "new_probe_identity": "info",
     "new_probe_mac":    "info",
     "new_probed_ssid":  "info",
+    "probe_activity_spike": "warning",
     "new_rid_drone":    "warning",
     "new_hostile_tool": "critical",
     "new_glasses":      "warning",
@@ -94,6 +104,14 @@ class SeenEntry:
     dirty: bool = False            # counters diverge from DB
 
 
+@dataclass
+class ProbeActivity:
+    sightings: deque[float] = field(default_factory=deque)
+    sensor_hits: deque[tuple[float, str]] = field(default_factory=deque)
+    ssid_hits: deque[tuple[float, str]] = field(default_factory=deque)
+    last_emit_ts: float = -1.0
+
+
 class EventDetector:
     """Singleton that ingests classified detections and emits first-seen events."""
 
@@ -103,10 +121,13 @@ class EventDetector:
     _CACHE_MAX = 10_000
     # Rehydrate window on startup (seconds)
     _REHYDRATE_WINDOW_S = 30 * 24 * 3600.0
+    _PROBE_ACTIVITY_WINDOW_S = 10 * 60.0
+    _PROBE_ACTIVITY_EMIT_DEDUPE_S = 6 * 3600.0
 
     def __init__(self) -> None:
         self._seen: dict[tuple[str, str], SeenEntry] = {}
         self._pending: dict[tuple[str, str], Pending] = {}
+        self._probe_activity: dict[str, ProbeActivity] = {}
         self._last_flush: float = 0.0
         # Whitelists mirrored from DB (refreshed from the classifier's set
         # and the MAC table on startup + when CRUD endpoints update them)
@@ -147,6 +168,16 @@ class EventDetector:
                     best_rssi=row.best_rssi,
                     dirty=False,
                 )
+                try:
+                    metadata = json.loads(row.metadata_json or "{}")
+                except Exception:
+                    metadata = {}
+                self._seen[key].__dict__["metadata"] = metadata
+                if row.event_type == "probe_activity_spike":
+                    probe_identity = probe_identity_from_event(row.event_type, row.identifier, metadata)
+                    if probe_identity:
+                        activity = self._probe_activity.setdefault(probe_identity, ProbeActivity())
+                        activity.last_emit_ts = max(activity.last_emit_ts, row.last_seen_at.timestamp())
                 loaded += 1
             # Whitelists
             mac_rows = (await session.execute(select(WhitelistedMAC))).scalars().all()
@@ -247,6 +278,7 @@ class EventDetector:
     def ingest(self, *, source: str, classification: str, drone_id: str,
                bssid: str | None, ssid: str | None, manufacturer: str | None,
                model: str | None, probed_ssids: list[str] | None,
+               ie_hash: str | None,
                rssi: int | None, confidence: float,
                sensor_id: str, ts: float,
                latitude: float | None = None, longitude: float | None = None,
@@ -261,7 +293,7 @@ class EventDetector:
         for ev_type, identifier, ctx in self._extract_candidates(
             source=source, classification=classification, drone_id=drone_id,
             bssid=bssid, ssid=ssid, manufacturer=manufacturer, model=model,
-            probed_ssids=probed_ssids, rssi=rssi,
+            probed_ssids=probed_ssids, ie_hash=ie_hash, rssi=rssi,
             latitude=latitude, longitude=longitude, operator_id=operator_id,
         ):
             if self._is_whitelisted(ev_type, identifier):
@@ -274,6 +306,19 @@ class EventDetector:
                 continue
             if self._advance_pending(ev_type, identifier, ctx, rssi, sensor_id, ts):
                 newly_emitted.append(key)
+
+        if source == "wifi_probe_request":
+            spike_key = self._record_probe_activity(
+                ie_hash=ie_hash,
+                drone_id=drone_id,
+                bssid=bssid,
+                probed_ssids=probed_ssids,
+                rssi=rssi,
+                sensor_id=sensor_id,
+                ts=ts,
+            )
+            if spike_key is not None:
+                newly_emitted.append(spike_key)
 
         return newly_emitted
 
@@ -361,7 +406,7 @@ class EventDetector:
     # ── Internals ─────────────────────────────────────────────────────
 
     def _extract_candidates(self, *, source, classification, drone_id, bssid,
-                            ssid, manufacturer, model, probed_ssids, rssi,
+                            ssid, manufacturer, model, probed_ssids, ie_hash, rssi,
                             latitude, longitude, operator_id):
         """Yield (event_type, identifier, context_dict) tuples for every
         event this detection may qualify for."""
@@ -424,11 +469,23 @@ class EventDetector:
 
         # Probe request paths
         if source == "wifi_probe_request":
-            mac = (bssid or "").upper()
-            if not mac and did.startswith("probe_"):
-                mac = did[len("probe_"):].upper()
-            if mac:
+            probe = normalize_probe_identity(ie_hash=ie_hash, drone_id=did, bssid=bssid)
+            if probe.identity:
+                yield ("new_probe_identity", probe.identity, {
+                    "probe_identity": probe.identity,
+                    "ie_hash": probe.ie_hash,
+                    "mac": probe.mac,
+                    "probed_ssids": list(probed_ssids or []),
+                    "manufacturer": mfr,
+                    "title": "New probe identity",
+                    "message": f"{probe.identity} probing {len(probed_ssids or [])} SSIDs",
+                })
+            if probe.mac and not probe.ie_hash:
+                mac = probe.mac
                 yield ("new_probe_mac", mac, {
+                    "probe_identity": probe.identity,
+                    "ie_hash": probe.ie_hash,
+                    "mac": probe.mac,
                     "probed_ssids": list(probed_ssids or []),
                     "manufacturer": mfr,
                     "title": "New probing device",
@@ -437,7 +494,8 @@ class EventDetector:
             for probed in (probed_ssids or []):
                 if probed and probed != "(broadcast)":
                     yield ("new_probed_ssid", probed, {
-                        "first_prober": mac,
+                        "first_prober": probe.mac,
+                        "probe_identity": probe.identity,
                         "title": "New SSID being searched for",
                         "message": f"Someone nearby is probing for '{probed}'",
                     })
@@ -456,6 +514,12 @@ class EventDetector:
             for entry in self._mac_entries:
                 if up.startswith(entry):
                     return True
+        if event_type == "new_probe_identity":
+            mac = mac_from_probe_identity(identifier)
+            if mac:
+                for entry in self._mac_entries:
+                    if mac.startswith(entry):
+                        return True
         if event_type == "new_probed_ssid":
             for pat in self._ssid_patterns:
                 if fnmatch.fnmatch(identifier, pat):
@@ -543,10 +607,96 @@ class EventDetector:
             entry.best_rssi = rssi
         entry.dirty = True
 
+    def _record_probe_activity(self, *,
+                               ie_hash: str | None,
+                               drone_id: str | None,
+                               bssid: str | None,
+                               probed_ssids: list[str] | None,
+                               rssi: int | None,
+                               sensor_id: str,
+                               ts: float) -> tuple[str, str] | None:
+        probe = normalize_probe_identity(ie_hash=ie_hash, drone_id=drone_id, bssid=bssid)
+        identity = probe.identity
+        if not identity or identity == "PROBE:UNKNOWN":
+            return None
+
+        activity = self._probe_activity.setdefault(identity, ProbeActivity())
+        activity.sightings.append(ts)
+        activity.sensor_hits.append((ts, sensor_id))
+        for ssid in probed_ssids or []:
+            if ssid and ssid != "(broadcast)":
+                activity.ssid_hits.append((ts, ssid))
+
+        cutoff = ts - self._PROBE_ACTIVITY_WINDOW_S
+        while activity.sightings and activity.sightings[0] < cutoff:
+            activity.sightings.popleft()
+        while activity.sensor_hits and activity.sensor_hits[0][0] < cutoff:
+            activity.sensor_hits.popleft()
+        while activity.ssid_hits and activity.ssid_hits[0][0] < cutoff:
+            activity.ssid_hits.popleft()
+
+        distinct_sensors = {sensor for _, sensor in activity.sensor_hits if sensor}
+        distinct_ssids = {ssid for _, ssid in activity.ssid_hits if ssid}
+        should_emit = (
+            len(activity.sightings) >= 25
+            or len(distinct_sensors) >= 3
+            or len(distinct_ssids) >= 5
+        )
+        if not should_emit:
+            return None
+        if activity.last_emit_ts >= 0 and (ts - activity.last_emit_ts) < self._PROBE_ACTIVITY_EMIT_DEDUPE_S:
+            return None
+
+        window_key = int(ts // self._PROBE_ACTIVITY_EMIT_DEDUPE_S) * int(self._PROBE_ACTIVITY_EMIT_DEDUPE_S)
+        key = ("probe_activity_spike", f"{identity}@{window_key}")
+        if key in self._seen:
+            return None
+
+        activity.last_emit_ts = ts
+        metadata = {
+            "probe_identity": identity,
+            "ie_hash": probe.ie_hash,
+            "mac": probe.mac,
+            "window_s": int(self._PROBE_ACTIVITY_WINDOW_S),
+            "sighting_count": len(activity.sightings),
+            "sensor_count": len(distinct_sensors),
+            "probed_ssids": sorted(distinct_ssids),
+            "title": "Probe activity spike",
+            "message": (
+                f"{identity} spiked to {len(activity.sightings)} sightings across "
+                f"{len(distinct_sensors)} sensor(s)"
+            ),
+        }
+        self._seen[key] = SeenEntry(
+            db_id=0,
+            first_seen=ts,
+            last_seen=ts,
+            sighting_count=len(activity.sightings),
+            sensor_ids=distinct_sensors,
+            best_rssi=rssi,
+            dirty=False,
+        )
+        self._seen[key].__dict__["metadata"] = metadata
+        if len(self._seen) > self._CACHE_MAX:
+            oldest = sorted(self._seen.items(), key=lambda kv: kv[1].last_seen)
+            for victim, _ in oldest[: len(self._seen) - self._CACHE_MAX]:
+                self._seen.pop(victim, None)
+        logger.info(
+            "event emit probe_activity_spike %s (hits=%d sensors=%d ssids=%d rssi=%s)",
+            identity,
+            len(activity.sightings),
+            len(distinct_sensors),
+            len(distinct_ssids),
+            rssi,
+        )
+        return key
+
     def _default_title(self, event_type: str, identifier: str) -> str:
         pretty = {
+            "new_probe_identity": "New probe identity",
             "new_probe_mac":    "New probing device",
             "new_probed_ssid":  "New SSID being searched for",
+            "probe_activity_spike": "Probe activity spike",
             "new_rid_drone":    "New Remote ID drone",
             "new_hostile_tool": "Hostile tool detected",
             "new_glasses":      "New smart glasses",
@@ -556,12 +706,20 @@ class EventDetector:
         return pretty.get(event_type, event_type)
 
     def _default_message(self, event_type: str, identifier: str, md: dict) -> str:
+        if event_type == "new_probe_identity":
+            n = len(md.get("probed_ssids") or [])
+            return f"{identifier} probing {n} SSID(s)"
         if event_type == "new_probe_mac":
             n = len(md.get("probed_ssids") or [])
             return f"MAC {identifier} probing {n} SSID(s)"
         if event_type == "new_probed_ssid":
             prober = md.get("first_prober", "?")
             return f"{prober} probing for '{identifier}'"
+        if event_type == "probe_activity_spike":
+            return (
+                f"{md.get('probe_identity', identifier)} spiked to "
+                f"{md.get('sighting_count', 0)} sightings"
+            )
         if event_type == "new_rid_drone":
             return f"ASTM Remote ID {identifier} first seen"
         if event_type == "new_hostile_tool":

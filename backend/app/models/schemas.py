@@ -111,7 +111,7 @@ class DroneDetectionItem(BaseModel):
     drone_id: str = Field(..., description="Drone serial number or generated identifier")
     source: str = Field(
         ...,
-        description="Detection source: ble_rid, wifi_ssid, wifi_dji_ie, wifi_beacon_rid, wifi_oui",
+        description="Detection source: ble_rid, ble_fingerprint, wifi_ssid, wifi_dji_ie, wifi_beacon_rid, wifi_oui, wifi_assoc, wifi_probe_request",
     )
     confidence: float = Field(ge=0.0, le=1.0, description="Raw detection confidence 0.0-1.0")
     timestamp: int | None = Field(
@@ -127,11 +127,17 @@ class DroneDetectionItem(BaseModel):
     heading_deg: float | None = Field(None, description="Heading 0-360 degrees true north")
     speed_mps: float | None = Field(None, description="Ground speed in m/s")
     rssi: int | None = Field(None, description="Signal strength in dBm")
+    estimated_distance_m: float | None = Field(
+        None,
+        description="Scanner-computed distance estimate in meters. When present, backend "
+                    "triangulation prefers this over re-deriving range from RSSI.",
+    )
     manufacturer: str | None = Field(None, description="Drone manufacturer (e.g. DJI, Skydio)")
     model: str | None = Field(None, description="Drone model name")
     operator_lat: float | None = Field(None, description="Operator latitude (WGS84 degrees)")
     operator_lon: float | None = Field(None, description="Operator longitude (WGS84 degrees)")
     operator_id: str | None = Field(None, description="Operator registration ID")
+    self_id_text: str | None = Field(None, description="ASTM self-ID text")
     ssid: str | None = Field(None, description="WiFi SSID if detected via WiFi")
     bssid: str | None = Field(None, description="WiFi BSSID (MAC address)")
     channel: int | None = Field(None, description="WiFi channel if available from the scanner")
@@ -177,7 +183,10 @@ class DroneDetectionBatch(BaseModel):
     timestamp: int = Field(..., description="Batch timestamp (epoch seconds)")
     firmware_version: str | None = Field(None, description="Firmware version (e.g. 0.35.0)")
     board_type: str | None = Field(None, description="Board type (uplink-esp32, uplink-c3)")
-    scanners: list[dict] | None = Field(None, description="Connected scanner identities [{uart, ver, board, chip, caps}]")
+    scanners: list[dict] | None = Field(
+        None,
+        description="Connected scanner identities and diagnostics [{uart, ver, board, chip, caps, toff, tcnt, uart_tx_dropped, uart_tx_high_water, tx_queue_depth, tx_queue_capacity, tx_queue_pressure_pct, noise_drop_ble, noise_drop_wifi, probe_seen, probe_sent, probe_drop_low_value, probe_drop_rate_limit, probe_drop_pressure}]",
+    )
     wifi_ssid: str | None = Field(None, description="Connected WiFi SSID")
     wifi_rssi: int | None = Field(None, description="WiFi RSSI (signal strength in dBm)")
     detections: list[DroneDetectionItem] = Field(
@@ -249,9 +258,15 @@ class SensorObservation(BaseModel):
     sensor_lon: float
     rssi: int | None = None
     estimated_distance_m: float | None = None
+    scanner_estimated_distance_m: float | None = None
+    backend_estimated_distance_m: float | None = None
+    distance_source: str | None = None
+    range_model: str | None = None
     confidence: float = 0.0
     source: str = ""
     ssid: str | None = None
+    bssid: str | None = None
+    ie_hash: str | None = None
 
 
 class LocatedDroneItem(BaseModel):
@@ -265,11 +280,15 @@ class LocatedDroneItem(BaseModel):
     speed_mps: float | None = Field(None, description="Ground speed m/s")
     position_source: str = Field(
         ...,
-        description="How position was determined: gps, trilateration, intersection, range_only",
+        description="How position was determined: gps, kalman, particle, trilateration, "
+                    "intersection, range_only, stationary_trilateration, "
+                    "stationary_intersection, stationary_range_only",
     )
     accuracy_m: float | None = Field(None, description="Estimated position accuracy in meters")
     range_m: float | None = Field(
-        None, description="For range_only: RSSI-estimated distance from sensor (radius of range circle)"
+        None,
+        description="For range_only / stationary_range_only: estimated distance from the anchor "
+                    "sensor (radius of the conservative search circle)",
     )
     sensor_count: int = Field(..., description="Number of sensors observing this drone")
     confidence: float = Field(0.0, description="Best detection confidence across sensors")
@@ -433,7 +452,10 @@ class EventItem(BaseModel):
     """A persistent first-seen event row."""
 
     id: int
-    event_type: str = Field(..., description="new_probe_mac, new_probed_ssid, new_rid_drone, new_hostile_tool, new_glasses, new_tracker, new_ap")
+    event_type: str = Field(
+        ...,
+        description="new_probe_identity, new_probe_mac, new_probed_ssid, probe_activity_spike, new_rid_drone, new_hostile_tool, new_glasses, new_tracker, new_ap",
+    )
     identifier: str = Field(..., description="Stable key for the thing that was seen (MAC, SSID, UAS serial, fingerprint)")
     severity: str = Field(..., description="info | warning | critical")
     title: str
@@ -462,6 +484,7 @@ class EventStatsResponse(BaseModel):
     total: int
     unacknowledged: int
     by_type: dict[str, int] = Field(default_factory=dict)
+    unack_by_type: dict[str, int] = Field(default_factory=dict)
     by_severity: dict[str, int] = Field(default_factory=dict)
     critical_unacked: int = 0
 

@@ -2,13 +2,15 @@
 
 import json
 import logging
+import re
 import time
-from collections import deque
+from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db_models import DroneDetection, SensorNode, TriangulatedPosition
@@ -34,8 +36,12 @@ from app.services.rf_anomaly import RFAnomalyDetector, RFDetectionEvent
 from app.services.signal_tracker import SignalEvent, SignalTracker
 from app.services.triangulation import SensorTracker
 from app.services.anomaly_detector import AnomalyDetector
-from app.services.classifier import classify_detection
+from app.services.classifier import classify_detection, normalize_detection_source
 from app.services.enrichment_ble import BLEEnricher
+from app.services.probe_identity import (
+    normalize_probe_identity,
+    probe_identity_from_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +98,10 @@ _recent_detections: deque[StoredDetection] = deque(maxlen=_MAX_RECENT)
 # ---------------------------------------------------------------------------
 
 _node_heartbeats: dict[str, dict] = {}
+_SOURCE_FIXUP_RECENT_WINDOW_S = 300.0
+_node_source_fixup_events: dict[str, deque[tuple[float, str]]] = defaultdict(
+    lambda: deque(maxlen=256)
+)
 
 # Position dedup cache: drone_id → (lat, lon) of last logged position
 _position_dedup: dict[str, tuple[float, float]] = {}
@@ -111,6 +121,7 @@ _ingest_dedup: dict[tuple[str, str, str, int], float] = {}
 # (drone_id, source, bssid) in a 10 s window we'd drop 4/5 of those messages
 # and lose the operator/system fields that only ride in specific messages.
 _NEVER_DEDUP_SOURCES = frozenset({"ble_rid", "wifi_beacon_rid", "wifi_dji_ie"})
+_MAC_RE = re.compile(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}")
 
 
 def _ingest_dedup_hit(drone_id: str, source: str, bssid: str, ts: float) -> bool:
@@ -136,6 +147,67 @@ def _ingest_dedup_hit(drone_id: str, source: str, bssid: str, ts: float) -> bool
             if v < cutoff:
                 del _ingest_dedup[k]
     return False
+
+
+def _device_id_mac_suffix(device_id: str | None) -> str | None:
+    if not device_id or "_" not in device_id:
+        return None
+    suffix = device_id.rsplit("_", 1)[-1].strip().upper()
+    if len(suffix) != 6 or any(ch not in "0123456789ABCDEF" for ch in suffix):
+        return None
+    return suffix
+
+
+def _wifi_assoc_mentions_known_node(drone_id: str | None) -> bool:
+    if not drone_id:
+        return False
+    known_suffixes = {
+        suffix
+        for suffix in (_device_id_mac_suffix(device_id) for device_id in _node_heartbeats)
+        if suffix
+    }
+    if not known_suffixes:
+        return False
+    for mac in _MAC_RE.findall(drone_id):
+        compact = mac.replace(":", "").upper()
+        if compact[-6:] in known_suffixes:
+            return True
+    return False
+
+
+def _record_source_fixup(device_id: str,
+                         raw_source: str,
+                         normalized_source: str,
+                         ts: float) -> None:
+    hb = _node_heartbeats.get(device_id)
+    if hb is None:
+        return
+    hb["source_fixups_total"] = int(hb.get("source_fixups_total", 0) or 0) + 1
+    by_rule = hb.setdefault("source_fixups_by_rule", {})
+    rule_key = f"{raw_source}->{normalized_source}"
+    by_rule[rule_key] = int(by_rule.get(rule_key, 0) or 0) + 1
+    hb["last_source_fixup_at"] = ts
+
+    events = _node_source_fixup_events[device_id]
+    events.append((ts, rule_key))
+    cutoff = ts - _SOURCE_FIXUP_RECENT_WINDOW_S
+    while events and events[0][0] < cutoff:
+        events.popleft()
+
+
+def _recent_source_fixups(device_id: str,
+                          now_ts: float) -> tuple[int, dict[str, int]]:
+    events = _node_source_fixup_events.get(device_id)
+    if not events:
+        return 0, {}
+    cutoff = now_ts - _SOURCE_FIXUP_RECENT_WINDOW_S
+    while events and events[0][0] < cutoff:
+        events.popleft()
+    by_rule: dict[str, int] = {}
+    for _, rule in events:
+        by_rule[rule] = by_rule.get(rule, 0) + 1
+    return len(events), by_rule
+
 
 # GPS-RSSI spoof detector: drone_id → {gps_positions: [(lat,lon,t)], rssi_values: [(rssi,t)]}
 _spoof_tracker: dict[str, dict] = {}
@@ -293,20 +365,24 @@ async def ingest_drone_detections(
 
     # Track heartbeat (works without DB)
     source_ip = request.client.host if request.client else None
+    prev_hb = _node_heartbeats.get(batch.device_id, {})
     _node_heartbeats[batch.device_id] = {
         "device_id": batch.device_id,
         "last_seen": received_at,
         "detection_count": len(batch.detections),
-        "total_batches": _node_heartbeats.get(batch.device_id, {}).get("total_batches", 0) + 1,
-        "total_detections": _node_heartbeats.get(batch.device_id, {}).get("total_detections", 0) + len(batch.detections),
+        "total_batches": prev_hb.get("total_batches", 0) + 1,
+        "total_detections": prev_hb.get("total_detections", 0) + len(batch.detections),
         "lat": batch.device_lat,
         "lon": batch.device_lon,
         "ip": source_ip,
-        "firmware_version": batch.firmware_version or _node_heartbeats.get(batch.device_id, {}).get("firmware_version"),
-        "board_type": batch.board_type or _node_heartbeats.get(batch.device_id, {}).get("board_type"),
-        "scanners": batch.scanners or _node_heartbeats.get(batch.device_id, {}).get("scanners"),
-        "wifi_ssid": batch.wifi_ssid or _node_heartbeats.get(batch.device_id, {}).get("wifi_ssid"),
-        "wifi_rssi": batch.wifi_rssi if batch.wifi_rssi is not None else _node_heartbeats.get(batch.device_id, {}).get("wifi_rssi"),
+        "firmware_version": batch.firmware_version or prev_hb.get("firmware_version"),
+        "board_type": batch.board_type or prev_hb.get("board_type"),
+        "scanners": batch.scanners or prev_hb.get("scanners"),
+        "wifi_ssid": batch.wifi_ssid or prev_hb.get("wifi_ssid"),
+        "wifi_rssi": batch.wifi_rssi if batch.wifi_rssi is not None else prev_hb.get("wifi_rssi"),
+        "source_fixups_total": prev_hb.get("source_fixups_total", 0),
+        "source_fixups_by_rule": dict(prev_hb.get("source_fixups_by_rule", {})),
+        "last_source_fixup_at": prev_hb.get("last_source_fixup_at"),
     }
 
     # WiFi attack detection (v0.60+) — scanner forwards deauth/disassoc counts
@@ -375,6 +451,27 @@ async def ingest_drone_detections(
         if det.ssid and det.ssid.upper().startswith("FOF-") and not det.ssid.upper().startswith("FOF-DRONE-"):
             continue
 
+        raw_source = det.source
+        det.source = normalize_detection_source(
+            raw_source,
+            drone_id=det.drone_id,
+            manufacturer=det.manufacturer,
+            latitude=det.latitude,
+            longitude=det.longitude,
+            operator_lat=det.operator_lat,
+            operator_lon=det.operator_lon,
+            operator_id=det.operator_id,
+            self_id_text=det.self_id_text,
+        )
+        if det.source != raw_source:
+            _record_source_fixup(batch.device_id, raw_source, det.source, received_at)
+
+        # Drop our own node association chatter. This is useful RF context for
+        # debugging WiFi, but it is not a drone signal and it pollutes the
+        # operator feed when nearby FoF uplinks are visible over the air.
+        if det.source == "wifi_assoc" and _wifi_assoc_mentions_known_node(det.drone_id):
+            continue
+
         # Drop duplicates (scanner re-emission, uplink offline-replay, batch retries)
         if _ingest_dedup_hit(det.drone_id, det.source, det.bssid or "", received_at):
             dedup_skipped += 1
@@ -433,6 +530,12 @@ async def ingest_drone_detections(
             drone_id=det.drone_id,
             model=det.model,
             bssid=det.bssid,
+            latitude=det.latitude,
+            longitude=det.longitude,
+            operator_lat=det.operator_lat,
+            operator_lon=det.operator_lon,
+            operator_id=det.operator_id,
+            self_id_text=det.self_id_text,
         )
 
         # Ring buffer
@@ -617,6 +720,7 @@ async def ingest_drone_detections(
                 manufacturer=det.manufacturer,
                 model=grouping_model,
                 probed_ssids=det.probed_ssids,
+                ie_hash=getattr(det, "ie_hash", None),
                 rssi=det.rssi,
                 confidence=det.confidence,
                 sensor_id=batch.device_id,
@@ -692,6 +796,7 @@ async def ingest_drone_detections(
             device_alt=sensor_alt,
             drone_id=det.drone_id,
             rssi=det.rssi,
+            estimated_distance_m=det.estimated_distance_m,
             drone_lat=det.latitude,
             drone_lon=det.longitude,
             drone_alt=det.altitude_m,
@@ -706,8 +811,10 @@ async def ingest_drone_detections(
             # start over every rotation and never accumulate enough
             # observations to produce a tight fix.
             model=grouping_model,
+            classification=classification,
             ssid=det.ssid,
             bssid=det.bssid,
+            ie_hash=getattr(det, "ie_hash", None),
             operator_lat=det.operator_lat,
             operator_lon=det.operator_lon,
             operator_id=det.operator_id,
@@ -788,10 +895,22 @@ async def ingest_drone_detections(
                     drone_id=d.drone_id,
                     model=d.model,
                     bssid=best_obs.bssid if best_obs and hasattr(best_obs, 'bssid') else None,
+                    latitude=d.lat,
+                    longitude=d.lon,
                 )[0] if best_obs else None,
                 observations_json=json.dumps([
-                    {"device_id": o.device_id, "rssi": o.rssi, "distance_m": o.estimated_distance_m,
-                     "sensor_lat": o.sensor_lat, "sensor_lon": o.sensor_lon, "ssid": o.ssid}
+                    {
+                        "device_id": o.device_id,
+                        "rssi": o.rssi,
+                        "distance_m": o.estimated_distance_m,
+                        "scanner_distance_m": o.scanner_estimated_distance_m,
+                        "backend_distance_m": o.backend_estimated_distance_m,
+                        "distance_source": o.distance_source,
+                        "range_model": o.range_model,
+                        "sensor_lat": o.sensor_lat,
+                        "sensor_lon": o.sensor_lon,
+                        "ssid": o.ssid,
+                    }
                     for o in d.observations
                 ]),
             )
@@ -853,7 +972,7 @@ async def get_drone_map(
     min_confidence: Annotated[float, Query(ge=0.0, le=1.0, description="Min confidence (0=all)")] = 0.0,
 ) -> DroneMapResponse:
     """Return all currently-tracked drones with estimated positions."""
-    located = _sensor_tracker.get_located_drones()
+    located = _sensor_tracker.get_located_drones(include_probe_diagnostics=include_probes)
     sensors = _sensor_tracker.get_active_sensors()
 
     # Get signal tracker data for approach/departure velocity
@@ -883,7 +1002,8 @@ async def get_drone_map(
             continue
 
         # Determine if this is a probe device
-        is_probe = best_obs and best_obs.source == "wifi_probe_request" if best_obs else False
+        is_probe = bool(best_obs and best_obs.source == "wifi_probe_request") or \
+            (d.drone_id or "").startswith("PROBE:")
 
         if classification and cls != classification:
             continue
@@ -913,9 +1033,15 @@ async def get_drone_map(
                 sensor_lon=o.sensor_lon,
                 rssi=o.rssi,
                 estimated_distance_m=o.estimated_distance_m,
+                scanner_estimated_distance_m=o.scanner_estimated_distance_m,
+                backend_estimated_distance_m=o.backend_estimated_distance_m,
+                distance_source=o.distance_source,
+                range_model=o.range_model,
                 confidence=o.confidence,
                 source=o.source,
                 ssid=o.ssid,
+                bssid=o.bssid,
+                ie_hash=o.ie_hash,
             )
             for o in d.observations
         ]
@@ -1062,7 +1188,16 @@ async def get_node_status(db: AsyncSession = Depends(get_db)):
     nodes = []
     for node in _node_heartbeats.values():
         age = now - node["last_seen"]
-        entry = {**node, "age_s": round(age, 1), "online": age < 120}
+        recent_fixups, recent_by_rule = _recent_source_fixups(node["device_id"], now)
+        entry = {
+            **node,
+            "age_s": round(age, 1),
+            "online": age < 120,
+            "source_fixups_since_boot": int(node.get("source_fixups_total", 0) or 0),
+            "source_fixups_recent": recent_fixups,
+            "source_fixups_recent_by_rule": recent_by_rule,
+            "source_fixups_recent_window_s": int(_SOURCE_FIXUP_RECENT_WINDOW_S),
+        }
         # Override lat/lon with registered DB position if available
         db_pos = db_positions.get(node["device_id"])
         if db_pos and db_pos.get("is_fixed"):
@@ -2178,14 +2313,28 @@ async def calibration_status():
 @router.get("/calibrate/model")
 async def calibration_model():
     """Get current triangulation model parameters."""
-    from app.services.triangulation import RSSI_REF, PATH_LOSS_OUTDOOR
+    from app.services.triangulation import PATH_LOSS_OUTDOOR, PER_LISTENER_MODEL, RSSI_REF
+    last = _calibration_mgr.last_result
     is_calibrated = _calibration_mgr.last_result is not None
+    is_trusted = bool(last and last.r_squared > 0.1)
+    applied_listener_count = len(PER_LISTENER_MODEL)
+    is_active = is_trusted or applied_listener_count > 0
+    if applied_listener_count > 0:
+        active_model_source = "per_listener"
+    elif is_trusted:
+        active_model_source = "calibration"
+    else:
+        active_model_source = "defaults"
     return {
         "rssi_ref": RSSI_REF,
         "path_loss_exponent": PATH_LOSS_OUTDOOR,
         "is_calibrated": is_calibrated,
-        "last_calibration": _calibration_mgr.last_result.timestamp if _calibration_mgr.last_result else None,
-        "r_squared": _calibration_mgr.last_result.r_squared if _calibration_mgr.last_result else None,
+        "is_active": is_active,
+        "is_trusted": is_trusted,
+        "active_model_source": active_model_source,
+        "applied_listener_count": applied_listener_count,
+        "last_calibration": last.timestamp if last else None,
+        "r_squared": last.r_squared if last else None,
     }
 
 
@@ -2286,15 +2435,30 @@ async def get_tracking_diagnostics(
       - p95 / max per-emit jump distance
       - EKF health: velocity warnings, covariance errors, update rejects
       - large-jump count (emits >= 50 m from the previous emit)
+      - current range inputs: scanner distance vs backend-derived distance
 
     Pure observability — does not affect behavior.
     """
     from app.services.position_filter import EKF_HEALTH
+    from app.services.triangulation import (
+        PATH_LOSS_INDOOR,
+        PATH_LOSS_OUTDOOR,
+        PER_LISTENER_MODEL,
+        PER_LISTENER_OFFSET_DB,
+        RSSI_REF,
+        STATIONARY_AGG_WINDOW_S,
+        STATIONARY_INTERSECTION_MAX_ACCURACY_M,
+    )
 
     now = time.time()
     history = _sensor_tracker._emit_history
     flips = _sensor_tracker._source_flip_counts
     counters = _sensor_tracker._emit_counters
+    current_range_source_counts: dict[str, int] = {}
+    for obs_map in _sensor_tracker.observations.values():
+        for obs in obs_map.values():
+            src = obs.distance_source or "none"
+            current_range_source_counts[src] = current_range_source_counts.get(src, 0) + 1
 
     # ── Global summary ──
     source_mix_total: dict[str, int] = {}
@@ -2322,6 +2486,16 @@ async def get_tracking_diagnostics(
         "ekf_update_rejects": EKF_HEALTH["update_rejects"],
         "large_jumps_total": _sensor_tracker._large_jump_count,
         "large_jump_threshold_m": _sensor_tracker.LARGE_JUMP_THRESHOLD_M,
+        "current_range_source_counts": current_range_source_counts,
+        "range_defaults": {
+            "rssi_ref": RSSI_REF,
+            "path_loss_outdoor": PATH_LOSS_OUTDOOR,
+            "path_loss_indoor": PATH_LOSS_INDOOR,
+            "per_listener_model_count": len(PER_LISTENER_MODEL),
+            "per_listener_offset_count": len(PER_LISTENER_OFFSET_DB),
+            "stationary_agg_window_s": STATIONARY_AGG_WINDOW_S,
+            "stationary_intersection_max_accuracy_m": STATIONARY_INTERSECTION_MAX_ACCURACY_M,
+        },
     }
 
     # ── Per-drone rows ──
@@ -2346,11 +2520,18 @@ async def get_tracking_diagnostics(
 
         last = records[-1]
         tail = records[-recent:] if recent else []
+        current_obs = list(_sensor_tracker.observations.get(drone_id, {}).values())
+        current_obs.sort(key=lambda o: o.timestamp, reverse=True)
+        range_source_mix: dict[str, int] = {}
+        for obs in current_obs:
+            src = obs.distance_source or "none"
+            range_source_mix[src] = range_source_mix.get(src, 0) + 1
         drones.append({
             "drone_id": drone_id,
             "emit_count": len(records),
             "source_mix": per_source,
             "source_flips": dict(flips.get(drone_id, {})),
+            "range_source_mix": range_source_mix,
             "p95_jump_m": round(p95_jump_m, 2),
             "max_jump_m": round(max_jump_m, 2),
             "last_emit": {
@@ -2362,6 +2543,21 @@ async def get_tracking_diagnostics(
                 "lat": last.lat,
                 "lon": last.lon,
             },
+            "current_ranges": [
+                {
+                    "device_id": o.device_id,
+                    "source": o.source,
+                    "timestamp": round(o.timestamp, 3),
+                    "age_s": round(now - o.timestamp, 1),
+                    "rssi": o.rssi,
+                    "used_distance_m": o.estimated_distance_m,
+                    "scanner_distance_m": o.scanner_estimated_distance_m,
+                    "backend_distance_m": o.backend_estimated_distance_m,
+                    "distance_source": o.distance_source,
+                    "range_model": o.range_model,
+                }
+                for o in current_obs
+            ],
             "recent": [
                 {
                     "t": round(r.timestamp, 3),
@@ -2631,51 +2827,51 @@ async def get_probe_history(
 @router.get("/probes")
 async def get_probe_devices(
     drone_only: Annotated[bool, Query(description="Only return devices classified as likely_drone or confirmed_drone")] = False,
-    max_age_s: Annotated[int, Query(ge=1, le=3600, description="Max age in seconds")] = 120,
+    max_age_s: Annotated[int, Query(ge=1, le=172800, description="Max age in seconds")] = 120,
+    db: AsyncSession = Depends(get_db),
 ):
-    """Return WiFi probe request devices grouped by probing MAC (BSSID).
-
-    Scans the in-memory ring buffer for source=='wifi_probe_request',
-    groups by BSSID (probing device MAC), and returns aggregated info
-    per device including all probed SSIDs, best RSSI, sensor count,
-    and classification.
-    """
+    """Return WiFi probe request devices grouped by stable identity."""
     now = time.time()
 
-    # Filter to probe request detections within age window
     probe_items = [
         d for d in _recent_detections
         if d.source == "wifi_probe_request" and (now - d.received_at) <= max_age_s
     ]
+    probe_items_24h = [
+        d for d in _recent_detections
+        if d.source == "wifi_probe_request" and (now - d.received_at) <= 86400
+    ]
 
-    # Group by BSSID (probing device MAC)
     groups: dict[str, dict] = {}
     for d in probe_items:
-        mac = d.bssid or d.drone_id or "unknown"
-        # Normalize: strip "probe_" prefix from drone_id if used as fallback
-        if mac.startswith("probe_"):
-            mac = mac[6:]
-
-        if mac not in groups:
-            groups[mac] = {
+        probe = normalize_probe_identity(
+            ie_hash=getattr(d, "ie_hash", None),
+            drone_id=d.drone_id,
+            bssid=d.bssid,
+        )
+        identity, ie_hash, mac = probe.identity, probe.ie_hash, probe.mac
+        if identity not in groups:
+            groups[identity] = {
+                "identity": identity,
+                "ie_hash": ie_hash,
                 "mac": mac,
+                "macs": set(),
                 "probed_ssids": set(),
                 "probe_count": 0,
                 "best_rssi": -999,
                 "sensors": set(),
                 "last_seen": 0.0,
                 "classification": "wifi_device",
-                "lat": None,
-                "lon": None,
             }
-        g = groups[mac]
+        g = groups[identity]
         g["probe_count"] += 1
+        if mac:
+            g["macs"].add(mac)
+            if not g["mac"]:
+                g["mac"] = mac
 
-        # Collect probed SSIDs from individual detection SSID field
         if d.ssid:
             g["probed_ssids"].add(d.ssid)
-
-        # Also collect from probed_ssids list if present
         if d.probed_ssids:
             for s in d.probed_ssids:
                 g["probed_ssids"].add(s)
@@ -2691,30 +2887,106 @@ async def get_probe_devices(
         if d.classification in ("confirmed_drone", "likely_drone"):
             g["classification"] = d.classification
 
-    # Try to get triangulated positions for probe devices
-    located = _sensor_tracker.get_located_drones()
+    stats_24h: dict[str, dict] = {}
+    for d in probe_items_24h:
+        probe = normalize_probe_identity(
+            ie_hash=getattr(d, "ie_hash", None),
+            drone_id=d.drone_id,
+            bssid=d.bssid,
+        )
+        identity = probe.identity
+        bucket = stats_24h.setdefault(identity, {
+            "seen_24h_count": 0,
+            "sensors": set(),
+        })
+        bucket["seen_24h_count"] += 1
+        if d.device_id:
+            bucket["sensors"].add(d.device_id)
+
+    from app.models.db_models import Event
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    try:
+        event_rows = (
+            await db.execute(
+                select(Event)
+                .where(Event.first_seen_at >= cutoff)
+                .where(Event.event_type.in_((
+                    "new_probe_identity",
+                    "new_probe_mac",
+                    "new_probed_ssid",
+                    "probe_activity_spike",
+                )))
+                .order_by(Event.first_seen_at.desc())
+            )
+        ).scalars().all()
+    except OperationalError as exc:
+        if "no such table: events" not in str(exc).lower():
+            raise
+        event_rows = []
+
+    identity_event_types: dict[str, set[str]] = defaultdict(set)
+    identity_first_seen: dict[str, float] = {}
+    ssid_event_types: dict[str, set[str]] = defaultdict(set)
+    for row in event_rows:
+        try:
+            metadata = json.loads(row.metadata_json or "{}")
+        except Exception:
+            metadata = {}
+        probe_identity = probe_identity_from_event(row.event_type, row.identifier, metadata)
+        if probe_identity:
+            identity_event_types[probe_identity].add(row.event_type)
+            first_seen_ts = _datetime_to_epoch_seconds(row.first_seen_at)
+            if first_seen_ts is None:
+                continue
+            prev_ts = identity_first_seen.get(probe_identity)
+            if prev_ts is None or first_seen_ts < prev_ts:
+                identity_first_seen[probe_identity] = first_seen_ts
+        if row.event_type == "new_probed_ssid":
+            ssid_event_types[row.identifier].add(row.event_type)
+
+    located = _sensor_tracker.get_located_drones(include_probe_diagnostics=True)
     located_by_id = {d.drone_id: d for d in located}
 
     devices = []
-    for mac, g in groups.items():
+    for identity, g in groups.items():
         cls = g["classification"]
         if drone_only and cls not in ("likely_drone", "confirmed_drone"):
             continue
 
-        # Check for triangulated position
-        probe_drone_id = f"probe_{mac}"
-        loc = located_by_id.get(probe_drone_id)
+        loc = located_by_id.get(identity)
+        stats24 = stats_24h.get(identity, {})
+        first_seen_ts = identity_first_seen.get(identity, g["last_seen"])
+        latest_event_types = set(identity_event_types.get(identity, set()))
+        for ssid in g["probed_ssids"]:
+            latest_event_types.update(ssid_event_types.get(ssid, set()))
+        seen_24h_count = int(stats24.get("seen_24h_count", g["probe_count"]))
+        sensor_count_24h = len(stats24.get("sensors", g["sensors"]))
+        if "probe_activity_spike" in latest_event_types or seen_24h_count >= 25 or sensor_count_24h >= 3:
+            activity_level = "high"
+        elif seen_24h_count >= 10 or sensor_count_24h >= 2:
+            activity_level = "medium"
+        else:
+            activity_level = "low"
 
         device_entry = {
-            "mac": mac,
+            "identity": identity,
+            "ie_hash": g["ie_hash"],
+            "mac": g["mac"],
+            "macs": sorted(g["macs"]),
             "probed_ssids": sorted(g["probed_ssids"]),
             "probe_count": g["probe_count"],
             "best_rssi": g["best_rssi"] if g["best_rssi"] != -999 else None,
             "classification": cls,
             "sensor_count": len(g["sensors"]),
             "sensors": sorted(g["sensors"]),
+            "first_seen": first_seen_ts,
+            "first_seen_age_s": round(now - first_seen_ts, 1) if first_seen_ts else None,
             "last_seen": g["last_seen"],
             "age_s": round(now - g["last_seen"], 1),
+            "seen_24h_count": seen_24h_count,
+            "sensor_count_24h": sensor_count_24h,
+            "activity_level": activity_level,
+            "latest_event_types": sorted(latest_event_types),
             "lat": loc.lat if loc else None,
             "lon": loc.lon if loc else None,
         }
@@ -2809,7 +3081,7 @@ async def get_sensor_stats(device_id: str):
 async def get_grouped_detections(
     classification: Annotated[str | None, Query(description="Filter by classification")] = None,
     exclude_known_ap: Annotated[bool, Query(description="Hide known APs (default true)")] = True,
-    max_age_s: Annotated[int, Query(ge=1, le=3600, description="Max age in seconds")] = 120,
+    max_age_s: Annotated[int, Query(ge=1, le=3600, description="Max age in seconds")] = 300,
 ):
     """Return detections grouped by drone_id — one row per device, showing all sensors that see it.
 
@@ -3084,6 +3356,14 @@ async def get_drone_track(
 # First-seen event API (see services/event_detector.py)
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _datetime_to_epoch_seconds(value: datetime | None) -> float | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.timestamp()
+
+
 def _event_row_to_item(row) -> dict:
     """Convert an Event row into the JSON shape the dashboard consumes."""
     try:
@@ -3113,9 +3393,27 @@ def _event_row_to_item(row) -> dict:
     }
 
 
+def _normalized_event_types(type_value: str | None,
+                            types_value: list[str] | None) -> list[str] | None:
+    values: list[str] = []
+    if type_value:
+        values.append(type_value)
+    values.extend(types_value or [])
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        for part in (raw or "").split(","):
+            cleaned = part.strip()
+            if cleaned and cleaned not in seen:
+                normalized.append(cleaned)
+                seen.add(cleaned)
+    return normalized or None
+
+
 @router.get("/events")
 async def list_events(
     type: Annotated[str | None, Query(description="Filter by event_type")] = None,
+    types: Annotated[list[str] | None, Query(description="Repeated or comma-separated event types")] = None,
     severity: Annotated[str | None, Query(description="info | warning | critical")] = None,
     acknowledged: Annotated[bool | None, Query(description="True / False / None (both)")] = None,
     since_hours: Annotated[float, Query(ge=0, le=720)] = 24.0,
@@ -3128,8 +3426,9 @@ async def list_events(
     import datetime as _dt
     cutoff = datetime.now(timezone.utc) - _dt.timedelta(hours=since_hours)
     q = select(Event).where(Event.first_seen_at >= cutoff)
-    if type:
-        q = q.where(Event.event_type == type)
+    event_types = _normalized_event_types(type, types)
+    if event_types:
+        q = q.where(Event.event_type.in_(event_types))
     if severity:
         q = q.where(Event.severity == severity)
     if acknowledged is True:
@@ -3159,12 +3458,20 @@ async def events_stats(db: AsyncSession = Depends(get_db)):
         .where(Event.severity == "critical")
     )).scalar() or 0
     by_type: dict[str, int] = {}
+    unack_by_type: dict[str, int] = {}
     rows = (await db.execute(
         select(Event.event_type, func.count(Event.id))
         .group_by(Event.event_type)
     )).all()
     for et, n in rows:
         by_type[et] = n
+    rows = (await db.execute(
+        select(Event.event_type, func.count(Event.id))
+        .where(Event.acknowledged == False)  # noqa: E712
+        .group_by(Event.event_type)
+    )).all()
+    for et, n in rows:
+        unack_by_type[et] = n
     by_sev: dict[str, int] = {}
     rows = (await db.execute(
         select(Event.severity, func.count(Event.id))
@@ -3177,6 +3484,7 @@ async def events_stats(db: AsyncSession = Depends(get_db)):
         "unacknowledged": unack,
         "critical_unacked": crit_unack,
         "by_type": by_type,
+        "unack_by_type": unack_by_type,
         "by_severity": by_sev,
     }
 
