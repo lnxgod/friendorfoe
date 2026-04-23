@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 70
-        versionName = "0.63.8-calibrate-runtime"
+        versionCode = 71
+        versionName = "0.63.9-node-labels"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

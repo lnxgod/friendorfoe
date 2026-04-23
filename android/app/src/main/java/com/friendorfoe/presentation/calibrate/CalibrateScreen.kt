@@ -957,7 +957,7 @@ private fun NodesTabContent(
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        (node.name ?: node.deviceId).ifBlank { node.deviceId },
+                        displayNodeLabel(node.name, node.deviceId),
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.weight(1f),
                     )
@@ -978,7 +978,7 @@ private fun NodesTabContent(
                     )
                 }
                 Text(
-                    "${node.deviceId} · ${node.firmwareVersion ?: "?"} · ${node.boardType ?: "?"}",
+                    "${node.firmwareVersion ?: "?"} · ${node.boardType ?: "?"}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontFamily = FontFamily.Monospace,
@@ -1267,6 +1267,15 @@ private fun formatRelativeAgeSeconds(ageS: Double): String {
     }
 }
 
+private fun displayNodeLabel(name: String?, deviceId: String): String {
+    val trimmedName = name?.trim().orEmpty()
+    return if (trimmedName.isBlank() || trimmedName == deviceId) {
+        deviceId
+    } else {
+        "$trimmedName · $deviceId"
+    }
+}
+
 
 @Composable
 private fun StatusDot(status: BackendStatus) {
@@ -1318,9 +1327,12 @@ private fun SensorCard(
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(sensor.name, fontWeight = FontWeight.SemiBold,
-                             style = MaterialTheme.typography.bodyMedium,
-                             modifier = Modifier.weight(1f, fill = false))
+                        Text(
+                            displayNodeLabel(sensor.name, sensor.deviceId),
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
                         if (highlighted) {
                             Spacer(Modifier.width(6.dp))
                             Text(
@@ -1337,12 +1349,13 @@ private fun SensorCard(
                                  fontWeight = FontWeight.SemiBold)
                         }
                     }
-                    Text("${sensor.deviceId} · " +
-                         "%.5f, %.5f".format(sensor.lat, sensor.lon) +
-                         (sensor.ageS?.let { " · %.0fs".format(it) } ?: ""),
-                         style = MaterialTheme.typography.bodySmall,
-                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                         fontFamily = FontFamily.Monospace)
+                    Text(
+                        "%.5f, %.5f".format(sensor.lat, sensor.lon) +
+                            (sensor.ageS?.let { " · %.0fs".format(it) } ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontFamily = FontFamily.Monospace,
+                    )
                 }
                 if (result != null) {
                     Icon(Icons.Default.CheckCircle, contentDescription = null, tint = sevColor)
