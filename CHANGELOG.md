@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.63.9-node-labels] - 2026-04-22
+
+### Changed
+- **Calibration walk cards now show the friendly node name and uplink ID
+  together.** The Android `Calibrate` interface now renders labels like
+  `Gate · uplink_D0A148` in both the walk sensor cards and the node diagnostics
+  list so operators can tell which node they are physically near during a live
+  calibration pass.
+
+### Fixed
+- **Node identity is no longer buried in secondary text during calibration.**
+  The previous layout technically showed the uplink ID, but only in a smaller
+  metadata row. The title now carries the simple name plus device ID directly,
+  and the metadata row is cleaned up to avoid repeating the same identifier.
+
 ## [0.63.8-calibrate-runtime] - 2026-04-22
 
 ### Added
