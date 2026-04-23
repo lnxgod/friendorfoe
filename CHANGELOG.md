@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.63.8-calibrate-runtime] - 2026-04-22
+
+### Added
+- **Android calibration emulator smoke test** — `scripts/android_calibrate_smoke.sh`
+  now launches the app in the emulator, opens `Calibrate`, verifies backend
+  preflight, simulates GPS, and confirms a walk can start against the live
+  backend.
+
+### Changed
+- **Calibration networking now reuses the shared backend stack.** The Android
+  calibration client now uses the app's shared backend `OkHttp` behavior for
+  reachability and keeps structured phase logging for `/health`,
+  `/walk/sensors`, `/walk/start`, and the live walk endpoints.
+- **Release version bump for calibration testing.** Android and backend now
+  identify this release as `0.63.8-calibrate-runtime` so field calibration runs
+  can be matched to the fixed preflight/runtime path.
+
+### Fixed
+- **Calibrate no longer fails with a false `Backend unreachable` banner.**
+  Tokened calibration requests were still performing synchronous OkHttp work on
+  the main thread, which threw `NetworkOnMainThreadException` during
+  `/detections/calibrate/walk/sensors`. Those requests now run off the UI
+  thread, allowing preflight to complete, diagnostics to unlock, and `Start
+  walk` to succeed against `fof-server.local:8000`.
+- **Preflight failure state now clears cleanly after recovery.** The Android
+  view-model regression tests now assert that stale failure detail is removed
+  once health and sensor loading succeed again.
+
 ### Added
 - **Android calibrate operator console** — The existing `Calibrate` route is
   now a three-tab operator workflow: `Walk`, `Nodes`, and `Probes`. Operators

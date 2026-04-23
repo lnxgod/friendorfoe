@@ -1,6 +1,7 @@
 package com.friendorfoe.presentation.calibrate
 
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -18,6 +19,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
@@ -30,15 +32,21 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.friendorfoe.calibration.CalibrationViewModel
+import com.friendorfoe.calibration.NetworkTransportState
+import com.friendorfoe.calibration.PreflightCheckStatus
 import com.friendorfoe.calibration.CalibrationViewModel.BackendStatus
 import com.friendorfoe.calibration.CalibrationViewModel.CheckpointResult
 import com.friendorfoe.calibration.CalibrationViewModel.MyPosition
 import com.friendorfoe.calibration.CalibrationViewModel.SensorInfo
 import com.friendorfoe.calibration.CalibrationViewModel.SensorReading
+import com.friendorfoe.calibration.preflightChecklist
+import com.friendorfoe.calibration.preflightFailureSummary
+import com.friendorfoe.calibration.ssidDisplay
 import com.friendorfoe.data.remote.CalibrationModelDto
 import com.friendorfoe.data.remote.EventDto
 import com.friendorfoe.data.remote.NodeDto
@@ -66,7 +74,28 @@ fun CalibrateScreen(
     val consoleState by consoleViewModel.state.collectAsState()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var selectedTab by remember { mutableStateOf(CalibrateTab.Walk) }
+    var selectedTab by rememberSaveable { mutableStateOf(CalibrateTab.Walk) }
+    var diagnosticsExpanded by rememberSaveable { mutableStateOf(false) }
+
+    fun currentlyGrantedPermissions(): Set<String> {
+        val needed = buildList {
+            add(android.Manifest.permission.ACCESS_FINE_LOCATION)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                add(android.Manifest.permission.BLUETOOTH_ADVERTISE)
+                add(android.Manifest.permission.BLUETOOTH_SCAN)
+                add(android.Manifest.permission.BLUETOOTH_CONNECT)
+            }
+        }
+        return needed.filterTo(mutableSetOf()) { permission ->
+            ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+    val hasRequiredPermissions = viewModel.missingPermissions(currentlyGrantedPermissions()).isEmpty()
+    val screenContract = buildCalibrateScreenContract(
+        state = state,
+        hasRequiredPermissions = hasRequiredPermissions,
+        diagnosticsExpanded = diagnosticsExpanded,
+    )
 
     // Refresh BT state + reach connectivity check whenever the screen
     // returns to the foreground (operator may have just enabled BT or
@@ -76,7 +105,6 @@ fun CalibrateScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshBluetoothState()
                 viewModel.refreshConnectivity()
-                consoleViewModel.startPolling()
             } else if (event == Lifecycle.Event.ON_PAUSE) {
                 consoleViewModel.stopPolling()
             }
@@ -85,6 +113,21 @@ fun CalibrateScreen(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(obs)
             consoleViewModel.stopPolling()
+        }
+    }
+
+    LaunchedEffect(screenContract.showDiagnosticsTabs) {
+        if (screenContract.showDiagnosticsTabs) {
+            consoleViewModel.startPolling()
+        } else {
+            consoleViewModel.stopPolling()
+            selectedTab = CalibrateTab.Walk
+        }
+    }
+
+    LaunchedEffect(screenContract.showDiagnosticsToggle) {
+        if (screenContract.showDiagnosticsToggle) {
+            consoleViewModel.refreshNow()
         }
     }
 
@@ -123,21 +166,19 @@ fun CalibrateScreen(
     }
 
     fun requestStart() {
-        val granted = mutableSetOf<String>()
-        // Build a "currently granted" map by re-asking for everything we
-        // need; the launcher returns success for already-granted perms.
+        val granted = currentlyGrantedPermissions()
         val needed = listOf(
             android.Manifest.permission.ACCESS_FINE_LOCATION,
             android.Manifest.permission.BLUETOOTH_ADVERTISE,
             android.Manifest.permission.BLUETOOTH_SCAN,
             android.Manifest.permission.BLUETOOTH_CONNECT,
         )
-        val missing = viewModel.missingPermissions(granted)  // empty grant set → returns full list
+        val missing = viewModel.missingPermissions(granted)
         if (missing.isEmpty()) {
             viewModel.startWalk()
         } else {
             pendingStartAfterGrant = true
-            permissionLauncher.launch(needed.toTypedArray())
+            permissionLauncher.launch(missing.ifEmpty { needed }.toTypedArray())
         }
     }
 
@@ -173,20 +214,11 @@ fun CalibrateScreen(
                 "broadcasts a known BLE beacon; sensors report what they " +
                 "hear; the backend fits a per-sensor path-loss model. " +
                 "Visit each sensor and tap its 'I'm here' button to " +
-                "anchor the fit and verify its registered coordinates.",
+                "anchor the fit and verify its registered coordinates. " +
+                "Diagnostics stay hidden until backend preflight is healthy.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-
-            TabRow(selectedTabIndex = selectedTab.ordinal) {
-                CalibrateTab.entries.forEach { tab ->
-                    Tab(
-                        selected = selectedTab == tab,
-                        onClick = { selectedTab = tab },
-                        text = { Text(tab.label) }
-                    )
-                }
-            }
 
             // ── Bluetooth-off banner ─────────────────────────────────
             if (!state.bluetoothEnabled) {
@@ -233,18 +265,22 @@ fun CalibrateScreen(
                                 state.queuedCount > 0 ->
                                     "Roaming — ${state.queuedCount} queued, will sync when you reach WiFi"
                                 state.backendStatus == BackendStatus.Ok ->
-                                    "Backend reachable · syncing live"
+                                    "Backend reachable"
                                 state.backendStatus == BackendStatus.AuthFailed ->
-                                    "Auth failed — check X-Cal-Token"
+                                    "Backend reachable · calibration token rejected"
                                 state.backendStatus == BackendStatus.Unreachable ->
-                                    "Backend unreachable — switch to a closer WiFi network"
+                                    "Backend unreachable"
                                 else -> "Connectivity unknown"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            "WiFi: " + (state.currentSsid ?: "not associated"),
+                            when (state.networkTransport) {
+                                NetworkTransportState.Wifi -> "WiFi: ${state.ssidDisplay()}"
+                                NetworkTransportState.Other -> "Network: non-WiFi transport active"
+                                NetworkTransportState.Offline -> "WiFi: not associated"
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontFamily = FontFamily.Monospace,
@@ -263,7 +299,7 @@ fun CalibrateScreen(
                             // back to the global settings index.
                             context.startActivity(Intent(Settings.ACTION_SETTINGS))
                         }
-                    }) { Text("Switch WiFi") }
+                    }) { Text("WiFi settings") }
                 }
             }
 
@@ -279,10 +315,10 @@ fun CalibrateScreen(
                         StatusDot(state.backendStatus)
                         Spacer(Modifier.width(6.dp))
                         Text(when (state.backendStatus) {
-                            BackendStatus.Ok           -> "ok"
-                            BackendStatus.AuthFailed   -> "401 — check token"
+                            BackendStatus.Ok           -> "reachable"
+                            BackendStatus.AuthFailed   -> "token rejected"
                             BackendStatus.Unreachable  -> "unreachable"
-                            BackendStatus.Unknown      -> "unknown"
+                            BackendStatus.Unknown      -> "not checked"
                         }, style = MaterialTheme.typography.labelSmall,
                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -290,7 +326,7 @@ fun CalibrateScreen(
                         value = state.backendUrl,
                         onValueChange = viewModel::setBackendUrl,
                         label = { Text("URL") },
-                        placeholder = { Text("http://192.168.42.235:8000/") },
+                        placeholder = { Text("http://fof-server.local:8000/") },
                         singleLine = true,
                         enabled = !state.isWalking,
                         modifier = Modifier.fillMaxWidth(),
@@ -327,11 +363,90 @@ fun CalibrateScreen(
                             Text("Reset token")
                         }
                     }
+                    Text(
+                        "Preflight checks `/health` first, then validates the calibration token and loads the walk sensor list.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    state.preflightFailureSummary()?.let { summary ->
+                        Text(
+                            "Debug: $summary",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                }
+            }
+
+            if (screenContract.showDiagnosticsToggle) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "Diagnostics",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                            Text(
+                                "Secondary debug tools for nodes and probe activity. The walk flow stays primary.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = {
+                            diagnosticsExpanded = !diagnosticsExpanded
+                            if (!diagnosticsExpanded) {
+                                selectedTab = CalibrateTab.Walk
+                            }
+                        }) {
+                            Text(if (diagnosticsExpanded) "Hide diagnostics" else "Show diagnostics")
+                        }
+                    }
+                }
+            }
+
+            if (screenContract.showDiagnosticsTabs) {
+                TabRow(selectedTabIndex = selectedTab.ordinal) {
+                    CalibrateTab.entries.forEach { tab ->
+                        Tab(
+                            selected = selectedTab == tab,
+                            onClick = { selectedTab = tab },
+                            text = { Text(tab.label) }
+                        )
+                    }
                 }
             }
 
             when (selectedTab) {
                 CalibrateTab.Walk -> {
+                    if (screenContract.showPreflightChecklist) {
+                        PreflightChecklistCard(
+                            items = state.preflightChecklist(),
+                            startDisabledReason = screenContract.startDisabledReason,
+                            failureSummary = state.preflightFailureSummary(),
+                        )
+                    } else if (!state.isWalking) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                "Walk is ready. Diagnostics are available below if you need node or probe detail while calibrating.",
+                                modifier = Modifier.padding(12.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                        }
+                    }
+
                     // ── Walk control ──────────────────────────────────
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -340,7 +455,7 @@ fun CalibrateScreen(
                         if (!state.isWalking) {
                             Button(
                                 onClick = { requestStart() },
-                                enabled = state.bluetoothEnabled,
+                                enabled = screenContract.startDisabledReason == null,
                                 modifier = Modifier.weight(1f),
                             ) { Text("Start walk") }
                         } else {
@@ -360,6 +475,13 @@ fun CalibrateScreen(
                                 )
                             }
                         }
+                    }
+                    if (!state.isWalking && screenContract.startDisabledReason != null) {
+                        Text(
+                            screenContract.startDisabledReason,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
 
                     if (state.isWalking) {
@@ -613,7 +735,7 @@ fun CalibrateScreen(
                          style = MaterialTheme.typography.bodySmall)
                 }
             }
-            consoleState.errorMessage?.let { msg ->
+            if (screenContract.showDiagnosticsToggle) consoleState.errorMessage?.let { msg ->
                 Surface(
                     color = WARN_AMBER.copy(alpha = 0.18f),
                     shape = RoundedCornerShape(8.dp),
@@ -1070,6 +1192,67 @@ private fun ProbeDeviceCard(probe: ProbeDeviceDto) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontFamily = FontFamily.Monospace,
             )
+        }
+    }
+}
+
+@Composable
+private fun PreflightChecklistCard(
+    items: List<com.friendorfoe.calibration.PreflightChecklistItem>,
+    startDisabledReason: String?,
+    failureSummary: String?,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Walk preflight", style = MaterialTheme.typography.labelLarge)
+            Text(
+                "Start with a healthy backend check, a valid token, and a loaded sensor list. Nodes and probes unlock after this passes.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            items.forEach { item ->
+                val color = when (item.status) {
+                    PreflightCheckStatus.Ok -> OK_GREEN
+                    PreflightCheckStatus.Pending -> WARN_AMBER
+                    PreflightCheckStatus.Error -> ERROR_RED
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(color)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text(item.label, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            item.detail,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            if (startDisabledReason != null) {
+                Text(
+                    startDisabledReason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (failureSummary != null) {
+                Text(
+                    "Debug: $failureSummary",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
         }
     }
 }

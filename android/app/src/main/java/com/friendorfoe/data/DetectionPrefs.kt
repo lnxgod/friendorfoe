@@ -2,6 +2,7 @@ package com.friendorfoe.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.friendorfoe.calibration.CalibrationSettingsStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -13,7 +14,7 @@ import javax.inject.Singleton
 @Singleton
 class DetectionPrefs @Inject constructor(
     @ApplicationContext context: Context
-) {
+) : CalibrationSettingsStore {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("fof_settings", Context.MODE_PRIVATE)
 
@@ -31,7 +32,7 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_BACKEND_ONLY = "sensor_backend_only_mode"
         private const val KEY_CAL_TOKEN = "fof_calibration_token"
         private const val KEY_OPERATOR_LABEL = "fof_calibration_operator"
-        private const val DEFAULT_BACKEND_URL = "http://192.168.42.235:8000/"
+        private const val DEFAULT_BACKEND_URL = "http://fof-server.local:8000/"
     }
 
     var adsbEnabled: Boolean
@@ -68,7 +69,7 @@ class DetectionPrefs @Inject constructor(
         set(value) = prefs.edit().putBoolean(KEY_SENSOR_BACKEND, value).apply()
 
     /** Backend URL — configurable */
-    var backendUrl: String
+    override var backendUrl: String
         get() = prefs.getString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL) ?: DEFAULT_BACKEND_URL
         set(value) = prefs.edit().putString(KEY_BACKEND_URL, value).apply()
 
@@ -81,12 +82,12 @@ class DetectionPrefs @Inject constructor(
      *  Default matches the backend's `_DEV_DEFAULT_CAL_TOKEN` so a
      *  fresh install + fresh backend Just Work. Operator can overwrite
      *  via the Calibrate screen if they've pinned FOF_CAL_TOKEN in prod. */
-    var calibrationToken: String
+    override var calibrationToken: String
         get() = prefs.getString(KEY_CAL_TOKEN, "chompchomp") ?: "chompchomp"
         set(value) = prefs.edit().putString(KEY_CAL_TOKEN, value).apply()
 
     /** Display name shown to operators reviewing calibration history. */
-    var operatorLabel: String
+    override var operatorLabel: String
         get() = prefs.getString(KEY_OPERATOR_LABEL, "") ?: ""
         set(value) = prefs.edit().putString(KEY_OPERATOR_LABEL, value).apply()
 
