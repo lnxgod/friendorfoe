@@ -4,6 +4,7 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.hardware.SensorManager
 import android.location.LocationManager
+import android.net.ConnectivityManager
 import android.net.wifi.WifiManager
 import dagger.Module
 import dagger.Provides
@@ -45,6 +46,12 @@ object SensorModule {
     @Singleton
     fun provideWifiManager(@ApplicationContext context: Context): WifiManager {
         return context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+    }
+
+    @Provides
+    @Singleton
+    fun provideConnectivityManager(@ApplicationContext context: Context): ConnectivityManager {
+        return context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     }
 
 }

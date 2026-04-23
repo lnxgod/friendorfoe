@@ -1,14 +1,10 @@
 package com.friendorfoe.calibration
 
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothManager
 import android.location.Location
 import android.location.LocationListener
-import android.location.LocationManager
-import android.net.wifi.WifiManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.friendorfoe.data.DetectionPrefs
 import com.google.gson.JsonObject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -37,12 +33,10 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class CalibrationViewModel @Inject constructor(
-    private val prefs: DetectionPrefs,
-    private val advertiser: BleCalibrationAdvertiser,
-    private val api: CalibrationApi,
-    private val locationManager: LocationManager,
-    private val bluetoothManager: BluetoothManager,
-    private val wifiManager: WifiManager,
+    private val prefs: CalibrationSettingsStore,
+    private val advertiser: CalibrationAdvertiser,
+    private val api: CalibrationBackend,
+    private val platform: CalibrationPlatform,
 ) : ViewModel() {
 
     /** One sensor as known to the fleet — drives the "tap which sensor
@@ -161,6 +155,13 @@ class CalibrationViewModel @Inject constructor(
          *  UI next to the "Switch WiFi" button so operators can see which
          *  network they're on while roaming across the property. */
         val currentSsid: String? = null,
+        val networkTransport: NetworkTransportState = NetworkTransportState.Offline,
+        val backendReachability: BackendReachabilityState = BackendReachabilityState.Unknown,
+        val calibrationAuthState: CalibrationAuthState = CalibrationAuthState.Unknown,
+        val sensorLoadState: SensorLoadState = SensorLoadState.Unknown,
+        val backendVersion: String? = null,
+        val lastPreflightFailurePhase: PreflightPhase? = null,
+        val lastPreflightFailureDetail: String? = null,
         val fitApplied: Boolean? = null,
         val bluetoothEnabled: Boolean = true,
         val backendStatus: BackendStatus = BackendStatus.Unknown,
@@ -170,7 +171,9 @@ class CalibrationViewModel @Inject constructor(
         backendUrl = prefs.backendUrl,
         token = prefs.calibrationToken,
         operatorLabel = prefs.operatorLabel,
-        bluetoothEnabled = bluetoothManager.adapter?.isEnabled == true,
+        bluetoothEnabled = platform.isBluetoothEnabled(),
+        currentSsid = platform.currentNetworkSnapshot().ssid,
+        networkTransport = platform.currentNetworkSnapshot().transport,
     ))
     val state: StateFlow<State> = _state.asStateFlow()
 
@@ -223,7 +226,7 @@ class CalibrationViewModel @Inject constructor(
                 if (sid != null && s.backendUrl.isNotBlank() && s.token.isNotBlank()) {
                     flushOnce(sid, s.backendUrl, s.token)
                 }
-                refreshCurrentSsid()
+                refreshNetworkState()
                 delay(4000)
             }
         }
@@ -279,18 +282,16 @@ class CalibrationViewModel @Inject constructor(
     }
 
     @SuppressLint("MissingPermission")
-    private fun refreshCurrentSsid() {
-        try {
-            val info = wifiManager.connectionInfo ?: return
-            val raw = info.ssid ?: return
-            // wifiManager returns "<unknown ssid>" when permission is denied
-            // and quotes real SSIDs as "Name". Strip quotes for display.
-            val ssid = raw.removePrefix("\"").removeSuffix("\"")
-                .takeIf { it.isNotBlank() && it != "<unknown ssid>" }
-            if (ssid != _state.value.currentSsid) {
-                _state.value = _state.value.copy(currentSsid = ssid)
-            }
-        } catch (_: Exception) { /* permission / roaming glitch */ }
+    private fun refreshNetworkState() {
+        val snapshot = try {
+            platform.currentNetworkSnapshot()
+        } catch (_: Exception) {
+            CalibrationNetworkSnapshot()
+        }
+        _state.value = _state.value.copy(
+            currentSsid = snapshot.ssid,
+            networkTransport = snapshot.transport,
+        )
     }
 
     private var feedbackJob: Job? = null
@@ -308,12 +309,24 @@ class CalibrationViewModel @Inject constructor(
 
     fun setBackendUrl(value: String) {
         prefs.backendUrl = value
-        _state.value = _state.value.copy(backendUrl = value, backendStatus = BackendStatus.Unknown)
+        _state.value = _state.value.copy(
+            backendUrl = value,
+            backendStatus = BackendStatus.Unknown,
+            backendReachability = BackendReachabilityState.Unknown,
+            calibrationAuthState = CalibrationAuthState.Unknown,
+            sensorLoadState = SensorLoadState.Unknown,
+            backendVersion = null,
+        )
     }
 
     fun setToken(value: String) {
         prefs.calibrationToken = value
-        _state.value = _state.value.copy(token = value, backendStatus = BackendStatus.Unknown)
+        _state.value = _state.value.copy(
+            token = value,
+            backendStatus = BackendStatus.Unknown,
+            calibrationAuthState = CalibrationAuthState.Unknown,
+            sensorLoadState = SensorLoadState.Unknown,
+        )
     }
 
     fun setOperatorLabel(value: String) {
@@ -325,11 +338,42 @@ class CalibrationViewModel @Inject constructor(
         _state.value = _state.value.copy(errorMessage = null, infoMessage = null)
     }
 
+    private fun clearPreflightFailure() {
+        _state.value = _state.value.copy(
+            lastPreflightFailurePhase = null,
+            lastPreflightFailureDetail = null,
+        )
+    }
+
+    private fun setPreflightFailure(
+        phase: PreflightPhase,
+        detail: String,
+        userMessage: String,
+        backendStatus: BackendStatus,
+        backendReachability: BackendReachabilityState,
+        calibrationAuthState: CalibrationAuthState,
+        sensorLoadState: SensorLoadState,
+        backendVersion: String? = _state.value.backendVersion,
+        availableSensors: List<SensorInfo> = _state.value.availableSensors,
+    ) {
+        _state.value = _state.value.copy(
+            backendStatus = backendStatus,
+            backendReachability = backendReachability,
+            calibrationAuthState = calibrationAuthState,
+            sensorLoadState = sensorLoadState,
+            backendVersion = backendVersion,
+            availableSensors = availableSensors,
+            lastPreflightFailurePhase = phase,
+            lastPreflightFailureDetail = detail,
+            errorMessage = userMessage,
+        )
+    }
+
     /** Re-check Bluetooth state, e.g. after the user toggles it in
      *  Settings and returns to the screen. */
     fun refreshBluetoothState() {
         _state.value = _state.value.copy(
-            bluetoothEnabled = bluetoothManager.adapter?.isEnabled == true,
+            bluetoothEnabled = platform.isBluetoothEnabled(),
         )
     }
 
@@ -342,6 +386,11 @@ class CalibrationViewModel @Inject constructor(
         _state.value = _state.value.copy(
             token = default,
             backendStatus = BackendStatus.Unknown,
+            backendReachability = BackendReachabilityState.Unknown,
+            calibrationAuthState = CalibrationAuthState.Unknown,
+            sensorLoadState = SensorLoadState.Unknown,
+            lastPreflightFailurePhase = null,
+            lastPreflightFailureDetail = null,
             infoMessage = "Token reset to default. Testing…",
         )
         refreshConnectivity()
@@ -356,40 +405,90 @@ class CalibrationViewModel @Inject constructor(
      *  APK had a random dev token in prefs that's now stale" upgrade
      *  path where SharedPreferences survive across installs. */
     fun refreshConnectivity() {
+        refreshNetworkState()
         val s = _state.value
         if (s.backendUrl.isBlank() || s.token.isBlank()) {
-            _state.value = s.copy(backendStatus = BackendStatus.Unknown)
+            _state.value = s.copy(
+                backendStatus = BackendStatus.Unknown,
+                backendReachability = BackendReachabilityState.Unknown,
+                calibrationAuthState = CalibrationAuthState.Unknown,
+                sensorLoadState = SensorLoadState.Unknown,
+                backendVersion = null,
+                lastPreflightFailurePhase = null,
+                lastPreflightFailureDetail = null,
+            )
             return
         }
         viewModelScope.launch {
-            var res = api.walkSensors(s.backendUrl, s.token)
-            if (res.isFailure) {
-                val firstMsg = res.exceptionOrNull()?.message.orEmpty()
+            clearPreflightFailure()
+            refreshNetworkState()
+            val live = _state.value
+            val healthRes = api.health(live.backendUrl)
+            if (healthRes.isFailure) {
+                val msg = healthRes.exceptionOrNull()?.message.orEmpty()
+                setPreflightFailure(
+                    phase = PreflightPhase.Health,
+                    detail = msg.ifBlank { "unknown health failure" },
+                    userMessage = "Backend unreachable: $msg",
+                    backendStatus = BackendStatus.Unreachable,
+                    backendReachability = BackendReachabilityState.Unreachable,
+                    calibrationAuthState = CalibrationAuthState.Unknown,
+                    sensorLoadState = SensorLoadState.Unknown,
+                    backendVersion = null,
+                    availableSensors = emptyList(),
+                )
+                return@launch
+            }
+            val healthBody = healthRes.getOrNull() ?: JsonObject()
+            val healthVersion = healthBody.get("version")
+                ?.takeIf { !it.isJsonNull }
+                ?.asString
+            _state.value = _state.value.copy(
+                backendStatus = BackendStatus.Ok,
+                backendReachability = BackendReachabilityState.Reachable,
+                backendVersion = healthVersion,
+                errorMessage = null,
+                lastPreflightFailurePhase = null,
+                lastPreflightFailureDetail = null,
+            )
+
+            var sensorsRes = api.walkSensors(live.backendUrl, live.token)
+            if (sensorsRes.isFailure) {
+                val firstMsg = sensorsRes.exceptionOrNull()?.message.orEmpty()
                 val is401 = "401" in firstMsg
-                // Silent retry with the default token if a) the current one
-                // got a 401 AND b) it's not already the default.
-                if (is401 && s.token != CalibrationApi.DEFAULT_TOKEN) {
-                    val recovered = api.walkSensors(s.backendUrl, CalibrationApi.DEFAULT_TOKEN)
+                if (is401 && live.token != CalibrationApi.DEFAULT_TOKEN) {
+                    val recovered = api.walkSensors(live.backendUrl, CalibrationApi.DEFAULT_TOKEN)
                     if (recovered.isSuccess) {
                         prefs.calibrationToken = CalibrationApi.DEFAULT_TOKEN
                         _state.value = _state.value.copy(
                             token = CalibrationApi.DEFAULT_TOKEN,
                             infoMessage = "Stored token was stale — reset to default.",
                         )
-                        res = recovered
+                        sensorsRes = recovered
                     }
                 }
             }
-            if (res.isFailure) {
-                val msg = res.exceptionOrNull()?.message.orEmpty()
-                _state.value = _state.value.copy(
-                    backendStatus = if ("401" in msg) BackendStatus.AuthFailed
-                                    else BackendStatus.Unreachable,
-                    errorMessage = "Backend check failed: $msg",
+            if (sensorsRes.isFailure) {
+                val msg = sensorsRes.exceptionOrNull()?.message.orEmpty()
+                val is401 = "401" in msg
+                setPreflightFailure(
+                    phase = PreflightPhase.Sensors,
+                    detail = msg.ifBlank { "unknown sensor preflight failure" },
+                    userMessage = if (is401) {
+                        "Calibration token rejected — update X-Cal-Token."
+                    } else {
+                        "Sensor list unavailable: $msg"
+                    },
+                    backendStatus = if (is401) BackendStatus.AuthFailed else BackendStatus.Ok,
+                    backendReachability = BackendReachabilityState.Reachable,
+                    calibrationAuthState = if (is401) CalibrationAuthState.Invalid else CalibrationAuthState.Valid,
+                    sensorLoadState = if (is401) SensorLoadState.Unknown else SensorLoadState.Unavailable,
+                    backendVersion = healthVersion,
+                    availableSensors = if (is401) emptyList() else _state.value.availableSensors,
                 )
                 return@launch
             }
-            val body = res.getOrNull() ?: return@launch
+            val body = sensorsRes.getOrNull() ?: return@launch
             val sensors = mutableListOf<SensorInfo>()
             body.getAsJsonArray("sensors")?.forEach { el ->
                 val obj = el.asJsonObject
@@ -405,6 +504,13 @@ class CalibrationViewModel @Inject constructor(
             _state.value = _state.value.copy(
                 availableSensors = sensors,
                 backendStatus = BackendStatus.Ok,
+                backendReachability = BackendReachabilityState.Reachable,
+                calibrationAuthState = CalibrationAuthState.Valid,
+                sensorLoadState = if (sensors.isEmpty()) SensorLoadState.Empty else SensorLoadState.Ready,
+                backendVersion = healthVersion,
+                lastPreflightFailurePhase = null,
+                lastPreflightFailureDetail = null,
+                errorMessage = null,
             )
         }
     }
@@ -427,17 +533,24 @@ class CalibrationViewModel @Inject constructor(
 
     @SuppressLint("MissingPermission")
     fun startWalk() {
+        refreshNetworkState()
+        refreshBluetoothState()
         val s = _state.value
         if (s.isWalking) return
         if (s.backendUrl.isBlank() || s.token.isBlank()) {
             _state.value = s.copy(errorMessage = "Backend URL and token are required.")
             return
         }
-        if (bluetoothManager.adapter?.isEnabled != true) {
+        if (!s.bluetoothEnabled) {
             _state.value = s.copy(
                 bluetoothEnabled = false,
                 errorMessage = "Bluetooth is off — enable it before starting a walk.",
             )
+            return
+        }
+        val preflightFailure = s.preflightFailureReason()
+        if (preflightFailure != null) {
+            _state.value = s.copy(errorMessage = preflightFailure)
             return
         }
         viewModelScope.launch {
@@ -445,10 +558,20 @@ class CalibrationViewModel @Inject constructor(
                                     operatorLabel = s.operatorLabel.ifBlank { "phone" })
             if (res.isFailure) {
                 val msg = res.exceptionOrNull()?.message.orEmpty()
-                _state.value = _state.value.copy(
-                    errorMessage = "Walk-start failed: $msg",
-                    backendStatus = if ("401" in msg) BackendStatus.AuthFailed
-                                    else BackendStatus.Unreachable,
+                setPreflightFailure(
+                    phase = PreflightPhase.StartWalk,
+                    detail = msg.ifBlank { "unknown walk-start failure" },
+                    userMessage = when {
+                        "401" in msg -> "Calibration token rejected — update X-Cal-Token."
+                        "gps" in msg.lowercase() -> "GPS unavailable — check location services."
+                        else -> "Walk-start failed: $msg"
+                    },
+                    backendStatus = if ("401" in msg) BackendStatus.AuthFailed else _state.value.backendStatus,
+                    backendReachability = if ("401" in msg) BackendReachabilityState.Reachable
+                        else _state.value.backendReachability,
+                    calibrationAuthState = if ("401" in msg) CalibrationAuthState.Invalid
+                        else _state.value.calibrationAuthState,
+                    sensorLoadState = _state.value.sensorLoadState,
                 )
                 return@launch
             }
@@ -464,14 +587,7 @@ class CalibrationViewModel @Inject constructor(
 
             // Subscribe to GPS — high-accuracy fixes at ~1 Hz
             try {
-                locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER, 1000L, 0.5f, gpsListener
-                )
-                if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                    locationManager.requestLocationUpdates(
-                        LocationManager.NETWORK_PROVIDER, 2000L, 1.0f, gpsListener
-                    )
-                }
+                platform.requestLocationUpdates(gpsListener)
             } catch (e: SecurityException) {
                 advertiser.stop()
                 _state.value = _state.value.copy(errorMessage = "Location permission missing.")
@@ -498,11 +614,13 @@ class CalibrationViewModel @Inject constructor(
                 fitResult = null,
                 fitApplied = null,
                 backendStatus = BackendStatus.Ok,
+                backendReachability = BackendReachabilityState.Reachable,
+                calibrationAuthState = CalibrationAuthState.Valid,
                 queuedCount = 0,
                 infoMessage = "Walking — visit each sensor and tap its 'I'm here' button " +
                               "to anchor the fit + verify the sensor's coordinates.",
             )
-            refreshCurrentSsid()
+            refreshNetworkState()
             startFeedbackPolling(sid)
             startFlushLoop()
             startMyPositionPolling(sid)
@@ -621,7 +739,7 @@ class CalibrationViewModel @Inject constructor(
         flushJob = null
         myPositionJob?.cancel()
         myPositionJob = null
-        try { locationManager.removeUpdates(gpsListener) } catch (_: Exception) {}
+        try { platform.removeLocationUpdates(gpsListener) } catch (_: Exception) {}
         advertiser.stop()
         viewModelScope.launch {
             // Last-ditch drain of anything still queued before we end the
@@ -739,7 +857,7 @@ class CalibrationViewModel @Inject constructor(
         feedbackJob?.cancel()
         flushJob?.cancel()
         myPositionJob?.cancel()
-        try { locationManager.removeUpdates(gpsListener) } catch (_: Exception) {}
+        try { platform.removeLocationUpdates(gpsListener) } catch (_: Exception) {}
         advertiser.stop()
         super.onCleared()
     }

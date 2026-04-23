@@ -8,7 +8,6 @@ import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.os.ParcelUuid
 import android.util.Log
-import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -27,9 +26,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class BleCalibrationAdvertiser @Inject constructor(
-    @ApplicationContext context: android.content.Context,
     private val bluetoothManager: BluetoothManager
-) {
+) : CalibrationAdvertiser {
     companion object {
         private const val TAG = "BleCalAdvertiser"
     }
@@ -42,7 +40,7 @@ class BleCalibrationAdvertiser @Inject constructor(
         private set
 
     @SuppressLint("MissingPermission")
-    fun start(serviceUuid: String, onError: (String) -> Unit = {}): Boolean {
+    override fun start(serviceUuid: String, onError: (String) -> Unit): Boolean {
         stop()
         val adapter = bluetoothManager.adapter
         if (adapter == null || !adapter.isEnabled) {
@@ -117,7 +115,7 @@ class BleCalibrationAdvertiser @Inject constructor(
 
     @SuppressLint("MissingPermission")
     @Synchronized
-    fun stop() {
+    override fun stop() {
         val cb = activeCallback ?: return
         try {
             advertiser?.stopAdvertising(cb)
