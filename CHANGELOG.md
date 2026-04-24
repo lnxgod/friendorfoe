@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.63.15-calibration-ci] - 2026-04-23
+
+### Fixed
+- Guarded scanner extended-BLE discovery handling behind the NimBLE `BLE_EXT_ADV` feature flag so ESP32-C5 builds compile cleanly when that target exposes only legacy discovery structs.
+
+### Release
+- Recut the calibration validation release after the ESP32-C5 clean-build compatibility fix.
+
 ## [0.63.14-calibration-ci] - 2026-04-23
 
 ### Fixed

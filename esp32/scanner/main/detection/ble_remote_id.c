@@ -420,6 +420,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         break;
     }
 
+#if MYNEWT_VAL(BLE_EXT_ADV)
     case BLE_GAP_EVENT_EXT_DISC: {
         /* Extended discovery event (BLE 5) — same processing as legacy */
         const struct ble_gap_ext_disc_desc *ext = &event->ext_disc;
@@ -670,6 +671,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
         break;
     }
+#endif
 
     case BLE_GAP_EVENT_DISC_COMPLETE:
         ESP_LOGI(TAG, "BLE scan complete, restarting...");
@@ -689,6 +691,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
 static void ble_remote_id_start_scan_internal(void)
 {
+#if MYNEWT_VAL(BLE_EXT_ADV)
     /*
      * Use ble_gap_ext_disc for BLE 5 extended discovery on ESP32-S3.
      * Passive scanning with 100% duty cycle (window == interval) to catch
@@ -735,6 +738,24 @@ static void ble_remote_id_start_scan_internal(void)
     } else {
         ESP_LOGI(TAG, "BLE scanning started (ext_disc passive, 100%% duty)");
     }
+#else
+    struct ble_gap_disc_params legacy_params = {
+        .passive = 1,
+        .itvl = 0x0060,
+        .window = 0x0060,
+        .filter_duplicates = 0,
+        .limited = 0,
+        .filter_policy = 0,
+    };
+
+    int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER,
+                          &legacy_params, ble_gap_event_cb, NULL);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gap_disc() failed: %d", rc);
+    } else {
+        ESP_LOGI(TAG, "BLE scanning started (legacy passive, continuous)");
+    }
+#endif
 }
 
 /* ── NimBLE host sync callback ─────────────────────────────────────────────── */
