@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     description="Backend proxy & enrichment layer for the Friend or Foe aircraft/drone identification app.",
-    version="0.63.10-calibration-mode",
+    version="0.63.11-calibration-ci",
     lifespan=lifespan,
 )
 
@@ -146,7 +146,7 @@ async def health_check() -> HealthResponse:
 
     return HealthResponse(
         status="ok",
-        version="0.63.10-calibration-mode",
+        version="0.63.11-calibration-ci",
         redis="ok" if redis_ok else "unavailable",
         database=db_status,
     )

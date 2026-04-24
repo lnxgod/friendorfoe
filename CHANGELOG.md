@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.63.11-calibration-ci] - 2026-04-23
+
+### Fixed
+- Added the missing `python-multipart` backend dependency so CI and clean installs can import OTA upload routes.
+- Linked ESP32 native tests against `libm` on Linux so Bayesian fusion math tests pass in GitHub Actions as well as locally.
+
+### Release
+- Recut the Android-led calibration-mode release after CI hardening so the latest tag has clean backend/app/firmware validation gates.
+
 ## [0.63.10-calibration-mode] - 2026-04-23
 
 ### Added
