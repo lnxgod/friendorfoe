@@ -3,12 +3,12 @@ package com.friendorfoe.calibration
 import android.annotation.SuppressLint
 import android.location.Location
 import android.location.LocationListener
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonObject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,10 +39,6 @@ class CalibrationViewModel @Inject constructor(
     private val api: CalibrationBackend,
     private val platform: CalibrationPlatform,
 ) : ViewModel() {
-    companion object {
-        private const val TAG = "CalibrationViewModel"
-    }
-
     /** One sensor as known to the fleet — drives the "tap which sensor
      *  you're at" cards and the live RSSI feedback table. */
     data class SensorInfo(
@@ -967,7 +963,6 @@ class CalibrationViewModel @Inject constructor(
     ) {
         val s = _state.value
         val sid = s.sessionId ?: return
-        Log.i(TAG, "action=abort_walk reason=$reason session=$sid")
         feedbackJob?.cancel()
         feedbackJob = null
         flushJob?.cancel()
@@ -1099,5 +1094,10 @@ class CalibrationViewModel @Inject constructor(
         try { platform.removeLocationUpdates(gpsListener) } catch (_: Exception) {}
         advertiser.stop()
         super.onCleared()
+    }
+
+    internal fun clearForTest() {
+        viewModelScope.cancel()
+        onCleared()
     }
 }

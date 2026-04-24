@@ -233,6 +233,7 @@ class CalibrationViewModelTest {
         assertEquals("quality_gate_r2_below_0_4", ended.applyReason)
         assertEquals("missing_fit", ended.verifiedFitResult?.get("reason")?.asString)
         assertEquals("android_walk_provisional", backend.lastEndProvisionalFit?.get("source")?.asString)
+        viewModel.clearForTest()
     }
 
     @Test
@@ -254,10 +255,10 @@ class CalibrationViewModelTest {
         viewModel.refreshConnectivity()
         advanceUntilIdle()
         viewModel.startWalk()
-        advanceUntilIdle()
+        runCurrent()
 
         viewModel.abortWalk(reason = "app_backgrounded", userMessage = "Walk aborted because the app left the foreground.")
-        advanceUntilIdle()
+        runCurrent()
 
         val state = viewModel.state.value
         assertFalse(state.isWalking)
@@ -266,6 +267,7 @@ class CalibrationViewModelTest {
         assertEquals("Walk aborted because the app left the foreground.", state.infoMessage)
         assertEquals(1, backend.abortCalls)
         assertEquals("app_backgrounded", backend.lastAbortReason)
+        viewModel.clearForTest()
     }
 
     @Test
