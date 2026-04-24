@@ -5,10 +5,14 @@ Synthetic-data tests so we can run them headless without nodes or a phone.
 
 import math
 import time
+import uuid
+from collections import deque
 
 import pytest
 from httpx import AsyncClient, ASGITransport
 
+from app.routers import detections
+from app.services.database import create_tables
 from app.services.phone_calibration import (
     PhoneCalibrationManager,
     _ols_fit,
@@ -19,6 +23,25 @@ from app.services.phone_calibration import (
     MIN_SAMPLES_PER_LISTENER,
 )
 from app.services.position_filter import AlphaBetaTracker, AlphaBetaManager
+from app.services.triangulation import SensorTracker
+
+
+async def _fake_start_node_mode(node, session):
+    return {
+        "ok": True,
+        "session_id": session.session_id,
+        "scan_mode": "calibration",
+        "device_id": node["device_id"],
+    }
+
+
+async def _fake_stop_node_mode(node, session_id, reason):
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "reason": reason,
+        "device_id": node["device_id"],
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -371,19 +394,58 @@ async def test_walk_endpoints_require_token():
 
 
 @pytest.mark.asyncio
-async def test_walk_lifecycle_with_token():
+async def test_walk_lifecycle_with_token(monkeypatch):
     from app.main import app
     from app.routers.detections import _CAL_TOKEN
+    await create_tables()
+    device_id = f"uplink-walk-{uuid.uuid4().hex[:8]}"
+    detections._phone_cal_mgr.sessions.clear()
+    detections._calibration_mode.active_session_id = None
+    detections._calibration_mode.fleet_mode_state = "inactive"
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {
+            device_id: {
+                "device_id": device_id,
+                "last_seen": time.time(),
+                "lat": 37.200001,
+                "lon": -122.200001,
+                "ip": "192.168.42.201",
+                "detection_count": 0,
+                "total_batches": 1,
+                "total_detections": 0,
+                "source_fixups_total": 0,
+                "source_fixups_by_rule": {},
+            }
+        },
+    )
+    monkeypatch.setattr(detections._calibration_mode, "_start_node_mode", _fake_start_node_mode)
+    monkeypatch.setattr(detections._calibration_mode, "_stop_node_mode", _fake_stop_node_mode)
     transport = ASGITransport(app=app)
     headers = {"X-Cal-Token": _CAL_TOKEN}
     async with AsyncClient(transport=transport, base_url="http://testserver",
                             headers=headers) as c:
+        create_resp = await c.post(
+            "/nodes",
+            json={
+                "device_id": device_id,
+                "name": "Pool",
+                "lat": 37.200001,
+                "lon": -122.200001,
+                "alt": 0.0,
+                "position_mode": "active",
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
         r = await c.post("/detections/calibrate/walk/start",
                          json={"operator_label": "test"})
         assert r.status_code == 200, r.text
         body = r.json()
         sid = body["session_id"]
         assert body["advertise_uuid"].startswith("cafe")
+        assert body["target_sensor_count"] == 1
+        assert body["mode_state"] == "active"
         # Push a couple trace points
         r = await c.post("/detections/calibrate/walk/sample",
                          json={"session_id": sid, "lat": 37.0, "lon": -122.0})
@@ -391,11 +453,386 @@ async def test_walk_lifecycle_with_token():
         # Feedback returns the session shape even with no samples
         r = await c.get(f"/detections/calibrate/walk/feedback?session_id={sid}")
         assert r.status_code == 200
-        assert r.json()["trace_points"] >= 1
+        feedback = r.json()
+        assert feedback["trace_points"] >= 1
+        assert feedback["eligible_sensor_count"] == 1
+        assert feedback["heard_sensor_count"] == 0
+        assert feedback["target_sensor_ids"] == [device_id]
+        assert feedback["fleet_mode_state"] == "active"
+        r = await c.get(f"/detections/calibrate/walk/my-position?session_id={sid}")
+        assert r.status_code == 200
+        my_pos = r.json()
+        assert my_pos["eligible_sensor_count"] == 1
+        assert my_pos["heard_sensor_count"] == 0
+        assert my_pos["target_sensor_ids"] == [device_id]
+        assert my_pos["fleet_mode_state"] == "active"
+        assert my_pos["status"] == "no_sensors_hearing_you_yet"
         # End — no sensor samples → fit fails cleanly, applied=False
         r = await c.post("/detections/calibrate/walk/end",
                          json={"session_id": sid})
         assert r.status_code == 200
         body = r.json()
         assert body["applied"] is False
-        assert body["fit"]["ok"] is False
+        assert body["verified_fit"]["ok"] is False
+
+        delete_resp = await c.delete(f"/nodes/{device_id}")
+        assert delete_resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_walk_abort_endpoint_stops_fleet_mode(monkeypatch):
+    from app.main import app
+    from app.routers.detections import _CAL_TOKEN
+
+    await create_tables()
+    device_id = f"uplink-abort-{uuid.uuid4().hex[:8]}"
+    detections._phone_cal_mgr.sessions.clear()
+    detections._calibration_mode.active_session_id = None
+    detections._calibration_mode.fleet_mode_state = "inactive"
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {
+            device_id: {
+                "device_id": device_id,
+                "last_seen": time.time(),
+                "lat": 37.230001,
+                "lon": -122.230001,
+                "ip": "192.168.42.211",
+            }
+        },
+    )
+    monkeypatch.setattr(detections._calibration_mode, "_start_node_mode", _fake_start_node_mode)
+    monkeypatch.setattr(detections._calibration_mode, "_stop_node_mode", _fake_stop_node_mode)
+
+    transport = ASGITransport(app=app)
+    headers = {"X-Cal-Token": _CAL_TOKEN}
+    async with AsyncClient(transport=transport, base_url="http://testserver", headers=headers) as c:
+        create_resp = await c.post(
+            "/nodes",
+            json={
+                "device_id": device_id,
+                "name": "AbortNode",
+                "lat": 37.230001,
+                "lon": -122.230001,
+                "alt": 0.0,
+                "position_mode": "active",
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+        start_resp = await c.post("/detections/calibrate/walk/start", json={"operator_label": "abort test"})
+        assert start_resp.status_code == 200, start_resp.text
+        sid = start_resp.json()["session_id"]
+        assert detections._calibration_mode.fleet_mode_state == "active"
+
+        abort_resp = await c.post(
+            "/detections/calibrate/walk/abort",
+            json={"session_id": sid, "reason": "test_abort"},
+        )
+        assert abort_resp.status_code == 200, abort_resp.text
+        payload = abort_resp.json()
+        assert payload["ok"] is True
+        assert payload["mode_state"] == "inactive"
+        assert payload["abort_reason"] == "test_abort"
+        assert detections._calibration_mode.fleet_mode_state == "inactive"
+
+        delete_resp = await c.delete(f"/nodes/{device_id}")
+        assert delete_resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_walk_sensors_only_include_live_active_geometry_nodes(monkeypatch):
+    from app.main import app
+    from app.routers.detections import _CAL_TOKEN
+
+    await create_tables()
+    transport = ASGITransport(app=app)
+    headers = {"X-Cal-Token": _CAL_TOKEN}
+
+    live_frontyard_id = f"uplink-live-{uuid.uuid4().hex[:8]}"
+    pool_id = f"uplink-pool-{uuid.uuid4().hex[:8]}"
+    stale_frontyard_id = f"uplink-stale-{uuid.uuid4().hex[:8]}"
+    gate_id = f"uplink-gate-{uuid.uuid4().hex[:8]}"
+    created_ids: list[str] = []
+
+    async with AsyncClient(transport=transport, base_url="http://testserver",
+                           headers=headers) as c:
+        for payload in [
+            {
+                "device_id": live_frontyard_id,
+                "name": "FrontYard",
+                "lat": 37.100001,
+                "lon": -122.100001,
+                "alt": 0.0,
+                "position_mode": "active",
+            },
+            {
+                "device_id": pool_id,
+                "name": "Pool",
+                "lat": 37.100101,
+                "lon": -122.100101,
+                "alt": 0.0,
+                "position_mode": "active",
+            },
+            {
+                "device_id": stale_frontyard_id,
+                "name": "FrontYard",
+                "lat": 37.199999,
+                "lon": -122.199999,
+                "alt": 0.0,
+                "position_mode": "active",
+            },
+            {
+                "device_id": gate_id,
+                "name": "Gate",
+                "lat": 37.300001,
+                "lon": -122.300001,
+                "alt": 0.0,
+                "position_mode": "excluded",
+            },
+        ]:
+            resp = await c.post("/nodes", json=payload)
+            assert resp.status_code == 201, resp.text
+            created_ids.append(payload["device_id"])
+
+        now = time.time()
+        monkeypatch.setattr(
+            detections,
+            "_node_heartbeats",
+            {
+                live_frontyard_id: {
+                    "device_id": live_frontyard_id,
+                    "last_seen": now,
+                    "lat": 37.100001,
+                    "lon": -122.100001,
+                    "ip": "192.168.42.101",
+                },
+                pool_id: {
+                    "device_id": pool_id,
+                    "last_seen": now,
+                    "lat": 37.100101,
+                    "lon": -122.100101,
+                    "ip": "192.168.42.102",
+                },
+                gate_id: {
+                    "device_id": gate_id,
+                    "last_seen": now,
+                    "lat": 37.300001,
+                    "lon": -122.300001,
+                    "ip": "192.168.42.202",
+                },
+            },
+        )
+
+        resp = await c.get("/detections/calibrate/walk/sensors")
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        sensor_ids = {sensor["device_id"] for sensor in payload["sensors"]}
+
+        assert payload["count"] == 2
+        assert live_frontyard_id in sensor_ids
+        assert pool_id in sensor_ids
+        assert stale_frontyard_id not in sensor_ids
+        assert gate_id not in sensor_ids
+    async with AsyncClient(transport=transport, base_url="http://testserver") as cleanup:
+        for device_id in created_ids:
+            await cleanup.delete(f"/nodes/{device_id}")
+
+
+@pytest.mark.asyncio
+async def test_active_calibration_beacon_creates_walk_sample_without_map_clutter(monkeypatch):
+    from app.main import app
+    from app.routers.detections import _CAL_TOKEN
+
+    await create_tables()
+    transport = ASGITransport(app=app)
+    headers = {"X-Cal-Token": _CAL_TOKEN}
+
+    tracker = SensorTracker()
+    recent = deque(maxlen=50000)
+    monkeypatch.setattr(detections, "_sensor_tracker", tracker)
+    monkeypatch.setattr(detections, "_recent_detections", recent)
+    monkeypatch.setattr(detections._calibration_mode, "_start_node_mode", _fake_start_node_mode)
+    monkeypatch.setattr(detections._calibration_mode, "_stop_node_mode", _fake_stop_node_mode)
+    detections._phone_cal_mgr.sessions.clear()
+
+    device_id = f"uplink-cal-{uuid.uuid4().hex[:8]}"
+    async with AsyncClient(transport=transport, base_url="http://testserver",
+                           headers=headers) as c:
+        create_resp = await c.post(
+            "/nodes",
+            json={
+                "device_id": device_id,
+                "name": "Pool",
+                "lat": 37.410001,
+                "lon": -122.410001,
+                "alt": 0.0,
+                "position_mode": "active",
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+        now = time.time()
+        monkeypatch.setattr(
+            detections,
+            "_node_heartbeats",
+            {
+                device_id: {
+                    "device_id": device_id,
+                    "last_seen": now,
+                    "lat": 37.410001,
+                    "lon": -122.410001,
+                    "ip": "192.168.42.201",
+                    "detection_count": 0,
+                    "total_batches": 1,
+                    "total_detections": 0,
+                    "source_fixups_total": 0,
+                    "source_fixups_by_rule": {},
+                }
+            },
+        )
+
+        start_resp = await c.post(
+            "/detections/calibrate/walk/start",
+            json={"operator_label": "Test phone"},
+        )
+        assert start_resp.status_code == 200, start_resp.text
+        start_body = start_resp.json()
+        sid = start_body["session_id"]
+        adv_uuid = start_body["advertise_uuid"]
+
+        trace_resp = await c.post(
+            "/detections/calibrate/walk/sample",
+            json={
+                "session_id": sid,
+                "lat": 37.410050,
+                "lon": -122.410050,
+                "accuracy_m": 3.0,
+            },
+        )
+        assert trace_resp.status_code == 200, trace_resp.text
+
+        ingest_resp = await c.post(
+            "/detections/drones",
+            json={
+                "device_id": device_id,
+                "device_lat": 37.410001,
+                "device_lon": -122.410001,
+                "device_alt": 0.0,
+                "timestamp": int(time.time()),
+                "detections": [
+                    {
+                        "drone_id": "BLE:12345678:Calibration Beacon",
+                        "source": "ble_fingerprint",
+                        "confidence": 0.85,
+                        "timestamp": int(time.time() * 1000),
+                        "rssi": -57,
+                        "manufacturer": "Calibration Beacon",
+                        "model": "FP:12345678",
+                        "bssid": "AA:BB:CC:DD:EE:FF",
+                        "ble_svc_uuids": adv_uuid,
+                    }
+                ],
+            },
+        )
+        assert ingest_resp.status_code == 200, ingest_resp.text
+        assert ingest_resp.json()["accepted"] == 1
+
+        session = detections._phone_cal_mgr.get(sid)
+        assert session is not None
+        assert len(session.samples) == 1
+        assert len(recent) == 0
+
+        feedback_resp = await c.get(f"/detections/calibrate/walk/feedback?session_id={sid}")
+        assert feedback_resp.status_code == 200, feedback_resp.text
+        feedback = feedback_resp.json()
+        assert feedback["eligible_sensor_count"] == 1
+        assert feedback["eligible_sensor_ids"] == [device_id]
+        assert feedback["heard_sensor_count"] == 1
+        assert feedback["heard_sensor_ids"] == [device_id]
+
+        my_pos_resp = await c.get(f"/detections/calibrate/walk/my-position?session_id={sid}")
+        assert my_pos_resp.status_code == 200, my_pos_resp.text
+        my_pos = my_pos_resp.json()
+        assert my_pos["eligible_sensor_count"] == 1
+        assert my_pos["heard_sensor_count"] == 1
+        assert my_pos["status"] == "only_1_sensor_need_3"
+
+        map_resp = await c.get("/detections/drones/map", params={"exclude_known": "false"})
+        assert map_resp.status_code == 200, map_resp.text
+        assert map_resp.json()["drone_count"] == 0
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as cleanup:
+        await cleanup.delete(f"/nodes/{device_id}")
+
+
+@pytest.mark.asyncio
+async def test_walk_start_fails_if_any_target_node_cannot_enter_calibration_mode(monkeypatch):
+    from app.main import app
+    from app.routers.detections import _CAL_TOKEN
+
+    await create_tables()
+    transport = ASGITransport(app=app)
+    headers = {"X-Cal-Token": _CAL_TOKEN}
+    detections._phone_cal_mgr.sessions.clear()
+    detections._calibration_mode.active_session_id = None
+    detections._calibration_mode.fleet_mode_state = "inactive"
+
+    ok_id = f"uplink-ok-{uuid.uuid4().hex[:8]}"
+    bad_id = f"uplink-bad-{uuid.uuid4().hex[:8]}"
+
+    async def fake_start(node, session):
+        if node["device_id"] == bad_id:
+            raise RuntimeError("arm failed")
+        return {"ok": True, "session_id": session.session_id, "scan_mode": "calibration"}
+
+    monkeypatch.setattr(detections._calibration_mode, "_start_node_mode", fake_start)
+    monkeypatch.setattr(detections._calibration_mode, "_stop_node_mode", _fake_stop_node_mode)
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {
+            ok_id: {
+                "device_id": ok_id,
+                "last_seen": time.time(),
+                "lat": 37.300001,
+                "lon": -122.300001,
+                "ip": "192.168.42.101",
+            },
+            bad_id: {
+                "device_id": bad_id,
+                "last_seen": time.time(),
+                "lat": 37.300101,
+                "lon": -122.300101,
+                "ip": "192.168.42.102",
+            },
+        },
+    )
+
+    async with AsyncClient(transport=transport, base_url="http://testserver", headers=headers) as c:
+        for device_id, lat, lon in [
+            (ok_id, 37.300001, -122.300001),
+            (bad_id, 37.300101, -122.300101),
+        ]:
+            resp = await c.post(
+                "/nodes",
+                json={
+                    "device_id": device_id,
+                    "name": device_id,
+                    "lat": lat,
+                    "lon": lon,
+                    "alt": 0.0,
+                    "position_mode": "active",
+                },
+            )
+            assert resp.status_code == 201, resp.text
+
+        start_resp = await c.post("/detections/calibrate/walk/start", json={"operator_label": "test"})
+        assert start_resp.status_code == 503
+        assert "failed to arm fleet calibration mode" in start_resp.text
+        assert not detections._phone_cal_mgr.sessions
+        assert detections._calibration_mode.active_session_id is None
+
+        await c.delete(f"/nodes/{ok_id}")
+        await c.delete(f"/nodes/{bad_id}")

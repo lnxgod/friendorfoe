@@ -138,11 +138,11 @@ pio run -e uplink-esp32 -t upload
 FOF_SET:device_id=fof_node_1
 FOF_SET:wifi_ssid=YourNetwork
 FOF_SET:wifi_pass=YourPassword
-FOF_SET:backend_url=http://192.168.42.145:8000
+FOF_SET:backend_url=http://192.168.42.162:8000
 FOF_SAVE
 
 # ── 5. Register Node on Backend ─────────────────────
-curl -X POST http://192.168.42.145:8000/nodes \
+curl -X POST http://192.168.42.162:8000/nodes \
   -H "Content-Type: application/json" \
   -d '{"device_id":"fof_node_1","name":"North","lat":YOUR_LAT,"lon":YOUR_LON}'
 </div>

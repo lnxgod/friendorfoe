@@ -11,13 +11,16 @@
 #include "bayesian_fusion.h"
 #include "constants.h"
 #include "detection_types.h"
+#include "detection_policy.h"
+#include "time_sync_policy.h"
 #include "uart_protocol.h"
 #include "task_priorities.h"
+#include "version.h"
 #include "wifi_scanner.h"
+#include "calibration_mode.h"
 #include "led_status.h"
 
 #include "cJSON.h"
-#include "esp_app_desc.h"
 
 #include "driver/uart.h"
 #include "esp_log.h"
@@ -29,6 +32,7 @@
 
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 #include "esp_timer.h"
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
@@ -38,6 +42,11 @@ static const char *TAG = "fof_uart_tx";
 #define UART_PORT_NUM       UART_NUM_1
 #define TX_BUF_SIZE         UART_BUF_SIZE
 #define RX_BUF_SIZE         UART_BUF_SIZE
+#define UART_TX_STACK_WARN_BYTES 1024
+#define LOW_PRIORITY_RATE_SLOTS 64
+#define BLE_FINGERPRINT_REEMIT_MS 60000
+#define WIFI_ASSOC_REEMIT_MS     30000
+#define WIFI_PROBE_REEMIT_MS     60000
 
 /* Queue receive timeout -- short enough to allow periodic maintenance. */
 #define QUEUE_RX_TIMEOUT_MS 100
@@ -48,6 +57,31 @@ static int s_ble_count  = 0;
 static int s_wifi_count = 0;
 static uint8_t s_current_channel = 0;
 static uint32_t s_seq = 0;
+static uint32_t s_uart_tx_dropped = 0;
+static uint32_t s_uart_tx_queue_high_water = 0;
+static uint32_t s_uart_tx_queue_depth = 0;
+static uint32_t s_uart_tx_queue_capacity = 0;
+static uint32_t s_uart_tx_queue_pressure_pct = 0;
+static uint32_t s_noise_drop_ble = 0;
+static uint32_t s_noise_drop_wifi = 0;
+static uint32_t s_probe_seen = 0;
+static uint32_t s_probe_sent = 0;
+static uint32_t s_probe_drop_low_value = 0;
+static uint32_t s_probe_drop_rate_limit = 0;
+static uint32_t s_probe_drop_pressure = 0;
+
+typedef struct {
+    bool    in_use;
+    char    key[64];
+    char    aux[32];
+    int64_t last_sent_ms;
+    float   last_confidence;
+    int8_t  last_rssi;
+} rate_limit_entry_t;
+
+static rate_limit_entry_t s_ble_fp_rate[LOW_PRIORITY_RATE_SLOTS];
+static rate_limit_entry_t s_wifi_assoc_rate[LOW_PRIORITY_RATE_SLOTS];
+static rate_limit_entry_t s_wifi_probe_rate[LOW_PRIORITY_RATE_SLOTS];
 
 /* UART write mutex — prevents interleaved writes from multiple tasks */
 static SemaphoreHandle_t s_uart_mutex = NULL;
@@ -66,6 +100,7 @@ static char s_identity_caps[16]  = {0};
 /* TX enable flag — controlled by uplink start/stop commands.
  * Scanner starts DISABLED, enabled when uplink sends "ready" or "start". */
 static volatile bool s_tx_enabled = false;
+static bool s_uart_tx_stack_warned = false;
 
 bool uart_tx_is_enabled(void) { return s_tx_enabled; }
 void uart_tx_set_enabled(bool enabled) {
@@ -127,6 +162,202 @@ static void cjson_add_string_if(cJSON *obj, const char *key, const char *val)
     }
 }
 
+static bool is_ble_source(uint8_t source)
+{
+    return source == DETECTION_SRC_BLE_RID ||
+           source == DETECTION_SRC_BLE_FINGERPRINT;
+}
+
+static const char *detection_rate_key(const drone_detection_t *detection)
+{
+    if (!detection) {
+        return "";
+    }
+    if (detection->bssid[0] != '\0') {
+        return detection->bssid;
+    }
+    if (detection->drone_id[0] != '\0') {
+        return detection->drone_id;
+    }
+    return "";
+}
+
+static rate_limit_entry_t *find_or_alloc_rate_slot(rate_limit_entry_t *table,
+                                                   size_t count,
+                                                   const char *key)
+{
+    int oldest_idx = 0;
+    int64_t oldest_ms = INT64_MAX;
+
+    for (size_t i = 0; i < count; i++) {
+        if (table[i].in_use && strcmp(table[i].key, key) == 0) {
+            return &table[i];
+        }
+        if (!table[i].in_use) {
+            return &table[i];
+        }
+        if (table[i].last_sent_ms < oldest_ms) {
+            oldest_ms = table[i].last_sent_ms;
+            oldest_idx = (int)i;
+        }
+    }
+
+    return &table[oldest_idx];
+}
+
+static bool allow_rate_limited_detection(rate_limit_entry_t *table,
+                                         size_t count,
+                                         const char *key,
+                                         const char *aux,
+                                         int64_t now_ms,
+                                         int window_ms,
+                                         float confidence,
+                                         int8_t rssi,
+                                         bool allow_aux_change,
+                                         bool allow_confidence_bump,
+                                         bool allow_rssi_jump)
+{
+    if (!key || key[0] == '\0') {
+        return true;
+    }
+
+    rate_limit_entry_t *slot = find_or_alloc_rate_slot(table, count, key);
+    if (!slot->in_use) {
+        memset(slot, 0, sizeof(*slot));
+        slot->in_use = true;
+        strncpy(slot->key, key, sizeof(slot->key) - 1);
+        slot->key[sizeof(slot->key) - 1] = '\0';
+        strncpy(slot->aux, aux ? aux : "", sizeof(slot->aux) - 1);
+        slot->aux[sizeof(slot->aux) - 1] = '\0';
+        slot->last_sent_ms = now_ms;
+        slot->last_confidence = confidence;
+        slot->last_rssi = rssi;
+        return true;
+    }
+
+    bool allow = false;
+    if ((now_ms - slot->last_sent_ms) >= window_ms) {
+        allow = true;
+    }
+    if (!allow && allow_aux_change && aux && aux[0] != '\0' &&
+        strcmp(slot->aux, aux) != 0) {
+        allow = true;
+    }
+    if (!allow && allow_confidence_bump &&
+        confidence >= (slot->last_confidence + 0.10f)) {
+        allow = true;
+    }
+    if (!allow && allow_rssi_jump &&
+        abs((int)rssi - (int)slot->last_rssi) >= 8) {
+        allow = true;
+    }
+    if (!allow) {
+        return false;
+    }
+
+    slot->key[0] = '\0';
+    slot->aux[0] = '\0';
+    strncpy(slot->key, key, sizeof(slot->key) - 1);
+    slot->key[sizeof(slot->key) - 1] = '\0';
+    strncpy(slot->aux, aux ? aux : "", sizeof(slot->aux) - 1);
+    slot->aux[sizeof(slot->aux) - 1] = '\0';
+    slot->last_sent_ms = now_ms;
+    slot->last_confidence = confidence;
+    slot->last_rssi = rssi;
+    return true;
+}
+
+typedef enum {
+    UART_DROP_LOW_VALUE = 0,
+    UART_DROP_RATE_LIMIT = 1,
+    UART_DROP_PRESSURE = 2,
+} uart_drop_reason_t;
+
+static void note_uart_drop(const drone_detection_t *detection,
+                           uart_drop_reason_t reason)
+{
+    s_uart_tx_dropped++;
+    if (is_ble_source(detection->source)) {
+        s_noise_drop_ble++;
+    } else {
+        s_noise_drop_wifi++;
+    }
+    if (detection->source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+        if (reason == UART_DROP_LOW_VALUE) {
+            s_probe_drop_low_value++;
+        } else if (reason == UART_DROP_RATE_LIMIT) {
+            s_probe_drop_rate_limit++;
+        } else if (reason == UART_DROP_PRESSURE) {
+            s_probe_drop_pressure++;
+        }
+    }
+}
+
+static bool should_rate_limit_detection(const drone_detection_t *detection,
+                                        int64_t now_ms)
+{
+    if (detection &&
+        detection->source == DETECTION_SRC_BLE_FINGERPRINT &&
+        fof_policy_ble_has_calibration_uuid_le(
+            detection->ble_service_uuids_128,
+            detection->ble_svc_uuid_128_count
+        )) {
+        return false;
+    }
+
+    if (detection->source == DETECTION_SRC_BLE_FINGERPRINT) {
+        const char *key = detection->bssid[0] ? detection->bssid : detection->drone_id;
+        const char *aux = detection->manufacturer[0] ? detection->manufacturer :
+                          (detection->model[0] ? detection->model : "");
+        return !allow_rate_limited_detection(
+            s_ble_fp_rate, LOW_PRIORITY_RATE_SLOTS,
+            key, aux, now_ms, BLE_FINGERPRINT_REEMIT_MS,
+            detection->confidence, detection->rssi, true, true, false
+        );
+    }
+    if (detection->source == DETECTION_SRC_WIFI_ASSOC) {
+        const char *key = detection->drone_id;
+        return !allow_rate_limited_detection(
+            s_wifi_assoc_rate, LOW_PRIORITY_RATE_SLOTS,
+            key, detection->bssid, now_ms, WIFI_ASSOC_REEMIT_MS,
+            detection->confidence, detection->rssi, true, false, true
+        );
+    }
+    if (detection->source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+        const char *key = detection_rate_key(detection);
+        char aux[16];
+        fof_policy_probe_rate_aux(
+            detection->probe_ie_hash,
+            detection->probed_ssids[0] ? detection->probed_ssids : detection->ssid,
+            aux,
+            sizeof(aux)
+        );
+        return !allow_rate_limited_detection(
+            s_wifi_probe_rate, LOW_PRIORITY_RATE_SLOTS,
+            key, aux, now_ms, WIFI_PROBE_REEMIT_MS,
+            detection->confidence, detection->rssi, true, false, false
+        );
+    }
+    return false;
+}
+
+static bool should_shed_low_priority_detection(const drone_detection_t *detection,
+                                               UBaseType_t queue_depth,
+                                               UBaseType_t queue_capacity)
+{
+    if (!detection) {
+        return false;
+    }
+    return fof_policy_should_shed_low_priority(
+        detection->source,
+        detection->manufacturer,
+        detection->ble_service_uuids_128,
+        detection->ble_svc_uuid_128_count,
+        (uint32_t)queue_depth,
+        (uint32_t)queue_capacity
+    );
+}
+
 /**
  * Transmit a raw null-terminated string over UART, appending the newline
  * delimiter.  The caller is responsible for providing valid JSON.
@@ -148,6 +379,25 @@ static void uart_send_line(const char *json_str)
     uart_write_bytes(UART_PORT_NUM, json_str, len);
     uart_write_bytes(UART_PORT_NUM, "\n", 1);
     if (s_uart_mutex) xSemaphoreGive(s_uart_mutex);
+}
+
+static void maybe_warn_uart_tx_stack_headroom(void)
+{
+    UBaseType_t free_words = uxTaskGetStackHighWaterMark(NULL);
+    size_t free_bytes = (size_t)free_words * sizeof(StackType_t);
+
+    if (free_bytes <= UART_TX_STACK_WARN_BYTES) {
+        if (!s_uart_tx_stack_warned) {
+            ESP_LOGW(TAG, "uart_tx stack headroom low: %u bytes free",
+                     (unsigned)free_bytes);
+            s_uart_tx_stack_warned = true;
+        }
+    } else if (s_uart_tx_stack_warned &&
+               free_bytes > (UART_TX_STACK_WARN_BYTES * 2)) {
+        ESP_LOGI(TAG, "uart_tx stack headroom recovered: %u bytes free",
+                 (unsigned)free_bytes);
+        s_uart_tx_stack_warned = false;
+    }
 }
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
@@ -184,14 +434,6 @@ void uart_tx_init(void)
 
 void uart_tx_send_detection(const drone_detection_t *detection)
 {
-    /* Drop low-value BLE noise at the source — saves UART bandwidth.
-     * The uplink drops these anyway (confidence < 0.04 filter).
-     * Reduces UART traffic ~50-70% on dense BLE environments. */
-    if (detection->confidence < 0.04f &&
-        detection->source == DETECTION_SRC_BLE_RID) {
-        return;
-    }
-
     cJSON *root = cJSON_CreateObject();
     if (!root) {
         ESP_LOGE(TAG, "cJSON alloc failed for detection");
@@ -384,6 +626,35 @@ static const char *s_scanner_board = NULL;
 static const char *s_scanner_chip  = NULL;
 static const char *s_scanner_caps  = NULL;
 
+static int64_t scanner_time_last_valid_age_s(void)
+{
+    extern volatile int64_t g_last_valid_time_local_ms;
+
+    if (g_last_valid_time_local_ms <= 0) {
+        return -1;
+    }
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    if (now_ms <= g_last_valid_time_local_ms) {
+        return 0;
+    }
+    return (now_ms - g_last_valid_time_local_ms) / 1000;
+}
+
+static const char *scanner_time_sync_state(void)
+{
+    extern volatile int64_t g_epoch_offset_ms;
+    extern volatile uint32_t g_time_valid_count;
+    extern volatile int64_t g_last_valid_time_local_ms;
+
+    return fof_time_sync_state_label(
+        g_time_valid_count,
+        g_epoch_offset_ms,
+        g_last_valid_time_local_ms,
+        esp_timer_get_time() / 1000,
+        FOF_TIME_SYNC_STALE_AFTER_MS
+    );
+}
+
 void uart_tx_send_status(int ble_count, int wifi_count,
                          uint8_t current_channel, uint32_t uptime_s)
 {
@@ -398,6 +669,20 @@ void uart_tx_send_status(int ble_count, int wifi_count,
     cJSON_AddNumberToObject(root, "wifi_count", wifi_count);
     cJSON_AddNumberToObject(root, "ch",         current_channel);
     cJSON_AddNumberToObject(root, "uptime_s",   uptime_s);
+    cJSON_AddNumberToObject(root, "uart_tx_dropped", s_uart_tx_dropped);
+    cJSON_AddNumberToObject(root, "uart_tx_high_water", s_uart_tx_queue_high_water);
+    cJSON_AddNumberToObject(root, "tx_queue_depth", s_uart_tx_queue_depth);
+    cJSON_AddNumberToObject(root, "tx_queue_capacity", s_uart_tx_queue_capacity);
+    cJSON_AddNumberToObject(root, "tx_queue_pressure_pct", s_uart_tx_queue_pressure_pct);
+    cJSON_AddNumberToObject(root, "noise_drop_ble", s_noise_drop_ble);
+    cJSON_AddNumberToObject(root, "noise_drop_wifi", s_noise_drop_wifi);
+    cJSON_AddNumberToObject(root, "probe_seen", s_probe_seen);
+    cJSON_AddNumberToObject(root, "probe_sent", s_probe_sent);
+    cJSON_AddNumberToObject(root, "probe_drop_low_value", s_probe_drop_low_value);
+    cJSON_AddNumberToObject(root, "probe_drop_rate_limit", s_probe_drop_rate_limit);
+    cJSON_AddNumberToObject(root, "probe_drop_pressure", s_probe_drop_pressure);
+    cJSON_AddStringToObject(root, JSON_KEY_SCAN_MODE, scanner_calibration_mode_label());
+    cjson_add_string_if(root, JSON_KEY_CALIBRATION_UUID, scanner_calibration_mode_uuid());
     cJSON_AddNumberToObject(root, JSON_KEY_SEQ, s_seq++);
 
     /* Include scanner identity in every status message */
@@ -406,6 +691,16 @@ void uart_tx_send_status(int ble_count, int wifi_count,
         cJSON_AddStringToObject(root, "board", s_scanner_board);
         cJSON_AddStringToObject(root, "chip", s_scanner_chip);
         cJSON_AddStringToObject(root, "caps", s_scanner_caps);
+    }
+    {
+        extern volatile int64_t g_epoch_offset_ms;
+        extern volatile uint32_t g_time_msg_count;
+        extern volatile uint32_t g_time_valid_count;
+        cJSON_AddNumberToObject(root, "toff", (double)g_epoch_offset_ms);
+        cJSON_AddNumberToObject(root, "tcnt", g_time_msg_count);
+        cJSON_AddNumberToObject(root, "time_valid_count", g_time_valid_count);
+        cJSON_AddNumberToObject(root, "time_last_valid_age_s", (double)scanner_time_last_valid_age_s());
+        cJSON_AddStringToObject(root, "time_sync_state", scanner_time_sync_state());
     }
 
     /* Attack / anomaly counters (delta since last status) */
@@ -461,18 +756,28 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
      * broadcasts (tcnt) and whether the value applied (toff). */
     extern volatile int64_t g_epoch_offset_ms;
     extern volatile uint32_t g_time_msg_count;
+    extern volatile uint32_t g_time_valid_count;
     char buf[224];
     snprintf(buf, sizeof(buf),
              "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
-             "\"chip\":\"%s\",\"caps\":\"%s\",\"toff\":%lld,\"tcnt\":%lu}",
+             "\"chip\":\"%s\",\"caps\":\"%s\",\"toff\":%lld,\"tcnt\":%lu,"
+             "\"time_valid_count\":%lu,\"time_last_valid_age_s\":%lld,\"time_sync_state\":\"%s\","
+             "\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\"}",
              ver ? ver : "?", board ? board : "?",
              chip ? chip : "?", caps ? caps : "?",
              (long long)g_epoch_offset_ms,
-             (unsigned long)g_time_msg_count);
+             (unsigned long)g_time_msg_count,
+             (unsigned long)g_time_valid_count,
+             (long long)scanner_time_last_valid_age_s(),
+             scanner_time_sync_state(),
+             scanner_calibration_mode_label(),
+             scanner_calibration_mode_uuid());
     uart_send_line(buf);
-    ESP_LOGI(TAG, "Scanner info TX: %s v%s (%s) toff=%lld tcnt=%lu",
+    ESP_LOGD(TAG, "Scanner info TX: %s v%s (%s) toff=%lld tcnt=%lu valid=%lu state=%s",
              board, ver, caps, (long long)g_epoch_offset_ms,
-             (unsigned long)g_time_msg_count);
+             (unsigned long)g_time_msg_count,
+             (unsigned long)g_time_valid_count,
+             scanner_time_sync_state());
 }
 
 /* ── UART TX Task ───────────────────────────────────────────────────────── */
@@ -513,8 +818,10 @@ static void uart_tx_task(void *arg)
 
     /* Send scanner identity now that uplink enabled us */
     if (s_identity_board[0]) {
-        const esp_app_desc_t *app = esp_app_get_description();
-        uart_tx_send_scanner_info(app ? app->version : "?",
+        /* Keep using the shared Friend or Foe version here. The ESP-IDF app
+         * descriptor can lag or collapse to "1", which makes live scanner
+         * heartbeats look stale even after a successful OTA. */
+        uart_tx_send_scanner_info(FOF_VERSION,
                                   s_identity_board, s_identity_chip, s_identity_caps);
     }
     led_set_pattern(LED_UPLINK_OK);
@@ -533,9 +840,50 @@ static void uart_tx_task(void *arg)
         /* Block on detection queue with a short timeout so we can do
          * periodic maintenance even when no detections are flowing. */
         if (xQueueReceive(detection_queue, &det, queue_timeout) == pdTRUE) {
+            int64_t tx_now_ms = esp_timer_get_time() / 1000;
+            UBaseType_t queue_depth = uxQueueMessagesWaiting(detection_queue);
+            UBaseType_t queue_capacity = queue_depth +
+                                         uxQueueSpacesAvailable(detection_queue);
+            s_uart_tx_queue_depth = (uint32_t)queue_depth;
+            s_uart_tx_queue_capacity = (uint32_t)queue_capacity;
+            s_uart_tx_queue_pressure_pct = fof_policy_queue_pressure_pct(
+                (uint32_t)queue_depth,
+                (uint32_t)queue_capacity
+            );
+            if ((uint32_t)queue_depth > s_uart_tx_queue_high_water) {
+                s_uart_tx_queue_high_water = (uint32_t)queue_depth;
+            }
+
+            if (det.source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+                s_probe_seen++;
+            }
+
+            if (!scanner_calibration_mode_allows_detection(&det)) {
+                note_uart_drop(&det, UART_DROP_PRESSURE);
+                continue;
+            }
+
+            if (fof_policy_should_drop_low_value(det.source,
+                                                 det.confidence,
+                                                 det.manufacturer,
+                                                 det.ble_service_uuids_128,
+                                                 det.ble_svc_uuid_128_count)) {
+                note_uart_drop(&det, UART_DROP_LOW_VALUE);
+                continue;
+            }
+            if (should_rate_limit_detection(&det, tx_now_ms)) {
+                note_uart_drop(&det, UART_DROP_RATE_LIMIT);
+                continue;
+            }
+            if (should_shed_low_priority_detection(&det,
+                                                   queue_depth,
+                                                   queue_capacity)) {
+                note_uart_drop(&det, UART_DROP_PRESSURE);
+                continue;
+            }
 
             /* Track per-source counters for status messages */
-            if (det.source == DETECTION_SRC_BLE_RID) {
+            if (is_ble_source(det.source)) {
                 s_ble_count++;
             } else {
                 s_wifi_count++;
@@ -573,6 +921,9 @@ static void uart_tx_task(void *arg)
             portEXIT_CRITICAL(&s_cache_lock);
 
             /* Serialize and transmit */
+            if (det.source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+                s_probe_sent++;
+            }
             uart_tx_send_detection(&det);
             led_set_pattern(LED_DETECTION);
 
@@ -609,12 +960,22 @@ static void uart_tx_task(void *arg)
             /* Compute uptime in seconds */
             uint32_t uptime_s = (uint32_t)(xTaskGetTickCount() /
                                            configTICK_RATE_HZ);
+            UBaseType_t queue_depth = uxQueueMessagesWaiting(detection_queue);
+            UBaseType_t queue_capacity = queue_depth +
+                                         uxQueueSpacesAvailable(detection_queue);
+            s_uart_tx_queue_depth = (uint32_t)queue_depth;
+            s_uart_tx_queue_capacity = (uint32_t)queue_capacity;
+            s_uart_tx_queue_pressure_pct = fof_policy_queue_pressure_pct(
+                (uint32_t)queue_depth,
+                (uint32_t)queue_capacity
+            );
 
+            maybe_warn_uart_tx_stack_headroom();
             uart_tx_send_status(s_ble_count, s_wifi_count,
                                 s_current_channel, uptime_s);
             led_set_pattern(LED_UPLINK_OK);  /* purple — UART flowing */
 
-            ESP_LOGI(TAG, "Status TX: ble=%d wifi=%d ch=%d uptime=%lus",
+            ESP_LOGD(TAG, "Status TX: ble=%d wifi=%d ch=%d uptime=%lus",
                      s_ble_count, s_wifi_count,
                      s_current_channel, (unsigned long)uptime_s);
         }

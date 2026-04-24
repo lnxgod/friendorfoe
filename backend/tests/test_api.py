@@ -52,7 +52,7 @@ class TestHealth:
         assert "version" in data
         assert "redis" in data
         assert data["status"] == "ok"
-        assert data["version"] == "0.58.0"
+        assert data["version"] == app.version
 
     @pytest.mark.asyncio
     async def test_root_returns_200(self, client: AsyncClient):
@@ -77,30 +77,30 @@ class TestNearbyAircraft:
 
     @pytest.mark.asyncio
     async def test_nearby_requires_lat_lon(self, client: AsyncClient):
-        """Missing required lat/lon should return 422."""
+        """Missing required lat/lon should return our validation contract."""
         resp = await client.get("/aircraft/nearby")
-        assert resp.status_code == 422
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_nearby_rejects_invalid_lat(self, client: AsyncClient):
-        """Latitude out of range should return 422."""
+        """Latitude out of range should return our validation contract."""
         resp = await client.get("/aircraft/nearby", params={"lat": 91.0, "lon": 0.0})
-        assert resp.status_code == 422
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_nearby_rejects_invalid_lon(self, client: AsyncClient):
-        """Longitude out of range should return 422."""
+        """Longitude out of range should return our validation contract."""
         resp = await client.get("/aircraft/nearby", params={"lat": 0.0, "lon": 181.0})
-        assert resp.status_code == 422
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_nearby_rejects_excessive_radius(self, client: AsyncClient):
-        """Radius beyond max_radius_nm should return 422."""
+        """Radius beyond max_radius_nm should return our validation contract."""
         resp = await client.get(
             "/aircraft/nearby",
             params={"lat": 40.0, "lon": -74.0, "radius_nm": 999.0},
         )
-        assert resp.status_code == 422
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_nearby_valid_request_returns_valid_structure(self, client: AsyncClient):

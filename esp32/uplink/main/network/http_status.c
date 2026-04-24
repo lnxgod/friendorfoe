@@ -26,6 +26,7 @@
 #include "uart_protocol.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "cJSON.h"
 
 /* Subsystem headers for status getters */
 #include "uart_rx.h"
@@ -35,6 +36,7 @@
 #include "battery.h"
 #include "http_upload.h"
 #include "nvs_config.h"
+#include "version.h"
 
 static const char *TAG = "http_status";
 
@@ -43,13 +45,104 @@ static const char *TAG = "http_status";
 static const char *source_name(uint8_t src)
 {
     switch (src) {
-        case 0: return "BLE RID";
-        case 1: return "WiFi SSID";
-        case 2: return "DJI IE";
-        case 3: return "WiFi Beacon";
-        case 4: return "WiFi OUI";
+        case DETECTION_SRC_BLE_RID:            return "BLE RID";
+        case DETECTION_SRC_WIFI_SSID:          return "WiFi SSID";
+        case DETECTION_SRC_WIFI_DJI_IE:        return "DJI IE";
+        case DETECTION_SRC_WIFI_BEACON:        return "WiFi Beacon";
+        case DETECTION_SRC_WIFI_OUI:           return "WiFi OUI";
+        case DETECTION_SRC_WIFI_PROBE_REQUEST: return "WiFi Probe";
+        case DETECTION_SRC_BLE_FINGERPRINT:    return "BLE FP";
+        case DETECTION_SRC_WIFI_ASSOC:         return "WiFi Assoc";
         default: return "Unknown";
     }
+}
+
+static const char *time_source_name(int source_mode)
+{
+    switch (source_mode) {
+        case 1: return "backend";
+        case 2: return "sntp";
+        case 3: return "local";
+        default: return "none";
+    }
+}
+
+static int64_t monotonic_age_s(int64_t since_ms)
+{
+    if (since_ms <= 0) {
+        return -1;
+    }
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    if (now_ms <= since_ms) {
+        return 0;
+    }
+    return (now_ms - since_ms) / 1000;
+}
+
+static bool scanner_mode_matches(const scanner_info_t *info,
+                                 const char *expected_mode,
+                                 const char *expected_uuid,
+                                 bool require_ack)
+{
+    if (!info || !expected_mode) {
+        return false;
+    }
+    if (require_ack && !info->calibration_mode_acked) {
+        return false;
+    }
+    const char *mode = info->scan_mode[0] ? info->scan_mode : "normal";
+    if (strcmp(mode, expected_mode) != 0) {
+        return false;
+    }
+    if (expected_uuid && expected_uuid[0] != '\0') {
+        return strcmp(info->calibration_uuid, expected_uuid) == 0;
+    }
+    return true;
+}
+
+static bool wait_for_node_mode(const char *expected_mode,
+                               const char *expected_uuid,
+                               int timeout_ms,
+                               bool require_ack)
+{
+    bool ble_required = uart_rx_is_ble_scanner_connected();
+#if CONFIG_DUAL_SCANNER
+    bool wifi_required = uart_rx_is_wifi_scanner_connected();
+#else
+    bool wifi_required = false;
+#endif
+
+    if (!ble_required && !wifi_required) {
+        return false;
+    }
+
+    int waited_ms = 0;
+    while (waited_ms <= timeout_ms) {
+        bool ble_ok = !ble_required ||
+                      scanner_mode_matches(
+                          uart_rx_get_ble_scanner_info(),
+                          expected_mode,
+                          expected_uuid,
+                          require_ack
+                      );
+#if CONFIG_DUAL_SCANNER
+        bool wifi_ok = !wifi_required ||
+                       scanner_mode_matches(
+                           uart_rx_get_wifi_scanner_info(),
+                           expected_mode,
+                           expected_uuid,
+                           require_ack
+                       );
+#else
+        bool wifi_ok = true;
+#endif
+        if (ble_ok && wifi_ok) {
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+        waited_ms += 100;
+    }
+    return false;
 }
 
 /* ── HTML status page handler ──────────────────────────────────────────── */
@@ -315,7 +408,7 @@ static esp_err_t status_json_handler(httpd_req_t *req)
     bool standalone = wifi_sta_is_standalone();
     bool scanner_ok = uart_rx_is_scanner_connected();
 
-    char buf[640];
+    char buf[1400];
 
     /* Heap / PSRAM snapshot. On S3 N16R8 boards this surfaces how much of
      * the 8 MB PSRAM is in use; on legacy / non-PSRAM boards both psram_*
@@ -330,6 +423,20 @@ static esp_err_t status_json_handler(httpd_req_t *req)
     extern volatile int g_last_time_fetch_nread;
     extern volatile int g_last_time_fetch_clen;
     extern volatile uint32_t g_time_broadcast_count;
+    extern volatile bool g_last_time_fetch_ok;
+    extern volatile int64_t g_last_time_attempt_monotonic_ms;
+    extern volatile int64_t g_last_time_success_monotonic_ms;
+    extern volatile uint32_t g_time_fetch_ok_count;
+    extern volatile uint32_t g_time_fetch_fail_count;
+    extern volatile uint32_t g_time_fetch_fail_streak;
+    extern volatile int64_t g_last_broadcast_epoch_ms;
+    extern volatile uint32_t g_time_broadcast_valid_count;
+    extern volatile uint32_t g_time_broadcast_invalid_count;
+    extern volatile int g_time_source_mode;
+    extern char g_last_time_fetch_url_source[16];
+    extern char g_last_time_fetch_url[96];
+    extern char g_last_time_fetch_ip[16];
+    extern volatile int g_last_time_fetch_port;
 
     /* Open JSON object */
     snprintf(buf, sizeof(buf),
@@ -337,25 +444,49 @@ static esp_err_t status_json_handler(httpd_req_t *req)
         "\"gps\":{\"fix\":%s,\"lat\":%.6f,\"lon\":%.6f,\"satellites\":%d},"
         "\"wifi_sta\":%s,\"ap_clients\":%d,"
         "\"standalone\":%s,\"scanner_connected\":%s,"
+        "\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\","
         "\"battery\":{\"percent\":%.1f,\"voltage\":%.2f},"
         "\"heap\":{\"internal_free\":%u,\"internal_total\":%u,"
                   "\"psram_free\":%u,\"psram_total\":%u},"
         "\"offline_queue\":{\"depth\":%d,\"capacity\":%d},"
-        "\"time_sync\":{\"last_epoch_ms\":%lld,\"perf\":%d,\"status\":%d,\"clen\":%d,\"nread\":%d,\"bcasts\":%u},"
+        "\"time_sync\":{\"time_source\":\"%s\",\"last_fetch_ok\":%s,"
+                     "\"last_fetch_url_source\":\"%s\",\"last_fetch_url\":\"%s\","
+                     "\"last_fetch_ip\":\"%s\",\"last_fetch_port\":%d,"
+                     "\"last_attempt_age_s\":%lld,\"last_success_age_s\":%lld,"
+                     "\"fetch_ok_count\":%u,\"fetch_fail_count\":%u,\"fetch_fail_streak\":%u,"
+                     "\"last_epoch_ms\":%lld,\"last_broadcast_epoch_ms\":%lld,"
+                     "\"perf\":%d,\"status\":%d,\"clen\":%d,\"nread\":%d,"
+                     "\"bcasts\":%u,\"broadcast_valid_count\":%u,\"broadcast_invalid_count\":%u},"
         "\"detections\":%d,\"uploads_ok\":%d,\"uploads_fail\":%d,",
         device_id, (long long)uptime_sec,
         gps_fix ? "true" : "false", gps.latitude, gps.longitude, gps.satellites,
         wifi_ok ? "true" : "false", ap_clients,
         standalone ? "true" : "false",
         scanner_ok ? "true" : "false",
+        uart_rx_get_node_scan_mode(),
+        uart_rx_get_node_calibration_uuid(),
         batt_pct, batt_v,
         (unsigned)heap_internal_free, (unsigned)heap_internal_total,
         (unsigned)psram_free, (unsigned)psram_total,
         http_upload_get_offline_count(), http_upload_get_offline_capacity(),
+        time_source_name(g_time_source_mode),
+        g_last_time_fetch_ok ? "true" : "false",
+        g_last_time_fetch_url_source,
+        g_last_time_fetch_url,
+        g_last_time_fetch_ip,
+        g_last_time_fetch_port,
+        (long long)monotonic_age_s(g_last_time_attempt_monotonic_ms),
+        (long long)monotonic_age_s(g_last_time_success_monotonic_ms),
+        (unsigned)g_time_fetch_ok_count,
+        (unsigned)g_time_fetch_fail_count,
+        (unsigned)g_time_fetch_fail_streak,
         (long long)g_last_backend_epoch_ms,
+        (long long)g_last_broadcast_epoch_ms,
         g_last_time_fetch_perf, g_last_time_fetch_status,
         g_last_time_fetch_clen, g_last_time_fetch_nread,
         (unsigned)g_time_broadcast_count,
+        (unsigned)g_time_broadcast_valid_count,
+        (unsigned)g_time_broadcast_invalid_count,
         det_count, upload_ok, upload_fail);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
@@ -816,6 +947,10 @@ static esp_err_t ota_info_handler(httpd_req_t *req)
     const esp_partition_t *update  = esp_ota_get_next_update_partition(NULL);
     esp_app_desc_t app_desc;
     esp_ota_get_partition_description(running, &app_desc);
+    const char *reported_version =
+        (app_desc.version[0] != '\0' && strcmp(app_desc.version, "1") != 0)
+            ? app_desc.version
+            : FOF_VERSION;
 
     char buf[256];
     snprintf(buf, sizeof(buf),
@@ -824,10 +959,35 @@ static esp_err_t ota_info_handler(httpd_req_t *req)
         "\"compile_date\":\"%s\",\"compile_time\":\"%s\"}",
         running ? running->label : "?",
         update ? update->label : "?",
-        app_desc.version, app_desc.idf_ver,
+        reported_version, app_desc.idf_ver,
         app_desc.date, app_desc.time);
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
+}
+
+static int wait_for_ota_response_since(int64_t start_ms,
+                                       const char *expected_type,
+                                       int timeout_ms,
+                                       ota_response_t *out)
+{
+    int64_t deadline_ms = start_ms + timeout_ms;
+    while ((esp_timer_get_time() / 1000) < deadline_ms) {
+        ota_response_t resp = uart_rx_get_last_ota_response();
+        if (resp.type[0] != '\0' && resp.timestamp >= start_ms) {
+            if (out) *out = resp;
+            if (strcmp(resp.type, expected_type) == 0) {
+                return 0;
+            }
+            if (strcmp(resp.type, "ota_error") == 0 ||
+                strcmp(resp.type, "ota_nack") == 0) {
+                return -2;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    if (out) memset(out, 0, sizeof(*out));
+    return -1;
 }
 
 /* ── OTA Relay: stream firmware to scanner via UART ───────────────────── */
@@ -840,7 +1000,13 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
     char query[32] = {0};
     httpd_req_get_url_query_str(req, query, sizeof(query));
     char uart_target[8] = "ble";
+    char legacy_flag[8] = {0};
     httpd_query_key_value(query, "uart", uart_target, sizeof(uart_target));
+    httpd_query_key_value(query, "legacy", legacy_flag, sizeof(legacy_flag));
+    const bool legacy_mode =
+        (strcmp(legacy_flag, "1") == 0) ||
+        (strcasecmp(legacy_flag, "true") == 0) ||
+        (strcasecmp(legacy_flag, "yes") == 0);
 
     /* Select UART port */
     uart_port_t uart_num;
@@ -855,7 +1021,8 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
 #endif
 
     int total = req->content_len;
-    ESP_LOGW(TAG, "OTA relay (streaming): %d bytes to scanner (uart=%s port=%d) heap=%lu",
+    ESP_LOGW(TAG, "OTA relay (%s): %d bytes to scanner (uart=%s port=%d) heap=%lu",
+             legacy_mode ? "legacy" : "streaming",
              total, uart_target, uart_num, (unsigned long)esp_get_free_heap_size());
 
     if (total < 1024 || total > 2 * 1024 * 1024) {
@@ -863,14 +1030,11 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    /* Pause all UART RX + HTTP uploads to free heap for relay */
+    /* Pause uploads to free heap for relay. Keep UART RX alive so ota_ack /
+     * ota_done / ota_error responses can still be observed. */
     http_upload_pause();
-    uart_rx_pause_scanner(0);
-#if CONFIG_DUAL_SCANNER
-    uart_rx_pause_scanner(1);
-#endif
     vTaskDelay(pdMS_TO_TICKS(300));
-    ESP_LOGI(TAG, "UART + uploads paused for streaming relay, heap=%lu",
+    ESP_LOGI(TAG, "Uploads paused for streaming relay, heap=%lu",
              (unsigned long)esp_get_free_heap_size());
 
     /* Increase socket timeout for large uploads */
@@ -880,8 +1044,11 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     }
 
-    /* Step 0: Stop scanner TX to prevent data collision during flash */
-    {
+    if (!legacy_mode) {
+        /* Step 0: Stop scanner TX to prevent data collision during flash.
+         * Legacy scanners pre-date the explicit stop/stop_ack handshake, so
+         * the compatibility path skips this and uses the older plain stream
+         * framing they already understand. */
         const char *stop_cmd = "{\"type\":\"stop\"}\n";
         uart_write_bytes(uart_num, stop_cmd, strlen(stop_cmd));
         ESP_LOGI(TAG, "Sent stop command to scanner before OTA relay");
@@ -890,124 +1057,176 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
 
     /* Step 1: Send OTA begin command */
     uart_rx_clear_ota_response();
+    int64_t begin_wait_start_ms = esp_timer_get_time() / 1000;
     uart_write_bytes(uart_num, "\n", 1);
     vTaskDelay(pdMS_TO_TICKS(50));
     char cmd[64];
     snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%d}\n", total);
     ESP_LOGI(TAG, "OTA relay: sending ota_begin (%d bytes) to UART%d", total, uart_num);
     uart_write_bytes(uart_num, cmd, strlen(cmd));
-    vTaskDelay(pdMS_TO_TICKS(2000));  /* Give scanner time to prepare partition */
 
-    /* Check if scanner acknowledged the OTA begin */
-    ota_response_t ota_resp = uart_rx_get_last_ota_response();
-    if (ota_resp.type[0]) {
-        ESP_LOGW(TAG, "OTA relay: scanner responded: type=%s error=%s",
-                 ota_resp.type, ota_resp.error);
-        if (strcmp(ota_resp.type, "ota_error") == 0) {
-            char err_msg[128];
+    if (!legacy_mode) {
+        ota_response_t ota_resp = {0};
+        int ack_wait = wait_for_ota_response_since(begin_wait_start_ms, "ota_ack", 3000, &ota_resp);
+        if (ack_wait != 0) {
+            char err_msg[192];
             snprintf(err_msg, sizeof(err_msg),
-                     "{\"ok\":false,\"error\":\"scanner_error\",\"detail\":\"%s\"}", ota_resp.error);
-            /* Resume everything before returning on error */
-            uart_rx_resume_scanner(0);
-#if CONFIG_DUAL_SCANNER
-            uart_rx_resume_scanner(1);
-#endif
+                     "{\"ok\":false,\"stage\":\"begin\",\"error\":\"%s\",\"detail\":\"%s\"}",
+                     ack_wait == -2 ? "scanner_error" : "ota_ack_timeout",
+                     ota_resp.error[0] ? ota_resp.error : "");
             http_upload_resume();
             uart_write_bytes(uart_num, "{\"type\":\"start\"}\n", 17);
             httpd_resp_set_type(req, "application/json");
             httpd_resp_sendstr(req, err_msg);
             return ESP_OK;
         }
-    } else {
-        ESP_LOGW(TAG, "OTA relay: no scanner response (may not support OTA yet)");
+        ESP_LOGI(TAG, "OTA relay: scanner acknowledged ota_begin");
     }
 
     /* UART RX already paused above — identify target scanner for logging */
     int scanner_id = (strcmp(uart_target, "wifi") == 0) ? 1 : 0;
     (void)scanner_id;  /* Used in resume path */
 
-    /* Step 2: Stream HTTP→UART one chunk at a time.
-     * Read HTTP in small bites matching UART speed to avoid backpressure. */
-    #define RELAY_CHUNK_SIZE  512
-    static uint8_t accum_buf[RELAY_CHUNK_SIZE];
-    static uint8_t uart_frame[5 + RELAY_CHUNK_SIZE + 4];  /* header + data + CRC32 */
     int received = 0;
     int remaining = total;
     uint16_t seq = 0;
-    int accum_pos = 0;
     int consecutive_timeouts = 0;
     bool relay_ok = true;
 
-    while (remaining > 0) {
-        /* Read only what we need to fill one UART chunk — prevents buffering ahead */
-        int need = RELAY_CHUNK_SIZE - accum_pos;
-        if (need > remaining) need = remaining;
-        int read_len = httpd_req_recv(req, (char *)(accum_buf + accum_pos), need);
-        if (read_len <= 0) {
-            if (read_len == HTTPD_SOCK_ERR_TIMEOUT) {
-                consecutive_timeouts++;
-                if (consecutive_timeouts > 3) {
-                    ESP_LOGE(TAG, "OTA relay: %d consecutive timeouts at %d/%d",
-                             consecutive_timeouts, received, total);
-                    uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
-                    relay_ok = false;
-                    break;
+    if (legacy_mode) {
+        /* Legacy scanner OTA (pre-v0.59):
+         *   ota_begin -> [magic][seq][len]+data -> 0xFF abort seq -> ota_end
+         * Older field scanners report versions fine but do not understand the
+         * newer CRC-trailer framing or the stop/stop_ack handshake. */
+        #define LEGACY_RELAY_CHUNK_SIZE 256
+        static uint8_t legacy_buf[LEGACY_RELAY_CHUNK_SIZE];
+        static uint8_t legacy_hdr[OTA_CHUNK_HEADER_SIZE];
+
+        while (remaining > 0) {
+            int to_read = remaining > LEGACY_RELAY_CHUNK_SIZE ? LEGACY_RELAY_CHUNK_SIZE : remaining;
+            int read_len = httpd_req_recv(req, (char *)legacy_buf, to_read);
+            if (read_len <= 0) {
+                if (read_len == HTTPD_SOCK_ERR_TIMEOUT) {
+                    consecutive_timeouts++;
+                    if (consecutive_timeouts > 3) {
+                        ESP_LOGE(TAG, "Legacy OTA relay: %d consecutive timeouts at %d/%d",
+                                 consecutive_timeouts, received, total);
+                        uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
+                        relay_ok = false;
+                        break;
+                    }
+                    continue;
                 }
-                continue;
+                ESP_LOGE(TAG, "Legacy OTA relay: HTTP recv error at %d/%d", received, total);
+                uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
+                relay_ok = false;
+                break;
             }
-            ESP_LOGE(TAG, "OTA relay: HTTP recv error at %d/%d", received, total);
-            uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
-            relay_ok = false;
-            break;
-        }
-        consecutive_timeouts = 0;
-        accum_pos += read_len;
-        remaining -= read_len;
 
-        /* Send when we have a full chunk, or this is the last data */
-        if (accum_pos >= RELAY_CHUNK_SIZE || remaining == 0) {
-            /* Build frame with CRC32 for integrity */
-            uart_frame[0] = OTA_CHUNK_MAGIC;
-            uart_frame[1] = (uint8_t)(seq >> 8);
-            uart_frame[2] = (uint8_t)(seq & 0xFF);
-            uart_frame[3] = (uint8_t)(accum_pos >> 8);
-            uart_frame[4] = (uint8_t)(accum_pos & 0xFF);
-            memcpy(uart_frame + 5, accum_buf, accum_pos);
-            uint32_t crc = esp_rom_crc32_le(0, accum_buf, accum_pos);
-            int co = 5 + accum_pos;
-            uart_frame[co + 0] = (uint8_t)(crc >> 24);
-            uart_frame[co + 1] = (uint8_t)(crc >> 16);
-            uart_frame[co + 2] = (uint8_t)(crc >> 8);
-            uart_frame[co + 3] = (uint8_t)(crc);
+            consecutive_timeouts = 0;
+            legacy_hdr[0] = OTA_CHUNK_MAGIC;
+            legacy_hdr[1] = (uint8_t)(seq >> 8);
+            legacy_hdr[2] = (uint8_t)(seq & 0xFF);
+            legacy_hdr[3] = (uint8_t)(read_len >> 8);
+            legacy_hdr[4] = (uint8_t)(read_len & 0xFF);
 
-            uart_write_bytes(uart_num, (char *)uart_frame, 5 + accum_pos + 4);
+            uart_write_bytes(uart_num, (char *)legacy_hdr, OTA_CHUNK_HEADER_SIZE);
+            uart_write_bytes(uart_num, (char *)legacy_buf, read_len);
             uart_wait_tx_done(uart_num, pdMS_TO_TICKS(1000));
 
-            received += accum_pos;
+            received += read_len;
+            remaining -= read_len;
             seq++;
-            accum_pos = 0;
 
-            /* Pacing: 30ms per chunk.
-             * Every 16 chunks (8KB), extra 500ms for scanner flash erase/write.
-             * This prevents UART TX buffer from backing up into HTTP recv. */
-            vTaskDelay(pdMS_TO_TICKS(30));
-            if (seq % 16 == 0) {
-                vTaskDelay(pdMS_TO_TICKS(500));
-                ESP_LOGI(TAG, "Relay: %d/%d (%.0f%%) seq=%d heap=%lu",
+            /* Conservative pacing keeps the legacy direct-to-flash writer from
+             * overrunning when it cannot NACK/retransmit the way v0.59+ can. */
+            vTaskDelay(pdMS_TO_TICKS(20));
+            if (seq % OTA_ACK_INTERVAL_CHUNKS == 0) {
+                vTaskDelay(pdMS_TO_TICKS(120));
+                ESP_LOGI(TAG, "Legacy relay: %d/%d (%.0f%%) seq=%d heap=%lu",
                          received, total, (float)received / total * 100, seq,
                          (unsigned long)esp_get_free_heap_size());
+            }
+        }
+
+        if (relay_ok) {
+            const char *end_cmd = "{\"type\":\"ota_end\"}\n";
+            vTaskDelay(pdMS_TO_TICKS(500));
+            uart_write_bytes(uart_num, end_cmd, strlen(end_cmd));
+        }
+    } else {
+        /* Step 2: Stream HTTP→UART one chunk at a time.
+         * Read HTTP in small bites matching UART speed to avoid backpressure. */
+        #define RELAY_CHUNK_SIZE  512
+        static uint8_t accum_buf[RELAY_CHUNK_SIZE];
+        static uint8_t uart_frame[5 + RELAY_CHUNK_SIZE + 4];  /* header + data + CRC32 */
+        int accum_pos = 0;
+
+        while (remaining > 0) {
+            /* Read only what we need to fill one UART chunk — prevents buffering ahead */
+            int need = RELAY_CHUNK_SIZE - accum_pos;
+            if (need > remaining) need = remaining;
+            int read_len = httpd_req_recv(req, (char *)(accum_buf + accum_pos), need);
+            if (read_len <= 0) {
+                if (read_len == HTTPD_SOCK_ERR_TIMEOUT) {
+                    consecutive_timeouts++;
+                    if (consecutive_timeouts > 3) {
+                        ESP_LOGE(TAG, "OTA relay: %d consecutive timeouts at %d/%d",
+                                 consecutive_timeouts, received, total);
+                        uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
+                        relay_ok = false;
+                        break;
+                    }
+                    continue;
+                }
+                ESP_LOGE(TAG, "OTA relay: HTTP recv error at %d/%d", received, total);
+                uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
+                relay_ok = false;
+                break;
+            }
+            consecutive_timeouts = 0;
+            accum_pos += read_len;
+            remaining -= read_len;
+
+            /* Send when we have a full chunk, or this is the last data */
+            if (accum_pos >= RELAY_CHUNK_SIZE || remaining == 0) {
+                /* Build frame with CRC32 for integrity */
+                uart_frame[0] = OTA_CHUNK_MAGIC;
+                uart_frame[1] = (uint8_t)(seq >> 8);
+                uart_frame[2] = (uint8_t)(seq & 0xFF);
+                uart_frame[3] = (uint8_t)(accum_pos >> 8);
+                uart_frame[4] = (uint8_t)(accum_pos & 0xFF);
+                memcpy(uart_frame + 5, accum_buf, accum_pos);
+                uint32_t crc = esp_rom_crc32_le(0, accum_buf, accum_pos);
+                int co = 5 + accum_pos;
+                uart_frame[co + 0] = (uint8_t)(crc >> 24);
+                uart_frame[co + 1] = (uint8_t)(crc >> 16);
+                uart_frame[co + 2] = (uint8_t)(crc >> 8);
+                uart_frame[co + 3] = (uint8_t)(crc);
+
+                uart_write_bytes(uart_num, (char *)uart_frame, 5 + accum_pos + 4);
+                uart_wait_tx_done(uart_num, pdMS_TO_TICKS(1000));
+
+                received += accum_pos;
+                seq++;
+                accum_pos = 0;
+
+                /* Pacing: 30ms per chunk.
+                 * Every 16 chunks (8KB), extra 500ms for scanner flash erase/write.
+                 * This prevents UART TX buffer from backing up into HTTP recv. */
+                vTaskDelay(pdMS_TO_TICKS(30));
+                if (seq % 16 == 0) {
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    ESP_LOGI(TAG, "Relay: %d/%d (%.0f%%) seq=%d heap=%lu",
+                             received, total, (float)received / total * 100, seq,
+                             (unsigned long)esp_get_free_heap_size());
+                }
             }
         }
     }
 
     /* Wait for scanner to process final chunks */
-    vTaskDelay(pdMS_TO_TICKS(3000));
-
-    /* Resume ALL paused tasks */
-    uart_rx_resume_scanner(0);
-#if CONFIG_DUAL_SCANNER
-    uart_rx_resume_scanner(1);
-#endif
+    int64_t final_wait_start_ms = esp_timer_get_time() / 1000;
     http_upload_resume();
 
     /* Re-enable scanner TX (only on failure — on success scanner is rebooting) */
@@ -1020,18 +1239,29 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "OTA relay %s: %d bytes, %d chunks to UART%d",
              relay_ok ? "complete" : "FAILED", received, seq, uart_num);
 
-    /* Check final OTA response from scanner */
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    ota_response_t final_resp = uart_rx_get_last_ota_response();
+    ota_response_t final_resp = {0};
+    if (relay_ok) {
+        int done_wait = wait_for_ota_response_since(final_wait_start_ms, "ota_done", 60000, &final_resp);
+        if (done_wait != 0) {
+            relay_ok = false;
+            if (done_wait == -2 && final_resp.error[0] == '\0') {
+                snprintf(final_resp.error, sizeof(final_resp.error), "%s", "scanner_error");
+            }
+        }
+    } else {
+        final_resp = uart_rx_get_last_ota_response();
+    }
 
     char resp_buf[256];
     snprintf(resp_buf, sizeof(resp_buf),
-             "{\"ok\":%s,\"bytes\":%d,\"chunks\":%d,"
+             "{\"ok\":%s,\"mode\":\"%s\",\"bytes\":%d,\"chunks\":%d,"
              "\"scanner_response\":\"%s\",\"scanner_error\":\"%s\"}",
              relay_ok ? "true" : "false",
+             legacy_mode ? "legacy" : "streaming",
              received, seq,
-             final_resp.type[0] ? final_resp.type : "none",
-             final_resp.error[0] ? final_resp.error : "");
+             final_resp.type[0] ? final_resp.type : (relay_ok ? "ota_done" : "none"),
+             final_resp.error[0] ? final_resp.error :
+                 (!relay_ok && received == total ? "finalize_timeout" : ""));
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp_buf);
@@ -1090,238 +1320,144 @@ static const httpd_uri_t uri_ota_relay = {
 
 /* ── Public API ────────────────────────────────────────────────────────── */
 
-/* ══════════════════════════════════════════════════════════════════════════
- * Calibration Mode — Inter-node RSSI measurement for path loss tuning
- *
- * Protocol:
- *   1. Backend tells one node to broadcast: POST /api/calibrate/start?power=80&channel=6
- *   2. Backend tells all OTHER nodes to measure: POST /api/calibrate/measure?bssid=XX&channel=6&duration=90
- *   3. Measuring nodes pause all scanners, lock to channel, average RSSI for 90s
- *   4. Backend collects results: GET /api/calibrate/result
- *   5. Backend tells broadcaster to change power: POST /api/calibrate/power?level=60
- *   6. Repeat measurements at different power levels
- *   7. POST /api/calibrate/stop → node reboots to free RAM and return to normal
- *
- * Power levels: units of 0.25dBm (8=2dBm, 20=5dBm, 40=10dBm, 60=15dBm, 80=20dBm)
- * ══════════════════════════════════════════════════════════════════════════ */
-
-/* Calibration measurement state (static — no heap allocation) */
-#define CAL_MAX_SAMPLES 500
-static struct {
-    bool     active;
-    char     target_bssid[18];
-    int      channel;
-    int      total_rssi;
-    int      sample_count;
-    int      min_rssi;
-    int      max_rssi;
-    int64_t  start_ms;
-    int64_t  duration_ms;
-} s_cal = {0};
-
-static esp_err_t calibrate_start_handler(httpd_req_t *req)
+static esp_err_t calibration_mode_status_handler(httpd_req_t *req)
 {
-    /* Parse power level and channel from query */
-    char query[64] = {0};
-    httpd_req_get_url_query_str(req, query, sizeof(query));
-    char power_str[4] = "80";  /* Default 20dBm */
-    char ch_str[4] = "6";
-    httpd_query_key_value(query, "power", power_str, sizeof(power_str));
-    httpd_query_key_value(query, "channel", ch_str, sizeof(ch_str));
-    int power = atoi(power_str);
-    int channel = atoi(ch_str);
-    if (power < 8) power = 8;
-    if (power > 84) power = 84;
-    if (channel < 1 || channel > 13) channel = 6;
-
-    /* Pause all scanner UART input during calibration */
-    http_upload_pause();
-    uart_rx_pause_scanner(0);
+    httpd_resp_set_type(req, "application/json");
+    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
 #if CONFIG_DUAL_SCANNER
-    uart_rx_pause_scanner(1);
+    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+#else
+    const scanner_info_t *wifi = NULL;
 #endif
 
-    /* Enable AP on specified channel */
-    wifi_ap_start();
-
-    /* Set TX power */
-    esp_wifi_set_max_tx_power((int8_t)power);
-
-    /* Read back actual power */
-    int8_t actual_power = 0;
-    esp_wifi_get_max_tx_power(&actual_power);
-
-    /* Get BSSID */
-    uint8_t mac[6];
-    esp_wifi_get_mac(WIFI_IF_AP, mac);
-    char bssid[18];
-    snprintf(bssid, sizeof(bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
-    const char *ssid = wifi_ap_get_ssid();
-
-    char resp[196];
-    snprintf(resp, sizeof(resp),
-             "{\"ok\":true,\"bssid\":\"%s\",\"ssid\":\"%s\",\"channel\":%d,"
-             "\"power_quarter_dbm\":%d,\"power_dbm\":%.1f}",
-             bssid, ssid, channel, actual_power, actual_power * 0.25f);
-    httpd_resp_set_type(req, "application/json");
+    char resp[640];
+    snprintf(
+        resp,
+        sizeof(resp),
+        "{\"ok\":true,\"scan_mode\":\"%s\",\"session_id\":\"%s\",\"calibration_uuid\":\"%s\","
+        "\"ble\":{\"connected\":%s,\"acked\":%s,\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\"},"
+        "\"wifi\":{\"connected\":%s,\"acked\":%s,\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\"}}",
+        uart_rx_get_node_scan_mode(),
+        uart_rx_get_node_calibration_session_id(),
+        uart_rx_get_node_calibration_uuid(),
+        uart_rx_is_ble_scanner_connected() ? "true" : "false",
+        (ble && ble->calibration_mode_acked) ? "true" : "false",
+        (ble && ble->scan_mode[0]) ? ble->scan_mode : "unknown",
+        (ble && ble->calibration_uuid[0]) ? ble->calibration_uuid : "",
+        uart_rx_is_wifi_scanner_connected() ? "true" : "false",
+        (wifi && wifi->calibration_mode_acked) ? "true" : "false",
+        (wifi && wifi->scan_mode[0]) ? wifi->scan_mode : "unknown",
+        (wifi && wifi->calibration_uuid[0]) ? wifi->calibration_uuid : ""
+    );
     httpd_resp_sendstr(req, resp);
-
-    ESP_LOGW(TAG, "CALIBRATION: AP enabled (SSID=%s BSSID=%s ch=%d power=%.1fdBm)",
-             ssid, bssid, channel, actual_power * 0.25f);
     return ESP_OK;
 }
 
-static esp_err_t calibrate_stop_handler(httpd_req_t *req)
+static esp_err_t calibration_mode_start_handler(httpd_req_t *req)
 {
-    s_cal.active = false;
-    wifi_ap_stop();
-
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true,\"rebooting\":true}");
-
-    ESP_LOGW(TAG, "CALIBRATION: complete — rebooting to free RAM and return to normal mode");
-
-    /* Reboot after brief delay to free all calibration RAM */
-    vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
-
-    return ESP_OK;  /* unreachable */
-}
-
-static esp_err_t calibrate_power_handler(httpd_req_t *req)
-{
-    /* Change TX power while AP is broadcasting */
-    char query[32] = {0};
-    httpd_req_get_url_query_str(req, query, sizeof(query));
-    char level_str[4] = "80";
-    httpd_query_key_value(query, "level", level_str, sizeof(level_str));
-    int level = atoi(level_str);
-    if (level < 8) level = 8;
-    if (level > 84) level = 84;
-
-    esp_wifi_set_max_tx_power((int8_t)level);
-
-    int8_t actual = 0;
-    esp_wifi_get_max_tx_power(&actual);
-
-    char resp[64];
-    snprintf(resp, sizeof(resp), "{\"ok\":true,\"power_dbm\":%.1f}", actual * 0.25f);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, resp);
-
-    ESP_LOGI(TAG, "CALIBRATION: TX power → %.1f dBm", actual * 0.25f);
-    return ESP_OK;
-}
-
-static esp_err_t calibrate_measure_handler(httpd_req_t *req)
-{
-    /* Parse target BSSID, channel, and duration */
-    char query[128] = {0};
-    httpd_req_get_url_query_str(req, query, sizeof(query));
-    char target_bssid[18] = {0};
-    char ch_str[4] = "6";
-    char dur_str[4] = "90";
-    httpd_query_key_value(query, "bssid", target_bssid, sizeof(target_bssid));
-    httpd_query_key_value(query, "channel", ch_str, sizeof(ch_str));
-    httpd_query_key_value(query, "duration", dur_str, sizeof(dur_str));
-    int channel = atoi(ch_str);
-    int duration = atoi(dur_str);
-    if (duration < 5) duration = 5;
-    if (duration > 120) duration = 120;
-
-    ESP_LOGW(TAG, "CALIBRATION: measuring BSSID=%s ch=%d for %ds", target_bssid, channel, duration);
-
-    /* Pause all scanner input during measurement */
-    http_upload_pause();
-    uart_rx_pause_scanner(0);
-#if CONFIG_DUAL_SCANNER
-    uart_rx_pause_scanner(1);
-#endif
-
-    /* Reset measurement state */
-    s_cal.active = true;
-    strncpy(s_cal.target_bssid, target_bssid, sizeof(s_cal.target_bssid) - 1);
-    s_cal.channel = channel;
-    s_cal.total_rssi = 0;
-    s_cal.sample_count = 0;
-    s_cal.min_rssi = 0;
-    s_cal.max_rssi = -127;
-    s_cal.start_ms = esp_timer_get_time() / 1000;
-    s_cal.duration_ms = duration * 1000;
-
-    /* Run passive scans on the target channel for the full duration */
-    int64_t end_ms = s_cal.start_ms + s_cal.duration_ms;
-
-    while ((esp_timer_get_time() / 1000) < end_ms && s_cal.active) {
-        wifi_scan_config_t cfg = {
-            .ssid = NULL,
-            .bssid = NULL,
-            .channel = (uint8_t)channel,
-            .show_hidden = true,
-            .scan_type = WIFI_SCAN_TYPE_PASSIVE,
-            .scan_time.passive = 500,  /* 500ms dwell for more samples */
-        };
-
-        if (esp_wifi_scan_start(&cfg, true) != ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(200));
-            continue;
-        }
-
-        uint16_t ap_count = 0;
-        esp_wifi_scan_get_ap_num(&ap_count);
-        if (ap_count > 0 && ap_count < 64) {
-            /* Use static buffer to avoid heap allocation */
-            static wifi_ap_record_t ap_buf[64];
-            uint16_t max_records = ap_count > 64 ? 64 : ap_count;
-            esp_wifi_scan_get_ap_records(&max_records, ap_buf);
-
-            for (int i = 0; i < max_records; i++) {
-                char found[18];
-                snprintf(found, sizeof(found), "%02X:%02X:%02X:%02X:%02X:%02X",
-                         ap_buf[i].bssid[0], ap_buf[i].bssid[1], ap_buf[i].bssid[2],
-                         ap_buf[i].bssid[3], ap_buf[i].bssid[4], ap_buf[i].bssid[5]);
-                if (strcasecmp(found, target_bssid) == 0) {
-                    s_cal.total_rssi += ap_buf[i].rssi;
-                    s_cal.sample_count++;
-                    if (ap_buf[i].rssi < s_cal.min_rssi) s_cal.min_rssi = ap_buf[i].rssi;
-                    if (ap_buf[i].rssi > s_cal.max_rssi) s_cal.max_rssi = ap_buf[i].rssi;
-                }
-            }
-        }
-
-        /* Progress log every 10s */
-        int64_t elapsed = (esp_timer_get_time() / 1000) - s_cal.start_ms;
-        if (elapsed > 0 && (elapsed % 10000) < 600) {
-            float avg = s_cal.sample_count > 0 ? (float)s_cal.total_rssi / s_cal.sample_count : -100;
-            ESP_LOGI(TAG, "CAL progress: %llds/%ds samples=%d avg=%.1f min=%d max=%d",
-                     (long long)(elapsed / 1000), duration,
-                     s_cal.sample_count, avg, s_cal.min_rssi, s_cal.max_rssi);
-        }
+    if (uart_rx_is_node_calibration_mode()) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"calibration_mode_already_active\"}");
+        return ESP_OK;
     }
 
-    s_cal.active = false;
-    float avg_rssi = s_cal.sample_count > 0 ? (float)s_cal.total_rssi / s_cal.sample_count : -100.0f;
+    char body[256] = {0};
+    int received = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (received <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"no_body\"}");
+        return ESP_OK;
+    }
 
-    /* Resume normal operations */
-    uart_rx_resume_scanner(0);
+    cJSON *root = cJSON_Parse(body);
+    if (!root) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"bad_json\"}");
+        return ESP_OK;
+    }
+
+    const char *session_id = cJSON_GetStringValue(cJSON_GetObjectItem(root, JSON_KEY_SESSION_ID));
+    const char *cal_uuid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "advertise_uuid"));
+    if (!session_id || !cal_uuid || session_id[0] == '\0' || cal_uuid[0] == '\0') {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"session_id_and_advertise_uuid_required\"}");
+        return ESP_OK;
+    }
+
+    uart_rx_set_node_calibration_mode(true, session_id, cal_uuid);
+
+    char cmd[192];
+    snprintf(
+        cmd,
+        sizeof(cmd),
+        "{\"type\":\"%s\",\"session_id\":\"%s\",\"calibration_uuid\":\"%s\"}",
+        MSG_TYPE_CAL_MODE_START,
+        session_id,
+        cal_uuid
+    );
+    uart_rx_send_command(cmd);
+
+    bool ok = wait_for_node_mode("calibration", cal_uuid, 2500, true);
+    if (!ok) {
+        snprintf(
+            cmd,
+            sizeof(cmd),
+            "{\"type\":\"%s\",\"session_id\":\"%s\"}",
+            MSG_TYPE_CAL_MODE_STOP,
+            session_id
+        );
+        uart_rx_send_command(cmd);
+        wait_for_node_mode("normal", "", 1500, false);
+        uart_rx_set_node_calibration_mode(false, "", "");
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"calibration_mode_ack_timeout\",\"stage\":\"cal_mode_start\"}");
+        return ESP_OK;
+    }
+
+    cJSON_Delete(root);
+    char resp[320];
+    snprintf(
+        resp,
+        sizeof(resp),
+        "{\"ok\":true,\"scan_mode\":\"%s\",\"session_id\":\"%s\",\"calibration_uuid\":\"%s\","
+        "\"ble_ack\":%s,\"wifi_ack\":%s}",
+        uart_rx_get_node_scan_mode(),
+        uart_rx_get_node_calibration_session_id(),
+        uart_rx_get_node_calibration_uuid(),
+        (uart_rx_get_ble_scanner_info() && uart_rx_get_ble_scanner_info()->calibration_mode_acked) ? "true" : "false",
 #if CONFIG_DUAL_SCANNER
-    uart_rx_resume_scanner(1);
+        (uart_rx_get_wifi_scanner_info() && uart_rx_get_wifi_scanner_info()->calibration_mode_acked) ? "true" : "false"
+#else
+        "false"
 #endif
-    http_upload_resume();
-
-    char resp[196];
-    snprintf(resp, sizeof(resp),
-             "{\"ok\":true,\"bssid\":\"%s\",\"channel\":%d,\"avg_rssi\":%.1f,"
-             "\"min_rssi\":%d,\"max_rssi\":%d,\"samples\":%d,\"duration_s\":%d}",
-             target_bssid, channel, avg_rssi,
-             s_cal.min_rssi, s_cal.max_rssi, s_cal.sample_count, duration);
-    httpd_resp_set_type(req, "application/json");
+    );
     httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
 
-    ESP_LOGW(TAG, "CALIBRATION: result → avg=%.1f min=%d max=%d (%d samples in %ds)",
-             avg_rssi, s_cal.min_rssi, s_cal.max_rssi, s_cal.sample_count, duration);
+static esp_err_t calibration_mode_stop_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    if (!uart_rx_is_node_calibration_mode()) {
+        httpd_resp_sendstr(req, "{\"ok\":true,\"scan_mode\":\"normal\"}");
+        return ESP_OK;
+    }
+
+    char cmd[128];
+    snprintf(
+        cmd,
+        sizeof(cmd),
+        "{\"type\":\"%s\",\"session_id\":\"%s\"}",
+        MSG_TYPE_CAL_MODE_STOP,
+        uart_rx_get_node_calibration_session_id()
+    );
+    uart_rx_send_command(cmd);
+    wait_for_node_mode("normal", "", 2500, false);
+    uart_rx_set_node_calibration_mode(false, "", "");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"scan_mode\":\"normal\"}");
     return ESP_OK;
 }
 
@@ -1331,7 +1467,7 @@ void http_status_init(void)
     config.server_port    = CONFIG_HTTP_STATUS_PORT;
     config.task_priority  = CONFIG_HTTP_STATUS_PRIORITY;
     config.stack_size     = 6144;   /* Minimal — relay uses static buffers, not stack */
-    config.max_uri_handlers = 20;   /* 15 active (status/setup/scan/connect/ota*3/fw*3/cal*4) + headroom */
+    config.max_uri_handlers = 20;   /* status/setup/scan/connect/ota*3/fw*3/cal-mode*3 + headroom */
     config.max_open_sockets = 1;  /* Single connection only — saves ~4KB per socket */
     config.lru_purge_enable = true; /* Close idle connections aggressively */
     config.recv_wait_timeout  = 60;  /* 60s timeout for large OTA uploads */
@@ -1358,20 +1494,16 @@ void http_status_init(void)
     /* Scanner firmware store + relay endpoints */
     fw_store_register(server);
 
-    /* Calibration endpoints */
-    static const httpd_uri_t uri_cal_start = {
-        .uri = "/api/calibrate/start", .method = HTTP_POST, .handler = calibrate_start_handler };
-    static const httpd_uri_t uri_cal_measure = {
-        .uri = "/api/calibrate/measure", .method = HTTP_POST, .handler = calibrate_measure_handler };
-    static const httpd_uri_t uri_cal_power = {
-        .uri = "/api/calibrate/power", .method = HTTP_POST, .handler = calibrate_power_handler };
-    static const httpd_uri_t uri_cal_stop = {
-        .uri = "/api/calibrate/stop", .method = HTTP_POST, .handler = calibrate_stop_handler };
-    httpd_register_uri_handler(server, &uri_cal_start);
-    httpd_register_uri_handler(server, &uri_cal_measure);
-    httpd_register_uri_handler(server, &uri_cal_power);
-    httpd_register_uri_handler(server, &uri_cal_stop);
+    static const httpd_uri_t uri_cal_mode_get = {
+        .uri = "/api/calibration/mode", .method = HTTP_GET, .handler = calibration_mode_status_handler };
+    static const httpd_uri_t uri_cal_mode_start = {
+        .uri = "/api/calibration/mode/start", .method = HTTP_POST, .handler = calibration_mode_start_handler };
+    static const httpd_uri_t uri_cal_mode_stop = {
+        .uri = "/api/calibration/mode/stop", .method = HTTP_POST, .handler = calibration_mode_stop_handler };
+    httpd_register_uri_handler(server, &uri_cal_mode_get);
+    httpd_register_uri_handler(server, &uri_cal_mode_start);
+    httpd_register_uri_handler(server, &uri_cal_mode_stop);
 
-    ESP_LOGI(TAG, "HTTP status server started on port %d (setup at /setup, calibration at /api/calibrate/*)",
+    ESP_LOGI(TAG, "HTTP status server started on port %d (setup at /setup, calibration mode at /api/calibration/mode*)",
              CONFIG_HTTP_STATUS_PORT);
 }

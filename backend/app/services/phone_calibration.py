@@ -104,6 +104,17 @@ class WalkSession:
     samples: list[_CalSample] = field(default_factory=list)
     checkpoints: list[_Checkpoint] = field(default_factory=list)
     fit_result: dict | None = None    # populated by .fit()
+    target_sensor_ids: list[str] = field(default_factory=list)
+    target_nodes: list[dict] = field(default_factory=list)
+    mode_state: str = "inactive"
+    mode_started_at: float | None = None
+    mode_stopped_at: float | None = None
+    abort_reason: str | None = None
+    provisional_fit: dict | None = None
+    verified_fit: dict | None = None
+    apply_requested: bool = False
+    applied: bool = False
+    apply_reason: str | None = None
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -434,7 +445,10 @@ class PhoneCalibrationManager:
             "hints": hints,
         }
 
-    def feedback(self, session_id: str, window_s: float = 10.0) -> dict:
+    def feedback(self,
+                 session_id: str,
+                 window_s: float = 10.0,
+                 eligible_sensor_ids: list[str] | set[str] | tuple[str, ...] | None = None) -> dict:
         """Live "what does the fleet hear right now" snapshot for the
         Android UI. Group recent sensor samples by sensor_id, return
         latest RSSI + sample count + interpolated distance + per-sensor
@@ -450,12 +464,21 @@ class PhoneCalibrationManager:
         per_sensor_recent: dict[str, list[_CalSample]] = {}
         for c in recent:
             per_sensor_recent.setdefault(c.sensor_id, []).append(c)
+        eligible_ids = sorted({
+            str(sensor_id)
+            for sensor_id in (eligible_sensor_ids or [])
+            if sensor_id
+        })
+        eligible_set = set(eligible_ids)
         # Union of every sensor we've ever heard from this session +
         # every sensor the operator touched. Gives the UI a stable row
         # per sensor instead of appearing/disappearing with silence.
-        all_sensor_ids = set(per_sensor_recent.keys()) | {c.sensor_id for c in s.samples} | {
-            cp.sensor_id for cp in s.checkpoints
-        }
+        if eligible_set:
+            all_sensor_ids = set(eligible_set)
+        else:
+            all_sensor_ids = set(per_sensor_recent.keys()) | {c.sensor_id for c in s.samples} | {
+                cp.sensor_id for cp in s.checkpoints
+            }
         last_pos = (s.trace[-1].lat, s.trace[-1].lon) if s.trace else None
         items = []
         for sid in all_sensor_ids:
@@ -486,6 +509,11 @@ class PhoneCalibrationManager:
         items.sort(key=lambda r: (not r["readiness"]["ready"],
                                    -(r["current_rssi"] or -127)))
         sensors_ready = sum(1 for it in items if it["readiness"]["ready"])
+        heard_sensor_ids = sorted([
+            sid for sid, lst in per_sensor_recent.items()
+            if lst and (not eligible_set or sid in eligible_set)
+        ])
+        sensors_total = len(eligible_ids) if eligible_ids else len(items)
         return {
             "session_id": session_id,
             "trace_points": len(s.trace),
@@ -493,10 +521,14 @@ class PhoneCalibrationManager:
             "samples_recent": len(recent),
             "phone_lat": last_pos[0] if last_pos else None,
             "phone_lon": last_pos[1] if last_pos else None,
+            "eligible_sensor_count": sensors_total,
+            "eligible_sensor_ids": eligible_ids if eligible_ids else sorted(all_sensor_ids),
+            "heard_sensor_count": len(heard_sensor_ids),
+            "heard_sensor_ids": heard_sensor_ids,
             "sensors": items,
             "session_readiness": {
                 "sensors_ready": sensors_ready,
-                "sensors_total": len(items),
+                "sensors_total": sensors_total,
                 "ready_overall": sensors_ready >= self.SESSION_READY_MIN_SENSORS,
                 "min_required": self.SESSION_READY_MIN_SENSORS,
             },

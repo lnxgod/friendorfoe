@@ -9,9 +9,11 @@
 #include "uart_rx.h"
 #include "uart_protocol.h"
 #include "config.h"
+#include "detection_policy.h"
 #include "led_status.h"
 
 #include <string.h>
+#include <stdio.h>
 #include <stdatomic.h>
 #include "driver/uart.h"
 #include "esp_log.h"
@@ -47,8 +49,15 @@ static portMUX_TYPE s_ota_response_lock = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool s_rx_paused_ble = false;
 static volatile bool s_rx_paused_wifi = false;
 
-/* Backpressure flag — prevents stop/start oscillation between RX tasks */
-static _Atomic bool s_backpressure_active = false;
+/* Per-scanner backpressure flags — BLE noise should not be able to pause the
+ * WiFi scanner, and each scanner must be able to resume independently. */
+static _Atomic bool s_backpressure_ble = false;
+static _Atomic bool s_backpressure_wifi = false;
+
+static bool s_node_calibration_mode = false;
+static char s_node_scan_mode[16] = "normal";
+static char s_node_calibration_session_id[24] = {0};
+static char s_node_calibration_uuid[48] = {0};
 
 /* ── Recent detections ring buffer ─────────────────────────────────────── */
 
@@ -76,18 +85,152 @@ static void push_recent(const drone_detection_t *det)
     portEXIT_CRITICAL(&s_recent_lock);
 }
 
+static _Atomic bool *backpressure_flag_for_scanner(int scanner_id)
+{
+    return (scanner_id == 0) ? &s_backpressure_ble : &s_backpressure_wifi;
+}
+
+static uart_port_t scanner_uart_for_id(int scanner_id)
+{
+    return (scanner_id == 0) ? CONFIG_BLE_SCANNER_UART : CONFIG_WIFI_SCANNER_UART;
+}
+
+static void send_scanner_flow_cmd(int scanner_id, const char *type)
+{
+    char cmd[24];
+    int n = snprintf(cmd, sizeof(cmd), "{\"type\":\"%s\"}\n", type);
+    if (n > 0) {
+        uart_write_bytes(scanner_uart_for_id(scanner_id), cmd, n);
+    }
+}
+
+static bool is_low_value_ble_detection(const drone_detection_t *det)
+{
+    if (det->source == DETECTION_SRC_BLE_FINGERPRINT) {
+        return det->confidence < 0.10f;
+    }
+    return det->source == DETECTION_SRC_BLE_RID &&
+           det->confidence < 0.10f &&
+           strncmp(det->drone_id, "rid_", 4) != 0 &&
+           det->latitude == 0.0 &&
+           det->longitude == 0.0 &&
+           det->operator_lat == 0.0 &&
+           det->operator_lon == 0.0;
+}
+
+static void maybe_resume_scanner(int scanner_id)
+{
+    _Atomic bool *flag = backpressure_flag_for_scanner(scanner_id);
+    if (!atomic_load(flag) || s_detection_queue == NULL) {
+        return;
+    }
+
+    UBaseType_t queue_count = uxQueueMessagesWaiting(s_detection_queue);
+    if (queue_count <= (CONFIG_DETECTION_QUEUE_SIZE * 4 / 10)) {
+        send_scanner_flow_cmd(scanner_id, "start");
+        ESP_LOGI(TAG, "Queue drained %d/%d — resuming scanner[%d]",
+                 (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE, scanner_id);
+        atomic_store(flag, false);
+    }
+}
+
+static void note_scanner_activity(int scanner_id, int_fast64_t now_ms)
+{
+    if (scanner_id == 0) {
+        atomic_store(&s_last_rx_time_ble, now_ms);
+    } else {
+        atomic_store(&s_last_rx_time_wifi, now_ms);
+    }
+}
+
+static bool msg_type_is_scanner_originated(const char *msg_type)
+{
+    if (!msg_type) {
+        return false;
+    }
+    return strcmp(msg_type, MSG_TYPE_DETECTION) == 0 ||
+           strcmp(msg_type, MSG_TYPE_STATUS) == 0 ||
+           strcmp(msg_type, "scanner_info") == 0 ||
+           strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0 ||
+           strncmp(msg_type, "ota_", 4) == 0;
+}
+
+void uart_rx_set_node_calibration_mode(bool active,
+                                       const char *session_id,
+                                       const char *calibration_uuid)
+{
+    s_node_calibration_mode = active;
+    strncpy(s_node_scan_mode, active ? "calibration" : "normal", sizeof(s_node_scan_mode) - 1);
+    s_node_scan_mode[sizeof(s_node_scan_mode) - 1] = '\0';
+
+    strncpy(s_node_calibration_session_id, session_id ? session_id : "", sizeof(s_node_calibration_session_id) - 1);
+    s_node_calibration_session_id[sizeof(s_node_calibration_session_id) - 1] = '\0';
+    strncpy(s_node_calibration_uuid, calibration_uuid ? calibration_uuid : "", sizeof(s_node_calibration_uuid) - 1);
+    s_node_calibration_uuid[sizeof(s_node_calibration_uuid) - 1] = '\0';
+
+    s_ble_scanner_info.calibration_mode_acked = false;
+    s_wifi_scanner_info.calibration_mode_acked = false;
+}
+
+bool uart_rx_is_node_calibration_mode(void)
+{
+    return s_node_calibration_mode;
+}
+
+const char *uart_rx_get_node_scan_mode(void)
+{
+    return s_node_scan_mode;
+}
+
+const char *uart_rx_get_node_calibration_uuid(void)
+{
+    return s_node_calibration_uuid;
+}
+
+const char *uart_rx_get_node_calibration_session_id(void)
+{
+    return s_node_calibration_session_id;
+}
+
+bool uart_rx_node_mode_allows_detection(const drone_detection_t *det)
+{
+    if (!s_node_calibration_mode) {
+        return true;
+    }
+    if (!det || det->source != DETECTION_SRC_BLE_FINGERPRINT) {
+        return false;
+    }
+    if (fof_policy_ble_svc_raw_contains_uuid(det->ble_svc_uuids_raw, s_node_calibration_uuid)) {
+        return true;
+    }
+    return fof_policy_ble_has_exact_uuid128_le(
+        det->ble_service_uuids_128,
+        det->ble_svc_uuid_128_count,
+        s_node_calibration_uuid
+    );
+}
+
 /* ── Source string to DETECTION_SRC mapping ────────────────────────────── */
 
-static uint8_t parse_source(int src_int)
+static bool parse_source_value(int src_int, uint8_t *out_source)
 {
+    if (!out_source) {
+        return false;
+    }
+
     switch (src_int) {
-        case DETECTION_SRC_BLE_RID:            return DETECTION_SRC_BLE_RID;
-        case DETECTION_SRC_WIFI_SSID:          return DETECTION_SRC_WIFI_SSID;
-        case DETECTION_SRC_WIFI_DJI_IE:        return DETECTION_SRC_WIFI_DJI_IE;
-        case DETECTION_SRC_WIFI_BEACON:        return DETECTION_SRC_WIFI_BEACON;
-        case DETECTION_SRC_WIFI_OUI:           return DETECTION_SRC_WIFI_OUI;
-        case DETECTION_SRC_WIFI_PROBE_REQUEST: return DETECTION_SRC_WIFI_PROBE_REQUEST;
-        default:                               return DETECTION_SRC_BLE_RID;
+        case DETECTION_SRC_BLE_RID:
+        case DETECTION_SRC_BLE_FINGERPRINT:
+        case DETECTION_SRC_WIFI_SSID:
+        case DETECTION_SRC_WIFI_DJI_IE:
+        case DETECTION_SRC_WIFI_BEACON:
+        case DETECTION_SRC_WIFI_OUI:
+        case DETECTION_SRC_WIFI_PROBE_REQUEST:
+        case DETECTION_SRC_WIFI_ASSOC:
+            *out_source = (uint8_t)src_int;
+            return true;
+        default:
+            return false;
     }
 }
 
@@ -135,8 +278,18 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
     }
     strncpy(det->drone_id, drone_id, sizeof(det->drone_id) - 1);
 
-    /* Source */
-    det->source = parse_source(json_get_int(root, JSON_KEY_SOURCE, 0));
+    /* Source — fail closed. Missing/unknown source codes must not silently
+     * downgrade into the BLE RID lane because that makes garbage look
+     * authoritative to the backend and operator UI. */
+    const cJSON *src_item = cJSON_GetObjectItemCaseSensitive(root, JSON_KEY_SOURCE);
+    if (!cJSON_IsNumber(src_item)) {
+        ESP_LOGW(TAG, "Detection %s missing numeric src", det->drone_id);
+        return false;
+    }
+    if (!parse_source_value(src_item->valueint, &det->source)) {
+        ESP_LOGW(TAG, "Detection %s has unknown src=%d", det->drone_id, src_item->valueint);
+        return false;
+    }
 
     /* Confidence */
     det->confidence = (float)json_get_double(root, JSON_KEY_CONFIDENCE, 0.0);
@@ -321,6 +474,38 @@ static void handle_status(const cJSON *root, int scanner_id)
         info->deauth_count  = (uint16_t)json_get_int(root, "deauth", 0);
         info->disassoc_count = (uint16_t)json_get_int(root, "disassoc", 0);
         info->auth_count    = (uint16_t)json_get_int(root, "auth_fr", 0);
+        info->uart_tx_dropped = (uint32_t)json_get_double(root, "uart_tx_dropped", 0);
+        info->uart_tx_high_water = (uint32_t)json_get_double(root, "uart_tx_high_water", 0);
+        info->tx_queue_depth = (uint32_t)json_get_double(root, "tx_queue_depth", 0);
+        info->tx_queue_capacity = (uint32_t)json_get_double(root, "tx_queue_capacity", 0);
+        info->tx_queue_pressure_pct = (uint32_t)json_get_double(root, "tx_queue_pressure_pct", 0);
+        info->noise_drop_ble = (uint32_t)json_get_double(root, "noise_drop_ble", 0);
+        info->noise_drop_wifi = (uint32_t)json_get_double(root, "noise_drop_wifi", 0);
+        info->probe_seen = (uint32_t)json_get_double(root, "probe_seen", 0);
+        info->probe_sent = (uint32_t)json_get_double(root, "probe_sent", 0);
+        info->probe_drop_low_value = (uint32_t)json_get_double(root, "probe_drop_low_value", 0);
+        info->probe_drop_rate_limit = (uint32_t)json_get_double(root, "probe_drop_rate_limit", 0);
+        info->probe_drop_pressure = (uint32_t)json_get_double(root, "probe_drop_pressure", 0);
+        info->toff_ms = (int64_t)json_get_double(root, "toff", (double)info->toff_ms);
+        info->tcnt = (uint32_t)json_get_int(root, "tcnt", (int)info->tcnt);
+        info->time_valid_count = (uint32_t)json_get_double(root, "time_valid_count", (double)info->time_valid_count);
+        info->time_last_valid_age_s = (int64_t)json_get_double(
+            root, "time_last_valid_age_s", (double)info->time_last_valid_age_s
+        );
+        const char *time_state = json_get_string(root, "time_sync_state", info->time_sync_state);
+        if (time_state) {
+            strncpy(info->time_sync_state, time_state, sizeof(info->time_sync_state) - 1);
+            info->time_sync_state[sizeof(info->time_sync_state) - 1] = '\0';
+        }
+        const char *scan_mode = json_get_string(root, JSON_KEY_SCAN_MODE, info->scan_mode[0] ? info->scan_mode : "normal");
+        strncpy(info->scan_mode, scan_mode, sizeof(info->scan_mode) - 1);
+        info->scan_mode[sizeof(info->scan_mode) - 1] = '\0';
+        const char *cal_uuid = json_get_string(root, JSON_KEY_CALIBRATION_UUID, info->calibration_uuid);
+        strncpy(info->calibration_uuid, cal_uuid ? cal_uuid : "", sizeof(info->calibration_uuid) - 1);
+        info->calibration_uuid[sizeof(info->calibration_uuid) - 1] = '\0';
+        info->calibration_mode_acked =
+            strcmp(info->scan_mode, "calibration") == 0 &&
+            info->calibration_uuid[0] != '\0';
 
         const cJSON *flood_item = cJSON_GetObjectItemCaseSensitive(root, "flood");
         info->deauth_flood = (flood_item && cJSON_IsTrue(flood_item));
@@ -355,26 +540,34 @@ static void handle_status(const cJSON *root, int scanner_id)
 
 static void process_line(const char *line, size_t len, int scanner_id)
 {
-    /* Update last-received timestamp for the correct scanner */
     int_fast64_t now_ms = (int_fast64_t)(esp_timer_get_time() / 1000);
-    if (scanner_id == 0) {
-        atomic_store(&s_last_rx_time_ble, now_ms);
-    } else {
-        atomic_store(&s_last_rx_time_wifi, now_ms);
-    }
 
     cJSON *root = cJSON_ParseWithLength(line, len);
     if (!root) {
-        ESP_LOGW(TAG, "JSON parse error: %.64s...", line);
+        ESP_LOGW(TAG, "Scanner[%d] JSON parse error: %.64s...",
+                 scanner_id, line);
         return;
     }
 
     const char *msg_type = json_get_string(root, JSON_KEY_TYPE, NULL);
     if (!msg_type) {
-        ESP_LOGW(TAG, "Message missing 'type' field");
+        ESP_LOGW(TAG, "Scanner[%d] message missing 'type' field", scanner_id);
         cJSON_Delete(root);
         return;
     }
+
+    if (!msg_type_is_scanner_originated(msg_type)) {
+        ESP_LOGW(TAG, "Scanner[%d] echoed/non-scanner msg type='%s' ignored",
+                 scanner_id, msg_type);
+        cJSON_Delete(root);
+        return;
+    }
+
+    note_scanner_activity(scanner_id, now_ms);
+
+    /* A stopped scanner still emits identity / status, so use scanner-originated
+     * traffic as a chance to release backpressure once the queue has drained. */
+    maybe_resume_scanner(scanner_id);
 
     if (strcmp(msg_type, MSG_TYPE_DETECTION) == 0) {
         drone_detection_t det;
@@ -383,33 +576,45 @@ static void process_line(const char *line, size_t len, int scanner_id)
              * WiFi APs (0.05) and phones (0.05) are still useful for the backend. */
             if (det.confidence < 0.04f) {
                 push_recent(&det);  /* Still show in recent list */
+                cJSON_Delete(root);
                 return;
             }
 
-            /* Backpressure: if queue is nearly full, tell scanners to pause.
-             * Resume when queue drops below 40%. Uses module-level atomics
-             * to avoid data races between BLE and WiFi RX tasks. */
+            if (!uart_rx_node_mode_allows_detection(&det)) {
+                cJSON_Delete(root);
+                return;
+            }
+
             UBaseType_t queue_count = uxQueueMessagesWaiting(s_detection_queue);
+            bool low_value_ble = is_low_value_ble_detection(&det);
+
+            /* Under sustained queue pressure, shed low-value BLE fingerprints
+             * before they can starve WiFi scans or real RID packets. */
+            if (low_value_ble &&
+                queue_count >= (CONFIG_DETECTION_QUEUE_SIZE / 2)) {
+                push_recent(&det);
+                cJSON_Delete(root);
+                return;
+            }
+
+            /* Backpressure: if queue is nearly full, pause only the scanner
+             * that is contributing this traffic. Global stop/start caused BLE
+             * bursts to starve the WiFi scanner and left scanners stuck until
+             * the watchdog re-sent "ready". */
+            _Atomic bool *bp_flag = backpressure_flag_for_scanner(scanner_id);
             if (queue_count >= (CONFIG_DETECTION_QUEUE_SIZE * 8 / 10)) {
-                if (!s_backpressure_active) {
-                    const char *stop_cmd = "{\"type\":\"stop\"}\n";
-                    uart_write_bytes(CONFIG_BLE_SCANNER_UART, stop_cmd, strlen(stop_cmd));
-#if CONFIG_DUAL_SCANNER
-                    uart_write_bytes(CONFIG_WIFI_SCANNER_UART, stop_cmd, strlen(stop_cmd));
-#endif
-                    ESP_LOGW(TAG, "Queue pressure %d/%d — throttling scanners",
-                             (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE);
-                    s_backpressure_active = true;
+                if (!atomic_load(bp_flag)) {
+                    send_scanner_flow_cmd(scanner_id, "stop");
+                    ESP_LOGW(TAG, "Queue pressure %d/%d — throttling scanner[%d]",
+                             (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE, scanner_id);
+                    atomic_store(bp_flag, true);
                 }
-            } else if (s_backpressure_active && queue_count <= (CONFIG_DETECTION_QUEUE_SIZE * 4 / 10)) {
-                const char *start_cmd = "{\"type\":\"start\"}\n";
-                uart_write_bytes(CONFIG_BLE_SCANNER_UART, start_cmd, strlen(start_cmd));
-#if CONFIG_DUAL_SCANNER
-                uart_write_bytes(CONFIG_WIFI_SCANNER_UART, start_cmd, strlen(start_cmd));
-#endif
-                ESP_LOGI(TAG, "Queue drained %d/%d — resuming scanners",
-                         (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE);
-                s_backpressure_active = false;
+            } else if (atomic_load(bp_flag) &&
+                       queue_count <= (CONFIG_DETECTION_QUEUE_SIZE * 4 / 10)) {
+                send_scanner_flow_cmd(scanner_id, "start");
+                ESP_LOGI(TAG, "Queue drained %d/%d — resuming scanner[%d]",
+                         (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE, scanner_id);
+                atomic_store(bp_flag, false);
             }
 
             if (xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -434,10 +639,44 @@ static void process_line(const char *line, size_t len, int scanner_id)
         strncpy(info->caps, caps, sizeof(info->caps) - 1);
         info->toff_ms = (int64_t)json_get_double(root, "toff", 0.0);
         info->tcnt    = (uint32_t)json_get_int(root, "tcnt", 0);
+        info->time_valid_count = (uint32_t)json_get_double(root, "time_valid_count", 0.0);
+        info->time_last_valid_age_s = (int64_t)json_get_double(root, "time_last_valid_age_s", -1.0);
+        const char *time_state = json_get_string(root, "time_sync_state", "unknown");
+        strncpy(info->time_sync_state, time_state, sizeof(info->time_sync_state) - 1);
+        info->time_sync_state[sizeof(info->time_sync_state) - 1] = '\0';
+        const char *scan_mode = json_get_string(root, JSON_KEY_SCAN_MODE, "normal");
+        strncpy(info->scan_mode, scan_mode, sizeof(info->scan_mode) - 1);
+        info->scan_mode[sizeof(info->scan_mode) - 1] = '\0';
+        const char *cal_uuid = json_get_string(root, JSON_KEY_CALIBRATION_UUID, "");
+        strncpy(info->calibration_uuid, cal_uuid, sizeof(info->calibration_uuid) - 1);
+        info->calibration_uuid[sizeof(info->calibration_uuid) - 1] = '\0';
+        info->calibration_mode_acked =
+            strcmp(info->scan_mode, "calibration") == 0 &&
+            info->calibration_uuid[0] != '\0';
         info->received = true;
-        ESP_LOGI(TAG, "Scanner[%d] identity: %s v%s (%s) chip=%s toff=%lld tcnt=%u",
+        ESP_LOGI(TAG, "Scanner[%d] identity: %s v%s (%s) chip=%s toff=%lld tcnt=%u valid=%u state=%s mode=%s",
                  scanner_id, board, ver, caps, chip,
-                 (long long)info->toff_ms, info->tcnt);
+                 (long long)info->toff_ms, info->tcnt,
+                 info->time_valid_count, info->time_sync_state,
+                 info->scan_mode[0] ? info->scan_mode : "normal");
+    } else if (strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0) {
+        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        const char *scan_mode = json_get_string(root, JSON_KEY_SCAN_MODE, "normal");
+        const char *cal_uuid = json_get_string(root, JSON_KEY_CALIBRATION_UUID, "");
+        const cJSON *ok_item = cJSON_GetObjectItemCaseSensitive(root, "ok");
+        bool ok = (ok_item && cJSON_IsTrue(ok_item)) ||
+                  (ok_item && cJSON_IsNumber(ok_item) && ok_item->valueint != 0);
+        strncpy(info->scan_mode, scan_mode, sizeof(info->scan_mode) - 1);
+        info->scan_mode[sizeof(info->scan_mode) - 1] = '\0';
+        strncpy(info->calibration_uuid, cal_uuid, sizeof(info->calibration_uuid) - 1);
+        info->calibration_uuid[sizeof(info->calibration_uuid) - 1] = '\0';
+        info->calibration_mode_acked = ok;
+        info->received = true;
+        ESP_LOGW(TAG, "Scanner[%d] calibration ack: ok=%d mode=%s uuid=%s",
+                 scanner_id,
+                 ok ? 1 : 0,
+                 info->scan_mode[0] ? info->scan_mode : "normal",
+                 info->calibration_uuid[0] ? info->calibration_uuid : "-");
     } else if (strncmp(msg_type, "ota_", 4) == 0) {
         /* OTA response from scanner — capture for relay diagnostics */
         portENTER_CRITICAL(&s_ota_response_lock);
@@ -689,6 +928,14 @@ static bool cmd_is_wifi_only(const char *json_cmd)
 void uart_rx_send_command(const char *json_cmd)
 {
     if (!json_cmd) return;
+    if (s_node_calibration_mode &&
+        (strstr(json_cmd, "\"type\":\"lockon\"") ||
+         strstr(json_cmd, "\"type\":\"lockon_cancel\"") ||
+         strstr(json_cmd, "\"type\":\"ble_lockon\"") ||
+         strstr(json_cmd, "\"type\":\"ble_lockon_cancel\""))) {
+        ESP_LOGW(TAG, "Rejecting scan-control command while calibration mode is active");
+        return;
+    }
     size_t len = strlen(json_cmd);
 
     const bool ble_only  = cmd_is_ble_only(json_cmd);

@@ -1,6 +1,6 @@
 package com.friendorfoe.calibration
 
 interface CalibrationAdvertiser {
-    fun start(serviceUuid: String, onError: (String) -> Unit = {}): Boolean
+    suspend fun start(serviceUuid: String): Result<Unit>
     fun stop()
 }

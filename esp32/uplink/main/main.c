@@ -52,6 +52,10 @@
 
 #include "version.h"
 
+#if CONFIG_BT_ENABLED
+#error "uplink firmware must keep Bluetooth disabled; uplinks should never advertise or scan BLE"
+#endif
+
 #if defined(UPLINK_ESP32S3)
 #define FIRMWARE_NAME "uplink-s3"
 #elif defined(UPLINK_ESP32)

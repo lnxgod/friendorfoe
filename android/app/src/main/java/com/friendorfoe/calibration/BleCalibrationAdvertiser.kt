@@ -8,9 +8,13 @@ import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.os.ParcelUuid
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.resume
 
 /**
  * BLE peripheral that advertises a known service UUID + name during a
@@ -40,76 +44,107 @@ class BleCalibrationAdvertiser @Inject constructor(
         private set
 
     @SuppressLint("MissingPermission")
-    override fun start(serviceUuid: String, onError: (String) -> Unit): Boolean {
+    override suspend fun start(serviceUuid: String): Result<Unit> = withContext(Dispatchers.Main) {
         stop()
         val adapter = bluetoothManager.adapter
         if (adapter == null || !adapter.isEnabled) {
-            onError("Bluetooth is off — enable it and try again.")
-            return false
+            return@withContext Result.failure(
+                IllegalStateException("Bluetooth is off — enable it and try again.")
+            )
         }
         if (!adapter.isMultipleAdvertisementSupported) {
-            onError("This device's Bluetooth chip does not support BLE advertising.")
-            return false
+            return@withContext Result.failure(
+                IllegalStateException("This device's Bluetooth chip does not support BLE advertising.")
+            )
         }
         val adv = adapter.bluetoothLeAdvertiser
         if (adv == null) {
-            onError("BluetoothLeAdvertiser unavailable.")
-            return false
+            return@withContext Result.failure(
+                IllegalStateException("BluetoothLeAdvertiser unavailable.")
+            )
         }
         advertiser = adv
 
-        val uuid = try { UUID.fromString(serviceUuid) } catch (e: Exception) {
-            onError("Bad service UUID: ${e.message}")
-            return false
+        val uuid = try {
+            UUID.fromString(serviceUuid)
+        } catch (e: Exception) {
+            return@withContext Result.failure(
+                IllegalStateException("Bad service UUID: ${e.message}")
+            )
         }
 
-        // ADVERTISE_TX_POWER_HIGH gives the most consistent RSSI floor
-        // across vendors — Gemini's recommendation, also matches what
-        // the backend's DEFAULT_PHONE_TX_DBM (-59 @ 1m) was calibrated for.
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-            .setConnectable(false)  // pure beacon — no GATT server needed
-            .setTimeout(0)          // run until stop() is called
+            .setConnectable(false)
+            .setTimeout(0)
             .build()
 
-        // Service UUID + included TX power. Skip the device name so the
-        // 31-byte advertisement budget has room for the full UUID.
         val data = AdvertiseData.Builder()
             .addServiceUuid(ParcelUuid(uuid))
             .setIncludeTxPowerLevel(true)
             .setIncludeDeviceName(false)
             .build()
 
-        val callback = object : AdvertiseCallback() {
-            override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
-                Log.i(TAG, "BLE advertise started: uuid=$uuid")
-                synchronized(this@BleCalibrationAdvertiser) { isAdvertising = true }
-            }
-            override fun onStartFailure(errorCode: Int) {
-                val msg = when (errorCode) {
-                    ADVERTISE_FAILED_DATA_TOO_LARGE -> "Advertisement payload too large."
-                    ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> "Too many active advertisers — restart the app."
-                    ADVERTISE_FAILED_ALREADY_STARTED -> "Already advertising."
-                    ADVERTISE_FAILED_INTERNAL_ERROR -> "BLE internal error."
-                    ADVERTISE_FAILED_FEATURE_UNSUPPORTED -> "Device does not support BLE advertising."
-                    else -> "BLE advertise failure $errorCode"
+        try {
+            suspendCancellableCoroutine { cont ->
+                val callback = object : AdvertiseCallback() {
+                    override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+                        Log.i(TAG, "BLE advertise started: uuid=$uuid")
+                        synchronized(this@BleCalibrationAdvertiser) { isAdvertising = true }
+                        if (cont.isActive) {
+                            cont.resume(Result.success(Unit))
+                        }
+                    }
+
+                    override fun onStartFailure(errorCode: Int) {
+                        val msg = when (errorCode) {
+                            ADVERTISE_FAILED_DATA_TOO_LARGE -> "Advertisement payload too large."
+                            ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> "Too many active advertisers — restart the app."
+                            ADVERTISE_FAILED_ALREADY_STARTED -> "Already advertising."
+                            ADVERTISE_FAILED_INTERNAL_ERROR -> "BLE internal error."
+                            ADVERTISE_FAILED_FEATURE_UNSUPPORTED -> "Device does not support BLE advertising."
+                            else -> "BLE advertise failure $errorCode"
+                        }
+                        Log.e(TAG, "BLE advertise failed: $msg")
+                        synchronized(this@BleCalibrationAdvertiser) {
+                            isAdvertising = false
+                            activeCallback = null
+                        }
+                        if (cont.isActive) {
+                            cont.resume(Result.failure(IllegalStateException(msg)))
+                        }
+                    }
                 }
-                Log.e(TAG, "BLE advertise failed: $msg")
-                synchronized(this@BleCalibrationAdvertiser) { isAdvertising = false }
-                onError(msg)
+                activeCallback = callback
+                try {
+                    adv.startAdvertising(settings, data, callback)
+                } catch (e: SecurityException) {
+                    activeCallback = null
+                    cont.resume(Result.failure(
+                        IllegalStateException("Missing BLUETOOTH_ADVERTISE permission.")
+                    ))
+                } catch (e: Exception) {
+                    activeCallback = null
+                    cont.resume(Result.failure(
+                        IllegalStateException("Could not start advertise: ${e.message}")
+                    ))
+                }
+                cont.invokeOnCancellation {
+                    try {
+                        adv.stopAdvertising(callback)
+                    } catch (_: Exception) {
+                    }
+                    synchronized(this@BleCalibrationAdvertiser) {
+                        if (activeCallback === callback) {
+                            activeCallback = null
+                        }
+                        isAdvertising = false
+                    }
+                }
             }
-        }
-        return try {
-            adv.startAdvertising(settings, data, callback)
-            activeCallback = callback
-            true
-        } catch (e: SecurityException) {
-            onError("Missing BLUETOOTH_ADVERTISE permission.")
-            false
         } catch (e: Exception) {
-            onError("Could not start advertise: ${e.message}")
-            false
+            Result.failure(e)
         }
     }
 

@@ -827,6 +827,8 @@ def _source_to_type(source: str) -> str:
         return "ble"
     if "probe" in source:
         return "wifi_probe"
+    if source == "wifi_assoc":
+        return "wifi_assoc"
     if "oui" in source or "ssid" in source:
         return "wifi_ap"
     return "unknown"

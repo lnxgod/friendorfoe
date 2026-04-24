@@ -21,6 +21,8 @@ extern "C" {
 #define DETECTION_SRC_WIFI_BEACON   3   /* WiFi Beacon Remote ID (NAN/Action) */
 #define DETECTION_SRC_WIFI_OUI      4   /* Known drone manufacturer OUI */
 #define DETECTION_SRC_WIFI_PROBE_REQUEST 5  /* WiFi probe request (device searching for SSID) */
+#define DETECTION_SRC_BLE_FINGERPRINT 6  /* Generic BLE fingerprint / device-class traffic */
+#define DETECTION_SRC_WIFI_ASSOC    7   /* AP<->STA association traffic */
 
 /* ── Full drone detection state ──────────────────────────────────────────── */
 

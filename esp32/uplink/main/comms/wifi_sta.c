@@ -11,6 +11,7 @@
 #include "wifi_ap.h"
 #include "nvs_config.h"
 #include "config.h"
+#include "time_sync.h"
 
 #include <string.h>
 #include "esp_wifi.h"
@@ -192,6 +193,9 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
 
         /* Disable AP — STA is connected, AP not needed */
         wifi_ap_stop();
+        if (!time_sync_is_sntp_synced()) {
+            time_sync_init();
+        }
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }

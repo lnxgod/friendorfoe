@@ -1,6 +1,6 @@
 """Pydantic v2 models for API request/response schemas."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -185,7 +185,11 @@ class DroneDetectionBatch(BaseModel):
     board_type: str | None = Field(None, description="Board type (uplink-esp32, uplink-c3)")
     scanners: list[dict] | None = Field(
         None,
-        description="Connected scanner identities and diagnostics [{uart, ver, board, chip, caps, toff, tcnt, uart_tx_dropped, uart_tx_high_water, tx_queue_depth, tx_queue_capacity, tx_queue_pressure_pct, noise_drop_ble, noise_drop_wifi, probe_seen, probe_sent, probe_drop_low_value, probe_drop_rate_limit, probe_drop_pressure}]",
+        description="Connected scanner identities and diagnostics [{uart, ver, board, chip, caps, toff, tcnt, time_valid_count, time_last_valid_age_s, time_sync_state, uart_tx_dropped, uart_tx_high_water, tx_queue_depth, tx_queue_capacity, tx_queue_pressure_pct, noise_drop_ble, noise_drop_wifi, probe_seen, probe_sent, probe_drop_low_value, probe_drop_rate_limit, probe_drop_pressure}]",
+    )
+    time_sync: dict | None = Field(
+        None,
+        description="Optional uplink time-sync diagnostics {time_source, last_fetch_ok, last_attempt_age_s, last_success_age_s, fetch_ok_count, fetch_fail_count, fetch_fail_streak, last_backend_epoch_ms, last_broadcast_epoch_ms, broadcast_valid_count, broadcast_invalid_count}",
     )
     wifi_ssid: str | None = Field(None, description="Connected WiFi SSID")
     wifi_rssi: int | None = Field(None, description="WiFi RSSI (signal strength in dBm)")
@@ -354,6 +358,10 @@ class NodeCreateRequest(BaseModel):
     lon: float = Field(..., description="Fixed longitude (WGS84 degrees)")
     alt: float | None = Field(None, description="Fixed altitude in meters MSL")
     sensor_type: str = Field("outdoor", description="Sensor environment: 'indoor' or 'outdoor'. Indoor uses higher path loss.")
+    position_mode: Literal["active", "excluded"] = Field(
+        "active",
+        description="Position usage mode: 'active' participates in geometry; 'excluded' preserves saved coordinates but keeps the node out of triangulation and calibration.",
+    )
 
 
 class NodeUpdateRequest(BaseModel):
@@ -363,6 +371,10 @@ class NodeUpdateRequest(BaseModel):
     lat: float | None = Field(None, description="New latitude (or None to keep existing)")
     lon: float | None = Field(None, description="New longitude (or None to keep existing)")
     alt: float | None = Field(None, description="New altitude (or None to keep existing)")
+    position_mode: Literal["active", "excluded"] | None = Field(
+        None,
+        description="New position usage mode (or None to keep existing).",
+    )
 
 
 class NodeResponse(BaseModel):
@@ -375,6 +387,8 @@ class NodeResponse(BaseModel):
     alt: float | None = None
     is_fixed: bool = False
     sensor_type: str = "outdoor"
+    position_mode: Literal["active", "excluded"] = "active"
+    geometry_enabled: bool = True
     last_seen: str | None = None
     created_at: str | None = None
 

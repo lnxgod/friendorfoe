@@ -44,6 +44,12 @@ FIRMWARE_TYPES = {
         "board": "esp32s3",
         "local_bin": _REPO_ROOT / "esp32/uplink/.pio/build/uplink-s3/firmware.bin",
     },
+    "scanner-s3-combo-seed": {
+        "description": "BLE + WiFi scanner (ESP32-S3 Seed/Mini N8R8)",
+        "asset_pattern": "scanner-s3-combo-seed",
+        "board": "esp32s3",
+        "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo-seed/firmware.bin",
+    },
     "scanner-s3-combo": {
         "description": "BLE + WiFi scanner (ESP32-S3)",
         "asset_pattern": "scanner-s3-combo",
@@ -146,11 +152,19 @@ class FirmwareManager:
                 logger.info("GitHub release: %s with %d assets", tag, len(gh_assets))
 
                 new_assets = {}
-                for fw_name, fw_info in FIRMWARE_TYPES.items():
+                used_assets = set()
+                fw_items = sorted(
+                    FIRMWARE_TYPES.items(),
+                    key=lambda item: len(item[1]["asset_pattern"]),
+                    reverse=True,
+                )
+                for fw_name, fw_info in fw_items:
                     pattern = fw_info["asset_pattern"]
                     # Find matching asset
                     for a in gh_assets:
                         aname = a["name"].lower()
+                        if a["name"] in used_assets:
+                            continue
                         if pattern in aname and aname.endswith(".bin"):
                             cached = CACHE_DIR / f"{tag}_{fw_name}.bin"
                             new_assets[fw_name] = FirmwareAsset(
@@ -161,6 +175,7 @@ class FirmwareManager:
                                 download_url=a["browser_download_url"],
                                 cached_path=str(cached) if cached.exists() else None,
                             )
+                            used_assets.add(a["name"])
                             break
 
                 self.assets = new_assets

@@ -2,6 +2,53 @@
 
 All notable changes to the ESP32 hardware edition of Friend or Foe.
 
+## [Unreleased]
+
+### Added
+- **Native unit tests are back in the live path.** CI now runs `pio test -e test`
+  before firmware builds, and local preflight does the same.
+- **Continuous time-sync health telemetry** now surfaces on both layers:
+  uplinks report fetch/broadcast source and freshness, and scanners report
+  valid time counts plus `waiting|fresh|stale` state.
+- **Android-led calibration mode** is now a first-class firmware feature.
+  Uplinks expose `/api/calibration/mode*`, scanners support `cal_mode_start`
+  / `cal_mode_stop`, and active sessions can switch the fleet into an
+  exact-UUID BLE-only calibration scan lane.
+
+### Changed
+- **Live fleet targets are first-class in CI.** `scanner-s3-combo-seed` and
+  `uplink-s3` are now built in the firmware workflow instead of only the older
+  legacy/web-flasher targets.
+- **Release artifacts now include seed scanner + S3 uplink binaries.** This
+  keeps GitHub release assets aligned with what the platform and fleet actually
+  deploy.
+- **Time polling/broadcast now runs on all uplink targets.** Backend `/detections/time`
+  polling is no longer S3-only, reconnect paths re-arm SNTP until it syncs,
+  and backend time can re-steer the wall clock until SNTP becomes authoritative.
+- **Calibration-mode safety nets now exist on both layers.** While a node is in
+  calibration mode, uplinks reject lock-on style scan commands and hard-drop any
+  non-calibration detections; scanners pause WiFi scanning and only forward BLE
+  advertisements matching the exact active session UUID.
+
+### Fixed
+- **Uplink backend time fetch is resilient to stale endpoint state.** The
+  `/detections/time` poll now tries primary and fallback URLs, attempts all
+  resolved IPv4 addresses, reports the endpoint/source/IP it actually used,
+  and clears the cached upload socket address when switching URLs. The compiled
+  fallback IP is updated to `192.168.42.162`.
+- **Root PlatformIO native-test config** now sets `src_dir = .` and `test_dir = test`
+  at the correct scope, fixing the broken host-side link step.
+- **ODID state-to-detection conversion** now copies the originating device
+  address into `drone_detection_t.bssid`, and the native parser test asserts it.
+- **Scanner stale time offsets now expire after 30 seconds.** Old firmware could
+  keep using drifted epoch offsets forever after losing valid uplink time.
+- **Dashboard/node status no longer treats `tcnt > 0` as healthy sync.** Legacy
+  nodes stay `unknown`, and fresh vs stale sync is now reported honestly.
+- **Calibration beacons no longer disappear in noise filtering.** Exact-session
+  `cafe...` BLE UUID advertisements are preserved through scanner filtering,
+  UART transport, and uplink upload generation so Android walk sessions can be
+  heard by the fleet.
+
 ## [0.59.2] - 2026-04-18
 
 ### Phase-2 firmware — offline queue, OTA rollback, URI headroom

@@ -28,7 +28,7 @@ typedef struct {
 /* Primary: mDNS hostname (works regardless of DHCP IP changes) */
 #define CONFIG_BACKEND_URL          "http://fof-server.local:8000"
 /* Fallback: last known static IP */
-#define CONFIG_BACKEND_URL_FALLBACK "http://192.168.42.145:8000"
+#define CONFIG_BACKEND_URL_FALLBACK "http://192.168.42.162:8000"
 #define CONFIG_UPLOAD_ENDPOINT      "/detections/drones"
 
 /* ── Device identity ───────────────────────────────────────────────────── */
@@ -111,7 +111,11 @@ typedef struct {
 
 /* ── Detection queue ───────────────────────────────────────────────────── */
 
-#define CONFIG_DETECTION_QUEUE_SIZE 20    /* Reduced from 60 to save ~23KB heap */
+#if defined(UPLINK_ESP32S3)
+#define CONFIG_DETECTION_QUEUE_SIZE 48    /* S3 has headroom; prevents BLE bursts from starving WiFi/RID */
+#else
+#define CONFIG_DETECTION_QUEUE_SIZE 20
+#endif
 
 /* ── Task stack sizes (bytes) ──────────────────────────────────────────── */
 

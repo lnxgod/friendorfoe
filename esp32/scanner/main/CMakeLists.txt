@@ -10,8 +10,11 @@ set(SRCS
     "detection/bayesian_fusion.c"
     "comms/uart_tx.c"
     "comms/uart_ota.c"
+    "core/calibration_mode.c"
     "hw/led_status.c"
     "hw/oled_display.c"
+    "../../shared/detection_policy.c"
+    "../../shared/time_sync_policy.c"
     "../../shared/psram_alloc.c"
 )
 

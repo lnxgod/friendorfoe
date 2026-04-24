@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 
 from pathlib import Path
@@ -45,8 +46,32 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("EntityTracker / EventDetector rehydrate failed: %s", e)
 
+    try:
+        from app.routers.detections import _applied_cal_store
+        _applied_cal_store.load()
+    except Exception as e:
+        logger.warning("Applied calibration load failed: %s", e)
+
+    async def calibration_lease_sweeper():
+        from app.routers.detections import _calibration_mode
+        while True:
+            try:
+                await _calibration_mode.expire_stale_session()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Calibration lease sweep failed: %s", exc)
+            await asyncio.sleep(5)
+
+    sweeper_task = asyncio.create_task(calibration_lease_sweeper())
+
     yield
     logger.info("Shutting down")
+    sweeper_task.cancel()
+    try:
+        await sweeper_task
+    except asyncio.CancelledError:
+        pass
     await close_redis()
     await close_db()
 
@@ -54,7 +79,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     description="Backend proxy & enrichment layer for the Friend or Foe aircraft/drone identification app.",
-    version="0.63.8-calibrate-runtime",
+    version="0.63.10-calibration-mode",
     lifespan=lifespan,
 )
 
@@ -121,7 +146,7 @@ async def health_check() -> HealthResponse:
 
     return HealthResponse(
         status="ok",
-        version="0.63.8-calibrate-runtime",
+        version="0.63.10-calibration-mode",
         redis="ok" if redis_ok else "unavailable",
         database=db_status,
     )

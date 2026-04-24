@@ -229,7 +229,7 @@ class AnomalyDetector:
     @staticmethod
     def _track_key(source: str, bssid: str, drone_id: str, model: str) -> str:
         """BLE devices: track by fingerprint hash. WiFi: track by BSSID."""
-        if source == "ble_rid" and model and model.startswith("FP:"):
+        if source in ("ble_rid", "ble_fingerprint") and model and model.startswith("FP:"):
             return model  # FP:XXXXXXXX — stable across MAC rotations
         return bssid or drone_id
 
@@ -303,7 +303,7 @@ class AnomalyDetector:
             # New device alert (only after warmup — need 50+ known devices first)
             if key not in self.known_keys and len(self.known_keys) > 50:
                 # Only alert for interesting new devices, not every random BLE
-                if confidence >= 0.1 or source != "ble_rid":
+                if confidence >= 0.1 or source != "ble_fingerprint":
                     self._alert("new_device", "info", key, ssid or drone_id,
                                 f"New device: {ssid or drone_id} ({manufacturer or 'unknown'}) RSSI={rssi}",
                                 now, {"rssi": rssi, "source": source})
@@ -348,7 +348,7 @@ class AnomalyDetector:
             return  # Don't generate anomalies for background noise
 
         # Skip anomaly checks for static WiFi APs — RSSI fluctuation is normal
-        if source in ("wifi_oui", "wifi_probe_request"):
+        if source in ("wifi_oui", "wifi_assoc", "wifi_probe_request"):
             return
 
         # 1. RSSI spike — compare against previous reading FROM THE SAME SENSOR.
@@ -421,7 +421,7 @@ class AnomalyDetector:
         # Residential networks commonly have 3-5 BSSIDs (router + extenders + mesh).
         # Only alert at 8+ different-vendor BSSIDs.
         # Skip broadcast probes — always come from many different MACs.
-        if ssid and source != "ble_rid" and ssid != "(broadcast)":
+        if ssid and not source.startswith("ble") and ssid != "(broadcast)":
             bssid_set = self.ssid_bssids.get(ssid, set())
             if (len(bssid_set) >= 8 and not self._same_oui(bssid_set)
                     and not self._cooldown_active(ssid, "spoofing", now)):
@@ -433,7 +433,7 @@ class AnomalyDetector:
                 self._mark_cooldown(ssid, "spoofing", now)
 
         # 5. BLE MAC rotation tracking (info, not warning)
-        if source == "ble_rid" and len(track.bssids_seen) > 5:
+        if source == "ble_fingerprint" and len(track.bssids_seen) > 5:
             if not self._cooldown_active(key, "mac_rotation", now):
                 self._alert("mac_rotation", "info", key, track.ssid,
                             f"{track.ssid} rotated MAC {len(track.bssids_seen)} times (tracker behavior)",

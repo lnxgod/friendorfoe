@@ -887,6 +887,34 @@ class SensorTracker:
             return False
         return time.time() - s.last_seen <= SENSOR_TTL_SEC
 
+    def remove_sensor(self, device_id: str) -> None:
+        """Drop a sensor from geometry state immediately.
+
+        Used when an operator marks a node as excluded for canary/testing so
+        stale sensor registry entries or recent observations cannot keep
+        influencing triangulation until natural expiry.
+        """
+        self.sensors.pop(device_id, None)
+        dead_tracking_ids: list[str] = []
+        for tracking_id, obs_map in self.observations.items():
+            obs_map.pop(device_id, None)
+            if not obs_map:
+                dead_tracking_ids.append(tracking_id)
+        for tracking_id in dead_tracking_ids:
+            del self.observations[tracking_id]
+
+        dead_history_ids: list[str] = []
+        for tracking_id, sensor_histories in self._observation_history.items():
+            sensor_histories.pop(device_id, None)
+            if not sensor_histories:
+                dead_history_ids.append(tracking_id)
+        for tracking_id in dead_history_ids:
+            del self._observation_history[tracking_id]
+
+        stale_keys = [k for k in self._rssi_history if k[1] == device_id]
+        for key in stale_keys:
+            del self._rssi_history[key]
+
     def get_ekf_stats(self) -> dict:
         """Return EKF position filter statistics."""
         return self._ekf.get_stats()

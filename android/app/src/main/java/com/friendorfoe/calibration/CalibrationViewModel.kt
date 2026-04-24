@@ -3,6 +3,7 @@ package com.friendorfoe.calibration
 import android.annotation.SuppressLint
 import android.location.Location
 import android.location.LocationListener
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonObject
@@ -38,6 +39,9 @@ class CalibrationViewModel @Inject constructor(
     private val api: CalibrationBackend,
     private val platform: CalibrationPlatform,
 ) : ViewModel() {
+    companion object {
+        private const val TAG = "CalibrationViewModel"
+    }
 
     /** One sensor as known to the fleet — drives the "tap which sensor
      *  you're at" cards and the live RSSI feedback table. */
@@ -48,6 +52,13 @@ class CalibrationViewModel @Inject constructor(
         val lon: Double,
         val online: Boolean,
         val ageS: Double?,
+    )
+
+    data class TargetNode(
+        val deviceId: String,
+        val name: String,
+        val lat: Double?,
+        val lon: Double?,
     )
 
     /** Live snapshot of "what the fleet is hearing right now". */
@@ -90,6 +101,10 @@ class CalibrationViewModel @Inject constructor(
         val stillS: Double = 0.0,
         val okToMove: Boolean = false,
         val status: String = "",
+        val eligibleSensorCount: Int = 0,
+        val eligibleSensorIds: List<String> = emptyList(),
+        val heardSensorCount: Int = 0,
+        val heardSensorIds: List<String> = emptyList(),
         val convergenceTargetM: Double = 10.0,
         val dwellTargetS: Double = 5.0,
         val minSensors: Int = 3,
@@ -129,10 +144,18 @@ class CalibrationViewModel @Inject constructor(
         val token: String = "",
         val operatorLabel: String = "",
         val isWalking: Boolean = false,
+        val beaconOnAir: Boolean = false,
         val sessionId: String? = null,
         val advertiseUuid: String? = null,
+        val fleetModeState: String = "inactive",
+        val walkStartedAtMs: Long? = null,
         val tracePoints: Int = 0,
         val samplesTotal: Int = 0,
+        val eligibleSensorCount: Int = 0,
+        val eligibleSensorIds: List<String> = emptyList(),
+        val heardSensorCount: Int = 0,
+        val heardSensorIds: List<String> = emptyList(),
+        val targetNodes: List<TargetNode> = emptyList(),
         val sensorsHearingMe: List<SensorReading> = emptyList(),
         val availableSensors: List<SensorInfo> = emptyList(),
         val checkpointResults: Map<String, CheckpointResult> = emptyMap(),
@@ -145,7 +168,8 @@ class CalibrationViewModel @Inject constructor(
         val gpsAccuracyM: Float? = null,
         val errorMessage: String? = null,
         val infoMessage: String? = null,
-        val fitResult: JsonObject? = null,
+        val provisionalFitResult: JsonObject? = null,
+        val verifiedFitResult: JsonObject? = null,
         /** Count of samples + checkpoints buffered locally because the
          *  backend couldn't be reached. Drives the amber "N queued" UI
          *  indicator so the operator knows the walk is still being
@@ -163,6 +187,7 @@ class CalibrationViewModel @Inject constructor(
         val lastPreflightFailurePhase: PreflightPhase? = null,
         val lastPreflightFailureDetail: String? = null,
         val fitApplied: Boolean? = null,
+        val applyReason: String? = null,
         val bluetoothEnabled: Boolean = true,
         val backendStatus: BackendStatus = BackendStatus.Unknown,
     )
@@ -292,6 +317,67 @@ class CalibrationViewModel @Inject constructor(
             currentSsid = snapshot.ssid,
             networkTransport = snapshot.transport,
         )
+    }
+
+    private fun parseSensorInfoArray(body: JsonObject, key: String): List<SensorInfo> {
+        val sensors = mutableListOf<SensorInfo>()
+        body.getAsJsonArray(key)?.forEach { el ->
+            val obj = el.asJsonObject
+            val deviceId = obj.get("device_id")?.takeIf { !it.isJsonNull }?.asString ?: return@forEach
+            sensors.add(
+                SensorInfo(
+                    deviceId = deviceId,
+                    name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: deviceId,
+                    lat = obj.get("lat")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0,
+                    lon = obj.get("lon")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0,
+                    online = obj.get("online")?.takeIf { !it.isJsonNull }?.asBoolean ?: true,
+                    ageS = obj.get("age_s")?.takeIf { !it.isJsonNull }?.asDouble,
+                )
+            )
+        }
+        return sensors
+    }
+
+    private fun parseTargetNodes(body: JsonObject): List<TargetNode> {
+        val targets = mutableListOf<TargetNode>()
+        body.getAsJsonArray("target_nodes")?.forEach { el ->
+            val obj = el.asJsonObject
+            val deviceId = obj.get("device_id")?.takeIf { !it.isJsonNull }?.asString ?: return@forEach
+            targets.add(
+                TargetNode(
+                    deviceId = deviceId,
+                    name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: deviceId,
+                    lat = obj.get("lat")?.takeIf { !it.isJsonNull }?.asDouble,
+                    lon = obj.get("lon")?.takeIf { !it.isJsonNull }?.asDouble,
+                )
+            )
+        }
+        return targets
+    }
+
+    private fun buildProvisionalFitSnapshot(): JsonObject {
+        val s = _state.value
+        return JsonObject().apply {
+            addProperty("ok", s.samplesTotal > 0 && s.tracePoints > 0)
+            addProperty("source", "android_walk_provisional")
+            addProperty("trace_points", s.tracePoints)
+            addProperty("samples_total", s.samplesTotal)
+            addProperty("checkpointed_sensor_count", s.checkpointResults.size)
+            addProperty("ready_sensor_count", s.sessionReadiness.sensorsReady)
+            addProperty("target_sensor_count", s.eligibleSensorCount)
+            addProperty("heard_sensor_count", s.heardSensorCount)
+            addProperty("ready_overall", s.sessionReadiness.readyOverall)
+            addProperty("reason", if (s.samplesTotal > 0) "local_walk_summary" else "no_samples_collected")
+        }
+    }
+
+    private suspend fun abortRemoteSession(
+        baseUrl: String,
+        token: String,
+        sessionId: String,
+        reason: String,
+    ) {
+        api.walkAbort(baseUrl, token, sessionId, reason)
     }
 
     private var feedbackJob: Job? = null
@@ -489,18 +575,7 @@ class CalibrationViewModel @Inject constructor(
                 return@launch
             }
             val body = sensorsRes.getOrNull() ?: return@launch
-            val sensors = mutableListOf<SensorInfo>()
-            body.getAsJsonArray("sensors")?.forEach { el ->
-                val obj = el.asJsonObject
-                sensors.add(SensorInfo(
-                    deviceId = obj.get("device_id")?.asString ?: return@forEach,
-                    name = obj.get("name")?.asString ?: "?",
-                    lat = obj.get("lat")?.asDouble ?: 0.0,
-                    lon = obj.get("lon")?.asDouble ?: 0.0,
-                    online = obj.get("online")?.asBoolean ?: false,
-                    ageS = obj.get("age_s")?.takeIf { !it.isJsonNull }?.asDouble,
-                ))
-            }
+            val sensors = parseSensorInfoArray(body, "sensors")
             _state.value = _state.value.copy(
                 availableSensors = sensors,
                 backendStatus = BackendStatus.Ok,
@@ -578,23 +653,86 @@ class CalibrationViewModel @Inject constructor(
             val body = res.getOrNull() ?: return@launch
             val sid = body.get("session_id")?.asString ?: return@launch
             val uuid = body.get("advertise_uuid")?.asString ?: return@launch
+            val modeState = body.get("mode_state")?.takeIf { !it.isJsonNull }?.asString ?: "inactive"
+            val targetNodes = parseTargetNodes(body)
+            val targetSensorIds = targetNodes.map { it.deviceId }
+            val targetSensorCount = body.get("target_sensor_count")?.takeIf { !it.isJsonNull }?.asInt
+                ?: targetSensorIds.size
+            if (modeState != "active") {
+                abortRemoteSession(
+                    baseUrl = s.backendUrl,
+                    token = s.token,
+                    sessionId = sid,
+                    reason = "fleet_mode_not_active_after_start",
+                )
+                setPreflightFailure(
+                    phase = PreflightPhase.StartWalk,
+                    detail = "backend returned mode_state=$modeState",
+                    userMessage = "Fleet did not enter calibration mode — retry the walk start.",
+                    backendStatus = BackendStatus.Ok,
+                    backendReachability = BackendReachabilityState.Reachable,
+                    calibrationAuthState = CalibrationAuthState.Valid,
+                    sensorLoadState = _state.value.sensorLoadState,
+                )
+                return@launch
+            }
 
             // Start BLE peripheral
-            val ok = advertiser.start(uuid) { msg ->
-                _state.value = _state.value.copy(errorMessage = msg, isWalking = false)
+            val advertiseRes = advertiser.start(uuid)
+            if (advertiseRes.isFailure) {
+                abortRemoteSession(
+                    baseUrl = s.backendUrl,
+                    token = s.token,
+                    sessionId = sid,
+                    reason = "advertiser_start_failed",
+                )
+                val msg = advertiseRes.exceptionOrNull()?.message
+                    ?: "BLE advertise failed."
+                _state.value = _state.value.copy(
+                    isWalking = false,
+                    beaconOnAir = false,
+                    sessionId = null,
+                    advertiseUuid = null,
+                    fleetModeState = "inactive",
+                    errorMessage = msg,
+                )
+                return@launch
             }
-            if (!ok) return@launch
 
             // Subscribe to GPS — high-accuracy fixes at ~1 Hz
             try {
                 platform.requestLocationUpdates(gpsListener)
             } catch (e: SecurityException) {
                 advertiser.stop()
-                _state.value = _state.value.copy(errorMessage = "Location permission missing.")
+                abortRemoteSession(
+                    baseUrl = s.backendUrl,
+                    token = s.token,
+                    sessionId = sid,
+                    reason = "location_permission_missing",
+                )
+                _state.value = _state.value.copy(
+                    beaconOnAir = false,
+                    sessionId = null,
+                    advertiseUuid = null,
+                    fleetModeState = "inactive",
+                    errorMessage = "Location permission missing."
+                )
                 return@launch
             } catch (e: Exception) {
                 advertiser.stop()
-                _state.value = _state.value.copy(errorMessage = "GPS unavailable: ${e.message}")
+                abortRemoteSession(
+                    baseUrl = s.backendUrl,
+                    token = s.token,
+                    sessionId = sid,
+                    reason = "gps_unavailable",
+                )
+                _state.value = _state.value.copy(
+                    beaconOnAir = false,
+                    sessionId = null,
+                    advertiseUuid = null,
+                    fleetModeState = "inactive",
+                    errorMessage = "GPS unavailable: ${e.message}"
+                )
                 return@launch
             }
 
@@ -605,20 +743,31 @@ class CalibrationViewModel @Inject constructor(
             }
             _state.value = _state.value.copy(
                 isWalking = true,
+                beaconOnAir = true,
                 sessionId = sid,
                 advertiseUuid = uuid,
+                fleetModeState = modeState,
+                walkStartedAtMs = System.currentTimeMillis(),
                 tracePoints = 0,
                 samplesTotal = 0,
+                eligibleSensorCount = targetSensorCount,
+                eligibleSensorIds = targetSensorIds,
+                heardSensorCount = 0,
+                heardSensorIds = emptyList(),
+                targetNodes = targetNodes,
                 sensorsHearingMe = emptyList(),
                 checkpointResults = emptyMap(),
-                fitResult = null,
+                myPosition = MyPosition(),
+                provisionalFitResult = null,
+                verifiedFitResult = null,
                 fitApplied = null,
+                applyReason = null,
                 backendStatus = BackendStatus.Ok,
                 backendReachability = BackendReachabilityState.Reachable,
                 calibrationAuthState = CalibrationAuthState.Valid,
                 queuedCount = 0,
-                infoMessage = "Walking — visit each sensor and tap its 'I'm here' button " +
-                              "to anchor the fit + verify the sensor's coordinates.",
+                errorMessage = null,
+                infoMessage = "Fleet calibration mode is active and the beacon is on air — walk near each live node and tap 'I'm here' to anchor the fit.",
             )
             refreshNetworkState()
             startFeedbackPolling(sid)
@@ -637,27 +786,51 @@ class CalibrationViewModel @Inject constructor(
                 if (res.isSuccess) {
                     val body = res.getOrNull()
                     if (body != null && !body.has("error")) {
-                        _state.value = _state.value.copy(myPosition = MyPosition(
-                            phoneLat = body.get("phone_lat")?.takeIf { !it.isJsonNull }?.asDouble,
-                            phoneLon = body.get("phone_lon")?.takeIf { !it.isJsonNull }?.asDouble,
-                            phoneAccuracyM = body.get("phone_accuracy_m")
-                                ?.takeIf { !it.isJsonNull }?.asFloat,
-                            triangulatedLat = body.get("triangulated_lat")
-                                ?.takeIf { !it.isJsonNull }?.asDouble,
-                            triangulatedLon = body.get("triangulated_lon")
-                                ?.takeIf { !it.isJsonNull }?.asDouble,
-                            triangulatedAccuracyM = body.get("triangulated_accuracy_m")
-                                ?.takeIf { !it.isJsonNull }?.asDouble,
-                            errorM = body.get("error_m")?.takeIf { !it.isJsonNull }?.asDouble,
-                            sensorCount = body.get("sensor_count")?.asInt ?: 0,
-                            standingStill = body.get("standing_still")?.asBoolean ?: false,
-                            stillS = body.get("still_s")?.asDouble ?: 0.0,
-                            okToMove = body.get("ok_to_move")?.asBoolean ?: false,
-                            status = body.get("status")?.asString ?: "",
-                            convergenceTargetM = body.get("convergence_target_m")?.asDouble ?: 10.0,
-                            dwellTargetS = body.get("dwell_target_s")?.asDouble ?: 5.0,
-                            minSensors = body.get("min_sensors")?.asInt ?: 3,
-                        ))
+                        val eligibleSensorIds = body.getAsJsonArray("eligible_sensor_ids")
+                            ?.mapNotNull { element -> element.takeIf { !it.isJsonNull }?.asString }
+                            ?: _state.value.eligibleSensorIds
+                        val heardSensorIds = body.getAsJsonArray("heard_sensor_ids")
+                            ?.mapNotNull { element -> element.takeIf { !it.isJsonNull }?.asString }
+                            ?: _state.value.heardSensorIds
+                        _state.value = _state.value.copy(
+                            eligibleSensorCount = body.get("eligible_sensor_count")?.asInt
+                                ?: eligibleSensorIds.size,
+                            eligibleSensorIds = eligibleSensorIds,
+                            heardSensorCount = body.get("heard_sensor_count")?.asInt
+                                ?: heardSensorIds.size,
+                            heardSensorIds = heardSensorIds,
+                            fleetModeState = body.get("fleet_mode_state")
+                                ?.takeIf { !it.isJsonNull }
+                                ?.asString
+                                ?: _state.value.fleetModeState,
+                            myPosition = MyPosition(
+                                phoneLat = body.get("phone_lat")?.takeIf { !it.isJsonNull }?.asDouble,
+                                phoneLon = body.get("phone_lon")?.takeIf { !it.isJsonNull }?.asDouble,
+                                phoneAccuracyM = body.get("phone_accuracy_m")
+                                    ?.takeIf { !it.isJsonNull }?.asFloat,
+                                triangulatedLat = body.get("triangulated_lat")
+                                    ?.takeIf { !it.isJsonNull }?.asDouble,
+                                triangulatedLon = body.get("triangulated_lon")
+                                    ?.takeIf { !it.isJsonNull }?.asDouble,
+                                triangulatedAccuracyM = body.get("triangulated_accuracy_m")
+                                    ?.takeIf { !it.isJsonNull }?.asDouble,
+                                errorM = body.get("error_m")?.takeIf { !it.isJsonNull }?.asDouble,
+                                sensorCount = body.get("sensor_count")?.asInt ?: 0,
+                                standingStill = body.get("standing_still")?.asBoolean ?: false,
+                                stillS = body.get("still_s")?.asDouble ?: 0.0,
+                                okToMove = body.get("ok_to_move")?.asBoolean ?: false,
+                                status = body.get("status")?.asString ?: "",
+                                eligibleSensorCount = body.get("eligible_sensor_count")?.asInt
+                                    ?: eligibleSensorIds.size,
+                                eligibleSensorIds = eligibleSensorIds,
+                                heardSensorCount = body.get("heard_sensor_count")?.asInt
+                                    ?: heardSensorIds.size,
+                                heardSensorIds = heardSensorIds,
+                                convergenceTargetM = body.get("convergence_target_m")?.asDouble ?: 10.0,
+                                dwellTargetS = body.get("dwell_target_s")?.asDouble ?: 5.0,
+                                minSensors = body.get("min_sensors")?.asInt ?: 3,
+                            ),
+                        )
                     }
                 }
                 delay(1000)
@@ -746,23 +919,73 @@ class CalibrationViewModel @Inject constructor(
             // session — avoids "you walked past sensor X and got a great
             // checkpoint, but then lost WiFi, so the fit never anchored".
             flushOnce(sid, s.backendUrl, s.token)
-            val res = api.walkEnd(s.backendUrl, s.token, sid)
+            val provisionalFit = buildProvisionalFitSnapshot()
+            val res = api.walkEnd(
+                s.backendUrl,
+                s.token,
+                sid,
+                provisionalFit = provisionalFit,
+                applyRequested = true,
+            )
             if (res.isFailure) {
                 _state.value = _state.value.copy(
                     isWalking = false,
+                    beaconOnAir = false,
+                    fleetModeState = "inactive",
                     errorMessage = "Walk-end failed: ${res.exceptionOrNull()?.message}"
                 )
                 return@launch
             }
             val body = res.getOrNull() ?: return@launch
-            val fit = body.getAsJsonObject("fit")
+            val verifiedFit = body.getAsJsonObject("verified_fit")
+            val returnedProvisionalFit = body.getAsJsonObject("provisional_fit") ?: provisionalFit
             val applied = body.get("applied")?.asBoolean ?: false
+            val applyReason = body.get("apply_reason")?.takeIf { !it.isJsonNull }?.asString
             _state.value = _state.value.copy(
                 isWalking = false,
-                fitResult = fit,
+                beaconOnAir = false,
+                fleetModeState = "inactive",
+                walkStartedAtMs = null,
+                heardSensorCount = 0,
+                heardSensorIds = emptyList(),
+                provisionalFitResult = returnedProvisionalFit,
+                verifiedFitResult = verifiedFit,
                 fitApplied = applied,
-                infoMessage = if (applied) "Calibration applied to backend."
-                              else "Walk ended — fit did not meet quality threshold (R² < 0.4).",
+                applyReason = applyReason,
+                infoMessage = if (applied) {
+                    "Calibration applied to backend."
+                } else {
+                    "Walk ended — backend kept the current live model (${applyReason ?: "not applied"})."
+                },
+            )
+        }
+    }
+
+    fun abortWalk(
+        reason: String = "client_abort",
+        userMessage: String = "Walk aborted.",
+    ) {
+        val s = _state.value
+        val sid = s.sessionId ?: return
+        Log.i(TAG, "action=abort_walk reason=$reason session=$sid")
+        feedbackJob?.cancel()
+        feedbackJob = null
+        flushJob?.cancel()
+        flushJob = null
+        myPositionJob?.cancel()
+        myPositionJob = null
+        try { platform.removeLocationUpdates(gpsListener) } catch (_: Exception) {}
+        advertiser.stop()
+        viewModelScope.launch {
+            abortRemoteSession(s.backendUrl, s.token, sid, reason)
+            _state.value = _state.value.copy(
+                isWalking = false,
+                beaconOnAir = false,
+                fleetModeState = "inactive",
+                walkStartedAtMs = null,
+                heardSensorCount = 0,
+                heardSensorIds = emptyList(),
+                infoMessage = userMessage,
             )
         }
     }
@@ -799,6 +1022,12 @@ class CalibrationViewModel @Inject constructor(
                             ))
                         }
                         val sr = body.getAsJsonObject("session_readiness")
+                        val eligibleSensorIds = body.getAsJsonArray("eligible_sensor_ids")
+                            ?.mapNotNull { element -> element.takeIf { !it.isJsonNull }?.asString }
+                            ?: s.availableSensors.map { it.deviceId }
+                        val heardSensorIds = body.getAsJsonArray("heard_sensor_ids")
+                            ?.mapNotNull { element -> element.takeIf { !it.isJsonNull }?.asString }
+                            ?: sensors.filter { it.samplesInWindow > 0 }.map { it.sensorId }
                         val readiness = if (sr != null) SessionReadiness(
                             sensorsReady = sr.get("sensors_ready")?.asInt ?: 0,
                             sensorsTotal = sr.get("sensors_total")?.asInt ?: 0,
@@ -808,6 +1037,16 @@ class CalibrationViewModel @Inject constructor(
                         _state.value = _state.value.copy(
                             tracePoints = body.get("trace_points")?.asInt ?: s.tracePoints,
                             samplesTotal = body.get("samples_total")?.asInt ?: s.samplesTotal,
+                            eligibleSensorCount = body.get("eligible_sensor_count")?.asInt
+                                ?: eligibleSensorIds.size,
+                            eligibleSensorIds = eligibleSensorIds,
+                            heardSensorCount = body.get("heard_sensor_count")?.asInt
+                                ?: heardSensorIds.size,
+                            heardSensorIds = heardSensorIds,
+                            fleetModeState = body.get("fleet_mode_state")
+                                ?.takeIf { !it.isJsonNull }
+                                ?.asString
+                                ?: s.fleetModeState,
                             sensorsHearingMe = sensors,
                             sessionReadiness = readiness,
                         )

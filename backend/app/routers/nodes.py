@@ -28,6 +28,20 @@ router = APIRouter(prefix="/nodes", tags=["nodes"])
 _firmware_mgr = FirmwareManager()
 
 
+def _geometry_enabled(position_mode: str | None) -> bool:
+    return (position_mode or "active") == "active"
+
+
+def _apply_geometry_policy(device_id: str, position_mode: str | None) -> None:
+    if _geometry_enabled(position_mode):
+        return
+    try:
+        from app.routers.detections import _sensor_tracker
+        _sensor_tracker.remove_sensor(device_id)
+    except Exception:
+        logger.debug("Failed to purge geometry state for excluded node %s", device_id, exc_info=True)
+
+
 def _node_to_response(node: SensorNode) -> NodeResponse:
     return NodeResponse(
         device_id=node.device_id,
@@ -37,6 +51,8 @@ def _node_to_response(node: SensorNode) -> NodeResponse:
         alt=node.alt,
         is_fixed=node.is_fixed,
         sensor_type=node.sensor_type,
+        position_mode=node.position_mode,
+        geometry_enabled=_geometry_enabled(node.position_mode),
         last_seen=node.last_seen.isoformat() if node.last_seen else None,
         created_at=node.created_at.isoformat() if node.created_at else None,
     )
@@ -60,10 +76,19 @@ async def register_node(req: NodeCreateRequest, db: AsyncSession = Depends(get_d
         existing.alt = req.alt
         existing.is_fixed = True
         existing.sensor_type = req.sensor_type
+        existing.position_mode = req.position_mode
         existing.last_seen = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(existing)
-        logger.info("Updated fixed node: %s at (%f, %f) type=%s", req.device_id, req.lat, req.lon, req.sensor_type)
+        _apply_geometry_policy(existing.device_id, existing.position_mode)
+        logger.info(
+            "Updated fixed node: %s at (%f, %f) type=%s position_mode=%s",
+            req.device_id,
+            req.lat,
+            req.lon,
+            req.sensor_type,
+            req.position_mode,
+        )
         return _node_to_response(existing)
 
     node = SensorNode(
@@ -74,11 +99,13 @@ async def register_node(req: NodeCreateRequest, db: AsyncSession = Depends(get_d
         alt=req.alt,
         is_fixed=True,
         sensor_type=req.sensor_type,
+        position_mode=req.position_mode,
         last_seen=datetime.now(timezone.utc),
     )
     db.add(node)
     await db.commit()
     await db.refresh(node)
+    _apply_geometry_policy(node.device_id, node.position_mode)
     logger.info("Registered new fixed node: %s '%s' at (%f, %f)", req.device_id, req.name, req.lat, req.lon)
     return _node_to_response(node)
 
@@ -112,11 +139,21 @@ async def update_node(device_id: str, req: NodeUpdateRequest, db: AsyncSession =
         node.is_fixed = True
     if req.alt is not None:
         node.alt = req.alt
+    if req.position_mode is not None:
+        node.position_mode = req.position_mode
     node.last_seen = datetime.now(timezone.utc)
 
     await db.commit()
     await db.refresh(node)
-    logger.info("Updated node %s: name=%s pos=(%f, %f)", device_id, node.name, node.lat, node.lon)
+    _apply_geometry_policy(node.device_id, node.position_mode)
+    logger.info(
+        "Updated node %s: name=%s pos=(%f, %f) position_mode=%s",
+        device_id,
+        node.name,
+        node.lat,
+        node.lon,
+        node.position_mode,
+    )
     return _node_to_response(node)
 
 
@@ -305,6 +342,12 @@ async def push_firmware_by_name(device_id: str, firmware_name: str):
     Fetches the firmware binary (from GitHub or custom upload) and
     POSTs it to the node's /api/ota endpoint.
     """
+    if not firmware_name.startswith("uplink-"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Firmware '{firmware_name}' is not an uplink image",
+        )
+
     from app.routers.detections import _node_heartbeats
 
     node_info = _node_heartbeats.get(device_id)
@@ -361,6 +404,12 @@ async def push_scanner_firmware(
 
     uart: "ble" or "wifi".
     """
+    if not firmware_name.startswith("scanner-"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Firmware '{firmware_name}' is not a scanner image",
+        )
+
     import json
     import subprocess
     import time
@@ -425,7 +474,8 @@ async def push_scanner_firmware(
     except Exception:
         stage_resp = {"raw": r_stage.stdout.decode(errors="replace")[:200]}
     op["stage_response"] = stage_resp
-    if not stage_resp.get("stored"):
+    stage_ok = bool(stage_resp.get("stored") or stage_resp.get("ok"))
+    if not stage_ok:
         op["status"] = "failed"
         op["error"] = "stage_rejected"
         op["finished_at"] = time.time()

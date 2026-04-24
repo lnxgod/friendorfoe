@@ -1341,7 +1341,7 @@ class BLEEnricher:
                         first_seen=kd.first_seen.timestamp() if kd.first_seen else 0,
                         last_seen=kd.last_seen.timestamp() if kd.last_seen else 0,
                         last_bssid=kd.last_bssid or "",
-                        source="ble_rid",
+                        source="ble_fingerprint",
                         confidence=0.5,
                         is_tracker=kd.is_tracker,
                     )

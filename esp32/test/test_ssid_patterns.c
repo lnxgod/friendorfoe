@@ -106,24 +106,3 @@ void test_null_ssid(void)
     TEST_ASSERT_NULL(wifi_ssid_match(NULL));
     TEST_ASSERT_NULL(wifi_ssid_match(""));
 }
-
-/* ── Unity runner ──────────────────────────────────────────────────────── */
-
-void setUp(void) {}
-void tearDown(void) {}
-
-int main(void)
-{
-    UNITY_BEGIN();
-
-    RUN_TEST(test_dji_match);
-    RUN_TEST(test_tello_match);
-    RUN_TEST(test_case_insensitive);
-    RUN_TEST(test_no_match);
-    RUN_TEST(test_hover_air);
-    RUN_TEST(test_generic_drone);
-    RUN_TEST(test_all_patterns_valid);
-    RUN_TEST(test_null_ssid);
-
-    return UNITY_END();
-}

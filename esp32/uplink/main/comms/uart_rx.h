@@ -78,6 +78,18 @@ typedef struct {
     bool     deauth_flood;
     bool     beacon_spam;
     char     fc_hist[128];   /* comma-separated frame subtype histogram */
+    uint32_t uart_tx_dropped;
+    uint32_t uart_tx_high_water;
+    uint32_t tx_queue_depth;
+    uint32_t tx_queue_capacity;
+    uint32_t tx_queue_pressure_pct;
+    uint32_t noise_drop_ble;
+    uint32_t noise_drop_wifi;
+    uint32_t probe_seen;
+    uint32_t probe_sent;
+    uint32_t probe_drop_low_value;
+    uint32_t probe_drop_rate_limit;
+    uint32_t probe_drop_pressure;
 
     /* Time-sync diagnostic (v0.60+): scanner's epoch-ms offset against its
      * monotonic clock. Stays at 0 until the scanner has received a usable
@@ -87,6 +99,12 @@ typedef struct {
      * if the value was bad. tcnt > 0 with toff_ms == 0 means UART is fine
      * but the uplink is sending bogus epochs. Both 0 = UART path broken. */
     uint32_t tcnt;
+    uint32_t time_valid_count;
+    int64_t  time_last_valid_age_s;
+    char     time_sync_state[12];
+    char     scan_mode[16];
+    char     calibration_uuid[48];
+    bool     calibration_mode_acked;
 } scanner_info_t;
 
 /** Get scanner info for the BLE scanner (UART slot). */
@@ -114,6 +132,15 @@ void uart_rx_clear_ota_response(void);
  *  When paused, the relay handler can read ACKs directly from the UART. */
 void uart_rx_pause_scanner(int scanner_id);
 void uart_rx_resume_scanner(int scanner_id);
+
+void uart_rx_set_node_calibration_mode(bool active,
+                                       const char *session_id,
+                                       const char *calibration_uuid);
+bool uart_rx_is_node_calibration_mode(void);
+const char *uart_rx_get_node_scan_mode(void);
+const char *uart_rx_get_node_calibration_uuid(void);
+const char *uart_rx_get_node_calibration_session_id(void);
+bool uart_rx_node_mode_allows_detection(const drone_detection_t *det);
 
 #ifdef __cplusplus
 }
