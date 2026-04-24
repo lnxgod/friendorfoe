@@ -43,6 +43,8 @@ val CalibrationViewModel.State.preflightReady: Boolean
         calibrationAuthState == CalibrationAuthState.Valid &&
         sensorLoadState == SensorLoadState.Ready
 
+private const val ZERO_HEARING_WARNING_AFTER_MS = 15_000L
+
 fun CalibrationViewModel.State.ssidDisplay(): String = when {
     networkTransport == NetworkTransportState.Wifi && !currentSsid.isNullOrBlank() -> currentSsid
     networkTransport == NetworkTransportState.Wifi -> "WiFi connected (SSID unavailable)"
@@ -128,4 +130,15 @@ fun CalibrationViewModel.State.preflightFailureSummary(): String? {
     val phase = lastPreflightFailurePhase ?: return null
     val detail = lastPreflightFailureDetail ?: return null
     return "${phase.name.lowercase()}: $detail"
+}
+
+fun CalibrationViewModel.State.zeroHearingWarning(nowMs: Long = System.currentTimeMillis()): String? {
+    val startedAt = walkStartedAtMs ?: return null
+    if (!isWalking || !beaconOnAir || heardSensorCount > 0) {
+        return null
+    }
+    if ((nowMs - startedAt) < ZERO_HEARING_WARNING_AFTER_MS) {
+        return null
+    }
+    return "Walk session is live and the beacon is on air, but no fleet sensor has heard it yet. Check BLE advertise support/permissions or scanner firmware handling of the calibration UUID."
 }

@@ -384,6 +384,23 @@ Contributions are welcome! Whether it's bug fixes, new detection methods, UI imp
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
+### TDD and Live-Code Workflow
+
+Firmware and triangulation changes hit live hardware, so the default workflow is
+test-first and canary-first. The short version:
+
+- write or tighten the failing test first
+- run local preflight before calling a change ready
+- update changelogs in the same change
+
+Playbook: [docs/tdd-live-playbook.md](docs/tdd-live-playbook.md)
+
+Local preflight:
+
+```bash
+python3 scripts/preflight.py
+```
+
 ### Ideas for Contributors
 
 - Additional aircraft type code mappings

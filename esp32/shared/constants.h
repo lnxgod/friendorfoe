@@ -20,10 +20,12 @@ extern "C" {
 
 /* Sensor likelihood ratios (higher = stronger evidence of drone) */
 #define LR_BLE_RID                  50.0
+#define LR_BLE_FINGERPRINT          1.6
 #define LR_WIFI_BEACON              50.0
 #define LR_WIFI_SSID                3.0
 #define LR_WIFI_DJI_IE              30.0
 #define LR_WIFI_OUI                 5.0
+#define LR_WIFI_ASSOC               1.4
 
 /* ── RSSI-based distance estimation ──────────────────────────────────────── */
 

@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.63.10-calibration-mode] - 2026-04-23
+
+### Added
+- **Android-led fleet calibration mode.** The backend now creates walk
+  sessions, arms live geometry-enabled uplinks into calibration mode, collects
+  raw phone walk data, and accepts Android provisional fits while keeping the
+  backend as the final verified-apply gate.
+- **Firmware calibration scan mode.** Uplinks expose node-local calibration
+  mode APIs and scanner UART commands; scanners pause WiFi scanning and only
+  forward exact-session BLE calibration UUID advertisements during an active
+  walk.
+- **Continuous time-sync observability.** Uplink and scanner status now report
+  backend fetch freshness, broadcast counters, scanner valid-time age, and
+  healthy/warning/stale sync states for field debugging.
+
+### Changed
+- **Calibration sensor lists are live-truth only.** Walk targets now come from
+  recent online, geometry-enabled nodes; stale registry duplicates and excluded
+  canary/test nodes stay out of calibration geometry.
+- **Gate canary/test exclusion is node-level and reversible.** Excluded nodes
+  keep saved coordinates and diagnostics but no longer contribute to active
+  geometry, map sensors, or calibration fitting.
+- **Probe and diagnostic RF traffic stay out of the primary drone map.** Probe
+  intelligence remains available for diagnostics while drone-grade sources stay
+  first-class.
+
+### Fixed
+- **Backend SQLite lock resilience.** SQLite now uses WAL/busy-timeout settings
+  and rolls back failed sessions so live ingest/dashboard load does not poison
+  later calibration or geometry reads.
+- **Uplink backend time fetch failover.** Uplinks now try primary and fallback
+  backend URLs for `/detections/time`, clear stale socket endpoint caches when
+  switching URLs, and report which endpoint/IP was actually used.
+- **Calibration beacon delivery.** Exact `cafe...` session UUID beacons are
+  preserved through scanner filtering, UART transport, and backend session
+  matching instead of disappearing as generic low-value BLE noise.
+
 ## [0.63.9-node-labels] - 2026-04-22
 
 ### Changed

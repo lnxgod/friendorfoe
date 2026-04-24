@@ -355,6 +355,10 @@ class EventDetector:
             if written:
                 await session.commit()
         except Exception as e:
+            try:
+                await session.rollback()
+            except Exception:
+                pass
             logger.warning("EventDetector.flush_dirty failed: %s", e)
         return written
 
@@ -400,6 +404,10 @@ class EventDetector:
             if written:
                 await session.commit()
         except Exception as e:
+            try:
+                await session.rollback()
+            except Exception:
+                pass
             logger.warning("EventDetector.commit_new failed: %s", e)
         return written
 

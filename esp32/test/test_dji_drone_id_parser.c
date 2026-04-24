@@ -214,20 +214,3 @@ void test_parse_wrong_oui(void)
 
     TEST_ASSERT_FALSE(ok);
 }
-
-/* ── Unity runner ──────────────────────────────────────────────────────── */
-
-void setUp(void) {}
-void tearDown(void) {}
-
-int main(void)
-{
-    UNITY_BEGIN();
-
-    RUN_TEST(test_parse_valid_payload);
-    RUN_TEST(test_parse_zero_coords);
-    RUN_TEST(test_parse_short_payload);
-    RUN_TEST(test_parse_wrong_oui);
-
-    return UNITY_END();
-}

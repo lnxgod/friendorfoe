@@ -117,8 +117,7 @@ CONFIRMED_DRONE_SOURCES = {"ble_rid", "wifi_beacon_rid", "wifi_dji_ie"}
 # and label it `confirmed_drone`. Below this, we downgrade to `likely_drone`
 # so an alert is still raised but without the "critical" severity.
 # A genuine Remote ID frame from a drone parses cleanly and the scanner
-# reports >= 0.85; confidences below 0.30 almost always come from fingerprint
-# mis-matches (e.g., a random BLE advertisement tagged ble_rid).
+# reports >= 0.85; confidences below 0.30 are usually weak/corrupt frames.
 CONFIRMED_DRONE_MIN_CONFIDENCE = 0.30
 
 # SSID patterns that indicate mobile hotspots, not infrastructure APs
@@ -161,6 +160,51 @@ def _is_mobile_hotspot_ssid(ssid: str | None) -> bool:
     return False
 
 
+def _has_meaningful_position(value: float | None) -> bool:
+    return value is not None and abs(value) > 1e-9
+
+
+def normalize_detection_source(
+    source: str,
+    *,
+    drone_id: str | None = None,
+    manufacturer: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    operator_lat: float | None = None,
+    operator_lon: float | None = None,
+    operator_id: str | None = None,
+    self_id_text: str | None = None,
+) -> str:
+    """Normalize legacy source labels into the production taxonomy.
+
+    Older scanners/uplinks still send generic BLE fingerprint traffic as
+    `ble_rid`, and AP<->STA association traffic as `wifi_oui`. Normalize
+    those payloads so downstream services can reason about them correctly
+    during a mixed-fleet rollout.
+    """
+    normalized = (source or "").strip()
+    if normalized == "ble_rid":
+        if (drone_id or "").startswith("rid_"):
+            return normalized
+        if operator_id or self_id_text:
+            return normalized
+        if any(
+            _has_meaningful_position(v)
+            for v in (latitude, longitude, operator_lat, operator_lon)
+        ):
+            return normalized
+        return "ble_fingerprint"
+
+    if normalized == "wifi_oui":
+        did = drone_id or ""
+        mfr = (manufacturer or "").strip().lower()
+        if mfr == "wifi-assoc" or did.startswith("STA:") or "→AP:" in did or "->AP:" in did:
+            return "wifi_assoc"
+
+    return normalized
+
+
 def classify_detection(
     source: str,
     confidence: float,
@@ -169,12 +213,30 @@ def classify_detection(
     drone_id: str | None = None,
     model: str | None = None,
     bssid: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    operator_lat: float | None = None,
+    operator_lon: float | None = None,
+    operator_id: str | None = None,
+    self_id_text: str | None = None,
 ) -> tuple[str, float]:
     """Classify a detection and optionally adjust confidence.
 
     Returns:
         (classification, adjusted_confidence)
     """
+    source = normalize_detection_source(
+        source,
+        drone_id=drone_id,
+        manufacturer=manufacturer,
+        latitude=latitude,
+        longitude=longitude,
+        operator_lat=operator_lat,
+        operator_lon=operator_lon,
+        operator_id=operator_id,
+        self_id_text=self_id_text,
+    )
+
     # 1. Check device type from drone_id (BLE:HASH:TypeName format)
     #    or from model field (which may carry the original type)
     device_type_str = None
@@ -194,6 +256,8 @@ def classify_detection(
         if dt_lower in TRACKER_TYPES:
             return "tracker", confidence
         if dt_lower in BLE_DRONE_TYPES:
+            if source == "ble_fingerprint":
+                return "possible_drone", max(confidence, 0.35)
             return "confirmed_drone", confidence
         # "unknown" type should NOT suppress drone classification —
         # a BLE Remote ID drone with unrecognized fingerprint is still a drone.
@@ -201,8 +265,8 @@ def classify_detection(
             return "unknown_device", confidence
 
     # 2. Fingerprint-grouped BLE (FP:XXXXXXXX) — these are generic BLE devices
-    #    Not confirmed drones just because they're BLE — treat as unknown
-    if drone_id and drone_id.startswith("FP:"):
+    #    Not confirmed drones just because they're BLE — treat as unknown.
+    if source == "ble_fingerprint" and drone_id and drone_id.startswith("FP:"):
         return "unknown_device", confidence
 
     # 3. Pwnagotchi — scanner detected the DE:AD:BE:EF:DE:AD hardcoded beacon
@@ -212,21 +276,15 @@ def classify_detection(
         return "hostile_tool", max(confidence, 0.90)
 
     # 4. Real drone protocols → confirmed_drone.
-    #    For ble_rid: the ESP32 reports ALL BLE devices as ble_rid source,
-    #    not just actual Remote ID. Use confidence + device_type to distinguish.
     if source in CONFIRMED_DRONE_SOURCES:
-        if source == "ble_rid":
-            if device_type_str and device_type_str.lower() != "unknown":
-                # Has a specific non-drone type — not a drone
-                return "unknown_device", confidence
-            if confidence < 0.15:
-                # Low confidence + unknown type = generic BLE device, not a drone
-                return "unknown_device", confidence
         # Weak-confidence drone-protocol frames get downgraded to likely_drone
         # so an alert still fires, but at warning (not critical) severity.
         if confidence < CONFIRMED_DRONE_MIN_CONFIDENCE:
             return "likely_drone", confidence
         return "confirmed_drone", confidence
+
+    if source == "ble_fingerprint":
+        return "unknown_device", confidence
 
     # 3. FOF-Drone- test drones (case-insensitive)
     if ssid and ssid.upper().startswith("FOF-DRONE-"):
@@ -246,6 +304,9 @@ def classify_detection(
             if drone_match:
                 return "likely_drone", max(confidence, 0.50)
         # Generic probe request — not a drone
+        return "wifi_device", confidence
+
+    if source == "wifi_assoc":
         return "wifi_device", confidence
 
     # 3.6. Check drone SSID reference database (191 patterns)

@@ -20,22 +20,22 @@ from app.services.triangulation import (
 
 
 def test_meta_glasses_is_moving():
-    assert _motion_class_for("ble_rid", "Meta", "Ray-Ban Meta") == "moving"
-    assert _motion_class_for("ble_rid", "Meta Glasses", "") == "moving"
+    assert _motion_class_for("ble_fingerprint", "Meta", "Ray-Ban Meta") == "moving"
+    assert _motion_class_for("ble_fingerprint", "Meta Glasses", "") == "moving"
 
 
 def test_luxottica_brand_is_moving():
-    assert _motion_class_for("ble_rid", "Luxottica", "Oakley HSTN") == "moving"
+    assert _motion_class_for("ble_fingerprint", "Luxottica", "Oakley HSTN") == "moving"
 
 
 def test_meta_quest_is_moving():
-    assert _motion_class_for("ble_rid", "Meta", "Meta Quest 3") == "moving"
+    assert _motion_class_for("ble_fingerprint", "Meta", "Meta Quest 3") == "moving"
 
 
 def test_drone_specific_protocols_are_moving_even_without_class_hint():
     """wifi_beacon_rid / wifi_dji_ie are drone-only protocols — airborne
-    by definition. ble_rid is intentionally NOT here: it's the generic
-    BLE scanner source and covers all kinds of benign devices too."""
+    by definition. BLE sources are intentionally NOT here because both
+    ble_rid and ble_fingerprint can coexist with benign nearby devices."""
     assert _motion_class_for("wifi_beacon_rid", "", "") == "moving"
     assert _motion_class_for("wifi_dji_ie", "", "") == "moving"
 
@@ -65,18 +65,19 @@ def test_drone_wifi_sources_still_moving_after_ap_rule():
 
 
 def test_airtag_is_stationary():
-    assert _motion_class_for("ble_rid", "Apple", "AirTag") == "stationary"
-    assert _motion_class_for("ble_rid", "Apple", "AirTag (Separated)") == "stationary"
+    assert _motion_class_for("ble_fingerprint", "Apple", "AirTag") == "stationary"
+    assert _motion_class_for("ble_fingerprint", "Apple", "AirTag (Separated)") == "stationary"
 
 
 def test_tile_and_smarttag_are_stationary():
-    assert _motion_class_for("ble_rid", "Tile", "Tile Tracker") == "stationary"
-    assert _motion_class_for("ble_rid", "Samsung", "Galaxy SmartTag") == "stationary"
+    assert _motion_class_for("ble_fingerprint", "Tile", "Tile Tracker") == "stationary"
+    assert _motion_class_for("ble_fingerprint", "Samsung", "Galaxy SmartTag") == "stationary"
 
 
 def test_generic_ble_is_default():
-    assert _motion_class_for("ble_rid", "Unknown", "") == "default"
+    assert _motion_class_for("ble_fingerprint", "Unknown", "") == "default"
     assert _motion_class_for("wifi_probe_request", "", "") == "default"
+    assert _motion_class_for("wifi_assoc", "", "") == "default"
 
 
 def test_obs_ttl_per_class():
@@ -87,8 +88,8 @@ def test_obs_ttl_per_class():
 
 
 def test_case_insensitive():
-    assert _motion_class_for("ble_rid", "META", "RAY-BAN META") == "moving"
-    assert _motion_class_for("ble_rid", "apple", "airtag") == "stationary"
+    assert _motion_class_for("ble_fingerprint", "META", "RAY-BAN META") == "moving"
+    assert _motion_class_for("ble_fingerprint", "apple", "airtag") == "stationary"
 
 
 def test_ekf_noise_uses_class():

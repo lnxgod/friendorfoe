@@ -15,6 +15,7 @@
 #include "config.h"
 #include "gps.h"
 #include "time_sync.h"
+#include "time_sync_policy.h"
 #include "version.h"
 
 #include <string.h>
@@ -62,6 +63,25 @@ volatile int     g_last_time_fetch_status = 0;
 volatile int     g_last_time_fetch_nread = 0;
 volatile int     g_last_time_fetch_clen  = -2;
 volatile uint32_t g_time_broadcast_count = 0;
+volatile bool    g_last_time_fetch_ok = false;
+volatile int64_t g_last_time_attempt_monotonic_ms = 0;
+volatile int64_t g_last_time_success_monotonic_ms = 0;
+volatile uint32_t g_time_fetch_ok_count = 0;
+volatile uint32_t g_time_fetch_fail_count = 0;
+volatile uint32_t g_time_fetch_fail_streak = 0;
+volatile int64_t g_last_broadcast_epoch_ms = 0;
+volatile uint32_t g_time_broadcast_valid_count = 0;
+volatile uint32_t g_time_broadcast_invalid_count = 0;
+volatile int g_time_source_mode = 0;
+char g_last_time_fetch_url_source[16] = "none";
+char g_last_time_fetch_url[96] = "";
+char g_last_time_fetch_ip[16] = "";
+volatile int g_last_time_fetch_port = 0;
+
+#define TIME_SOURCE_NONE     0
+#define TIME_SOURCE_BACKEND  1
+#define TIME_SOURCE_SNTP     2
+#define TIME_SOURCE_LOCAL    3
 
 /* Maximum JSON payload size for a batch */
 #define MAX_PAYLOAD_SIZE    4096
@@ -79,13 +99,37 @@ static const char *source_to_string(uint8_t src)
 {
     switch (src) {
         case DETECTION_SRC_BLE_RID:            return "ble_rid";
+        case DETECTION_SRC_BLE_FINGERPRINT:    return "ble_fingerprint";
         case DETECTION_SRC_WIFI_SSID:          return "wifi_ssid";
         case DETECTION_SRC_WIFI_DJI_IE:        return "wifi_dji_ie";
         case DETECTION_SRC_WIFI_BEACON:        return "wifi_beacon_rid";
         case DETECTION_SRC_WIFI_OUI:           return "wifi_oui";
         case DETECTION_SRC_WIFI_PROBE_REQUEST: return "wifi_probe_request";
+        case DETECTION_SRC_WIFI_ASSOC:         return "wifi_assoc";
         default:                               return "unknown";
     }
+}
+
+static const char *time_source_to_string(int source_mode)
+{
+    switch (source_mode) {
+        case TIME_SOURCE_BACKEND: return "backend";
+        case TIME_SOURCE_SNTP:    return "sntp";
+        case TIME_SOURCE_LOCAL:   return "local";
+        default:                  return "none";
+    }
+}
+
+static int64_t monotonic_age_s(int64_t since_ms)
+{
+    if (since_ms <= 0) {
+        return -1;
+    }
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    if (now_ms <= since_ms) {
+        return 0;
+    }
+    return (now_ms - since_ms) / 1000;
 }
 
 static size_t estimate_detection_json_size(const drone_detection_t *det)
@@ -152,11 +196,40 @@ static int append_scanner_info(char *buf, int off, int max, const char *uart_nam
                  info->deauth_flood ? "true" : "false",
                  info->beacon_spam ? "true" : "false");
     if (n > 0) off += n;
+    n = snprintf(&buf[off], max-off,
+                 ",\"uart_tx_dropped\":%lu,\"uart_tx_high_water\":%lu"
+                 ",\"tx_queue_depth\":%lu,\"tx_queue_capacity\":%lu,\"tx_queue_pressure_pct\":%lu"
+                 ",\"noise_drop_ble\":%lu,\"noise_drop_wifi\":%lu"
+                 ",\"probe_seen\":%lu,\"probe_sent\":%lu"
+                 ",\"probe_drop_low_value\":%lu,\"probe_drop_rate_limit\":%lu,\"probe_drop_pressure\":%lu",
+                 (unsigned long)info->uart_tx_dropped,
+                 (unsigned long)info->uart_tx_high_water,
+                 (unsigned long)info->tx_queue_depth,
+                 (unsigned long)info->tx_queue_capacity,
+                 (unsigned long)info->tx_queue_pressure_pct,
+                 (unsigned long)info->noise_drop_ble,
+                 (unsigned long)info->noise_drop_wifi,
+                 (unsigned long)info->probe_seen,
+                 (unsigned long)info->probe_sent,
+                 (unsigned long)info->probe_drop_low_value,
+                 (unsigned long)info->probe_drop_rate_limit,
+                 (unsigned long)info->probe_drop_pressure);
+    if (n > 0) off += n;
     /* v0.60 time-sync diagnostic — surfaces whether scanner has received the
      * uplink's epoch broadcast. tcnt = #broadcasts seen, toff = applied
      * offset (0 means none usable). Visible via /detections/nodes/status. */
-    n = snprintf(&buf[off], max-off, ",\"toff\":%lld,\"tcnt\":%u",
-                 (long long)info->toff_ms, info->tcnt); if(n>0) off+=n;
+    n = snprintf(&buf[off], max-off,
+                 ",\"toff\":%lld,\"tcnt\":%u,\"time_valid_count\":%lu"
+                 ",\"time_last_valid_age_s\":%lld,\"time_sync_state\":\"%s\""
+                 ",\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\",\"calibration_mode_acked\":%s",
+                 (long long)info->toff_ms, info->tcnt,
+                 (unsigned long)info->time_valid_count,
+                 (long long)info->time_last_valid_age_s,
+                 info->time_sync_state[0] ? info->time_sync_state : "unknown",
+                 info->scan_mode[0] ? info->scan_mode : "normal",
+                 info->calibration_uuid,
+                 info->calibration_mode_acked ? "true" : "false");
+    if(n>0) off+=n;
     n = snprintf(&buf[off], max-off, "}"); if(n>0) off+=n;
     return off;
 }
@@ -185,6 +258,33 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     BUF_APPEND(",\"board_type\":\"uplink-c3\"");
 #endif
     if (wifi_ssid[0]) BUF_APPEND(",\"wifi_ssid\":\"%s\",\"wifi_rssi\":%d", wifi_ssid, wifi_sta_get_rssi());
+    BUF_APPEND(",\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\"",
+               uart_rx_get_node_scan_mode(),
+               uart_rx_get_node_calibration_uuid());
+    BUF_APPEND(
+        ",\"time_sync\":{\"time_source\":\"%s\",\"last_fetch_ok\":%s"
+        ",\"last_fetch_url_source\":\"%s\",\"last_fetch_url\":\"%s\""
+        ",\"last_fetch_ip\":\"%s\",\"last_fetch_port\":%d"
+        ",\"last_attempt_age_s\":%lld,\"last_success_age_s\":%lld"
+        ",\"fetch_ok_count\":%lu,\"fetch_fail_count\":%lu,\"fetch_fail_streak\":%lu"
+        ",\"last_backend_epoch_ms\":%lld,\"last_broadcast_epoch_ms\":%lld"
+        ",\"broadcast_valid_count\":%lu,\"broadcast_invalid_count\":%lu}",
+        time_source_to_string(g_time_source_mode),
+        g_last_time_fetch_ok ? "true" : "false",
+        g_last_time_fetch_url_source,
+        g_last_time_fetch_url,
+        g_last_time_fetch_ip,
+        g_last_time_fetch_port,
+        (long long)monotonic_age_s(g_last_time_attempt_monotonic_ms),
+        (long long)monotonic_age_s(g_last_time_success_monotonic_ms),
+        (unsigned long)g_time_fetch_ok_count,
+        (unsigned long)g_time_fetch_fail_count,
+        (unsigned long)g_time_fetch_fail_streak,
+        (long long)g_last_backend_epoch_ms,
+        (long long)g_last_broadcast_epoch_ms,
+        (unsigned long)g_time_broadcast_valid_count,
+        (unsigned long)g_time_broadcast_invalid_count
+    );
 
     /* Scanners array */
     BUF_APPEND(",\"scanners\":[");
@@ -211,6 +311,8 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
 
         BUF_APPEND("{\"drone_id\":\"%s\",\"source\":\"%s\",\"confidence\":%.8f,\"rssi\":%d",
                    d->drone_id, source_to_string(d->source), d->confidence, d->rssi);
+        if (d->estimated_distance_m > 0.0)
+            BUF_APPEND(",\"estimated_distance_m\":%.6f", d->estimated_distance_m);
         if (d->latitude != 0.0 || d->longitude != 0.0)
             BUF_APPEND(",\"latitude\":%.7f,\"longitude\":%.7f", d->latitude, d->longitude);
         if (d->altitude_m != 0.0) BUF_APPEND(",\"altitude_m\":%.1f", d->altitude_m);
@@ -410,6 +512,258 @@ static char s_http_header[256];  /* Static buffer for HTTP request header */
 static char s_http_resp[256];    /* Static buffer for HTTP response */
 static struct sockaddr_in s_cached_addr = {0};  /* Cached resolved address — avoid getaddrinfo heap alloc */
 static bool s_addr_cached = false;
+static char s_cached_backend_url[128] = {0};
+
+static void raw_socket_forget_endpoint_cache(void)
+{
+    if (s_sock >= 0) {
+        close(s_sock);
+        s_sock = -1;
+    }
+    memset(&s_cached_addr, 0, sizeof(s_cached_addr));
+    s_addr_cached = false;
+    s_cached_backend_url[0] = '\0';
+    s_resolved_url[0] = '\0';
+}
+
+static bool parse_backend_host_port(const char *backend_url,
+                                    char *host,
+                                    size_t host_size,
+                                    int *port_out)
+{
+    if (!backend_url || !host || host_size == 0 || !port_out) {
+        return false;
+    }
+    const char *host_start = strstr(backend_url, "://");
+    host_start = host_start ? host_start + 3 : backend_url;
+    const char *host_end = host_start;
+    while (*host_end && *host_end != ':' && *host_end != '/') {
+        host_end++;
+    }
+    size_t host_len = (size_t)(host_end - host_start);
+    if (host_len == 0 || host_len >= host_size) {
+        return false;
+    }
+    memcpy(host, host_start, host_len);
+    host[host_len] = '\0';
+    *port_out = 80;
+    if (*host_end == ':') {
+        *port_out = atoi(host_end + 1);
+    }
+    return true;
+}
+
+static void remember_time_fetch_endpoint(const char *url_source,
+                                         const char *backend_url,
+                                         const char *ip,
+                                         int port)
+{
+    strncpy(g_last_time_fetch_url_source,
+            url_source ? url_source : "unknown",
+            sizeof(g_last_time_fetch_url_source) - 1);
+    g_last_time_fetch_url_source[sizeof(g_last_time_fetch_url_source) - 1] = '\0';
+    strncpy(g_last_time_fetch_url,
+            backend_url ? backend_url : "",
+            sizeof(g_last_time_fetch_url) - 1);
+    g_last_time_fetch_url[sizeof(g_last_time_fetch_url) - 1] = '\0';
+    strncpy(g_last_time_fetch_ip,
+            ip ? ip : "",
+            sizeof(g_last_time_fetch_ip) - 1);
+    g_last_time_fetch_ip[sizeof(g_last_time_fetch_ip) - 1] = '\0';
+    g_last_time_fetch_port = port;
+}
+
+static bool backend_urls_equal(const char *a, const char *b)
+{
+    if (!a || !b) {
+        return false;
+    }
+    return strcmp(a, b) == 0;
+}
+
+static bool fetch_backend_time_epoch_ms_single(const char *backend_url,
+                                               const char *url_source,
+                                               int64_t *epoch_ms_out)
+{
+    char host[64] = {0};
+    int port = 80;
+    int sock = -1;
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+    struct addrinfo *res = NULL;
+    char port_str[8];
+    char request[192];
+    char response[256];
+    int status = 0;
+    int clen = -1;
+    int nread = 0;
+    int perf = -1;
+    int64_t parsed_epoch_ms = 0;
+
+    if (!parse_backend_host_port(backend_url, host, sizeof(host), &port)) {
+        perf = -1;
+        remember_time_fetch_endpoint(url_source, backend_url, "", 0);
+        goto done;
+    }
+    remember_time_fetch_endpoint(url_source, backend_url, "", port);
+    snprintf(port_str, sizeof(port_str), "%d", port);
+    if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) {
+        perf = -2;
+        goto done;
+    }
+
+    bool connected = false;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (sock < 0) {
+            perf = -3;
+            continue;
+        }
+
+        struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        if (connect(sock, ai->ai_addr, ai->ai_addrlen) == 0) {
+            if (ai->ai_family == AF_INET) {
+                char ip_str[16] = {0};
+                struct sockaddr_in *addr = (struct sockaddr_in *)ai->ai_addr;
+                inet_ntoa_r(addr->sin_addr, ip_str, sizeof(ip_str));
+                remember_time_fetch_endpoint(url_source, backend_url, ip_str, port);
+            }
+            connected = true;
+            break;
+        }
+
+        perf = -4;
+        close(sock);
+        sock = -1;
+    }
+    if (!connected) {
+        goto done;
+    }
+
+    char host_header[80];
+    if (port == 80) {
+        snprintf(host_header, sizeof(host_header), "%s", host);
+    } else {
+        snprintf(host_header, sizeof(host_header), "%s:%d", host, port);
+    }
+    int req_len = snprintf(
+        request, sizeof(request),
+        "GET /detections/time HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+        host_header
+    );
+    if (send(sock, request, req_len, 0) != req_len) {
+        perf = -5;
+        goto done;
+    }
+
+    int total = 0;
+    while (total < (int)sizeof(response) - 1) {
+        int got = recv(sock, response + total, sizeof(response) - 1 - total, 0);
+        if (got <= 0) {
+            break;
+        }
+        total += got;
+        response[total] = '\0';
+        char *body_probe = strstr(response, "\r\n\r\n");
+        if (body_probe) {
+            char *cl_probe = strstr(response, "Content-Length:");
+            if (!cl_probe) cl_probe = strstr(response, "content-length:");
+            if (cl_probe) {
+                int expected_clen = atoi(cl_probe + 15);
+                int header_len = (int)((body_probe + 4) - response);
+                if (expected_clen >= 0 && total >= header_len + expected_clen) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+    if (total <= 0) {
+        perf = -6;
+        goto done;
+    }
+    response[total] = '\0';
+    nread = total;
+
+    if (total > 12 && strncmp(response, "HTTP/", 5) == 0) {
+        status = atoi(response + 9);
+    }
+    char *cl = strstr(response, "Content-Length:");
+    if (!cl) cl = strstr(response, "content-length:");
+    if (cl) {
+        clen = atoi(cl + 15);
+    }
+    char *body = strstr(response, "\r\n\r\n");
+    if (!body) {
+        perf = -7;
+        goto done;
+    }
+    body += 4;
+    cJSON *root = cJSON_Parse(body);
+    if (!root) {
+        perf = -8;
+        goto done;
+    }
+    cJSON *ms = cJSON_GetObjectItem(root, "ms");
+    if (ms && cJSON_IsNumber(ms)) {
+        parsed_epoch_ms = (int64_t)ms->valuedouble;
+    }
+    cJSON_Delete(root);
+    perf = 0;
+
+done:
+    g_last_time_fetch_perf = perf;
+    g_last_time_fetch_status = status;
+    g_last_time_fetch_clen = clen;
+    g_last_time_fetch_nread = nread;
+    if (res) {
+        freeaddrinfo(res);
+    }
+    if (sock >= 0) {
+        close(sock);
+    }
+    if (epoch_ms_out) {
+        *epoch_ms_out = parsed_epoch_ms;
+    }
+    return perf == 0 && status >= 200 && status < 300 && fof_time_epoch_is_valid(parsed_epoch_ms);
+}
+
+static bool fetch_backend_time_epoch_ms(int64_t *epoch_ms_out)
+{
+    char primary_url[96] = {0};
+    char fallback_url[96] = {0};
+    const char *first_source = "primary";
+    const char *second_source = "fallback";
+    const char *first_url = primary_url;
+    const char *second_url = fallback_url;
+
+    nvs_config_get_backend_url(primary_url, sizeof(primary_url));
+    strncpy(fallback_url, CONFIG_BACKEND_URL_FALLBACK, sizeof(fallback_url) - 1);
+
+    if (s_using_fallback_url) {
+        first_source = "fallback";
+        second_source = "primary";
+        first_url = fallback_url;
+        second_url = primary_url;
+    }
+
+    if (fetch_backend_time_epoch_ms_single(first_url, first_source, epoch_ms_out)) {
+        return true;
+    }
+    if (!backend_urls_equal(first_url, second_url) &&
+        fetch_backend_time_epoch_ms_single(second_url, second_source, epoch_ms_out)) {
+        bool now_using_fallback = (strcmp(second_source, "fallback") == 0);
+        if (s_using_fallback_url != now_using_fallback) {
+            s_using_fallback_url = now_using_fallback;
+            raw_socket_forget_endpoint_cache();
+        }
+        return true;
+    }
+    return false;
+}
 
 static bool raw_socket_connect(void)
 {
@@ -420,6 +774,11 @@ static bool raw_socket_connect(void)
         strncpy(backend_url, CONFIG_BACKEND_URL_FALLBACK, sizeof(backend_url) - 1);
     } else {
         nvs_config_get_backend_url(backend_url, sizeof(backend_url));
+    }
+    if (strncmp(s_cached_backend_url, backend_url, sizeof(s_cached_backend_url)) != 0) {
+        raw_socket_forget_endpoint_cache();
+        strncpy(s_cached_backend_url, backend_url, sizeof(s_cached_backend_url) - 1);
+        s_cached_backend_url[sizeof(s_cached_backend_url) - 1] = '\0';
     }
 
     /* Parse host and port from URL like "http://192.0.2.1:8000" */
@@ -477,8 +836,7 @@ static bool raw_socket_connect(void)
 
     if (connect(s_sock, (struct sockaddr *)&s_cached_addr, sizeof(s_cached_addr)) != 0) {
         ESP_LOGE(TAG, "Connect failed");
-        close(s_sock);
-        s_sock = -1;
+        raw_socket_forget_endpoint_cache();
         return false;
     }
 
@@ -719,7 +1077,7 @@ static void http_upload_task(void *arg)
         bool connected_now = wifi_sta_is_connected();
         if (connected_now && !was_connected) {
             ESP_LOGI(TAG, "WiFi reconnected — resetting HTTP client");
-            raw_socket_close();
+            raw_socket_forget_endpoint_cache();
             consecutive_fails = 0;
         }
         was_connected = connected_now;
@@ -730,7 +1088,7 @@ static void http_upload_task(void *arg)
             if (since_success >= pdMS_TO_TICKS(HEALTH_RESET_SEC * 1000)) {
                 ESP_LOGW(TAG, "HEALTH RESET: no success for %ds, resetting client + clearing offline buffer",
                          HEALTH_RESET_SEC);
-                raw_socket_close();
+                raw_socket_forget_endpoint_cache();
                 /* Clear stale offline batches — they're probably the cause */
                 if (s_offline_buffer) {
                     offline_batch_t discard;
@@ -792,7 +1150,7 @@ static void http_upload_task(void *arg)
             if (free_heap < 10000) {
                 ESP_LOGW(TAG, "LOW HEAP (%u bytes) — dropping batch of %d to recover",
                          (unsigned)free_heap, batch_count);
-                raw_socket_close();  /* Free HTTP client resources */
+                raw_socket_forget_endpoint_cache();  /* Free HTTP client resources */
                 batch_count = 0;
                 estimated_payload_bytes = 0;
                 scan_ts_ms = 0;
@@ -813,7 +1171,7 @@ static void http_upload_task(void *arg)
                                      s_using_fallback_url ? "fallback" : "primary",
                                      consecutive_fails);
                             /* Force socket recreation with new URL */
-                            raw_socket_close();
+                            raw_socket_forget_endpoint_cache();
                         }
                     } else {
                         last_send = xTaskGetTickCount();
@@ -868,78 +1226,71 @@ static void http_upload_task(void *arg)
 
                 /* Unconditional time sync (v0.60+).
                  * Every 10s: fetch authoritative epoch-ms from the backend
-                 * and broadcast it to both scanners over UART. No dependency
-                 * on SNTP — the backend's system clock is the source of
-                 * truth for fleet-internal cross-node correlation. Works on
-                 * walled-garden networks that block outbound NTP (CasaChomp
-                 * was hitting this). */
-#if defined(UPLINK_ESP32S3)
+                 * and broadcast it to both scanners over UART. If the fetch
+                 * fails but the uplink still has a fresh authoritative local
+                 * clock (SNTP or recent backend-steered), broadcast that as
+                 * a marked local fallback instead of pretending the fetch
+                * succeeded. */
                 {
-                    char ts_url[128] = {0};
-                    char backend_url[96] = {0};
-                    if (s_using_fallback_url) {
-                        strncpy(backend_url, CONFIG_BACKEND_URL_FALLBACK, sizeof(backend_url) - 1);
-                    } else {
-                        nvs_config_get_backend_url(backend_url, sizeof(backend_url));
-                    }
-                    snprintf(ts_url, sizeof(ts_url), "%s/detections/time", backend_url);
-                    esp_http_client_config_t ts_cfg = {
-                        .url = ts_url, .method = HTTP_METHOD_GET, .timeout_ms = 3000,
-                    };
-                    esp_http_client_handle_t ts_client = esp_http_client_init(&ts_cfg);
                     int64_t backend_epoch_ms = 0;
-                    if (ts_client) {
-                        /* Use open/fetch/read pattern instead of perform —
-                         * perform auto-consumes the body when no event handler
-                         * is registered, leaving nothing for read() to return. */
-                        esp_err_t e_open = esp_http_client_open(ts_client, 0);
-                        int ts_status = 0, ts_len = -1, nread = 0;
-                        char tbuf[128] = {0};
-                        if (e_open == ESP_OK) {
-                            ts_len = esp_http_client_fetch_headers(ts_client);
-                            ts_status = esp_http_client_get_status_code(ts_client);
-                            if (ts_len > 0 && ts_len < (int)sizeof(tbuf)) {
-                                nread = esp_http_client_read_response(ts_client, tbuf, sizeof(tbuf) - 1);
+                    int64_t now_monotonic_ms = esp_timer_get_time() / 1000;
+                    g_last_time_attempt_monotonic_ms = now_monotonic_ms;
+                    bool fetch_ok = fetch_backend_time_epoch_ms(&backend_epoch_ms);
+                    g_last_time_fetch_ok = fetch_ok;
+
+                    int64_t broadcast_ms = -1;
+                    bool broadcast_ok = false;
+                    const char *broadcast_src = "none";
+
+                    if (fetch_ok) {
+                        g_last_backend_epoch_ms = backend_epoch_ms;
+                        g_last_time_success_monotonic_ms = now_monotonic_ms;
+                        g_time_fetch_ok_count++;
+                        g_time_fetch_fail_streak = 0;
+                        g_time_source_mode = TIME_SOURCE_BACKEND;
+                        time_sync_set_from_backend(backend_epoch_ms);
+                        broadcast_ms = backend_epoch_ms;
+                        broadcast_ok = true;
+                        broadcast_src = "backend";
+                    } else {
+                        g_time_fetch_fail_count++;
+                        g_time_fetch_fail_streak++;
+                        if (time_sync_has_fresh_authority(FOF_TIME_SYNC_LOCAL_FRESHNESS_MS)) {
+                            int64_t local_epoch_ms = time_sync_get_epoch_ms();
+                            if (fof_time_epoch_is_valid(local_epoch_ms)) {
+                                broadcast_ms = local_epoch_ms;
+                                broadcast_ok = true;
+                                broadcast_src = "local";
+                                g_time_source_mode = time_sync_is_sntp_synced()
+                                    ? TIME_SOURCE_SNTP
+                                    : TIME_SOURCE_LOCAL;
                             }
-                            esp_http_client_close(ts_client);
+                        } else {
+                            g_time_source_mode = TIME_SOURCE_NONE;
                         }
-                        g_last_time_fetch_perf   = (int)e_open;
-                        g_last_time_fetch_status = ts_status;
-                        g_last_time_fetch_clen   = ts_len;
-                        g_last_time_fetch_nread  = nread;
-                        ESP_LOGI(TAG, "TIME FETCH: open=%s status=%d clen=%d nread=%d body='%.*s'",
-                                 esp_err_to_name(e_open), ts_status, ts_len,
-                                 nread, nread > 0 ? nread : 0, tbuf);
-                        if (nread > 0) {
-                            cJSON *tr = cJSON_Parse(tbuf);
-                            if (tr) {
-                                cJSON *ms = cJSON_GetObjectItem(tr, "ms");
-                                if (ms && cJSON_IsNumber(ms)) {
-                                    backend_epoch_ms = (int64_t)ms->valuedouble;
-                                    g_last_backend_epoch_ms = backend_epoch_ms;
-                                    time_sync_set_from_backend(backend_epoch_ms);
-                                }
-                                cJSON_Delete(tr);
-                            }
-                        }
-                        esp_http_client_cleanup(ts_client);
                     }
-                    /* Broadcast time to scanners. Always send (even if backend
-                     * fetch returned 0) so the scanner side can confirm the
-                     * UART path works regardless of HTTP fetch quirks.
-                     * Scanner guards against epoch_ms <= 1.7e12 itself. */
-                    char time_cmd[64];
-                    int64_t broadcast_ms = backend_epoch_ms > 0 ? backend_epoch_ms : -1;
+
+                    char time_cmd[96];
                     snprintf(time_cmd, sizeof(time_cmd),
-                             "{\"type\":\"%s\",\"%s\":%lld}",
-                             MSG_TYPE_TIME, JSON_KEY_EPOCH_MS,
-                             (long long)broadcast_ms);
+                             "{\"type\":\"%s\",\"%s\":%lld,\"%s\":%s,\"%s\":\"%s\"}",
+                             MSG_TYPE_TIME, JSON_KEY_EPOCH_MS, (long long)broadcast_ms,
+                             JSON_KEY_TIME_OK, broadcast_ok ? "true" : "false",
+                             JSON_KEY_TIME_SOURCE, broadcast_src);
                     uart_rx_send_command(time_cmd);
                     g_time_broadcast_count++;
-                    ESP_LOGI(TAG, "TIME BROADCAST: %lld ms to both scanners",
-                             (long long)broadcast_ms);
+                    g_last_broadcast_epoch_ms = broadcast_ok ? broadcast_ms : 0;
+                    if (broadcast_ok) {
+                        g_time_broadcast_valid_count++;
+                    } else {
+                        g_time_broadcast_invalid_count++;
+                    }
+                    ESP_LOGI(TAG, "TIME BROADCAST: ok=%s src=%s ms=%lld fetch_ok=%s perf=%d",
+                             broadcast_ok ? "true" : "false",
+                             broadcast_src,
+                             (long long)broadcast_ms,
+                             fetch_ok ? "true" : "false",
+                             g_last_time_fetch_perf);
                 }
-#endif
 
 #if defined(UPLINK_ESP32S3)
                 /* Lock-on polling — only on S3 (ESP32 has too little heap for extra HTTP client) */

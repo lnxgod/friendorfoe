@@ -23,6 +23,7 @@ class SensorNode(Base):
     alt: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_fixed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sensor_type: Mapped[str] = mapped_column(String(16), nullable=False, default="outdoor")
+    position_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     last_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

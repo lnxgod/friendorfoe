@@ -6,6 +6,8 @@ PACKAGE="${PACKAGE:-com.friendorfoe}"
 ACTIVITY="${ACTIVITY:-com.friendorfoe.presentation.MainActivity}"
 BACKEND_HOST="${BACKEND_HOST:-fof-server.local}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
+BACKEND_URL="${BACKEND_URL:-http://${BACKEND_HOST}:${BACKEND_PORT}/}"
+CAL_TOKEN="${CAL_TOKEN:-chompchomp}"
 GEO_LON="${GEO_LON:--122.431297}"
 GEO_LAT="${GEO_LAT:-37.773972}"
 TMP_XML="$(mktemp)"
@@ -27,6 +29,31 @@ require python3
 
 adb_cmd() {
   "$ADB_BIN" "$@"
+}
+
+seed_backend_prefs() {
+  local backend_url="$1"
+  local token="$2"
+  local app_data_dir="/data/user/0/${PACKAGE}"
+  local remote_tmp="/data/local/tmp/${PACKAGE//./_}_fof_settings.xml"
+  local xml
+  xml="$(cat <<EOF
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="sensor_backend_url">${backend_url}</string>
+    <string name="fof_calibration_token">${token}</string>
+    <boolean name="sensor_backend_enabled" value="true" />
+    <boolean name="sensor_backend_only_mode" value="true" />
+</map>
+EOF
+)"
+  adb_cmd shell mkdir -p /data/local/tmp
+  adb_cmd shell sh -c "cat > ${remote_tmp}" <<EOF
+$xml
+EOF
+  adb_cmd shell run-as "$PACKAGE" mkdir -p "${app_data_dir}/shared_prefs"
+  adb_cmd shell run-as "$PACKAGE" cp "${remote_tmp}" "${app_data_dir}/shared_prefs/fof_settings.xml"
+  adb_cmd shell rm -f "${remote_tmp}"
 }
 
 dump_ui() {
@@ -146,6 +173,7 @@ reveal_ui_text() {
 echo "==> launching $PACKAGE"
 adb_cmd logcat -c
 adb_cmd shell am force-stop "$PACKAGE" >/dev/null 2>&1 || true
+seed_backend_prefs "$BACKEND_URL" "$CAL_TOKEN"
 adb_cmd shell am start -n "$PACKAGE/$ACTIVITY" >/dev/null
 sleep 2
 
@@ -172,10 +200,35 @@ adb_cmd emu geo fix "$GEO_LON" "$GEO_LAT" >/dev/null
 echo "==> starting walk"
 tap_node "Start walk"
 wait_for_log "phase=walk_start method=POST .* success code=200"
+wait_for_log "phase=walk_feedback method=GET .* success code=200"
+wait_for_log "phase=walk_sample method=POST .* success code=200" 30
+reveal_ui_text "Beacon on air"
+wait_for_ui_text "Beacon on air" 20
+
+echo "==> backgrounding app to verify abort path"
+adb_cmd shell input keyevent KEYCODE_HOME >/dev/null
+wait_for_log "phase=walk_abort method=POST .* success code=200" 20
+
+echo "==> relaunching after abort"
+adb_cmd shell am start -n "$PACKAGE/$ACTIVITY" >/dev/null
+sleep 2
+tap_node "Calibrate"
+wait_for_ui_text "Backend reachable"
+reveal_ui_text "Start walk"
+wait_for_ui_text "Start walk"
+
+echo "==> starting second walk"
+adb_cmd emu geo fix "$GEO_LON" "$GEO_LAT" >/dev/null
+tap_node "Start walk"
+wait_for_log "phase=walk_start method=POST .* success code=200" 20
 wait_for_log "phase=walk_sample method=POST .* success code=200" 30
 reveal_ui_text "Stop walk + apply fit" 4 down
 wait_for_ui_text "Stop walk + apply fit" 20
 
+echo "==> ending walk"
+tap_node "Stop walk + apply fit"
+wait_for_log "phase=walk_end method=POST .* success code=200" 30
+
 echo "Calibration smoke passed."
-echo "Backend: http://$BACKEND_HOST:$BACKEND_PORT/"
+echo "Backend: $BACKEND_URL"
 echo "GPS: lat=$GEO_LAT lon=$GEO_LON"

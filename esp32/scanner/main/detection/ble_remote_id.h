@@ -37,6 +37,17 @@ void ble_remote_id_start(void);
  */
 void ble_remote_id_stop(void);
 
+/**
+ * Focus BLE reporting on a specific advertiser MAC.
+ * Calibration mode cancels this focus to avoid suppressing the phone beacon.
+ */
+void ble_rid_lockon(const uint8_t mac[6], int duration_s);
+
+/**
+ * Cancel BLE focus mode and resume normal advertiser reporting.
+ */
+void ble_rid_lockon_cancel(void);
+
 #if CONFIG_FOF_GLASSES_DETECTION
 /**
  * Attach a queue for smart glasses / privacy device detections.

@@ -20,7 +20,19 @@ interface CalibrationBackend {
         accuracyM: Float?,
     ): Result<JsonObject>
     suspend fun walkFeedback(baseUrl: String, token: String, sessionId: String): Result<JsonObject>
-    suspend fun walkEnd(baseUrl: String, token: String, sessionId: String): Result<JsonObject>
+    suspend fun walkEnd(
+        baseUrl: String,
+        token: String,
+        sessionId: String,
+        provisionalFit: JsonObject?,
+        applyRequested: Boolean = true,
+    ): Result<JsonObject>
+    suspend fun walkAbort(
+        baseUrl: String,
+        token: String,
+        sessionId: String,
+        reason: String,
+    ): Result<JsonObject>
     suspend fun walkSensors(baseUrl: String, token: String): Result<JsonObject>
     suspend fun walkMyPosition(baseUrl: String, token: String, sessionId: String): Result<JsonObject>
     suspend fun walkCheckpoint(

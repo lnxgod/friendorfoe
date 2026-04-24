@@ -493,7 +493,7 @@
         </select>
         <select id="det-source" onchange="refreshDetections()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:11px">
           <option value="">All Sources</option><option value="wifi_ssid">WiFi SSID</option><option value="wifi_oui">WiFi AP</option>
-          <option value="wifi_probe_request">WiFi Probe</option><option value="ble_rid">BLE</option><option value="wifi_dji_ie">DJI IE</option><option value="wifi_beacon_rid">Beacon RID</option>
+          <option value="wifi_assoc">WiFi Assoc</option><option value="wifi_probe_request">WiFi Probe</option><option value="ble_rid">BLE RID</option><option value="ble_fingerprint">BLE FP</option><option value="wifi_dji_ie">DJI IE</option><option value="wifi_beacon_rid">Beacon RID</option>
         </select>
         <span id="det-count" style="font-size:10px;color:#484f58"></span>
       </div>
@@ -519,6 +519,11 @@
             <select id="cfg-device" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:12px;min-width:120px"><option value="">Loading...</option></select></div>
           <div><label style="font-size:10px;color:#484f58;display:block">Name</label>
             <input id="cfg-name" type="text" placeholder="Front Yard" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:12px;width:110px"></div>
+          <div><label style="font-size:10px;color:#484f58;display:block">Geometry</label>
+            <select id="cfg-position-mode" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:12px;width:150px">
+              <option value="active">Active</option>
+              <option value="excluded">Excluded (canary/test)</option>
+            </select></div>
           <div><label style="font-size:10px;color:#484f58;display:block">Lat</label>
             <input id="cfg-lat" type="number" step="any" placeholder="37.7749" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:12px;width:110px"></div>
           <div><label style="font-size:10px;color:#484f58;display:block">Lon</label>
@@ -527,10 +532,12 @@
             <input id="cfg-alt" type="number" step="any" placeholder="0" value="0" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:12px;width:70px"></div>
           <button onclick="registerNode()" style="background:#238636;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:700">Set Position</button>
           <button onclick="useMyLocation()" style="background:#1f6feb;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px">My Location</button>
+          <button id="cfg-pause-btn" onclick="setSelectedNodeGeometryMode('excluded')" style="background:#d29922;color:#111;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:700">Pause Geometry</button>
+          <button id="cfg-resume-btn" onclick="setSelectedNodeGeometryMode('active')" style="background:#238636;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:700">Use In Geometry</button>
         </div>
         <div id="cfg-result" style="margin-top:6px;font-size:11px"></div>
         <div id="placement-map-container" style="height:350px;margin-top:12px;border-radius:6px;border:1px solid #30363d;overflow:hidden"></div>
-        <div style="font-size:10px;color:#484f58;margin-top:4px">Drag the marker to set sensor position. Click "Set Position" to save.</div>
+        <div style="font-size:10px;color:#484f58;margin-top:4px">Drag the marker to set sensor position. Use Excluded (canary/test) to keep the saved point but remove the node from live geometry.</div>
       </div>
     </div>
     <div class="card full" style="border:1px solid #58a6ff44">
@@ -699,9 +706,11 @@ function rssiClass(r) { return !r?'':r>-50?'close':r>-70?'mid':'far'; }
 function srcBadge(s) {
   if(!s) return '';
   const map = {
-    'ble_rid':           ['#a371f7','BLE'],
+    'ble_rid':           ['#a371f7','BLE RID'],
+    'ble_fingerprint':   ['#7ee787','BLE FP'],
     'wifi_ssid':         ['#ff9500','WiFi SSID'],
     'wifi_oui':          ['#8b949e','WiFi AP'],
+    'wifi_assoc':        ['#79c0ff','WiFi Assoc'],
     'wifi_dji_ie':       ['#f85149','DJI IE'],
     'wifi_beacon_rid':   ['#3fb950','Beacon RID'],
     'wifi_probe_request':['#d29922','Probe'],
@@ -716,6 +725,35 @@ function clsBadge(c) {
 function fmtUp(s) { if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m'; }
 function ago(e) { const s=Math.floor(Date.now()/1000-e);return s<5?'now':s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h'; }
 function sensorLabel(id) { return id.replace('uplink_','U'); }
+function timeHealthClass(h) {
+  if (h === 'fresh' || h === 'good') return 'ok';
+  if (h === 'waiting' || h === 'warning') return 'warn';
+  if (h === 'stale' || h === 'bad') return 'err';
+  return '';
+}
+function timeHealthLabel(h) {
+  if (!h) return 'unknown';
+  return String(h).replace('_', ' ');
+}
+function formatAgeSeconds(s) {
+  if (s === null || s === undefined || s === '' || Number.isNaN(Number(s))) return '?';
+  const n = Number(s);
+  return n < 60 ? Math.round(n) + 's' : fmtUp(Math.round(n));
+}
+function scannerTimeSummary(sc) {
+  const state = sc.time_sync_state || 'unknown';
+  const health = sc.time_sync_health || 'unknown';
+  const valid = sc.time_valid_count ?? 0;
+  const age = formatAgeSeconds(sc.time_last_valid_age_s);
+  return 'time:'+state+'/'+health+' valid:'+valid+' age:'+age+' tcnt:'+(sc.tcnt||0);
+}
+function uplinkTimeSummary(ts) {
+  if (!ts) return 'time:unknown';
+  return 'uplink:'+timeHealthLabel(ts.sync_health)+' src:'+(ts.time_source||'unknown')+
+    ' ok:'+(ts.last_fetch_ok === true ? 'yes' : ts.last_fetch_ok === false ? 'no' : '?')+
+    ' age:'+formatAgeSeconds(ts.last_success_age_s)+
+    ' fail:'+((ts.fetch_fail_streak ?? 0));
+}
 
 async function f(url,ms) {
   const c=new AbortController();const t=setTimeout(()=>c.abort(),ms||3000);
@@ -1017,7 +1055,7 @@ function updateMap(sensors, drones, nodeList) {
   sensors.forEach(s => { if (s.lat && s.lon) sensorSet[s.device_id] = s; });
   // Add registered nodes that have GPS but aren't in the live sensor list
   (nodeList || []).forEach(n => {
-    if (n.lat && n.lon && n.lat != 0 && !sensorSet[n.device_id]) {
+    if (n.geometry_enabled !== false && n.lat && n.lon && n.lat != 0 && !sensorSet[n.device_id]) {
       sensorSet[n.device_id] = { device_id: n.device_id, lat: n.lat, lon: n.lon, online: n.online, last_seen: n.last_seen };
     }
   });
@@ -1676,7 +1714,7 @@ async function refreshWifi() {
     f(API+'/detections/probes/history?hours=1')
   ]);
   if (!data) return;
-  const wifi = data.devices.filter(d => d.source && !d.source.includes('ble') && d.source !== 'wifi_probe_request' && d.classification !== 'mobile_hotspot');
+  const wifi = data.devices.filter(d => d.source && !d.source.includes('ble') && d.source !== 'wifi_probe_request' && d.source !== 'wifi_assoc' && d.classification !== 'mobile_hotspot');
 
   // Build probe count map: SSID → number of devices probing for it
   const probeCountBySSID = {};
@@ -2217,11 +2255,14 @@ async function refresh() {
     // NODES TAB — skip rebuild if user is interacting (but don't exit refresh)
     if (!pausedFeeds.has('nodes')) {
     const gs=document.getElementById('gps-summary');
-    const gpsSet = nodeList.filter(n => n.lat != 0 || n.lon != 0);
-    gs.innerHTML = '<table><tr><th>Device</th><th>Name</th><th>Status</th><th>Firmware Stack</th><th>Latitude</th><th>Longitude</th><th>IP</th><th>Last Seen</th><th>OTA</th></tr>' +
+    const gpsSet = nodeList.filter(n => n.geometry_enabled !== false && (n.lat != 0 || n.lon != 0));
+    gs.innerHTML = '<table><tr><th>Device</th><th>Name</th><th>Status</th><th>Geometry</th><th>Firmware Stack</th><th>Latitude</th><th>Longitude</th><th>IP</th><th>Last Seen</th><th>OTA</th></tr>' +
       nodeList.map(n => {
         const on = n.online;
         const hasGPS = n.lat != 0 || n.lon != 0;
+        const geometryEnabled = n.geometry_enabled !== false;
+        const geometryLabel = geometryEnabled ? 'ACTIVE' : 'EXCLUDED';
+        const geometryColor = geometryEnabled ? '#3fb950' : '#d29922';
         const fw = n.firmware_version || '?';
         const did = n.device_id;
         const bt = n.board_type || '?';
@@ -2238,9 +2279,10 @@ async function refresh() {
           '<td style="font-weight:700;color:#58a6ff">' + did + '</td>' +
           '<td style="color:#c9d1d9">' + (n.name || '-') + '</td>' +
           '<td><span class="pill ' + (on?'on':'off') + '">' + (on?'ONLINE':'OFFLINE') + '</span></td>' +
+          '<td><span style="font-size:10px;font-weight:700;color:'+geometryColor+'">' + geometryLabel + '</span></td>' +
           '<td>' + fwStack + '</td>' +
-          '<td style="font-family:JetBrains Mono,monospace;color:' + (hasGPS?'#3fb950':'#f85149') + '">' + (hasGPS ? n.lat.toFixed(6) : 'NOT SET') + '</td>' +
-          '<td style="font-family:JetBrains Mono,monospace;color:' + (hasGPS?'#3fb950':'#f85149') + '">' + (hasGPS ? n.lon.toFixed(6) : 'NOT SET') + '</td>' +
+          '<td style="font-family:JetBrains Mono,monospace;color:' + (hasGPS?(geometryEnabled?'#3fb950':'#d29922'):'#f85149') + '">' + (hasGPS ? n.lat.toFixed(6) : 'NOT SET') + '</td>' +
+          '<td style="font-family:JetBrains Mono,monospace;color:' + (hasGPS?(geometryEnabled?'#3fb950':'#d29922'):'#f85149') + '">' + (hasGPS ? n.lon.toFixed(6) : 'NOT SET') + '</td>' +
           '<td style="color:#484f58">' + (n.ip || '-') + '</td>' +
           '<td>' + ago(n.last_seen) + '</td>' +
           '<td>' + (on ? '<button onclick="showOtaDialog(\''+did+'\')" style="background:#1f6feb22;border:1px solid #1f6feb44;color:#1f6feb;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Update</button>' : '-') + '</td></tr>';
@@ -2253,9 +2295,13 @@ async function refresh() {
       const newHtml=nodeList.map(n=>{
         const on=n.online;
         const fw=n.firmware_version||'?';
+        const geometryEnabled = n.geometry_enabled !== false;
+        const geometryLabel = geometryEnabled ? 'ACTIVE' : 'EXCLUDED';
+        const geometryColor = geometryEnabled ? '#3fb950' : '#d29922';
         return '<div class="node" style="cursor:pointer" onclick="toggleSensorDetail(\''+n.device_id+'\')">'+
           '<div class="node-hdr"><span class="node-name">'+n.device_id+(n.name?' <span style="color:#8b949e;font-weight:400;font-size:11px">'+n.name+'</span>':'')+'</span>'+
             '<span style="display:flex;gap:6px;align-items:center">'+
+              '<span style="font-size:10px;color:'+geometryColor+';font-family:JetBrains Mono,monospace">'+geometryLabel+'</span>'+
               '<span style="font-size:10px;color:#e040fb;font-family:JetBrains Mono,monospace">v'+fw+'</span>'+
               '<span style="font-size:10px;color:#484f58">'+n.ip+'</span>'+
               '<span class="pill '+(on?'on':'off')+'">'+(on?'ONLINE':'OFFLINE')+'</span>'+
@@ -2264,14 +2310,24 @@ async function refresh() {
             '<div class="nstat"><div class="nl">Last Seen</div><div class="nv">'+ago(n.last_seen)+'</div></div>'+
             '<div class="nstat"><div class="nl">Batches</div><div class="nv">'+n.total_batches+'</div></div>'+
             '<div class="nstat"><div class="nl">Detections</div><div class="nv">'+n.total_detections+'</div></div>'+
-            '<div class="nstat"><div class="nl">Position</div><div class="nv">'+(n.lat!=0?n.lat.toFixed(4)+','+n.lon.toFixed(4):'<span style="color:#f85149">NOT SET</span>')+'</div></div>'+
+            '<div class="nstat"><div class="nl">Position</div><div class="nv">'+(n.lat!=0?'<span style="color:'+(geometryEnabled?'#3fb950':'#d29922')+'">'+n.lat.toFixed(4)+','+n.lon.toFixed(4)+'</span>':'<span style="color:#f85149">NOT SET</span>')+'</div></div>'+
+            '<div class="nstat"><div class="nl">Geometry</div><div class="nv" style="color:'+geometryColor+'">'+(geometryEnabled?'used in triangulation':'saved only')+'</div></div>'+
             '<div class="nstat"><div class="nl">Uplink FW</div><div class="nv" style="color:#e040fb">'+fw+'</div></div>'+
             '<div class="nstat"><div class="nl">WiFi</div><div class="nv" style="font-size:9px">'+(n.wifi_ssid||'?')+' <span class="rssi '+(n.wifi_rssi>-50?'close':n.wifi_rssi>-70?'mid':'far')+'">'+(n.wifi_rssi||'?')+'</span></div></div>'+
+            '<div class="nstat"><div class="nl">Uplink Time</div><div class="nv"><span class="val '+timeHealthClass(n.time_sync && n.time_sync.sync_health)+'">'+timeHealthLabel(n.time_sync && n.time_sync.sync_health)+'</span></div></div>'+
           '</div>'+
           /* Scanner info cards */
           (n.scanners && n.scanners.length > 0 ?
             '<div style="margin-top:6px;border-top:1px solid #21262d;padding-top:6px">'+
+            (n.time_sync ? '<div style="padding:0 0 4px 0;font-size:9px;color:#6e7681;font-family:JetBrains Mono,monospace">'+uplinkTimeSummary(n.time_sync)+'</div>' : '')+
             n.scanners.map(function(sc) {
+              let diag = scannerTimeSummary(sc);
+              if (sc.tx_queue_pressure_pct > 0) diag += ' q:'+sc.tx_queue_depth+'/'+sc.tx_queue_capacity+'('+sc.tx_queue_pressure_pct+'%)';
+              if (sc.uart_tx_high_water > 0) diag += ' qhi:'+sc.uart_tx_high_water;
+              if (sc.uart_tx_dropped > 0) diag += ' drops:'+sc.uart_tx_dropped;
+              if (sc.probe_seen > 0 || sc.probe_sent > 0) diag += ' probe:'+sc.probe_sent+'/'+sc.probe_seen;
+              if (sc.noise_drop_ble > 0) diag += ' ble_drop:'+sc.noise_drop_ble;
+              if (sc.noise_drop_wifi > 0) diag += ' wifi_drop:'+sc.noise_drop_wifi;
               return '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:11px">'+
                 '<span style="color:#8b949e">'+sc.uart.toUpperCase()+' Scanner</span>'+
                 '<span style="font-family:JetBrains Mono,monospace">'+
@@ -2280,7 +2336,8 @@ async function refresh() {
                   '<span style="color:#484f58">('+sc.caps+')</span>'+
                 '</span>'+
                 '<button onclick="event.stopPropagation();showOtaDialog(\''+n.device_id+'\')" style="background:#1f6feb22;border:1px solid #1f6feb44;color:#1f6feb;padding:1px 6px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Update</button>'+
-              '</div>';
+              '</div>' +
+              (diag ? '<div style="padding:0 0 4px 0;font-size:9px;color:#6e7681;font-family:JetBrains Mono,monospace">'+diag.trim()+'</div>' : '');
             }).join('') + '</div>' : '') +
           (on&&n.ip?'<div style="margin-top:4px;text-align:right"><a href="http://'+n.ip+'/setup" target="_blank" style="color:#484f58;font-size:10px;text-decoration:none">Setup Page</a></div>':'') +
           '<div id="sensor-detail-'+n.device_id+'" style="display:none;margin-top:8px;border-top:1px solid #30363d;padding-top:8px"></div>'+
@@ -2367,6 +2424,8 @@ async function refreshDetections() {
           if (parts.length >= 3) devType = parts.slice(2).join(':');
         } else if (d.source === 'wifi_probe_request') {
           devType = 'Probe Req';
+        } else if (d.source === 'wifi_assoc') {
+          devType = 'Association';
         } else if (d.source === 'wifi_oui') {
           devType = 'Access Point';
         } else if (d.source === 'wifi_ssid') {
@@ -2487,6 +2546,7 @@ async function refreshAlerts() {
 async function registerNode() {
   const device_id=document.getElementById('cfg-device').value;
   const name=document.getElementById('cfg-name').value;
+  const position_mode=document.getElementById('cfg-position-mode').value || 'active';
   const lat=parseFloat(document.getElementById('cfg-lat').value);
   const lon=parseFloat(document.getElementById('cfg-lon').value);
   const alt=parseFloat(document.getElementById('cfg-alt').value)||0;
@@ -2495,9 +2555,70 @@ async function registerNode() {
   if(isNaN(lat)||isNaN(lon)){result.innerHTML='<span style="color:#f85149">Enter valid coords</span>';return;}
   result.innerHTML='<span style="color:#d29922">Saving...</span>';
   try{
-    const r=await fetch(API+'/nodes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id,name:name||device_id,lat,lon,alt})});
-    if(r.ok){const d=await r.json();result.innerHTML='<span style="color:#3fb950">Saved: '+d.device_id+' at '+lat.toFixed(6)+', '+lon.toFixed(6)+'</span>';}
+    const r=await fetch(API+'/nodes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id,name:name||device_id,lat,lon,alt,position_mode})});
+    if(r.ok){
+      const d=await r.json();
+      const modeLabel = position_mode === 'excluded' ? 'saved / excluded from geometry' : 'active in geometry';
+      result.innerHTML='<span style="color:#3fb950">Saved: '+d.device_id+' at '+lat.toFixed(6)+', '+lon.toFixed(6)+' ('+modeLabel+')</span>';
+      document.getElementById('cfg-position-mode').value = d.position_mode || position_mode;
+      syncGeometryButtons(d.position_mode || position_mode);
+      updateNodeDropdown();
+    }
     else{const e=await r.text();result.innerHTML='<span style="color:#f85149">Error: '+e+'</span>';}
+  }catch(e){result.innerHTML='<span style="color:#f85149">Failed: '+e.message+'</span>';}
+}
+
+function syncGeometryButtons(positionMode) {
+  const mode = positionMode || 'active';
+  const pauseBtn = document.getElementById('cfg-pause-btn');
+  const resumeBtn = document.getElementById('cfg-resume-btn');
+  if (pauseBtn) {
+    pauseBtn.disabled = mode === 'excluded';
+    pauseBtn.style.opacity = mode === 'excluded' ? '0.55' : '1';
+    pauseBtn.style.cursor = mode === 'excluded' ? 'default' : 'pointer';
+  }
+  if (resumeBtn) {
+    resumeBtn.disabled = mode === 'active';
+    resumeBtn.style.opacity = mode === 'active' ? '0.55' : '1';
+    resumeBtn.style.cursor = mode === 'active' ? 'default' : 'pointer';
+  }
+}
+
+async function setSelectedNodeGeometryMode(positionMode) {
+  const device_id=document.getElementById('cfg-device').value;
+  const result=document.getElementById('cfg-result');
+  if(!device_id){result.innerHTML='<span style="color:#f85149">Select a device</span>';return;}
+  result.innerHTML='<span style="color:#d29922">Updating geometry mode...</span>';
+  try{
+    const r=await fetch(API+'/nodes/'+encodeURIComponent(device_id),{
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({position_mode:positionMode})
+    });
+    if(r.ok){
+      const d=await r.json();
+      document.getElementById('cfg-position-mode').value = d.position_mode || positionMode;
+      syncGeometryButtons(d.position_mode || positionMode);
+      const modeLabel = (d.position_mode || positionMode) === 'excluded'
+        ? 'saved / excluded from geometry'
+        : 'active in geometry';
+      result.innerHTML='<span style="color:#3fb950">'+d.device_id+' is now '+modeLabel+'</span>';
+      updateNodeDropdown();
+      if (placementNodes && placementNodes.length) {
+        const idx = placementNodes.findIndex(n => n.device_id === d.device_id);
+        if (idx >= 0) {
+          placementNodes[idx].position_mode = d.position_mode || positionMode;
+          placementNodes[idx].geometry_enabled = (d.geometry_enabled !== false);
+        }
+      }
+      updatePlacementMap(d.device_id);
+      refresh();
+    } else if (r.status === 404) {
+      result.innerHTML='<span style="color:#f85149">Save this node first with Set Position, then pause/resume geometry.</span>';
+    } else {
+      const e=await r.text();
+      result.innerHTML='<span style="color:#f85149">Error: '+e+'</span>';
+    }
   }catch(e){result.innerHTML='<span style="color:#f85149">Failed: '+e.message+'</span>';}
 }
 
@@ -2547,9 +2668,10 @@ function updatePlacementMap(deviceId) {
   // Add all sensors as small gray markers (context)
   placementNodes.forEach(n => {
     if (n.lat && n.lon && n.lat !== 0 && n.device_id !== deviceId) {
+      const markerColor = n.geometry_enabled === false ? '#d29922' : '#3fb950';
       const m = L.circleMarker([n.lat, n.lon], {
-        radius: 6, fillColor: '#3fb950', fillOpacity: 0.5, color: '#fff', weight: 1
-      }).bindTooltip(n.name || n.device_id, { permanent: true, direction: 'right', offset: [8, 0],
+        radius: 6, fillColor: markerColor, fillOpacity: 0.5, color: '#fff', weight: 1
+      }).bindTooltip((n.name || n.device_id) + (n.geometry_enabled === false ? ' (excluded)' : ''), { permanent: true, direction: 'right', offset: [8, 0],
         className: 'sensor-label' });
       m.addTo(placementMap);
       placementMap._fofSensorMarkers.push(m);
@@ -2574,8 +2696,10 @@ function updatePlacementMap(deviceId) {
   // Fill form fields
   if (node) {
     document.getElementById('cfg-name').value = node.name || '';
+    document.getElementById('cfg-position-mode').value = node.position_mode || 'active';
     document.getElementById('cfg-lat').value = lat.toFixed(8);
     document.getElementById('cfg-lon').value = lon.toFixed(8);
+    syncGeometryButtons(node.position_mode || 'active');
   }
 
   placementMap.setView([lat, lon], 19);
@@ -2588,7 +2712,10 @@ async function updateNodeDropdown() {
   if(!nodes||!nodes.nodes.length)return;
   placementNodes = nodes.nodes;
   const prev = sel.value;
-  sel.innerHTML=nodes.nodes.map(n=>'<option value="'+n.device_id+'">'+(n.name||n.device_id)+'</option>').join('');
+  sel.innerHTML=nodes.nodes.map(n=>{
+    const suffix = n.geometry_enabled === false ? ' (excluded)' : '';
+    return '<option value="'+n.device_id+'">'+(n.name||n.device_id)+suffix+'</option>';
+  }).join('');
   if (prev) sel.value = prev;
   sel.onchange = function() { updatePlacementMap(sel.value); };
   // Init placement map on first load
@@ -2599,15 +2726,58 @@ async function updateNodeDropdown() {
 
 async function updateScannerDiag() {
   const div=document.getElementById('scanner-diag');
-  const uplink=uplinkDeviceId?await f(API+'/nodes/'+uplinkDeviceId+'/live',3000):await findUplink();
-  if(!uplink){div.innerHTML='<div class="empty">Uplink not reachable</div>';return;}
-  div.innerHTML=
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
-      '<div class="node" style="border-left:3px solid #00ff88"><div class="node-hdr"><span class="node-name">BLE Scanner</span><span class="pill '+(uplink.scanner_connected?'on':'off')+'">'+(uplink.scanner_connected?'ON':'OFF')+'</span></div>'+
-        '<div class="metric"><span>Status</span><span class="val '+(uplink.scanner_connected?'ok':'err')+'">'+(uplink.scanner_connected?'Scanning':'Down')+'</span></div></div>'+
-      '<div class="node" style="border-left:3px solid #ff9500"><div class="node-hdr"><span class="node-name">WiFi Scanner</span><span class="pill on">ON</span></div>'+
-        '<div class="metric"><span>Detections</span><span class="val blue">'+uplink.detections+'</span></div>'+
-        '<div class="metric"><span>Uploads</span><span class="val ok">'+uplink.uploads_ok+'</span></div></div>'+
+  const nodes = await f(API+'/detections/nodes/status', 3000);
+  if (!nodes || !nodes.nodes || !nodes.nodes.length) {
+    div.innerHTML='<div class="empty">No node status available</div>';
+    return;
+  }
+  let node = null;
+  if (uplinkDeviceId) node = nodes.nodes.find(n => n.device_id === uplinkDeviceId);
+  if (!node) node = nodes.nodes.find(n => n.online) || nodes.nodes[0];
+  if (!node) {
+    div.innerHTML='<div class="empty">No uplink available</div>';
+    return;
+  }
+  uplinkDeviceId = node.device_id;
+
+  const scanners = node.scanners || [];
+  if (!scanners.length) {
+    div.innerHTML='<div class="empty">No scanners reported by '+node.device_id+'</div>';
+    return;
+  }
+
+  div.innerHTML =
+    '<div style="font-size:11px;color:#8b949e;margin-bottom:6px">Diagnostics for '+node.device_id+' ('+(node.ip||'?')+')</div>' +
+    '<div style="font-size:11px;color:#8b949e;margin-bottom:8px">Backend source fixups: <span class="'+((node.source_fixups_total||0)>0?'warn':'')+'">'+(node.source_fixups_total||0)+'</span> total, <span class="'+((node.source_fixups_recent||0)>0?'warn':'')+'">'+(node.source_fixups_recent||0)+'</span> recent</div>' +
+    '<div style="font-size:11px;color:#8b949e;margin-bottom:8px">Uplink time: <span class="val '+timeHealthClass(node.time_sync && node.time_sync.sync_health)+'">'+timeHealthLabel(node.time_sync && node.time_sync.sync_health)+'</span>' +
+      ' src='+(node.time_sync && node.time_sync.time_source || 'unknown')+
+      ' ok='+(node.time_sync && node.time_sync.last_fetch_ok === true ? 'yes' : node.time_sync && node.time_sync.last_fetch_ok === false ? 'no' : '?')+
+      ' age='+(formatAgeSeconds(node.time_sync && node.time_sync.last_success_age_s))+
+      ' fail_streak='+((node.time_sync && node.time_sync.fetch_fail_streak) ?? '?')+
+      ' bcast=' + (((node.time_sync && node.time_sync.broadcast_valid_count) ?? 0)) + '/' + (((node.time_sync && node.time_sync.broadcast_invalid_count) ?? 0)) +
+    '</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
+      scanners.map(sc => {
+        const border = sc.uart === 'ble' ? '#00ff88' : '#ff9500';
+        const status = sc.time_sync_state || sc.time_sync_health || 'unknown';
+        const statusCls = timeHealthClass(sc.time_sync_health || status);
+        return '<div class="node" style="border-left:3px solid '+border+'">' +
+          '<div class="node-hdr"><span class="node-name">'+sc.uart.toUpperCase()+' Scanner</span><span class="pill on">'+(sc.ver||'?')+'</span></div>' +
+          '<div class="metric"><span>Board</span><span class="val blue">'+(sc.board||'?')+'</span></div>' +
+          '<div class="metric"><span>Time Sync</span><span class="val '+statusCls+'">'+timeHealthLabel(status)+'</span></div>' +
+          '<div class="metric"><span>tcnt</span><span class="val">'+(sc.tcnt||0)+'</span></div>' +
+          '<div class="metric"><span>Valid Count</span><span class="val">'+(sc.time_valid_count||0)+'</span></div>' +
+          '<div class="metric"><span>Valid Age</span><span class="val '+timeHealthClass(sc.time_sync_health)+'">'+formatAgeSeconds(sc.time_last_valid_age_s)+'</span></div>' +
+          '<div class="metric"><span>Queue</span><span class="val">'+(sc.tx_queue_depth||0)+'/'+(sc.tx_queue_capacity||0)+'</span></div>' +
+          '<div class="metric"><span>Pressure</span><span class="val '+((sc.tx_queue_pressure_pct||0)>=60?'warn':'')+'">'+(sc.tx_queue_pressure_pct||0)+'%</span></div>' +
+          '<div class="metric"><span>Queue High</span><span class="val">'+(sc.uart_tx_high_water||0)+'</span></div>' +
+          '<div class="metric"><span>TX Dropped</span><span class="val '+((sc.uart_tx_dropped||0)>0?'warn':'')+'">'+(sc.uart_tx_dropped||0)+'</span></div>' +
+          '<div class="metric"><span>Probe Seen/Sent</span><span class="val">'+(sc.probe_seen||0)+'/'+(sc.probe_sent||0)+'</span></div>' +
+          '<div class="metric"><span>Probe RL/Pressure</span><span class="val">'+(sc.probe_drop_rate_limit||0)+'/'+(sc.probe_drop_pressure||0)+'</span></div>' +
+          '<div class="metric"><span>BLE Noise Drop</span><span class="val">'+(sc.noise_drop_ble||0)+'</span></div>' +
+          '<div class="metric"><span>WiFi Noise Drop</span><span class="val">'+(sc.noise_drop_wifi||0)+'</span></div>' +
+        '</div>';
+      }).join('') +
     '</div>';
 }
 
@@ -2711,15 +2881,8 @@ async function showOtaDialog(deviceId) {
     return;
   }
 
-  // Auto-select the right firmware for this board
-  let autoIdx = 0;
-  if (boardType) {
-    const match = available.findIndex(fw => fw.name === boardType);
-    if (match >= 0) autoIdx = match;
-  }
-
-  const options = available.map((fw, i) =>
-    '<option value="'+fw.name+'"'+(i===autoIdx?' selected':'')+'>'+fw.name+' ('+fw.source+', '+(fw.size/1024).toFixed(0)+'KB'+(fw.version?' '+fw.version:'')+')</option>'
+  const options = available.map((fw) =>
+    '<option value="'+fw.name+'">'+fw.name+' ('+fw.source+', '+(fw.size/1024).toFixed(0)+'KB'+(fw.version?' '+fw.version:'')+')</option>'
   ).join('');
 
   // Build scanner info display
@@ -2735,6 +2898,12 @@ async function showOtaDialog(deviceId) {
       if (sc.deauth > 0) stats += ' deauth:'+sc.deauth;
       if (sc.disassoc > 0) stats += ' disassoc:'+sc.disassoc;
       if (sc.auth_fr > 0) stats += ' auth:'+sc.auth_fr;
+      if (sc.tx_queue_pressure_pct > 0) stats += ' q:'+sc.tx_queue_depth+'/'+sc.tx_queue_capacity+'('+sc.tx_queue_pressure_pct+'%)';
+      if (sc.uart_tx_dropped > 0) stats += ' drops:'+sc.uart_tx_dropped;
+      if (sc.uart_tx_high_water > 0) stats += ' qhi:'+sc.uart_tx_high_water;
+      if (sc.probe_seen > 0 || sc.probe_sent > 0) stats += ' probe:'+sc.probe_sent+'/'+sc.probe_seen;
+      if (sc.noise_drop_ble > 0) stats += ' ble_drop:'+sc.noise_drop_ble;
+      if (sc.noise_drop_wifi > 0) stats += ' wifi_drop:'+sc.noise_drop_wifi;
       scannerHtml += '<div class="metric"><span>'+sc.uart.toUpperCase()+' Scanner</span>' +
         '<span class="val"><span style="color:#58a6ff">'+sc.board+'</span> <span style="color:#e040fb">v'+sc.ver+'</span>'+alerts+'</span></div>';
       if (stats) scannerHtml += '<div class="metric"><span style="color:#484f58;font-size:10px">Frame stats</span><span class="val" style="color:#8b949e;font-size:10px">'+stats.trim()+'</span></div>';
@@ -2747,6 +2916,7 @@ async function showOtaDialog(deviceId) {
       '<div class="metric"><span>Uplink firmware</span><span class="val" style="color:#e040fb">'+currentFw+'</span></div>' +
       '<div class="metric"><span>Board type</span><span class="val" style="color:#58a6ff">'+(boardType||'unknown')+'</span></div>' +
       '<div class="metric"><span>IP</span><span class="val" style="color:#484f58">'+(node?node.ip:'?')+'</span></div>' +
+      '<div class="metric"><span>Backend Fixups</span><span class="val '+(((node && node.source_fixups_recent) || 0)>0?'warn':'')+'">'+((node && node.source_fixups_recent) || 0)+'</span></div>' +
       scannerHtml +
     '</div>' +
     '<div style="margin-bottom:8px">' +
@@ -2767,6 +2937,21 @@ async function showOtaDialog(deviceId) {
     '</div>' +
     '<button onclick="doOtaPush()" style="background:#238636;color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;width:100%">Flash Firmware</button>' +
     '<div id="ota-status" style="margin-top:8px;font-size:12px"></div>';
+
+  const targetSel = document.getElementById('ota-target');
+  const fwSel = document.getElementById('ota-fw');
+  const pickFirmwareForTarget = function() {
+    let desired = boardType || '';
+    if (targetSel.value !== 'uplink') {
+      const sc = scanners.find(function(s){ return s.uart === targetSel.value; });
+      desired = sc && sc.board ? sc.board : '';
+    }
+    if (!desired) return;
+    const opt = Array.from(fwSel.options).find(function(o){ return o.value === desired; });
+    if (opt) fwSel.value = desired;
+  };
+  targetSel.addEventListener('change', pickFirmwareForTarget);
+  pickFirmwareForTarget();
 }
 
 async function doOtaPush() {
@@ -2822,144 +3007,34 @@ let calPolling = false;
 
 async function runCalibration() {
   const btn = document.getElementById('cal-run-btn');
-  btn.disabled = true;
-  btn.textContent = 'Starting...';
-  try {
-    const resp = await fetch(API + '/detections/calibrate', { method: 'POST' });
-    const data = await resp.json();
-    btn.textContent = 'Running...';
-    document.getElementById('cal-progress').textContent = data.progress || 'Calibration started...';
-    // Poll progress until complete
-    if (!calPolling) {
-      calPolling = true;
-      const poll = setInterval(async () => {
-        const s = await f(API + '/detections/calibrate/status');
-        if (!s) return;
-        document.getElementById('cal-progress').textContent = s.progress || '';
-        if (!s.running) {
-          clearInterval(poll);
-          calPolling = false;
-          btn.disabled = false;
-          btn.textContent = 'Run Calibration';
-          refreshCalibration();
-        }
-      }, 2000);
-    }
-  } catch (e) {
-    btn.disabled = false;
-    btn.textContent = 'Run Calibration';
-    document.getElementById('cal-progress').textContent = 'Error: ' + e.message;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Android-led only';
   }
+  document.getElementById('cal-progress').textContent =
+    'Legacy backend calibration was removed. Start calibration walks from the Android app.';
 }
 
 async function refreshCalibration() {
-  const [model, status, history, matrix] = await Promise.all([
-    f(API + '/detections/calibrate/model'),
-    f(API + '/detections/calibrate/status'),
-    f(API + '/detections/calibrate/history'),
-    f(API + '/detections/calibrate/matrix'),
-  ]);
+  const model = await f(API + '/detections/calibrate/model');
 
   if (model) {
     document.getElementById('cal-rssi-ref').textContent = model.rssi_ref.toFixed(1) + ' dBm';
     document.getElementById('cal-path-loss').textContent = model.path_loss_exponent.toFixed(2);
     document.getElementById('cal-r-squared').textContent = model.r_squared != null ? model.r_squared.toFixed(3) : '—';
     document.getElementById('cal-r-squared').style.color = model.r_squared >= 0.7 ? '#3fb950' : model.r_squared >= 0.4 ? '#d29922' : '#f85149';
-    document.getElementById('cal-status').textContent = model.is_calibrated ? 'Calibrated' : 'Default';
-    document.getElementById('cal-status').style.color = model.is_calibrated ? '#3fb950' : '#8b949e';
+    const calStatus = model.is_active
+      ? (model.is_trusted ? 'Active' : 'Active (untrusted)')
+      : 'Defaults';
+    document.getElementById('cal-status').textContent = calStatus;
+    document.getElementById('cal-status').style.color = model.is_trusted ? '#3fb950' : model.is_active ? '#d29922' : '#8b949e';
   }
-
-  if (status && status.running) {
-    document.getElementById('cal-progress').textContent = status.progress || 'Running...';
-    document.getElementById('cal-run-btn').disabled = true;
-    document.getElementById('cal-run-btn').textContent = 'Running...';
-  }
-
-  // Node-pair matrix — the main calibration visualization
-  const calMeas = document.getElementById('cal-measurements');
-  if (matrix && matrix.nodes && matrix.nodes.length > 0) {
-    const nodes = matrix.nodes;
-    const m = matrix.matrix;
-    const short = id => (id || '').replace('uplink_','').slice(-6);
-
-    // Build NxN grid header
-    let html = '<div style="font-size:11px;color:#8b949e;margin-bottom:6px">Node-Pair RSSI Matrix (broadcaster → listener)</div>';
-    html += '<table style="font-size:11px"><tr><th style="text-align:left">From \\ To</th>';
-    nodes.forEach(n => { html += '<th style="color:#58a6ff">' + short(n) + '</th>'; });
-    html += '<th style="color:#8b949e">Avg</th></tr>';
-
-    // Each row = one broadcaster
-    nodes.forEach(src => {
-      html += '<tr><td style="font-weight:700;color:#e040fb">' + short(src) + '</td>';
-      let rowRssi = [];
-      nodes.forEach(dst => {
-        if (src === dst) {
-          html += '<td style="color:#30363d;text-align:center">—</td>';
-        } else if (m[src] && m[src][dst]) {
-          const cell = m[src][dst];
-          const cls = rssiClass(cell.rssi);
-          rowRssi.push(cell.rssi);
-          html += '<td style="text-align:center" title="' + cell.distance_m.toFixed(1) + 'm, ' + cell.samples + ' samples">' +
-            '<span class="rssi ' + cls + '">' + cell.rssi.toFixed(0) + '</span>' +
-            '<div style="font-size:9px;color:#484f58">' + cell.distance_m.toFixed(0) + 'm</div></td>';
-        } else {
-          html += '<td style="color:#484f58;text-align:center">n/a</td>';
-        }
-      });
-      const avg = rowRssi.length > 0 ? (rowRssi.reduce((a,b)=>a+b,0)/rowRssi.length) : 0;
-      html += '<td style="text-align:center;color:#8b949e">' + (rowRssi.length > 0 ? avg.toFixed(0) : '—') + '</td></tr>';
-    });
-    html += '</table>';
-
-    // Per-pair detail with path loss estimates
-    if (matrix.pairs && matrix.pairs.length > 0) {
-      html += '<div style="margin-top:10px;font-size:11px;color:#8b949e;margin-bottom:4px">Per-Pair Path Loss Estimates</div>';
-      html += '<table style="font-size:11px"><tr><th>From</th><th>To</th><th>Distance</th><th>RSSI</th><th>Path Loss (n)</th><th>Samples</th></tr>';
-      matrix.pairs.forEach(p => {
-        const nColor = p.path_loss >= 2 && p.path_loss <= 4 ? '#3fb950' : '#d29922';
-        html += '<tr><td style="color:#e040fb">' + short(p.from) + '</td>' +
-          '<td style="color:#58a6ff">' + short(p.to) + '</td>' +
-          '<td>' + p.distance_m.toFixed(1) + 'm</td>' +
-          '<td><span class="rssi ' + rssiClass(p.rssi) + '">' + p.rssi.toFixed(1) + '</span></td>' +
-          '<td style="font-weight:700;color:' + nColor + '">' + p.path_loss.toFixed(2) + '</td>' +
-          '<td>' + p.samples + '</td></tr>';
-      });
-      html += '</table>';
-    }
-
-    calMeas.innerHTML = html;
-  } else if (!status || !status.running) {
-    // Only show empty state if not currently running
-    if (status && status.last_result && status.last_result.measurements && status.last_result.measurements.length > 0) {
-      // Fallback: show raw measurements if matrix isn't available yet
-      const ms = status.last_result.measurements;
-      calMeas.innerHTML =
-        '<div style="font-size:11px;color:#8b949e;margin-bottom:4px">' + ms.length + ' measurements from ' + status.last_result.node_count + ' nodes</div>' +
-        '<table><tr><th>Broadcaster</th><th>Listener</th><th>Distance</th><th>RSSI</th><th>Samples</th></tr>' +
-        ms.map(r =>
-          '<tr><td style="color:#e040fb;font-size:10px">' + (r.broadcaster||'').slice(-8) + '</td>' +
-          '<td style="color:#58a6ff;font-size:10px">' + (r.listener||'').slice(-8) + '</td>' +
-          '<td>' + r.distance_m.toFixed(1) + 'm</td>' +
-          '<td><span class="rssi ' + rssiClass(r.avg_rssi) + '">' + r.avg_rssi.toFixed(1) + '</span></td>' +
-          '<td>' + r.samples + '</td></tr>'
-        ).join('') + '</table>';
-    }
-  }
-
-  // Calibration history
-  if (history && history.history && history.history.length > 0) {
-    document.getElementById('cal-history').innerHTML =
-      '<div style="font-size:11px;color:#8b949e;margin-bottom:4px">Calibration History</div>' +
-      '<table><tr><th>Time</th><th>n</th><th>RSSI Ref</th><th>R²</th><th>Nodes</th><th>Measurements</th></tr>' +
-      history.history.map(h =>
-        '<tr><td style="font-size:10px">' + new Date(h.timestamp * 1000).toLocaleString() + '</td>' +
-        '<td style="font-weight:700;color:#58a6ff">' + h.path_loss_exponent.toFixed(2) + '</td>' +
-        '<td>' + h.rssi_ref.toFixed(1) + '</td>' +
-        '<td style="color:' + (h.r_squared >= 0.7 ? '#3fb950' : h.r_squared >= 0.4 ? '#d29922' : '#f85149') + '">' + h.r_squared.toFixed(3) + '</td>' +
-        '<td>' + h.node_count + '</td>' +
-        '<td>' + h.measurement_count + '</td></tr>'
-      ).join('') + '</table>';
-  }
+  document.getElementById('cal-progress').textContent =
+    'Android-led walk calibration only. Backend reflects the currently applied verified model.';
+  document.getElementById('cal-measurements').innerHTML =
+    '<div style="font-size:11px;color:#8b949e">Node-pair AP-pulse calibration was removed from the product surface. Use the Android walk flow to collect a verified model.</div>';
+  document.getElementById('cal-history').innerHTML =
+    '<div style="font-size:11px;color:#8b949e">Calibration history is now stored per Android walk session and applied model, not as backend-run AP pulses.</div>';
 }
 
 updateNodeDropdown();

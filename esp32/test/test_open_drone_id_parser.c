@@ -369,30 +369,9 @@ void test_state_to_detection(void)
 
     /* Signal */
     TEST_ASSERT_EQUAL_INT8(-65, det.rssi);
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", det.bssid);
 
     /* Timestamps */
     TEST_ASSERT_EQUAL_INT64(5000, det.first_seen_ms);
     TEST_ASSERT_EQUAL_INT64(6000, det.last_updated_ms);
-}
-
-/* ── Unity runner ──────────────────────────────────────────────────────── */
-
-void setUp(void) {}
-void tearDown(void) {}
-
-int main(void)
-{
-    UNITY_BEGIN();
-
-    RUN_TEST(test_parse_basic_id);
-    RUN_TEST(test_parse_location);
-    RUN_TEST(test_parse_system);
-    RUN_TEST(test_parse_operator_id);
-    RUN_TEST(test_parse_self_id);
-    RUN_TEST(test_parse_message_pack);
-    RUN_TEST(test_accuracy_code_to_meters);
-    RUN_TEST(test_invalid_location_zero);
-    RUN_TEST(test_state_to_detection);
-
-    return UNITY_END();
 }

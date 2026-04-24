@@ -3,6 +3,7 @@ package com.friendorfoe.presentation.calibrate
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -47,6 +48,7 @@ import com.friendorfoe.calibration.CalibrationViewModel.SensorReading
 import com.friendorfoe.calibration.preflightChecklist
 import com.friendorfoe.calibration.preflightFailureSummary
 import com.friendorfoe.calibration.ssidDisplay
+import com.friendorfoe.calibration.zeroHearingWarning
 import com.friendorfoe.data.remote.CalibrationModelDto
 import com.friendorfoe.data.remote.EventDto
 import com.friendorfoe.data.remote.NodeDto
@@ -57,10 +59,8 @@ private val WARN_AMBER   = Color(0xFFFFB300)
 private val ERROR_RED    = Color(0xFFE53935)
 private val NEUTRAL_GREY = Color(0xFF616161)
 
-private enum class CalibrateTab(val label: String) {
-    Walk("Walk"),
-    Nodes("Nodes"),
-    Probes("Probes"),
+private enum class CalibrateTab {
+    Walk,
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -76,6 +76,7 @@ fun CalibrateScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     var selectedTab by rememberSaveable { mutableStateOf(CalibrateTab.Walk) }
     var diagnosticsExpanded by rememberSaveable { mutableStateOf(false) }
+    val latestIsWalking by rememberUpdatedState(state.isWalking)
 
     fun currentlyGrantedPermissions(): Set<String> {
         val needed = buildList {
@@ -105,7 +106,21 @@ fun CalibrateScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshBluetoothState()
                 viewModel.refreshConnectivity()
-            } else if (event == Lifecycle.Event.ON_PAUSE) {
+            } else if (event == Lifecycle.Event.ON_PAUSE && latestIsWalking) {
+                Log.i("CalibrateScreen", "lifecycle=pause action=abort_walk")
+                viewModel.abortWalk(
+                    reason = "app_backgrounded",
+                    userMessage = "Walk aborted because the app left the foreground.",
+                )
+                consoleViewModel.stopPolling()
+            } else if (event == Lifecycle.Event.ON_STOP) {
+                if (latestIsWalking) {
+                    Log.i("CalibrateScreen", "lifecycle=stop action=abort_walk")
+                    viewModel.abortWalk(
+                        reason = "app_backgrounded",
+                        userMessage = "Walk aborted because the app left the foreground.",
+                    )
+                }
                 consoleViewModel.stopPolling()
             }
         }
@@ -121,7 +136,6 @@ fun CalibrateScreen(
             consoleViewModel.startPolling()
         } else {
             consoleViewModel.stopPolling()
-            selectedTab = CalibrateTab.Walk
         }
     }
 
@@ -412,18 +426,6 @@ fun CalibrateScreen(
                 }
             }
 
-            if (screenContract.showDiagnosticsTabs) {
-                TabRow(selectedTabIndex = selectedTab.ordinal) {
-                    CalibrateTab.entries.forEach { tab ->
-                        Tab(
-                            selected = selectedTab == tab,
-                            onClick = { selectedTab = tab },
-                            text = { Text(tab.label) }
-                        )
-                    }
-                }
-            }
-
             when (selectedTab) {
                 CalibrateTab.Walk -> {
                     if (screenContract.showPreflightChecklist) {
@@ -484,6 +486,39 @@ fun CalibrateScreen(
                         )
                     }
 
+                    Surface(
+                        color = if (state.fleetModeState == "active") {
+                            OK_GREEN.copy(alpha = 0.12f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                if (state.fleetModeState == "active") "Fleet mode active"
+                                else "Fleet mode inactive",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                when {
+                                    state.targetNodes.isNotEmpty() ->
+                                        state.targetNodes.joinToString(", ") { displayNodeLabel(it.name, it.deviceId) }
+                                    state.availableSensors.isNotEmpty() ->
+                                        state.availableSensors.joinToString(", ") { displayNodeLabel(it.name, it.deviceId) }
+                                    else -> "No live geometry-enabled nodes loaded yet."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+
                     if (state.isWalking) {
                         val sr = state.sessionReadiness
                         val pctReady = if (sr.sensorsTotal > 0) {
@@ -525,9 +560,63 @@ fun CalibrateScreen(
                         }
                     }
 
+                    if (state.isWalking) {
+                        Surface(
+                            color = if (state.heardSensorCount > 0) {
+                                OK_GREEN.copy(alpha = 0.12f)
+                            } else {
+                                WARN_AMBER.copy(alpha = 0.14f)
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(
+                                Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(
+                                    when {
+                                        !state.beaconOnAir -> "Beacon not confirmed on air"
+                                        state.heardSensorCount > 0 ->
+                                            "Fleet ${state.fleetModeState} · Beacon on air · Hearing ${state.heardSensorCount}/${state.eligibleSensorCount} live sensors"
+                                        else -> "Beacon on air · No sensor has heard you yet"
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    when {
+                                        state.heardSensorIds.isNotEmpty() ->
+                                            state.heardSensorIds.joinToString(", ")
+                                        state.eligibleSensorIds.isNotEmpty() ->
+                                            "Eligible: ${state.eligibleSensorIds.joinToString(", ")}"
+                                        else -> "No live geometry nodes are eligible right now."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontFamily = FontFamily.Monospace,
+                                )
+                            }
+                        }
+                    }
+
                     CalibrationModelCard(consoleState.calibrationModel)
 
                     if (state.isWalking) {
+                        state.zeroHearingWarning()?.let { warning ->
+                            Surface(
+                                color = WARN_AMBER.copy(alpha = 0.18f),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(
+                                    warning,
+                                    modifier = Modifier.padding(12.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                        }
                         ConvergenceCard(state.myPosition)
                     }
 
@@ -587,8 +676,28 @@ fun CalibrateScreen(
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("Live status", style = MaterialTheme.typography.labelLarge)
                             InfoRow("Walking", if (state.isWalking) "yes" else "no")
+                            InfoRow("Fleet mode", state.fleetModeState)
+                            InfoRow("Beacon", if (state.beaconOnAir) "on air" else "off")
                             InfoRow("Session", state.sessionId ?: "—")
                             InfoRow("BLE UUID", state.advertiseUuid?.take(13)?.plus("…") ?: "—")
+                            InfoRow(
+                                "Targets",
+                                when {
+                                    state.targetNodes.isNotEmpty() ->
+                                        state.targetNodes.joinToString(", ") { displayNodeLabel(it.name, it.deviceId) }
+                                    state.eligibleSensorIds.isNotEmpty() -> state.eligibleSensorIds.joinToString(", ")
+                                    else -> "—"
+                                }
+                            )
+                            InfoRow("Eligible sensors", state.eligibleSensorCount.toString())
+                            InfoRow(
+                                "Heard now",
+                                if (state.heardSensorCount > 0) {
+                                    "${state.heardSensorCount} · ${state.heardSensorIds.joinToString(", ")}"
+                                } else {
+                                    "0"
+                                }
+                            )
                             InfoRow(
                                 "Phone GPS",
                                 state.phoneLat?.let {
@@ -627,8 +736,13 @@ fun CalibrateScreen(
                             )
                             if (state.sensorsHearingMe.isEmpty()) {
                                 Text(
-                                    if (state.isWalking) "No sensor sightings yet — keep walking."
-                                    else "Start a walk to see live sensor RSSI.",
+                                    if (state.isWalking && state.eligibleSensorCount == 0) {
+                                        "No live geometry nodes are eligible for this walk."
+                                    } else if (state.isWalking) {
+                                        "No sensor sightings yet — keep walking."
+                                    } else {
+                                        "Start a walk to see live sensor RSSI."
+                                    },
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     style = MaterialTheme.typography.bodySmall,
                                 )
@@ -681,33 +795,29 @@ fun CalibrateScreen(
                         }
                     }
 
-                    state.fitResult?.let { fit ->
-                        Surface(
-                            color = if (state.fitApplied == true) {
-                                Color(0xFF1B5E20).copy(alpha = 0.20f)
-                            } else MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(8.dp),
-                        ) {
-                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    if (state.fitApplied == true) "Calibration applied"
-                                    else "Calibration NOT applied (fit too weak)",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = if (state.fitApplied == true) OK_GREEN else MaterialTheme.colorScheme.error,
-                                )
-                                InfoRow("Global RSSI_REF", fit.get("global_rssi_ref")?.toString() ?: "—")
-                                InfoRow("Global path-loss n", fit.get("global_path_loss_exponent")?.toString() ?: "—")
-                                InfoRow("Global R²", fit.get("global_r_squared")?.toString() ?: "—")
-                                InfoRow("Trace points", fit.get("trace_points")?.toString() ?: "—")
-                                InfoRow("Total samples", fit.get("samples_total")?.toString() ?: "—")
-                                InfoRow("Sensors checkpointed", fit.get("checkpointed_sensor_count")?.toString() ?: "—")
-                            }
-                        }
+                    state.provisionalFitResult?.let { fit ->
+                        FitSummaryCard(
+                            title = "Android provisional fit",
+                            fit = fit,
+                            accentColor = WARN_AMBER,
+                            subtitle = "Phone-side walk summary before backend verification.",
+                        )
+                    }
+
+                    state.verifiedFitResult?.let { fit ->
+                        FitSummaryCard(
+                            title = if (state.fitApplied == true) "Backend verified fit applied" else "Backend verified fit",
+                            fit = fit,
+                            accentColor = if (state.fitApplied == true) OK_GREEN else MaterialTheme.colorScheme.error,
+                            subtitle = state.applyReason ?: "Verification result",
+                        )
                     }
                 }
+            }
 
-                CalibrateTab.Nodes -> NodesTabContent(consoleState.nodes, consoleState.lastRefreshMs)
-                CalibrateTab.Probes -> ProbesTabContent(
+            if (screenContract.showDiagnosticsTabs) {
+                NodesTabContent(consoleState.nodes, consoleState.lastRefreshMs)
+                ProbesTabContent(
                     probes = consoleState.probes,
                     events = consoleState.events,
                     onAckEvent = consoleViewModel::ackEvent,
@@ -760,13 +870,13 @@ private fun ConvergenceCard(pos: MyPosition) {
     // red when the fleet can't hear us, grey while waiting for GPS.
     val color = when {
         pos.okToMove -> OK_GREEN
-        pos.sensorCount == 0 -> ERROR_RED
+        pos.heardSensorCount == 0 -> ERROR_RED
         pos.errorM != null -> WARN_AMBER
         else -> NEUTRAL_GREY
     }
     val headline = when {
         pos.okToMove -> "OK to move — fleet is locked on you"
-        pos.sensorCount == 0 -> "No sensors hearing you yet"
+        pos.heardSensorCount == 0 -> "No sensors hearing you yet"
         pos.phoneLat == null -> "Waiting for GPS fix"
         pos.triangulatedLat == null -> "Waiting for triangulation"
         !pos.standingStill -> "Walking — sampling across positions"
@@ -786,7 +896,7 @@ private fun ConvergenceCard(pos: MyPosition) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val icon = when {
                     pos.okToMove -> Icons.Default.CheckCircle
-                    pos.sensorCount == 0 -> Icons.Default.Warning
+                    pos.heardSensorCount == 0 -> Icons.Default.Warning
                     else -> Icons.Default.LocationOn
                 }
                 Icon(icon, contentDescription = null, tint = color)
@@ -820,6 +930,11 @@ private fun ConvergenceCard(pos: MyPosition) {
                     modifier = Modifier.weight(1f),
                 )
                 Text("${pos.sensorCount}/${pos.minSensors}+ sensors",
+                     style = MaterialTheme.typography.labelSmall,
+                     fontFamily = FontFamily.Monospace,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(8.dp))
+                Text("${pos.heardSensorCount}/${pos.eligibleSensorCount} heard",
                      style = MaterialTheme.typography.labelSmall,
                      fontFamily = FontFamily.Monospace,
                      color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -898,6 +1013,39 @@ private fun CalibrationModelCard(model: CalibrationModelDto?) {
                 InfoRow("Path-loss n", model.pathLossExponent?.let { "%.2f".format(it) } ?: "—")
                 InfoRow("R²", model.rSquared?.let { "%.3f".format(it) } ?: "—")
             }
+        }
+    }
+}
+
+@Composable
+private fun FitSummaryCard(
+    title: String,
+    fit: com.google.gson.JsonObject,
+    accentColor: Color,
+    subtitle: String,
+) {
+    Surface(
+        color = accentColor.copy(alpha = 0.14f),
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.labelLarge,
+                color = accentColor,
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            InfoRow("Reason", fit.get("reason")?.takeIf { !it.isJsonNull }?.asString ?: "—")
+            InfoRow("Trace points", fit.get("trace_points")?.toString() ?: "—")
+            InfoRow("Total samples", fit.get("samples_total")?.toString() ?: "—")
+            InfoRow("Sensors checkpointed", fit.get("checkpointed_sensor_count")?.toString() ?: "—")
+            InfoRow("Global RSSI_REF", fit.get("global_rssi_ref")?.toString() ?: "—")
+            InfoRow("Global path-loss n", fit.get("global_path_loss_exponent")?.toString() ?: "—")
+            InfoRow("Global R²", fit.get("global_r_squared")?.toString() ?: "—")
         }
     }
 }
@@ -1210,7 +1358,7 @@ private fun PreflightChecklistCard(
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Walk preflight", style = MaterialTheme.typography.labelLarge)
             Text(
-                "Start with a healthy backend check, a valid token, and a loaded sensor list. Nodes and probes unlock after this passes.",
+                "Start with a healthy backend check, a valid token, and a loaded sensor list. Secondary diagnostics stay behind the walk flow.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1465,6 +1613,13 @@ private fun SensorCard(
                             Text("• ${prettyWarning(w)}",
                                  style = MaterialTheme.typography.labelSmall,
                                  color = sevColor)
+                        }
+                        if (result.rssiAtTouch == null) {
+                            Text(
+                                "• Anchor failed — this sensor had no recent hearing when you tapped.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = sevColor,
+                            )
                         }
                     }
                 }

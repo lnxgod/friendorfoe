@@ -9,6 +9,7 @@
 #include "constants.h"
 
 #include <string.h>
+#include <stdio.h>
 #include <math.h>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -431,6 +432,8 @@ bool odid_state_to_detection(const odid_state_t *state, const char *id_prefix,
 
     /* Signal */
     out->rssi = state->rssi;
+    strncpy(out->bssid, state->device_address, sizeof(out->bssid) - 1);
+    out->bssid[sizeof(out->bssid) - 1] = '\0';
 
     /* Timestamps */
     out->first_seen_ms = state->first_seen_ms;

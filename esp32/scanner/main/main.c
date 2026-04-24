@@ -24,9 +24,11 @@
 #include "detection_types.h"
 #include "uart_protocol.h"
 #include "task_priorities.h"
+#include "calibration_mode.h"
 #include "led_status.h"
 #include "oled_display.h"
 #include "ble_remote_id.h"
+#include "time_sync_policy.h"
 
 #if CONFIG_FOF_GLASSES_DETECTION
 #include "glasses_detector.h"
@@ -92,6 +94,20 @@ volatile int64_t g_epoch_offset_ms = 0;
  * → /detections/nodes/status to diagnose UART path vs HTTP-fetch failure
  * without serial console access. */
 volatile uint32_t g_time_msg_count = 0;
+volatile uint32_t g_time_valid_count = 0;
+volatile int64_t g_last_valid_time_local_ms = 0;
+
+static void maybe_expire_time_sync(int64_t now_ms)
+{
+    if (g_epoch_offset_ms != 0 &&
+        fof_time_offset_is_stale(g_last_valid_time_local_ms,
+                                 now_ms,
+                                 FOF_TIME_SYNC_STALE_AFTER_MS)) {
+        ESP_LOGW(TAG, "TIME SYNC stale after %lld ms — clearing epoch offset",
+                 (long long)(now_ms - g_last_valid_time_local_ms));
+        g_epoch_offset_ms = 0;
+    }
+}
 
 /* ── Glasses detection cache ────────────────────────────────────────────── */
 
@@ -312,6 +328,22 @@ static void display_task(void *arg)
 #include "comms/uart_ota.h"
 #include "esp_ota_ops.h"
 
+static void send_cal_mode_ack(bool ok_flag)
+{
+    char ack[192];
+    snprintf(
+        ack,
+        sizeof(ack),
+        "{\"type\":\"%s\",\"ok\":%s,\"session_id\":\"%s\",\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\"}",
+        MSG_TYPE_CAL_MODE_ACK,
+        ok_flag ? "true" : "false",
+        scanner_calibration_mode_session_id(),
+        scanner_calibration_mode_label(),
+        scanner_calibration_mode_uuid()
+    );
+    uart_tx_send_raw_json(ack);
+}
+
 static void uart_cmd_listener_task(void *arg)
 {
     uint8_t buf[256];
@@ -333,6 +365,10 @@ static void uart_cmd_listener_task(void *arg)
     static const char *s_board_name = "scanner-esp32";
     static const char *s_chip_name = "esp32";
     static const char *s_caps = "wifi";
+#elif defined(SEED_SCANNER_PINS)
+    static const char *s_board_name = "scanner-s3-combo-seed";
+    static const char *s_chip_name = "esp32s3";
+    static const char *s_caps = "ble,wifi";
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
     static const char *s_board_name = "scanner-s3-combo";
     static const char *s_chip_name = "esp32s3";
@@ -358,6 +394,7 @@ static void uart_cmd_listener_task(void *arg)
     TickType_t last_info_send = xTaskGetTickCount();
 
     while (1) {
+        maybe_expire_time_sync(esp_timer_get_time() / 1000);
         int len = uart_read_bytes(UART_NUM_1, buf, sizeof(buf), pdMS_TO_TICKS(500));
 
         /* Resend scanner_info every 10s — always, even when TX is stopped.
@@ -371,15 +408,11 @@ static void uart_cmd_listener_task(void *arg)
             uart_tx_send_scanner_info(FOF_VERSION, s_board_name, s_chip_name, s_caps);
             /* Send status even when stopped — uplink can see we're alive */
             if (!uart_tx_is_enabled()) {
-                ESP_LOGI(TAG, "Scanner waiting for start command (TX disabled)");
+                ESP_LOGD(TAG, "Scanner waiting for start command (TX disabled)");
             }
         }
 
         if (len <= 0) continue;
-
-        /* Log any received data for debugging */
-        ESP_LOGI(TAG, "UART CMD RX: %d bytes [%02X %02X %02X %02X...]",
-                 len, buf[0], len > 1 ? buf[1] : 0, len > 2 ? buf[2] : 0, len > 3 ? buf[3] : 0);
 
         /* During OTA: route raw bytes to OTA receiver */
         if (uart_ota_is_active()) {
@@ -387,22 +420,22 @@ static void uart_cmd_listener_task(void *arg)
             continue;
         }
 
+        ESP_LOGD(TAG, "UART CMD RX: %d bytes [%02X %02X %02X %02X...]",
+                 len, buf[0], len > 1 ? buf[1] : 0, len > 2 ? buf[2] : 0, len > 3 ? buf[3] : 0);
+
         for (int i = 0; i < len; i++) {
             if (buf[i] == '\n') {
                 if (line_pos > 0) {
                     line[line_pos] = '\0';
                     /* Parse JSON command */
-                    ESP_LOGW(TAG, "UART CMD LINE (%d chars): [%02X %02X %02X %02X] '%.*s'",
-                             line_pos,
-                             (uint8_t)line[0], line_pos > 1 ? (uint8_t)line[1] : 0,
-                             line_pos > 2 ? (uint8_t)line[2] : 0, line_pos > 3 ? (uint8_t)line[3] : 0,
-                             line_pos > 40 ? 40 : line_pos, line);
+                    ESP_LOGD(TAG, "UART CMD LINE (%d chars): '%.*s'",
+                             line_pos, line_pos > 48 ? 48 : line_pos, line);
                     cJSON *root = cJSON_Parse(line);
                     if (root) {
                         const char *type = NULL;
                         cJSON *t = cJSON_GetObjectItem(root, "type");
                         if (t && t->valuestring) type = t->valuestring;
-                        ESP_LOGW(TAG, "UART CMD TYPE: '%s'", type ? type : "(null)");
+                        ESP_LOGD(TAG, "UART CMD TYPE: '%s'", type ? type : "(null)");
 
                         if (type && (strcmp(type, "ready") == 0 || strcmp(type, "start") == 0)) {
                             /* Uplink tells scanner to start transmitting */
@@ -422,6 +455,12 @@ static void uart_cmd_listener_task(void *arg)
                             ESP_LOGI(TAG, "Uplink sent STOP — TX disabled, ack sent");
 
                         } else if (type && strcmp(type, "lockon") == 0) {
+                            if (scanner_calibration_mode_is_active()) {
+                                ESP_LOGW(TAG, "Rejecting WiFi lock-on while calibration mode is active");
+                                cJSON_Delete(root);
+                                line_pos = 0;
+                                continue;
+                            }
                             cJSON *ch = cJSON_GetObjectItem(root, "ch");
                             cJSON *dur = cJSON_GetObjectItem(root, "dur");
                             cJSON *bssid = cJSON_GetObjectItem(root, "bssid");
@@ -434,12 +473,24 @@ static void uart_cmd_listener_task(void *arg)
                             wifi_scanner_lockon((uint8_t)channel, bssid_str, duration);
 
                         } else if (type && strcmp(type, "lockon_cancel") == 0) {
+                            if (scanner_calibration_mode_is_active()) {
+                                ESP_LOGW(TAG, "Ignoring WiFi lock-on cancel while calibration mode is active");
+                                cJSON_Delete(root);
+                                line_pos = 0;
+                                continue;
+                            }
                             ESP_LOGI(TAG, "WiFi LOCK-ON cancel");
                             wifi_scanner_lockon_cancel();
 
 
 #ifndef WIFI_SCANNER_ONLY
                         } else if (type && strcmp(type, "ble_lockon") == 0) {
+                            if (scanner_calibration_mode_is_active()) {
+                                ESP_LOGW(TAG, "Rejecting BLE focus while calibration mode is active");
+                                cJSON_Delete(root);
+                                line_pos = 0;
+                                continue;
+                            }
                             cJSON *mac_j = cJSON_GetObjectItem(root, "mac");
                             cJSON *dur = cJSON_GetObjectItem(root, "dur");
                             int duration = dur ? dur->valueint : 45;
@@ -455,10 +506,37 @@ static void uart_cmd_listener_task(void *arg)
                                 }
                             }
                         } else if (type && strcmp(type, "ble_lockon_cancel") == 0) {
+                            if (scanner_calibration_mode_is_active()) {
+                                ESP_LOGW(TAG, "Ignoring BLE focus cancel while calibration mode is active");
+                                cJSON_Delete(root);
+                                line_pos = 0;
+                                continue;
+                            }
                             ESP_LOGI(TAG, "BLE FOCUS cancel");
                             extern void ble_rid_lockon_cancel(void);
                             ble_rid_lockon_cancel();
 #endif /* !WIFI_SCANNER_ONLY */
+
+                        } else if (type && strcmp(type, MSG_TYPE_CAL_MODE_START) == 0) {
+                            cJSON *session_j = cJSON_GetObjectItem(root, JSON_KEY_SESSION_ID);
+                            cJSON *uuid_j = cJSON_GetObjectItem(root, JSON_KEY_CALIBRATION_UUID);
+                            bool ok = false;
+                            if (session_j && session_j->valuestring &&
+                                uuid_j && uuid_j->valuestring) {
+                                ok = scanner_calibration_mode_start(
+                                    session_j->valuestring,
+                                    uuid_j->valuestring
+                                );
+                            }
+                            send_cal_mode_ack(ok);
+                            ESP_LOGW(TAG, "Calibration mode %s for session=%s uuid=%s",
+                                     ok ? "armed" : "rejected",
+                                     session_j && session_j->valuestring ? session_j->valuestring : "?",
+                                     uuid_j && uuid_j->valuestring ? uuid_j->valuestring : "?");
+
+                        } else if (type && strcmp(type, MSG_TYPE_CAL_MODE_STOP) == 0) {
+                            scanner_calibration_mode_stop("uplink_stop");
+                            send_cal_mode_ack(true);
 
                         } else if (type && strcmp(type, MSG_TYPE_TIME) == 0) {
                             /* Uplink broadcasts its epoch-ms every 10s.
@@ -467,19 +545,27 @@ static void uart_cmd_listener_task(void *arg)
                              * helps diagnose UART vs HTTP-fetch failure. */
                             extern volatile int64_t g_epoch_offset_ms;
                             extern volatile uint32_t g_time_msg_count;
+                            extern volatile uint32_t g_time_valid_count;
+                            extern volatile int64_t g_last_valid_time_local_ms;
                             g_time_msg_count++;
                             cJSON *ms_j = cJSON_GetObjectItem(root, JSON_KEY_EPOCH_MS);
+                            cJSON *ok_j = cJSON_GetObjectItem(root, JSON_KEY_TIME_OK);
+                            bool has_ok = ok_j && (cJSON_IsBool(ok_j) || cJSON_IsNumber(ok_j));
+                            bool ok = cJSON_IsTrue(ok_j) || (cJSON_IsNumber(ok_j) && ok_j->valueint != 0);
                             if (ms_j && cJSON_IsNumber(ms_j)) {
                                 int64_t epoch_ms = (int64_t)ms_j->valuedouble;
-                                if (epoch_ms > 1700000000000LL) {
+                                if (fof_time_message_is_valid(has_ok, ok, epoch_ms)) {
                                     int64_t local_ms = esp_timer_get_time() / 1000;
                                     g_epoch_offset_ms = epoch_ms - local_ms;
-                                    ESP_LOGI(TAG, "TIME SYNC: epoch=%lld local=%lld offset=%lld",
+                                    g_time_valid_count++;
+                                    g_last_valid_time_local_ms = local_ms;
+                                    ESP_LOGD(TAG, "TIME SYNC: epoch=%lld local=%lld offset=%lld",
                                              (long long)epoch_ms, (long long)local_ms,
                                              (long long)g_epoch_offset_ms);
                                 } else {
-                                    ESP_LOGW(TAG, "TIME SYNC: bad epoch_ms=%lld (uplink hasn't synced)",
-                                             (long long)epoch_ms);
+                                    ESP_LOGW(TAG, "TIME SYNC rejected: epoch_ms=%lld ok=%s",
+                                             (long long)epoch_ms,
+                                             has_ok ? (ok ? "true" : "false") : "legacy");
                                 }
                             }
 
@@ -637,6 +723,8 @@ void app_main(void)
         const char *bname = "scanner-c5", *cname = "esp32c5", *caps = "wifi,5ghz";
 #elif defined(WIFI_SCANNER_ONLY)
         const char *bname = "scanner-esp32", *cname = "esp32", *caps = "wifi";
+#elif defined(SEED_SCANNER_PINS)
+        const char *bname = "scanner-s3-combo-seed", *cname = "esp32s3", *caps = "ble,wifi";
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
         const char *bname = "scanner-s3-combo", *cname = "esp32s3", *caps = "ble,wifi";
 #else

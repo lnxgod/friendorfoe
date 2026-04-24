@@ -84,10 +84,12 @@ static double get_base_lr(uint8_t source)
 {
     switch (source) {
     case DETECTION_SRC_BLE_RID:     return LR_BLE_RID;
+    case DETECTION_SRC_BLE_FINGERPRINT: return LR_BLE_FINGERPRINT;
     case DETECTION_SRC_WIFI_BEACON: return LR_WIFI_BEACON;
     case DETECTION_SRC_WIFI_DJI_IE: return LR_WIFI_DJI_IE;
     case DETECTION_SRC_WIFI_SSID:   return LR_WIFI_SSID;
     case DETECTION_SRC_WIFI_OUI:    return LR_WIFI_OUI;
+    case DETECTION_SRC_WIFI_ASSOC:  return LR_WIFI_ASSOC;
     default:                        return 2.0;
     }
 }

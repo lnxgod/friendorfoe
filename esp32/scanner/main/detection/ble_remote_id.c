@@ -19,6 +19,8 @@
 #include "open_drone_id_parser.h"
 #include "constants.h"
 #include "detection_types.h"
+#include "detection_policy.h"
+#include "calibration_mode.h"
 #include "core/task_priorities.h"
 
 #if CONFIG_FOF_GLASSES_DETECTION
@@ -216,6 +218,9 @@ static void process_odid_service_data(const uint8_t mac[6],
     if (odid_state_to_detection(&slot->odid, "rid_",
                                 DETECTION_SRC_BLE_RID, &det)) {
         det.rssi = rssi;
+        snprintf(det.bssid, sizeof(det.bssid),
+                 "%02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
         /* If no drone_id was set from the ODID Basic ID, use MAC */
         if (det.drone_id[0] == '\0') {
@@ -228,7 +233,7 @@ static void process_odid_service_data(const uint8_t mac[6],
         det.first_seen_ms = ts;
         det.last_updated_ms = ts;
 
-        ESP_LOGI(TAG, "BLE RID: id=%s lat=%.6f lon=%.6f alt=%.0fm RSSI=%d",
+        ESP_LOGD(TAG, "BLE RID: id=%s lat=%.6f lon=%.6f alt=%.0fm RSSI=%d",
                  det.drone_id, det.latitude, det.longitude,
                  det.altitude_m, rssi);
 
@@ -258,11 +263,15 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         static uint32_t s_total_adv_rx = 0;
         s_total_adv_rx++;
         if (s_total_adv_rx % 500 == 1) {
-            ESP_LOGI(TAG, "BLE adv received (total=%lu, this: addr=%02x:%02x:%02x:%02x:%02x:%02x rssi=%d len=%d)",
+            ESP_LOGD(TAG, "BLE adv received (total=%lu, this: addr=%02x:%02x:%02x:%02x:%02x:%02x rssi=%d len=%d)",
                      (unsigned long)s_total_adv_rx,
                      desc->addr.val[5], desc->addr.val[4], desc->addr.val[3],
                      desc->addr.val[2], desc->addr.val[1], desc->addr.val[0],
                      desc->rssi, desc->length_data);
+        }
+
+        if (scanner_calibration_mode_is_active()) {
+            break;
         }
 
         /*
@@ -396,7 +405,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         static uint32_t s_ext_adv_rx = 0;
         s_ext_adv_rx++;
         if (s_ext_adv_rx % 500 == 1) {
-            ESP_LOGI(TAG, "BLE ext_adv (total=%lu rssi=%d len=%d legacy=%d)",
+            ESP_LOGD(TAG, "BLE ext_adv (total=%lu rssi=%d len=%d legacy=%d)",
                      (unsigned long)s_ext_adv_rx, ext->rssi,
                      ext->length_data,
                      (ext->props & BLE_HCI_ADV_LEGACY_MASK) ? 1 : 0);
@@ -435,6 +444,17 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             ble_fingerprint_compute(ext->data, ext->length_data,
                                     ext->addr.type,
                                     (uint8_t)(ext->props & 0xFF), &fp);
+            bool is_calibration_beacon = fof_policy_ble_has_calibration_uuid_le(
+                fp.service_uuids_128,
+                fp.svc_uuid_128_count
+            );
+            if (scanner_calibration_mode_is_active() &&
+                !scanner_calibration_mode_allows_ble_uuid128(
+                    fp.service_uuids_128,
+                    fp.svc_uuid_128_count
+                )) {
+                break;
+            }
 
             /* BLE Focus mode: if this MAC is the tracking target, bypass rate limit */
             bool is_focus_target = ble_rid_is_focused() && ble_rid_is_target(ext->addr.val);
@@ -444,11 +464,13 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
             /* Rate limit: drones/trackers fast, others moderate
              * Focus target: 200ms (5 reports/sec for maximum resolution) */
-            static uint32_t last_hashes[50];
+            static uint8_t  last_macs[50][6];
             static int64_t  last_times[50];
-            static int      hash_idx = 0;
+            static int      mac_idx = 0;
             int rate_limit_ms;
-            if (is_focus_target) {
+            if (is_calibration_beacon) {
+                rate_limit_ms = 500;    /* Phone calibration beacon: high cadence */
+            } else if (is_focus_target) {
                 rate_limit_ms = 200;    /* Focus target: max resolution */
             } else if (fp.device_type == BLE_DEV_DRONE_CONTROLLER) {
                 rate_limit_ms = 500;    /* Drones: every 0.5s */
@@ -479,7 +501,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
             bool recently_sent = false;
             for (int i = 0; i < 50; i++) {
-                if (last_hashes[i] == fp.hash &&
+                if (memcmp(last_macs[i], ext->addr.val, 6) == 0 &&
                     (now_ms - last_times[i]) < rate_limit_ms) {
                     recently_sent = true;
                     break;
@@ -487,18 +509,20 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             }
 
             if (!recently_sent) {
-                last_hashes[hash_idx] = fp.hash;
-                last_times[hash_idx] = now_ms;
-                hash_idx = (hash_idx + 1) % 50;
+                memcpy(last_macs[mac_idx], ext->addr.val, 6);
+                last_times[mac_idx] = now_ms;
+                mac_idx = (mac_idx + 1) % 50;
 
                 drone_detection_t det = {0};
-                det.source = DETECTION_SRC_BLE_RID;
+                det.source = DETECTION_SRC_BLE_FINGERPRINT;
                 det.rssi = ext->rssi;
                 det.last_updated_ms = now_ms;
                 det.first_seen_ms = now_ms;
 
                 /* Confidence based on device classification */
-                if (fp.is_tracker) {
+                if (is_calibration_beacon) {
+                    det.confidence = 0.85f;
+                } else if (fp.is_tracker) {
                     det.confidence = 0.50f;  /* Trackers are high interest */
                 } else if (fp.device_type == BLE_DEV_DRONE_CONTROLLER ||
                            fp.device_type == BLE_DEV_DRONE_OTHER) {
@@ -516,9 +540,12 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 }
 
                 /* Use fingerprint hash + type as drone_id for backend tracking */
+                const char *device_label = is_calibration_beacon
+                    ? "Calibration Beacon"
+                    : fp.type_name;
                 snprintf(det.drone_id, sizeof(det.drone_id),
                          "BLE:%08lX:%s",
-                         (unsigned long)fp.hash, fp.type_name);
+                         (unsigned long)fp.hash, device_label);
 
                 snprintf(det.bssid, sizeof(det.bssid),
                          "%02X:%02X:%02X:%02X:%02X:%02X",
@@ -527,7 +554,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
                 /* Store device type in manufacturer field */
                 snprintf(det.manufacturer, sizeof(det.manufacturer),
-                         "%s", fp.type_name);
+                         "%s", device_label);
 
                 /* Store fingerprint hash in model field for backend correlation */
                 snprintf(det.model, sizeof(det.model),

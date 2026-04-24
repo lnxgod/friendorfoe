@@ -6,7 +6,7 @@ uplink→scanner UART relay (v0.59+ staged-handshake protocol). Returns
 structured stage/error info so bad flashes surface quickly.
 
 Usage:
-    python3 scripts/fof_flash.py <node> [--scanner s3-combo|esp32|c5]
+    python3 scripts/fof_flash.py <node> [--scanner s3-combo|s3-combo-seed|esp32|c5]
                                          [--uart ble|wifi]
                                          [--backend http://HOST:8000]
                                          [--bin /path/to/firmware.bin]
@@ -36,9 +36,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BACKEND = os.environ.get("FOF_BACKEND", "http://localhost:8000")
 
 FW_PATHS = {
-    "s3-combo": REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo/firmware.bin",
-    "esp32":    REPO_ROOT / "esp32/scanner/.pio/build/scanner-esp32/firmware.bin",
-    "c5":       REPO_ROOT / "esp32/scanner/.pio/build/scanner-c5/firmware.bin",
+    "s3-combo":      REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo/firmware.bin",
+    "s3-combo-seed": REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo-seed/firmware.bin",
+    "esp32":         REPO_ROOT / "esp32/scanner/.pio/build/scanner-esp32/firmware.bin",
+    "c5":            REPO_ROOT / "esp32/scanner/.pio/build/scanner-c5/firmware.bin",
 }
 
 NODE_ALIASES = {

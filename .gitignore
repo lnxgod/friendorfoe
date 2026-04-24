@@ -49,6 +49,9 @@ esp32/**/wifi_credentials.h
 # Backend data (calibration results, may contain node GPS)
 backend/app/data/
 backend/friendorfoe.db
+backend/friendorfoe.db-*
+friendorfoe.db
+friendorfoe.db-*
 *.png
 
 # Claude Code / MCP tooling

@@ -3,12 +3,13 @@
 import json
 import logging
 import re
+import secrets as _secrets
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,10 +43,17 @@ from app.services.probe_identity import (
     normalize_probe_identity,
     probe_identity_from_event,
 )
+from app.services.applied_calibration import AppliedCalibrationStore
+from app.services.calibration_mode import CalibrationModeCoordinator
+from app.services.phone_calibration import PhoneCalibrationManager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/detections", tags=["detections"])
+
+_phone_cal_mgr = PhoneCalibrationManager()
+_applied_cal_store = AppliedCalibrationStore()
+_calibration_mode = CalibrationModeCoordinator(_phone_cal_mgr, _applied_cal_store)
 
 
 # Manufacturer / model substrings whose devices rotate BT Private Resolvable
@@ -85,6 +93,43 @@ def _grouping_model(det) -> str:
     if not rotating:
         return orig
     return f"FP:{ja3}"
+
+
+_CALIBRATION_UUID_RE = re.compile(
+    r"^cafe[0-9a-f]{4}-0000-1000-8000-[0-9a-f]{12}$"
+)
+
+
+def _iter_ble_service_uuids(ble_svc_uuids: str | None):
+    for token in (ble_svc_uuids or "").split(","):
+        norm = token.strip().lower()
+        if norm:
+            yield norm
+
+
+def _is_calibration_uuid(uuid_token: str | None) -> bool:
+    return bool(uuid_token and _CALIBRATION_UUID_RE.fullmatch(uuid_token))
+
+
+def _is_calibration_beacon_detection(det) -> bool:
+    return any(
+        _is_calibration_uuid(token)
+        for token in _iter_ble_service_uuids(getattr(det, "ble_svc_uuids", None))
+    )
+
+
+def _find_active_calibration_session(ble_svc_uuids: str | None):
+    for token in _iter_ble_service_uuids(ble_svc_uuids):
+        if not _is_calibration_uuid(token):
+            continue
+        session = _calibration_mode.active_for_uuid(token)
+        if session is not None:
+            return session
+    return None
+
+
+def _is_calibration_tracking_id(drone_id: str | None) -> bool:
+    return bool((drone_id or "").startswith("FP:CAL-"))
 
 # ---------------------------------------------------------------------------
 # In-memory ring buffer for recent detections (fast path, no DB needed)
@@ -209,6 +254,52 @@ def _recent_source_fixups(device_id: str,
     return len(events), by_rule
 
 
+_SCANNER_TIME_FRESH_WINDOW_S = 30
+_UPLINK_TIME_GOOD_WINDOW_S = 20
+_UPLINK_TIME_FALLBACK_WINDOW_S = 60
+
+
+def _scanner_time_sync_health(scanner: dict) -> str:
+    state = str(scanner.get("time_sync_state") or "").lower()
+    try:
+        age_s = float(scanner.get("time_last_valid_age_s"))
+    except (TypeError, ValueError):
+        age_s = None
+
+    if state == "fresh" and age_s is not None and age_s <= _SCANNER_TIME_FRESH_WINDOW_S:
+        return "fresh"
+    if state == "waiting":
+        return "waiting"
+    if state == "stale":
+        return "stale"
+    return "unknown"
+
+
+def _uplink_time_sync_health(info: dict | None) -> str:
+    if not isinstance(info, dict) or not info:
+        return "unknown"
+
+    last_fetch_ok = info.get("last_fetch_ok")
+    time_source = str(info.get("time_source") or "none").lower()
+    try:
+        last_success_age_s = float(info.get("last_success_age_s"))
+    except (TypeError, ValueError):
+        last_success_age_s = None
+
+    if last_fetch_ok is True and last_success_age_s is not None and last_success_age_s <= _UPLINK_TIME_GOOD_WINDOW_S:
+        return "good"
+    if (
+        last_fetch_ok is False
+        and time_source != "none"
+        and last_success_age_s is not None
+        and last_success_age_s <= _UPLINK_TIME_FALLBACK_WINDOW_S
+    ):
+        return "warning"
+    if time_source == "none" or last_success_age_s is None or last_success_age_s > _UPLINK_TIME_FALLBACK_WINDOW_S:
+        return "bad"
+    return "unknown"
+
+
 # GPS-RSSI spoof detector: drone_id → {gps_positions: [(lat,lon,t)], rssi_values: [(rssi,t)]}
 _spoof_tracker: dict[str, dict] = {}
 
@@ -252,22 +343,9 @@ from app.services.identity_correlator import IdentityCorrelator
 _identity_correlator = IdentityCorrelator()
 _entity_tracker.set_identity_correlator(_identity_correlator)
 
-from app.services.calibration import CalibrationManager
-_calibration_mgr = CalibrationManager()
-
-# Apply persisted calibration to triangulation engine on startup
-if _calibration_mgr.last_result and _calibration_mgr.last_result.r_squared > 0.1:
-    from app.services.triangulation import update_calibration as _apply_cal
-    _lr = _calibration_mgr.last_result
-    _apply_cal(_lr.rssi_ref, _lr.path_loss_exponent,
-               getattr(_lr, "per_listener_offset_db", None))
-
-
 # v0.63: phone-driven walk calibration. The Android app advertises BLE
 # from known GPS positions; backend joins the trace × sensor sightings
 # and fits a per-listener log-distance model.
-from app.services.phone_calibration import PhoneCalibrationManager
-_phone_cal_mgr = PhoneCalibrationManager()
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +356,6 @@ _phone_cal_mgr = PhoneCalibrationManager()
 # from polluting our calibration", which a static secret over LAN handles.
 # ---------------------------------------------------------------------------
 import os as _os
-import secrets as _secrets
 from fastapi import HTTPException, Header
 
 # Default token matches the Android app's DetectionPrefs.calibrationToken
@@ -301,17 +378,32 @@ def _require_cal_token(x_cal_token: str | None) -> None:
         raise HTTPException(status_code=401, detail="invalid X-Cal-Token")
 
 
+def _legacy_calibration_removed() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy backend calibration flow was removed. Use the Android walk calibration workflow.",
+    )
+
+
+def _position_mode(node: SensorNode | None) -> str:
+    return (getattr(node, "position_mode", None) or "active") if node else "active"
+
+
+def _geometry_enabled_for_node(node: SensorNode | None) -> bool:
+    return _position_mode(node) == "active"
+
+
 async def _resolve_sensor_position(
     device_id: str,
     device_lat: float | None,
     device_lon: float | None,
     device_alt: float | None,
     db: AsyncSession | None,
-) -> tuple[float | None, float | None, float | None, str]:
+) -> tuple[float | None, float | None, float | None, str, str, bool]:
     """
     Look up sensor node in DB. If it's a registered fixed node, use the
     registered position (ignoring GPS from payload). Otherwise use GPS.
-    Returns (lat, lon, alt, sensor_type).
+    Returns (lat, lon, alt, sensor_type, position_mode, geometry_enabled).
     """
     if db:
         try:
@@ -319,10 +411,14 @@ async def _resolve_sensor_position(
                 select(SensorNode).where(SensorNode.device_id == device_id)
             )
             node = result.scalar_one_or_none()
+            if node and not _geometry_enabled_for_node(node):
+                node.last_seen = datetime.now(timezone.utc)
+                await db.commit()
+                return None, None, node.alt, node.sensor_type, _position_mode(node), False
             if node and node.is_fixed:
                 node.last_seen = datetime.now(timezone.utc)
                 await db.commit()
-                return node.lat, node.lon, node.alt, node.sensor_type
+                return node.lat, node.lon, node.alt, node.sensor_type, _position_mode(node), True
             elif node and not node.is_fixed:
                 if device_lat is not None and device_lon is not None:
                     node.lat = device_lat
@@ -330,11 +426,71 @@ async def _resolve_sensor_position(
                     node.alt = device_alt
                     node.last_seen = datetime.now(timezone.utc)
                     await db.commit()
-                return device_lat, device_lon, device_alt, node.sensor_type
+                return device_lat, device_lon, device_alt, node.sensor_type, _position_mode(node), True
         except Exception as e:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             logger.warning("DB lookup failed for %s: %s", device_id, e)
 
-    return device_lat, device_lon, device_alt, "outdoor"
+    return device_lat, device_lon, device_alt, "outdoor", "active", True
+
+
+def _heartbeat_is_online_recent(hb: dict, now: float, max_age_s: float = 120.0) -> bool:
+    return (now - float(hb.get("last_seen", 0) or 0)) < max_age_s
+
+
+async def _live_walk_sensor_rows(
+    db: AsyncSession,
+    *,
+    max_age_s: float = 120.0,
+) -> list[dict]:
+    """Return recent online geometry-capable nodes for phone calibration.
+
+    This is deliberately stricter than the generic node registry: the walk
+    flow should reflect only the sensors that are alive *now* and eligible
+    to contribute to geometry.
+    """
+    now = time.time()
+    db_nodes: dict[str, SensorNode] = {}
+    try:
+        result = await db.execute(select(SensorNode))
+        db_nodes = {node.device_id: node for node in result.scalars().all()}
+    except Exception as exc:
+        logger.warning("walk/sensors DB read failed: %s", exc)
+
+    sensors: list[dict] = []
+    for hb in _node_heartbeats.values():
+        device_id = hb.get("device_id")
+        if not device_id or not _heartbeat_is_online_recent(hb, now, max_age_s):
+            continue
+
+        db_node = db_nodes.get(device_id)
+        if db_node and not _geometry_enabled_for_node(db_node):
+            continue
+
+        use_registered = bool(db_node and db_node.is_fixed)
+        lat = db_node.lat if use_registered else hb.get("lat", db_node.lat if db_node else None)
+        lon = db_node.lon if use_registered else hb.get("lon", db_node.lon if db_node else None)
+        if lat is None or lon is None or abs(float(lat)) <= 0.1 or abs(float(lon)) <= 0.1:
+            continue
+
+        sensors.append({
+            "device_id": device_id,
+            "name": (db_node.name if db_node and db_node.name else device_id),
+            "lat": float(lat),
+            "lon": float(lon),
+            "is_fixed": bool(db_node.is_fixed) if db_node else False,
+            "online": True,
+            "age_s": round(now - float(hb.get("last_seen", now) or now), 1),
+            "ip": hb.get("ip"),
+            "position_mode": _position_mode(db_node),
+            "geometry_enabled": True,
+        })
+
+    sensors.sort(key=lambda row: (row["name"], row["device_id"]))
+    return sensors
 
 
 # ---------------------------------------------------------------------------
@@ -378,6 +534,7 @@ async def ingest_drone_detections(
         "firmware_version": batch.firmware_version or prev_hb.get("firmware_version"),
         "board_type": batch.board_type or prev_hb.get("board_type"),
         "scanners": batch.scanners or prev_hb.get("scanners"),
+        "time_sync": batch.time_sync or prev_hb.get("time_sync"),
         "wifi_ssid": batch.wifi_ssid or prev_hb.get("wifi_ssid"),
         "wifi_rssi": batch.wifi_rssi if batch.wifi_rssi is not None else prev_hb.get("wifi_rssi"),
         "source_fixups_total": prev_hb.get("source_fixups_total", 0),
@@ -429,16 +586,22 @@ async def ingest_drone_detections(
             logger.info("Auto-registered new node: %s at (%.6f, %.6f)",
                         batch.device_id, batch.device_lat, batch.device_lon)
     except Exception:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         pass  # Don't break ingestion if auto-register fails
 
     # Resolve sensor position (fixed node overrides GPS)
-    sensor_lat, sensor_lon, sensor_alt, sensor_type = await _resolve_sensor_position(
+    sensor_lat, sensor_lon, sensor_alt, sensor_type, position_mode, geometry_enabled = await _resolve_sensor_position(
         batch.device_id, batch.device_lat, batch.device_lon, batch.device_alt, db
     )
+    if not geometry_enabled:
+        _sensor_tracker.remove_sensor(batch.device_id)
 
     logger.info(
-        "Drone batch from device=%s count=%d sensor_pos=(%s, %s)",
-        batch.device_id, len(batch.detections), sensor_lat, sensor_lon,
+        "Drone batch from device=%s count=%d sensor_pos=(%s, %s) position_mode=%s geometry_enabled=%s",
+        batch.device_id, len(batch.detections), sensor_lat, sensor_lon, position_mode, geometry_enabled,
     )
 
     accepted = 0
@@ -472,8 +635,14 @@ async def ingest_drone_detections(
         if det.source == "wifi_assoc" and _wifi_assoc_mentions_known_node(det.drone_id):
             continue
 
+        is_calibration_beacon = (
+            det.source == "ble_fingerprint" and
+            _is_calibration_beacon_detection(det)
+        )
+
         # Drop duplicates (scanner re-emission, uplink offline-replay, batch retries)
-        if _ingest_dedup_hit(det.drone_id, det.source, det.bssid or "", received_at):
+        if (not is_calibration_beacon and
+                _ingest_dedup_hit(det.drone_id, det.source, det.bssid or "", received_at)):
             dedup_skipped += 1
             continue
 
@@ -520,6 +689,64 @@ async def ingest_drone_detections(
                 # (length heuristic / short payload path). Apple doesn't
                 # broadcast model — downgrade to generic.
                 det.manufacturer = "Apple Device"
+
+        cal_session = None
+        if det.source == "ble_fingerprint" and is_calibration_beacon:
+            cal_session = _find_active_calibration_session(
+                getattr(det, "ble_svc_uuids", None)
+            )
+            if cal_session is not None and \
+               det.rssi is not None and \
+               sensor_lat is not None and \
+               sensor_lon is not None:
+                _phone_cal_mgr.add_sensor_sample(
+                    session_id=cal_session.session_id,
+                    sensor_id=batch.device_id,
+                    sensor_lat=sensor_lat,
+                    sensor_lon=sensor_lon,
+                    rssi=det.rssi,
+                    ts_s=(det.timestamp / 1000.0)
+                          if det.timestamp and det.timestamp > 1e12
+                          else received_at,
+                )
+
+                det_ts = (det.timestamp / 1000.0
+                          if det.timestamp and det.timestamp > 1_700_000_000_000
+                          else received_at)
+                _sensor_tracker.ingest(
+                    device_id=batch.device_id,
+                    device_lat=sensor_lat,
+                    device_lon=sensor_lon,
+                    device_alt=sensor_alt,
+                    drone_id=det.drone_id,
+                    rssi=det.rssi,
+                    estimated_distance_m=det.estimated_distance_m,
+                    drone_lat=det.latitude,
+                    drone_lon=det.longitude,
+                    drone_alt=det.altitude_m,
+                    heading_deg=det.heading_deg,
+                    speed_mps=det.speed_mps,
+                    confidence=max(det.confidence, 0.85),
+                    source=det.source,
+                    manufacturer=det.manufacturer,
+                    model=f"FP:CAL-{cal_session.session_id}",
+                    classification="unknown_device",
+                    ssid=det.ssid,
+                    bssid=det.bssid,
+                    ie_hash=getattr(det, "ie_hash", None),
+                    operator_lat=det.operator_lat,
+                    operator_lon=det.operator_lon,
+                    operator_id=det.operator_id,
+                    sensor_type=sensor_type,
+                    timestamp=det_ts,
+                )
+                accepted += 1
+                continue
+
+            # Ignore inactive or geometry-excluded calibration beacons
+            # for operator-facing feeds. They are only meaningful while
+            # a phone walk session is actively collecting samples.
+            continue
 
         # Classify the detection
         classification, adj_confidence = classify_detection(
@@ -585,35 +812,6 @@ async def ingest_drone_detections(
         # rotating RPAs now collapse into one logical device/entity/threat
         # instead of producing a fresh identity every ~15 min.
         grouping_model = _grouping_model(det)
-
-        # Phone-walk calibration hook — if this detection carries a
-        # service UUID matching an active calibration session, forward
-        # (sensor_id, rssi, ts) into the session so the OLS fitter has
-        # data to work with at /walk/end. The svc_uuids field comes
-        # from the scanner's BLE parser.
-        _svc = (getattr(det, "ble_svc_uuids", "") or "").lower()
-        if _svc and "cafe" in _svc and det.rssi is not None:
-            for _u in _svc.split(","):
-                cal_session = _phone_cal_mgr.find_active_for_uuid(_u.strip())
-                if cal_session is not None and sensor_lat and sensor_lon:
-                    _phone_cal_mgr.add_sensor_sample(
-                        session_id=cal_session.session_id,
-                        sensor_id=batch.device_id,
-                        sensor_lat=sensor_lat, sensor_lon=sensor_lon,
-                        rssi=det.rssi,
-                        ts_s=(det.timestamp / 1000.0)
-                              if det.timestamp and det.timestamp > 1e12
-                              else received_at,
-                    )
-                    # Override the grouping_model so downstream triangulation
-                    # accumulates this phone's BLE beacon under a stable
-                    # tracking_id (the session). Without this the triangulator
-                    # would key off the phone's (rotating) BLE MAC and never
-                    # produce a converged position for the operator. Enables
-                    # the /walk/my-position "am I where GPS says I am?"
-                    # real-time feedback loop.
-                    grouping_model = f"FP:CAL-{cal_session.session_id}"
-                    break
 
         # Anomaly detection (fingerprint-aware, whitelisted, mesh-aware)
         _anomaly_detector.ingest(
@@ -859,6 +1057,8 @@ async def ingest_drone_detections(
         # Store triangulated positions — skip range_only, deduplicate
         located = _sensor_tracker.get_located_drones()
         for d in located:
+            if _is_calibration_tracking_id(d.drone_id):
+                continue
             # Skip single-sensor range_only (just sensor position, no real data)
             if d.position_source == "range_only":
                 continue
@@ -918,6 +1118,10 @@ async def ingest_drone_detections(
 
         await db.commit()
     except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         logger.warning("DB write failed (detections still in memory): %s", e)
 
     # Debounced entity checkpoint — persists dirty entities roughly every 30 s
@@ -984,6 +1188,8 @@ async def get_drone_map(
 
     drone_items = []
     for d in located:
+        if _is_calibration_tracking_id(d.drone_id):
+            continue
         # Classify using the best observation's data
         best_obs = max(d.observations, key=lambda o: o.confidence) if d.observations else None
         best_bssid = best_obs.bssid if best_obs and hasattr(best_obs, 'bssid') else None
@@ -1178,9 +1384,17 @@ async def get_node_status(db: AsyncSession = Depends(get_db)):
         from app.models.db_models import SensorNode
         result = await db.execute(select(SensorNode))
         for sn in result.scalars().all():
+            geometry_enabled = _geometry_enabled_for_node(sn)
             db_positions[sn.device_id] = {
                 "lat": sn.lat, "lon": sn.lon, "alt": sn.alt,
                 "name": sn.name, "is_fixed": sn.is_fixed,
+                "position_mode": _position_mode(sn),
+                "geometry_enabled": geometry_enabled,
+                "geometry_status": (
+                    "excluded_for_canary_testing"
+                    if not geometry_enabled
+                    else ("fixed" if sn.is_fixed else "dynamic")
+                ),
             }
     except Exception:
         pass  # DB unavailable, use heartbeat data only
@@ -1189,10 +1403,27 @@ async def get_node_status(db: AsyncSession = Depends(get_db)):
     for node in _node_heartbeats.values():
         age = now - node["last_seen"]
         recent_fixups, recent_by_rule = _recent_source_fixups(node["device_id"], now)
+        scanners = []
+        for sc in (node.get("scanners") or []):
+            if isinstance(sc, dict):
+                sc_entry = dict(sc)
+                sc_entry["time_sync_health"] = _scanner_time_sync_health(sc_entry)
+                scanners.append(sc_entry)
+            else:
+                scanners.append(sc)
+        time_sync = None
+        if isinstance(node.get("time_sync"), dict):
+            time_sync = dict(node["time_sync"])
+            time_sync["sync_health"] = _uplink_time_sync_health(time_sync)
         entry = {
             **node,
+            "scanners": scanners,
+            "time_sync": time_sync,
             "age_s": round(age, 1),
             "online": age < 120,
+            "position_mode": "active",
+            "geometry_enabled": True,
+            "geometry_status": "dynamic",
             "source_fixups_since_boot": int(node.get("source_fixups_total", 0) or 0),
             "source_fixups_recent": recent_fixups,
             "source_fixups_recent_by_rule": recent_by_rule,
@@ -1206,8 +1437,24 @@ async def get_node_status(db: AsyncSession = Depends(get_db)):
             entry["alt"] = db_pos.get("alt", 0)
             entry["name"] = db_pos.get("name", "")
             entry["gps_registered"] = True
+            entry["position_mode"] = db_pos.get("position_mode", "active")
+            entry["geometry_enabled"] = bool(db_pos.get("geometry_enabled", True))
+            entry["geometry_status"] = db_pos.get("geometry_status", "fixed")
+        elif db_pos and not db_pos.get("geometry_enabled", True):
+            entry["lat"] = db_pos["lat"]
+            entry["lon"] = db_pos["lon"]
+            entry["alt"] = db_pos.get("alt", 0)
+            entry["name"] = db_pos.get("name", "")
+            entry["gps_registered"] = True
+            entry["position_mode"] = db_pos.get("position_mode", "excluded")
+            entry["geometry_enabled"] = False
+            entry["geometry_status"] = db_pos.get("geometry_status", "excluded_for_canary_testing")
         else:
             entry["gps_registered"] = False
+            if db_pos:
+                entry["position_mode"] = db_pos.get("position_mode", "active")
+                entry["geometry_enabled"] = bool(db_pos.get("geometry_enabled", True))
+                entry["geometry_status"] = db_pos.get("geometry_status", "dynamic")
         nodes.append(entry)
     nodes.sort(key=lambda n: n["device_id"])
     return {"count": len(nodes), "nodes": nodes}
@@ -1587,51 +1834,8 @@ async def get_threats(
 # ---------------------------------------------------------------------------
 
 @router.post("/calibrate")
-async def start_calibration(background_tasks: BackgroundTasks):
-    """Start inter-node RSSI calibration sequence."""
-    if _calibration_mgr.is_running:
-        return {"status": "already_running", "progress": _calibration_mgr.progress}
-
-    # Gather online nodes with GPS + IP — use registered DB positions
-    from app.models.db_models import SensorNode
-    from app.services.database import async_session
-    nodes = []
-    try:
-        async with async_session() as session:
-            result = await session.execute(select(SensorNode))
-            db_nodes = {sn.device_id: sn for sn in result.scalars().all()}
-    except Exception:
-        db_nodes = {}
-
-    for node in _node_heartbeats.values():
-        age = time.time() - node["last_seen"]
-        if age > 120 or not node.get("ip"):
-            continue
-        db_node = db_nodes.get(node["device_id"])
-        lat = db_node.lat if db_node and db_node.is_fixed else node.get("lat", 0)
-        lon = db_node.lon if db_node and db_node.is_fixed else node.get("lon", 0)
-        name = db_node.name if db_node else node["device_id"]
-        if lat and lon and abs(lat) > 0.1:
-            nodes.append({
-                "device_id": node["device_id"],
-                "ip": node["ip"],
-                "lat": lat,
-                "lon": lon,
-                "name": name,
-            })
-
-    if len(nodes) < 2:
-        return {"status": "error", "message": f"Need 2+ online nodes with GPS, found {len(nodes)}"}
-
-    async def run_cal():
-        from app.services.triangulation import update_calibration
-        result = await _calibration_mgr.run_calibration(nodes)
-        if result and result.r_squared > 0.1:
-            update_calibration(result.rssi_ref, result.path_loss_exponent,
-                               getattr(result, "per_listener_offset_db", None))
-
-    background_tasks.add_task(run_cal)
-    return {"status": "started", "nodes": len(nodes), "node_ids": [n["device_id"] for n in nodes]}
+async def start_calibration():
+    _legacy_calibration_removed()
 
 
 # ---------------------------------------------------------------------------
@@ -1653,6 +1857,7 @@ async def start_calibration(background_tasks: BackgroundTasks):
 @router.post("/calibrate/walk/start")
 async def calibrate_walk_start(
     body: dict,
+    db: AsyncSession = Depends(get_db),
     x_cal_token: str | None = Header(None),
 ):
     """Begin a phone-driven calibration walk session.
@@ -1663,12 +1868,25 @@ async def calibrate_walk_start(
     _require_cal_token(x_cal_token)
     label = (body.get("operator_label") or "phone").strip()[:64]
     txp = body.get("tx_power_dbm")
-    s = _phone_cal_mgr.start(label, txp)
+    target_nodes = await _live_walk_sensor_rows(db)
+    if not target_nodes:
+        raise HTTPException(status_code=409, detail="no live geometry-enabled sensors available")
+    try:
+        s = await _calibration_mode.start_session(
+            operator_label=label,
+            tx_power_dbm=txp,
+            target_nodes=target_nodes,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"failed to arm fleet calibration mode: {exc}") from exc
     return {
         "session_id": s.session_id,
         "advertise_uuid": s.expected_uuid,
         "tx_power_dbm": s.tx_power_dbm,
         "started_at": s.started_at,
+        "target_nodes": getattr(s, "target_nodes", []),
+        "target_sensor_count": len(getattr(s, "target_sensor_ids", []) or []),
+        "mode_state": getattr(s, "mode_state", "inactive"),
         "advice": (
             "Walk a perimeter + an X across the property. Phone should report "
             "GPS + ts at ~1 Hz. Aim for 5+ minutes of motion to give each "
@@ -1691,6 +1909,7 @@ async def calibrate_walk_sample(
         raise HTTPException(status_code=400, detail="session_id, lat, lon required")
     ts_ms = body.get("ts_ms")
     ts_s = (ts_ms / 1000.0) if ts_ms else None
+    _calibration_mode.renew_lease(str(sid))
     ok = _phone_cal_mgr.add_trace_point(
         session_id=sid,
         lat=float(lat), lon=float(lon),
@@ -1707,12 +1926,26 @@ async def calibrate_walk_feedback(
     session_id: Annotated[str, Query(description="Session ID from /walk/start")],
     window_s: Annotated[float, Query(ge=1.0, le=60.0)] = 10.0,
     x_cal_token: str | None = Header(None),
+    db: AsyncSession = Depends(get_db),
 ):
     """Live "what the fleet is hearing" snapshot — drives the phone UI's
     real-time list of sensors + RSSI per sensor. Auth-protected because
     it leaks active session state."""
     _require_cal_token(x_cal_token)
-    return _phone_cal_mgr.feedback(session_id, window_s=window_s)
+    session = _phone_cal_mgr.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="unknown session")
+    _calibration_mode.renew_lease(session_id)
+    eligible_sensor_ids = list(getattr(session, "target_sensor_ids", []) or [])
+    return _phone_cal_mgr.feedback(
+        session_id,
+        window_s=window_s,
+        eligible_sensor_ids=eligible_sensor_ids,
+    ) | {
+        "target_sensor_count": len(eligible_sensor_ids),
+        "target_sensor_ids": eligible_sensor_ids,
+        "fleet_mode_state": _calibration_mode.lease_state(session_id),
+    }
 
 
 # Smart stand-still detector state. Keyed per session_id; values track:
@@ -1732,6 +1965,7 @@ _CONVERGENCE_MIN_SENSORS = 3           # need 3+ contributing sensors
 async def calibrate_walk_my_position(
     session_id: Annotated[str, Query(description="Walk session ID")],
     x_cal_token: str | None = Header(None),
+    db: AsyncSession = Depends(get_db),
 ):
     """Real-time "where I think I am vs where the fleet thinks I am" for
     the Calibrate screen's convergence card.
@@ -1755,6 +1989,7 @@ async def calibrate_walk_my_position(
         raise HTTPException(status_code=404, detail="unknown session")
     if s.ended_at is not None:
         return {"error": "session_ended"}
+    _calibration_mode.renew_lease(session_id)
 
     import math as _math
 
@@ -1769,6 +2004,15 @@ async def calibrate_walk_my_position(
     now = time.time()
     phone = (s.trace[-1].lat, s.trace[-1].lon) if s.trace else None
     gps_acc = s.trace[-1].accuracy_m if s.trace else None
+    eligible_sensor_ids = list(getattr(s, "target_sensor_ids", []) or [])
+    feedback = _phone_cal_mgr.feedback(
+        session_id,
+        window_s=10.0,
+        eligible_sensor_ids=eligible_sensor_ids,
+    )
+    eligible_sensor_count = int(feedback.get("eligible_sensor_count", len(eligible_sensor_ids)))
+    heard_sensor_ids = list(feedback.get("heard_sensor_ids", []))
+    heard_sensor_count = int(feedback.get("heard_sensor_count", len(heard_sensor_ids)))
 
     # Locate the phone via the triangulator using the session's tracking_id
     tracking_id = f"FP:CAL-{session_id}"
@@ -1814,10 +2058,12 @@ async def calibrate_walk_my_position(
     # "OK to move" so they know whether to wait or reposition.
     if not phone:
         status = "waiting_for_phone_gps"
-    elif sensor_count == 0:
+    elif eligible_sensor_count == 0:
+        status = "no_eligible_sensors_configured"
+    elif heard_sensor_count == 0:
         status = "no_sensors_hearing_you_yet"
-    elif sensor_count < _CONVERGENCE_MIN_SENSORS:
-        status = f"only_{sensor_count}_sensor_need_{_CONVERGENCE_MIN_SENSORS}"
+    elif heard_sensor_count < _CONVERGENCE_MIN_SENSORS:
+        status = f"only_{heard_sensor_count}_sensor_need_{_CONVERGENCE_MIN_SENSORS}"
     elif not standing_still:
         status = "moving_keep_walking_or_stand_still"
     elif error_m is not None and error_m >= _CONVERGENCE_ERROR_OK_M:
@@ -1839,6 +2085,13 @@ async def calibrate_walk_my_position(
         "triangulated_accuracy_m": tri.accuracy_m if tri else None,
         "error_m": round(error_m, 1) if error_m is not None else None,
         "sensor_count": sensor_count,
+        "eligible_sensor_count": eligible_sensor_count,
+        "eligible_sensor_ids": eligible_sensor_ids,
+        "target_sensor_count": len(eligible_sensor_ids),
+        "target_sensor_ids": eligible_sensor_ids,
+        "heard_sensor_count": heard_sensor_count,
+        "heard_sensor_ids": heard_sensor_ids,
+        "fleet_mode_state": _calibration_mode.lease_state(session_id),
         "standing_still": standing_still,
         "still_s": round(still_s, 1),
         "ok_to_move": ok_to_move,
@@ -1862,46 +2115,7 @@ async def calibrate_walk_sensors(
     been registered yet still appear (using the GPS they self-reported).
     """
     _require_cal_token(x_cal_token)
-    now = time.time()
-    out: dict[str, dict] = {}
-    # 1) DB-registered nodes
-    try:
-        result = await db.execute(select(SensorNode))
-        for n in result.scalars().all():
-            out[n.device_id] = {
-                "device_id": n.device_id,
-                "name": n.name or n.device_id,
-                "lat": n.lat,
-                "lon": n.lon,
-                "is_fixed": bool(n.is_fixed),
-                "online": False,
-                "age_s": None,
-                "ip": None,
-            }
-    except Exception as e:  # DB unavailable — fall back to heartbeats only
-        logger.warning("walk/sensors DB read failed: %s", e)
-    # 2) Overlay live heartbeat info (online status, recent IP, fallback GPS)
-    for hb in _node_heartbeats.values():
-        did = hb.get("device_id")
-        if not did:
-            continue
-        age = now - hb.get("last_seen", 0)
-        existing = out.get(did, {
-            "device_id": did,
-            "name": did,
-            "lat": hb.get("lat", 0.0),
-            "lon": hb.get("lon", 0.0),
-            "is_fixed": False,
-        })
-        existing["online"] = age < 120
-        existing["age_s"] = round(age, 1)
-        existing["ip"] = hb.get("ip")
-        # Backfill GPS for unregistered nodes
-        if not existing.get("lat") and hb.get("lat"):
-            existing["lat"] = hb["lat"]
-            existing["lon"] = hb["lon"]
-        out[did] = existing
-    sensors = sorted(out.values(), key=lambda s: (not s["online"], s["name"]))
+    sensors = await _live_walk_sensor_rows(db)
     return {"sensors": sensors, "count": len(sensors)}
 
 
@@ -1936,8 +2150,15 @@ async def calibrate_walk_checkpoint(
             select(SensorNode).where(SensorNode.device_id == sensor_id)
         )
         node = result.scalar_one_or_none()
+        if node and not _geometry_enabled_for_node(node):
+            raise HTTPException(
+                status_code=409,
+                detail=f"sensor {sensor_id} is excluded from geometry for canary/testing",
+            )
         if node and (node.lat or node.lon):
             sensor_lat, sensor_lon = float(node.lat), float(node.lon)
+    except HTTPException:
+        raise
     except Exception:
         pass
     if sensor_lat is None or sensor_lon is None:
@@ -1950,6 +2171,14 @@ async def calibrate_walk_checkpoint(
             status_code=404,
             detail=f"sensor {sensor_id} has no registered position — register it via /nodes first",
         )
+
+    session = _phone_cal_mgr.get(str(sid))
+    if session is None:
+        raise HTTPException(status_code=404, detail="unknown session")
+    target_sensor_ids = set(getattr(session, "target_sensor_ids", []) or [])
+    if target_sensor_ids and sensor_id not in target_sensor_ids:
+        raise HTTPException(status_code=409, detail=f"sensor {sensor_id} is not in the active calibration target set")
+    _calibration_mode.renew_lease(str(sid))
 
     ts_ms = body.get("ts_ms")
     ts_s = (ts_ms / 1000.0) if ts_ms else None
@@ -1979,35 +2208,35 @@ async def calibrate_walk_end(
     sid = body.get("session_id")
     if not sid:
         raise HTTPException(status_code=400, detail="session_id required")
-    s = _phone_cal_mgr.end(sid)
-    if s is None:
+    session = _phone_cal_mgr.get(str(sid))
+    if session is None:
         raise HTTPException(status_code=404, detail="unknown session")
-    fit = s.fit_result or {}
-    applied = False
-    if fit.get("ok") and fit.get("global_r_squared", 0.0) >= 0.4:
-        # Build the per-listener model dict — only include sensors whose
-        # individual fit succeeded. Sensors without a per-listener fit
-        # still benefit from the updated global model.
-        per_listener = {}
-        for sid_, info in (fit.get("per_listener") or {}).items():
-            if info.get("ok"):
-                per_listener[sid_] = (
-                    float(info["rssi_ref"]),
-                    float(info["path_loss_exponent"]),
-                )
-        from app.services.triangulation import update_calibration as _apply
-        _apply(
-            rssi_ref=float(fit["global_rssi_ref"]),
-            path_loss=float(fit["global_path_loss_exponent"]),
-            per_listener_model=per_listener,
-        )
-        applied = True
-        logger.info(
-            "Phone-cal applied: RSSI_REF=%.1f PATH_LOSS=%.2f per_listener=%d sensors r²=%.2f",
-            fit["global_rssi_ref"], fit["global_path_loss_exponent"],
-            len(per_listener), fit["global_r_squared"],
-        )
-    return {"session_id": sid, "applied": applied, "fit": fit}
+    result = await _calibration_mode.end_session(
+        str(sid),
+        provisional_fit=body.get("provisional_fit"),
+        apply_requested=bool(body.get("apply_requested", True)),
+    )
+    return {"session_id": sid, **result}
+
+
+@router.post("/calibrate/walk/abort")
+async def calibrate_walk_abort(
+    body: dict,
+    x_cal_token: str | None = Header(None),
+):
+    _require_cal_token(x_cal_token)
+    sid = body.get("session_id")
+    if not sid:
+        raise HTTPException(status_code=400, detail="session_id required")
+    session = await _calibration_mode.abort_session(str(sid), reason=str(body.get("reason") or "client_abort"))
+    if session is None:
+        raise HTTPException(status_code=404, detail="unknown session")
+    return {
+        "session_id": sid,
+        "ok": True,
+        "mode_state": getattr(session, "mode_state", "inactive"),
+        "abort_reason": getattr(session, "abort_reason", None),
+    }
 
 
 @router.get("/calibrate/walk/{session_id}")
@@ -2031,6 +2260,8 @@ async def calibrate_walk_status(
         "trace_points": len(s.trace),
         "samples_total": len(s.samples),
         "fit": s.fit_result,
+        "target_nodes": getattr(s, "target_nodes", []),
+        "mode_state": getattr(s, "mode_state", "inactive"),
     }
 
 
@@ -2061,14 +2292,7 @@ async def calibrate_audit(
     x_cal_token: str | None = Header(None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Audit deployed-node placement from accumulated detection history.
-
-    Returns suspicion-ranked list of sensors, pairwise match rates, and
-    per-sensor summary stats. Auth-protected because it exposes fleet
-    topology + RSSI correlations that could help an adversary map the
-    property's sensor placements.
-    """
-    _require_cal_token(x_cal_token)
+    _legacy_calibration_removed()
 
     import math as _math
 
@@ -2306,48 +2530,22 @@ async def server_time():
 
 @router.get("/calibrate/status")
 async def calibration_status():
-    """Get calibration progress and results."""
-    return _calibration_mgr.get_status()
+    _legacy_calibration_removed()
 
 
 @router.get("/calibrate/model")
 async def calibration_model():
-    """Get current triangulation model parameters."""
-    from app.services.triangulation import PATH_LOSS_OUTDOOR, PER_LISTENER_MODEL, RSSI_REF
-    last = _calibration_mgr.last_result
-    is_calibrated = _calibration_mgr.last_result is not None
-    is_trusted = bool(last and last.r_squared > 0.1)
-    applied_listener_count = len(PER_LISTENER_MODEL)
-    is_active = is_trusted or applied_listener_count > 0
-    if applied_listener_count > 0:
-        active_model_source = "per_listener"
-    elif is_trusted:
-        active_model_source = "calibration"
-    else:
-        active_model_source = "defaults"
-    return {
-        "rssi_ref": RSSI_REF,
-        "path_loss_exponent": PATH_LOSS_OUTDOOR,
-        "is_calibrated": is_calibrated,
-        "is_active": is_active,
-        "is_trusted": is_trusted,
-        "active_model_source": active_model_source,
-        "applied_listener_count": applied_listener_count,
-        "last_calibration": last.timestamp if last else None,
-        "r_squared": last.r_squared if last else None,
-    }
+    return _applied_cal_store.summary()
 
 
 @router.get("/calibrate/history")
 async def calibration_history():
-    """Get calibration history."""
-    return {"history": _calibration_mgr.get_history()}
+    _legacy_calibration_removed()
 
 
 @router.get("/calibrate/matrix")
 async def calibration_matrix():
-    """Get node-pair RSSI/distance matrix from last calibration."""
-    return _calibration_mgr.get_node_pair_matrix()
+    _legacy_calibration_removed()
 
 
 # GET /detections/drone-alerts — drone-specific alerts (high priority)

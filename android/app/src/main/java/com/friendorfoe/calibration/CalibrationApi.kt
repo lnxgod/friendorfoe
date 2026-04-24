@@ -130,9 +130,24 @@ class CalibrationApi @Inject constructor(
              token, null)
 
     override suspend fun walkEnd(baseUrl: String, token: String,
-                                 sessionId: String): Result<JsonObject> =
+                                 sessionId: String,
+                                 provisionalFit: JsonObject?,
+                                 applyRequested: Boolean): Result<JsonObject> =
         call("walk_end", "POST", baseUrl, "/detections/calibrate/walk/end", token, mapOf(
             "session_id" to sessionId,
+            "provisional_fit" to provisionalFit,
+            "apply_requested" to applyRequested,
+        ))
+
+    override suspend fun walkAbort(
+        baseUrl: String,
+        token: String,
+        sessionId: String,
+        reason: String,
+    ): Result<JsonObject> =
+        call("walk_abort", "POST", baseUrl, "/detections/calibrate/walk/abort", token, mapOf(
+            "session_id" to sessionId,
+            "reason" to reason,
         ))
 
     /** Returns the fleet sensor list — id, label, lat, lon, online age.

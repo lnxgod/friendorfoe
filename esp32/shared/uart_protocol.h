@@ -69,6 +69,12 @@ extern "C" {
 #define MSG_TYPE_ACK                "ack"
 #define MSG_TYPE_LOCKON             "lockon"
 #define MSG_TYPE_LOCKON_CANCEL      "lockon_cancel"
+#define MSG_TYPE_CAL_MODE_START     "cal_mode_start"
+#define MSG_TYPE_CAL_MODE_STOP      "cal_mode_stop"
+#define MSG_TYPE_CAL_MODE_ACK       "cal_mode_ack"
+#define JSON_KEY_SCAN_MODE          "scan_mode"
+#define JSON_KEY_CALIBRATION_UUID   "calibration_uuid"
+#define JSON_KEY_SESSION_ID         "session_id"
 /* Apple Continuity deep fields */
 #define JSON_KEY_BLE_APPLE_AUTH     "ble_auth"   /* hex string "a1b2c3" */
 #define JSON_KEY_BLE_ACTIVITY       "ble_act"    /* uint8 activity code */
@@ -86,6 +92,8 @@ extern "C" {
 #define MSG_TYPE_STOP_ACK           "stop_ack"      /* scanner confirms TX loop halted (v0.59+) */
 #define MSG_TYPE_TIME               "time"          /* uplink → scanner wall-clock broadcast (v0.60+) */
 #define JSON_KEY_EPOCH_MS           "ms"            /* epoch milliseconds in MSG_TYPE_TIME */
+#define JSON_KEY_TIME_OK            "ok"
+#define JSON_KEY_TIME_SOURCE        "src"
 #define MSG_TYPE_OTA_ACK            "ota_ack"
 #define MSG_TYPE_OTA_NACK           "ota_nack"      /* bad CRC — retransmit the named seq */
 #define MSG_TYPE_OTA_PROGRESS       "ota_progress"

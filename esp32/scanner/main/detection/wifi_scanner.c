@@ -23,6 +23,7 @@
 #include "open_drone_id_parser.h"
 #include "constants.h"
 #include "detection_types.h"
+#include "detection_policy.h"
 #include "core/task_priorities.h"
 
 #include <stdlib.h>
@@ -525,7 +526,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
     if (ssid[0] != '\0') {
         /* Always log F-starting SSIDs */
         if (ssid[0] == 'F' || ssid[0] == 'f') {
-            ESP_LOGI(TAG, "F-SSID: \"%s\" RSSI=%d ch=%d", ssid, rssi, s_current_channel);
+            ESP_LOGD(TAG, "F-SSID: \"%s\" RSSI=%d ch=%d", ssid, rssi, s_current_channel);
         }
         /* Log new unique SSIDs */
         bool already = false;
@@ -536,7 +537,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
             strncpy(seen_ssids[seen_count], ssid, 32);
             seen_ssids[seen_count][32] = '\0';
             seen_count++;
-            ESP_LOGI(TAG, "NEW[%d]: \"%s\" RSSI=%d ch=%d", seen_count, ssid, rssi, s_current_channel);
+            ESP_LOGD(TAG, "NEW[%d]: \"%s\" RSSI=%d ch=%d", seen_count, ssid, rssi, s_current_channel);
         }
     }
 
@@ -847,7 +848,7 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
 
     /* Drop broadcast probes — they flood UART/queue/heap for zero value.
      * Every phone sends these constantly. Only targeted probes (with SSID) matter. */
-    bool is_broadcast = (ssid[0] == '\0');
+    bool is_broadcast = fof_policy_probe_should_ignore_broadcast(ssid);
     if (is_broadcast) {
         return;
     }
@@ -866,21 +867,14 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
         soft = (!pattern && wifi_ssid_match_soft(ssid));
     }
 
-    float conf;
-    const char *mfr;
-    if (pattern) {
-        conf = 0.50f;
-        mfr = pattern->manufacturer;
-    } else {
-        /* Probe requests are what a CLIENT is searching for, not what a
-         * drone is broadcasting. Even if the SSID looks drone-like, a
-         * phone asking for "WIFI_FPV" isn't itself a drone. Treat all
-         * non-hard-match probes as generic wifi_device (handled by the
-         * backend classifier) — no "Drone Likely" soft tag. */
-        (void)soft;
-        conf = 0.05f;
-        mfr = "Unknown";
-    }
+    float conf = fof_policy_probe_confidence(pattern != NULL);
+    const char *mfr = pattern ? pattern->manufacturer : "Unknown";
+    /* Probe requests are what a CLIENT is searching for, not what a
+     * drone is broadcasting. Even if the SSID looks drone-like, a
+     * phone asking for "WIFI_FPV" isn't itself a drone. Treat all
+     * non-hard-match probes as generic wifi_device (handled by the
+     * backend classifier) — no "Drone Likely" soft tag. */
+    (void)soft;
 
     /* Build detection with full probe fingerprint */
     drone_detection_t det;
@@ -906,7 +900,7 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
         add_channel_heat(channel, 2);  /* Soft match probe = low heat */
     }
 
-    ESP_LOGI(TAG, "Probe req: MAC=%s SSID=\"%s\" RSSI=%d conf=%.2f",
+    ESP_LOGD(TAG, "Probe req: MAC=%s SSID=\"%s\" RSSI=%d conf=%.2f",
              det.bssid, ssid, rssi, conf);
 
     if (s_detection_queue) {
@@ -934,7 +928,7 @@ typedef struct {
 } wifi_assoc_entry_t;
 static wifi_assoc_entry_t s_assoc_lru[WIFI_ASSOC_LRU_SLOTS];
 static int s_assoc_lru_idx = 0;
-#define WIFI_ASSOC_REFRESH_MS  60000  /* Re-emit if seen again > 60 s later */
+#define WIFI_ASSOC_REFRESH_MS  30000  /* Re-emit if seen again > 30 s later */
 
 static bool wifi_assoc_seen_recently(const uint8_t *sta, const uint8_t *bssid, int64_t now)
 {
@@ -986,7 +980,7 @@ static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         if (s_detection_queue) {
             drone_detection_t det;
             init_detection(&det, sta_p, p->rx_ctrl.rssi, "");
-            det.source = DETECTION_SRC_WIFI_OUI;  /* re-use OUI source slot */
+            det.source = DETECTION_SRC_WIFI_ASSOC;
             det.confidence = 0.10f;
             format_bssid(bssid_p, det.bssid, sizeof(det.bssid));
             snprintf(det.drone_id, sizeof(det.drone_id),
@@ -1197,6 +1191,8 @@ static uint16_t advance_channel(void)
 #define MAX_AP_RECORDS           96     /* Capture more APs per scan (was 64) */
 #define MAX_HOT_CHANNELS         5      /* Track more hot channels (was 3) */
 #define HOT_CHANNEL_TTL_MS       6000   /* Keep hot channels longer (was 4s) */
+#define FULL_SCAN_PASSIVE_MS     100
+#define HOT_SCAN_PASSIVE_MS      50
 
 /* Hot channel tracking — channels where interesting targets were last seen */
 typedef struct {
@@ -1264,6 +1260,28 @@ static void update_hot_channel(uint16_t ch)
     }
 }
 
+static wifi_scan_config_t make_passive_scan_config(uint8_t channel, uint32_t passive_ms)
+{
+    wifi_scan_config_t cfg = {
+        .ssid        = NULL,
+        .bssid       = NULL,
+        .channel     = channel,
+        .show_hidden = true,
+        .scan_type   = WIFI_SCAN_TYPE_PASSIVE,
+    };
+
+#if defined(WIFI_SCANNER_ONLY)
+    cfg.scan_time.passive = passive_ms;
+#else
+    /* When BLE is active on combo/seed boards, ESP-IDF requires the default
+     * passive dwell settings for WiFi scans. Overriding scan_time.passive
+     * triggers coexistence warnings and can hurt capture quality. */
+    (void)passive_ms;
+#endif
+
+    return cfg;
+}
+
 /* ── Process scan results ──────────────────────────────────────────────────── */
 
 static void process_scan_results(void)
@@ -1290,9 +1308,12 @@ static void process_scan_results(void)
 
         if (ssid[0] == '\0') continue;
 
-        /* Classify: drone pattern match, soft match, or unmatched */
+        /* Classify only useful scan hits. Generic unmatched APs create a lot
+         * of queue/UART noise and don't materially help drone detection. */
         const drone_ssid_pattern_t *pattern = wifi_ssid_match(ssid);
         bool soft = (!pattern && wifi_ssid_match_soft(ssid));
+        const oui_entry_t *oui = wifi_oui_lookup_raw(bssid);
+        bool strong_oui = (oui && !oui->high_false_positive);
 
         /* Rate-limit repeated BSSIDs (hard or soft match). Unmatched SSIDs
          * fall through as low-confidence wifi_oui and are also subject to
@@ -1301,7 +1322,6 @@ static void process_scan_results(void)
             continue;
         }
 
-        /* Build detection for every AP — backend handles filtering */
         drone_detection_t det;
         init_detection(&det, bssid, rssi, ssid);
         det.freq_mhz = (ch <= 13) ? (2407 + ch * 5) : (5000 + ch * 5);
@@ -1318,6 +1338,14 @@ static void process_scan_results(void)
             strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
             update_hot_channel(ch);
             add_channel_heat(ch, 4);  /* SSID match = medium heat */
+        } else if (strong_oui) {
+            det.source = DETECTION_SRC_WIFI_OUI;
+            det.confidence = 0.40f;
+            strncpy(det.manufacturer, oui->manufacturer,
+                    sizeof(det.manufacturer) - 1);
+            format_bssid(bssid, det.drone_id, sizeof(det.drone_id));
+            update_hot_channel(ch);
+            add_channel_heat(ch, 3);  /* OUI match = medium-low heat */
         } else if (soft && rssi_track_update(bssid, rssi)) {
             /* Soft match only admitted when RSSI has moved — static APs
              * with drone-like names are dropped. */
@@ -1331,9 +1359,9 @@ static void process_scan_results(void)
             /* Soft match without movement — skip entirely. */
             continue;
         } else {
-            det.source = DETECTION_SRC_WIFI_OUI;
-            det.confidence = 0.05f;
-            strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
+            /* Unmatched AP scan result — keep local only. Promiscuous-mode
+             * beacon parsing still captures stronger WiFi drone signals. */
+            continue;
         }
 
         if (s_detection_queue) {
@@ -1348,14 +1376,7 @@ static void process_scan_results(void)
 
 static void do_full_scan(void)
 {
-    wifi_scan_config_t cfg = {
-        .ssid        = NULL,
-        .bssid       = NULL,
-        .channel     = 0,           /* all channels */
-        .show_hidden = true,
-        .scan_type   = WIFI_SCAN_TYPE_PASSIVE,  /* Passive = listen only, no probe TX */
-        .scan_time.passive = 100,               /* 100ms per channel passive dwell */
-    };
+    wifi_scan_config_t cfg = make_passive_scan_config(0, FULL_SCAN_PASSIVE_MS);
 
     esp_err_t err = esp_wifi_scan_start(&cfg, true);
     if (err != ESP_OK) {
@@ -1373,14 +1394,8 @@ static void do_fast_rescan(void)
     if (s_hot_channel_count == 0) return;
 
     for (int i = 0; i < s_hot_channel_count; i++) {
-        wifi_scan_config_t cfg = {
-            .ssid        = NULL,
-            .bssid       = NULL,
-            .channel     = s_hot_channels[i].channel,  /* single hot channel */
-            .show_hidden = true,
-            .scan_type   = WIFI_SCAN_TYPE_PASSIVE,  /* Passive = listen only */
-            .scan_time.passive = 50,                /* 50ms per hot channel */
-        };
+        wifi_scan_config_t cfg = make_passive_scan_config(s_hot_channels[i].channel,
+                                                          HOT_SCAN_PASSIVE_MS);
 
         esp_err_t err = esp_wifi_scan_start(&cfg, true);
         if (err != ESP_OK) continue;
@@ -1395,6 +1410,12 @@ static void wifi_scan_task(void *arg)
     ESP_LOGI(TAG, "WiFi scan task started on core %d", xPortGetCoreID());
     ESP_LOGI(TAG, "Adaptive scan: full every %dms, fast rescan every %dms on hot channels",
              FULL_SCAN_INTERVAL_MS, FAST_RESCAN_INTERVAL_MS);
+#if defined(WIFI_SCANNER_ONLY)
+    ESP_LOGI(TAG, "WiFi passive scan dwell: full=%dms hot=%dms",
+             FULL_SCAN_PASSIVE_MS, HOT_SCAN_PASSIVE_MS);
+#else
+    ESP_LOGI(TAG, "WiFi passive scans using BLE-safe default dwell timing");
+#endif
 
     TickType_t last_full_scan = 0;
     TickType_t last_heartbeat = xTaskGetTickCount();
@@ -1423,7 +1444,7 @@ static void wifi_scan_task(void *arg)
         /* Heartbeat */
         if ((now - last_heartbeat) >= pdMS_TO_TICKS(10000)) {
             last_heartbeat = now;
-            ESP_LOGI(TAG, "scan: tot=%lu bcn=%lu hot_ch=%d",
+            ESP_LOGD(TAG, "scan: tot=%lu bcn=%lu hot_ch=%d",
                      (unsigned long)s_total_frames,
                      (unsigned long)s_beacon_frames,
                      s_hot_channel_count);
