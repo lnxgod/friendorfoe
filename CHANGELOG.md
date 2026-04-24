@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.63.14-calibration-ci] - 2026-04-23
+
+### Fixed
+- Fixed scanner OLED page-indicator buffer sizing so clean ESP32 CI builds do not fail under `-Werror=format-truncation`.
+
+### Release
+- Recut the calibration validation release after the final scanner clean-build fix.
+
 ## [0.63.13-calibration-ci] - 2026-04-23
 
 ### Fixed

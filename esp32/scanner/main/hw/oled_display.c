@@ -506,7 +506,7 @@ void oled_show_detection_paged(const char *drone_id, const char *manufacturer,
         fb_draw_string(0, 45, line);
 
         /* Right-aligned page indicator (e.g. "2/5") */
-        char page_str[8];
+        char page_str[24];
         snprintf(page_str, sizeof(page_str), "%d/%d", page_current, page_total);
         int len = (int)strlen(page_str);
         int px = 128 - len * 6;  /* 6px per char */
@@ -570,7 +570,7 @@ void oled_show_glasses_paged(const char *device_type, const char *manufacturer,
     fb_draw_string(0, 45, line);
 
     if (page_total > 1) {
-        char page_str[8];
+        char page_str[24];
         snprintf(page_str, sizeof(page_str), "%d/%d", page_current, page_total);
         int len = (int)strlen(page_str);
         int px = 128 - len * 6;
