@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.63.13-calibration-ci] - 2026-04-23
+
+### Fixed
+- Fixed a scanner BLE focus prototype mismatch that clean GitHub Actions builds treat as an error, keeping the ESP32 web-flasher release workflow aligned with local firmware builds.
+- Restored standalone BLE scanner builds after the combo-scanner calibration mode refactor by providing a normal-mode compatibility path and linking the shared detection policy implementation.
+- Restored single-slot legacy uplink builds by keeping scanner UART routing from referencing the WiFi scanner UART when `CONFIG_DUAL_SCANNER=0`.
+- Bumped unified ESP32 firmware reporting to `0.63.0-svc136` for this release candidate.
+
+### Release
+- Recut the calibration validation release so Android, backend, and ESP32 release gates can all pass from a clean checkout.
+
 ## [0.63.12-calibration-ci] - 2026-04-23
 
 ### Fixed
