@@ -92,7 +92,12 @@ static _Atomic bool *backpressure_flag_for_scanner(int scanner_id)
 
 static uart_port_t scanner_uart_for_id(int scanner_id)
 {
+#if CONFIG_DUAL_SCANNER
     return (scanner_id == 0) ? CONFIG_BLE_SCANNER_UART : CONFIG_WIFI_SCANNER_UART;
+#else
+    (void)scanner_id;
+    return CONFIG_BLE_SCANNER_UART;
+#endif
 }
 
 static void send_scanner_flow_cmd(int scanner_id, const char *type)

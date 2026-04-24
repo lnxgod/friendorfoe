@@ -501,7 +501,6 @@ static void uart_cmd_listener_task(void *arg)
                                            &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6) {
                                     for (int j = 0; j < 6; j++) mac[j] = (uint8_t)m[j];
                                     ESP_LOGW(TAG, "BLE FOCUS: %s dur=%ds", mac_j->valuestring, duration);
-                                    extern void ble_rid_lockon(const uint8_t *mac, int duration_s);
                                     ble_rid_lockon(mac, duration);
                                 }
                             }
@@ -513,7 +512,6 @@ static void uart_cmd_listener_task(void *arg)
                                 continue;
                             }
                             ESP_LOGI(TAG, "BLE FOCUS cancel");
-                            extern void ble_rid_lockon_cancel(void);
                             ble_rid_lockon_cancel();
 #endif /* !WIFI_SCANNER_ONLY */
 

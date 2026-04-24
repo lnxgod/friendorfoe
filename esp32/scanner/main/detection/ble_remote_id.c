@@ -20,8 +20,30 @@
 #include "constants.h"
 #include "detection_types.h"
 #include "detection_policy.h"
-#include "calibration_mode.h"
 #include "core/task_priorities.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#if defined(BLE_SCANNER_BOARD)
+/* The standalone BLE scanner reuses this detector without the combo scanner's
+ * UART-driven calibration-mode component. It always runs in normal scan mode. */
+static inline bool scanner_calibration_mode_is_active(void)
+{
+    return false;
+}
+
+static inline bool scanner_calibration_mode_allows_ble_uuid128(
+    const uint8_t uuids[][16],
+    uint8_t count)
+{
+    (void)uuids;
+    (void)count;
+    return true;
+}
+#else
+#include "calibration_mode.h"
+#endif
 
 #if CONFIG_FOF_GLASSES_DETECTION
 #include "glasses_detector.h"
@@ -84,7 +106,7 @@ static struct {
     uint32_t target_adv_count;      /* how many ads from target during focus */
 } s_ble_focus = {0};
 
-void ble_rid_lockon(const uint8_t *mac, int duration_s)
+void ble_rid_lockon(const uint8_t mac[6], int duration_s)
 {
     memcpy(s_ble_focus.target_mac, mac, 6);
     s_ble_focus.start_ms = esp_timer_get_time() / 1000;

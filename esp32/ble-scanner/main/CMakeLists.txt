@@ -10,6 +10,7 @@ idf_component_register(
          "../../scanner/main/detection/open_drone_id_parser.c"
          "../../scanner/main/detection/bayesian_fusion.c"
          "../../scanner/main/detection/glasses_detector.c"
+         "../../shared/detection_policy.c"
     INCLUDE_DIRS "." "comms" "core" "hw" "detection"
                  "../../scanner/main/detection"
                  "../../shared"
