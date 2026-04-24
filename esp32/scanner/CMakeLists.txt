@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.16)
 
 set(EXTRA_COMPONENT_DIRS
     "main"
-    "managed_components/espressif__led_strip"
 )
 # Read version from shared/version.h (single source of truth)
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../shared/version.h" _ver_line REGEX "FOF_VERSION")

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.63.12-calibration-ci] - 2026-04-23
+
+### Fixed
+- Removed the scanner firmware build's hardcoded dependency on ignored `managed_components/` checkout state so clean GitHub Actions builds fetch `espressif/led_strip` from the checked-in component manifest.
+
+### Release
+- Recut the calibration validation release after the ESP32 web-flasher clean-checkout fix.
+
 ## [0.63.11-calibration-ci] - 2026-04-23
 
 ### Fixed
