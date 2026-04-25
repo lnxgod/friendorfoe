@@ -23,6 +23,7 @@
 #include "constants.h"
 #include "detection_types.h"
 #include "detection_policy.h"
+#include "calibration_mode.h"
 #include "core/task_priorities.h"
 
 #include <stdlib.h>
@@ -677,6 +678,72 @@ static bool beacon_rate_limit_allow(const uint8_t *bssid, int8_t rssi, int64_t t
     return true;
 }
 
+/* ── Diagnostic AP inventory rate-limit cache ────────────────────────────── */
+
+#define AP_INV_CACHE_SLOTS     128
+#define AP_INV_RATE_LIMIT_MS   600000  /* 10 min */
+#define AP_INV_RSSI_DELTA_DB   10
+
+typedef struct {
+    uint8_t  bssid[6];
+    char     ssid[33];
+    uint8_t  authmode;
+    uint8_t  channel;
+    int8_t   last_rssi;
+    int64_t  last_seen_ms;
+    bool     in_use;
+} ap_inventory_cache_entry_t;
+
+static ap_inventory_cache_entry_t s_ap_inventory_cache[AP_INV_CACHE_SLOTS];
+static int s_ap_inventory_cache_idx = 0;
+
+static bool ap_inventory_rate_limit_allow(const uint8_t *bssid,
+                                          const char *ssid,
+                                          uint8_t authmode,
+                                          uint8_t channel,
+                                          int8_t rssi,
+                                          int64_t ts_ms)
+{
+    for (int i = 0; i < AP_INV_CACHE_SLOTS; i++) {
+        ap_inventory_cache_entry_t *slot = &s_ap_inventory_cache[i];
+        if (!slot->in_use || memcmp(slot->bssid, bssid, 6) != 0) {
+            continue;
+        }
+        int delta = (int)rssi - (int)slot->last_rssi;
+        if (delta < 0) {
+            delta = -delta;
+        }
+        bool changed = strcmp(slot->ssid, ssid ? ssid : "") != 0 ||
+                       slot->authmode != authmode ||
+                       slot->channel != channel ||
+                       delta >= AP_INV_RSSI_DELTA_DB;
+        if (!changed && (ts_ms - slot->last_seen_ms) < AP_INV_RATE_LIMIT_MS) {
+            return false;
+        }
+        strncpy(slot->ssid, ssid ? ssid : "", sizeof(slot->ssid) - 1);
+        slot->ssid[sizeof(slot->ssid) - 1] = '\0';
+        slot->authmode = authmode;
+        slot->channel = channel;
+        slot->last_rssi = rssi;
+        slot->last_seen_ms = ts_ms;
+        return true;
+    }
+
+    ap_inventory_cache_entry_t *slot =
+        &s_ap_inventory_cache[s_ap_inventory_cache_idx];
+    memset(slot, 0, sizeof(*slot));
+    memcpy(slot->bssid, bssid, 6);
+    strncpy(slot->ssid, ssid ? ssid : "", sizeof(slot->ssid) - 1);
+    slot->authmode = authmode;
+    slot->channel = channel;
+    slot->last_rssi = rssi;
+    slot->last_seen_ms = ts_ms;
+    slot->in_use = true;
+    s_ap_inventory_cache_idx = (s_ap_inventory_cache_idx + 1) %
+                               AP_INV_CACHE_SLOTS;
+    return true;
+}
+
 /* ── Probe request rate-limit cache ───────────────────────────────────────── */
 
 /* Bumped from 16 to 128 on S3 — crowded networks have far more than 16
@@ -1295,13 +1362,6 @@ static void process_scan_results(void)
         const oui_entry_t *oui = wifi_oui_lookup_raw(bssid);
         bool strong_oui = (oui && !oui->high_false_positive);
 
-        /* Rate-limit repeated BSSIDs (hard or soft match). Unmatched SSIDs
-         * fall through as low-confidence wifi_oui and are also subject to
-         * the rate limit so background APs don't flood the stream. */
-        if (!beacon_rate_limit_allow(bssid, rssi, scan_ts)) {
-            continue;
-        }
-
         drone_detection_t det;
         init_detection(&det, bssid, rssi, ssid);
         det.freq_mhz = (ch <= 13) ? (2407 + ch * 5) : (5000 + ch * 5);
@@ -1311,6 +1371,9 @@ static void process_scan_results(void)
         det.wifi_auth_mode = (uint8_t)ap_list[i].authmode;
 
         if (pattern) {
+            if (!beacon_rate_limit_allow(bssid, rssi, scan_ts)) {
+                continue;
+            }
             det.source = DETECTION_SRC_WIFI_SSID;
             det.confidence = 0.30f;
             strncpy(det.manufacturer, pattern->manufacturer,
@@ -1319,6 +1382,9 @@ static void process_scan_results(void)
             update_hot_channel(ch);
             add_channel_heat(ch, 4);  /* SSID match = medium heat */
         } else if (strong_oui) {
+            if (!beacon_rate_limit_allow(bssid, rssi, scan_ts)) {
+                continue;
+            }
             det.source = DETECTION_SRC_WIFI_OUI;
             det.confidence = 0.40f;
             strncpy(det.manufacturer, oui->manufacturer,
@@ -1327,6 +1393,9 @@ static void process_scan_results(void)
             update_hot_channel(ch);
             add_channel_heat(ch, 3);  /* OUI match = medium-low heat */
         } else if (soft && rssi_track_update(bssid, rssi)) {
+            if (!beacon_rate_limit_allow(bssid, rssi, scan_ts)) {
+                continue;
+            }
             /* Soft match only admitted when RSSI has moved — static APs
              * with drone-like names are dropped. */
             det.source = DETECTION_SRC_WIFI_SSID;
@@ -1339,9 +1408,29 @@ static void process_scan_results(void)
             /* Soft match without movement — skip entirely. */
             continue;
         } else {
-            /* Unmatched AP scan result — keep local only. Promiscuous-mode
-             * beacon parsing still captures stronger WiFi drone signals. */
-            continue;
+            if (scanner_calibration_mode_is_active()) {
+                continue;
+            }
+            if (!ap_inventory_rate_limit_allow(
+                    bssid,
+                    ssid,
+                    (uint8_t)ap_list[i].authmode,
+                    (uint8_t)ch,
+                    rssi,
+                    scan_ts)) {
+                continue;
+            }
+            det.source = DETECTION_SRC_WIFI_AP_INVENTORY;
+            det.confidence = 0.01f;
+            if (oui && oui->manufacturer[0]) {
+                strncpy(det.manufacturer, oui->manufacturer,
+                        sizeof(det.manufacturer) - 1);
+            } else {
+                strncpy(det.manufacturer, "Unknown", sizeof(det.manufacturer) - 1);
+            }
+            format_bssid(bssid, det.drone_id, sizeof(det.drone_id));
+            strncpy(det.class_reason, "passive_ap_inventory",
+                    sizeof(det.class_reason) - 1);
         }
 
         if (s_detection_queue) {

@@ -53,6 +53,7 @@ static const char *source_name(uint8_t src)
         case DETECTION_SRC_WIFI_PROBE_REQUEST: return "WiFi Probe";
         case DETECTION_SRC_BLE_FINGERPRINT:    return "BLE FP";
         case DETECTION_SRC_WIFI_ASSOC:         return "WiFi Assoc";
+        case DETECTION_SRC_WIFI_AP_INVENTORY:  return "WiFi AP Inv";
         default: return "Unknown";
     }
 }
@@ -98,6 +99,50 @@ static bool scanner_mode_matches(const scanner_info_t *info,
         return strcmp(info->calibration_uuid, expected_uuid) == 0;
     }
     return true;
+}
+
+static bool scanner_connected_mode_matches(bool connected,
+                                           const scanner_info_t *info,
+                                           const char *expected_mode,
+                                           const char *expected_uuid,
+                                           bool require_ack)
+{
+    if (!connected) {
+        return true;
+    }
+    return scanner_mode_matches(info, expected_mode, expected_uuid, require_ack);
+}
+
+static const char *aggregate_calibration_scan_mode(void)
+{
+    const char *uuid = uart_rx_get_node_calibration_uuid();
+    bool root_cal = uart_rx_is_node_calibration_mode();
+    bool ble_conn = uart_rx_is_ble_scanner_connected();
+#if CONFIG_DUAL_SCANNER
+    bool wifi_conn = uart_rx_is_wifi_scanner_connected();
+#else
+    bool wifi_conn = false;
+#endif
+
+    bool slots_normal =
+        scanner_connected_mode_matches(
+            ble_conn, uart_rx_get_ble_scanner_info(), "normal", "", false) &&
+        scanner_connected_mode_matches(
+            wifi_conn, uart_rx_get_wifi_scanner_info(), "normal", "", false);
+
+    bool slots_calibration =
+        scanner_connected_mode_matches(
+            ble_conn, uart_rx_get_ble_scanner_info(), "calibration", uuid, true) &&
+        scanner_connected_mode_matches(
+            wifi_conn, uart_rx_get_wifi_scanner_info(), "calibration", uuid, true);
+
+    if (!root_cal && slots_normal) {
+        return "normal";
+    }
+    if (root_cal && slots_calibration) {
+        return "calibration";
+    }
+    return "degraded";
 }
 
 static bool wait_for_node_mode(const char *expected_mode,
@@ -1192,6 +1237,19 @@ static const httpd_uri_t uri_status_html = {
     .handler  = status_html_handler,
 };
 
+static esp_err_t health_json_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+static const httpd_uri_t uri_health_json = {
+    .uri      = "/health",
+    .method   = HTTP_GET,
+    .handler  = health_json_handler,
+};
+
 static const httpd_uri_t uri_status_json = {
     .uri      = "/api/status",
     .method   = HTTP_GET,
@@ -1246,16 +1304,19 @@ static esp_err_t calibration_mode_status_handler(httpd_req_t *req)
     const scanner_info_t *wifi = NULL;
 #endif
 
-    char resp[640];
+    const char *aggregate_mode = aggregate_calibration_scan_mode();
+    char resp[720];
     snprintf(
         resp,
         sizeof(resp),
         "{\"ok\":true,\"scan_mode\":\"%s\",\"session_id\":\"%s\",\"calibration_uuid\":\"%s\","
+        "\"root_scan_mode\":\"%s\","
         "\"ble\":{\"connected\":%s,\"acked\":%s,\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\"},"
         "\"wifi\":{\"connected\":%s,\"acked\":%s,\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\"}}",
-        uart_rx_get_node_scan_mode(),
+        aggregate_mode,
         uart_rx_get_node_calibration_session_id(),
         uart_rx_get_node_calibration_uuid(),
+        uart_rx_get_node_scan_mode(),
         uart_rx_is_ble_scanner_connected() ? "true" : "false",
         (ble && ble->calibration_mode_acked) ? "true" : "false",
         (ble && ble->scan_mode[0]) ? ble->scan_mode : "unknown",
@@ -1272,9 +1333,10 @@ static esp_err_t calibration_mode_status_handler(httpd_req_t *req)
 static esp_err_t calibration_mode_start_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
-    if (uart_rx_is_node_calibration_mode()) {
+    const char *aggregate_mode = aggregate_calibration_scan_mode();
+    if (strcmp(aggregate_mode, "normal") != 0) {
         httpd_resp_set_status(req, "409 Conflict");
-        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"calibration_mode_already_active\"}");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"calibration_mode_not_normal\"}");
         return ESP_OK;
     }
 
@@ -1357,25 +1419,30 @@ static esp_err_t calibration_mode_start_handler(httpd_req_t *req)
 static esp_err_t calibration_mode_stop_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
-    if (!uart_rx_is_node_calibration_mode()) {
+    const char *aggregate_mode = aggregate_calibration_scan_mode();
+    if (!uart_rx_is_node_calibration_mode() && strcmp(aggregate_mode, "normal") == 0) {
         httpd_resp_sendstr(req, "{\"ok\":true,\"scan_mode\":\"normal\"}");
         return ESP_OK;
     }
 
     char cmd[128];
+    const char *session_id = uart_rx_get_node_calibration_session_id();
+    if (!session_id || session_id[0] == '\0') {
+        session_id = "stale";
+    }
     snprintf(
         cmd,
         sizeof(cmd),
         "{\"type\":\"%s\",\"session_id\":\"%s\"}",
         MSG_TYPE_CAL_MODE_STOP,
-        uart_rx_get_node_calibration_session_id()
+        session_id
     );
     uart_rx_send_command(cmd);
     if (!wait_for_node_mode("normal", "", 2500, false)) {
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_sendstr(
             req,
-            "{\"ok\":false,\"scan_mode\":\"calibration\","
+            "{\"ok\":false,\"scan_mode\":\"degraded\","
             "\"error\":\"scanner_calibration_stop_ack_timeout\"}"
         );
         return ESP_OK;
@@ -1391,8 +1458,8 @@ void http_status_init(void)
     config.server_port    = CONFIG_HTTP_STATUS_PORT;
     config.task_priority  = CONFIG_HTTP_STATUS_PRIORITY;
     config.stack_size     = 6144;   /* Minimal — relay uses static buffers, not stack */
-    config.max_uri_handlers = 20;   /* status/setup/scan/connect/ota*3/fw*3/cal-mode*3 + headroom */
-    config.max_open_sockets = 1;  /* Single connection only — saves ~4KB per socket */
+    config.max_uri_handlers = 21;   /* status/setup/scan/connect/ota*3/fw*3/cal-mode*3/health + headroom */
+    config.max_open_sockets = 2;    /* One OTA/status client plus one recovery probe. */
     config.lru_purge_enable = true; /* Close idle connections aggressively */
     config.recv_wait_timeout  = 60;  /* 60s timeout for large OTA uploads */
     config.send_wait_timeout  = 60;
@@ -1407,6 +1474,7 @@ void http_status_init(void)
 
     esp_err_t r;
     r = httpd_register_uri_handler(server, &uri_status_html);  if (r != ESP_OK) ESP_LOGE(TAG, "Failed /: %s", esp_err_to_name(r));
+    r = httpd_register_uri_handler(server, &uri_health_json);  if (r != ESP_OK) ESP_LOGE(TAG, "Failed /health: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_status_json);  if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/status: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_setup_html);   if (r != ESP_OK) ESP_LOGE(TAG, "Failed /setup: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_scan_json);    if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/scan: %s", esp_err_to_name(r));

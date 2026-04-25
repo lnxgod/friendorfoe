@@ -39,6 +39,14 @@ class CalibrationViewModel @Inject constructor(
     private val api: CalibrationBackend,
     private val platform: CalibrationPlatform,
 ) : ViewModel() {
+    private companion object {
+        const val ANCHOR_PHONE_GPS = "phone_gps"
+        const val ANCHOR_SENSOR_FALLBACK = "sensor_position_fallback"
+        const val CHECKPOINT_HEARD_FRESH_S = 3.0
+        const val CHECKPOINT_GOOD_GPS_ACCURACY_M = 10f
+        const val CHECKPOINT_RETRY_AFTER_MS = 3500L
+    }
+
     /** One sensor as known to the fleet — drives the "tap which sensor
      *  you're at" cards and the live RSSI feedback table. */
     data class SensorInfo(
@@ -48,6 +56,7 @@ class CalibrationViewModel @Inject constructor(
         val lon: Double,
         val online: Boolean,
         val ageS: Double?,
+        val modeState: String? = null,
     )
 
     data class TargetNode(
@@ -55,6 +64,7 @@ class CalibrationViewModel @Inject constructor(
         val name: String,
         val lat: Double?,
         val lon: Double?,
+        val modeState: String? = null,
     )
 
     /** Live snapshot of "what the fleet is hearing right now". */
@@ -67,6 +77,8 @@ class CalibrationViewModel @Inject constructor(
         val sampleCountTotal: Int = 0,
         val scannerSlotsSeen: Int? = null,
         val acceptedIntoFit: Boolean = false,
+        val checkpointStatus: String? = null,
+        val anchorSource: String? = null,
         val gpsDistanceM: Double?,
         // Closed-loop readiness — tells the operator when this sensor
         // has enough data to fit cleanly, so they know whether to keep
@@ -120,6 +132,43 @@ class CalibrationViewModel @Inject constructor(
         val strongestAtTouch: String?,
         val warnings: List<String>,
         val tsMs: Long,
+        val anchorSource: String = ANCHOR_PHONE_GPS,
+    )
+
+    enum class CheckpointPhase {
+        Idle,
+        WaitingForNodeHearing,
+        SyncingCheckpoint,
+        AnchorLocked,
+        CollectingRange,
+        ReadyForNext,
+        NeedsAttention,
+    }
+
+    data class ActiveCheckpointLock(
+        val sensorId: String,
+        val sensorName: String,
+        val phase: CheckpointPhase = CheckpointPhase.WaitingForNodeHearing,
+        val startedAtMs: Long = System.currentTimeMillis(),
+        val updatedAtMs: Long = startedAtMs,
+        val statusText: String = "Stand still at this node while the fleet hears your phone.",
+        val detailText: String? = null,
+        val anchorSource: String? = null,
+        val gpsAccuracyM: Float? = null,
+        val lastRssi: Int? = null,
+        val lastHeardAgeS: Double? = null,
+        val samplesCount: Int = 0,
+        val samplesNeeded: Int = 20,
+        val distanceRangeM: Double = 0.0,
+        val backendSynced: Boolean = false,
+    )
+
+    private data class AnchorSelection(
+        val lat: Double,
+        val lon: Double,
+        val accuracyM: Float?,
+        val anchorSource: String,
+        val detailText: String,
     )
 
     /** Backend reachability indicator shown next to the URL field. */
@@ -138,6 +187,7 @@ class CalibrationViewModel @Inject constructor(
         val sensorId: String,
         val lat: Double, val lon: Double,
         val tsMs: Long, val accuracyM: Float?,
+        val anchorSource: String,
     )
 
     data class State(
@@ -160,6 +210,7 @@ class CalibrationViewModel @Inject constructor(
         val sensorsHearingMe: List<SensorReading> = emptyList(),
         val availableSensors: List<SensorInfo> = emptyList(),
         val checkpointResults: Map<String, CheckpointResult> = emptyMap(),
+        val activeCheckpoint: ActiveCheckpointLock? = null,
         val sessionReadiness: SessionReadiness = SessionReadiness(),
         /** Live "phone GPS vs fleet's triangulated position" + convergence
          *  telemetry. Updated by a ~1 Hz poll during the walk. */
@@ -281,21 +332,12 @@ class CalibrationViewModel @Inject constructor(
             } ?: break
             val res = api.walkCheckpoint(baseUrl, token, sessionId,
                                          next.sensorId, next.lat, next.lon,
-                                         next.accuracyM, next.tsMs)
+                                         next.accuracyM, next.tsMs,
+                                         next.anchorSource)
             if (res.isFailure) return
             val body = res.getOrNull()
             if (body != null) {
-                val warnings = body.getAsJsonArray("warnings")?.map { it.asString } ?: emptyList()
-                val cr = CheckpointResult(
-                    sensorId = next.sensorId,
-                    severity = body.get("severity")?.asString ?: "warn",
-                    gpsDriftM = body.get("gps_drift_m")?.takeIf { !it.isJsonNull }?.asDouble,
-                    rssiAtTouch = body.get("rssi_at_touch")?.takeIf { !it.isJsonNull }?.asInt,
-                    strongestAtTouch = body.get("strongest_sensor_at_touch")
-                        ?.takeIf { !it.isJsonNull }?.asString,
-                    warnings = warnings,
-                    tsMs = next.tsMs,
-                )
+                val cr = parseCheckpointResult(body, next.sensorId, next.tsMs, next.anchorSource)
                 _state.value = _state.value.copy(
                     checkpointResults = _state.value.checkpointResults + (next.sensorId to cr),
                 )
@@ -333,6 +375,7 @@ class CalibrationViewModel @Inject constructor(
                     lon = obj.get("lon")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0,
                     online = obj.get("online")?.takeIf { !it.isJsonNull }?.asBoolean ?: true,
                     ageS = obj.get("age_s")?.takeIf { !it.isJsonNull }?.asDouble,
+                    modeState = obj.get("mode_state")?.takeIf { !it.isJsonNull }?.asString,
                 )
             )
         }
@@ -350,6 +393,7 @@ class CalibrationViewModel @Inject constructor(
                     name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: deviceId,
                     lat = obj.get("lat")?.takeIf { !it.isJsonNull }?.asDouble,
                     lon = obj.get("lon")?.takeIf { !it.isJsonNull }?.asDouble,
+                    modeState = obj.get("mode_state")?.takeIf { !it.isJsonNull }?.asString,
                 )
             )
         }
@@ -370,6 +414,250 @@ class CalibrationViewModel @Inject constructor(
             addProperty("ready_overall", s.sessionReadiness.readyOverall)
             addProperty("reason", if (s.samplesTotal > 0) "local_walk_summary" else "no_samples_collected")
         }
+    }
+
+    private fun parseCheckpointResult(
+        body: JsonObject,
+        sensorId: String,
+        tsMs: Long,
+        requestedAnchorSource: String,
+    ): CheckpointResult {
+        val warnings = body.getAsJsonArray("warnings")?.map { it.asString } ?: emptyList()
+        return CheckpointResult(
+            sensorId = sensorId,
+            severity = body.get("severity")?.asString ?: "warn",
+            gpsDriftM = body.get("gps_drift_m")?.takeIf { !it.isJsonNull }?.asDouble,
+            rssiAtTouch = body.get("rssi_at_touch")?.takeIf { !it.isJsonNull }?.asInt,
+            strongestAtTouch = body.get("strongest_sensor_at_touch")
+                ?.takeIf { !it.isJsonNull }?.asString,
+            warnings = warnings,
+            tsMs = tsMs,
+            anchorSource = body.get("anchor_source")
+                ?.takeIf { !it.isJsonNull }
+                ?.asString
+                ?: requestedAnchorSource,
+        )
+    }
+
+    private fun selectCheckpointAnchor(sensor: SensorInfo, state: State): AnchorSelection {
+        val phoneLat = state.phoneLat
+        val phoneLon = state.phoneLon
+        val gpsAccuracy = state.gpsAccuracyM
+        val hasGoodGps = state.phoneLat != null &&
+            state.phoneLon != null &&
+            gpsAccuracy != null &&
+            gpsAccuracy <= CHECKPOINT_GOOD_GPS_ACCURACY_M
+
+        return if (hasGoodGps) {
+            AnchorSelection(
+                lat = phoneLat!!,
+                lon = phoneLon!!,
+                accuracyM = gpsAccuracy,
+                anchorSource = ANCHOR_PHONE_GPS,
+                detailText = "Phone GPS accepted (±${"%.0f".format(gpsAccuracy)} m).",
+            )
+        } else {
+            val gpsDetail = when {
+                phoneLat == null || phoneLon == null -> "Phone GPS unavailable."
+                gpsAccuracy == null -> "Phone GPS accuracy unavailable."
+                else -> "Phone GPS is ±${"%.0f".format(gpsAccuracy)} m, above the ${CHECKPOINT_GOOD_GPS_ACCURACY_M.toInt()} m lock gate."
+            }
+            AnchorSelection(
+                lat = sensor.lat,
+                lon = sensor.lon,
+                accuracyM = null,
+                anchorSource = ANCHOR_SENSOR_FALLBACK,
+                detailText = "$gpsDetail Using saved coordinates for ${sensor.name}.",
+            )
+        }
+    }
+
+    private fun freshHearing(reading: SensorReading?): Boolean {
+        if (reading == null) return false
+        val rssi = reading.lastRssi ?: reading.rssi
+        val age = reading.lastHeardAgeS ?: if (reading.samplesInWindow > 0) 0.0 else 999.0
+        return rssi != null && age <= CHECKPOINT_HEARD_FRESH_S
+    }
+
+    private fun activeCheckpointReading(state: State): SensorReading? {
+        val lock = state.activeCheckpoint ?: return null
+        return state.sensorsHearingMe.firstOrNull { it.sensorId == lock.sensorId }
+    }
+
+    private fun activeCheckpointSensor(state: State): SensorInfo? {
+        val lock = state.activeCheckpoint ?: return null
+        return state.availableSensors.firstOrNull { it.deviceId == lock.sensorId }
+    }
+
+    private fun lockWithReading(
+        lock: ActiveCheckpointLock,
+        reading: SensorReading?,
+    ): ActiveCheckpointLock {
+        return lock.copy(
+            lastRssi = reading?.lastRssi ?: reading?.rssi ?: lock.lastRssi,
+            lastHeardAgeS = reading?.lastHeardAgeS ?: lock.lastHeardAgeS,
+            samplesCount = reading?.samplesCount ?: lock.samplesCount,
+            samplesNeeded = reading?.samplesNeeded ?: lock.samplesNeeded,
+            distanceRangeM = reading?.distanceRangeM ?: lock.distanceRangeM,
+        )
+    }
+
+    private fun updateActiveCheckpointFromFeedback() {
+        val state = _state.value
+        val lock = state.activeCheckpoint ?: return
+        val reading = activeCheckpointReading(state)
+        val result = state.checkpointResults[lock.sensorId]
+        val withReading = lockWithReading(lock, reading)
+        val nowMs = System.currentTimeMillis()
+
+        val next = when {
+            reading?.ready == true && lock.phase != CheckpointPhase.NeedsAttention -> withReading.copy(
+                phase = CheckpointPhase.ReadyForNext,
+                updatedAtMs = nowMs,
+                statusText = "This node is ready. Move to the next sensor.",
+                detailText = "Checkpoint synced, ${reading.samplesCount}/${reading.samplesNeeded} samples collected, ${"%.0f".format(reading.distanceRangeM)} m range.",
+                backendSynced = true,
+            )
+            result?.rssiAtTouch != null &&
+                withReading.phase in setOf(
+                    CheckpointPhase.AnchorLocked,
+                    CheckpointPhase.CollectingRange,
+                    CheckpointPhase.WaitingForNodeHearing,
+                    CheckpointPhase.SyncingCheckpoint,
+                ) -> withReading.copy(
+                    phase = CheckpointPhase.CollectingRange,
+                    updatedAtMs = nowMs,
+                    statusText = "Anchor locked. Move away slowly from this node.",
+                    detailText = "Collecting range: ${reading?.samplesCount ?: withReading.samplesCount}/${reading?.samplesNeeded ?: withReading.samplesNeeded} samples, ${"%.0f".format(reading?.distanceRangeM ?: withReading.distanceRangeM)} m range.",
+                    anchorSource = result.anchorSource,
+                    gpsAccuracyM = state.gpsAccuracyM,
+                    backendSynced = true,
+                )
+            else -> withReading
+        }
+
+        if (next != lock) {
+            _state.value = state.copy(activeCheckpoint = next)
+        }
+    }
+
+    private suspend fun submitActiveCheckpointIfReady() {
+        val state = _state.value
+        val lock = state.activeCheckpoint ?: return
+        if (lock.phase !in setOf(CheckpointPhase.WaitingForNodeHearing, CheckpointPhase.SyncingCheckpoint)) {
+            return
+        }
+        val nowMs = System.currentTimeMillis()
+        if (lock.phase == CheckpointPhase.SyncingCheckpoint &&
+            nowMs - lock.updatedAtMs < CHECKPOINT_RETRY_AFTER_MS) {
+            return
+        }
+        val sensor = activeCheckpointSensor(state) ?: return
+        val sessionId = state.sessionId ?: return
+        val reading = activeCheckpointReading(state)
+
+        if (!state.isWalking || !state.beaconOnAir || state.fleetModeState != "active") {
+            _state.value = state.copy(
+                activeCheckpoint = lockWithReading(lock, reading).copy(
+                    phase = CheckpointPhase.WaitingForNodeHearing,
+                    updatedAtMs = nowMs,
+                    statusText = "Waiting for active fleet calibration mode.",
+                    detailText = "Fleet=${state.fleetModeState}, beacon=${if (state.beaconOnAir) "on" else "off"}.",
+                )
+            )
+            return
+        }
+
+        if (!freshHearing(reading)) {
+            val age = reading?.lastHeardAgeS
+            val detail = if (reading?.lastRssi != null || reading?.rssi != null) {
+                "Last RSSI ${reading.lastRssi ?: reading.rssi} dBm" +
+                    (age?.let { ", ${"%.1f".format(it)} s ago" } ?: "")
+            } else {
+                "No packet from ${sensor.name} yet."
+            }
+            _state.value = state.copy(
+                activeCheckpoint = lockWithReading(lock, reading).copy(
+                    phase = CheckpointPhase.WaitingForNodeHearing,
+                    updatedAtMs = nowMs,
+                    statusText = "Stand still at ${sensor.name}; waiting for this exact node to hear you.",
+                    detailText = "$detail Need a packet within ${CHECKPOINT_HEARD_FRESH_S.toInt()} s before syncing.",
+                )
+            )
+            return
+        }
+
+        val anchor = selectCheckpointAnchor(sensor, state)
+        _state.value = state.copy(
+            activeCheckpoint = lockWithReading(lock, reading).copy(
+                phase = CheckpointPhase.SyncingCheckpoint,
+                updatedAtMs = nowMs,
+                statusText = "Packets heard. Syncing checkpoint with backend…",
+                detailText = anchor.detailText,
+                anchorSource = anchor.anchorSource,
+                gpsAccuracyM = state.gpsAccuracyM,
+            )
+        )
+
+        val res = api.walkCheckpoint(
+            baseUrl = state.backendUrl,
+            token = state.token,
+            sessionId = sessionId,
+            sensorId = sensor.deviceId,
+            lat = anchor.lat,
+            lon = anchor.lon,
+            accuracyM = anchor.accuracyM,
+            tsMs = nowMs,
+            anchorSource = anchor.anchorSource,
+        )
+
+        if (res.isFailure) {
+            val current = _state.value.activeCheckpoint ?: return
+            _state.value = _state.value.copy(
+                activeCheckpoint = lockWithReading(current, activeCheckpointReading(_state.value)).copy(
+                    phase = CheckpointPhase.SyncingCheckpoint,
+                    updatedAtMs = System.currentTimeMillis(),
+                    statusText = "Waiting to sync with backend. Stay at this node.",
+                    detailText = res.exceptionOrNull()?.message ?: "Backend checkpoint call failed.",
+                    anchorSource = anchor.anchorSource,
+                    gpsAccuracyM = state.gpsAccuracyM,
+                )
+            )
+            return
+        }
+
+        val body = res.getOrNull() ?: return
+        val cr = parseCheckpointResult(body, sensor.deviceId, nowMs, anchor.anchorSource)
+        val nextPhase = if (cr.rssiAtTouch == null || cr.severity == "error") {
+            CheckpointPhase.NeedsAttention
+        } else {
+            CheckpointPhase.AnchorLocked
+        }
+        val status = if (nextPhase == CheckpointPhase.NeedsAttention) {
+            "Checkpoint failed. Retry here before moving."
+        } else {
+            "Anchor locked. Move away slowly from this node."
+        }
+        _state.value = _state.value.copy(
+            checkpointResults = _state.value.checkpointResults + (sensor.deviceId to cr),
+            activeCheckpoint = lockWithReading(
+                _state.value.activeCheckpoint ?: lock,
+                activeCheckpointReading(_state.value),
+            ).copy(
+                phase = nextPhase,
+                updatedAtMs = System.currentTimeMillis(),
+                statusText = status,
+                detailText = if (nextPhase == CheckpointPhase.NeedsAttention) {
+                    cr.warnings.joinToString("; ").ifBlank { "Backend did not accept the anchor." }
+                } else {
+                    "RSSI@touch ${cr.rssiAtTouch} dBm. Now widen range until this sensor is ready."
+                },
+                anchorSource = cr.anchorSource,
+                gpsAccuracyM = state.gpsAccuracyM,
+                backendSynced = true,
+            ),
+        )
+        updateActiveCheckpointFromFeedback()
     }
 
     private suspend fun abortRemoteSession(
@@ -700,47 +988,20 @@ class CalibrationViewModel @Inject constructor(
                 return@launch
             }
 
-            // Subscribe to GPS — high-accuracy fixes at ~1 Hz
-            try {
-                platform.requestLocationUpdates(gpsListener)
-            } catch (e: SecurityException) {
-                advertiser.stop()
-                abortRemoteSession(
-                    baseUrl = s.backendUrl,
-                    token = s.token,
-                    sessionId = sid,
-                    reason = "location_permission_missing",
-                )
-                _state.value = _state.value.copy(
-                    beaconOnAir = false,
-                    sessionId = null,
-                    advertiseUuid = null,
-                    fleetModeState = "inactive",
-                    errorMessage = "Location permission missing."
-                )
-                return@launch
-            } catch (e: Exception) {
-                advertiser.stop()
-                abortRemoteSession(
-                    baseUrl = s.backendUrl,
-                    token = s.token,
-                    sessionId = sid,
-                    reason = "gps_unavailable",
-                )
-                _state.value = _state.value.copy(
-                    beaconOnAir = false,
-                    sessionId = null,
-                    advertiseUuid = null,
-                    fleetModeState = "inactive",
-                    errorMessage = "GPS unavailable: ${e.message}"
-                )
-                return@launch
-            }
-
             // Reset local queue state for the new session
             synchronized(queueLock) {
                 pendingSamples.clear()
                 pendingCheckpoints.clear()
+            }
+            var gpsWarning: String? = null
+            try {
+                // GPS is useful trace data, but it must not block the RF
+                // calibration session after the fleet and BLE beacon are live.
+                platform.requestLocationUpdates(gpsListener)
+            } catch (e: SecurityException) {
+                gpsWarning = "Walk is active, but Android denied location. Use 'I'm here' at each sensor; anchors will use saved sensor coordinates until GPS is fixed."
+            } catch (e: Exception) {
+                gpsWarning = "Walk is active, but GPS did not start (${e.message ?: "unknown error"}). Use 'I'm here' at each sensor; anchors will use saved sensor coordinates until GPS is fixed."
             }
             _state.value = _state.value.copy(
                 isWalking = true,
@@ -758,6 +1019,7 @@ class CalibrationViewModel @Inject constructor(
                 targetNodes = targetNodes,
                 sensorsHearingMe = emptyList(),
                 checkpointResults = emptyMap(),
+                activeCheckpoint = null,
                 myPosition = MyPosition(),
                 provisionalFitResult = null,
                 verifiedFitResult = null,
@@ -768,7 +1030,8 @@ class CalibrationViewModel @Inject constructor(
                 calibrationAuthState = CalibrationAuthState.Valid,
                 queuedCount = 0,
                 errorMessage = null,
-                infoMessage = "Fleet calibration mode is active and the beacon is on air — walk near each live node and tap 'I'm here' to anchor the fit.",
+                infoMessage = gpsWarning
+                    ?: "Fleet calibration mode is active and the beacon is on air — walk near each live node and tap 'I'm here' to anchor the fit.",
             )
             refreshNetworkState()
             startFeedbackPolling(sid)
@@ -842,64 +1105,59 @@ class CalibrationViewModel @Inject constructor(
     /** Operator walked up to a sensor and pressed its "I'm here" button. */
     fun markAtSensor(sensor: SensorInfo) {
         val s = _state.value
-        val sid = s.sessionId ?: run {
+        s.sessionId ?: run {
             _state.value = s.copy(errorMessage = "Start the walk first.")
             return
         }
-        val lat = s.phoneLat
-        val lon = s.phoneLon
-        if (lat == null || lon == null) {
-            _state.value = s.copy(errorMessage = "No GPS fix yet — wait for the phone to lock on.")
+        val active = s.activeCheckpoint
+        if (active != null &&
+            active.sensorId != sensor.deviceId &&
+            active.phase !in setOf(CheckpointPhase.ReadyForNext, CheckpointPhase.Idle)) {
+            _state.value = s.copy(
+                errorMessage = "Finish ${active.sensorName} before moving to another sensor.",
+            )
             return
         }
-        val nowMs = System.currentTimeMillis()
-        val accM = s.gpsAccuracyM
-        viewModelScope.launch {
-            val res = api.walkCheckpoint(
-                baseUrl = s.backendUrl, token = s.token,
-                sessionId = sid, sensorId = sensor.deviceId,
-                lat = lat, lon = lon,
-                accuracyM = accM, tsMs = nowMs,
-            )
-            if (res.isFailure) {
-                // Offline — queue the checkpoint so the fit anchor + sanity
-                // result still lands once connectivity returns. Show an
-                // optimistic "queued" card in the UI so the operator can
-                // keep walking without waiting.
-                enqueueCheckpoint(QueuedCheckpoint(
+        val startedAt = System.currentTimeMillis()
+        val reading = s.sensorsHearingMe.firstOrNull { it.sensorId == sensor.deviceId }
+        val anchor = selectCheckpointAnchor(sensor, s)
+        _state.value = s.copy(
+            errorMessage = null,
+            infoMessage = null,
+            activeCheckpoint = lockWithReading(
+                ActiveCheckpointLock(
                     sensorId = sensor.deviceId,
-                    lat = lat, lon = lon,
-                    tsMs = nowMs, accuracyM = accM,
-                ))
-                _state.value = _state.value.copy(
-                    checkpointResults = _state.value.checkpointResults + (sensor.deviceId to
-                        CheckpointResult(
-                            sensorId = sensor.deviceId,
-                            severity = "warn",
-                            gpsDriftM = null,
-                            rssiAtTouch = null,
-                            strongestAtTouch = null,
-                            warnings = listOf("queued_offline_will_sync_when_backend_reachable"),
-                            tsMs = nowMs,
-                        )),
-                )
-                return@launch
-            }
-            val body = res.getOrNull() ?: return@launch
-            val warnings = body.getAsJsonArray("warnings")?.map { it.asString } ?: emptyList()
-            val cr = CheckpointResult(
-                sensorId = sensor.deviceId,
-                severity = body.get("severity")?.asString ?: "warn",
-                gpsDriftM = body.get("gps_drift_m")?.takeIf { !it.isJsonNull }?.asDouble,
-                rssiAtTouch = body.get("rssi_at_touch")?.takeIf { !it.isJsonNull }?.asInt,
-                strongestAtTouch = body.get("strongest_sensor_at_touch")
-                    ?.takeIf { !it.isJsonNull }?.asString,
-                warnings = warnings,
-                tsMs = nowMs,
+                    sensorName = sensor.name,
+                    phase = CheckpointPhase.WaitingForNodeHearing,
+                    startedAtMs = startedAt,
+                    updatedAtMs = startedAt,
+                    statusText = "Stand still at ${sensor.name}; waiting for this exact node to hear you.",
+                    detailText = anchor.detailText,
+                    anchorSource = anchor.anchorSource,
+                    gpsAccuracyM = s.gpsAccuracyM,
+                ),
+                reading,
+            ),
+        )
+        viewModelScope.launch {
+            submitActiveCheckpointIfReady()
+        }
+    }
+
+    fun retryActiveCheckpoint() {
+        val s = _state.value
+        val lock = s.activeCheckpoint ?: return
+        _state.value = s.copy(
+            errorMessage = null,
+            activeCheckpoint = lock.copy(
+                phase = CheckpointPhase.WaitingForNodeHearing,
+                updatedAtMs = System.currentTimeMillis(),
+                statusText = "Retrying ${lock.sensorName}. Stand still at this node.",
+                detailText = null,
             )
-            _state.value = _state.value.copy(
-                checkpointResults = _state.value.checkpointResults + (sensor.deviceId to cr),
-            )
+        )
+        viewModelScope.launch {
+            submitActiveCheckpointIfReady()
         }
     }
 
@@ -949,6 +1207,7 @@ class CalibrationViewModel @Inject constructor(
                 walkStartedAtMs = null,
                 heardSensorCount = 0,
                 heardSensorIds = emptyList(),
+                activeCheckpoint = null,
                 provisionalFitResult = returnedProvisionalFit,
                 verifiedFitResult = verifiedFit,
                 fitApplied = applied,
@@ -985,6 +1244,7 @@ class CalibrationViewModel @Inject constructor(
                 walkStartedAtMs = null,
                 heardSensorCount = 0,
                 heardSensorIds = emptyList(),
+                activeCheckpoint = null,
                 infoMessage = userMessage,
             )
         }
@@ -1017,6 +1277,10 @@ class CalibrationViewModel @Inject constructor(
                                 scannerSlotsSeen = obj.get("scanner_slots_seen")
                                     ?.takeIf { !it.isJsonNull }?.asInt,
                                 acceptedIntoFit = obj.get("accepted_into_fit")?.asBoolean ?: false,
+                                checkpointStatus = obj.get("checkpoint_status")
+                                    ?.takeIf { !it.isJsonNull }?.asString,
+                                anchorSource = obj.get("anchor_source")
+                                    ?.takeIf { !it.isJsonNull }?.asString,
                                 gpsDistanceM = obj.get("distance_m_estimated_from_phone_gps")
                                     ?.takeIf { !it.isJsonNull }?.asDouble,
                                 samplesCount = r?.get("samples_count")?.asInt ?: 0,
@@ -1058,6 +1322,8 @@ class CalibrationViewModel @Inject constructor(
                             sensorsHearingMe = sensors,
                             sessionReadiness = readiness,
                         )
+                        updateActiveCheckpointFromFeedback()
+                        submitActiveCheckpointIfReady()
                     }
                 }
                 delay(2000)

@@ -47,6 +47,7 @@ async def create_tables():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_ensure_sensor_node_columns)
+        await conn.run_sync(_ensure_detection_columns)
 
 
 def _ensure_sensor_node_columns(sync_conn) -> None:
@@ -68,6 +69,29 @@ def _ensure_sensor_node_columns(sync_conn) -> None:
                 "WHERE position_mode IS NULL"
             )
         )
+
+
+def _ensure_detection_columns(sync_conn) -> None:
+    """Best-effort lightweight schema reconciliation for additive RF evidence fields."""
+    inspector = inspect(sync_conn)
+    if "drone_detections" not in inspector.get_table_names():
+        return
+    columns = {col["name"] for col in inspector.get_columns("drone_detections")}
+    wanted = {
+        "mac_is_randomized": "BOOLEAN",
+        "mac_identity_kind": "VARCHAR(32)",
+        "mac_reason": "VARCHAR(64)",
+        "brand": "VARCHAR(128)",
+        "brand_source": "VARCHAR(48)",
+        "brand_confidence": "FLOAT",
+        "device_class": "VARCHAR(64)",
+        "device_class_confidence": "FLOAT",
+        "identity_source": "VARCHAR(48)",
+        "evidence_json": "TEXT",
+    }
+    for name, ddl_type in wanted.items():
+        if name not in columns:
+            sync_conn.execute(text(f"ALTER TABLE drone_detections ADD COLUMN {name} {ddl_type}"))
 
 
 async def close_db():

@@ -91,6 +91,7 @@ class _Checkpoint:
     rssi_at_touch: int | None       # strongest observed RSSI for that sensor near touch
     strongest_sensor_at_touch: str | None  # sensor_id with the loudest RSSI overall
     ts_s: float
+    anchor_source: str = "phone_gps"
 
 
 @dataclass
@@ -271,7 +272,8 @@ class PhoneCalibrationManager:
                        sensor_lat: float, sensor_lon: float,
                        phone_lat: float, phone_lon: float,
                        phone_accuracy_m: float | None = None,
-                       ts_s: float | None = None) -> dict:
+                       ts_s: float | None = None,
+                       anchor_source: str = "phone_gps") -> dict:
         """Record an "I'm standing next to <sensor>" event.
 
         Returns immediate sanity result for the phone UI:
@@ -315,6 +317,8 @@ class PhoneCalibrationManager:
             )
         if rssi_val is None:
             warnings.append("no_rssi_heard_at_touch_check_uuid")
+        if anchor_source == "sensor_position_fallback":
+            warnings.append("anchor_used_saved_sensor_coordinates")
         elif strongest_id and strongest_id != sensor_id and \
              strongest_rssi - (rssi_val or -127) > self.LABEL_MATCH_MARGIN_DB:
             warnings.append(
@@ -359,6 +363,7 @@ class PhoneCalibrationManager:
             rssi_at_touch=rssi_val,
             strongest_sensor_at_touch=strongest_id,
             ts_s=now,
+            anchor_source=anchor_source,
         ))
         return {
             "ok": rssi_val is not None,
@@ -369,6 +374,7 @@ class PhoneCalibrationManager:
             "warnings": warnings,
             "severity": severity,
             "accepted_into_fit": rssi_val is not None,
+            "anchor_source": anchor_source,
         }
 
     def find_active_for_uuid(self, advertised_uuid: str) -> WalkSession | None:
@@ -503,6 +509,16 @@ class PhoneCalibrationManager:
                 d_m = _haversine_m(last_pos[0], last_pos[1],
                                    src.sensor_lat, src.sensor_lon)
             readiness = self._sensor_readiness(s, sid)
+            cp = max((c for c in s.checkpoints if c.sensor_id == sid),
+                     key=lambda c: c.ts_s, default=None)
+            checkpoint_status = "none"
+            if cp is not None:
+                checkpoint_status = "error" if cp.rssi_at_touch is None else (
+                    "warn"
+                    if _haversine_m(cp.phone_lat, cp.phone_lon,
+                                    cp.claimed_sensor_lat, cp.claimed_sensor_lon) > self.GPS_DRIFT_OK_M
+                    else "ok"
+                )
             last_all_time = latest or fallback
             last_heard_age_s = (
                 round(now - last_all_time.ts_s, 1)
@@ -517,6 +533,8 @@ class PhoneCalibrationManager:
                 "sample_count_total": readiness["samples_count"],
                 "scanner_slots_seen": last_all_time.scanner_slots_seen if last_all_time else None,
                 "accepted_into_fit": readiness["samples_count"] > 0,
+                "checkpoint_status": checkpoint_status,
+                "anchor_source": cp.anchor_source if cp else None,
                 "distance_m_estimated_from_phone_gps": round(d_m, 1) if d_m is not None else None,
                 "readiness": readiness,
             })
@@ -621,6 +639,7 @@ class PhoneCalibrationManager:
                                      cp.claimed_sensor_lat, cp.claimed_sensor_lon)
                 entry["gps_drift_m"] = round(drift, 1)
                 entry["rssi_at_touch"] = cp.rssi_at_touch
+                entry["anchor_source"] = cp.anchor_source
                 entry["label_match"] = (
                     cp.strongest_sensor_at_touch is None or
                     cp.strongest_sensor_at_touch == sid
@@ -632,6 +651,8 @@ class PhoneCalibrationManager:
                     w.append(
                         f"loudest_at_touch_was_{cp.strongest_sensor_at_touch}_likely_swapped"
                     )
+                if cp.anchor_source == "sensor_position_fallback":
+                    w.append("anchor_used_saved_sensor_coordinates")
                 entry["warnings"] = w
             per_listener_models[sid] = entry
 

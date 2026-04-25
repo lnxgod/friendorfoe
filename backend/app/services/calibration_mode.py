@@ -77,7 +77,47 @@ class CalibrationModeCoordinator:
             raise RuntimeError(f"{node.get('device_id')}: {data}")
         return data
 
+    async def _get_node_mode(self, node: dict[str, Any]) -> dict[str, Any]:
+        ip = (node.get("ip") or "").strip()
+        if not ip:
+            raise RuntimeError(f"{node.get('device_id')}: missing IP")
+        url = f"http://{ip}/api/calibration/mode"
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            response = await client.get(url)
+        if response.status_code >= 400:
+            raise RuntimeError(f"{node.get('device_id')}: HTTP {response.status_code} {response.text[:160]}")
+        data = response.json()
+        if not data.get("ok", True):
+            raise RuntimeError(f"{node.get('device_id')}: {data}")
+        return data
+
+    @staticmethod
+    def _mode_payload_is_clean_normal(payload: dict[str, Any]) -> bool:
+        if payload.get("scan_mode") != "normal":
+            return False
+        for slot_name in ("ble", "wifi"):
+            slot = payload.get(slot_name)
+            if not isinstance(slot, dict) or not slot.get("connected"):
+                continue
+            if slot.get("scan_mode") != "normal":
+                return False
+        return True
+
+    async def _normalize_node_mode(self, node: dict[str, Any]) -> None:
+        payload = await self._get_node_mode(node)
+        if self._mode_payload_is_clean_normal(payload):
+            return
+
+        session_id = str(payload.get("session_id") or "stale")
+        await self._stop_node_mode(node, session_id, "normalize_before_start")
+        after = await self._get_node_mode(node)
+        if not self._mode_payload_is_clean_normal(after):
+            raise RuntimeError(
+                f"{node.get('device_id')}: calibration mode degraded after stop: {after}"
+            )
+
     async def _start_node_mode(self, node: dict[str, Any], session: WalkSession) -> dict[str, Any]:
+        await self._normalize_node_mode(node)
         return await self._post_node(
             node,
             "/api/calibration/mode/start",
@@ -115,6 +155,7 @@ class CalibrationModeCoordinator:
                     "ip": node.get("ip"),
                     "lat": node.get("lat"),
                     "lon": node.get("lon"),
+                    "mode_state": node.get("mode_state"),
                 }
                 for node in target_nodes
             ]
@@ -202,7 +243,9 @@ class CalibrationModeCoordinator:
         applied = False
         apply_reason = "apply_not_requested"
         if apply_requested:
-            if not verified_fit.get("ok"):
+            if session.abort_reason:
+                apply_reason = f"session_aborted:{session.abort_reason}"
+            elif not verified_fit.get("ok"):
                 apply_reason = f"verify_failed:{verified_fit.get('reason', 'unknown')}"
             elif float(verified_fit.get("global_r_squared") or 0.0) < 0.4:
                 apply_reason = "quality_gate_r2_below_0_4"

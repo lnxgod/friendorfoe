@@ -3,6 +3,7 @@
 #include "detection_policy.h"
 #include "wifi_scanner.h"
 #include "ble_remote_id.h"
+#include "uart_tx.h"
 
 #include "esp_log.h"
 
@@ -31,6 +32,7 @@ bool scanner_calibration_mode_start(const char *session_id,
     wifi_scanner_lockon_cancel();
     wifi_scanner_pause();
     ble_rid_lockon_cancel();
+    uart_tx_flush_detection_queue();
     ESP_LOGW(TAG, "Calibration mode ACTIVE: session=%s uuid=%s", s_session_id, s_uuid);
     return true;
 }

@@ -45,6 +45,8 @@ void test_probe_rate_aux_changes_when_identity_changes(void)
 void test_queue_shedding_prefers_diagnostic_sources_first(void)
 {
     TEST_ASSERT_TRUE(fof_policy_should_shed_low_priority(
+        DETECTION_SRC_WIFI_AP_INVENTORY, "", NULL, 0, 40, 100));
+    TEST_ASSERT_TRUE(fof_policy_should_shed_low_priority(
         DETECTION_SRC_WIFI_PROBE_REQUEST, "", NULL, 0, 60, 100));
     TEST_ASSERT_FALSE(fof_policy_should_shed_low_priority(
         DETECTION_SRC_BLE_FINGERPRINT, "Drone Controller", NULL, 0, 70, 100));
@@ -52,6 +54,19 @@ void test_queue_shedding_prefers_diagnostic_sources_first(void)
         DETECTION_SRC_BLE_FINGERPRINT, "Apple Device", NULL, 0, 70, 100));
     TEST_ASSERT_TRUE(fof_policy_should_shed_low_priority(
         DETECTION_SRC_WIFI_ASSOC, "WiFi-Assoc", NULL, 0, 80, 100));
+}
+
+void test_ap_inventory_dedupe_key_uses_bssid(void)
+{
+    drone_detection_t det = {0};
+    char key[128];
+
+    det.source = DETECTION_SRC_WIFI_AP_INVENTORY;
+    strncpy(det.bssid, "00:11:22:33:44:55", sizeof(det.bssid) - 1);
+
+    TEST_ASSERT_TRUE(fof_policy_detection_identity_key(
+        &det, key, sizeof(key)));
+    TEST_ASSERT_EQUAL_STRING("WIFI:00:11:22:33:44:55", key);
 }
 
 void test_calibration_ble_uuid_is_recognized_and_kept(void)

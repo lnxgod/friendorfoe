@@ -110,6 +110,7 @@ static const char *source_to_string(uint8_t src)
         case DETECTION_SRC_WIFI_OUI:           return "wifi_oui";
         case DETECTION_SRC_WIFI_PROBE_REQUEST: return "wifi_probe_request";
         case DETECTION_SRC_WIFI_ASSOC:         return "wifi_assoc";
+        case DETECTION_SRC_WIFI_AP_INVENTORY:  return "wifi_ap_inventory";
         default:                               return "unknown";
     }
 }
@@ -138,12 +139,20 @@ static int64_t monotonic_age_s(int64_t since_ms)
 
 static bool is_calibration_detection(const drone_detection_t *det)
 {
-    if (!det || det->source != DETECTION_SRC_BLE_FINGERPRINT) {
+    if (!uart_rx_is_node_calibration_mode() ||
+        !det || det->source != DETECTION_SRC_BLE_FINGERPRINT) {
         return false;
     }
-    return strstr(det->ble_svc_uuids_raw, "cafe") != NULL ||
-           strstr(det->ble_svc_uuids_raw, "CAFE") != NULL ||
-           strcmp(det->manufacturer, "Calibration Beacon") == 0;
+    const char *uuid = uart_rx_get_node_calibration_uuid();
+    if (!uuid || uuid[0] == '\0') {
+        return false;
+    }
+    return fof_policy_ble_svc_raw_contains_uuid(det->ble_svc_uuids_raw, uuid) ||
+           fof_policy_ble_has_exact_uuid128_le(
+               det->ble_service_uuids_128,
+               det->ble_svc_uuid_128_count,
+               uuid
+           );
 }
 
 static int64_t detection_timestamp_ms(const drone_detection_t *det)
@@ -189,10 +198,41 @@ static void merge_duplicate_detection(drone_detection_t *existing,
                                       const drone_detection_t *candidate)
 {
     uint8_t slots = existing->scanner_slots_seen | candidate->scanner_slots_seen;
+    char merged_ssids[sizeof(existing->probed_ssids)] = {0};
+    if (existing->probed_ssids[0]) {
+        strncpy(merged_ssids, existing->probed_ssids, sizeof(merged_ssids) - 1);
+    }
+    if (candidate->probed_ssids[0]) {
+        char incoming[sizeof(candidate->probed_ssids)];
+        strncpy(incoming, candidate->probed_ssids, sizeof(incoming) - 1);
+        incoming[sizeof(incoming) - 1] = '\0';
+        char *tok = incoming;
+        while (tok && *tok) {
+            char *comma = strchr(tok, ',');
+            if (comma) {
+                *comma = '\0';
+            }
+            if (tok[0] && !strstr(merged_ssids, tok)) {
+                size_t used = strlen(merged_ssids);
+                size_t left = sizeof(merged_ssids) - used - 1;
+                if (left > strlen(tok) + (used ? 1U : 0U)) {
+                    if (used) {
+                        strncat(merged_ssids, ",", sizeof(merged_ssids) - strlen(merged_ssids) - 1);
+                    }
+                    strncat(merged_ssids, tok, sizeof(merged_ssids) - strlen(merged_ssids) - 1);
+                }
+            }
+            tok = comma ? comma + 1 : NULL;
+        }
+    }
     if (candidate->rssi > existing->rssi) {
         *existing = *candidate;
     }
     existing->scanner_slots_seen = slots;
+    if (merged_ssids[0]) {
+        strncpy(existing->probed_ssids, merged_ssids, sizeof(existing->probed_ssids) - 1);
+        existing->probed_ssids[sizeof(existing->probed_ssids) - 1] = '\0';
+    }
 }
 
 static size_t estimate_detection_json_size(const drone_detection_t *det)
@@ -205,6 +245,9 @@ static size_t estimate_detection_json_size(const drone_detection_t *det)
     if (det->ssid[0] != '\0') estimate += strlen(det->ssid);
     if (det->bssid[0] != '\0') estimate += strlen(det->bssid);
     if (det->operator_id[0] != '\0') estimate += strlen(det->operator_id);
+    if (det->probed_ssids[0] != '\0') estimate += strlen(det->probed_ssids) + 16;
+    if (det->ble_name[0] != '\0') estimate += strlen(det->ble_name);
+    if (det->class_reason[0] != '\0') estimate += strlen(det->class_reason);
 
     if (det->latitude != 0.0 || det->longitude != 0.0) estimate += 32;
     if (det->operator_lat != 0.0 || det->operator_lon != 0.0) estimate += 32;
@@ -240,6 +283,103 @@ static int   s_payload_buf_size = PAYLOAD_BUF_FALLBACK_SIZE;
     int _n = snprintf(&s_payload_buf[off], s_payload_buf_size - off, fmt, ##__VA_ARGS__); \
     if (_n > 0 && off + _n < s_payload_buf_size) off += _n; \
 } while(0)
+
+static int append_json_escaped_value(int off, const char *value)
+{
+    if (!value) {
+        value = "";
+    }
+    for (const unsigned char *p = (const unsigned char *)value;
+         *p && off < s_payload_buf_size - 1; ++p) {
+        unsigned char ch = *p;
+        if (ch == '"' || ch == '\\') {
+            if (off < s_payload_buf_size - 2) {
+                s_payload_buf[off++] = '\\';
+                s_payload_buf[off++] = (char)ch;
+            }
+        } else if (ch >= 0x20) {
+            s_payload_buf[off++] = (char)ch;
+        }
+    }
+    if (off < s_payload_buf_size) {
+        s_payload_buf[off] = '\0';
+    }
+    return off;
+}
+
+static int append_json_string_field(int off, const char *key, const char *value)
+{
+    if (!value || value[0] == '\0') {
+        return off;
+    }
+    int n = snprintf(&s_payload_buf[off], s_payload_buf_size - off,
+                     ",\"%s\":\"", key);
+    if (n <= 0 || off + n >= s_payload_buf_size) {
+        return off;
+    }
+    off += n;
+    off = append_json_escaped_value(off, value);
+    if (off < s_payload_buf_size - 1) {
+        s_payload_buf[off++] = '"';
+        s_payload_buf[off] = '\0';
+    }
+    return off;
+}
+
+static int append_json_csv_array_field(int off,
+                                       const char *key,
+                                       const char *csv,
+                                       const char *fallback)
+{
+    const char *src = (csv && csv[0]) ? csv : fallback;
+    if (!src || src[0] == '\0') {
+        return off;
+    }
+
+    int n = snprintf(&s_payload_buf[off], s_payload_buf_size - off,
+                     ",\"%s\":[", key);
+    if (n <= 0 || off + n >= s_payload_buf_size) {
+        return off;
+    }
+    off += n;
+
+    bool emitted = false;
+    char token[33];
+    size_t pos = 0;
+    for (const char *p = src;; ++p) {
+        if (*p == ',' || *p == '\0') {
+            token[pos] = '\0';
+            if (pos > 0) {
+                if (emitted && off < s_payload_buf_size - 1) {
+                    s_payload_buf[off++] = ',';
+                }
+                if (off < s_payload_buf_size - 1) {
+                    s_payload_buf[off++] = '"';
+                }
+                off = append_json_escaped_value(off, token);
+                if (off < s_payload_buf_size - 1) {
+                    s_payload_buf[off++] = '"';
+                    s_payload_buf[off] = '\0';
+                }
+                emitted = true;
+            }
+            pos = 0;
+            if (*p == '\0') {
+                break;
+            }
+            continue;
+        }
+        if (pos < sizeof(token) - 1) {
+            token[pos++] = *p;
+        }
+    }
+
+    if (off < s_payload_buf_size - 1) {
+        s_payload_buf[off++] = ']';
+        s_payload_buf[off] = '\0';
+    }
+    return off;
+}
 
 /* Helper: append scanner info object */
 static int append_scanner_info(char *buf, int off, int max, const char *uart_name, const scanner_info_t *info)
@@ -380,8 +520,10 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
         const drone_detection_t *d = &batch[i];
         if (i > 0) BUF_APPEND(",");
 
-        BUF_APPEND("{\"drone_id\":\"%s\",\"source\":\"%s\",\"confidence\":%.8f,\"rssi\":%d",
-                   d->drone_id, source_to_string(d->source), d->confidence, d->rssi);
+        BUF_APPEND("{\"drone_id\":\"");
+        off = append_json_escaped_value(off, d->drone_id);
+        BUF_APPEND("\",\"source\":\"%s\",\"confidence\":%.8f,\"rssi\":%d",
+                   source_to_string(d->source), d->confidence, d->rssi);
         BUF_APPEND(",\"scanner_slot\":%u,\"scanner_slots_seen\":%u",
                    d->scanner_slot, d->scanner_slots_seen);
         if (d->estimated_distance_m > 0.0)
@@ -389,15 +531,15 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
         if (d->latitude != 0.0 || d->longitude != 0.0)
             BUF_APPEND(",\"latitude\":%.7f,\"longitude\":%.7f", d->latitude, d->longitude);
         if (d->altitude_m != 0.0) BUF_APPEND(",\"altitude_m\":%.1f", d->altitude_m);
-        if (d->manufacturer[0]) BUF_APPEND(",\"manufacturer\":\"%s\"", d->manufacturer);
-        if (d->model[0]) BUF_APPEND(",\"model\":\"%s\"", d->model);
-        if (d->ssid[0]) BUF_APPEND(",\"ssid\":\"%s\"", d->ssid);
-        if (d->bssid[0]) BUF_APPEND(",\"bssid\":\"%s\"", d->bssid);
+        off = append_json_string_field(off, "manufacturer", d->manufacturer);
+        off = append_json_string_field(off, "model", d->model);
+        off = append_json_string_field(off, "ssid", d->ssid);
+        off = append_json_string_field(off, "bssid", d->bssid);
         if (d->freq_mhz != 0) BUF_APPEND(",\"channel\":%d", d->freq_mhz);
         if (d->wifi_auth_mode != 0xFF) BUF_APPEND(",\"auth_m\":%d", d->wifi_auth_mode);
         if (d->operator_lat != 0.0 || d->operator_lon != 0.0)
             BUF_APPEND(",\"operator_lat\":%.7f,\"operator_lon\":%.7f", d->operator_lat, d->operator_lon);
-        if (d->operator_id[0]) BUF_APPEND(",\"operator_id\":\"%s\"", d->operator_id);
+        off = append_json_string_field(off, "operator_id", d->operator_id);
         /* Per-detection scan timestamp (epoch-ms when scanner is time-synced
          * with uplink, v0.60+). Backend uses this instead of batch-level
          * timestamp for cross-node correlation — see triangulation.py. */
@@ -405,8 +547,14 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
             BUF_APPEND(",\"timestamp\":%lld", (long long)d->last_updated_ms);
 
         /* Probe request SSIDs */
-        if (d->source == DETECTION_SRC_WIFI_PROBE_REQUEST && d->ssid[0])
-            BUF_APPEND(",\"probed_ssids\":[\"%s\"]", d->ssid);
+        if (d->source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+            off = append_json_csv_array_field(
+                off,
+                "probed_ssids",
+                d->probed_ssids,
+                d->ssid
+            );
+        }
 
         /* BLE fingerprinting fields (only non-zero) */
         if (d->ble_company_id) BUF_APPEND(",\"ble_company_id\":%u", d->ble_company_id);
@@ -415,6 +563,8 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
         if (d->ble_payload_len) BUF_APPEND(",\"ble_payload_len\":%u", d->ble_payload_len);
         if (d->ble_addr_type) BUF_APPEND(",\"ble_addr_type\":%u", d->ble_addr_type);
         if (d->ble_ja3_hash) BUF_APPEND(",\"ble_ja3\":\"%08lx\"", (unsigned long)d->ble_ja3_hash);
+        off = append_json_string_field(off, "ble_name", d->ble_name);
+        off = append_json_string_field(off, "class_reason", d->class_reason);
         if (d->ble_apple_auth[0] || d->ble_apple_auth[1] || d->ble_apple_auth[2])
             BUF_APPEND(",\"ble_apple_auth\":\"%02x%02x%02x\"", d->ble_apple_auth[0], d->ble_apple_auth[1], d->ble_apple_auth[2]);
         if (d->ble_apple_activity) BUF_APPEND(",\"ble_activity\":%u", d->ble_apple_activity);
@@ -432,12 +582,7 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
          * ("cafe9a86-0000-1000-8000-..."). Re-encode the uint16 mirror only
          * when a local detection did not populate the raw field. */
         if (d->ble_svc_uuids_raw[0] != '\0') {
-            BUF_APPEND(",\"ble_svc_uuids\":\"");
-            /* The raw string is already valid JSON content except for
-             * quote escaping, and UUID chars (hex + hyphen + comma) are
-             * all safe, so we can append verbatim. */
-            BUF_APPEND("%s", d->ble_svc_uuids_raw);
-            BUF_APPEND("\"");
+            off = append_json_string_field(off, "ble_svc_uuids", d->ble_svc_uuids_raw);
         } else if (d->ble_svc_uuid_count > 0) {
             BUF_APPEND(",\"ble_svc_uuids\":\"");
             for (int j = 0; j < d->ble_svc_uuid_count && j < 4; j++) {

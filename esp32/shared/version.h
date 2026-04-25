@@ -7,7 +7,7 @@
  * Update FOF_VERSION here; all boards pick it up automatically.
  */
 
-#define FOF_VERSION "0.63.0-svc138"
+#define FOF_VERSION "0.63.0-svc139"
 
 /*
  * FIRMWARE_NAME is set per build target:

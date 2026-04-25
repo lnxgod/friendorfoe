@@ -44,5 +44,6 @@ interface CalibrationBackend {
         lon: Double,
         accuracyM: Float?,
         tsMs: Long,
+        anchorSource: String = "phone_gps",
     ): Result<JsonObject>
 }

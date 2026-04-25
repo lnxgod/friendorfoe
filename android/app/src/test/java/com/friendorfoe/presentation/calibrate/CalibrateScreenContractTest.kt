@@ -22,7 +22,6 @@ class CalibrateScreenContractTest {
         val contract = buildCalibrateScreenContract(
             state = state,
             hasRequiredPermissions = true,
-            diagnosticsExpanded = false,
         )
 
         assertTrue(contract.showPreflightChecklist)
@@ -41,14 +40,13 @@ class CalibrateScreenContractTest {
         val contract = buildCalibrateScreenContract(
             state = state,
             hasRequiredPermissions = true,
-            diagnosticsExpanded = false,
         )
 
         assertEquals("Backend unreachable — test connectivity first.", contract.startDisabledReason)
     }
 
     @Test
-    fun diagnosticsUnlockAfterSuccessfulPreflight() {
+    fun diagnosticsStayHiddenAfterSuccessfulPreflight() {
         val state = CalibrationViewModel.State(
             backendReachability = BackendReachabilityState.Reachable,
             calibrationAuthState = CalibrationAuthState.Valid,
@@ -68,12 +66,11 @@ class CalibrateScreenContractTest {
         val contract = buildCalibrateScreenContract(
             state = state,
             hasRequiredPermissions = true,
-            diagnosticsExpanded = true,
         )
 
         assertFalse(contract.showPreflightChecklist)
-        assertTrue(contract.showDiagnosticsToggle)
-        assertTrue(contract.showDiagnosticsTabs)
+        assertFalse(contract.showDiagnosticsToggle)
+        assertFalse(contract.showDiagnosticsTabs)
         assertEquals(null, contract.startDisabledReason)
     }
 }

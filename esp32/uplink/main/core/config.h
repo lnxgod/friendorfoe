@@ -98,7 +98,7 @@ typedef struct {
 
 /* ── HTTP status server ───────────────────────────────────────────────── */
 
-#define CONFIG_HTTP_STATUS_PRIORITY  2
+#define CONFIG_HTTP_STATUS_PRIORITY  5  /* Must outrank upload work so OTA/status stay reachable under RF load. */
 #define CONFIG_HTTP_STATUS_STACK     4096
 #define CONFIG_HTTP_STATUS_PORT      80
 

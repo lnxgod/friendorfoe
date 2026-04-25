@@ -26,18 +26,12 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.core.content.ContextCompat
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -70,12 +64,9 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun FriendOrFoeApp() {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
-    val chromeViewModel: AppChromeViewModel = hiltViewModel()
-    val calibrateBadgeCount by chromeViewModel.calibrateBadgeCount.collectAsStateWithLifecycle()
 
     // Request Location + BT + WiFi permissions at app startup (not Camera — that stays AR-only)
     val startupPermissionLauncher = rememberLauncherForActivityResult(
@@ -111,21 +102,6 @@ fun FriendOrFoeApp() {
         }
         if (missing.isNotEmpty()) {
             startupPermissionLauncher.launch(missing.toTypedArray())
-        }
-    }
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_RESUME -> chromeViewModel.start()
-                Lifecycle.Event.ON_PAUSE -> chromeViewModel.stop()
-                else -> {}
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            chromeViewModel.stop()
         }
     }
 
@@ -178,22 +154,10 @@ fun FriendOrFoeApp() {
                                 }
                             },
                             icon = {
-                                androidx.compose.material3.BadgedBox(
-                                    badge = {
-                                        if (item.route == Screen.Calibrate.route && calibrateBadgeCount > 0) {
-                                            androidx.compose.material3.Badge {
-                                                Text(
-                                                    if (calibrateBadgeCount > 9) "9+" else calibrateBadgeCount.toString()
-                                                )
-                                            }
-                                        }
-                                    }
-                                ) {
-                                    Icon(
-                                        imageVector = item.icon,
-                                        contentDescription = item.label
-                                    )
-                                }
+                                Icon(
+                                    imageVector = item.icon,
+                                    contentDescription = item.label
+                                )
                             },
                             label = { Text(item.label) }
                         )

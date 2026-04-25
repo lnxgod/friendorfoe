@@ -38,6 +38,7 @@ void test_hard_probe_matches_keep_elevated_confidence(void);
 void test_generic_targeted_probes_are_not_low_value_dropped(void);
 void test_probe_rate_aux_changes_when_identity_changes(void);
 void test_queue_shedding_prefers_diagnostic_sources_first(void);
+void test_ap_inventory_dedupe_key_uses_bssid(void);
 void test_calibration_ble_uuid_is_recognized_and_kept(void);
 void test_dedupe_key_groups_probe_ie_hash_across_rotated_macs(void);
 void test_dedupe_key_changes_across_time_bucket(void);
@@ -86,6 +87,7 @@ int main(void)
     RUN_TEST(test_generic_targeted_probes_are_not_low_value_dropped);
     RUN_TEST(test_probe_rate_aux_changes_when_identity_changes);
     RUN_TEST(test_queue_shedding_prefers_diagnostic_sources_first);
+    RUN_TEST(test_ap_inventory_dedupe_key_uses_bssid);
     RUN_TEST(test_calibration_ble_uuid_is_recognized_and_kept);
     RUN_TEST(test_dedupe_key_groups_probe_ie_hash_across_rotated_macs);
     RUN_TEST(test_dedupe_key_changes_across_time_bucket);

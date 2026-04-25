@@ -171,7 +171,8 @@ class CalibrationApi @Inject constructor(
     override suspend fun walkCheckpoint(baseUrl: String, token: String,
                                         sessionId: String, sensorId: String,
                                         lat: Double, lon: Double,
-                                        accuracyM: Float?, tsMs: Long): Result<JsonObject> =
+                                        accuracyM: Float?, tsMs: Long,
+                                        anchorSource: String): Result<JsonObject> =
         call("walk_checkpoint", "POST", baseUrl, "/detections/calibrate/walk/checkpoint", token, mapOf(
             "session_id" to sessionId,
             "sensor_id" to sensorId,
@@ -179,5 +180,6 @@ class CalibrationApi @Inject constructor(
             "lon" to lon,
             "accuracy_m" to accuracyM,
             "ts_ms" to tsMs,
+            "anchor_source" to anchorSource,
         ))
 }

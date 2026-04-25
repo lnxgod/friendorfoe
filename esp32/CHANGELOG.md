@@ -4,6 +4,30 @@ All notable changes to the ESP32 hardware edition of Friend or Foe.
 
 ## [Unreleased]
 
+## [0.63.0-svc139] - 2026-04-25
+
+### Added
+- **RF evidence fields on the scanner wire.** Scanner JSON now preserves full
+  targeted probe SSID arrays, BLE local names, and classification reasons so
+  uplink/backend enrichment can explain brand/device-class claims.
+- **Diagnostic AP inventory.** Combo/seed scanners emit rate-limited
+  `wifi_ap_inventory` observations for generic APs when UART pressure is low,
+  with calibration mode and queue-pressure gates keeping the release safe.
+
+### Changed
+- **Hidden-camera heuristics are cautious.** Ambiguous BLE LED/IoT names are
+  demoted to suspect IoT fingerprints unless explicit camera evidence exists.
+- **Uplink dual-slot dedupe preserves evidence.** Upload dedupe now collapses
+  same-packet captures from both scanner slots while unioning slot metadata and
+  probed SSIDs.
+
+### Fixed
+- **Probe serialization no longer drops extra SSIDs.** Multi-SSID targeted
+  probes are emitted and uploaded as arrays while legacy string parsing remains
+  accepted for mixed-fleet compatibility.
+
+## [0.63.0-svc138] - 2026-04-24
+
 ### Added
 - **Native unit tests are back in the live path.** CI now runs `pio test -e test`
   before firmware builds, and local preflight does the same.

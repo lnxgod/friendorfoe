@@ -3,7 +3,6 @@ package com.friendorfoe.presentation.calibrate
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.provider.Settings
-import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -20,7 +19,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
@@ -40,8 +38,10 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.friendorfoe.calibration.CalibrationViewModel
 import com.friendorfoe.calibration.NetworkTransportState
 import com.friendorfoe.calibration.PreflightCheckStatus
+import com.friendorfoe.calibration.CalibrationViewModel.ActiveCheckpointLock
 import com.friendorfoe.calibration.CalibrationViewModel.BackendStatus
 import com.friendorfoe.calibration.CalibrationViewModel.CheckpointResult
+import com.friendorfoe.calibration.CalibrationViewModel.CheckpointPhase
 import com.friendorfoe.calibration.CalibrationViewModel.MyPosition
 import com.friendorfoe.calibration.CalibrationViewModel.SensorInfo
 import com.friendorfoe.calibration.CalibrationViewModel.SensorReading
@@ -59,24 +59,15 @@ private val WARN_AMBER   = Color(0xFFFFB300)
 private val ERROR_RED    = Color(0xFFE53935)
 private val NEUTRAL_GREY = Color(0xFF616161)
 
-private enum class CalibrateTab {
-    Walk,
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CalibrateScreen(
     onBack: () -> Unit,
     viewModel: CalibrationViewModel = hiltViewModel(),
-    consoleViewModel: CalibrateConsoleViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
-    val consoleState by consoleViewModel.state.collectAsState()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var selectedTab by rememberSaveable { mutableStateOf(CalibrateTab.Walk) }
-    var diagnosticsExpanded by rememberSaveable { mutableStateOf(false) }
-    val latestIsWalking by rememberUpdatedState(state.isWalking)
 
     fun currentlyGrantedPermissions(): Set<String> {
         val needed = buildList {
@@ -95,7 +86,6 @@ fun CalibrateScreen(
     val screenContract = buildCalibrateScreenContract(
         state = state,
         hasRequiredPermissions = hasRequiredPermissions,
-        diagnosticsExpanded = diagnosticsExpanded,
     )
 
     // Refresh BT state + reach connectivity check whenever the screen
@@ -106,42 +96,11 @@ fun CalibrateScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshBluetoothState()
                 viewModel.refreshConnectivity()
-            } else if (event == Lifecycle.Event.ON_PAUSE && latestIsWalking) {
-                Log.i("CalibrateScreen", "lifecycle=pause action=abort_walk")
-                viewModel.abortWalk(
-                    reason = "app_backgrounded",
-                    userMessage = "Walk aborted because the app left the foreground.",
-                )
-                consoleViewModel.stopPolling()
-            } else if (event == Lifecycle.Event.ON_STOP) {
-                if (latestIsWalking) {
-                    Log.i("CalibrateScreen", "lifecycle=stop action=abort_walk")
-                    viewModel.abortWalk(
-                        reason = "app_backgrounded",
-                        userMessage = "Walk aborted because the app left the foreground.",
-                    )
-                }
-                consoleViewModel.stopPolling()
             }
         }
         lifecycleOwner.lifecycle.addObserver(obs)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(obs)
-            consoleViewModel.stopPolling()
-        }
-    }
-
-    LaunchedEffect(screenContract.showDiagnosticsTabs) {
-        if (screenContract.showDiagnosticsTabs) {
-            consoleViewModel.startPolling()
-        } else {
-            consoleViewModel.stopPolling()
-        }
-    }
-
-    LaunchedEffect(screenContract.showDiagnosticsToggle) {
-        if (screenContract.showDiagnosticsToggle) {
-            consoleViewModel.refreshNow()
         }
     }
 
@@ -173,9 +132,9 @@ fun CalibrateScreen(
             android.Manifest.permission.BLUETOOTH_SCAN,
             android.Manifest.permission.BLUETOOTH_CONNECT,
         )
-        val missing = viewModel.missingPermissions(granted = emptySet())
+        val missing = viewModel.missingPermissions(granted = currentlyGrantedPermissions())
         if (missing.isNotEmpty()) {
-            permissionLauncher.launch(needed.toTypedArray())
+            permissionLauncher.launch(missing.ifEmpty { needed }.toTypedArray())
         }
     }
 
@@ -208,7 +167,6 @@ fun CalibrateScreen(
                 actions = {
                     IconButton(onClick = {
                         viewModel.refreshConnectivity()
-                        consoleViewModel.refreshNow()
                     }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
@@ -393,41 +351,7 @@ fun CalibrateScreen(
                 }
             }
 
-            if (screenContract.showDiagnosticsToggle) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                "Diagnostics",
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                            Text(
-                                "Secondary debug tools for nodes and probe activity. The walk flow stays primary.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        TextButton(onClick = {
-                            diagnosticsExpanded = !diagnosticsExpanded
-                            if (!diagnosticsExpanded) {
-                                selectedTab = CalibrateTab.Walk
-                            }
-                        }) {
-                            Text(if (diagnosticsExpanded) "Hide diagnostics" else "Show diagnostics")
-                        }
-                    }
-                }
-            }
-
-            when (selectedTab) {
-                CalibrateTab.Walk -> {
+            run {
                     if (screenContract.showPreflightChecklist) {
                         PreflightChecklistCard(
                             items = state.preflightChecklist(),
@@ -441,7 +365,7 @@ fun CalibrateScreen(
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text(
-                                "Walk is ready. Diagnostics are available below if you need node or probe detail while calibrating.",
+                                "Walk is ready. Start the session, keep this screen open, and tap 'I'm here' when you are standing at each live node.",
                                 modifier = Modifier.padding(12.dp),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -600,8 +524,6 @@ fun CalibrateScreen(
                         }
                     }
 
-                    CalibrationModelCard(consoleState.calibrationModel)
-
                     if (state.isWalking) {
                         state.zeroHearingWarning()?.let { warning ->
                             Surface(
@@ -618,6 +540,15 @@ fun CalibrateScreen(
                             }
                         }
                         ConvergenceCard(state.myPosition)
+                        state.activeCheckpoint?.let { lock ->
+                            val reading = state.sensorsHearingMe.firstOrNull { it.sensorId == lock.sensorId }
+                            ActiveCheckpointPanel(
+                                lock = lock,
+                                reading = reading,
+                                result = state.checkpointResults[lock.sensorId],
+                                onRetry = { viewModel.retryActiveCheckpoint() },
+                            )
+                        }
                     }
 
                     Surface(
@@ -655,13 +586,24 @@ fun CalibrateScreen(
                                     }.thenBy { it.name }
                                 )
                                 val candidateId = sortedSensors.firstOrNull()?.deviceId
+                                val activeCheckpoint = state.activeCheckpoint
+                                val blockingLock = activeCheckpoint != null &&
+                                    activeCheckpoint.phase !in setOf(
+                                        CheckpointPhase.Idle,
+                                        CheckpointPhase.ReadyForNext,
+                                    )
                                 sortedSensors.forEach { sensor ->
+                                    val sameAsActive = activeCheckpoint?.sensorId == sensor.deviceId
                                     SensorCard(
                                         sensor = sensor,
                                         reading = readingById[sensor.deviceId],
                                         result = state.checkpointResults[sensor.deviceId],
+                                        activeCheckpoint = activeCheckpoint,
                                         walking = state.isWalking,
-                                        highlighted = sensor.deviceId == candidateId,
+                                        canMarkHere = state.isWalking &&
+                                            !sameAsActive &&
+                                            !blockingLock,
+                                        highlighted = sameAsActive || sensor.deviceId == candidateId,
                                         onMarkHere = { viewModel.markAtSensor(sensor) },
                                     )
                                 }
@@ -710,18 +652,6 @@ fun CalibrateScreen(
                             )
                             InfoRow("Trace points", state.tracePoints.toString())
                             InfoRow("Sensor samples", state.samplesTotal.toString())
-                            InfoRow(
-                                "Model source",
-                                consoleState.calibrationModel?.activeModelSource ?: "defaults"
-                            )
-                            InfoRow(
-                                "Model trust",
-                                when {
-                                    consoleState.calibrationModel?.isTrusted == true -> "trusted"
-                                    consoleState.calibrationModel?.isActive == true -> "active, untrusted"
-                                    else -> "defaults only"
-                                }
-                            )
                         }
                     }
 
@@ -812,16 +742,6 @@ fun CalibrateScreen(
                             subtitle = state.applyReason ?: "Verification result",
                         )
                     }
-                }
-            }
-
-            if (screenContract.showDiagnosticsTabs) {
-                NodesTabContent(consoleState.nodes, consoleState.lastRefreshMs)
-                ProbesTabContent(
-                    probes = consoleState.probes,
-                    events = consoleState.events,
-                    onAckEvent = consoleViewModel::ackEvent,
-                )
             }
 
             // ── Messages ──────────────────────────────────────────────
@@ -843,20 +763,6 @@ fun CalibrateScreen(
                     Text(msg, modifier = Modifier.padding(12.dp),
                          color = MaterialTheme.colorScheme.onTertiaryContainer,
                          style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            if (screenContract.showDiagnosticsToggle) consoleState.errorMessage?.let { msg ->
-                Surface(
-                    color = WARN_AMBER.copy(alpha = 0.18f),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        msg,
-                        modifier = Modifier.padding(12.dp),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
                 }
             }
         }
@@ -1442,11 +1348,127 @@ private fun StatusDot(status: BackendStatus) {
 }
 
 @Composable
+private fun ActiveCheckpointPanel(
+    lock: ActiveCheckpointLock,
+    reading: SensorReading?,
+    result: CheckpointResult?,
+    onRetry: () -> Unit,
+) {
+    val phaseColor = when (lock.phase) {
+        CheckpointPhase.ReadyForNext -> OK_GREEN
+        CheckpointPhase.NeedsAttention -> ERROR_RED
+        CheckpointPhase.SyncingCheckpoint,
+        CheckpointPhase.WaitingForNodeHearing -> WARN_AMBER
+        else -> OK_GREEN
+    }
+    val samplePct = if (lock.samplesNeeded > 0) {
+        (lock.samplesCount.toFloat() / lock.samplesNeeded).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    Surface(
+        color = phaseColor.copy(alpha = 0.14f),
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    if (lock.phase == CheckpointPhase.ReadyForNext) Icons.Default.CheckCircle else Icons.Default.LocationOn,
+                    contentDescription = null,
+                    tint = phaseColor,
+                )
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Checkpoint lock · ${lock.sensorName}",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        prettyCheckpointPhase(lock.phase),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = phaseColor,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            Text(lock.statusText, style = MaterialTheme.typography.bodySmall)
+            lock.detailText?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            LinearProgressIndicator(
+                progress = { samplePct },
+                color = phaseColor,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth().height(6.dp),
+            )
+            InfoRow(
+                "Node hearing",
+                when {
+                    lock.lastRssi != null && lock.lastHeardAgeS != null ->
+                        "${lock.lastRssi} dBm · ${"%.1f".format(lock.lastHeardAgeS)}s ago"
+                    lock.lastRssi != null -> "${lock.lastRssi} dBm"
+                    else -> "waiting for packet"
+                }
+            )
+            InfoRow(
+                "GPS / anchor",
+                when (lock.anchorSource) {
+                    "sensor_position_fallback" -> "saved sensor coordinates"
+                    "phone_gps" -> lock.gpsAccuracyM?.let { "phone GPS ±${"%.0f".format(it)}m" } ?: "phone GPS"
+                    else -> "choosing best anchor"
+                }
+            )
+            InfoRow("Backend sync", if (lock.backendSynced) "synced" else "waiting")
+            InfoRow("Samples", "${lock.samplesCount}/${lock.samplesNeeded}")
+            InfoRow("Range", "${"%.0f".format(lock.distanceRangeM)}m / 5m")
+            reading?.hints?.takeIf { it.isNotEmpty() && lock.phase != CheckpointPhase.ReadyForNext }?.let { hints ->
+                hints.take(2).forEach { hint ->
+                    Text(
+                        "→ ${prettyHint(hint)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WARN_AMBER,
+                    )
+                }
+            }
+            if (result?.warnings?.isNotEmpty() == true) {
+                result.warnings.take(2).forEach { warning ->
+                    Text(
+                        "• ${prettyWarning(warning)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (lock.phase == CheckpointPhase.NeedsAttention) ERROR_RED else phaseColor,
+                    )
+                }
+            }
+            if (lock.phase == CheckpointPhase.NeedsAttention) {
+                Button(onClick = onRetry, colors = ButtonDefaults.buttonColors(containerColor = ERROR_RED)) {
+                    Text("Retry this sensor")
+                }
+            } else if (lock.phase == CheckpointPhase.ReadyForNext) {
+                Text(
+                    "Move to another sensor and tap its `I'm here` button.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = OK_GREEN,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun SensorCard(
     sensor: SensorInfo,
     reading: SensorReading?,
     result: CheckpointResult?,
+    activeCheckpoint: ActiveCheckpointLock?,
     walking: Boolean,
+    canMarkHere: Boolean,
     highlighted: Boolean = false,
     onMarkHere: () -> Unit,
 ) {
@@ -1461,6 +1483,8 @@ private fun SensorCard(
         reading != null && reading.samplesCount > 0 -> WARN_AMBER
         else -> NEUTRAL_GREY
     }
+    val visitState = sensorVisitState(sensor, reading, result, activeCheckpoint)
+    val visitColor = sensorVisitColor(visitState)
     Surface(
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(6.dp),
@@ -1484,22 +1508,24 @@ private fun SensorCard(
                         if (highlighted) {
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                "candidate",
-                                color = WARN_AMBER,
+                                if (activeCheckpoint?.sensorId == sensor.deviceId) "active" else "candidate",
+                                color = if (activeCheckpoint?.sensorId == sensor.deviceId) visitColor else WARN_AMBER,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
                             )
                         }
-                        if (reading?.ready == true) {
-                            Spacer(Modifier.width(6.dp))
-                            Text("ready", color = OK_GREEN,
-                                 style = MaterialTheme.typography.labelSmall,
-                                 fontWeight = FontWeight.SemiBold)
-                        }
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            visitState,
+                            color = visitColor,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
                     }
                     Text(
                         "%.5f, %.5f".format(sensor.lat, sensor.lon) +
-                            (sensor.ageS?.let { " · %.0fs".format(it) } ?: ""),
+                            (sensor.ageS?.let { " · %.0fs".format(it) } ?: "") +
+                            (sensor.modeState?.let { " · $it" } ?: ""),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontFamily = FontFamily.Monospace,
@@ -1511,13 +1537,13 @@ private fun SensorCard(
                 }
                 Button(
                     onClick = onMarkHere,
-                    enabled = walking,
+                    enabled = walking && canMarkHere,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                 ) {
                     Icon(Icons.Default.LocationOn, contentDescription = null,
                          modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("I'm here")
+                    Text(if (activeCheckpoint?.sensorId == sensor.deviceId) "In progress" else "I'm here")
                 }
             }
             // ── Readiness progress strip ──────────────────────────
@@ -1566,6 +1592,17 @@ private fun SensorCard(
                                  color = WARN_AMBER.copy(alpha = 0.9f))
                         }
                     }
+                    reading.checkpointStatus?.takeIf { it != "none" }?.let { status ->
+                        Text(
+                            "Checkpoint: $status" + (
+                                if (reading.anchorSource == "sensor_position_fallback")
+                                    " · sensor-coordinate anchor"
+                                else ""
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
             if (result != null) {
@@ -1609,6 +1646,15 @@ private fun SensorCard(
                                 }
                             }
                         }
+                        Text(
+                            if (result.anchorSource == "sensor_position_fallback") {
+                                "Anchor source: saved sensor coordinates (phone GPS unavailable)"
+                            } else {
+                                "Anchor source: phone GPS"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         for (w in result.warnings) {
                             Text("• ${prettyWarning(w)}",
                                  style = MaterialTheme.typography.labelSmall,
@@ -1637,6 +1683,45 @@ private fun prettyHint(raw: String): String {
         raw.startsWith("need_") && raw.endsWith("_more_samples") ->
             "Keep walking — ${raw.removePrefix("need_").removeSuffix("_more_samples")} more samples needed"
         else -> raw.replace("_", " ")
+    }
+}
+
+private fun prettyCheckpointPhase(phase: CheckpointPhase): String {
+    return when (phase) {
+        CheckpointPhase.Idle -> "not started"
+        CheckpointPhase.WaitingForNodeHearing -> "waiting for packets"
+        CheckpointPhase.SyncingCheckpoint -> "syncing checkpoint"
+        CheckpointPhase.AnchorLocked -> "anchor locked"
+        CheckpointPhase.CollectingRange -> "collecting range"
+        CheckpointPhase.ReadyForNext -> "ready for next"
+        CheckpointPhase.NeedsAttention -> "needs attention"
+    }
+}
+
+private fun sensorVisitState(
+    sensor: SensorInfo,
+    reading: SensorReading?,
+    result: CheckpointResult?,
+    activeCheckpoint: ActiveCheckpointLock?,
+): String {
+    if (activeCheckpoint?.sensorId == sensor.deviceId) {
+        return prettyCheckpointPhase(activeCheckpoint.phase)
+    }
+    return when {
+        reading?.ready == true -> "ready"
+        result?.severity == "error" -> "needs attention"
+        result?.rssiAtTouch != null -> "collecting range"
+        result != null -> "anchor attempted"
+        else -> "not visited"
+    }
+}
+
+private fun sensorVisitColor(state: String): Color {
+    return when (state) {
+        "ready", "ready for next", "anchor locked" -> OK_GREEN
+        "needs attention" -> ERROR_RED
+        "waiting for packets", "syncing checkpoint", "collecting range", "anchor attempted" -> WARN_AMBER
+        else -> NEUTRAL_GREY
     }
 }
 

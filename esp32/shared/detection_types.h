@@ -23,6 +23,7 @@ extern "C" {
 #define DETECTION_SRC_WIFI_PROBE_REQUEST 5  /* WiFi probe request (device searching for SSID) */
 #define DETECTION_SRC_BLE_FINGERPRINT 6  /* Generic BLE fingerprint / device-class traffic */
 #define DETECTION_SRC_WIFI_ASSOC    7   /* AP<->STA association traffic */
+#define DETECTION_SRC_WIFI_AP_INVENTORY 8 /* Diagnostic generic AP inventory */
 
 /* ── Full drone detection state ──────────────────────────────────────────── */
 
@@ -98,6 +99,8 @@ typedef struct {
     uint8_t     ble_payload_len;        /* Raw advertisement payload length */
     uint8_t     ble_addr_type;          /* 0=public, 1=random static, 2=RPA, 3=non-resolvable */
     uint32_t    ble_ja3_hash;           /* BLE-JA3 structural profile hash (same for all devices of same model) */
+    char        ble_name[32];           /* BLE local name when present (diagnostic evidence) */
+    char        class_reason[48];       /* Short evidence reason for source classification */
 
     /* Apple Continuity deep fields */
     uint8_t     ble_apple_auth[3];      /* Auth tag (rotates slower than MAC — entity resolution key) */

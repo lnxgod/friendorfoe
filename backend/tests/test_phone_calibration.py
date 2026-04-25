@@ -22,6 +22,8 @@ from app.services.phone_calibration import (
     DEFAULT_PHONE_TX_DBM,
     MIN_SAMPLES_PER_LISTENER,
 )
+from app.services.applied_calibration import AppliedCalibrationStore
+from app.services.calibration_mode import CalibrationModeCoordinator
 from app.services.position_filter import AlphaBetaTracker, AlphaBetaManager
 from app.services.triangulation import SensorTracker
 
@@ -311,6 +313,29 @@ def test_checkpoint_without_recent_hearing_is_failed_anchor():
     assert any("no_rssi_heard" in w for w in res["warnings"])
 
 
+def test_checkpoint_sensor_position_fallback_is_labeled_and_still_requires_hearing():
+    mgr = PhoneCalibrationManager()
+    s = mgr.start("fallback", None)
+
+    res = mgr.add_checkpoint(
+        session_id=s.session_id,
+        sensor_id="sensor_a",
+        sensor_lat=37.0,
+        sensor_lon=-122.0,
+        phone_lat=37.0,
+        phone_lon=-122.0,
+        phone_accuracy_m=None,
+        ts_s=1_700_000_010.0,
+        anchor_source="sensor_position_fallback",
+    )
+
+    assert res["ok"] is False
+    assert res["accepted_into_fit"] is False
+    assert res["anchor_source"] == "sensor_position_fallback"
+    assert "anchor_used_saved_sensor_coordinates" in res["warnings"]
+    assert any("no_rssi_heard" in w for w in res["warnings"])
+
+
 def test_readiness_is_not_ready_initially():
     """Fresh session with no samples → no sensor ready, session not ready."""
     mgr = PhoneCalibrationManager()
@@ -560,6 +585,49 @@ async def test_walk_abort_endpoint_stops_fleet_mode(monkeypatch):
 
         delete_resp = await c.delete(f"/nodes/{device_id}")
         assert delete_resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_aborted_walk_does_not_apply_verified_fit(tmp_path):
+    mgr = PhoneCalibrationManager()
+    store = AppliedCalibrationStore(tmp_path / "applied.json")
+    coord = CalibrationModeCoordinator(
+        mgr,
+        store,
+        session_dir=tmp_path / "sessions",
+    )
+    session = mgr.start("expired", None)
+    session.abort_reason = "lease_expired"
+
+    def fake_fit(_session):
+        return {
+            "ok": True,
+            "global_rssi_ref": -55.0,
+            "global_path_loss_exponent": 2.4,
+            "global_r_squared": 0.8,
+            "per_listener": {
+                "uplink-test": {
+                    "ok": True,
+                    "rssi_ref": -55.0,
+                    "path_loss_exponent": 2.4,
+                    "r_squared": 0.8,
+                }
+            },
+        }
+
+    mgr.fit = fake_fit
+
+    result = await coord.end_session(
+        session.session_id,
+        provisional_fit={"ok": True},
+        apply_requested=True,
+    )
+
+    assert result["verified_fit"]["ok"] is True
+    assert result["applied"] is False
+    assert result["apply_reason"] == "session_aborted:lease_expired"
+    assert store.record is None
+    assert not (tmp_path / "applied.json").exists()
 
 
 @pytest.mark.asyncio
@@ -880,3 +948,55 @@ async def test_walk_start_fails_if_any_target_node_cannot_enter_calibration_mode
         await c.delete(f"/nodes/{ok_id}")
         await c.delete(f"/nodes/{bad_id}")
         await c.delete(f"/nodes/{late_ok_id}")
+
+
+@pytest.mark.asyncio
+async def test_start_node_mode_normalizes_stale_scanner_split_brain(monkeypatch, tmp_path):
+    mgr = PhoneCalibrationManager()
+    coord = CalibrationModeCoordinator(
+        mgr,
+        AppliedCalibrationStore(tmp_path / "applied.json"),
+        session_dir=tmp_path / "sessions",
+    )
+    session = mgr.start("normalize", None)
+    node = {"device_id": "uplink-test", "ip": "192.168.42.10"}
+    statuses = deque([
+        {
+            "ok": True,
+            "scan_mode": "normal",
+            "session_id": "",
+            "ble": {"connected": True, "scan_mode": "calibration"},
+            "wifi": {"connected": True, "scan_mode": "normal"},
+        },
+        {
+            "ok": True,
+            "scan_mode": "normal",
+            "session_id": "",
+            "ble": {"connected": True, "scan_mode": "normal"},
+            "wifi": {"connected": True, "scan_mode": "normal"},
+        },
+    ])
+    stopped: list[str] = []
+    posted: list[str] = []
+
+    async def fake_get_mode(target):
+        assert target == node
+        return statuses.popleft()
+
+    async def fake_stop(target, session_id, reason):
+        stopped.append(reason)
+        return {"ok": True, "scan_mode": "normal"}
+
+    async def fake_post(target, path, payload):
+        posted.append(path)
+        return {"ok": True, "scan_mode": "calibration", "session_id": payload["session_id"]}
+
+    monkeypatch.setattr(coord, "_get_node_mode", fake_get_mode)
+    monkeypatch.setattr(coord, "_stop_node_mode", fake_stop)
+    monkeypatch.setattr(coord, "_post_node", fake_post)
+
+    result = await coord._start_node_mode(node, session)
+
+    assert result["ok"] is True
+    assert stopped == ["normalize_before_start"]
+    assert posted == ["/api/calibration/mode/start"]
