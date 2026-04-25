@@ -23,6 +23,8 @@ jobs:
   # ── Build firmware ──────────────────────────────────────────────────────────
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -109,8 +111,10 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: build
-    # Deploy even if build failed — page will show but flash won't work yet
-    if: always()
+    # Deploy Pages for branch/workflow runs, but not release events. Release
+    # tags are blocked by the github-pages environment rules and only need the
+    # firmware assets attached to the GitHub release.
+    if: ${{ github.event_name != 'release' && always() }}
     permissions:
       pages: write
       id-token: write
