@@ -1,8 +1,7 @@
 /**
  * Friend or Foe -- Uplink Status LED Implementation
  *
- * ESP32-S3: WS2812 RGB LED on GPIO48 with colour-coded status.
- * ESP32-C3/ESP32: Plain GPIO LED with blink patterns (fallback).
+ * ESP32-S3 WS2812 RGB LED on GPIO48 with colour-coded status.
  */
 
 #include "led_status.h"
@@ -44,11 +43,6 @@ static const led_step_t *const s_patterns[] = {
     [LED_NO_SERVER]   = pat_no_server,
     [LED_WIFI_DOWN]   = pat_wifi_down,
 };
-
-/* ═══════════════════════════════════════════════════════════════════════
- * S3 RGB LED (WS2812 on GPIO48)
- * ═══════════════════════════════════════════════════════════════════════ */
-#if defined(UPLINK_ESP32S3)
 
 #include "led_strip.h"
 
@@ -147,60 +141,6 @@ void led_init(void)
     rgb_off();
     ESP_LOGI(TAG, "RGB LED initialized (WS2812 GPIO%d)", LED_GPIO);
 }
-
-/* ═══════════════════════════════════════════════════════════════════════
- * C3 / plain ESP32 — simple GPIO LED
- * ═══════════════════════════════════════════════════════════════════════ */
-#else
-
-#include "driver/gpio.h"
-
-#if defined(UPLINK_ESP32)
-#define LED_GPIO    GPIO_NUM_2
-#else
-#define LED_GPIO    GPIO_NUM_8
-#endif
-
-static void led_task(void *arg)
-{
-    ESP_LOGI(TAG, "LED task started");
-
-    while (1) {
-        led_pattern_t pat = (led_pattern_t)atomic_load(&s_current_pattern);
-        const led_step_t *steps = s_patterns[pat];
-        int step = 0;
-
-        while (1) {
-            led_pattern_t cur = (led_pattern_t)atomic_load(&s_current_pattern);
-            if (cur != pat) break;
-            if (steps[step].on_ms == 0) { step = 0; continue; }
-
-            gpio_set_level(LED_GPIO, 1);
-            vTaskDelay(pdMS_TO_TICKS(steps[step].on_ms));
-
-            cur = (led_pattern_t)atomic_load(&s_current_pattern);
-            if (cur != pat) { gpio_set_level(LED_GPIO, 0); break; }
-
-            gpio_set_level(LED_GPIO, 0);
-            vTaskDelay(pdMS_TO_TICKS(steps[step].off_ms));
-
-            step++;
-        }
-    }
-}
-
-void led_init(void)
-{
-    gpio_config_t io = {
-        .pin_bit_mask = (1ULL << LED_GPIO),
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    ESP_ERROR_CHECK(gpio_config(&io));
-    gpio_set_level(LED_GPIO, 0);
-    ESP_LOGI(TAG, "LED initialized (GPIO%d)", LED_GPIO);
-}
-
-#endif /* UPLINK_ESP32S3 */
 
 /* ── Shared API ──────────────────────────────────────────────────────── */
 

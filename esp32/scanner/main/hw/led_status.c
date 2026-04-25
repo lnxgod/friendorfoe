@@ -4,9 +4,7 @@
  * Drives an addressable WS2812 RGB LED via the RMT-based led_strip driver.
  * Different colours indicate system state at a glance.
  *
- * GPIO:
- *   ESP32-S3: GPIO48 (built-in RGB LED on DevKitC-1)
- *   ESP32-C5: GPIO27 (RGB LED pin on C5 dev boards)
+ * GPIO48: built-in RGB LED on ESP32-S3 DevKitC-1.
  *
  * Colour key:
  *   BOOT       — blue blinks
@@ -28,13 +26,7 @@
 
 static const char *TAG = "led";
 
-#if CONFIG_IDF_TARGET_ESP32S3
 #define LED_GPIO    48
-#elif CONFIG_IDF_TARGET_ESP32C5
-#define LED_GPIO    27
-#else
-#define LED_GPIO    48
-#endif
 
 /* ── RGB colour for each pattern ──────────────────────────────────────── */
 

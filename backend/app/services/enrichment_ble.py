@@ -396,9 +396,9 @@ def oui_lookup(mac: str) -> str | None:
 
     Delegates to services.oui_db which wraps the Wireshark manuf file
     (~56k entries, longest-prefix match, randomized-MAC short-circuit).
-    Falls back to the legacy hand-curated _BLE_OUI dict only for the
-    handful of entries that carry friendlier names (e.g., "Ring Camera"
-    vs the registry's "Amazon Technologies Inc.").
+    Falls back to the hand-curated _BLE_OUI dict only for the handful of
+    entries that carry friendlier names (e.g., "Ring Camera" vs the
+    registry's "Amazon Technologies Inc.").
     """
     if not mac or len(mac) < 8:
         return None
@@ -409,8 +409,8 @@ def oui_lookup(mac: str) -> str | None:
         short, _long = hit
         return short
 
-    # Legacy overrides — friendlier names for a few devices where the
-    # registry's raw company name doesn't say what the product IS (e.g.,
+    # Local overrides — friendlier names for a few devices where the
+    # registry's raw company name doesn't say what the product is (e.g.,
     # "Ring Camera" is clearer than "Amazon Technologies Inc.").
     prefix3 = mac[:8].upper()
     prefix1 = mac[:2].upper()
@@ -454,7 +454,7 @@ class EnrichedDevice:
     ble_adv_interval: float = 0     # Advertisement interval in ms
     ble_apple_auth: str = ""        # Apple auth tag hex (entity linking)
     ble_svc_uuids: str = ""         # Comma-separated service UUIDs (hex)
-    ble_apple_info: int = 0         # Apple info/status byte
+    ble_apple_flags: int = 0        # Apple Nearby Info data-flags byte
 
 
 # ---------------------------------------------------------------------------
@@ -623,13 +623,13 @@ class BLEEnricher:
         if adv_interval and adv_interval > 0:
             dev.ble_adv_interval = adv_interval
 
-        # Store service UUIDs and Apple info byte
+        # Store service UUIDs and Apple data-flags byte
         svc = kwargs.get("ble_svc_uuids")
         if svc and not dev.ble_svc_uuids:
             dev.ble_svc_uuids = svc
-        ainfo = kwargs.get("ble_apple_info")
-        if ainfo and ainfo > 0:
-            dev.ble_apple_info = ainfo
+        flags = kwargs.get("ble_apple_flags")
+        if flags and flags > 0:
+            dev.ble_apple_flags = flags
 
     # Apple Continuity sub-type → descriptive label.
     # NOTE 2026-04-16: Per the furiousMAC reverse-engineering of Nearby Info
@@ -670,7 +670,7 @@ class BLEEnricher:
         0x12: {"activity": "findmy_beacon", "device_class": "airtag"},
     }
 
-    # Nearby Info / Nearby Action "data flags" byte (ble_apple_info) — known
+    # Nearby Info / Nearby Action "data flags" byte — known
     # bit semantics from furiousMAC reverse engineering. We decode as hints,
     # not certainties, since Apple keeps re-assigning these across iOS
     # versions. Used to enrich the label ("Apple (AirPods in)") rather than
@@ -743,7 +743,7 @@ class BLEEnricher:
                 return "Apple Mac/TV"
             if at in (0x10, 0x0F, 0x05, 0x08, 0x0D, 0x0E):
                 # Generic "Apple device" signals — refine with data flags
-                flags = self._decode_apple_nearby_flags(dev.ble_apple_info)
+                flags = self._decode_apple_nearby_flags(dev.ble_apple_flags)
                 bits = []
                 if flags.get("airpods_connected"): bits.append("AirPods in")
                 if flags.get("watch_paired"):      bits.append("Watch paired")
@@ -1024,7 +1024,7 @@ class BLEEnricher:
                 "ble_company_id": dev.ble_company_id or None,
                 "ble_apple_type": dev.ble_apple_type or None,
                 "ble_svc_uuids": dev.ble_svc_uuids or None,
-                "ble_apple_info": dev.ble_apple_info or None,
+                "ble_apple_flags": dev.ble_apple_flags or None,
                 "apple_state": self._decode_apple_state(dev),
             }
 

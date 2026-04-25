@@ -334,15 +334,16 @@ static bool try_i2c_scan(int sda, int scl, const char *label, uint8_t *out_addr)
 void oled_init(void)
 {
     /* Toggle hardware reset pin if configured */
-    if (OLED_RST_PIN >= 0) {
+    int rst_pin = OLED_RST_PIN;
+    if (rst_pin >= 0) {
         gpio_config_t rst_cfg = {
-            .pin_bit_mask = 1ULL << OLED_RST_PIN,
+            .pin_bit_mask = 1ULL << rst_pin,
             .mode         = GPIO_MODE_OUTPUT,
         };
         gpio_config(&rst_cfg);
-        gpio_set_level(OLED_RST_PIN, 0);
+        gpio_set_level(rst_pin, 0);
         vTaskDelay(pdMS_TO_TICKS(10));
-        gpio_set_level(OLED_RST_PIN, 1);
+        gpio_set_level(rst_pin, 1);
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
@@ -493,13 +494,6 @@ void oled_update(int drone_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     }
 
     oled_flush();
-}
-
-void oled_update_legacy(int drone_count, bool gps_fix, bool wifi_connected,
-                        float battery_pct, int upload_count)
-{
-    oled_update(drone_count, false, false, true, upload_count,
-                wifi_connected, battery_pct, 0, NULL);
 }
 
 void oled_show_detection(const char *drone_id, const char *manufacturer,

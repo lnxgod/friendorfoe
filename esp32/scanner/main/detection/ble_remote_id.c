@@ -6,7 +6,7 @@
  * multiple ODID message types (Basic ID, Location, System, Operator ID)
  * into a complete drone detection.
  *
- * Service data format (BLE 4 Legacy):
+ * Service data format (BLE 4 advertising):
  *   - 25 bytes: raw ODID message
  *
  * Service data format (BLE 5 Long Range):
@@ -25,25 +25,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#if defined(BLE_SCANNER_BOARD)
-/* The standalone BLE scanner reuses this detector without the combo scanner's
- * UART-driven calibration-mode component. It always runs in normal scan mode. */
-static inline bool scanner_calibration_mode_is_active(void)
-{
-    return false;
-}
-
-static inline bool scanner_calibration_mode_allows_ble_uuid128(
-    const uint8_t uuids[][16],
-    uint8_t count)
-{
-    (void)uuids;
-    (void)count;
-    return true;
-}
-#else
 #include "calibration_mode.h"
-#endif
 
 #if CONFIG_FOF_GLASSES_DETECTION
 #include "glasses_detector.h"
@@ -56,6 +38,10 @@ static inline bool scanner_calibration_mode_allows_ble_uuid128(
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
+
+#if !MYNEWT_VAL(BLE_EXT_ADV)
+#error "Supported FoF scanner firmware requires NimBLE extended advertising discovery."
+#endif
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -215,7 +201,7 @@ static void process_odid_service_data(const uint8_t mac[6],
     /*
      * Service data format depends on length:
      *   >= 27 bytes: BLE 5 format — skip app_code(1) + counter(1)
-     *   == 25 bytes: BLE 4 legacy — raw ODID message
+     *   == 25 bytes: BLE 4 advertising — raw ODID message
      */
     if (data_len >= 27) {
         odid_msg = data + 2;  /* skip app_code + counter */
@@ -278,157 +264,18 @@ static void ble_remote_id_start_scan_internal(void);
 static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
-    case BLE_GAP_EVENT_DISC: {
-        const struct ble_gap_disc_desc *desc = &event->disc;
-
-        /* Debug: count all BLE advertisements to verify scanner is receiving */
-        static uint32_t s_total_adv_rx = 0;
-        s_total_adv_rx++;
-        if (s_total_adv_rx % 500 == 1) {
-            ESP_LOGD(TAG, "BLE adv received (total=%lu, this: addr=%02x:%02x:%02x:%02x:%02x:%02x rssi=%d len=%d)",
-                     (unsigned long)s_total_adv_rx,
-                     desc->addr.val[5], desc->addr.val[4], desc->addr.val[3],
-                     desc->addr.val[2], desc->addr.val[1], desc->addr.val[0],
-                     desc->rssi, desc->length_data);
-        }
-
-        if (scanner_calibration_mode_is_active()) {
-            break;
-        }
-
-        /*
-         * Search the advertisement data for service data with UUID 0xFFFA.
-         *
-         * BLE AD type 0x16 = Service Data - 16-bit UUID
-         * Format: UUID_lo(1) + UUID_hi(1) + service_data(N)
-         */
-        /*
-         * Try NimBLE structured parser first (handles standard advertisements
-         * with flags). If it succeeds, check for ODID service data.
-         */
-        struct ble_hs_adv_fields fields;
-        int rc = ble_hs_adv_parse_fields(&fields, desc->data, desc->length_data);
-        if (rc == 0) {
-            /*
-             * NimBLE parses svc_data_uuid16 for us. Check if it matches ODID UUID.
-             * The svc_data_uuid16 field contains the raw bytes after the AD length+type,
-             * starting with the 2-byte UUID in little-endian.
-             */
-            if (fields.svc_data_uuid16 != NULL && fields.svc_data_uuid16_len >= 2) {
-                uint16_t uuid16 = (uint16_t)fields.svc_data_uuid16[0] |
-                                  ((uint16_t)fields.svc_data_uuid16[1] << 8);
-
-                if (uuid16 == ODID_SERVICE_UUID_16 && fields.svc_data_uuid16_len > 2) {
-                    const uint8_t *svc_data = fields.svc_data_uuid16 + 2;
-                    int svc_data_len = fields.svc_data_uuid16_len - 2;
-
-                    process_odid_service_data(
-                        desc->addr.val,
-                        svc_data,
-                        svc_data_len,
-                        desc->rssi
-                    );
-                }
-            }
-        }
-
-        /*
-         * ALWAYS walk raw AD structures as fallback — handles non-standard
-         * advertisements without flags (e.g., OpenDroneID-only payloads where
-         * flags are omitted to fit within the 31-byte BLE 4.x limit).
-         */
-        if (desc->data != NULL && desc->length_data > 0) {
-            /* Walk raw AD structures looking for type 0x16 with UUID 0xFFFA */
-            int pos = 0;
-            while (pos + 1 < desc->length_data) {
-                uint8_t ad_len = desc->data[pos];
-                if (ad_len == 0 || pos + 1 + ad_len > desc->length_data) {
-                    break;
-                }
-                uint8_t ad_type = desc->data[pos + 1];
-
-                /* AD type 0x16 = Service Data - 16-bit UUID */
-                if (ad_type == 0x16 && ad_len >= 3) {
-                    uint16_t uuid16 = (uint16_t)desc->data[pos + 2] |
-                                      ((uint16_t)desc->data[pos + 3] << 8);
-                    if (uuid16 == ODID_SERVICE_UUID_16) {
-                        const uint8_t *svc_data = &desc->data[pos + 4];
-                        int svc_data_len = ad_len - 3; /* minus type(1) + uuid(2) */
-
-                        process_odid_service_data(
-                            desc->addr.val,
-                            svc_data,
-                            svc_data_len,
-                            desc->rssi
-                        );
-                    }
-                }
-
-                pos += 1 + ad_len;
-            }
-        }
-
-#if CONFIG_FOF_GLASSES_DETECTION
-        /* ── Smart glasses / privacy device check ──────────────────── */
-        if (s_glasses_queue != NULL && glasses_detection_is_enabled()) {
-            /* Extract name, manufacturer data, service UUIDs from parsed fields */
-            const char *adv_name = NULL;
-            int adv_name_len = 0;
-            const uint8_t *mfr_data = NULL;
-            int mfr_data_len = 0;
-            uint16_t svc_uuids[8];
-            int svc_uuid_count = 0;
-            uint16_t appearance = 0;
-
-            if (rc == 0) { /* NimBLE parsed successfully */
-                if (fields.name != NULL && fields.name_len > 0) {
-                    adv_name = (const char *)fields.name;
-                    adv_name_len = fields.name_len;
-                }
-                if (fields.mfg_data != NULL && fields.mfg_data_len >= 2) {
-                    mfr_data = fields.mfg_data;
-                    mfr_data_len = fields.mfg_data_len;
-                }
-                if (fields.svc_data_uuid16 != NULL && fields.svc_data_uuid16_len >= 2) {
-                    uint16_t u = (uint16_t)fields.svc_data_uuid16[0] |
-                                 ((uint16_t)fields.svc_data_uuid16[1] << 8);
-                    if (u != ODID_SERVICE_UUID_16 && svc_uuid_count < 8) {
-                        svc_uuids[svc_uuid_count++] = u;
-                    }
-                }
-                if (fields.uuids16 != NULL) {
-                    for (int i = 0; i < (int)fields.num_uuids16 && svc_uuid_count < 8; i++) {
-                        svc_uuids[svc_uuid_count++] = ble_uuid_u16(&fields.uuids16[i].u);
-                    }
-                }
-                if (fields.appearance_is_present) {
-                    appearance = fields.appearance;
-                }
-            }
-
-            glasses_detection_t gdet;
-            if (glasses_check_advertisement(
-                    desc->addr.val, adv_name, adv_name_len,
-                    mfr_data, mfr_data_len,
-                    svc_uuids, svc_uuid_count,
-                    appearance, desc->rssi, &gdet)) {
-                xQueueSend(s_glasses_queue, &gdet, pdMS_TO_TICKS(5));
-            }
-        }
-#endif  /* CONFIG_FOF_GLASSES_DETECTION */
-
+    case BLE_GAP_EVENT_DISC:
+        ESP_LOGW(TAG, "Ignoring unsupported BLE_GAP_EVENT_DISC event");
         break;
-    }
 
-#if MYNEWT_VAL(BLE_EXT_ADV)
     case BLE_GAP_EVENT_EXT_DISC: {
-        /* Extended discovery event (BLE 5) — same processing as legacy */
+        /* Extended discovery also reports BLE 4.x advertising packets. */
         const struct ble_gap_ext_disc_desc *ext = &event->ext_disc;
 
         static uint32_t s_ext_adv_rx = 0;
         s_ext_adv_rx++;
         if (s_ext_adv_rx % 500 == 1) {
-            ESP_LOGD(TAG, "BLE ext_adv (total=%lu rssi=%d len=%d legacy=%d)",
+            ESP_LOGD(TAG, "BLE ext_adv (total=%lu rssi=%d len=%d ble4=%d)",
                      (unsigned long)s_ext_adv_rx, ext->rssi,
                      ext->length_data,
                      (ext->props & BLE_HCI_ADV_LEGACY_MASK) ? 1 : 0);
@@ -671,7 +518,6 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
         break;
     }
-#endif
 
     case BLE_GAP_EVENT_DISC_COMPLETE:
         ESP_LOGI(TAG, "BLE scan complete, restarting...");
@@ -691,12 +537,11 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
 static void ble_remote_id_start_scan_internal(void)
 {
-#if MYNEWT_VAL(BLE_EXT_ADV)
     /*
      * Use ble_gap_ext_disc for BLE 5 extended discovery on ESP32-S3.
      * Passive scanning with 100% duty cycle (window == interval) to catch
      * every advertisement without missing any while sending SCAN_REQ.
-     * Handles both legacy (4.x) and extended (5.x) advertising.
+     * The extended-discovery API reports both BLE 4.x and BLE 5.x packets.
      */
     struct ble_gap_ext_disc_params uncoded_params = {
         .itvl = 0x0060,        /* 60ms scan interval (96 * 0.625ms) */
@@ -718,44 +563,11 @@ static void ble_remote_id_start_scan_internal(void)
     );
 
     if (rc != 0) {
-        ESP_LOGE(TAG, "ble_gap_ext_disc() failed: %d, falling back to legacy", rc);
-        /* Fallback to legacy discovery */
-        struct ble_gap_disc_params legacy_params = {
-            .passive = 1,
-            .itvl = 0x0060,
-            .window = 0x0060,
-            .filter_duplicates = 0,
-            .limited = 0,
-            .filter_policy = 0,
-        };
-        rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER,
-                          &legacy_params, ble_gap_event_cb, NULL);
-        if (rc != 0) {
-            ESP_LOGE(TAG, "ble_gap_disc() also failed: %d", rc);
-        } else {
-            ESP_LOGI(TAG, "BLE scanning started (legacy passive, continuous)");
-        }
+        ESP_LOGE(TAG, "ble_gap_ext_disc() failed: %d; non-extended discovery is unsupported", rc);
+        s_scanning = false;
     } else {
         ESP_LOGI(TAG, "BLE scanning started (ext_disc passive, 100%% duty)");
     }
-#else
-    struct ble_gap_disc_params legacy_params = {
-        .passive = 1,
-        .itvl = 0x0060,
-        .window = 0x0060,
-        .filter_duplicates = 0,
-        .limited = 0,
-        .filter_policy = 0,
-    };
-
-    int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER,
-                          &legacy_params, ble_gap_event_cb, NULL);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "ble_gap_disc() failed: %d", rc);
-    } else {
-        ESP_LOGI(TAG, "BLE scanning started (legacy passive, continuous)");
-    }
-#endif
 }
 
 /* ── NimBLE host sync callback ─────────────────────────────────────────────── */

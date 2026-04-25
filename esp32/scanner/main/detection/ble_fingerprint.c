@@ -11,7 +11,7 @@
  *   - Company ID from manufacturer-specific data
  *   - Apple Continuity sub-type byte
  *   - Service UUID list
- *   - Advertisement properties (legacy/ext, connectable/scannable)
+ *   - Advertisement properties (BLE4/ext, connectable/scannable)
  *   - Payload length class
  *
  * Known device signatures:
@@ -175,7 +175,7 @@ static ble_device_type_t classify_apple(uint8_t continuity_type,
          *   mfr_data[3]    = 0x19 for AirTag, other values for non-AirTag FindMy
          */
         if (mfr_len >= 4 && mfr_data[3] == 0x19) return BLE_DEV_APPLE_AIRTAG;
-        /* Legacy fallback — very short FindMy payload is almost always AirTag. */
+        /* Very short FindMy payload is almost always AirTag. */
         if (mfr_len <= 8) return BLE_DEV_APPLE_AIRTAG;
         return BLE_DEV_APPLE_FINDMY;
 

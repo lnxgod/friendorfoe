@@ -39,12 +39,6 @@ void oled_update(int drone_count, bool ble_scanner_ok, bool wifi_scanner_ok,
                  float battery_pct, uint32_t uptime_s, const char *device_id);
 
 /**
- * Legacy oled_update signature for backward compatibility.
- */
-void oled_update_legacy(int drone_count, bool gps_fix, bool wifi_connected,
-                        float battery_pct, int upload_count);
-
-/**
  * Briefly show the latest detection on screen.
  *
  * @param drone_id      Drone serial number or generated ID

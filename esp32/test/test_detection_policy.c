@@ -101,3 +101,52 @@ void test_calibration_ble_uuid_is_recognized_and_kept(void)
         "cafe1111-0000-1000-8000-a21607f068aa"
     ));
 }
+
+void test_dedupe_key_groups_probe_ie_hash_across_rotated_macs(void)
+{
+    drone_detection_t a = {0};
+    drone_detection_t b = {0};
+    char key_a[128];
+    char key_b[128];
+
+    a.source = DETECTION_SRC_WIFI_PROBE_REQUEST;
+    b.source = DETECTION_SRC_WIFI_PROBE_REQUEST;
+    a.probe_ie_hash = 0xAABBCCDD;
+    b.probe_ie_hash = 0xAABBCCDD;
+    strncpy(a.bssid, "AA:AA:AA:AA:AA:AA", sizeof(a.bssid) - 1);
+    strncpy(b.bssid, "BB:BB:BB:BB:BB:BB", sizeof(b.bssid) - 1);
+
+    TEST_ASSERT_TRUE(fof_policy_detection_dedupe_key(
+        &a, 1700000000100LL, 500, key_a, sizeof(key_a)));
+    TEST_ASSERT_TRUE(fof_policy_detection_dedupe_key(
+        &b, 1700000000200LL, 500, key_b, sizeof(key_b)));
+    TEST_ASSERT_EQUAL_STRING(key_a, key_b);
+}
+
+void test_dedupe_key_changes_across_time_bucket(void)
+{
+    drone_detection_t det = {0};
+    char key_a[128];
+    char key_b[128];
+
+    det.source = DETECTION_SRC_BLE_FINGERPRINT;
+    strncpy(det.ble_svc_uuids_raw,
+            "cafe9a86-0000-1000-8000-a21607f068aa",
+            sizeof(det.ble_svc_uuids_raw) - 1);
+
+    TEST_ASSERT_TRUE(fof_policy_detection_dedupe_key(
+        &det, 1700000000100LL, 500, key_a, sizeof(key_a)));
+    TEST_ASSERT_TRUE(fof_policy_detection_dedupe_key(
+        &det, 1700000000700LL, 500, key_b, sizeof(key_b)));
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(key_a, key_b));
+}
+
+void test_scan_profiles_assign_slot_roles_and_calibration_override(void)
+{
+    TEST_ASSERT_EQUAL_STRING("ble_primary", fof_policy_slot_role_for_slot(0));
+    TEST_ASSERT_EQUAL_STRING("wifi_primary", fof_policy_slot_role_for_slot(1));
+    TEST_ASSERT_EQUAL_STRING("ble_primary", fof_policy_scan_profile_for_slot(0, false));
+    TEST_ASSERT_EQUAL_STRING("wifi_primary", fof_policy_scan_profile_for_slot(1, false));
+    TEST_ASSERT_EQUAL_STRING("calibration", fof_policy_scan_profile_for_slot(0, true));
+    TEST_ASSERT_EQUAL_STRING("calibration", fof_policy_scan_profile_for_slot(1, true));
+}

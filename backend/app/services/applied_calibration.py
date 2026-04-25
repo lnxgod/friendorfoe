@@ -42,6 +42,7 @@ class AppliedCalibrationStore:
                 rssi_ref=float(data["rssi_ref"]),
                 path_loss=float(data["path_loss_exponent"]),
                 per_listener_model=data.get("per_listener_model") or {},
+                trusted=True,
             )
         except Exception as exc:
             logger.warning("Failed to apply persisted calibration: %s", exc)
@@ -87,6 +88,7 @@ class AppliedCalibrationStore:
             rssi_ref=record["rssi_ref"],
             path_loss=record["path_loss_exponent"],
             per_listener_model=record["per_listener_model"],
+            trusted=True,
         )
         self.record = record
         logger.info(
@@ -101,6 +103,7 @@ class AppliedCalibrationStore:
 
     def summary(self) -> dict[str, Any]:
         if self.record is None:
+            triangulation.set_calibration_trusted(False)
             return {
                 "rssi_ref": triangulation.RSSI_REF,
                 "path_loss_exponent": triangulation.PATH_LOSS_OUTDOOR,

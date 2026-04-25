@@ -457,23 +457,18 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    /* Parse ?uart=ble|wifi  (the old ?ack= param is vestigial and ignored; v0.59
-     * always uses fire-and-forget with selective NACK-driven retransmit) */
+    /* Parse ?uart=ble|wifi. */
     char query[64] = {0};
     httpd_req_get_url_query_str(req, query, sizeof(query));
     char uart_target[8] = "ble";
     httpd_query_key_value(query, "uart", uart_target, sizeof(uart_target));
 
     uart_port_t uart_num;
-#if defined(UPLINK_ESP32) || defined(UPLINK_ESP32S3)
     if (strcmp(uart_target, "wifi") == 0) {
         uart_num = CONFIG_WIFI_SCANNER_UART;
     } else {
         uart_num = CONFIG_BLE_SCANNER_UART;
     }
-#else
-    uart_num = CONFIG_BLE_SCANNER_UART;
-#endif
 
     s_operation_active = true;
 
@@ -510,10 +505,9 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
         if (r == 0) {
             ESP_LOGI(TAG, "Stage stop: stop_ack received");
         } else {
-            /* v0.58 and earlier scanners don't emit stop_ack — proceed anyway,
-             * but pause ~1 s for any in-flight detection JSON to drain. */
-            ESP_LOGW(TAG, "Stage stop: no stop_ack (legacy scanner?) — proceeding after 1s");
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            snprintf(error_msg, sizeof(error_msg), "stop_ack_timeout");
+            relay_ok = false;
+            goto relay_done;
         }
         /* Drain any remaining detection JSON sitting in the FIFO before we send
          * ota_begin. 500ms quiet window = good enough signal the scanner's TX
@@ -645,13 +639,9 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
 
     /* ── Stage 3: ota_end + wait for ota_done, ota_error, OR scanner reboot ─ */
     /*
-     * v0.59+ scanners emit {"type":"ota_done"} then vTaskDelay(500) + reboot,
-     * but legacy v0.55/v0.58 scanners sometimes don't flush the TX FIFO before
-     * reboot — ota_done is lost on the wire. As an orthogonal signal, we also
-     * watch for "scanner_info" or "identity" lines from the scanner after
-     * reboot (any reappearance of a v0.59 identity inside the window is
-     * implicit "flash succeeded"). 60 s window to give slow flash writes /
-     * slow scanners time to come back.
+     * Supported S3 scanners emit {"type":"ota_done"} then reboot. As an
+     * orthogonal signal, we also watch for scanner_info/identity lines from
+     * modern S3 scanner firmware after reboot.
      */
     snprintf(stage, sizeof(stage), "end");
     {
@@ -669,8 +659,9 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
             int n = relay_read_line(uart_num, line, sizeof(line), remaining);
             if (n < 0) break;
             if (strstr(line, "ota_done")) { result = 0; saw_done_or_boot = true; break; }
-            if (strstr(line, "scanner_info") || strstr(line, "\"scanner-s3-combo\"") ||
-                strstr(line, "\"scanner-esp32\"") || strstr(line, "\"scanner-c5\"")) {
+            if (strstr(line, "scanner_info") ||
+                strstr(line, "\"scanner-s3-combo\"") ||
+                strstr(line, "\"scanner-s3-combo-seed\"")) {
                 /* Scanner rebooted into new image and is announcing itself. */
                 result = 0; saw_done_or_boot = true;
                 ESP_LOGW(TAG, "Stage end: scanner identity after reboot → implicit ota_done");
@@ -687,8 +678,7 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
                 }
                 result = -2; break;
             }
-            /* Ignore other lines — could be late NACKs from legacy scanners,
-             * drone detections that leaked through, watchdog noise. */
+            /* Ignore other lines — could be late NACKs, leaked detections, or watchdog noise. */
         }
 
         if (result == -2) {

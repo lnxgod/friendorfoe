@@ -6,10 +6,7 @@
  * Drives an SSD1306 128x64 OLED over I2C to show scanner status,
  * detection counts, channel info, and detection overlays.
  *
- * Hardware:
- *   ESP32-S3: GPIO4 (SDA) / GPIO5 (SCL)
- *   ESP32-C5: GPIO6 (SDA) / GPIO7 (SCL)  (GPIO4/5 are UART on C5)
- *   Address: 0x3C
+ * Hardware: ESP32-S3 GPIO4 (SDA) / GPIO5 (SCL), address 0x3C.
  */
 
 #include <stdint.h>

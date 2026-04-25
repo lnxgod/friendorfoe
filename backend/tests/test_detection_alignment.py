@@ -45,7 +45,7 @@ async def test_probe_map_is_drone_first_until_probe_opt_in(monkeypatch, client: 
         estimated_distance_m=10.0,
         source="wifi_probe_request",
         classification="wifi_device",
-        ssid="DJI-1234",
+        ssid="HomeNet",
         bssid="AA:AA:AA:AA:AA:01",
         ie_hash="A1B2C3D4",
         timestamp=now,
@@ -60,7 +60,7 @@ async def test_probe_map_is_drone_first_until_probe_opt_in(monkeypatch, client: 
         estimated_distance_m=10.0,
         source="wifi_probe_request",
         classification="wifi_device",
-        ssid="DJI-1234",
+        ssid="HomeNet",
         bssid="BB:BB:BB:BB:BB:02",
         ie_hash="A1B2C3D4",
         timestamp=now,
@@ -81,6 +81,10 @@ async def test_probe_map_is_drone_first_until_probe_opt_in(monkeypatch, client: 
     assert payload["drone_count"] == 1
     assert payload["drones"][0]["drone_id"] == "PROBE:A1B2C3D4"
     assert payload["drones"][0]["position_source"] == "intersection"
+    assert payload["drones"][0]["identity_source"] == "probe_fingerprint"
+    assert payload["drones"][0]["source_tier"] == "diagnostic"
+    assert payload["drones"][0]["uncertainty_m"] >= 25.0
+    assert payload["drones"][0]["observations"][0]["source_tier"] == "diagnostic"
 
 
 @pytest.mark.asyncio
@@ -161,7 +165,6 @@ async def test_probe_summary_groups_by_ie_hash(monkeypatch, client: AsyncClient)
                 ble_raw_mfr=None,
                 ble_adv_interval=None,
                 ble_svc_uuids=None,
-                ble_apple_info=None,
                 ble_apple_flags=None,
                 probed_ssids=["DJI-1234"],
                 ie_hash="A1B2C3D4",
@@ -204,7 +207,6 @@ async def test_probe_summary_groups_by_ie_hash(monkeypatch, client: AsyncClient)
                 ble_raw_mfr=None,
                 ble_adv_interval=None,
                 ble_svc_uuids=None,
-                ble_apple_info=None,
                 ble_apple_flags=None,
                 probed_ssids=["DJI-1234"],
                 ie_hash="A1B2C3D4",

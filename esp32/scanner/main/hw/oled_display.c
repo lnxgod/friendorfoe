@@ -4,10 +4,7 @@
  * Drives an SSD1306 128x64 monochrome OLED over I2C.  Uses a 1024-byte
  * frame buffer and a built-in 5x7 pixel font for text rendering.
  *
- * Hardware:
- *   ESP32-S3: I2C, SDA=GPIO4, SCL=GPIO5, address 0x3C (default)
- *   ESP32-C5: I2C, SDA=GPIO6, SCL=GPIO7, address 0x3C (default)
- *   Pins configurable via KConfig (menuconfig or sdkconfig overrides)
+ * Hardware: ESP32-S3 I2C, SDA=GPIO4, SCL=GPIO5, address 0x3C by default.
  */
 
 #include "oled_display.h"
@@ -20,7 +17,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "esp_private/esp_gpio_reserve.h"
 
 static const char *TAG = "oled";
 
@@ -296,25 +292,17 @@ static void oled_flush(void)
 
 void oled_init(void)
 {
-#if CONFIG_IDF_TARGET_ESP32C5
-    /* On ESP32-C5, GPIO 6/7 are JTAG (MTDI/MTCK) by default and get
-     * reserved in the GPIO reservation system during startup.  Revoke
-     * that reservation so the I2C driver can claim them cleanly. */
-    esp_gpio_revoke(BIT64(OLED_SDA_PIN) | BIT64(OLED_SCL_PIN));
-    gpio_reset_pin(OLED_SDA_PIN);
-    gpio_reset_pin(OLED_SCL_PIN);
-#endif
-
     /* Toggle hardware reset pin if configured */
-    if (OLED_RST_PIN >= 0) {
+    int rst_pin = OLED_RST_PIN;
+    if (rst_pin >= 0) {
         gpio_config_t rst_cfg = {
-            .pin_bit_mask = 1ULL << OLED_RST_PIN,
+            .pin_bit_mask = 1ULL << rst_pin,
             .mode         = GPIO_MODE_OUTPUT,
         };
         gpio_config(&rst_cfg);
-        gpio_set_level(OLED_RST_PIN, 0);
+        gpio_set_level(rst_pin, 0);
         vTaskDelay(pdMS_TO_TICKS(10));
-        gpio_set_level(OLED_RST_PIN, 1);
+        gpio_set_level(rst_pin, 1);
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 

@@ -10,7 +10,6 @@
  *   4. OUI prefix match        -> conf 0.40, no position
  *
  * ESP32-S3: 2.4 GHz channels 1-13 (~1.3s full sweep).
- * ESP32-C5: Interleaved 2.4 + 5 GHz channels (~3.8s full sweep).
  * Dwell time: ~100ms per channel.
  */
 
@@ -634,11 +633,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
  * out of PSRAM per policy rule 7 because this cache is iterated per packet).
  * Drone-protocol sources (BLE RID, DJI IE, Beacon RID) are exempt from this
  * rate limit anyway — see feedback_rid_top_priority.md. */
-#if defined(SCANNER_S3_COMBO) || defined(UPLINK_ESP32S3)
 #define BEACON_CACHE_SLOTS        1024
-#else
-#define BEACON_CACHE_SLOTS        128
-#endif
 #define BEACON_RATE_LIMIT_MS      30000   /* re-report each BSSID at most every 30s */
 #define BEACON_RSSI_DELTA_DB      5       /* unless RSSI shifted by >= 5 dB */
 
@@ -686,11 +681,7 @@ static bool beacon_rate_limit_allow(const uint8_t *bssid, int8_t rssi, int64_t t
 
 /* Bumped from 16 to 128 on S3 — crowded networks have far more than 16
  * concurrent probers, causing the LRU to overwrite before entries expire. */
-#if defined(SCANNER_S3_COMBO) || defined(UPLINK_ESP32S3)
 #define PROBE_CACHE_SLOTS       128
-#else
-#define PROBE_CACHE_SLOTS       16
-#endif
 #define PROBE_RATE_LIMIT_MS     5000    /* 1 detection per MAC+SSID pair per 5s */
 
 typedef struct {
@@ -761,7 +752,7 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
     char probed_ssids[128] = {0};
     int probed_pos = 0;
     uint32_t ie_hash = 0x811c9dc5;  /* FNV1a offset basis */
-    uint8_t wifi_gen = 0;           /* 0=legacy, 4=n, 5=ac, 6=ax */
+    uint8_t wifi_gen = 0;           /* 0=unknown/older, 4=n, 5=ac, 6=ax */
     int offset = 24;
 
     while (offset + 2 <= frame_len) {
@@ -1177,13 +1168,6 @@ static uint16_t advance_channel(void)
 
 /* ── WiFi scan task (active scan + promiscuous hybrid) ──────────────────────── */
 
-/*
- * The ESP32-C5's promiscuous mode has poor frame capture after channel switches.
- * Hybrid approach: run periodic active scans (esp_wifi_scan_start) to reliably
- * discover all APs, then feed matching SSIDs into the detection pipeline.
- * Promiscuous mode still runs in parallel for DJI IEs and beacon RID.
- */
-
 /* ── Scan configuration ─────────────────────────────────────────────────────── */
 
 #define FULL_SCAN_INTERVAL_MS    30000  /* Full discovery every 30s (was 1.5s — too aggressive) */
@@ -1270,14 +1254,10 @@ static wifi_scan_config_t make_passive_scan_config(uint8_t channel, uint32_t pas
         .scan_type   = WIFI_SCAN_TYPE_PASSIVE,
     };
 
-#if defined(WIFI_SCANNER_ONLY)
-    cfg.scan_time.passive = passive_ms;
-#else
     /* When BLE is active on combo/seed boards, ESP-IDF requires the default
      * passive dwell settings for WiFi scans. Overriding scan_time.passive
      * triggers coexistence warnings and can hurt capture quality. */
     (void)passive_ms;
-#endif
 
     return cfg;
 }
@@ -1410,12 +1390,7 @@ static void wifi_scan_task(void *arg)
     ESP_LOGI(TAG, "WiFi scan task started on core %d", xPortGetCoreID());
     ESP_LOGI(TAG, "Adaptive scan: full every %dms, fast rescan every %dms on hot channels",
              FULL_SCAN_INTERVAL_MS, FAST_RESCAN_INTERVAL_MS);
-#if defined(WIFI_SCANNER_ONLY)
-    ESP_LOGI(TAG, "WiFi passive scan dwell: full=%dms hot=%dms",
-             FULL_SCAN_PASSIVE_MS, HOT_SCAN_PASSIVE_MS);
-#else
     ESP_LOGI(TAG, "WiFi passive scans using BLE-safe default dwell timing");
-#endif
 
     TickType_t last_full_scan = 0;
     TickType_t last_heartbeat = xTaskGetTickCount();

@@ -410,9 +410,7 @@ static esp_err_t status_json_handler(httpd_req_t *req)
 
     char buf[1400];
 
-    /* Heap / PSRAM snapshot. On S3 N16R8 boards this surfaces how much of
-     * the 8 MB PSRAM is in use; on legacy / non-PSRAM boards both psram_*
-     * values report 0 (graceful degrade per esp32/shared/psram_alloc). */
+    /* Heap / PSRAM snapshot for S3 N16R8 boards. */
     size_t heap_internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     size_t heap_internal_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
     size_t psram_free  = psram_free_size();
@@ -991,8 +989,7 @@ static int wait_for_ota_response_since(int64_t start_ms,
 }
 
 /* ── OTA Relay: stream firmware to scanner via UART ───────────────────── */
-/* Fallback for nodes without fw_store partition. Prefer /api/fw/upload +
- * /api/fw/relay when available (CRC32 + ACK + retransmit). */
+/* Current scanner relay uses CRC32 + ACK + retransmit framing only. */
 
 static esp_err_t ota_relay_handler(httpd_req_t *req)
 {
@@ -1000,29 +997,18 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
     char query[32] = {0};
     httpd_req_get_url_query_str(req, query, sizeof(query));
     char uart_target[8] = "ble";
-    char legacy_flag[8] = {0};
     httpd_query_key_value(query, "uart", uart_target, sizeof(uart_target));
-    httpd_query_key_value(query, "legacy", legacy_flag, sizeof(legacy_flag));
-    const bool legacy_mode =
-        (strcmp(legacy_flag, "1") == 0) ||
-        (strcasecmp(legacy_flag, "true") == 0) ||
-        (strcasecmp(legacy_flag, "yes") == 0);
 
     /* Select UART port */
     uart_port_t uart_num;
-#if defined(UPLINK_ESP32) || defined(UPLINK_ESP32S3)
     if (strcmp(uart_target, "wifi") == 0) {
         uart_num = CONFIG_WIFI_SCANNER_UART;
     } else {
         uart_num = CONFIG_BLE_SCANNER_UART;
     }
-#else
-    uart_num = CONFIG_BLE_SCANNER_UART;
-#endif
 
     int total = req->content_len;
-    ESP_LOGW(TAG, "OTA relay (%s): %d bytes to scanner (uart=%s port=%d) heap=%lu",
-             legacy_mode ? "legacy" : "streaming",
+    ESP_LOGW(TAG, "OTA relay: %d bytes to scanner (uart=%s port=%d) heap=%lu",
              total, uart_target, uart_num, (unsigned long)esp_get_free_heap_size());
 
     if (total < 1024 || total > 2 * 1024 * 1024) {
@@ -1044,16 +1030,11 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     }
 
-    if (!legacy_mode) {
-        /* Step 0: Stop scanner TX to prevent data collision during flash.
-         * Legacy scanners pre-date the explicit stop/stop_ack handshake, so
-         * the compatibility path skips this and uses the older plain stream
-         * framing they already understand. */
-        const char *stop_cmd = "{\"type\":\"stop\"}\n";
-        uart_write_bytes(uart_num, stop_cmd, strlen(stop_cmd));
-        ESP_LOGI(TAG, "Sent stop command to scanner before OTA relay");
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
+    /* Step 0: Stop scanner TX to prevent data collision during flash. */
+    const char *stop_cmd = "{\"type\":\"stop\"}\n";
+    uart_write_bytes(uart_num, stop_cmd, strlen(stop_cmd));
+    ESP_LOGI(TAG, "Sent stop command to scanner before OTA relay");
+    vTaskDelay(pdMS_TO_TICKS(500));
 
     /* Step 1: Send OTA begin command */
     uart_rx_clear_ota_response();
@@ -1065,23 +1046,21 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "OTA relay: sending ota_begin (%d bytes) to UART%d", total, uart_num);
     uart_write_bytes(uart_num, cmd, strlen(cmd));
 
-    if (!legacy_mode) {
-        ota_response_t ota_resp = {0};
-        int ack_wait = wait_for_ota_response_since(begin_wait_start_ms, "ota_ack", 3000, &ota_resp);
-        if (ack_wait != 0) {
-            char err_msg[192];
-            snprintf(err_msg, sizeof(err_msg),
-                     "{\"ok\":false,\"stage\":\"begin\",\"error\":\"%s\",\"detail\":\"%s\"}",
-                     ack_wait == -2 ? "scanner_error" : "ota_ack_timeout",
-                     ota_resp.error[0] ? ota_resp.error : "");
-            http_upload_resume();
-            uart_write_bytes(uart_num, "{\"type\":\"start\"}\n", 17);
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_sendstr(req, err_msg);
-            return ESP_OK;
-        }
-        ESP_LOGI(TAG, "OTA relay: scanner acknowledged ota_begin");
+    ota_response_t ota_resp = {0};
+    int ack_wait = wait_for_ota_response_since(begin_wait_start_ms, "ota_ack", 3000, &ota_resp);
+    if (ack_wait != 0) {
+        char err_msg[192];
+        snprintf(err_msg, sizeof(err_msg),
+                 "{\"ok\":false,\"stage\":\"begin\",\"error\":\"%s\",\"detail\":\"%s\"}",
+                 ack_wait == -2 ? "scanner_error" : "ota_ack_timeout",
+                 ota_resp.error[0] ? ota_resp.error : "");
+        http_upload_resume();
+        uart_write_bytes(uart_num, "{\"type\":\"start\"}\n", 17);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, err_msg);
+        return ESP_OK;
     }
+    ESP_LOGI(TAG, "OTA relay: scanner acknowledged ota_begin");
 
     /* UART RX already paused above — identify target scanner for logging */
     int scanner_id = (strcmp(uart_target, "wifi") == 0) ? 1 : 0;
@@ -1093,134 +1072,71 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
     int consecutive_timeouts = 0;
     bool relay_ok = true;
 
-    if (legacy_mode) {
-        /* Legacy scanner OTA (pre-v0.59):
-         *   ota_begin -> [magic][seq][len]+data -> 0xFF abort seq -> ota_end
-         * Older field scanners report versions fine but do not understand the
-         * newer CRC-trailer framing or the stop/stop_ack handshake. */
-        #define LEGACY_RELAY_CHUNK_SIZE 256
-        static uint8_t legacy_buf[LEGACY_RELAY_CHUNK_SIZE];
-        static uint8_t legacy_hdr[OTA_CHUNK_HEADER_SIZE];
+    /* Step 2: Stream HTTP→UART one chunk at a time.
+     * Read HTTP in small bites matching UART speed to avoid backpressure. */
+    #define RELAY_CHUNK_SIZE  512
+    static uint8_t accum_buf[RELAY_CHUNK_SIZE];
+    static uint8_t uart_frame[5 + RELAY_CHUNK_SIZE + 4];  /* header + data + CRC32 */
+    int accum_pos = 0;
 
-        while (remaining > 0) {
-            int to_read = remaining > LEGACY_RELAY_CHUNK_SIZE ? LEGACY_RELAY_CHUNK_SIZE : remaining;
-            int read_len = httpd_req_recv(req, (char *)legacy_buf, to_read);
-            if (read_len <= 0) {
-                if (read_len == HTTPD_SOCK_ERR_TIMEOUT) {
-                    consecutive_timeouts++;
-                    if (consecutive_timeouts > 3) {
-                        ESP_LOGE(TAG, "Legacy OTA relay: %d consecutive timeouts at %d/%d",
-                                 consecutive_timeouts, received, total);
-                        uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
-                        relay_ok = false;
-                        break;
-                    }
-                    continue;
+    while (remaining > 0) {
+        /* Read only what we need to fill one UART chunk — prevents buffering ahead */
+        int need = RELAY_CHUNK_SIZE - accum_pos;
+        if (need > remaining) need = remaining;
+        int read_len = httpd_req_recv(req, (char *)(accum_buf + accum_pos), need);
+        if (read_len <= 0) {
+            if (read_len == HTTPD_SOCK_ERR_TIMEOUT) {
+                consecutive_timeouts++;
+                if (consecutive_timeouts > 3) {
+                    ESP_LOGE(TAG, "OTA relay: %d consecutive timeouts at %d/%d",
+                             consecutive_timeouts, received, total);
+                    uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
+                    relay_ok = false;
+                    break;
                 }
-                ESP_LOGE(TAG, "Legacy OTA relay: HTTP recv error at %d/%d", received, total);
-                uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
-                relay_ok = false;
-                break;
+                continue;
             }
+            ESP_LOGE(TAG, "OTA relay: HTTP recv error at %d/%d", received, total);
+            uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
+            relay_ok = false;
+            break;
+        }
+        consecutive_timeouts = 0;
+        accum_pos += read_len;
+        remaining -= read_len;
 
-            consecutive_timeouts = 0;
-            legacy_hdr[0] = OTA_CHUNK_MAGIC;
-            legacy_hdr[1] = (uint8_t)(seq >> 8);
-            legacy_hdr[2] = (uint8_t)(seq & 0xFF);
-            legacy_hdr[3] = (uint8_t)(read_len >> 8);
-            legacy_hdr[4] = (uint8_t)(read_len & 0xFF);
+        /* Send when we have a full chunk, or this is the last data */
+        if (accum_pos >= RELAY_CHUNK_SIZE || remaining == 0) {
+            /* Build frame with CRC32 for integrity */
+            uart_frame[0] = OTA_CHUNK_MAGIC;
+            uart_frame[1] = (uint8_t)(seq >> 8);
+            uart_frame[2] = (uint8_t)(seq & 0xFF);
+            uart_frame[3] = (uint8_t)(accum_pos >> 8);
+            uart_frame[4] = (uint8_t)(accum_pos & 0xFF);
+            memcpy(uart_frame + 5, accum_buf, accum_pos);
+            uint32_t crc = esp_rom_crc32_le(0, accum_buf, accum_pos);
+            int co = 5 + accum_pos;
+            uart_frame[co + 0] = (uint8_t)(crc >> 24);
+            uart_frame[co + 1] = (uint8_t)(crc >> 16);
+            uart_frame[co + 2] = (uint8_t)(crc >> 8);
+            uart_frame[co + 3] = (uint8_t)(crc);
 
-            uart_write_bytes(uart_num, (char *)legacy_hdr, OTA_CHUNK_HEADER_SIZE);
-            uart_write_bytes(uart_num, (char *)legacy_buf, read_len);
+            uart_write_bytes(uart_num, (char *)uart_frame, 5 + accum_pos + 4);
             uart_wait_tx_done(uart_num, pdMS_TO_TICKS(1000));
 
-            received += read_len;
-            remaining -= read_len;
+            received += accum_pos;
             seq++;
+            accum_pos = 0;
 
-            /* Conservative pacing keeps the legacy direct-to-flash writer from
-             * overrunning when it cannot NACK/retransmit the way v0.59+ can. */
-            vTaskDelay(pdMS_TO_TICKS(20));
-            if (seq % OTA_ACK_INTERVAL_CHUNKS == 0) {
-                vTaskDelay(pdMS_TO_TICKS(120));
-                ESP_LOGI(TAG, "Legacy relay: %d/%d (%.0f%%) seq=%d heap=%lu",
+            /* Pacing: 30ms per chunk.
+             * Every 16 chunks (8KB), extra 500ms for scanner flash erase/write.
+             * This prevents UART TX buffer from backing up into HTTP recv. */
+            vTaskDelay(pdMS_TO_TICKS(30));
+            if (seq % 16 == 0) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+                ESP_LOGI(TAG, "Relay: %d/%d (%.0f%%) seq=%d heap=%lu",
                          received, total, (float)received / total * 100, seq,
                          (unsigned long)esp_get_free_heap_size());
-            }
-        }
-
-        if (relay_ok) {
-            const char *end_cmd = "{\"type\":\"ota_end\"}\n";
-            vTaskDelay(pdMS_TO_TICKS(500));
-            uart_write_bytes(uart_num, end_cmd, strlen(end_cmd));
-        }
-    } else {
-        /* Step 2: Stream HTTP→UART one chunk at a time.
-         * Read HTTP in small bites matching UART speed to avoid backpressure. */
-        #define RELAY_CHUNK_SIZE  512
-        static uint8_t accum_buf[RELAY_CHUNK_SIZE];
-        static uint8_t uart_frame[5 + RELAY_CHUNK_SIZE + 4];  /* header + data + CRC32 */
-        int accum_pos = 0;
-
-        while (remaining > 0) {
-            /* Read only what we need to fill one UART chunk — prevents buffering ahead */
-            int need = RELAY_CHUNK_SIZE - accum_pos;
-            if (need > remaining) need = remaining;
-            int read_len = httpd_req_recv(req, (char *)(accum_buf + accum_pos), need);
-            if (read_len <= 0) {
-                if (read_len == HTTPD_SOCK_ERR_TIMEOUT) {
-                    consecutive_timeouts++;
-                    if (consecutive_timeouts > 3) {
-                        ESP_LOGE(TAG, "OTA relay: %d consecutive timeouts at %d/%d",
-                                 consecutive_timeouts, received, total);
-                        uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
-                        relay_ok = false;
-                        break;
-                    }
-                    continue;
-                }
-                ESP_LOGE(TAG, "OTA relay: HTTP recv error at %d/%d", received, total);
-                uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
-                relay_ok = false;
-                break;
-            }
-            consecutive_timeouts = 0;
-            accum_pos += read_len;
-            remaining -= read_len;
-
-            /* Send when we have a full chunk, or this is the last data */
-            if (accum_pos >= RELAY_CHUNK_SIZE || remaining == 0) {
-                /* Build frame with CRC32 for integrity */
-                uart_frame[0] = OTA_CHUNK_MAGIC;
-                uart_frame[1] = (uint8_t)(seq >> 8);
-                uart_frame[2] = (uint8_t)(seq & 0xFF);
-                uart_frame[3] = (uint8_t)(accum_pos >> 8);
-                uart_frame[4] = (uint8_t)(accum_pos & 0xFF);
-                memcpy(uart_frame + 5, accum_buf, accum_pos);
-                uint32_t crc = esp_rom_crc32_le(0, accum_buf, accum_pos);
-                int co = 5 + accum_pos;
-                uart_frame[co + 0] = (uint8_t)(crc >> 24);
-                uart_frame[co + 1] = (uint8_t)(crc >> 16);
-                uart_frame[co + 2] = (uint8_t)(crc >> 8);
-                uart_frame[co + 3] = (uint8_t)(crc);
-
-                uart_write_bytes(uart_num, (char *)uart_frame, 5 + accum_pos + 4);
-                uart_wait_tx_done(uart_num, pdMS_TO_TICKS(1000));
-
-                received += accum_pos;
-                seq++;
-                accum_pos = 0;
-
-                /* Pacing: 30ms per chunk.
-                 * Every 16 chunks (8KB), extra 500ms for scanner flash erase/write.
-                 * This prevents UART TX buffer from backing up into HTTP recv. */
-                vTaskDelay(pdMS_TO_TICKS(30));
-                if (seq % 16 == 0) {
-                    vTaskDelay(pdMS_TO_TICKS(500));
-                    ESP_LOGI(TAG, "Relay: %d/%d (%.0f%%) seq=%d heap=%lu",
-                             received, total, (float)received / total * 100, seq,
-                             (unsigned long)esp_get_free_heap_size());
-                }
             }
         }
     }
@@ -1257,7 +1173,7 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
              "{\"ok\":%s,\"mode\":\"%s\",\"bytes\":%d,\"chunks\":%d,"
              "\"scanner_response\":\"%s\",\"scanner_error\":\"%s\"}",
              relay_ok ? "true" : "false",
-             legacy_mode ? "legacy" : "streaming",
+             "streaming",
              received, seq,
              final_resp.type[0] ? final_resp.type : (relay_ok ? "ota_done" : "none"),
              final_resp.error[0] ? final_resp.error :
@@ -1455,7 +1371,15 @@ static esp_err_t calibration_mode_stop_handler(httpd_req_t *req)
         uart_rx_get_node_calibration_session_id()
     );
     uart_rx_send_command(cmd);
-    wait_for_node_mode("normal", "", 2500, false);
+    if (!wait_for_node_mode("normal", "", 2500, false)) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_sendstr(
+            req,
+            "{\"ok\":false,\"scan_mode\":\"calibration\","
+            "\"error\":\"scanner_calibration_stop_ack_timeout\"}"
+        );
+        return ESP_OK;
+    }
     uart_rx_set_node_calibration_mode(false, "", "");
     httpd_resp_sendstr(req, "{\"ok\":true,\"scan_mode\":\"normal\"}");
     return ESP_OK;

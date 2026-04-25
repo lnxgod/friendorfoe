@@ -3,8 +3,7 @@
 /**
  * Friend or Foe -- Uplink Status LED
  *
- * On ESP32-S3: WS2812 RGB LED on GPIO48 with colour-coded status.
- * On ESP32-C3/ESP32: Plain GPIO LED with blink patterns.
+ * ESP32-S3 WS2812 RGB LED on GPIO48 with colour-coded status.
  *
  * Colour key (S3 RGB):
  *   SOLID GREEN        = WiFi + server + scanners all good

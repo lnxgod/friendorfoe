@@ -2,10 +2,7 @@
 
 #include "detection_policy.h"
 #include "wifi_scanner.h"
-
-#ifndef WIFI_SCANNER_ONLY
 #include "ble_remote_id.h"
-#endif
 
 #include "esp_log.h"
 
@@ -33,9 +30,7 @@ bool scanner_calibration_mode_start(const char *session_id,
 
     wifi_scanner_lockon_cancel();
     wifi_scanner_pause();
-#ifndef WIFI_SCANNER_ONLY
     ble_rid_lockon_cancel();
-#endif
     ESP_LOGW(TAG, "Calibration mode ACTIVE: session=%s uuid=%s", s_session_id, s_uuid);
     return true;
 }

@@ -10,11 +10,7 @@
  * - Known drone manufacturer OUI prefixes
  *
  * ESP32-S3: 2.4 GHz only (ch 1-13), dual-core, pinned to Core 0.
- * ESP32-C5: Dual-band 2.4 + 5 GHz (ch 1-13 + 36-165), single-core.
- *
- * Channel-hops with ~100ms dwell time per channel. On dual-band builds,
- * channels are interleaved (one 2.4 GHz, one 5 GHz) so neither band
- * is starved.
+ * Channel-hops with BLE-safe passive dwell timing.
  */
 
 #include "detection_types.h"

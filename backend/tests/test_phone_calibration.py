@@ -290,6 +290,27 @@ def test_checkpoint_warns_on_gps_drift():
     assert res["severity"] in ("warn", "error")
 
 
+def test_checkpoint_without_recent_hearing_is_failed_anchor():
+    mgr = PhoneCalibrationManager()
+    s = mgr.start("silent", None)
+
+    res = mgr.add_checkpoint(
+        session_id=s.session_id,
+        sensor_id="sensor_a",
+        sensor_lat=37.0,
+        sensor_lon=-122.0,
+        phone_lat=37.0,
+        phone_lon=-122.0,
+        phone_accuracy_m=2.0,
+        ts_s=1_700_000_010.0,
+    )
+
+    assert res["ok"] is False
+    assert res["accepted_into_fit"] is False
+    assert res["severity"] == "error"
+    assert any("no_rssi_heard" in w for w in res["warnings"])
+
+
 def test_readiness_is_not_ready_initially():
     """Fresh session with no samples → no sensor ready, session not ready."""
     mgr = PhoneCalibrationManager()
@@ -743,6 +764,9 @@ async def test_active_calibration_beacon_creates_walk_sample_without_map_clutter
         assert session is not None
         assert len(session.samples) == 1
         assert len(recent) == 0
+        obs = tracker.observations[f"FP:CAL-{sid}"][device_id]
+        assert obs.distance_source == "backend_rssi"
+        assert obs.scanner_estimated_distance_m is None
 
         feedback_resp = await c.get(f"/detections/calibrate/walk/feedback?session_id={sid}")
         assert feedback_resp.status_code == 200, feedback_resp.text
@@ -779,27 +803,26 @@ async def test_walk_start_fails_if_any_target_node_cannot_enter_calibration_mode
     detections._calibration_mode.active_session_id = None
     detections._calibration_mode.fleet_mode_state = "inactive"
 
-    ok_id = f"uplink-ok-{uuid.uuid4().hex[:8]}"
     bad_id = f"uplink-bad-{uuid.uuid4().hex[:8]}"
+    ok_id = f"uplink-ok-{uuid.uuid4().hex[:8]}"
+    late_ok_id = f"uplink-late-ok-{uuid.uuid4().hex[:8]}"
+    stopped_ids: list[str] = []
 
     async def fake_start(node, session):
         if node["device_id"] == bad_id:
             raise RuntimeError("arm failed")
         return {"ok": True, "session_id": session.session_id, "scan_mode": "calibration"}
 
+    async def fake_stop(node, session_id, reason):
+        stopped_ids.append(node["device_id"])
+        return await _fake_stop_node_mode(node, session_id, reason)
+
     monkeypatch.setattr(detections._calibration_mode, "_start_node_mode", fake_start)
-    monkeypatch.setattr(detections._calibration_mode, "_stop_node_mode", _fake_stop_node_mode)
+    monkeypatch.setattr(detections._calibration_mode, "_stop_node_mode", fake_stop)
     monkeypatch.setattr(
         detections,
         "_node_heartbeats",
         {
-            ok_id: {
-                "device_id": ok_id,
-                "last_seen": time.time(),
-                "lat": 37.300001,
-                "lon": -122.300001,
-                "ip": "192.168.42.101",
-            },
             bad_id: {
                 "device_id": bad_id,
                 "last_seen": time.time(),
@@ -807,19 +830,38 @@ async def test_walk_start_fails_if_any_target_node_cannot_enter_calibration_mode
                 "lon": -122.300101,
                 "ip": "192.168.42.102",
             },
+            ok_id: {
+                "device_id": ok_id,
+                "last_seen": time.time(),
+                "lat": 37.300001,
+                "lon": -122.300001,
+                "ip": "192.168.42.101",
+            },
+            late_ok_id: {
+                "device_id": late_ok_id,
+                "last_seen": time.time(),
+                "lat": 37.300201,
+                "lon": -122.300201,
+                "ip": "192.168.42.103",
+            },
         },
     )
 
     async with AsyncClient(transport=transport, base_url="http://testserver", headers=headers) as c:
         for device_id, lat, lon in [
-            (ok_id, 37.300001, -122.300001),
             (bad_id, 37.300101, -122.300101),
+            (ok_id, 37.300001, -122.300001),
+            (late_ok_id, 37.300201, -122.300201),
         ]:
             resp = await c.post(
                 "/nodes",
                 json={
                     "device_id": device_id,
-                    "name": device_id,
+                    "name": (
+                        "a-bad"
+                        if device_id == bad_id
+                        else ("b-ok" if device_id == ok_id else "c-late-ok")
+                    ),
                     "lat": lat,
                     "lon": lon,
                     "alt": 0.0,
@@ -833,6 +875,8 @@ async def test_walk_start_fails_if_any_target_node_cannot_enter_calibration_mode
         assert "failed to arm fleet calibration mode" in start_resp.text
         assert not detections._phone_cal_mgr.sessions
         assert detections._calibration_mode.active_session_id is None
+        assert set(stopped_ids) == {ok_id, late_ok_id}
 
         await c.delete(f"/nodes/{ok_id}")
         await c.delete(f"/nodes/{bad_id}")
+        await c.delete(f"/nodes/{late_ok_id}")

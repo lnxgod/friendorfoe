@@ -131,6 +131,68 @@ def _find_active_calibration_session(ble_svc_uuids: str | None):
 def _is_calibration_tracking_id(drone_id: str | None) -> bool:
     return bool((drone_id or "").startswith("FP:CAL-"))
 
+
+def _source_tier_for_observation(obs, classification: str | None = None) -> str:
+    if obs is None:
+        return "unknown"
+    if _is_calibration_tracking_id(getattr(obs, "model", None)):
+        return "calibration"
+    source = (getattr(obs, "source", "") or "").lower()
+    cls = (classification or getattr(obs, "classification", "") or "").lower()
+    if source in ("wifi_assoc", "ble_fingerprint", "wifi_oui"):
+        return "diagnostic"
+    if source == "wifi_probe_request" and cls not in {
+        "confirmed_drone", "likely_drone", "test_drone", "possible_drone",
+    }:
+        return "diagnostic"
+    return "drone_grade"
+
+
+def _calibration_state_for_item(drone_id: str | None = None) -> str:
+    if _is_calibration_tracking_id(drone_id):
+        return "calibration_session"
+    summary = _applied_cal_store.summary()
+    if summary.get("is_trusted") and summary.get("is_active"):
+        return "active"
+    return "defaults"
+
+
+def _geometry_trust_for_observation(obs, drone_id: str | None = None) -> str:
+    if obs is None:
+        return "unknown"
+    if _is_calibration_tracking_id(drone_id) or _is_calibration_tracking_id(getattr(obs, "model", None)):
+        return "calibration_session"
+    if getattr(obs, "range_model", None) == "per_listener":
+        return "per_listener_calibrated"
+    summary = _applied_cal_store.summary()
+    if summary.get("is_trusted") and getattr(obs, "distance_source", None) == "backend_rssi":
+        return "trusted_backend_model"
+    if getattr(obs, "distance_source", None) == "backend_rssi":
+        return "default_backend_model"
+    if getattr(obs, "distance_source", None) == "scanner":
+        return "scanner_firmware_model"
+    return "unknown"
+
+
+def _dominant_range_authority(observations: list) -> str | None:
+    counts: dict[str, int] = {}
+    for obs in observations:
+        src = getattr(obs, "distance_source", None) or "none"
+        counts[src] = counts.get(src, 0) + 1
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda item: item[1])[0]
+
+
+def _uncertainty_for_map_item(position_source: str | None,
+                              source_tier: str,
+                              accuracy_m: float | None,
+                              range_m: float | None) -> float | None:
+    uncertainty = accuracy_m if accuracy_m is not None else range_m
+    if source_tier == "diagnostic":
+        uncertainty = max(float(uncertainty or 0.0), 25.0)
+    return uncertainty
+
 # ---------------------------------------------------------------------------
 # In-memory ring buffer for recent detections (fast path, no DB needed)
 # ---------------------------------------------------------------------------
@@ -308,7 +370,7 @@ _known_drones: dict[str, float] = {}
 _drone_alerts: list[dict] = []  # Persistent drone-specific alerts
 _DRONE_REAPPEAR_SEC = 300  # Re-alert if drone gone >5min and comes back
 
-# Lock-on command (polled by uplinks) — legacy global + per-node via drone_tracker
+# Lock-on command polled by uplinks; per-node tracking lives in drone_tracker.
 _lockon_command: dict = {"active": False, "channel": 0, "bssid": "", "duration_s": 0, "issued_at": 0}
 
 # Automated drone tracking orchestrator
@@ -535,6 +597,18 @@ async def ingest_drone_detections(
         "board_type": batch.board_type or prev_hb.get("board_type"),
         "scanners": batch.scanners or prev_hb.get("scanners"),
         "time_sync": batch.time_sync or prev_hb.get("time_sync"),
+        "scan_mode": batch.scan_mode or prev_hb.get("scan_mode"),
+        "scan_profile": batch.scan_profile or prev_hb.get("scan_profile"),
+        "calibration_uuid": batch.calibration_uuid or prev_hb.get("calibration_uuid"),
+        "dedup_seen": batch.dedup_seen if batch.dedup_seen is not None else prev_hb.get("dedup_seen"),
+        "dedup_sent": batch.dedup_sent if batch.dedup_sent is not None else prev_hb.get("dedup_sent"),
+        "dedup_collapsed": (
+            batch.dedup_collapsed
+            if batch.dedup_collapsed is not None
+            else prev_hb.get("dedup_collapsed")
+        ),
+        "cal_seen": batch.cal_seen if batch.cal_seen is not None else prev_hb.get("cal_seen"),
+        "cal_sent": batch.cal_sent if batch.cal_sent is not None else prev_hb.get("cal_sent"),
         "wifi_ssid": batch.wifi_ssid or prev_hb.get("wifi_ssid"),
         "wifi_rssi": batch.wifi_rssi if batch.wifi_rssi is not None else prev_hb.get("wifi_rssi"),
         "source_fixups_total": prev_hb.get("source_fixups_total", 0),
@@ -660,18 +734,14 @@ async def ingest_drone_detections(
             except Exception:
                 pass
 
-        # Data-flags byte: v0.58+ scanners emit ble_apple_flags (always, even
-        # when 0). Legacy scanners emit ble_apple_info non-zero-only. Prefer
-        # the new field; fall back to the old one until all nodes are reflashed.
-        ainfo = det.ble_apple_flags
-        if ainfo is None:
-            ainfo = det.ble_apple_info or 0
+        # Data-flags byte: current scanners emit ble_apple_flags even when 0,
+        # so the backend can distinguish "all flags false" from "absent".
+        ainfo = det.ble_apple_flags or 0
 
         # Honest Apple classification. v0.58+ scanners send "Apple Device"
-        # directly (with enriched flag labels still applied below). Legacy
-        # scanners still send "iPhone" — rewrite those. v0.58 scanners that
-        # resolve to Handoff/AirPlay/AirPods/AirTag send their specific label
-        # and bypass this block entirely.
+        # directly, with enriched flag labels still applied below. Scanners
+        # that resolve to Handoff/AirPlay/AirPods/AirTag send their specific
+        # label and bypass this block entirely.
         if _mfr in ("iPhone", "Apple Device"):
             at = det.ble_apple_type or 0
             if _mfr == "iPhone" and at in (0x0C, 0x09):
@@ -685,9 +755,8 @@ async def ingest_drone_detections(
                 else:
                     det.manufacturer = "Apple Device"
             else:
-                # Legacy scanner said "iPhone" with no Continuity evidence
-                # (length heuristic / short payload path). Apple doesn't
-                # broadcast model — downgrade to generic.
+                # No Continuity evidence. Apple doesn't broadcast model here,
+                # so keep the label generic.
                 det.manufacturer = "Apple Device"
 
         cal_session = None
@@ -708,6 +777,7 @@ async def ingest_drone_detections(
                     ts_s=(det.timestamp / 1000.0)
                           if det.timestamp and det.timestamp > 1e12
                           else received_at,
+                    scanner_slots_seen=getattr(det, "scanner_slots_seen", None),
                 )
 
                 det_ts = (det.timestamp / 1000.0
@@ -720,7 +790,7 @@ async def ingest_drone_detections(
                     device_alt=sensor_alt,
                     drone_id=det.drone_id,
                     rssi=det.rssi,
-                    estimated_distance_m=det.estimated_distance_m,
+                    estimated_distance_m=None,
                     drone_lat=det.latitude,
                     drone_lon=det.longitude,
                     drone_alt=det.altitude_m,
@@ -739,6 +809,7 @@ async def ingest_drone_detections(
                     operator_id=det.operator_id,
                     sensor_type=sensor_type,
                     timestamp=det_ts,
+                    range_authority="backend_rssi",
                 )
                 accepted += 1
                 continue
@@ -838,7 +909,7 @@ async def ingest_drone_detections(
             ble_apple_auth=det.ble_apple_auth,
             ble_adv_interval=det.ble_adv_interval,
             ble_svc_uuids=det.ble_svc_uuids,
-            ble_apple_info=ainfo,
+            ble_apple_flags=ainfo,
         )
 
         alerts = _rf_anomaly_detector.process_event(
@@ -982,8 +1053,8 @@ async def ingest_drone_detections(
         db_detections.append(db_det)
 
         # Triangulation engine (use adjusted confidence for test drones).
-        # Per-detection timestamp from scanner's epoch-synced clock (v0.60+);
-        # falls back to batch receive time for pre-sync or legacy uplinks.
+        # Per-detection timestamp from scanner's epoch-synced clock; fall back
+        # to batch receive time when the scanner timestamp is not epoch-valid.
         det_ts = (det.timestamp / 1000.0
                   if det.timestamp and det.timestamp > 1_700_000_000_000
                   else received_at)
@@ -1202,14 +1273,31 @@ async def get_drone_map(
             model=d.model,
             bssid=best_bssid,
         ) if best_obs else ("unknown_device", d.confidence)
+        source_tier = _source_tier_for_observation(best_obs, cls)
+        range_authority = _dominant_range_authority(d.observations)
+        geometry_trust = _geometry_trust_for_observation(best_obs, d.drone_id)
+        uncertainty_m = _uncertainty_for_map_item(
+            d.position_source,
+            source_tier,
+            d.accuracy_m,
+            d.range_m,
+        )
+        calibration_state = _calibration_state_for_item(d.drone_id)
 
         # Skip positions with huge uncertainty — they're noise
-        if d.accuracy_m and d.accuracy_m > 200:
+        if uncertainty_m and uncertainty_m > 200:
             continue
 
         # Determine if this is a probe device
         is_probe = bool(best_obs and best_obs.source == "wifi_probe_request") or \
             (d.drone_id or "").startswith("PROBE:")
+        if source_tier == "diagnostic":
+            if not include_probes:
+                continue
+            if d.sensor_count < 2:
+                continue
+            if uncertainty_m is None or uncertainty_m > 200:
+                continue
 
         if classification and cls != classification:
             continue
@@ -1243,6 +1331,15 @@ async def get_drone_map(
                 backend_estimated_distance_m=o.backend_estimated_distance_m,
                 distance_source=o.distance_source,
                 range_model=o.range_model,
+                range_authority=o.distance_source,
+                source_tier=_source_tier_for_observation(o, cls),
+                geometry_trust=_geometry_trust_for_observation(o, d.drone_id),
+                uncertainty_m=(
+                    o.estimated_distance_m
+                    if o.estimated_distance_m is not None and source_tier != "diagnostic"
+                    else (max(float(o.estimated_distance_m or 0.0), 25.0)
+                          if o.estimated_distance_m is not None else None)
+                ),
                 confidence=o.confidence,
                 source=o.source,
                 ssid=o.ssid,
@@ -1257,6 +1354,8 @@ async def get_drone_map(
         _did = d.drone_id or ""
         if _did.startswith("rid_"):
             identity_source = "rid"
+        elif _did.startswith("PROBE:"):
+            identity_source = "probe_fingerprint"
         elif _did.startswith("FP:") or _did.startswith("BLE:"):
             identity_source = "fingerprint"
         else:
@@ -1289,6 +1388,11 @@ async def get_drone_map(
             bssid=best_bssid,
             ssid=best_obs.ssid if best_obs else None,
             identity_source=identity_source,
+            range_authority=range_authority,
+            geometry_trust=geometry_trust,
+            source_tier=source_tier,
+            uncertainty_m=uncertainty_m,
+            calibration_state=calibration_state,
         ))
 
     sensor_items = [

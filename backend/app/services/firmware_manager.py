@@ -24,20 +24,9 @@ CACHE_TTL_S = 1800  # Re-check GitHub every 30 minutes
 # Repo root relative to backend/app/services/firmware_manager.py
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# Map firmware names to their expected asset filename patterns + local build dir
+# Current production firmware support is S3-only. Older targets remain in git
+# history, but the live catalog must not offer them for OTA rollout.
 FIRMWARE_TYPES = {
-    "uplink-esp32": {
-        "description": "Uplink node (ESP32 OLED)",
-        "asset_pattern": "uplink-esp32",
-        "board": "esp32dev",
-        "local_bin": _REPO_ROOT / "esp32/uplink/.pio/build/uplink-esp32/firmware.bin",
-    },
-    "uplink-c3": {
-        "description": "Uplink node (ESP32-C3)",
-        "asset_pattern": "uplink-c3",
-        "board": "esp32-c3",
-        "local_bin": _REPO_ROOT / "esp32/uplink/.pio/build/uplink/firmware.bin",
-    },
     "uplink-s3": {
         "description": "Uplink node (ESP32-S3 N16R8)",
         "asset_pattern": "uplink-s3",
@@ -55,30 +44,6 @@ FIRMWARE_TYPES = {
         "asset_pattern": "scanner-s3-combo",
         "board": "esp32s3",
         "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo/firmware.bin",
-    },
-    "scanner-s3-legacy": {
-        "description": "BLE + WiFi scanner (S3 for legacy OLED uplink)",
-        "asset_pattern": "scanner-s3-legacy",
-        "board": "esp32s3",
-        "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-legacy/firmware.bin",
-    },
-    "scanner-s3-wifi": {
-        "description": "WiFi-only scanner (ESP32-S3)",
-        "asset_pattern": "scanner-s3-wifi",
-        "board": "esp32s3",
-        "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-wifi/firmware.bin",
-    },
-    "scanner-esp32": {
-        "description": "WiFi-only scanner (ESP32)",
-        "asset_pattern": "scanner-esp32",
-        "board": "esp32dev",
-        "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-esp32/firmware.bin",
-    },
-    "scanner-c5": {
-        "description": "2.4+5GHz WiFi scanner (ESP32-C5)",
-        "asset_pattern": "scanner-c5",
-        "board": "esp32c5",
-        "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-c5/firmware.bin",
     },
 }
 

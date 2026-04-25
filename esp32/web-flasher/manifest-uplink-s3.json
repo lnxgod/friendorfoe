@@ -1,0 +1,14 @@
+{
+  "name": "Friend or Foe Uplink (ESP32-S3)",
+  "version": "0.63.16-calibration-demo",
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "firmware/uplink-s3/bootloader.bin", "offset": 0 },
+        { "path": "firmware/uplink-s3/partition-table.bin", "offset": 32768 },
+        { "path": "firmware/uplink-s3/firmware.bin", "offset": 131072 }
+      ]
+    }
+  ]
+}

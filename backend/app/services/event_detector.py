@@ -368,50 +368,118 @@ class EventDetector:
         if not keys:
             return 0
         try:
+            from sqlalchemy.exc import IntegrityError
             from app.models.db_models import Event
         except Exception:
             return 0
 
         written = 0
-        try:
-            for key in keys:
-                entry = self._seen.get(key)
-                if not entry or entry.db_id:
+
+        for key in keys:
+            entry = self._seen.get(key)
+            if not entry or entry.db_id:
+                continue
+            try:
+                existing = await self._get_existing_event_row(session, Event, key)
+                if existing is not None:
+                    self._merge_seen_entry_into_event_row(existing, entry)
+                    await session.commit()
+                    self._mark_seen_entry_persisted(entry, existing.id)
+                    written += 1
                     continue
-                row = Event(
-                    event_type=key[0],
-                    identifier=key[1],
-                    severity=SEVERITY.get(key[0], "info"),
-                    title=entry.sensor_ids and next(iter(entry.sensor_ids)) or "",  # placeholder
-                    message="",  # will be replaced by metadata_json lookup below
-                    first_seen_at=datetime.fromtimestamp(entry.first_seen, tz=timezone.utc),
-                    last_seen_at=datetime.fromtimestamp(entry.last_seen, tz=timezone.utc),
-                    sighting_count=entry.sighting_count,
-                    sensor_count=len(entry.sensor_ids),
-                    sensor_ids_json=json.dumps(sorted(entry.sensor_ids)),
-                    best_rssi=entry.best_rssi,
-                    metadata_json=json.dumps(entry.__dict__.get("metadata", {})),
-                )
-                # Hydrate title/message from cached metadata
-                md = entry.__dict__.get("metadata") or {}
-                row.title = md.get("title", self._default_title(key[0], key[1]))
-                row.message = md.get("message", self._default_message(key[0], key[1], md))
-                row.metadata_json = json.dumps(md)
+
+                row = self._build_event_row(Event, key, entry)
                 session.add(row)
                 await session.flush()  # assigns PK
-                entry.db_id = row.id
-                written += 1
-            if written:
+                row_id = row.id
                 await session.commit()
-        except Exception as e:
-            try:
-                await session.rollback()
-            except Exception:
-                pass
-            logger.warning("EventDetector.commit_new failed: %s", e)
+                self._mark_seen_entry_persisted(entry, row_id)
+                written += 1
+            except IntegrityError:
+                written += await self._recover_duplicate_event(session, Event, key, entry)
+            except Exception as e:
+                await self._rollback_quietly(session)
+                logger.warning("EventDetector.commit_new failed for %s: %s", key, e)
         return written
 
     # ── Internals ─────────────────────────────────────────────────────
+
+    async def _get_existing_event_row(self, session, Event, key: tuple[str, str]):
+        from sqlalchemy import select
+
+        result = await session.execute(
+            select(Event).where(
+                Event.event_type == key[0],
+                Event.identifier == key[1],
+            )
+        )
+        return result.scalar_one_or_none()
+
+    def _build_event_row(self, Event, key: tuple[str, str], entry: SeenEntry):
+        md = entry.__dict__.get("metadata") or {}
+        return Event(
+            event_type=key[0],
+            identifier=key[1],
+            severity=SEVERITY.get(key[0], "info"),
+            title=md.get("title", self._default_title(key[0], key[1])),
+            message=md.get("message", self._default_message(key[0], key[1], md)),
+            first_seen_at=datetime.fromtimestamp(entry.first_seen, tz=timezone.utc),
+            last_seen_at=datetime.fromtimestamp(entry.last_seen, tz=timezone.utc),
+            sighting_count=entry.sighting_count,
+            sensor_count=len(entry.sensor_ids),
+            sensor_ids_json=json.dumps(sorted(entry.sensor_ids)),
+            best_rssi=entry.best_rssi,
+            metadata_json=json.dumps(md),
+        )
+
+    @staticmethod
+    def _merge_seen_entry_into_event_row(row, entry: SeenEntry) -> None:
+        try:
+            existing_sensors = set(json.loads(row.sensor_ids_json or "[]"))
+        except Exception:
+            existing_sensors = set()
+        merged_sensors = existing_sensors | set(entry.sensor_ids)
+        entry_last_seen = datetime.fromtimestamp(entry.last_seen, tz=timezone.utc)
+        row.last_seen_at = max(row.last_seen_at, entry_last_seen, key=lambda dt: dt.timestamp())
+        row.sighting_count = int(row.sighting_count or 0) + max(1, int(entry.sighting_count or 0))
+        row.sensor_count = len(merged_sensors)
+        row.sensor_ids_json = json.dumps(sorted(merged_sensors))
+        if entry.best_rssi is not None:
+            row.best_rssi = (
+                entry.best_rssi
+                if row.best_rssi is None
+                else max(int(row.best_rssi), int(entry.best_rssi))
+            )
+        if not row.metadata_json:
+            row.metadata_json = json.dumps(entry.__dict__.get("metadata") or {})
+
+    @staticmethod
+    def _mark_seen_entry_persisted(entry: SeenEntry, row_id: int) -> None:
+        entry.db_id = row_id
+        entry.dirty = False
+
+    async def _recover_duplicate_event(self, session, Event, key: tuple[str, str], entry: SeenEntry) -> int:
+        await self._rollback_quietly(session)
+        try:
+            existing = await self._get_existing_event_row(session, Event, key)
+            if existing is None:
+                logger.warning("EventDetector.commit_new duplicate disappeared for %s", key)
+                return 0
+            self._merge_seen_entry_into_event_row(existing, entry)
+            await session.commit()
+            self._mark_seen_entry_persisted(entry, existing.id)
+            return 1
+        except Exception as e:
+            await self._rollback_quietly(session)
+            logger.warning("EventDetector.commit_new duplicate recovery failed for %s: %s", key, e)
+            return 0
+
+    @staticmethod
+    async def _rollback_quietly(session) -> None:
+        try:
+            await session.rollback()
+        except Exception:
+            pass
 
     def _extract_candidates(self, *, source, classification, drone_id, bssid,
                             ssid, manufacturer, model, probed_ssids, ie_hash, rssi,

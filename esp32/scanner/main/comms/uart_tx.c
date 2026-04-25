@@ -584,8 +584,7 @@ void uart_tx_send_detection(const drone_detection_t *detection)
     }
 
     /* Apple Nearby Info data-flags byte — always emitted (even when 0) so
-     * the backend can distinguish "all flags false" from "field absent".
-     * Cold-renamed in v0.58 from ble_apple_info / "ble_ainfo". */
+     * the backend can distinguish "all flags false" from "field absent". */
     cJSON_AddNumberToObject(root, JSON_KEY_BLE_APPLE_FLAGS, detection->ble_apple_flags);
 
     /* WiFi probe fingerprint — only add if not already added as array above */

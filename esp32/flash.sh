@@ -40,44 +40,20 @@ detect_and_flash() {
 
     if echo "$chip_info" | grep -q "ESP32-S3"; then
         echo -e "${GREEN}Detected: ESP32-S3${NC}"
-        # S3 = BLE+WiFi combo scanner
-        flash_board "$port" "ESP32-S3" "scanner-s3-combo" "scanner" "S3 Combo Scanner"
-
-    elif echo "$chip_info" | grep -q "ESP32-C3"; then
-        echo -e "${GREEN}Detected: ESP32-C3${NC}"
-        # C3 = uplink
-        flash_board "$port" "ESP32-C3" "uplink" "uplink" "Uplink (C3)"
-
-    elif echo "$chip_info" | grep -q "ESP32-D0\|ESP32 "; then
-        echo -e "${GREEN}Detected: Plain ESP32${NC}"
-        # Plain ESP32 could be uplink-esp32 or scanner-esp32
-        # Check serial output to determine which firmware is running
-        local ident
-        ident=$(timeout 5 cat "$port" 2>/dev/null | head -50 | grep -oE '(uplink|scanner)' | head -1 || true)
-
-        if [ -z "$ident" ]; then
-            echo -e "${YELLOW}Can't auto-detect firmware type from serial. Choose:${NC}"
-            echo "  1) Uplink (ESP32 OLED)"
-            echo "  2) WiFi Scanner"
-            read -rp "Choice [1/2]: " choice
-            case "$choice" in
-                2) ident="scanner" ;;
-                *) ident="uplink" ;;
-            esac
-        fi
-
-        if [ "$ident" = "uplink" ]; then
-            flash_board "$port" "ESP32" "uplink-esp32" "uplink" "Uplink (ESP32)"
-        else
-            flash_board "$port" "ESP32" "scanner-esp32" "scanner" "WiFi Scanner (ESP32)"
-        fi
-
-    elif echo "$chip_info" | grep -q "ESP32-C5"; then
-        echo -e "${GREEN}Detected: ESP32-C5${NC}"
-        flash_board "$port" "ESP32-C5" "scanner-c5" "scanner" "WiFi Scanner (C5)"
+        echo -e "${YELLOW}Choose current production firmware:${NC}"
+        echo "  1) Scanner S3 combo"
+        echo "  2) Scanner S3 seed"
+        echo "  3) Uplink S3"
+        read -rp "Choice [1/2/3, default 1]: " choice
+        case "$choice" in
+            2) flash_board "$port" "ESP32-S3" "scanner-s3-combo-seed" "scanner" "S3 Seed Scanner" ;;
+            3) flash_board "$port" "ESP32-S3" "uplink-s3" "uplink" "S3 Uplink" ;;
+            *) flash_board "$port" "ESP32-S3" "scanner-s3-combo" "scanner" "S3 Combo Scanner" ;;
+        esac
 
     else
-        echo -e "${RED}Unknown chip: ${chip_info}${NC}"
+        echo -e "${RED}Unsupported chip for current releases: ${chip_info}${NC}"
+        echo "Current production firmware supports ESP32-S3 scanner, seed scanner, and uplink only."
         echo "Raw output:"
         "$ESPTOOL" --port "$port" chip-id 2>&1 | head -10
         return 1

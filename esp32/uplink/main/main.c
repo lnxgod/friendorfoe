@@ -1,11 +1,11 @@
 /**
- * Friend or Foe -- Uplink Main Entry Point (ESP32-C3)
+ * Friend or Foe -- Uplink Main Entry Point (ESP32-S3)
  *
  * The Uplink board receives drone detections from the Scanner over UART,
  * uploads them to the FastAPI backend via HTTP, and manages hardware
  * peripherals (OLED, GPS, LED, battery).
  *
- * Task layout (single-core ESP32-C3):
+ * Task layout:
  *   uart_rx_task     - priority 5, stack 4096   - UART line parsing + JSON decode
  *   http_upload_task - priority 4, stack 8192   - Batch upload to backend
  *   gps_task         - priority 3, stack 4096   - NMEA parsing
@@ -56,13 +56,11 @@
 #error "uplink firmware must keep Bluetooth disabled; uplinks should never advertise or scan BLE"
 #endif
 
-#if defined(UPLINK_ESP32S3)
-#define FIRMWARE_NAME "uplink-s3"
-#elif defined(UPLINK_ESP32)
-#define FIRMWARE_NAME "uplink-esp32"
-#else
-#define FIRMWARE_NAME "uplink"
+#if !defined(UPLINK_ESP32S3)
+#error "Supported FoF uplink firmware is ESP32-S3 only."
 #endif
+
+#define FIRMWARE_NAME "uplink-s3"
 
 static const char *TAG = "main";
 
@@ -73,12 +71,10 @@ static const char *TAG = "main";
  *   - If the connectivity watchdog would otherwise esp_restart() while
  *     the flag is still set, we call esp_ota_mark_app_invalid_rollback_
  *     and_reboot() instead, which boots the previous slot.
- * Flag is only meaningful on S3 builds — legacy ESP32 rollback is gated
- * behind UPLINK_ESP32S3 because the sdkconfig flag lives in the S3 defaults.
+ * Rollback is required for fleet OTA safety.
  */
 static volatile bool s_ota_pending_verify = false;
 
-#if defined(UPLINK_ESP32S3)
 static void rollback_check_at_boot(void)
 {
     const esp_partition_t *running = esp_ota_get_running_partition();
@@ -123,15 +119,6 @@ static void rollback_and_reboot_or_restart(const char *reason)
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
 }
-#else  /* legacy ESP32 — no rollback */
-#  define rollback_check_at_boot()         ((void)0)
-#  define rollback_mark_valid()            ((void)0)
-#  define rollback_and_reboot_or_restart(r) do { \
-        ESP_LOGE(TAG, "WATCHDOG REBOOT: %s", (r)); \
-        vTaskDelay(pdMS_TO_TICKS(1000));           \
-        esp_restart();                              \
-    } while (0)
-#endif
 
 /* ── Display update task ───────────────────────────────────────────────── */
 
@@ -146,7 +133,6 @@ static void display_task(void *arg)
     while (1) {
         /* Gather current state */
         int drone_count    = uart_rx_get_detection_count();
-        bool gps_fix       = gps_has_fix();
         bool wifi_ok       = wifi_sta_is_connected();
         float battery_pct  = battery_get_percentage();
         int upload_count   = http_upload_get_success_count();
@@ -188,11 +174,6 @@ static void display_task(void *arg)
         bool server_ok   = !standalone &&
                            http_upload_get_fail_count() <= http_upload_get_success_count();
 
-#if !defined(UPLINK_ESP32) && !defined(UPLINK_ESP32S3)
-        if (!gps_fix) {
-            led_set_pattern(LED_NO_GPS);
-        } else
-#endif
         if (!standalone && !wifi_ok) {
             led_set_pattern(LED_WIFI_DOWN);         /* red/yellow flash */
         } else if (!scanner_ok) {
@@ -216,13 +197,7 @@ static void display_task(void *arg)
 static void print_banner(void)
 {
     ESP_LOGI(TAG, "=============================================");
-#if defined(UPLINK_ESP32S3)
     ESP_LOGI(TAG, "  Friend or Foe — %s v%s (ESP32-S3)", FIRMWARE_NAME, FOF_VERSION);
-#elif defined(UPLINK_ESP32)
-    ESP_LOGI(TAG, "  Friend or Foe — %s v%s (ESP32)", FIRMWARE_NAME, FOF_VERSION);
-#else
-    ESP_LOGI(TAG, "  Friend or Foe — %s v%s (ESP32-C3)", FIRMWARE_NAME, FOF_VERSION);
-#endif
     ESP_LOGI(TAG, "  Drone Detection Backend Relay");
     ESP_LOGI(TAG, "=============================================");
 
@@ -487,10 +462,9 @@ void app_main(void)
                 rollback_and_reboot_or_restart(reason);
             }
 
-            /* Heap critically low → reboot before stack overflow crash.
-             * Legacy ESP32 heap fragments over time with HTTP traffic. A memory
-             * leak this severe in the first 20s is a strong bad-OTA signal, so
-             * a PENDING_VERIFY image rolls back rather than restarts-in-place. */
+            /* Heap critically low → reboot before stack overflow crash. A leak
+             * this severe in the first 20s is a strong bad-OTA signal, so a
+             * PENDING_VERIFY image rolls back rather than restarts-in-place. */
             uint32_t free_heap = esp_get_free_heap_size();
             if (free_heap < 4000 && uptime_s > 20 && !fw_store_is_relay_active()) {
                 snprintf(reason, sizeof(reason), "heap=%lu critically low",

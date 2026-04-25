@@ -61,7 +61,12 @@ class CalibrationViewModel @Inject constructor(
     data class SensorReading(
         val sensorId: String,
         val rssi: Int?,
+        val lastRssi: Int? = null,
+        val lastHeardAgeS: Double? = null,
         val samplesInWindow: Int,
+        val sampleCountTotal: Int = 0,
+        val scannerSlotsSeen: Int? = null,
+        val acceptedIntoFit: Boolean = false,
         val gpsDistanceM: Double?,
         // Closed-loop readiness — tells the operator when this sensor
         // has enough data to fit cleanly, so they know whether to keep
@@ -1003,7 +1008,15 @@ class CalibrationViewModel @Inject constructor(
                                 sensorId = obj.get("sensor_id")?.asString ?: "?",
                                 rssi = obj.get("current_rssi")
                                     ?.takeIf { !it.isJsonNull }?.asInt,
+                                lastRssi = obj.get("last_rssi")
+                                    ?.takeIf { !it.isJsonNull }?.asInt,
+                                lastHeardAgeS = obj.get("last_heard_age_s")
+                                    ?.takeIf { !it.isJsonNull }?.asDouble,
                                 samplesInWindow = obj.get("samples_in_window")?.asInt ?: 0,
+                                sampleCountTotal = obj.get("sample_count_total")?.asInt ?: 0,
+                                scannerSlotsSeen = obj.get("scanner_slots_seen")
+                                    ?.takeIf { !it.isJsonNull }?.asInt,
+                                acceptedIntoFit = obj.get("accepted_into_fit")?.asBoolean ?: false,
                                 gpsDistanceM = obj.get("distance_m_estimated_from_phone_gps")
                                     ?.takeIf { !it.isJsonNull }?.asDouble,
                                 samplesCount = r?.get("samples_count")?.asInt ?: 0,

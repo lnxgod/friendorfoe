@@ -29,6 +29,7 @@
 #include "oled_display.h"
 #include "ble_remote_id.h"
 #include "time_sync_policy.h"
+#include "comms/uart_ota.h"
 
 #if CONFIG_FOF_GLASSES_DETECTION
 #include "glasses_detector.h"
@@ -43,9 +44,11 @@
 #include "psram_alloc.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
+#include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "cJSON.h"
 
 #include <string.h>
 
@@ -55,17 +58,17 @@ static const char *TAG = "fof_scanner";
 
 #include "version.h"
 
-#ifdef WIFI_SCANNER_ONLY
-#define FIRMWARE_NAME "wifi-scanner"
-#else
-#define FIRMWARE_NAME "scanner"
+#if defined(WIFI_SCANNER_ONLY) || defined(BLE_SCANNER_ONLY) || !defined(CONFIG_IDF_TARGET_ESP32S3)
+#error "Supported FoF scanner firmware is ESP32-S3 combo/seed only."
 #endif
+
+#define FIRMWARE_NAME "scanner"
 #define DETECTION_QUEUE_LEN 50
 #define DISPLAY_UPDATE_MS   250
 
 /* ── BOOT button ────────────────────────────────────────────────────────── */
 
-#define BOOT_BUTTON_GPIO    GPIO_NUM_9   /* ESP32-C5 BOOT = GPIO9 */
+#define BOOT_BUTTON_GPIO    GPIO_NUM_9   /* ESP32-S3 BOOT = GPIO9 */
 #define LONG_PRESS_MS       1500
 #define DOUBLE_TAP_WINDOW_MS 600
 
@@ -322,12 +325,6 @@ static void display_task(void *arg)
 
 /* ── UART command listener (lock-on from uplink) ──────────────────────── */
 
-#ifndef BLE_SCANNER_ONLY
-#include "driver/uart.h"
-#include "cJSON.h"
-#include "comms/uart_ota.h"
-#include "esp_ota_ops.h"
-
 static void send_cal_mode_ack(bool ok_flag)
 {
     char ack[192];
@@ -353,30 +350,14 @@ static void uart_cmd_listener_task(void *arg)
     ESP_LOGI(TAG, "UART cmd listener on UART1 (commands + OTA from uplink)");
 
     /* Determine board identity at compile time — matches firmware catalog names */
-#if defined(BLE_SCANNER_ONLY)
-    static const char *s_board_name = "scanner-s3-ble";
-    static const char *s_chip_name = "esp32s3";
-    static const char *s_caps = "ble";
-#elif defined(WIFI_SCANNER_ONLY) && defined(CONFIG_IDF_TARGET_ESP32C5)
-    static const char *s_board_name = "scanner-c5";
-    static const char *s_chip_name = "esp32c5";
-    static const char *s_caps = "wifi,5ghz";
-#elif defined(WIFI_SCANNER_ONLY)
-    static const char *s_board_name = "scanner-esp32";
-    static const char *s_chip_name = "esp32";
-    static const char *s_caps = "wifi";
-#elif defined(SEED_SCANNER_PINS)
+#if defined(SEED_SCANNER_PINS)
     static const char *s_board_name = "scanner-s3-combo-seed";
     static const char *s_chip_name = "esp32s3";
     static const char *s_caps = "ble,wifi";
-#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+#else
     static const char *s_board_name = "scanner-s3-combo";
     static const char *s_chip_name = "esp32s3";
     static const char *s_caps = "ble,wifi";
-#else
-    static const char *s_board_name = "scanner-esp32";
-    static const char *s_chip_name = "esp32";
-    static const char *s_caps = "wifi";
 #endif
 
     /* Send scanner identity immediately on boot — uplink needs this to know
@@ -482,8 +463,6 @@ static void uart_cmd_listener_task(void *arg)
                             ESP_LOGI(TAG, "WiFi LOCK-ON cancel");
                             wifi_scanner_lockon_cancel();
 
-
-#ifndef WIFI_SCANNER_ONLY
                         } else if (type && strcmp(type, "ble_lockon") == 0) {
                             if (scanner_calibration_mode_is_active()) {
                                 ESP_LOGW(TAG, "Rejecting BLE focus while calibration mode is active");
@@ -513,7 +492,6 @@ static void uart_cmd_listener_task(void *arg)
                             }
                             ESP_LOGI(TAG, "BLE FOCUS cancel");
                             ble_rid_lockon_cancel();
-#endif /* !WIFI_SCANNER_ONLY */
 
                         } else if (type && strcmp(type, MSG_TYPE_CAL_MODE_START) == 0) {
                             cJSON *session_j = cJSON_GetObjectItem(root, JSON_KEY_SESSION_ID);
@@ -563,7 +541,7 @@ static void uart_cmd_listener_task(void *arg)
                                 } else {
                                     ESP_LOGW(TAG, "TIME SYNC rejected: epoch_ms=%lld ok=%s",
                                              (long long)epoch_ms,
-                                             has_ok ? (ok ? "true" : "false") : "legacy");
+                                             has_ok ? (ok ? "true" : "false") : "missing");
                                 }
                             }
 
@@ -604,7 +582,6 @@ static void uart_cmd_listener_task(void *arg)
 
     }
 }
-#endif /* BLE_SCANNER_ONLY */
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
@@ -683,15 +660,10 @@ void app_main(void)
     /* ── 6. Initialize UART TX (hardware setup, no task yet) ──────────── */
     uart_tx_init();
 
-#ifndef BLE_SCANNER_ONLY
     /* ── 7. Initialize WiFi scanner (sets up promiscuous mode) ────────── */
     wifi_scanner_init(detection_queue);
     ESP_LOGI(TAG, "WiFi scanner initialised");
-#else
-    ESP_LOGI(TAG, "WiFi scanner DISABLED (BLE-only mode)");
-#endif
 
-#ifndef WIFI_SCANNER_ONLY
     /* ── 7b. Initialize BLE scanner (NimBLE) ─────────────────────────── */
     ble_remote_id_init(detection_queue);
     ESP_LOGI(TAG, "BLE Remote ID scanner initialised");
@@ -705,9 +677,6 @@ void app_main(void)
         ESP_LOGI(TAG, "Glasses detection queue created (10 slots)");
     }
 #endif
-#else
-    ESP_LOGI(TAG, "BLE scanner DISABLED (WiFi-only mode)");
-#endif
 
     /* Start UART TX task on Core 1 (processing core).
      * The TX task has a 10s startup delay to let the uplink boot first. */
@@ -715,35 +684,23 @@ void app_main(void)
 
     /* ── 8. Set scanner identity — sent by TX task after startup delay ── */
     {
-#if defined(BLE_SCANNER_ONLY)
-        const char *bname = "scanner-s3-ble", *cname = "esp32s3", *caps = "ble";
-#elif defined(WIFI_SCANNER_ONLY) && defined(CONFIG_IDF_TARGET_ESP32C5)
-        const char *bname = "scanner-c5", *cname = "esp32c5", *caps = "wifi,5ghz";
-#elif defined(WIFI_SCANNER_ONLY)
-        const char *bname = "scanner-esp32", *cname = "esp32", *caps = "wifi";
-#elif defined(SEED_SCANNER_PINS)
+#if defined(SEED_SCANNER_PINS)
         const char *bname = "scanner-s3-combo-seed", *cname = "esp32s3", *caps = "ble,wifi";
-#elif defined(CONFIG_IDF_TARGET_ESP32S3)
-        const char *bname = "scanner-s3-combo", *cname = "esp32s3", *caps = "ble,wifi";
 #else
-        const char *bname = "scanner-esp32", *cname = "esp32", *caps = "wifi";
+        const char *bname = "scanner-s3-combo", *cname = "esp32s3", *caps = "ble,wifi";
 #endif
         /* Store identity — TX task will send it after its startup delay */
         uart_tx_set_identity(bname, cname, caps);
     }
 
-#ifndef BLE_SCANNER_ONLY
     /* ── 9. Start WiFi scanner task on Core 0 (radio core) ───────────── */
     wifi_scanner_start();
     ESP_LOGI(TAG, "WiFi scanner started on core %d, priority %d",
              WIFI_SCAN_TASK_CORE, WIFI_SCAN_TASK_PRIORITY);
-#endif
 
-#ifndef WIFI_SCANNER_ONLY
     /* ── 9b. Start BLE scanner ───────────────────────────────────────── */
     ble_remote_id_start();
     ESP_LOGI(TAG, "BLE scanner started");
-#endif
 
     /* ── 10. Start LED task ───────────────────────────────────────────── */
     led_start();
@@ -765,23 +722,14 @@ void app_main(void)
     /* ── 12. Startup banner ───────────────────────────────────────────── */
     ESP_LOGI(TAG, "============================================");
     ESP_LOGI(TAG, "  Friend or Foe — %s v%s", FIRMWARE_NAME, FOF_VERSION);
-#if CONFIG_IDF_TARGET_ESP32C5
-    ESP_LOGI(TAG, "  ESP32-C5 single-core RISC-V @ 240 MHz");
-    ESP_LOGI(TAG, "  WiFi 6 dual-band + BLE 5");
-#elif CONFIG_IDF_TARGET_ESP32S3
     ESP_LOGI(TAG, "  ESP32-S3 dual-core @ 240 MHz");
     ESP_LOGI(TAG, "  WiFi + BLE 5");
-#elif CONFIG_IDF_TARGET_ESP32
-    ESP_LOGI(TAG, "  ESP32 dual-core Xtensa @ 240 MHz");
-    ESP_LOGI(TAG, "  WiFi promiscuous scanner");
-#endif
     ESP_LOGI(TAG, "  UART1 -> Uplink @ %d baud", UART_BAUD_RATE);
     ESP_LOGI(TAG, "  Detection queue: %d slots", DETECTION_QUEUE_LEN);
     ESP_LOGI(TAG, "  BOOT button: tap=scroll, 2x=privacy view");
     ESP_LOGI(TAG, "============================================");
 
     /* ── 13. UART command listener (receives lock-on from uplink) ────── */
-#ifndef BLE_SCANNER_ONLY
     xTaskCreatePinnedToCore(
         uart_cmd_listener_task,
         "uart_cmd",
@@ -792,7 +740,6 @@ void app_main(void)
         DISPLAY_TASK_CORE
     );
     ESP_LOGI(TAG, "UART command listener started");
-#endif
 
     /* app_main returns; FreeRTOS scheduler keeps tasks running. */
 }
