@@ -492,7 +492,7 @@
           <option value="0.15" selected>Likely+</option><option value="0.3">High</option>
         </select>
         <select id="det-source" onchange="refreshDetections()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:11px">
-          <option value="">All Sources</option><option value="wifi_ssid">WiFi SSID</option><option value="wifi_oui">WiFi AP</option>
+          <option value="">All Sources</option><option value="wifi_ssid">WiFi SSID</option><option value="wifi_oui">WiFi AP</option><option value="wifi_ap_inventory">AP Inventory</option>
           <option value="wifi_assoc">WiFi Assoc</option><option value="wifi_probe_request">WiFi Probe</option><option value="ble_rid">BLE RID</option><option value="ble_fingerprint">BLE FP</option><option value="wifi_dji_ie">DJI IE</option><option value="wifi_beacon_rid">Beacon RID</option>
         </select>
         <span id="det-count" style="font-size:10px;color:#484f58"></span>
@@ -710,6 +710,7 @@ function srcBadge(s) {
     'ble_fingerprint':   ['#7ee787','BLE FP'],
     'wifi_ssid':         ['#ff9500','WiFi SSID'],
     'wifi_oui':          ['#8b949e','WiFi AP'],
+    'wifi_ap_inventory': ['#6e7681','AP Inv'],
     'wifi_assoc':        ['#79c0ff','WiFi Assoc'],
     'wifi_dji_ie':       ['#f85149','DJI IE'],
     'wifi_beacon_rid':   ['#3fb950','Beacon RID'],
@@ -721,6 +722,15 @@ function srcBadge(s) {
 function clsBadge(c) {
   const m={confirmed_drone:['#3fb950','DRONE'],likely_drone:['#d29922','LIKELY'],test_drone:['#58a6ff','TEST'],possible_drone:['#8b949e','POSS'],known_ap:['#484f58','AP'],tracker:['#f85149','TRACKER'],wifi_device:['#6e7681','WiFi Dev'],mobile_hotspot:['#e040fb','HOTSPOT'],unknown_device:['#30363d','UNK']};
   if(!c)return'';const[col,lbl]=m[c]||['#30363d',c];return'<span class="badge" style="background:'+col+'22;color:'+col+';border:1px solid '+col+'44">'+lbl+'</span>';
+}
+function rfChips(d) {
+  if(!d) return '';
+  const chips = [];
+  if(d.mac_is_randomized) chips.push('<span class="badge" style="background:#d2992222;color:#d29922;border:1px solid #d2992244">Random MAC</span>');
+  if(d.brand) chips.push('<span class="badge" style="background:#1f6feb22;color:#58a6ff;border:1px solid #58a6ff44">'+d.brand+'</span>');
+  if(d.device_class) chips.push('<span class="badge" style="background:#6e768122;color:#8b949e;border:1px solid #8b949e44">'+d.device_class+'</span>');
+  if(d.identity_source) chips.push('<span class="badge" style="background:#30363d;color:#c9d1d9;border:1px solid #484f58">'+d.identity_source+'</span>');
+  return chips.join(' ');
 }
 function fmtUp(s) { if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m'; }
 function ago(e) { const s=Math.floor(Date.now()/1000-e);return s<5?'now':s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h'; }
@@ -2414,7 +2424,7 @@ async function refreshDetections() {
     if (srcFilter) devs = devs.filter(d => d.source === srcFilter);
     if (confFilter > 0) devs = devs.filter(d => d.best_confidence >= confFilter);
     dc.textContent = devs.length + ' / ' + grouped.count + ' devices';
-    updateFeed('det-feed', '<table><tr><th onclick="sortTable(this)">Age</th><th onclick="sortTable(this)">Class</th><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Type</th><th onclick="sortTable(this)">Src</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th>Sensor RSSI</th><th onclick="sortTable(this)">Hits</th><th onclick="sortTable(this)">Mfr</th></tr>'+
+    updateFeed('det-feed', '<table><tr><th onclick="sortTable(this)">Age</th><th onclick="sortTable(this)">Class</th><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Type</th><th onclick="sortTable(this)">Src</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th>Sensor RSSI</th><th onclick="sortTable(this)">Hits</th><th onclick="sortTable(this)">Evidence</th></tr>'+
       devs.map(d => {
         const sRssi = Object.entries(d.sensor_rssi||{}).map(([k,v])=>sensorLabel(k)+':'+v).join(' ');
         // Extract device type from BLE drone_id (BLE:HASH:TypeName)
@@ -2426,6 +2436,8 @@ async function refreshDetections() {
           devType = 'Probe Req';
         } else if (d.source === 'wifi_assoc') {
           devType = 'Association';
+        } else if (d.source === 'wifi_ap_inventory') {
+          devType = 'AP Inventory';
         } else if (d.source === 'wifi_oui') {
           devType = 'Access Point';
         } else if (d.source === 'wifi_ssid') {
@@ -2440,7 +2452,8 @@ async function refreshDetections() {
         const mfr = d.manufacturer || '';
         const bssid = d.bssid || '';
         const mfrDisplay = mfr || (bssid ? '<span style="color:#484f58" title="'+bssid+'">'+bssid.substring(0,8)+'</span>' : '-');
-        return '<tr><td>'+d.age_s+'s</td><td>'+clsBadge(d.classification)+'</td><td style="font-weight:700">'+devName+'</td><td style="font-size:10px;color:#8b949e">'+devType+'</td><td>'+srcBadge(d.source)+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td><td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td><td style="font-size:10px">'+sRssi+'</td><td>'+d.detection_count+'</td><td style="color:#8b949e">'+mfrDisplay+'</td></tr>';
+        const evidence = rfChips(d) + (d.evidence && d.evidence.length ? '<div style="font-size:9px;color:#8b949e;margin-top:2px">'+d.evidence.slice(0,2).join(' | ')+'</div>' : '') || mfrDisplay;
+        return '<tr><td>'+d.age_s+'s</td><td>'+clsBadge(d.classification)+'</td><td style="font-weight:700">'+devName+'</td><td style="font-size:10px;color:#8b949e">'+devType+'</td><td>'+srcBadge(d.source)+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td><td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td><td style="font-size:10px">'+sRssi+'</td><td>'+d.detection_count+'</td><td style="color:#8b949e">'+evidence+'</td></tr>';
       }).join('') + '</table>');
   } else { dc.textContent=''; updateFeed('det-feed','<div class="empty">No detections</div>'); }
 }

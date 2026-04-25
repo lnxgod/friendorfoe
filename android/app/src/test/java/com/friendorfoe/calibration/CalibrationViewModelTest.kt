@@ -4,6 +4,7 @@ import com.friendorfoe.test.MainDispatcherRule
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -277,6 +278,212 @@ class CalibrationViewModelTest {
     }
 
     @Test
+    fun startWalk_withGpsFailureStillEntersActiveWalk() = runTest {
+        val backend = FakeCalibrationBackend(
+            healthResult = successJson("""{"status":"ok","version":"0.63.8"}"""),
+            walkSensorsResult = successJson("""{"sensors":[{"device_id":"pool","name":"Pool","lat":1.0,"lon":2.0,"online":true}]}"""),
+            walkStartResult = successJson(
+                """{"session_id":"abc123","advertise_uuid":"cafeabc1-0000-1000-8000-abc123def456","mode_state":"active","target_sensor_count":1,"target_nodes":[{"device_id":"pool","name":"Pool","lat":1.0,"lon":2.0}]}"""
+            ),
+        )
+        val viewModel = CalibrationViewModel(
+            prefs = FakeCalibrationSettingsStore(),
+            advertiser = FakeCalibrationAdvertiser(),
+            api = backend,
+            platform = FakeCalibrationPlatform(locationFailure = IllegalStateException("gps disabled")),
+        )
+
+        viewModel.refreshConnectivity()
+        advanceUntilIdle()
+        viewModel.startWalk()
+        runCurrent()
+
+        val state = viewModel.state.value
+        assertTrue(state.isWalking)
+        assertTrue(state.beaconOnAir)
+        assertEquals("active", state.fleetModeState)
+        assertTrue(state.infoMessage?.contains("GPS did not start") == true)
+        assertEquals(0, backend.abortCalls)
+        viewModel.clearForTest()
+    }
+
+    @Test
+    fun markAtSensor_withoutPhoneGpsUsesSensorCoordinateFallback() = runTest {
+        val backend = FakeCalibrationBackend(
+            healthResult = successJson("""{"status":"ok","version":"0.63.8"}"""),
+            walkSensorsResult = successJson("""{"sensors":[{"device_id":"pool","name":"Pool","lat":37.1,"lon":-120.2,"online":true}]}"""),
+            walkStartResult = successJson(
+                """{"session_id":"abc123","advertise_uuid":"cafeabc1-0000-1000-8000-abc123def456","mode_state":"active","target_sensor_count":1,"target_nodes":[{"device_id":"pool","name":"Pool","lat":37.1,"lon":-120.2}]}"""
+            ),
+            walkFeedbackResult = successJson(freshPoolFeedback()),
+        )
+        val viewModel = CalibrationViewModel(
+            prefs = FakeCalibrationSettingsStore(),
+            advertiser = FakeCalibrationAdvertiser(),
+            api = backend,
+            platform = FakeCalibrationPlatform(locationFailure = IllegalStateException("gps disabled")),
+        )
+
+        viewModel.refreshConnectivity()
+        advanceUntilIdle()
+        viewModel.startWalk()
+        runCurrent()
+        runCurrent()
+        viewModel.markAtSensor(viewModel.state.value.availableSensors.first())
+        runCurrent()
+
+        assertEquals(1, backend.checkpointCalls)
+        assertEquals(37.1, backend.lastCheckpointLat)
+        assertEquals(-120.2, backend.lastCheckpointLon)
+        assertEquals("sensor_position_fallback", backend.lastCheckpointAnchorSource)
+        assertEquals(
+            "sensor_position_fallback",
+            viewModel.state.value.checkpointResults["pool"]?.anchorSource,
+        )
+        viewModel.clearForTest()
+    }
+
+    @Test
+    fun markAtSensor_waitsForFreshNodeHearingBeforeCheckpointSync() = runTest {
+        val backend = FakeCalibrationBackend(
+            healthResult = successJson("""{"status":"ok","version":"0.63.8"}"""),
+            walkSensorsResult = successJson("""{"sensors":[{"device_id":"pool","name":"Pool","lat":37.1,"lon":-120.2,"online":true}]}"""),
+            walkStartResult = successJson(
+                """{"session_id":"abc123","advertise_uuid":"cafeabc1-0000-1000-8000-abc123def456","mode_state":"active","target_sensor_count":1,"target_nodes":[{"device_id":"pool","name":"Pool","lat":37.1,"lon":-120.2}]}"""
+            ),
+            walkFeedbackResult = successJson(
+                """
+                {
+                  "sensors": [],
+                  "eligible_sensor_count": 1,
+                  "eligible_sensor_ids": ["pool"],
+                  "heard_sensor_count": 0,
+                  "heard_sensor_ids": [],
+                  "fleet_mode_state": "active",
+                  "session_readiness": {"sensors_ready":0,"sensors_total":1,"ready_overall":false,"min_required":4}
+                }
+                """.trimIndent()
+            ),
+        )
+        val viewModel = CalibrationViewModel(
+            prefs = FakeCalibrationSettingsStore(),
+            advertiser = FakeCalibrationAdvertiser(),
+            api = backend,
+            platform = FakeCalibrationPlatform(locationFailure = IllegalStateException("gps disabled")),
+        )
+
+        viewModel.refreshConnectivity()
+        advanceUntilIdle()
+        viewModel.startWalk()
+        runCurrent()
+        runCurrent()
+        viewModel.markAtSensor(viewModel.state.value.availableSensors.first())
+        runCurrent()
+
+        assertEquals(0, backend.checkpointCalls)
+        assertEquals(
+            CalibrationViewModel.CheckpointPhase.WaitingForNodeHearing,
+            viewModel.state.value.activeCheckpoint?.phase,
+        )
+        assertTrue(
+            viewModel.state.value.activeCheckpoint?.statusText
+                ?.contains("waiting for this exact node") == true
+        )
+        viewModel.clearForTest()
+    }
+
+    @Test
+    fun checkpointLock_collectsRangeUntilBackendReadinessIsReady() = runTest {
+        val backend = FakeCalibrationBackend(
+            healthResult = successJson("""{"status":"ok","version":"0.63.8"}"""),
+            walkSensorsResult = successJson("""{"sensors":[{"device_id":"pool","name":"Pool","lat":37.1,"lon":-120.2,"online":true}]}"""),
+            walkStartResult = successJson(
+                """{"session_id":"abc123","advertise_uuid":"cafeabc1-0000-1000-8000-abc123def456","mode_state":"active","target_sensor_count":1,"target_nodes":[{"device_id":"pool","name":"Pool","lat":37.1,"lon":-120.2}]}"""
+            ),
+            walkFeedbackResult = successJson(freshPoolFeedback()),
+            walkCheckpointResult = successJson(
+                """
+                {
+                  "severity": "ok",
+                  "gps_drift_m": 0.0,
+                  "rssi_at_touch": -45,
+                  "strongest_sensor_at_touch": "pool",
+                  "warnings": [],
+                  "anchor_source": "sensor_position_fallback"
+                }
+                """.trimIndent()
+            ),
+        )
+        val viewModel = CalibrationViewModel(
+            prefs = FakeCalibrationSettingsStore(),
+            advertiser = FakeCalibrationAdvertiser(),
+            api = backend,
+            platform = FakeCalibrationPlatform(locationFailure = IllegalStateException("gps disabled")),
+        )
+
+        viewModel.refreshConnectivity()
+        advanceUntilIdle()
+        viewModel.startWalk()
+        runCurrent()
+        runCurrent()
+        viewModel.markAtSensor(viewModel.state.value.availableSensors.first())
+        runCurrent()
+
+        assertEquals(1, backend.checkpointCalls)
+        assertEquals(
+            CalibrationViewModel.CheckpointPhase.CollectingRange,
+            viewModel.state.value.activeCheckpoint?.phase,
+        )
+
+        backend.walkFeedbackResult = successJson(readyPoolFeedback())
+        advanceTimeBy(2_000)
+        runCurrent()
+
+        assertEquals(
+            CalibrationViewModel.CheckpointPhase.ReadyForNext,
+            viewModel.state.value.activeCheckpoint?.phase,
+        )
+        assertTrue(viewModel.state.value.activeCheckpoint?.statusText?.contains("ready") == true)
+        viewModel.clearForTest()
+    }
+
+    @Test
+    fun checkpointSyncFailureStaysBlockedAndDoesNotMarkReady() = runTest {
+        val backend = FakeCalibrationBackend(
+            healthResult = successJson("""{"status":"ok","version":"0.63.8"}"""),
+            walkSensorsResult = successJson("""{"sensors":[{"device_id":"pool","name":"Pool","lat":37.1,"lon":-120.2,"online":true}]}"""),
+            walkStartResult = successJson(
+                """{"session_id":"abc123","advertise_uuid":"cafeabc1-0000-1000-8000-abc123def456","mode_state":"active","target_sensor_count":1,"target_nodes":[{"device_id":"pool","name":"Pool","lat":37.1,"lon":-120.2}]}"""
+            ),
+            walkFeedbackResult = successJson(freshPoolFeedback()),
+            walkCheckpointResult = Result.failure(IllegalStateException("timeout")),
+        )
+        val viewModel = CalibrationViewModel(
+            prefs = FakeCalibrationSettingsStore(),
+            advertiser = FakeCalibrationAdvertiser(),
+            api = backend,
+            platform = FakeCalibrationPlatform(locationFailure = IllegalStateException("gps disabled")),
+        )
+
+        viewModel.refreshConnectivity()
+        advanceUntilIdle()
+        viewModel.startWalk()
+        runCurrent()
+        runCurrent()
+        viewModel.markAtSensor(viewModel.state.value.availableSensors.first())
+        runCurrent()
+
+        assertEquals(1, backend.checkpointCalls)
+        assertEquals(
+            CalibrationViewModel.CheckpointPhase.SyncingCheckpoint,
+            viewModel.state.value.activeCheckpoint?.phase,
+        )
+        assertNull(viewModel.state.value.checkpointResults["pool"])
+        assertTrue(viewModel.state.value.activeCheckpoint?.backendSynced == false)
+        viewModel.clearForTest()
+    }
+
+    @Test
     fun abortWalk_callsBackendAbortAndLeavesWalkInactive() = runTest {
         val backend = FakeCalibrationBackend(
             healthResult = successJson("""{"status":"ok","version":"0.63.8"}"""),
@@ -331,6 +538,74 @@ class CalibrationViewModelTest {
 
     private fun successJson(body: String): Result<JsonObject> =
         Result.success(Gson().fromJson(body, JsonObject::class.java))
+
+    private fun freshPoolFeedback(): String =
+        """
+        {
+          "sensors": [
+            {
+              "sensor_id": "pool",
+              "current_rssi": -47,
+              "last_rssi": -47,
+              "last_heard_age_s": 0.8,
+              "samples_in_window": 3,
+              "sample_count_total": 12,
+              "scanner_slots_seen": 2,
+              "accepted_into_fit": true,
+              "distance_m_estimated_from_phone_gps": 1.2,
+              "readiness": {
+                "samples_count": 12,
+                "samples_needed": 20,
+                "distance_range_m": 2.0,
+                "has_checkpoint": false,
+                "ready": false,
+                "hints": ["need_8_more_samples", "walk_farther_from_sensor_to_widen_range"]
+              }
+            }
+          ],
+          "eligible_sensor_count": 1,
+          "eligible_sensor_ids": ["pool"],
+          "heard_sensor_count": 1,
+          "heard_sensor_ids": ["pool"],
+          "fleet_mode_state": "active",
+          "session_readiness": {"sensors_ready":0,"sensors_total":1,"ready_overall":false,"min_required":4}
+        }
+        """.trimIndent()
+
+    private fun readyPoolFeedback(): String =
+        """
+        {
+          "sensors": [
+            {
+              "sensor_id": "pool",
+              "current_rssi": -62,
+              "last_rssi": -62,
+              "last_heard_age_s": 0.6,
+              "samples_in_window": 6,
+              "sample_count_total": 28,
+              "scanner_slots_seen": 2,
+              "accepted_into_fit": true,
+              "checkpoint_status": "ok",
+              "anchor_source": "sensor_position_fallback",
+              "distance_m_estimated_from_phone_gps": 7.4,
+              "readiness": {
+                "samples_count": 28,
+                "samples_needed": 20,
+                "distance_range_m": 7.0,
+                "has_checkpoint": true,
+                "ready": true,
+                "hints": []
+              }
+            }
+          ],
+          "eligible_sensor_count": 1,
+          "eligible_sensor_ids": ["pool"],
+          "heard_sensor_count": 1,
+          "heard_sensor_ids": ["pool"],
+          "fleet_mode_state": "active",
+          "session_readiness": {"sensors_ready":1,"sensors_total":1,"ready_overall":false,"min_required":4}
+        }
+        """.trimIndent()
 }
 
 private class FakeCalibrationSettingsStore(
@@ -366,10 +641,15 @@ private class FakeCalibrationBackend(
     var walkFeedbackResult: Result<JsonObject> = Result.success(JsonObject()),
     var walkMyPositionResult: Result<JsonObject> = Result.success(JsonObject()),
     var walkEndResult: Result<JsonObject> = Result.success(JsonObject()),
+    var walkCheckpointResult: Result<JsonObject>? = null,
 ) : CalibrationBackend {
     var abortCalls: Int = 0
+    var checkpointCalls: Int = 0
     var lastAbortReason: String? = null
     var lastEndProvisionalFit: JsonObject? = null
+    var lastCheckpointLat: Double? = null
+    var lastCheckpointLon: Double? = null
+    var lastCheckpointAnchorSource: String? = null
 
     override suspend fun health(baseUrl: String): Result<JsonObject> = healthResult
     override suspend fun walkStart(
@@ -428,5 +708,23 @@ private class FakeCalibrationBackend(
         lon: Double,
         accuracyM: Float?,
         tsMs: Long,
-    ): Result<JsonObject> = Result.success(JsonObject())
+        anchorSource: String,
+    ): Result<JsonObject> {
+        checkpointCalls += 1
+        lastCheckpointLat = lat
+        lastCheckpointLon = lon
+        lastCheckpointAnchorSource = anchorSource
+        return walkCheckpointResult ?: Result.success(Gson().fromJson(
+            """
+            {
+              "severity": "error",
+              "gps_drift_m": 0.0,
+              "rssi_at_touch": null,
+              "strongest_sensor_at_touch": null,
+              "warnings": ["no_rssi_heard_at_touch_check_uuid"],
+              "anchor_source": "$anchorSource"
+            }
+            """.trimIndent()
+            , JsonObject::class.java))
+    }
 }

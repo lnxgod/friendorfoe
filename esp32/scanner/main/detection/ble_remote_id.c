@@ -264,9 +264,237 @@ static void ble_remote_id_start_scan_internal(void);
 static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
-    case BLE_GAP_EVENT_DISC:
-        ESP_LOGW(TAG, "Ignoring unsupported BLE_GAP_EVENT_DISC event");
+    case BLE_GAP_EVENT_DISC: {
+        /* Some NimBLE targets surface BLE 4.x advertisements through the
+         * legacy discovery event. Keep this path behaviorally aligned with
+         * EXT_DISC so calibration beacons are not silently dropped. */
+        const struct ble_gap_disc_desc *disc = &event->disc;
+
+        static uint32_t s_legacy_adv_rx = 0;
+        s_legacy_adv_rx++;
+        if (s_legacy_adv_rx % 500 == 1) {
+            ESP_LOGD(TAG, "BLE legacy_adv (total=%lu rssi=%d len=%d)",
+                     (unsigned long)s_legacy_adv_rx, disc->rssi,
+                     disc->length_data);
+        }
+
+        ble_fingerprint_t fp;
+        ble_fingerprint_compute(disc->data, disc->length_data,
+                                disc->addr.type,
+                                (uint8_t)(disc->event_type & 0xFF), &fp);
+        bool is_calibration_beacon = fof_policy_ble_has_calibration_uuid_le(
+            fp.service_uuids_128,
+            fp.svc_uuid_128_count
+        );
+        if (scanner_calibration_mode_is_active() &&
+            !scanner_calibration_mode_allows_ble_uuid128(
+                fp.service_uuids_128,
+                fp.svc_uuid_128_count
+            )) {
+            break;
+        }
+
+        if (disc->data != NULL && disc->length_data > 0) {
+            int pos = 0;
+            while (pos + 1 < disc->length_data) {
+                uint8_t ad_len = disc->data[pos];
+                if (ad_len == 0 || pos + 1 + ad_len > disc->length_data) break;
+                uint8_t ad_type = disc->data[pos + 1];
+
+                if (ad_type == 0x16 && ad_len >= 3) {
+                    uint16_t uuid16 = (uint16_t)disc->data[pos + 2] |
+                                      ((uint16_t)disc->data[pos + 3] << 8);
+                    if (uuid16 == ODID_SERVICE_UUID_16) {
+                        process_odid_service_data(
+                            disc->addr.val,
+                            &disc->data[pos + 4],
+                            ad_len - 3,
+                            disc->rssi
+                        );
+                    }
+                }
+                pos += 1 + ad_len;
+            }
+        }
+
+        if (s_detection_queue != NULL) {
+            int64_t now_ms = esp_timer_get_time() / 1000;
+            bool is_focus_target = ble_rid_is_focused() && ble_rid_is_target(disc->addr.val);
+            if (is_focus_target) {
+                s_ble_focus.target_adv_count++;
+            }
+
+            static uint8_t  last_macs[50][6];
+            static int64_t  last_times[50];
+            static int      mac_idx = 0;
+            int rate_limit_ms;
+            if (is_calibration_beacon) {
+                rate_limit_ms = 500;
+            } else if (is_focus_target) {
+                rate_limit_ms = 200;
+            } else if (fp.device_type == BLE_DEV_DRONE_CONTROLLER) {
+                rate_limit_ms = 500;
+            } else if (fp.is_tracker) {
+                rate_limit_ms = 1000;
+            } else if (fp.device_type == BLE_DEV_FLIPPER_ZERO) {
+                rate_limit_ms = 1000;
+            } else if (fp.device_type == BLE_DEV_META_GLASSES ||
+                       fp.device_type == BLE_DEV_META_DEVICE) {
+                rate_limit_ms = 2000;
+            } else if (ble_rid_is_focused()) {
+                rate_limit_ms = 5000;
+            } else if (fp.device_type == BLE_DEV_DRONE_OTHER) {
+                rate_limit_ms = 500;
+            } else if (fp.device_type == BLE_DEV_AUDIO_DEVICE ||
+                       fp.device_type == BLE_DEV_SMART_HOME ||
+                       fp.device_type == BLE_DEV_GAMING ||
+                       fp.device_type == BLE_DEV_MEDICAL ||
+                       fp.device_type == BLE_DEV_ESCOOTER ||
+                       fp.device_type == BLE_DEV_VEHICLE ||
+                       fp.device_type == BLE_DEV_CAMERA) {
+                rate_limit_ms = 10000;
+            } else if (fp.device_type != BLE_DEV_UNKNOWN) {
+                rate_limit_ms = 5000;
+            } else {
+                rate_limit_ms = 10000;
+            }
+
+            bool recently_sent = false;
+            for (int i = 0; i < 50; i++) {
+                if (memcmp(last_macs[i], disc->addr.val, 6) == 0 &&
+                    (now_ms - last_times[i]) < rate_limit_ms) {
+                    recently_sent = true;
+                    break;
+                }
+            }
+
+            if (!recently_sent) {
+                memcpy(last_macs[mac_idx], disc->addr.val, 6);
+                last_times[mac_idx] = now_ms;
+                mac_idx = (mac_idx + 1) % 50;
+
+                drone_detection_t det = {0};
+                det.source = DETECTION_SRC_BLE_FINGERPRINT;
+                det.rssi = disc->rssi;
+                det.last_updated_ms = now_ms;
+                det.first_seen_ms = now_ms;
+
+                if (is_calibration_beacon) {
+                    det.confidence = 0.85f;
+                } else if (fp.is_tracker) {
+                    det.confidence = 0.50f;
+                } else if (fp.device_type == BLE_DEV_DRONE_CONTROLLER ||
+                           fp.device_type == BLE_DEV_DRONE_OTHER) {
+                    det.confidence = 0.60f;
+                } else if (fp.device_type == BLE_DEV_FLIPPER_ZERO) {
+                    det.confidence = 0.40f;
+                } else if (fp.device_type == BLE_DEV_META_GLASSES) {
+                    det.confidence = 0.30f;
+                } else if (fp.device_type == BLE_DEV_META_DEVICE) {
+                    det.confidence = 0.10f;
+                } else if (fp.device_type != BLE_DEV_UNKNOWN) {
+                    det.confidence = 0.05f;
+                } else {
+                    det.confidence = 0.02f;
+                }
+
+                const char *device_label = is_calibration_beacon
+                    ? "Calibration Beacon"
+                    : fp.type_name;
+                snprintf(det.drone_id, sizeof(det.drone_id),
+                         "BLE:%08lX:%s",
+                         (unsigned long)fp.hash, device_label);
+
+                snprintf(det.bssid, sizeof(det.bssid),
+                         "%02X:%02X:%02X:%02X:%02X:%02X",
+                         disc->addr.val[5], disc->addr.val[4], disc->addr.val[3],
+                         disc->addr.val[2], disc->addr.val[1], disc->addr.val[0]);
+                snprintf(det.manufacturer, sizeof(det.manufacturer),
+                         "%s", device_label);
+                snprintf(det.model, sizeof(det.model),
+                         "FP:%08lX", (unsigned long)fp.hash);
+
+                det.ble_company_id = fp.company_id;
+                det.ble_apple_type = fp.apple_type;
+                det.ble_ad_type_count = fp.ad_type_count;
+                det.ble_payload_len = fp.payload_len;
+                det.ble_addr_type = disc->addr.type;
+                strncpy(det.ble_name, fp.local_name, sizeof(det.ble_name) - 1);
+                strncpy(det.class_reason, fp.class_reason, sizeof(det.class_reason) - 1);
+                memcpy(det.ble_apple_auth, fp.apple_auth, 3);
+                det.ble_apple_activity = fp.apple_activity;
+                det.ble_apple_flags = fp.apple_flags;
+                memcpy(det.ble_raw_mfr, fp.raw_mfr, fp.raw_mfr_len);
+                det.ble_raw_mfr_len = fp.raw_mfr_len;
+                det.ble_svc_uuid_count = fp.svc_uuid_count;
+                for (int u = 0; u < fp.svc_uuid_count && u < 4; u++) {
+                    det.ble_service_uuids[u] = fp.service_uuids[u];
+                }
+                det.ble_svc_uuid_128_count = fp.svc_uuid_128_count;
+                for (int u = 0; u < fp.svc_uuid_128_count && u < 2; u++) {
+                    memcpy(det.ble_service_uuids_128[u],
+                           fp.service_uuids_128[u], 16);
+                }
+
+                {
+                    static struct { uint8_t mac[6]; int64_t last_us; } ival_cache[64];
+                    static int ival_idx = 0;
+                    int64_t now_us = esp_timer_get_time();
+                    int found = -1;
+                    for (int k = 0; k < 64; k++) {
+                        if (memcmp(ival_cache[k].mac, disc->addr.val, 6) == 0) {
+                            found = k;
+                            break;
+                        }
+                    }
+                    if (found >= 0) {
+                        det.ble_adv_interval_us = now_us - ival_cache[found].last_us;
+                        ival_cache[found].last_us = now_us;
+                    } else {
+                        det.ble_adv_interval_us = 0;
+                        memcpy(ival_cache[ival_idx].mac, disc->addr.val, 6);
+                        ival_cache[ival_idx].last_us = now_us;
+                        ival_idx = (ival_idx + 1) % 64;
+                    }
+                }
+
+                ble_ja3_hash_t ja3;
+                if (ble_ja3_from_gap_event(event, &ja3)) {
+                    det.ble_ja3_hash = ja3.value;
+                }
+
+                xQueueSend(s_detection_queue, &det, 0);
+            }
+        }
+
+#if CONFIG_FOF_GLASSES_DETECTION
+        if (s_glasses_queue != NULL && glasses_detection_is_enabled()) {
+            struct ble_hs_adv_fields fields;
+            int parse_rc = ble_hs_adv_parse_fields(&fields, disc->data, disc->length_data);
+            if (parse_rc == 0) {
+                const char *adv_name = NULL;
+                int adv_name_len = 0;
+                const uint8_t *mfr_data = NULL;
+                int mfr_data_len = 0;
+                uint16_t svc_uuids[8];
+                int svc_uuid_count = 0;
+                uint16_t appearance = 0;
+
+                if (fields.name) { adv_name = (const char *)fields.name; adv_name_len = fields.name_len; }
+                if (fields.mfg_data && fields.mfg_data_len >= 2) { mfr_data = fields.mfg_data; mfr_data_len = fields.mfg_data_len; }
+                if (fields.appearance_is_present) appearance = fields.appearance;
+
+                glasses_detection_t gdet;
+                if (glasses_check_advertisement(disc->addr.val, adv_name, adv_name_len,
+                        mfr_data, mfr_data_len, svc_uuids, svc_uuid_count,
+                        appearance, disc->rssi, &gdet)) {
+                    xQueueSend(s_glasses_queue, &gdet, pdMS_TO_TICKS(5));
+                }
+            }
+        }
+#endif
         break;
+    }
 
     case BLE_GAP_EVENT_EXT_DISC: {
         /* Extended discovery also reports BLE 4.x advertising packets. */
@@ -436,6 +664,8 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 det.ble_ad_type_count = fp.ad_type_count;
                 det.ble_payload_len = fp.payload_len;
                 det.ble_addr_type = ext->addr.type;
+                strncpy(det.ble_name, fp.local_name, sizeof(det.ble_name) - 1);
+                strncpy(det.class_reason, fp.class_reason, sizeof(det.class_reason) - 1);
 
                 /* Apple Continuity deep fields */
                 memcpy(det.ble_apple_auth, fp.apple_auth, 3);

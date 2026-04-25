@@ -162,6 +162,8 @@ extern "C" {
 #define JSON_KEY_BLE_ADDR_TYPE      "ble_atype"
 #define JSON_KEY_BLE_JA3            "ble_ja3"
 #define JSON_KEY_BLE_SVC_UUIDS      "ble_svc"    /* comma-separated hex UUIDs */
+#define JSON_KEY_BLE_NAME           "ble_name"
+#define JSON_KEY_CLASS_REASON       "class_reason"
 /* Apple Nearby Info (Continuity type 0x10) / Nearby Action (0x0F) data-flags
  * byte. Always emitted by v0.58+ scanners — even when 0, so the backend can
  * distinguish "all flags false" from "field absent". Bit semantics (per

@@ -89,7 +89,6 @@ bool fof_policy_is_priority_ble_fingerprint(const char *manufacturer)
            strcmp(mfr, "Meta Device") == 0 ||
            strcmp(mfr, "Flipper Zero") == 0 ||
            strcmp(mfr, "Card Skimmer (suspect)") == 0 ||
-           strcmp(mfr, "Hidden Camera (suspect)") == 0 ||
            strcmp(mfr, "Flock Surveillance") == 0;
 }
 
@@ -226,6 +225,10 @@ bool fof_policy_should_shed_low_priority(uint8_t source,
         queue_depth >= (queue_capacity * 6U / 10U)) {
         return true;
     }
+    if (source == DETECTION_SRC_WIFI_AP_INVENTORY &&
+        queue_depth >= (queue_capacity * 4U / 10U)) {
+        return true;
+    }
     if (source == DETECTION_SRC_BLE_FINGERPRINT &&
         !fof_policy_is_controller_class_ble(source, manufacturer) &&
         queue_depth >= (queue_capacity * 7U / 10U)) {
@@ -316,6 +319,7 @@ bool fof_policy_detection_identity_key(const drone_detection_t *det,
     if (det->source == DETECTION_SRC_WIFI_ASSOC ||
         det->source == DETECTION_SRC_WIFI_SSID ||
         det->source == DETECTION_SRC_WIFI_OUI ||
+        det->source == DETECTION_SRC_WIFI_AP_INVENTORY ||
         det->source == DETECTION_SRC_WIFI_DJI_IE ||
         det->source == DETECTION_SRC_WIFI_BEACON) {
         if (det->bssid[0] != '\0') {

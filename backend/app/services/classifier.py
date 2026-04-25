@@ -309,6 +309,10 @@ def classify_detection(
     if source == "wifi_assoc":
         return "wifi_device", confidence
 
+    if source == "wifi_ap_inventory":
+        return ("known_ap" if ssid and any(fnmatch(ssid, pattern) for pattern in WHITELIST_SSID_PATTERNS)
+                else "wifi_device"), confidence
+
     # 3.6. Check drone SSID reference database (191 patterns)
     if ssid and match_drone_wifi_ssid:
         drone_match = match_drone_wifi_ssid(ssid)

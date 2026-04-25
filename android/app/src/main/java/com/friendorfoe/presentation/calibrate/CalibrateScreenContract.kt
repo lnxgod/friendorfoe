@@ -14,18 +14,17 @@ data class CalibrateScreenContract(
 fun buildCalibrateScreenContract(
     state: CalibrationViewModel.State,
     hasRequiredPermissions: Boolean,
-    diagnosticsExpanded: Boolean,
 ): CalibrateScreenContract {
     val startDisabledReason = when {
         !hasRequiredPermissions -> "Grant Bluetooth + location permissions to start a walk."
         !state.bluetoothEnabled -> "Bluetooth is off — enable it before starting a walk."
         else -> state.preflightFailureReason()
     }
-    val diagnosticsUnlocked = state.preflightReady
+    val preflightReady = state.preflightReady
     return CalibrateScreenContract(
-        showPreflightChecklist = !diagnosticsUnlocked,
-        showDiagnosticsToggle = diagnosticsUnlocked,
-        showDiagnosticsTabs = diagnosticsUnlocked && diagnosticsExpanded,
+        showPreflightChecklist = !preflightReady,
+        showDiagnosticsToggle = false,
+        showDiagnosticsTabs = false,
         startDisabledReason = startDisabledReason,
     )
 }

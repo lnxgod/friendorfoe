@@ -409,6 +409,8 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 memcpy(local_name, ad_data, n);
                 local_name[n] = '\0';
                 local_name_len = n;
+                strncpy(fp->local_name, local_name, sizeof(fp->local_name) - 1);
+                fp->local_name[sizeof(fp->local_name) - 1] = '\0';
             }
             /* Fall through to default hashing — name length matters but not exact bytes
              * (since random parts in some product names rotate). */
@@ -539,18 +541,28 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
             strncmp(local_name, "AT-09", 5) == 0) {
             fp->device_type = BLE_DEV_CARD_SKIMMER;
             fp->is_tracker = true;
+            strncpy(fp->class_reason, "default_uart_ble_name", sizeof(fp->class_reason) - 1);
         }
-        /* Hidden cameras / cheap LED-strip controllers commonly used as cover
-         * for spy gear. ELK-BLEDOM is the most-confused-with-camera name on
-         * Reddit because the same chipset shows up in cheap WiFi spy cams. */
-        else if (strncmp(local_name, "ELK-BLEDOM", 10) == 0 ||
-                 strncmp(local_name, "BT_BPM", 6) == 0 ||
+        /* Explicit camera-like names remain suspect camera evidence. */
+        else if (strncmp(local_name, "HIDVCAM", 6) == 0 ||
+                 strncmp(local_name, "HDWiFiCam", 8) == 0 ||
+                 strncmp(local_name, "V380", 4) == 0 ||
+                 strncmp(local_name, "LookCam", 7) == 0 ||
                  strncmp(local_name, "Hidden", 6) == 0 ||
-                 strncmp(local_name, "Spy",    3) == 0 ||
-                 strncmp(local_name, "MELK-",  5) == 0 ||
-                 strncmp(local_name, "QHM-",   4) == 0) {
+                 strncmp(local_name, "Spy",    3) == 0) {
             fp->device_type = BLE_DEV_HIDDEN_CAMERA;
             fp->is_tracker = true;
+            strncpy(fp->class_reason, "explicit_camera_ble_name", sizeof(fp->class_reason) - 1);
+        }
+        /* ELK/QHM/MELK/BT_BPM are cheap BLE/IoT name families, not enough
+         * evidence to call a hidden camera by themselves. */
+        else if (strncmp(local_name, "ELK-BLEDOM", 10) == 0 ||
+                 strncmp(local_name, "BT_BPM", 6) == 0 ||
+                 strncmp(local_name, "MELK-",  5) == 0 ||
+                 strncmp(local_name, "QHM-",   4) == 0) {
+            fp->device_type = BLE_DEV_SMART_HOME;
+            fp->is_tracker = false;
+            strncpy(fp->class_reason, "ambiguous_iot_ble_name", sizeof(fp->class_reason) - 1);
         }
         /* Flock Safety license-plate readers. Marauder has dedicated detection. */
         else if (strncmp(local_name, "Flock",  5) == 0 ||
@@ -558,6 +570,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                  strncmp(local_name, "FlockOS", 7) == 0) {
             fp->device_type = BLE_DEV_FLOCK_SAFETY;
             fp->is_tracker = true;
+            strncpy(fp->class_reason, "flock_ble_name", sizeof(fp->class_reason) - 1);
         }
     }
 

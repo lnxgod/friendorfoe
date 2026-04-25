@@ -47,6 +47,11 @@ interface SensorMapApiService {
         @Query("drone_only") droneOnly: Boolean = false,
     ): ProbeDevicesDto
 
+    @GET("detections/wifi/ap-inventory")
+    suspend fun getWifiApInventory(
+        @Query("max_age_s") maxAgeS: Int = 86400,
+    ): WifiApInventoryDto
+
     @GET("detections/calibrate/model")
     suspend fun getCalibrationModel(): CalibrationModelDto
 
@@ -92,6 +97,16 @@ data class LocatedDroneDto(
     @SerializedName("source_tier") val sourceTier: String? = null,
     @SerializedName("uncertainty_m") val uncertaintyM: Double? = null,
     @SerializedName("calibration_state") val calibrationState: String? = null,
+    @SerializedName("mac_is_randomized") val macIsRandomized: Boolean? = null,
+    @SerializedName("mac_identity_kind") val macIdentityKind: String? = null,
+    @SerializedName("mac_reason") val macReason: String? = null,
+    val brand: String? = null,
+    @SerializedName("brand_source") val brandSource: String? = null,
+    @SerializedName("brand_confidence") val brandConfidence: Float? = null,
+    @SerializedName("device_class") val deviceClass: String? = null,
+    @SerializedName("device_class_confidence") val deviceClassConfidence: Float? = null,
+    val evidence: List<String>? = null,
+    @SerializedName("related_entities") val relatedEntities: List<RelatedEntityDto>? = null,
 )
 
 data class SensorObservationDto(
@@ -113,6 +128,22 @@ data class SensorObservationDto(
     val ssid: String? = null,
     val bssid: String? = null,
     @SerializedName("ie_hash") val ieHash: String? = null,
+    @SerializedName("mac_is_randomized") val macIsRandomized: Boolean? = null,
+    @SerializedName("mac_identity_kind") val macIdentityKind: String? = null,
+    @SerializedName("mac_reason") val macReason: String? = null,
+    val brand: String? = null,
+    @SerializedName("brand_source") val brandSource: String? = null,
+    @SerializedName("brand_confidence") val brandConfidence: Float? = null,
+    @SerializedName("device_class") val deviceClass: String? = null,
+    @SerializedName("device_class_confidence") val deviceClassConfidence: Float? = null,
+    @SerializedName("related_entities") val relatedEntities: List<RelatedEntityDto>? = null,
+)
+
+data class RelatedEntityDto(
+    @SerializedName("entity_id") val entityId: String,
+    @SerializedName("relation_type") val relationType: String,
+    val confidence: Float = 0f,
+    val reason: String? = null,
 )
 
 data class SensorDto(
@@ -295,6 +326,47 @@ data class ProbeDeviceDto(
     @SerializedName("latest_event_types") val latestEventTypes: List<String> = emptyList(),
     val lat: Double? = null,
     val lon: Double? = null,
+    @SerializedName("mac_is_randomized") val macIsRandomized: Boolean? = null,
+    @SerializedName("mac_identity_kind") val macIdentityKind: String? = null,
+    @SerializedName("mac_reason") val macReason: String? = null,
+    val brand: String? = null,
+    @SerializedName("brand_source") val brandSource: String? = null,
+    @SerializedName("brand_confidence") val brandConfidence: Float? = null,
+    @SerializedName("device_class") val deviceClass: String? = null,
+    @SerializedName("device_class_confidence") val deviceClassConfidence: Float? = null,
+    @SerializedName("identity_source") val identitySource: String? = null,
+    val evidence: List<String> = emptyList(),
+    @SerializedName("related_entities") val relatedEntities: List<RelatedEntityDto> = emptyList(),
+)
+
+data class WifiApInventoryDto(
+    val count: Int = 0,
+    val aps: List<WifiApDto> = emptyList(),
+)
+
+data class WifiApDto(
+    val bssid: String? = null,
+    val ssid: String? = null,
+    @SerializedName("auth_m") val authMode: Int? = null,
+    val channel: Int? = null,
+    val vendor: String? = null,
+    val sensors: List<String> = emptyList(),
+    @SerializedName("sensor_count") val sensorCount: Int = 0,
+    val count: Int = 0,
+    @SerializedName("best_rssi") val bestRssi: Int? = null,
+    @SerializedName("first_seen") val firstSeen: Double? = null,
+    @SerializedName("last_seen") val lastSeen: Double? = null,
+    @SerializedName("age_s") val ageS: Double? = null,
+    @SerializedName("mac_is_randomized") val macIsRandomized: Boolean? = null,
+    @SerializedName("mac_identity_kind") val macIdentityKind: String? = null,
+    @SerializedName("mac_reason") val macReason: String? = null,
+    val brand: String? = null,
+    @SerializedName("brand_source") val brandSource: String? = null,
+    @SerializedName("brand_confidence") val brandConfidence: Float? = null,
+    @SerializedName("device_class") val deviceClass: String? = null,
+    @SerializedName("device_class_confidence") val deviceClassConfidence: Float? = null,
+    @SerializedName("identity_source") val identitySource: String? = null,
+    val evidence: List<String> = emptyList(),
 )
 
 data class CalibrationModelDto(

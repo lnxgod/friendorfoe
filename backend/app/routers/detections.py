@@ -43,6 +43,7 @@ from app.services.probe_identity import (
     normalize_probe_identity,
     probe_identity_from_event,
 )
+from app.services.rf_identity import enrich_rf_evidence, probe_relation_hints
 from app.services.applied_calibration import AppliedCalibrationStore
 from app.services.calibration_mode import CalibrationModeCoordinator
 from app.services.phone_calibration import PhoneCalibrationManager
@@ -139,7 +140,7 @@ def _source_tier_for_observation(obs, classification: str | None = None) -> str:
         return "calibration"
     source = (getattr(obs, "source", "") or "").lower()
     cls = (classification or getattr(obs, "classification", "") or "").lower()
-    if source in ("wifi_assoc", "ble_fingerprint", "wifi_oui"):
+    if source in ("wifi_assoc", "ble_fingerprint", "wifi_oui", "wifi_ap_inventory"):
         return "diagnostic"
     if source == "wifi_probe_request" and cls not in {
         "confirmed_drone", "likely_drone", "test_drone", "possible_drone",
@@ -172,6 +173,28 @@ def _geometry_trust_for_observation(obs, drone_id: str | None = None) -> str:
     if getattr(obs, "distance_source", None) == "scanner":
         return "scanner_firmware_model"
     return "unknown"
+
+
+def _rf_meta_for_observation(obs, *, classification: str | None = None) -> dict:
+    if obs is None:
+        return {}
+    return enrich_rf_evidence(
+        source=getattr(obs, "source", None),
+        drone_id=getattr(obs, "drone_id", None),
+        bssid=getattr(obs, "bssid", None),
+        ssid=getattr(obs, "ssid", None),
+        manufacturer=getattr(obs, "manufacturer", None),
+        model=getattr(obs, "model", None),
+        classification=classification or getattr(obs, "classification", None),
+        probed_ssids=getattr(obs, "probed_ssids", None),
+        ie_hash=getattr(obs, "ie_hash", None),
+        ble_company_id=getattr(obs, "ble_company_id", None),
+        ble_addr_type=getattr(obs, "ble_addr_type", None),
+        ble_ja3=getattr(obs, "ble_ja3", None),
+        ble_svc_uuids=getattr(obs, "ble_svc_uuids", None),
+        ble_name=getattr(obs, "ble_name", None),
+        class_reason=getattr(obs, "class_reason", None),
+    )
 
 
 def _dominant_range_authority(observations: list) -> str | None:
@@ -547,6 +570,7 @@ async def _live_walk_sensor_rows(
             "online": True,
             "age_s": round(now - float(hb.get("last_seen", now) or now), 1),
             "ip": hb.get("ip"),
+            "mode_state": hb.get("scan_mode") or "unknown",
             "position_mode": _position_mode(db_node),
             "geometry_enabled": True,
         })
@@ -835,15 +859,34 @@ async def ingest_drone_detections(
             operator_id=det.operator_id,
             self_id_text=det.self_id_text,
         )
+        rf_meta = enrich_rf_evidence(
+            source=det.source,
+            drone_id=det.drone_id,
+            bssid=det.bssid,
+            ssid=det.ssid,
+            manufacturer=det.manufacturer,
+            model=det.model,
+            classification=classification,
+            probed_ssids=det.probed_ssids,
+            ie_hash=getattr(det, "ie_hash", None),
+            ble_company_id=det.ble_company_id,
+            ble_addr_type=det.ble_addr_type,
+            ble_ja3=det.ble_ja3,
+            ble_svc_uuids=det.ble_svc_uuids,
+            ble_name=det.ble_name,
+            class_reason=det.class_reason,
+        )
 
         # Ring buffer
+        stored_payload = det.model_dump()
+        stored_payload.update(rf_meta)
         stored = StoredDetection(
             device_id=batch.device_id,
             device_lat=sensor_lat,
             device_lon=sensor_lon,
             received_at=received_at,
             classification=classification,
-            **det.model_dump(),
+            **stored_payload,
         )
         _recent_detections.append(stored)
 
@@ -1041,6 +1084,16 @@ async def ingest_drone_detections(
             heading_deg=det.heading_deg,
             manufacturer=det.manufacturer,
             model=det.model,
+            mac_is_randomized=rf_meta.get("mac_is_randomized"),
+            mac_identity_kind=rf_meta.get("mac_identity_kind"),
+            mac_reason=rf_meta.get("mac_reason"),
+            brand=rf_meta.get("brand"),
+            brand_source=rf_meta.get("brand_source"),
+            brand_confidence=rf_meta.get("brand_confidence"),
+            device_class=rf_meta.get("device_class"),
+            device_class_confidence=rf_meta.get("device_class_confidence"),
+            identity_source=rf_meta.get("identity_source"),
+            evidence_json=json.dumps(rf_meta.get("evidence") or []),
             operator_lat=det.operator_lat,
             operator_lon=det.operator_lon,
             operator_id=det.operator_id,
@@ -1320,8 +1373,10 @@ async def get_drone_map(
         elif abs(vel) > 0.1:
             trend = "stationary"
 
-        obs_items = [
-            SensorObservation(
+        obs_items = []
+        for o in d.observations:
+            obs_meta = _rf_meta_for_observation(o, classification=cls)
+            obs_items.append(SensorObservation(
                 device_id=o.device_id,
                 sensor_lat=o.sensor_lat,
                 sensor_lon=o.sensor_lon,
@@ -1345,9 +1400,16 @@ async def get_drone_map(
                 ssid=o.ssid,
                 bssid=o.bssid,
                 ie_hash=o.ie_hash,
-            )
-            for o in d.observations
-        ]
+                mac_is_randomized=obs_meta.get("mac_is_randomized"),
+                mac_identity_kind=obs_meta.get("mac_identity_kind"),
+                mac_reason=obs_meta.get("mac_reason"),
+                brand=obs_meta.get("brand"),
+                brand_source=obs_meta.get("brand_source"),
+                brand_confidence=obs_meta.get("brand_confidence"),
+                device_class=obs_meta.get("device_class"),
+                device_class_confidence=obs_meta.get("device_class_confidence"),
+                related_entities=obs_meta.get("related_entities"),
+            ))
         # Classify the identity derivation path so the dashboard can distinguish
         # ASTM-Remote-ID-verified drones from BLE-fingerprint-guessed identities
         # without having to duplicate the prefix heuristic client-side.
@@ -1355,12 +1417,13 @@ async def get_drone_map(
         if _did.startswith("rid_"):
             identity_source = "rid"
         elif _did.startswith("PROBE:"):
-            identity_source = "probe_fingerprint"
+            identity_source = "probe_ie_hash"
         elif _did.startswith("FP:") or _did.startswith("BLE:"):
             identity_source = "fingerprint"
         else:
             identity_source = "mac"
 
+        item_meta = _rf_meta_for_observation(best_obs, classification=cls)
         drone_items.append(LocatedDroneItem(
             drone_id=d.drone_id,
             lat=d.lat,
@@ -1393,6 +1456,16 @@ async def get_drone_map(
             source_tier=source_tier,
             uncertainty_m=uncertainty_m,
             calibration_state=calibration_state,
+            mac_is_randomized=item_meta.get("mac_is_randomized"),
+            mac_identity_kind=item_meta.get("mac_identity_kind"),
+            mac_reason=item_meta.get("mac_reason"),
+            brand=item_meta.get("brand"),
+            brand_source=item_meta.get("brand_source"),
+            brand_confidence=item_meta.get("brand_confidence"),
+            device_class=item_meta.get("device_class"),
+            device_class_confidence=item_meta.get("device_class_confidence"),
+            evidence=item_meta.get("evidence"),
+            related_entities=item_meta.get("related_entities"),
         ))
 
     sensor_items = [
@@ -2286,6 +2359,9 @@ async def calibrate_walk_checkpoint(
 
     ts_ms = body.get("ts_ms")
     ts_s = (ts_ms / 1000.0) if ts_ms else None
+    anchor_source = str(body.get("anchor_source") or "phone_gps")
+    if anchor_source not in {"phone_gps", "sensor_position_fallback"}:
+        raise HTTPException(status_code=400, detail="invalid anchor_source")
     return _phone_cal_mgr.add_checkpoint(
         session_id=sid,
         sensor_id=sensor_id,
@@ -2293,6 +2369,7 @@ async def calibrate_walk_checkpoint(
         phone_lat=float(lat), phone_lon=float(lon),
         phone_accuracy_m=body.get("accuracy_m"),
         ts_s=ts_s,
+        anchor_source=anchor_source,
     )
 
 
@@ -3269,12 +3346,25 @@ async def get_probe_devices(
             activity_level = "medium"
         else:
             activity_level = "low"
+        macs = sorted(g["macs"])
+        rf_meta = enrich_rf_evidence(
+            source="wifi_probe_request",
+            drone_id=None,
+            bssid=g["mac"],
+            ssid=None,
+            manufacturer=None,
+            model=None,
+            classification=cls,
+            probed_ssids=sorted(g["probed_ssids"]),
+            ie_hash=g["ie_hash"],
+        )
+        related = probe_relation_hints(identity, macs, g["ie_hash"])
 
         device_entry = {
             "identity": identity,
             "ie_hash": g["ie_hash"],
             "mac": g["mac"],
-            "macs": sorted(g["macs"]),
+            "macs": macs,
             "probed_ssids": sorted(g["probed_ssids"]),
             "probe_count": g["probe_count"],
             "best_rssi": g["best_rssi"] if g["best_rssi"] != -999 else None,
@@ -3291,6 +3381,17 @@ async def get_probe_devices(
             "latest_event_types": sorted(latest_event_types),
             "lat": loc.lat if loc else None,
             "lon": loc.lon if loc else None,
+            "mac_is_randomized": rf_meta.get("mac_is_randomized"),
+            "mac_identity_kind": rf_meta.get("mac_identity_kind"),
+            "mac_reason": rf_meta.get("mac_reason"),
+            "brand": rf_meta.get("brand"),
+            "brand_source": rf_meta.get("brand_source"),
+            "brand_confidence": rf_meta.get("brand_confidence"),
+            "device_class": rf_meta.get("device_class"),
+            "device_class_confidence": rf_meta.get("device_class_confidence"),
+            "identity_source": rf_meta.get("identity_source"),
+            "evidence": rf_meta.get("evidence"),
+            "related_entities": related,
         }
         devices.append(device_entry)
 
@@ -3298,6 +3399,95 @@ async def get_probe_devices(
     devices.sort(key=lambda x: x["last_seen"], reverse=True)
 
     return {"count": len(devices), "devices": devices}
+
+
+# ---------------------------------------------------------------------------
+# GET /detections/wifi/ap-inventory — diagnostic generic AP inventory
+# ---------------------------------------------------------------------------
+
+@router.get("/wifi/ap-inventory")
+async def get_wifi_ap_inventory(
+    max_age_s: Annotated[int, Query(ge=1, le=172800, description="Max age in seconds")] = 86400,
+):
+    """Return diagnostic AP inventory grouped by BSSID.
+
+    This is intentionally separate from drone feeds and map geometry. Generic
+    APs are RF context, not airspace evidence.
+    """
+    now = time.time()
+    items = [
+        d for d in _recent_detections
+        if d.source == "wifi_ap_inventory" and d.bssid and (now - d.received_at) <= max_age_s
+    ]
+
+    groups: dict[str, dict] = {}
+    for d in items:
+        key = d.bssid or d.drone_id
+        if key not in groups:
+            groups[key] = {
+                "bssid": d.bssid,
+                "ssid": d.ssid,
+                "auth_m": d.auth_m,
+                "channel": d.channel,
+                "vendor": d.manufacturer,
+                "sensors": set(),
+                "count": 0,
+                "best_rssi": -999,
+                "first_seen": d.received_at,
+                "last_seen": d.received_at,
+            }
+        g = groups[key]
+        g["count"] += 1
+        if d.device_id:
+            g["sensors"].add(d.device_id)
+        if d.rssi is not None and d.rssi > g["best_rssi"]:
+            g["best_rssi"] = d.rssi
+            g["ssid"] = d.ssid or g["ssid"]
+            g["auth_m"] = d.auth_m
+            g["channel"] = d.channel
+            g["vendor"] = d.manufacturer or g["vendor"]
+        if d.received_at < g["first_seen"]:
+            g["first_seen"] = d.received_at
+        if d.received_at > g["last_seen"]:
+            g["last_seen"] = d.received_at
+
+    aps = []
+    for g in groups.values():
+        rf_meta = enrich_rf_evidence(
+            source="wifi_ap_inventory",
+            drone_id=None,
+            bssid=g["bssid"],
+            ssid=g["ssid"],
+            manufacturer=g["vendor"],
+            classification="wifi_device",
+        )
+        aps.append({
+            "bssid": g["bssid"],
+            "ssid": g["ssid"],
+            "auth_m": g["auth_m"],
+            "channel": g["channel"],
+            "vendor": g["vendor"],
+            "sensors": sorted(g["sensors"]),
+            "sensor_count": len(g["sensors"]),
+            "count": g["count"],
+            "best_rssi": g["best_rssi"] if g["best_rssi"] != -999 else None,
+            "first_seen": g["first_seen"],
+            "last_seen": g["last_seen"],
+            "age_s": round(now - g["last_seen"], 1),
+            "mac_is_randomized": rf_meta.get("mac_is_randomized"),
+            "mac_identity_kind": rf_meta.get("mac_identity_kind"),
+            "mac_reason": rf_meta.get("mac_reason"),
+            "brand": rf_meta.get("brand"),
+            "brand_source": rf_meta.get("brand_source"),
+            "brand_confidence": rf_meta.get("brand_confidence"),
+            "device_class": rf_meta.get("device_class"),
+            "device_class_confidence": rf_meta.get("device_class_confidence"),
+            "identity_source": rf_meta.get("identity_source"),
+            "evidence": rf_meta.get("evidence"),
+        })
+
+    aps.sort(key=lambda x: x["last_seen"], reverse=True)
+    return {"count": len(aps), "aps": aps}
 
 
 # ---------------------------------------------------------------------------
@@ -3431,6 +3621,7 @@ async def get_grouped_detections(
                 "first_seen": d.received_at,
                 "count": 0,
                 "bssid": d.bssid,
+                "sample": d,
             }
         g = groups[group_key]
         g["count"] += 1
@@ -3443,10 +3634,13 @@ async def get_grouped_detections(
                 g["sensor_rssi"][d.device_id] = d.rssi
         if d.rssi and d.rssi > g["best_rssi"]:
             g["best_rssi"] = d.rssi
+            g["sample"] = d
         if d.confidence > g["best_confidence"]:
             g["best_confidence"] = d.confidence
         if d.received_at > g["last_seen"]:
             g["last_seen"] = d.received_at
+            if not g.get("sample"):
+                g["sample"] = d
         if d.received_at < g["first_seen"]:
             g["first_seen"] = d.received_at
 
@@ -3469,6 +3663,15 @@ async def get_grouped_detections(
     # Build response
     result = []
     for g in sorted(groups.values(), key=lambda x: x["last_seen"], reverse=True):
+        sample = g.get("sample")
+        rf_meta = _rf_meta_for_observation(sample, classification=g["classification"])
+        related = []
+        if sample and sample.source == "wifi_probe_request":
+            related = probe_relation_hints(
+                sample.drone_id,
+                sorted({sample.bssid} if sample.bssid else set()),
+                getattr(sample, "ie_hash", None),
+            )
         result.append({
             "entity_id": g["entity_id"],
             "drone_id": g["drone_id"],
@@ -3487,6 +3690,17 @@ async def get_grouped_detections(
             "last_seen": g["last_seen"],
             "first_seen": g["first_seen"],
             "age_s": round(now - g["last_seen"], 1),
+            "mac_is_randomized": rf_meta.get("mac_is_randomized"),
+            "mac_identity_kind": rf_meta.get("mac_identity_kind"),
+            "mac_reason": rf_meta.get("mac_reason"),
+            "brand": rf_meta.get("brand"),
+            "brand_source": rf_meta.get("brand_source"),
+            "brand_confidence": rf_meta.get("brand_confidence"),
+            "device_class": rf_meta.get("device_class"),
+            "device_class_confidence": rf_meta.get("device_class_confidence"),
+            "identity_source": rf_meta.get("identity_source"),
+            "evidence": rf_meta.get("evidence"),
+            "related_entities": related,
         })
 
     return {"count": len(result), "devices": result}

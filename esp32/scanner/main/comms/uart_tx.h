@@ -87,6 +87,12 @@ bool uart_tx_is_enabled(void);
 void uart_tx_set_enabled(bool enabled);
 
 /**
+ * Drop any detections queued before a mode transition. Calibration mode uses
+ * this to prevent stale WiFi/probe traffic from leaking after quiet mode starts.
+ */
+void uart_tx_flush_detection_queue(void);
+
+/**
  * Send a raw JSON line over UART (adds trailing newline). Thread-safe.
  * Used for protocol control messages emitted outside the normal TX loop:
  * stop_ack, ota_nack, etc. Caller must provide valid null-terminated JSON.

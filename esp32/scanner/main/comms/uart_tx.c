@@ -85,6 +85,7 @@ static rate_limit_entry_t s_wifi_probe_rate[LOW_PRIORITY_RATE_SLOTS];
 
 /* UART write mutex — prevents interleaved writes from multiple tasks */
 static SemaphoreHandle_t s_uart_mutex = NULL;
+static QueueHandle_t s_detection_queue = NULL;
 
 /* ── Detection cache for OLED scoreboard ────────────────────────────────── */
 
@@ -106,6 +107,24 @@ bool uart_tx_is_enabled(void) { return s_tx_enabled; }
 void uart_tx_set_enabled(bool enabled) {
     s_tx_enabled = enabled;
     ESP_LOGI("fof_uart_tx", "TX %s by uplink command", enabled ? "ENABLED" : "DISABLED");
+}
+
+void uart_tx_flush_detection_queue(void)
+{
+    QueueHandle_t q = s_detection_queue;
+    if (!q) {
+        return;
+    }
+    drone_detection_t dropped;
+    uint32_t count = 0;
+    while (xQueueReceive(q, &dropped, 0) == pdTRUE) {
+        count++;
+    }
+    if (count > 0) {
+        s_uart_tx_queue_depth = 0;
+        ESP_LOGI(TAG, "Flushed %lu queued detections for mode transition",
+                 (unsigned long)count);
+    }
 }
 
 /* ── Detection cache helpers ────────────────────────────────────────────── */
@@ -159,6 +178,47 @@ static void cjson_add_string_if(cJSON *obj, const char *key, const char *val)
 {
     if (val && val[0] != '\0') {
         cJSON_AddStringToObject(obj, key, val);
+    }
+}
+
+static void cjson_add_csv_array_if(cJSON *obj,
+                                   const char *key,
+                                   const char *csv,
+                                   const char *fallback)
+{
+    const char *src = (csv && csv[0] != '\0') ? csv : fallback;
+    if (!src || src[0] == '\0') {
+        return;
+    }
+
+    cJSON *arr = cJSON_AddArrayToObject(obj, key);
+    if (!arr) {
+        return;
+    }
+
+    char token[33];
+    size_t pos = 0;
+    bool emitted = false;
+    for (const char *p = src;; ++p) {
+        if (*p == ',' || *p == '\0') {
+            token[pos] = '\0';
+            if (pos > 0) {
+                cJSON_AddItemToArray(arr, cJSON_CreateString(token));
+                emitted = true;
+            }
+            pos = 0;
+            if (*p == '\0') {
+                break;
+            }
+            continue;
+        }
+        if (pos < sizeof(token) - 1) {
+            token[pos++] = *p;
+        }
+    }
+
+    if (!emitted) {
+        cJSON_DeleteItemFromObject(obj, key);
     }
 }
 
@@ -503,13 +563,14 @@ void uart_tx_send_detection(const drone_detection_t *detection)
         cJSON_AddNumberToObject(root, JSON_KEY_WIFI_AUTH_MODE, detection->wifi_auth_mode);
     }
 
-    /* Probe request: include probed SSID as a JSON array */
-    if (detection->source == DETECTION_SRC_WIFI_PROBE_REQUEST &&
-        detection->ssid[0] != '\0') {
-        cJSON *probed = cJSON_AddArrayToObject(root, JSON_KEY_PROBED_SSIDS);
-        if (probed) {
-            cJSON_AddItemToArray(probed, cJSON_CreateString(detection->ssid));
-        }
+    /* Probe request: include every parsed targeted SSID as a JSON array. */
+    if (detection->source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+        cjson_add_csv_array_if(
+            root,
+            JSON_KEY_PROBED_SSIDS,
+            detection->probed_ssids,
+            detection->ssid
+        );
     }
 
     /* BLE fingerprinting fields */
@@ -533,6 +594,8 @@ void uart_tx_send_detection(const drone_detection_t *detection)
         snprintf(ja3_hex, sizeof(ja3_hex), "%08lx", (unsigned long)detection->ble_ja3_hash);
         cJSON_AddStringToObject(root, JSON_KEY_BLE_JA3, ja3_hex);
     }
+    cjson_add_string_if(root, JSON_KEY_BLE_NAME, detection->ble_name);
+    cjson_add_string_if(root, JSON_KEY_CLASS_REASON, detection->class_reason);
 
     /* Apple Continuity deep fields */
     if (detection->ble_apple_auth[0] || detection->ble_apple_auth[1] || detection->ble_apple_auth[2]) {
@@ -992,6 +1055,7 @@ void uart_tx_set_identity(const char *board, const char *chip, const char *caps)
 
 void uart_tx_start(QueueHandle_t detection_queue)
 {
+    s_detection_queue = detection_queue;
     xTaskCreatePinnedToCore(
         uart_tx_task,
         "uart_tx",

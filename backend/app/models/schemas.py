@@ -111,7 +111,7 @@ class DroneDetectionItem(BaseModel):
     drone_id: str = Field(..., description="Drone serial number or generated identifier")
     source: str = Field(
         ...,
-        description="Detection source: ble_rid, ble_fingerprint, wifi_ssid, wifi_dji_ie, wifi_beacon_rid, wifi_oui, wifi_assoc, wifi_probe_request",
+        description="Detection source: ble_rid, ble_fingerprint, wifi_ssid, wifi_dji_ie, wifi_beacon_rid, wifi_oui, wifi_assoc, wifi_probe_request, wifi_ap_inventory",
     )
     confidence: float = Field(ge=0.0, le=1.0, description="Raw detection confidence 0.0-1.0")
     timestamp: int | None = Field(
@@ -170,6 +170,8 @@ class DroneDetectionItem(BaseModel):
     ble_adv_interval: float | None = Field(None, description="BLE advertisement interval in ms")
     ble_svc_uuids: str | None = Field(None, description="Comma-separated 16-bit BLE service UUIDs (hex)")
     ble_apple_flags: int | None = Field(None, description="Apple Nearby Info data-flags byte (v0.58+ scanners, always emitted — 0 ≠ absent).")
+    ble_name: str | None = Field(None, description="BLE local name evidence, if advertised")
+    class_reason: str | None = Field(None, description="Short scanner classification reason/evidence")
     probed_ssids: list[str] | None = Field(None, description="SSIDs this device is probing for (from probe requests)")
     ie_hash: str | None = Field(
         None,
@@ -178,6 +180,17 @@ class DroneDetectionItem(BaseModel):
                     "IE ordering + capability bits after rotating MACs). Populated "
                     "by the scanner for probe_request sources when firmware supports it.",
     )
+    mac_is_randomized: bool | None = Field(None, description="True when the MAC is randomized/private")
+    mac_identity_kind: str | None = Field(None, description="public_oui, randomized, ble_rpa, ble_random_static, or unknown")
+    mac_reason: str | None = Field(None, description="Reason for MAC identity classification")
+    brand: str | None = Field(None, description="Best brand/manufacturer claim, when evidence supports it")
+    brand_source: str | None = Field(None, description="Evidence source for brand: oui, ble_company_id, scanner_label, etc.")
+    brand_confidence: float | None = Field(None, description="0-1 confidence for the brand claim")
+    device_class: str | None = Field(None, description="Cautious device class such as wifi_ap, wifi_device, suspect_iot")
+    device_class_confidence: float | None = Field(None, description="0-1 confidence for the device class")
+    identity_source: str | None = Field(None, description="Identity derivation path: probe_ie_hash, mac, ble_ja3, ble_company_id, ble_name, ssid_pattern, oui")
+    evidence: list[str] | None = Field(None, description="Short human-readable evidence chips")
+    related_entities: list[dict] | None = Field(None, description="Cautious relation hints; never human identity")
 
 
 class DroneDetectionBatch(BaseModel):
@@ -302,6 +315,15 @@ class SensorObservation(BaseModel):
     ssid: str | None = None
     bssid: str | None = None
     ie_hash: str | None = None
+    mac_is_randomized: bool | None = None
+    mac_identity_kind: str | None = None
+    mac_reason: str | None = None
+    brand: str | None = None
+    brand_source: str | None = None
+    brand_confidence: float | None = None
+    device_class: str | None = None
+    device_class_confidence: float | None = None
+    related_entities: list[dict] | None = None
 
 
 class LocatedDroneItem(BaseModel):
@@ -353,6 +375,16 @@ class LocatedDroneItem(BaseModel):
     source_tier: str | None = Field(None, description="Geometry policy tier for this item.")
     uncertainty_m: float | None = Field(None, description="Operator-facing uncertainty radius in meters.")
     calibration_state: str | None = Field(None, description="active, defaults, calibration_session, or unknown.")
+    mac_is_randomized: bool | None = None
+    mac_identity_kind: str | None = None
+    mac_reason: str | None = None
+    brand: str | None = None
+    brand_source: str | None = None
+    brand_confidence: float | None = None
+    device_class: str | None = None
+    device_class_confidence: float | None = None
+    evidence: list[str] | None = None
+    related_entities: list[dict] | None = None
 
 
 class SensorItem(BaseModel):

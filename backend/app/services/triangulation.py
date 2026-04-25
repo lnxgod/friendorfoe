@@ -147,6 +147,7 @@ _DIAGNOSTIC_SOURCES = frozenset({
     "wifi_assoc",
     "ble_fingerprint",
     "wifi_oui",
+    "wifi_ap_inventory",
 })
 _DRONE_LIKE_CLASSIFICATIONS = frozenset({
     "confirmed_drone",
@@ -191,7 +192,7 @@ def _motion_class_for(source: str | None,
     s = (source or "").lower()
     if s in ("wifi_beacon_rid", "wifi_dji_ie"):
         return "moving"
-    if s in ("wifi_ssid", "wifi_oui"):
+    if s in ("wifi_ssid", "wifi_oui", "wifi_ap_inventory"):
         return "stationary"
     return "default"
 
@@ -743,7 +744,7 @@ class SensorTracker:
                 drone_id=drone_id,
                 bssid=bssid,
             ).identity
-        elif source in ("wifi_ssid", "wifi_oui", "wifi_beacon_rid", "wifi_dji_ie") and bssid:
+        elif source in ("wifi_ssid", "wifi_oui", "wifi_ap_inventory", "wifi_beacon_rid", "wifi_dji_ie") and bssid:
             tracking_id = f"AP:{bssid}"
 
         # Scanner distance is preserved for diagnostics. Backend RSSI distance

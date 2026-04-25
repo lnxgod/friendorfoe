@@ -232,6 +232,7 @@ static bool parse_source_value(int src_int, uint8_t *out_source)
         case DETECTION_SRC_WIFI_OUI:
         case DETECTION_SRC_WIFI_PROBE_REQUEST:
         case DETECTION_SRC_WIFI_ASSOC:
+        case DETECTION_SRC_WIFI_AP_INVENTORY:
             *out_source = (uint8_t)src_int;
             return true;
         default:
@@ -267,6 +268,45 @@ static const char *json_get_string(const cJSON *obj, const char *key,
         return item->valuestring;
     }
     return def;
+}
+
+static void json_get_string_or_array_csv(const cJSON *obj,
+                                         const char *key,
+                                         char *out,
+                                         size_t out_len)
+{
+    if (!out || out_len == 0) {
+        return;
+    }
+    out[0] = '\0';
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (cJSON_IsString(item) && item->valuestring) {
+        strncpy(out, item->valuestring, out_len - 1);
+        out[out_len - 1] = '\0';
+        return;
+    }
+    if (!cJSON_IsArray(item)) {
+        return;
+    }
+
+    size_t off = 0;
+    const cJSON *entry = NULL;
+    cJSON_ArrayForEach(entry, item) {
+        if (!cJSON_IsString(entry) || !entry->valuestring ||
+            entry->valuestring[0] == '\0') {
+            continue;
+        }
+        if (off > 0 && off < out_len - 1) {
+            out[off++] = ',';
+        }
+        for (const char *p = entry->valuestring; *p && off < out_len - 1; ++p) {
+            out[off++] = *p;
+        }
+        if (off >= out_len - 1) {
+            break;
+        }
+    }
+    out[off] = '\0';
 }
 
 /* ── Parse a detection message ─────────────────────────────────────────── */
@@ -348,10 +388,12 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
     det->wifi_auth_mode    = (uint8_t)json_get_int(root, JSON_KEY_WIFI_AUTH_MODE, 0xFF);
 
     /* Probe request: extract probed SSIDs and fingerprint */
-    const char *probed_str = json_get_string(root, JSON_KEY_PROBED_SSIDS, NULL);
-    if (probed_str) {
-        strncpy(det->probed_ssids, probed_str, sizeof(det->probed_ssids) - 1);
-    }
+    json_get_string_or_array_csv(
+        root,
+        JSON_KEY_PROBED_SSIDS,
+        det->probed_ssids,
+        sizeof(det->probed_ssids)
+    );
     const char *ie_hash_str = json_get_string(root, "ie_hash", NULL);
     if (ie_hash_str) {
         det->probe_ie_hash = (uint32_t)strtoul(ie_hash_str, NULL, 16);
@@ -377,6 +419,10 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
     if (ja3_str) {
         det->ble_ja3_hash = (uint32_t)strtoul(ja3_str, NULL, 16);
     }
+    const char *ble_name = json_get_string(root, JSON_KEY_BLE_NAME, "");
+    strncpy(det->ble_name, ble_name, sizeof(det->ble_name) - 1);
+    const char *class_reason = json_get_string(root, JSON_KEY_CLASS_REASON, "");
+    strncpy(det->class_reason, class_reason, sizeof(det->class_reason) - 1);
 
     /* Apple Continuity deep fields (previously dropped — fixes entity resolution) */
     const char *auth_str = json_get_string(root, JSON_KEY_BLE_APPLE_AUTH, NULL);
@@ -578,7 +624,8 @@ static void process_line(const char *line, size_t len, int scanner_id)
 
             /* Skip BLE background noise (0.02 confidence) to reduce queue pressure.
              * WiFi APs (0.05) and phones (0.05) are still useful for the backend. */
-            if (det.confidence < 0.04f) {
+            if (det.confidence < 0.04f &&
+                det.source != DETECTION_SRC_WIFI_AP_INVENTORY) {
                 push_recent(&det);  /* Still show in recent list */
                 cJSON_Delete(root);
                 return;

@@ -73,7 +73,11 @@ class SensorMapApiServiceDtoTest {
                   "position_source": "intersection",
                   "sensor_count": 2,
                   "confidence": 0.4,
-                  "identity_source": "probe_fingerprint",
+                  "identity_source": "probe_ie_hash",
+                  "mac_is_randomized": true,
+                  "mac_identity_kind": "randomized",
+                  "device_class": "wifi_device",
+                  "evidence": ["Probe IE hash: A1B2C3D4"],
                   "range_authority": "backend_rssi",
                   "geometry_trust": "diagnostic",
                   "source_tier": "diagnostic",
@@ -102,9 +106,11 @@ class SensorMapApiServiceDtoTest {
         val drone = dto.drones.first()
         val obs = drone.observations.first()
 
-        assertEquals("probe_fingerprint", drone.identitySource)
+        assertEquals("probe_ie_hash", drone.identitySource)
         assertEquals("diagnostic", drone.geometryTrust)
         assertEquals(35.5, drone.uncertaintyM!!, 0.001)
+        assertEquals(true, drone.macIsRandomized)
+        assertEquals("wifi_device", drone.deviceClass)
         assertEquals("backend_rssi", obs.rangeAuthority)
         assertEquals("diagnostic", obs.sourceTier)
     }
@@ -127,7 +133,21 @@ class SensorMapApiServiceDtoTest {
                   "seen_24h_count": 17,
                   "sensor_count_24h": 3,
                   "activity_level": "high",
-                  "latest_event_types": ["new_probe_identity", "probe_activity_spike"]
+                  "latest_event_types": ["new_probe_identity", "probe_activity_spike"],
+                  "mac_is_randomized": true,
+                  "mac_identity_kind": "randomized",
+                  "mac_reason": "locally_administered_bit",
+                  "device_class": "wifi_device",
+                  "identity_source": "probe_ie_hash",
+                  "evidence": ["Probe IE hash: A1B2C3D4"],
+                  "related_entities": [
+                    {
+                      "entity_id": "MAC:AA:AA:AA:AA:AA:01",
+                      "relation_type": "likely_same_device",
+                      "confidence": 0.9,
+                      "reason": "same_probe_ie_hash:A1B2C3D4"
+                    }
+                  ]
                 }
               ]
             }
@@ -148,8 +168,46 @@ class SensorMapApiServiceDtoTest {
 
         assertEquals("PROBE:A1B2C3D4", probes.devices.first().identity)
         assertEquals("high", probes.devices.first().activityLevel)
+        assertEquals(true, probes.devices.first().macIsRandomized)
+        assertEquals("probe_ie_hash", probes.devices.first().identitySource)
+        assertEquals("likely_same_device", probes.devices.first().relatedEntities.first().relationType)
         assertTrue(probes.devices.first().latestEventTypes.contains("probe_activity_spike"))
         assertEquals(2, stats.unackByType["new_probe_identity"])
         assertEquals(1, stats.unackByType["new_probed_ssid"])
+    }
+
+    @Test
+    fun parses_wifi_ap_inventory_payload() {
+        val json = """
+            {
+              "count": 1,
+              "aps": [
+                {
+                  "bssid": "00:11:22:33:44:55",
+                  "ssid": "GarageAP",
+                  "auth_m": 3,
+                  "channel": 2412,
+                  "vendor": "Espressif",
+                  "sensors": ["node-a"],
+                  "sensor_count": 1,
+                  "best_rssi": -44,
+                  "mac_is_randomized": false,
+                  "mac_identity_kind": "public_oui",
+                  "brand": "Espressif",
+                  "brand_source": "oui",
+                  "device_class": "wifi_ap",
+                  "identity_source": "ssid_pattern",
+                  "evidence": ["SSID: GarageAP"]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val dto = gson.fromJson(json, WifiApInventoryDto::class.java)
+
+        assertEquals(1, dto.count)
+        assertEquals("GarageAP", dto.aps.first().ssid)
+        assertEquals("wifi_ap", dto.aps.first().deviceClass)
+        assertEquals("public_oui", dto.aps.first().macIdentityKind)
     }
 }

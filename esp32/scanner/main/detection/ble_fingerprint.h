@@ -68,6 +68,8 @@ typedef struct {
     bool                is_tracker;     /* True if likely a tracking device */
     uint8_t             ad_type_count;  /* Number of AD structures */
     uint8_t             payload_len;    /* Total adv payload length */
+    char                local_name[32]; /* BLE local name evidence, if present */
+    char                class_reason[48]; /* Short evidence/reason for classification */
 
     /* Apple Continuity deep fields */
     uint8_t             apple_auth[3];  /* Auth tag — rotates slower than MAC (entity linking key) */

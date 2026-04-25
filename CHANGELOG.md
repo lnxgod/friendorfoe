@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.63.17-rf-intel] - 2026-04-25
+
+### Added
+- **RF evidence capture is preserved end-to-end.** Probe detections now carry
+  full probed-SSID arrays, probe IE hashes, BLE local names, classification
+  reasons, randomized-MAC truth, brand/source confidence, device class
+  confidence, and operator-readable evidence chips through firmware, backend,
+  dashboard, and Android DTOs.
+- **Diagnostic AP inventory is first-class but not map pollution.** Scanner
+  firmware emits rate-limited `wifi_ap_inventory` records for generic APs
+  under safe queue pressure, the backend exposes `/detections/wifi/ap-inventory`,
+  and dashboard/API consumers can inspect AP evidence without promoting it to
+  drone alerts or default triangulation.
+- **Safe identity correlation replaces overclaims.** Backend enrichment now
+  marks randomized MACs honestly, groups probes by stable `ie_hash` before MAC,
+  and exposes cautious `likely_same_device` / `possibly_related` hints with
+  explicit reasons instead of claiming person identity or fake brands.
+
+### Changed
+- **Hidden-camera labeling is evidence-gated.** Ambiguous BLE names such as
+  ELK-BLEDOM/QHM/MELK-style devices now classify as suspect IoT fingerprints;
+  camera-oriented labels require stronger explicit camera evidence.
+- **Dual-slot captures are deduped per node.** Uplink upload collapsing now
+  unions scanner slots and probed SSIDs while preserving the strongest RSSI, so
+  two SATMs on the same uplink do not double-count the same packet.
+
+### Fixed
+- **Probe intelligence no longer loses SSIDs.** Firmware serialization and
+  uplink parsing now preserve all targeted probe SSIDs instead of only a legacy
+  single-string field.
+- **Generic AP/probe/BLE diagnostics stay out of calibration and primary map
+  precision.** Calibration quiet mode continues to suppress non-calibration RF
+  traffic, and diagnostic sources remain diagnostic unless explicitly requested
+  or upgraded to drone-like evidence.
+
 ## [0.63.16-calibration-demo] - 2026-04-24
 
 ### Changed
