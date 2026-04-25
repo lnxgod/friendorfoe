@@ -10,7 +10,7 @@
  *   - Ordered AD type sequence
  *   - BT SIG Company ID (from manufacturer-specific data)
  *   - Service UUID list (16-bit and 128-bit)
- *   - Advertisement properties (connectable, scannable, legacy)
+ *   - Advertisement properties (connectable, scannable, BLE4/ext)
  *   - Payload length class (rounded to 4 bytes)
  *   - TX Power level (if present)
  *   - Appearance value (if present)
@@ -141,13 +141,13 @@ bool ble_ja3_from_gap_event(const struct ble_gap_event *event,
 
     const uint8_t *adv_data = NULL;
     uint8_t adv_len = 0;
-    uint8_t connectable = 2, scannable = 2, legacy = 2;
+    uint8_t connectable = 2, scannable = 2, ble4_adv = 2;
 
     switch (event->type) {
     case BLE_GAP_EVENT_DISC:
         adv_data = event->disc.data;
         adv_len = event->disc.length_data;
-        legacy = 1;
+        ble4_adv = 1;
         switch (event->disc.event_type) {
         case BLE_HCI_ADV_RPT_EVTYPE_ADV_IND:
             connectable = 1; scannable = 1; break;
@@ -167,7 +167,7 @@ bool ble_ja3_from_gap_event(const struct ble_gap_event *event,
         adv_len = event->ext_disc.length_data;
         connectable = (event->ext_disc.props & BLE_HCI_ADV_CONN_MASK) ? 1 : 0;
         scannable = (event->ext_disc.props & BLE_HCI_ADV_SCAN_MASK) ? 1 : 0;
-        legacy = (event->ext_disc.props & BLE_HCI_ADV_LEGACY_MASK) ? 1 : 0;
+        ble4_adv = (event->ext_disc.props & BLE_HCI_ADV_LEGACY_MASK) ? 1 : 0;
         break;
 #endif
 
@@ -208,7 +208,7 @@ bool ble_ja3_from_gap_event(const struct ble_gap_event *event,
     fnv1a_u8(&h, 0x40);
     fnv1a_u8(&h, connectable);
     fnv1a_u8(&h, scannable);
-    fnv1a_u8(&h, legacy);
+    fnv1a_u8(&h, ble4_adv);
 
     /* Payload length class (rounded to 4 bytes — avoids rotating key influence) */
     fnv1a_u8(&h, 0x50);

@@ -31,8 +31,8 @@ typedef struct {
 
 /**
  * Compute BLE-JA3 hash from a GAP discovery event.
- * Works with both legacy (BLE_GAP_EVENT_DISC) and extended
- * (BLE_GAP_EVENT_EXT_DISC) advertisements.
+ * Works with both BLE_GAP_EVENT_DISC and BLE_GAP_EVENT_EXT_DISC
+ * advertisements.
  *
  * @param event  NimBLE GAP event
  * @param out    Output hash structure

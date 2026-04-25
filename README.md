@@ -48,10 +48,10 @@ Install the APK, grant permissions — privacy scanning and aircraft detection s
 
 Always-on, unattended detection. Build for ~$25-40 per node:
 
-- **Scanner** (ESP32-S3 or ESP32-C5) — BLE Remote ID + WiFi promiscuous frame capture, Bayesian fusion, BLE fingerprinting. C5 runs dual-mode BLE 5 + WiFi 6 with privacy device detection on OLED
-- **Uplink** (ESP32-C3 or ESP32) — GPS, OLED status display, WiFi backhaul to backend, OTA firmware relay
+- **Scanner** (ESP32-S3 combo or seed) — BLE Remote ID + WiFi promiscuous frame capture, Bayesian fusion, BLE fingerprinting, and Android-led calibration mode
+- **Uplink** (ESP32-S3) — GPS, OLED status display, WiFi backhaul to backend, dual scanner UART, OTA firmware relay
 - **Multi-node sensor network** — Deploy 2-4 nodes for triangulated device positioning on the real-time map
-- **Inter-node RF calibration** — Automated calibration measures RSSI between all node pairs to compute path loss model for accurate triangulation
+- **Android-led RF calibration** — Phone walk workflow puts the live S3 fleet into calibration mode and collects RSSI samples for triangulation tuning
 - **Real-time dashboard** — 12-tab web UI with map, device tracking, alerts, entity correlation, anomaly detection, probe analysis, and sensor management
 - **Flash from your browser** — no toolchain needed: [**ESP32 Web Flasher**](https://lnxgod.github.io/friendorfoe/)
 - Hardware setup: [INSTALL.md](esp32/INSTALL.md)

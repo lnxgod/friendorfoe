@@ -129,8 +129,16 @@ class DroneDetectionItem(BaseModel):
     rssi: int | None = Field(None, description="Signal strength in dBm")
     estimated_distance_m: float | None = Field(
         None,
-        description="Scanner-computed distance estimate in meters. When present, backend "
-                    "triangulation prefers this over re-deriving range from RSSI.",
+        description="Scanner-computed distance estimate in meters. Preserved as diagnostics; "
+                    "backend geometry may prefer calibrated RSSI when a trusted model exists.",
+    )
+    scanner_slot: int | None = Field(
+        None,
+        description="Uplink UART slot that produced the strongest copy of this observation.",
+    )
+    scanner_slots_seen: int | None = Field(
+        None,
+        description="Bitmask of UART scanner slots that saw a deduplicated observation.",
     )
     manufacturer: str | None = Field(None, description="Drone manufacturer (e.g. DJI, Skydio)")
     model: str | None = Field(None, description="Drone model name")
@@ -161,7 +169,6 @@ class DroneDetectionItem(BaseModel):
     ble_raw_mfr: str | None = Field(None, description="Raw manufacturer data hex (first 20 bytes)")
     ble_adv_interval: float | None = Field(None, description="BLE advertisement interval in ms")
     ble_svc_uuids: str | None = Field(None, description="Comma-separated 16-bit BLE service UUIDs (hex)")
-    ble_apple_info: int | None = Field(None, description="Legacy alias for ble_apple_flags (v0.57 and earlier scanners). Retained one release for back-compat.")
     ble_apple_flags: int | None = Field(None, description="Apple Nearby Info data-flags byte (v0.58+ scanners, always emitted — 0 ≠ absent).")
     probed_ssids: list[str] | None = Field(None, description="SSIDs this device is probing for (from probe requests)")
     ie_hash: str | None = Field(
@@ -182,7 +189,7 @@ class DroneDetectionBatch(BaseModel):
     device_alt: float | None = Field(None, description="Sensor device altitude in meters")
     timestamp: int = Field(..., description="Batch timestamp (epoch seconds)")
     firmware_version: str | None = Field(None, description="Firmware version (e.g. 0.35.0)")
-    board_type: str | None = Field(None, description="Board type (uplink-esp32, uplink-c3)")
+    board_type: str | None = Field(None, description="Board type (uplink-s3)")
     scanners: list[dict] | None = Field(
         None,
         description="Connected scanner identities and diagnostics [{uart, ver, board, chip, caps, toff, tcnt, time_valid_count, time_last_valid_age_s, time_sync_state, uart_tx_dropped, uart_tx_high_water, tx_queue_depth, tx_queue_capacity, tx_queue_pressure_pct, noise_drop_ble, noise_drop_wifi, probe_seen, probe_sent, probe_drop_low_value, probe_drop_rate_limit, probe_drop_pressure}]",
@@ -191,6 +198,14 @@ class DroneDetectionBatch(BaseModel):
         None,
         description="Optional uplink time-sync diagnostics {time_source, last_fetch_ok, last_attempt_age_s, last_success_age_s, fetch_ok_count, fetch_fail_count, fetch_fail_streak, last_backend_epoch_ms, last_broadcast_epoch_ms, broadcast_valid_count, broadcast_invalid_count}",
     )
+    scan_mode: str | None = Field(None, description="Node scan mode: normal or calibration")
+    scan_profile: str | None = Field(None, description="Node scan profile: normal or calibration")
+    calibration_uuid: str | None = Field(None, description="Active calibration UUID when scan_mode=calibration")
+    dedup_seen: int | None = Field(None, description="Node-level detections considered for upload dedupe")
+    dedup_sent: int | None = Field(None, description="Node-level detections emitted after dedupe")
+    dedup_collapsed: int | None = Field(None, description="Node-level duplicate observations collapsed before upload")
+    cal_seen: int | None = Field(None, description="Calibration beacon observations considered before dedupe")
+    cal_sent: int | None = Field(None, description="Calibration beacon observations emitted after dedupe")
     wifi_ssid: str | None = Field(None, description="Connected WiFi SSID")
     wifi_rssi: int | None = Field(None, description="WiFi RSSI (signal strength in dBm)")
     detections: list[DroneDetectionItem] = Field(
@@ -266,6 +281,22 @@ class SensorObservation(BaseModel):
     backend_estimated_distance_m: float | None = None
     distance_source: str | None = None
     range_model: str | None = None
+    range_authority: str | None = Field(
+        None,
+        description="Range value used for geometry: scanner, backend_rssi, direct_gps, or none.",
+    )
+    source_tier: str | None = Field(
+        None,
+        description="Geometry policy tier: drone_grade, diagnostic, or calibration.",
+    )
+    geometry_trust: str | None = Field(
+        None,
+        description="Trust level for this observation's geometry model.",
+    )
+    uncertainty_m: float | None = Field(
+        None,
+        description="Per-observation range/position uncertainty exposed for diagnostics.",
+    )
     confidence: float = 0.0
     source: str = ""
     ssid: str | None = None
@@ -314,8 +345,14 @@ class LocatedDroneItem(BaseModel):
         None,
         description="How the drone_id was derived: 'rid' = ASTM Remote ID UAS serial; "
                     "'fingerprint' = BLE content hash (identity inferred, not verified); "
-                    "'mac' = raw MAC address (typically probe-request sources)",
+                    "'probe_fingerprint' = WiFi probe IE hash/stable probe identity; "
+                    "'mac' = raw MAC address fallback.",
     )
+    range_authority: str | None = Field(None, description="Dominant range authority used for this location.")
+    geometry_trust: str | None = Field(None, description="Trust level for the emitted geometry.")
+    source_tier: str | None = Field(None, description="Geometry policy tier for this item.")
+    uncertainty_m: float | None = Field(None, description="Operator-facing uncertainty radius in meters.")
+    calibration_state: str | None = Field(None, description="active, defaults, calibration_session, or unknown.")
 
 
 class SensorItem(BaseModel):

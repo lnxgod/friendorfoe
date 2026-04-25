@@ -408,21 +408,17 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
         det->ble_adv_interval_us = (int64_t)(ival_ms * 1000);
     }
 
-    /* BLE Service UUIDs — v0.63 the scanner may emit 16-bit hex ("fd5f")
-     * and/or 128-bit hyphenated ("cafe9a86-0000-1000-8000-..."). We
-     * pass the raw string through verbatim via ble_svc_uuids_raw so
-     * the backend sees exactly what the scanner emitted. We also keep
-     * the legacy uint16 parse path for backward compat with any code
-     * path that reads det->ble_service_uuids directly — `strtoul`
-     * stops at a hyphen so 128-bit tokens get harmlessly truncated
-     * to their first 16-bit value in the legacy array. */
+    /* BLE service UUIDs may include 16-bit hex ("fd5f") and/or 128-bit
+     * hyphenated UUIDs ("cafe9a86-0000-1000-8000-..."). Preserve the raw
+     * scanner string for backend matching, and mirror 16-bit tokens into
+     * det->ble_service_uuids for internal summaries that still read it. */
     const char *svc_str = json_get_string(root, JSON_KEY_BLE_SVC_UUIDS, NULL);
     if (svc_str) {
         /* Pass-through raw copy — this is what http_upload actually sends. */
         strncpy(det->ble_svc_uuids_raw, svc_str, sizeof(det->ble_svc_uuids_raw) - 1);
         det->ble_svc_uuids_raw[sizeof(det->ble_svc_uuids_raw) - 1] = '\0';
 
-        /* Legacy uint16 parse for backward compat. */
+        /* Best-effort 16-bit mirror. strtoul stops at '-' for 128-bit tokens. */
         char svc_buf[160];
         strncpy(svc_buf, svc_str, sizeof(svc_buf) - 1);
         svc_buf[sizeof(svc_buf) - 1] = '\0';
@@ -577,6 +573,9 @@ static void process_line(const char *line, size_t len, int scanner_id)
     if (strcmp(msg_type, MSG_TYPE_DETECTION) == 0) {
         drone_detection_t det;
         if (parse_detection(root, &det)) {
+            det.scanner_slot = (uint8_t)scanner_id;
+            det.scanner_slots_seen = (uint8_t)(1U << scanner_id);
+
             /* Skip BLE background noise (0.02 confidence) to reduce queue pressure.
              * WiFi APs (0.05) and phones (0.05) are still useful for the backend. */
             if (det.confidence < 0.04f) {

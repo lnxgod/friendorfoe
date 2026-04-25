@@ -31,23 +31,22 @@ docker compose up                                   # Full stack (API + Redis + 
 
 ### ESP32 (PlatformIO + ESP-IDF, requires Python 3.12 venv — 3.14 breaks pydantic-core)
 ```bash
-cd esp32/scanner && pio run                    # Build scanner (ESP32-S3 combo: WiFi + BLE)
-cd esp32/uplink && pio run                     # Build uplink (ESP32-C3 or legacy ESP32)
-cd esp32/ble-scanner && pio run                # BLE-only variant
+cd esp32/scanner && pio run -e scanner-s3-combo       # Build production scanner
+cd esp32/scanner && pio run -e scanner-s3-combo-seed  # Build seed scanner
+cd esp32/uplink && pio run -e uplink-s3               # Build production uplink
 cd esp32/rid-simulator && pio run              # Remote ID simulator
-cd esp32 && pio test -e native                 # Run unit tests (27 tests, no hardware needed)
+cd esp32 && pio test -e test                   # Run unit tests (native, no hardware needed)
 cd esp32/web-flasher && python3 -m http.server 8080  # Local web flasher
-./esp32/update_legacy_nodes.sh                 # OTA-update deployed legacy ESP32 nodes
 ```
 
-**Never** run `erase_flash` on ESP32 hardware — it permanently kills WiFi on legacy boards (see memory).
+Current release firmware support is S3-only: `scanner-s3-combo`, `scanner-s3-combo-seed`, and `uplink-s3`.
 
 ## Architecture
 
 ### Platforms
 - **`android/`** — Kotlin + Jetpack Compose, Clean Architecture. AR viewfinder with multi-source detection.
 - **`backend/`** — Python FastAPI. ADS-B aggregation, drone detection ingest from sensor nodes, multi-sensor triangulation, entity tracking, RF anomaly alerts, web dashboard, OTA firmware hosting.
-- **`esp32/`** — ESP-IDF firmware with 5 build targets (scanner, wifi-scanner, ble-scanner, uplink, rid-simulator) across ESP32-S3 / ESP32-C3 / legacy ESP32. Scanner↔Uplink communicate via UART at 921,600 baud with newline-delimited JSON. Unified version in `esp32/shared/version.h`.
+- **`esp32/`** — ESP-IDF firmware for the current ESP32-S3 scanner, seed scanner, and uplink fleet, plus shared native tests and RID simulator utilities. Scanner↔Uplink communicate via UART at 921,600 baud with newline-delimited JSON. Unified version in `esp32/shared/version.h`.
 - **`macos/`** — Swift companion app (early stage, not production).
 
 ### Android Clean Architecture Layers

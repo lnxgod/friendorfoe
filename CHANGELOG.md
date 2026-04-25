@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.63.16-calibration-demo] - 2026-04-24
+
+### Changed
+- **Current firmware support is S3-only.** CI release builds, the web flasher,
+  flash helpers, and backend OTA catalog now expose only `scanner-s3-combo`,
+  `scanner-s3-combo-seed`, and `uplink-s3`. Retired ESP32/C3/C5/BLE-only
+  code paths are no longer current-release artifacts or operator choices.
+- **Android calibration diagnostics consume backend truth.** The calibration
+  view now parses per-node last RSSI, hearing age, total samples, scanner slot
+  coverage, and fit-acceptance fields so the phone can show whether the fleet
+  is actually hearing the walk beacon.
+- **Map and node DTOs carry geometry trust.** Android now accepts
+  `range_authority`, `geometry_trust`, `source_tier`, uncertainty, calibration
+  state, scan profile, dedupe, and calibration counters from the backend
+  without dropping those fields during demo testing.
+- **Release firmware assets are catalog-ready.** Release automation now uploads
+  exact current-target `.bin` assets (`scanner-s3-combo-*`,
+  `scanner-s3-combo-seed-*`, `uplink-s3-*`) in addition to bundle tarballs so
+  the backend OTA catalog can discover GitHub release binaries directly.
+- **Scanner BLE discovery is modern-only.** Supported scanner firmware now
+  requires NimBLE extended advertising discovery and no longer falls back to
+  the legacy BLE discovery path during calibration-mode scans.
+
+### Fixed
+- **Fleet calibration start rollback is complete.** If any node fails to arm,
+  the backend now records every successfully armed node before raising and
+  rolls all of them back, preventing a partial fleet from getting stuck in
+  calibration mode.
+- **Calibration stop reports scanner ack failures.** Uplinks now return a
+  degraded/503 response when attached scanners do not acknowledge normal-mode
+  resume instead of claiming `ok:true`.
+- **Event duplicate handling no longer loses whole batches.** Duplicate
+  `(event_type, identifier)` inserts now hydrate/update the existing event row
+  and keep unrelated fresh events in the same flush.
+
 ## [0.63.15-calibration-ci] - 2026-04-23
 
 ### Fixed

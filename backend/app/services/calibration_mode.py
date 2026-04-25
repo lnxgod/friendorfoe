@@ -127,10 +127,14 @@ class CalibrationModeCoordinator:
                     *(self._start_node_mode(node, session) for node in target_nodes),
                     return_exceptions=True,
                 )
+                errors: list[Exception] = []
                 for node, result in zip(target_nodes, results, strict=False):
                     if isinstance(result, Exception):
-                        raise result
-                    started_nodes.append(node)
+                        errors.append(result)
+                    else:
+                        started_nodes.append(node)
+                if errors:
+                    raise RuntimeError("; ".join(str(e) for e in errors))
             except Exception:
                 for node in started_nodes:
                     try:

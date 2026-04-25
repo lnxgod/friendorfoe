@@ -15,7 +15,7 @@
 
 static const char *TAG = "battery";
 
-/* GPIO3 on ESP32-C3 is ADC1 channel 3 */
+/* GPIO3 battery divider input. */
 #define BATTERY_ADC_UNIT        ADC_UNIT_1
 #define BATTERY_ADC_CHANNEL     ADC_CHANNEL_3
 #define BATTERY_ADC_ATTEN       ADC_ATTEN_DB_12   /* ~0-3.3V range */

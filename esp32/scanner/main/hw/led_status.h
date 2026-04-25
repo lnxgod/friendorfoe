@@ -6,9 +6,7 @@
  * Drives a single GPIO LED with configurable blink patterns to
  * indicate system state at a glance.
  *
- * Hardware:
- *   ESP32-S3: GPIO48 (built-in RGB LED on DevKitC-1, driven as on/off)
- *   ESP32-C5: GPIO27 (RGB LED pin on C5 dev boards)
+ * Hardware: ESP32-S3 GPIO48 built-in RGB LED.
  */
 
 #ifdef __cplusplus

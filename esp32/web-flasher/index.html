@@ -253,7 +253,7 @@
 <body>
   <div class="container">
     <h1>Friend or Foe <span>ESP32 Flasher</span></h1>
-    <p class="subtitle">Flash drone detector firmware to your ESP32 boards — directly from your browser.</p>
+    <p class="subtitle">Flash current production ESP32-S3 firmware — scanner, seed scanner, and uplink — directly from your browser.</p>
 
     <div class="warning">
       <strong>Browser requirement:</strong> Web Serial requires <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>
@@ -281,84 +281,36 @@
         <div class="desc">Connect your ESP32-S3 via USB, then click to flash. That's it.</div>
       </div>
       <div class="flash-card no-config">
-        <h3>WiFi Scanner (ESP32)</h3>
-        <div class="chip">Plain ESP32 DevKit — 2.4 GHz WiFi only, no config needed</div>
-        <ul>
-          <li>WiFi promiscuous capture (2.4 GHz)</li>
-          <li>DJI DroneID IE parsing</li>
-          <li>WiFi Beacon RID + French DRI</li>
-          <li>SSID pattern matching (104 patterns)</li>
-          <li>Bayesian sensor fusion</li>
-        </ul>
-        <esp-web-install-button manifest="manifest-scanner-esp32.json">
-          <button slot="activate">Flash WiFi Scanner (ESP32)</button>
-          <span slot="not-allowed">Your browser does not support Web Serial</span>
-        </esp-web-install-button>
-        <div class="desc">Cheapest option (~$5). WiFi detection only, no BLE. Connect via USB and flash.</div>
-      </div>
-      <div class="flash-card no-config">
-        <h3>Scanner Board (C5)</h3>
-        <div class="chip">ESP32-C5-DevKitC-1 — dual-band 2.4 + 5 GHz, no config needed</div>
+        <h3>Seed Scanner Board (S3)</h3>
+        <div class="chip">ESP32-S3 Seed/Mini carrier — 8 MB flash, no config needed</div>
         <ul>
           <li>BLE Remote ID (ASTM F3411)</li>
-          <li>WiFi dual-band capture (2.4 + 5 GHz)</li>
-          <li>DJI DroneID IE parsing</li>
-          <li>SSID pattern matching (104 patterns)</li>
-          <li>Bayesian sensor fusion</li>
+          <li>WiFi promiscuous capture (2.4 GHz)</li>
+          <li>Calibration-mode BLE UUID filtering</li>
+          <li>Seed UART pin mapping</li>
+          <li>Runtime identity: scanner-s3-combo-seed</li>
         </ul>
-        <esp-web-install-button manifest="manifest-scanner-c5.json">
-          <button slot="activate">Flash Scanner (C5)</button>
+        <esp-web-install-button manifest="manifest-scanner-seed.json">
+          <button slot="activate">Flash Seed Scanner (S3)</button>
           <span slot="not-allowed">Your browser does not support Web Serial</span>
         </esp-web-install-button>
-        <div class="desc">Connect your ESP32-C5 via USB, then click to flash. Detects 5 GHz drones.</div>
-      </div>
-      <div class="flash-card no-config">
-        <h3>BLE Scanner</h3>
-        <div class="chip">ESP32-S3 — BLE-only, no config needed</div>
-        <ul>
-          <li>BLE Remote ID detection</li>
-          <li>Smart glasses / privacy alerts</li>
-          <li>OLED drone + glasses display</li>
-          <li>Meta, Snap, Xreal, Vuzix, Bose</li>
-          <li>No WiFi needed</li>
-        </ul>
-        <esp-web-install-button manifest="manifest-ble-scanner.json">
-          <button slot="activate">Flash BLE Scanner</button>
-          <span slot="not-allowed">Your browser does not support Web Serial</span>
-        </esp-web-install-button>
-        <div class="desc">Standalone BLE detector with OLED. Detects drones AND smart glasses nearby.</div>
+        <div class="desc">Use this for Gate/seed SATM scanner boards. It reports the seed variant explicitly.</div>
       </div>
       <div class="flash-card">
-        <h3>Uplink Board</h3>
-        <div class="chip">ESP32-C3-DevKitM-1 — needs WiFi config (Step 2)</div>
+        <h3>Uplink Board (S3)</h3>
+        <div class="chip">ESP32-S3 N16R8 — needs WiFi config (Step 2)</div>
         <ul>
           <li>WiFi STA + backend upload</li>
           <li>GPS NMEA parsing</li>
-          <li>OLED status display</li>
-          <li>Battery monitoring</li>
-          <li>Offline ring buffer (100 batches)</li>
+          <li>Dual scanner UART slots</li>
+          <li>Calibration-mode fleet control</li>
+          <li>OTA relay to attached scanners</li>
         </ul>
-        <esp-web-install-button manifest="manifest-uplink.json">
-          <button slot="activate">Flash Uplink (C3)</button>
+        <esp-web-install-button manifest="manifest-uplink-s3.json">
+          <button slot="activate">Flash Uplink (S3)</button>
           <span slot="not-allowed">Your browser does not support Web Serial</span>
         </esp-web-install-button>
-        <div class="desc">For ESP32-C3 boards. Config (WiFi/URL) is preserved across updates.</div>
-      </div>
-      <div class="flash-card">
-        <h3>Uplink (Plain ESP32 OLED)</h3>
-        <div class="chip">ESP32 with OLED — needs WiFi config (Step 2)</div>
-        <ul>
-          <li>WiFi STA + backend upload</li>
-          <li>Dual UART (BLE + WiFi scanner)</li>
-          <li>OLED status display</li>
-          <li>Connectivity watchdog (auto-reboot)</li>
-          <li>Lock-on command forwarding</li>
-        </ul>
-        <esp-web-install-button manifest="manifest-uplink-esp32.json">
-          <button slot="activate">Flash Uplink (ESP32 OLED)</button>
-          <span slot="not-allowed">Your browser does not support Web Serial</span>
-        </esp-web-install-button>
-        <div class="desc">For ideaspark ESP32 OLED boards. Config is preserved across updates.</div>
+        <div class="desc">Current production uplink target. Config (WiFi/URL) is preserved across updates.</div>
       </div>
     </div>
 
@@ -415,12 +367,12 @@
     <h2>System Architecture</h2>
     <div class="arch-diagram">
 +-------------------------------+  UART 921600  +---------------------------+
-| ESP32-S3 or C5 "SCANNER"     | -------------&gt; | ESP32-C3 "UPLINK"         |
+| ESP32-S3 "SCANNER"           | -------------&gt; | ESP32-S3 "UPLINK"         |
 |                               | JSON messages  |                           |
-| S3: Dual-core, 2.4 GHz WiFi  |                | WiFi STA (always on)      |
-| C5: Single-core, 2.4+5 GHz   |                | HTTP POST -> backend      |
+| Dual-core, 2.4 GHz WiFi      |                | WiFi STA (always on)      |
+| BLE extended discovery       |                | HTTP POST -> backend      |
 |                               |                | GPS, OLED, LED, Battery   |
-| BLE scan + WiFi promisc       |                | UART RX                   |
+| BLE scan + WiFi promisc       |                | Dual UART RX              |
 | Bayesian fusion + UART TX     |                |                           |
 +-------------------------------+                +---------------------------+
                                                           |
@@ -435,18 +387,18 @@
     <h2>Quick Start</h2>
     <ol class="steps">
       <li>
-        <strong>Get the hardware</strong> — ESP32-S3 (scanner) + ESP32-C3 (uplink) + GPS module + OLED display.
+        <strong>Get the hardware</strong> — ESP32-S3 scanner/seed boards + ESP32-S3 uplink + GPS module + OLED display.
         See <a href="https://github.com/lnxgod/friendorfoe/blob/main/esp32/INSTALL.md">INSTALL.md</a> for the full BOM (~$25-40 total).
       </li>
       <li>
-        <strong>Flash the Scanner</strong> — connect the ESP32-S3 via USB, click "Flash Scanner Firmware" above.
+        <strong>Flash the Scanner</strong> — connect the ESP32-S3 via USB, click "Flash Scanner (S3)" or "Flash Seed Scanner (S3)" above.
         No configuration needed — it auto-starts scanning.
       </li>
       <li>
-        <strong>Flash the Uplink</strong> — disconnect the S3, connect the ESP32-C3, click "Flash Uplink Firmware".
+        <strong>Flash the Uplink</strong> — connect the ESP32-S3 uplink board, click "Flash Uplink (S3)".
       </li>
       <li>
-        <strong>Configure the Uplink</strong> — with the C3 still plugged in, fill in WiFi and backend settings
+        <strong>Configure the Uplink</strong> — with the S3 uplink still plugged in, fill in WiFi and backend settings
         in Step 2 above and click "Send Configuration to Board". Settings are saved to flash.
       </li>
       <li>
@@ -461,21 +413,21 @@
 
     <h2>Wiring Reference</h2>
     <div class="arch-diagram">
-Scanner ESP32-S3                  Uplink ESP32-C3
+Scanner ESP32-S3                  Uplink ESP32-S3
 +----------------+                +----------------+
 |         TX  ---+-- GPIO 17 ---&gt; | GPIO 20 -- RX  |
 |         RX  ---+-- GPIO 18 &lt;--- | GPIO 21 -- TX  |
 |        GND  ---+----------------+-- GND          |
 +----------------+                +----------------+
 
-Scanner ESP32-C5                  Uplink ESP32-C3
+Seed Scanner ESP32-S3             Uplink ESP32-S3
 +----------------+                +----------------+
-|         TX  ---+-- GPIO 4  ---&gt; | GPIO 20 -- RX  |
-|         RX  ---+-- GPIO 5  &lt;--- | GPIO 21 -- TX  |
+|         TX  ---+-- GPIO 1  ---&gt; | scanner RX     |
+|         RX  ---+-- GPIO 2  &lt;--- | scanner TX     |
 |        GND  ---+----------------+-- GND          |
 +----------------+                +----------------+
 
-Uplink ESP32-C3 Peripherals:
+Uplink ESP32-S3 Peripherals:
   GPIO 4 (SDA) ---&gt; SSD1306 OLED SDA
   GPIO 5 (SCL) ---&gt; SSD1306 OLED SCL
   GPIO 6 (TX)  ---&gt; GPS module RX
@@ -502,7 +454,7 @@ Uplink ESP32-C3 Peripherals:
       <li><strong>"No compatible device found"</strong> — make sure you're using a data-capable USB cable (not charge-only).</li>
       <li><strong>"Failed to connect"</strong> — hold the BOOT button on the ESP32 board while clicking flash, then release after connection starts.</li>
       <li><strong>Button says "Not supported"</strong> — switch to Chrome or Edge. Firefox and Safari do not support Web Serial.</li>
-      <li><strong>Config says "No response"</strong> — press the RST button on the C3 board, then quickly click "Send Configuration". The board waits 3 seconds for config at boot.</li>
+      <li><strong>Config says "No response"</strong> — press the RST button on the S3 uplink board, then quickly click "Send Configuration". The board waits 3 seconds for config at boot.</li>
       <li><strong>Firmware files missing</strong> — the CI may not have run yet. Check <a href="https://github.com/lnxgod/friendorfoe/actions">Actions</a> or download from <a href="https://github.com/lnxgod/friendorfoe/releases">Releases</a>.</li>
     </ul>
 
@@ -557,7 +509,7 @@ Uplink ESP32-C3 Peripherals:
       let reader = null;
 
       try {
-        setStatus('Select the ESP32-C3 serial port...', 'status-busy');
+        setStatus('Select the ESP32-S3 uplink serial port...', 'status-busy');
 
         // Request serial port
         port = await navigator.serial.requestPort();

@@ -200,8 +200,40 @@ class CalibrationViewModelTest {
             walkStartResult = successJson(
                 """{"session_id":"abc123","advertise_uuid":"cafeabc1-0000-1000-8000-abc123def456","mode_state":"active","target_sensor_count":1,"target_nodes":[{"device_id":"pool","name":"Pool","lat":1.0,"lon":2.0}]}"""
             ),
-            walkFeedbackResult = successJson("""{"sensors":[],"eligible_sensor_count":1,"eligible_sensor_ids":["pool"],"heard_sensor_count":0,"heard_sensor_ids":[],"fleet_mode_state":"active","session_readiness":{"sensors_ready":0,"sensors_total":1,"ready_overall":false,"min_required":4}}"""),
-            walkMyPositionResult = successJson("""{"sensor_count":0,"eligible_sensor_count":1,"eligible_sensor_ids":["pool"],"heard_sensor_count":0,"heard_sensor_ids":[],"fleet_mode_state":"active","status":"no_sensors_hearing_you_yet"}"""),
+            walkFeedbackResult = successJson(
+                """
+                {
+                  "sensors": [
+                    {
+                      "sensor_id": "pool",
+                      "current_rssi": -51,
+                      "last_rssi": -49,
+                      "last_heard_age_s": 1.2,
+                      "samples_in_window": 4,
+                      "sample_count_total": 11,
+                      "scanner_slots_seen": 3,
+                      "accepted_into_fit": true,
+                      "distance_m_estimated_from_phone_gps": 2.4,
+                      "readiness": {
+                        "samples_count": 11,
+                        "samples_needed": 20,
+                        "distance_range_m": 8.0,
+                        "has_checkpoint": false,
+                        "ready": false,
+                        "hints": ["keep walking"]
+                      }
+                    }
+                  ],
+                  "eligible_sensor_count": 1,
+                  "eligible_sensor_ids": ["pool"],
+                  "heard_sensor_count": 1,
+                  "heard_sensor_ids": ["pool"],
+                  "fleet_mode_state": "active",
+                  "session_readiness": {"sensors_ready":0,"sensors_total":1,"ready_overall":false,"min_required":4}
+                }
+                """.trimIndent()
+            ),
+            walkMyPositionResult = successJson("""{"sensor_count":1,"eligible_sensor_count":1,"eligible_sensor_ids":["pool"],"heard_sensor_count":1,"heard_sensor_ids":["pool"],"fleet_mode_state":"active","status":"hearing_sensors"}"""),
             walkEndResult = successJson("""{"verified_fit":{"ok":false,"reason":"missing_fit","trace_points":0,"samples_total":0,"checkpointed_sensor_count":0},"provisional_fit":{"ok":true,"trace_points":1,"samples_total":2},"applied":false,"apply_reason":"quality_gate_r2_below_0_4"}"""),
         )
         val viewModel = CalibrationViewModel(
@@ -211,29 +243,37 @@ class CalibrationViewModelTest {
             platform = FakeCalibrationPlatform(),
         )
 
-        viewModel.refreshConnectivity()
-        advanceUntilIdle()
-        viewModel.startWalk()
-        runCurrent()
+        try {
+            viewModel.refreshConnectivity()
+            advanceUntilIdle()
+            viewModel.startWalk()
+            runCurrent()
+            runCurrent()
 
-        val state = viewModel.state.value
-        assertTrue(state.isWalking)
-        assertTrue(state.beaconOnAir)
-        assertEquals("abc123", state.sessionId)
-        assertEquals(1, state.eligibleSensorCount)
-        assertEquals("active", state.fleetModeState)
-        assertEquals(listOf("pool"), state.targetNodes.map { it.deviceId })
+            val state = viewModel.state.value
+            assertTrue(state.isWalking)
+            assertTrue(state.beaconOnAir)
+            assertEquals("abc123", state.sessionId)
+            assertEquals(1, state.eligibleSensorCount)
+            assertEquals(1, state.heardSensorCount)
+            assertEquals("active", state.fleetModeState)
+            assertEquals(listOf("pool"), state.targetNodes.map { it.deviceId })
+            assertEquals(-49, state.sensorsHearingMe.first().lastRssi)
+            assertEquals(3, state.sensorsHearingMe.first().scannerSlotsSeen)
+            assertTrue(state.sensorsHearingMe.first().acceptedIntoFit)
 
-        viewModel.endWalk()
-        advanceUntilIdle()
+            viewModel.endWalk()
+            advanceUntilIdle()
 
-        val ended = viewModel.state.value
-        assertFalse(ended.isWalking)
-        assertEquals("inactive", ended.fleetModeState)
-        assertEquals("quality_gate_r2_below_0_4", ended.applyReason)
-        assertEquals("missing_fit", ended.verifiedFitResult?.get("reason")?.asString)
-        assertEquals("android_walk_provisional", backend.lastEndProvisionalFit?.get("source")?.asString)
-        viewModel.clearForTest()
+            val ended = viewModel.state.value
+            assertFalse(ended.isWalking)
+            assertEquals("inactive", ended.fleetModeState)
+            assertEquals("quality_gate_r2_below_0_4", ended.applyReason)
+            assertEquals("missing_fit", ended.verifiedFitResult?.get("reason")?.asString)
+            assertEquals("android_walk_provisional", backend.lastEndProvisionalFit?.get("source")?.asString)
+        } finally {
+            viewModel.clearForTest()
+        }
     }
 
     @Test

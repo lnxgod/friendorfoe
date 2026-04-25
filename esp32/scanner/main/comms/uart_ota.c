@@ -32,12 +32,8 @@
 #include "uart_ota.h"
 #include "uart_protocol.h"
 #include "psram_alloc.h"
-#ifndef BLE_SCANNER_ONLY
 #include "wifi_scanner.h"
-#endif
-#ifndef WIFI_SCANNER_ONLY
 #include "ble_remote_id.h"
-#endif
 
 #include <string.h>
 #include <stdio.h>
@@ -134,12 +130,8 @@ static void send_ota_error(const char *reason)
  * on EVERY exit path (success or failure). */
 static void halt_scans(void)
 {
-#ifndef BLE_SCANNER_ONLY
     wifi_scanner_pause();
-#endif
-#ifndef WIFI_SCANNER_ONLY
     ble_remote_id_stop();
-#endif
     /* Give the scan tasks a tick to notice the flags and release shared
      * resources (e.g. the NimBLE lock, the WiFi scan timer). */
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -147,12 +139,8 @@ static void halt_scans(void)
 
 static void resume_scans(void)
 {
-#ifndef BLE_SCANNER_ONLY
     wifi_scanner_resume();
-#endif
-#ifndef WIFI_SCANNER_ONLY
     ble_remote_id_start();
-#endif
 }
 
 /* ── Cleanup + state reset ─────────────────────────────────────────────── */
@@ -423,9 +411,8 @@ bool uart_ota_process_data(const uint8_t *data, int len)
     return true;
 }
 
-/* Legacy entry point. Kept for source compatibility with older callers;
- * validation+flash is now driven entirely by the chunk stream reaching
- * total_size in process_data(). */
+/* Informational ota_end entry point. Validation+flash is also driven by the
+ * chunk stream reaching total_size in process_data(). */
 bool uart_ota_finalize(void)
 {
     if (s_ota.state != OTA_STAGING) return false;

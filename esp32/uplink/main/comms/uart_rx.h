@@ -3,14 +3,8 @@
 /**
  * Friend or Foe -- Uplink UART RX Module
  *
- * Receives newline-delimited JSON messages from scanner boards over UART.
- *
- * Dual-scanner mode (plain ESP32 uplink):
- *   UART1 (RX=GPIO25) — BLE scanner (ESP32-S3)
- *   UART2 (RX=GPIO32) — WiFi scanner (ESP32-C5)
- *
- * Single-scanner mode (ESP32-C3 uplink):
- *   UART1 (RX=GPIO20) — combined scanner
+ * Receives newline-delimited JSON messages from scanner boards over the two
+ * ESP32-S3 uplink UART slots.
  */
 
 #include "detection_types.h"
@@ -23,8 +17,6 @@ extern "C" {
 
 /**
  * Initialize UART hardware for receiving scanner messages.
- * On plain ESP32: initializes both UART1 (BLE) and UART2 (WiFi).
- * On ESP32-C3: initializes UART1 only.
  */
 void uart_rx_init(QueueHandle_t detection_queue);
 
@@ -67,8 +59,8 @@ void uart_rx_send_command(const char *json_cmd);
 typedef struct {
     char version[16];
     char board[24];     /* firmware catalog name: "scanner-s3-combo" */
-    char chip[12];      /* "esp32s3", "esp32", "esp32c5" */
-    char caps[32];      /* "ble,wifi", "wifi", "ble" */
+    char chip[12];      /* "esp32s3" */
+    char caps[32];      /* "ble,wifi" */
     bool received;
 
     /* Attack / anomaly counters (latest delta from scanner status) */

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.main import app
@@ -13,7 +14,7 @@ from app.models.db_models import Event
 from app.models.schemas import StoredDetection
 from app.routers import detections
 from app.services.database import Base, get_db
-from app.services.event_detector import EventDetector
+from app.services.event_detector import EventDetector, SeenEntry
 
 
 @pytest_asyncio.fixture
@@ -292,6 +293,70 @@ async def test_events_endpoint_accepts_multi_type_filters_and_stats_include_unac
 
 
 @pytest.mark.asyncio
+async def test_commit_new_hydrates_duplicate_event_without_losing_batch(db_session_factory):
+    now = datetime.now(timezone.utc)
+    async with db_session_factory() as session:
+        existing = Event(
+            event_type="new_probed_ssid",
+            identifier="GarageCam",
+            severity="info",
+            title="Probe SSID",
+            message="existing",
+            first_seen_at=now - timedelta(days=2),
+            last_seen_at=now - timedelta(days=1),
+            sighting_count=3,
+            sensor_count=1,
+            sensor_ids_json=json.dumps(["sensor-old"]),
+            best_rssi=-80,
+            metadata_json=json.dumps({"probe_identity": "PROBE:OLD"}),
+            acknowledged=False,
+        )
+        session.add(existing)
+        await session.commit()
+
+        detector = EventDetector()
+        duplicate_key = ("new_probed_ssid", "GarageCam")
+        fresh_key = ("new_probe_identity", "PROBE:PYTEST-FRESH")
+        detector._seen[duplicate_key] = SeenEntry(
+            db_id=0,
+            first_seen=(now - timedelta(minutes=5)).timestamp(),
+            last_seen=now.timestamp(),
+            sighting_count=2,
+            sensor_ids={"sensor-new"},
+            best_rssi=-55,
+        )
+        detector._seen[duplicate_key].__dict__["metadata"] = {"title": "Duplicate"}
+        detector._seen[fresh_key] = SeenEntry(
+            db_id=0,
+            first_seen=now.timestamp(),
+            last_seen=now.timestamp(),
+            sighting_count=2,
+            sensor_ids={"sensor-fresh"},
+            best_rssi=-58,
+        )
+        detector._seen[fresh_key].__dict__["metadata"] = {"title": "Fresh identity"}
+
+        written = await detector.commit_new(session, [duplicate_key, fresh_key])
+        assert written == 2
+
+        rows = (await session.execute(select(Event))).scalars().all()
+        assert len(rows) == 2
+        duplicate_row = (
+            await session.execute(
+                select(Event).where(
+                    Event.event_type == "new_probed_ssid",
+                    Event.identifier == "GarageCam",
+                )
+            )
+        ).scalar_one()
+        assert duplicate_row.sighting_count == 5
+        assert set(json.loads(duplicate_row.sensor_ids_json)) == {"sensor-old", "sensor-new"}
+        assert duplicate_row.best_rssi == -55
+        assert detector._seen[duplicate_key].db_id == duplicate_row.id
+        assert detector._seen[fresh_key].db_id
+
+
+@pytest.mark.asyncio
 async def test_probe_summary_includes_first_seen_and_activity_fields(
     monkeypatch,
     client: AsyncClient,
@@ -341,7 +406,6 @@ async def test_probe_summary_includes_first_seen_and_activity_fields(
                 ble_raw_mfr=None,
                 ble_adv_interval=None,
                 ble_svc_uuids=None,
-                ble_apple_info=None,
                 ble_apple_flags=None,
                 probed_ssids=["DJI-1234", "HomeNet"],
                 ie_hash="A1B2C3D4",
@@ -384,7 +448,6 @@ async def test_probe_summary_includes_first_seen_and_activity_fields(
                 ble_raw_mfr=None,
                 ble_adv_interval=None,
                 ble_svc_uuids=None,
-                ble_apple_info=None,
                 ble_apple_flags=None,
                 probed_ssids=["DJI-1234", "Hangar"],
                 ie_hash="A1B2C3D4",

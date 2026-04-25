@@ -52,10 +52,16 @@ PER_LISTENER_OFFSET_DB: dict[str, float] = {}
 # table fall back to the global RSSI_REF/PATH_LOSS_EXPONENT.
 PER_LISTENER_MODEL: dict[str, tuple[float, float]] = {}
 
+# The backend should only take over range authority from the scanner once a
+# verified Android walk model is active. Calibration sessions force this path
+# per-observation so the phone walk trains the same model the map evaluates.
+TRUSTED_CALIBRATION_ACTIVE = False
+
 
 def update_calibration(rssi_ref: float, path_loss: float,
                         per_listener_offset_db: dict | None = None,
-                        per_listener_model: dict | None = None):
+                        per_listener_model: dict | None = None,
+                        trusted: bool | None = None):
     """Update the RSSI model with calibrated values.
 
     `per_listener_offset_db` (v0.62 inter-node calibration) and
@@ -65,6 +71,7 @@ def update_calibration(rssi_ref: float, path_loss: float,
     """
     global RSSI_REF, PATH_LOSS_EXPONENT, PATH_LOSS_OUTDOOR
     global PER_LISTENER_OFFSET_DB, PER_LISTENER_MODEL
+    global TRUSTED_CALIBRATION_ACTIVE
     RSSI_REF = rssi_ref
     PATH_LOSS_EXPONENT = path_loss
     PATH_LOSS_OUTDOOR = path_loss
@@ -72,10 +79,18 @@ def update_calibration(rssi_ref: float, path_loss: float,
         PER_LISTENER_OFFSET_DB = dict(per_listener_offset_db)
     if per_listener_model is not None:
         PER_LISTENER_MODEL = {k: tuple(v) for k, v in per_listener_model.items()}
+    if trusted is not None:
+        TRUSTED_CALIBRATION_ACTIVE = bool(trusted)
     import logging
     logging.getLogger(__name__).info(
         "Calibration applied: RSSI_REF=%.1f PATH_LOSS=%.2f per_listener_offset=%s per_listener_model=%d nodes",
         rssi_ref, path_loss, PER_LISTENER_OFFSET_DB, len(PER_LISTENER_MODEL))
+
+
+def set_calibration_trusted(active: bool) -> None:
+    """Mark whether current RSSI parameters came from a verified live walk."""
+    global TRUSTED_CALIBRATION_ACTIVE
+    TRUSTED_CALIBRATION_ACTIVE = bool(active)
 
 # Observation staleness: must be long enough for all sensors to report
 # the same device. WiFi active scans run every 2-3s but some SSIDs only
@@ -208,6 +223,23 @@ CONVERGENCE_M = 1.0  # stop when update < 1 meter
 # Maximum distance from sensor centroid for a valid position (meters)
 # Rejects garbage trilateration results that land on the other side of the planet
 MAX_RESULT_DISTANCE_M = 10000.0  # 10 km
+
+# Diagnostic device fixes are intentionally lower-trust than drone/RID fixes.
+# They may be shown when explicitly requested, but never as centimeter-precise
+# pins just because two noisy RSSI circles happen to touch.
+DIAGNOSTIC_UNCERTAINTY_FLOOR_M = 25.0
+DIAGNOSTIC_MAX_ACCURACY_M = 200.0
+FILTER_MIN_CURRENT_SENSORS = 2
+MULTISENSOR_FRESH_WINDOW_S = 2.0
+
+
+def _uncertainty_for_policy(source_policy: str, accuracy_m: float | None) -> float | None:
+    """Apply a conservative uncertainty floor to diagnostic map estimates."""
+    if source_policy != "diagnostic":
+        return accuracy_m
+    if accuracy_m is None:
+        return DIAGNOSTIC_UNCERTAINTY_FLOOR_M
+    return max(float(accuracy_m), DIAGNOSTIC_UNCERTAINTY_FLOOR_M)
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +704,7 @@ class SensorTracker:
         operator_lon: float | None = None,
         operator_id: str | None = None,
         timestamp: float = 0.0,
+        range_authority: str | None = None,
     ) -> None:
         """Record a single drone observation from a sensor.
 
@@ -713,8 +746,9 @@ class SensorTracker:
         elif source in ("wifi_ssid", "wifi_oui", "wifi_beacon_rid", "wifi_dji_ie") and bssid:
             tracking_id = f"AP:{bssid}"
 
-        # Prefer the scanner's own distance estimate when present so the
-        # backend doesn't silently replace it with a different RSSI model.
+        # Scanner distance is preserved for diagnostics. Backend RSSI distance
+        # becomes authoritative only for verified calibration models or when a
+        # caller explicitly forces it (phone calibration sessions).
         scanner_dist = _normalize_distance_m(estimated_distance_m)
         backend_dist = None
         dist = scanner_dist
@@ -757,7 +791,18 @@ class SensorTracker:
                 range_model = "per_listener"
             else:
                 range_model = "global_indoor" if is_indoor else "global_outdoor"
-            if dist is None:
+
+            backend_authoritative = (
+                range_authority == "backend_rssi" or
+                (
+                    range_authority is None and
+                    (TRUSTED_CALIBRATION_ACTIVE or device_id in PER_LISTENER_MODEL)
+                )
+            )
+            if backend_authoritative:
+                dist = backend_dist
+                distance_source = "backend_rssi"
+            elif dist is None:
                 dist = backend_dist
                 distance_source = "backend_rssi"
 
@@ -1213,14 +1258,37 @@ class SensorTracker:
                 if best_obs.source != "wifi_probe_request" or not include_probe_diagnostics:
                     continue
 
+            # Current multi-sensor geometry window used by both filter gating
+            # and direct trilateration. This prevents an old EKF/particle state
+            # from continuing to emit a precise-looking point after only one
+            # sensor still hears the target.
+            newest_ts = max((o.timestamp for o in observations), default=0)
+            usable = [
+                o for o in observations
+                if o.sensor_lat != 0.0 and o.sensor_lon != 0.0
+                and o.estimated_distance_m is not None
+                and (
+                    newest_ts == 0 or
+                    (newest_ts - o.timestamp) <= MULTISENSOR_FRESH_WINDOW_S
+                )
+            ]
+            current_sensor_count = len(usable)
+
             # --- Priority 1.5: EKF smoothed position ---
             # Pick the tighter of EKF vs particle filter when both converged.
             # The EKF is analytically optimal for Gaussian/linear cases; the
             # particle filter handles multi-modal / nonlinear posteriors.
             ekf_filter = self._ekf.filters.get(drone_id)
             pf_filter  = self._pf.filters.get(drone_id)
-            ekf_ok = (ekf_filter is not None and ekf_filter.update_count >= 3)
-            pf_ok  = (pf_filter is not None and pf_filter.update_count >= 3 and pf_filter._initialized)
+            enough_current_sensors = current_sensor_count >= FILTER_MIN_CURRENT_SENSORS
+            ekf_ok = (
+                enough_current_sensors and
+                ekf_filter is not None and ekf_filter.update_count >= 3
+            )
+            pf_ok  = (
+                enough_current_sensors and
+                pf_filter is not None and pf_filter.update_count >= 3 and pf_filter._initialized
+            )
             # If only PF converged (e.g. EKF rejected observations), use it.
             if source_policy == "drone_grade" and pf_ok and not ekf_ok:
                 from app.services.position_filter import local_to_gps
@@ -1245,7 +1313,7 @@ class SensorTracker:
                     ))
                     self._record_emit(results[-1])
                     continue
-            if source_policy == "drone_grade" and ekf_filter and ekf_filter.update_count >= 3:
+            if source_policy == "drone_grade" and ekf_ok:
                 from app.services.position_filter import local_to_gps
                 x, y = ekf_filter.get_position()
                 ekf_lat, ekf_lon = local_to_gps(x, y, self._ekf.origin_lat, self._ekf.origin_lon)
@@ -1272,19 +1340,6 @@ class SensorTracker:
                     continue
 
             # --- Collect sensors with valid positions and distance estimates ---
-            # Enforce a tight staleness window against the newest observation so
-            # trilateration doesn't mix "30-second-old" sensor reads with fresh
-            # ones — that's what was anchoring the EKF to the wrong geometry.
-            # 2s matches v0.60 time-sync cadence: observations within 2s are
-            # genuinely the same target event, anything older is a ghost pull.
-            newest_ts = max((o.timestamp for o in observations), default=0)
-            usable = [
-                o for o in observations
-                if o.sensor_lat != 0.0 and o.sensor_lon != 0.0
-                and o.estimated_distance_m is not None
-                and (newest_ts == 0 or (newest_ts - o.timestamp) <= 2.0)
-            ]
-
             # Compute sensor centroid for result validation
             if usable:
                 centroid_lat = sum(o.sensor_lat for o in usable) / len(usable)
@@ -1308,6 +1363,9 @@ class SensorTracker:
                 result = _trilaterate(sensors_pos, distances)
                 if result:
                     lat, lon, accuracy = result
+                    accuracy = _uncertainty_for_policy(source_policy, accuracy)
+                    if source_policy == "diagnostic" and accuracy and accuracy > DIAGNOSTIC_MAX_ACCURACY_M:
+                        continue
                     if _result_valid(lat, lon):
                         results.append(LocatedDrone(
                             drone_id=drone_id,
@@ -1342,6 +1400,9 @@ class SensorTracker:
                         result = None  # fall through to range_only
                 if result:
                     lat, lon, accuracy = result
+                    accuracy = _uncertainty_for_policy(source_policy, accuracy)
+                    if source_policy == "diagnostic" and accuracy and accuracy > DIAGNOSTIC_MAX_ACCURACY_M:
+                        continue
                     results.append(LocatedDrone(
                         drone_id=drone_id,
                         lat=lat,

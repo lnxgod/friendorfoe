@@ -1,0 +1,14 @@
+{
+  "name": "Friend or Foe Seed Scanner (ESP32-S3 BLE+WiFi)",
+  "version": "0.63.16-calibration-demo",
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "firmware/scanner-seed/bootloader.bin", "offset": 0 },
+        { "path": "firmware/scanner-seed/partition-table.bin", "offset": 32768 },
+        { "path": "firmware/scanner-seed/firmware.bin", "offset": 131072 }
+      ]
+    }
+  ]
+}

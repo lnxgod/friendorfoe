@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "detection_types.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -41,6 +43,17 @@ void fof_policy_probe_rate_aux(uint32_t ie_hash,
                                const char *probed_ssids,
                                char *out,
                                size_t out_len);
+bool fof_policy_detection_identity_key(const drone_detection_t *det,
+                                       char *out,
+                                       size_t out_len);
+bool fof_policy_detection_dedupe_key(const drone_detection_t *det,
+                                     int64_t timestamp_ms,
+                                     uint32_t bucket_ms,
+                                     char *out,
+                                     size_t out_len);
+const char *fof_policy_scan_profile_for_slot(uint8_t scanner_id,
+                                             bool calibration_active);
+const char *fof_policy_slot_role_for_slot(uint8_t scanner_id);
 
 #ifdef __cplusplus
 }

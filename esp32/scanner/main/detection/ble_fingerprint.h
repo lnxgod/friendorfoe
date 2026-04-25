@@ -95,7 +95,7 @@ typedef struct {
  * @param data          Raw advertisement payload
  * @param length        Payload length
  * @param addr_type     Address type (public, random, etc.)
- * @param props         Advertisement properties (legacy, connectable, etc.)
+ * @param props         Advertisement properties (BLE4/ext, connectable, etc.)
  * @param fp            Output fingerprint
  */
 void ble_fingerprint_compute(const uint8_t *data, int length,

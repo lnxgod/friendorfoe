@@ -17,6 +17,7 @@
 #include "time_sync.h"
 #include "time_sync_policy.h"
 #include "version.h"
+#include "detection_policy.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -25,9 +26,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <unistd.h>
-#if defined(UPLINK_ESP32S3)
-#include "esp_http_client.h"  /* Only for S3 lockon polling */
-#endif
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -35,7 +34,6 @@
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include <netdb.h>
 #include "lwip/inet.h"
 
 static const char *TAG = "http_up";
@@ -45,6 +43,11 @@ static ring_buffer_t  *s_offline_buffer    = NULL;
 static int             s_success_count     = 0;
 static int             s_fail_count        = 0;
 static int64_t         s_last_success_epoch_ms = 0;
+static uint32_t        s_node_dedup_seen = 0;
+static uint32_t        s_node_dedup_sent = 0;
+static uint32_t        s_node_dedup_collapsed = 0;
+static uint32_t        s_cal_seen = 0;
+static uint32_t        s_cal_sent = 0;
 
 /* Persistent HTTP client handle (avoids socket exhaustion from rapid open/close) */
 /* esp_http_client removed — using raw sockets for zero heap allocation */
@@ -92,6 +95,7 @@ volatile int g_last_time_fetch_port = 0;
 #define BACKOFF_BASE_MS     500     /* 500ms base (was 1000) */
 #define MAX_DRAIN_PER_CYCLE 1       /* drain 1 offline batch per loop — don't block */
 #define HEALTH_RESET_SEC    30      /* force reset client if no success for 30s */
+#define NODE_DEDUP_BUCKET_MS 500     /* collapse duplicate dual-slot captures */
 
 /* ── Source integer to string mapping ──────────────────────────────────── */
 
@@ -132,6 +136,65 @@ static int64_t monotonic_age_s(int64_t since_ms)
     return (now_ms - since_ms) / 1000;
 }
 
+static bool is_calibration_detection(const drone_detection_t *det)
+{
+    if (!det || det->source != DETECTION_SRC_BLE_FINGERPRINT) {
+        return false;
+    }
+    return strstr(det->ble_svc_uuids_raw, "cafe") != NULL ||
+           strstr(det->ble_svc_uuids_raw, "CAFE") != NULL ||
+           strcmp(det->manufacturer, "Calibration Beacon") == 0;
+}
+
+static int64_t detection_timestamp_ms(const drone_detection_t *det)
+{
+    if (det && det->last_updated_ms > 0) {
+        return det->last_updated_ms;
+    }
+    return time_sync_get_epoch_ms();
+}
+
+static int find_duplicate_in_batch(const drone_detection_t *batch,
+                                   int count,
+                                   const drone_detection_t *det)
+{
+    char key[224];
+    if (!fof_policy_detection_dedupe_key(
+            det,
+            detection_timestamp_ms(det),
+            NODE_DEDUP_BUCKET_MS,
+            key,
+            sizeof(key))) {
+        return -1;
+    }
+
+    for (int i = 0; i < count; i++) {
+        char existing_key[224];
+        if (!fof_policy_detection_dedupe_key(
+                &batch[i],
+                detection_timestamp_ms(&batch[i]),
+                NODE_DEDUP_BUCKET_MS,
+                existing_key,
+                sizeof(existing_key))) {
+            continue;
+        }
+        if (strcmp(key, existing_key) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void merge_duplicate_detection(drone_detection_t *existing,
+                                      const drone_detection_t *candidate)
+{
+    uint8_t slots = existing->scanner_slots_seen | candidate->scanner_slots_seen;
+    if (candidate->rssi > existing->rssi) {
+        *existing = *candidate;
+    }
+    existing->scanner_slots_seen = slots;
+}
+
 static size_t estimate_detection_json_size(const drone_detection_t *det)
 {
     size_t estimate = 120; /* fixed keys + punctuation */
@@ -156,10 +219,9 @@ static size_t estimate_detection_json_size(const drone_detection_t *det)
 
 /* Payload buffer for building detection batch JSON.
  *
- * On S3 (N16R8) this is a 64 KB PSRAM-backed buffer, allowing much larger
- * batches per HTTP round-trip. On legacy ESP32 (no PSRAM) or if PSRAM init
- * failed, we fall back to the original 4 KB static buffer — preserving the
- * heap-stability guarantees from project_heap_stability_solution.md.
+ * On S3 (N16R8) this is a 64 KB PSRAM-backed buffer, allowing larger batches
+ * per HTTP round-trip. If PSRAM is unavailable, the static internal-RAM buffer
+ * keeps upload behavior deterministic instead of heap-fragmenting.
  *
  * The buffer pointer and size are set once in http_upload_init() and never
  * reallocated, matching the original "ZERO heap allocation in hot path"
@@ -182,9 +244,14 @@ static int   s_payload_buf_size = PAYLOAD_BUF_FALLBACK_SIZE;
 /* Helper: append scanner info object */
 static int append_scanner_info(char *buf, int off, int max, const char *uart_name, const scanner_info_t *info)
 {
+    uint8_t scanner_id = (strcmp(uart_name, "wifi") == 0) ? 1 : 0;
+    bool scanner_calibration = strcmp(info->scan_mode, "calibration") == 0;
     int n = snprintf(&buf[off], max - off,
-        "{\"uart\":\"%s\",\"ver\":\"%s\",\"board\":\"%s\",\"chip\":\"%s\",\"caps\":\"%s\"",
-        uart_name, info->version, info->board, info->chip, info->caps);
+        "{\"uart\":\"%s\",\"ver\":\"%s\",\"board\":\"%s\",\"chip\":\"%s\",\"caps\":\"%s\""
+        ",\"scan_profile\":\"%s\",\"slot_role\":\"%s\"",
+        uart_name, info->version, info->board, info->chip, info->caps,
+        fof_policy_scan_profile_for_slot(scanner_id, scanner_calibration),
+        fof_policy_slot_role_for_slot(scanner_id));
     if (n > 0) off += n;
     if (info->auth_count > 0) { n = snprintf(&buf[off], max-off, ",\"auth_fr\":%d", info->auth_count); if(n>0) off+=n; }
     if (info->fc_hist[0]) { n = snprintf(&buf[off], max-off, ",\"fc_hist\":\"%s\"", info->fc_hist); if(n>0) off+=n; }
@@ -250,17 +317,21 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     BUF_APPEND("{\"device_id\":\"%s\",\"device_lat\":%.6f,\"device_lon\":%.6f,\"device_alt\":%.1f,\"timestamp\":%lld",
                device_id, gps_pos.latitude, gps_pos.longitude, gps_pos.altitude_m, (long long)(ts_ms / 1000));
     BUF_APPEND(",\"firmware_version\":\"%s\"", FOF_VERSION);
-#if defined(UPLINK_ESP32S3)
     BUF_APPEND(",\"board_type\":\"uplink-s3\"");
-#elif defined(UPLINK_ESP32)
-    BUF_APPEND(",\"board_type\":\"uplink-esp32\"");
-#else
-    BUF_APPEND(",\"board_type\":\"uplink-c3\"");
-#endif
     if (wifi_ssid[0]) BUF_APPEND(",\"wifi_ssid\":\"%s\",\"wifi_rssi\":%d", wifi_ssid, wifi_sta_get_rssi());
     BUF_APPEND(",\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\"",
                uart_rx_get_node_scan_mode(),
                uart_rx_get_node_calibration_uuid());
+    BUF_APPEND(
+        ",\"scan_profile\":\"%s\",\"dedup_seen\":%lu,\"dedup_sent\":%lu"
+        ",\"dedup_collapsed\":%lu,\"cal_seen\":%lu,\"cal_sent\":%lu",
+        uart_rx_is_node_calibration_mode() ? "calibration" : "normal",
+        (unsigned long)s_node_dedup_seen,
+        (unsigned long)s_node_dedup_sent,
+        (unsigned long)s_node_dedup_collapsed,
+        (unsigned long)s_cal_seen,
+        (unsigned long)s_cal_sent
+    );
     BUF_APPEND(
         ",\"time_sync\":{\"time_source\":\"%s\",\"last_fetch_ok\":%s"
         ",\"last_fetch_url_source\":\"%s\",\"last_fetch_url\":\"%s\""
@@ -311,6 +382,8 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
 
         BUF_APPEND("{\"drone_id\":\"%s\",\"source\":\"%s\",\"confidence\":%.8f,\"rssi\":%d",
                    d->drone_id, source_to_string(d->source), d->confidence, d->rssi);
+        BUF_APPEND(",\"scanner_slot\":%u,\"scanner_slots_seen\":%u",
+                   d->scanner_slot, d->scanner_slots_seen);
         if (d->estimated_distance_m > 0.0)
             BUF_APPEND(",\"estimated_distance_m\":%.6f", d->estimated_distance_m);
         if (d->latitude != 0.0 || d->longitude != 0.0)
@@ -355,10 +428,9 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
                 BUF_APPEND("%02x", d->ble_raw_mfr[j]);
             BUF_APPEND("\"");
         }
-        /* v0.63: prefer the pass-through raw string so 128-bit UUIDs
-         * survive intact ("cafe9a86-0000-1000-8000-..."). Fall back to
-         * the legacy uint16-array re-encoding only when the raw field
-         * is empty (e.g. detection built before the raw field existed). */
+        /* Prefer the pass-through raw string so 128-bit UUIDs survive intact
+         * ("cafe9a86-0000-1000-8000-..."). Re-encode the uint16 mirror only
+         * when a local detection did not populate the raw field. */
         if (d->ble_svc_uuids_raw[0] != '\0') {
             BUF_APPEND(",\"ble_svc_uuids\":\"");
             /* The raw string is already valid JSON content except for
@@ -502,9 +574,8 @@ static void reset_http_client(void)
 #endif  /* dead code */
 
 /* ── Raw socket HTTP POST — ZERO heap allocation ─────────────────────────
- * Uses a persistent TCP socket with static buffers instead of esp_http_client.
- * This eliminates all malloc/free during uploads, preventing heap fragmentation
- * that causes legacy ESP32 nodes to crash every 30 seconds.
+ * Uses a persistent TCP socket with static buffers instead of esp_http_client
+ * in the hot path. This keeps upload memory behavior predictable under load.
  */
 
 static int s_sock = -1;
@@ -1110,7 +1181,14 @@ static void http_upload_task(void *arg)
             ? pdMS_TO_TICKS(25)
             : pdMS_TO_TICKS(100);
 
-        if (xQueueReceive(s_detection_queue, &det, wait_ticks) == pdTRUE) {
+        if (batch_count < CONFIG_MAX_BATCH_SIZE &&
+            xQueueReceive(s_detection_queue, &det, wait_ticks) == pdTRUE) {
+            bool cal_detection = is_calibration_detection(&det);
+            s_node_dedup_seen++;
+            if (cal_detection) {
+                s_cal_seen++;
+            }
+
             if (batch_count == 0) {
                 /* Start the batch age clock with the first detection. */
                 first_item_tick = xTaskGetTickCount();
@@ -1118,7 +1196,23 @@ static void http_upload_task(void *arg)
                 scan_ts_ms = det.last_updated_ms > 0 ? det.last_updated_ms : time_sync_get_epoch_ms();
             }
             last_item_tick = xTaskGetTickCount();
+
+            int dup_idx = find_duplicate_in_batch(batch, batch_count, &det);
+            if (dup_idx >= 0) {
+                merge_duplicate_detection(&batch[dup_idx], &det);
+                s_node_dedup_collapsed++;
+                if (det.last_updated_ms > 0 &&
+                    (scan_ts_ms == 0 || det.last_updated_ms < scan_ts_ms)) {
+                    scan_ts_ms = det.last_updated_ms;
+                }
+                continue;
+            }
+
             batch[batch_count++] = det;
+            s_node_dedup_sent++;
+            if (cal_detection) {
+                s_cal_sent++;
+            }
             estimated_payload_bytes += estimate_detection_json_size(&det);
             if (det.last_updated_ms > 0 &&
                 (scan_ts_ms == 0 || det.last_updated_ms < scan_ts_ms)) {
@@ -1292,8 +1386,6 @@ static void http_upload_task(void *arg)
                              g_last_time_fetch_perf);
                 }
 
-#if defined(UPLINK_ESP32S3)
-                /* Lock-on polling — only on S3 (ESP32 has too little heap for extra HTTP client) */
                 /* Build lock-on poll URL (per-node: includes device_id) */
                 char backend_url[128] = {0};
                 if (s_using_fallback_url) {
@@ -1364,7 +1456,6 @@ static void http_upload_task(void *arg)
                     }
                     esp_http_client_cleanup(client);
                 }
-#endif  /* UPLINK_ESP32S3 — lockon polling */
             }
         }
     }
@@ -1376,9 +1467,9 @@ void http_upload_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
 
-    /* Try to relocate the payload buffer into PSRAM (64 KB) on S3 boards
-     * with external memory. Silently stays on the 4 KB static buffer when
-     * PSRAM isn't available, preserving the legacy ESP32 path unchanged. */
+    /* Try to relocate the payload buffer into PSRAM. Stay on the 4 KB static
+     * buffer if PSRAM is unavailable so the upload path never allocates in
+     * the hot loop. */
     char *psram_buf = (char *)psram_alloc_strict(PAYLOAD_BUF_PSRAM_SIZE);
     if (psram_buf) {
         s_payload_buf      = psram_buf;
@@ -1389,10 +1480,8 @@ void http_upload_init(QueueHandle_t detection_queue)
                  PAYLOAD_BUF_FALLBACK_SIZE / 1024);
     }
 
-    /* Offline queue: PSRAM on S3 (2 MB / 512 batches), internal heap on legacy.
-     * Storage-in-PSRAM + header-in-SRAM is handled by ring_buffer_create_psram;
-     * it silently falls back to calloc if PSRAM is absent, so the same call
-     * works on every build target. */
+    /* Offline queue prefers PSRAM (2 MB / 512 batches). ring_buffer_create_psram
+     * falls back internally if PSRAM is unavailable. */
     s_offline_buffer  = ring_buffer_create_psram(CONFIG_MAX_OFFLINE_BATCHES,
                                                  sizeof(offline_batch_t));
     if (!s_offline_buffer) {

@@ -55,27 +55,12 @@ jobs:
       - name: Build Scanner firmware (ESP32-S3 combo seed)
         run: cd esp32/scanner && pio run -e scanner-s3-combo-seed
 
-      - name: Build WiFi Scanner firmware (ESP32)
-        run: cd esp32/scanner && pio run -e scanner-esp32
-
-      - name: Build Scanner firmware (ESP32-C5)
-        run: cd esp32/scanner && pio run -e scanner-c5
-
-      - name: Build BLE Scanner firmware (ESP32-S3)
-        run: cd esp32/ble-scanner && pio run -e ble-scanner-s3
-
-      - name: Build Uplink firmware (ESP32-C3)
-        run: cd esp32/uplink && pio run -e uplink
-
       - name: Build Uplink firmware (ESP32-S3)
         run: cd esp32/uplink && pio run -e uplink-s3
 
-      - name: Build Uplink firmware (Plain ESP32)
-        run: cd esp32/uplink && pio run -e uplink-esp32
-
       - name: Package firmware binaries
         run: |
-          mkdir -p firmware/scanner firmware/scanner-seed firmware/scanner-esp32 firmware/scanner-c5 firmware/ble-scanner firmware/uplink firmware/uplink-s3
+          mkdir -p firmware/scanner firmware/scanner-seed firmware/uplink-s3
 
           cp esp32/scanner/.pio/build/scanner-s3-combo/bootloader.bin firmware/scanner/
           cp esp32/scanner/.pio/build/scanner-s3-combo/partitions.bin firmware/scanner/partition-table.bin
@@ -85,30 +70,9 @@ jobs:
           cp esp32/scanner/.pio/build/scanner-s3-combo-seed/partitions.bin firmware/scanner-seed/partition-table.bin
           cp esp32/scanner/.pio/build/scanner-s3-combo-seed/firmware.bin   firmware/scanner-seed/
 
-          cp esp32/scanner/.pio/build/scanner-esp32/bootloader.bin firmware/scanner-esp32/
-          cp esp32/scanner/.pio/build/scanner-esp32/partitions.bin firmware/scanner-esp32/partition-table.bin
-          cp esp32/scanner/.pio/build/scanner-esp32/firmware.bin   firmware/scanner-esp32/
-
-          cp esp32/scanner/.pio/build/scanner-c5/bootloader.bin firmware/scanner-c5/
-          cp esp32/scanner/.pio/build/scanner-c5/partitions.bin firmware/scanner-c5/partition-table.bin
-          cp esp32/scanner/.pio/build/scanner-c5/firmware.bin   firmware/scanner-c5/
-
-          cp esp32/ble-scanner/.pio/build/ble-scanner-s3/bootloader.bin firmware/ble-scanner/
-          cp esp32/ble-scanner/.pio/build/ble-scanner-s3/partitions.bin firmware/ble-scanner/partition-table.bin
-          cp esp32/ble-scanner/.pio/build/ble-scanner-s3/firmware.bin   firmware/ble-scanner/
-
-          cp esp32/uplink/.pio/build/uplink/bootloader.bin firmware/uplink/
-          cp esp32/uplink/.pio/build/uplink/partitions.bin firmware/uplink/partition-table.bin
-          cp esp32/uplink/.pio/build/uplink/firmware.bin   firmware/uplink/
-
           cp esp32/uplink/.pio/build/uplink-s3/bootloader.bin firmware/uplink-s3/
           cp esp32/uplink/.pio/build/uplink-s3/partitions.bin firmware/uplink-s3/partition-table.bin
           cp esp32/uplink/.pio/build/uplink-s3/firmware.bin   firmware/uplink-s3/
-
-          mkdir -p firmware/uplink-esp32
-          cp esp32/uplink/.pio/build/uplink-esp32/bootloader.bin firmware/uplink-esp32/
-          cp esp32/uplink/.pio/build/uplink-esp32/partitions.bin firmware/uplink-esp32/partition-table.bin
-          cp esp32/uplink/.pio/build/uplink-esp32/firmware.bin   firmware/uplink-esp32/
 
           echo "=== Firmware sizes ==="
           find firmware -name '*.bin' -exec ls -lh {} \;
@@ -126,20 +90,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG=${{ github.event.release.tag_name }}
+          cp firmware/scanner/firmware.bin      /tmp/scanner-s3-combo-${TAG}.bin
+          cp firmware/scanner-seed/firmware.bin /tmp/scanner-s3-combo-seed-${TAG}.bin
+          cp firmware/uplink-s3/firmware.bin    /tmp/uplink-s3-${TAG}.bin
           cd firmware/scanner        && tar czf /tmp/scanner-firmware-${TAG}.tar.gz *.bin && cd -
           cd firmware/scanner-seed   && tar czf /tmp/scanner-seed-firmware-${TAG}.tar.gz *.bin && cd -
-          cd firmware/scanner-esp32  && tar czf /tmp/scanner-esp32-firmware-${TAG}.tar.gz *.bin && cd -
-          cd firmware/scanner-c5     && tar czf /tmp/scanner-c5-firmware-${TAG}.tar.gz *.bin && cd -
-          cd firmware/ble-scanner    && tar czf /tmp/ble-scanner-firmware-${TAG}.tar.gz *.bin && cd -
-          cd firmware/uplink         && tar czf /tmp/uplink-firmware-${TAG}.tar.gz *.bin && cd -
           cd firmware/uplink-s3      && tar czf /tmp/uplink-s3-firmware-${TAG}.tar.gz *.bin && cd -
           gh release upload "$TAG" \
+            /tmp/scanner-s3-combo-${TAG}.bin \
+            /tmp/scanner-s3-combo-seed-${TAG}.bin \
+            /tmp/uplink-s3-${TAG}.bin \
             /tmp/scanner-firmware-${TAG}.tar.gz \
             /tmp/scanner-seed-firmware-${TAG}.tar.gz \
-            /tmp/scanner-esp32-firmware-${TAG}.tar.gz \
-            /tmp/ble-scanner-firmware-${TAG}.tar.gz \
-            /tmp/scanner-c5-firmware-${TAG}.tar.gz \
-            /tmp/uplink-firmware-${TAG}.tar.gz \
             /tmp/uplink-s3-firmware-${TAG}.tar.gz \
             --clobber
 
@@ -161,16 +123,13 @@ jobs:
 
       - name: Assemble site
         run: |
-          mkdir -p _site/firmware/scanner _site/firmware/scanner-esp32 _site/firmware/scanner-c5 _site/firmware/ble-scanner _site/firmware/uplink _site/firmware/uplink-esp32
+          mkdir -p _site/firmware/scanner _site/firmware/scanner-seed _site/firmware/uplink-s3
 
           # Web flasher page + manifests
           cp esp32/web-flasher/index.html                    _site/
           cp esp32/web-flasher/manifest-scanner.json          _site/
-          cp esp32/web-flasher/manifest-scanner-esp32.json    _site/
-          cp esp32/web-flasher/manifest-scanner-c5.json       _site/
-          cp esp32/web-flasher/manifest-ble-scanner.json      _site/
-          cp esp32/web-flasher/manifest-uplink.json           _site/
-          cp esp32/web-flasher/manifest-uplink-esp32.json     _site/
+          cp esp32/web-flasher/manifest-scanner-seed.json     _site/
+          cp esp32/web-flasher/manifest-uplink-s3.json        _site/
 
       - name: Download firmware artifact
         uses: actions/download-artifact@v4
@@ -190,28 +149,16 @@ jobs:
             echo "Scanner S3 firmware: MISSING (build may have failed)"
           fi
 
-          if [ -f _site/firmware/scanner-esp32/firmware.bin ]; then
-            echo "WiFi Scanner ESP32 firmware: OK"
+          if [ -f _site/firmware/scanner-seed/firmware.bin ]; then
+            echo "Scanner S3 seed firmware: OK"
           else
-            echo "WiFi Scanner ESP32 firmware: MISSING (build may have failed)"
+            echo "Scanner S3 seed firmware: MISSING (build may have failed)"
           fi
 
-          if [ -f _site/firmware/scanner-c5/firmware.bin ]; then
-            echo "Scanner C5 firmware: OK"
+          if [ -f _site/firmware/uplink-s3/firmware.bin ]; then
+            echo "Uplink S3 firmware: OK"
           else
-            echo "Scanner C5 firmware: MISSING (build may have failed)"
-          fi
-
-          if [ -f _site/firmware/ble-scanner/firmware.bin ]; then
-            echo "BLE Scanner firmware: OK"
-          else
-            echo "BLE Scanner firmware: MISSING (build may have failed)"
-          fi
-
-          if [ -f _site/firmware/uplink/firmware.bin ]; then
-            echo "Uplink firmware: OK"
-          else
-            echo "Uplink firmware: MISSING (build may have failed)"
+            echo "Uplink S3 firmware: MISSING (build may have failed)"
           fi
 
       - name: Setup Pages

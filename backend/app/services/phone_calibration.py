@@ -74,6 +74,7 @@ class _CalSample:
     # come with a ground-truth d≈1 m anchor — operator stood at the
     # sensor and tapped the button. Default 1 = ordinary walk sample.
     weight: int = 1
+    scanner_slots_seen: int | None = None
 
 
 @dataclass
@@ -231,7 +232,8 @@ class PhoneCalibrationManager:
 
     def add_sensor_sample(self, session_id: str, sensor_id: str,
                           sensor_lat: float, sensor_lon: float,
-                          rssi: int, ts_s: float | None = None) -> bool:
+                          rssi: int, ts_s: float | None = None,
+                          scanner_slots_seen: int | None = None) -> bool:
         """Called by the detection ingest path when a sensor hears a
         BLE advertisement matching an active session's expected UUID."""
         s = self.sessions.get(session_id)
@@ -243,6 +245,7 @@ class PhoneCalibrationManager:
             sensor_lon=sensor_lon,
             rssi=int(rssi),
             ts_s=ts_s if ts_s and ts_s > 1e9 else time.time(),
+            scanner_slots_seen=scanner_slots_seen,
         ))
         return True
 
@@ -358,13 +361,14 @@ class PhoneCalibrationManager:
             ts_s=now,
         ))
         return {
-            "ok": True,
+            "ok": rssi_val is not None,
             "sensor_id": sensor_id,
             "gps_drift_m": round(gps_drift_m, 1),
             "rssi_at_touch": rssi_val,
             "strongest_sensor_at_touch": strongest_id,
             "warnings": warnings,
             "severity": severity,
+            "accepted_into_fit": rssi_val is not None,
         }
 
     def find_active_for_uuid(self, advertised_uuid: str) -> WalkSession | None:
@@ -499,10 +503,20 @@ class PhoneCalibrationManager:
                 d_m = _haversine_m(last_pos[0], last_pos[1],
                                    src.sensor_lat, src.sensor_lon)
             readiness = self._sensor_readiness(s, sid)
+            last_all_time = latest or fallback
+            last_heard_age_s = (
+                round(now - last_all_time.ts_s, 1)
+                if last_all_time is not None else None
+            )
             items.append({
                 "sensor_id": sid,
                 "current_rssi": latest.rssi if latest else None,
+                "last_rssi": last_all_time.rssi if last_all_time else None,
+                "last_heard_age_s": last_heard_age_s,
                 "samples_in_window": len(lst),
+                "sample_count_total": readiness["samples_count"],
+                "scanner_slots_seen": last_all_time.scanner_slots_seen if last_all_time else None,
+                "accepted_into_fit": readiness["samples_count"] > 0,
                 "distance_m_estimated_from_phone_gps": round(d_m, 1) if d_m is not None else None,
                 "readiness": readiness,
             })

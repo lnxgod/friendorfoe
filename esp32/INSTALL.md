@@ -6,9 +6,8 @@ Hardware setup and flashing instructions for the Friend or Foe ESP32 edition.
 
 | Component | Part | ~Cost | Notes |
 |-----------|------|-------|-------|
-| Scanner MCU | ESP32-S3-DevKitC-1 (8MB PSRAM) | $8-10 | Must be S3 variant for BLE+WiFi coexistence |
-| Scanner MCU (alt) | ESP32-C5 dev board | $8-12 | Alternative scanner — adds 5 GHz WiFi scanning |
-| Uplink MCU | ESP32-C3-DevKitM-1 | $3-5 | Any C3 dev board works |
+| Scanner MCU | ESP32-S3-DevKitC-1 or S3 seed carrier | $8-10 | Current scanner and seed scanner firmware targets |
+| Uplink MCU | ESP32-S3 N16R8 | $8-12 | Current production uplink target |
 | GPS module | u-blox NEO-6M (or NEO-M8N) | $8-12 | 3.3V TTL UART output |
 | OLED display (x2) | SSD1306 0.96" 128x64 I2C | $3-5 each | I2C address 0x3C; one for scanner, one for uplink |
 | Scanner LED | Built-in on DevKitC-1 (GPIO 48) | — | Or external LED + 220 ohm resistor |
@@ -24,7 +23,7 @@ Hardware setup and flashing instructions for the Friend or Foe ESP32 edition.
 ### Scanner ↔ Uplink UART
 
 ```
-Scanner ESP32-S3                  Uplink ESP32-C3
+Scanner ESP32-S3                  Uplink ESP32-S3
 ┌──────────────┐                  ┌──────────────┐
 │         TX ──┼── GPIO 17 ──────►│ GPIO 20 ── RX│
 │         RX ──┼── GPIO 18 ◄──────┤ GPIO 21 ── TX│
@@ -45,10 +44,10 @@ Scanner ESP32-S3 Peripherals:
 
 The S3 DevKitC-1 has a built-in addressable RGB LED on GPIO 48 — no external LED or resistor needed. The firmware drives it as a simple on/off indicator.
 
-### Uplink ESP32-C3 Peripherals
+### Uplink ESP32-S3 Peripherals
 
 ```
-Uplink ESP32-C3 Peripherals:
+Uplink ESP32-S3 Peripherals:
   GPIO 4 (SDA) ───► SSD1306 OLED SDA
   GPIO 5 (SCL) ───► SSD1306 OLED SCL
   GPIO 6 (TX)  ───► GPS module RX
@@ -58,19 +57,6 @@ Uplink ESP32-C3 Peripherals:
   3.3V         ───► OLED VCC, GPS VCC
   GND          ───► OLED GND, GPS GND, LED GND
 ```
-
-### Scanner ESP32-C5 Variant (alternative, adds 5 GHz)
-
-If using an ESP32-C5 as the scanner instead of an S3, the pin assignments differ because GPIO 4/5 are used for UART on the C5:
-
-```
-Scanner ESP32-C5:
-  UART:  TX = GPIO 4,  RX = GPIO 5   (to Uplink GPIO 20/21)
-  OLED:  SDA = GPIO 6, SCL = GPIO 7
-  LED:   GPIO 27
-```
-
-The C5 is a RISC-V single-core chip with 2.4 + 5 GHz WiFi. It can detect drones operating on 5 GHz channels that the S3 cannot see. BLE scanning still works on the C5.
 
 ### Battery Voltage Divider (optional)
 If monitoring battery voltage, connect a voltage divider (two equal resistors, e.g., 100K + 100K) between battery positive and GND, with the midpoint wired to Uplink GPIO 3.
@@ -107,8 +93,8 @@ The KConfig variables are defined in `scanner/main/Kconfig.projbuild` and `uplin
 The easiest way to flash is with the **browser-based web flasher** — no toolchain installation needed.
 
 1. Open [`web-flasher/index.html`](web-flasher/index.html) in **Google Chrome** or **Microsoft Edge**
-2. Connect your ESP32-S3, click **"Flash Scanner Firmware"**
-3. Disconnect, connect your ESP32-C3, click **"Flash Uplink Firmware"**
+2. Connect your ESP32-S3 scanner, click **"Flash Scanner (S3)"** or **"Flash Seed Scanner (S3)"**
+3. Disconnect, connect your ESP32-S3 uplink, click **"Flash Uplink (S3)"**
 
 Requirements:
 - Chrome 89+ or Edge 89+ (Firefox/Safari not supported — Web Serial API)
@@ -157,32 +143,31 @@ These can also be changed at runtime via NVS (serial console commands — future
 ```bash
 cd esp32/scanner
 
-# Build
-pio run
+# Build production scanner or seed scanner
+pio run -e scanner-s3-combo
+pio run -e scanner-s3-combo-seed
 
 # Flash (connect S3 board via USB)
-pio run -t upload
+pio run -e scanner-s3-combo -t upload
 
 # Monitor serial output
 pio device monitor
 ```
 
-### Uplink (ESP32-C3)
+### Uplink (ESP32-S3)
 
 ```bash
 cd esp32/uplink
 
 # Build
-pio run
+pio run -e uplink-s3
 
-# Flash (connect C3 board via USB)
-pio run -t upload
+# Flash (connect S3 uplink board via USB)
+pio run -e uplink-s3 -t upload
 
-# Monitor serial output (console is on USB-JTAG, not UART0)
+# Monitor serial output
 pio device monitor
 ```
-
-Note: The C3's serial console uses the built-in USB-JTAG interface, not UART0. UART0 is dedicated to the GPS module. Connect via the USB-C port on the C3 dev board.
 
 ### Unit Tests (no hardware needed)
 
@@ -251,8 +236,8 @@ The scanner board works as a standalone device — no uplink board, WiFi, or bac
 - **Full detection pipeline** — WiFi promiscuous scanning, BLE Remote ID, Bayesian fusion all run normally
 
 **Setup:**
-1. Flash the scanner firmware onto an ESP32-S3 (or C5)
-2. Connect an SSD1306 OLED (SDA→GPIO4, SCL→GPIO5; or GPIO6/7 on C5)
+1. Flash the scanner firmware onto an ESP32-S3 combo or seed board
+2. Connect an SSD1306 OLED (SDA→GPIO4, SCL→GPIO5)
 3. Power on via USB — the OLED shows stats immediately, LED blinks to confirm scanning
 4. No wiring to an uplink board required
 
@@ -267,7 +252,7 @@ The scanner board works as a standalone device — no uplink board, WiFi, or bac
 2. Wire TX/RX/GND between boards
 3. Connect GPS module to uplink
 4. Connect OLED to uplink (SDA→GPIO4, SCL→GPIO5)
-5. Connect OLED to scanner (SDA→GPIO4, SCL→GPIO5; or GPIO6/7 on C5)
+5. Connect OLED to scanner (SDA→GPIO4, SCL→GPIO5)
 6. Power on both boards (USB or shared 5V)
 7. **Scanner OLED** should show: `FOF Scanner`, drone count, channel, uptime
 8. Watch uplink serial monitor for:
@@ -316,7 +301,7 @@ Create a mobile hotspot named `DJI-TEST-12345`. The scanner should detect the SS
 | OLED blank on board with built-in display | Wrong I2C pins | Override via build flags: `-DCONFIG_FOF_OLED_SDA_PIN=X -DCONFIG_FOF_OLED_SCL_PIN=Y` (see [Known Board Pin Mappings](#known-board-pin-mappings)) |
 | GPS no fix | Indoor or cold start | Move outdoors, wait 1-2 minutes for first fix |
 | No detections reaching backend | WiFi disconnect or wrong URL | Check uplink log for HTTP errors, verify backend URL |
-| Scanner log shows BLE errors | BLE init failed | Ensure you're using ESP32-S3 or C5 (not plain ESP32 or S2) |
+| Scanner log shows BLE errors | BLE init failed | Ensure you're using supported ESP32-S3 scanner hardware |
 | Upload failures | Backend not running | Start backend with `uvicorn app.main:app`, or use standalone mode |
 | `uart_rx: JSON parse error` | Baud rate mismatch | Both boards must be at 921600 — check wiring |
 | Standalone mode not activating | SSID is set to a real network | Set `CONFIG_WIFI_SSID` to `"YourSSID"` or `""` in `config.h` and reflash |
@@ -326,7 +311,7 @@ Create a mobile hotspot named `DJI-TEST-12345`. The scanner should detect the SS
 
 ```
 ┌──────────────────────────┐   UART 921600   ┌──────────────────────────┐
-│   ESP32-S3 "SCANNER"     │ ──────────────► │   ESP32-C3 "UPLINK"      │
+│   ESP32-S3 "SCANNER"     │ ──────────────► │   ESP32-S3 "UPLINK"      │
 │                          │  JSON messages   │                          │
 │  Core 0: WiFi promisc    │                  │  WiFi APSTA              │
 │          BLE scan        │                  │  HTTP POST → backend     │
@@ -354,7 +339,7 @@ esp32/
 │   ├── detection_types.h   # drone_detection_t struct
 │   └── uart_protocol.h     # JSON keys, UART config, pin assignments
 │
-├── scanner/                # ESP32-S3 (or C5) scanner firmware
+├── scanner/                # ESP32-S3 combo/seed scanner firmware
 │   ├── platformio.ini      # PlatformIO build config
 │   ├── CMakeLists.txt      # ESP-IDF project root
 │   ├── sdkconfig.defaults  # NimBLE, WiFi coexist, PSRAM
@@ -379,7 +364,7 @@ esp32/
 │       └── core/
 │           └── task_priorities.h
 │
-├── uplink/                 # ESP32-C3 uplink firmware
+├── uplink/                 # ESP32-S3 uplink firmware
 │   ├── platformio.ini
 │   ├── CMakeLists.txt
 │   ├── sdkconfig.defaults  # Console on USB-JTAG

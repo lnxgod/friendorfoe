@@ -6,7 +6,7 @@ uplink→scanner UART relay (v0.59+ staged-handshake protocol). Returns
 structured stage/error info so bad flashes surface quickly.
 
 Usage:
-    python3 scripts/fof_flash.py <node> [--scanner s3-combo|s3-combo-seed|esp32|c5]
+    python3 scripts/fof_flash.py <node> [--scanner s3-combo|s3-combo-seed]
                                          [--uart ble|wifi]
                                          [--backend http://HOST:8000]
                                          [--bin /path/to/firmware.bin]
@@ -15,8 +15,8 @@ Examples:
     # Flash Pool's BLE scanner with scanner-s3-combo build
     python3 scripts/fof_flash.py pool --scanner s3-combo --uart ble
 
-    # Flash Lamb's WiFi scanner with scanner-esp32 build
-    python3 scripts/fof_flash.py lamb --scanner esp32 --uart wifi
+    # Flash Gate's seed scanner with scanner-s3-combo-seed build
+    python3 scripts/fof_flash.py gate --scanner s3-combo-seed --uart ble
 
 The node name is resolved to an IP via the backend's GET /nodes table.
 Pass an IP directly (e.g. 192.168.42.201) to skip the lookup.
@@ -38,8 +38,6 @@ DEFAULT_BACKEND = os.environ.get("FOF_BACKEND", "http://localhost:8000")
 FW_PATHS = {
     "s3-combo":      REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo/firmware.bin",
     "s3-combo-seed": REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo-seed/firmware.bin",
-    "esp32":         REPO_ROOT / "esp32/scanner/.pio/build/scanner-esp32/firmware.bin",
-    "c5":            REPO_ROOT / "esp32/scanner/.pio/build/scanner-c5/firmware.bin",
 }
 
 NODE_ALIASES = {
@@ -48,6 +46,7 @@ NODE_ALIASES = {
     "frontyard": "uplink_001D6C",
     "spare":     "uplink_9AB838",
     "lamb":      "uplink_E3A56C",
+    "gate":      "uplink_D0A148",
 }
 
 

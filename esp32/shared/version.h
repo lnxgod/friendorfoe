@@ -3,7 +3,7 @@
 /**
  * Friend or Foe — Unified Firmware Version
  *
- * Single source of truth for all ESP32 firmware variants.
+ * Single source of truth for current ESP32-S3 firmware variants.
  * Update FOF_VERSION here; all boards pick it up automatically.
  */
 
@@ -11,10 +11,8 @@
 
 /*
  * FIRMWARE_NAME is set per build target:
- *   - "scanner"       (S3 combo: WiFi + BLE)
- *   - "wifi-scanner"  (WiFi-only, any chip)
- *   - "ble-scanner"   (BLE-only)
- *   - "uplink"        (C3 or ESP32 uplink relay)
+ *   - "scanner"       (S3 combo/seed: WiFi + BLE)
+ *   - "uplink"        (S3 uplink relay)
  *   - "rid-simulator" (Remote ID simulator)
  *
  * Each main.c #defines FIRMWARE_NAME before including this header,

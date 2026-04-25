@@ -129,6 +129,13 @@ typedef struct {
      * 4=WPA/WPA2-PSK, 5=WPA2-Enterprise, 6=WPA3-PSK, 7=WPA2/WPA3-PSK,
      * 8=WAPI, 9=OWE, 10=WPA3-Ent-192. 0xFF = unknown / not a WiFi AP. */
     uint8_t     wifi_auth_mode;
+
+    /* Uplink-local metadata. Scanners do not serialize these fields; the
+     * uplink annotates detections with the UART slot that produced them and
+     * merges duplicate slot captures before HTTP upload. Bit 0 = BLE slot,
+     * bit 1 = WiFi slot. */
+    uint8_t     scanner_slot;
+    uint8_t     scanner_slots_seen;
 } drone_detection_t;
 
 #ifdef __cplusplus

@@ -1,6 +1,6 @@
 {
   "name": "Friend or Foe Scanner (ESP32-S3 BLE+WiFi)",
-  "version": "0.35.1",
+  "version": "0.63.16-calibration-demo",
   "builds": [
     {
       "chipFamily": "ESP32-S3",
