@@ -1457,9 +1457,9 @@ void http_status_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port    = CONFIG_HTTP_STATUS_PORT;
     config.task_priority  = CONFIG_HTTP_STATUS_PRIORITY;
-    config.stack_size     = 6144;   /* Minimal — relay uses static buffers, not stack */
+    config.stack_size     = CONFIG_HTTP_STATUS_STACK;
     config.max_uri_handlers = 21;   /* status/setup/scan/connect/ota*3/fw*3/cal-mode*3/health + headroom */
-    config.max_open_sockets = 2;    /* One OTA/status client plus one recovery probe. */
+    config.max_open_sockets = 4;    /* Browsers often hold status, setup, favicon, and API sockets briefly. */
     config.lru_purge_enable = true; /* Close idle connections aggressively */
     config.recv_wait_timeout  = 60;  /* 60s timeout for large OTA uploads */
     config.send_wait_timeout  = 60;
