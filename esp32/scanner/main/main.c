@@ -350,7 +350,11 @@ static void uart_cmd_listener_task(void *arg)
     ESP_LOGI(TAG, "UART cmd listener on UART1 (commands + OTA from uplink)");
 
     /* Determine board identity at compile time — matches firmware catalog names */
-#if defined(SEED_SCANNER_PINS)
+#if defined(FOF_BADGE_SCANNER_PINS)
+    static const char *s_board_name = "scanner-s3-combo-fof_badge";
+    static const char *s_chip_name = "esp32s3";
+    static const char *s_caps = "ble,wifi";
+#elif defined(SEED_SCANNER_PINS)
     static const char *s_board_name = "scanner-s3-combo-seed";
     static const char *s_chip_name = "esp32s3";
     static const char *s_caps = "ble,wifi";
@@ -684,7 +688,9 @@ void app_main(void)
 
     /* ── 8. Set scanner identity — sent by TX task after startup delay ── */
     {
-#if defined(SEED_SCANNER_PINS)
+#if defined(FOF_BADGE_SCANNER_PINS)
+        const char *bname = "scanner-s3-combo-fof_badge", *cname = "esp32s3", *caps = "ble,wifi";
+#elif defined(SEED_SCANNER_PINS)
         const char *bname = "scanner-s3-combo-seed", *cname = "esp32s3", *caps = "ble,wifi";
 #else
         const char *bname = "scanner-s3-combo", *cname = "esp32s3", *caps = "ble,wifi";

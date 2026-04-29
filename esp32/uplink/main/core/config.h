@@ -21,7 +21,14 @@ typedef struct {
 } wifi_credential_t;
 
 /* ── WiFi credentials — loaded from local-only file (gitignored) ──────── */
+#if __has_include("wifi_credentials.h")
 #include "wifi_credentials.h"
+#else
+#define CONFIG_WIFI_SSID            ""
+#define CONFIG_WIFI_PASSWORD        ""
+#define CONFIG_WIFI_CREDENTIALS     { { CONFIG_WIFI_SSID, CONFIG_WIFI_PASSWORD } }
+#define CONFIG_WIFI_CREDENTIAL_COUNT 1
+#endif
 
 /* ── Backend URL ───────────────────────────────────────────────────────── */
 
@@ -71,11 +78,27 @@ typedef struct {
  *     Scanner RX(18) ← Uplink GPIO 15 (TX)
  */
 #define CONFIG_BLE_SCANNER_UART     UART_NUM_1
+#if defined(FOF_BADGE_VARIANT)
+/* FoF Badge wiring:
+ *   Scanner 1 TX(GPIO1) -> Uplink RX GPIO2
+ *   Scanner 1 RX(GPIO2) <- Uplink TX GPIO1
+ *   Scanner 2 TX(GPIO1) -> Uplink RX GPIO4
+ *   Scanner 2 RX(GPIO2) <- Uplink TX GPIO3
+ */
+#define CONFIG_BLE_SCANNER_RX_PIN   2
+#define CONFIG_BLE_SCANNER_TX_PIN   1
+#define CONFIG_WIFI_SCANNER_UART    UART_NUM_2
+#define CONFIG_WIFI_SCANNER_RX_PIN  4
+#define CONFIG_WIFI_SCANNER_TX_PIN  3
+#define CONFIG_BATTERY_MONITOR      0
+#else
 #define CONFIG_BLE_SCANNER_RX_PIN   18
 #define CONFIG_BLE_SCANNER_TX_PIN   17
 #define CONFIG_WIFI_SCANNER_UART    UART_NUM_2
 #define CONFIG_WIFI_SCANNER_RX_PIN  16
 #define CONFIG_WIFI_SCANNER_TX_PIN  15
+#define CONFIG_BATTERY_MONITOR      1
+#endif
 #define CONFIG_DUAL_SCANNER         1
 
 /* ── Detection queue ───────────────────────────────────────────────────── */
@@ -99,7 +122,7 @@ typedef struct {
 /* ── HTTP status server ───────────────────────────────────────────────── */
 
 #define CONFIG_HTTP_STATUS_PRIORITY  5  /* Must outrank upload work so OTA/status stay reachable under RF load. */
-#define CONFIG_HTTP_STATUS_STACK     4096
+#define CONFIG_HTTP_STATUS_STACK     8192
 #define CONFIG_HTTP_STATUS_PORT      80
 
 /* ── Task priorities ───────────────────────────────────────────────────── */
