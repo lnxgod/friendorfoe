@@ -86,6 +86,62 @@ def test_true_ble_remote_id_remains_confirmed_drone():
     assert conf == 0.95
 
 
+def test_fof_drone_ssid_is_protected_test_drone():
+    cls, conf = classify_detection(
+        source="wifi_ssid",
+        confidence=0.05,
+        ssid="FOF-DRONE-TEST",
+        drone_id="FOF-DRONE-TEST",
+    )
+
+    assert cls == "test_drone"
+    assert conf >= 0.70
+
+
+def test_fof_infrastructure_stays_known_ap():
+    cls, conf = classify_detection(
+        source="wifi_ssid",
+        confidence=0.30,
+        ssid="FoF-LAB",
+        drone_id="FoF-LAB",
+    )
+
+    assert cls == "known_ap"
+    assert conf == 0.30
+
+
+def test_curated_cheap_drone_ssids_are_likely_drone():
+    for ssid in [
+        "WiFiUFO-1234",
+        "E88-ABCD",
+        "HolyStoneFPV_123",
+        "Potensic D_01",
+        "RUKO-F11-GIM2",
+        "SKYVIPERGPS_123",
+        "FPV_WIFI_123",
+    ]:
+        cls, conf = classify_detection(
+            source="wifi_ssid",
+            confidence=0.05,
+            ssid=ssid,
+            drone_id=ssid,
+        )
+        assert cls == "likely_drone", ssid
+        assert conf >= 0.50
+
+
+def test_generic_non_drone_ssid_is_not_drone():
+    cls, conf = classify_detection(
+        source="wifi_ssid",
+        confidence=0.05,
+        ssid="MyHomeWiFi",
+        drone_id="MyHomeWiFi",
+    )
+
+    assert cls == "unknown_device"
+    assert conf == 0.05
+
+
 def test_wifi_assoc_filter_catches_known_node_mac_suffix():
     prev = dict(_node_heartbeats)
     try:

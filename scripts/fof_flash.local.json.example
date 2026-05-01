@@ -1,0 +1,7 @@
+{
+  "_comment": "Operator-local fallback map for fof_flash.py. Copy this to fof_flash.local.json (gitignored), populate with your fleet's static IPs, and the script will use it when the backend doesn't resolve a device_id. NODE_ALIASES (the friendly names) live in fof_flash.py itself — only IPs go here so you don't have to fork the script for your deployment.",
+  "device_ip": {
+    "uplink_AA1234": "192.168.1.101",
+    "uplink_BB5678": "192.168.1.102"
+  }
+}

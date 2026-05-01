@@ -1408,29 +1408,9 @@ static void process_scan_results(void)
             /* Soft match without movement — skip entirely. */
             continue;
         } else {
-            if (scanner_calibration_mode_is_active()) {
-                continue;
-            }
-            if (!ap_inventory_rate_limit_allow(
-                    bssid,
-                    ssid,
-                    (uint8_t)ap_list[i].authmode,
-                    (uint8_t)ch,
-                    rssi,
-                    scan_ts)) {
-                continue;
-            }
-            det.source = DETECTION_SRC_WIFI_AP_INVENTORY;
-            det.confidence = 0.01f;
-            if (oui && oui->manufacturer[0]) {
-                strncpy(det.manufacturer, oui->manufacturer,
-                        sizeof(det.manufacturer) - 1);
-            } else {
-                strncpy(det.manufacturer, "Unknown", sizeof(det.manufacturer) - 1);
-            }
-            format_bssid(bssid, det.drone_id, sizeof(det.drone_id));
-            strncpy(det.class_reason, "passive_ap_inventory",
-                    sizeof(det.class_reason) - 1);
+            /* Recovery build: keep unmatched APs local until scanner command
+             * RX is proven stable again on canary hardware. */
+            continue;
         }
 
         if (s_detection_queue) {

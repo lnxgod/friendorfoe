@@ -20,6 +20,22 @@ from app.services import triangulation
 logger = logging.getLogger(__name__)
 
 
+def _record_trust(record: dict[str, Any]) -> tuple[bool, list[str]]:
+    validation = (record.get("verified_fit") or {}).get("model_validation")
+    if isinstance(validation, dict):
+        reasons = [str(r) for r in (validation.get("reasons") or [])]
+        return bool(validation.get("applyable")), reasons
+
+    # Legacy applied records predate embedded validation. Treat them as
+    # calibrated-but-not-active unless they clear a conservative floor.
+    reasons: list[str] = []
+    if float(record.get("r_squared") or 0.0) < 0.55:
+        reasons.append("legacy_record_r2_below_0_55")
+    if len(record.get("per_listener_model") or {}) < 3:
+        reasons.append("legacy_record_listener_count_below_3")
+    return not reasons, reasons
+
+
 class AppliedCalibrationStore:
     def __init__(self, path: str | Path | None = None) -> None:
         default_path = Path(__file__).parent.parent / "data" / "applied_calibration.json"
@@ -37,13 +53,22 @@ class AppliedCalibrationStore:
             self.record = None
             return None
 
+        trusted, trust_reasons = _record_trust(data)
         try:
-            triangulation.update_calibration(
-                rssi_ref=float(data["rssi_ref"]),
-                path_loss=float(data["path_loss_exponent"]),
-                per_listener_model=data.get("per_listener_model") or {},
-                trusted=True,
-            )
+            if trusted:
+                triangulation.update_calibration(
+                    rssi_ref=float(data["rssi_ref"]),
+                    path_loss=float(data["path_loss_exponent"]),
+                    per_listener_model=data.get("per_listener_model") or {},
+                    trusted=True,
+                )
+            else:
+                triangulation.update_calibration(
+                    rssi_ref=triangulation.RSSI_REF,
+                    path_loss=triangulation.PATH_LOSS_OUTDOOR,
+                    per_listener_model={},
+                    trusted=False,
+                )
         except Exception as exc:
             logger.warning("Failed to apply persisted calibration: %s", exc)
             self.record = None
@@ -51,11 +76,13 @@ class AppliedCalibrationStore:
 
         self.record = data
         logger.info(
-            "Loaded applied calibration: ref=%.1f n=%.3f r2=%.3f listeners=%d",
+            "Loaded applied calibration: ref=%.1f n=%.3f r2=%.3f listeners=%d trusted=%s reasons=%s",
             float(data["rssi_ref"]),
             float(data["path_loss_exponent"]),
             float(data.get("r_squared") or 0.0),
             len(data.get("per_listener_model") or {}),
+            trusted,
+            trust_reasons,
         )
         return data
 
@@ -69,7 +96,7 @@ class AppliedCalibrationStore:
         per_listener_model = {
             sensor_id: [float(info["rssi_ref"]), float(info["path_loss_exponent"])]
             for sensor_id, info in (verified_fit.get("per_listener") or {}).items()
-            if info.get("ok")
+            if info.get("accepted_for_apply", info.get("ok"))
         }
         record = {
             "session_id": session_id,
@@ -79,6 +106,7 @@ class AppliedCalibrationStore:
             "r_squared": float(verified_fit.get("global_r_squared") or 0.0),
             "per_listener_model": per_listener_model,
             "verified_fit": verified_fit,
+            "model_validation": verified_fit.get("model_validation"),
             "provisional_fit": provisional_fit,
             "source": "android_walk_verified",
         }
@@ -114,17 +142,22 @@ class AppliedCalibrationStore:
                 "applied_listener_count": len(triangulation.PER_LISTENER_MODEL),
                 "last_calibration": None,
                 "r_squared": None,
+                "model_validation": None,
+                "trust_reasons": [],
             }
 
+        trusted, trust_reasons = _record_trust(self.record)
         return {
-            "rssi_ref": triangulation.RSSI_REF,
-            "path_loss_exponent": triangulation.PATH_LOSS_OUTDOOR,
+            "rssi_ref": self.record.get("rssi_ref"),
+            "path_loss_exponent": self.record.get("path_loss_exponent"),
             "is_calibrated": True,
-            "is_active": True,
-            "is_trusted": True,
+            "is_active": trusted,
+            "is_trusted": trusted,
             "active_model_source": self.record.get("source", "android_walk_verified"),
             "applied_listener_count": len(self.record.get("per_listener_model") or {}),
             "last_calibration": self.record.get("applied_at"),
             "r_squared": self.record.get("r_squared"),
             "session_id": self.record.get("session_id"),
+            "model_validation": self.record.get("model_validation") or (self.record.get("verified_fit") or {}).get("model_validation"),
+            "trust_reasons": trust_reasons,
         }

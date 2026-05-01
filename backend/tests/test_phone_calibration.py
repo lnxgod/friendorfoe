@@ -147,6 +147,51 @@ def test_session_full_loop_produces_sane_per_listener_models():
     # Per-listener fits should distinguish the two sensors' references
     assert abs(pl["sensor_a"]["rssi_ref"] - true_ref_a) < 2.0
     assert abs(pl["sensor_b"]["rssi_ref"] - true_ref_b) < 2.0
+    assert "model_validation" in fit
+    assert fit["model_validation"]["fit_sample_windows"] >= 198
+
+
+def test_fit_collapses_packet_bursts_before_ols():
+    """Multiple packets in one second should be averaged into one fit
+    window, so a loud receiver can add confidence without overweighting
+    the model."""
+    mgr = PhoneCalibrationManager()
+    s = mgr.start("packet burst", tx_power_dbm=-59.0)
+
+    sensor = (37.0, -122.0)
+    true_ref = -56.0
+    true_n = 2.4
+    s.target_sensor_ids = ["sensor_a"]
+
+    for i in range(40):
+        ts = float(1_700_000_000 + i)
+        lat = 37.0 + (i + 1) * 0.00001
+        lon = -122.0
+        mgr.add_trace_point(s.session_id, lat, lon, ts_s=ts)
+        d = _haversine_m(lat, lon, *sensor)
+        base = true_ref - 10 * true_n * math.log10(max(d, 1.0))
+        for j in range(10):
+            # Deterministic jitter around the same second.
+            mgr.add_sensor_sample(
+                s.session_id,
+                "sensor_a",
+                sensor[0],
+                sensor[1],
+                int(round(base + ((j % 3) - 1))),
+                ts_s=ts + j * 0.03,
+            )
+
+    ended = mgr.end(s.session_id)
+    fit = ended.fit_result
+    assert fit["ok"], fit
+    listener = fit["per_listener"]["sensor_a"]
+    assert listener["raw_samples"] == 400
+    assert listener["sample_windows"] == 40
+    assert listener["samples"] == 40
+    assert abs(listener["rssi_ref"] - true_ref) < 2.0
+    assert abs(listener["path_loss_exponent"] - true_n) < 0.25
+    assert fit["model_validation"]["fit_sample_windows"] == 40
+    assert fit["model_validation"]["applyable"] is True
 
 
 def test_session_with_no_samples_returns_clear_failure():
@@ -457,7 +502,7 @@ async def test_walk_lifecycle_with_token(monkeypatch):
                 "last_seen": time.time(),
                 "lat": 37.200001,
                 "lon": -122.200001,
-                "ip": "192.168.42.201",
+                "ip": "192.168.1.201",
                 "detection_count": 0,
                 "total_batches": 1,
                 "total_detections": 0,
@@ -544,7 +589,7 @@ async def test_walk_abort_endpoint_stops_fleet_mode(monkeypatch):
                 "last_seen": time.time(),
                 "lat": 37.230001,
                 "lon": -122.230001,
-                "ip": "192.168.42.211",
+                "ip": "192.168.1.211",
             }
         },
     )
@@ -631,6 +676,83 @@ async def test_aborted_walk_does_not_apply_verified_fit(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_end_session_rejects_embedded_model_validation_failure(tmp_path):
+    mgr = PhoneCalibrationManager()
+    store = AppliedCalibrationStore(tmp_path / "applied.json")
+    coord = CalibrationModeCoordinator(
+        mgr,
+        store,
+        session_dir=tmp_path / "sessions",
+    )
+    session = mgr.start("weak", None)
+
+    def fake_fit(_session):
+        return {
+            "ok": True,
+            "global_rssi_ref": -55.0,
+            "global_path_loss_exponent": 2.4,
+            "global_r_squared": 0.8,
+            "per_listener": {
+                "uplink-a": {
+                    "ok": True,
+                    "accepted_for_apply": True,
+                    "rssi_ref": -55.0,
+                    "path_loss_exponent": 2.4,
+                    "r_squared": 0.8,
+                }
+            },
+            "model_validation": {
+                "applyable": False,
+                "reasons": ["accepted_listeners_1_below_required_3"],
+            },
+        }
+
+    mgr.fit = fake_fit
+
+    result = await coord.end_session(
+        session.session_id,
+        provisional_fit={"ok": True},
+        apply_requested=True,
+    )
+
+    assert result["verified_fit"]["ok"] is True
+    assert result["applied"] is False
+    assert result["apply_reason"] == "quality_gate:accepted_listeners_1_below_required_3"
+    assert store.record is None
+    assert not (tmp_path / "applied.json").exists()
+
+
+def test_applied_store_marks_weak_legacy_record_untrusted(tmp_path):
+    path = tmp_path / "applied.json"
+    path.write_text(
+        """
+        {
+          "session_id": "legacy-weak",
+          "applied_at": 1700000000.0,
+          "rssi_ref": -55.48,
+          "path_loss_exponent": 2.315,
+          "r_squared": 0.422,
+          "per_listener_model": {
+            "uplink-a": [-61.0, 1.9],
+            "uplink-b": [-55.0, 2.4],
+            "uplink-c": [-70.0, 1.8]
+          },
+          "verified_fit": {},
+          "source": "android_walk_verified"
+        }
+        """
+    )
+    store = AppliedCalibrationStore(path)
+    assert store.load() is not None
+    summary = store.summary()
+
+    assert summary["is_calibrated"] is True
+    assert summary["is_active"] is False
+    assert summary["is_trusted"] is False
+    assert "legacy_record_r2_below_0_55" in summary["trust_reasons"]
+
+
+@pytest.mark.asyncio
 async def test_walk_sensors_only_include_live_active_geometry_nodes(monkeypatch):
     from app.main import app
     from app.routers.detections import _CAL_TOKEN
@@ -695,21 +817,21 @@ async def test_walk_sensors_only_include_live_active_geometry_nodes(monkeypatch)
                     "last_seen": now,
                     "lat": 37.100001,
                     "lon": -122.100001,
-                    "ip": "192.168.42.101",
+                    "ip": "192.168.1.101",
                 },
                 pool_id: {
                     "device_id": pool_id,
                     "last_seen": now,
                     "lat": 37.100101,
                     "lon": -122.100101,
-                    "ip": "192.168.42.102",
+                    "ip": "192.168.1.102",
                 },
                 gate_id: {
                     "device_id": gate_id,
                     "last_seen": now,
                     "lat": 37.300001,
                     "lon": -122.300001,
-                    "ip": "192.168.42.202",
+                    "ip": "192.168.1.202",
                 },
             },
         )
@@ -772,7 +894,7 @@ async def test_active_calibration_beacon_creates_walk_sample_without_map_clutter
                     "last_seen": now,
                     "lat": 37.410001,
                     "lon": -122.410001,
-                    "ip": "192.168.42.201",
+                    "ip": "192.168.1.201",
                     "detection_count": 0,
                     "total_batches": 1,
                     "total_detections": 0,
@@ -896,21 +1018,21 @@ async def test_walk_start_fails_if_any_target_node_cannot_enter_calibration_mode
                 "last_seen": time.time(),
                 "lat": 37.300101,
                 "lon": -122.300101,
-                "ip": "192.168.42.102",
+                "ip": "192.168.1.102",
             },
             ok_id: {
                 "device_id": ok_id,
                 "last_seen": time.time(),
                 "lat": 37.300001,
                 "lon": -122.300001,
-                "ip": "192.168.42.101",
+                "ip": "192.168.1.101",
             },
             late_ok_id: {
                 "device_id": late_ok_id,
                 "last_seen": time.time(),
                 "lat": 37.300201,
                 "lon": -122.300201,
-                "ip": "192.168.42.103",
+                "ip": "192.168.1.103",
             },
         },
     )
@@ -959,7 +1081,7 @@ async def test_start_node_mode_normalizes_stale_scanner_split_brain(monkeypatch,
         session_dir=tmp_path / "sessions",
     )
     session = mgr.start("normalize", None)
-    node = {"device_id": "uplink-test", "ip": "192.168.42.10"}
+    node = {"device_id": "uplink-test", "ip": "192.168.1.10"}
     statuses = deque([
         {
             "ok": True,

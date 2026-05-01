@@ -49,6 +49,7 @@
 #include "wifi_ap.h"
 #include "http_status.h"
 #include "fw_store.h"
+#include "fw_auto_check.h"
 
 #include "version.h"
 
@@ -66,8 +67,8 @@ static const char *TAG = "main";
 
 /* ── Self-OTA rollback state ─────────────────────────────────────────────
  * When true, the running image is an OTA that hasn't been verified yet:
- *   - On first successful HTTP upload we call esp_ota_mark_app_valid_
- *     cancel_rollback() and clear the flag.
+     *   - As soon as the node proves WiFi association after boot we call
+     *     esp_ota_mark_app_valid_cancel_rollback() and clear the flag.
  *   - If the connectivity watchdog would otherwise esp_restart() while
  *     the flag is still set, we call esp_ota_mark_app_invalid_rollback_
  *     and_reboot() instead, which boots the previous slot.
@@ -266,6 +267,24 @@ void app_main(void)
     /* ── 2. Initialize NVS configuration ──────────────────────────────── */
     nvs_config_init();
 
+    /* ── 2a. Cached scanner firmware status — visible proof that the
+     *        uplink retains the latest scanner image across reboots so
+     *        a crash-looping scanner can fw_check us and re-flash. */
+    {
+        fw_store_info_t fw_info = {0};
+        if (fw_store_get_info(&fw_info) && fw_info.stored) {
+            ESP_LOGW(TAG, "fw_store: cached %s v%s (%lu bytes, partition=%s) "
+                          "available for scanner recovery",
+                     fw_info.name[0] ? fw_info.name : "scanner",
+                     fw_info.version[0] ? fw_info.version : "?",
+                     (unsigned long)fw_info.size,
+                     fw_info.partition[0] ? fw_info.partition : "?");
+        } else {
+            ESP_LOGW(TAG, "fw_store: no cached scanner firmware — first stage "
+                          "from backend is needed before scanner self-recovery works");
+        }
+    }
+
     /* ── 2b. Serial config window (web flasher sends config here) ──── */
     serial_config_listen(3000);
 
@@ -290,6 +309,9 @@ void app_main(void)
 
     /* ── 6. Wait for WiFi connection (30s timeout) ────────────────────── */
     wifi_sta_wait_connected(30000);
+    if (wifi_sta_is_connected()) {
+        rollback_mark_valid();
+    }
 
     /* ── 7. Initialize SNTP time sync ─────────────────────────────────── */
     if (wifi_sta_is_connected()) {
@@ -353,16 +375,18 @@ void app_main(void)
     /* ── 16. Print startup banner ─────────────────────────────────────── */
     print_banner();
 
+    /* ── 15a. Spawn the periodic firmware auto-check task. Polls the
+     *         backend on a 30-min cadence: self-OTAs the uplink and
+     *         refreshes the cached scanner firmware so a connected
+     *         scanner can self-recover via the existing fw_check flow. */
+    fw_auto_check_init();
+
     ESP_LOGI(TAG, "All tasks started. Uplink is operational.");
 
     /* ── 16b. Tell scanners to start transmitting ────────────────────── */
     /* Scanners boot silent (start/stop protocol) and wait for this signal. */
     {
-        const char *ready_msg = "{\"type\":\"ready\"}\n";
-        uart_write_bytes(CONFIG_BLE_SCANNER_UART, ready_msg, strlen(ready_msg));
-#if CONFIG_DUAL_SCANNER
-        uart_write_bytes(CONFIG_WIFI_SCANNER_UART, ready_msg, strlen(ready_msg));
-#endif
+        uart_rx_send_command("{\"type\":\"ready\"}");
         ESP_LOGW(TAG, "Sent ready signal to all scanners — detections enabled");
     }
 
@@ -423,13 +447,11 @@ void app_main(void)
 
             /* Re-send ready signal every watchdog cycle (30s).
              * Ensures scanners get the start command even if they
-             * missed it during boot or rebooted independently. */
-            {
-                const char *ready_msg = "{\"type\":\"ready\"}\n";
-                uart_write_bytes(CONFIG_BLE_SCANNER_UART, ready_msg, strlen(ready_msg));
-#if CONFIG_DUAL_SCANNER
-                uart_write_bytes(CONFIG_WIFI_SCANNER_UART, ready_msg, strlen(ready_msg));
-#endif
+             * missed it during boot or rebooted independently. Keep it off
+             * the UART while a scanner relay owns the link; even one JSON
+             * line in the binary OTA stream can corrupt a chunk. */
+            if (!fw_store_is_relay_active() && !http_upload_is_paused()) {
+                uart_rx_send_command("{\"type\":\"ready\"}");
             }
 
             /* WiFi dead for >120s → hard reboot (was 60s, too aggressive for weak signal).

@@ -54,6 +54,8 @@ bool uart_rx_is_wifi_scanner_connected(void);
  * Used for lock-on commands from the backend.
  */
 void uart_rx_send_command(const char *json_cmd);
+void uart_rx_send_command_to_scanner(int scanner_id, const char *json_cmd);
+bool uart_rx_send_command_to_scanner_checked(int scanner_id, const char *json_cmd);
 
 /** Scanner identity info (received via UART scanner_info message). */
 typedef struct {
@@ -94,9 +96,21 @@ typedef struct {
     uint32_t time_valid_count;
     int64_t  time_last_valid_age_s;
     char     time_sync_state[12];
+    uint32_t cmd_rx_count;
+    uint32_t cmd_parse_error_count;
+    uint32_t cmd_overflow_count;
+    uint32_t cmd_stale_count;
+    int64_t  cmd_last_age_s;
     char     scan_mode[16];
+    char     scan_profile[24];
     char     calibration_uuid[48];
     bool     calibration_mode_acked;
+    bool     need_firmware;
+    char     fw_target_version[32];
+    char     fw_update_state[16];
+    uint32_t fw_check_count;
+    int64_t  fw_backoff_s;
+    char     last_fw_error[48];
 } scanner_info_t;
 
 /** Get scanner info for the BLE scanner (UART slot). */

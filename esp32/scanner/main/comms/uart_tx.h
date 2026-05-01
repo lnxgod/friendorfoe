@@ -93,6 +93,23 @@ void uart_tx_set_enabled(bool enabled);
 void uart_tx_flush_detection_queue(void);
 
 /**
+ * Track firmware update state for scanner_info/status telemetry.
+ * need_firmware=true means the uplink has offered a newer staged image.
+ */
+void uart_tx_set_firmware_update_state(bool need_firmware,
+                                       const char *target_version,
+                                       const char *state);
+void uart_tx_set_firmware_error(const char *reason);
+void uart_tx_clear_firmware_error(void);
+void uart_tx_note_firmware_check(void);
+bool uart_tx_firmware_update_needed(void);
+const char *uart_tx_firmware_target_version(void);
+const char *uart_tx_firmware_update_state(void);
+const char *uart_tx_firmware_last_error(void);
+uint32_t uart_tx_firmware_check_count(void);
+bool uart_tx_firmware_backoff_active(void);
+
+/**
  * Send a raw JSON line over UART (adds trailing newline). Thread-safe.
  * Used for protocol control messages emitted outside the normal TX loop:
  * stop_ack, ota_nack, etc. Caller must provide valid null-terminated JSON.

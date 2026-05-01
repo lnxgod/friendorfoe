@@ -67,6 +67,21 @@ def _parse_app_desc(bin_path: Path) -> dict | None:
         return None
 
 
+def _repo_fof_version() -> str | None:
+    """Read the shared firmware version used by all ESP32 targets."""
+    version_h = _REPO_ROOT / "esp32/shared/version.h"
+    try:
+        for line in version_h.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("#define FOF_VERSION"):
+                parts = line.split(maxsplit=2)
+                if len(parts) >= 3:
+                    return parts[2].strip().strip('"')
+    except Exception:
+        return None
+    return None
+
+
 @dataclass
 class FirmwareAsset:
     name: str
@@ -196,6 +211,26 @@ class FirmwareManager:
             logger.error("Download failed for %s: %s", name, e)
             return None
 
+    async def get_firmware_version(self, name: str) -> str | None:
+        """Return the version for the firmware image that get_firmware_binary serves."""
+        if name in self._custom_firmware:
+            return "custom"
+
+        fw_info = FIRMWARE_TYPES.get(name)
+        if fw_info:
+            local_bin = fw_info.get("local_bin")
+            if local_bin and local_bin.exists():
+                fof_version = _repo_fof_version()
+                if fof_version:
+                    return fof_version
+                desc = _parse_app_desc(local_bin)
+                if desc and desc.get("version"):
+                    return desc["version"]
+
+        await self.refresh_from_github()
+        asset = self.assets.get(name)
+        return asset.version if asset else None
+
     def set_custom_firmware(self, name: str, data: bytes):
         """Upload a custom firmware binary (overrides GitHub for testing)."""
         self._custom_firmware[name] = data
@@ -227,8 +262,9 @@ class FirmwareManager:
                 size = len(self._custom_firmware[fw_name])
                 source = "custom"
             elif local_present:
+                version = _repo_fof_version()
                 desc = _parse_app_desc(local_bin)
-                version = desc["version"] if desc else "local"
+                version = version or (desc["version"] if desc else "local")
                 try:
                     size = local_bin.stat().st_size
                 except OSError:

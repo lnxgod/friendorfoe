@@ -6,6 +6,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **`SECURITY.md`** — vulnerability-disclosure email (lnxgod@gmail.com),
+  supported versions, dual-use posture statement explicitly ruling out
+  active injection / deauth / packet crafting in this codebase, and
+  production-deployment notes (`FOF_CAL_TOKEN`, `wifi_credentials.h`,
+  example backend URL placeholder).
+- **`docs/THREAT_MODEL.md`** — what FoF detects vs. doesn't, per-source
+  Bayesian likelihood ratios, MAC randomization handling, privacy posture,
+  known false-positive sources.
+- **`docs/ARCHITECTURE.md`** — end-to-end pipeline (scanner radios →
+  parsers → fuse → UART → uplink → backend → entity tracker → dashboard
+  / Android), partition tables, hardware topology, auto-OTA flow.
+- **`docs/TRIANGULATION.md`** — log-distance path-loss model, three-regime
+  solver (Gauss-Newton NLLS / circle-circle / RSSI range circle), inter-
+  node calibration walk, EKF smoothing, limitations.
+- **`docs/BAYESIAN_FUSION.md`** — log-odds combination math, 30 s
+  half-life decay, ±7 clamp, per-source likelihood-ratio table, worked
+  example tracing a DJI Phantom from prior to confirmed-drone, cross-stack
+  parity statement.
+- **`docs/notes/wifi-probe-request-interface.md`** — moved from
+  `INTERFACES.md` at repo root; original interface contract for the
+  `wifi_probe_request` source.
+
+### Changed
+- **README freshened for live deployment.** Added top-of-file deployment
+  banner naming current firmware (v0.63.0-svc156), self-healing fleet
+  section describing auto-OTA + ESP-IDF rollback + scanner crash-loop
+  guard, Bayesian fusion + cross-stack parity callouts, multi-node
+  triangulation summary, production-deployment note for `FOF_CAL_TOKEN`,
+  and links into the new docs/.
+- **Repo root cleaned** for public-facing readability: removed
+  `facebook.md`, `reddit.md`, `x.md` (social-media post drafts), removed
+  `map-filters.md` and `map-snapshot.md` (Playwright accessibility-tree
+  debug dumps), moved `INTERFACES.md` into `docs/notes/`, and relocated
+  29 root-level screenshots into `images/screenshots/`.
+- **Redacted internal LAN IP** from `esp32/uplink/main/core/config.h:31`
+  — example fallback now `192.168.1.100:8000` with a comment explaining
+  it's a placeholder overridden at deploy time via NVS `backend_url`.
+
+### Fixed
+- **Scanner OTA verification.** Backend scanner OTA now treats every relay mode
+  as unverified until the scanner heartbeat reports the target firmware version.
+  Auto mode can try staged, staged-legacy, and direct legacy relay paths, but
+  `legacy_sent` no longer counts as success by itself.
+
+## [0.63.20-controlpath-recovery] - 2026-04-25
+
+### Fixed
+- **Scanner control path recovery build.** Removes the unproven alternate RX
+  listeners from the canary image and returns combo scanners to the canonical
+  UART1 command path while we prove time sync on one healthy slot before any
+  wider firmware rollout.
+- **Scanner RF-noise rollback for calibration stability.** Keeps the additive
+  backend/app RF evidence contracts, but stops scanner normal mode from
+  uploading generic AP inventory and legacy BLE discovery fingerprints until
+  the uplink-to-scanner command path is stable again.
+- **Deployment safety.** This release is intended for controlled canary
+  validation first; do not use it for fleet scanner rollout unless the canary
+  reports fresh `time_sync_state`, rising `tcnt`, and successful stop/start
+  acknowledgements after reboot.
+
 ## [0.63.17-rf-intel] - 2026-04-25
 
 ### Added

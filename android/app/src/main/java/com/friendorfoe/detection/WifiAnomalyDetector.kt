@@ -14,8 +14,12 @@ import javax.inject.Singleton
  *
  * Detection methods (all work on stock Android, no root):
  * 1. Same SSID on multiple BSSIDs with mixed security (open + WPA)
- * 2. Same SSID with different OUI vendors (unusual for legitimate mesh)
- * 3. Single BSSID broadcasting many different SSIDs (karma attack)
+ * 2. Single BSSID broadcasting many different SSIDs (karma attack)
+ *
+ * Note: a rule that flagged "same SSID across multiple OUI vendors" was
+ * removed — it false-positived on legitimate multi-vendor mesh deployments
+ * (Eero + Google Home extender, Apple TV mesh, etc.). The mixed-security
+ * check below is the actually-diagnostic evil twin signal.
  */
 @Singleton
 class WifiAnomalyDetector @Inject constructor(
@@ -87,21 +91,6 @@ class WifiAnomalyDetector @Inject constructor(
                 ))
                 Log.w(TAG, "EVIL TWIN: '$ssid' has mixed security: $securities")
                 continue
-            }
-
-            // Check 2: Different OUI vendors (MEDIUM threat)
-            val ouis = results.map { it.BSSID.take(8).uppercase() }.toSet()
-            if (ouis.size > 1) {
-                // Multiple vendors for same SSID — suspicious unless mesh
-                anomalies.add(WifiAnomaly(
-                    type = "rogue_ap",
-                    ssid = ssid,
-                    details = "Same SSID '$ssid' broadcast by ${ouis.size} different vendors: " +
-                        "${ouis.joinToString(", ")}. Could indicate a rogue access point.",
-                    threatLevel = 2,
-                    bssids = results.map { it.BSSID },
-                    timestamp = now
-                ))
             }
         }
 

@@ -22,6 +22,22 @@ from app.services.phone_calibration import PhoneCalibrationManager, WalkSession
 logger = logging.getLogger(__name__)
 
 
+def _fit_rejection_reason(verified_fit: dict[str, Any]) -> str | None:
+    if not verified_fit.get("ok"):
+        return f"verify_failed:{verified_fit.get('reason', 'unknown')}"
+    validation = verified_fit.get("model_validation")
+    if isinstance(validation, dict):
+        if validation.get("applyable"):
+            return None
+        reasons = validation.get("reasons") or ["model_validation_failed"]
+        return "quality_gate:" + ",".join(str(r) for r in reasons[:8])
+    # Backward-compatible fallback for tests or old callers that provide a
+    # pre-v0.63.21 fit dict without embedded validation details.
+    if float(verified_fit.get("global_r_squared") or 0.0) < 0.4:
+        return "quality_gate_r2_below_0_4"
+    return None
+
+
 class CalibrationModeCoordinator:
     LEASE_TTL_S = 30.0
 
@@ -245,10 +261,8 @@ class CalibrationModeCoordinator:
         if apply_requested:
             if session.abort_reason:
                 apply_reason = f"session_aborted:{session.abort_reason}"
-            elif not verified_fit.get("ok"):
-                apply_reason = f"verify_failed:{verified_fit.get('reason', 'unknown')}"
-            elif float(verified_fit.get("global_r_squared") or 0.0) < 0.4:
-                apply_reason = "quality_gate_r2_below_0_4"
+            elif (reason := _fit_rejection_reason(verified_fit)) is not None:
+                apply_reason = reason
             else:
                 self.applied_store.save_verified_model(
                     session_id=session_id,

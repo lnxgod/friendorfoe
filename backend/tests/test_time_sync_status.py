@@ -35,7 +35,7 @@ async def test_nodes_status_surfaces_uplink_and_scanner_time_health(
                 "total_detections": 0,
                 "lat": 37.1,
                 "lon": -122.1,
-                "ip": "192.168.42.101",
+                "ip": "192.168.1.101",
                 "firmware_version": "0.63.0-svc133",
                 "board_type": "uplink-s3",
                 "time_sync": {
@@ -90,7 +90,7 @@ async def test_nodes_status_keeps_legacy_scanner_time_unknown(
                 "total_detections": 0,
                 "lat": 37.2,
                 "lon": -122.2,
-                "ip": "192.168.42.102",
+                "ip": "192.168.1.102",
                 "firmware_version": "0.63.0-svc132",
                 "board_type": "uplink-s3",
                 "scanners": [

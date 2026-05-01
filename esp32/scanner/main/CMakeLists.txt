@@ -15,6 +15,7 @@ set(SRCS
     "comms/uart_tx.c"
     "comms/uart_ota.c"
     "core/calibration_mode.c"
+    "core/scanner_rollback.c"
     "hw/led_status.c"
     "hw/oled_display.c"
     "../../shared/detection_policy.c"

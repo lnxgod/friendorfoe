@@ -3,6 +3,9 @@
 *.aab
 *.ap_
 *.dex
+build/
+android/**/build/
+android/.gradle/
 
 # Signing
 *.jks
@@ -11,10 +14,12 @@
 # Environment
 .env
 .env.local
+local.properties
 
 # OS
 .DS_Store
 Thumbs.db
+*.log
 
 # Python
 __pycache__/
@@ -47,7 +52,10 @@ esp32/**/local_coords.h
 esp32/**/wifi_credentials.h
 
 # Backend data (calibration results, may contain node GPS)
-backend/app/data/
+backend/app/data/*
+!backend/app/data/
+!backend/app/data/rf_reference.json
+!backend/app/data/rf_overrides.yaml
 backend/friendorfoe.db
 backend/friendorfoe.db-*
 friendorfoe.db
@@ -66,3 +74,6 @@ esp32/uart-diag-uplink/
 # Personal notes
 map-filters.md
 map-snapshot.md
+
+# Operator-local config — fleet IP maps, anything keyed to a real deployment
+scripts/fof_flash.local.json

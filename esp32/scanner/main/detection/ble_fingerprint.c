@@ -548,6 +548,14 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                  strncmp(local_name, "HDWiFiCam", 8) == 0 ||
                  strncmp(local_name, "V380", 4) == 0 ||
                  strncmp(local_name, "LookCam", 7) == 0 ||
+                 strncmp(local_name, "YCC365", 6) == 0 ||
+                 strncmp(local_name, "ICSee", 5) == 0 ||
+                 strncmp(local_name, "UBox", 4) == 0 ||
+                 strncmp(local_name, "CamHi", 5) == 0 ||
+                 strncmp(local_name, "VStarcam", 8) == 0 ||
+                 strncmp(local_name, "FREDI", 5) == 0 ||
+                 strncmp(local_name, "MiniCam", 7) == 0 ||
+                 strncmp(local_name, "P2PLiveCam", 10) == 0 ||
                  strncmp(local_name, "Hidden", 6) == 0 ||
                  strncmp(local_name, "Spy",    3) == 0) {
             fp->device_type = BLE_DEV_HIDDEN_CAMERA;

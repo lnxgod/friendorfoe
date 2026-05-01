@@ -1,0 +1,124 @@
+# Local defensive RF enrichment overrides.
+#
+# This file is intentionally small and operator-owned. It is folded into the
+# generated rf_reference.json artifact by scripts/update_rf_reference_data.py.
+# Keep claims evidence-gated: randomized MACs never get a vendor from MAC alone.
+
+prefix_overrides:
+  "90:48:9A":
+    brand: "Ring"
+    product_hint: "Ring camera/doorbell family"
+    device_family: "camera_or_video"
+    device_class: "surveillance_camera"
+  "00:40:40":
+    brand: "Ring"
+    product_hint: "Ring camera/doorbell family"
+    device_family: "camera_or_video"
+    device_class: "surveillance_camera"
+  "18:7F:88":
+    brand: "Ring"
+    product_hint: "Ring camera/doorbell family"
+    device_family: "camera_or_video"
+    device_class: "surveillance_camera"
+  "34:3E:A4":
+    brand: "Ring"
+    product_hint: "Ring camera/doorbell family"
+    device_family: "camera_or_video"
+    device_class: "surveillance_camera"
+  "54:E0:19":
+    brand: "Ring"
+    product_hint: "Ring camera/doorbell family"
+    device_family: "camera_or_video"
+    device_class: "surveillance_camera"
+  "2C:AA:8E":
+    brand: "Wyze"
+    product_hint: "Wyze camera/IoT family"
+    device_family: "camera_or_video"
+    device_class: "surveillance_camera"
+  "40:5D:82":
+    brand: "Arlo"
+    product_hint: "Arlo camera family"
+    device_family: "camera_or_video"
+    device_class: "surveillance_camera"
+  "EC:71:DB":
+    brand: "Reolink"
+    product_hint: "Reolink camera family"
+    device_family: "camera_or_video"
+    device_class: "surveillance_camera"
+  "38:AF:29":
+    brand: "Dahua"
+    product_hint: "Dahua camera/NVR family"
+    device_family: "camera_or_video"
+    device_class: "surveillance_camera"
+  "00:40:8C":
+    brand: "Axis"
+    product_hint: "Axis camera family"
+    device_family: "camera_or_video"
+    device_class: "surveillance_camera"
+
+ssid_patterns:
+  - pattern: "teamcharitycase*"
+    label: "TeamCharityCase lab/property"
+    device_class: "known_owned"
+    device_family: "operator_known_lab_device"
+    confidence: 0.75
+  - pattern: "esp_*"
+    label: "ESP/IoT firmware SSID pattern"
+    device_class: "suspect_iot"
+    device_family: "esp32_or_iot_dev_board"
+    confidence: 0.72
+  - pattern: "esp-*"
+    label: "ESP/IoT firmware SSID pattern"
+    device_class: "suspect_iot"
+    device_family: "esp32_or_iot_dev_board"
+    confidence: 0.72
+  - pattern: "esp32*"
+    label: "ESP/IoT firmware SSID pattern"
+    device_class: "suspect_iot"
+    device_family: "esp32_or_iot_dev_board"
+    confidence: 0.72
+  - pattern: "wled*"
+    label: "ESP/IoT firmware SSID pattern"
+    device_class: "suspect_iot"
+    device_family: "esp32_or_iot_dev_board"
+    confidence: 0.72
+  - pattern: "tasmota*"
+    label: "ESP/IoT firmware SSID pattern"
+    device_class: "suspect_iot"
+    device_family: "esp32_or_iot_dev_board"
+    confidence: 0.72
+  - pattern: "shelly*"
+    label: "ESP/IoT firmware SSID pattern"
+    device_class: "suspect_iot"
+    device_family: "esp32_or_iot_dev_board"
+    confidence: 0.72
+  - pattern: "v380*"
+    label: "camera-style SSID pattern"
+    device_class: "suspect_camera"
+    device_family: "camera_or_video"
+    confidence: 0.72
+  - pattern: "ipcam*"
+    label: "camera-style SSID pattern"
+    device_class: "suspect_camera"
+    device_family: "camera_or_video"
+    confidence: 0.72
+  - pattern: "hdwificam*"
+    label: "camera-style SSID pattern"
+    device_class: "suspect_camera"
+    device_family: "camera_or_video"
+    confidence: 0.72
+  - pattern: "lookcam*"
+    label: "camera-style SSID pattern"
+    device_class: "suspect_camera"
+    device_family: "camera_or_video"
+    confidence: 0.72
+  - pattern: "reolink*"
+    label: "camera-style SSID pattern"
+    device_class: "suspect_camera"
+    device_family: "camera_or_video"
+    confidence: 0.72
+  - pattern: "wyze*"
+    label: "camera-style SSID pattern"
+    device_class: "suspect_camera"
+    device_family: "camera_or_video"
+    confidence: 0.72

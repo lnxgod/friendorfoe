@@ -27,8 +27,9 @@ typedef struct {
 
 /* Primary: mDNS hostname (works regardless of DHCP IP changes) */
 #define CONFIG_BACKEND_URL          "http://fof-server.local:8000"
-/* Fallback: last known static IP */
-#define CONFIG_BACKEND_URL_FALLBACK "http://192.168.42.162:8000"
+/* Fallback: example RFC1918 placeholder. Real deployments override via the
+ * NVS `backend_url` key (set through serial config or POST /api/config). */
+#define CONFIG_BACKEND_URL_FALLBACK "http://192.168.1.100:8000"
 #define CONFIG_UPLOAD_ENDPOINT      "/detections/drones"
 
 /* ── Device identity ───────────────────────────────────────────────────── */

@@ -9,6 +9,8 @@
 
 Friend or Foe is an open-source **privacy awareness** and **airspace detection** platform for Android and ESP32. It passively scans Bluetooth and WiFi signals around you to detect surveillance devices, tracking beacons, hidden cameras, smart glasses, and drones — then identifies every aircraft overhead using augmented reality. No accounts, no signups, no API keys. Install and go.
 
+> **Live deployment** — current firmware **v0.63.0-svc156** (released 2026-04-30). S3-only fleet with end-to-end auto-OTA: backend hosts the latest firmware, uplinks self-update on a 30-min poll, scanners self-recover from bad images via ESP-IDF rollback. See [esp32/CHANGELOG.md](esp32/CHANGELOG.md) for firmware history and [CHANGELOG.md](CHANGELOG.md) for backend / Android.
+
 ### What It Detects
 
 | Category | Examples | Method |
@@ -119,6 +121,30 @@ Privacy detection is **on by default** and can be toggled in Settings (About scr
 The app fuses accelerometer, magnetometer, and gyroscope data to determine exactly where the phone is pointing. Aircraft positions (lat/lon/altitude) are projected onto the camera view using haversine distance calculations and camera FOV geometry.
 
 **ARCore + Compass Hybrid**: ARCore provides excellent tracking when the camera sees ground features, but struggles when pointed at featureless sky — exactly when you need it most. The app automatically falls back to compass-math orientation when ARCore loses tracking, providing seamless labels in all conditions.
+
+### Bayesian Sensor Fusion (Cross-Stack)
+
+Detection confidence is a Bayesian posterior, not a max-of-sources heuristic. Each source contributes a likelihood ratio (BLE Remote ID = 50, DJI DroneID IE = 30, OUI = 5, SSID = 3, etc.); the engine combines them in log-odds with a 30-second half-life decay and clamps at ±7 to keep one noisy frame from saturating. Math walk-through with a worked example: [`docs/BAYESIAN_FUSION.md`](docs/BAYESIAN_FUSION.md).
+
+**Cross-stack parity**: the same fusion math, OpenDroneID parser, DJI IE parser, and WiFi Beacon RID parser run byte-for-byte identically in Android Kotlin and ESP32 C. Native test suites on both stacks pin the parity (`./gradlew test` and `pio test -e test`).
+
+### Multi-Node Triangulation
+
+When two or more sensor nodes hear the same drone, the backend localizes it: 3+ sensors → Gauss-Newton non-linear least squares; 2 → circle-circle intersection; 1 → RSSI range circle. An EKF smooths the output and an inter-node calibration walk (run from the Android app) tunes the path-loss exponent and per-listener offsets for the site. Math + limitations: [`docs/TRIANGULATION.md`](docs/TRIANGULATION.md).
+
+### Self-Healing Fleet (Auto-OTA)
+
+The fleet maintains itself without manual flashing:
+
+- **Backend** hosts the latest firmware at `GET /nodes/firmware/latest/{name}` (metadata + sha256) and `GET /nodes/firmware/download/{name}` (binary, ETag-cacheable).
+- **Uplinks** poll every 30 minutes (`fw_auto_check`); if a newer image is available they self-OTA and refresh the cached scanner image stored in the `fw_store` partition.
+- **Scanners** request firmware from the uplink via the existing `fw_check` / `fw_offer` / `fw_ready` UART protocol; the uplink relays from its local cache.
+- **Rollback** is wired on every layer: a fresh OTA boots in `PENDING_VERIFY`; if the watchdog fires before the image proves itself (uplink: WiFi-associated, scanner: 60 s of stable uptime), `esp_ota_mark_app_invalid_rollback_and_reboot()` reverts to the previous slot.
+- **Crash-loop guard** on scanners: 3 consecutive panic boots on a *validated* image surface as `last_fw_error: "crash_loop:N"` in heartbeat, and the next `fw_check` re-pulls the cached firmware from the uplink — recovery without USB.
+
+Pipeline diagram: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Threat model + privacy considerations: [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md). Vulnerability disclosure: [`SECURITY.md`](SECURITY.md).
+
+> **Production deployments**: set `FOF_CAL_TOKEN` (backend env) before exposing `/detections/calibration/*` beyond your LAN. The dev default is intentionally weak so a fresh phone + fresh backend pair without setup; the backend logs a warning at boot when the env is unset.
 
 ### Architecture
 

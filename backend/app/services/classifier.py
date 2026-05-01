@@ -286,8 +286,10 @@ def classify_detection(
     if source == "ble_fingerprint":
         return "unknown_device", confidence
 
-    # 3. FOF-Drone- test drones (case-insensitive)
-    if ssid and ssid.upper().startswith("FOF-DRONE-"):
+    # 3. FOF-Drone- test drones (case-insensitive). This intentionally
+    # wins before the FoF-* infrastructure whitelist so triangulation tests
+    # remain visible in map/alert workflows.
+    if ssid and ssid.upper().startswith(("FOF-DRONE-", "FOF_DRONE_")):
         return "test_drone", max(confidence, 0.70)
 
     # 3.4. Mobile hotspot detection — phone acting as AP, not infrastructure

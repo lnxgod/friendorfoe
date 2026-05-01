@@ -270,6 +270,10 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
          * EXT_DISC so calibration beacons are not silently dropped. */
         const struct ble_gap_disc_desc *disc = &event->disc;
 
+        if (!scanner_calibration_mode_is_active()) {
+            break;
+        }
+
         static uint32_t s_legacy_adv_rx = 0;
         s_legacy_adv_rx++;
         if (s_legacy_adv_rx % 500 == 1) {

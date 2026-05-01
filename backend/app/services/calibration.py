@@ -250,7 +250,7 @@ class CalibrationManager:
                         # AP is forced to STA's channel when APSTA is active — the
                         # `channel` param sent to /api/calibrate/start is silently
                         # ignored by the firmware. Scanning all channels finds the
-                        # AP regardless of which band CasaChomp_2g is on.
+                        # AP regardless of which band the multi-band SSID is broadcasting.
                         measure_tasks = [
                             self._measure_node(client, listener, bssid, 0,
                                                self.MEASURE_DURATION_S)

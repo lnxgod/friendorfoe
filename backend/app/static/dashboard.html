@@ -4,34 +4,40 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Friend or Foe - Sensor Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0f14'/%3E%3Cpath d='M16 4l10 4v7c0 6-4 10-10 13C10 25 6 21 6 15V8l10-4z' fill='%2358a6ff'/%3E%3Cpath d='M16 9l5 2v4c0 3-2 5-5 7-3-2-5-4-5-7v-4l5-2z' fill='%230b0f14'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'DM Sans', sans-serif; background: #0d1117; color: #c9d1d9; font-size: 13px; }
-  .header { background: #161b22; border-bottom: 1px solid #30363d; padding: 10px 24px; display: flex; justify-content: space-between; align-items: center; }
-  .header h1 { color: #58a6ff; font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
+  :root { --bg:#0b0f14; --panel:#121821; --panel-2:#161d27; --line:#26313f; --muted:#8b949e; --text:#d8dee9; --soft:#9aa7b5; --blue:#58a6ff; --green:#3fb950; --amber:#d29922; --red:#f85149; --probe:#e040fb; }
+  body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); font-size: 13px; }
+  .header { background: #111821; border-bottom: 1px solid var(--line); padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; }
+  .header h1 { color: var(--blue); font-size: 18px; font-weight: 700; letter-spacing: 0; }
   .header h1 span { color: #8b949e; font-weight: 400; font-size: 12px; margin-left: 8px; }
   .header .status { font-size: 11px; color: #8b949e; font-family: 'JetBrains Mono', monospace; }
   .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
   .status-dot.ok { background: #3fb950; box-shadow: 0 0 6px #3fb95066; }
   .status-dot.warn { background: #d29922; }
   .status-dot.err { background: #f85149; box-shadow: 0 0 6px #f8514966; }
-  .tabs { background: #161b22; border-bottom: 1px solid #30363d; padding: 0 24px; display: flex; gap: 0; overflow-x: auto; }
-  .tab { padding: 9px 18px; color: #8b949e; cursor: pointer; border-bottom: 2px solid transparent; font-size: 12px; font-weight: 600; white-space: nowrap; transition: color 0.15s; }
-  .tab:hover { color: #c9d1d9; }
-  .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+  .tabs { background: #10161f; border-bottom: 1px solid var(--line); padding: 0 24px; display: flex; gap: 8px; overflow-x: auto; align-items: stretch; }
+  .tab-group { display:flex; align-items:center; gap:0; border-left:1px solid #26313f88; padding-left:8px; }
+  .tab-group:first-child { border-left:0; padding-left:0; }
+  .tab-group-label { align-self:center; color:#5f6b7a; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.8px; padding:0 8px 0 2px; }
+  .tab { padding: 10px 12px; color: #8b949e; cursor: pointer; border-bottom: 2px solid transparent; font-size: 12px; font-weight: 600; white-space: nowrap; transition: color 0.15s, background 0.15s, border-color 0.15s; }
+  .tab:hover { color: #d8dee9; background:#18202b; }
+  .tab.active { color: #d8dee9; border-bottom-color: var(--blue); background:#151d27; }
   .tab.wifi { color: #ff9500; border-bottom-color: #ff9500; }
   .tab.ble { color: #00ff88; border-bottom-color: #00ff88; }
   .tab.probes { color: #e040fb; border-bottom-color: #e040fb; }
-  .tab-content { display: none; }
-  .tab-content.active { display: block; }
+  .tab-content { display: none; opacity:0; transform:translateY(3px); }
+  .tab-content.active { display: block; animation: tabFade 140ms ease-out forwards; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 24px; }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; padding: 12px 24px; }
   .grid4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; padding: 12px 24px; }
-  .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; }
+  .card { background: var(--panel); border: 1px solid #26313fcc; border-radius: 6px; padding: 12px; }
   .card h2 { color: #8b949e; font-size: 11px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; }
   .card.full { grid-column: 1 / -1; }
   .card.wifi-accent { border-left: 3px solid #ff9500; }
@@ -69,6 +75,52 @@
   tr.multi-sensor:hover { background: #3fb95015; }
   tr.test-drone { background: #58a6ff08; }
   .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-weight: 700; letter-spacing: 0.3px; font-family: 'DM Sans', sans-serif; }
+  .btn { border:1px solid var(--line); background:#18202b; color:var(--text); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:700; }
+  .btn:hover { background:#1d2835; }
+  .btn:focus-visible, .tab:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+  .btn.primary { background:#1f6feb22; border-color:#1f6feb55; color:var(--blue); }
+  .btn.danger { background:#f8514922; border-color:#f8514955; color:var(--red); }
+  .btn.ghost { background:transparent; color:var(--muted); }
+  .status-chip { display:inline-flex; align-items:center; gap:5px; padding:2px 7px; border-radius:999px; border:1px solid var(--line); background:#0d1117; color:var(--soft); font-size:10px; font-weight:700; white-space:nowrap; }
+  .status-chip::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .status-chip.ok { color:var(--green); border-color:#3fb95055; background:#3fb95012; }
+  .status-chip.warn { color:var(--amber); border-color:#d2992255; background:#d2992212; }
+  .status-chip.err { color:var(--red); border-color:#f8514955; background:#f8514912; }
+  .status-chip.info { color:var(--blue); border-color:#58a6ff55; background:#58a6ff12; }
+  .status-chip.diag { color:var(--probe); border-color:#e040fb55; background:#e040fb12; }
+  .workspace { padding:14px 24px; display:grid; gap:12px; }
+  .readiness-strip { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; min-width:0; }
+  .readiness-tile { background:linear-gradient(180deg,#151d27,#10161f); border:1px solid #26313fcc; border-radius:6px; padding:10px; min-height:76px; min-width:0; }
+  .readiness-tile .label { color:#7d8896; font-size:10px; text-transform:uppercase; letter-spacing:0.6px; font-weight:700; }
+  .readiness-tile .value { margin-top:8px; font-family:'JetBrains Mono',monospace; font-size:22px; line-height:1; font-weight:700; color:var(--text); }
+  .readiness-tile .value.ok { color:var(--green); }
+  .readiness-tile .value.warn { color:var(--amber); }
+  .readiness-tile .value.err { color:var(--red); }
+  .readiness-tile .hint { margin-top:6px; color:#7d8896; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .cockpit-grid { display:grid; grid-template-columns:1.1fr 1fr; gap:12px; align-items:start; min-width:0; }
+  .signal-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+  .signal-card { background:#10161f; border:1px solid #26313faa; border-radius:6px; padding:10px; }
+  .signal-card .k { color:#7d8896; font-size:10px; text-transform:uppercase; letter-spacing:0.5px; font-weight:700; }
+  .signal-card .v { margin-top:5px; font-family:'JetBrains Mono',monospace; font-size:20px; font-weight:700; }
+  .data-panel { background:var(--panel); border:1px solid #26313fcc; border-radius:6px; padding:12px; min-width:0; }
+  .data-panel h2 { color:#9aa7b5; font-size:11px; margin-bottom:8px; text-transform:uppercase; letter-spacing:0.7px; }
+  #ov-sensor-roster { max-width:100%; overflow-x:auto; }
+  .map-preview { min-height:156px; display:grid; gap:7px; }
+  .position-row { display:flex; justify-content:space-between; gap:10px; padding:7px 0; border-bottom:1px solid #202a36; font-size:11px; }
+  .position-row:last-child { border-bottom:0; }
+  .drawer-backdrop { position:fixed; inset:0; background:#0008; z-index:8000; opacity:0; pointer-events:none; transition:opacity 140ms ease; }
+  .drawer-backdrop.open { opacity:1; pointer-events:auto; }
+  .detail-drawer { position:fixed; top:0; right:0; bottom:0; width:min(430px,94vw); background:#111821; border-left:1px solid var(--line); z-index:8001; transform:translateX(104%); transition:transform 160ms ease; box-shadow:-16px 0 40px #0008; display:flex; flex-direction:column; }
+  .detail-drawer.open { transform:translateX(0); }
+  .drawer-head { padding:14px 16px; border-bottom:1px solid var(--line); display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+  .drawer-title { font-weight:700; font-size:15px; color:var(--text); word-break:break-word; }
+  .drawer-body { padding:14px 16px; overflow:auto; display:grid; gap:12px; }
+  .drawer-section { border-top:1px solid #26313f; padding-top:10px; }
+  .drawer-section:first-child { border-top:0; padding-top:0; }
+  .drawer-section h3 { color:#8b949e; font-size:10px; text-transform:uppercase; letter-spacing:0.7px; margin-bottom:6px; }
+  .drawer-list { display:grid; gap:5px; color:#b7c1ce; font-size:12px; }
+  @keyframes tabFade { to { opacity:1; transform:translateY(0); } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration:0.001ms !important; transition-duration:0.001ms !important; } }
   .badge.ble { background: #00ff8818; color: #00ff88; border: 1px solid #00ff8833; }
   .badge.wifi { background: #ff950018; color: #ff9500; border: 1px solid #ff950033; }
   .badge.probe { background: #e040fb18; color: #e040fb; border: 1px solid #e040fb33; }
@@ -85,7 +137,8 @@
   .summary-bar { display: flex; gap: 16px; padding: 8px 12px; background: #0d1117; border-radius: 4px; margin-bottom: 8px; font-size: 11px; }
   .summary-bar .sb-item { display: flex; align-items: center; gap: 4px; }
   .summary-bar .sb-val { font-family: 'JetBrains Mono', monospace; font-weight: 700; }
-  @media (max-width: 800px) { .grid,.grid3,.grid4 { grid-template-columns: 1fr; } .node-stats { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 1000px) { .readiness-strip,.signal-summary,.cockpit-grid { grid-template-columns:1fr 1fr; } }
+  @media (max-width: 800px) { .grid,.grid3,.grid4,.readiness-strip,.signal-summary,.cockpit-grid { grid-template-columns: minmax(0, 1fr); } .node-stats { grid-template-columns: repeat(2, 1fr); } .tabs { padding:0 12px; } .tab-group-label { display:none; } .workspace { padding:12px; } }
   /* Leaflet map dark theme */
   #map-container { height: 500px; border-radius: 6px; border: 1px solid #30363d; overflow: hidden; }
   .leaflet-container { background: #0d1117 !important; }
@@ -126,46 +179,59 @@
 </div>
 
 <div class="tabs">
-  <div class="tab active" onclick="switchTab('overview')">Overview</div>
-  <div class="tab" onclick="switchTab('wifi')" id="tab-btn-wifi">WiFi APs</div>
-  <div class="tab" onclick="switchTab('ble')" id="tab-btn-ble">BLE</div>
-  <div class="tab" onclick="switchTab('mobile')" id="tab-btn-mobile" style="color:#e040fb">Mobile</div>
-  <div class="tab" onclick="switchTab('probes')" id="tab-btn-probes">Probes</div>
-  <div class="tab" onclick="switchTab('map')">Map</div>
-  <div class="tab" onclick="switchTab('alerts')" id="tab-btn-alerts" style="color:#f85149">Alerts</div>
-  <div class="tab" onclick="switchTab('events')" id="tab-btn-events" style="color:#ff9500">Events <span id="events-badge" style="display:none;margin-left:4px;background:#ff9500;color:#000;border-radius:8px;padding:1px 6px;font-size:10px;font-weight:800"></span></div>
-  <div class="tab" onclick="switchTab('entities')" id="tab-btn-entities" style="color:#3fb950">Entities</div>
-  <div class="tab" onclick="switchTab('whitelist')">Whitelist</div>
-  <div class="tab" onclick="switchTab('anomalies')">Anomalies</div>
-  <div class="tab" onclick="switchTab('detections')">All Detections</div>
-  <div class="tab" onclick="switchTab('nodes')">Sensors</div>
+  <div class="tab-group">
+    <div class="tab-group-label">Operate</div>
+    <div class="tab active" onclick="switchTab('overview')">Overview</div>
+    <div class="tab" onclick="switchTab('map')">Map</div>
+    <div class="tab" onclick="switchTab('alerts')" id="tab-btn-alerts">Alerts</div>
+    <div class="tab" onclick="switchTab('diagnostics')" id="tab-btn-diagnostics">Diagnostics</div>
+  </div>
+  <div class="tab-group">
+    <div class="tab-group-label">Signals</div>
+    <div class="tab" onclick="switchTab('wifi')" id="tab-btn-wifi">WiFi APs</div>
+    <div class="tab" onclick="switchTab('ble')" id="tab-btn-ble">BLE</div>
+    <div class="tab" onclick="switchTab('mobile')" id="tab-btn-mobile">Mobile</div>
+    <div class="tab" onclick="switchTab('probes')" id="tab-btn-probes">Probes</div>
+    <div class="tab" onclick="switchTab('detections')">All Detections</div>
+  </div>
+  <div class="tab-group">
+    <div class="tab-group-label">Manage</div>
+    <div class="tab" onclick="switchTab('nodes')">Sensors</div>
+    <div class="tab" onclick="switchTab('whitelist')">Whitelist</div>
+    <div class="tab" onclick="switchTab('events')" id="tab-btn-events">Events <span id="events-badge" style="display:none;margin-left:4px;background:#ff9500;color:#000;border-radius:8px;padding:1px 6px;font-size:10px;font-weight:800"></span></div>
+    <div class="tab" onclick="switchTab('entities')" id="tab-btn-entities">Entities</div>
+    <div class="tab" onclick="switchTab('anomalies')">Anomalies</div>
+  </div>
 </div>
 
 <!-- OVERVIEW TAB -->
 <div id="tab-overview" class="tab-content active">
   <div id="drone-alert-banner" style="display:none;margin:8px 24px;padding:10px 16px;background:#f8514922;border:2px solid #f85149;border-radius:6px;font-size:13px;font-weight:700;color:#f85149;animation:pulse-ring 2s ease-in-out infinite"></div>
-  <div class="grid4">
-    <div class="card">
-      <h2>Sensors Online</h2>
-      <div id="ov-sensors"><div class="empty">...</div></div>
+  <div class="workspace">
+    <div class="readiness-strip" id="ov-readiness-strip">
+      <div class="readiness-tile"><div class="label">Backend</div><div class="value">...</div><div class="hint">Waiting for health</div></div>
+      <div class="readiness-tile"><div class="label">Sensors</div><div class="value">...</div><div class="hint">Waiting for nodes</div></div>
+      <div class="readiness-tile"><div class="label">Scanners</div><div class="value">...</div><div class="hint">Waiting for telemetry</div></div>
+      <div class="readiness-tile"><div class="label">Calibration</div><div class="value">...</div><div class="hint">Waiting for diagnostics</div></div>
+      <div class="readiness-tile"><div class="label">Firmware</div><div class="value">...</div><div class="hint">Waiting for diagnostics</div></div>
     </div>
-    <div class="card wifi-accent">
-      <h2>WiFi Detections</h2>
-      <div id="ov-wifi"><div class="empty">...</div></div>
-    </div>
-    <div class="card ble-accent">
-      <h2>BLE Detections</h2>
-      <div id="ov-ble"><div class="empty">...</div></div>
-    </div>
-    <div class="card">
-      <h2>System</h2>
-      <div id="ov-system"><div class="empty">...</div></div>
-    </div>
-  </div>
-  <div class="grid">
-    <div class="card full">
-      <h2>Recent Activity (excl. known APs)</h2>
-      <div id="ov-recent"><div class="empty">Waiting for data...</div></div>
+    <div class="cockpit-grid">
+      <div class="data-panel">
+        <h2>Active Signals</h2>
+        <div class="signal-summary" id="ov-signal-summary"><div class="empty">Waiting for signal data...</div></div>
+      </div>
+      <div class="data-panel">
+        <h2>Last Known Positions</h2>
+        <div class="map-preview" id="ov-map-summary"><div class="empty">No positioned signals yet</div></div>
+      </div>
+      <div class="data-panel" style="grid-column:1 / -1">
+        <h2>Reporting Sensors</h2>
+        <div id="ov-sensor-roster"><div class="empty">Waiting for node telemetry...</div></div>
+      </div>
+      <div class="data-panel" style="grid-column:1 / -1">
+        <h2>Recent Explained Activity</h2>
+        <div id="ov-recent"><div class="empty">Waiting for detections...</div></div>
+      </div>
     </div>
   </div>
 </div>
@@ -208,7 +274,7 @@
     </div>
     <div class="card full">
       <h2>Nearby Mobile Devices (by Probe Activity)</h2>
-      <div style="font-size:11px;color:#8b949e;margin-bottom:8px">Phones/devices detected via WiFi probe requests — grouped by device MAC showing which networks they're searching for</div>
+      <div style="font-size:11px;color:#8b949e;margin-bottom:8px">Phones/devices detected via WiFi probe requests — grouped by stable probe identity, with MACs shown as evidence</div>
       <div id="mobile-probe-devices"><div class="empty">Loading probe data...</div></div>
     </div>
   </div>
@@ -243,8 +309,8 @@
       <button onclick="setProbeWindow(24)" class="probe-time-active" style="padding:4px 12px;background:#e040fb22;border:none;color:#e040fb;cursor:pointer;font-size:11px;font-weight:700">24h</button>
       <button onclick="setProbeWindow(168)" style="padding:4px 12px;background:transparent;border:none;color:#8b949e;cursor:pointer;font-size:11px;font-weight:700">7d</button>
     </div>
-    <label style="font-size:11px;color:#8b949e;cursor:pointer"><input type="checkbox" id="probes-auto-refresh" checked style="margin-right:3px">Auto-refresh</label>
-    <label style="font-size:11px;color:#8b949e;cursor:pointer"><input type="checkbox" id="probes-drone-only" style="margin-right:3px">Drone SSIDs only</label>
+    <label style="font-size:11px;color:#8b949e;cursor:pointer"><input type="checkbox" id="probes-auto-refresh" checked onchange="refreshProbes()" style="margin-right:3px">Auto-refresh</label>
+    <label style="font-size:11px;color:#8b949e;cursor:pointer"><input type="checkbox" id="probes-drone-only" onchange="refreshProbes()" style="margin-right:3px">Drone SSIDs only</label>
     <span id="probes-status" style="font-size:10px;color:#484f58;margin-left:auto"></span>
   </div>
   <!-- Main content: device table + hot SSIDs -->
@@ -388,8 +454,10 @@
           <option value="new_hostile_tool">New hostile tool</option>
           <option value="new_glasses">New glasses</option>
           <option value="new_tracker">New tracker</option>
+          <option value="new_probe_identity">New probe identity</option>
           <option value="new_probe_mac">New probe MAC</option>
           <option value="new_probed_ssid">New probed SSID</option>
+          <option value="probe_activity_spike">Probe activity spike</option>
           <option value="new_ap">New WiFi AP</option>
         </select>
         <span style="color:#8b949e">Severity:</span>
@@ -443,7 +511,7 @@
       <h2>SSID Whitelist</h2>
       <div style="margin-bottom:10px;font-size:12px;color:#8b949e">
         SSIDs matching these patterns are classified as <span style="color:#3fb950;font-weight:700">known_ap</span> (not drones).
-        Use glob patterns: <code style="background:#0d1117;padding:1px 4px;border-radius:3px">CasaChomp*</code> matches CasaChomp_2g, CasaChomp_5g, etc.
+        Use glob patterns: <code style="background:#0d1117;padding:1px 4px;border-radius:3px">HomeNet*</code> matches HomeNet_2g, HomeNet_5g, etc.
       </div>
       <!-- Add form -->
       <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center">
@@ -489,15 +557,42 @@
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
         <select id="det-filter" onchange="refreshDetections()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:11px">
           <option value="0">All (Debug)</option><option value="0.05">Low+</option><option value="0.1">Medium+</option>
-          <option value="0.15" selected>Likely+</option><option value="0.3">High</option>
+          <option value="0.15">Likely+</option><option value="0.3">High</option>
         </select>
         <select id="det-source" onchange="refreshDetections()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:11px">
           <option value="">All Sources</option><option value="wifi_ssid">WiFi SSID</option><option value="wifi_oui">WiFi AP</option><option value="wifi_ap_inventory">AP Inventory</option>
           <option value="wifi_assoc">WiFi Assoc</option><option value="wifi_probe_request">WiFi Probe</option><option value="ble_rid">BLE RID</option><option value="ble_fingerprint">BLE FP</option><option value="wifi_dji_ie">DJI IE</option><option value="wifi_beacon_rid">Beacon RID</option>
         </select>
         <span id="det-count" style="font-size:10px;color:#484f58"></span>
+        <span id="det-source-summary" style="font-size:10px;color:#8b949e"></span>
       </div>
       <div id="det-feed"><div class="empty">...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- DIAGNOSTICS TAB -->
+<div id="tab-diagnostics" class="tab-content">
+  <div class="grid">
+    <div class="card full">
+      <h2>System Readiness</h2>
+      <div id="diag-system"><div class="empty">Loading diagnostics...</div></div>
+    </div>
+    <div class="card full">
+      <h2>Ingest Path</h2>
+      <div id="diag-ingest"><div class="empty">Waiting for uplink telemetry...</div></div>
+    </div>
+    <div class="card full">
+      <h2>Detection Explanations</h2>
+      <div id="diag-explanations"><div class="empty">...</div></div>
+    </div>
+    <div class="card full">
+      <h2>Drone & Test Signals</h2>
+      <div id="diag-drone-signals"><div class="empty">...</div></div>
+    </div>
+    <div class="card full">
+      <h2>Noisy / Unknown Signals</h2>
+      <div id="diag-noise"><div class="empty">...</div></div>
     </div>
   </div>
 </div>
@@ -510,6 +605,10 @@
       <div id="gps-summary"><div class="empty">Loading...</div></div>
     </div>
     <div class="card full"><h2>Sensor Details (click to expand)</h2><div id="node-list"><div class="empty">...</div></div></div>
+    <div class="card full">
+      <h2>Scanner Firmware Fleet</h2>
+      <div id="fleet-firmware-panel"><div class="empty">Loading scanner firmware readiness...</div></div>
+    </div>
     <div class="card full">
       <h2>Node Configuration</h2>
       <div style="background:#0d1117;border-radius:6px;padding:12px">
@@ -584,10 +683,25 @@
 
 <div class="footer" id="footer">auto-refresh 5s</div>
 
+<div id="drawer-backdrop" class="drawer-backdrop" onclick="closeSignalDrawer()"></div>
+<aside id="detail-drawer" class="detail-drawer" aria-hidden="true" aria-label="Signal detail drawer">
+  <div class="drawer-head">
+    <div>
+      <div class="drawer-title" id="drawer-title">Signal detail</div>
+      <div id="drawer-subtitle" style="color:#8b949e;font-size:11px;margin-top:4px"></div>
+    </div>
+    <button class="btn ghost" onclick="closeSignalDrawer()" aria-label="Close signal detail">Close</button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+
 <script>
 const API = window.location.origin;
 let uplinkDeviceId = null;
 let refreshN = 0;
+let lastHealthOk = false;
+const drawerItems = {};
+let drawerSeq = 0;
 
 // Pause-on-hover: tabs pause auto-refresh when user is interacting
 const pausedFeeds = new Set();
@@ -699,6 +813,7 @@ function switchTab(id) {
   if (id === 'alerts') refreshAlerts();
   if (id === 'mobile') refreshMobile();
   if (id === 'entities') refreshEntities();
+  if (id === 'diagnostics') refreshDiagnostics();
   if (id === 'nodes') refreshCalibration();
 }
 
@@ -726,14 +841,142 @@ function clsBadge(c) {
 function rfChips(d) {
   if(!d) return '';
   const chips = [];
-  if(d.mac_is_randomized) chips.push('<span class="badge" style="background:#d2992222;color:#d29922;border:1px solid #d2992244">Random MAC</span>');
-  if(d.brand) chips.push('<span class="badge" style="background:#1f6feb22;color:#58a6ff;border:1px solid #58a6ff44">'+d.brand+'</span>');
-  if(d.device_class) chips.push('<span class="badge" style="background:#6e768122;color:#8b949e;border:1px solid #8b949e44">'+d.device_class+'</span>');
-  if(d.identity_source) chips.push('<span class="badge" style="background:#30363d;color:#c9d1d9;border:1px solid #484f58">'+d.identity_source+'</span>');
+  if(d.detection_explanation) {
+    const ex = d.detection_explanation;
+    const title = [ex.confidence_band || '', ...(ex.limitations || [])].filter(Boolean).join(' | ');
+    chips.push('<span class="badge" title="'+htmlEsc(title)+'" style="background:#d2992222;color:#d29922;border:1px solid #d2992244">'+htmlEsc(ex.primary_reason || 'Explained')+'</span>');
+  }
+  if(d.mac_is_randomized) chips.push('<span class="badge" title="'+htmlEsc(d.mac_reason||'randomized/private MAC')+'" style="background:#d2992222;color:#d29922;border:1px solid #d2992244">Random MAC</span>');
+  if((d.randomized_mac_count||0)>0) chips.push('<span class="badge" style="background:#d2992218;color:#d29922;border:1px solid #d2992233">'+htmlEsc(d.randomized_mac_count)+' random member'+(d.randomized_mac_count===1?'':'s')+'</span>');
+  if(d.brand) chips.push('<span class="badge" title="'+htmlEsc((d.brand_source||'evidence')+(d.brand_confidence!=null?' '+Math.round(d.brand_confidence*100)+'%':'')+(d.vendor_long?' | '+d.vendor_long:''))+'" style="background:#1f6feb22;color:#58a6ff;border:1px solid #58a6ff44">'+htmlEsc(d.brand)+'</span>');
+  if(d.oui_prefix) chips.push('<span class="badge" title="'+htmlEsc(d.vendor_long||'public OUI prefix')+'" style="background:#30363d;color:#8b949e;border:1px solid #484f58">OUI '+htmlEsc(d.oui_prefix)+'</span>');
+  if(d.vendor_source || d.prefix_bits) chips.push('<span class="badge" title="'+htmlEsc((d.vendor_source||'local RF reference')+(d.reference_updated_at?' | updated '+d.reference_updated_at:''))+'" style="background:#30363d;color:#c9d1d9;border:1px solid #484f58">'+htmlEsc(d.assignment_type||'MAC')+(d.prefix_bits?'/'+htmlEsc(d.prefix_bits):'')+'</span>');
+  if(Array.isArray(d.reference_sources) && d.reference_sources.length) {
+    const refs = d.reference_sources.map(s => (s.label || s.id || '') + (s.url ? ' <' + s.url + '>' : '')).join(' | ');
+    chips.push('<span class="badge" title="'+htmlEsc(refs)+'" style="background:#30363d;color:#8b949e;border:1px solid #484f58">refs '+htmlEsc(d.reference_sources.length)+'</span>');
+  }
+  if(d.product_hint) chips.push('<span class="badge" style="background:#8957e522;color:#d2a8ff;border:1px solid #a371f744">'+htmlEsc(d.product_hint)+'</span>');
+  if(d.representative_oui_prefix && !d.oui_prefix) chips.push('<span class="badge" title="Representative public MAC OUI for this group" style="background:#30363d;color:#8b949e;border:1px solid #484f58">Group OUI '+htmlEsc(d.representative_oui_prefix)+'</span>');
+  if(d.brand_source==='group_oui_majority') chips.push('<span class="badge" style="background:#23863622;color:#3fb950;border:1px solid #3fb95044">via group OUI</span>');
+  if(d.known_network_label) chips.push('<span class="badge" style="background:#23863622;color:#3fb950;border:1px solid #3fb95044">'+htmlEsc(d.known_network_label)+'</span>');
+  if(d.public_oui_brands && Object.keys(d.public_oui_brands).length) {
+    const top = Object.entries(d.public_oui_brands).slice(0,2).map(([k,v]) => htmlEsc(k)+':'+htmlEsc(v)).join(' ');
+    chips.push('<span class="badge" title="Public OUI rollup" style="background:#30363d;color:#c9d1d9;border:1px solid #484f58">'+top+'</span>');
+  }
+  if(d.device_class) {
+    const camera = d.device_class === 'suspect_camera';
+    chips.push('<span class="badge" style="background:'+(camera?'#f8514922':'#6e768122')+';color:'+(camera?'#f85149':'#8b949e')+';border:1px solid '+(camera?'#f8514944':'#8b949e44')+'">'+htmlEsc(d.device_class)+'</span>');
+  }
+  if(d.device_family) chips.push('<span class="badge" title="'+htmlEsc((d.family_source||'evidence')+(d.family_confidence!=null?' '+Math.round(d.family_confidence*100)+'%':''))+'" style="background:#a371f722;color:#d2a8ff;border:1px solid #a371f744">'+htmlEsc(d.device_family)+'</span>');
+  if(d.apple_continuity && (d.apple_continuity.label || (d.apple_continuity.message_types||[]).length)) {
+    const ac = d.apple_continuity;
+    chips.push('<span class="badge" title="'+htmlEsc((ac.evidence||[]).slice(0,4).join(' | '))+'" style="background:#58a6ff22;color:#79c0ff;border:1px solid #58a6ff44">'+htmlEsc(ac.label || (ac.message_types||[]).join(','))+'</span>');
+  }
+  if(d.wifi_fingerprint_v2 && d.wifi_fingerprint_v2.stable_id) chips.push('<span class="badge" title="'+htmlEsc((d.wifi_fingerprint_v2.evidence||[]).join(' | '))+'" style="background:#d2992222;color:#d29922;border:1px solid #d2992244">'+htmlEsc(d.wifi_fingerprint_v2.stable_id)+'</span>');
+  if(d.drone_ssid_match) {
+    const dm = d.drone_ssid_match;
+    chips.push('<span class="badge" title="'+htmlEsc((dm.ssid||'')+' matched '+(dm.matched_prefix||'')+' via '+(dm.source||'drone signatures'))+'" style="background:#f8514922;color:#f85149;border:1px solid #f8514944">'+htmlEsc(dm.match_type === 'test_drone_ssid' ? 'FOF test SSID' : (dm.manufacturer || 'Drone SSID'))+'</span>');
+  }
+  if(d.geometry_quality && d.geometry_quality.status) {
+    const good = d.geometry_quality.status === 'triangulation_ready';
+    chips.push('<span class="badge" title="'+htmlEsc((d.geometry_quality.reasons||[]).join(' | ') || 'geometry quality')+'" style="background:'+(good?'#23863622':'#d2992222')+';color:'+(good?'#3fb950':'#d29922')+';border:1px solid '+(good?'#3fb95044':'#d2992244')+'">'+htmlEsc(d.geometry_quality.status)+'</span>');
+  }
+  if(d.identity_source) chips.push('<span class="badge" style="background:#30363d;color:#c9d1d9;border:1px solid #484f58">'+htmlEsc(d.identity_source)+'</span>');
   return chips.join(' ');
 }
+function registerDrawerItem(d) {
+  const id = 'drawer_' + (++drawerSeq);
+  drawerItems[id] = d || {};
+  return id;
+}
+function explanationHtml(d) {
+  const ex = d && d.detection_explanation ? d.detection_explanation : null;
+  if (!ex) return '<div class="empty">No backend explanation metadata for this row</div>';
+  const limits = (ex.limitations || []).map(x => '<span class="status-chip warn">'+htmlEsc(x)+'</span>').join(' ');
+  const evidence = (ex.evidence || []).slice(0,8).map(x => '<div>'+htmlEsc(x)+'</div>').join('');
+  return '<div class="drawer-section"><h3>Why this appears</h3>' +
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">' +
+      '<span class="status-chip info">'+htmlEsc(ex.primary_reason || 'Explained')+'</span>' +
+      '<span class="status-chip diag">'+htmlEsc(ex.confidence_band || 'diagnostic')+'</span>' +
+      '<span class="status-chip">'+htmlEsc(ex.recommended_action || 'monitor')+'</span>' +
+    '</div>' +
+    (limits ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'+limits+'</div>' : '') +
+    '<div class="drawer-list">'+(evidence || '<div>No evidence strings returned</div>')+'</div></div>';
+}
+function openSignalDrawer(id) {
+  const d = drawerItems[id] || {};
+  const title = d.ssid || d.identity || d.drone_id || d.device_id || d.bssid || 'Signal detail';
+  const subtitle = [d.classification, d.source, d.age_s != null ? Math.round(d.age_s)+'s old' : null].filter(Boolean).join(' · ');
+  document.getElementById('drawer-title').textContent = title;
+  document.getElementById('drawer-subtitle').textContent = subtitle;
+  const sensors = Array.isArray(d.sensors) ? d.sensors : [];
+  const ssids = probeSsids(d);
+  document.getElementById('drawer-body').innerHTML =
+    explanationHtml(d) +
+    '<div class="drawer-section"><h3>Signal</h3><div class="drawer-list">' +
+      '<div>Class: '+(clsBadge(d.classification) || htmlEsc(d.classification || 'unknown'))+'</div>' +
+      '<div>Source: '+srcBadge(d.source || '')+'</div>' +
+      '<div>RSSI: <span class="rssi '+rssiClass(d.best_rssi || d.rssi)+'">'+htmlEsc(d.best_rssi ?? d.rssi ?? '?')+'</span></div>' +
+      '<div>Sensors: '+htmlEsc(sensors.length ? sensors.map(sensorLabel).join(', ') : (d.sensor_count || '?'))+'</div>' +
+      '<div>Seen: '+htmlEsc(d.first_seen ? fmtSeen(d.first_seen) : '?')+' → '+htmlEsc(d.last_seen ? fmtSeen(d.last_seen) : '?')+'</div>' +
+    '</div></div>' +
+    (ssids.length ? '<div class="drawer-section"><h3>Probed SSIDs</h3><div class="drawer-list">'+ssids.slice(0,12).map(htmlEsc).map(s=>'<div>'+s+'</div>').join('')+'</div></div>' : '') +
+    '<div class="drawer-section"><h3>Evidence Chips</h3><div style="display:flex;gap:5px;flex-wrap:wrap">'+(rfChips(d) || '<span class="status-chip">none</span>')+'</div></div>';
+  document.getElementById('drawer-backdrop').classList.add('open');
+  const drawer = document.getElementById('detail-drawer');
+  drawer.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+}
+function closeSignalDrawer() {
+  document.getElementById('drawer-backdrop').classList.remove('open');
+  const drawer = document.getElementById('detail-drawer');
+  drawer.classList.remove('open');
+  drawer.setAttribute('aria-hidden', 'true');
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeSignalDrawer();
+});
 function fmtUp(s) { if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m'; }
 function ago(e) { const s=Math.floor(Date.now()/1000-e);return s<5?'now':s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h'; }
+function htmlEsc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function fmtSeen(v) {
+  if (!v) return '?';
+  const d = typeof v === 'number' ? new Date(v * 1000) : new Date(v);
+  return Number.isNaN(d.getTime()) ? '?' : d.toLocaleTimeString();
+}
+function probeIdentity(d) { return d.identity || d.device || (d.mac ? 'PROBE:' + d.mac : '?'); }
+function probeMacSummary(d) {
+  const macs = d.macs && d.macs.length ? d.macs : (d.mac ? [d.mac] : []);
+  if (!macs.length) return '?';
+  return macs.slice(0, 2).join(', ') + (macs.length > 2 ? ' +' + (macs.length - 2) : '');
+}
+function probeSsids(d) {
+  if (Array.isArray(d.probed_ssids)) return d.probed_ssids.filter(Boolean);
+  if (Array.isArray(d.ssids)) return d.ssids.map(s => s.ssid).filter(Boolean);
+  return [];
+}
+function probeCount(d) { return d.probe_count || d.total_probes || d.seen_24h_count || 0; }
+function probeTrackTarget(d) { return d.identity || d.device || (d.mac ? 'probe_' + d.mac : ''); }
+function aggregateProbeSsids(devices) {
+  const by = {};
+  (devices || []).forEach(d => {
+    const count = probeCount(d);
+    probeSsids(d).forEach(ssid => {
+      if (!ssid || ssid === '(broadcast)') return;
+      const row = by[ssid] || {ssid, device_count:0, total_probes:0, best_rssi:-999, sensors:new Set(), drone_ssid_match:null};
+      row.device_count += 1;
+      row.total_probes += count || 1;
+      if ((d.best_rssi ?? -999) > row.best_rssi) row.best_rssi = d.best_rssi;
+      (d.sensors || []).forEach(s => row.sensors.add(s));
+      row.drone_ssid_match = row.drone_ssid_match || droneSsidMatchFor(ssid, d);
+      by[ssid] = row;
+    });
+  });
+  return Object.values(by).map(r => ({...r, sensors:Array.from(r.sensors)}))
+    .sort((a,b) => (b.total_probes || 0) - (a.total_probes || 0));
+}
 function sensorLabel(id) { return id.replace('uplink_','U'); }
 function timeHealthClass(h) {
   if (h === 'fresh' || h === 'good') return 'ok';
@@ -1016,9 +1259,6 @@ function toggleSensorMoveMode() {
           body: JSON.stringify({lat: pos.lat, lon: pos.lon})
         }).then(r => r.json()).then(d => {
           saved++;
-          if (saved === moves.length) {
-            console.log('All sensor positions saved');
-          }
         }).catch(e => console.error('Failed to save', did, e));
       });
     }
@@ -1238,6 +1478,11 @@ function updateMap(sensors, drones, nodeList) {
       const opRow = (isRID && d.operator_id)
         ? '<div class="popup-row"><span>Operator</span><span style="font-family:monospace;font-size:10px">' + d.operator_id + '</span></div>'
         : '';
+      const drawerId = registerDrawerItem(d);
+      const detailButton =
+        '<div style="margin-top:6px;border-top:1px solid #30363d;padding-top:6px">' +
+        '<button class="btn ghost" onclick="openSignalDrawer(\'' + drawerId + '\')">Details</button>' +
+        '</div>';
 
       // Build popup content
       const popupContent =
@@ -1257,7 +1502,8 @@ function updateMap(sensors, drones, nodeList) {
         (d.manufacturer ? '<div class="popup-row"><span>Manufacturer</span><span>' + d.manufacturer + '</span></div>' : '') +
         (macAddr ? '<div class="popup-row"><span>MAC</span><span style="font-family:monospace;font-size:10px">' + macAddr + '<span style="color:#484f58">' + macLabel + '</span></span></div>' : '') +
         (d.ssid && d.ssid !== displayName ? '<div class="popup-row"><span>SSID</span><span style="color:#ff9500">' + d.ssid + '</span></div>' : '') +
-        obsHtml;
+        obsHtml +
+        detailButton;
 
       let marker;
       if (isTracked) {
@@ -1719,33 +1965,39 @@ async function findUplink() {
 async function refreshWifi() {
   if (pausedFeeds.has('wifi')) return;
   const showAP = document.getElementById('wifi-show-ap').checked;
-  const [data, probeData] = await Promise.all([
+  const [data, probeData, apInventory] = await Promise.all([
     f(API+'/detections/grouped?max_age_s=120&exclude_known_ap='+(showAP?'false':'true')),
-    f(API+'/detections/probes/history?hours=1')
+    f(API+'/detections/probes?max_age_s=3600'),
+    f(API+'/detections/wifi/ap-inventory?max_age_s=120')
   ]);
   if (!data) return;
   const wifi = data.devices.filter(d => d.source && !d.source.includes('ble') && d.source !== 'wifi_probe_request' && d.source !== 'wifi_assoc' && d.classification !== 'mobile_hotspot');
 
   // Build probe count map: SSID → number of devices probing for it
   const probeCountBySSID = {};
-  if (probeData && probeData.hot_ssids) {
-    probeData.hot_ssids.forEach(s => { probeCountBySSID[s.ssid] = s.device_count; });
+  if (probeData && probeData.devices) {
+    aggregateProbeSsids(probeData.devices).forEach(s => { probeCountBySSID[s.ssid] = s.device_count; });
   }
   const sum = document.getElementById('wifi-summary');
 
   const drones = wifi.filter(d => ['confirmed_drone','likely_drone','test_drone'].includes(d.classification));
   const possible = wifi.filter(d => d.classification === 'possible_drone');
   const multi = wifi.filter(d => d.sensor_count >= 2);
+  const apInvCount = apInventory && typeof apInventory.count === 'number'
+    ? apInventory.count
+    : wifi.filter(d => d.source === 'wifi_ap_inventory').length;
 
   sum.innerHTML =
     '<div class="sb-item"><span style="color:#ff9500">WiFi:</span> <span class="sb-val" style="color:#ff9500">'+wifi.length+'</span></div>'+
+    '<div class="sb-item">AP Inventory: <span class="sb-val">'+apInvCount+'</span></div>'+
     '<div class="sb-item">Drones: <span class="sb-val val ok">'+drones.length+'</span></div>'+
     '<div class="sb-item">Possible: <span class="sb-val">'+possible.length+'</span></div>'+
     '<div class="sb-item">Multi-sensor: <span class="sb-val val '+(multi.length>0?'ok':'')+'">'+multi.length+'</span></div>';
 
   if (wifi.length > 0) {
-    updateFeed('wifi-feed', '<table><tr><th onclick="sortTable(this)">Age</th><th onclick="sortTable(this)">Class</th><th onclick="sortTable(this)">SSID</th><th>Probing</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th>Per-Sensor</th><th onclick="sortTable(this)">BSSID</th><th onclick="sortTable(this)">Mfr</th><th onclick="sortTable(this)">Hits</th><th></th></tr>'+
+    updateFeed('wifi-feed', '<table><tr><th onclick="sortTable(this)">Age</th><th onclick="sortTable(this)">Class</th><th onclick="sortTable(this)">SSID</th><th>Probing</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th>Per-Sensor</th><th onclick="sortTable(this)">Conf</th><th onclick="sortTable(this)">BSSID</th><th onclick="sortTable(this)">Mfr</th><th onclick="sortTable(this)">Hits</th><th></th></tr>'+
       wifi.map(d => {
+        const drawerId = registerDrawerItem(d);
         const cls = d.classification || '';
         const rowCls = d.sensor_count >= 2 ? ' class="multi-sensor"' : cls === 'test_drone' ? ' class="test-drone"' : '';
         const sRssi = Object.entries(d.sensor_rssi||{}).map(([k,v])=>'<span style="color:#8b949e">'+sensorLabel(k)+'</span>:<span class="rssi '+rssiClass(v)+'">'+v+'</span>').join(' ');
@@ -1767,7 +2019,7 @@ async function refreshWifi() {
           '<td style="color:#484f58">'+(d.bssid||'-')+'</td>' +
           '<td style="color:#8b949e">'+(d.manufacturer||'-')+'</td>' +
           '<td>'+d.detection_count+'</td>' +
-          '<td style="display:flex;gap:2px">'+wlBtn+'<button onclick="trackDevice(\''+did+'\')" style="background:#ff950022;border:1px solid #ff950044;color:#ff9500;padding:1px 5px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Track</button></td></tr>';
+          '<td style="display:flex;gap:2px">'+wlBtn+'<button class="btn ghost" onclick="openSignalDrawer(\''+drawerId+'\')">Details</button><button onclick="trackDevice(\''+did+'\')" style="background:#ff950022;border:1px solid #ff950044;color:#ff9500;padding:1px 5px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Track</button></td></tr>';
       }).join('') + '</table>');
   } else {
     updateFeed('wifi-feed', '<div class="empty">No WiFi devices detected</div>');
@@ -1811,6 +2063,7 @@ async function refreshBLE() {
   if (devs.length > 0) {
     updateFeed('ble-feed', '<table><tr><th onclick="sortTable(this)">Type</th><th onclick="sortTable(this)">Mfr</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Avg</th><th onclick="sortTable(this)">Sensors</th><th onclick="sortTable(this)">JA3</th><th onclick="sortTable(this)">MACs</th><th onclick="sortTable(this)">Idle</th><th onclick="sortTable(this)">Age</th><th></th></tr>'+
       devs.slice(0, 80).map(d => {
+        const drawerId = registerDrawerItem(d);
         const sensorCount = d.sensor_count || (d.seen_by ? d.seen_by.length : 1);
         const sensors = d.seen_by ? d.seen_by.map(sensorLabel).join(', ') : '-';
         const isNew = d.age_s < 3600;
@@ -1846,7 +2099,7 @@ async function refreshBLE() {
           '<td>'+(d.mac_rotations||0)+'</td>' +
           '<td>'+idleStr+'</td>' +
           '<td>'+ageStr+'</td>' +
-          '<td><button onclick="trackDevice(\''+fp+'\')" style="background:#58a6ff22;border:1px solid #58a6ff44;color:#58a6ff;padding:1px 6px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Track</button>'+
+          '<td><button class="btn ghost" onclick="openSignalDrawer(\''+drawerId+'\')">Details</button> <button onclick="trackDevice(\''+fp+'\')" style="background:#58a6ff22;border:1px solid #58a6ff44;color:#58a6ff;padding:1px 6px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700">Track</button>'+
           (d.is_tracker ? ' <button onclick="markTrackerKnown(\''+fp+'\')" style="background:#23862622;border:1px solid #23862644;color:#238636;padding:1px 6px;border-radius:3px;cursor:pointer;font-size:9px;font-weight:700" title="Mark as your own tracker (suppresses alerts)">Mine</button>' : '')+
           '</td></tr>';
       }).join('') + '</table>');
@@ -1889,8 +2142,20 @@ async function addWhitelistEntry() {
 }
 
 // ── Probes Tab ─────────────────────────────────────────────────────────
-const DRONE_SSID_RE = /^(DJI|TELLO|SKYDIO|AUTEL|PARROT|FIMI|HUBSAN|EACHINE|HOLY.?STONE|SYMA|POTENSIC|SNAPTAIN|RUKO|FOF-)/i;
-function isDroneSSID(ssid) { return DRONE_SSID_RE.test(ssid || ''); }
+function droneSsidMatches(d) {
+  if (!d) return [];
+  if (Array.isArray(d.drone_ssid_matches)) return d.drone_ssid_matches;
+  if (d.drone_ssid_match) return [d.drone_ssid_match];
+  return [];
+}
+function droneSsidMatchFor(ssid, d) {
+  const target = String(ssid || '').toLowerCase();
+  return droneSsidMatches(d).find(m => String(m.ssid || '').toLowerCase() === target) || null;
+}
+function isDroneRelatedDevice(d) {
+  return ['confirmed_drone','likely_drone','test_drone'].includes(d && d.classification) || droneSsidMatches(d).length > 0;
+}
+function isDroneRelatedSsid(ssid, d) { return !!droneSsidMatchFor(ssid, d); }
 
 let probeHours = 24;
 function setProbeWindow(h) {
@@ -1898,7 +2163,11 @@ function setProbeWindow(h) {
   document.querySelectorAll('#probes-time-btns button').forEach(b => {
     b.style.background = 'transparent'; b.style.color = '#8b949e';
   });
-  event.target.style.background = '#e040fb22'; event.target.style.color = '#e040fb';
+  const target = window.event && window.event.target;
+  if (target) {
+    target.style.background = '#e040fb22';
+    target.style.color = '#e040fb';
+  }
   refreshProbes();
 }
 
@@ -1983,22 +2252,21 @@ async function refreshMobile() {
     }
   }
 
-  // 2. Probe device profiles — group by MAC showing probed SSIDs
-  const probes = await f(API+'/detections/probes/history?hours=1');
+  // 2. Probe device profiles — stable identity first, MAC as evidence only.
+  const probes = await f(API+'/detections/probes?max_age_s=3600');
   const devEl = document.getElementById('mobile-probe-devices');
   if (probes && probes.devices && probes.devices.length > 0) {
-    // Filter out broadcast-only devices
-    const realDevs = probes.devices.filter(d => d.ssids.some(s => s.ssid !== '(broadcast)'));
+    const realDevs = probes.devices.filter(d => probeSsids(d).length > 0);
     if (realDevs.length > 0) {
-      devEl.innerHTML = '<table><tr><th>Device MAC</th><th>Networks Searching For</th><th>Probes</th><th>RSSI</th><th>Sensors</th><th>Last Seen</th><th></th></tr>' +
+      devEl.innerHTML = '<table><tr><th>Identity</th><th>MAC evidence</th><th>Networks Searching For</th><th>Probes</th><th>RSSI</th><th>Sensors</th><th>Last Seen</th><th></th></tr>' +
         realDevs.slice(0, 30).map(d => {
-          const ssidList = d.ssids.filter(s => s.ssid !== '(broadcast)').map(s =>
-            '<span style="background:#1f6feb22;color:#58a6ff;padding:1px 5px;border-radius:3px;font-size:10px;margin:1px">'+s.ssid+' <span style="color:#484f58">×'+s.count+'</span></span>'
+          const drawerId = registerDrawerItem(d);
+          const ssidList = probeSsids(d).slice(0, 6).map(s =>
+            '<span style="background:#1f6feb22;color:#58a6ff;padding:1px 5px;border-radius:3px;font-size:10px;margin:1px">'+htmlEsc(s)+'</span>'
           ).join(' ');
-          const broadcastCount = d.ssids.filter(s => s.ssid === '(broadcast)').reduce((sum,s) => sum + s.count, 0);
-          return '<tr><td style="font-family:monospace;font-size:10px">'+d.mac+'</td><td>'+ssidList+(broadcastCount > 0 ? ' <span style="color:#484f58;font-size:9px">+'+broadcastCount+' broadcast</span>' : '')+'</td><td>'+d.total_probes+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+d.best_rssi+'</span></td><td>'+d.sensors.length+'</td><td style="font-size:10px;color:#8b949e">'+new Date(d.last_seen).toLocaleTimeString()+'</td><td>'+locateBtn(d.device)+'</td></tr>';
+          return '<tr><td style="font-family:monospace;font-size:10px;color:#e040fb;font-weight:700">'+htmlEsc(probeIdentity(d))+'</td><td style="font-family:monospace;font-size:10px">'+htmlEsc(probeMacSummary(d))+' '+rfChips(d)+'</td><td>'+ssidList+'</td><td>'+probeCount(d)+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi ?? '?')+'</span></td><td>'+((d.sensors || []).length || d.sensor_count || 0)+'</td><td style="font-size:10px;color:#8b949e">'+fmtSeen(d.last_seen)+'</td><td><button class="btn ghost" onclick="openSignalDrawer(\''+drawerId+'\')">Details</button> '+locateBtn(probeTrackTarget(d))+'</td></tr>';
         }).join('') + '</table>' +
-        '<div style="margin-top:6px;font-size:10px;color:#484f58">'+realDevs.length+' devices with targeted probes / '+probes.unique_devices+' total probe devices</div>';
+        '<div style="margin-top:6px;font-size:10px;color:#484f58">'+realDevs.length+' stable probe identities / '+(probes.count || probes.devices.length)+' active identities</div>';
     } else {
       devEl.innerHTML = '<div class="empty">No targeted probe requests (only broadcasts)</div>';
     }
@@ -2011,7 +2279,7 @@ async function refreshProbes() {
   if (!document.getElementById('probes-auto-refresh').checked) return;
   if (pausedFeeds.has('probes')) return;
   const droneOnly = document.getElementById('probes-drone-only').checked;
-  const url = API + '/detections/probes/history?hours=' + probeHours + (droneOnly ? '&drone_only=true' : '');
+  const url = API + '/detections/probes?max_age_s=' + Math.round(probeHours * 3600) + (droneOnly ? '&drone_only=true' : '');
   const data = await f(url, 8000);
   const feed = document.getElementById('probes-feed');
   const hotDiv = document.getElementById('probes-hot-ssids');
@@ -2022,56 +2290,61 @@ async function refreshProbes() {
     return;
   }
 
-  // Summary cards
-  document.getElementById('probes-stat-total').textContent = data.total_probes || 0;
-  document.getElementById('probes-stat-devices').textContent = data.unique_devices || 0;
-  document.getElementById('probes-stat-ssids').textContent = data.unique_ssids || 0;
-
   const devices = data.devices || [];
-  const droneCount = devices.filter(d => {
-    const ssids = (d.ssids || []).map(s => s.ssid);
-    return ssids.some(s => isDroneSSID(s));
-  }).length;
+  const ssidSet = new Set();
+  devices.forEach(d => probeSsids(d).forEach(s => ssidSet.add(s)));
+
+  // Summary cards
+  document.getElementById('probes-stat-total').textContent = devices.reduce((sum,d)=>sum+probeCount(d),0);
+  document.getElementById('probes-stat-devices').textContent = data.count || devices.length;
+  document.getElementById('probes-stat-ssids').textContent = ssidSet.size;
+
+  const droneCount = devices.filter(isDroneRelatedDevice).length;
   document.getElementById('probes-stat-drones').textContent = droneCount;
 
-  statusEl.textContent = 'Last ' + probeHours + 'h — ' + devices.length + ' devices — updated ' + new Date().toLocaleTimeString();
+  statusEl.textContent = 'Last ' + probeHours + 'h — ' + devices.length + ' stable identities — updated ' + new Date().toLocaleTimeString();
 
-  // Device table with expandable SSID details
+  // Device table with expandable stable-identity details
   if (devices.length > 0) {
-    updateFeed('probes-feed', '<table><tr><th onclick="sortTable(this)">Device MAC</th><th onclick="sortTable(this)">SSIDs Probed</th><th onclick="sortTable(this)">Probes</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th onclick="sortTable(this)">First Seen</th><th onclick="sortTable(this)">Last Seen</th></tr>' +
+    updateFeed('probes-feed', '<table><tr><th onclick="sortTable(this)">Identity</th><th onclick="sortTable(this)">MAC evidence</th><th onclick="sortTable(this)">SSIDs Probed</th><th onclick="sortTable(this)">Probes</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th onclick="sortTable(this)">Activity</th><th onclick="sortTable(this)">First Seen</th><th onclick="sortTable(this)">Last Seen</th></tr>' +
       devices.map((d, idx) => {
-        const ssids = d.ssids || [];
-        const hasDrone = ssids.some(s => isDroneSSID(s.ssid));
+        const drawerId = registerDrawerItem(d);
+        const ssids = probeSsids(d);
+        const hasDrone = isDroneRelatedDevice(d);
         const rowBg = hasDrone ? 'background:#f8514910;' : '';
 
         // Main row
         let html = '<tr style="cursor:pointer;' + rowBg + '" onclick="toggleProbeDetail(\'pd' + idx + '\')">' +
-          '<td style="color:#e040fb;font-weight:700">' + (d.mac || '?') + '</td>' +
+          '<td style="color:#e040fb;font-weight:700;font-family:JetBrains Mono,monospace;font-size:10px">' + htmlEsc(probeIdentity(d)) + '</td>' +
+          '<td style="font-family:JetBrains Mono,monospace;font-size:10px" title="' + htmlEsc((d.macs || []).join(', ')) + '">' + htmlEsc(probeMacSummary(d)) + '<div style="margin-top:3px;font-family:Inter,system-ui,sans-serif">' + rfChips(d) + '</div></td>' +
           '<td>' + ssids.slice(0, 3).map(s => {
-            const dr = isDroneSSID(s.ssid);
-            return '<span style="color:' + (dr ? '#f85149' : '#c9d1d9') + ';font-size:10px">' + s.ssid + '</span>';
+            const dr = isDroneRelatedSsid(s, d);
+            return '<span style="color:' + (dr ? '#f85149' : '#c9d1d9') + ';font-size:10px">' + htmlEsc(s) + '</span>';
           }).join(', ') + (ssids.length > 3 ? ' <span style="color:#484f58">+' + (ssids.length - 3) + '</span>' : '') + '</td>' +
-          '<td style="color:#e040fb;font-weight:700">' + (d.total_probes || 0) + '</td>' +
-          '<td><span class="rssi ' + rssiClass(d.best_rssi) + '">' + (d.best_rssi || '?') + '</span></td>' +
-          '<td><span class="val ' + (d.sensor_count >= 2 ? 'ok' : '') + '">' + d.sensor_count + '</span></td>' +
-          '<td style="color:#484f58;font-size:10px">' + (d.first_seen ? new Date(d.first_seen).toLocaleTimeString() : '?') + '</td>' +
-          '<td style="font-size:10px">' + (d.last_seen ? new Date(d.last_seen).toLocaleTimeString() : '?') + '</td></tr>';
+          '<td style="color:#e040fb;font-weight:700">' + probeCount(d) + '</td>' +
+          '<td><span class="rssi ' + rssiClass(d.best_rssi) + '">' + (d.best_rssi ?? '?') + '</span></td>' +
+          '<td><span class="val ' + ((d.sensor_count || 0) >= 2 ? 'ok' : '') + '">' + (d.sensor_count || 0) + '</span></td>' +
+          '<td>' + clsBadge(d.activity_level || d.classification || 'wifi_device') + '</td>' +
+          '<td style="color:#484f58;font-size:10px">' + fmtSeen(d.first_seen) + '</td>' +
+          '<td style="font-size:10px">' + fmtSeen(d.last_seen) + ' <button class="btn ghost" onclick="event.stopPropagation();openSignalDrawer(\''+drawerId+'\')">Details</button></td></tr>';
 
         // Expandable detail row (hidden by default)
         html += '<tr id="pd' + idx + '" style="display:none;background:#0d111788">' +
-          '<td colspan="7" style="padding:8px 12px">' +
+          '<td colspan="9" style="padding:8px 12px">' +
           '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
           '<div><div style="font-size:10px;color:#e040fb;font-weight:700;margin-bottom:4px">PROBED SSIDS</div>' +
           ssids.map(s => {
-            const dr = isDroneSSID(s.ssid);
+            const dr = isDroneRelatedSsid(s, d);
             return '<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #21262d">' +
-              '<span style="color:' + (dr ? '#f85149' : '#c9d1d9') + ';font-size:10px">' + (dr ? '&#x26a0; ' : '') + s.ssid + '</span>' +
-              '<span style="color:#e040fb;font-size:10px;font-weight:700">' + s.count + 'x</span></div>';
+              '<span style="color:' + (dr ? '#f85149' : '#c9d1d9') + ';font-size:10px">' + (dr ? '&#x26a0; ' : '') + htmlEsc(s) + '</span>' +
+              '<span style="color:#e040fb;font-size:10px;font-weight:700">' + probeCount(d) + ' hits</span></div>';
           }).join('') + '</div>' +
           '<div><div style="font-size:10px;color:#8b949e;font-weight:700;margin-bottom:4px">DETAILS</div>' +
-          '<div class="metric"><span>Sensors</span><span class="val">' + (d.sensors || []).join(', ') + '</span></div>' +
-          '<div class="metric"><span>Unique SSIDs</span><span class="val">' + d.unique_ssids + '</span></div>' +
-          '<div class="metric"><span>Total probes</span><span class="val probe-col">' + d.total_probes + '</span></div>' +
+          '<div class="metric"><span>Evidence</span><span class="val">' + rfChips(d) + '</span></div>' +
+          '<div class="metric"><span>Sensors</span><span class="val">' + (d.sensors || []).map(sensorLabel).join(', ') + '</span></div>' +
+          '<div class="metric"><span>Unique SSIDs</span><span class="val">' + ssids.length + '</span></div>' +
+          '<div class="metric"><span>24h seen</span><span class="val probe-col">' + (d.seen_24h_count || probeCount(d)) + '</span></div>' +
+          '<div style="font-size:9px;color:#8b949e;margin-top:4px">' + ((d.evidence || []).slice(0, 4).map(htmlEsc).join(' | ') || 'No evidence metadata') + '</div>' +
           '</div></div></td></tr>';
 
         return html;
@@ -2080,22 +2353,23 @@ async function refreshProbes() {
     updateFeed('probes-feed', '<div class="empty">No probing devices found in last ' + probeHours + ' hours</div>');
   }
 
-  // Hot SSIDs panel from history data (now with richer data)
-  const hotSsids = data.hot_ssids || [];
+  // Hot SSIDs panel from stable probe groups.
+  const hotSsids = aggregateProbeSsids(devices);
   const maxProbes = hotSsids.length > 0 ? Math.max(...hotSsids.map(s => s.total_probes || s.device_count || 1)) : 1;
 
   if (hotSsids.length > 0) {
     hotDiv.innerHTML = hotSsids.slice(0, 20).map(s => {
-      const dr = isDroneSSID(s.ssid);
+      const dr = !!s.drone_ssid_match;
       const barColor = dr ? '#f85149' : '#e040fb';
+      const matchTitle = dr ? ' title="' + htmlEsc((s.drone_ssid_match.manufacturer || 'Drone SSID') + ' / ' + (s.drone_ssid_match.matched_prefix || '')) + '"' : ' title="' + htmlEsc(s.ssid) + '"';
       const probes = s.total_probes || s.device_count || 0;
       const devCount = s.device_count || 0;
       const pct = Math.max(5, Math.round(probes / maxProbes * 100));
       const sensorsStr = s.sensors ? s.sensors.map(sensorLabel).join(', ') : '';
       return '<div style="padding:5px 0;border-bottom:1px solid #21262d">' +
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">' +
-          '<span style="color:' + (dr ? '#f85149' : '#c9d1d9') + ';font-family:JetBrains Mono,monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1" title="' + s.ssid + '">' +
-            (dr ? '&#x26a0; ' : '') + s.ssid + '</span>' +
+          '<span style="color:' + (dr ? '#f85149' : '#c9d1d9') + ';font-family:JetBrains Mono,monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1"' + matchTitle + '>' +
+            (dr ? '&#x26a0; ' : '') + htmlEsc(s.ssid) + '</span>' +
           '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:' + barColor + ';font-weight:700;min-width:50px;text-align:right">' +
             probes + '<span style="color:#484f58;font-weight:400"> / ' + devCount + 'd</span></span>' +
         '</div>' +
@@ -2114,31 +2388,108 @@ function toggleProbeDetail(id) {
   if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
 }
 
+function countTable(obj, labelA, labelB) {
+  const entries = Object.entries(obj || {});
+  if (!entries.length) return '<div class="empty">No data in this window</div>';
+  return '<table><tr><th>'+labelA+'</th><th>'+labelB+'</th></tr>' +
+    entries.map(([k,v]) => '<tr><td>'+htmlEsc(k)+'</td><td><span class="val">'+htmlEsc(v)+'</span></td></tr>').join('') +
+    '</table>';
+}
+
+async function refreshDiagnostics() {
+  const diag = await f(API+'/detections/diagnostics?max_age_s=300');
+  if (!diag) {
+    ['diag-system','diag-ingest','diag-explanations','diag-drone-signals','diag-noise'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = '<div class="empty">Diagnostics unavailable</div>';
+    });
+    return;
+  }
+  const sum = diag.summary || {};
+  const cal = diag.calibration_readiness || {};
+  const fw = diag.firmware_readiness || {};
+  const ingest = diag.ingest_freshness || {};
+  const warnings = diag.system_warnings || [];
+  const warnHtml = warnings.length
+    ? '<table><tr><th>Severity</th><th>Warning</th><th>Device</th></tr>' + warnings.slice(0,20).map(w =>
+        '<tr><td>'+htmlEsc(w.severity||'info')+'</td><td>'+htmlEsc(w.message||w.code)+'</td><td style="font-family:JetBrains Mono,monospace;font-size:10px">'+htmlEsc([w.device_id,w.uart].filter(Boolean).join('/')||'-')+'</td></tr>'
+      ).join('') + '</table>'
+    : '<div class="metric"><span>Warnings</span><span class="val ok">none</span></div>';
+
+  document.getElementById('diag-system').innerHTML =
+    '<div class="grid4">' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Online Nodes</div><div class="val '+(sum.online_node_count>0?'ok':'err')+'">'+htmlEsc(sum.online_node_count||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Scanners</div><div class="val '+(sum.scanner_count>0?'ok':'warn')+'">'+htmlEsc(sum.scanner_count||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Firmware Drift</div><div class="val '+((fw.drift_count||0)>0?'warn':'ok')+'">'+htmlEsc(fw.drift_count||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Update Blockers</div><div class="val '+((fw.scanner_update_blocked_count||0)>0?'err':'ok')+'">'+htmlEsc(fw.scanner_update_blocked_count||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Calibration</div><div class="val '+(cal.ready?'ok':'warn')+'">'+(cal.ready?'READY':'CHECK')+'</div></div>' +
+    '</div>' +
+    '<div style="margin-top:8px">'+warnHtml+'</div>';
+
+  document.getElementById('diag-ingest').innerHTML =
+    '<div class="grid4">' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Posting Nodes</div><div class="val '+((ingest.posting_node_count||0)>0?'ok':'err')+'">'+htmlEsc(ingest.posting_node_count||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Last POST Age</div><div class="val '+(ingest.last_ingest_age_s == null ? 'err' : ingest.last_ingest_age_s < 120 ? 'ok' : 'warn')+'">'+htmlEsc(ingest.last_ingest_age_s == null ? 'none' : formatAgeSeconds(ingest.last_ingest_age_s))+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Batches</div><div class="val">'+htmlEsc(ingest.total_batches||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Rejected</div><div class="val '+((ingest.recent_rejected_batches||0)>0?'warn':'ok')+'">'+htmlEsc(ingest.recent_rejected_batches||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Posting IPs</div><div class="val" style="font-size:13px">'+htmlEsc((ingest.last_posting_ips||[]).join(', ') || 'none')+'</div></div>' +
+    '</div>' +
+    '<div style="font-size:11px;color:#8b949e;margin-top:8px">Expected uplink POST: <span class="val">'+htmlEsc(ingest.expected_backend_url || 'http://fof-server.local:8000/detections/drones')+'</span></div>' +
+    ((ingest.recent_rejected_batches||0)>0 ? '<div style="font-size:11px;color:#d29922;margin-top:6px">Rejected by IP: <span class="val">'+htmlEsc(Object.entries(ingest.rejected_by_ip||{}).map(([ip,count]) => ip+': '+count).join(', ') || 'unknown')+'</span></div>' : '');
+
+  document.getElementById('diag-explanations').innerHTML =
+    '<div class="grid2">' +
+      '<div>' + countTable((diag.top_explanations||{}).by_primary_reason, 'Reason', 'Count') + '</div>' +
+      '<div>' + countTable((diag.top_explanations||{}).by_confidence_band, 'Band', 'Count') + '</div>' +
+    '</div>';
+
+  const matches = diag.recent_drone_ssid_matches || [];
+  document.getElementById('diag-drone-signals').innerHTML = matches.length
+    ? '<table><tr><th>Age</th><th>SSID</th><th>Match</th><th>Class</th><th>Node</th></tr>' + matches.map(m =>
+        '<tr><td>'+htmlEsc(m.age_s)+'s</td><td style="font-weight:700;color:#f85149">'+htmlEsc(m.ssid)+'</td><td>'+htmlEsc((m.manufacturer||'Drone')+' / '+(m.matched_prefix||''))+'</td><td>'+clsBadge(m.classification)+'</td><td>'+htmlEsc(m.device_id||'-')+'</td></tr>'
+      ).join('') + '</table>'
+    : '<div class="empty">No curated drone SSID matches in this window</div>';
+
+  document.getElementById('diag-noise').innerHTML =
+    '<div class="grid4">' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Unknown / Noisy</div><div class="val '+((sum.unknown_noisy_count||0)>0?'warn':'ok')+'">'+htmlEsc(sum.unknown_noisy_count||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Probe Identities</div><div class="val">'+htmlEsc(sum.probe_identity_count||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">WiFi</div><div class="val wifi-col">'+htmlEsc(sum.wifi_count||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">BLE</div><div class="val ble-col">'+htmlEsc(sum.ble_count||0)+'</div></div>' +
+    '</div>' +
+    '<div style="font-size:11px;color:#8b949e;margin-top:8px">Expected firmware: <span class="val">'+htmlEsc(fw.expected_firmware_version||'?')+'</span> · Backend: <span class="val">'+htmlEsc(diag.backend_version||'?')+'</span> · Scanner update blockers: '+htmlEsc((fw.scanner_update_blockers||[]).map(b => (b.device_id||'?')+'/'+(b.uart||'?')).join(', ') || 'none')+' · Calibration blockers: '+htmlEsc((cal.reasons||[]).join(', ') || 'none')+'</div>';
+}
+
 // ── Main refresh ────────────────────────────────────────────────────────
 async function refresh() {
   refreshN++;
+  let health = null;
   try {
-    const [health,nodes,map,recent,uplink] = await Promise.all([
-      f(API+'/health'),
+    health = await f(API+'/health');
+    lastHealthOk = !!health;
+    const dot=document.getElementById('health-dot');
+    const htxt=document.getElementById('health-text');
+    if(health){dot.className='status-dot ok';htxt.textContent='v'+health.version;}
+    else{dot.className='status-dot err';htxt.textContent='offline';}
+
+    const diagPromise = f(API+'/detections/diagnostics?max_age_s=300', 1500);
+    const [nodes,map,recent,uplink] = await Promise.all([
       f(API+'/detections/nodes/status'),
       f(API+'/detections/drones/map?exclude_known=false&include_probes=' + (document.getElementById('map-show-probes')&&document.getElementById('map-show-probes').checked ? 'true' : 'false')),
       f(API+'/detections/grouped?max_age_s=60&exclude_known_ap=true'),
       uplinkDeviceId ? f(API+'/nodes/'+uplinkDeviceId+'/live',3000) : findUplink()
     ]);
 
-    // Health
-    const dot=document.getElementById('health-dot');
-    const htxt=document.getElementById('health-text');
-    if(health){dot.className='status-dot ok';htxt.textContent='v'+health.version;}
-    else{dot.className='status-dot err';htxt.textContent='offline';}
-
     // Keep previous node list if API call failed (prevents flash to empty)
     if (nodes && nodes.nodes) { window._lastNodeList = nodes.nodes; }
     // Filter out nodes not seen in 10 hours (36000s), sort by device_id for stable order
-    const nodeList = (window._lastNodeList || []).filter(n => n.age_s < 36000)
-      .sort((a, b) => a.device_id.localeCompare(b.device_id));
+    const nodeList = (window._lastNodeList || [])
+      .filter(n => n.age_s === undefined || n.age_s === null || n.age_s < 36000)
+      .sort((a, b) => String(a.device_id || '').localeCompare(String(b.device_id || '')));
     const onlineN=nodeList.filter(n=>n.online).length;
-    document.getElementById('sensor-summary').textContent=onlineN+'/'+nodeList.length+' sensors online';
+    document.getElementById('sensor-summary').textContent = nodes
+      ? (onlineN || nodeList.length ? onlineN+'/'+nodeList.length+' sensors online' : 'backend online · no uplink batches')
+      : 'backend online · node API fetch failed';
 
     // Drone alert banner
     const droneAlertBanner = document.getElementById('drone-alert-banner');
@@ -2158,51 +2509,92 @@ async function refresh() {
       }
     });
 
-    // Overview: Sensors
-    const ovSensorsHtml=
-      '<div class="metric"><span>Online</span><span class="val '+(onlineN>0?'ok':'err')+'">'+onlineN+'/'+nodeList.length+'</span></div>'+
-      nodeList.filter(n=>n.online).map(n=>
-        '<div class="metric"><span>'+(n.name||n.device_id)+'</span><span class="val" style="font-size:10px">'+ago(n.last_seen)+'</span></div>'
-      ).join('');
-    const ovEl=document.getElementById('ov-sensors');
-    if(ovEl.innerHTML!==ovSensorsHtml) ovEl.innerHTML=ovSensorsHtml;
-
-    // Overview: WiFi breakdown
     const wifiDevices = recent ? recent.devices.filter(d => d.source && !d.source.includes('ble')) : [];
     const wifiDrones = wifiDevices.filter(d => ['confirmed_drone','likely_drone','test_drone'].includes(d.classification));
-    document.getElementById('ov-wifi').innerHTML=
-      '<div class="metric"><span>Total WiFi</span><span class="val wifi-col">'+wifiDevices.length+'</span></div>'+
-      '<div class="metric"><span>Drones/Test</span><span class="val '+(wifiDrones.length>0?'warn':'')+'">'+wifiDrones.length+'</span></div>'+
-      '<div class="metric"><span>Multi-sensor</span><span class="val '+(wifiDevices.filter(d=>d.sensor_count>=2).length>0?'ok':'')+'">'+wifiDevices.filter(d=>d.sensor_count>=2).length+'</span></div>';
 
-    // Overview: BLE breakdown
     const devData = await f(API+'/detections/devices/live');
     const devSum = devData ? devData.summary : {active:0,trackers_active:0,classified:0};
-    document.getElementById('ov-ble').innerHTML=
-      '<div class="metric"><span>Active BLE</span><span class="val ble-col">'+devSum.active+'</span></div>'+
-      '<div class="metric"><span>Trackers</span><span class="val '+(devSum.trackers_active>0?'err':'')+'">'+devSum.trackers_active+'</span></div>'+
-      '<div class="metric"><span>Classified</span><span class="val">'+devSum.classified+'</span></div>';
+    const totalBatches=nodeList.reduce((s,n)=>s+(n.total_batches || 0),0);
+    const totalDets=nodeList.reduce((s,n)=>s+(n.total_detections || 0),0);
+    const diag = await diagPromise;
+    const diagSummary = (diag && diag.summary) || {};
+    const ingest = (diag && diag.ingest_freshness) || {};
+    const cal = (diag && diag.calibration_readiness) || {};
+    const fw = (diag && diag.firmware_readiness) || {};
+    const scannerCount = diagSummary.scanner_count ?? nodeList.reduce((s,n)=>s+(Array.isArray(n.scanners)?n.scanners.length:0),0);
+    const staleScanners = nodeList.flatMap(n => n.scanners || []).filter(sc => sc.time_sync_health && sc.time_sync_health !== 'fresh').length;
+    const nodesFetchFailed = !nodes;
+    const sensorStateClass = nodesFetchFailed ? 'warn' : onlineN > 0 ? 'ok' : 'warn';
+    const sensorStateLabel = nodesFetchFailed ? 'API?' : onlineN + '/' + nodeList.length;
+    const sensorHint = nodesFetchFailed
+      ? 'Node status API fetch failed'
+      : onlineN > 0
+        ? totalBatches+' batches · '+totalDets+' detections'
+        : 'No uplink batches received at /detections/drones';
+    const scannerHint = nodesFetchFailed
+      ? 'waiting for node status'
+      : staleScanners
+        ? staleScanners+' stale time sync'
+        : scannerCount
+          ? 'fresh telemetry'
+          : 'no scanners reported';
+    const readinessHtml =
+      '<div class="readiness-tile"><div class="label">Backend</div><div class="value '+(health?'ok':'err')+'">'+(health?'OK':'OFF')+'</div><div class="hint">'+htmlEsc(health ? 'v'+health.version : 'health unavailable')+'</div></div>'+
+      '<div class="readiness-tile"><div class="label">Sensors</div><div class="value '+sensorStateClass+'">'+htmlEsc(sensorStateLabel)+'</div><div class="hint">'+htmlEsc(sensorHint)+'</div></div>'+
+      '<div class="readiness-tile"><div class="label">Scanners</div><div class="value '+(nodesFetchFailed?'warn':staleScanners?'warn':scannerCount?'ok':'warn')+'">'+scannerCount+'</div><div class="hint">'+htmlEsc(scannerHint)+'</div></div>'+
+      '<div class="readiness-tile"><div class="label">Calibration</div><div class="value '+(cal.ready?'ok':'warn')+'">'+(cal.ready?'READY':'CHECK')+'</div><div class="hint">'+htmlEsc((cal.reasons||[]).join(', ') || (cal.active_model_source || 'trusted model'))+'</div></div>'+
+      '<div class="readiness-tile"><div class="label">Firmware</div><div class="value '+((fw.drift_count||0)>0?'warn':'ok')+'">'+(fw.drift_count||0)+'</div><div class="hint">'+htmlEsc((fw.expected_firmware_version||'current target')+' drift warnings')+'</div></div>';
+    document.getElementById('ov-readiness-strip').innerHTML = readinessHtml;
+    const sensorRoster = document.getElementById('ov-sensor-roster');
+    if (sensorRoster) {
+      sensorRoster.innerHTML = nodeList.length
+        ? '<table class="compact-table"><tr><th>Node</th><th>Status</th><th>Scanners</th><th>Firmware</th><th>Batches</th><th>Detections</th><th>Last Seen</th></tr>' +
+          nodeList.map(n => {
+            const scanners = Array.isArray(n.scanners) ? n.scanners : [];
+            return '<tr><td style="font-weight:700;color:#58a6ff">'+htmlEsc(n.device_id || 'unknown')+'</td>' +
+              '<td><span class="status-chip '+(n.online?'ok':'err')+'">'+(n.online?'online':'offline')+'</span></td>' +
+              '<td>'+htmlEsc(scanners.length ? scanners.map(sc => (sc.uart || '?').toUpperCase()+':'+(sc.ver || '?')).join(' / ') : 'none seen')+'</td>' +
+              '<td style="font-family:JetBrains Mono,monospace">'+htmlEsc(n.firmware_version || '?')+'</td>' +
+              '<td>'+htmlEsc(n.total_batches ?? 0)+'</td>' +
+              '<td>'+htmlEsc(n.total_detections ?? 0)+'</td>' +
+              '<td>'+ago(n.last_seen)+'</td></tr>';
+          }).join('') + '</table>'
+        : '<div class="empty">'+htmlEsc(nodesFetchFailed ? 'Node status API fetch failed' : 'No uplink batches received at /detections/drones')+'</div>' +
+          (!nodesFetchFailed ? '<div style="font-size:11px;color:#8b949e;margin-top:6px">Expected uplink POST: <span class="val">'+htmlEsc(ingest.expected_backend_url || 'http://fof-server.local:8000/detections/drones')+'</span></div>' : '');
+    }
 
-    // Overview: System
-    const totalBatches=nodeList.reduce((s,n)=>s+n.total_batches,0);
-    const totalDets=nodeList.reduce((s,n)=>s+n.total_detections,0);
-    document.getElementById('ov-system').innerHTML=
-      '<div class="metric"><span>Batches</span><span class="val">'+totalBatches+'</span></div>'+
-      '<div class="metric"><span>Detections</span><span class="val">'+totalDets+'</span></div>'+
-      (uplink?'<div class="metric"><span>Uptime</span><span class="val">'+fmtUp(uplink.uptime_s)+'</span></div>':'');
+    document.getElementById('ov-signal-summary').innerHTML =
+      '<div class="signal-card"><div class="k">Drone / Test</div><div class="v" style="color:'+ (wifiDrones.length?'var(--red)':'var(--green)') +'">'+(diagSummary.drone_related_count ?? wifiDrones.length)+'</div><div class="hint">Remote ID and curated SSIDs</div></div>'+
+      '<div class="signal-card"><div class="k">Trackers</div><div class="v" style="color:'+ (devSum.trackers_active?'var(--red)':'var(--green)') +'">'+(devSum.trackers_active||0)+'</div><div class="hint">Active BLE tracker class</div></div>'+
+      '<div class="signal-card"><div class="k">Probe Identities</div><div class="v" style="color:var(--probe)">'+(diagSummary.probe_identity_count||0)+'</div><div class="hint">Stable WiFi probe groups</div></div>'+
+      '<div class="signal-card"><div class="k">Unknown / Noisy</div><div class="v" style="color:'+((diagSummary.unknown_noisy_count||0)?'var(--amber)':'var(--green)')+'">'+(diagSummary.unknown_noisy_count||0)+'</div><div class="hint">Needs context or filtering</div></div>';
 
     // Overview: Recent (non-AP)
     const rd=document.getElementById('ov-recent');
     if(recent && recent.count>0){
-      rd.innerHTML='<table><tr><th>Age</th><th>Class</th><th>Device</th><th>Source</th><th>RSSI</th><th>Sensors</th><th>Mfr</th></tr>'+
-        recent.devices.slice(0,20).map(d=>
+      rd.innerHTML='<table class="compact-table"><tr><th>Age</th><th>Class</th><th>Device</th><th>Connected AP</th><th>Why</th><th>RSSI</th><th>Sensors</th><th></th></tr>'+
+        recent.devices.slice(0,20).map(d=>{
+          const drawerId = registerDrawerItem(d);
+          const ex = d.detection_explanation || {};
+          const limits = (ex.limitations || []).slice(0,2).join(' | ');
+          let apCell = '<span style="color:#7d8896">—</span>';
+          if (d.source === 'wifi_assoc') {
+            if (d.connected_ap_ssid) {
+              apCell = '<b>'+htmlEsc(d.connected_ap_ssid)+'</b>'+
+                (d.connected_ap_vendor ? '<br><span style="color:#7d8896;font-size:11px">'+htmlEsc(d.connected_ap_vendor)+'</span>' : '');
+            } else if (d.bssid) {
+              apCell = '<span style="color:#7d8896" title="No beacon for this BSSID yet — wait for a scan cycle">'+htmlEsc(d.bssid)+'</span>';
+            }
+          }
+          return (
           '<tr><td>'+d.age_s+'s</td><td>'+clsBadge(d.classification)+'</td>'+
           '<td style="font-weight:700">'+(d.ssid||d.drone_id)+'</td>'+
-          '<td>'+srcBadge(d.source)+'</td>'+
+          '<td>'+apCell+'</td>'+
+          '<td>'+srcBadge(d.source)+' <span title="'+htmlEsc(limits)+'">'+htmlEsc(ex.primary_reason || 'Observed RF device')+'</span></td>'+
           '<td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td>'+
           '<td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td>'+
-          '<td style="color:#8b949e">'+(d.manufacturer||'-')+'</td></tr>'
-        ).join('')+'</table>';
+          '<td><button class="btn ghost" onclick="openSignalDrawer(\''+drawerId+'\')">Details</button></td></tr>'
+        )}).join('')+'</table>';
     } else { rd.innerHTML='<div class="empty">No detections yet</div>'; }
 
     // MAP TAB — Leaflet
@@ -2210,6 +2602,13 @@ async function refresh() {
     const drones=map?map.drones:[];
     const hasSensorPos=sensors.some(s=>s.lat!=0||s.lon!=0);
     updateMap(sensors, drones, nodeList);
+    const positionedPreview = (map && map.drones ? map.drones : []).filter(d => d.lat && d.lon).slice(0,5);
+    document.getElementById('ov-map-summary').innerHTML = positionedPreview.length
+      ? positionedPreview.map(d => {
+          const drawerId = registerDrawerItem(d);
+          return '<div class="position-row"><span>'+clsBadge(d.classification)+' <b>'+htmlEsc(d.ssid || d.drone_id)+'</b><br><span style="color:#7d8896">'+htmlEsc((d.detection_explanation||{}).primary_reason || d.position_source || 'positioned')+'</span></span><span style="text-align:right;font-family:JetBrains Mono,monospace">'+Number(d.lat).toFixed(5)+', '+Number(d.lon).toFixed(5)+'<br><button class="btn ghost" onclick="openSignalDrawer(\''+drawerId+'\')">Details</button></span></div>';
+        }).join('')
+      : '<div class="empty">No positioned signals match current filters</div>';
 
     // Triangulation
     const ts=document.getElementById('tri-status');
@@ -2261,6 +2660,8 @@ async function refresh() {
     refreshAnomalies();
     refreshDetections();
     refreshAlerts();
+    refreshDiagnostics();
+    refreshFleetFirmwarePanel();
 
     // NODES TAB — skip rebuild if user is interacting (but don't exit refresh)
     if (!pausedFeeds.has('nodes')) {
@@ -2338,6 +2739,9 @@ async function refresh() {
               if (sc.probe_seen > 0 || sc.probe_sent > 0) diag += ' probe:'+sc.probe_sent+'/'+sc.probe_seen;
               if (sc.noise_drop_ble > 0) diag += ' ble_drop:'+sc.noise_drop_ble;
               if (sc.noise_drop_wifi > 0) diag += ' wifi_drop:'+sc.noise_drop_wifi;
+              if (sc.fw_state || sc.fw_update_state) diag += ' fw:'+(sc.fw_state||sc.fw_update_state);
+              if (sc.fw_check_count > 0) diag += ' fw_checks:'+sc.fw_check_count;
+              if (sc.last_fw_error) diag += ' fw_error:'+sc.last_fw_error;
               return '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:11px">'+
                 '<span style="color:#8b949e">'+sc.uart.toUpperCase()+' Scanner</span>'+
                 '<span style="font-family:JetBrains Mono,monospace">'+
@@ -2360,8 +2764,8 @@ async function refresh() {
 
     document.getElementById('footer').textContent=new Date().toLocaleTimeString()+' | #'+refreshN;
   } catch(e) {
-    document.getElementById('health-dot').className='status-dot err';
-    document.getElementById('health-text').textContent='error: '+e.message;
+    document.getElementById('health-dot').className=lastHealthOk ? 'status-dot warn' : 'status-dot err';
+    document.getElementById('health-text').textContent=(lastHealthOk ? 'ui error: ' : 'offline: ')+e.message;
   }
 }
 
@@ -2421,11 +2825,21 @@ async function refreshDetections() {
     const srcFilter = document.getElementById('det-source').value;
     const confFilter = parseFloat(document.getElementById('det-filter').value) || 0;
     let devs = grouped.devices;
+    const sourceCounts = {};
+    grouped.devices.forEach(d => { sourceCounts[d.source || 'unknown'] = (sourceCounts[d.source || 'unknown'] || 0) + 1; });
+    const sourceSummary = document.getElementById('det-source-summary');
+    if (sourceSummary) {
+      sourceSummary.innerHTML = Object.entries(sourceCounts)
+        .sort((a,b) => b[1] - a[1])
+        .map(([src,count]) => '<span style="margin-left:6px">'+srcBadge(src)+' <span style="color:#c9d1d9">'+count+'</span></span>')
+        .join('');
+    }
     if (srcFilter) devs = devs.filter(d => d.source === srcFilter);
     if (confFilter > 0) devs = devs.filter(d => d.best_confidence >= confFilter);
     dc.textContent = devs.length + ' / ' + grouped.count + ' devices';
-    updateFeed('det-feed', '<table><tr><th onclick="sortTable(this)">Age</th><th onclick="sortTable(this)">Class</th><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Type</th><th onclick="sortTable(this)">Src</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th>Sensor RSSI</th><th onclick="sortTable(this)">Hits</th><th onclick="sortTable(this)">Evidence</th></tr>'+
+    updateFeed('det-feed', '<table><tr><th onclick="sortTable(this)">Age</th><th onclick="sortTable(this)">Class</th><th onclick="sortTable(this)">Device</th><th onclick="sortTable(this)">Type</th><th onclick="sortTable(this)">Src</th><th onclick="sortTable(this)">RSSI</th><th onclick="sortTable(this)">Sensors</th><th>Sensor RSSI</th><th onclick="sortTable(this)">Hits</th><th onclick="sortTable(this)">Evidence</th><th></th></tr>'+
       devs.map(d => {
+        const drawerId = registerDrawerItem(d);
         const sRssi = Object.entries(d.sensor_rssi||{}).map(([k,v])=>sensorLabel(k)+':'+v).join(' ');
         // Extract device type from BLE drone_id (BLE:HASH:TypeName)
         let devType = '';
@@ -2453,9 +2867,14 @@ async function refreshDetections() {
         const bssid = d.bssid || '';
         const mfrDisplay = mfr || (bssid ? '<span style="color:#484f58" title="'+bssid+'">'+bssid.substring(0,8)+'</span>' : '-');
         const evidence = rfChips(d) + (d.evidence && d.evidence.length ? '<div style="font-size:9px;color:#8b949e;margin-top:2px">'+d.evidence.slice(0,2).join(' | ')+'</div>' : '') || mfrDisplay;
-        return '<tr><td>'+d.age_s+'s</td><td>'+clsBadge(d.classification)+'</td><td style="font-weight:700">'+devName+'</td><td style="font-size:10px;color:#8b949e">'+devType+'</td><td>'+srcBadge(d.source)+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td><td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td><td style="font-size:10px">'+sRssi+'</td><td>'+d.detection_count+'</td><td style="color:#8b949e">'+evidence+'</td></tr>';
+        return '<tr><td>'+d.age_s+'s</td><td>'+clsBadge(d.classification)+'</td><td style="font-weight:700">'+devName+'</td><td style="font-size:10px;color:#8b949e">'+devType+'</td><td>'+srcBadge(d.source)+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi||'-')+'</span></td><td><span class="val '+(d.sensor_count>=2?'ok':'')+'">'+d.sensor_count+'</span></td><td style="font-size:10px">'+sRssi+'</td><td>'+d.detection_count+'</td><td style="color:#8b949e">'+evidence+'</td><td><button class="btn ghost" onclick="openSignalDrawer(\''+drawerId+'\')">Details</button></td></tr>';
       }).join('') + '</table>');
-  } else { dc.textContent=''; updateFeed('det-feed','<div class="empty">No detections</div>'); }
+  } else {
+    dc.textContent='';
+    const sourceSummary = document.getElementById('det-source-summary');
+    if (sourceSummary) sourceSummary.textContent = '';
+    updateFeed('det-feed','<div class="empty">No detections</div>');
+  }
 }
 
 async function refreshAlerts() {
@@ -2514,19 +2933,21 @@ async function refreshAlerts() {
   }
 
   // 4. WiFi Probe Activity
-  const probes = await f(API+'/detections/probes/history?hours=1');
+  const probes = await f(API+'/detections/probes?max_age_s=3600');
   const probeEl = document.getElementById('alert-probes');
   if (probes && probes.devices && probes.devices.length > 0) {
+    const hotSsids = aggregateProbeSsids(probes.devices);
     probeEl.innerHTML =
-      '<div style="margin-bottom:8px;font-size:11px;color:#8b949e">' + probes.unique_devices + ' devices probing for ' + probes.unique_ssids + ' SSIDs in the last hour</div>' +
-      '<table><tr><th>Device MAC</th><th>SSIDs Probed</th><th>Count</th><th>Best RSSI</th><th>Sensors</th></tr>' +
+      '<div style="margin-bottom:8px;font-size:11px;color:#8b949e">' + (probes.count || probes.devices.length) + ' stable probe identities probing for ' + hotSsids.length + ' SSIDs in the last hour</div>' +
+      '<table><tr><th>Identity</th><th>SSIDs Probed</th><th>Count</th><th>Best RSSI</th><th>Sensors</th><th></th></tr>' +
       probes.devices.slice(0, 20).map(d => {
-        const ssids = d.ssids.slice(0, 5).map(s => s.ssid).join(', ') + (d.ssids.length > 5 ? ' +' + (d.ssids.length-5) + ' more' : '');
-        return '<tr><td style="font-family:monospace;font-size:10px">'+d.mac+'</td><td style="font-size:11px">'+ssids+'</td><td>'+d.total_probes+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+d.best_rssi+'</span></td><td>'+d.sensors.length+'</td><td>'+locateBtn(d.device)+'</td></tr>';
+        const ssids = probeSsids(d);
+        const ssidText = ssids.slice(0, 5).map(htmlEsc).join(', ') + (ssids.length > 5 ? ' +' + (ssids.length-5) + ' more' : '');
+        return '<tr><td style="font-family:monospace;font-size:10px;color:#e040fb">'+htmlEsc(probeIdentity(d))+'</td><td style="font-size:11px">'+ssidText+'</td><td>'+probeCount(d)+'</td><td><span class="rssi '+rssiClass(d.best_rssi)+'">'+(d.best_rssi ?? '?')+'</span></td><td>'+((d.sensors || []).length || d.sensor_count || 0)+'</td><td>'+locateBtn(probeTrackTarget(d))+'</td></tr>';
       }).join('') + '</table>' +
-      (probes.hot_ssids && probes.hot_ssids.length > 0 ? '<div style="margin-top:12px"><div style="font-size:12px;font-weight:700;color:#ff9500;margin-bottom:6px">Hot SSIDs (probed by multiple devices)</div>' +
+      (hotSsids.length > 0 ? '<div style="margin-top:12px"><div style="font-size:12px;font-weight:700;color:#ff9500;margin-bottom:6px">Hot SSIDs (probed by multiple devices)</div>' +
         '<table><tr><th>SSID</th><th>Devices</th><th>Probes</th><th>Best RSSI</th></tr>' +
-        probes.hot_ssids.slice(0,10).map(s => '<tr><td style="font-weight:700">'+s.ssid+'</td><td>'+s.device_count+'</td><td>'+s.total_probes+'</td><td><span class="rssi '+rssiClass(s.best_rssi)+'">'+s.best_rssi+'</span></td></tr>').join('') + '</table></div>' : '');
+        hotSsids.slice(0,10).map(s => '<tr><td style="font-weight:700">'+htmlEsc(s.ssid)+'</td><td>'+s.device_count+'</td><td>'+s.total_probes+'</td><td><span class="rssi '+rssiClass(s.best_rssi)+'">'+(s.best_rssi ?? '?')+'</span></td></tr>').join('') + '</table></div>' : '');
   } else {
     probeEl.innerHTML = '<div class="empty">No probe data in the last hour</div>';
   }
@@ -2777,6 +3198,7 @@ async function updateScannerDiag() {
         return '<div class="node" style="border-left:3px solid '+border+'">' +
           '<div class="node-hdr"><span class="node-name">'+sc.uart.toUpperCase()+' Scanner</span><span class="pill on">'+(sc.ver||'?')+'</span></div>' +
           '<div class="metric"><span>Board</span><span class="val blue">'+(sc.board||'?')+'</span></div>' +
+          '<div class="metric"><span>Profile</span><span class="val">'+(sc.scan_profile||node.scan_profile||'unknown')+' / '+(sc.slot_role||sc.uart||'?')+'</span></div>' +
           '<div class="metric"><span>Time Sync</span><span class="val '+statusCls+'">'+timeHealthLabel(status)+'</span></div>' +
           '<div class="metric"><span>tcnt</span><span class="val">'+(sc.tcnt||0)+'</span></div>' +
           '<div class="metric"><span>Valid Count</span><span class="val">'+(sc.time_valid_count||0)+'</span></div>' +
@@ -2859,6 +3281,86 @@ async function toggleSensorDetail(deviceId) {
   el.innerHTML = html;
 }
 
+// ── Fleet Scanner Firmware Controls ─────────────────────────────────────
+let lastScannerRolloutId = '';
+
+async function refreshFleetFirmwarePanel() {
+  const el = document.getElementById('fleet-firmware-panel');
+  if (!el) return;
+  const readiness = await f(API+'/nodes/firmware/scanner/readiness', 5000);
+  let rollout = null;
+  if (lastScannerRolloutId) {
+    rollout = await f(API+'/nodes/firmware/rollouts/'+lastScannerRolloutId, 3000);
+  }
+  if (!readiness) {
+    el.innerHTML = '<div class="empty">Scanner firmware readiness API unavailable</div>';
+    return;
+  }
+  const scanners = readiness.scanners || [];
+  const blockers = scanners.filter(s => s.needs_usb_recovery || (s.blockers||[]).length);
+  const rolloutHtml = rollout
+    ? '<div style="margin-top:8px;font-size:11px;color:#8b949e">Last rollout <span class="val">'+htmlEsc(rollout.rollout_id)+'</span> · <span class="val '+(rollout.status==='done'?'ok':rollout.status==='blocked'||rollout.status==='failed'?'err':'warn')+'">'+htmlEsc(rollout.status)+'</span></div>'
+    : '<div style="margin-top:8px;font-size:11px;color:#8b949e">No scanner fleet rollout started from this dashboard session</div>';
+  el.innerHTML =
+    '<div class="grid4">' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Scanners</div><div class="val">'+htmlEsc(readiness.count||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Self-update Capable</div><div class="val '+((readiness.ready_count||0)>0?'ok':'warn')+'">'+htmlEsc(readiness.ready_count||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">Blocked</div><div class="val '+((readiness.blocked_count||0)>0?'warn':'ok')+'">'+htmlEsc(readiness.blocked_count||0)+'</div></div>' +
+      '<div class="card" style="padding:8px"><div style="font-size:10px;color:#484f58">USB Recovery</div><div class="val '+((readiness.needs_usb_recovery_count||0)>0?'err':'ok')+'">'+htmlEsc(readiness.needs_usb_recovery_count||0)+'</div></div>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">' +
+      '<button class="btn secondary" onclick="stageFleetScannerFirmware()">Stage Fleet</button>' +
+      '<button class="btn primary" onclick="startScannerFleetRollout(\'canary\')">Canary</button>' +
+      '<button class="btn secondary" onclick="startScannerFleetRollout(\'fleet\')">Continue Fleet</button>' +
+      '<button class="btn secondary" onclick="triggerScannerFirmwareCheck()">Trigger Firmware Check</button>' +
+      '<button class="btn ghost" onclick="refreshFleetFirmwarePanel()">Refresh</button>' +
+    '</div>' +
+    (scanners.length
+      ? '<table class="compact-table"><tr><th>Node</th><th>Slot</th><th>Current</th><th>Target</th><th>State</th><th>Blocker / Next Action</th></tr>' +
+        scanners.map(s => {
+          const blockers = (s.blockers||[]).join(', ');
+          const stateCls = s.already_current ? 'ok' : s.needs_usb_recovery ? 'err' : blockers ? 'warn' : 'blue';
+          return '<tr><td style="font-weight:700;color:#58a6ff">'+htmlEsc(s.device_id)+'</td>' +
+            '<td>'+htmlEsc((s.uart||'?').toUpperCase())+'</td>' +
+            '<td style="font-family:JetBrains Mono,monospace">'+htmlEsc(s.current_version||'?')+'</td>' +
+            '<td style="font-family:JetBrains Mono,monospace">'+htmlEsc((s.target_firmware||'?')+' '+(s.target_version||''))+'</td>' +
+            '<td><span class="val '+stateCls+'">'+htmlEsc(s.state||'?')+'</span></td>' +
+            '<td style="font-size:11px;color:'+(s.needs_usb_recovery?'#f85149':'#8b949e')+'">'+htmlEsc(blockers || s.next_action || 'ready')+'</td></tr>';
+        }).join('') + '</table>'
+      : '<div class="empty">No scanner slots are reporting yet</div>') +
+    (blockers.length ? '<div style="margin-top:8px;color:#d29922;font-size:11px">Blocked scanners will not be treated as flashed until heartbeat version proof appears. USB recovery means this scanner needs the recovery-capable image once.</div>' : '') +
+    rolloutHtml +
+    '<div id="fleet-firmware-status" style="margin-top:8px;font-size:12px"></div>';
+}
+
+async function stageFleetScannerFirmware() {
+  const status = document.getElementById('fleet-firmware-status');
+  if (status) status.innerHTML = '<span class="val warn">Staging scanner firmware to online uplinks...</span>';
+  const r = await fetch(API+'/nodes/firmware/scanner/stage-fleet', {method:'POST'});
+  const d = await r.json();
+  if (status) status.innerHTML = '<span class="val '+(d.ok?'ok':'warn')+'">Stage fleet: '+(d.ok?'ok':'check blockers')+' ('+(d.count||0)+' uplinks)</span>';
+  await refreshFleetFirmwarePanel();
+}
+
+async function triggerScannerFirmwareCheck() {
+  const status = document.getElementById('fleet-firmware-status');
+  if (status) status.innerHTML = '<span class="val warn">Triggering scanner fw_check...</span>';
+  const r = await fetch(API+'/nodes/firmware/scanner/trigger-check', {method:'POST'});
+  const d = await r.json();
+  if (status) status.innerHTML = '<span class="val '+(d.ok?'ok':'warn')+'">Trigger check: '+(d.ok?'sent':'blocked')+' ('+(d.count||0)+' uplinks)</span>';
+  await refreshFleetFirmwarePanel();
+}
+
+async function startScannerFleetRollout(mode) {
+  const status = document.getElementById('fleet-firmware-status');
+  if (status) status.innerHTML = '<span class="val warn">Starting '+mode+' scanner rollout...</span>';
+  const r = await fetch(API+'/nodes/firmware/scanner/rollout?mode='+encodeURIComponent(mode), {method:'POST'});
+  const d = await r.json();
+  if (d.rollout_id) lastScannerRolloutId = d.rollout_id;
+  if (status) status.innerHTML = '<span class="val '+(r.ok?'ok':'err')+'">'+(r.ok?'Rollout queued: '+d.rollout_id:(d.detail||'rollout failed'))+'</span>';
+  await refreshFleetFirmwarePanel();
+}
+
 // ── OTA Modal ─────────────────────────────────────────────────────────
 let otaDeviceId = '';
 
@@ -2915,8 +3417,12 @@ async function showOtaDialog(deviceId) {
       if (sc.uart_tx_dropped > 0) stats += ' drops:'+sc.uart_tx_dropped;
       if (sc.uart_tx_high_water > 0) stats += ' qhi:'+sc.uart_tx_high_water;
       if (sc.probe_seen > 0 || sc.probe_sent > 0) stats += ' probe:'+sc.probe_sent+'/'+sc.probe_seen;
+      if (sc.scan_profile || sc.slot_role) stats += ' profile:'+(sc.scan_profile||'?')+'/'+(sc.slot_role||'?');
       if (sc.noise_drop_ble > 0) stats += ' ble_drop:'+sc.noise_drop_ble;
       if (sc.noise_drop_wifi > 0) stats += ' wifi_drop:'+sc.noise_drop_wifi;
+      if (sc.fw_state || sc.fw_update_state) stats += ' fw:'+(sc.fw_state||sc.fw_update_state);
+      if (sc.fw_check_count > 0) stats += ' fw_checks:'+sc.fw_check_count;
+      if (sc.last_fw_error) stats += ' fw_error:'+sc.last_fw_error;
       scannerHtml += '<div class="metric"><span>'+sc.uart.toUpperCase()+' Scanner</span>' +
         '<span class="val"><span style="color:#58a6ff">'+sc.board+'</span> <span style="color:#e040fb">v'+sc.ver+'</span>'+alerts+'</span></div>';
       if (stats) scannerHtml += '<div class="metric"><span style="color:#484f58;font-size:10px">Frame stats</span><span class="val" style="color:#8b949e;font-size:10px">'+stats.trim()+'</span></div>';

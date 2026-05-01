@@ -4,6 +4,239 @@ All notable changes to the ESP32 hardware edition of Friend or Foe.
 
 ## [Unreleased]
 
+## [0.63.0-svc156] - 2026-04-30
+
+### Added
+- **Auto firmware check on the uplink.** New `fw_auto_check` task in
+  `esp32/uplink/main/network/fw_auto_check.{c,h}` polls the backend on a
+  30-min cadence (first check 2 min after boot). Two responsibilities:
+  - Self-OTA: if `/nodes/firmware/latest/uplink-s3` advertises a different
+    version than running, downloads via `/nodes/firmware/download/uplink-s3`
+    into the inactive OTA slot, sets boot partition, restarts. Existing
+    rollback machinery in `main.c` reverts on first-boot WiFi failure.
+  - Scanner cache refresh: detects which scanner variant is connected
+    (`scanner-s3-combo` vs `scanner-s3-combo-seed`) from heartbeat, fetches
+    the matching firmware, stages it via the existing fw_store partition
+    so the next `fw_check` from the scanner pulls the new image through
+    the existing fw_offer / fw_ready flow.
+- **Backend `GET /nodes/firmware/latest/{name}`** — returns metadata
+  (`name`, `version`, `size`, `sha256`, `download_url`, `board`,
+  `description`) for the latest available firmware. Reuses the existing
+  `FirmwareManager` (custom upload → local build → GitHub release).
+- **Backend `GET /nodes/firmware/download/{name}`** — raw binary stream
+  with sha256 ETag and `If-None-Match` support so devices that already
+  have the right image get a cheap 304 instead of a re-download.
+- **`fw_store_get_target_partition` / `fw_store_persist_metadata`** public
+  helpers in `fw_store.h` so `fw_auto_check` can stage to the same partition
+  the manual `/api/fw/upload` flow uses without duplicating selection logic.
+- **Skip-conditions + version-compare native tests** (13 cases) covering
+  WiFi-down, relay-active, low-heap, never-checked, interval boundary,
+  unknown remote, mixed naming schemes.
+
+### Notes
+- Auto-check uses NVS-stored `backend_url` (default
+  `http://fof-server.local:8000`), so a freshly-flashed uplink picks up
+  whatever URL was configured via the serial config window.
+- Exponential backoff on consecutive failures: 60 s → 120 s → ... up to
+  1 hour, then steady. Reset on first successful check.
+- For 16 MB uplinks the partition table already provisions per-variant
+  scanner caches (`fw_scanner_s3`, `fw_scanner_esp32`, `fw_scanner_c5`,
+  `fw_self`) — `fw_store_get_target_partition` currently picks the first
+  inactive OTA slot or the first 0x40 data partition, which is the same
+  behavior as before. Multi-variant caching is a future enhancement.
+
+## [0.63.0-svc155] - 2026-04-30
+
+### Added
+- **Scanner OTA rollback + crash-loop guard.** Mirrors the uplink rollback
+  machinery in `scanner/main/core/scanner_rollback.{h,c}`:
+  - Boot-time `esp_ota_get_state_partition()` check sets PENDING_VERIFY flag.
+  - One-shot task marks the running app valid after `STABLE_BOOT_S` (60 s) of
+    uptime — clears the rollback gate and resets the crash counter.
+  - NVS-persisted crash counter (`fof_rb/crash_n`) bumps on `ESP_RST_PANIC`,
+    `ESP_RST_INT_WDT`, `ESP_RST_TASK_WDT`, `ESP_RST_WDT`. Brownouts excluded.
+  - **Bad-OTA recovery:** any crash boot while PENDING_VERIFY immediately calls
+    `esp_ota_mark_app_invalid_rollback_and_reboot()` — reverts to the last
+    known-good slot before the bad image can keep crashing.
+  - **Crash-loop on validated image:** if the running image is *validated* but
+    has crashed `CRASH_LOOP_THRESHOLD` (3) times in a row, fw_state surfaces
+    `crash_loop:N` via `last_fw_error`. The next `fw_check` carries this and
+    the uplink's existing `fw_offer` / `fw_ready` flow re-delivers the cached
+    firmware — recovery without USB.
+- **UART command watchdog routes through rollback path.** Replaces a raw
+  `esp_restart()` so a freshly-OTA'd scanner that goes silent self-heals via
+  rollback instead of looping on the bad image.
+- **Uplink boot log of cached scanner firmware.** New `ESP_LOGW` line at
+  startup names the cached scanner image (`name`, `version`, `size`,
+  `partition`) so it's obvious the recovery cache is intact across reboots.
+- **Native-test coverage of rollback policy.** 10 new cases in
+  `test/test_scanner_rollback.c` exercise every (reset_reason × pending_verify
+  × prior_count) combination. Pure-function design — no esp_ota / NVS
+  dependency — by gating the runtime side on `SCANNER_ROLLBACK_HOST_TEST`.
+
+### Notes
+- Uplink fw_store partition was already persistent (NVS metadata + inactive
+  OTA partition). No new storage was needed for the "uplink keeps the latest
+  scanner firmware as a backup" requirement; this release just makes that
+  cache load-bearing for crash recovery.
+- Scanner-side rollback target is the *previous* OTA slot. After several
+  successive normal flashes the previous slot may itself be old — but it's
+  guaranteed to be a slot the device booted off cleanly before, which is
+  what we want for emergency fallback.
+
+## [0.63.0-svc154] - 2026-04-30
+
+### Added
+- **Scanner command-RX diagnostics on the wire.** Heartbeats now carry
+  `cmd_rx`, `cmd_parse_err`, `cmd_overflow`, `cmd_stale`, and `cmd_last_age_s`
+  so uplink + backend can distinguish a healthy command channel from a silent
+  one (e.g. UART backpressure, malformed JSON, listener stall).
+- **Firmware-update state in scanner heartbeat.** New fields propagated from
+  scanner up through uplink up to backend: `need_firmware`, `fw_state`,
+  `fw_target_version`, `fw_check_count`, `fw_backoff_s`, `last_fw_error`.
+  This lets the dashboard show *why* a scanner is or isn't taking an update
+  without USB serial.
+- **`scan_profile` echoed back from scanner.** Mirrors the command the uplink
+  sent so we can confirm the scanner actually adopted a profile change.
+- **OTA error state surfaced.** `uart_ota.c` now calls
+  `uart_tx_set_firmware_update_state(..., "error")` and records the reason
+  string on every OTA failure path, so a botched chunk shows up as `fw_state =
+  "error"` in the next heartbeat instead of silently looking healthy.
+- **Native test coverage.** `test_detection_policy.c` and `test_ssid_patterns.c`
+  pick up new cases that landed during the OTA hardening work.
+
+### Changed
+- **Uplink → scanner UART writes serialized.** New `s_uart_tx_lock` semaphore
+  (1s timeout) prevents the OTA chunk pipe from interleaving with flow-control
+  / scan-profile / fw_check commands. Removes a class of "scanner saw garbled
+  JSON" failures that surfaced under fast OTA + concurrent control traffic.
+- **`send_scanner_flow_cmd` uses the locked path.** Same code path as every
+  other scanner command write, so flow-control no longer races OTA chunks.
+- **Uplink `fw_store` substantially reworked** (~660 LOC delta) to support
+  the scanner self-update orchestration: staging, offer, relay, reboot,
+  and post-reboot version verification from heartbeat.
+
+### Notes
+- **Crash fallback today (uplink only):** ESP-IDF rollback is wired via
+  `rollback_check_at_boot` / `rollback_mark_valid` /
+  `rollback_and_reboot_or_restart` — a fresh-OTA uplink that can't associate
+  to WiFi is reverted to its previous slot before the watchdog can brick it.
+- **Crash fallback gap (scanners):** scanners do *not* yet call
+  `esp_ota_mark_app_invalid_rollback_and_reboot()`. A bad scanner OTA today
+  needs USB recovery. Adding the equivalent guard on the scanner is filed
+  for a follow-up rev.
+
+## [0.63.0-svc153] - 2026-04-27
+
+### Changed
+- **Canary rollout proof bump.** Version-only release used to verify the
+  scanner self-update path can stage, offer, relay, reboot, and prove both gate
+  seed scanner slots from heartbeat without USB recovery.
+
+## [0.63.0-svc152] - 2026-04-26
+
+### Fixed
+- **Scanner self-update boot ordering.** Scanner command listeners now start
+  immediately after UART setup, before WiFi/BLE/display tasks consume heap,
+  and task creation is checked explicitly. This makes the boot `fw_check`,
+  manual `fw_check_now`, and OTA command ingress prove themselves in scanner
+  telemetry instead of silently disappearing.
+
+## [0.63.0-svc151] - 2026-04-26
+
+### Fixed
+- **Scanner command-ingress diagnostics.** Scanner heartbeats now report parsed
+  command count, parse errors, stale partial lines, overflow count, and last
+  command age so the dashboard/backend can distinguish sensor TX health from
+  uplink-to-scanner command RX health.
+- **Scanner command listener watchdog.** A dedicated watchdog reboots the
+  scanner if the UART command listener stops looping, preventing a silent loss
+  of calibration, time-sync, scan-profile, or OTA command handling.
+
+## [0.63.0-svc150] - 2026-04-26
+
+### Fixed
+- **Scanner relay stop recovery.** Staged scanner relays now resend the
+  newline-framed `stop` command for an 8 s quieting window while watching for
+  `stop_ack`, instead of betting the whole flash on one control line during RF
+  flood. Verification remains strict: a scanner update still fails unless the
+  target version is proven after reboot.
+
+## [0.63.0-svc149] - 2026-04-26
+
+### Fixed
+- **Scanner command path hardening.** Uplink scanner commands now go through a
+  serialized single-frame writer with TX drain, watchdog `ready` messages stay
+  off the UART during scanner relays, and scanner command listeners run at
+  higher priority with stale partial-line recovery. This protects time sync,
+  calibration mode, scan-profile control, and scanner OTA from RF-flood
+  command loss.
+
+## [0.63.0-svc148] - 2026-04-26
+
+### Fixed
+- **Scanner relay verification.** Staged scanner relays now require `ota_done`
+  or a scanner identity line matching the staged target version before the
+  uplink reports success. The staged legacy relay path now fails with
+  `legacy_version_not_updated` or `legacy_verify_timeout` instead of claiming a
+  green update when an old scanner keeps running the previous image.
+
+## [0.63.0-svc147] - 2026-04-26
+
+### Fixed
+- **Staged scanner relay legacy fallback.** `/api/fw/relay?legacy=1` now
+  tolerates old scanner firmware that misses `stop_ack`, `ota_ack`, or final
+  `ota_done` while still using the uplink's staged firmware partition. The
+  backend scanner OTA endpoint retries this fallback automatically after
+  handshake timeouts.
+
+## [0.63.0-svc146] - 2026-04-26
+
+### Added
+- **Legacy scanner relay fallback.** Uplinks now accept
+  `/api/ota/relay?legacy=1` for old scanner firmware that can receive OTA
+  chunks but does not answer the newer `ota_ack` handshake reliably. The
+  normal staged/ACK relay remains the preferred path.
+
+## [0.63.0-svc145] - 2026-04-26
+
+### Fixed
+- **Uplink OTA rollback validation now happens immediately after WiFi
+  association.** `svc144` could report briefly and then roll back if a board
+  reset before the 30-second watchdog loop marked the pending OTA slot valid.
+
+## [0.63.0-svc144] - 2026-04-26
+
+### Added
+- **Scanner-initiated firmware update handshake.** Scanners now send `fw_check`,
+  accept uplink `fw_offer`, quiet their own TX path, and emit `fw_ready` before
+  OTA relay starts. This avoids forcing update commands through a flooded UART.
+- **Firmware update telemetry.** Scanner status and identity messages now carry
+  `need_firmware`, `fw_state`, and `target_ver` so backend/dashboard surfaces
+  can explain update readiness.
+
+### Changed
+- Uplinks now stage scanner images with real firmware version + board metadata,
+  expose that metadata via `/api/fw/info`, and can auto-relay a matching staged
+  image after scanner `fw_ready`.
+
+## [0.63.0-svc143] - 2026-04-26
+
+### Changed
+- Align the fleet target version across firmware builds, backend diagnostics,
+  web flasher manifests, and direct flash tooling.
+
+## [0.63.0-svc142] - 2026-04-25
+
+### Fixed
+- **Scanner control path recovery.** Reverts canary-only alternate RX listeners
+  and uses the known canonical scanner UART1 command path.
+- **Normal-mode RF quieting.** Temporarily suppresses generic AP inventory and
+  legacy BLE discovery fingerprints in scanner normal mode while preserving
+  exact calibration UUID handling and existing drone/probe paths.
+- **Rollout guardrail.** `svc142` must prove fresh scanner time sync and
+  stop/start acknowledgements on a single canary slot before any fleet OTA.
+
 ## [0.63.0-svc139] - 2026-04-25
 
 ### Added
