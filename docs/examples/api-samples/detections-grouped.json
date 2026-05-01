@@ -1,0 +1,3230 @@
+{
+  "count": 24,
+  "devices": [
+    {
+      "entity_id": "ent-98bd65d8",
+      "drone_id": "BLE:EA390488:AirTag",
+      "drone_ids": [
+        "BLE:EA390488:AirTag"
+      ],
+      "classification": "tracker",
+      "ssid": null,
+      "source": "ble_fingerprint",
+      "manufacturer": "AirTag",
+      "bssid": "C8:8E:19:XX:XX:XX",
+      "best_rssi": -80,
+      "best_confidence": 0.5,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -80
+      },
+      "detection_count": 6,
+      "last_seen": 1777660488.811857,
+      "first_seen": 1777660196.1825979,
+      "age_s": 2.2,
+      "mac_is_randomized": true,
+      "mac_identity_kind": "ble_random_static",
+      "mac_reason": "ble_random_address_type",
+      "brand": "Apple, Inc.",
+      "brand_source": "bluetooth_sig",
+      "brand_confidence": 0.9,
+      "vendor_long": "Apple, Inc.",
+      "oui_prefix": null,
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": "tracker",
+      "device_class_confidence": 0.75,
+      "device_family": "phone_tablet_or_pc",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.7,
+      "identity_source": "ble_ja3",
+      "detection_explanation": {
+        "primary_reason": "Apple Continuity BLE",
+        "confidence_band": "possible",
+        "evidence": [
+          "BLE company ID 0x004C: Apple, Inc.",
+          "Apple Continuity: Find My",
+          "Device family: phone_tablet_or_pc via vendor_keyword",
+          "ble_random_address_type",
+          "BLE-JA3: 45906bb9"
+        ],
+        "limitations": [
+          "Randomized MAC",
+          "Single-sensor observation"
+        ],
+        "recommended_action": "monitor"
+      },
+      "evidence": [
+        "BLE company ID 0x004C: Apple, Inc.",
+        "Apple Continuity: Find My",
+        "Device family: phone_tablet_or_pc via vendor_keyword",
+        "ble_random_address_type",
+        "BLE-JA3: 45906bb9"
+      ],
+      "related_entities": [],
+      "vendor_short": null,
+      "vendor_aliases": [],
+      "vendor_source": "randomized_mac",
+      "assignment_type": null,
+      "prefix_bits": null,
+      "product_hint": null,
+      "vendor_confidence": 0.0,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "randomized_mac",
+          "label": "Randomized/private MAC rule",
+          "url": "local:derived/mac-locally-administered-bit",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "bluetooth_sig",
+          "label": "Bluetooth SIG Assigned Numbers",
+          "url": null,
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "apple_continuity",
+          "label": "Apple Continuity BLE evidence",
+          "url": "https://github.com/furiousMAC/continuity",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": {
+        "label": "Apple Find My-capable Device",
+        "confidence": 0.78,
+        "source": "apple_continuity",
+        "source_url": "https://github.com/furiousMAC/continuity",
+        "message_types": [
+          "Find My"
+        ],
+        "messages": [
+          {
+            "type": 18,
+            "type_hex": "0x12",
+            "subtype_name": "Find My",
+            "length": null,
+            "flags": [],
+            "nearby_action": null,
+            "activity": null
+          }
+        ],
+        "flags": [],
+        "activity": null,
+        "nearby_actions": [],
+        "auth_tag_present": false,
+        "auth_tag_hash": null,
+        "evidence": [
+          "Apple Continuity: Find My"
+        ]
+      },
+      "wifi_fingerprint_v2": null,
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-d670018d",
+      "drone_id": "probe_F4:65:0B:XX:XX:XX",
+      "drone_ids": [
+        "probe_F4:65:0B:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": "[REDACTED-SSID-1]",
+      "source": "wifi_probe_request",
+      "manufacturer": "Espressif",
+      "bssid": "F4:65:0B:XX:XX:XX",
+      "best_rssi": -84,
+      "best_confidence": 0.05,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -84
+      },
+      "detection_count": 3,
+      "last_seen": 1777660485.233585,
+      "first_seen": 1777660305.141236,
+      "age_s": 5.8,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Espressif",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Espressif Inc.",
+      "oui_prefix": "F4:65:0B",
+      "public_oui_brands": {
+        "Espressif": 1
+      },
+      "randomized_mac_count": 0,
+      "public_mac_count": 1,
+      "brand_candidates": [
+        {
+          "brand": "Espressif",
+          "source": "oui",
+          "count": 1,
+          "confidence": 0.65,
+          "vendor_long": "Espressif Inc.",
+          "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+          "prefix_bits": 24
+        }
+      ],
+      "representative_public_mac": "F4:65:0B:XX:XX:XX",
+      "representative_oui_prefix": "F4:65:0B",
+      "known_network_label": "[REDACTED-SSID-2]",
+      "device_class": "known_owned",
+      "device_class_confidence": 0.75,
+      "device_family": "operator_known_lab_device",
+      "family_source": "known_network_label",
+      "family_confidence": 0.75,
+      "identity_source": "probe_ie_hash",
+      "detection_explanation": {
+        "primary_reason": "Known infrastructure",
+        "confidence_band": "known",
+        "evidence": [
+          "Public OUI: Espressif (Espressif Inc.) / MA-L-24",
+          "Known network label: [REDACTED-SSID] lab/property",
+          "Device family: operator_known_lab_device via known_network_label",
+          "Stable probe IE hash: 4f6e335e",
+          "Probed SSID count: 1",
+          "SSID evidence: [REDACTED-SSID]",
+          "Channel 2412 (2.4GHz)",
+          "Scanner/AP vendor label: Espressif"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "ignore_known"
+      },
+      "evidence": [
+        "Public OUI: Espressif (Espressif Inc.) / MA-L-24",
+        "Known network label: [REDACTED-SSID] lab/property",
+        "Device family: operator_known_lab_device via known_network_label",
+        "Stable probe IE hash: 4f6e335e",
+        "Probed SSID count: 1",
+        "SSID evidence: [REDACTED-SSID]",
+        "Channel 2412 (2.4GHz)",
+        "Scanner/AP vendor label: Espressif",
+        "Probe IE hash: 4f6e335e",
+        "Probed SSIDs: [REDACTED-SSID]"
+      ],
+      "related_entities": [],
+      "vendor_short": "Espressif",
+      "vendor_aliases": [
+        "Espressif",
+        "Espressif Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "operator_ssid_override",
+          "label": "Operator RF override",
+          "url": "local:backend/app/data/rf_overrides.yaml",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "IEH:4f6e335e",
+        "identity_basis": "ie_hash",
+        "ie_hash": "4f6e335e",
+        "auth_mode": null,
+        "channel": 2412,
+        "band": "2.4GHz",
+        "wifi_generation_hint": "2.4GHz-observed",
+        "probed_ssid_count": 1,
+        "ssid_present": true,
+        "confidence": 0.82,
+        "evidence": [
+          "Stable probe IE hash: 4f6e335e",
+          "Probed SSID count: 1",
+          "SSID evidence: [REDACTED-SSID]",
+          "Channel 2412 (2.4GHz)",
+          "Scanner/AP vendor label: Espressif"
+        ]
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-3066f805",
+      "drone_id": "STA:E4:F0:42:XX:XX:XX\u2192AP:F0:72:EA:XX:XX:XX",
+      "drone_ids": [
+        "STA:E4:F0:42:XX:XX:XX\u2192AP:F0:72:EA:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "F0:72:EA:XX:XX:XX",
+      "best_rssi": -70,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -70
+      },
+      "detection_count": 7,
+      "last_seen": 1777660482.56126,
+      "first_seen": 1777660212.049103,
+      "age_s": 8.5,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Google",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Google, Inc.",
+      "oui_prefix": "F0:72:EA",
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": "phone_tablet_or_pc",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.7,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Public OUI: Google (Google, Inc.) / MA-L-24",
+          "Scanner class label: WiFi-Assoc",
+          "Device family: phone_tablet_or_pc via vendor_keyword"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Public OUI: Google (Google, Inc.) / MA-L-24",
+        "Scanner class label: WiFi-Assoc",
+        "Device family: phone_tablet_or_pc via vendor_keyword"
+      ],
+      "related_entities": [],
+      "vendor_short": "Google",
+      "vendor_aliases": [
+        "Google",
+        "Google, Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-f3c072ee",
+      "drone_id": "STA:F8:B3:B7:XX:XX:XX\u2192AP:28:BD:89:XX:XX:XX",
+      "drone_ids": [
+        "STA:F8:B3:B7:XX:XX:XX\u2192AP:28:BD:89:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "28:BD:89:XX:XX:XX",
+      "best_rssi": -82,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -82
+      },
+      "detection_count": 7,
+      "last_seen": 1777660482.380204,
+      "first_seen": 1777660212.256321,
+      "age_s": 8.7,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Google",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Google, Inc.",
+      "oui_prefix": "28:BD:89",
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": "phone_tablet_or_pc",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.7,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Public OUI: Google (Google, Inc.) / MA-L-24",
+          "Scanner class label: WiFi-Assoc",
+          "Device family: phone_tablet_or_pc via vendor_keyword"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Public OUI: Google (Google, Inc.) / MA-L-24",
+        "Scanner class label: WiFi-Assoc",
+        "Device family: phone_tablet_or_pc via vendor_keyword"
+      ],
+      "related_entities": [],
+      "vendor_short": "Google",
+      "vendor_aliases": [
+        "Google",
+        "Google, Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-9dcd23a2",
+      "drone_id": "BLE:80543427:AirTag",
+      "drone_ids": [
+        "BLE:80543427:AirTag"
+      ],
+      "classification": "tracker",
+      "ssid": null,
+      "source": "ble_fingerprint",
+      "manufacturer": "AirTag",
+      "bssid": "EA:21:F6:XX:XX:XX",
+      "best_rssi": -87,
+      "best_confidence": 0.5,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -87
+      },
+      "detection_count": 10,
+      "last_seen": 1777660473.9365609,
+      "first_seen": 1777660222.80419,
+      "age_s": 17.1,
+      "mac_is_randomized": true,
+      "mac_identity_kind": "ble_random_static",
+      "mac_reason": "ble_random_address_type",
+      "brand": "Apple, Inc.",
+      "brand_source": "bluetooth_sig",
+      "brand_confidence": 0.9,
+      "vendor_long": "Apple, Inc.",
+      "oui_prefix": null,
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": "tracker",
+      "device_class_confidence": 0.75,
+      "device_family": "phone_tablet_or_pc",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.7,
+      "identity_source": "ble_ja3",
+      "detection_explanation": {
+        "primary_reason": "Apple Continuity BLE",
+        "confidence_band": "possible",
+        "evidence": [
+          "BLE company ID 0x004C: Apple, Inc.",
+          "Apple Continuity: Find My",
+          "Device family: phone_tablet_or_pc via vendor_keyword",
+          "ble_random_address_type",
+          "BLE-JA3: 50117611"
+        ],
+        "limitations": [
+          "Randomized MAC",
+          "Single-sensor observation"
+        ],
+        "recommended_action": "monitor"
+      },
+      "evidence": [
+        "BLE company ID 0x004C: Apple, Inc.",
+        "Apple Continuity: Find My",
+        "Device family: phone_tablet_or_pc via vendor_keyword",
+        "ble_random_address_type",
+        "BLE-JA3: 50117611"
+      ],
+      "related_entities": [],
+      "vendor_short": null,
+      "vendor_aliases": [],
+      "vendor_source": "randomized_mac",
+      "assignment_type": null,
+      "prefix_bits": null,
+      "product_hint": null,
+      "vendor_confidence": 0.0,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "randomized_mac",
+          "label": "Randomized/private MAC rule",
+          "url": "local:derived/mac-locally-administered-bit",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "bluetooth_sig",
+          "label": "Bluetooth SIG Assigned Numbers",
+          "url": null,
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "apple_continuity",
+          "label": "Apple Continuity BLE evidence",
+          "url": "https://github.com/furiousMAC/continuity",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": {
+        "label": "Apple Find My-capable Device",
+        "confidence": 0.78,
+        "source": "apple_continuity",
+        "source_url": "https://github.com/furiousMAC/continuity",
+        "message_types": [
+          "Find My"
+        ],
+        "messages": [
+          {
+            "type": 18,
+            "type_hex": "0x12",
+            "subtype_name": "Find My",
+            "length": 2,
+            "flags": [],
+            "nearby_action": null,
+            "activity": null
+          }
+        ],
+        "flags": [],
+        "activity": null,
+        "nearby_actions": [],
+        "auth_tag_present": false,
+        "auth_tag_hash": null,
+        "evidence": [
+          "Apple Continuity: Find My"
+        ]
+      },
+      "wifi_fingerprint_v2": null,
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-6f1556d4",
+      "drone_id": "STA:B0:81:84:XX:XX:XX\u2192AP:B0:E4:D5:XX:XX:XX",
+      "drone_ids": [
+        "STA:B0:81:84:XX:XX:XX\u2192AP:B0:E4:D5:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "B0:E4:D5:XX:XX:XX",
+      "best_rssi": -36,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -36
+      },
+      "detection_count": 7,
+      "last_seen": 1777660456.065166,
+      "first_seen": 1777660215.157171,
+      "age_s": 35.0,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Google",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Google, Inc.",
+      "oui_prefix": "B0:E4:D5",
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": "phone_tablet_or_pc",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.7,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Public OUI: Google (Google, Inc.) / MA-L-24",
+          "Scanner class label: WiFi-Assoc",
+          "Device family: phone_tablet_or_pc via vendor_keyword"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Public OUI: Google (Google, Inc.) / MA-L-24",
+        "Scanner class label: WiFi-Assoc",
+        "Device family: phone_tablet_or_pc via vendor_keyword"
+      ],
+      "related_entities": [],
+      "vendor_short": "Google",
+      "vendor_aliases": [
+        "Google",
+        "Google, Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-524499ba",
+      "drone_id": "STA:9C:76:13:XX:XX:XX\u2192AP:B0:E4:D5:XX:XX:XX",
+      "drone_ids": [
+        "STA:9C:76:13:XX:XX:XX\u2192AP:B0:E4:D5:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "B0:E4:D5:XX:XX:XX",
+      "best_rssi": -82,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -82
+      },
+      "detection_count": 1,
+      "last_seen": 1777660455.768785,
+      "first_seen": 1777660455.768785,
+      "age_s": 35.3,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Google",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Google, Inc.",
+      "oui_prefix": "B0:E4:D5",
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": "phone_tablet_or_pc",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.7,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Public OUI: Google (Google, Inc.) / MA-L-24",
+          "Scanner class label: WiFi-Assoc",
+          "Device family: phone_tablet_or_pc via vendor_keyword"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Public OUI: Google (Google, Inc.) / MA-L-24",
+        "Scanner class label: WiFi-Assoc",
+        "Device family: phone_tablet_or_pc via vendor_keyword"
+      ],
+      "related_entities": [],
+      "vendor_short": "Google",
+      "vendor_aliases": [
+        "Google",
+        "Google, Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-58f9c404",
+      "drone_id": "probe_F8:B3:B7:XX:XX:XX",
+      "drone_ids": [
+        "probe_F8:B3:B7:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": "[REDACTED-SSID-1]",
+      "source": "wifi_probe_request",
+      "manufacturer": "Espressif",
+      "bssid": "F8:B3:B7:XX:XX:XX",
+      "best_rssi": -79,
+      "best_confidence": 0.05,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -79
+      },
+      "detection_count": 1,
+      "last_seen": 1777660455.138525,
+      "first_seen": 1777660455.138525,
+      "age_s": 35.9,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Espressif",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Espressif Inc.",
+      "oui_prefix": "F8:B3:B7",
+      "public_oui_brands": {
+        "Espressif": 1
+      },
+      "randomized_mac_count": 0,
+      "public_mac_count": 1,
+      "brand_candidates": [
+        {
+          "brand": "Espressif",
+          "source": "oui",
+          "count": 1,
+          "confidence": 0.65,
+          "vendor_long": "Espressif Inc.",
+          "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+          "prefix_bits": 24
+        }
+      ],
+      "representative_public_mac": "F8:B3:B7:XX:XX:XX",
+      "representative_oui_prefix": "F8:B3:B7",
+      "known_network_label": "[REDACTED-SSID-2]",
+      "device_class": "known_owned",
+      "device_class_confidence": 0.75,
+      "device_family": "operator_known_lab_device",
+      "family_source": "known_network_label",
+      "family_confidence": 0.75,
+      "identity_source": "probe_ie_hash",
+      "detection_explanation": {
+        "primary_reason": "Known infrastructure",
+        "confidence_band": "known",
+        "evidence": [
+          "Public OUI: Espressif (Espressif Inc.) / MA-L-24",
+          "Known network label: [REDACTED-SSID] lab/property",
+          "Device family: operator_known_lab_device via known_network_label",
+          "Stable probe IE hash: 4f6e335e",
+          "Probed SSID count: 1",
+          "SSID evidence: [REDACTED-SSID]",
+          "Channel 2412 (2.4GHz)",
+          "Scanner/AP vendor label: Espressif"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "ignore_known"
+      },
+      "evidence": [
+        "Public OUI: Espressif (Espressif Inc.) / MA-L-24",
+        "Known network label: [REDACTED-SSID] lab/property",
+        "Device family: operator_known_lab_device via known_network_label",
+        "Stable probe IE hash: 4f6e335e",
+        "Probed SSID count: 1",
+        "SSID evidence: [REDACTED-SSID]",
+        "Channel 2412 (2.4GHz)",
+        "Scanner/AP vendor label: Espressif",
+        "Probe IE hash: 4f6e335e",
+        "Probed SSIDs: [REDACTED-SSID]"
+      ],
+      "related_entities": [],
+      "vendor_short": "Espressif",
+      "vendor_aliases": [
+        "Espressif",
+        "Espressif Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "operator_ssid_override",
+          "label": "Operator RF override",
+          "url": "local:backend/app/data/rf_overrides.yaml",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "IEH:4f6e335e",
+        "identity_basis": "ie_hash",
+        "ie_hash": "4f6e335e",
+        "auth_mode": null,
+        "channel": 2412,
+        "band": "2.4GHz",
+        "wifi_generation_hint": "2.4GHz-observed",
+        "probed_ssid_count": 1,
+        "ssid_present": true,
+        "confidence": 0.82,
+        "evidence": [
+          "Stable probe IE hash: 4f6e335e",
+          "Probed SSID count: 1",
+          "SSID evidence: [REDACTED-SSID]",
+          "Channel 2412 (2.4GHz)",
+          "Scanner/AP vendor label: Espressif"
+        ]
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-5448f34e",
+      "drone_id": "probe_F4:65:0B:XX:XX:XX",
+      "drone_ids": [
+        "probe_F4:65:0B:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": "[REDACTED-SSID-1]",
+      "source": "wifi_probe_request",
+      "manufacturer": "Espressif",
+      "bssid": "F4:65:0B:XX:XX:XX",
+      "best_rssi": -84,
+      "best_confidence": 0.05,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -84
+      },
+      "detection_count": 4,
+      "last_seen": 1777660454.808892,
+      "first_seen": 1777660211.863422,
+      "age_s": 36.2,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Espressif",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Espressif Inc.",
+      "oui_prefix": "F4:65:0B",
+      "public_oui_brands": {
+        "Espressif": 1
+      },
+      "randomized_mac_count": 0,
+      "public_mac_count": 1,
+      "brand_candidates": [
+        {
+          "brand": "Espressif",
+          "source": "oui",
+          "count": 1,
+          "confidence": 0.65,
+          "vendor_long": "Espressif Inc.",
+          "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+          "prefix_bits": 24
+        }
+      ],
+      "representative_public_mac": "F4:65:0B:XX:XX:XX",
+      "representative_oui_prefix": "F4:65:0B",
+      "known_network_label": "[REDACTED-SSID-2]",
+      "device_class": "known_owned",
+      "device_class_confidence": 0.75,
+      "device_family": "operator_known_lab_device",
+      "family_source": "known_network_label",
+      "family_confidence": 0.75,
+      "identity_source": "probe_ie_hash",
+      "detection_explanation": {
+        "primary_reason": "Known infrastructure",
+        "confidence_band": "known",
+        "evidence": [
+          "Public OUI: Espressif (Espressif Inc.) / MA-L-24",
+          "Known network label: [REDACTED-SSID] lab/property",
+          "Device family: operator_known_lab_device via known_network_label",
+          "Stable probe IE hash: 4f6e335e",
+          "Probed SSID count: 1",
+          "SSID evidence: [REDACTED-SSID]",
+          "Channel 2412 (2.4GHz)",
+          "Scanner/AP vendor label: Espressif"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "ignore_known"
+      },
+      "evidence": [
+        "Public OUI: Espressif (Espressif Inc.) / MA-L-24",
+        "Known network label: [REDACTED-SSID] lab/property",
+        "Device family: operator_known_lab_device via known_network_label",
+        "Stable probe IE hash: 4f6e335e",
+        "Probed SSID count: 1",
+        "SSID evidence: [REDACTED-SSID]",
+        "Channel 2412 (2.4GHz)",
+        "Scanner/AP vendor label: Espressif",
+        "Probe IE hash: 4f6e335e",
+        "Probed SSIDs: [REDACTED-SSID]"
+      ],
+      "related_entities": [],
+      "vendor_short": "Espressif",
+      "vendor_aliases": [
+        "Espressif",
+        "Espressif Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "operator_ssid_override",
+          "label": "Operator RF override",
+          "url": "local:backend/app/data/rf_overrides.yaml",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "IEH:4f6e335e",
+        "identity_basis": "ie_hash",
+        "ie_hash": "4f6e335e",
+        "auth_mode": null,
+        "channel": 2412,
+        "band": "2.4GHz",
+        "wifi_generation_hint": "2.4GHz-observed",
+        "probed_ssid_count": 1,
+        "ssid_present": true,
+        "confidence": 0.82,
+        "evidence": [
+          "Stable probe IE hash: 4f6e335e",
+          "Probed SSID count: 1",
+          "SSID evidence: [REDACTED-SSID]",
+          "Channel 2412 (2.4GHz)",
+          "Scanner/AP vendor label: Espressif"
+        ]
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-f9c9931c",
+      "drone_id": "STA:00:1D:63:XX:XX:XX\u2192AP:B2:E4:D5:XX:XX:XX",
+      "drone_ids": [
+        "STA:00:1D:63:XX:XX:XX\u2192AP:B2:E4:D5:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "B2:E4:D5:XX:XX:XX",
+      "best_rssi": -71,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -71
+      },
+      "detection_count": 2,
+      "last_seen": 1777660425.659793,
+      "first_seen": 1777660216.606425,
+      "age_s": 65.4,
+      "mac_is_randomized": true,
+      "mac_identity_kind": "randomized",
+      "mac_reason": "locally_administered_bit",
+      "brand": null,
+      "brand_source": "none_randomized_mac",
+      "brand_confidence": 0.0,
+      "vendor_long": null,
+      "oui_prefix": null,
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": null,
+      "family_source": null,
+      "family_confidence": null,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Scanner class label: WiFi-Assoc",
+          "locally_administered_bit"
+        ],
+        "limitations": [
+          "Randomized MAC",
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Scanner class label: WiFi-Assoc",
+        "locally_administered_bit"
+      ],
+      "related_entities": [],
+      "vendor_short": null,
+      "vendor_aliases": [],
+      "vendor_source": "randomized_mac",
+      "assignment_type": null,
+      "prefix_bits": null,
+      "product_hint": null,
+      "vendor_confidence": 0.0,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "randomized_mac",
+          "label": "Randomized/private MAC rule",
+          "url": "local:derived/mac-locally-administered-bit",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "none_randomized_mac",
+          "label": "No vendor from randomized MAC",
+          "url": "local:derived/no-mac-vendor-for-randomized-address",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-a62fed43",
+      "drone_id": "STA:70:C9:32:XX:XX:XX\u2192AP:F2:72:EA:XX:XX:XX",
+      "drone_ids": [
+        "STA:70:C9:32:XX:XX:XX\u2192AP:F2:72:EA:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "F2:72:EA:XX:XX:XX",
+      "best_rssi": -72,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -72
+      },
+      "detection_count": 1,
+      "last_seen": 1777660423.15802,
+      "first_seen": 1777660423.15802,
+      "age_s": 67.9,
+      "mac_is_randomized": true,
+      "mac_identity_kind": "randomized",
+      "mac_reason": "locally_administered_bit",
+      "brand": null,
+      "brand_source": "none_randomized_mac",
+      "brand_confidence": 0.0,
+      "vendor_long": null,
+      "oui_prefix": null,
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": null,
+      "family_source": null,
+      "family_confidence": null,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Scanner class label: WiFi-Assoc",
+          "locally_administered_bit"
+        ],
+        "limitations": [
+          "Randomized MAC",
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Scanner class label: WiFi-Assoc",
+        "locally_administered_bit"
+      ],
+      "related_entities": [],
+      "vendor_short": null,
+      "vendor_aliases": [],
+      "vendor_source": "randomized_mac",
+      "assignment_type": null,
+      "prefix_bits": null,
+      "product_hint": null,
+      "vendor_confidence": 0.0,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "randomized_mac",
+          "label": "Randomized/private MAC rule",
+          "url": "local:derived/mac-locally-administered-bit",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "none_randomized_mac",
+          "label": "No vendor from randomized MAC",
+          "url": "local:derived/no-mac-vendor-for-randomized-address",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-fc1b523d",
+      "drone_id": "STA:CA:6A:10:XX:XX:XX\u2192AP:C2:FA:D0:XX:XX:XX",
+      "drone_ids": [
+        "STA:CA:6A:10:XX:XX:XX\u2192AP:C2:FA:D0:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "C2:FA:D0:XX:XX:XX",
+      "best_rssi": -18,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -18
+      },
+      "detection_count": 2,
+      "last_seen": 1777660418.971589,
+      "first_seen": 1777660311.665441,
+      "age_s": 72.1,
+      "mac_is_randomized": true,
+      "mac_identity_kind": "randomized",
+      "mac_reason": "locally_administered_bit",
+      "brand": null,
+      "brand_source": "none_randomized_mac",
+      "brand_confidence": 0.0,
+      "vendor_long": null,
+      "oui_prefix": null,
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": null,
+      "family_source": null,
+      "family_confidence": null,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Scanner class label: WiFi-Assoc",
+          "locally_administered_bit"
+        ],
+        "limitations": [
+          "Randomized MAC",
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Scanner class label: WiFi-Assoc",
+        "locally_administered_bit"
+      ],
+      "related_entities": [],
+      "vendor_short": null,
+      "vendor_aliases": [],
+      "vendor_source": "randomized_mac",
+      "assignment_type": null,
+      "prefix_bits": null,
+      "product_hint": null,
+      "vendor_confidence": 0.0,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "randomized_mac",
+          "label": "Randomized/private MAC rule",
+          "url": "local:derived/mac-locally-administered-bit",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "none_randomized_mac",
+          "label": "No vendor from randomized MAC",
+          "url": "local:derived/no-mac-vendor-for-randomized-address",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-aab6cde8",
+      "drone_id": "STA:54:F8:F0:XX:XX:XX\u2192AP:B0:E4:D5:XX:XX:XX",
+      "drone_ids": [
+        "STA:54:F8:F0:XX:XX:XX\u2192AP:B0:E4:D5:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "B0:E4:D5:XX:XX:XX",
+      "best_rssi": -40,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -40
+      },
+      "detection_count": 2,
+      "last_seen": 1777660395.862995,
+      "first_seen": 1777660245.610786,
+      "age_s": 95.2,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Google",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Google, Inc.",
+      "oui_prefix": "B0:E4:D5",
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": "phone_tablet_or_pc",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.7,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Public OUI: Google (Google, Inc.) / MA-L-24",
+          "Scanner class label: WiFi-Assoc",
+          "Device family: phone_tablet_or_pc via vendor_keyword"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Public OUI: Google (Google, Inc.) / MA-L-24",
+        "Scanner class label: WiFi-Assoc",
+        "Device family: phone_tablet_or_pc via vendor_keyword"
+      ],
+      "related_entities": [],
+      "vendor_short": "Google",
+      "vendor_aliases": [
+        "Google",
+        "Google, Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-0d765922",
+      "drone_id": "probe_E4:F0:42:XX:XX:XX",
+      "drone_ids": [
+        "probe_E4:F0:42:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": "[REDACTED-SSID-3]",
+      "source": "wifi_probe_request",
+      "manufacturer": "Google",
+      "bssid": "E4:F0:42:XX:XX:XX",
+      "best_rssi": -71,
+      "best_confidence": 0.05,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -71
+      },
+      "detection_count": 1,
+      "last_seen": 1777660392.7555041,
+      "first_seen": 1777660392.7555041,
+      "age_s": 98.3,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Google",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Google, Inc.",
+      "oui_prefix": "E4:F0:42",
+      "public_oui_brands": {
+        "Google": 1
+      },
+      "randomized_mac_count": 0,
+      "public_mac_count": 1,
+      "brand_candidates": [
+        {
+          "brand": "Google",
+          "source": "oui",
+          "count": 1,
+          "confidence": 0.65,
+          "vendor_long": "Google, Inc.",
+          "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+          "prefix_bits": 24
+        }
+      ],
+      "representative_public_mac": "E4:F0:42:XX:XX:XX",
+      "representative_oui_prefix": "E4:F0:42",
+      "known_network_label": null,
+      "device_class": "wifi_device",
+      "device_class_confidence": 0.45,
+      "device_family": "phone_tablet_or_pc",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.7,
+      "identity_source": "probe_ie_hash",
+      "detection_explanation": {
+        "primary_reason": "Randomized probe identity",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Public OUI: Google (Google, Inc.) / MA-L-24",
+          "Device family: phone_tablet_or_pc via vendor_keyword",
+          "Stable probe IE hash: ec5d2fbf",
+          "Probed SSID count: 1",
+          "SSID evidence: [REDACTED-SSID]",
+          "Channel 2412 (2.4GHz)",
+          "Scanner/AP vendor label: Google",
+          "Probe IE hash: ec5d2fbf"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Public OUI: Google (Google, Inc.) / MA-L-24",
+        "Device family: phone_tablet_or_pc via vendor_keyword",
+        "Stable probe IE hash: ec5d2fbf",
+        "Probed SSID count: 1",
+        "SSID evidence: [REDACTED-SSID]",
+        "Channel 2412 (2.4GHz)",
+        "Scanner/AP vendor label: Google",
+        "Probe IE hash: ec5d2fbf",
+        "Probed SSIDs: [REDACTED-SSID]"
+      ],
+      "related_entities": [],
+      "vendor_short": "Google",
+      "vendor_aliases": [
+        "Google",
+        "Google, Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "IEH:ec5d2fbf",
+        "identity_basis": "ie_hash",
+        "ie_hash": "ec5d2fbf",
+        "auth_mode": null,
+        "channel": 2412,
+        "band": "2.4GHz",
+        "wifi_generation_hint": "2.4GHz-observed",
+        "probed_ssid_count": 1,
+        "ssid_present": true,
+        "confidence": 0.82,
+        "evidence": [
+          "Stable probe IE hash: ec5d2fbf",
+          "Probed SSID count: 1",
+          "SSID evidence: [REDACTED-SSID]",
+          "Channel 2412 (2.4GHz)",
+          "Scanner/AP vendor label: Google"
+        ]
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-e478a6d0",
+      "drone_id": "STA:10:2C:B1:XX:XX:XX\u2192AP:60:83:E7:XX:XX:XX",
+      "drone_ids": [
+        "STA:10:2C:B1:XX:XX:XX\u2192AP:60:83:E7:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "60:83:E7:XX:XX:XX",
+      "best_rssi": -78,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -78
+      },
+      "detection_count": 1,
+      "last_seen": 1777660391.839597,
+      "first_seen": 1777660391.839597,
+      "age_s": 99.2,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "TPLink",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "TP-Link Systems Inc",
+      "oui_prefix": "60:83:E7",
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": "network_infrastructure",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.78,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Public OUI: TPLink (TP-Link Systems Inc) / MA-L-24",
+          "Scanner class label: WiFi-Assoc",
+          "Device family: network_infrastructure via vendor_keyword"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Public OUI: TPLink (TP-Link Systems Inc) / MA-L-24",
+        "Scanner class label: WiFi-Assoc",
+        "Device family: network_infrastructure via vendor_keyword"
+      ],
+      "related_entities": [],
+      "vendor_short": "TPLink",
+      "vendor_aliases": [
+        "TP-Link Systems",
+        "TP-Link Systems Inc",
+        "TPLink"
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-e1cbcdeb",
+      "drone_id": "STA:DC:03:98:XX:XX:XX\u2192AP:B0:E4:D5:XX:XX:XX",
+      "drone_ids": [
+        "STA:DC:03:98:XX:XX:XX\u2192AP:B0:E4:D5:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "B0:E4:D5:XX:XX:XX",
+      "best_rssi": -81,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -81
+      },
+      "detection_count": 1,
+      "last_seen": 1777660365.376854,
+      "first_seen": 1777660365.376854,
+      "age_s": 125.7,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Google",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Google, Inc.",
+      "oui_prefix": "B0:E4:D5",
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": "phone_tablet_or_pc",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.7,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Public OUI: Google (Google, Inc.) / MA-L-24",
+          "Scanner class label: WiFi-Assoc",
+          "Device family: phone_tablet_or_pc via vendor_keyword"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Public OUI: Google (Google, Inc.) / MA-L-24",
+        "Scanner class label: WiFi-Assoc",
+        "Device family: phone_tablet_or_pc via vendor_keyword"
+      ],
+      "related_entities": [],
+      "vendor_short": "Google",
+      "vendor_aliases": [
+        "Google",
+        "Google, Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-34039a29",
+      "drone_id": "STA:E0:BB:9E:XX:XX:XX\u2192AP:B0:E4:D5:XX:XX:XX",
+      "drone_ids": [
+        "STA:E0:BB:9E:XX:XX:XX\u2192AP:B0:E4:D5:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "B0:E4:D5:XX:XX:XX",
+      "best_rssi": -74,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -74
+      },
+      "detection_count": 2,
+      "last_seen": 1777660364.807308,
+      "first_seen": 1777660215.08125,
+      "age_s": 126.2,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Google",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Google, Inc.",
+      "oui_prefix": "B0:E4:D5",
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": "phone_tablet_or_pc",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.7,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Public OUI: Google (Google, Inc.) / MA-L-24",
+          "Scanner class label: WiFi-Assoc",
+          "Device family: phone_tablet_or_pc via vendor_keyword"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Public OUI: Google (Google, Inc.) / MA-L-24",
+        "Scanner class label: WiFi-Assoc",
+        "Device family: phone_tablet_or_pc via vendor_keyword"
+      ],
+      "related_entities": [],
+      "vendor_short": "Google",
+      "vendor_aliases": [
+        "Google",
+        "Google, Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-fe39e2a3",
+      "drone_id": "probe_F4:65:0B:XX:XX:XX",
+      "drone_ids": [
+        "probe_F4:65:0B:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": "[REDACTED-SSID-1]",
+      "source": "wifi_probe_request",
+      "manufacturer": "Espressif",
+      "bssid": "F4:65:0B:XX:XX:XX",
+      "best_rssi": -85,
+      "best_confidence": 0.05,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -85
+      },
+      "detection_count": 2,
+      "last_seen": 1777660363.712157,
+      "first_seen": 1777660273.707146,
+      "age_s": 127.3,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Espressif",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Espressif Inc.",
+      "oui_prefix": "F4:65:0B",
+      "public_oui_brands": {
+        "Espressif": 1
+      },
+      "randomized_mac_count": 0,
+      "public_mac_count": 1,
+      "brand_candidates": [
+        {
+          "brand": "Espressif",
+          "source": "oui",
+          "count": 1,
+          "confidence": 0.65,
+          "vendor_long": "Espressif Inc.",
+          "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+          "prefix_bits": 24
+        }
+      ],
+      "representative_public_mac": "F4:65:0B:XX:XX:XX",
+      "representative_oui_prefix": "F4:65:0B",
+      "known_network_label": "[REDACTED-SSID-2]",
+      "device_class": "known_owned",
+      "device_class_confidence": 0.75,
+      "device_family": "operator_known_lab_device",
+      "family_source": "known_network_label",
+      "family_confidence": 0.75,
+      "identity_source": "probe_ie_hash",
+      "detection_explanation": {
+        "primary_reason": "Known infrastructure",
+        "confidence_band": "known",
+        "evidence": [
+          "Public OUI: Espressif (Espressif Inc.) / MA-L-24",
+          "Known network label: [REDACTED-SSID] lab/property",
+          "Device family: operator_known_lab_device via known_network_label",
+          "Stable probe IE hash: 4f6e335e",
+          "Probed SSID count: 1",
+          "SSID evidence: [REDACTED-SSID]",
+          "Channel 2412 (2.4GHz)",
+          "Scanner/AP vendor label: Espressif"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "ignore_known"
+      },
+      "evidence": [
+        "Public OUI: Espressif (Espressif Inc.) / MA-L-24",
+        "Known network label: [REDACTED-SSID] lab/property",
+        "Device family: operator_known_lab_device via known_network_label",
+        "Stable probe IE hash: 4f6e335e",
+        "Probed SSID count: 1",
+        "SSID evidence: [REDACTED-SSID]",
+        "Channel 2412 (2.4GHz)",
+        "Scanner/AP vendor label: Espressif",
+        "Probe IE hash: 4f6e335e",
+        "Probed SSIDs: [REDACTED-SSID]"
+      ],
+      "related_entities": [],
+      "vendor_short": "Espressif",
+      "vendor_aliases": [
+        "Espressif",
+        "Espressif Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "operator_ssid_override",
+          "label": "Operator RF override",
+          "url": "local:backend/app/data/rf_overrides.yaml",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "IEH:4f6e335e",
+        "identity_basis": "ie_hash",
+        "ie_hash": "4f6e335e",
+        "auth_mode": null,
+        "channel": 2412,
+        "band": "2.4GHz",
+        "wifi_generation_hint": "2.4GHz-observed",
+        "probed_ssid_count": 1,
+        "ssid_present": true,
+        "confidence": 0.82,
+        "evidence": [
+          "Stable probe IE hash: 4f6e335e",
+          "Probed SSID count: 1",
+          "SSID evidence: [REDACTED-SSID]",
+          "Channel 2412 (2.4GHz)",
+          "Scanner/AP vendor label: Espressif"
+        ]
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-59d0e65a",
+      "drone_id": "STA:9C:76:13:XX:XX:XX\u2192AP:F0:72:EA:XX:XX:XX",
+      "drone_ids": [
+        "STA:9C:76:13:XX:XX:XX\u2192AP:F0:72:EA:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "F0:72:EA:XX:XX:XX",
+      "best_rssi": -70,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -70
+      },
+      "detection_count": 1,
+      "last_seen": 1777660332.174041,
+      "first_seen": 1777660332.174041,
+      "age_s": 158.9,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Google",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Google, Inc.",
+      "oui_prefix": "F0:72:EA",
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": "phone_tablet_or_pc",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.7,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Public OUI: Google (Google, Inc.) / MA-L-24",
+          "Scanner class label: WiFi-Assoc",
+          "Device family: phone_tablet_or_pc via vendor_keyword"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Public OUI: Google (Google, Inc.) / MA-L-24",
+        "Scanner class label: WiFi-Assoc",
+        "Device family: phone_tablet_or_pc via vendor_keyword"
+      ],
+      "related_entities": [],
+      "vendor_short": "Google",
+      "vendor_aliases": [
+        "Google",
+        "Google, Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-c2abe2d7",
+      "drone_id": "STA:24:18:C6:XX:XX:XX\u2192AP:B2:E4:D5:XX:XX:XX",
+      "drone_ids": [
+        "STA:24:18:C6:XX:XX:XX\u2192AP:B2:E4:D5:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "B2:E4:D5:XX:XX:XX",
+      "best_rssi": -36,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -36
+      },
+      "detection_count": 1,
+      "last_seen": 1777660306.942274,
+      "first_seen": 1777660306.942274,
+      "age_s": 184.1,
+      "mac_is_randomized": true,
+      "mac_identity_kind": "randomized",
+      "mac_reason": "locally_administered_bit",
+      "brand": null,
+      "brand_source": "none_randomized_mac",
+      "brand_confidence": 0.0,
+      "vendor_long": null,
+      "oui_prefix": null,
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": null,
+      "family_source": null,
+      "family_confidence": null,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Scanner class label: WiFi-Assoc",
+          "locally_administered_bit"
+        ],
+        "limitations": [
+          "Randomized MAC",
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Scanner class label: WiFi-Assoc",
+        "locally_administered_bit"
+      ],
+      "related_entities": [],
+      "vendor_short": null,
+      "vendor_aliases": [],
+      "vendor_source": "randomized_mac",
+      "assignment_type": null,
+      "prefix_bits": null,
+      "product_hint": null,
+      "vendor_confidence": 0.0,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "randomized_mac",
+          "label": "Randomized/private MAC rule",
+          "url": "local:derived/mac-locally-administered-bit",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "none_randomized_mac",
+          "label": "No vendor from randomized MAC",
+          "url": "local:derived/no-mac-vendor-for-randomized-address",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-4f061564",
+      "drone_id": "STA:DC:1E:D5:XX:XX:XX\u2192AP:B2:CF:84:XX:XX:XX",
+      "drone_ids": [
+        "STA:DC:1E:D5:XX:XX:XX\u2192AP:B2:CF:84:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "B2:CF:84:XX:XX:XX",
+      "best_rssi": -28,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -28
+      },
+      "detection_count": 1,
+      "last_seen": 1777660303.191058,
+      "first_seen": 1777660303.191058,
+      "age_s": 187.8,
+      "mac_is_randomized": true,
+      "mac_identity_kind": "randomized",
+      "mac_reason": "locally_administered_bit",
+      "brand": null,
+      "brand_source": "none_randomized_mac",
+      "brand_confidence": 0.0,
+      "vendor_long": null,
+      "oui_prefix": null,
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": null,
+      "family_source": null,
+      "family_confidence": null,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Scanner class label: WiFi-Assoc",
+          "locally_administered_bit"
+        ],
+        "limitations": [
+          "Randomized MAC",
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Scanner class label: WiFi-Assoc",
+        "locally_administered_bit"
+      ],
+      "related_entities": [],
+      "vendor_short": null,
+      "vendor_aliases": [],
+      "vendor_source": "randomized_mac",
+      "assignment_type": null,
+      "prefix_bits": null,
+      "product_hint": null,
+      "vendor_confidence": 0.0,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "randomized_mac",
+          "label": "Randomized/private MAC rule",
+          "url": "local:derived/mac-locally-administered-bit",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "none_randomized_mac",
+          "label": "No vendor from randomized MAC",
+          "url": "local:derived/no-mac-vendor-for-randomized-address",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-979f6868",
+      "drone_id": "STA:F4:65:0B:XX:XX:XX\u2192AP:28:BD:89:XX:XX:XX",
+      "drone_ids": [
+        "STA:F4:65:0B:XX:XX:XX\u2192AP:28:BD:89:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "28:BD:89:XX:XX:XX",
+      "best_rssi": -68,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -68
+      },
+      "detection_count": 1,
+      "last_seen": 1777660302.04638,
+      "first_seen": 1777660302.04638,
+      "age_s": 189.0,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "Google",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Google, Inc.",
+      "oui_prefix": "28:BD:89",
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": "phone_tablet_or_pc",
+      "family_source": "vendor_keyword",
+      "family_confidence": 0.7,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Public OUI: Google (Google, Inc.) / MA-L-24",
+          "Scanner class label: WiFi-Assoc",
+          "Device family: phone_tablet_or_pc via vendor_keyword"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Public OUI: Google (Google, Inc.) / MA-L-24",
+        "Scanner class label: WiFi-Assoc",
+        "Device family: phone_tablet_or_pc via vendor_keyword"
+      ],
+      "related_entities": [],
+      "vendor_short": "Google",
+      "vendor_aliases": [
+        "Google",
+        "Google, Inc."
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-0b3caf7a",
+      "drone_id": "STA:E4:C0:E2:XX:XX:XX\u2192AP:4A:4B:D4:XX:XX:XX",
+      "drone_ids": [
+        "STA:E4:C0:E2:XX:XX:XX\u2192AP:4A:4B:D4:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": null,
+      "source": "wifi_assoc",
+      "manufacturer": "WiFi-Assoc",
+      "bssid": "4A:4B:D4:XX:XX:XX",
+      "best_rssi": -77,
+      "best_confidence": 0.1,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -77
+      },
+      "detection_count": 1,
+      "last_seen": 1777660250.730231,
+      "first_seen": 1777660250.730231,
+      "age_s": 240.3,
+      "mac_is_randomized": true,
+      "mac_identity_kind": "randomized",
+      "mac_reason": "locally_administered_bit",
+      "brand": null,
+      "brand_source": "none_randomized_mac",
+      "brand_confidence": 0.0,
+      "vendor_long": null,
+      "oui_prefix": null,
+      "public_oui_brands": {},
+      "randomized_mac_count": 0,
+      "public_mac_count": 0,
+      "brand_candidates": [],
+      "representative_public_mac": null,
+      "representative_oui_prefix": null,
+      "known_network_label": null,
+      "device_class": null,
+      "device_class_confidence": null,
+      "device_family": null,
+      "family_source": null,
+      "family_confidence": null,
+      "identity_source": "mac",
+      "detection_explanation": {
+        "primary_reason": "WiFi fingerprint",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Scanner class label: WiFi-Assoc",
+          "locally_administered_bit"
+        ],
+        "limitations": [
+          "Randomized MAC",
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Scanner class label: WiFi-Assoc",
+        "locally_administered_bit"
+      ],
+      "related_entities": [],
+      "vendor_short": null,
+      "vendor_aliases": [],
+      "vendor_source": "randomized_mac",
+      "assignment_type": null,
+      "prefix_bits": null,
+      "product_hint": null,
+      "vendor_confidence": 0.0,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "randomized_mac",
+          "label": "Randomized/private MAC rule",
+          "url": "local:derived/mac-locally-administered-bit",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "none_randomized_mac",
+          "label": "No vendor from randomized MAC",
+          "url": "local:derived/no-mac-vendor-for-randomized-address",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "WF2:35a5a1f883a47361",
+        "identity_basis": "observed_wifi_metadata",
+        "ie_hash": null,
+        "auth_mode": null,
+        "channel": null,
+        "band": null,
+        "wifi_generation_hint": null,
+        "probed_ssid_count": 0,
+        "ssid_present": false,
+        "confidence": 0.35,
+        "evidence": []
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    },
+    {
+      "entity_id": "ent-62cbe86f",
+      "drone_id": "probe_90:48:46:XX:XX:XX",
+      "drone_ids": [
+        "probe_90:48:46:XX:XX:XX"
+      ],
+      "classification": "wifi_device",
+      "ssid": "[REDACTED-SSID-4]",
+      "source": "wifi_probe_request",
+      "manufacturer": "TexasInstrum",
+      "bssid": "90:48:46:XX:XX:XX",
+      "best_rssi": -81,
+      "best_confidence": 0.05,
+      "sensor_count": 1,
+      "sensors": [
+        "uplink_D0A148"
+      ],
+      "sensor_rssi": {
+        "uplink_D0A148": -81
+      },
+      "detection_count": 1,
+      "last_seen": 1777660242.373864,
+      "first_seen": 1777660242.373864,
+      "age_s": 248.7,
+      "mac_is_randomized": false,
+      "mac_identity_kind": "public_oui",
+      "mac_reason": "public_oui",
+      "brand": "TexasInstrum",
+      "brand_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "brand_confidence": 0.82,
+      "vendor_long": "Texas Instruments",
+      "oui_prefix": "90:48:46",
+      "public_oui_brands": {
+        "TexasInstrum": 1
+      },
+      "randomized_mac_count": 0,
+      "public_mac_count": 1,
+      "brand_candidates": [
+        {
+          "brand": "TexasInstrum",
+          "source": "oui",
+          "count": 1,
+          "confidence": 0.65,
+          "vendor_long": "Texas Instruments",
+          "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+          "prefix_bits": 24
+        }
+      ],
+      "representative_public_mac": "90:48:46:XX:XX:XX",
+      "representative_oui_prefix": "90:48:46",
+      "known_network_label": null,
+      "device_class": "wifi_device",
+      "device_class_confidence": 0.45,
+      "device_family": "wifi_client",
+      "family_source": "source",
+      "family_confidence": 0.35,
+      "identity_source": "probe_ie_hash",
+      "detection_explanation": {
+        "primary_reason": "Randomized probe identity",
+        "confidence_band": "diagnostic",
+        "evidence": [
+          "Public OUI: TexasInstrum (Texas Instruments) / MA-L-24",
+          "Device family: wifi_client via source",
+          "Stable probe IE hash: 218cf8a8",
+          "Probed SSID count: 1",
+          "SSID evidence: [REDACTED-SSID]",
+          "Channel 2412 (2.4GHz)",
+          "Scanner/AP vendor label: TexasInstrum",
+          "Probe IE hash: 218cf8a8"
+        ],
+        "limitations": [
+          "Single-sensor observation"
+        ],
+        "recommended_action": "verify_known"
+      },
+      "evidence": [
+        "Public OUI: TexasInstrum (Texas Instruments) / MA-L-24",
+        "Device family: wifi_client via source",
+        "Stable probe IE hash: 218cf8a8",
+        "Probed SSID count: 1",
+        "SSID evidence: [REDACTED-SSID]",
+        "Channel 2412 (2.4GHz)",
+        "Scanner/AP vendor label: TexasInstrum",
+        "Probe IE hash: 218cf8a8",
+        "Probed SSIDs: [REDACTED-SSID]"
+      ],
+      "related_entities": [],
+      "vendor_short": "TexasInstrum",
+      "vendor_aliases": [
+        "Texas Instruments",
+        "TexasInstrum"
+      ],
+      "vendor_source": "ieee_ma_l+nmap_mac_prefixes+wireshark_manuf",
+      "assignment_type": "MA-L",
+      "prefix_bits": 24,
+      "product_hint": null,
+      "vendor_confidence": 0.82,
+      "reference_updated_at": "2026-04-26T05:21:49.886373+00:00",
+      "reference_sources": [
+        {
+          "id": "ieee_ma_l",
+          "label": "IEEE RA MA-L",
+          "url": "https://standards-oui.ieee.org/oui/oui.csv",
+          "sha256": "46883f853561b15aa32f279c2530b4f9bc68e7219f490c071cf549aa2ca19bb1",
+          "bytes": 3745133,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "nmap_mac_prefixes",
+          "label": "Nmap mac-prefixes",
+          "url": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
+          "sha256": "ae8b132bb3471ea94055e111137f76e041f4a8f5df9799ac184cc1fbf23d508d",
+          "bytes": 1375622,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wireshark_manuf",
+          "label": "Wireshark manuf",
+          "url": "https://www.wireshark.org/download/automated/data/manuf",
+          "sha256": "37be8f474724823d1248ae79ad7796f9feec7a5234d4ef0266dc4d6679e8c79e",
+          "bytes": 3084093,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        },
+        {
+          "id": "wifi_fingerprint_v2",
+          "label": "WiFi fingerprint v2",
+          "url": "local:derived/wifi-ie-auth-channel-fingerprint",
+          "sha256": null,
+          "bytes": null,
+          "artifact_generated_at": "2026-04-26T05:21:49.886373+00:00"
+        }
+      ],
+      "apple_continuity": null,
+      "wifi_fingerprint_v2": {
+        "version": 2,
+        "source": "wifi_fingerprint_v2",
+        "stable_id": "IEH:218cf8a8",
+        "identity_basis": "ie_hash",
+        "ie_hash": "218cf8a8",
+        "auth_mode": null,
+        "channel": 2412,
+        "band": "2.4GHz",
+        "wifi_generation_hint": "2.4GHz-observed",
+        "probed_ssid_count": 1,
+        "ssid_present": true,
+        "confidence": 0.82,
+        "evidence": [
+          "Stable probe IE hash: 218cf8a8",
+          "Probed SSID count: 1",
+          "SSID evidence: [REDACTED-SSID]",
+          "Channel 2412 (2.4GHz)",
+          "Scanner/AP vendor label: TexasInstrum"
+        ]
+      },
+      "drone_ssid_match": null,
+      "drone_ssid_matches": null
+    }
+  ]
+}
