@@ -1,0 +1,9 @@
+{
+  "name": "scanner-s3-combo-seed",
+  "description": "BLE + WiFi scanner (ESP32-S3 Seed/Mini N8R8)",
+  "board": "esp32s3",
+  "version": "0.63.0-svc156",
+  "size": 1099088,
+  "sha256": "cb36e91c6a71b79951efba3f7f7f2153ce1503fb6517af7ffadfa4fa3ef18c14",
+  "download_url": "/nodes/firmware/download/scanner-s3-combo-seed"
+}

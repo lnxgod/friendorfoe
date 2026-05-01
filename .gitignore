@@ -61,6 +61,8 @@ backend/friendorfoe.db-*
 friendorfoe.db
 friendorfoe.db-*
 *.png
+!docs/examples/screenshots/*.png
+!images/**/*.png
 
 # Claude Code / MCP tooling
 .claude/

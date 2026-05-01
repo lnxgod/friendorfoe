@@ -1,0 +1,9 @@
+{
+  "name": "uplink-s3",
+  "description": "Uplink node (ESP32-S3 N16R8)",
+  "board": "esp32s3",
+  "version": "0.63.0-svc156",
+  "size": 1130448,
+  "sha256": "d656acaa0c27873617fb43f0f19c9fc53b64942c8bf8b3b82e3502933fee4b20",
+  "download_url": "/nodes/firmware/download/uplink-s3"
+}
