@@ -1,8 +1,9 @@
 """Pydantic v2 models for API request/response schemas."""
 
+import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +109,8 @@ class HealthResponse(BaseModel):
 class DroneDetectionItem(BaseModel):
     """A single drone detection from an ESP32 sensor node."""
 
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     drone_id: str = Field(..., description="Drone serial number or generated identifier")
     source: str = Field(
         ...,
@@ -172,7 +175,11 @@ class DroneDetectionItem(BaseModel):
     ble_apple_flags: int | None = Field(None, description="Apple Nearby Info data-flags byte (v0.58+ scanners, always emitted — 0 ≠ absent).")
     ble_name: str | None = Field(None, description="BLE local name evidence, if advertised")
     class_reason: str | None = Field(None, description="Short scanner classification reason/evidence")
-    probed_ssids: list[str] | None = Field(None, description="SSIDs this device is probing for (from probe requests)")
+    probed_ssids: list[str] | None = Field(
+        None,
+        validation_alias=AliasChoices("probed_ssids", "probed"),
+        description="SSIDs this device is probing for (from probe requests)",
+    )
     ie_hash: str | None = Field(
         None,
         description="Hex FNV1a hash of WiFi probe-request Information Elements — "
@@ -186,21 +193,98 @@ class DroneDetectionItem(BaseModel):
     brand: str | None = Field(None, description="Best brand/manufacturer claim, when evidence supports it")
     brand_source: str | None = Field(None, description="Evidence source for brand: oui, ble_company_id, scanner_label, etc.")
     brand_confidence: float | None = Field(None, description="0-1 confidence for the brand claim")
+    vendor_short: str | None = Field(None, description="Short registry/vendor display name from local RF reference data")
+    vendor_long: str | None = Field(None, description="Full OUI/vendor name when available")
+    vendor_aliases: list[str] | None = Field(None, description="Alias names from IEEE/Wireshark/Nmap reference sources")
+    vendor_source: str | None = Field(None, description="Reference source(s) used for MAC/vendor attribution")
+    assignment_type: str | None = Field(None, description="MA-L, MA-M, MA-S, CID, or supplemental registry type")
+    prefix_bits: int | None = Field(None, description="Prefix length used for MAC attribution")
+    oui_prefix: str | None = Field(None, description="Public OUI prefix for the row MAC, if the row MAC is not randomized")
+    product_hint: str | None = Field(None, description="Operator/reference product hint for known RF families")
+    vendor_confidence: float | None = Field(None, description="0-1 confidence for raw MAC/vendor registry attribution")
+    reference_updated_at: str | None = Field(None, description="RF reference artifact generation timestamp")
+    reference_sources: list[dict[str, Any]] | None = Field(None, description="Local/offline reference sources used for RF enrichment")
+    public_oui_brands: dict[str, int] | None = Field(None, description="Group-level public OUI brand counts")
+    randomized_mac_count: int | None = Field(None, description="Group-level randomized/private MAC count")
+    public_mac_count: int | None = Field(None, description="Group-level public MAC count")
+    brand_candidates: list[dict[str, Any]] | None = Field(None, description="Candidate brands with evidence counts")
+    representative_public_mac: str | None = Field(None, description="Representative public MAC from the group, if any")
+    representative_oui_prefix: str | None = Field(None, description="OUI prefix for the representative public MAC, if any")
+    known_network_label: str | None = Field(None, description="Operator-known network label evidence, if matched")
     device_class: str | None = Field(None, description="Cautious device class such as wifi_ap, wifi_device, suspect_iot")
     device_class_confidence: float | None = Field(None, description="0-1 confidence for the device class")
+    device_family: str | None = Field(None, description="Human-friendly device family such as camera_or_video or esp32_or_iot_dev_board")
+    family_source: str | None = Field(None, description="Evidence source for device_family")
+    family_confidence: float | None = Field(None, description="0-1 confidence for the device family")
     identity_source: str | None = Field(None, description="Identity derivation path: probe_ie_hash, mac, ble_ja3, ble_company_id, ble_name, ssid_pattern, oui")
+    apple_continuity: dict[str, Any] | None = Field(None, description="Decoded Apple Continuity TLV evidence with auth tags hashed")
+    wifi_fingerprint_v2: dict[str, Any] | None = Field(None, description="WiFi IE/auth/channel fingerprint evidence")
+    drone_ssid_match: dict[str, Any] | None = Field(None, description="Best curated drone-related SSID match, if any")
+    drone_ssid_matches: list[dict[str, Any]] | None = Field(None, description="All curated drone-related SSID matches, if any")
+    detection_explanation: dict[str, Any] | None = Field(None, description="Normalized operator-facing explanation for this detection")
+    geometry_quality: dict[str, Any] | None = Field(None, description="Triangulation/debug quality gates for this RF observation or map item")
     evidence: list[str] | None = Field(None, description="Short human-readable evidence chips")
     related_entities: list[dict] | None = Field(None, description="Cautious relation hints; never human identity")
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def normalize_source_value(cls, value: Any) -> str:
+        source_map = {
+            0: "ble_rid",
+            1: "wifi_ssid",
+            2: "wifi_dji_ie",
+            3: "wifi_beacon_rid",
+            4: "wifi_oui",
+            5: "wifi_probe_request",
+            6: "ble_fingerprint",
+            7: "wifi_assoc",
+            8: "wifi_ap_inventory",
+        }
+        if isinstance(value, int):
+            return source_map.get(value, "unknown")
+        if value is None:
+            return "unknown"
+        text = str(value).strip()
+        if text.isdigit():
+            return source_map.get(int(text), "unknown")
+        return text or "unknown"
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def clamp_confidence(cls, value: Any) -> float:
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if math.isnan(confidence) or math.isinf(confidence):
+            return 0.0
+        return max(0.0, min(1.0, confidence))
+
+    @field_validator("probed_ssids", mode="before")
+    @classmethod
+    def normalize_probed_ssids(cls, value: Any) -> list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            values = [part.strip() for part in value.split(",")]
+        elif isinstance(value, list):
+            values = [str(part).strip() for part in value]
+        else:
+            return None
+        cleaned = [part for part in values if part]
+        return cleaned or None
 
 
 class DroneDetectionBatch(BaseModel):
     """Batch of drone detections from a single ESP32 sensor node."""
 
+    model_config = ConfigDict(extra="ignore")
+
     device_id: str = Field(..., description="Unique identifier for the ESP32 sensor device")
     device_lat: float | None = Field(None, description="Sensor device latitude")
     device_lon: float | None = Field(None, description="Sensor device longitude")
     device_alt: float | None = Field(None, description="Sensor device altitude in meters")
-    timestamp: int = Field(..., description="Batch timestamp (epoch seconds)")
+    timestamp: int | None = Field(None, description="Batch timestamp (epoch seconds)")
     firmware_version: str | None = Field(None, description="Firmware version (e.g. 0.35.0)")
     board_type: str | None = Field(None, description="Board type (uplink-s3)")
     scanners: list[dict] | None = Field(
@@ -222,7 +306,7 @@ class DroneDetectionBatch(BaseModel):
     wifi_ssid: str | None = Field(None, description="Connected WiFi SSID")
     wifi_rssi: int | None = Field(None, description="WiFi RSSI (signal strength in dBm)")
     detections: list[DroneDetectionItem] = Field(
-        ..., description="List of drone detections in this batch"
+        default_factory=list, description="List of drone detections in this batch"
     )
 
 
@@ -321,8 +405,36 @@ class SensorObservation(BaseModel):
     brand: str | None = None
     brand_source: str | None = None
     brand_confidence: float | None = None
+    vendor_short: str | None = None
+    vendor_long: str | None = None
+    vendor_aliases: list[str] | None = None
+    vendor_source: str | None = None
+    assignment_type: str | None = None
+    prefix_bits: int | None = None
+    oui_prefix: str | None = None
+    product_hint: str | None = None
+    vendor_confidence: float | None = None
+    reference_updated_at: str | None = None
+    reference_sources: list[dict[str, Any]] | None = None
+    public_oui_brands: dict[str, int] | None = None
+    randomized_mac_count: int | None = None
+    public_mac_count: int | None = None
+    brand_candidates: list[dict[str, Any]] | None = None
+    representative_public_mac: str | None = None
+    representative_oui_prefix: str | None = None
+    known_network_label: str | None = None
     device_class: str | None = None
     device_class_confidence: float | None = None
+    device_family: str | None = None
+    family_source: str | None = None
+    family_confidence: float | None = None
+    apple_continuity: dict[str, Any] | None = None
+    wifi_fingerprint_v2: dict[str, Any] | None = None
+    drone_ssid_match: dict[str, Any] | None = None
+    drone_ssid_matches: list[dict[str, Any]] | None = None
+    detection_explanation: dict[str, Any] | None = None
+    geometry_quality: dict[str, Any] | None = None
+    evidence: list[str] | None = None
     related_entities: list[dict] | None = None
 
 
@@ -381,8 +493,35 @@ class LocatedDroneItem(BaseModel):
     brand: str | None = None
     brand_source: str | None = None
     brand_confidence: float | None = None
+    vendor_short: str | None = None
+    vendor_long: str | None = None
+    vendor_aliases: list[str] | None = None
+    vendor_source: str | None = None
+    assignment_type: str | None = None
+    prefix_bits: int | None = None
+    oui_prefix: str | None = None
+    product_hint: str | None = None
+    vendor_confidence: float | None = None
+    reference_updated_at: str | None = None
+    reference_sources: list[dict[str, Any]] | None = None
+    public_oui_brands: dict[str, int] | None = None
+    randomized_mac_count: int | None = None
+    public_mac_count: int | None = None
+    brand_candidates: list[dict[str, Any]] | None = None
+    representative_public_mac: str | None = None
+    representative_oui_prefix: str | None = None
+    known_network_label: str | None = None
     device_class: str | None = None
     device_class_confidence: float | None = None
+    device_family: str | None = None
+    family_source: str | None = None
+    family_confidence: float | None = None
+    apple_continuity: dict[str, Any] | None = None
+    wifi_fingerprint_v2: dict[str, Any] | None = None
+    drone_ssid_match: dict[str, Any] | None = None
+    drone_ssid_matches: list[dict[str, Any]] | None = None
+    detection_explanation: dict[str, Any] | None = None
+    geometry_quality: dict[str, Any] | None = None
     evidence: list[str] | None = None
     related_entities: list[dict] | None = None
 
@@ -490,6 +629,36 @@ class DetectionHistoryItem(BaseModel):
     sensor_lon: float | None = None
     manufacturer: str | None = None
     model: str | None = None
+    mac_is_randomized: bool | None = None
+    mac_identity_kind: str | None = None
+    mac_reason: str | None = None
+    brand: str | None = None
+    brand_source: str | None = None
+    brand_confidence: float | None = None
+    vendor_short: str | None = None
+    vendor_long: str | None = None
+    vendor_aliases: list[str] | None = None
+    vendor_source: str | None = None
+    assignment_type: str | None = None
+    prefix_bits: int | None = None
+    oui_prefix: str | None = None
+    product_hint: str | None = None
+    vendor_confidence: float | None = None
+    reference_updated_at: str | None = None
+    reference_sources: list[dict[str, Any]] | None = None
+    device_class: str | None = None
+    device_class_confidence: float | None = None
+    device_family: str | None = None
+    family_source: str | None = None
+    family_confidence: float | None = None
+    identity_source: str | None = None
+    apple_continuity: dict[str, Any] | None = None
+    wifi_fingerprint_v2: dict[str, Any] | None = None
+    drone_ssid_match: dict[str, Any] | None = None
+    drone_ssid_matches: list[dict[str, Any]] | None = None
+    detection_explanation: dict[str, Any] | None = None
+    geometry_quality: dict[str, Any] | None = None
+    evidence: list[str] | None = None
     timestamp: int
     received_at: str
 

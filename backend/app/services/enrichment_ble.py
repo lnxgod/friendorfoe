@@ -1023,6 +1023,7 @@ class BLEEnricher:
                 "ble_ja3": dev.ble_ja3 or None,
                 "ble_company_id": dev.ble_company_id or None,
                 "ble_apple_type": dev.ble_apple_type or None,
+                "ble_addr_type": dev.ble_addr_type or None,
                 "ble_svc_uuids": dev.ble_svc_uuids or None,
                 "ble_apple_flags": dev.ble_apple_flags or None,
                 "apple_state": self._decode_apple_state(dev),

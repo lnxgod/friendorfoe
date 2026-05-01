@@ -990,19 +990,16 @@ static esp_err_t ota_info_handler(httpd_req_t *req)
     const esp_partition_t *update  = esp_ota_get_next_update_partition(NULL);
     esp_app_desc_t app_desc;
     esp_ota_get_partition_description(running, &app_desc);
-    const char *reported_version =
-        (app_desc.version[0] != '\0' && strcmp(app_desc.version, "1") != 0)
-            ? app_desc.version
-            : FOF_VERSION;
+    const char *app_desc_version = app_desc.version[0] ? app_desc.version : "";
 
-    char buf[256];
+    char buf[320];
     snprintf(buf, sizeof(buf),
         "{\"running_partition\":\"%s\",\"next_partition\":\"%s\","
-        "\"app_version\":\"%s\",\"idf_version\":\"%s\","
+        "\"app_version\":\"%s\",\"app_desc_version\":\"%s\",\"idf_version\":\"%s\","
         "\"compile_date\":\"%s\",\"compile_time\":\"%s\"}",
         running ? running->label : "?",
         update ? update->label : "?",
-        reported_version, app_desc.idf_ver,
+        FOF_VERSION, app_desc_version, app_desc.idf_ver,
         app_desc.date, app_desc.time);
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
@@ -1039,10 +1036,18 @@ static int wait_for_ota_response_since(int64_t start_ms,
 static esp_err_t ota_relay_handler(httpd_req_t *req)
 {
     /* Parse ?uart=ble or ?uart=wifi query param */
-    char query[32] = {0};
+    char query[96] = {0};
     httpd_req_get_url_query_str(req, query, sizeof(query));
     char uart_target[8] = "ble";
     httpd_query_key_value(query, "uart", uart_target, sizeof(uart_target));
+    char mode[16] = {0};
+    char legacy_param[8] = {0};
+    httpd_query_key_value(query, "mode", mode, sizeof(mode));
+    httpd_query_key_value(query, "legacy", legacy_param, sizeof(legacy_param));
+    bool legacy_mode =
+        strcmp(mode, "legacy") == 0 ||
+        strcmp(legacy_param, "1") == 0 ||
+        strcmp(legacy_param, "true") == 0;
 
     /* Select UART port */
     uart_port_t uart_num;
@@ -1051,10 +1056,12 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
     } else {
         uart_num = CONFIG_BLE_SCANNER_UART;
     }
+    int scanner_id = (strcmp(uart_target, "wifi") == 0) ? 1 : 0;
 
     int total = req->content_len;
-    ESP_LOGW(TAG, "OTA relay: %d bytes to scanner (uart=%s port=%d) heap=%lu",
-             total, uart_target, uart_num, (unsigned long)esp_get_free_heap_size());
+    ESP_LOGW(TAG, "OTA relay: %d bytes to scanner (uart=%s port=%d legacy=%s) heap=%lu",
+             total, uart_target, uart_num, legacy_mode ? "true" : "false",
+             (unsigned long)esp_get_free_heap_size());
 
     if (total < 1024 || total > 2 * 1024 * 1024) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid firmware size");
@@ -1076,8 +1083,7 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
     }
 
     /* Step 0: Stop scanner TX to prevent data collision during flash. */
-    const char *stop_cmd = "{\"type\":\"stop\"}\n";
-    uart_write_bytes(uart_num, stop_cmd, strlen(stop_cmd));
+    uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"stop\"}");
     ESP_LOGI(TAG, "Sent stop command to scanner before OTA relay");
     vTaskDelay(pdMS_TO_TICKS(500));
 
@@ -1087,29 +1093,30 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
     uart_write_bytes(uart_num, "\n", 1);
     vTaskDelay(pdMS_TO_TICKS(50));
     char cmd[64];
-    snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%d}\n", total);
+    snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%d}", total);
     ESP_LOGI(TAG, "OTA relay: sending ota_begin (%d bytes) to UART%d", total, uart_num);
-    uart_write_bytes(uart_num, cmd, strlen(cmd));
+    uart_rx_send_command_to_scanner(scanner_id, cmd);
 
     ota_response_t ota_resp = {0};
-    int ack_wait = wait_for_ota_response_since(begin_wait_start_ms, "ota_ack", 3000, &ota_resp);
-    if (ack_wait != 0) {
-        char err_msg[192];
-        snprintf(err_msg, sizeof(err_msg),
-                 "{\"ok\":false,\"stage\":\"begin\",\"error\":\"%s\",\"detail\":\"%s\"}",
-                 ack_wait == -2 ? "scanner_error" : "ota_ack_timeout",
-                 ota_resp.error[0] ? ota_resp.error : "");
-        http_upload_resume();
-        uart_write_bytes(uart_num, "{\"type\":\"start\"}\n", 17);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, err_msg);
-        return ESP_OK;
+    if (legacy_mode) {
+        ESP_LOGW(TAG, "OTA relay legacy mode: skipping ota_ack wait for old scanner firmware");
+        vTaskDelay(pdMS_TO_TICKS(2500));
+    } else {
+        int ack_wait = wait_for_ota_response_since(begin_wait_start_ms, "ota_ack", 3000, &ota_resp);
+        if (ack_wait != 0) {
+            char err_msg[192];
+            snprintf(err_msg, sizeof(err_msg),
+                     "{\"ok\":false,\"stage\":\"begin\",\"error\":\"%s\",\"detail\":\"%s\"}",
+                     ack_wait == -2 ? "scanner_error" : "ota_ack_timeout",
+                     ota_resp.error[0] ? ota_resp.error : "");
+            http_upload_resume();
+            uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, err_msg);
+            return ESP_OK;
+        }
+        ESP_LOGI(TAG, "OTA relay: scanner acknowledged ota_begin");
     }
-    ESP_LOGI(TAG, "OTA relay: scanner acknowledged ota_begin");
-
-    /* UART RX already paused above — identify target scanner for logging */
-    int scanner_id = (strcmp(uart_target, "wifi") == 0) ? 1 : 0;
-    (void)scanner_id;  /* Used in resume path */
 
     int received = 0;
     int remaining = total;
@@ -1135,14 +1142,14 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
                 if (consecutive_timeouts > 3) {
                     ESP_LOGE(TAG, "OTA relay: %d consecutive timeouts at %d/%d",
                              consecutive_timeouts, received, total);
-                    uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
+                    uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"ota_abort\"}");
                     relay_ok = false;
                     break;
                 }
                 continue;
             }
             ESP_LOGE(TAG, "OTA relay: HTTP recv error at %d/%d", received, total);
-            uart_write_bytes(uart_num, "{\"type\":\"ota_abort\"}\n", 20);
+            uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"ota_abort\"}");
             relay_ok = false;
             break;
         }
@@ -1192,8 +1199,7 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
 
     /* Re-enable scanner TX (only on failure — on success scanner is rebooting) */
     if (!relay_ok) {
-        const char *start_cmd = "{\"type\":\"start\"}\n";
-        uart_write_bytes(uart_num, start_cmd, strlen(start_cmd));
+        uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
         ESP_LOGI(TAG, "Sent start command to scanner after failed OTA relay");
     }
 
@@ -1201,7 +1207,7 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
              relay_ok ? "complete" : "FAILED", received, seq, uart_num);
 
     ota_response_t final_resp = {0};
-    if (relay_ok) {
+    if (relay_ok && !legacy_mode) {
         int done_wait = wait_for_ota_response_since(final_wait_start_ms, "ota_done", 60000, &final_resp);
         if (done_wait != 0) {
             relay_ok = false;
@@ -1209,16 +1215,20 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
                 snprintf(final_resp.error, sizeof(final_resp.error), "%s", "scanner_error");
             }
         }
+    } else if (relay_ok && legacy_mode) {
+        snprintf(final_resp.type, sizeof(final_resp.type), "%s", "legacy_sent");
+        vTaskDelay(pdMS_TO_TICKS(12000));
     } else {
         final_resp = uart_rx_get_last_ota_response();
     }
 
     char resp_buf[256];
     snprintf(resp_buf, sizeof(resp_buf),
-             "{\"ok\":%s,\"mode\":\"%s\",\"bytes\":%d,\"chunks\":%d,"
+             "{\"ok\":%s,\"mode\":\"%s\",\"legacy\":%s,\"bytes\":%d,\"chunks\":%d,"
              "\"scanner_response\":\"%s\",\"scanner_error\":\"%s\"}",
              relay_ok ? "true" : "false",
              "streaming",
+             legacy_mode ? "true" : "false",
              received, seq,
              final_resp.type[0] ? final_resp.type : (relay_ok ? "ota_done" : "none"),
              final_resp.error[0] ? final_resp.error :

@@ -1,6 +1,6 @@
 {
   "name": "Friend or Foe Seed Scanner (ESP32-S3 BLE+WiFi)",
-  "version": "0.63.17-rf-intel",
+  "version": "0.63.0-svc156",
   "builds": [
     {
       "chipFamily": "ESP32-S3",

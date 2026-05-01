@@ -35,6 +35,8 @@ from typing import Any
 
 
 _RAW_WIFI_SSID_PREFIX_TO_MANUFACTURER: dict[str, str] = {
+    "FOF-DRONE-": "FriendOrFoe",
+    "FOF_Drone_": "FriendOrFoe",
     "DJI-": "DJI",
     "TELLO-": "Ryze/DJI",
     "MAVIC-": "DJI",
@@ -230,6 +232,8 @@ _RAW_WIFI_SSID_PREFIX_TO_MANUFACTURER: dict[str, str] = {
 
 
 _EXACT_SSID_MODEL_OVERRIDES: dict[str, str] = {
+    "FOF-DRONE-": "FriendOrFoe triangulation test beacon",
+    "FOF_Drone_": "FriendOrFoe triangulation test beacon",
     "DJI-": "Generic DJI Wi-Fi / QuickTransfer / pairing SSID",
     "TELLO-": "Ryze Tello",
     "RMTT-": "RoboMaster TT / Tello EDU family",
@@ -904,6 +908,45 @@ def match_drone_wifi_ssid(ssid: str | None) -> dict[str, Any] | None:
         if ssid_lower.startswith(prefix.lower()):
             return {"matched_prefix": prefix, **metadata}
     return None
+
+
+def drone_wifi_ssid_matches(
+    *,
+    ssid: str | None = None,
+    probed_ssids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return structured drone-related SSID evidence for UI/API consumers.
+
+    The first match is the strongest/most specific match. Values are safe to
+    expose directly: they contain provenance and cautious role metadata, not
+    person identity.
+    """
+    candidates = [ssid, *(probed_ssids or [])]
+    matches: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for value in candidates:
+        if not value or value == "(broadcast)" or value in seen:
+            continue
+        seen.add(value)
+        match = match_drone_wifi_ssid(value)
+        if not match:
+            continue
+        match_type = "test_drone_ssid" if value.upper().startswith(("FOF-DRONE-", "FOF_DRONE_")) else "curated_drone_ssid"
+        matches.append({
+            "ssid": value,
+            "match_type": match_type,
+            "source": "drone_signature_reference",
+            **match,
+        })
+
+    matches.sort(
+        key=lambda item: (
+            0 if item.get("match_type") == "test_drone_ssid" else 1,
+            -len(str(item.get("matched_prefix") or "")),
+        )
+    )
+    return matches
 
 
 def match_soft_generic_drone_ssid(ssid: str | None) -> dict[str, Any] | None:

@@ -84,6 +84,8 @@ async def test_probe_map_is_drone_first_until_probe_opt_in(monkeypatch, client: 
     assert payload["drones"][0]["identity_source"] == "probe_ie_hash"
     assert payload["drones"][0]["source_tier"] == "diagnostic"
     assert payload["drones"][0]["uncertainty_m"] >= 25.0
+    assert payload["drones"][0]["geometry_quality"]["status"] == "diagnostic_only"
+    assert payload["drones"][0]["geometry_quality"]["fresh_sensor_count"] == 2
     assert payload["drones"][0]["observations"][0]["source_tier"] == "diagnostic"
 
 

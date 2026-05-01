@@ -73,6 +73,8 @@ extern "C" {
 #define MSG_TYPE_CAL_MODE_STOP      "cal_mode_stop"
 #define MSG_TYPE_CAL_MODE_ACK       "cal_mode_ack"
 #define JSON_KEY_SCAN_MODE          "scan_mode"
+#define JSON_KEY_SCAN_PROFILE       "scan_profile"
+#define JSON_KEY_SLOT_ROLE          "slot_role"
 #define JSON_KEY_CALIBRATION_UUID   "calibration_uuid"
 #define JSON_KEY_SESSION_ID         "session_id"
 /* Apple Continuity deep fields */
@@ -99,6 +101,24 @@ extern "C" {
 #define MSG_TYPE_OTA_PROGRESS       "ota_progress"
 #define MSG_TYPE_OTA_DONE           "ota_done"
 #define MSG_TYPE_OTA_ERROR          "ota_error"
+
+/* Scanner-managed firmware update negotiation.
+ * Scanners ask the uplink whether a newer staged image is available. If the
+ * uplink offers one, the scanner quiets its own TX path and sends fw_ready so
+ * the uplink can relay the image without first forcing a stop_ack through a
+ * flooded UART. */
+#define MSG_TYPE_FW_CHECK           "fw_check"      /* scanner → uplink */
+#define MSG_TYPE_FW_OFFER           "fw_offer"      /* uplink → scanner */
+#define MSG_TYPE_FW_READY           "fw_ready"      /* scanner → uplink */
+#define MSG_TYPE_FW_CHECK_NOW       "fw_check_now"  /* uplink → scanner manual trigger */
+#define JSON_KEY_FW_VERSION         "fw_ver"
+#define JSON_KEY_FW_TARGET_VERSION  "target_ver"
+#define JSON_KEY_FW_NAME            "fw_name"
+#define JSON_KEY_FW_UPDATE          "update"
+#define JSON_KEY_FW_STATE           "fw_state"
+#define JSON_KEY_FW_REASON          "reason"
+#define JSON_KEY_FW_SIZE            "size"
+#define JSON_KEY_FW_CRC32           "crc"
 
 /* OTA sequence number JSON key — ack / nack payloads carry "seq": <u16> so
  * the uplink knows which chunk succeeded/failed. Additive in v0.59; older

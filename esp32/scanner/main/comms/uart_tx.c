@@ -47,6 +47,7 @@ static const char *TAG = "fof_uart_tx";
 #define BLE_FINGERPRINT_REEMIT_MS 60000
 #define WIFI_ASSOC_REEMIT_MS     30000
 #define WIFI_PROBE_REEMIT_MS     60000
+#define FW_ERROR_BACKOFF_MS      (6LL * 60LL * 60LL * 1000LL)
 
 /* Queue receive timeout -- short enough to allow periodic maintenance. */
 #define QUEUE_RX_TIMEOUT_MS 100
@@ -102,6 +103,12 @@ static char s_identity_caps[16]  = {0};
  * Scanner starts DISABLED, enabled when uplink sends "ready" or "start". */
 static volatile bool s_tx_enabled = false;
 static bool s_uart_tx_stack_warned = false;
+static volatile bool s_need_firmware = false;
+static char s_fw_target_version[32] = {0};
+static char s_fw_update_state[16] = "idle";
+static char s_fw_last_error[48] = {0};
+static uint32_t s_fw_check_count = 0;
+static int64_t s_fw_error_backoff_until_ms = 0;
 
 bool uart_tx_is_enabled(void) { return s_tx_enabled; }
 void uart_tx_set_enabled(bool enabled) {
@@ -125,6 +132,79 @@ void uart_tx_flush_detection_queue(void)
         ESP_LOGI(TAG, "Flushed %lu queued detections for mode transition",
                  (unsigned long)count);
     }
+}
+
+void uart_tx_set_firmware_update_state(bool need_firmware,
+                                       const char *target_version,
+                                       const char *state)
+{
+    s_need_firmware = need_firmware;
+    if (target_version && target_version[0]) {
+        strncpy(s_fw_target_version, target_version, sizeof(s_fw_target_version) - 1);
+        s_fw_target_version[sizeof(s_fw_target_version) - 1] = '\0';
+    } else if (!need_firmware) {
+        s_fw_target_version[0] = '\0';
+    }
+    if (state && state[0]) {
+        strncpy(s_fw_update_state, state, sizeof(s_fw_update_state) - 1);
+        s_fw_update_state[sizeof(s_fw_update_state) - 1] = '\0';
+    }
+    if (!need_firmware && (!state || strcmp(state, "current") == 0 || strcmp(state, "idle") == 0)) {
+        s_fw_last_error[0] = '\0';
+        s_fw_error_backoff_until_ms = 0;
+    }
+}
+
+void uart_tx_set_firmware_error(const char *reason)
+{
+    if (reason && reason[0]) {
+        strncpy(s_fw_last_error, reason, sizeof(s_fw_last_error) - 1);
+        s_fw_last_error[sizeof(s_fw_last_error) - 1] = '\0';
+    } else {
+        s_fw_last_error[0] = '\0';
+    }
+    s_fw_error_backoff_until_ms = (esp_timer_get_time() / 1000) + FW_ERROR_BACKOFF_MS;
+}
+
+void uart_tx_clear_firmware_error(void)
+{
+    s_fw_last_error[0] = '\0';
+    s_fw_error_backoff_until_ms = 0;
+}
+
+void uart_tx_note_firmware_check(void)
+{
+    s_fw_check_count++;
+}
+
+bool uart_tx_firmware_update_needed(void)
+{
+    return s_need_firmware;
+}
+
+const char *uart_tx_firmware_target_version(void)
+{
+    return s_fw_target_version;
+}
+
+const char *uart_tx_firmware_update_state(void)
+{
+    return s_fw_update_state;
+}
+
+const char *uart_tx_firmware_last_error(void)
+{
+    return s_fw_last_error;
+}
+
+uint32_t uart_tx_firmware_check_count(void)
+{
+    return s_fw_check_count;
+}
+
+bool uart_tx_firmware_backoff_active(void)
+{
+    return s_fw_error_backoff_until_ms > (esp_timer_get_time() / 1000);
 }
 
 /* ── Detection cache helpers ────────────────────────────────────────────── */
@@ -702,6 +782,20 @@ static int64_t scanner_time_last_valid_age_s(void)
     return (now_ms - g_last_valid_time_local_ms) / 1000;
 }
 
+static int64_t scanner_cmd_last_age_s(void)
+{
+    extern volatile int64_t g_last_cmd_local_ms;
+
+    if (g_last_cmd_local_ms <= 0) {
+        return -1;
+    }
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    if (now_ms <= g_last_cmd_local_ms) {
+        return 0;
+    }
+    return (now_ms - g_last_cmd_local_ms) / 1000;
+}
+
 static const char *scanner_time_sync_state(void)
 {
     extern volatile int64_t g_epoch_offset_ms;
@@ -744,8 +838,25 @@ void uart_tx_send_status(int ble_count, int wifi_count,
     cJSON_AddNumberToObject(root, "probe_drop_rate_limit", s_probe_drop_rate_limit);
     cJSON_AddNumberToObject(root, "probe_drop_pressure", s_probe_drop_pressure);
     cJSON_AddStringToObject(root, JSON_KEY_SCAN_MODE, scanner_calibration_mode_label());
+    cJSON_AddStringToObject(root, JSON_KEY_SCAN_PROFILE, scanner_scan_profile_label());
     cjson_add_string_if(root, JSON_KEY_CALIBRATION_UUID, scanner_calibration_mode_uuid());
     cJSON_AddNumberToObject(root, JSON_KEY_SEQ, s_seq++);
+    if (s_need_firmware) {
+        cJSON_AddTrueToObject(root, "need_firmware");
+    } else {
+        cJSON_AddFalseToObject(root, "need_firmware");
+    }
+    cJSON_AddStringToObject(root, JSON_KEY_FW_STATE, s_fw_update_state);
+    cJSON_AddNumberToObject(root, "fw_check_count", s_fw_check_count);
+    int64_t fw_backoff_ms = s_fw_error_backoff_until_ms - (esp_timer_get_time() / 1000);
+    cJSON_AddNumberToObject(root, "fw_backoff_s",
+                            fw_backoff_ms > 0 ? (double)(fw_backoff_ms / 1000) : 0.0);
+    if (s_fw_last_error[0]) {
+        cJSON_AddStringToObject(root, "last_fw_error", s_fw_last_error);
+    }
+    if (s_fw_target_version[0]) {
+        cJSON_AddStringToObject(root, JSON_KEY_FW_TARGET_VERSION, s_fw_target_version);
+    }
 
     /* Include scanner identity in every status message */
     if (s_scanner_ver) {
@@ -758,11 +869,20 @@ void uart_tx_send_status(int ble_count, int wifi_count,
         extern volatile int64_t g_epoch_offset_ms;
         extern volatile uint32_t g_time_msg_count;
         extern volatile uint32_t g_time_valid_count;
+        extern volatile uint32_t g_cmd_msg_count;
+        extern volatile uint32_t g_cmd_parse_error_count;
+        extern volatile uint32_t g_cmd_overflow_count;
+        extern volatile uint32_t g_cmd_stale_count;
         cJSON_AddNumberToObject(root, "toff", (double)g_epoch_offset_ms);
         cJSON_AddNumberToObject(root, "tcnt", g_time_msg_count);
         cJSON_AddNumberToObject(root, "time_valid_count", g_time_valid_count);
         cJSON_AddNumberToObject(root, "time_last_valid_age_s", (double)scanner_time_last_valid_age_s());
         cJSON_AddStringToObject(root, "time_sync_state", scanner_time_sync_state());
+        cJSON_AddNumberToObject(root, "cmd_rx", g_cmd_msg_count);
+        cJSON_AddNumberToObject(root, "cmd_parse_err", g_cmd_parse_error_count);
+        cJSON_AddNumberToObject(root, "cmd_overflow", g_cmd_overflow_count);
+        cJSON_AddNumberToObject(root, "cmd_stale", g_cmd_stale_count);
+        cJSON_AddNumberToObject(root, "cmd_last_age_s", (double)scanner_cmd_last_age_s());
     }
 
     /* Attack / anomaly counters (delta since last status) */
@@ -819,12 +939,21 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
     extern volatile int64_t g_epoch_offset_ms;
     extern volatile uint32_t g_time_msg_count;
     extern volatile uint32_t g_time_valid_count;
-    char buf[224];
+    extern volatile uint32_t g_cmd_msg_count;
+    extern volatile uint32_t g_cmd_parse_error_count;
+    extern volatile uint32_t g_cmd_overflow_count;
+    extern volatile uint32_t g_cmd_stale_count;
+    char buf[720];
+    int64_t fw_backoff_info_ms = s_fw_error_backoff_until_ms - (esp_timer_get_time() / 1000);
     snprintf(buf, sizeof(buf),
              "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
              "\"chip\":\"%s\",\"caps\":\"%s\",\"toff\":%lld,\"tcnt\":%lu,"
              "\"time_valid_count\":%lu,\"time_last_valid_age_s\":%lld,\"time_sync_state\":\"%s\","
-             "\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\"}",
+             "\"cmd_rx\":%lu,\"cmd_parse_err\":%lu,\"cmd_overflow\":%lu,"
+             "\"cmd_stale\":%lu,\"cmd_last_age_s\":%lld,"
+             "\"scan_mode\":\"%s\",\"scan_profile\":\"%s\",\"calibration_uuid\":\"%s\","
+             "\"need_firmware\":%s,\"fw_state\":\"%s\",\"target_ver\":\"%s\","
+             "\"fw_check_count\":%lu,\"fw_backoff_s\":%lld,\"last_fw_error\":\"%s\"}",
              ver ? ver : "?", board ? board : "?",
              chip ? chip : "?", caps ? caps : "?",
              (long long)g_epoch_offset_ms,
@@ -832,8 +961,20 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
              (unsigned long)g_time_valid_count,
              (long long)scanner_time_last_valid_age_s(),
              scanner_time_sync_state(),
+             (unsigned long)g_cmd_msg_count,
+             (unsigned long)g_cmd_parse_error_count,
+             (unsigned long)g_cmd_overflow_count,
+             (unsigned long)g_cmd_stale_count,
+             (long long)scanner_cmd_last_age_s(),
              scanner_calibration_mode_label(),
-             scanner_calibration_mode_uuid());
+             scanner_scan_profile_label(),
+             scanner_calibration_mode_uuid(),
+             s_need_firmware ? "true" : "false",
+             s_fw_update_state,
+             s_fw_target_version,
+             (unsigned long)s_fw_check_count,
+             (long long)(fw_backoff_info_ms > 0 ? fw_backoff_info_ms / 1000 : 0),
+             s_fw_last_error);
     uart_send_line(buf);
     ESP_LOGD(TAG, "Scanner info TX: %s v%s (%s) toff=%lld tcnt=%lu valid=%lu state=%s",
              board, ver, caps, (long long)g_epoch_offset_ms,

@@ -80,6 +80,10 @@ class WifiDroneScanner @Inject constructor(
         /**
          * Known drone SSID patterns mapped to manufacturer names.
          * Patterns are matched as prefixes (case-insensitive).
+         *
+         * The backend/scanner curated SSID reference is the dashboard source
+         * of truth for cheap-drone coverage; keep this Android fallback in
+         * sync when changing production SSID signatures.
          */
         private val DRONE_SSID_PATTERNS = listOf(
             // Major consumer brands - DJI

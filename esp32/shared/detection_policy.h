@@ -54,6 +54,8 @@ bool fof_policy_detection_dedupe_key(const drone_detection_t *det,
 const char *fof_policy_scan_profile_for_slot(uint8_t scanner_id,
                                              bool calibration_active);
 const char *fof_policy_slot_role_for_slot(uint8_t scanner_id);
+bool fof_policy_scan_profile_allows_source(const char *scan_profile,
+                                           uint8_t source);
 
 #ifdef __cplusplus
 }

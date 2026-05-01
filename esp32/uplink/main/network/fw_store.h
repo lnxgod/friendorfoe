@@ -14,6 +14,7 @@
  */
 
 #include "esp_http_server.h"
+#include "esp_partition.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -27,6 +28,49 @@ void fw_store_register(httpd_handle_t server);
 /** True if a firmware upload or relay operation is currently active.
  *  Used by the watchdog to skip upload-age reboot during relay. */
 bool fw_store_is_relay_active(void);
+
+typedef struct {
+    bool     stored;
+    uint32_t size;
+    uint32_t checksum;
+    char     version[32];
+    char     name[32];
+    char     partition[16];
+} fw_store_info_t;
+
+/** Read staged scanner firmware metadata from the uplink store. */
+bool fw_store_get_info(fw_store_info_t *out);
+
+/**
+ * Pick the partition where staged scanner firmware is written. Returns the
+ * same partition the /api/fw/upload handler uses. NULL if nothing suitable
+ * (catastrophic on a sane partition table).
+ *
+ * Public so fw_auto_check (which downloads scanner firmware via HTTP from
+ * the backend) can stage to the same place /api/fw/upload would.
+ */
+const esp_partition_t *fw_store_get_target_partition(void);
+
+/**
+ * Persist scanner firmware metadata to NVS so subsequent fw_store_get_info()
+ * / fw_check / fw_offer flows see it.
+ *
+ * Caller has already written `size` bytes via esp_ota_write to `partition`
+ * and called esp_ota_abort (intentionally NOT esp_ota_end — see the comment
+ * in fw_upload_handler about why we never make scanner firmware bootable
+ * for the uplink itself).
+ */
+void fw_store_persist_metadata(const char *name, const char *version,
+                               const esp_partition_t *partition,
+                               uint32_t size, uint32_t crc32);
+
+/** Handle scanner-originated firmware negotiation messages. */
+void fw_store_handle_scanner_check(int scanner_id,
+                                   const char *scanner_board,
+                                   const char *scanner_version);
+void fw_store_handle_scanner_ready(int scanner_id,
+                                   const char *scanner_board,
+                                   const char *scanner_version);
 
 #ifdef __cplusplus
 }

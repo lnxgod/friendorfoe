@@ -31,6 +31,7 @@
 
 #include "uart_ota.h"
 #include "uart_protocol.h"
+#include "uart_tx.h"
 #include "psram_alloc.h"
 #include "wifi_scanner.h"
 #include "ble_remote_id.h"
@@ -116,6 +117,8 @@ static void send_chunk_nack(uint16_t seq)
 
 static void send_ota_error(const char *reason)
 {
+    uart_tx_set_firmware_update_state(true, uart_tx_firmware_target_version(), "error");
+    uart_tx_set_firmware_error(reason ? reason : "ota_error");
     char buf[128];
     snprintf(buf, sizeof(buf),
              "{\"type\":\"ota_error\",\"reason\":\"%s\",\"received\":%lu}",

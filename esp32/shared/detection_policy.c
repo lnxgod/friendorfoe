@@ -89,6 +89,8 @@ bool fof_policy_is_priority_ble_fingerprint(const char *manufacturer)
            strcmp(mfr, "Meta Device") == 0 ||
            strcmp(mfr, "Flipper Zero") == 0 ||
            strcmp(mfr, "Card Skimmer (suspect)") == 0 ||
+           strcmp(mfr, "Camera") == 0 ||
+           strcmp(mfr, "Hidden Camera (suspect)") == 0 ||
            strcmp(mfr, "Flock Surveillance") == 0;
 }
 
@@ -301,6 +303,19 @@ bool fof_policy_detection_identity_key(const drone_detection_t *det,
             snprintf(out, out_len, "CAL:%s", det->ble_svc_uuids_raw);
             return true;
         }
+        if (det->bssid[0] != '\0') {
+            if (strncmp(det->model, "FP:", 3) == 0) {
+                snprintf(out, out_len, "BLEMAC:%s|%s", det->bssid, det->model);
+                return true;
+            }
+            if (det->ble_ja3_hash != 0) {
+                snprintf(out, out_len, "BLEMAC:%s|JA3:%08lx",
+                         det->bssid, (unsigned long)det->ble_ja3_hash);
+                return true;
+            }
+            snprintf(out, out_len, "BLEMAC:%s", det->bssid);
+            return true;
+        }
         if (strncmp(det->model, "FP:", 3) == 0) {
             snprintf(out, out_len, "BLE:%s", det->model);
             return true;
@@ -308,10 +323,6 @@ bool fof_policy_detection_identity_key(const drone_detection_t *det,
         if (det->ble_ja3_hash != 0) {
             snprintf(out, out_len, "BLEJA3:%08lx",
                      (unsigned long)det->ble_ja3_hash);
-            return true;
-        }
-        if (det->bssid[0] != '\0') {
-            snprintf(out, out_len, "BLEMAC:%s", det->bssid);
             return true;
         }
     }
@@ -374,4 +385,41 @@ const char *fof_policy_scan_profile_for_slot(uint8_t scanner_id,
 const char *fof_policy_slot_role_for_slot(uint8_t scanner_id)
 {
     return scanner_id == 0 ? "ble_primary" : "wifi_primary";
+}
+
+static bool source_is_ble(uint8_t source)
+{
+    return source == DETECTION_SRC_BLE_RID ||
+           source == DETECTION_SRC_BLE_FINGERPRINT;
+}
+
+static bool source_is_wifi(uint8_t source)
+{
+    return source == DETECTION_SRC_WIFI_SSID ||
+           source == DETECTION_SRC_WIFI_DJI_IE ||
+           source == DETECTION_SRC_WIFI_BEACON ||
+           source == DETECTION_SRC_WIFI_OUI ||
+           source == DETECTION_SRC_WIFI_ASSOC ||
+           source == DETECTION_SRC_WIFI_PROBE_REQUEST ||
+           source == DETECTION_SRC_WIFI_AP_INVENTORY;
+}
+
+bool fof_policy_scan_profile_allows_source(const char *scan_profile,
+                                           uint8_t source)
+{
+    if (!scan_profile || scan_profile[0] == '\0' ||
+        ascii_eq_nocase(scan_profile, "normal") ||
+        ascii_eq_nocase(scan_profile, "hybrid_failover")) {
+        return true;
+    }
+    if (ascii_eq_nocase(scan_profile, "ble_primary")) {
+        return !source_is_wifi(source);
+    }
+    if (ascii_eq_nocase(scan_profile, "wifi_primary")) {
+        return !source_is_ble(source);
+    }
+    if (ascii_eq_nocase(scan_profile, "calibration")) {
+        return source == DETECTION_SRC_BLE_FINGERPRINT;
+    }
+    return true;
 }

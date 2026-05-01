@@ -14,6 +14,24 @@ static const char *TAG = "scanner_cal_mode";
 static bool s_active = false;
 static char s_session_id[24] = {0};
 static char s_uuid[48] = {0};
+static char s_scan_profile[24] = "hybrid_failover";
+
+static bool profile_is_ble_primary(void)
+{
+    return strcmp(s_scan_profile, "ble_primary") == 0;
+}
+
+static void apply_normal_profile_radios(void)
+{
+    if (s_active) {
+        return;
+    }
+    if (profile_is_ble_primary()) {
+        wifi_scanner_pause();
+    } else {
+        wifi_scanner_resume();
+    }
+}
 
 bool scanner_calibration_mode_start(const char *session_id,
                                     const char *advertise_uuid)
@@ -46,7 +64,7 @@ void scanner_calibration_mode_stop(const char *reason)
     s_active = false;
     s_session_id[0] = '\0';
     s_uuid[0] = '\0';
-    wifi_scanner_resume();
+    apply_normal_profile_radios();
     ESP_LOGW(TAG, "Calibration mode STOPPED: %s", reason ? reason : "unspecified");
 }
 
@@ -70,6 +88,27 @@ const char *scanner_calibration_mode_label(void)
     return s_active ? "calibration" : "normal";
 }
 
+void scanner_scan_profile_set(const char *profile)
+{
+    if (!profile || profile[0] == '\0') {
+        profile = "hybrid_failover";
+    }
+    if (strcmp(profile, "ble_primary") != 0 &&
+        strcmp(profile, "wifi_primary") != 0 &&
+        strcmp(profile, "hybrid_failover") != 0) {
+        profile = "hybrid_failover";
+    }
+    strncpy(s_scan_profile, profile, sizeof(s_scan_profile) - 1);
+    s_scan_profile[sizeof(s_scan_profile) - 1] = '\0';
+    apply_normal_profile_radios();
+    ESP_LOGI(TAG, "Scan profile set: %s", s_scan_profile);
+}
+
+const char *scanner_scan_profile_label(void)
+{
+    return s_active ? "calibration" : s_scan_profile;
+}
+
 bool scanner_calibration_mode_allows_ble_uuid128(const uint8_t uuids[][16],
                                                  uint8_t count)
 {
@@ -81,10 +120,14 @@ bool scanner_calibration_mode_allows_ble_uuid128(const uint8_t uuids[][16],
 
 bool scanner_calibration_mode_allows_detection(const drone_detection_t *detection)
 {
-    if (!s_active) {
-        return true;
+    if (!detection) {
+        return false;
     }
-    if (!detection || detection->source != DETECTION_SRC_BLE_FINGERPRINT) {
+    if (!s_active) {
+        return fof_policy_scan_profile_allows_source(s_scan_profile,
+                                                     detection->source);
+    }
+    if (detection->source != DETECTION_SRC_BLE_FINGERPRINT) {
         return false;
     }
     if (fof_policy_ble_svc_raw_contains_uuid(detection->ble_svc_uuids_raw, s_uuid)) {

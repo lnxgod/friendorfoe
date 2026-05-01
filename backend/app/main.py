@@ -2,6 +2,7 @@
 
 import logging
 import asyncio
+import json
 from contextlib import asynccontextmanager
 
 from pathlib import Path
@@ -79,7 +80,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     description="Backend proxy & enrichment layer for the Friend or Foe aircraft/drone identification app.",
-    version="0.63.17-rf-intel",
+    version="0.63.20-controlpath-recovery",
     lifespan=lifespan,
 )
 
@@ -89,9 +90,44 @@ app = FastAPI(
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     """Log every incoming request for debugging."""
-    logger.info(">>> %s %s from %s", request.method, request.url.path, request.client.host if request.client else "unknown")
+    source_ip = request.client.host if request.client else "unknown"
+    ingest_body: bytes | None = None
+    if request.method == "POST" and request.url.path == "/detections/drones":
+        ingest_body = await request.body()
+
+        async def receive():
+            return {"type": "http.request", "body": ingest_body or b"", "more_body": False}
+
+        request = Request(request.scope, receive)
+
+    logger.info(">>> %s %s from %s", request.method, request.url.path, source_ip)
     response = await call_next(request)
     logger.info("<<< %s %s -> %d", request.method, request.url.path, response.status_code)
+    if request.method == "POST" and request.url.path == "/detections/drones" and response.status_code >= 400:
+        if ingest_body:
+            preview = ingest_body[:768].decode("utf-8", "replace")
+            try:
+                payload = json.loads(ingest_body)
+                logger.warning(
+                    "Rejected ingest payload from %s: keys=%s device_id=%s detections=%s preview=%s",
+                    source_ip,
+                    sorted(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
+                    payload.get("device_id") if isinstance(payload, dict) else None,
+                    len(payload.get("detections") or []) if isinstance(payload, dict) else None,
+                    preview,
+                )
+            except Exception:
+                logger.warning(
+                    "Rejected non-JSON ingest payload from %s: bytes=%d preview=%s",
+                    source_ip,
+                    len(ingest_body),
+                    preview,
+                )
+        try:
+            detections.record_ingest_rejection(source_ip, response.status_code)
+            response.headers["Connection"] = "close"
+        except Exception as exc:
+            logger.debug("ingest rejection diagnostic skipped: %s", exc)
     return response
 
 
@@ -146,7 +182,7 @@ async def health_check() -> HealthResponse:
 
     return HealthResponse(
         status="ok",
-        version="0.63.17-rf-intel",
+        version="0.63.20-controlpath-recovery",
         redis="ok" if redis_ok else "unavailable",
         database=db_status,
     )

@@ -197,7 +197,7 @@ class TrackedEntityRecord(Base):
 class WhitelistedSSID(Base):
     """SSID whitelist — marks networks as friendly/known (not drones).
 
-    Patterns use glob syntax: CasaChomp* matches CasaChomp_2g, CasaChomp_5g, etc.
+    Patterns use glob syntax: HomeNet* matches HomeNet_2g, HomeNet_5g, etc.
     Managed via dashboard UI.
     """
 

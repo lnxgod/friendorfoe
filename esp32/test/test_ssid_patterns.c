@@ -73,6 +73,38 @@ void test_generic_drone(void)
     TEST_ASSERT_EQUAL_STRING("Unknown", result->manufacturer);
 }
 
+/* ── Test: FriendOrFoe triangulation SSIDs are first-class test drones ─── */
+
+void test_fof_drone_test_ssids(void)
+{
+    const drone_ssid_pattern_t *dash = wifi_ssid_match("FOF-Drone-TEST");
+    const drone_ssid_pattern_t *underscore = wifi_ssid_match("FOF_Drone_TEST");
+
+    TEST_ASSERT_NOT_NULL(dash);
+    TEST_ASSERT_EQUAL_STRING("FriendOrFoe", dash->manufacturer);
+    TEST_ASSERT_NOT_NULL(underscore);
+    TEST_ASSERT_EQUAL_STRING("FriendOrFoe", underscore->manufacturer);
+}
+
+/* ── Test: Expanded budget/toy drone prefixes stay covered ─────────────── */
+
+void test_budget_drone_prefixes(void)
+{
+    const char *ssids[] = {
+        "WiFiUFO-1234",
+        "E88-ABCD",
+        "HolyStoneFPV_123",
+        "Potensic D_01",
+        "RUKO-F11-GIM2",
+        "SKYVIPERGPS_123",
+        "FPV_WIFI123",
+    };
+
+    for (int i = 0; i < (int)(sizeof(ssids) / sizeof(ssids[0])); i++) {
+        TEST_ASSERT_NOT_NULL_MESSAGE(wifi_ssid_match(ssids[i]), ssids[i]);
+    }
+}
+
 /* ── Test: All patterns have valid prefix and manufacturer ─────────────── */
 
 void test_all_patterns_valid(void)

@@ -30,6 +30,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 
 static const char *TAG = "fw_store";
@@ -38,6 +39,19 @@ static const char *TAG = "fw_store";
 
 static volatile bool s_operation_active = false;  /* Prevents concurrent upload/relay */
 
+typedef struct {
+    bool ok;
+    char stage[24];
+    char error[64];
+    int chunks;
+    int nacks;
+    int retries;
+    int64_t elapsed_s;
+    int64_t finished_ms;
+} fw_last_relay_state_t;
+
+static fw_last_relay_state_t s_last_relay[2] = {0};
+
 /* ── OTA upload staging buffer (P4) ──────────────────────────────────────
  * Lazily allocated on first upload. 64 KB on PSRAM collapses the
  * recv/esp_ota_write loop from ~280 iterations per 1.1 MB scanner firmware
@@ -45,6 +59,11 @@ static volatile bool s_operation_active = false;  /* Prevents concurrent upload/
  * on boards without PSRAM — matches the heap-stability baseline. */
 #define FW_STAGE_BUF_PSRAM   (64 * 1024)
 #define FW_STAGE_BUF_FALLBACK 4096
+
+/* Busy scanners can miss a single control line while their TX queue is full.
+ * Keep re-sending the quiet request before relay, but still require proof. */
+#define FW_RELAY_STOP_STORM_MS       8000
+#define FW_RELAY_STOP_STORM_STEP_MS  250
 
 static uint8_t  s_fw_stage_fallback[FW_STAGE_BUF_FALLBACK];
 static uint8_t *s_fw_stage_buf = NULL;     /* resolved on first use */
@@ -75,6 +94,7 @@ bool fw_store_is_relay_active(void) { return s_operation_active; }
 #define NVS_FW_CKSUM    "fw_cksum"
 #define NVS_FW_CRC32    "fw_crc32"
 #define NVS_FW_VER      "fw_ver"
+#define NVS_FW_NAME     "fw_name"
 #define NVS_FW_PART     "fw_part"
 
 /** Read stored firmware metadata from NVS. Returns false if nothing stored. */
@@ -86,6 +106,40 @@ static bool read_fw_metadata(uint32_t *size, uint32_t *checksum,
     if (checksum) nvs_config_get_u32(NVS_FW_CKSUM, checksum);
     if (version)  nvs_config_get_string(NVS_FW_VER, version, ver_len);
     if (part_label) nvs_config_get_string(NVS_FW_PART, part_label, label_len);
+    return true;
+}
+
+/* Forward decl — defined below near the http handlers. */
+static const esp_partition_t *get_store_partition(void);
+
+const esp_partition_t *fw_store_get_target_partition(void)
+{
+    return get_store_partition();
+}
+
+void fw_store_persist_metadata(const char *name, const char *version,
+                               const esp_partition_t *partition,
+                               uint32_t size, uint32_t crc32)
+{
+    nvs_config_set_u32(NVS_FW_SIZE, size);
+    nvs_config_set_u32(NVS_FW_CKSUM, crc32);
+    nvs_config_set_u32(NVS_FW_CRC32, crc32);
+    nvs_config_set_string(NVS_FW_VER,  version && version[0] ? version : "?");
+    nvs_config_set_string(NVS_FW_NAME, name && name[0] ? name : "");
+    if (partition && partition->label[0]) {
+        nvs_config_set_string(NVS_FW_PART, partition->label);
+    }
+}
+
+bool fw_store_get_info(fw_store_info_t *out)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    out->stored = read_fw_metadata(&out->size, &out->checksum,
+                                   out->version, sizeof(out->version),
+                                   out->partition, sizeof(out->partition));
+    if (!out->stored) return false;
+    nvs_config_get_string(NVS_FW_NAME, out->name, sizeof(out->name));
     return true;
 }
 
@@ -268,27 +322,35 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
     esp_ota_abort(ota_handle);
 
     /* Store metadata in NVS (survives power cycle, partition swaps) */
-    char version[16] = {0};
-    char query[64] = {0};
+    char version[32] = {0};
+    char fw_name[32] = {0};
+    char query[96] = {0};
     httpd_req_get_url_query_str(req, query, sizeof(query));
     httpd_query_key_value(query, "version", version, sizeof(version));
+    httpd_query_key_value(query, "name", fw_name, sizeof(fw_name));
 
     nvs_config_set_u32(NVS_FW_SIZE, (uint32_t)total);
     nvs_config_set_u32(NVS_FW_CKSUM, checksum);
     nvs_config_set_u32(NVS_FW_CRC32, checksum);  /* Now CRC32, same key stores it */
     nvs_config_set_string(NVS_FW_VER, version[0] ? version : "?");
+    nvs_config_set_string(NVS_FW_NAME, fw_name[0] ? fw_name : "");
     nvs_config_set_string(NVS_FW_PART, p->label);
 
-    ESP_LOGW(TAG, "Firmware stored: %d bytes, CRC32=%08lX, partition=%s, version=%s",
-             total, (unsigned long)checksum, p->label, version[0] ? version : "?");
+    ESP_LOGW(TAG, "Firmware stored: %d bytes, CRC32=%08lX, partition=%s, name=%s version=%s",
+             total, (unsigned long)checksum, p->label,
+             fw_name[0] ? fw_name : "?",
+             version[0] ? version : "?");
 
     resume_all_tasks();
     s_operation_active = false;
 
-    char resp[128];
+    char resp[192];
     snprintf(resp, sizeof(resp),
-             "{\"ok\":true,\"size\":%d,\"checksum\":%lu,\"partition\":\"%s\"}",
-             total, (unsigned long)checksum, p->label);
+             "{\"ok\":true,\"size\":%d,\"checksum\":%lu,\"partition\":\"%s\","
+             "\"name\":\"%s\",\"version\":\"%s\"}",
+             total, (unsigned long)checksum, p->label,
+             fw_name[0] ? fw_name : "",
+             version[0] ? version : "");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp);
     return ESP_OK;
@@ -407,6 +469,80 @@ static int relay_wait_for(uart_port_t uart_num, const char *needle,
     }
 }
 
+static int relay_wait_for_with_resend(int scanner_id,
+                                      uart_port_t uart_num,
+                                      const char *cmd,
+                                      const char *needle,
+                                      int timeout_ms,
+                                      int resend_ms,
+                                      char *reason_out,
+                                      size_t reason_size)
+{
+    char line[160];
+    int64_t start_ms = esp_timer_get_time() / 1000;
+    int64_t deadline_ms = start_ms + timeout_ms;
+    int64_t next_send_ms = start_ms;
+    int lines_seen = 0;
+
+    ESP_LOGW(TAG, "relay_wait_for_with_resend(%s): timeout=%dms resend=%dms",
+             needle, timeout_ms, resend_ms);
+
+    while (true) {
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        if (now_ms >= deadline_ms) {
+            ESP_LOGW(TAG, "relay_wait_for_with_resend(%s) TIMEOUT after %lldms — %d lines seen",
+                     needle, (long long)(now_ms - start_ms), lines_seen);
+            return -1;
+        }
+
+        if (now_ms >= next_send_ms) {
+            uart_rx_send_command_to_scanner(scanner_id, cmd);
+            next_send_ms = now_ms + resend_ms;
+        }
+
+        int remaining_ms = (int)(deadline_ms - now_ms);
+        int until_resend_ms = (int)(next_send_ms - now_ms);
+        int read_timeout_ms = remaining_ms;
+        if (until_resend_ms > 0 && until_resend_ms < read_timeout_ms) {
+            read_timeout_ms = until_resend_ms;
+        }
+        if (read_timeout_ms > 50) {
+            read_timeout_ms = 50;
+        }
+        if (read_timeout_ms <= 0) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+
+        int n = relay_read_line(uart_num, line, sizeof(line), read_timeout_ms);
+        if (n < 0) {
+            continue;
+        }
+        lines_seen++;
+        ESP_LOGI(TAG, "relay_wait_for_with_resend(%s) line[%d]: %.80s",
+                 needle, lines_seen, line);
+        if (strstr(line, needle)) {
+            return 0;
+        }
+        if (strstr(line, "ota_error")) {
+            if (reason_out && reason_size) {
+                const char *r = strstr(line, "\"reason\":\"");
+                if (r) {
+                    r += strlen("\"reason\":\"");
+                    const char *e = strchr(r, '"');
+                    size_t rlen = e ? (size_t)(e - r) : strlen(r);
+                    if (rlen >= reason_size) rlen = reason_size - 1;
+                    memcpy(reason_out, r, rlen);
+                    reason_out[rlen] = 0;
+                } else {
+                    reason_out[0] = 0;
+                }
+            }
+            return -2;
+        }
+    }
+}
+
 /* Extract an integer "seq" field from a NACK line. Returns -1 if not parseable. */
 static int relay_extract_seq(const char *line)
 {
@@ -433,126 +569,206 @@ static int relay_poll_nack(uart_port_t uart_num, int timeout_ms)
     return -1;
 }
 
-/* ── POST /api/fw/relay — staged handshake + fire-and-forget with NACK ──── */
+/* ── Firmware offer + relay core ───────────────────────────────────────── */
 
-static esp_err_t fw_relay_handler(httpd_req_t *req)
+typedef struct {
+    bool ok;
+    bool legacy;
+    uint32_t size;
+    int chunks;
+    int nacks;
+    int retries;
+    int64_t elapsed_s;
+    char stage[16];
+    char error[64];
+} fw_relay_result_t;
+
+static const char *normalized_version(const char *v)
 {
+    if (!v) return "";
+    return (v[0] == 'v' || v[0] == 'V') ? v + 1 : v;
+}
+
+static bool staged_version_is_known(const fw_store_info_t *info)
+{
+    return info && info->version[0] != '\0';
+}
+
+static bool relay_line_matches_staged_version(const char *line,
+                                              const fw_store_info_t *info)
+{
+    if (!line || !staged_version_is_known(info)) {
+        return !staged_version_is_known(info);
+    }
+    const char *normalized = normalized_version(info->version);
+    return (normalized[0] && strstr(line, normalized)) ||
+           (info->version[0] && strstr(line, info->version));
+}
+
+static bool relay_line_is_scanner_identity(const char *line)
+{
+    if (!line) return false;
+    return strstr(line, "scanner_info") ||
+           strstr(line, "\"scanner-s3-combo\"") ||
+           strstr(line, "\"scanner-s3-combo-seed\"");
+}
+
+static bool staged_firmware_matches_scanner(const fw_store_info_t *info,
+                                            const char *scanner_board)
+{
+    if (!info || !info->stored) return false;
+    if (!info->name[0] || !scanner_board || !scanner_board[0]) {
+        return false;
+    }
+    return strcmp(info->name, scanner_board) == 0;
+}
+
+static bool staged_firmware_is_newer_for_scanner(const fw_store_info_t *info,
+                                                 const char *scanner_board,
+                                                 const char *scanner_version)
+{
+    if (!staged_firmware_matches_scanner(info, scanner_board)) return false;
+    if (!info->version[0] || !scanner_version || !scanner_version[0]) return false;
+    return strcmp(normalized_version(info->version),
+                  normalized_version(scanner_version)) != 0;
+}
+
+static void send_fw_offer(int scanner_id, bool update, const fw_store_info_t *info,
+                          const char *reason)
+{
+    char cmd[240];
+    snprintf(cmd, sizeof(cmd),
+             "{\"type\":\"%s\",\"update\":%s,\"target_ver\":\"%s\","
+             "\"fw_name\":\"%s\",\"size\":%lu,\"crc\":%lu,\"reason\":\"%s\"}",
+             MSG_TYPE_FW_OFFER,
+             update ? "true" : "false",
+             (info && info->version[0]) ? info->version : "",
+             (info && info->name[0]) ? info->name : "",
+             (unsigned long)((info) ? info->size : 0),
+             (unsigned long)((info) ? info->checksum : 0),
+             reason ? reason : "");
+    uart_rx_send_command_to_scanner(scanner_id, cmd);
+}
+
+static bool fw_relay_stored_to_scanner(int scanner_id,
+                                       bool scanner_already_quiet,
+                                       bool legacy_mode,
+                                       fw_relay_result_t *result)
+{
+    fw_relay_result_t local = {0};
+    if (!result) result = &local;
+    memset(result, 0, sizeof(*result));
+    snprintf(result->stage, sizeof(result->stage), "init");
+
     if (s_operation_active) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Operation in progress");
-        return ESP_FAIL;
+        snprintf(result->error, sizeof(result->error), "operation_active");
+        return false;
     }
 
-    /* Read firmware metadata from NVS */
-    uint32_t fw_size = 0, fw_cksum = 0;
-    char fw_ver[16] = {0}, fw_part_label[16] = {0};
-    if (!read_fw_metadata(&fw_size, &fw_cksum, fw_ver, sizeof(fw_ver),
-                          fw_part_label, sizeof(fw_part_label))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No firmware stored");
-        return ESP_FAIL;
+    fw_store_info_t info = {0};
+    if (!fw_store_get_info(&info)) {
+        snprintf(result->error, sizeof(result->error), "no_firmware_stored");
+        return false;
     }
 
     const esp_partition_t *p = find_fw_partition();
     if (!p) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Partition not found");
-        return ESP_FAIL;
+        snprintf(result->error, sizeof(result->error), "partition_not_found");
+        return false;
     }
 
-    /* Parse ?uart=ble|wifi. */
-    char query[64] = {0};
-    httpd_req_get_url_query_str(req, query, sizeof(query));
-    char uart_target[8] = "ble";
-    httpd_query_key_value(query, "uart", uart_target, sizeof(uart_target));
-
-    uart_port_t uart_num;
-    if (strcmp(uart_target, "wifi") == 0) {
-        uart_num = CONFIG_WIFI_SCANNER_UART;
-    } else {
-        uart_num = CONFIG_BLE_SCANNER_UART;
-    }
-
+    uart_port_t uart_num = scanner_id == 1 ? CONFIG_WIFI_SCANNER_UART : CONFIG_BLE_SCANNER_UART;
+    const char *uart_target = scanner_id == 1 ? "wifi" : "ble";
     s_operation_active = true;
 
-    ESP_LOGW(TAG, "Relay v2: %lu bytes from '%s' to UART%d (uart=%s) heap=%lu",
-             (unsigned long)fw_size, p->label, uart_num, uart_target,
+    ESP_LOGW(TAG, "Relay v2: %lu bytes from '%s' to UART%d (uart=%s quiet=%s legacy=%s) heap=%lu",
+             (unsigned long)info.size, p->label, uart_num, uart_target,
+             scanner_already_quiet ? "true" : "false",
+             legacy_mode ? "true" : "false",
              (unsigned long)esp_get_free_heap_size());
 
-    /* Pause HTTP uploads to free heap + prevent concurrent WiFi ops */
     http_upload_pause();
     vTaskDelay(pdMS_TO_TICKS(500));
-
-    /* Take exclusive control of the scanner UART: pause the RX task so we can
-     * read handshake JSON directly from the peripheral. The task's buffered
-     * bytes are left alone (not flushed) — we'll consume them as "other"
-     * lines during relay_wait_for (which ignores non-matching lines). */
-    int scanner_id = (strcmp(uart_target, "wifi") == 0) ? 1 : 0;
     uart_rx_pause_scanner(scanner_id);
 
     bool relay_ok = true;
     char error_msg[64] = {0};
     char stage[16] = "init";
     int64_t start_ms = esp_timer_get_time() / 1000;
-    int64_t overall_timeout_ms = 10 * 60 * 1000;  /* 10-minute hard ceiling */
+    int64_t overall_timeout_ms = 10 * 60 * 1000;
     uint16_t seq = 0;
     int nack_count = 0;
     int total_retries = 0;
 
-    /* ── Stage 0: Stop scanner TX and wait for ack ─────────────────────── */
     snprintf(stage, sizeof(stage), "stop");
     {
-        const char *stop_cmd = "{\"type\":\"stop\"}\n";
-        uart_write_bytes(uart_num, stop_cmd, strlen(stop_cmd));
-        int r = relay_wait_for(uart_num, "stop_ack", 2000, NULL, 0);
-        if (r == 0) {
-            ESP_LOGI(TAG, "Stage stop: stop_ack received");
+        if (!scanner_already_quiet) {
+            int r = relay_wait_for_with_resend(
+                scanner_id,
+                uart_num,
+                "{\"type\":\"stop\"}",
+                "stop_ack",
+                FW_RELAY_STOP_STORM_MS,
+                FW_RELAY_STOP_STORM_STEP_MS,
+                NULL,
+                0
+            );
+            if (r == 0) {
+                ESP_LOGI(TAG, "Stage stop: stop_ack received");
+            } else if (legacy_mode) {
+                ESP_LOGW(TAG, "Stage stop: stop_ack missing after stop storm, continuing in legacy mode");
+            } else {
+                snprintf(error_msg, sizeof(error_msg), "stop_ack_timeout");
+                relay_ok = false;
+                goto relay_done;
+            }
         } else {
-            snprintf(error_msg, sizeof(error_msg), "stop_ack_timeout");
-            relay_ok = false;
-            goto relay_done;
+            ESP_LOGW(TAG, "Stage stop: scanner pre-quiet via fw_ready");
         }
-        /* Drain any remaining detection JSON sitting in the FIFO before we send
-         * ota_begin. 500ms quiet window = good enough signal the scanner's TX
-         * loop is actually halted. */
         char drain[160];
         while (relay_read_line(uart_num, drain, sizeof(drain), 300) >= 0) {}
     }
 
-    /* ── Stage 1: ota_begin + wait for ota_ack ─────────────────────────── */
     snprintf(stage, sizeof(stage), "begin");
     {
         uint32_t fw_crc32 = 0;
         bool has_crc = nvs_config_get_u32(NVS_FW_CRC32, &fw_crc32);
         char cmd[96];
         if (has_crc) {
-            snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%lu,\"crc\":%lu}\n",
-                     (unsigned long)fw_size, (unsigned long)fw_crc32);
+            snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%lu,\"crc\":%lu}",
+                     (unsigned long)info.size, (unsigned long)fw_crc32);
         } else {
-            snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%lu}\n",
-                     (unsigned long)fw_size);
+            snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%lu}",
+                     (unsigned long)info.size);
         }
-        uart_write_bytes(uart_num, cmd, strlen(cmd));
+        uart_rx_send_command_to_scanner(scanner_id, cmd);
         ESP_LOGI(TAG, "Stage begin: sent ota_begin (%lu bytes, CRC=%s%08lX)",
-                 (unsigned long)fw_size, has_crc ? "" : "none/", (unsigned long)fw_crc32);
+                 (unsigned long)info.size, has_crc ? "" : "none/", (unsigned long)fw_crc32);
 
-        char reason[48] = {0};
-        int r = relay_wait_for(uart_num, "ota_ack", 3000, reason, sizeof(reason));
-        if (r != 0) {
-            snprintf(error_msg, sizeof(error_msg),
-                     r == -2 ? "scanner_error:%s" : "ota_ack_timeout",
-                     r == -2 ? reason : "");
-            relay_ok = false;
-            goto relay_done;
+        if (legacy_mode) {
+            ESP_LOGW(TAG, "Stage begin: skipping ota_ack wait in legacy mode");
+            vTaskDelay(pdMS_TO_TICKS(2500));
+        } else {
+            char reason[48] = {0};
+            int r = relay_wait_for(uart_num, "ota_ack", 3000, reason, sizeof(reason));
+            if (r != 0) {
+                snprintf(error_msg, sizeof(error_msg),
+                         r == -2 ? "scanner_error:%s" : "ota_ack_timeout",
+                         r == -2 ? reason : "");
+                relay_ok = false;
+                goto relay_done;
+            }
+            ESP_LOGI(TAG, "Stage begin: ota_ack received, entering chunk stream");
         }
-        ESP_LOGI(TAG, "Stage begin: ota_ack received, entering chunk stream");
     }
 
-    /* ── Stage 2: Stream chunks; poll for NACK per-chunk; retransmit ───── */
     snprintf(stage, sizeof(stage), "chunks");
     {
         static uint8_t read_buf[OTA_CHUNK_MAX_DATA];
         static uint8_t frame[OTA_CHUNK_HEADER_SIZE + OTA_CHUNK_MAX_DATA + OTA_CHUNK_CRC_SIZE];
         uint32_t offset = 0;
-        uint32_t remaining = fw_size;
-        uint8_t  retry_for_seq[8] = {0};   /* small rolling window of retries per seq */
+        uint32_t remaining = info.size;
+        uint8_t retry_for_seq[8] = {0};
 
         while (remaining > 0) {
             int64_t now_ms = esp_timer_get_time() / 1000;
@@ -587,19 +803,10 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
             uart_write_bytes(uart_num, (char *)frame, frame_len);
             uart_wait_tx_done(uart_num, pdMS_TO_TICKS(1000));
 
-            /* Pacing: 50ms between chunks is the sweet spot — gives the
-             * scanner time to write the previous chunk to flash and, more
-             * importantly, time to emit a NACK if the just-sent chunk's CRC
-             * failed. Brief window is enough — scanner replies within ~20 ms. */
             int nack_seq = relay_poll_nack(uart_num, 50);
             if (nack_seq >= 0) {
-                /* Scanner reported a CRC failure for chunk `nack_seq`.
-                 * Rewind to that seq and retransmit. In fire-and-forget mode,
-                 * the NACK seq is always the current or a recent one, so
-                 * rewinding by (seq - nack_seq) chunks is safe. */
                 if (nack_seq > (int)seq) {
-                    ESP_LOGW(TAG, "NACK seq=%d > current seq=%d — ignoring (stale)",
-                             nack_seq, seq);
+                    ESP_LOGW(TAG, "NACK seq=%d > current seq=%d, ignoring", nack_seq, seq);
                 } else {
                     int behind = (int)seq - nack_seq;
                     uint32_t rewind_bytes = (uint32_t)behind * OTA_CHUNK_MAX_DATA;
@@ -616,7 +823,7 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
                     offset -= rewind_bytes;
                     remaining += rewind_bytes;
                     seq = (uint16_t)nack_seq;
-                    ESP_LOGW(TAG, "NACK seq=%d → rewind %lu bytes (retry %u)",
+                    ESP_LOGW(TAG, "NACK seq=%d -> rewind %lu bytes (retry %u)",
                              nack_seq, (unsigned long)rewind_bytes,
                              retry_for_seq[slot]);
                     continue;
@@ -627,45 +834,74 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
             remaining -= chunk_len;
             seq++;
 
-            if ((fw_size - remaining) % (100 * 1024) < OTA_CHUNK_MAX_DATA) {
+            if ((info.size - remaining) % (100 * 1024) < OTA_CHUNK_MAX_DATA) {
                 ESP_LOGI(TAG, "Relay: %lu/%lu (%.0f%%) seq=%d nacks=%d heap=%lu",
-                         (unsigned long)(fw_size - remaining), (unsigned long)fw_size,
-                         (float)(fw_size - remaining) / fw_size * 100,
+                         (unsigned long)(info.size - remaining), (unsigned long)info.size,
+                         (float)(info.size - remaining) / info.size * 100,
                          seq, nack_count,
                          (unsigned long)esp_get_free_heap_size());
             }
         }
     }
 
-    /* ── Stage 3: ota_end + wait for ota_done, ota_error, OR scanner reboot ─ */
-    /*
-     * Supported S3 scanners emit {"type":"ota_done"} then reboot. As an
-     * orthogonal signal, we also watch for scanner_info/identity lines from
-     * modern S3 scanner firmware after reboot.
-     */
     snprintf(stage, sizeof(stage), "end");
     {
-        const char *end_cmd = "{\"type\":\"ota_end\"}\n";
-        uart_write_bytes(uart_num, end_cmd, strlen(end_cmd));
+        uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"ota_end\"}");
+
+        if (legacy_mode) {
+            char line[192];
+            int64_t deadline = (esp_timer_get_time() / 1000) + 60000;
+            bool verified = false;
+            bool saw_identity = false;
+            ESP_LOGW(TAG, "Stage end: legacy relay sent ota_end, waiting for reboot/version proof");
+            while ((esp_timer_get_time() / 1000) < deadline) {
+                int remaining_ms = (int)(deadline - (esp_timer_get_time() / 1000));
+                if (remaining_ms <= 0) break;
+                int n = relay_read_line(uart_num, line, sizeof(line), remaining_ms);
+                if (n < 0) break;
+                if (strstr(line, "ota_done")) {
+                    verified = true;
+                    ESP_LOGW(TAG, "Stage end: legacy scanner emitted ota_done");
+                    break;
+                }
+                if (relay_line_is_scanner_identity(line)) {
+                    saw_identity = true;
+                    if (relay_line_matches_staged_version(line, &info)) {
+                        verified = true;
+                        ESP_LOGW(TAG, "Stage end: legacy scanner identity matches staged version");
+                        break;
+                    }
+                    ESP_LOGW(TAG, "Stage end: scanner identity did not match staged version yet");
+                }
+            }
+            if (!verified) {
+                snprintf(error_msg, sizeof(error_msg), "%s",
+                         saw_identity ? "legacy_version_not_updated" : "legacy_verify_timeout");
+                relay_ok = false;
+                goto relay_done;
+            }
+            goto relay_done;
+        }
 
         char line[192];
         int64_t deadline = (esp_timer_get_time() / 1000) + 60000;
         bool saw_done_or_boot = false;
-        int result = -1;   /* -1 timeout, 0 done/boot, -2 scanner_error */
+        int result_code = -1;
         char reason[48] = {0};
         while ((esp_timer_get_time() / 1000) < deadline) {
-            int remaining = (int)(deadline - (esp_timer_get_time() / 1000));
-            if (remaining <= 0) break;
-            int n = relay_read_line(uart_num, line, sizeof(line), remaining);
+            int remaining_ms = (int)(deadline - (esp_timer_get_time() / 1000));
+            if (remaining_ms <= 0) break;
+            int n = relay_read_line(uart_num, line, sizeof(line), remaining_ms);
             if (n < 0) break;
-            if (strstr(line, "ota_done")) { result = 0; saw_done_or_boot = true; break; }
-            if (strstr(line, "scanner_info") ||
-                strstr(line, "\"scanner-s3-combo\"") ||
-                strstr(line, "\"scanner-s3-combo-seed\"")) {
-                /* Scanner rebooted into new image and is announcing itself. */
-                result = 0; saw_done_or_boot = true;
-                ESP_LOGW(TAG, "Stage end: scanner identity after reboot → implicit ota_done");
-                break;
+            if (strstr(line, "ota_done")) { result_code = 0; saw_done_or_boot = true; break; }
+            if (relay_line_is_scanner_identity(line)) {
+                if (relay_line_matches_staged_version(line, &info)) {
+                    result_code = 0;
+                    saw_done_or_boot = true;
+                    ESP_LOGW(TAG, "Stage end: scanner identity/version after reboot -> implicit ota_done");
+                    break;
+                }
+                ESP_LOGW(TAG, "Stage end: scanner identity did not match staged version yet");
             }
             if (strstr(line, "ota_error")) {
                 const char *r = strstr(line, "\"reason\":\"");
@@ -676,12 +912,11 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
                     if (rlen >= sizeof(reason)) rlen = sizeof(reason) - 1;
                     memcpy(reason, r, rlen); reason[rlen] = 0;
                 }
-                result = -2; break;
+                result_code = -2; break;
             }
-            /* Ignore other lines — could be late NACKs, leaked detections, or watchdog noise. */
         }
 
-        if (result == -2) {
+        if (result_code == -2) {
             snprintf(error_msg, sizeof(error_msg), "scanner_error:%s",
                      reason[0] ? reason : "unknown");
             relay_ok = false;
@@ -691,25 +926,20 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
             relay_ok = false;
             goto relay_done;
         }
-        ESP_LOGW(TAG, "Stage end: scanner acknowledged — rebooting");
+        ESP_LOGW(TAG, "Stage end: scanner acknowledged, rebooting");
     }
 
 relay_done:;
-    /* Resume UART RX task + HTTP uploads */
     uart_rx_resume_scanner(scanner_id);
 
     int64_t elapsed_s = ((esp_timer_get_time() / 1000) - start_ms) / 1000;
-
-    /* On failure, wake the scanner's TX loop back up so detections resume.
-     * On success the scanner is rebooting into the new image and will come
-     * back online on its own; the watchdog's periodic ready signal picks up. */
     if (!relay_ok) {
-        uart_write_bytes(uart_num, "{\"type\":\"start\"}\n", 17);
+        uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
     }
 
     if (relay_ok) {
         ESP_LOGW(TAG, "Relay complete: %lu bytes, %d chunks, %d nacks in %llds",
-                 (unsigned long)fw_size, seq, nack_count, (long long)elapsed_s);
+                 (unsigned long)info.size, seq, nack_count, (long long)elapsed_s);
     } else {
         ESP_LOGE(TAG, "Relay FAILED @ %s: %s (%d chunks in %llds)",
                  stage, error_msg, seq, (long long)elapsed_s);
@@ -718,17 +948,156 @@ relay_done:;
     http_upload_resume();
     s_operation_active = false;
 
+    result->ok = relay_ok;
+    result->legacy = legacy_mode;
+    result->size = info.size;
+    result->chunks = seq;
+    result->nacks = nack_count;
+    result->retries = total_retries;
+    result->elapsed_s = elapsed_s;
+    strncpy(result->stage, stage, sizeof(result->stage) - 1);
+    result->stage[sizeof(result->stage) - 1] = '\0';
+    strncpy(result->error, error_msg, sizeof(result->error) - 1);
+    result->error[sizeof(result->error) - 1] = '\0';
+    if (scanner_id >= 0 && scanner_id < 2) {
+        s_last_relay[scanner_id].ok = result->ok;
+        strncpy(s_last_relay[scanner_id].stage, result->stage, sizeof(s_last_relay[scanner_id].stage) - 1);
+        s_last_relay[scanner_id].stage[sizeof(s_last_relay[scanner_id].stage) - 1] = '\0';
+        strncpy(s_last_relay[scanner_id].error, result->error, sizeof(s_last_relay[scanner_id].error) - 1);
+        s_last_relay[scanner_id].error[sizeof(s_last_relay[scanner_id].error) - 1] = '\0';
+        s_last_relay[scanner_id].chunks = result->chunks;
+        s_last_relay[scanner_id].nacks = result->nacks;
+        s_last_relay[scanner_id].retries = result->retries;
+        s_last_relay[scanner_id].elapsed_s = result->elapsed_s;
+        s_last_relay[scanner_id].finished_ms = esp_timer_get_time() / 1000;
+    }
+    return relay_ok;
+}
+
+/* ── POST /api/fw/relay — staged handshake + fire-and-forget with NACK ──── */
+
+static esp_err_t fw_relay_handler(httpd_req_t *req)
+{
+    char query[96] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    char uart_target[8] = "ble";
+    httpd_query_key_value(query, "uart", uart_target, sizeof(uart_target));
+    char mode[16] = {0};
+    char legacy_param[8] = {0};
+    httpd_query_key_value(query, "mode", mode, sizeof(mode));
+    httpd_query_key_value(query, "legacy", legacy_param, sizeof(legacy_param));
+    bool legacy_mode =
+        strcmp(mode, "legacy") == 0 ||
+        strcmp(legacy_param, "1") == 0 ||
+        strcmp(legacy_param, "true") == 0;
+    int scanner_id = (strcmp(uart_target, "wifi") == 0) ? 1 : 0;
+
+    fw_relay_result_t result = {0};
+    fw_relay_stored_to_scanner(scanner_id, false, legacy_mode, &result);
+
     char resp_buf[320];
     snprintf(resp_buf, sizeof(resp_buf),
-             "{\"ok\":%s,\"size\":%lu,\"chunks\":%d,\"nacks\":%d,"
+             "{\"ok\":%s,\"legacy\":%s,\"size\":%lu,\"chunks\":%d,\"nacks\":%d,"
              "\"retries\":%d,\"elapsed_s\":%lld,\"stage\":\"%s\","
              "\"error\":\"%s\"}",
-             relay_ok ? "true" : "false",
-             (unsigned long)fw_size, seq, nack_count, total_retries,
-             (long long)elapsed_s, stage, error_msg);
+             result.ok ? "true" : "false",
+             result.legacy ? "true" : "false",
+             (unsigned long)result.size, result.chunks, result.nacks, result.retries,
+             (long long)result.elapsed_s, result.stage, result.error);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp_buf);
     return ESP_OK;
+}
+
+#define FW_AUTO_RELAY_COOLDOWN_MS (10 * 60 * 1000)
+
+static int64_t s_last_auto_relay_ms[2] = {0, 0};
+
+typedef struct {
+    int scanner_id;
+} fw_auto_relay_args_t;
+
+static void fw_auto_relay_task(void *arg)
+{
+    fw_auto_relay_args_t *args = (fw_auto_relay_args_t *)arg;
+    int scanner_id = args ? args->scanner_id : 0;
+    if (args) free(args);
+
+    vTaskDelay(pdMS_TO_TICKS(250));
+    fw_relay_result_t result = {0};
+    fw_relay_stored_to_scanner(scanner_id, true, false, &result);
+    ESP_LOGW(TAG, "Auto scanner relay[%d] ok=%d stage=%s error=%s chunks=%d",
+             scanner_id, result.ok ? 1 : 0, result.stage, result.error, result.chunks);
+    vTaskDelete(NULL);
+}
+
+void fw_store_handle_scanner_check(int scanner_id,
+                                   const char *scanner_board,
+                                   const char *scanner_version)
+{
+    fw_store_info_t info = {0};
+    if (!fw_store_get_info(&info)) {
+        send_fw_offer(scanner_id, false, NULL, "no_staged_firmware");
+        return;
+    }
+    if (!info.name[0]) {
+        send_fw_offer(scanner_id, false, &info, "staged_firmware_missing_name");
+        return;
+    }
+    if (!staged_firmware_matches_scanner(&info, scanner_board)) {
+        send_fw_offer(scanner_id, false, &info, "board_mismatch");
+        return;
+    }
+    if (!staged_firmware_is_newer_for_scanner(&info, scanner_board, scanner_version)) {
+        send_fw_offer(scanner_id, false, &info, "current");
+        return;
+    }
+    send_fw_offer(scanner_id, true, &info, "staged_update_available");
+}
+
+void fw_store_handle_scanner_ready(int scanner_id,
+                                   const char *scanner_board,
+                                   const char *scanner_version)
+{
+    fw_store_info_t info = {0};
+    int64_t now_ms = esp_timer_get_time() / 1000;
+
+    if (scanner_id < 0 || scanner_id > 1) {
+        return;
+    }
+    if (!fw_store_get_info(&info) ||
+        !info.name[0] ||
+        !staged_firmware_is_newer_for_scanner(&info, scanner_board, scanner_version)) {
+        ESP_LOGW(TAG, "Scanner[%d] fw_ready ignored: no matching newer staged image",
+                 scanner_id);
+        uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
+        return;
+    }
+    if (s_operation_active) {
+        ESP_LOGW(TAG, "Scanner[%d] fw_ready deferred: operation active", scanner_id);
+        uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
+        return;
+    }
+    if (s_last_auto_relay_ms[scanner_id] != 0 &&
+        (now_ms - s_last_auto_relay_ms[scanner_id]) < FW_AUTO_RELAY_COOLDOWN_MS) {
+        ESP_LOGW(TAG, "Scanner[%d] fw_ready deferred: auto relay cooldown", scanner_id);
+        uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
+        return;
+    }
+
+    s_last_auto_relay_ms[scanner_id] = now_ms;
+    fw_auto_relay_args_t *args = calloc(1, sizeof(*args));
+    if (!args) {
+        uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
+        return;
+    }
+    args->scanner_id = scanner_id;
+    BaseType_t ok = xTaskCreate(fw_auto_relay_task, "fw_auto_relay", 6144,
+                                args, 5, NULL);
+    if (ok != pdPASS) {
+        free(args);
+        uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
+    }
 }
 
 /* ── GET /api/fw/info — check stored firmware status ─────────────────────── */
@@ -736,20 +1105,76 @@ relay_done:;
 static esp_err_t fw_info_handler(httpd_req_t *req)
 {
     uint32_t size = 0, cksum = 0;
-    char ver[16] = {0}, part[16] = {0};
+    char ver[32] = {0}, name[32] = {0}, part[16] = {0};
     bool has_fw = read_fw_metadata(&size, &cksum, ver, sizeof(ver), part, sizeof(part));
+    if (has_fw) nvs_config_get_string(NVS_FW_NAME, name, sizeof(name));
 
-    char resp[256];
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    char resp[768];
     if (has_fw) {
         snprintf(resp, sizeof(resp),
                  "{\"stored\":true,\"size\":%lu,\"checksum\":%lu,"
-                 "\"version\":\"%s\",\"partition\":\"%s\"}",
+                 "\"version\":\"%s\",\"name\":\"%s\",\"partition\":\"%s\","
+                 "\"auto_update_enabled\":true,\"auto_relay_cooldown_s\":%d,"
+                 "\"last_relay\":{\"ble\":{\"ok\":%s,\"stage\":\"%s\",\"error\":\"%s\","
+                 "\"chunks\":%d,\"nacks\":%d,\"retries\":%d,\"elapsed_s\":%lld,\"age_s\":%lld},"
+                 "\"wifi\":{\"ok\":%s,\"stage\":\"%s\",\"error\":\"%s\","
+                 "\"chunks\":%d,\"nacks\":%d,\"retries\":%d,\"elapsed_s\":%lld,\"age_s\":%lld}}}",
                  (unsigned long)size, (unsigned long)cksum,
-                 ver[0] ? ver : "", part[0] ? part : "");
+                 ver[0] ? ver : "", name[0] ? name : "", part[0] ? part : "",
+                 (int)(FW_AUTO_RELAY_COOLDOWN_MS / 1000),
+                 s_last_relay[0].ok ? "true" : "false",
+                 s_last_relay[0].stage, s_last_relay[0].error,
+                 s_last_relay[0].chunks, s_last_relay[0].nacks, s_last_relay[0].retries,
+                 (long long)s_last_relay[0].elapsed_s,
+                 (long long)(s_last_relay[0].finished_ms > 0 ? (now_ms - s_last_relay[0].finished_ms) / 1000 : -1),
+                 s_last_relay[1].ok ? "true" : "false",
+                 s_last_relay[1].stage, s_last_relay[1].error,
+                 s_last_relay[1].chunks, s_last_relay[1].nacks, s_last_relay[1].retries,
+                 (long long)s_last_relay[1].elapsed_s,
+                 (long long)(s_last_relay[1].finished_ms > 0 ? (now_ms - s_last_relay[1].finished_ms) / 1000 : -1));
     } else {
-        snprintf(resp, sizeof(resp), "{\"stored\":false}");
+        snprintf(resp, sizeof(resp),
+                 "{\"stored\":false,\"auto_update_enabled\":true,"
+                 "\"auto_relay_cooldown_s\":%d}",
+                 (int)(FW_AUTO_RELAY_COOLDOWN_MS / 1000));
     }
 
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
+/* ── POST /api/fw/trigger — ask scanner(s) to run fw_check now ─────────── */
+
+static esp_err_t fw_trigger_handler(httpd_req_t *req)
+{
+    char query[96] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    char uart_target[8] = "both";
+    httpd_query_key_value(query, "uart", uart_target, sizeof(uart_target));
+
+    bool target_ble = strcmp(uart_target, "ble") == 0 || strcmp(uart_target, "both") == 0;
+    bool target_wifi = strcmp(uart_target, "wifi") == 0 || strcmp(uart_target, "both") == 0;
+    if (!target_ble && !target_wifi) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "uart must be ble, wifi, or both");
+        return ESP_OK;
+    }
+
+    const char *cmd = "{\"type\":\"fw_check_now\"}";
+    bool ble_sent = target_ble ? uart_rx_send_command_to_scanner_checked(0, cmd) : false;
+    bool wifi_sent = target_wifi ? uart_rx_send_command_to_scanner_checked(1, cmd) : false;
+    bool ok = (!target_ble || ble_sent) && (!target_wifi || wifi_sent);
+
+    char resp[192];
+    snprintf(resp, sizeof(resp),
+             "{\"ok\":%s,\"uart\":\"%s\",\"ble_sent\":%s,\"wifi_sent\":%s,"
+             "\"error\":\"%s\"}",
+             ok ? "true" : "false",
+             uart_target,
+             ble_sent ? "true" : "false",
+             wifi_sent ? "true" : "false",
+             ok ? "" : "scanner_command_ingress_unreachable");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp);
     return ESP_OK;
@@ -766,6 +1191,9 @@ static const httpd_uri_t uri_fw_relay = {
 static const httpd_uri_t uri_fw_info = {
     .uri = "/api/fw/info", .method = HTTP_GET, .handler = fw_info_handler,
 };
+static const httpd_uri_t uri_fw_trigger = {
+    .uri = "/api/fw/trigger", .method = HTTP_POST, .handler = fw_trigger_handler,
+};
 
 void fw_store_register(httpd_handle_t server)
 {
@@ -776,6 +1204,8 @@ void fw_store_register(httpd_handle_t server)
     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/fw/relay: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_fw_info);
     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/fw/info: %s", esp_err_to_name(r));
+    r = httpd_register_uri_handler(server, &uri_fw_trigger);
+    if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/fw/trigger: %s", esp_err_to_name(r));
 
     ESP_LOGI(TAG, "Firmware store endpoints registered");
 }

@@ -27,6 +27,7 @@ import math
 import time
 import uuid
 from dataclasses import dataclass, field
+from statistics import median
 
 # Reference RSSI at 1 m for ADVERTISE_TX_POWER_HIGH on a typical
 # Android peripheral (Pixel/Samsung). Reading TX power from the
@@ -52,6 +53,19 @@ MIN_SAMPLES_PER_LISTENER = 20
 # device with the same UUID).
 MIN_PATH_LOSS = 1.8
 MAX_PATH_LOSS = 5.0
+
+# Apply-quality gates. These are intentionally stricter than "can we fit a
+# line?" because a demo/operator model must produce stable positions, not just
+# mathematically non-empty coefficients.
+APPLY_MIN_GLOBAL_R2 = 0.55
+APPLY_MIN_OK_LISTENERS = 3
+APPLY_MIN_TARGET_COVERAGE = 0.75
+APPLY_MAX_CHECKPOINT_DRIFT_M = 15.0
+
+# During a calibration walk a nearby node can hear many copies of the same
+# phone advertisement in a second. Collapse those packet bursts to median RSSI
+# before fitting so one "screaming" receiver does not overweight the model.
+FIT_PACKET_BUCKET_S = 1.0
 
 
 @dataclass
@@ -185,6 +199,41 @@ def _ols_fit(distances_m: list[float], rssis: list[float]) -> tuple[float, float
     if not (MIN_PATH_LOSS <= path_loss <= MAX_PATH_LOSS):
         return None
     return (rssi_ref, path_loss, r2)
+
+
+def _percentile(values: list[float], pct: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    k = (len(ordered) - 1) * pct / 100.0
+    lo = math.floor(k)
+    hi = math.ceil(k)
+    if lo == hi:
+        return float(ordered[int(k)])
+    return float(ordered[lo] * (hi - k) + ordered[hi] * (k - lo))
+
+
+def _error_stats(values: list[float]) -> dict:
+    if not values:
+        return {
+            "count": 0,
+            "mean_m": None,
+            "median_m": None,
+            "p90_m": None,
+            "max_m": None,
+        }
+    return {
+        "count": len(values),
+        "mean_m": round(sum(values) / len(values), 2),
+        "median_m": round(float(median(values)), 2),
+        "p90_m": round(_percentile(values, 90) or 0.0, 2),
+        "max_m": round(max(values), 2),
+    }
+
+
+def _distance_from_model(rssi: float, rssi_ref: float, path_loss: float) -> float:
+    exponent = (rssi_ref - rssi) / (10.0 * path_loss)
+    return max(1.0, min(200.0, 10.0 ** exponent))
 
 
 class PhoneCalibrationManager:
@@ -576,15 +625,25 @@ class PhoneCalibrationManager:
             return {"ok": False, "reason": "no_sensor_samples"}
 
         # Bucket samples by sensor and join with interpolated phone GPS.
-        # Sample weights replicate the (d, rssi) tuple — used by checkpoint
-        # touches (weight=10) so the d≈1 m anchor dominates the intercept.
-        # For weighted (checkpoint) samples we force d_m = 1 m: the operator
-        # literally stood next to the sensor, GPS jitter notwithstanding,
-        # and we want the regression intercept locked at log10(1)=0.
+        # Normal walk packets are collapsed into 1 s median-RSSI buckets so
+        # repeated packets from a loud receiver improve confidence without
+        # dominating the regression. Checkpoint samples remain weighted because
+        # they deliberately anchor the d≈1 m intercept.
         per_sensor: dict[str, list[tuple[float, float]]] = {}  # sensor_id → [(d_m, rssi), ...]
+        validation_pairs: dict[str, list[tuple[float, float]]] = {}
+        packet_buckets: dict[str, dict[int, list[tuple[float, float]]]] = {}
+        raw_samples_by_sensor: dict[str, int] = {}
+        checkpoint_fit_samples = 0
         for c in session.samples:
+            raw_samples_by_sensor[c.sensor_id] = raw_samples_by_sensor.get(c.sensor_id, 0) + 1
             if c.weight > 1:
                 d_m = 1.0   # checkpoint anchor — operator next to sensor
+                entry = (d_m, float(c.rssi))
+                bucket = per_sensor.setdefault(c.sensor_id, [])
+                for _ in range(max(1, c.weight)):
+                    bucket.append(entry)
+                    checkpoint_fit_samples += 1
+                validation_pairs.setdefault(c.sensor_id, []).append(entry)
             else:
                 pos = _interpolate_position(session.trace, c.ts_s)
                 if pos is None:
@@ -594,10 +653,20 @@ class PhoneCalibrationManager:
                     # Reject implausible distances — likely GPS noise or
                     # the phone advertised before/after the trace span.
                     continue
-            entry = (d_m, float(c.rssi))
-            bucket = per_sensor.setdefault(c.sensor_id, [])
-            for _ in range(max(1, c.weight)):
-                bucket.append(entry)
+                bucket_id = int(c.ts_s // FIT_PACKET_BUCKET_S)
+                packet_buckets.setdefault(c.sensor_id, {}).setdefault(bucket_id, []).append(
+                    (d_m, float(c.rssi))
+                )
+
+        sample_windows_by_sensor: dict[str, int] = {}
+        for sid, buckets in packet_buckets.items():
+            sample_windows_by_sensor[sid] = len(buckets)
+            for samples in buckets.values():
+                d_m = float(median([p[0] for p in samples]))
+                rssi = float(median([p[1] for p in samples]))
+                entry = (d_m, rssi)
+                per_sensor.setdefault(sid, []).append(entry)
+                validation_pairs.setdefault(sid, []).append(entry)
 
         # Pre-index checkpoints per sensor so we can attach sanity fields
         # (gps_drift_m, rssi_at_touch, label_match) to each per-listener
@@ -611,15 +680,19 @@ class PhoneCalibrationManager:
                 latest_checkpoint[cp.sensor_id] = cp
 
         per_listener_models: dict[str, dict] = {}
-        successful_fits: list[tuple[float, float, float, int]] = []  # (rref, n, r2, samples)
+        successful_fits: list[tuple[str, float, float, float, int]] = []  # (sid, rref, n, r2, samples)
         for sid, pairs in per_sensor.items():
             ds = [p[0] for p in pairs]
             rs = [p[1] for p in pairs]
             res = _ols_fit(ds, rs)
+            distance_span = (max(ds) - min(ds)) if ds else 0.0
             entry: dict
             if res is None:
                 entry = {
                     "samples": len(pairs),
+                    "raw_samples": raw_samples_by_sensor.get(sid, 0),
+                    "sample_windows": sample_windows_by_sensor.get(sid, 0),
+                    "distance_range_m": round(distance_span, 1),
                     "ok": False,
                     "reason": "insufficient_or_out_of_band",
                 }
@@ -627,12 +700,15 @@ class PhoneCalibrationManager:
                 rref, n, r2 = res
                 entry = {
                     "samples": len(pairs),
+                    "raw_samples": raw_samples_by_sensor.get(sid, 0),
+                    "sample_windows": sample_windows_by_sensor.get(sid, 0),
+                    "distance_range_m": round(distance_span, 1),
                     "rssi_ref": round(rref, 2),
                     "path_loss_exponent": round(n, 3),
                     "r_squared": round(r2, 3),
                     "ok": True,
                 }
-                successful_fits.append((rref, n, r2, len(pairs)))
+                successful_fits.append((sid, rref, n, r2, len(pairs)))
             cp = latest_checkpoint.get(sid)
             if cp is not None:
                 drift = _haversine_m(cp.phone_lat, cp.phone_lon,
@@ -671,13 +747,103 @@ class PhoneCalibrationManager:
                 "trace_points": len(session.trace),
                 "samples_total": len(session.samples),
             }
-        weights = [r2 * samples for _, _, r2, samples in successful_fits]
+        weights = [r2 * samples for _, _, _, r2, samples in successful_fits]
         wsum = sum(weights) or 1.0
-        g_ref = sum(w * rref for w, (rref, _, _, _) in zip(weights, successful_fits)) / wsum
-        g_n = sum(w * n for w, (_, n, _, _) in zip(weights, successful_fits)) / wsum
+        g_ref = sum(w * rref for w, (_, rref, _, _, _) in zip(weights, successful_fits)) / wsum
+        g_n = sum(w * n for w, (_, _, n, _, _) in zip(weights, successful_fits)) / wsum
         # Composite r² is the average of per-listener r²s — gives the operator
         # a single fit-quality number that represents the typical sensor.
-        g_r2 = sum(r2 for _, _, r2, _ in successful_fits) / len(successful_fits)
+        g_r2 = sum(r2 for _, _, _, r2, _ in successful_fits) / len(successful_fits)
+
+        accepted_listener_ids: list[str] = []
+        all_range_errors: list[float] = []
+        for sid, entry in per_listener_models.items():
+            pairs = validation_pairs.get(sid, [])
+            errors: list[float] = []
+            if entry.get("ok"):
+                rref = float(entry["rssi_ref"])
+                n = float(entry["path_loss_exponent"])
+                for d_m, rssi in pairs:
+                    pred = _distance_from_model(rssi, rref, n)
+                    err = abs(pred - d_m)
+                    errors.append(err)
+                    all_range_errors.append(err)
+            entry["range_error_m"] = _error_stats(errors)
+
+            accepted = bool(entry.get("ok"))
+            reject_reasons: list[str] = []
+            if not accepted:
+                reject_reasons.append(str(entry.get("reason") or "fit_failed"))
+            elif float(entry.get("r_squared") or 0.0) < 0.35:
+                accepted = False
+                reject_reasons.append("listener_r2_below_0_35")
+            err_stats = entry.get("range_error_m") or {}
+            if accepted and (err_stats.get("median_m") is not None) and float(err_stats["median_m"]) > 20.0:
+                accepted = False
+                reject_reasons.append("median_range_error_above_20m")
+            if accepted and (err_stats.get("p90_m") is not None) and float(err_stats["p90_m"]) > 50.0:
+                accepted = False
+                reject_reasons.append("p90_range_error_above_50m")
+            if accepted and float(entry.get("gps_drift_m") or 0.0) > APPLY_MAX_CHECKPOINT_DRIFT_M:
+                accepted = False
+                reject_reasons.append("checkpoint_gps_drift_above_15m")
+            entry["accepted_for_apply"] = accepted
+            entry["apply_reject_reasons"] = reject_reasons
+            if accepted:
+                accepted_listener_ids.append(sid)
+
+        target_ids = sorted({
+            str(sensor_id)
+            for sensor_id in (getattr(session, "target_sensor_ids", None) or [])
+            if sensor_id
+        })
+        if not target_ids:
+            target_ids = sorted(per_sensor.keys())
+        target_count = len(target_ids)
+        required_listeners = (
+            max(APPLY_MIN_OK_LISTENERS, math.ceil(target_count * APPLY_MIN_TARGET_COVERAGE))
+            if target_count >= APPLY_MIN_OK_LISTENERS else target_count
+        )
+        target_coverage = (
+            len([sid for sid in accepted_listener_ids if sid in set(target_ids)]) / target_count
+            if target_count else 0.0
+        )
+        apply_reasons: list[str] = []
+        if g_r2 < APPLY_MIN_GLOBAL_R2:
+            apply_reasons.append(f"global_r2_below_{APPLY_MIN_GLOBAL_R2:.2f}")
+        if len(accepted_listener_ids) < required_listeners:
+            apply_reasons.append(
+                f"accepted_listeners_{len(accepted_listener_ids)}_below_required_{required_listeners}"
+            )
+        if target_count and target_coverage < APPLY_MIN_TARGET_COVERAGE:
+            apply_reasons.append(
+                f"target_coverage_{target_coverage:.2f}_below_{APPLY_MIN_TARGET_COVERAGE:.2f}"
+            )
+        for sid in target_ids:
+            entry = per_listener_models.get(sid)
+            if entry and not entry.get("accepted_for_apply"):
+                reasons = ",".join(entry.get("apply_reject_reasons") or [entry.get("reason") or "not_accepted"])
+                apply_reasons.append(f"listener_{sid}:{reasons}")
+
+        model_validation = {
+            "applyable": not apply_reasons,
+            "reasons": apply_reasons,
+            "global_r2": round(g_r2, 3),
+            "min_global_r2": APPLY_MIN_GLOBAL_R2,
+            "accepted_listener_count": len(accepted_listener_ids),
+            "accepted_listener_ids": accepted_listener_ids,
+            "successful_listener_count": len(successful_fits),
+            "target_sensor_count": target_count,
+            "target_sensor_ids": target_ids,
+            "target_coverage": round(target_coverage, 3),
+            "min_target_coverage": APPLY_MIN_TARGET_COVERAGE,
+            "required_listener_count": required_listeners,
+            "range_error_m": _error_stats(all_range_errors),
+            "packet_bucket_s": FIT_PACKET_BUCKET_S,
+            "raw_samples_total": len(session.samples),
+            "fit_sample_windows": sum(sample_windows_by_sensor.values()),
+            "checkpoint_fit_samples": checkpoint_fit_samples,
+        }
 
         return {
             "ok": True,
@@ -691,6 +857,7 @@ class PhoneCalibrationManager:
             "checkpointed_sensor_count": len(latest_checkpoint),
             "session_id": session.session_id,
             "tx_power_dbm": session.tx_power_dbm,
+            "model_validation": model_validation,
         }
 
     def prune(self) -> None:

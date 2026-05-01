@@ -11,6 +11,7 @@
 #include "config.h"
 #include "detection_policy.h"
 #include "led_status.h"
+#include "fw_store.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -20,6 +21,7 @@
 #include "esp_timer.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "freertos/portmacro.h"
 
@@ -36,6 +38,7 @@ static bool s_first_status_received = false;
 
 static QueueHandle_t s_detection_queue = NULL;
 static int           s_detection_count = 0;
+static SemaphoreHandle_t s_uart_tx_lock = NULL;
 
 /* Scanner identity (populated from scanner_info UART messages) */
 static scanner_info_t s_ble_scanner_info = {0};
@@ -100,12 +103,56 @@ static uart_port_t scanner_uart_for_id(int scanner_id)
 #endif
 }
 
+static bool send_json_line_to_scanner_locked(int scanner_id, const char *json_cmd)
+{
+    if (!json_cmd) {
+        return false;
+    }
+
+    char line[384];
+    size_t len = strlen(json_cmd);
+    while (len > 0 && (json_cmd[len - 1] == '\n' || json_cmd[len - 1] == '\r')) {
+        len--;
+    }
+    if (len == 0 || len >= sizeof(line) - 1) {
+        ESP_LOGW(TAG, "scanner command rejected: len=%u scanner=%d",
+                 (unsigned)len, scanner_id);
+        return false;
+    }
+
+    memcpy(line, json_cmd, len);
+    line[len++] = '\n';
+
+    SemaphoreHandle_t lock = s_uart_tx_lock;
+    if (lock && xSemaphoreTake(lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGW(TAG, "scanner command lock timeout: scanner=%d", scanner_id);
+        return false;
+    }
+
+    uart_port_t uart = scanner_uart_for_id(scanner_id);
+    int written = uart_write_bytes(uart, line, len);
+    if (written == (int)len) {
+        uart_wait_tx_done(uart, pdMS_TO_TICKS(150));
+    }
+
+    if (lock) {
+        xSemaphoreGive(lock);
+    }
+
+    if (written != (int)len) {
+        ESP_LOGW(TAG, "scanner command short write: scanner=%d uart=%d wrote=%d/%u",
+                 scanner_id, uart, written, (unsigned)len);
+        return false;
+    }
+    return true;
+}
+
 static void send_scanner_flow_cmd(int scanner_id, const char *type)
 {
     char cmd[24];
-    int n = snprintf(cmd, sizeof(cmd), "{\"type\":\"%s\"}\n", type);
+    int n = snprintf(cmd, sizeof(cmd), "{\"type\":\"%s\"}", type);
     if (n > 0) {
-        uart_write_bytes(scanner_uart_for_id(scanner_id), cmd, n);
+        send_json_line_to_scanner_locked(scanner_id, cmd);
     }
 }
 
@@ -157,6 +204,8 @@ static bool msg_type_is_scanner_originated(const char *msg_type)
            strcmp(msg_type, MSG_TYPE_STATUS) == 0 ||
            strcmp(msg_type, "scanner_info") == 0 ||
            strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0 ||
+           strcmp(msg_type, MSG_TYPE_FW_CHECK) == 0 ||
+           strcmp(msg_type, MSG_TYPE_FW_READY) == 0 ||
            strncmp(msg_type, "ota_", 4) == 0;
 }
 
@@ -544,15 +593,39 @@ static void handle_status(const cJSON *root, int scanner_id)
             strncpy(info->time_sync_state, time_state, sizeof(info->time_sync_state) - 1);
             info->time_sync_state[sizeof(info->time_sync_state) - 1] = '\0';
         }
+        info->cmd_rx_count = (uint32_t)json_get_double(root, "cmd_rx", (double)info->cmd_rx_count);
+        info->cmd_parse_error_count = (uint32_t)json_get_double(
+            root, "cmd_parse_err", (double)info->cmd_parse_error_count
+        );
+        info->cmd_overflow_count = (uint32_t)json_get_double(root, "cmd_overflow", (double)info->cmd_overflow_count);
+        info->cmd_stale_count = (uint32_t)json_get_double(root, "cmd_stale", (double)info->cmd_stale_count);
+        info->cmd_last_age_s = (int64_t)json_get_double(root, "cmd_last_age_s", (double)info->cmd_last_age_s);
         const char *scan_mode = json_get_string(root, JSON_KEY_SCAN_MODE, info->scan_mode[0] ? info->scan_mode : "normal");
         strncpy(info->scan_mode, scan_mode, sizeof(info->scan_mode) - 1);
         info->scan_mode[sizeof(info->scan_mode) - 1] = '\0';
+        const char *scan_profile = json_get_string(root, JSON_KEY_SCAN_PROFILE, info->scan_profile[0] ? info->scan_profile : "");
+        strncpy(info->scan_profile, scan_profile ? scan_profile : "", sizeof(info->scan_profile) - 1);
+        info->scan_profile[sizeof(info->scan_profile) - 1] = '\0';
         const char *cal_uuid = json_get_string(root, JSON_KEY_CALIBRATION_UUID, info->calibration_uuid);
         strncpy(info->calibration_uuid, cal_uuid ? cal_uuid : "", sizeof(info->calibration_uuid) - 1);
         info->calibration_uuid[sizeof(info->calibration_uuid) - 1] = '\0';
         info->calibration_mode_acked =
             strcmp(info->scan_mode, "calibration") == 0 &&
             info->calibration_uuid[0] != '\0';
+        const cJSON *need_fw = cJSON_GetObjectItemCaseSensitive(root, "need_firmware");
+        info->need_firmware = (need_fw && cJSON_IsTrue(need_fw)) ||
+                              (need_fw && cJSON_IsNumber(need_fw) && need_fw->valueint != 0);
+        const char *fw_state = json_get_string(root, JSON_KEY_FW_STATE, info->fw_update_state);
+        strncpy(info->fw_update_state, fw_state ? fw_state : "", sizeof(info->fw_update_state) - 1);
+        info->fw_update_state[sizeof(info->fw_update_state) - 1] = '\0';
+        const char *target_ver = json_get_string(root, JSON_KEY_FW_TARGET_VERSION, info->fw_target_version);
+        strncpy(info->fw_target_version, target_ver ? target_ver : "", sizeof(info->fw_target_version) - 1);
+        info->fw_target_version[sizeof(info->fw_target_version) - 1] = '\0';
+        info->fw_check_count = (uint32_t)json_get_double(root, "fw_check_count", (double)info->fw_check_count);
+        info->fw_backoff_s = (int64_t)json_get_double(root, "fw_backoff_s", (double)info->fw_backoff_s);
+        const char *last_fw_error = json_get_string(root, "last_fw_error", info->last_fw_error);
+        strncpy(info->last_fw_error, last_fw_error ? last_fw_error : "", sizeof(info->last_fw_error) - 1);
+        info->last_fw_error[sizeof(info->last_fw_error) - 1] = '\0';
 
         const cJSON *flood_item = cJSON_GetObjectItemCaseSensitive(root, "flood");
         info->deauth_flood = (flood_item && cJSON_IsTrue(flood_item));
@@ -695,21 +768,75 @@ static void process_line(const char *line, size_t len, int scanner_id)
         const char *time_state = json_get_string(root, "time_sync_state", "unknown");
         strncpy(info->time_sync_state, time_state, sizeof(info->time_sync_state) - 1);
         info->time_sync_state[sizeof(info->time_sync_state) - 1] = '\0';
+        info->cmd_rx_count = (uint32_t)json_get_double(root, "cmd_rx", 0.0);
+        info->cmd_parse_error_count = (uint32_t)json_get_double(root, "cmd_parse_err", 0.0);
+        info->cmd_overflow_count = (uint32_t)json_get_double(root, "cmd_overflow", 0.0);
+        info->cmd_stale_count = (uint32_t)json_get_double(root, "cmd_stale", 0.0);
+        info->cmd_last_age_s = (int64_t)json_get_double(root, "cmd_last_age_s", -1.0);
         const char *scan_mode = json_get_string(root, JSON_KEY_SCAN_MODE, "normal");
         strncpy(info->scan_mode, scan_mode, sizeof(info->scan_mode) - 1);
         info->scan_mode[sizeof(info->scan_mode) - 1] = '\0';
+        const char *scan_profile = json_get_string(root, JSON_KEY_SCAN_PROFILE, "");
+        strncpy(info->scan_profile, scan_profile, sizeof(info->scan_profile) - 1);
+        info->scan_profile[sizeof(info->scan_profile) - 1] = '\0';
         const char *cal_uuid = json_get_string(root, JSON_KEY_CALIBRATION_UUID, "");
         strncpy(info->calibration_uuid, cal_uuid, sizeof(info->calibration_uuid) - 1);
         info->calibration_uuid[sizeof(info->calibration_uuid) - 1] = '\0';
         info->calibration_mode_acked =
             strcmp(info->scan_mode, "calibration") == 0 &&
             info->calibration_uuid[0] != '\0';
+        const cJSON *need_fw = cJSON_GetObjectItemCaseSensitive(root, "need_firmware");
+        info->need_firmware = (need_fw && cJSON_IsTrue(need_fw)) ||
+                              (need_fw && cJSON_IsNumber(need_fw) && need_fw->valueint != 0);
+        const char *fw_state = json_get_string(root, JSON_KEY_FW_STATE, "");
+        strncpy(info->fw_update_state, fw_state, sizeof(info->fw_update_state) - 1);
+        info->fw_update_state[sizeof(info->fw_update_state) - 1] = '\0';
+        const char *target_ver = json_get_string(root, JSON_KEY_FW_TARGET_VERSION, "");
+        strncpy(info->fw_target_version, target_ver, sizeof(info->fw_target_version) - 1);
+        info->fw_target_version[sizeof(info->fw_target_version) - 1] = '\0';
+        info->fw_check_count = (uint32_t)json_get_double(root, "fw_check_count", 0.0);
+        info->fw_backoff_s = (int64_t)json_get_double(root, "fw_backoff_s", 0.0);
+        const char *last_fw_error = json_get_string(root, "last_fw_error", "");
+        strncpy(info->last_fw_error, last_fw_error, sizeof(info->last_fw_error) - 1);
+        info->last_fw_error[sizeof(info->last_fw_error) - 1] = '\0';
         info->received = true;
         ESP_LOGI(TAG, "Scanner[%d] identity: %s v%s (%s) chip=%s toff=%lld tcnt=%u valid=%u state=%s mode=%s",
                  scanner_id, board, ver, caps, chip,
                  (long long)info->toff_ms, info->tcnt,
                  info->time_valid_count, info->time_sync_state,
                  info->scan_mode[0] ? info->scan_mode : "normal");
+    } else if (strcmp(msg_type, MSG_TYPE_FW_CHECK) == 0) {
+        const char *board = json_get_string(root, "board", "");
+        const char *ver = json_get_string(root, "ver", "");
+        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        info->fw_check_count = (uint32_t)json_get_double(root, "fw_check_count", (double)info->fw_check_count);
+        const char *fw_state = json_get_string(root, JSON_KEY_FW_STATE, info->fw_update_state);
+        strncpy(info->fw_update_state, fw_state ? fw_state : "", sizeof(info->fw_update_state) - 1);
+        info->fw_update_state[sizeof(info->fw_update_state) - 1] = '\0';
+        const char *last_fw_error = json_get_string(root, "last_fw_error", info->last_fw_error);
+        strncpy(info->last_fw_error, last_fw_error ? last_fw_error : "", sizeof(info->last_fw_error) - 1);
+        info->last_fw_error[sizeof(info->last_fw_error) - 1] = '\0';
+        ESP_LOGI(TAG, "Scanner[%d] firmware check: board=%s ver=%s",
+                 scanner_id,
+                 board[0] ? board : "?",
+                 ver[0] ? ver : "?");
+        fw_store_handle_scanner_check(scanner_id, board, ver);
+    } else if (strcmp(msg_type, MSG_TYPE_FW_READY) == 0) {
+        const char *board = json_get_string(root, "board", "");
+        const char *ver = json_get_string(root, "ver", "");
+        const char *target = json_get_string(root, JSON_KEY_FW_TARGET_VERSION, "");
+        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        info->need_firmware = true;
+        strncpy(info->fw_update_state, "ready", sizeof(info->fw_update_state) - 1);
+        info->fw_update_state[sizeof(info->fw_update_state) - 1] = '\0';
+        strncpy(info->fw_target_version, target, sizeof(info->fw_target_version) - 1);
+        info->fw_target_version[sizeof(info->fw_target_version) - 1] = '\0';
+        ESP_LOGW(TAG, "Scanner[%d] firmware ready: board=%s current=%s target=%s",
+                 scanner_id,
+                 board[0] ? board : "?",
+                 ver[0] ? ver : "?",
+                 target[0] ? target : "?");
+        fw_store_handle_scanner_ready(scanner_id, board, ver);
     } else if (strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0) {
         scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
         const char *scan_mode = json_get_string(root, JSON_KEY_SCAN_MODE, "normal");
@@ -728,6 +855,14 @@ static void process_line(const char *line, size_t len, int scanner_id)
                  ok ? 1 : 0,
                  info->scan_mode[0] ? info->scan_mode : "normal",
                  info->calibration_uuid[0] ? info->calibration_uuid : "-");
+    } else if (strcmp(msg_type, "scan_profile_ack") == 0) {
+        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        const char *scan_profile = json_get_string(root, JSON_KEY_SCAN_PROFILE, "");
+        strncpy(info->scan_profile, scan_profile, sizeof(info->scan_profile) - 1);
+        info->scan_profile[sizeof(info->scan_profile) - 1] = '\0';
+        info->received = true;
+        ESP_LOGI(TAG, "Scanner[%d] scan profile ack: %s",
+                 scanner_id, info->scan_profile[0] ? info->scan_profile : "?");
     } else if (strncmp(msg_type, "ota_", 4) == 0) {
         /* OTA response from scanner — capture for relay diagnostics */
         portENTER_CRITICAL(&s_ota_response_lock);
@@ -862,6 +997,12 @@ static void init_uart_port(int uart_num, int rx_pin, int tx_pin, const char *lab
 void uart_rx_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
+    if (!s_uart_tx_lock) {
+        s_uart_tx_lock = xSemaphoreCreateMutex();
+        if (!s_uart_tx_lock) {
+            ESP_LOGE(TAG, "Failed to create scanner UART TX lock");
+        }
+    }
 
     /* BLE scanner on UART1 (always) */
     s_ble_task_params.uart_num = CONFIG_BLE_SCANNER_UART;
@@ -987,8 +1128,6 @@ void uart_rx_send_command(const char *json_cmd)
         ESP_LOGW(TAG, "Rejecting scan-control command while calibration mode is active");
         return;
     }
-    size_t len = strlen(json_cmd);
-
     const bool ble_only  = cmd_is_ble_only(json_cmd);
 #if CONFIG_DUAL_SCANNER
     const bool wifi_only = cmd_is_wifi_only(json_cmd);
@@ -997,23 +1136,49 @@ void uart_rx_send_command(const char *json_cmd)
 #endif
 
     /* BLE scanner: gets the command unless it's WiFi-specific. */
+    bool ble_ok = true;
     if (!wifi_only) {
-        uart_write_bytes(CONFIG_BLE_SCANNER_UART, json_cmd, len);
-        uart_write_bytes(CONFIG_BLE_SCANNER_UART, "\n", 1);
+        ble_ok = send_json_line_to_scanner_locked(0, json_cmd);
     }
 
 #if CONFIG_DUAL_SCANNER
     /* WiFi scanner: gets the command unless it's BLE-specific. */
+    bool wifi_ok = true;
     if (!ble_only) {
-        uart_write_bytes(CONFIG_WIFI_SCANNER_UART, json_cmd, len);
-        uart_write_bytes(CONFIG_WIFI_SCANNER_UART, "\n", 1);
+        wifi_ok = send_json_line_to_scanner_locked(1, json_cmd);
     }
+#else
+    bool wifi_ok = true;
 #endif
 
-    ESP_LOGI("uart_tx_cmd", "cmd → %s (%d bytes)",
+    ESP_LOGI("uart_tx_cmd", "cmd -> %s (%d bytes) ok=%d/%d",
              ble_only  ? "BLE only"  :
              wifi_only ? "WiFi only" : "broadcast",
-             (int)len);
+             (int)strlen(json_cmd),
+             ble_ok ? 1 : 0,
+             wifi_ok ? 1 : 0);
+}
+
+bool uart_rx_send_command_to_scanner_checked(int scanner_id, const char *json_cmd)
+{
+    if (!json_cmd) {
+        return false;
+    }
+    if (s_node_calibration_mode &&
+        (strstr(json_cmd, "\"type\":\"lockon\"") ||
+         strstr(json_cmd, "\"type\":\"lockon_cancel\"") ||
+         strstr(json_cmd, "\"type\":\"ble_lockon\"") ||
+         strstr(json_cmd, "\"type\":\"ble_lockon_cancel\""))) {
+        ESP_LOGW(TAG, "Rejecting scan-control command while calibration mode is active");
+        return false;
+    }
+
+    return send_json_line_to_scanner_locked(scanner_id, json_cmd);
+}
+
+void uart_rx_send_command_to_scanner(int scanner_id, const char *json_cmd)
+{
+    (void)uart_rx_send_command_to_scanner_checked(scanner_id, json_cmd);
 }
 
 const scanner_info_t *uart_rx_get_ble_scanner_info(void)

@@ -48,6 +48,7 @@ static uint32_t        s_node_dedup_sent = 0;
 static uint32_t        s_node_dedup_collapsed = 0;
 static uint32_t        s_cal_seen = 0;
 static uint32_t        s_cal_sent = 0;
+static int64_t         s_last_scan_profile_ms = 0;
 
 /* Persistent HTTP client handle (avoids socket exhaustion from rapid open/close) */
 /* esp_http_client removed — using raw sockets for zero heap allocation */
@@ -78,6 +79,44 @@ volatile uint32_t g_time_broadcast_invalid_count = 0;
 volatile int g_time_source_mode = 0;
 char g_last_time_fetch_url_source[16] = "none";
 char g_last_time_fetch_url[96] = "";
+
+static void maybe_send_scan_profile_commands(int64_t now_ms)
+{
+    if (uart_rx_is_node_calibration_mode()) {
+        return;
+    }
+    if (s_last_scan_profile_ms != 0 &&
+        (now_ms - s_last_scan_profile_ms) < 10000) {
+        return;
+    }
+    s_last_scan_profile_ms = now_ms;
+
+    bool ble_connected = uart_rx_is_ble_scanner_connected();
+    bool wifi_connected = uart_rx_is_wifi_scanner_connected();
+    char cmd[80];
+
+    if (ble_connected) {
+        const char *profile = wifi_connected
+            ? fof_policy_scan_profile_for_slot(0, false)
+            : "hybrid_failover";
+        snprintf(cmd, sizeof(cmd),
+                 "{\"type\":\"scan_profile\",\"%s\":\"%s\"}",
+                 JSON_KEY_SCAN_PROFILE, profile);
+        uart_rx_send_command_to_scanner(0, cmd);
+    }
+
+#if CONFIG_DUAL_SCANNER
+    if (wifi_connected) {
+        const char *profile = ble_connected
+            ? fof_policy_scan_profile_for_slot(1, false)
+            : "hybrid_failover";
+        snprintf(cmd, sizeof(cmd),
+                 "{\"type\":\"scan_profile\",\"%s\":\"%s\"}",
+                 JSON_KEY_SCAN_PROFILE, profile);
+        uart_rx_send_command_to_scanner(1, cmd);
+    }
+#endif
+}
 char g_last_time_fetch_ip[16] = "";
 volatile int g_last_time_fetch_port = 0;
 
@@ -386,11 +425,14 @@ static int append_scanner_info(char *buf, int off, int max, const char *uart_nam
 {
     uint8_t scanner_id = (strcmp(uart_name, "wifi") == 0) ? 1 : 0;
     bool scanner_calibration = strcmp(info->scan_mode, "calibration") == 0;
+    const char *scan_profile = info->scan_profile[0]
+        ? info->scan_profile
+        : fof_policy_scan_profile_for_slot(scanner_id, scanner_calibration);
     int n = snprintf(&buf[off], max - off,
         "{\"uart\":\"%s\",\"ver\":\"%s\",\"board\":\"%s\",\"chip\":\"%s\",\"caps\":\"%s\""
         ",\"scan_profile\":\"%s\",\"slot_role\":\"%s\"",
         uart_name, info->version, info->board, info->chip, info->caps,
-        fof_policy_scan_profile_for_slot(scanner_id, scanner_calibration),
+        scan_profile,
         fof_policy_slot_role_for_slot(scanner_id));
     if (n > 0) off += n;
     if (info->auth_count > 0) { n = snprintf(&buf[off], max-off, ",\"auth_fr\":%d", info->auth_count); if(n>0) off+=n; }
@@ -428,14 +470,31 @@ static int append_scanner_info(char *buf, int off, int max, const char *uart_nam
     n = snprintf(&buf[off], max-off,
                  ",\"toff\":%lld,\"tcnt\":%u,\"time_valid_count\":%lu"
                  ",\"time_last_valid_age_s\":%lld,\"time_sync_state\":\"%s\""
+                 ",\"cmd_rx\":%lu,\"cmd_parse_err\":%lu,\"cmd_overflow\":%lu"
+                 ",\"cmd_stale\":%lu,\"cmd_last_age_s\":%lld"
                  ",\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\",\"calibration_mode_acked\":%s",
                  (long long)info->toff_ms, info->tcnt,
                  (unsigned long)info->time_valid_count,
                  (long long)info->time_last_valid_age_s,
                  info->time_sync_state[0] ? info->time_sync_state : "unknown",
+                 (unsigned long)info->cmd_rx_count,
+                 (unsigned long)info->cmd_parse_error_count,
+                 (unsigned long)info->cmd_overflow_count,
+                 (unsigned long)info->cmd_stale_count,
+                 (long long)info->cmd_last_age_s,
                  info->scan_mode[0] ? info->scan_mode : "normal",
                  info->calibration_uuid,
                  info->calibration_mode_acked ? "true" : "false");
+    if(n>0) off+=n;
+    n = snprintf(&buf[off], max-off,
+                 ",\"need_firmware\":%s,\"fw_state\":\"%s\",\"target_ver\":\"%s\""
+                 ",\"fw_check_count\":%lu,\"fw_backoff_s\":%lld,\"last_fw_error\":\"%s\"",
+                 info->need_firmware ? "true" : "false",
+                 info->fw_update_state[0] ? info->fw_update_state : "idle",
+                 info->fw_target_version,
+                 (unsigned long)info->fw_check_count,
+                 (long long)info->fw_backoff_s,
+                 info->last_fw_error);
     if(n>0) off+=n;
     n = snprintf(&buf[off], max-off, "}"); if(n>0) off+=n;
     return off;
@@ -1529,6 +1588,7 @@ static void http_upload_task(void *arg)
                              (long long)broadcast_ms,
                              fetch_ok ? "true" : "false",
                              g_last_time_fetch_perf);
+                    maybe_send_scan_profile_commands(now_monotonic_ms);
                 }
 
                 /* Build lock-on poll URL (per-node: includes device_id) */

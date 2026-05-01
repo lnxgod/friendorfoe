@@ -156,6 +156,47 @@ void test_dedupe_key_changes_across_time_bucket(void)
     TEST_ASSERT_NOT_EQUAL(0, strcmp(key_a, key_b));
 }
 
+void test_ble_fingerprint_dedupe_keeps_mac_in_identity(void)
+{
+    drone_detection_t a = {0};
+    drone_detection_t b = {0};
+    drone_detection_t c = {0};
+    char key_a[128];
+    char key_b[128];
+    char key_c[128];
+
+    a.source = DETECTION_SRC_BLE_FINGERPRINT;
+    b.source = DETECTION_SRC_BLE_FINGERPRINT;
+    c.source = DETECTION_SRC_BLE_FINGERPRINT;
+    strncpy(a.bssid, "AA:AA:AA:AA:AA:AA", sizeof(a.bssid) - 1);
+    strncpy(b.bssid, "BB:BB:BB:BB:BB:BB", sizeof(b.bssid) - 1);
+    strncpy(c.bssid, "AA:AA:AA:AA:AA:AA", sizeof(c.bssid) - 1);
+    strncpy(a.model, "FP:12345678", sizeof(a.model) - 1);
+    strncpy(b.model, "FP:12345678", sizeof(b.model) - 1);
+    strncpy(c.model, "FP:12345678", sizeof(c.model) - 1);
+
+    TEST_ASSERT_TRUE(fof_policy_detection_dedupe_key(
+        &a, 1700000000100LL, 500, key_a, sizeof(key_a)));
+    TEST_ASSERT_TRUE(fof_policy_detection_dedupe_key(
+        &b, 1700000000100LL, 500, key_b, sizeof(key_b)));
+    TEST_ASSERT_TRUE(fof_policy_detection_dedupe_key(
+        &c, 1700000000200LL, 500, key_c, sizeof(key_c)));
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(key_a, key_b));
+    TEST_ASSERT_EQUAL_STRING(key_a, key_c);
+}
+
+void test_hidden_camera_ble_is_priority_not_low_value(void)
+{
+    TEST_ASSERT_TRUE(fof_policy_is_priority_ble_fingerprint("Hidden Camera (suspect)"));
+    TEST_ASSERT_FALSE(fof_policy_should_drop_low_value(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        0.02f,
+        "Hidden Camera (suspect)",
+        NULL,
+        0
+    ));
+}
+
 void test_scan_profiles_assign_slot_roles_and_calibration_override(void)
 {
     TEST_ASSERT_EQUAL_STRING("ble_primary", fof_policy_slot_role_for_slot(0));
@@ -164,4 +205,26 @@ void test_scan_profiles_assign_slot_roles_and_calibration_override(void)
     TEST_ASSERT_EQUAL_STRING("wifi_primary", fof_policy_scan_profile_for_slot(1, false));
     TEST_ASSERT_EQUAL_STRING("calibration", fof_policy_scan_profile_for_slot(0, true));
     TEST_ASSERT_EQUAL_STRING("calibration", fof_policy_scan_profile_for_slot(1, true));
+}
+
+void test_scan_profile_source_gates_normal_lanes(void)
+{
+    TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
+        "ble_primary", DETECTION_SRC_BLE_FINGERPRINT));
+    TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
+        "ble_primary", DETECTION_SRC_BLE_RID));
+    TEST_ASSERT_FALSE(fof_policy_scan_profile_allows_source(
+        "ble_primary", DETECTION_SRC_WIFI_PROBE_REQUEST));
+    TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
+        "wifi_primary", DETECTION_SRC_WIFI_AP_INVENTORY));
+    TEST_ASSERT_FALSE(fof_policy_scan_profile_allows_source(
+        "wifi_primary", DETECTION_SRC_BLE_FINGERPRINT));
+    TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
+        "hybrid_failover", DETECTION_SRC_BLE_FINGERPRINT));
+    TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
+        "hybrid_failover", DETECTION_SRC_WIFI_PROBE_REQUEST));
+    TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
+        "calibration", DETECTION_SRC_BLE_FINGERPRINT));
+    TEST_ASSERT_FALSE(fof_policy_scan_profile_allows_source(
+        "calibration", DETECTION_SRC_WIFI_AP_INVENTORY));
 }

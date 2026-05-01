@@ -23,6 +23,27 @@ Every bug fix or behavior change should leave behind:
 5. If the change touches ingest, calibration, triangulation, or dashboard data
    shape, test the endpoint or serializer that operators actually see.
 
+#### No-Hardware Uplink Smoke
+
+When the dashboard says the backend is online but no sensors are reporting, prove
+the backend ingest path before chasing UI rendering. With the backend running on
+port `8000`, post a synthetic empty batch and confirm it appears as an online
+node:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/detections/drones \
+  -H 'Content-Type: application/json' \
+  --data '{"device_id":"uplink_SMOKE01","device_lat":37.333,"device_lon":-122.444,"device_alt":12,"timestamp":0,"firmware_version":"smoke-test","board_type":"uplink-s3","scanners":[{"uart":"ble","board":"scanner-s3-combo","ver":"smoke-test","caps":"ble,wifi","scan_profile":"field","time_sync_state":"fresh","time_valid_count":1}],"detections":[]}'
+
+curl -sS http://127.0.0.1:8000/detections/nodes/status
+```
+
+Expected result: `/detections/nodes/status` includes `uplink_SMOKE01`, and the
+dashboard Overview changes from `No uplink batches received` to
+`1/1 sensors online`. If this passes but field nodes do not appear, verify that
+uplinks are posting to `http://fof-server.local:8000/detections/drones` and that
+backend access logs show `POST /detections/drones`.
+
 ### ESP32 firmware
 
 1. Add or tighten a native unit test in `esp32/test/` when the logic is pure.

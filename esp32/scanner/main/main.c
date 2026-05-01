@@ -25,6 +25,7 @@
 #include "uart_protocol.h"
 #include "task_priorities.h"
 #include "calibration_mode.h"
+#include "scanner_rollback.h"
 #include "led_status.h"
 #include "oled_display.h"
 #include "ble_remote_id.h"
@@ -38,6 +39,7 @@
 #include "esp_log.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
@@ -99,6 +101,16 @@ volatile int64_t g_epoch_offset_ms = 0;
 volatile uint32_t g_time_msg_count = 0;
 volatile uint32_t g_time_valid_count = 0;
 volatile int64_t g_last_valid_time_local_ms = 0;
+volatile uint32_t g_cmd_msg_count = 0;
+volatile uint32_t g_cmd_parse_error_count = 0;
+volatile uint32_t g_cmd_overflow_count = 0;
+volatile uint32_t g_cmd_stale_count = 0;
+volatile int64_t g_last_cmd_local_ms = 0;
+static volatile int64_t s_uart_cmd_last_loop_ms = 0;
+static char s_fw_ready_target[32] = {0};
+
+#define FW_CHECK_DAILY_INTERVAL_MS     (24LL * 60LL * 60LL * 1000LL)
+#define FW_CHECK_JITTER_MAX_MS         (60LL * 60LL * 1000LL)
 
 static void maybe_expire_time_sync(int64_t now_ms)
 {
@@ -341,11 +353,116 @@ static void send_cal_mode_ack(bool ok_flag)
     uart_tx_send_raw_json(ack);
 }
 
+static void send_fw_check(const char *board, const char *caps, const char *reason)
+{
+    uart_tx_note_firmware_check();
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "{\"type\":\"%s\",\"board\":\"%s\",\"ver\":\"%s\","
+             "\"caps\":\"%s\",\"fw_state\":\"%s\",\"fw_check_count\":%lu,"
+             "\"last_fw_error\":\"%s\",\"reason\":\"%s\"}",
+             MSG_TYPE_FW_CHECK,
+             board ? board : "?",
+             FOF_VERSION,
+             caps ? caps : "?",
+             uart_tx_firmware_update_state(),
+             (unsigned long)uart_tx_firmware_check_count(),
+             uart_tx_firmware_last_error(),
+             reason ? reason : "periodic");
+    uart_tx_send_raw_json(msg);
+}
+
+static void handle_fw_offer(cJSON *root, const char *board)
+{
+    const cJSON *update_j = cJSON_GetObjectItem(root, JSON_KEY_FW_UPDATE);
+    bool update = (update_j && cJSON_IsTrue(update_j)) ||
+                  (update_j && cJSON_IsNumber(update_j) && update_j->valueint != 0);
+    const cJSON *target_j = cJSON_GetObjectItem(root, JSON_KEY_FW_TARGET_VERSION);
+    const cJSON *name_j = cJSON_GetObjectItem(root, JSON_KEY_FW_NAME);
+    const cJSON *size_j = cJSON_GetObjectItem(root, JSON_KEY_FW_SIZE);
+    const cJSON *crc_j = cJSON_GetObjectItem(root, JSON_KEY_FW_CRC32);
+    const char *target = (target_j && target_j->valuestring) ? target_j->valuestring : "";
+    const char *fw_name = (name_j && name_j->valuestring) ? name_j->valuestring : "";
+    uint32_t size = size_j ? (uint32_t)size_j->valuedouble : 0;
+    uint32_t crc = crc_j ? (uint32_t)crc_j->valuedouble : 0;
+
+    if (!update) {
+        uart_tx_set_firmware_update_state(false, "", "current");
+        s_fw_ready_target[0] = '\0';
+        ESP_LOGI(TAG, "Firmware check: scanner is current");
+        return;
+    }
+
+    if (fw_name[0] && board && board[0] && strcmp(fw_name, board) != 0) {
+        uart_tx_set_firmware_update_state(false, "", "error");
+        uart_tx_set_firmware_error("board_mismatch");
+        ESP_LOGW(TAG, "Rejected firmware offer: board mismatch offer=%s scanner=%s",
+                 fw_name, board);
+        return;
+    }
+    if (!target[0] || strcmp(target, FOF_VERSION) == 0) {
+        uart_tx_set_firmware_update_state(false, "", "current");
+        ESP_LOGI(TAG, "Rejected firmware offer: target is current or missing");
+        return;
+    }
+    if (size == 0 || crc == 0) {
+        uart_tx_set_firmware_update_state(true, target, "error");
+        uart_tx_set_firmware_error(size == 0 ? "missing_size" : "missing_crc");
+        ESP_LOGW(TAG, "Rejected firmware offer: missing integrity metadata size=%lu crc=%08lX",
+                 (unsigned long)size, (unsigned long)crc);
+        return;
+    }
+    if (uart_tx_firmware_backoff_active()) {
+        uart_tx_set_firmware_update_state(true, target, "deferred");
+        ESP_LOGW(TAG, "Firmware offer deferred during error backoff: target=%s error=%s",
+                 target, uart_tx_firmware_last_error());
+        return;
+    }
+
+    uart_tx_set_firmware_update_state(true, target, "offered");
+    ESP_LOGW(TAG, "Firmware update offered: current=%s target=%s size=%lu crc=%08lX",
+             FOF_VERSION,
+             target[0] ? target : "?",
+             (unsigned long)size,
+             (unsigned long)crc);
+
+    if (target[0] && strcmp(s_fw_ready_target, target) == 0) {
+        uart_tx_set_firmware_update_state(true, target, "deferred");
+        ESP_LOGW(TAG, "Firmware target %s was already requested; leaving TX enabled",
+                 target);
+        return;
+    }
+
+    /* Scanner owns the quiet transition. This avoids forcing stop_ack through
+     * a busy detection stream; once fw_ready is emitted, only the command
+     * listener remains active to receive ota_begin and binary chunks. */
+    uart_tx_flush_detection_queue();
+    uart_tx_set_enabled(false);
+    uart_tx_set_firmware_update_state(true, target, "ready");
+    if (target[0]) {
+        strncpy(s_fw_ready_target, target, sizeof(s_fw_ready_target) - 1);
+        s_fw_ready_target[sizeof(s_fw_ready_target) - 1] = '\0';
+    }
+
+    char ready[224];
+    snprintf(ready, sizeof(ready),
+             "{\"type\":\"%s\",\"board\":\"%s\",\"ver\":\"%s\","
+             "\"target_ver\":\"%s\",\"size\":%lu,\"crc\":%lu}",
+             MSG_TYPE_FW_READY,
+             board ? board : "?",
+             FOF_VERSION,
+             target[0] ? target : "?",
+             (unsigned long)size,
+             (unsigned long)crc);
+    uart_tx_send_raw_json(ready);
+}
+
 static void uart_cmd_listener_task(void *arg)
 {
     uint8_t buf[256];
     char line[256];
     int line_pos = 0;
+    TickType_t line_started_tick = 0;
 
     ESP_LOGI(TAG, "UART cmd listener on UART1 (commands + OTA from uplink)");
 
@@ -373,10 +490,16 @@ static void uart_cmd_listener_task(void *arg)
     }
 
     TickType_t last_info_send = xTaskGetTickCount();
+    int64_t next_fw_check_ms =
+        (esp_timer_get_time() / 1000) + FW_CHECK_DAILY_INTERVAL_MS +
+        (int64_t)(esp_random() % FW_CHECK_JITTER_MAX_MS);
+    send_fw_check(s_board_name, s_caps, "boot");
 
     while (1) {
-        maybe_expire_time_sync(esp_timer_get_time() / 1000);
-        int len = uart_read_bytes(UART_NUM_1, buf, sizeof(buf), pdMS_TO_TICKS(500));
+        int64_t loop_now_ms = esp_timer_get_time() / 1000;
+        s_uart_cmd_last_loop_ms = loop_now_ms;
+        maybe_expire_time_sync(loop_now_ms);
+        int len = uart_read_bytes(UART_NUM_1, buf, sizeof(buf), pdMS_TO_TICKS(50));
 
         /* Resend scanner_info every 10s — always, even when TX is stopped.
          * This lets the uplink see us and know our version/capabilities.
@@ -387,13 +510,28 @@ static void uart_cmd_listener_task(void *arg)
             (xTaskGetTickCount() - last_info_send) >= pdMS_TO_TICKS(10000)) {
             last_info_send = xTaskGetTickCount();
             uart_tx_send_scanner_info(FOF_VERSION, s_board_name, s_chip_name, s_caps);
+            int64_t now_ms = esp_timer_get_time() / 1000;
+            if (now_ms >= next_fw_check_ms && !uart_tx_firmware_backoff_active()) {
+                next_fw_check_ms = now_ms + FW_CHECK_DAILY_INTERVAL_MS +
+                                   (int64_t)(esp_random() % FW_CHECK_JITTER_MAX_MS);
+                send_fw_check(s_board_name, s_caps, "daily");
+            }
             /* Send status even when stopped — uplink can see we're alive */
             if (!uart_tx_is_enabled()) {
                 ESP_LOGD(TAG, "Scanner waiting for start command (TX disabled)");
             }
         }
 
-        if (len <= 0) continue;
+        if (len <= 0) {
+            if (line_pos > 0 && line_started_tick != 0 &&
+                (xTaskGetTickCount() - line_started_tick) >= pdMS_TO_TICKS(1000)) {
+                ESP_LOGW(TAG, "UART CMD stale partial line (%d bytes), resetting", line_pos);
+                g_cmd_stale_count++;
+                line_pos = 0;
+                line_started_tick = 0;
+            }
+            continue;
+        }
 
         /* During OTA: route raw bytes to OTA receiver */
         if (uart_ota_is_active()) {
@@ -405,6 +543,9 @@ static void uart_cmd_listener_task(void *arg)
                  len, buf[0], len > 1 ? buf[1] : 0, len > 2 ? buf[2] : 0, len > 3 ? buf[3] : 0);
 
         for (int i = 0; i < len; i++) {
+            if (buf[i] == '\r') {
+                continue;
+            }
             if (buf[i] == '\n') {
                 if (line_pos > 0) {
                     line[line_pos] = '\0';
@@ -413,6 +554,8 @@ static void uart_cmd_listener_task(void *arg)
                              line_pos, line_pos > 48 ? 48 : line_pos, line);
                     cJSON *root = cJSON_Parse(line);
                     if (root) {
+                        g_cmd_msg_count++;
+                        g_last_cmd_local_ms = esp_timer_get_time() / 1000;
                         const char *type = NULL;
                         cJSON *t = cJSON_GetObjectItem(root, "type");
                         if (t && t->valuestring) type = t->valuestring;
@@ -422,6 +565,13 @@ static void uart_cmd_listener_task(void *arg)
                             /* Uplink tells scanner to start transmitting */
                             extern void uart_tx_set_enabled(bool enabled);
                             uart_tx_set_enabled(true);
+                            if (uart_tx_firmware_update_needed()) {
+                                uart_tx_set_firmware_update_state(
+                                    true,
+                                    uart_tx_firmware_target_version(),
+                                    "deferred"
+                                );
+                            }
                             ESP_LOGI(TAG, "Uplink sent START — TX enabled");
 
                         } else if (type && strcmp(type, "stop") == 0) {
@@ -434,6 +584,16 @@ static void uart_cmd_listener_task(void *arg)
                             uart_tx_set_enabled(false);
                             uart_tx_send_raw_json("{\"type\":\"stop_ack\"}");
                             ESP_LOGI(TAG, "Uplink sent STOP — TX disabled, ack sent");
+
+                        } else if (type && strcmp(type, MSG_TYPE_FW_OFFER) == 0) {
+                            handle_fw_offer(root, s_board_name);
+
+                        } else if (type && strcmp(type, MSG_TYPE_FW_CHECK_NOW) == 0) {
+                            uart_tx_clear_firmware_error();
+                            next_fw_check_ms = (esp_timer_get_time() / 1000) +
+                                               FW_CHECK_DAILY_INTERVAL_MS +
+                                               (int64_t)(esp_random() % FW_CHECK_JITTER_MAX_MS);
+                            send_fw_check(s_board_name, s_caps, "manual");
 
                         } else if (type && strcmp(type, "lockon") == 0) {
                             if (scanner_calibration_mode_is_active()) {
@@ -514,6 +674,21 @@ static void uart_cmd_listener_task(void *arg)
                             scanner_calibration_mode_stop("uplink_stop");
                             send_cal_mode_ack(true);
 
+                        } else if (type && strcmp(type, "scan_profile") == 0) {
+                            cJSON *profile_j = cJSON_GetObjectItem(root, JSON_KEY_SCAN_PROFILE);
+                            if (!profile_j) {
+                                profile_j = cJSON_GetObjectItem(root, "profile");
+                            }
+                            const char *profile = (profile_j && profile_j->valuestring)
+                                ? profile_j->valuestring
+                                : "hybrid_failover";
+                            scanner_scan_profile_set(profile);
+                            char ack[96];
+                            snprintf(ack, sizeof(ack),
+                                     "{\"type\":\"scan_profile_ack\",\"scan_profile\":\"%s\"}",
+                                     scanner_scan_profile_label());
+                            uart_tx_send_raw_json(ack);
+
                         } else if (type && strcmp(type, MSG_TYPE_TIME) == 0) {
                             /* Uplink broadcasts its epoch-ms every 10s.
                              * Use a small flag so /api/status can show that we
@@ -547,6 +722,11 @@ static void uart_cmd_listener_task(void *arg)
 
                         } else if (type && strcmp(type, MSG_TYPE_OTA_BEGIN) == 0) {
                             /* UART OTA: receive firmware from uplink */
+                            uart_tx_set_firmware_update_state(
+                                true,
+                                uart_tx_firmware_target_version(),
+                                "updating"
+                            );
                             cJSON *sz = cJSON_GetObjectItem(root, "size");
                             cJSON *crc_j = cJSON_GetObjectItem(root, "crc");
                             uint32_t total = sz ? (uint32_t)sz->valueint : 0;
@@ -557,30 +737,124 @@ static void uart_cmd_listener_task(void *arg)
                                          (unsigned long)total,
                                          has_crc ? "" : "none/",
                                          (unsigned long)expected_crc);
-                                uart_ota_begin(total, expected_crc, has_crc, UART_NUM_1);
+                                if (!uart_ota_begin(total, expected_crc, has_crc, UART_NUM_1)) {
+                                    uart_tx_set_firmware_update_state(
+                                        true,
+                                        uart_tx_firmware_target_version(),
+                                        "error"
+                                    );
+                                    uart_tx_set_firmware_error("ota_begin_failed");
+                                }
+                            } else {
+                                uart_tx_set_firmware_update_state(
+                                    true,
+                                    uart_tx_firmware_target_version(),
+                                    "error"
+                                );
+                                uart_tx_set_firmware_error("bad_size");
                             }
                         } else if (type && strcmp(type, MSG_TYPE_OTA_END) == 0) {
                             ESP_LOGI(TAG, "UART OTA finalize");
-                            uart_ota_finalize();
+                            if (!uart_ota_finalize()) {
+                                uart_tx_set_firmware_update_state(
+                                    true,
+                                    uart_tx_firmware_target_version(),
+                                    "error"
+                                );
+                                uart_tx_set_firmware_error("finalize_failed");
+                            }
                         } else if (type && strcmp(type, MSG_TYPE_OTA_ABORT) == 0) {
                             ESP_LOGW(TAG, "UART OTA abort");
                             uart_ota_abort();
+                            uart_tx_set_firmware_update_state(
+                                true,
+                                uart_tx_firmware_target_version(),
+                                "error"
+                            );
+                            uart_tx_set_firmware_error("aborted");
                         }
 
                         cJSON_Delete(root);
+                    } else {
+                        g_cmd_parse_error_count++;
+                        ESP_LOGW(TAG, "UART CMD parse error (%d chars)", line_pos);
                     }
                     line_pos = 0;
+                    line_started_tick = 0;
                 }
             } else if (line_pos < (int)sizeof(line) - 1) {
+                if (line_pos == 0) {
+                    line_started_tick = xTaskGetTickCount();
+                }
                 line[line_pos++] = (char)buf[i];
             } else {
                 /* Buffer overflow — reset to prevent corruption */
                 ESP_LOGW(TAG, "UART CMD line overflow at %d bytes, resetting (byte=0x%02X)", line_pos, buf[i]);
+                g_cmd_overflow_count++;
                 line_pos = 0;
+                line_started_tick = 0;
             }
         }
 
     }
+}
+
+static void uart_cmd_watchdog_task(void *arg)
+{
+    (void)arg;
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(10000));
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        int64_t last_ms = s_uart_cmd_last_loop_ms;
+        if (last_ms > 0 && (now_ms - last_ms) > 30000) {
+            char reason[64];
+            snprintf(reason, sizeof(reason),
+                     "uart_cmd_stale_%lld_ms", (long long)(now_ms - last_ms));
+            scanner_rollback_reboot_or_restart(reason);
+        }
+    }
+}
+
+static bool start_uart_command_tasks(void)
+{
+    BaseType_t ok = xTaskCreatePinnedToCore(
+        uart_cmd_listener_task,
+        "uart_cmd",
+        UART_CMD_TASK_STACK_SIZE,
+        NULL,
+        UART_CMD_TASK_PRIORITY,
+        NULL,
+        UART_CMD_TASK_CORE
+    );
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG,
+                 "Failed to create UART command listener (stack=%d, internal_heap=%u)",
+                 UART_CMD_TASK_STACK_SIZE,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        return false;
+    }
+    ESP_LOGI(TAG, "UART command listener task created on core %d, priority %d",
+             UART_CMD_TASK_CORE, UART_CMD_TASK_PRIORITY);
+
+    ok = xTaskCreatePinnedToCore(
+        uart_cmd_watchdog_task,
+        "uart_cmd_wd",
+        UART_CMD_WATCHDOG_TASK_STACK_SIZE,
+        NULL,
+        UART_CMD_WATCHDOG_TASK_PRIORITY,
+        NULL,
+        UART_CMD_WATCHDOG_TASK_CORE
+    );
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG,
+                 "Failed to create UART command watchdog (stack=%d, internal_heap=%u)",
+                 UART_CMD_WATCHDOG_TASK_STACK_SIZE,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        return false;
+    }
+    ESP_LOGI(TAG, "UART command watchdog task created on core %d, priority %d",
+             UART_CMD_WATCHDOG_TASK_CORE, UART_CMD_WATCHDOG_TASK_PRIORITY);
+    return true;
 }
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
@@ -616,6 +890,11 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    /* ── 1a. Rollback / crash-loop guard — must run before any task that can
+     *        crash, so PENDING_VERIFY state and the crash counter are read
+     *        from the *previous* boot, not whatever this one ends up doing. */
+    scanner_rollback_init();
 
     /* ── 1b. Initialize TCP/IP network interface (required for radio subsystem) ── */
     ESP_ERROR_CHECK(esp_netif_init());
@@ -660,16 +939,41 @@ void app_main(void)
     /* ── 6. Initialize UART TX (hardware setup, no task yet) ──────────── */
     uart_tx_init();
 
-    /* ── 7. Initialize WiFi scanner (sets up promiscuous mode) ────────── */
+    /* ── 7. Set scanner identity before any UART status/check messages ── */
+    {
+#if defined(SEED_SCANNER_PINS)
+        const char *bname = "scanner-s3-combo-seed", *cname = "esp32s3", *caps = "ble,wifi";
+#else
+        const char *bname = "scanner-s3-combo", *cname = "esp32s3", *caps = "ble,wifi";
+#endif
+        uart_tx_set_identity(bname, cname, caps);
+    }
+
+    /* ── 8. Start command listener early, before radio/display heap use ─ */
+    if (!start_uart_command_tasks()) {
+        ESP_LOGE(TAG, "UART command path is required for remote firmware recovery; rebooting");
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        scanner_rollback_reboot_or_restart("uart_cmd_task_create_failed");
+    }
+
+    /* ── 8a. After uptime threshold, mark this image VALID and clear the
+     *        crash counter. Spawned as a one-shot task so we don't block
+     *        boot waiting for the threshold. */
+    xTaskCreatePinnedToCore(scanner_rollback_mark_valid_task,
+                            "rb_mark_valid",
+                            2048, NULL, tskIDLE_PRIORITY + 1, NULL,
+                            tskNO_AFFINITY);
+
+    /* ── 9. Initialize WiFi scanner (sets up promiscuous mode) ────────── */
     wifi_scanner_init(detection_queue);
     ESP_LOGI(TAG, "WiFi scanner initialised");
 
-    /* ── 7b. Initialize BLE scanner (NimBLE) ─────────────────────────── */
+    /* ── 9b. Initialize BLE scanner (NimBLE) ─────────────────────────── */
     ble_remote_id_init(detection_queue);
     ESP_LOGI(TAG, "BLE Remote ID scanner initialised");
 
 #if CONFIG_FOF_GLASSES_DETECTION
-    /* ── 7c. Create glasses detection queue and wire to BLE scanner ───── */
+    /* ── 9c. Create glasses detection queue and wire to BLE scanner ───── */
     s_glasses_queue = xQueueCreate(10, sizeof(glasses_detection_t));
     if (s_glasses_queue != NULL) {
         ble_remote_id_set_glasses_queue(s_glasses_queue);
@@ -682,31 +986,20 @@ void app_main(void)
      * The TX task has a 10s startup delay to let the uplink boot first. */
     uart_tx_start(detection_queue);
 
-    /* ── 8. Set scanner identity — sent by TX task after startup delay ── */
-    {
-#if defined(SEED_SCANNER_PINS)
-        const char *bname = "scanner-s3-combo-seed", *cname = "esp32s3", *caps = "ble,wifi";
-#else
-        const char *bname = "scanner-s3-combo", *cname = "esp32s3", *caps = "ble,wifi";
-#endif
-        /* Store identity — TX task will send it after its startup delay */
-        uart_tx_set_identity(bname, cname, caps);
-    }
-
-    /* ── 9. Start WiFi scanner task on Core 0 (radio core) ───────────── */
+    /* ── 10. Start WiFi scanner task on Core 0 (radio core) ──────────── */
     wifi_scanner_start();
     ESP_LOGI(TAG, "WiFi scanner started on core %d, priority %d",
              WIFI_SCAN_TASK_CORE, WIFI_SCAN_TASK_PRIORITY);
 
-    /* ── 9b. Start BLE scanner ───────────────────────────────────────── */
+    /* ── 10b. Start BLE scanner ──────────────────────────────────────── */
     ble_remote_id_start();
     ESP_LOGI(TAG, "BLE scanner started");
 
-    /* ── 10. Start LED task ───────────────────────────────────────────── */
+    /* ── 11. Start LED task ──────────────────────────────────────────── */
     led_start();
     led_set_pattern(LED_UPLINK_OK);   /* purple — UART active, connected to uplink */
 
-    /* ── 11. Start display task ──────────────────────────────────────── */
+    /* ── 12. Start display task ──────────────────────────────────────── */
     xTaskCreatePinnedToCore(
         display_task,
         "display",
@@ -719,7 +1012,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Display task started on core %d, priority %d",
              DISPLAY_TASK_CORE, DISPLAY_TASK_PRIORITY);
 
-    /* ── 12. Startup banner ───────────────────────────────────────────── */
+    /* ── 13. Startup banner ───────────────────────────────────────────── */
     ESP_LOGI(TAG, "============================================");
     ESP_LOGI(TAG, "  Friend or Foe — %s v%s", FIRMWARE_NAME, FOF_VERSION);
     ESP_LOGI(TAG, "  ESP32-S3 dual-core @ 240 MHz");
@@ -728,18 +1021,6 @@ void app_main(void)
     ESP_LOGI(TAG, "  Detection queue: %d slots", DETECTION_QUEUE_LEN);
     ESP_LOGI(TAG, "  BOOT button: tap=scroll, 2x=privacy view");
     ESP_LOGI(TAG, "============================================");
-
-    /* ── 13. UART command listener (receives lock-on from uplink) ────── */
-    xTaskCreatePinnedToCore(
-        uart_cmd_listener_task,
-        "uart_cmd",
-        8192,   /* Increased from 4096: esp_ota_write needs ~2-3KB stack */
-        NULL,
-        3,      /* Raised from 1: must compete with WiFi/BLE scan tasks during OTA */
-        NULL,
-        DISPLAY_TASK_CORE
-    );
-    ESP_LOGI(TAG, "UART command listener started");
 
     /* app_main returns; FreeRTOS scheduler keeps tasks running. */
 }
