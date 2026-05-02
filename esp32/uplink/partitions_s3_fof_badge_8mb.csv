@@ -1,0 +1,14 @@
+# Friend or Foe - FoF Badge Uplink Partition Table (8 MB flash, ESP32-S3R8)
+#
+# Keeps 2 MB OTA slots for uplink self-updates and one 2 MB data partition
+# for staging scanner firmware before UART relay.
+#
+# Name,             Type, SubType,  Offset,    Size,       Flags
+nvs,                data, nvs,      0x9000,    0x6000,
+otadata,            data, ota,      0xf000,    0x2000,
+phy_init,           data, phy,      0x11000,   0x1000,
+ota_0,              app,  ota_0,    0x20000,   0x200000,
+ota_1,              app,  ota_1,    0x220000,  0x200000,
+fw_scanner_s3,      data, 0x40,     0x420000,  0x200000,
+storage,            data, spiffs,   0x620000,  0x100000,
+reserved,           data, fat,      0x720000,  0xe0000,

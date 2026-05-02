@@ -168,6 +168,16 @@ static const esp_partition_t *find_fw_partition(void)
 /** Get the best partition for storing scanner firmware. Prefers inactive OTA. */
 static const esp_partition_t *get_store_partition(void)
 {
+#if defined(FOF_BADGE_VARIANT)
+    const esp_partition_t *dedicated = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, 0x40, "fw_scanner_s3");
+    if (dedicated) {
+        ESP_LOGI(TAG, "Store target: fw_scanner_s3 '%s' (%luKB)",
+                 dedicated->label, (unsigned long)(dedicated->size / 1024));
+        return dedicated;
+    }
+#endif
+
     /* Prefer inactive OTA partition — esp_ota_begin works natively with it */
     const esp_partition_t *p = esp_ota_get_next_update_partition(NULL);
     if (p) {
@@ -610,7 +620,8 @@ static bool relay_line_is_scanner_identity(const char *line)
     if (!line) return false;
     return strstr(line, "scanner_info") ||
            strstr(line, "\"scanner-s3-combo\"") ||
-           strstr(line, "\"scanner-s3-combo-seed\"");
+           strstr(line, "\"scanner-s3-combo-seed\"") ||
+           strstr(line, "\"scanner-s3-combo-fof_badge\"");
 }
 
 static bool staged_firmware_matches_scanner(const fw_store_info_t *info,
