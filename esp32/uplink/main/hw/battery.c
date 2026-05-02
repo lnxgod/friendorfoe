@@ -8,6 +8,8 @@
 
 #include "battery.h"
 
+#include "config.h"
+
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -40,6 +42,10 @@ static bool                      s_calibrated  = false;
 
 void battery_init(void)
 {
+#if !CONFIG_BATTERY_MONITOR
+    ESP_LOGI(TAG, "Battery monitor disabled for this board variant");
+    return;
+#else
     /* Initialize ADC oneshot unit */
     adc_oneshot_unit_init_cfg_t unit_cfg = {
         .unit_id  = BATTERY_ADC_UNIT,
@@ -78,6 +84,7 @@ void battery_init(void)
 #endif
 
     ESP_LOGI(TAG, "Battery monitor initialized (GPIO3, ADC1_CH3)");
+#endif
 }
 
 /* ── Read raw millivolts ───────────────────────────────────────────────── */
@@ -121,14 +128,21 @@ static float read_voltage_mv(void)
 
 float battery_get_voltage(void)
 {
+#if !CONFIG_BATTERY_MONITOR
+    return 0.0f;
+#else
     float mv = read_voltage_mv();
     /* Apply voltage divider ratio to get actual battery voltage */
     float voltage = (mv / 1000.0f) * VOLTAGE_DIVIDER_RATIO;
     return voltage;
+#endif
 }
 
 float battery_get_percentage(void)
 {
+#if !CONFIG_BATTERY_MONITOR
+    return 0.0f;
+#else
     float v = battery_get_voltage();
 
     if (v >= VBAT_FULL) {
@@ -151,4 +165,5 @@ float battery_get_percentage(void)
         /* Lower segment: 3.0V=0%, 3.7V=50% */
         return 50.0f * (v - VBAT_EMPTY) / (VBAT_NOMINAL - VBAT_EMPTY);
     }
+#endif
 }
