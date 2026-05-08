@@ -20,6 +20,8 @@ static const char *TAG = "rollback";
 /* NVS namespace + key for the crash counter. Persists across reboots. */
 #define NVS_NS          "fof_rb"
 #define NVS_KEY_CRASH_N "crash_n"
+#define NVS_KEY_FORCE_SAFE "force_safe"
+#define NVS_KEY_SAFE_REASON "safe_reason"
 #endif
 
 /* Marks-valid threshold. Mirrors uplink intent: long enough that a
@@ -33,6 +35,8 @@ static const char *TAG = "rollback";
 #ifndef SCANNER_ROLLBACK_HOST_TEST
 static volatile bool     s_pending_verify = false;
 static volatile uint32_t s_crash_count    = 0;
+static volatile bool     s_safe_mode_requested = false;
+static char              s_safe_reason[64] = {0};
 #endif
 
 /* Mirrors esp_reset_reason_t values we care about. Kept as ints in the
@@ -86,6 +90,7 @@ rollback_decision_t scanner_rollback_decide(int reset_reason,
          * fw_check carries crash_loop reason; uplink will offer cached
          * firmware via the existing fw_offer / fw_ready flow. */
         d.action = ROLLBACK_ACTION_MARK_CRASH_LOOP;
+        d.enter_safe_mode = true;
     }
     return d;
 }
@@ -114,8 +119,66 @@ static void crash_count_store(uint32_t n)
     nvs_close(h);
 }
 
+static uint32_t nvs_get_u32_default(const char *key, uint32_t fallback)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return fallback;
+    uint32_t value = fallback;
+    nvs_get_u32(h, key, &value);
+    nvs_close(h);
+    return value;
+}
+
+static void nvs_set_u32_value(const char *key, uint32_t value)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_open failed; %s not persisted", key);
+        return;
+    }
+    nvs_set_u32(h, key, value);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void safe_reason_load(char *out, size_t out_len)
+{
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    size_t len = out_len;
+    if (nvs_get_str(h, NVS_KEY_SAFE_REASON, out, &len) != ESP_OK) {
+        out[0] = '\0';
+    }
+    nvs_close(h);
+}
+
+static void safe_reason_store(const char *reason)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_open failed; safe reason not persisted");
+        return;
+    }
+    nvs_set_str(h, NVS_KEY_SAFE_REASON,
+                (reason && reason[0]) ? reason : "operator");
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 void scanner_rollback_init(void)
 {
+    uint32_t forced_safe = nvs_get_u32_default(NVS_KEY_FORCE_SAFE, 0);
+    if (forced_safe != 0) {
+        s_safe_mode_requested = true;
+        safe_reason_load(s_safe_reason, sizeof(s_safe_reason));
+        if (!s_safe_reason[0]) {
+            strncpy(s_safe_reason, "forced_safe", sizeof(s_safe_reason) - 1);
+        }
+        ESP_LOGW(TAG, "UART-only recovery forced by NVS: %s", s_safe_reason);
+    }
+
     /* 1. PENDING_VERIFY check. */
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (running) {
@@ -161,6 +224,11 @@ void scanner_rollback_init(void)
         snprintf(buf, sizeof(buf), "crash_loop:%lu",
                  (unsigned long)d.new_crash_count);
         uart_tx_set_firmware_error(buf);
+        if (d.enter_safe_mode) {
+            s_safe_mode_requested = true;
+            strncpy(s_safe_reason, buf, sizeof(s_safe_reason) - 1);
+            s_safe_reason[sizeof(s_safe_reason) - 1] = '\0';
+        }
         ESP_LOGE(TAG, "CRASH LOOP (%lu boots) on validated image — fw_state "
                       "carries '%s'; uplink will re-offer cached firmware",
                  (unsigned long)d.new_crash_count, buf);
@@ -177,8 +245,56 @@ uint32_t scanner_rollback_crash_count(void)
     return s_crash_count;
 }
 
+bool scanner_rollback_safe_mode_requested(void)
+{
+    return s_safe_mode_requested;
+}
+
+const char *scanner_rollback_recovery_mode(void)
+{
+    if (s_safe_mode_requested) {
+        return "safe_uart";
+    }
+    return s_pending_verify ? "ota_pending" : "normal";
+}
+
+const char *scanner_rollback_safe_reason(void)
+{
+    return s_safe_reason[0] ? s_safe_reason : "";
+}
+
+void scanner_rollback_force_safe_mode(bool enabled, const char *reason)
+{
+    nvs_set_u32_value(NVS_KEY_FORCE_SAFE, enabled ? 1 : 0);
+    if (enabled) {
+        safe_reason_store(reason && reason[0] ? reason : "operator");
+        s_safe_mode_requested = true;
+        strncpy(s_safe_reason,
+                reason && reason[0] ? reason : "operator",
+                sizeof(s_safe_reason) - 1);
+        s_safe_reason[sizeof(s_safe_reason) - 1] = '\0';
+    } else {
+        s_safe_mode_requested = false;
+        s_safe_reason[0] = '\0';
+    }
+}
+
+void scanner_rollback_clear_crash_state(void)
+{
+    crash_count_store(0);
+    nvs_set_u32_value(NVS_KEY_FORCE_SAFE, 0);
+    s_crash_count = 0;
+    s_safe_mode_requested = false;
+    s_safe_reason[0] = '\0';
+    uart_tx_clear_firmware_error();
+}
+
 void scanner_rollback_mark_valid(void)
 {
+    if (s_safe_mode_requested) {
+        ESP_LOGW(TAG, "mark_valid skipped while UART-only recovery is active");
+        return;
+    }
     if (s_pending_verify) {
         esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
         if (err == ESP_OK) {

@@ -126,6 +126,7 @@ extern "C" {
  * back to its existing ACK-counting timeout behavior). */
 #define JSON_KEY_OTA_SEQ            "seq"
 #define JSON_KEY_OTA_REASON         "reason"        /* free-text reason in ota_error */
+#define JSON_KEY_OTA_SESSION_ID     JSON_KEY_SESSION_ID
 
 /* Binary OTA chunk: [0xF0][seq(2)][len(2)] + data + [CRC32(4)]
  * CRC32 covers data bytes only (not header). Scanner verifies CRC
@@ -133,8 +134,25 @@ extern "C" {
 #define OTA_CHUNK_MAGIC             0xF0
 #define OTA_CHUNK_HEADER_SIZE       5
 #define OTA_CHUNK_CRC_SIZE          4       /* CRC32 trailer */
-#define OTA_CHUNK_MAX_DATA          512     /* smaller chunks = faster retransmit */
+#define OTA_CHUNK_DEFAULT_MAX_DATA  512     /* production relay compatibility */
+#define OTA_CHUNK_BADGE_MAX_DATA    1024    /* badge recovery: fewer UART frames */
+#if defined(FOF_BADGE_VARIANT)
+#define OTA_CHUNK_MAX_DATA          OTA_CHUNK_BADGE_MAX_DATA
+#else
+#define OTA_CHUNK_MAX_DATA          OTA_CHUNK_DEFAULT_MAX_DATA
+#endif
 #define OTA_ACK_INTERVAL_CHUNKS     16      /* legacy, unused with per-chunk ACK */
+#define OTA_RELAY_BADGE_NACK_DRAIN_MS       2
+#define OTA_RELAY_PROGRESS_INTERVAL_BYTES   (32 * 1024UL)
+#define OTA_RELAY_TIMEOUT_MIN_MS            (240 * 1000UL)
+#define OTA_RELAY_TIMEOUT_MAX_MS            (900 * 1000UL)
+#define OTA_RELAY_TIMEOUT_PER_KB_MS         300UL
+#define OTA_RELAY_TIMEOUT_FOR_SIZE_MS(size_bytes) \
+    (((((uint32_t)(size_bytes) + 1023UL) / 1024UL) * OTA_RELAY_TIMEOUT_PER_KB_MS) < OTA_RELAY_TIMEOUT_MIN_MS ? \
+        OTA_RELAY_TIMEOUT_MIN_MS : \
+        (((((uint32_t)(size_bytes) + 1023UL) / 1024UL) * OTA_RELAY_TIMEOUT_PER_KB_MS) > OTA_RELAY_TIMEOUT_MAX_MS ? \
+            OTA_RELAY_TIMEOUT_MAX_MS : \
+            ((((uint32_t)(size_bytes) + 1023UL) / 1024UL) * OTA_RELAY_TIMEOUT_PER_KB_MS)))
 
 /* ── JSON key names (short to save bandwidth at 921600 baud) ─────────────── */
 

@@ -87,6 +87,16 @@ void test_three_panics_on_validated_marks_crash_loop(void)
         RST_PANIC, /* pending_verify=*/false, /* prior=*/2, THRESHOLD);
     TEST_ASSERT_EQUAL(ROLLBACK_ACTION_MARK_CRASH_LOOP, d.action);
     TEST_ASSERT_EQUAL_UINT32(3, d.new_crash_count);
+    TEST_ASSERT_TRUE(d.enter_safe_mode);
+}
+
+void test_validated_crash_loop_enters_safe_uart_recovery(void)
+{
+    rollback_decision_t d = scanner_rollback_decide(
+        RST_TASK_WDT, /* pending_verify=*/false, /* prior=*/2, THRESHOLD);
+    TEST_ASSERT_EQUAL(ROLLBACK_ACTION_MARK_CRASH_LOOP, d.action);
+    TEST_ASSERT_TRUE(d.enter_safe_mode);
+    TEST_ASSERT_EQUAL_UINT32(3, d.new_crash_count);
 }
 
 void test_well_above_threshold_still_marks_crash_loop_not_rollback(void)

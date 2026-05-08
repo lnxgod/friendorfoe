@@ -15,10 +15,34 @@ static bool s_active = false;
 static char s_session_id[24] = {0};
 static char s_uuid[48] = {0};
 static char s_scan_profile[24] = "hybrid_failover";
+static bool s_ble_radio_enabled = true;
 
 static bool profile_is_ble_primary(void)
 {
     return strcmp(s_scan_profile, "ble_primary") == 0;
+}
+
+static bool profile_is_wifi_primary(void)
+{
+    return strcmp(s_scan_profile, "wifi_primary") == 0;
+}
+
+static void ensure_ble_radio_enabled(bool enabled)
+{
+    if (enabled && s_ble_radio_enabled && !ble_remote_id_is_scanning()) {
+        ble_remote_id_start();
+        return;
+    }
+    if (s_ble_radio_enabled == enabled) {
+        return;
+    }
+    if (enabled) {
+        ble_remote_id_start();
+    } else {
+        ble_rid_lockon_cancel();
+        ble_remote_id_stop();
+    }
+    s_ble_radio_enabled = enabled;
 }
 
 static void apply_normal_profile_radios(void)
@@ -28,9 +52,27 @@ static void apply_normal_profile_radios(void)
     }
     if (profile_is_ble_primary()) {
         wifi_scanner_pause();
+        ensure_ble_radio_enabled(true);
+    } else if (profile_is_wifi_primary()) {
+#ifdef FOF_BADGE_VARIANT
+        /* Badge hardware has to remain demo-recoverable if the dedicated BLE
+         * slot goes stale. Keeping NimBLE alive avoids the stop/restart path
+         * that can leave a scanner host-active but unsynced after failover.
+         */
+        ensure_ble_radio_enabled(true);
+#else
+        ensure_ble_radio_enabled(false);
+#endif
+        wifi_scanner_resume();
     } else {
+        ensure_ble_radio_enabled(true);
         wifi_scanner_resume();
     }
+}
+
+void scanner_scan_profile_apply(void)
+{
+    apply_normal_profile_radios();
 }
 
 bool scanner_calibration_mode_start(const char *session_id,
@@ -50,6 +92,7 @@ bool scanner_calibration_mode_start(const char *session_id,
     wifi_scanner_lockon_cancel();
     wifi_scanner_pause();
     ble_rid_lockon_cancel();
+    ensure_ble_radio_enabled(true);
     uart_tx_flush_detection_queue();
     ESP_LOGW(TAG, "Calibration mode ACTIVE: session=%s uuid=%s", s_session_id, s_uuid);
     return true;
@@ -98,8 +141,15 @@ void scanner_scan_profile_set(const char *profile)
         strcmp(profile, "hybrid_failover") != 0) {
         profile = "hybrid_failover";
     }
+    bool changed = strcmp(s_scan_profile, profile) != 0;
     strncpy(s_scan_profile, profile, sizeof(s_scan_profile) - 1);
     s_scan_profile[sizeof(s_scan_profile) - 1] = '\0';
+    if (changed) {
+        uart_tx_reset_counts();
+        ble_remote_id_reset_profile_counters();
+        wifi_scanner_reset_attack_counters();
+        wifi_scanner_reset_fc_histogram();
+    }
     apply_normal_profile_radios();
     ESP_LOGI(TAG, "Scan profile set: %s", s_scan_profile);
 }

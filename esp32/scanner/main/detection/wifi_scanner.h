@@ -18,6 +18,7 @@
 #include "freertos/queue.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -108,6 +109,31 @@ void wifi_scanner_pause(void);
 
 /** Resume WiFi scanning (re-enable promiscuous mode). */
 void wifi_scanner_resume(void);
+
+/** True when WiFi promiscuous scanning is intentionally paused. */
+bool wifi_scanner_is_paused(void);
+
+typedef struct {
+    uint32_t total_frames;
+    uint32_t beacon_frames;
+    uint32_t full_scan_count;
+    uint32_t full_scan_ok;
+    uint32_t full_scan_err;
+    int      full_scan_last_rc;
+    uint32_t last_ap_count;
+    int64_t  last_scan_age_s;
+    uint32_t drone_ssid_emit;
+    uint32_t notable_ssid_emit;
+    char     last_drone_ssid[33];
+    char     last_notable_ssid[33];
+    uint32_t oui_emit;
+    uint32_t soft_ssid_emit;
+    uint16_t current_channel;
+    uint8_t  hot_channel_count;
+} wifi_scanner_stats_t;
+
+/** Copy badge-safe Wi-Fi scanner proof counters. */
+void wifi_scanner_get_stats(wifi_scanner_stats_t *out);
 
 #ifdef __cplusplus
 }

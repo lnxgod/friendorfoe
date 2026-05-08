@@ -246,6 +246,17 @@ static esp_err_t download_to_partition(const char *backend_base, const char *nam
 /* Try to update the uplink itself. Returns ESP_OK if a reboot is imminent. */
 static esp_err_t try_self_update_uplink(const char *backend_base)
 {
+#if defined(FOF_BADGE_VARIANT)
+    (void)backend_base;
+    /* The badge has its own LCD wiring and version track. The production
+     * backend catalog entry is currently "uplink-s3", so letting the badge
+     * self-OTA against that name replaces it with the non-LCD production
+     * image and leaves the ST7735 white. Keep scanner-cache refresh enabled
+     * by returning ESP_OK, but never self-replace the badge from this path. */
+    ESP_LOGI(TAG, "FoF Badge: uplink self-OTA skipped; preserving badge display firmware");
+    s_remote_uplink_ver[0] = '\0';
+    return ESP_OK;
+#else
     char remote_ver[40] = {0};
     int  remote_size = 0;
     esp_err_t err = fetch_metadata(backend_base, "uplink-s3",
@@ -293,6 +304,7 @@ static esp_err_t try_self_update_uplink(const char *backend_base)
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
     return ESP_OK;  /* unreachable */
+#endif
 }
 
 /**
@@ -318,7 +330,8 @@ static esp_err_t try_refresh_scanner_cache(const char *backend_base)
     }
     /* Sanity: only refresh known scanner variants, never random strings. */
     if (strcmp(board, "scanner-s3-combo") != 0 &&
-        strcmp(board, "scanner-s3-combo-seed") != 0) {
+        strcmp(board, "scanner-s3-combo-seed") != 0 &&
+        strcmp(board, "scanner-s3-combo-fof_badge") != 0) {
         ESP_LOGW(TAG, "ignoring unknown scanner board '%s'", board);
         return ESP_OK;
     }

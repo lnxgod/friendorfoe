@@ -108,10 +108,14 @@ typedef struct {
 
 /* ── Task stack sizes (bytes) ──────────────────────────────────────────── */
 
-#define CONFIG_UART_RX_STACK        5120  /* Needs headroom for cJSON parsing + backpressure logic */
+#define CONFIG_UART_RX_STACK        8192  /* Needs headroom for scanner proof JSON + cJSON parsing */
 #define CONFIG_HTTP_UPLOAD_STACK   16384  /* Needs full 16KB for raw socket + DNS + error paths */
 #define CONFIG_GPS_STACK            3072  /* Reduced from 4096 */
+#ifdef FOF_BADGE_VARIANT
+#define CONFIG_DISPLAY_STACK        12288 /* ST7735 badge UI draws deeper than SSD1306 status UI. */
+#else
 #define CONFIG_DISPLAY_STACK        3072  /* Reduced from 4096 */
+#endif
 #define CONFIG_LED_STACK            2048  /* Can't reduce — RGB LED driver needs this */
 
 /* ── WiFi AP defaults (override via NVS) ──────────────────────────────── */

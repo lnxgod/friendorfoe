@@ -8,6 +8,7 @@
  */
 
 #include "detection_types.h"
+#include "badge_threat_policy.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
@@ -31,14 +32,22 @@ int uart_rx_get_detection_count(void);
 /** Summary of a recent detection for display. */
 typedef struct {
     char    drone_id[64];
+    char    manufacturer[32];
+    char    badge_label[BADGE_THREAT_LABEL_LEN];
+    char    badge_entity_key[BADGE_THREAT_KEY_LEN];
+    char    badge_class_name[16];
     uint8_t source;
     float   confidence;
+    float   threat_score;
     int8_t  rssi;
     int64_t timestamp_ms;
 } detection_summary_t;
 
 /** Copy most recent detections into caller's buffer (newest first). */
 int uart_rx_get_recent_detections(detection_summary_t *out, int max);
+
+/** Snapshot badge-local active threat state for LCD/API surfaces. */
+void uart_rx_get_badge_threat_snapshot(badge_threat_snapshot_t *out);
 
 /** True if ANY scanner is connected (sent data within 5s). */
 bool uart_rx_is_scanner_connected(void);
@@ -49,6 +58,17 @@ bool uart_rx_is_ble_scanner_connected(void);
 /** True if the WiFi scanner (UART2) is connected. */
 bool uart_rx_is_wifi_scanner_connected(void);
 
+/** Raw UART diagnostics, including bytes that did not parse into JSON. */
+typedef struct {
+    bool raw_seen;
+    int64_t raw_age_s;
+    uint32_t raw_bytes;
+    uint32_t line_overflow_count;
+    uint32_t json_parse_error_count;
+} scanner_uart_diag_t;
+
+void uart_rx_get_scanner_uart_diag(int scanner_id, scanner_uart_diag_t *out);
+
 /**
  * Send a JSON command to all connected scanners via UART TX.
  * Used for lock-on commands from the backend.
@@ -56,11 +76,12 @@ bool uart_rx_is_wifi_scanner_connected(void);
 void uart_rx_send_command(const char *json_cmd);
 void uart_rx_send_command_to_scanner(int scanner_id, const char *json_cmd);
 bool uart_rx_send_command_to_scanner_checked(int scanner_id, const char *json_cmd);
+bool uart_rx_set_scanner_tx_pin_for_badge_probe(int scanner_id, int tx_pin);
 
 /** Scanner identity info (received via UART scanner_info message). */
 typedef struct {
-    char version[16];
-    char board[24];     /* firmware catalog name: "scanner-s3-combo" */
+    char version[32];
+    char board[40];     /* firmware catalog name, e.g. "scanner-s3-combo-fof_badge" */
     char chip[12];      /* "esp32s3" */
     char caps[32];      /* "ble,wifi" */
     bool received;
@@ -84,6 +105,59 @@ typedef struct {
     uint32_t probe_drop_low_value;
     uint32_t probe_drop_rate_limit;
     uint32_t probe_drop_pressure;
+    bool     ble_scanning;
+    bool     ble_host_active;
+    bool     ble_host_synced;
+    bool     wifi_paused;
+    uint32_t wifi_total_frames;
+    uint32_t wifi_beacon_frames;
+    uint32_t wifi_full_scan_count;
+    uint32_t wifi_full_scan_ok;
+    uint32_t wifi_full_scan_err;
+    int      wifi_full_scan_last_rc;
+    uint32_t wifi_last_ap_count;
+    int64_t  wifi_last_scan_age_s;
+    uint32_t wifi_drone_ssid_emit;
+    uint32_t wifi_notable_ssid_emit;
+    char     wifi_last_drone_ssid[33];
+    char     wifi_last_notable_ssid[33];
+    uint32_t wifi_oui_emit;
+    uint32_t wifi_soft_ssid_emit;
+    uint32_t wifi_hot_ch;
+    uint32_t ble_adv_seen;
+    uint32_t ble_fp_emit;
+    uint32_t ble_meta_seen;
+    uint32_t ble_tracker_seen;
+    uint32_t ble_privacy_candidate_seen;
+    uint32_t ble_near_unknown_seen;
+    uint32_t ble_drop_profile;
+    uint32_t ble_drop_rate;
+    uint32_t ble_dbg_near_seen;
+    int8_t   ble_dbg_near_rssi;
+    char     ble_dbg_near_label[24];
+    char     ble_dbg_near_name[32];
+    char     ble_dbg_near_reason[32];
+    uint16_t ble_dbg_near_cid;
+    uint16_t ble_dbg_near_svc0;
+    uint8_t  ble_dbg_near_svc_count;
+    uint8_t  ble_dbg_near_payload_len;
+    uint32_t ble_dbg_priv_seen;
+    int8_t   ble_dbg_priv_rssi;
+    char     ble_dbg_priv_label[24];
+    char     ble_dbg_priv_name[32];
+    char     ble_dbg_priv_reason[32];
+    uint16_t ble_dbg_priv_cid;
+    uint16_t ble_dbg_priv_svc0;
+    uint8_t  ble_dbg_priv_svc_count;
+    uint8_t  ble_dbg_priv_payload_len;
+    uint32_t ble_host_restart_count;
+    uint32_t ble_scan_start_count;
+    uint32_t ble_scan_start_ok;
+    int      ble_scan_last_rc;
+    int      ble_sync_last_rc;
+    uint32_t rid_service_seen;
+    uint32_t rid_emit;
+    uint32_t privacy_seen;
 
     /* Time-sync diagnostic (v0.60+): scanner's epoch-ms offset against its
      * monotonic clock. Stays at 0 until the scanner has received a usable
@@ -111,6 +185,15 @@ typedef struct {
     uint32_t fw_check_count;
     int64_t  fw_backoff_s;
     char     last_fw_error[48];
+    char     ota_state[16];
+    char     ota_session_id[24];
+    uint32_t ota_received;
+    uint32_t ota_total;
+    char     recovery_mode[16];
+    char     safe_reason[48];
+    bool     rollback_pending;
+    uint32_t crash_count;
+    uint32_t radio_restart_count;
 } scanner_info_t;
 
 /** Get scanner info for the BLE scanner (UART slot). */

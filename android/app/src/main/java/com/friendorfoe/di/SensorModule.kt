@@ -3,6 +3,7 @@ package com.friendorfoe.di
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.hardware.SensorManager
+import android.hardware.usb.UsbManager
 import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.wifi.WifiManager
@@ -52,6 +53,12 @@ object SensorModule {
     @Singleton
     fun provideConnectivityManager(@ApplicationContext context: Context): ConnectivityManager {
         return context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    }
+
+    @Provides
+    @Singleton
+    fun provideUsbManager(@ApplicationContext context: Context): UsbManager {
+        return context.getSystemService(Context.USB_SERVICE) as UsbManager
     }
 
 }

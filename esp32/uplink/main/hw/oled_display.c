@@ -5,10 +5,18 @@
  * frame buffer and a built-in 5x7 pixel font for text rendering.
  *
  * Hardware: I2C, address 0x3C, pins configurable via KConfig
+ *
+ * Build-time selection: this SSD1306 backend is compiled out for the
+ * FoF Badge target (XIAO ESP32-S3 with Waveshare 1.8" ST7735), which
+ * uses display_st7735.c instead. Both files implement the same public
+ * oled_* API from oled_display.h.
  */
+
+#ifndef FOF_BADGE_VARIANT
 
 #include "oled_display.h"
 #include "uart_rx.h"
+#include "detection_types.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -429,7 +437,54 @@ void oled_init(void)
              found_addr, found_sda, found_scl);
 }
 
-void oled_update(int drone_count, bool ble_scanner_ok, bool wifi_scanner_ok,
+static bool contains_nocase_ascii(const char *haystack, const char *needle)
+{
+    if (!haystack || !needle || needle[0] == '\0') return false;
+    for (const char *h = haystack; *h; h++) {
+        const char *a = h;
+        const char *b = needle;
+        while (*a && *b) {
+            char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a - 'A' + 'a') : *a;
+            char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b - 'A' + 'a') : *b;
+            if (ca != cb) break;
+            a++;
+            b++;
+        }
+        if (*b == '\0') return true;
+    }
+    return false;
+}
+
+static bool source_is_drone(uint8_t source, const char *manufacturer)
+{
+    if (source == DETECTION_SRC_BLE_FINGERPRINT) {
+        return contains_nocase_ascii(manufacturer, "drone");
+    }
+    return source == DETECTION_SRC_BLE_RID ||
+           source == DETECTION_SRC_WIFI_SSID ||
+           source == DETECTION_SRC_WIFI_DJI_IE ||
+           source == DETECTION_SRC_WIFI_BEACON ||
+           source == DETECTION_SRC_WIFI_OUI;
+}
+
+static const char *detection_label_short(uint8_t source, const char *manufacturer)
+{
+    if (source_is_drone(source, manufacturer)) return "DRONE";
+    if (source == DETECTION_SRC_BLE_FINGERPRINT) {
+        if (contains_nocase_ascii(manufacturer, "meta")) return "META";
+        if (contains_nocase_ascii(manufacturer, "tag") ||
+            contains_nocase_ascii(manufacturer, "tile") ||
+            contains_nocase_ascii(manufacturer, "tracker") ||
+            contains_nocase_ascii(manufacturer, "findmy")) return "TRACK";
+        return "BLE";
+    }
+    if (source == DETECTION_SRC_WIFI_PROBE_REQUEST) return "PROBE";
+    if (source == DETECTION_SRC_WIFI_ASSOC) return "ASSOC";
+    if (source == DETECTION_SRC_WIFI_AP_INVENTORY) return "AP";
+    return "EVENT";
+}
+
+void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
                  bool backend_ok, int upload_count, bool wifi_network_ok,
                  float battery_pct, uint32_t uptime_s, const char *device_id)
 {
@@ -468,9 +523,9 @@ void oled_update(int drone_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     }
     fb_draw_string(0, 22, line);
 
-    /* Line 4: Drones + Uploads */
-    snprintf(line, sizeof(line), "Drones:%-3d Up:%d",
-             drone_count, upload_count);
+    /* Line 4: Detection events + uploads */
+    snprintf(line, sizeof(line), "Events:%-3d Up:%d",
+             detection_count, upload_count);
     fb_draw_string(0, 32, line);
 
     /* Line 5: Battery + Uptime */
@@ -487,8 +542,8 @@ void oled_update(int drone_count, bool ble_scanner_ok, bool wifi_scanner_ok,
         fb_draw_string(0, 55, "! SVR OFFLINE");
     } else if (!ble_scanner_ok && !wifi_scanner_ok) {
         fb_draw_string(0, 55, "! NO SCANNERS");
-    } else if (drone_count > 0) {
-        fb_draw_string(0, 55, "* TRACKING");
+    } else if (detection_count > 0) {
+        fb_draw_string(0, 55, "* ACTIVITY");
     } else {
         fb_draw_string(0, 55, "  SCANNING...");
     }
@@ -496,8 +551,8 @@ void oled_update(int drone_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     oled_flush();
 }
 
-void oled_show_detection(const char *drone_id, const char *manufacturer,
-                         float confidence, int rssi)
+void oled_show_detection(const char *detection_id, const char *manufacturer,
+                         uint8_t source, float confidence, int rssi)
 {
     if (!s_initialized) {
         return;
@@ -511,8 +566,10 @@ void oled_show_detection(const char *drone_id, const char *manufacturer,
     /* Separator at y=41 */
     fb_draw_hline(0, 127, 41);
 
-    /* Drone ID (truncated) */
-    snprintf(line, sizeof(line), "ID:%.17s", drone_id ? drone_id : "???");
+    /* Detection class + ID (truncated) */
+    snprintf(line, sizeof(line), "%s:%.17s",
+             detection_label_short(source, manufacturer),
+             detection_id ? detection_id : "???");
     fb_draw_string(0, 44, line);
 
     /* Manufacturer + RSSI */
@@ -533,3 +590,12 @@ void oled_clear(void)
     fb_clear();
     oled_flush();
 }
+
+void oled_show_boot_status(const char *stage, const char *mode, const char *line)
+{
+    (void)stage;
+    (void)mode;
+    (void)line;
+}
+
+#endif /* !FOF_BADGE_VARIANT */

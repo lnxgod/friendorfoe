@@ -29,13 +29,28 @@ class SensorMapApiServiceDtoTest {
                   "cal_seen": 10,
                   "cal_sent": 6,
                   "source_fixups_recent": 2,
+                  "reporting": {
+                    "network_mode": "backend",
+                    "backend_enabled": true,
+                    "uploads_ok": 3,
+                    "uploads_fail": 0,
+                    "last_upload_age_s": 1
+                  },
                   "scanners": [
                     {
+                      "slot": 0,
                       "uart": "ble",
+                      "connected": true,
                       "ver": "0.63.0-svc132",
                       "board": "scanner-s3-combo-seed",
                       "scan_profile": "calibration",
+                      "expected_scan_profile": "calibration",
                       "slot_role": "ble_primary",
+                      "role_acked": true,
+                      "health": "ok",
+                      "cmd_rx": 8,
+                      "cmd_last_age_s": 2,
+                      "ble_adv_seen": 42,
                       "tx_queue_depth": 3,
                       "tx_queue_capacity": 64,
                       "tx_queue_pressure_pct": 4,
@@ -57,6 +72,12 @@ class SensorMapApiServiceDtoTest {
         assertEquals("calibration", dto.nodes.first().scanMode)
         assertEquals(8, dto.nodes.first().dedupCollapsed)
         assertEquals("ble_primary", dto.nodes.first().scanners.first().slotRole)
+        assertEquals("backend", dto.nodes.first().reporting!!.networkMode)
+        assertEquals(3, dto.nodes.first().reporting!!.uploadsOk)
+        assertEquals(true, dto.nodes.first().scanners.first().connected)
+        assertEquals(true, dto.nodes.first().scanners.first().roleAcked)
+        assertEquals("ok", dto.nodes.first().scanners.first().health)
+        assertEquals(42, dto.nodes.first().scanners.first().bleAdvSeen)
     }
 
     @Test

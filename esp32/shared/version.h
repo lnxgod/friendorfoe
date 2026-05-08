@@ -7,7 +7,27 @@
  * Update FOF_VERSION here; all boards pick it up automatically.
  */
 
-#define FOF_VERSION "0.63.0-svc156"
+/*
+ * Production and FoF Badge are intentionally on separate version tracks.
+ * Production firmware is shared by uplink-s3, scanner-s3-combo, and
+ * scanner-s3-combo-seed; the FoF Badge build is XIAO-only and ships a
+ * different feature set (Waveshare ST7735 display, Triforce splash).
+ *
+ * NEVER collapse these — flashing a production node with a "-badge-*"
+ * version string is misleading and was caught by the user once already.
+ *
+ * Both string literals also live as fixed names so the per-target CMake
+ * (uplink/CMakeLists.txt, scanner/CMakeLists.txt) can pick the right one
+ * for ESP-IDF's PROJECT_VER metadata based on the PIOENV env var.
+ */
+#define FOF_VERSION_PROD  "0.63.0-svc156"
+#define FOF_VERSION_BADGE "0.64.35-badge-blefix"
+
+#if defined(FOF_BADGE_VARIANT)
+#define FOF_VERSION FOF_VERSION_BADGE
+#else
+#define FOF_VERSION FOF_VERSION_PROD
+#endif
 
 /*
  * FIRMWARE_NAME is set per build target:

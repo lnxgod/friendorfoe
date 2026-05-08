@@ -33,42 +33,44 @@ void oled_set_version(const char *version);
  * Redraw the main scanner status screen.
  *
  * @param detection_count  Total detections since boot
- * @param active_drones    Currently tracked drone count (Bayesian slots in use)
+ * @param active_tracks    Currently tracked RF/entity slots in use
  * @param wifi_channel     Current WiFi scan channel
  * @param ble_count        Cumulative BLE detections
  * @param wifi_count       Cumulative WiFi detections
  * @param uptime_s         System uptime in seconds
  */
-void oled_update(int detection_count, int active_drones, uint8_t wifi_channel,
+void oled_update(int detection_count, int active_tracks, uint8_t wifi_channel,
                  int ble_count, int wifi_count, uint32_t uptime_s);
 
 /**
  * Briefly show the latest detection on screen (bottom half overlay).
  *
- * @param drone_id      Drone serial number or generated ID
+ * @param detection_id  Detection identifier
  * @param manufacturer  Manufacturer name (may be NULL/empty)
+ * @param source        DETECTION_SRC_* source code
  * @param confidence    Detection confidence 0.0-1.0
  * @param rssi          Signal strength in dBm
  */
-void oled_show_detection(const char *drone_id, const char *manufacturer,
-                         float confidence, int rssi);
+void oled_show_detection(const char *detection_id, const char *manufacturer,
+                         uint8_t source, float confidence, int rssi);
 
 /**
  * Show a detection with a page indicator for multi-drone scoreboard.
  *
  * When page_total == 1, behaves identically to oled_show_detection
  * (full 17-char ID + signal bars). When page_total > 1, truncates
- * drone_id to 14 chars and draws a right-aligned "N/M" indicator.
+ * detection_id to 14 chars and draws a right-aligned "N/M" indicator.
  *
- * @param drone_id      Drone serial number or generated ID
+ * @param detection_id  Detection identifier
  * @param manufacturer  Manufacturer name (may be NULL/empty)
+ * @param source        DETECTION_SRC_* source code
  * @param confidence    Detection confidence 0.0-1.0
  * @param rssi          Signal strength in dBm
  * @param page_current  Current page (1-based)
  * @param page_total    Total number of pages
  */
-void oled_show_detection_paged(const char *drone_id, const char *manufacturer,
-                               float confidence, int rssi,
+void oled_show_detection_paged(const char *detection_id, const char *manufacturer,
+                               uint8_t source, float confidence, int rssi,
                                int page_current, int page_total);
 
 /**

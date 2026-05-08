@@ -18,6 +18,9 @@
 #include "time_sync_policy.h"
 #include "version.h"
 #include "detection_policy.h"
+#ifdef FOF_BADGE_VARIANT
+#include "badge_runtime.h"
+#endif
 
 #include <string.h>
 #include <stdio.h>
@@ -421,20 +424,62 @@ static int append_json_csv_array_field(int off,
 }
 
 /* Helper: append scanner info object */
-static int append_scanner_info(char *buf, int off, int max, const char *uart_name, const scanner_info_t *info)
+static int append_scanner_info(char *buf,
+                               int off,
+                               int max,
+                               const char *uart_name,
+                               bool connected,
+                               bool peer_connected,
+                               const scanner_info_t *info)
 {
     uint8_t scanner_id = (strcmp(uart_name, "wifi") == 0) ? 1 : 0;
-    bool scanner_calibration = strcmp(info->scan_mode, "calibration") == 0;
-    const char *scan_profile = info->scan_profile[0]
+    bool scanner_calibration = info && strcmp(info->scan_mode, "calibration") == 0;
+    const char *expected_profile = scanner_calibration
+        ? fof_policy_scan_profile_for_slot(scanner_id, true)
+        : (peer_connected ? fof_policy_scan_profile_for_slot(scanner_id, false)
+                          : "hybrid_failover");
+    const char *scan_profile = (info && info->scan_profile[0])
         ? info->scan_profile
-        : fof_policy_scan_profile_for_slot(scanner_id, scanner_calibration);
+        : "";
+    bool role_acked = connected && scan_profile[0] &&
+                      strcmp(scan_profile, expected_profile) == 0;
+    bool cmd_fresh = connected && info && info->cmd_rx_count > 0 &&
+                     info->cmd_last_age_s >= 0 && info->cmd_last_age_s <= 45;
+    const char *health = !connected ? "missing" :
+        (!role_acked ? "role_wait" :
+         (!cmd_fresh ? "cmd_wait" :
+          (scanner_id == 0 && info && !info->ble_scanning ? "ble_off" : "ok")));
+    scanner_uart_diag_t uart_diag = {0};
+    uart_rx_get_scanner_uart_diag(scanner_id, &uart_diag);
     int n = snprintf(&buf[off], max - off,
-        "{\"uart\":\"%s\",\"ver\":\"%s\",\"board\":\"%s\",\"chip\":\"%s\",\"caps\":\"%s\""
-        ",\"scan_profile\":\"%s\",\"slot_role\":\"%s\"",
-        uart_name, info->version, info->board, info->chip, info->caps,
+        "{\"slot\":%u,\"uart\":\"%s\",\"connected\":%s,"
+        "\"ver\":\"%s\",\"board\":\"%s\",\"chip\":\"%s\",\"caps\":\"%s\""
+        ",\"scan_profile\":\"%s\",\"expected_scan_profile\":\"%s\",\"slot_role\":\"%s\","
+        "\"role_acked\":%s,\"health\":\"%s\","
+        "\"uart_raw_seen\":%s,\"uart_raw_age_s\":%lld,"
+        "\"uart_raw_bytes\":%lu,\"uart_line_overflow\":%lu,\"uart_json_err\":%lu",
+        (unsigned)scanner_id,
+        uart_name,
+        connected ? "true" : "false",
+        info ? info->version : "",
+        info ? info->board : "",
+        info ? info->chip : "",
+        info ? info->caps : "",
         scan_profile,
-        fof_policy_slot_role_for_slot(scanner_id));
+        expected_profile,
+        fof_policy_slot_role_for_slot(scanner_id),
+        role_acked ? "true" : "false",
+        health,
+        uart_diag.raw_seen ? "true" : "false",
+        (long long)uart_diag.raw_age_s,
+        (unsigned long)uart_diag.raw_bytes,
+        (unsigned long)uart_diag.line_overflow_count,
+        (unsigned long)uart_diag.json_parse_error_count);
     if (n > 0) off += n;
+    if (!info) {
+        n = snprintf(&buf[off], max-off, "}"); if(n>0) off+=n;
+        return off;
+    }
     if (info->auth_count > 0) { n = snprintf(&buf[off], max-off, ",\"auth_fr\":%d", info->auth_count); if(n>0) off+=n; }
     if (info->fc_hist[0]) { n = snprintf(&buf[off], max-off, ",\"fc_hist\":\"%s\"", info->fc_hist); if(n>0) off+=n; }
     /* WiFi attack stats (v0.60+): scanner detects deauth/disassoc/auth-frame
@@ -450,7 +495,8 @@ static int append_scanner_info(char *buf, int off, int max, const char *uart_nam
                  ",\"tx_queue_depth\":%lu,\"tx_queue_capacity\":%lu,\"tx_queue_pressure_pct\":%lu"
                  ",\"noise_drop_ble\":%lu,\"noise_drop_wifi\":%lu"
                  ",\"probe_seen\":%lu,\"probe_sent\":%lu"
-                 ",\"probe_drop_low_value\":%lu,\"probe_drop_rate_limit\":%lu,\"probe_drop_pressure\":%lu",
+                 ",\"probe_drop_low_value\":%lu,\"probe_drop_rate_limit\":%lu,\"probe_drop_pressure\":%lu"
+                 ",\"rid_service_seen\":%lu,\"rid_emit\":%lu,\"privacy_seen\":%lu",
                  (unsigned long)info->uart_tx_dropped,
                  (unsigned long)info->uart_tx_high_water,
                  (unsigned long)info->tx_queue_depth,
@@ -462,7 +508,10 @@ static int append_scanner_info(char *buf, int off, int max, const char *uart_nam
                  (unsigned long)info->probe_sent,
                  (unsigned long)info->probe_drop_low_value,
                  (unsigned long)info->probe_drop_rate_limit,
-                 (unsigned long)info->probe_drop_pressure);
+                 (unsigned long)info->probe_drop_pressure,
+                 (unsigned long)info->rid_service_seen,
+                 (unsigned long)info->rid_emit,
+                 (unsigned long)info->privacy_seen);
     if (n > 0) off += n;
     /* v0.60 time-sync diagnostic — surfaces whether scanner has received the
      * uplink's epoch broadcast. tcnt = #broadcasts seen, toff = applied
@@ -487,14 +536,78 @@ static int append_scanner_info(char *buf, int off, int max, const char *uart_nam
                  info->calibration_mode_acked ? "true" : "false");
     if(n>0) off+=n;
     n = snprintf(&buf[off], max-off,
+                 ",\"ble_scanning\":%s,\"ble_host_active\":%s,\"ble_host_synced\":%s"
+                 ",\"wifi_paused\":%s,\"wifi_total_frames\":%lu"
+                 ",\"wifi_beacon_frames\":%lu,\"wifi_full_scan_count\":%lu"
+                 ",\"wifi_full_scan_ok\":%lu,\"wifi_full_scan_err\":%lu"
+                 ",\"wifi_full_scan_last_rc\":%d,\"wifi_last_ap_count\":%lu"
+                 ",\"wifi_last_scan_age_s\":%lld"
+                 ",\"wifi_drone_ssid_emit\":%lu,\"wifi_notable_ssid_emit\":%lu"
+                 ",\"wifi_oui_emit\":%lu,\"wifi_soft_ssid_emit\":%lu"
+                 ",\"wifi_hot_ch\":%lu"
+                 ",\"ble_adv_seen\":%lu,\"ble_fp_emit\":%lu"
+                 ",\"ble_meta_seen\":%lu,\"ble_tracker_seen\":%lu"
+                 ",\"ble_privacy_candidate_seen\":%lu,\"ble_near_unknown_seen\":%lu"
+                 ",\"ble_drop_profile\":%lu,\"ble_drop_rate\":%lu"
+                 ",\"ble_host_restart_count\":%lu"
+                 ",\"ble_scan_start_count\":%lu,\"ble_scan_start_ok\":%lu"
+                 ",\"ble_scan_last_rc\":%d,\"ble_sync_last_rc\":%d"
                  ",\"need_firmware\":%s,\"fw_state\":\"%s\",\"target_ver\":\"%s\""
                  ",\"fw_check_count\":%lu,\"fw_backoff_s\":%lld,\"last_fw_error\":\"%s\"",
+                 info->ble_scanning ? "true" : "false",
+                 info->ble_host_active ? "true" : "false",
+                 info->ble_host_synced ? "true" : "false",
+                 info->wifi_paused ? "true" : "false",
+                 (unsigned long)info->wifi_total_frames,
+                 (unsigned long)info->wifi_beacon_frames,
+                 (unsigned long)info->wifi_full_scan_count,
+                 (unsigned long)info->wifi_full_scan_ok,
+                 (unsigned long)info->wifi_full_scan_err,
+                 info->wifi_full_scan_last_rc,
+                 (unsigned long)info->wifi_last_ap_count,
+                 (long long)info->wifi_last_scan_age_s,
+                 (unsigned long)info->wifi_drone_ssid_emit,
+                 (unsigned long)info->wifi_notable_ssid_emit,
+                 (unsigned long)info->wifi_oui_emit,
+                 (unsigned long)info->wifi_soft_ssid_emit,
+                 (unsigned long)info->wifi_hot_ch,
+                 (unsigned long)info->ble_adv_seen,
+                 (unsigned long)info->ble_fp_emit,
+                 (unsigned long)info->ble_meta_seen,
+                 (unsigned long)info->ble_tracker_seen,
+                 (unsigned long)info->ble_privacy_candidate_seen,
+                 (unsigned long)info->ble_near_unknown_seen,
+                 (unsigned long)info->ble_drop_profile,
+                 (unsigned long)info->ble_drop_rate,
+                 (unsigned long)info->ble_host_restart_count,
+                 (unsigned long)info->ble_scan_start_count,
+                 (unsigned long)info->ble_scan_start_ok,
+                 info->ble_scan_last_rc,
+                 info->ble_sync_last_rc,
                  info->need_firmware ? "true" : "false",
                  info->fw_update_state[0] ? info->fw_update_state : "idle",
                  info->fw_target_version,
                  (unsigned long)info->fw_check_count,
                  (long long)info->fw_backoff_s,
                  info->last_fw_error);
+    if(n>0) off+=n;
+    off = append_json_string_field(off, "wifi_last_drone_ssid", info->wifi_last_drone_ssid);
+    off = append_json_string_field(off, "wifi_last_notable_ssid", info->wifi_last_notable_ssid);
+    off = append_json_string_field(off, "ota_state",
+                                   info->ota_state[0] ? info->ota_state : "idle");
+    off = append_json_string_field(off, "ota_session_id", info->ota_session_id);
+    n = snprintf(&buf[off], max-off,
+                 ",\"ota_received\":%lu,\"ota_total\":%lu,"
+                 "\"recovery_mode\":\"%s\",\"safe_reason\":\"%s\","
+                 "\"rollback_pending\":%s,\"crash_count\":%lu,"
+                 "\"radio_restart_count\":%lu",
+                 (unsigned long)info->ota_received,
+                 (unsigned long)info->ota_total,
+                 info->recovery_mode[0] ? info->recovery_mode : "normal",
+                 info->safe_reason,
+                 info->rollback_pending ? "true" : "false",
+                 (unsigned long)info->crash_count,
+                 (unsigned long)info->radio_restart_count);
     if(n>0) off+=n;
     n = snprintf(&buf[off], max-off, "}"); if(n>0) off+=n;
     return off;
@@ -556,20 +669,55 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
         (unsigned long)g_time_broadcast_invalid_count
     );
 
+    int64_t last_upload_age_s = -1;
+    if (s_last_success_epoch_ms > 0) {
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        last_upload_age_s = now_ms >= s_last_success_epoch_ms
+            ? (now_ms - s_last_success_epoch_ms) / 1000
+            : 0;
+    }
+#ifdef FOF_BADGE_VARIANT
+    BUF_APPEND(
+        ",\"reporting\":{\"network_mode\":\"%s\",\"backend_enabled\":%s,"
+        "\"network_ttl_s\":%d,\"wifi_sta\":%s,\"standalone\":%s,"
+        "\"uploads_ok\":%d,\"uploads_fail\":%d,\"last_upload_age_s\":%lld}",
+        badge_runtime_network_mode_name(badge_runtime_get_network_mode()),
+        badge_runtime_get_network_mode() == BADGE_RUNTIME_NETWORK_BACKEND ? "true" : "false",
+        badge_runtime_get_network_ttl_s(),
+        wifi_sta_is_connected() ? "true" : "false",
+        wifi_sta_is_standalone() ? "true" : "false",
+        s_success_count,
+        s_fail_count,
+        (long long)last_upload_age_s
+    );
+#else
+    BUF_APPEND(
+        ",\"reporting\":{\"network_mode\":\"backend\",\"backend_enabled\":%s,"
+        "\"network_ttl_s\":0,\"wifi_sta\":%s,\"standalone\":%s,"
+        "\"uploads_ok\":%d,\"uploads_fail\":%d,\"last_upload_age_s\":%lld}",
+        wifi_sta_is_standalone() ? "false" : "true",
+        wifi_sta_is_connected() ? "true" : "false",
+        wifi_sta_is_standalone() ? "true" : "false",
+        s_success_count,
+        s_fail_count,
+        (long long)last_upload_age_s
+    );
+#endif
+
     /* Scanners array */
     BUF_APPEND(",\"scanners\":[");
     bool has_scanner = false;
+    bool ble_connected = uart_rx_is_ble_scanner_connected();
+    bool wifi_connected = uart_rx_is_wifi_scanner_connected();
     const scanner_info_t *ble_info = uart_rx_get_ble_scanner_info();
-    if (ble_info) {
-        off = append_scanner_info(s_payload_buf, off, s_payload_buf_size, "ble", ble_info);
-        has_scanner = true;
-    }
+    off = append_scanner_info(s_payload_buf, off, s_payload_buf_size, "ble",
+                              ble_connected, wifi_connected, ble_info);
+    has_scanner = true;
 #if CONFIG_DUAL_SCANNER
     const scanner_info_t *wifi_info = uart_rx_get_wifi_scanner_info();
-    if (wifi_info) {
-        if (has_scanner) BUF_APPEND(",");
-        off = append_scanner_info(s_payload_buf, off, s_payload_buf_size, "wifi", wifi_info);
-    }
+    if (has_scanner) BUF_APPEND(",");
+    off = append_scanner_info(s_payload_buf, off, s_payload_buf_size, "wifi",
+                              wifi_connected, ble_connected, wifi_info);
 #endif
     BUF_APPEND("]");
 
@@ -1231,6 +1379,7 @@ static bool upload_with_retry(const char *payload)
 
         if (http_post_payload(payload)) {
             s_success_count++;
+            s_last_success_epoch_ms = esp_timer_get_time() / 1000;
             return true;
         }
 
@@ -1702,8 +1851,13 @@ void http_upload_init(QueueHandle_t detection_queue)
 
 void http_upload_start(void)
 {
+    static bool s_task_started = false;
+    if (s_task_started) {
+        return;
+    }
     xTaskCreate(http_upload_task, "http_upload", CONFIG_HTTP_UPLOAD_STACK,
                 NULL, CONFIG_HTTP_UPLOAD_PRIORITY, NULL);
+    s_task_started = true;
     ESP_LOGI(TAG, "HTTP upload task created (priority=%d, stack=%d)",
              CONFIG_HTTP_UPLOAD_PRIORITY, CONFIG_HTTP_UPLOAD_STACK);
 }

@@ -61,6 +61,7 @@ void uart_tx_start(QueueHandle_t detection_queue);
 typedef struct {
     char    drone_id[64];
     char    manufacturer[32];
+    uint8_t source;
     float   confidence;
     int8_t  rssi;
     int64_t timestamp_ms;
@@ -121,6 +122,9 @@ int uart_tx_get_ble_count(void);
 
 /** Get cumulative WiFi detection count. */
 int uart_tx_get_wifi_count(void);
+
+/** Reset per-profile BLE/WiFi transmission counters. */
+void uart_tx_reset_counts(void);
 
 /** Get total detection count (BLE + WiFi). */
 int uart_tx_get_total_count(void);

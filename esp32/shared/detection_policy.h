@@ -12,6 +12,8 @@ extern "C" {
 
 bool fof_policy_probe_should_ignore_broadcast(const char *ssid);
 float fof_policy_probe_confidence(bool hard_match);
+bool fof_policy_ssid_is_notable(const char *ssid);
+const char *fof_policy_notable_ssid_label(const char *ssid);
 
 bool fof_policy_is_priority_ble_fingerprint(const char *manufacturer);
 bool fof_policy_ble_uuid128_is_calibration_le(const uint8_t uuid_le[16]);

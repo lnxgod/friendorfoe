@@ -17,6 +17,7 @@ const char *scanner_calibration_mode_uuid(void);
 const char *scanner_calibration_mode_session_id(void);
 const char *scanner_calibration_mode_label(void);
 void scanner_scan_profile_set(const char *profile);
+void scanner_scan_profile_apply(void);
 const char *scanner_scan_profile_label(void);
 bool scanner_calibration_mode_allows_detection(const drone_detection_t *detection);
 bool scanner_calibration_mode_allows_ble_uuid128(const uint8_t uuids[][16],

@@ -72,6 +72,76 @@ float fof_policy_probe_confidence(bool hard_match)
     return hard_match ? 0.50f : 0.05f;
 }
 
+bool fof_policy_ssid_is_notable(const char *ssid)
+{
+    if (!ssid || ssid[0] == '\0') {
+        return false;
+    }
+
+    const bool drone_like =
+        ascii_contains_nocase(ssid, "drone") ||
+        ascii_contains_nocase(ssid, "uav") ||
+        ascii_contains_nocase(ssid, "fpv") ||
+        ascii_contains_nocase(ssid, "remoteid") ||
+        ascii_contains_nocase(ssid, "remote-id") ||
+        ascii_contains_nocase(ssid, "rid-");
+    const bool high_value =
+        drone_like ||
+        ascii_contains_nocase(ssid, "camera") ||
+        ascii_contains_nocase(ssid, "cam") ||
+        ascii_contains_nocase(ssid, "flock") ||
+        ascii_contains_nocase(ssid, "skimmer");
+
+    /* Badge instrument mode is not an AP inventory.  These are our own/demo
+     * ambient broadcasts and they crowd out higher-value SA like drones,
+     * Flock, glasses, and skimmer/tooling evidence. */
+    if (ascii_contains_nocase(ssid, "teamcharitycase")) {
+        return false;
+    }
+    if (!high_value &&
+        (ascii_contains_nocase(ssid, "friendorfoe") ||
+         ascii_contains_nocase(ssid, "fof-") ||
+         ascii_contains_nocase(ssid, "fof_") ||
+         ascii_contains_nocase(ssid, "fof "))) {
+        return false;
+    }
+    if (drone_like) {
+        return true;
+    }
+
+    static const char *tokens[] = {
+        "defcon", "dc33", "drone", "uav", "fpv", "remoteid",
+        "remote-id", "camera", "cam", "flock", "skimmer",
+        "pwnagotchi", "marauder", "pineapple", "evil", "twin",
+    };
+    for (size_t i = 0; i < sizeof(tokens) / sizeof(tokens[0]); i++) {
+        if (ascii_contains_nocase(ssid, tokens[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const char *fof_policy_notable_ssid_label(const char *ssid)
+{
+    if (ascii_contains_nocase(ssid, "drone") ||
+        ascii_contains_nocase(ssid, "uav") ||
+        ascii_contains_nocase(ssid, "fpv") ||
+        ascii_contains_nocase(ssid, "remoteid") ||
+        ascii_contains_nocase(ssid, "remote-id") ||
+        ascii_contains_nocase(ssid, "rid-")) return "Drone SSID";
+    if (ascii_contains_nocase(ssid, "flock")) return "Flock SSID";
+    if (ascii_contains_nocase(ssid, "camera") ||
+        ascii_contains_nocase(ssid, "cam")) return "Camera SSID";
+    if (ascii_contains_nocase(ssid, "skimmer")) return "Skimmer SSID";
+    if (ascii_contains_nocase(ssid, "pwnagotchi")) return "Pwnagotchi";
+    if (ascii_contains_nocase(ssid, "marauder")) return "Marauder";
+    if (ascii_contains_nocase(ssid, "pineapple")) return "Pineapple";
+    if (ascii_contains_nocase(ssid, "evil") ||
+        ascii_contains_nocase(ssid, "twin")) return "EvilTwin SSID";
+    return "Notable SSID";
+}
+
 bool fof_policy_is_priority_ble_fingerprint(const char *manufacturer)
 {
     const char *mfr = manufacturer ? manufacturer : "";

@@ -9,6 +9,7 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 
 from app.main import app
+from app.routers import detections
 
 
 @pytest.mark.asyncio
@@ -66,3 +67,46 @@ async def test_threats_page_static_file_served():
         r = await c.get("/threats")
         assert r.status_code == 200
         assert "Threat Dashboard" in r.text
+
+
+@pytest.mark.asyncio
+async def test_threats_dedupes_repeated_drone_alerts(monkeypatch):
+    original_alerts = list(detections._drone_alerts)
+    detections._drone_alerts.clear()
+    detections._drone_alerts.extend([
+        {
+            "alert_type": "drone_detected",
+            "severity": "warning",
+            "drone_id": "DRONE-ONE",
+            "classification": "likely_drone",
+            "source": "wifi_ssid",
+            "rssi": -62,
+            "manufacturer": "DJI",
+            "device_id": "node-a",
+            "timestamp": 1000.0,
+        },
+        {
+            "alert_type": "drone_detected",
+            "severity": "critical",
+            "drone_id": "DRONE-ONE",
+            "classification": "confirmed_drone",
+            "source": "wifi_dji_ie",
+            "rssi": -51,
+            "manufacturer": "DJI",
+            "device_id": "node-b",
+            "timestamp": 1005.0,
+        },
+    ])
+
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+            r = await c.get("/detections/threats", params={"include_rf_anomalies": "false"})
+            assert r.status_code == 200, r.text
+            drones = [t for t in r.json()["threats"] if t.get("kind") == "drone" and t.get("drone_id") == "DRONE-ONE"]
+            assert len(drones) == 1
+            assert drones[0]["severity"] == "critical"
+            assert set(drones[0]["sensors_active"]) == {"node-a", "node-b"}
+    finally:
+        detections._drone_alerts.clear()
+        detections._drone_alerts.extend(original_alerts)

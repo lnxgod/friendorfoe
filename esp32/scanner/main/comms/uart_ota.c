@@ -35,6 +35,7 @@
 #include "psram_alloc.h"
 #include "wifi_scanner.h"
 #include "ble_remote_id.h"
+#include "calibration_mode.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -60,6 +61,12 @@ static const char *TAG = "uart_ota";
  * well under this window (stage+validate+flash ≈ 3–6 min wall clock). */
 #define OPERATION_CEILING_MS     900000   /* 15 min */
 
+/* Keep final flash commits in modest pieces. Some badge scanners in the
+ * field run older firmware that staged fine but failed committing one large
+ * PSRAM buffer in a single esp_ota_write() call. Chunking is slower but far
+ * easier on the flash/OTA stack and gives us useful progress/error context. */
+#define FLASH_WRITE_CHUNK_BYTES   16384
+
 /* ── OTA session state ─────────────────────────────────────────────────── */
 
 typedef enum {
@@ -78,6 +85,7 @@ static struct {
     uint32_t                 total_size;
     uint32_t                 expected_image_crc;
     bool                     has_expected_crc;
+    char                     session_id[24];
 
     /* Staging buffer in PSRAM (NULL when IDLE) */
     uint8_t                 *buffer;
@@ -92,12 +100,16 @@ static struct {
     uint8_t                  crc_buf[OTA_CHUNK_CRC_SIZE];
     uint8_t                  crc_pos;
     uint16_t                 chunk_seq;
+    uint16_t                 expected_seq;
     enum { PHASE_HEADER, PHASE_DATA, PHASE_CRC } phase;
 
     /* Timing */
     int64_t                  start_ms;         /* OTA session start */
     int64_t                  last_chunk_ms;    /* for idle watchdog */
+    uint32_t                 next_progress_bytes;
 } s_ota = {0};
+
+static bool s_radio_control_enabled = true;
 
 /* ── Wire helpers ──────────────────────────────────────────────────────── */
 
@@ -110,8 +122,14 @@ static void send_json(const char *json)
 
 static void send_chunk_nack(uint16_t seq)
 {
-    char buf[48];
-    snprintf(buf, sizeof(buf), "{\"type\":\"ota_nack\",\"seq\":%u}", seq);
+    char buf[96];
+    if (s_ota.session_id[0]) {
+        snprintf(buf, sizeof(buf),
+                 "{\"type\":\"ota_nack\",\"seq\":%u,\"session_id\":\"%s\"}",
+                 seq, s_ota.session_id);
+    } else {
+        snprintf(buf, sizeof(buf), "{\"type\":\"ota_nack\",\"seq\":%u}", seq);
+    }
     send_json(buf);
 }
 
@@ -119,10 +137,51 @@ static void send_ota_error(const char *reason)
 {
     uart_tx_set_firmware_update_state(true, uart_tx_firmware_target_version(), "error");
     uart_tx_set_firmware_error(reason ? reason : "ota_error");
-    char buf[128];
-    snprintf(buf, sizeof(buf),
-             "{\"type\":\"ota_error\",\"reason\":\"%s\",\"received\":%lu}",
-             reason ? reason : "unknown", (unsigned long)s_ota.received);
+    char buf[176];
+    if (s_ota.session_id[0]) {
+        snprintf(buf, sizeof(buf),
+                 "{\"type\":\"ota_error\",\"reason\":\"%s\",\"received\":%lu,"
+                 "\"session_id\":\"%s\"}",
+                 reason ? reason : "unknown",
+                 (unsigned long)s_ota.received,
+                 s_ota.session_id);
+    } else {
+        snprintf(buf, sizeof(buf),
+                 "{\"type\":\"ota_error\",\"reason\":\"%s\",\"received\":%lu}",
+                 reason ? reason : "unknown", (unsigned long)s_ota.received);
+    }
+    send_json(buf);
+}
+
+static void send_ota_errorf(const char *prefix, esp_err_t err)
+{
+    char reason[64];
+    snprintf(reason, sizeof(reason), "%s_%s",
+             prefix ? prefix : "ota", esp_err_to_name(err));
+    send_ota_error(reason);
+}
+
+static void send_ota_progress(void)
+{
+    if (s_ota.total_size == 0) return;
+    int percent = (int)(((uint64_t)s_ota.received * 100ULL) / s_ota.total_size);
+    char buf[160];
+    if (s_ota.session_id[0]) {
+        snprintf(buf, sizeof(buf),
+                 "{\"type\":\"ota_progress\",\"received\":%lu,\"total\":%lu,"
+                 "\"percent\":%d,\"session_id\":\"%s\"}",
+                 (unsigned long)s_ota.received,
+                 (unsigned long)s_ota.total_size,
+                 percent,
+                 s_ota.session_id);
+    } else {
+        snprintf(buf, sizeof(buf),
+                 "{\"type\":\"ota_progress\",\"received\":%lu,\"total\":%lu,"
+                 "\"percent\":%d}",
+                 (unsigned long)s_ota.received,
+                 (unsigned long)s_ota.total_size,
+                 percent);
+    }
     send_json(buf);
 }
 
@@ -133,6 +192,10 @@ static void send_ota_error(const char *reason)
  * on EVERY exit path (success or failure). */
 static void halt_scans(void)
 {
+    if (!s_radio_control_enabled) {
+        ESP_LOGW(TAG, "OTA scan halt skipped: radio control disabled");
+        return;
+    }
     wifi_scanner_pause();
     ble_remote_id_stop();
     /* Give the scan tasks a tick to notice the flags and release shared
@@ -142,8 +205,11 @@ static void halt_scans(void)
 
 static void resume_scans(void)
 {
-    wifi_scanner_resume();
-    ble_remote_id_start();
+    if (!s_radio_control_enabled) {
+        ESP_LOGW(TAG, "OTA scan resume skipped: radio control disabled");
+        return;
+    }
+    scanner_scan_profile_apply();
 }
 
 /* ── Cleanup + state reset ─────────────────────────────────────────────── */
@@ -170,7 +236,8 @@ static void cleanup_and_idle(void)
 /* ── Public API ────────────────────────────────────────────────────────── */
 
 bool uart_ota_begin(uint32_t total_size, uint32_t expected_crc,
-                    bool has_crc, uart_port_t uart_num)
+                    bool has_crc, uart_port_t uart_num,
+                    const char *session_id)
 {
     s_ota.uart_num = uart_num;   /* so error emits go to the right port */
 
@@ -180,6 +247,12 @@ bool uart_ota_begin(uint32_t total_size, uint32_t expected_crc,
     if (s_ota.state != OTA_IDLE) {
         ESP_LOGW(TAG, "ota_begin while state=%d — recovering to IDLE", s_ota.state);
         cleanup_and_idle();
+    }
+    if (session_id && session_id[0]) {
+        strncpy(s_ota.session_id, session_id, sizeof(s_ota.session_id) - 1);
+        s_ota.session_id[sizeof(s_ota.session_id) - 1] = '\0';
+    } else {
+        s_ota.session_id[0] = '\0';
     }
 
     /* Sanity checks */
@@ -204,27 +277,44 @@ bool uart_ota_begin(uint32_t total_size, uint32_t expected_crc,
      * of the scanner during OTA mode is annoying to debug. */
     halt_scans();
 
+    char session_copy[sizeof(s_ota.session_id)];
+    strncpy(session_copy, s_ota.session_id, sizeof(session_copy) - 1);
+    session_copy[sizeof(session_copy) - 1] = '\0';
+
     s_ota.buffer             = buf;
     s_ota.total_size         = total_size;
     s_ota.expected_image_crc = expected_crc;
     s_ota.has_expected_crc   = has_crc;
+    strncpy(s_ota.session_id, session_copy, sizeof(s_ota.session_id) - 1);
+    s_ota.session_id[sizeof(s_ota.session_id) - 1] = '\0';
     s_ota.received           = 0;
     s_ota.phase              = PHASE_HEADER;
     s_ota.hdr_pos            = 0;
     s_ota.chunk_pos          = 0;
     s_ota.crc_pos            = 0;
+    s_ota.expected_seq       = 0;
     s_ota.start_ms           = esp_timer_get_time() / 1000;
     s_ota.last_chunk_ms      = s_ota.start_ms;
+    s_ota.next_progress_bytes = OTA_RELAY_PROGRESS_INTERVAL_BYTES;
     s_ota.state              = OTA_STAGING;
 
-    ESP_LOGW(TAG, "OTA staging: %lu bytes → PSRAM (image CRC %s%08lX, PSRAM free=%u KB)",
+    ESP_LOGW(TAG, "OTA staging: %lu bytes -> PSRAM (session=%s image CRC %s%08lX, PSRAM free=%u KB)",
              (unsigned long)total_size,
+             s_ota.session_id[0] ? s_ota.session_id : "none",
              has_crc ? "" : "none/",
              (unsigned long)expected_crc,
              (unsigned)(psram_free_size() / 1024));
 
     /* Ready for chunks */
-    send_json("{\"type\":\"ota_ack\"}");
+    if (s_ota.session_id[0]) {
+        char ack[80];
+        snprintf(ack, sizeof(ack),
+                 "{\"type\":\"ota_ack\",\"session_id\":\"%s\"}",
+                 s_ota.session_id);
+        send_json(ack);
+    } else {
+        send_json("{\"type\":\"ota_ack\"}");
+    }
     return true;
 }
 
@@ -257,6 +347,15 @@ static bool validate_and_flash(void)
         cleanup_and_idle();
         return false;
     }
+    if (s_ota.received > update->size) {
+        ESP_LOGE(TAG, "Image too large for OTA partition '%s': image=%lu partition=%lu",
+                 update->label,
+                 (unsigned long)s_ota.received,
+                 (unsigned long)update->size);
+        send_ota_error("image_too_large");
+        cleanup_and_idle();
+        return false;
+    }
 
     /* Pre-emptively make sure no stale handle is hanging around from a
      * previous botched attempt. esp_ota_abort is safe on NULL. */
@@ -264,27 +363,50 @@ static bool validate_and_flash(void)
     esp_err_t err = esp_ota_begin(update, s_ota.received, &handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
-        send_ota_error("begin_failed");
+        send_ota_errorf("begin", err);
         cleanup_and_idle();
         return false;
     }
 
-    ESP_LOGW(TAG, "Flashing %lu bytes to partition '%s'...",
-             (unsigned long)s_ota.received, update->label);
+    ESP_LOGW(TAG, "Flashing %lu bytes to partition '%s' (%lu bytes) in %u byte chunks...",
+             (unsigned long)s_ota.received,
+             update->label,
+             (unsigned long)update->size,
+             (unsigned)FLASH_WRITE_CHUNK_BYTES);
 
-    err = esp_ota_write(handle, s_ota.buffer, s_ota.received);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(err));
-        send_ota_error("write_failed");
-        esp_ota_abort(handle);
-        cleanup_and_idle();
-        return false;
+    uint32_t written = 0;
+    while (written < s_ota.received) {
+        size_t write_len = s_ota.received - written;
+        if (write_len > FLASH_WRITE_CHUNK_BYTES) {
+            write_len = FLASH_WRITE_CHUNK_BYTES;
+        }
+        err = esp_ota_write(handle, s_ota.buffer + written, write_len);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_write failed at %lu/%lu (%u bytes): %s",
+                     (unsigned long)written,
+                     (unsigned long)s_ota.received,
+                     (unsigned)write_len,
+                     esp_err_to_name(err));
+            send_ota_errorf("write", err);
+            esp_ota_abort(handle);
+            cleanup_and_idle();
+            return false;
+        }
+        written += (uint32_t)write_len;
+        if (written % (128 * 1024) < FLASH_WRITE_CHUNK_BYTES ||
+            written >= s_ota.received) {
+            ESP_LOGI(TAG, "Flash commit: %lu/%lu (%.0f%%)",
+                     (unsigned long)written,
+                     (unsigned long)s_ota.received,
+                     (float)written / s_ota.received * 100.0f);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 
     err = esp_ota_end(handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
-        send_ota_error("validate_failed");
+        send_ota_errorf("end", err);
         cleanup_and_idle();
         return false;
     }
@@ -292,7 +414,7 @@ static bool validate_and_flash(void)
     err = esp_ota_set_boot_partition(update);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
-        send_ota_error("set_boot_failed");
+        send_ota_errorf("set_boot", err);
         cleanup_and_idle();
         return false;
     }
@@ -302,9 +424,16 @@ static bool validate_and_flash(void)
     ESP_LOGW(TAG, "OTA complete — %lu bytes in '%s'. Emitting done + rebooting.",
              (unsigned long)s_ota.received, update->label);
 
-    char buf[64];
-    snprintf(buf, sizeof(buf), "{\"type\":\"ota_done\",\"received\":%lu}",
-             (unsigned long)s_ota.received);
+    char buf[112];
+    if (s_ota.session_id[0]) {
+        snprintf(buf, sizeof(buf),
+                 "{\"type\":\"ota_done\",\"received\":%lu,\"session_id\":\"%s\"}",
+                 (unsigned long)s_ota.received,
+                 s_ota.session_id);
+    } else {
+        snprintf(buf, sizeof(buf), "{\"type\":\"ota_done\",\"received\":%lu}",
+                 (unsigned long)s_ota.received);
+    }
     send_json(buf);
 
     /* Make sure the "done" bytes physically leave the UART TX FIFO before
@@ -339,6 +468,13 @@ bool uart_ota_process_data(const uint8_t *data, int len)
                 uint16_t clen = ((uint16_t)s_ota.hdr_buf[3] << 8) | s_ota.hdr_buf[4];
                 if (clen > OTA_CHUNK_MAX_DATA) {
                     ESP_LOGE(TAG, "Chunk too large: %d (seq %d)", clen, seq);
+                    s_ota.hdr_pos = 0;
+                    continue;
+                }
+                if (seq != s_ota.expected_seq) {
+                    ESP_LOGW(TAG, "Unexpected OTA seq=%u expected=%u -> NACK expected",
+                             (unsigned)seq, (unsigned)s_ota.expected_seq);
+                    send_chunk_nack(s_ota.expected_seq);
                     s_ota.hdr_pos = 0;
                     continue;
                 }
@@ -390,6 +526,15 @@ bool uart_ota_process_data(const uint8_t *data, int len)
                 s_ota.received     += write_len;
                 s_ota.last_chunk_ms = esp_timer_get_time() / 1000;
                 s_ota.phase         = PHASE_HEADER;
+                s_ota.expected_seq++;
+
+                if (s_ota.received >= s_ota.next_progress_bytes ||
+                    s_ota.received >= s_ota.total_size) {
+                    send_ota_progress();
+                    while (s_ota.next_progress_bytes <= s_ota.received) {
+                        s_ota.next_progress_bytes += OTA_RELAY_PROGRESS_INTERVAL_BYTES;
+                    }
+                }
 
                 if (s_ota.received % (100 * 1024) < OTA_CHUNK_MAX_DATA) {
                     ESP_LOGI(TAG, "Staging: %lu/%lu (%.0f%%) PSRAM_free=%u KB",
@@ -468,4 +613,36 @@ bool uart_ota_is_active(void)
         return false;
     }
     return true;
+}
+
+const char *uart_ota_state_label(void)
+{
+    switch (s_ota.state) {
+        case OTA_IDLE:       return "idle";
+        case OTA_STAGING:    return "staging";
+        case OTA_VALIDATING: return "validating";
+        case OTA_FLASHING:   return "flashing";
+        case OTA_REBOOTING:  return "rebooting";
+        default:             return "unknown";
+    }
+}
+
+const char *uart_ota_session_id(void)
+{
+    return s_ota.session_id;
+}
+
+uint32_t uart_ota_received(void)
+{
+    return s_ota.received;
+}
+
+uint32_t uart_ota_total_size(void)
+{
+    return s_ota.total_size;
+}
+
+void uart_ota_set_radio_control_enabled(bool enabled)
+{
+    s_radio_control_enabled = enabled;
 }

@@ -21,6 +21,14 @@ extern "C" {
  * Must be called after esp_event_loop_create_default().
  */
 void wifi_sta_init(void);
+void wifi_sta_stop_all(void);
+bool wifi_sta_is_initialized(void);
+
+/** Force AP-only standalone behavior even when Wi-Fi credentials exist. */
+void wifi_sta_set_force_standalone(bool force);
+
+/** Keep the setup/control AP enabled after STA gets an IP. */
+void wifi_sta_set_keep_ap_enabled(bool keep_enabled);
 
 /**
  * Check whether WiFi is currently connected and has an IP address.

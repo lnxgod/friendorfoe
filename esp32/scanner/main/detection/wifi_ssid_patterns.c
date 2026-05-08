@@ -13,7 +13,13 @@
 static const drone_ssid_pattern_t PATTERNS[] = {
     /* ── Test / Debug ──────────────────────────────────────────────────────── */
     { "FOF-Drone-", "FriendOrFoe" },
+    { "FOF-Drone",  "FriendOrFoe" },
     { "FOF_Drone_", "FriendOrFoe" },
+    { "FOF_Drone",  "FriendOrFoe" },
+    { "FOF Drone",  "FriendOrFoe" },
+    { "FOFDrone",   "FriendOrFoe" },
+    { "FriendOrFoe Drone", "FriendOrFoe" },
+    { "Friend or Foe Drone", "FriendOrFoe" },
 
     /* ── DJI ───────────────────────────────────────────────────────────────── */
     { "DJI-",       "DJI" },
