@@ -56,6 +56,9 @@
     <!-- WiFi Aware (NaN) for Remote ID over WiFi NaN transport -->
     <uses-feature android:name="android.hardware.wifi.aware" android:required="false" />
 
+    <!-- USB host for direct FoF badge USB-C serial input -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+
     <application
         android:name=".FriendOrFoeApplication"
         android:allowBackup="true"
@@ -80,6 +83,12 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/badge_usb_device_filter" />
         </activity>
     </application>
 

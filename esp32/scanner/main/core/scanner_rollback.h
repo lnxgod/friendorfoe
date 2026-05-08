@@ -50,6 +50,7 @@ typedef struct {
     rollback_action_t action;
     uint32_t          new_crash_count;
     bool              reset_was_crash;
+    bool              enter_safe_mode;
 } rollback_decision_t;
 
 /**
@@ -82,6 +83,21 @@ bool scanner_rollback_is_pending_verify(void);
 
 /** Number of consecutive crash boots (panic, WDT) since the last mark_valid. */
 uint32_t scanner_rollback_crash_count(void);
+
+/** True when the scanner should stay in UART-only recovery mode. */
+bool scanner_rollback_safe_mode_requested(void);
+
+/** Human-readable recovery mode label for status/debug surfaces. */
+const char *scanner_rollback_recovery_mode(void);
+
+/** Reason associated with UART-only recovery mode, if active. */
+const char *scanner_rollback_safe_reason(void);
+
+/** Persistently request or clear UART-only safe mode on next boot. */
+void scanner_rollback_force_safe_mode(bool enabled, const char *reason);
+
+/** Clear crash-loop state and any forced safe-mode request. */
+void scanner_rollback_clear_crash_state(void);
 
 /**
  * Mark the running app VALID and clear the crash counter. Call once after

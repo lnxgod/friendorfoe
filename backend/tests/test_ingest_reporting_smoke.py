@@ -29,16 +29,28 @@ def _smoke_batch(device_id: str = "uplink_SMOKE01") -> dict:
         "firmware_version": "0.63.20-controlpath-recovery",
         "board_type": "uplink-s3",
         "scan_profile": "field",
+        "reporting": {
+            "network_mode": "backend",
+            "backend_enabled": True,
+            "uploads_ok": 3,
+            "uploads_fail": 0,
+            "last_upload_age_s": 1,
+        },
         "scanners": [
             {
+                "slot": 0,
                 "uart": "ble",
+                "connected": True,
                 "board": "scanner-s3-combo",
                 "ver": "0.63.20-controlpath-recovery",
                 "caps": "ble,wifi",
+                "health": "ok",
+                "role_acked": True,
                 "scan_profile": "field",
                 "time_sync_state": "fresh",
                 "time_valid_count": 3,
                 "time_last_valid_age_s": 1,
+                "ble_adv_seen": 42,
             }
         ],
         "detections": [],
@@ -63,7 +75,12 @@ async def test_empty_detection_batch_creates_dashboard_visible_node(client: Asyn
     assert node["total_detections"] == 0
     assert node["ip"] == "127.0.0.1"
     assert node["scanners"][0]["uart"] == "ble"
+    assert node["scanners"][0]["connected"] is True
     assert node["scanners"][0]["ver"] == "0.63.20-controlpath-recovery"
+    assert node["scanners"][0]["health"] == "ok"
+    assert node["scanners"][0]["ble_adv_seen"] == 42
+    assert node["reporting"]["network_mode"] == "backend"
+    assert node["reporting"]["uploads_ok"] == 3
 
     diag_resp = await client.get("/detections/diagnostics")
     assert diag_resp.status_code == 200
@@ -82,6 +99,37 @@ async def test_empty_detection_batch_creates_dashboard_visible_node(client: Asyn
     map_payload = map_resp.json()
     assert map_payload["sensor_count"] >= 1
     assert any(s["device_id"] == "uplink_SMOKE01" for s in map_payload["sensors"])
+
+
+@pytest.mark.asyncio
+async def test_coordinate_drone_detection_reaches_map_payload(client: AsyncClient):
+    batch = _smoke_batch("uplink_COORD01")
+    batch["detections"] = [
+        {
+            "drone_id": "RID-COORD-1",
+            "source": "ble_rid",
+            "confidence": 0.95,
+            "rssi": -42,
+            "latitude": 37.3341,
+            "longitude": -122.4452,
+            "altitude_m": 41.0,
+            "operator_lat": 37.3300,
+            "operator_lon": -122.4400,
+            "operator_id": "OP-123",
+            "manufacturer": "DJI",
+        }
+    ]
+    ingest = await client.post("/detections/drones", json=batch)
+    assert ingest.status_code == 200, ingest.text
+    assert ingest.json()["accepted"] == 1
+
+    map_resp = await client.get("/detections/drones/map?exclude_known=false")
+    assert map_resp.status_code == 200
+    drone = next(d for d in map_resp.json()["drones"] if d["drone_id"] == "RID-COORD-1")
+    assert drone["lat"] == pytest.approx(37.3341)
+    assert drone["lon"] == pytest.approx(-122.4452)
+    assert drone["operator_lat"] == pytest.approx(37.3300)
+    assert drone["operator_lon"] == pytest.approx(-122.4400)
 
 
 @pytest.mark.asyncio

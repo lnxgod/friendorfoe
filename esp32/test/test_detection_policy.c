@@ -1,5 +1,6 @@
 #include "unity.h"
 
+#include "ble_fingerprint.h"
 #include "detection_policy.h"
 #include "detection_types.h"
 
@@ -26,6 +27,16 @@ void test_generic_targeted_probes_are_not_low_value_dropped(void)
         NULL,
         0
     ));
+}
+
+void test_fof_drone_ssids_are_notable_but_ambient_fof_is_not(void)
+{
+    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("FoF Drone"));
+    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("FriendOrFoe Drone Test"));
+    TEST_ASSERT_EQUAL_STRING("Drone SSID",
+                             fof_policy_notable_ssid_label("FriendOrFoe Drone Test"));
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("FoF Badge"));
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("TeamCharityCase"));
 }
 
 void test_probe_rate_aux_changes_when_identity_changes(void)
@@ -183,6 +194,75 @@ void test_ble_fingerprint_dedupe_keeps_mac_in_identity(void)
         &c, 1700000000200LL, 500, key_c, sizeof(key_c)));
     TEST_ASSERT_NOT_EQUAL(0, strcmp(key_a, key_b));
     TEST_ASSERT_EQUAL_STRING(key_a, key_c);
+}
+
+void test_ble_fingerprint_meta_name_is_case_insensitive(void)
+{
+    static const uint8_t adv[] = {
+        2, 0x01, 0x06,
+        13, 0x09, 'r', 'a', 'y', '-', 'b', 'a', 'n', ' ', 'm', 'e', 't', 'a'
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_EQUAL(BLE_DEV_META_GLASSES, fp.device_type);
+    TEST_ASSERT_EQUAL_STRING("Meta Glasses", fp.type_name);
+    TEST_ASSERT_EQUAL_STRING("name:meta_glasses", fp.class_reason);
+}
+
+void test_ble_fingerprint_meta_rayban_uuid_is_human_evidence(void)
+{
+    static const uint8_t adv[] = {
+        3, 0x03, 0x5F, 0xFD
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_EQUAL(BLE_DEV_META_GLASSES, fp.device_type);
+    TEST_ASSERT_EQUAL_STRING("uuid16:0xFD5F", fp.class_reason);
+    TEST_ASSERT_EQUAL_UINT16(0xFD5F, fp.service_uuids[0]);
+}
+
+void test_ble_fingerprint_meta_service_uuid_keeps_exact_reason(void)
+{
+    static const uint8_t adv[] = {
+        4, 0x16, 0xB7, 0xFE, 0x00
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_EQUAL(BLE_DEV_META_GLASSES, fp.device_type);
+    TEST_ASSERT_EQUAL_STRING("uuid16:0xFEB7", fp.class_reason);
+    TEST_ASSERT_EQUAL_UINT16(0xFEB7, fp.service_uuids[0]);
+}
+
+void test_ble_fingerprint_meta_feb8_is_high_recall_glasses(void)
+{
+    static const uint8_t adv[] = {
+        3, 0x03, 0xB8, 0xFE
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_EQUAL(BLE_DEV_META_GLASSES, fp.device_type);
+    TEST_ASSERT_EQUAL_STRING("uuid16:0xFEB8", fp.class_reason);
+}
+
+void test_ble_fingerprint_luxottica_cid_is_meta_glasses(void)
+{
+    static const uint8_t adv[] = {
+        5, 0xFF, 0x53, 0x0D, 0x01, 0x02
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_EQUAL(BLE_DEV_META_GLASSES, fp.device_type);
+    TEST_ASSERT_EQUAL_STRING("mfr_cid:0x0D53", fp.class_reason);
 }
 
 void test_hidden_camera_ble_is_priority_not_low_value(void)

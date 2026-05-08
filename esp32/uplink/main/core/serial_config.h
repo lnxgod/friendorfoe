@@ -23,6 +23,7 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,6 +40,32 @@ extern "C" {
  * @return true if any configuration was saved, false if timed out
  */
 bool serial_config_listen(int timeout_ms);
+
+/**
+ * Start a low-priority USB serial control listener for runtime maintenance.
+ *
+ * Supported commands:
+ *   FOF_PING        -> FOF_PONG:<version>
+ *   FOF_REBOOT      -> restart the app
+ *   FOF_BOOTLOADER  -> restart into ESP32 ROM download mode for esptool
+ *
+ * This is intentionally separate from the startup config window so flashing
+ * tools can request bootloader mode from a running badge without physical
+ * BOOT/RESET access.
+ */
+void serial_config_start_control_task(void);
+
+/**
+ * Emit a machine-readable badge detection line over USB serial.
+ *
+ * Android and desktop tools can listen for lines beginning with FOF_DET:
+ * while ordinary ESP-IDF logs continue to flow on the same console.
+ */
+void serial_config_emit_badge_detection(const char *detection_id,
+                                        const char *manufacturer,
+                                        uint8_t source,
+                                        float confidence,
+                                        int rssi);
 
 #ifdef __cplusplus
 }

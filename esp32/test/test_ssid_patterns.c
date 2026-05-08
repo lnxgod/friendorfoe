@@ -79,11 +79,24 @@ void test_fof_drone_test_ssids(void)
 {
     const drone_ssid_pattern_t *dash = wifi_ssid_match("FOF-Drone-TEST");
     const drone_ssid_pattern_t *underscore = wifi_ssid_match("FOF_Drone_TEST");
+    const drone_ssid_pattern_t *space = wifi_ssid_match("fof drone test");
+    const drone_ssid_pattern_t *compact = wifi_ssid_match("FOFDroneTest");
+    const drone_ssid_pattern_t *dash_plain = wifi_ssid_match("FOF-Drone");
+    const drone_ssid_pattern_t *friendorfoe =
+        wifi_ssid_match("FriendOrFoe Drone Test");
 
     TEST_ASSERT_NOT_NULL(dash);
     TEST_ASSERT_EQUAL_STRING("FriendOrFoe", dash->manufacturer);
     TEST_ASSERT_NOT_NULL(underscore);
     TEST_ASSERT_EQUAL_STRING("FriendOrFoe", underscore->manufacturer);
+    TEST_ASSERT_NOT_NULL(space);
+    TEST_ASSERT_EQUAL_STRING("FriendOrFoe", space->manufacturer);
+    TEST_ASSERT_NOT_NULL(compact);
+    TEST_ASSERT_EQUAL_STRING("FriendOrFoe", compact->manufacturer);
+    TEST_ASSERT_NOT_NULL(dash_plain);
+    TEST_ASSERT_EQUAL_STRING("FriendOrFoe", dash_plain->manufacturer);
+    TEST_ASSERT_NOT_NULL(friendorfoe);
+    TEST_ASSERT_EQUAL_STRING("FriendOrFoe", friendorfoe->manufacturer);
 }
 
 /* ── Test: Expanded budget/toy drone prefixes stay covered ─────────────── */

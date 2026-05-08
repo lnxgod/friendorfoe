@@ -42,6 +42,20 @@ typedef struct {
 bool fw_store_get_info(fw_store_info_t *out);
 
 /**
+ * Relay the staged scanner firmware to a scanner UART without HTTP.
+ * scanner_id: 0 = BLE scanner slot, 1 = Wi-Fi scanner slot.
+ * Writes a compact JSON result into out_json when provided.
+ */
+bool fw_store_relay_staged_to_scanner(int scanner_id,
+                                      char *out_json,
+                                      size_t out_json_len);
+bool fw_store_relay_staged_to_scanner_ex(int scanner_id,
+                                         bool force_probe_skip,
+                                         bool allow_same_version,
+                                         char *out_json,
+                                         size_t out_json_len);
+
+/**
  * Pick the partition where staged scanner firmware is written. Returns the
  * same partition the /api/fw/upload handler uses. NULL if nothing suitable
  * (catastrophic on a sane partition table).
@@ -63,6 +77,26 @@ const esp_partition_t *fw_store_get_target_partition(void);
 void fw_store_persist_metadata(const char *name, const char *version,
                                const esp_partition_t *partition,
                                uint32_t size, uint32_t crc32);
+
+/**
+ * USB serial staging path for badge builds. The caller sends exactly `size`
+ * binary bytes after begin; the store computes CRC while writing and persists
+ * metadata only when the complete image matches expected_crc32.
+ */
+bool fw_store_serial_upload_begin(const char *name,
+                                  const char *version,
+                                  uint32_t size,
+                                  uint32_t expected_crc32,
+                                  char *out_json,
+                                  size_t out_json_len);
+bool fw_store_serial_upload_write(const uint8_t *data,
+                                  size_t len,
+                                  char *out_json,
+                                  size_t out_json_len);
+bool fw_store_serial_upload_end(char *out_json, size_t out_json_len);
+void fw_store_serial_upload_abort(const char *reason);
+bool fw_store_serial_upload_active(void);
+uint32_t fw_store_serial_upload_remaining(void);
 
 /** Handle scanner-originated firmware negotiation messages. */
 void fw_store_handle_scanner_check(int scanner_id,

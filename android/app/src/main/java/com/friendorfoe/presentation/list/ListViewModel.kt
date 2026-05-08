@@ -7,6 +7,7 @@ import android.location.LocationManager
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.friendorfoe.data.badge.BadgeUsbRepository
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
@@ -35,6 +36,7 @@ import javax.inject.Inject
 @HiltViewModel
 class ListViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
+    private val badgeUsbRepository: BadgeUsbRepository,
     private val locationManager: LocationManager
 ) : ViewModel() {
 
@@ -75,6 +77,9 @@ class ListViewModel @Inject constructor(
     /** BLE direction finder. */
     val bleTracker = skyObjectRepository.bleTracker
 
+    /** Direct USB-C feed from the badge firmware. */
+    val badgeUsbState = badgeUsbRepository.state
+
     /** Ignore a privacy device (persists across restarts). */
     fun ignoreDevice(mac: String) {
         skyObjectRepository.ignorePrivacyDevice(mac)
@@ -83,6 +88,51 @@ class ListViewModel @Inject constructor(
     /** Start BLE direction scan to find a device. */
     fun startDirectionScan(mac: String) {
         bleTracker.startDirectionScan(mac)
+    }
+
+    fun startBadgeUsb() {
+        badgeUsbRepository.start()
+    }
+
+    fun stopBadgeUsb() {
+        badgeUsbRepository.stop()
+    }
+
+    fun connectBadgeUsb() {
+        badgeUsbRepository.requestConnection()
+    }
+
+    fun pingBadgeUsb() {
+        badgeUsbRepository.sendPing()
+    }
+
+    fun refreshBadgeStatus() {
+        badgeUsbRepository.requestStatus()
+    }
+
+    fun setBadgeMode(mode: String) {
+        badgeUsbRepository.setMode(mode)
+    }
+
+    fun rebootBadge() {
+        badgeUsbRepository.rebootBadge()
+    }
+
+    fun badgeBootloader() {
+        badgeUsbRepository.enterBootloader()
+    }
+
+    fun relayBadgeScannerFirmware(uart: String) {
+        badgeUsbRepository.relayScannerFirmware(uart)
+    }
+
+    fun flashBadgeScannerFirmware(uart: String, name: String, firmware: ByteArray) {
+        badgeUsbRepository.flashScannerFirmware(
+            uart = uart,
+            name = name,
+            version = "android-upload",
+            firmware = firmware
+        )
     }
 
     private val _userPosition = MutableStateFlow(
@@ -163,5 +213,6 @@ class ListViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         stopLocationUpdates()
+        stopBadgeUsb()
     }
 }

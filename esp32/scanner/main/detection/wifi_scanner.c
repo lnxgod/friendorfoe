@@ -116,6 +116,27 @@ static uint32_t s_total_frames = 0;
 static uint32_t s_mgmt_frames = 0;
 static uint32_t s_beacon_frames = 0;
 static uint32_t s_fc_histogram[16] = {0};  /* subtype distribution */
+static uint32_t s_full_scan_count = 0;
+static uint32_t s_full_scan_ok = 0;
+static uint32_t s_full_scan_err = 0;
+static int      s_full_scan_last_rc = 0;
+static uint32_t s_last_ap_count = 0;
+static int64_t  s_last_scan_ms = 0;
+static uint32_t s_drone_ssid_emit = 0;
+static uint32_t s_notable_ssid_emit = 0;
+static char     s_last_drone_ssid[33] = {0};
+static char     s_last_notable_ssid[33] = {0};
+static uint32_t s_oui_emit = 0;
+static uint32_t s_soft_ssid_emit = 0;
+
+static void remember_status_ssid(char out[33], const char *ssid)
+{
+    if (!out || !ssid || ssid[0] == '\0') {
+        return;
+    }
+    strncpy(out, ssid, 32);
+    out[32] = '\0';
+}
 
 /* ── Attack / anomaly counters (delta-reported, reset each status) ────────── */
 
@@ -123,6 +144,7 @@ static uint16_t s_deauth_count  = 0;      /* deauth frames since last status */
 static uint16_t s_disassoc_count = 0;     /* disassoc frames since last status */
 static uint16_t s_auth_count    = 0;      /* auth frames since last status */
 static bool     s_deauth_flood  = false;  /* flood detected in current window */
+static bool     s_wifi_scan_paused = false;
 
 /* Per-source deauth tracker — detect flood from single source */
 #define DEAUTH_SRC_SLOTS    16
@@ -557,6 +579,8 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
             strncpy(det.manufacturer, pattern->manufacturer,
                     sizeof(det.manufacturer) - 1);
             strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
+            remember_status_ssid(s_last_drone_ssid, ssid);
+            s_drone_ssid_emit++;
 
             ESP_LOGI(TAG, "SSID match: \"%s\" (%s) RSSI=%d ~%.0fm",
                      ssid, pattern->manufacturer, rssi,
@@ -585,6 +609,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
 
             /* Use BSSID as drone_id since SSID may be hidden */
             format_bssid(bssid, det.drone_id, sizeof(det.drone_id));
+            s_oui_emit++;
 
             ESP_LOGI(TAG, "OUI match: BSSID=%s (%s) RSSI=%d ~%.0fm",
                      det.bssid, oui->manufacturer, rssi,
@@ -616,6 +641,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
 
         strncpy(det.manufacturer, "Drone Likely", sizeof(det.manufacturer) - 1);
         strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
+        s_soft_ssid_emit++;
 
         ESP_LOGI(TAG, "Soft SSID (moving): \"%s\" RSSI=%d ~%.0fm conf=%.2f",
                  ssid, rssi, det.estimated_distance_m, det.confidence);
@@ -925,8 +951,31 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
         soft = (!pattern && wifi_ssid_match_soft(ssid));
     }
 
-    float conf = fof_policy_probe_confidence(pattern != NULL);
-    const char *mfr = pattern ? pattern->manufacturer : "Unknown";
+#ifdef FOF_BADGE_VARIANT
+    const bool notable = fof_policy_ssid_is_notable(ssid);
+    if (!pattern && !notable) {
+        return;
+    }
+#endif
+
+    float conf = pattern ? fof_policy_probe_confidence(true) :
+#ifdef FOF_BADGE_VARIANT
+                 (notable ? 0.55f :
+#endif
+                  fof_policy_probe_confidence(false)
+#ifdef FOF_BADGE_VARIANT
+                 )
+#endif
+                 ;
+    const char *mfr = pattern ? pattern->manufacturer :
+#ifdef FOF_BADGE_VARIANT
+                      (notable ? fof_policy_notable_ssid_label(ssid) :
+#endif
+                       "Unknown"
+#ifdef FOF_BADGE_VARIANT
+                      )
+#endif
+                      ;
     /* Probe requests are what a CLIENT is searching for, not what a
      * drone is broadcasting. Even if the SSID looks drone-like, a
      * phone asking for "WIFI_FPV" isn't itself a drone. Treat all
@@ -954,6 +1003,10 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
 
     if (pattern) {
         add_channel_heat(channel, 4);  /* Drone SSID probe = medium heat */
+#ifdef FOF_BADGE_VARIANT
+    } else if (notable) {
+        add_channel_heat(channel, 3);  /* Watchlist/special SSID probe. */
+#endif
     } else if (soft) {
         add_channel_heat(channel, 2);  /* Soft match probe = low heat */
     }
@@ -1034,6 +1087,13 @@ static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         if ((sta_p[0] & 0x01) || (bssid_p[0] & 0x01)) return;  /* skip mcast */
         int64_t now = now_ms();
         if (wifi_assoc_seen_recently(sta_p, bssid_p, now)) return;
+#ifdef FOF_BADGE_VARIANT
+        /* Badge mode is a local blue-team instrument. Ordinary AP<->STA data
+         * traffic is useful for lab inventory, but it drowns the talk badge in
+         * non-actionable rows. Keep deauth/disassoc counters and real drone/RID
+         * paths, but do not emit generic association telemetry. */
+        return;
+#endif
         /* Emit one wifi_assoc detection: drone_id = STA MAC, bssid = AP. */
         if (s_detection_queue) {
             drone_detection_t det;
@@ -1335,6 +1395,8 @@ static void process_scan_results(void)
 {
     uint16_t ap_count = 0;
     esp_wifi_scan_get_ap_num(&ap_count);
+    s_last_scan_ms = now_ms();
+    s_last_ap_count = ap_count;
     if (ap_count == 0) return;
     if (ap_count > MAX_AP_RECORDS) ap_count = MAX_AP_RECORDS;
 
@@ -1379,6 +1441,8 @@ static void process_scan_results(void)
             strncpy(det.manufacturer, pattern->manufacturer,
                     sizeof(det.manufacturer) - 1);
             strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
+            remember_status_ssid(s_last_drone_ssid, ssid);
+            s_drone_ssid_emit++;
             update_hot_channel(ch);
             add_channel_heat(ch, 4);  /* SSID match = medium heat */
         } else if (strong_oui) {
@@ -1390,9 +1454,29 @@ static void process_scan_results(void)
             strncpy(det.manufacturer, oui->manufacturer,
                     sizeof(det.manufacturer) - 1);
             format_bssid(bssid, det.drone_id, sizeof(det.drone_id));
+            s_oui_emit++;
             update_hot_channel(ch);
             add_channel_heat(ch, 3);  /* OUI match = medium-low heat */
-        } else if (soft && rssi_track_update(bssid, rssi)) {
+        }
+#ifdef FOF_BADGE_VARIANT
+        else if (fof_policy_ssid_is_notable(ssid)) {
+            if (!beacon_rate_limit_allow(bssid, rssi, scan_ts)) {
+                continue;
+            }
+            det.source = DETECTION_SRC_WIFI_ASSOC;
+            det.confidence = 0.55f;
+            strncpy(det.manufacturer, fof_policy_notable_ssid_label(ssid),
+                    sizeof(det.manufacturer) - 1);
+            strncpy(det.class_reason, fof_policy_notable_ssid_label(ssid),
+                    sizeof(det.class_reason) - 1);
+            strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
+            remember_status_ssid(s_last_notable_ssid, ssid);
+            s_notable_ssid_emit++;
+            update_hot_channel(ch);
+            add_channel_heat(ch, 3);  /* DEF CON/demo watch SSID. */
+        }
+#endif
+        else if (soft && rssi_track_update(bssid, rssi)) {
             if (!beacon_rate_limit_allow(bssid, rssi, scan_ts)) {
                 continue;
             }
@@ -1402,6 +1486,7 @@ static void process_scan_results(void)
             det.confidence = 0.25f;
             strncpy(det.manufacturer, "Drone Likely", sizeof(det.manufacturer) - 1);
             strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
+            s_soft_ssid_emit++;
             update_hot_channel(ch);
             add_channel_heat(ch, 2);  /* Soft match = low heat */
         } else if (soft) {
@@ -1427,11 +1512,15 @@ static void do_full_scan(void)
 {
     wifi_scan_config_t cfg = make_passive_scan_config(0, FULL_SCAN_PASSIVE_MS);
 
+    s_full_scan_count++;
     esp_err_t err = esp_wifi_scan_start(&cfg, true);
+    s_full_scan_last_rc = (int)err;
     if (err != ESP_OK) {
+        s_full_scan_err++;
         ESP_LOGW(TAG, "Full scan failed: %s", esp_err_to_name(err));
         return;
     }
+    s_full_scan_ok++;
     process_scan_results();
 }
 
@@ -1466,6 +1555,11 @@ static void wifi_scan_task(void *arg)
 
     while (1) {
         TickType_t now = xTaskGetTickCount();
+
+        if (s_wifi_scan_paused) {
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+        }
 
         /* Lock-on mode: stay on target channel, no hopping */
         if (wifi_scanner_is_locked_on()) {
@@ -1676,12 +1770,46 @@ void wifi_scanner_reset_fc_histogram(void)
 
 void wifi_scanner_pause(void)
 {
+    s_wifi_scan_paused = true;
     esp_wifi_set_promiscuous(false);
     ESP_LOGW(TAG, "WiFi scanning PAUSED (OTA in progress)");
 }
 
 void wifi_scanner_resume(void)
 {
+    s_wifi_scan_paused = false;
     esp_wifi_set_promiscuous(true);
     ESP_LOGW(TAG, "WiFi scanning RESUMED");
+}
+
+bool wifi_scanner_is_paused(void)
+{
+    return s_wifi_scan_paused;
+}
+
+void wifi_scanner_get_stats(wifi_scanner_stats_t *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->total_frames = s_total_frames;
+    out->beacon_frames = s_beacon_frames;
+    out->full_scan_count = s_full_scan_count;
+    out->full_scan_ok = s_full_scan_ok;
+    out->full_scan_err = s_full_scan_err;
+    out->full_scan_last_rc = s_full_scan_last_rc;
+    out->last_ap_count = s_last_ap_count;
+    int64_t last_ms = s_last_scan_ms;
+    out->last_scan_age_s = last_ms > 0 ? (now_ms() - last_ms) / 1000 : -1;
+    out->drone_ssid_emit = s_drone_ssid_emit;
+    out->notable_ssid_emit = s_notable_ssid_emit;
+    strncpy(out->last_drone_ssid, s_last_drone_ssid,
+            sizeof(out->last_drone_ssid) - 1);
+    strncpy(out->last_notable_ssid, s_last_notable_ssid,
+            sizeof(out->last_notable_ssid) - 1);
+    out->oui_emit = s_oui_emit;
+    out->soft_ssid_emit = s_soft_ssid_emit;
+    out->current_channel = s_current_channel;
+    out->hot_channel_count = (uint8_t)s_hot_channel_count;
 }

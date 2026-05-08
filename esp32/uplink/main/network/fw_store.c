@@ -15,12 +15,14 @@
 #include "uart_protocol.h"
 #include "uart_rx.h"
 #include "http_upload.h"
+#include "version.h"
 
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "esp_random.h"
 #include "esp_rom_crc.h"
 #include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
@@ -41,6 +43,8 @@ static volatile bool s_operation_active = false;  /* Prevents concurrent upload/
 
 typedef struct {
     bool ok;
+    uint32_t size;
+    uint32_t bytes;
     char stage[24];
     char error[64];
     int chunks;
@@ -48,6 +52,13 @@ typedef struct {
     int retries;
     int64_t elapsed_s;
     int64_t finished_ms;
+    uint32_t cmd_rx_before;
+    uint32_t cmd_rx_after;
+    uint32_t fw_check_before;
+    uint32_t fw_check_after;
+    int64_t cmd_age_after_s;
+    char scanner_version[32];
+    char scanner_fw_state[16];
 } fw_last_relay_state_t;
 
 static fw_last_relay_state_t s_last_relay[2] = {0};
@@ -64,10 +75,31 @@ static fw_last_relay_state_t s_last_relay[2] = {0};
  * Keep re-sending the quiet request before relay, but still require proof. */
 #define FW_RELAY_STOP_STORM_MS       8000
 #define FW_RELAY_STOP_STORM_STEP_MS  250
+#ifdef FOF_BADGE_VARIANT
+#define FW_RELAY_NACK_POLL_MS        OTA_RELAY_BADGE_NACK_DRAIN_MS
+#define FW_RELAY_CHUNK_DATA          OTA_CHUNK_BADGE_MAX_DATA
+#else
+#define FW_RELAY_NACK_POLL_MS        120
+#define FW_RELAY_CHUNK_DATA          256
+#endif
 
 static uint8_t  s_fw_stage_fallback[FW_STAGE_BUF_FALLBACK];
 static uint8_t *s_fw_stage_buf = NULL;     /* resolved on first use */
 static size_t   s_fw_stage_cap = 0;
+
+typedef struct {
+    bool active;
+    esp_ota_handle_t handle;
+    const esp_partition_t *partition;
+    uint32_t size;
+    uint32_t received;
+    uint32_t crc32;
+    uint32_t expected_crc32;
+    char name[32];
+    char version[32];
+} serial_upload_state_t;
+
+static serial_upload_state_t s_serial_upload;
 
 static void fw_stage_buf_ensure(void)
 {
@@ -111,6 +143,7 @@ static bool read_fw_metadata(uint32_t *size, uint32_t *checksum,
 
 /* Forward decl — defined below near the http handlers. */
 static const esp_partition_t *get_store_partition(void);
+static void resume_all_tasks(void);
 
 const esp_partition_t *fw_store_get_target_partition(void)
 {
@@ -129,6 +162,201 @@ void fw_store_persist_metadata(const char *name, const char *version,
     if (partition && partition->label[0]) {
         nvs_config_set_string(NVS_FW_PART, partition->label);
     }
+}
+
+bool fw_store_serial_upload_active(void)
+{
+    return s_serial_upload.active;
+}
+
+uint32_t fw_store_serial_upload_remaining(void)
+{
+    if (!s_serial_upload.active || s_serial_upload.received >= s_serial_upload.size) {
+        return 0;
+    }
+    return s_serial_upload.size - s_serial_upload.received;
+}
+
+void fw_store_serial_upload_abort(const char *reason)
+{
+    if (!s_serial_upload.active) {
+        return;
+    }
+    ESP_LOGW(TAG, "USB firmware staging aborted at %lu/%lu: %s",
+             (unsigned long)s_serial_upload.received,
+             (unsigned long)s_serial_upload.size,
+             reason ? reason : "?");
+    if (s_serial_upload.handle) {
+        esp_ota_abort(s_serial_upload.handle);
+    }
+    memset(&s_serial_upload, 0, sizeof(s_serial_upload));
+    resume_all_tasks();
+    s_operation_active = false;
+}
+
+bool fw_store_serial_upload_begin(const char *name,
+                                  const char *version,
+                                  uint32_t size,
+                                  uint32_t expected_crc32,
+                                  char *out_json,
+                                  size_t out_json_len)
+{
+    if (s_operation_active || s_serial_upload.active) {
+        if (out_json && out_json_len) {
+            snprintf(out_json, out_json_len,
+                     "{\"ok\":false,\"error\":\"operation_active\"}");
+        }
+        return false;
+    }
+
+    const esp_partition_t *p = get_store_partition();
+    if (!p || size < 1024 || size > p->size || expected_crc32 == 0) {
+        if (out_json && out_json_len) {
+            snprintf(out_json, out_json_len,
+                     "{\"ok\":false,\"error\":\"invalid_image\",\"max\":%lu}",
+                     p ? (unsigned long)p->size : 0UL);
+        }
+        return false;
+    }
+
+    memset(&s_serial_upload, 0, sizeof(s_serial_upload));
+    s_operation_active = true;
+    http_upload_pause();
+    uart_rx_pause_scanner(0);
+#if CONFIG_DUAL_SCANNER
+    uart_rx_pause_scanner(1);
+#endif
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    esp_err_t err = esp_ota_begin(p, OTA_WITH_SEQUENTIAL_WRITES,
+                                  &s_serial_upload.handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "USB staging esp_ota_begin failed: %s on '%s'",
+                 esp_err_to_name(err), p->label);
+        resume_all_tasks();
+        s_operation_active = false;
+        if (out_json && out_json_len) {
+            snprintf(out_json, out_json_len,
+                     "{\"ok\":false,\"error\":\"esp_ota_begin:%s\"}",
+                     esp_err_to_name(err));
+        }
+        return false;
+    }
+
+    s_serial_upload.active = true;
+    s_serial_upload.partition = p;
+    s_serial_upload.size = size;
+    s_serial_upload.expected_crc32 = expected_crc32;
+    strncpy(s_serial_upload.name,
+            (name && name[0]) ? name : "scanner-s3-combo-fof_badge",
+            sizeof(s_serial_upload.name) - 1);
+    strncpy(s_serial_upload.version,
+            (version && version[0]) ? version : FOF_VERSION,
+            sizeof(s_serial_upload.version) - 1);
+
+    ESP_LOGW(TAG, "USB staging scanner firmware: %lu bytes to '%s' crc=%08lX",
+             (unsigned long)size, p->label, (unsigned long)expected_crc32);
+    if (out_json && out_json_len) {
+        snprintf(out_json, out_json_len,
+                 "{\"ok\":true,\"partition\":\"%s\",\"size\":%lu,"
+                 "\"crc32\":%lu,\"name\":\"%s\",\"version\":\"%s\"}",
+                 p->label, (unsigned long)size,
+                 (unsigned long)expected_crc32,
+                 s_serial_upload.name, s_serial_upload.version);
+    }
+    return true;
+}
+
+bool fw_store_serial_upload_write(const uint8_t *data,
+                                  size_t len,
+                                  char *out_json,
+                                  size_t out_json_len)
+{
+    if (!s_serial_upload.active || !data || len == 0) {
+        return true;
+    }
+    uint32_t remaining = s_serial_upload.size - s_serial_upload.received;
+    if (len > remaining) {
+        fw_store_serial_upload_abort("too_many_bytes");
+        if (out_json && out_json_len) {
+            snprintf(out_json, out_json_len,
+                     "{\"ok\":false,\"error\":\"too_many_bytes\"}");
+        }
+        return false;
+    }
+    esp_err_t err = esp_ota_write(s_serial_upload.handle, data, len);
+    if (err != ESP_OK) {
+        fw_store_serial_upload_abort("write_failed");
+        if (out_json && out_json_len) {
+            snprintf(out_json, out_json_len,
+                     "{\"ok\":false,\"error\":\"write:%s\"}",
+                     esp_err_to_name(err));
+        }
+        return false;
+    }
+    s_serial_upload.crc32 = esp_rom_crc32_le(s_serial_upload.crc32, data, len);
+    s_serial_upload.received += (uint32_t)len;
+    return true;
+}
+
+bool fw_store_serial_upload_end(char *out_json, size_t out_json_len)
+{
+    if (!s_serial_upload.active) {
+        if (out_json && out_json_len) {
+            snprintf(out_json, out_json_len,
+                     "{\"ok\":false,\"error\":\"not_active\"}");
+        }
+        return false;
+    }
+    if (s_serial_upload.received != s_serial_upload.size) {
+        if (out_json && out_json_len) {
+            snprintf(out_json, out_json_len,
+                     "{\"ok\":false,\"error\":\"incomplete\",\"received\":%lu,"
+                     "\"size\":%lu}",
+                     (unsigned long)s_serial_upload.received,
+                     (unsigned long)s_serial_upload.size);
+        }
+        fw_store_serial_upload_abort("incomplete");
+        return false;
+    }
+    if (s_serial_upload.crc32 != s_serial_upload.expected_crc32) {
+        uint32_t got = s_serial_upload.crc32;
+        uint32_t expected = s_serial_upload.expected_crc32;
+        if (out_json && out_json_len) {
+            snprintf(out_json, out_json_len,
+                     "{\"ok\":false,\"error\":\"crc_mismatch\","
+                     "\"expected\":%lu,\"got\":%lu}",
+                     (unsigned long)expected, (unsigned long)got);
+        }
+        fw_store_serial_upload_abort("crc_mismatch");
+        return false;
+    }
+
+    esp_ota_abort(s_serial_upload.handle);
+    fw_store_persist_metadata(s_serial_upload.name,
+                              s_serial_upload.version,
+                              s_serial_upload.partition,
+                              s_serial_upload.size,
+                              s_serial_upload.crc32);
+    if (out_json && out_json_len) {
+        snprintf(out_json, out_json_len,
+                 "{\"ok\":true,\"partition\":\"%s\",\"size\":%lu,"
+                 "\"crc32\":%lu,\"name\":\"%s\",\"version\":\"%s\"}",
+                 s_serial_upload.partition ? s_serial_upload.partition->label : "?",
+                 (unsigned long)s_serial_upload.size,
+                 (unsigned long)s_serial_upload.crc32,
+                 s_serial_upload.name,
+                 s_serial_upload.version);
+    }
+    ESP_LOGW(TAG, "USB firmware staged: %lu bytes CRC=%08lX name=%s version=%s",
+             (unsigned long)s_serial_upload.size,
+             (unsigned long)s_serial_upload.crc32,
+             s_serial_upload.name,
+             s_serial_upload.version);
+    memset(&s_serial_upload, 0, sizeof(s_serial_upload));
+    resume_all_tasks();
+    s_operation_active = false;
+    return true;
 }
 
 bool fw_store_get_info(fw_store_info_t *out)
@@ -429,6 +657,20 @@ static int relay_read_line(uart_port_t uart_num, char *line, size_t size, int ti
     return -1;
 }
 
+static bool relay_line_session_matches_or_legacy(const char *line,
+                                                 const char *session_id)
+{
+    if (!session_id || !session_id[0]) {
+        return true;
+    }
+    if (!line || !strstr(line, "\"session_id\"")) {
+        return true;
+    }
+    char needle[48];
+    snprintf(needle, sizeof(needle), "\"session_id\":\"%s\"", session_id);
+    return line && strstr(line, needle) != NULL;
+}
+
 /* Wait for a JSON line whose payload contains `needle` (usually the "type"
  * value). Returns 0 on success, -1 on timeout, -2 if "ota_error" seen (fills
  * reason_out with the "reason":"X" string if present). Other line types are
@@ -436,7 +678,7 @@ static int relay_read_line(uart_port_t uart_num, char *line, size_t size, int ti
 static int relay_wait_for(uart_port_t uart_num, const char *needle,
                          int timeout_ms, char *reason_out, size_t reason_size)
 {
-    char line[160];
+    char line[512];
     int64_t start_ms = esp_timer_get_time() / 1000;
     int64_t deadline_ms = start_ms + timeout_ms;
     int lines_seen = 0;
@@ -483,12 +725,13 @@ static int relay_wait_for_with_resend(int scanner_id,
                                       uart_port_t uart_num,
                                       const char *cmd,
                                       const char *needle,
+                                      const char *session_id,
                                       int timeout_ms,
                                       int resend_ms,
                                       char *reason_out,
                                       size_t reason_size)
 {
-    char line[160];
+    char line[512];
     int64_t start_ms = esp_timer_get_time() / 1000;
     int64_t deadline_ms = start_ms + timeout_ms;
     int64_t next_send_ms = start_ms;
@@ -532,6 +775,17 @@ static int relay_wait_for_with_resend(int scanner_id,
         ESP_LOGI(TAG, "relay_wait_for_with_resend(%s) line[%d]: %.80s",
                  needle, lines_seen, line);
         if (strstr(line, needle)) {
+#ifdef FOF_BADGE_VARIANT
+            if (session_id && session_id[0] &&
+                !relay_line_session_matches_or_legacy(line, session_id)) {
+                ESP_LOGW(TAG,
+                         "relay_wait_for_with_resend(%s) ignored stale session line: %.80s",
+                         needle, line);
+                continue;
+            }
+#else
+            (void)session_id;
+#endif
             return 0;
         }
         if (strstr(line, "ota_error")) {
@@ -562,18 +816,93 @@ static int relay_extract_seq(const char *line)
     return (int)strtol(s, NULL, 10);
 }
 
+static int64_t relay_timeout_ms_for_size(uint32_t size_bytes)
+{
+#ifdef FOF_BADGE_VARIANT
+    return (int64_t)OTA_RELAY_TIMEOUT_FOR_SIZE_MS(size_bytes);
+#else
+    (void)size_bytes;
+    return 15 * 60 * 1000;
+#endif
+}
+
+#ifdef FOF_BADGE_VARIANT
+static void relay_emit_progress(int scanner_id,
+                                const char *stage,
+                                uint32_t bytes,
+                                uint32_t size,
+                                int chunks,
+                                int nacks,
+                                int retries,
+                                int64_t start_ms,
+                                const char *error)
+{
+    int percent = size ? (int)(((uint64_t)bytes * 100ULL) / size) : 0;
+    int64_t elapsed_s = ((esp_timer_get_time() / 1000) - start_ms) / 1000;
+    printf("FOF_FW_RELAY_PROGRESS:{\"uart\":\"%s\",\"stage\":\"%s\","
+           "\"bytes\":%lu,\"size\":%lu,\"percent\":%d,"
+           "\"chunks\":%d,\"nacks\":%d,\"retries\":%d,"
+           "\"elapsed_s\":%lld,\"error\":\"%s\"}\n",
+           scanner_id == 1 ? "wifi" : "ble",
+           stage ? stage : "relay",
+           (unsigned long)bytes,
+           (unsigned long)size,
+           percent,
+           chunks,
+           nacks,
+           retries,
+           (long long)elapsed_s,
+           error ? error : "");
+    fflush(stdout);
+}
+#else
+static void relay_emit_progress(int scanner_id,
+                                const char *stage,
+                                uint32_t bytes,
+                                uint32_t size,
+                                int chunks,
+                                int nacks,
+                                int retries,
+                                int64_t start_ms,
+                                const char *error)
+{
+    (void)scanner_id;
+    (void)stage;
+    (void)bytes;
+    (void)size;
+    (void)chunks;
+    (void)nacks;
+    (void)retries;
+    (void)start_ms;
+    (void)error;
+}
+#endif
+
 /* Non-blocking peek for a NACK line. Returns seq number on NACK hit, -1 if
  * nothing relevant read within timeout_ms. Silently consumes other lines. */
-static int relay_poll_nack(uart_port_t uart_num, int timeout_ms)
+static int relay_poll_nack(uart_port_t uart_num,
+                           const char *session_id,
+                           int timeout_ms)
 {
-    char line[160];
+    char line[512];
+    size_t buffered = 0;
+    if (uart_get_buffered_data_len(uart_num, &buffered) != ESP_OK ||
+        buffered == 0) {
+        return -1;
+    }
     int64_t deadline_ms = (esp_timer_get_time() / 1000) + timeout_ms;
     while ((esp_timer_get_time() / 1000) < deadline_ms) {
         int remaining = (int)(deadline_ms - (esp_timer_get_time() / 1000));
         if (remaining <= 0) break;
         int n = relay_read_line(uart_num, line, sizeof(line), remaining);
         if (n < 0) break;
-        if (strstr(line, "ota_nack")) return relay_extract_seq(line);
+        if (strstr(line, "ota_nack")) {
+            if (!relay_line_session_matches_or_legacy(line, session_id)) {
+                ESP_LOGW(TAG, "Ignoring stale OTA NACK: %.80s", line);
+                continue;
+            }
+            return relay_extract_seq(line);
+        }
         /* consume other lines and keep polling */
     }
     return -1;
@@ -585,13 +914,212 @@ typedef struct {
     bool ok;
     bool legacy;
     uint32_t size;
+    uint32_t bytes;
     int chunks;
     int nacks;
     int retries;
     int64_t elapsed_s;
     char stage[16];
     char error[64];
+    uint32_t cmd_rx_before;
+    uint32_t cmd_rx_after;
+    uint32_t fw_check_before;
+    uint32_t fw_check_after;
+    int64_t cmd_age_after_s;
+    char scanner_version[32];
+    char scanner_fw_state[16];
 } fw_relay_result_t;
+
+typedef struct {
+    bool received;
+    uint32_t cmd_rx;
+    uint32_t fw_check;
+    int64_t cmd_age_s;
+    char version[32];
+    char board[40];
+    char fw_state[16];
+} fw_command_health_t;
+
+static void remember_relay_result(int scanner_id, const fw_relay_result_t *result)
+{
+    if (!result || scanner_id < 0 || scanner_id >= 2) {
+        return;
+    }
+    s_last_relay[scanner_id].ok = result->ok;
+    s_last_relay[scanner_id].size = result->size;
+    s_last_relay[scanner_id].bytes = result->bytes;
+    strncpy(s_last_relay[scanner_id].stage, result->stage,
+            sizeof(s_last_relay[scanner_id].stage) - 1);
+    s_last_relay[scanner_id].stage[sizeof(s_last_relay[scanner_id].stage) - 1] = '\0';
+    strncpy(s_last_relay[scanner_id].error, result->error,
+            sizeof(s_last_relay[scanner_id].error) - 1);
+    s_last_relay[scanner_id].error[sizeof(s_last_relay[scanner_id].error) - 1] = '\0';
+    s_last_relay[scanner_id].chunks = result->chunks;
+    s_last_relay[scanner_id].nacks = result->nacks;
+    s_last_relay[scanner_id].retries = result->retries;
+    s_last_relay[scanner_id].elapsed_s = result->elapsed_s;
+    s_last_relay[scanner_id].finished_ms = esp_timer_get_time() / 1000;
+    s_last_relay[scanner_id].cmd_rx_before = result->cmd_rx_before;
+    s_last_relay[scanner_id].cmd_rx_after = result->cmd_rx_after;
+    s_last_relay[scanner_id].fw_check_before = result->fw_check_before;
+    s_last_relay[scanner_id].fw_check_after = result->fw_check_after;
+    s_last_relay[scanner_id].cmd_age_after_s = result->cmd_age_after_s;
+    strncpy(s_last_relay[scanner_id].scanner_version, result->scanner_version,
+            sizeof(s_last_relay[scanner_id].scanner_version) - 1);
+    s_last_relay[scanner_id].scanner_version[sizeof(s_last_relay[scanner_id].scanner_version) - 1] = '\0';
+    strncpy(s_last_relay[scanner_id].scanner_fw_state, result->scanner_fw_state,
+            sizeof(s_last_relay[scanner_id].scanner_fw_state) - 1);
+    s_last_relay[scanner_id].scanner_fw_state[sizeof(s_last_relay[scanner_id].scanner_fw_state) - 1] = '\0';
+}
+
+static void capture_command_health(int scanner_id, fw_command_health_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->cmd_age_s = -1;
+    const scanner_info_t *info = (scanner_id == 0)
+        ? uart_rx_get_ble_scanner_info()
+        : uart_rx_get_wifi_scanner_info();
+    if (!info) {
+        return;
+    }
+    out->received = info->received;
+    out->cmd_rx = info->cmd_rx_count;
+    out->fw_check = info->fw_check_count;
+    out->cmd_age_s = info->cmd_last_age_s;
+    strncpy(out->version, info->version, sizeof(out->version) - 1);
+    strncpy(out->board, info->board, sizeof(out->board) - 1);
+    strncpy(out->fw_state, info->fw_update_state, sizeof(out->fw_state) - 1);
+}
+
+static bool command_health_moved(const fw_command_health_t *before,
+                                 const fw_command_health_t *after)
+{
+    if (!after || !after->received) {
+        return false;
+    }
+    if (before && after->cmd_rx > before->cmd_rx) {
+        return true;
+    }
+    if (before && after->fw_check > before->fw_check) {
+        return true;
+    }
+    return after->cmd_age_s >= 0 && after->cmd_age_s <= 3;
+}
+
+static bool probe_scanner_command_ingress(int scanner_id,
+                                          fw_command_health_t *before,
+                                          fw_command_health_t *after)
+{
+    capture_command_health(scanner_id, before);
+    const scanner_info_t *info = (scanner_id == 0)
+        ? uart_rx_get_ble_scanner_info()
+        : uart_rx_get_wifi_scanner_info();
+    const char *profile = (info && info->scan_profile[0])
+        ? info->scan_profile
+        : "hybrid_failover";
+    char probe_cmd[96];
+    snprintf(probe_cmd, sizeof(probe_cmd),
+             "{\"type\":\"scan_profile\",\"%s\":\"%s\"}",
+             JSON_KEY_SCAN_PROFILE, profile);
+    (void)uart_rx_send_command_to_scanner_checked(scanner_id, probe_cmd);
+
+    int64_t deadline_ms = (esp_timer_get_time() / 1000) + 2500;
+    do {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        capture_command_health(scanner_id, after);
+        if (command_health_moved(before, after)) {
+            return true;
+        }
+    } while ((esp_timer_get_time() / 1000) < deadline_ms);
+
+    capture_command_health(scanner_id, after);
+    return command_health_moved(before, after);
+}
+
+#ifdef FOF_BADGE_VARIANT
+static bool badge_candidate_seen(const int *pins, int count, int pin)
+{
+    for (int i = 0; i < count; i++) {
+        if (pins[i] == pin) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int badge_default_tx_pin_for_scanner(int scanner_id)
+{
+    return scanner_id == 1 ? CONFIG_WIFI_SCANNER_TX_PIN : CONFIG_BLE_SCANNER_TX_PIN;
+}
+
+static int badge_peer_tx_pin_for_scanner(int scanner_id)
+{
+    return scanner_id == 1 ? CONFIG_BLE_SCANNER_TX_PIN : CONFIG_WIFI_SCANNER_TX_PIN;
+}
+
+static bool badge_try_heal_command_tx_pin(int scanner_id,
+                                          fw_command_health_t *before,
+                                          fw_command_health_t *after,
+                                          int *healed_pin)
+{
+    int candidates[8];
+    int count = 0;
+    const int raw[] = {
+        badge_default_tx_pin_for_scanner(scanner_id),
+        badge_peer_tx_pin_for_scanner(scanner_id),
+        scanner_id == 1 ? 15 : 17,
+        scanner_id == 1 ? 17 : 15,
+        scanner_id == 1 ? 16 : 18,
+        scanner_id == 1 ? 18 : 16,
+    };
+    const int rx_pin = scanner_id == 1 ? CONFIG_WIFI_SCANNER_RX_PIN : CONFIG_BLE_SCANNER_RX_PIN;
+    const int peer_rx_pin = scanner_id == 1 ? CONFIG_BLE_SCANNER_RX_PIN : CONFIG_WIFI_SCANNER_RX_PIN;
+
+    for (int i = 0; i < (int)(sizeof(raw) / sizeof(raw[0])); i++) {
+        if (raw[i] >= 0 &&
+            raw[i] != rx_pin &&
+            raw[i] != peer_rx_pin &&
+            !badge_candidate_seen(candidates, count, raw[i])) {
+            candidates[count++] = raw[i];
+        }
+    }
+
+    ESP_LOGW(TAG, "Badge scanner[%d] command ingress unhealthy; probing %d TX pins",
+             scanner_id, count);
+    for (int i = 0; i < count; i++) {
+        int pin = candidates[i];
+        fw_command_health_t pin_before = {0};
+        fw_command_health_t pin_after = {0};
+        if (!uart_rx_set_scanner_tx_pin_for_badge_probe(scanner_id, pin)) {
+            continue;
+        }
+        if (probe_scanner_command_ingress(scanner_id, &pin_before, &pin_after)) {
+            if (before) *before = pin_before;
+            if (after) *after = pin_after;
+            if (healed_pin) *healed_pin = pin;
+            ESP_LOGW(TAG,
+                     "Badge scanner[%d] command TX pin healed: GPIO%d "
+                     "(cmd_rx %lu->%lu fw_check %lu->%lu)",
+                     scanner_id,
+                     pin,
+                     (unsigned long)pin_before.cmd_rx,
+                     (unsigned long)pin_after.cmd_rx,
+                     (unsigned long)pin_before.fw_check,
+                     (unsigned long)pin_after.fw_check);
+            return true;
+        }
+    }
+
+    (void)uart_rx_set_scanner_tx_pin_for_badge_probe(
+        scanner_id,
+        badge_default_tx_pin_for_scanner(scanner_id)
+    );
+    ESP_LOGE(TAG, "Badge scanner[%d] command TX pin probe failed; restored GPIO%d",
+             scanner_id, badge_default_tx_pin_for_scanner(scanner_id));
+    return false;
+}
+#endif
 
 static const char *normalized_version(const char *v)
 {
@@ -664,6 +1192,8 @@ static void send_fw_offer(int scanner_id, bool update, const fw_store_info_t *in
 static bool fw_relay_stored_to_scanner(int scanner_id,
                                        bool scanner_already_quiet,
                                        bool legacy_mode,
+                                       bool force_probe_skip,
+                                       bool allow_same_version,
                                        fw_relay_result_t *result)
 {
     fw_relay_result_t local = {0};
@@ -673,18 +1203,23 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
 
     if (s_operation_active) {
         snprintf(result->error, sizeof(result->error), "operation_active");
+        remember_relay_result(scanner_id, result);
         return false;
     }
 
     fw_store_info_t info = {0};
     if (!fw_store_get_info(&info)) {
         snprintf(result->error, sizeof(result->error), "no_firmware_stored");
+        remember_relay_result(scanner_id, result);
         return false;
     }
+    result->legacy = legacy_mode;
+    result->size = info.size;
 
     const esp_partition_t *p = find_fw_partition();
     if (!p) {
         snprintf(result->error, sizeof(result->error), "partition_not_found");
+        remember_relay_result(scanner_id, result);
         return false;
     }
 
@@ -698,6 +1233,90 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
              legacy_mode ? "true" : "false",
              (unsigned long)esp_get_free_heap_size());
 
+    fw_command_health_t cmd_before = {0};
+    fw_command_health_t cmd_after = {0};
+    bool cmd_ingress_ok = false;
+    if (force_probe_skip) {
+        capture_command_health(scanner_id, &cmd_before);
+        cmd_after = cmd_before;
+        cmd_ingress_ok = true;
+        ESP_LOGW(TAG, "Relay force mode: skipping command-health probe for scanner[%d]",
+                 scanner_id);
+    } else {
+        cmd_ingress_ok = probe_scanner_command_ingress(
+            scanner_id, &cmd_before, &cmd_after);
+#ifdef FOF_BADGE_VARIANT
+        if (!cmd_ingress_ok) {
+            int healed_pin = -1;
+            cmd_ingress_ok = badge_try_heal_command_tx_pin(
+                scanner_id, &cmd_before, &cmd_after, &healed_pin);
+            if (cmd_ingress_ok) {
+                ESP_LOGW(TAG, "Relay using badge scanner[%d] healed TX GPIO%d",
+                         scanner_id, healed_pin);
+            }
+        }
+#endif
+    }
+    strncpy(result->scanner_version, cmd_after.version[0] ? cmd_after.version : cmd_before.version,
+            sizeof(result->scanner_version) - 1);
+    strncpy(result->scanner_fw_state, cmd_after.fw_state[0] ? cmd_after.fw_state : cmd_before.fw_state,
+            sizeof(result->scanner_fw_state) - 1);
+    result->cmd_rx_before = cmd_before.cmd_rx;
+    result->cmd_rx_after = cmd_after.cmd_rx;
+    result->fw_check_before = cmd_before.fw_check;
+    result->fw_check_after = cmd_after.fw_check;
+    result->cmd_age_after_s = cmd_after.cmd_age_s;
+
+    if (!cmd_ingress_ok) {
+        snprintf(result->stage, sizeof(result->stage), "probe");
+        snprintf(result->error, sizeof(result->error), "command_ingress_unhealthy");
+        ESP_LOGE(TAG,
+                 "Relay refused: scanner[%d] command ingress unhealthy "
+                 "(cmd_rx %lu->%lu fw_check %lu->%lu cmd_age=%lld ver=%s fw=%s)",
+                 scanner_id,
+                 (unsigned long)cmd_before.cmd_rx,
+                 (unsigned long)cmd_after.cmd_rx,
+                 (unsigned long)cmd_before.fw_check,
+                 (unsigned long)cmd_after.fw_check,
+                 (long long)cmd_after.cmd_age_s,
+                 result->scanner_version[0] ? result->scanner_version : "?",
+                 result->scanner_fw_state[0] ? result->scanner_fw_state : "?");
+        s_operation_active = false;
+        remember_relay_result(scanner_id, result);
+        return false;
+    }
+
+    const char *scanner_board = cmd_after.board[0] ? cmd_after.board : cmd_before.board;
+    const char *scanner_version = cmd_after.version[0] ? cmd_after.version : cmd_before.version;
+    if (scanner_board && scanner_board[0] &&
+        !staged_firmware_matches_scanner(&info, scanner_board)) {
+        snprintf(result->stage, sizeof(result->stage), "version");
+        snprintf(result->error, sizeof(result->error), "board_mismatch");
+        ESP_LOGE(TAG, "Relay refused: staged board=%s scanner board=%s",
+                 info.name[0] ? info.name : "?",
+                 scanner_board);
+        s_operation_active = false;
+        remember_relay_result(scanner_id, result);
+        return false;
+    }
+    if (!allow_same_version &&
+        scanner_board && scanner_board[0] &&
+        scanner_version && scanner_version[0] &&
+        staged_firmware_matches_scanner(&info, scanner_board) &&
+        !staged_firmware_is_newer_for_scanner(&info, scanner_board, scanner_version)) {
+        snprintf(result->stage, sizeof(result->stage), "version");
+        snprintf(result->error, sizeof(result->error), "same_version_refused");
+        ESP_LOGW(TAG,
+                 "Relay refused: scanner[%d] already has %s (%s). "
+                 "Use explicit same-version override only for recovery.",
+                 scanner_id,
+                 scanner_version,
+                 scanner_board);
+        s_operation_active = false;
+        remember_relay_result(scanner_id, result);
+        return false;
+    }
+
     http_upload_pause();
     vTaskDelay(pdMS_TO_TICKS(500));
     uart_rx_pause_scanner(scanner_id);
@@ -706,10 +1325,14 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
     char error_msg[64] = {0};
     char stage[16] = "init";
     int64_t start_ms = esp_timer_get_time() / 1000;
-    int64_t overall_timeout_ms = 10 * 60 * 1000;
     uint16_t seq = 0;
     int nack_count = 0;
     int total_retries = 0;
+    char relay_session_id[16] = {0};
+    int64_t overall_timeout_ms = relay_timeout_ms_for_size(info.size);
+
+    relay_emit_progress(scanner_id, "stop", 0, info.size, 0, 0, 0,
+                        start_ms, "");
 
     snprintf(stage, sizeof(stage), "stop");
     {
@@ -719,6 +1342,7 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
                 uart_num,
                 "{\"type\":\"stop\"}",
                 "stop_ack",
+                NULL,
                 FW_RELAY_STOP_STORM_MS,
                 FW_RELAY_STOP_STORM_STEP_MS,
                 NULL,
@@ -726,60 +1350,88 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
             );
             if (r == 0) {
                 ESP_LOGI(TAG, "Stage stop: stop_ack received");
-            } else if (legacy_mode) {
-                ESP_LOGW(TAG, "Stage stop: stop_ack missing after stop storm, continuing in legacy mode");
             } else {
-                snprintf(error_msg, sizeof(error_msg), "stop_ack_timeout");
-                relay_ok = false;
-                goto relay_done;
+                if (force_probe_skip) {
+                    ESP_LOGW(TAG,
+                             "Stage stop: no stop_ack in recovery force mode; "
+                             "flushing scanner UART and trying ota_begin");
+                } else {
+                    snprintf(error_msg, sizeof(error_msg), "command_ingress_unhealthy");
+                    relay_ok = false;
+                    goto relay_done;
+                }
             }
         } else {
             ESP_LOGW(TAG, "Stage stop: scanner pre-quiet via fw_ready");
         }
-        char drain[160];
-        while (relay_read_line(uart_num, drain, sizeof(drain), 300) >= 0) {}
+        uart_flush_input(uart_num);
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 
     snprintf(stage, sizeof(stage), "begin");
+    relay_emit_progress(scanner_id, "begin", 0, info.size, 0, 0, 0,
+                        start_ms, "");
     {
         uint32_t fw_crc32 = 0;
         bool has_crc = nvs_config_get_u32(NVS_FW_CRC32, &fw_crc32);
-        char cmd[96];
+        char session_id[16];
+        snprintf(session_id, sizeof(session_id), "r%08lx",
+                 (unsigned long)esp_random());
+        strncpy(relay_session_id, session_id, sizeof(relay_session_id) - 1);
+        char cmd[144];
         if (has_crc) {
-            snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%lu,\"crc\":%lu}",
-                     (unsigned long)info.size, (unsigned long)fw_crc32);
+            snprintf(cmd, sizeof(cmd),
+                     "{\"type\":\"ota_begin\",\"size\":%lu,\"crc\":%lu,"
+                     "\"session_id\":\"%s\"}",
+                     (unsigned long)info.size, (unsigned long)fw_crc32,
+                     session_id);
         } else {
-            snprintf(cmd, sizeof(cmd), "{\"type\":\"ota_begin\",\"size\":%lu}",
-                     (unsigned long)info.size);
+            snprintf(cmd, sizeof(cmd),
+                     "{\"type\":\"ota_begin\",\"size\":%lu,"
+                     "\"session_id\":\"%s\"}",
+                     (unsigned long)info.size,
+                     session_id);
         }
         uart_rx_send_command_to_scanner(scanner_id, cmd);
-        ESP_LOGI(TAG, "Stage begin: sent ota_begin (%lu bytes, CRC=%s%08lX)",
-                 (unsigned long)info.size, has_crc ? "" : "none/", (unsigned long)fw_crc32);
+        ESP_LOGI(TAG, "Stage begin: sent ota_begin (%lu bytes, session=%s CRC=%s%08lX)",
+                 (unsigned long)info.size, session_id,
+                 has_crc ? "" : "none/", (unsigned long)fw_crc32);
 
-        if (legacy_mode) {
-            ESP_LOGW(TAG, "Stage begin: skipping ota_ack wait in legacy mode");
-            vTaskDelay(pdMS_TO_TICKS(2500));
-        } else {
-            char reason[48] = {0};
-            int r = relay_wait_for(uart_num, "ota_ack", 3000, reason, sizeof(reason));
-            if (r != 0) {
-                snprintf(error_msg, sizeof(error_msg),
-                         r == -2 ? "scanner_error:%s" : "ota_ack_timeout",
-                         r == -2 ? reason : "");
-                relay_ok = false;
-                goto relay_done;
-            }
-            ESP_LOGI(TAG, "Stage begin: ota_ack received, entering chunk stream");
+        char reason[48] = {0};
+        int r = relay_wait_for_with_resend(
+            scanner_id,
+            uart_num,
+            cmd,
+            "ota_ack",
+            session_id,
+            15000,
+            500,
+            reason,
+            sizeof(reason)
+        );
+        if (r != 0) {
+            snprintf(error_msg, sizeof(error_msg),
+                     r == -2 ? "scanner_error:%s" : "ota_ack_timeout",
+                     r == -2 ? reason : "");
+            relay_ok = false;
+            goto relay_done;
         }
+        ESP_LOGI(TAG, "Stage begin: ota_ack received, entering chunk stream");
     }
 
     snprintf(stage, sizeof(stage), "chunks");
+    relay_emit_progress(scanner_id, "chunks", 0, info.size, 0, nack_count,
+                        total_retries, start_ms, "");
     {
         static uint8_t read_buf[OTA_CHUNK_MAX_DATA];
         static uint8_t frame[OTA_CHUNK_HEADER_SIZE + OTA_CHUNK_MAX_DATA + OTA_CHUNK_CRC_SIZE];
         uint32_t offset = 0;
         uint32_t remaining = info.size;
         uint8_t retry_for_seq[8] = {0};
+        const uint32_t relay_chunk_data =
+            FW_RELAY_CHUNK_DATA < OTA_CHUNK_MAX_DATA ? FW_RELAY_CHUNK_DATA : OTA_CHUNK_MAX_DATA;
+        uint32_t next_progress_bytes = OTA_RELAY_PROGRESS_INTERVAL_BYTES;
+        int64_t next_progress_ms = (esp_timer_get_time() / 1000) + 5000;
 
         while (remaining > 0) {
             int64_t now_ms = esp_timer_get_time() / 1000;
@@ -789,7 +1441,7 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
                 goto relay_done;
             }
 
-            uint32_t chunk_len = remaining > OTA_CHUNK_MAX_DATA ? OTA_CHUNK_MAX_DATA : remaining;
+            uint32_t chunk_len = remaining > relay_chunk_data ? relay_chunk_data : remaining;
             esp_err_t err = esp_partition_read(p, offset, read_buf, chunk_len);
             if (err != ESP_OK) {
                 snprintf(error_msg, sizeof(error_msg), "flash_read_%lu", (unsigned long)offset);
@@ -814,14 +1466,14 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
             uart_write_bytes(uart_num, (char *)frame, frame_len);
             uart_wait_tx_done(uart_num, pdMS_TO_TICKS(1000));
 
-            int nack_seq = relay_poll_nack(uart_num, 50);
+            int nack_seq = relay_poll_nack(uart_num, relay_session_id,
+                                           FW_RELAY_NACK_POLL_MS);
             if (nack_seq >= 0) {
                 if (nack_seq > (int)seq) {
                     ESP_LOGW(TAG, "NACK seq=%d > current seq=%d, ignoring", nack_seq, seq);
                 } else {
-                    int behind = (int)seq - nack_seq;
-                    uint32_t rewind_bytes = (uint32_t)behind * OTA_CHUNK_MAX_DATA;
-                    if (rewind_bytes > offset) rewind_bytes = offset;
+                    uint32_t nack_offset = (uint32_t)nack_seq * relay_chunk_data;
+                    uint32_t rewind_bytes = offset > nack_offset ? (offset - nack_offset) : 0;
                     uint8_t slot = (uint8_t)(nack_seq & 0x7);
                     if (++retry_for_seq[slot] > 3) {
                         snprintf(error_msg, sizeof(error_msg),
@@ -832,8 +1484,9 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
                     nack_count++;
                     total_retries++;
                     offset -= rewind_bytes;
-                    remaining += rewind_bytes;
+                    remaining = info.size - offset;
                     seq = (uint16_t)nack_seq;
+                    result->bytes = offset;
                     ESP_LOGW(TAG, "NACK seq=%d -> rewind %lu bytes (retry %u)",
                              nack_seq, (unsigned long)rewind_bytes,
                              retry_for_seq[slot]);
@@ -844,55 +1497,34 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
             offset += chunk_len;
             remaining -= chunk_len;
             seq++;
+            result->bytes = offset;
 
-            if ((info.size - remaining) % (100 * 1024) < OTA_CHUNK_MAX_DATA) {
+            if ((info.size - remaining) % (100 * 1024) < relay_chunk_data) {
                 ESP_LOGI(TAG, "Relay: %lu/%lu (%.0f%%) seq=%d nacks=%d heap=%lu",
                          (unsigned long)(info.size - remaining), (unsigned long)info.size,
                          (float)(info.size - remaining) / info.size * 100,
                          seq, nack_count,
                          (unsigned long)esp_get_free_heap_size());
             }
+            now_ms = esp_timer_get_time() / 1000;
+            if (offset >= next_progress_bytes || now_ms >= next_progress_ms ||
+                remaining == 0) {
+                relay_emit_progress(scanner_id, "chunks", offset, info.size,
+                                    seq, nack_count, total_retries,
+                                    start_ms, "");
+                while (next_progress_bytes <= offset) {
+                    next_progress_bytes += OTA_RELAY_PROGRESS_INTERVAL_BYTES;
+                }
+                next_progress_ms = now_ms + 5000;
+            }
         }
     }
 
     snprintf(stage, sizeof(stage), "end");
+    relay_emit_progress(scanner_id, "end", info.size, info.size, seq,
+                        nack_count, total_retries, start_ms, "");
     {
         uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"ota_end\"}");
-
-        if (legacy_mode) {
-            char line[192];
-            int64_t deadline = (esp_timer_get_time() / 1000) + 60000;
-            bool verified = false;
-            bool saw_identity = false;
-            ESP_LOGW(TAG, "Stage end: legacy relay sent ota_end, waiting for reboot/version proof");
-            while ((esp_timer_get_time() / 1000) < deadline) {
-                int remaining_ms = (int)(deadline - (esp_timer_get_time() / 1000));
-                if (remaining_ms <= 0) break;
-                int n = relay_read_line(uart_num, line, sizeof(line), remaining_ms);
-                if (n < 0) break;
-                if (strstr(line, "ota_done")) {
-                    verified = true;
-                    ESP_LOGW(TAG, "Stage end: legacy scanner emitted ota_done");
-                    break;
-                }
-                if (relay_line_is_scanner_identity(line)) {
-                    saw_identity = true;
-                    if (relay_line_matches_staged_version(line, &info)) {
-                        verified = true;
-                        ESP_LOGW(TAG, "Stage end: legacy scanner identity matches staged version");
-                        break;
-                    }
-                    ESP_LOGW(TAG, "Stage end: scanner identity did not match staged version yet");
-                }
-            }
-            if (!verified) {
-                snprintf(error_msg, sizeof(error_msg), "%s",
-                         saw_identity ? "legacy_version_not_updated" : "legacy_verify_timeout");
-                relay_ok = false;
-                goto relay_done;
-            }
-            goto relay_done;
-        }
 
         char line[192];
         int64_t deadline = (esp_timer_get_time() / 1000) + 60000;
@@ -941,6 +1573,20 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
     }
 
 relay_done:;
+    if (!relay_ok) {
+        relay_emit_progress(scanner_id, stage, result->bytes, info.size, seq,
+                            nack_count, total_retries, start_ms, error_msg);
+        char abort_cmd[96];
+        if (relay_session_id[0]) {
+            snprintf(abort_cmd, sizeof(abort_cmd),
+                     "{\"type\":\"ota_abort\",\"session_id\":\"%s\"}",
+                     relay_session_id);
+        } else {
+            snprintf(abort_cmd, sizeof(abort_cmd), "{\"type\":\"ota_abort\"}");
+        }
+        uart_rx_send_command_to_scanner(scanner_id, abort_cmd);
+        vTaskDelay(pdMS_TO_TICKS(150));
+    }
     uart_rx_resume_scanner(scanner_id);
 
     int64_t elapsed_s = ((esp_timer_get_time() / 1000) - start_ms) / 1000;
@@ -949,6 +1595,8 @@ relay_done:;
     }
 
     if (relay_ok) {
+        relay_emit_progress(scanner_id, "done", info.size, info.size, seq,
+                            nack_count, total_retries, start_ms, "");
         ESP_LOGW(TAG, "Relay complete: %lu bytes, %d chunks, %d nacks in %llds",
                  (unsigned long)info.size, seq, nack_count, (long long)elapsed_s);
     } else {
@@ -962,6 +1610,9 @@ relay_done:;
     result->ok = relay_ok;
     result->legacy = legacy_mode;
     result->size = info.size;
+    if (relay_ok) {
+        result->bytes = info.size;
+    }
     result->chunks = seq;
     result->nacks = nack_count;
     result->retries = total_retries;
@@ -970,18 +1621,7 @@ relay_done:;
     result->stage[sizeof(result->stage) - 1] = '\0';
     strncpy(result->error, error_msg, sizeof(result->error) - 1);
     result->error[sizeof(result->error) - 1] = '\0';
-    if (scanner_id >= 0 && scanner_id < 2) {
-        s_last_relay[scanner_id].ok = result->ok;
-        strncpy(s_last_relay[scanner_id].stage, result->stage, sizeof(s_last_relay[scanner_id].stage) - 1);
-        s_last_relay[scanner_id].stage[sizeof(s_last_relay[scanner_id].stage) - 1] = '\0';
-        strncpy(s_last_relay[scanner_id].error, result->error, sizeof(s_last_relay[scanner_id].error) - 1);
-        s_last_relay[scanner_id].error[sizeof(s_last_relay[scanner_id].error) - 1] = '\0';
-        s_last_relay[scanner_id].chunks = result->chunks;
-        s_last_relay[scanner_id].nacks = result->nacks;
-        s_last_relay[scanner_id].retries = result->retries;
-        s_last_relay[scanner_id].elapsed_s = result->elapsed_s;
-        s_last_relay[scanner_id].finished_ms = esp_timer_get_time() / 1000;
-    }
+    remember_relay_result(scanner_id, result);
     return relay_ok;
 }
 
@@ -995,32 +1635,119 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
     httpd_query_key_value(query, "uart", uart_target, sizeof(uart_target));
     char mode[16] = {0};
     char legacy_param[8] = {0};
+    char force_param[8] = {0};
+    char allow_same_param[8] = {0};
     httpd_query_key_value(query, "mode", mode, sizeof(mode));
     httpd_query_key_value(query, "legacy", legacy_param, sizeof(legacy_param));
+    httpd_query_key_value(query, "force", force_param, sizeof(force_param));
+    httpd_query_key_value(query, "allow_same_version",
+                          allow_same_param, sizeof(allow_same_param));
     bool legacy_mode =
         strcmp(mode, "legacy") == 0 ||
         strcmp(legacy_param, "1") == 0 ||
         strcmp(legacy_param, "true") == 0;
+    bool force_probe_skip =
+        strcmp(force_param, "1") == 0 ||
+        strcmp(force_param, "true") == 0;
+    bool allow_same_version =
+        strcmp(allow_same_param, "1") == 0 ||
+        strcmp(allow_same_param, "true") == 0;
     int scanner_id = (strcmp(uart_target, "wifi") == 0) ? 1 : 0;
 
     fw_relay_result_t result = {0};
-    fw_relay_stored_to_scanner(scanner_id, false, legacy_mode, &result);
+    fw_relay_stored_to_scanner(scanner_id, false, legacy_mode, force_probe_skip,
+                               allow_same_version, &result);
 
-    char resp_buf[320];
+    char resp_buf[900];
     snprintf(resp_buf, sizeof(resp_buf),
-             "{\"ok\":%s,\"legacy\":%s,\"size\":%lu,\"chunks\":%d,\"nacks\":%d,"
+             "{\"ok\":%s,\"legacy\":%s,\"size\":%lu,\"bytes\":%lu,"
+             "\"chunks\":%d,\"nacks\":%d,"
              "\"retries\":%d,\"elapsed_s\":%lld,\"stage\":\"%s\","
-             "\"error\":\"%s\"}",
+             "\"error\":\"%s\",\"cmd_rx_before\":%lu,\"cmd_rx_after\":%lu,"
+             "\"fw_check_before\":%lu,\"fw_check_after\":%lu,"
+             "\"cmd_age_after_s\":%lld,\"scanner_ver\":\"%s\","
+             "\"scanner_fw_state\":\"%s\"}",
              result.ok ? "true" : "false",
              result.legacy ? "true" : "false",
-             (unsigned long)result.size, result.chunks, result.nacks, result.retries,
-             (long long)result.elapsed_s, result.stage, result.error);
+             (unsigned long)result.size,
+             (unsigned long)result.bytes,
+             result.chunks, result.nacks, result.retries,
+             (long long)result.elapsed_s, result.stage, result.error,
+             (unsigned long)result.cmd_rx_before,
+             (unsigned long)result.cmd_rx_after,
+             (unsigned long)result.fw_check_before,
+             (unsigned long)result.fw_check_after,
+             (long long)result.cmd_age_after_s,
+             result.scanner_version,
+             result.scanner_fw_state);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp_buf);
     return ESP_OK;
 }
 
+bool fw_store_relay_staged_to_scanner(int scanner_id,
+                                      char *out_json,
+                                      size_t out_json_len)
+{
+    return fw_store_relay_staged_to_scanner_ex(scanner_id, false, false,
+                                               out_json, out_json_len);
+}
+
+bool fw_store_relay_staged_to_scanner_ex(int scanner_id,
+                                         bool force_probe_skip,
+                                         bool allow_same_version,
+                                         char *out_json,
+                                         size_t out_json_len)
+{
+    if (scanner_id < 0 || scanner_id > 1) {
+        if (out_json && out_json_len > 0) {
+            snprintf(out_json, out_json_len,
+                     "{\"ok\":false,\"error\":\"invalid_scanner\"}");
+        }
+        return false;
+    }
+
+    fw_relay_result_t result = {0};
+    bool ok = fw_relay_stored_to_scanner(scanner_id, false, false,
+                                         force_probe_skip,
+                                         allow_same_version,
+                                         &result);
+    if (out_json && out_json_len > 0) {
+        snprintf(out_json, out_json_len,
+                 "{\"ok\":%s,\"uart\":\"%s\",\"size\":%lu,\"bytes\":%lu,"
+                 "\"chunks\":%d,"
+                 "\"nacks\":%d,\"retries\":%d,\"elapsed_s\":%lld,"
+                 "\"stage\":\"%s\",\"error\":\"%s\","
+                 "\"cmd_rx_before\":%lu,\"cmd_rx_after\":%lu,"
+                 "\"fw_check_before\":%lu,\"fw_check_after\":%lu,"
+                 "\"cmd_age_after_s\":%lld,\"scanner_ver\":\"%s\","
+                 "\"scanner_fw_state\":\"%s\"}",
+                 ok ? "true" : "false",
+                 scanner_id == 1 ? "wifi" : "ble",
+                 (unsigned long)result.size,
+                 (unsigned long)result.bytes,
+                 result.chunks,
+                 result.nacks,
+                 result.retries,
+                 (long long)result.elapsed_s,
+                 result.stage,
+                 result.error,
+                 (unsigned long)result.cmd_rx_before,
+                 (unsigned long)result.cmd_rx_after,
+                 (unsigned long)result.fw_check_before,
+                 (unsigned long)result.fw_check_after,
+                 (long long)result.cmd_age_after_s,
+                 result.scanner_version,
+                 result.scanner_fw_state);
+    }
+    return ok;
+}
+
+#ifdef FOF_BADGE_VARIANT
+#define FW_AUTO_RELAY_COOLDOWN_MS (2 * 60 * 1000)
+#else
 #define FW_AUTO_RELAY_COOLDOWN_MS (10 * 60 * 1000)
+#endif
 
 static int64_t s_last_auto_relay_ms[2] = {0, 0};
 
@@ -1036,7 +1763,7 @@ static void fw_auto_relay_task(void *arg)
 
     vTaskDelay(pdMS_TO_TICKS(250));
     fw_relay_result_t result = {0};
-    fw_relay_stored_to_scanner(scanner_id, true, false, &result);
+    fw_relay_stored_to_scanner(scanner_id, true, false, false, false, &result);
     ESP_LOGW(TAG, "Auto scanner relay[%d] ok=%d stage=%s error=%s chunks=%d",
              scanner_id, result.ok ? 1 : 0, result.stage, result.error, result.chunks);
     vTaskDelete(NULL);
@@ -1121,29 +1848,57 @@ static esp_err_t fw_info_handler(httpd_req_t *req)
     if (has_fw) nvs_config_get_string(NVS_FW_NAME, name, sizeof(name));
 
     int64_t now_ms = esp_timer_get_time() / 1000;
-    char resp[768];
+    char resp[1800];
     if (has_fw) {
         snprintf(resp, sizeof(resp),
                  "{\"stored\":true,\"size\":%lu,\"checksum\":%lu,"
                  "\"version\":\"%s\",\"name\":\"%s\",\"partition\":\"%s\","
                  "\"auto_update_enabled\":true,\"auto_relay_cooldown_s\":%d,"
                  "\"last_relay\":{\"ble\":{\"ok\":%s,\"stage\":\"%s\",\"error\":\"%s\","
-                 "\"chunks\":%d,\"nacks\":%d,\"retries\":%d,\"elapsed_s\":%lld,\"age_s\":%lld},"
+                 "\"size\":%lu,\"bytes\":%lu,"
+                 "\"chunks\":%d,\"nacks\":%d,\"retries\":%d,\"elapsed_s\":%lld,\"age_s\":%lld,"
+                 "\"cmd_rx_before\":%lu,\"cmd_rx_after\":%lu,"
+                 "\"fw_check_before\":%lu,\"fw_check_after\":%lu,"
+                 "\"cmd_age_after_s\":%lld,\"scanner_ver\":\"%s\","
+                 "\"scanner_fw_state\":\"%s\"},"
                  "\"wifi\":{\"ok\":%s,\"stage\":\"%s\",\"error\":\"%s\","
-                 "\"chunks\":%d,\"nacks\":%d,\"retries\":%d,\"elapsed_s\":%lld,\"age_s\":%lld}}}",
+                 "\"size\":%lu,\"bytes\":%lu,"
+                 "\"chunks\":%d,\"nacks\":%d,\"retries\":%d,\"elapsed_s\":%lld,\"age_s\":%lld,"
+                 "\"cmd_rx_before\":%lu,\"cmd_rx_after\":%lu,"
+                 "\"fw_check_before\":%lu,\"fw_check_after\":%lu,"
+                 "\"cmd_age_after_s\":%lld,\"scanner_ver\":\"%s\","
+                 "\"scanner_fw_state\":\"%s\"}}}",
                  (unsigned long)size, (unsigned long)cksum,
                  ver[0] ? ver : "", name[0] ? name : "", part[0] ? part : "",
                  (int)(FW_AUTO_RELAY_COOLDOWN_MS / 1000),
                  s_last_relay[0].ok ? "true" : "false",
                  s_last_relay[0].stage, s_last_relay[0].error,
+                 (unsigned long)s_last_relay[0].size,
+                 (unsigned long)s_last_relay[0].bytes,
                  s_last_relay[0].chunks, s_last_relay[0].nacks, s_last_relay[0].retries,
                  (long long)s_last_relay[0].elapsed_s,
                  (long long)(s_last_relay[0].finished_ms > 0 ? (now_ms - s_last_relay[0].finished_ms) / 1000 : -1),
+                 (unsigned long)s_last_relay[0].cmd_rx_before,
+                 (unsigned long)s_last_relay[0].cmd_rx_after,
+                 (unsigned long)s_last_relay[0].fw_check_before,
+                 (unsigned long)s_last_relay[0].fw_check_after,
+                 (long long)s_last_relay[0].cmd_age_after_s,
+                 s_last_relay[0].scanner_version,
+                 s_last_relay[0].scanner_fw_state,
                  s_last_relay[1].ok ? "true" : "false",
                  s_last_relay[1].stage, s_last_relay[1].error,
+                 (unsigned long)s_last_relay[1].size,
+                 (unsigned long)s_last_relay[1].bytes,
                  s_last_relay[1].chunks, s_last_relay[1].nacks, s_last_relay[1].retries,
                  (long long)s_last_relay[1].elapsed_s,
-                 (long long)(s_last_relay[1].finished_ms > 0 ? (now_ms - s_last_relay[1].finished_ms) / 1000 : -1));
+                 (long long)(s_last_relay[1].finished_ms > 0 ? (now_ms - s_last_relay[1].finished_ms) / 1000 : -1),
+                 (unsigned long)s_last_relay[1].cmd_rx_before,
+                 (unsigned long)s_last_relay[1].cmd_rx_after,
+                 (unsigned long)s_last_relay[1].fw_check_before,
+                 (unsigned long)s_last_relay[1].fw_check_after,
+                 (long long)s_last_relay[1].cmd_age_after_s,
+                 s_last_relay[1].scanner_version,
+                 s_last_relay[1].scanner_fw_state);
     } else {
         snprintf(resp, sizeof(resp),
                  "{\"stored\":false,\"auto_update_enabled\":true,"

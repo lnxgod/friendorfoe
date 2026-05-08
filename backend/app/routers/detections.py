@@ -865,6 +865,7 @@ async def ingest_drone_detections(
         "board_type": batch.board_type or prev_hb.get("board_type"),
         "scanners": batch.scanners or prev_hb.get("scanners"),
         "time_sync": batch.time_sync or prev_hb.get("time_sync"),
+        "reporting": batch.reporting or prev_hb.get("reporting"),
         "scan_mode": batch.scan_mode or prev_hb.get("scan_mode"),
         "scan_profile": batch.scan_profile or prev_hb.get("scan_profile"),
         "calibration_uuid": batch.calibration_uuid or prev_hb.get("calibration_uuid"),
@@ -2613,12 +2614,39 @@ async def get_threats(
 
     # ── 4. Confirmed drones (from the drone-alerts ring buffer)
     if include_drone_alerts:
+        deduped_drone_alerts: dict[str, dict] = {}
         for a in list(_drone_alerts)[-100:]:
+            did = a.get("drone_id") or ""
+            entity_id = _entity_tracker.get_entity_id(did) if did else None
+            key = entity_id or did or a.get("bssid") or a.get("ssid") or a.get("message") or "unknown"
+            existing = deduped_drone_alerts.get(key)
+            if existing is None:
+                merged = dict(a)
+                merged["_sensor_ids"] = {a.get("device_id")} if a.get("device_id") else set()
+                deduped_drone_alerts[key] = merged
+                continue
+
+            if a.get("device_id"):
+                existing.setdefault("_sensor_ids", set()).add(a.get("device_id"))
+            old_rank = _SEVERITY_RANK.get(existing.get("severity") or "info", 0)
+            new_rank = _SEVERITY_RANK.get(a.get("severity") or "info", 0)
+            old_ts = existing.get("timestamp") or 0
+            new_ts = a.get("timestamp") or 0
+            if new_rank > old_rank or (new_rank == old_rank and new_ts >= old_ts):
+                sensors = existing.get("_sensor_ids", set())
+                merged = dict(a)
+                merged["_sensor_ids"] = sensors
+                if a.get("device_id"):
+                    merged["_sensor_ids"].add(a.get("device_id"))
+                deduped_drone_alerts[key] = merged
+
+        for a in deduped_drone_alerts.values():
             sev = a.get("severity") or "warning"
             if _SEVERITY_RANK.get(sev, 0) < min_rank:
                 continue
             if sev == "info":
                 continue
+            sensors = sorted(s for s in a.get("_sensor_ids", set()) if s)
             ld = located_by_id.get(a.get("drone_id", ""))
             lat = a.get("latitude") if a.get("latitude") else (ld.lat if ld else None)
             lon = a.get("longitude") if a.get("longitude") else (ld.lon if ld else None)
@@ -2635,8 +2663,8 @@ async def get_threats(
                 "rssi_trend": None,
                 "current_rssi": a.get("rssi"),
                 "peak_rssi": None,
-                "sensor_count": 1,
-                "sensors_active": [a.get("device_id")] if a.get("device_id") else [],
+                "sensor_count": len(sensors) or (1 if a.get("device_id") else 0),
+                "sensors_active": sensors or ([a.get("device_id")] if a.get("device_id") else []),
                 "dominant_sensor": a.get("device_id"),
                 "mac_rotations": 0,
                 "latitude": lat,

@@ -33,6 +33,10 @@ static esp_timer_handle_t s_reconnect_timer  = NULL;
 static bool               s_is_connected     = false;
 static bool               s_standalone       = false;
 static bool               s_scanning         = false;  /* true during initial multi-SSID scan */
+static bool               s_force_standalone = false;
+static bool               s_keep_ap_enabled  = false;
+static bool               s_initialized      = false;
+static bool               s_started          = false;
 static int                s_retry_count      = 0;
 
 /* Multi-SSID credential list */
@@ -191,8 +195,12 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
         /* Max TX power for best range to router */
         esp_wifi_set_max_tx_power(80);  /* 80 = 20dBm (units of 0.25dBm) */
 
-        /* Disable AP — STA is connected, AP not needed */
-        wifi_ap_stop();
+        if (!s_keep_ap_enabled) {
+            /* Disable AP — STA is connected, AP not needed */
+            wifi_ap_stop();
+        } else {
+            wifi_ap_start();
+        }
         if (!time_sync_is_sntp_synced()) {
             time_sync_init();
         }
@@ -204,45 +212,59 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
 
 void wifi_sta_init(void)
 {
-    s_wifi_event_group = xEventGroupCreate();
+    if (!s_initialized) {
+        s_wifi_event_group = xEventGroupCreate();
 
-    /* Create reconnect timer (one-shot, used for non-blocking backoff) */
-    const esp_timer_create_args_t timer_args = {
-        .callback = reconnect_timer_cb,
-        .name     = "wifi_reconn",
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_reconnect_timer));
+        /* Create reconnect timer (one-shot, used for non-blocking backoff) */
+        const esp_timer_create_args_t timer_args = {
+            .callback = reconnect_timer_cb,
+            .name     = "wifi_reconn",
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_reconnect_timer));
 
-    /* Initialize TCP/IP stack */
-    ESP_ERROR_CHECK(esp_netif_init());
-    esp_netif_create_default_wifi_sta();
-    esp_netif_create_default_wifi_ap();
+        /* Initialize TCP/IP stack */
+        ESP_ERROR_CHECK(esp_netif_init());
+        esp_netif_create_default_wifi_sta();
+        esp_netif_create_default_wifi_ap();
 
-    /* Initialize WiFi with default config */
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+        /* Initialize WiFi with default config */
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    /* Register event handlers */
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler, NULL, NULL));
+        /* Register event handlers */
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(
+            WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(
+            IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler, NULL, NULL));
+        s_initialized = true;
+    }
+
+    if (s_started) {
+        ESP_LOGI(TAG, "WiFi already started");
+        return;
+    }
 
     /* Check if NVS has a manually-configured SSID first */
     char nvs_ssid[33] = {0};
     nvs_config_get_wifi_ssid(nvs_ssid, sizeof(nvs_ssid));
 
-    if (nvs_ssid[0] == '\0' || strcmp(nvs_ssid, "YourSSID") == 0) {
+    if (s_force_standalone ||
+        nvs_ssid[0] == '\0' || strcmp(nvs_ssid, "YourSSID") == 0) {
         s_standalone = true;
-        ESP_LOGI(TAG, "No WiFi SSID configured -- standalone mode (AP-only)");
+        ESP_LOGI(TAG, "%s -- standalone mode (AP-only)",
+                 s_force_standalone
+                     ? "Badge mode forced backend off"
+                     : "No WiFi SSID configured");
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
         ESP_ERROR_CHECK(esp_wifi_start());
+        s_started = true;
         return;
     }
 
     s_scanning = true;  /* Suppress auto-connect/reconnect during scan */
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    s_started = true;
 
     /* Let WiFi radio fully initialize before scanning */
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -265,6 +287,22 @@ void wifi_sta_init(void)
              s_wifi_creds[best].ssid);
 }
 
+void wifi_sta_set_force_standalone(bool force)
+{
+    s_force_standalone = force;
+    if (force) {
+        s_standalone = true;
+        s_is_connected = false;
+    } else {
+        s_standalone = false;
+    }
+}
+
+void wifi_sta_set_keep_ap_enabled(bool keep_enabled)
+{
+    s_keep_ap_enabled = keep_enabled;
+}
+
 bool wifi_sta_is_connected(void)
 {
     return !s_standalone && s_is_connected;
@@ -273,6 +311,36 @@ bool wifi_sta_is_connected(void)
 bool wifi_sta_is_standalone(void)
 {
     return s_standalone;
+}
+
+bool wifi_sta_is_initialized(void)
+{
+    return s_initialized;
+}
+
+void wifi_sta_stop_all(void)
+{
+    if (!s_initialized) {
+        s_force_standalone = true;
+        s_standalone = true;
+        s_is_connected = false;
+        return;
+    }
+    if (s_reconnect_timer) {
+        esp_timer_stop(s_reconnect_timer);
+    }
+    s_scanning = false;
+    s_started = false;
+    s_is_connected = false;
+    s_standalone = true;
+    s_retry_count = 0;
+    if (s_wifi_event_group) {
+        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+    esp_wifi_set_mode(WIFI_MODE_NULL);
+    ESP_LOGW(TAG, "WiFi radio stopped for badge display-only mode");
 }
 
 void wifi_sta_wait_connected(int timeout_ms)

@@ -26,7 +26,8 @@ extern "C" {
  * @return true if OTA partition is ready
  */
 bool uart_ota_begin(uint32_t total_size, uint32_t expected_crc,
-                    bool has_crc, uart_port_t uart_num);
+                    bool has_crc, uart_port_t uart_num,
+                    const char *session_id);
 
 /**
  * Process incoming UART data during an active OTA session.
@@ -51,6 +52,24 @@ void uart_ota_abort(void);
 
 /** Check if a UART OTA session is active. */
 bool uart_ota_is_active(void);
+
+/** Human-readable OTA state for status/debug telemetry. */
+const char *uart_ota_state_label(void);
+
+/** Active OTA relay session id, or an empty string when idle/no id. */
+const char *uart_ota_session_id(void);
+
+/** Current staged byte count for status/debug telemetry. */
+uint32_t uart_ota_received(void);
+
+/** Expected OTA image size for status/debug telemetry. */
+uint32_t uart_ota_total_size(void);
+
+/**
+ * Safe recovery mode can keep radios uninitialized. Disable scan halt/resume
+ * hooks so UART OTA remains available in that mode.
+ */
+void uart_ota_set_radio_control_enabled(bool enabled);
 
 #ifdef __cplusplus
 }

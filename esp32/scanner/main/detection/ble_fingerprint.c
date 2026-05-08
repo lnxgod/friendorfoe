@@ -25,6 +25,9 @@
 
 #include "ble_fingerprint.h"
 #include <string.h>
+#include <strings.h>
+#include <stdio.h>
+#include <ctype.h>
 
 /* ── Apple Continuity sub-types ─────────────────────────────────────────── */
 
@@ -211,6 +214,41 @@ static ble_device_type_t classify_apple(uint8_t continuity_type,
     }
 }
 
+static bool contains_case_insensitive(const char *haystack, const char *needle)
+{
+    if (!haystack || !needle || needle[0] == '\0') {
+        return false;
+    }
+    for (const char *h = haystack; *h; h++) {
+        const char *a = h;
+        const char *b = needle;
+        while (*a && *b &&
+               tolower((unsigned char)*a) == tolower((unsigned char)*b)) {
+            a++;
+            b++;
+        }
+        if (*b == '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool name_mentions_meta_glasses(const char *name)
+{
+    if (!name || name[0] == '\0') {
+        return false;
+    }
+    return contains_case_insensitive(name, "meta") ||
+           contains_case_insensitive(name, "ray-ban") ||
+           contains_case_insensitive(name, "rayban") ||
+           contains_case_insensitive(name, "oakley") ||
+           contains_case_insensitive(name, "wayfarer") ||
+           strncasecmp(name, "RB-", 3) == 0 ||
+           strncasecmp(name, "RB ", 3) == 0 ||
+           strncasecmp(name, "OAK", 3) == 0;
+}
+
 /* ── Main fingerprint computation ───────────────────────────────────────── */
 
 void ble_fingerprint_compute(const uint8_t *data, int length,
@@ -244,6 +282,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     bool has_meta_svc = false;
     bool has_meta_rayban_svc = false;  /* 0xFD5F = Ray-Ban specific */
     bool has_meta_quest_svc = false;   /* 0xFEB8 without 0xFD5F = Quest */
+    uint16_t first_meta_svc = 0;
 
     /* Local name capture for spooky-device pattern matching (v0.62+) */
     char    local_name[32]   = {0};
@@ -333,6 +372,10 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 if (uuid == GOOGLE_FASTPAIR_UUID || uuid == GOOGLE_FMDN_UUID) has_fastpair_svc = true;
                 if (uuid == SAMSUNG_SMARTTAG_SVC1 || uuid == SAMSUNG_SMARTTAG_SVC2 || uuid == SAMSUNG_SMARTTAG_LOST) has_smarttag_svc = true;
                 if (uuid == META_RAYBANGEN2_SVC || uuid == META_SVC_UUID1 || uuid == META_SVC_UUID2) has_meta_svc = true;
+                if ((uuid == META_RAYBANGEN2_SVC || uuid == META_SVC_UUID1 || uuid == META_SVC_UUID2) &&
+                    first_meta_svc == 0) {
+                    first_meta_svc = uuid;
+                }
                 if (uuid == META_RAYBANGEN2_SVC) has_meta_rayban_svc = true;
                 if (uuid == META_SVC_UUID2 && !has_meta_rayban_svc) has_meta_quest_svc = true;
 
@@ -379,6 +422,10 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 if (svc_uuid == TILE_SVC_UUID || svc_uuid == TILE_SVC_UUID2) has_tile_svc = true;
                 if (svc_uuid == SAMSUNG_SMARTTAG_SVC1 || svc_uuid == SAMSUNG_SMARTTAG_SVC2 || svc_uuid == SAMSUNG_SMARTTAG_LOST) has_smarttag_svc = true;
                 if (svc_uuid == META_RAYBANGEN2_SVC || svc_uuid == META_SVC_UUID1 || svc_uuid == META_SVC_UUID2) has_meta_svc = true;
+                if ((svc_uuid == META_RAYBANGEN2_SVC || svc_uuid == META_SVC_UUID1 || svc_uuid == META_SVC_UUID2) &&
+                    first_meta_svc == 0) {
+                    first_meta_svc = svc_uuid;
+                }
                 if (svc_uuid == META_RAYBANGEN2_SVC) has_meta_rayban_svc = true;
                 if (svc_uuid == META_SVC_UUID2 && !has_meta_rayban_svc) has_meta_quest_svc = true;
 
@@ -458,7 +505,8 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
         fp->device_type = BLE_DEV_GOOGLE_FINDMY;
         fp->is_tracker = (mfr_data_len <= 12);
     } else if (company_id == META_COMPANY_ID || company_id == META_TECH_COMPANY_ID
-               || company_id == META_LUXOTTICA_CID || has_meta_svc) {
+               || company_id == META_LUXOTTICA_CID || has_meta_svc ||
+               name_mentions_meta_glasses(local_name)) {
         /* Meta device classification. Luxottica (0x0D53) is the *frame*
          * manufacturer for Ray-Ban Meta + Oakley Meta glasses and is the
          * signal Marauder's Meta scanner relies on most (not Meta's own
@@ -469,16 +517,23 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
          *   local name contains "Ray-Ban" / "RB Meta" / "Oakley Meta"
          * - Quest headset: 0xFEB8 without 0xFD5F, or name contains "Quest"
          * - Other Meta: portals, controllers, Neural Band, etc. */
-        if (has_meta_rayban_svc || company_id == META_LUXOTTICA_CID) {
+        if (has_meta_rayban_svc || has_meta_svc ||
+            company_id == META_LUXOTTICA_CID ||
+            name_mentions_meta_glasses(local_name)) {
             fp->device_type = BLE_DEV_META_GLASSES;
-        } else if (has_meta_quest_svc) {
-            fp->device_type = BLE_DEV_META_DEVICE;
-        } else if (has_meta_svc) {
-            /* Generic Meta service — payload size heuristic.
-             * Quest tends to have larger advertisements than glasses. */
-            fp->device_type = (fp->payload_len > 20) ? BLE_DEV_META_DEVICE : BLE_DEV_META_GLASSES;
+            if (has_meta_rayban_svc) {
+                strncpy(fp->class_reason, "uuid16:0xFD5F", sizeof(fp->class_reason) - 1);
+            } else if (has_meta_svc && first_meta_svc != 0) {
+                snprintf(fp->class_reason, sizeof(fp->class_reason),
+                         "uuid16:0x%04X", first_meta_svc);
+            } else if (company_id == META_LUXOTTICA_CID) {
+                strncpy(fp->class_reason, "mfr_cid:0x0D53", sizeof(fp->class_reason) - 1);
+            } else {
+                strncpy(fp->class_reason, "name:meta_glasses", sizeof(fp->class_reason) - 1);
+            }
         } else {
             fp->device_type = BLE_DEV_META_DEVICE;
+            strncpy(fp->class_reason, "mfr_cid:meta", sizeof(fp->class_reason) - 1);
         }
     } else if (company_id == FLIPPER_COMPANY_ID) {
         fp->device_type = BLE_DEV_FLIPPER_ZERO;

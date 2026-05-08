@@ -21,6 +21,7 @@ static int  s_station_count = 0;
 static char s_ap_ssid[33]   = {0};
 static esp_timer_handle_t s_ap_mode_timer = NULL;
 static volatile bool s_ap_desired_state = true;  /* true=APSTA, false=STA-only */
+static bool s_ap_initialized = false;
 
 /* Deferred mode switch — runs from timer task, safe to call esp_wifi_set_mode */
 static void ap_mode_switch_cb(void *arg)
@@ -73,6 +74,9 @@ static void ap_event_handler(void *arg, esp_event_base_t event_base,
 
 void wifi_ap_init(void)
 {
+    if (s_ap_initialized) {
+        return;
+    }
     /* Create deferred mode switch timer */
     const esp_timer_create_args_t timer_args = {
         .callback = ap_mode_switch_cb,
@@ -114,10 +118,15 @@ void wifi_ap_init(void)
 
     ESP_LOGI(TAG, "WiFi AP initialized: SSID='%s', channel=%d, max_conn=%d",
              s_ap_ssid, CONFIG_AP_CHANNEL, CONFIG_AP_MAX_CONNECTIONS);
+    s_ap_initialized = true;
 }
 
 void wifi_ap_stop(void)
 {
+    if (!s_ap_initialized || !s_ap_mode_timer) {
+        s_ap_desired_state = false;
+        return;
+    }
     /* Fully disable AP by switching to STA-only mode.
      * Deferred via timer — esp_wifi_set_mode is too heavy for event handler context. */
     s_ap_desired_state = false;
@@ -128,6 +137,9 @@ void wifi_ap_stop(void)
 
 void wifi_ap_start(void)
 {
+    if (!s_ap_initialized || !s_ap_mode_timer) {
+        return;
+    }
     /* Switch to APSTA mode first via deferred timer, then config will be set
      * by the timer callback after mode switch completes. */
     s_ap_desired_state = true;

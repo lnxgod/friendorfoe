@@ -295,6 +295,10 @@ class DroneDetectionBatch(BaseModel):
         None,
         description="Optional uplink time-sync diagnostics {time_source, last_fetch_ok, last_attempt_age_s, last_success_age_s, fetch_ok_count, fetch_fail_count, fetch_fail_streak, last_backend_epoch_ms, last_broadcast_epoch_ms, broadcast_valid_count, broadcast_invalid_count}",
     )
+    reporting: dict | None = Field(
+        None,
+        description="Optional badge/uplink reporting diagnostics {network_mode, backend_enabled, uploads_ok, uploads_fail, last_upload_age_s}",
+    )
     scan_mode: str | None = Field(None, description="Node scan mode: normal or calibration")
     scan_profile: str | None = Field(None, description="Node scan profile: normal or calibration")
     calibration_uuid: str | None = Field(None, description="Active calibration UUID when scan_mode=calibration")

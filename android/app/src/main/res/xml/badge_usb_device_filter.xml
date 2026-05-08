@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Espressif USB Serial/JTAG used by XIAO ESP32-S3 badge builds. -->
+    <usb-device vendor-id="12346" />
+</resources>

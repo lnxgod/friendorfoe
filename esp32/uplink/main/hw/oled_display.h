@@ -22,9 +22,9 @@ extern "C" {
 void oled_init(void);
 
 /**
- * Redraw the main status screen with uplink + node + drone info.
+ * Redraw the main status screen with uplink + node + detection info.
  *
- * @param drone_count       Number of currently tracked drones
+ * @param detection_count   Total detections/events since boot
  * @param ble_scanner_ok    Whether BLE scanner board is connected via UART
  * @param wifi_scanner_ok   Whether WiFi scanner board is connected via UART
  * @param backend_ok        Whether backend server is reachable
@@ -34,20 +34,27 @@ void oled_init(void);
  * @param uptime_s          System uptime in seconds
  * @param device_id         This node's device ID (e.g. "fof_node_1")
  */
-void oled_update(int drone_count, bool ble_scanner_ok, bool wifi_scanner_ok,
+void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
                  bool backend_ok, int upload_count, bool wifi_network_ok,
                  float battery_pct, uint32_t uptime_s, const char *device_id);
 
 /**
+ * Show an early boot/status screen. Badge builds render this before Wi-Fi
+ * comes up; non-badge OLED builds may ignore it.
+ */
+void oled_show_boot_status(const char *stage, const char *mode, const char *line);
+
+/**
  * Briefly show the latest detection on screen.
  *
- * @param drone_id      Drone serial number or generated ID
+ * @param detection_id  Detection identifier
  * @param manufacturer  Manufacturer name (may be empty)
+ * @param source        DETECTION_SRC_* source code
  * @param confidence    Detection confidence 0.0-1.0
  * @param rssi          Signal strength in dBm
  */
-void oled_show_detection(const char *drone_id, const char *manufacturer,
-                         float confidence, int rssi);
+void oled_show_detection(const char *detection_id, const char *manufacturer,
+                         uint8_t source, float confidence, int rssi);
 
 /**
  * Clear the display to all black.

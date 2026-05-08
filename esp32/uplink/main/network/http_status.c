@@ -23,6 +23,8 @@
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_rom_crc.h"
+#include "soc/rtc_cntl_reg.h"
+#include "soc/soc.h"
 #include "uart_protocol.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -36,9 +38,16 @@
 #include "battery.h"
 #include "http_upload.h"
 #include "nvs_config.h"
+#include "badge_mode.h"
 #include "version.h"
+#include "detection_policy.h"
+#ifdef FOF_BADGE_VARIANT
+#include "badge_runtime.h"
+#endif
 
 static const char *TAG = "http_status";
+
+static void json_chunk_string(httpd_req_t *req, const char *value);
 
 /* ── Source name lookup ─────────────────────────────────────────────────── */
 
@@ -56,6 +65,147 @@ static const char *source_name(uint8_t src)
         case DETECTION_SRC_WIFI_AP_INVENTORY:  return "WiFi AP Inv";
         default: return "Unknown";
     }
+}
+
+static void badge_status_chunk_scanner(httpd_req_t *req,
+                                       const char *name,
+                                       uint8_t scanner_id,
+                                       bool connected,
+                                       bool peer_connected,
+                                       const scanner_info_t *info,
+                                       bool first)
+{
+    char buf[1536];
+    const bool calibration = info && strcmp(info->scan_mode, "calibration") == 0;
+    const char *expected = calibration
+        ? fof_policy_scan_profile_for_slot(scanner_id, true)
+        : (peer_connected ? fof_policy_scan_profile_for_slot(scanner_id, false)
+                          : "hybrid_failover");
+    const char *actual = (info && info->scan_profile[0])
+        ? info->scan_profile
+        : "";
+    const bool role_acked = connected && actual[0] && strcmp(actual, expected) == 0;
+    const bool cmd_fresh = connected && info && info->cmd_rx_count > 0 &&
+                           info->cmd_last_age_s >= 0 && info->cmd_last_age_s <= 45;
+    const char *health = !connected ? "missing" :
+        (!role_acked ? "role_wait" :
+         (!cmd_fresh ? "cmd_wait" :
+          (info && scanner_id == 0 && !info->ble_scanning ? "ble_off" : "ok")));
+
+    snprintf(buf, sizeof(buf),
+             "%s{\"slot\":%u,\"uart\":\"%s\",\"connected\":%s,"
+             "\"slot_role\":\"%s\",\"expected_scan_profile\":\"%s\","
+             "\"scan_profile\":\"%s\",\"role_acked\":%s,\"health\":\"%s\"",
+             first ? "" : ",",
+             (unsigned)scanner_id,
+             name,
+             connected ? "true" : "false",
+             fof_policy_slot_role_for_slot(scanner_id),
+             expected,
+             actual,
+             role_acked ? "true" : "false",
+             health);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    scanner_uart_diag_t uart_diag = {0};
+    uart_rx_get_scanner_uart_diag(scanner_id, &uart_diag);
+    snprintf(buf, sizeof(buf),
+             ",\"uart_raw_seen\":%s,\"uart_raw_age_s\":%lld,"
+             "\"uart_raw_bytes\":%lu,\"uart_line_overflow\":%lu,"
+             "\"uart_json_err\":%lu",
+             uart_diag.raw_seen ? "true" : "false",
+             (long long)uart_diag.raw_age_s,
+             (unsigned long)uart_diag.raw_bytes,
+             (unsigned long)uart_diag.line_overflow_count,
+             (unsigned long)uart_diag.json_parse_error_count);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    if (info) {
+        snprintf(buf, sizeof(buf),
+                 ",\"ver\":\"%s\",\"board\":\"%s\",\"cmd_rx\":%lu,"
+                 "\"cmd_last_age_s\":%lld,\"cmd_parse_err\":%lu,"
+                 "\"cmd_overflow\":%lu,\"ble_scanning\":%s,"
+                 "\"ble_host_active\":%s,\"ble_host_synced\":%s,"
+                 "\"wifi_paused\":%s,"
+                 "\"ble_adv_seen\":%lu,\"ble_fp_emit\":%lu,"
+                 "\"ble_meta_seen\":%lu,\"ble_tracker_seen\":%lu,"
+                 "\"ble_privacy_candidate_seen\":%lu,\"ble_near_unknown_seen\":%lu,"
+                 "\"ble_drop_profile\":%lu,\"ble_drop_rate\":%lu,"
+                 "\"ble_host_restart_count\":%lu,"
+                 "\"ble_scan_start_count\":%lu,\"ble_scan_start_ok\":%lu,"
+                 "\"ble_scan_last_rc\":%d,\"ble_sync_last_rc\":%d,"
+                 "\"rid_service_seen\":%lu,\"rid_emit\":%lu,\"privacy_seen\":%lu,"
+                 "\"wifi_total_frames\":%lu,\"wifi_beacon_frames\":%lu,"
+                 "\"wifi_full_scan_count\":%lu,\"wifi_full_scan_ok\":%lu,"
+                 "\"wifi_full_scan_err\":%lu,\"wifi_full_scan_last_rc\":%d,"
+                 "\"wifi_last_ap_count\":%lu,\"wifi_last_scan_age_s\":%lld,"
+                 "\"wifi_oui_emit\":%lu,\"wifi_soft_ssid_emit\":%lu,"
+                 "\"wifi_hot_ch\":%lu,"
+                 "\"fw_state\":\"%s\",\"target_ver\":\"%s\","
+                 "\"last_fw_error\":\"%s\",\"ota_state\":\"%s\","
+                 "\"ota_session_id\":\"%s\",\"ota_received\":%lu,"
+                 "\"ota_total\":%lu,\"recovery_mode\":\"%s\","
+                 "\"safe_reason\":\"%s\",\"rollback_pending\":%s,"
+                 "\"crash_count\":%lu,\"radio_restart_count\":%lu,"
+                 "\"wifi_drone_ssid_emit\":%lu,\"wifi_notable_ssid_emit\":%lu",
+                 info->version,
+                 info->board,
+                 (unsigned long)info->cmd_rx_count,
+                 (long long)info->cmd_last_age_s,
+                 (unsigned long)info->cmd_parse_error_count,
+                 (unsigned long)info->cmd_overflow_count,
+                 info->ble_scanning ? "true" : "false",
+                 info->ble_host_active ? "true" : "false",
+                 info->ble_host_synced ? "true" : "false",
+                 info->wifi_paused ? "true" : "false",
+                 (unsigned long)info->ble_adv_seen,
+                 (unsigned long)info->ble_fp_emit,
+                 (unsigned long)info->ble_meta_seen,
+                 (unsigned long)info->ble_tracker_seen,
+                 (unsigned long)info->ble_privacy_candidate_seen,
+                 (unsigned long)info->ble_near_unknown_seen,
+                 (unsigned long)info->ble_drop_profile,
+                 (unsigned long)info->ble_drop_rate,
+                 (unsigned long)info->ble_host_restart_count,
+                 (unsigned long)info->ble_scan_start_count,
+                 (unsigned long)info->ble_scan_start_ok,
+                 info->ble_scan_last_rc,
+                 info->ble_sync_last_rc,
+                 (unsigned long)info->rid_service_seen,
+                 (unsigned long)info->rid_emit,
+                 (unsigned long)info->privacy_seen,
+                 (unsigned long)info->wifi_total_frames,
+                 (unsigned long)info->wifi_beacon_frames,
+                 (unsigned long)info->wifi_full_scan_count,
+                 (unsigned long)info->wifi_full_scan_ok,
+                 (unsigned long)info->wifi_full_scan_err,
+                 info->wifi_full_scan_last_rc,
+                 (unsigned long)info->wifi_last_ap_count,
+                 (long long)info->wifi_last_scan_age_s,
+                 (unsigned long)info->wifi_oui_emit,
+                 (unsigned long)info->wifi_soft_ssid_emit,
+                 (unsigned long)info->wifi_hot_ch,
+                 info->fw_update_state[0] ? info->fw_update_state : "idle",
+                 info->fw_target_version,
+                 info->last_fw_error,
+                 info->ota_state[0] ? info->ota_state : "idle",
+                 info->ota_session_id,
+                 (unsigned long)info->ota_received,
+                 (unsigned long)info->ota_total,
+                 info->recovery_mode[0] ? info->recovery_mode : "normal",
+                 info->safe_reason,
+                 info->rollback_pending ? "true" : "false",
+                 (unsigned long)info->crash_count,
+                 (unsigned long)info->radio_restart_count,
+                 (unsigned long)info->wifi_drone_ssid_emit,
+                 (unsigned long)info->wifi_notable_ssid_emit);
+        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+        httpd_resp_send_chunk(req, ",\"wifi_last_drone_ssid\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->wifi_last_drone_ssid);
+        httpd_resp_send_chunk(req, ",\"wifi_last_notable_ssid\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->wifi_last_notable_ssid);
+    }
+    httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
 }
 
 static const char *time_source_name(int source_mode)
@@ -533,6 +683,40 @@ static esp_err_t status_json_handler(httpd_req_t *req)
         det_count, upload_ok, upload_fail);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
+    int64_t last_upload_ms = http_upload_get_last_success_ms();
+    int64_t last_upload_age_s = -1;
+    if (last_upload_ms > 0) {
+        int64_t now_monotonic_ms = esp_timer_get_time() / 1000;
+        last_upload_age_s = now_monotonic_ms >= last_upload_ms
+            ? (now_monotonic_ms - last_upload_ms) / 1000
+            : 0;
+    }
+    httpd_resp_send_chunk(req, "\"reporting\":{\"network_mode\":", HTTPD_RESP_USE_STRLEN);
+#ifdef FOF_BADGE_VARIANT
+    json_chunk_string(req, badge_runtime_network_mode_name(
+        badge_runtime_get_network_mode()));
+    snprintf(buf, sizeof(buf),
+             ",\"backend_enabled\":%s,\"network_ttl_s\":%d",
+             badge_runtime_get_network_mode() == BADGE_RUNTIME_NETWORK_BACKEND ? "true" : "false",
+             badge_runtime_get_network_ttl_s());
+#else
+    json_chunk_string(req, standalone ? "standalone" : "backend");
+    snprintf(buf, sizeof(buf),
+             ",\"backend_enabled\":%s,\"network_ttl_s\":0",
+             standalone ? "false" : "true");
+#endif
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    snprintf(buf, sizeof(buf),
+             ",\"wifi_sta\":%s,\"standalone\":%s,"
+             "\"uploads_ok\":%d,\"uploads_fail\":%d,"
+             "\"last_upload_age_s\":%lld},",
+             wifi_ok ? "true" : "false",
+             standalone ? "true" : "false",
+             upload_ok,
+             upload_fail,
+             (long long)last_upload_age_s);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
     /* Recent detections array */
     httpd_resp_send_chunk(req, "\"recent\":[", HTTPD_RESP_USE_STRLEN);
 
@@ -551,6 +735,21 @@ static esp_err_t status_json_handler(httpd_req_t *req)
         httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
     }
 
+    httpd_resp_send_chunk(req, "],\"scanners\":[", HTTPD_RESP_USE_STRLEN);
+    bool ble_connected = uart_rx_is_ble_scanner_connected();
+    bool wifi_connected = uart_rx_is_wifi_scanner_connected();
+    badge_status_chunk_scanner(req, "ble", 0,
+                               ble_connected,
+                               wifi_connected,
+                               uart_rx_get_ble_scanner_info(),
+                               true);
+#if CONFIG_DUAL_SCANNER
+    badge_status_chunk_scanner(req, "wifi", 1,
+                               wifi_connected,
+                               ble_connected,
+                               uart_rx_get_wifi_scanner_info(),
+                               false);
+#endif
     httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
 
     /* Finish */
@@ -626,7 +825,7 @@ static esp_err_t setup_html_handler(httpd_req_t *req)
         "<input type=\"text\" id=\"ssid\" placeholder=\"Select from scan or type\""
         , HTTPD_RESP_USE_STRLEN);
 
-    char buf[256];
+    char buf[512];
     snprintf(buf, sizeof(buf), " value=\"%s\">", cur_ssid);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
@@ -960,6 +1159,13 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
     ESP_LOGW(TAG, "OTA update successful! %d bytes written to %s. Rebooting...",
              received, update_partition->label);
 
+#ifdef FOF_BADGE_VARIANT
+    (void)badge_runtime_arm_reboot_network_hold(
+        badge_runtime_get_network_mode(),
+        badge_runtime_post_ota_hold_ttl_s(badge_runtime_get_network_mode(), 0)
+    );
+#endif
+
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"OTA complete, rebooting...\"}");
 
@@ -1083,9 +1289,26 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
     }
 
     /* Step 0: Stop scanner TX to prevent data collision during flash. */
+    uart_rx_clear_ota_response();
+    int64_t stop_wait_start_ms = esp_timer_get_time() / 1000;
     uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"stop\"}");
     ESP_LOGI(TAG, "Sent stop command to scanner before OTA relay");
-    vTaskDelay(pdMS_TO_TICKS(500));
+    ota_response_t stop_resp = {0};
+    int stop_wait = wait_for_ota_response_since(stop_wait_start_ms,
+                                                "stop_ack",
+                                                3000,
+                                                &stop_resp);
+    if (stop_wait != 0) {
+        char err_msg[192];
+        snprintf(err_msg, sizeof(err_msg),
+                 "{\"ok\":false,\"stage\":\"stop\",\"error\":\"command_ingress_unhealthy\","
+                 "\"detail\":\"stop_ack_timeout\"}");
+        http_upload_resume();
+        uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, err_msg);
+        return ESP_OK;
+    }
 
     /* Step 1: Send OTA begin command */
     uart_rx_clear_ota_response();
@@ -1099,24 +1322,22 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
 
     ota_response_t ota_resp = {0};
     if (legacy_mode) {
-        ESP_LOGW(TAG, "OTA relay legacy mode: skipping ota_ack wait for old scanner firmware");
-        vTaskDelay(pdMS_TO_TICKS(2500));
-    } else {
-        int ack_wait = wait_for_ota_response_since(begin_wait_start_ms, "ota_ack", 3000, &ota_resp);
-        if (ack_wait != 0) {
-            char err_msg[192];
-            snprintf(err_msg, sizeof(err_msg),
-                     "{\"ok\":false,\"stage\":\"begin\",\"error\":\"%s\",\"detail\":\"%s\"}",
-                     ack_wait == -2 ? "scanner_error" : "ota_ack_timeout",
-                     ota_resp.error[0] ? ota_resp.error : "");
-            http_upload_resume();
-            uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_sendstr(req, err_msg);
-            return ESP_OK;
-        }
-        ESP_LOGI(TAG, "OTA relay: scanner acknowledged ota_begin");
+        ESP_LOGW(TAG, "OTA relay legacy parameter ignored: strict ota_ack proof required");
     }
+    int ack_wait = wait_for_ota_response_since(begin_wait_start_ms, "ota_ack", 3000, &ota_resp);
+    if (ack_wait != 0) {
+        char err_msg[192];
+        snprintf(err_msg, sizeof(err_msg),
+                 "{\"ok\":false,\"stage\":\"begin\",\"error\":\"%s\",\"detail\":\"%s\"}",
+                 ack_wait == -2 ? "scanner_error" : "ota_ack_timeout",
+                 ota_resp.error[0] ? ota_resp.error : "");
+        http_upload_resume();
+        uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, err_msg);
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "OTA relay: scanner acknowledged ota_begin");
 
     int received = 0;
     int remaining = total;
@@ -1207,7 +1428,7 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
              relay_ok ? "complete" : "FAILED", received, seq, uart_num);
 
     ota_response_t final_resp = {0};
-    if (relay_ok && !legacy_mode) {
+    if (relay_ok) {
         int done_wait = wait_for_ota_response_since(final_wait_start_ms, "ota_done", 60000, &final_resp);
         if (done_wait != 0) {
             relay_ok = false;
@@ -1215,9 +1436,6 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
                 snprintf(final_resp.error, sizeof(final_resp.error), "%s", "scanner_error");
             }
         }
-    } else if (relay_ok && legacy_mode) {
-        snprintf(final_resp.type, sizeof(final_resp.type), "%s", "legacy_sent");
-        vTaskDelay(pdMS_TO_TICKS(12000));
     } else {
         final_resp = uart_rx_get_last_ota_response();
     }
@@ -1300,6 +1518,419 @@ static const httpd_uri_t uri_ota_relay = {
     .uri      = "/api/ota/relay",
     .method   = HTTP_POST,
     .handler  = ota_relay_handler,
+};
+
+/* ── Badge Control API ───────────────────────────────────────────────── */
+
+static void json_chunk_string(httpd_req_t *req, const char *value)
+{
+    httpd_resp_send_chunk(req, "\"", 1);
+    const char *p = value ? value : "";
+    char esc[3] = {'\\', 0, 0};
+    char ch[2] = {0, 0};
+    while (*p) {
+        unsigned char c = (unsigned char)*p++;
+        if (c == '"' || c == '\\') {
+            esc[1] = (char)c;
+            httpd_resp_send_chunk(req, esc, 2);
+        } else if (c >= 0x20 && c <= 0x7E) {
+            ch[0] = (char)c;
+            httpd_resp_send_chunk(req, ch, 1);
+        }
+    }
+    httpd_resp_send_chunk(req, "\"", 1);
+}
+
+static esp_err_t badge_status_json_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+
+    badge_threat_snapshot_t snapshot;
+    uart_rx_get_badge_threat_snapshot(&snapshot);
+    badge_mode_t mode = badge_mode_get();
+    char debug_value[8] = {0};
+    bool display_debug = nvs_config_get_string("badge_display_debug",
+                                               debug_value,
+                                               sizeof(debug_value)) &&
+                         strcmp(debug_value, "1") == 0;
+
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{\"version\":\"%s\",\"mode\":\"%s\",\"mode_label\":",
+             FOF_VERSION, badge_mode_to_string(mode));
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, badge_mode_display_name(mode));
+
+    snprintf(buf, sizeof(buf),
+             ",\"display_debug\":%s,"
+             "\"ap_enabled\":%s,\"ap_url\":\"http://192.168.4.1\","
+             "\"ap_ssid\":",
+             display_debug ? "true" : "false",
+#ifdef FOF_BADGE_VARIANT
+             badge_runtime_get_network_mode() == BADGE_RUNTIME_NETWORK_LOCAL_AP ? "true" : "false"
+#else
+             badge_mode_ap_enabled(mode) ? "true" : "false"
+#endif
+             );
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, wifi_ap_get_ssid());
+
+    snprintf(buf, sizeof(buf),
+             ",\"wifi_sta\":%s,\"backend_enabled\":%s,"
+             "\"scanner_connected\":%s,\"ble_scanner\":%s,\"wifi_scanner\":%s,"
+             "\"threat_score\":%.1f,\"color_rgb565\":%u,"
+             "\"dominant_class\":\"%s\",\"dominant_category\":\"%s\","
+             "\"dominant_proximity\":%d,"
+             "\"counts\":{\"drone\":%lu,\"meta\":%lu,\"tracker\":%lu,"
+             "\"wifi_anomaly\":%lu,\"ble\":%lu,\"other\":%lu}",
+             wifi_sta_is_connected() ? "true" : "false",
+#ifdef FOF_BADGE_VARIANT
+             badge_runtime_get_network_mode() == BADGE_RUNTIME_NETWORK_BACKEND ? "true" : "false",
+#else
+             badge_mode_backend_enabled(mode) ? "true" : "false",
+#endif
+             uart_rx_is_scanner_connected() ? "true" : "false",
+             uart_rx_is_ble_scanner_connected() ? "true" : "false",
+             uart_rx_is_wifi_scanner_connected() ? "true" : "false",
+             snapshot.threat_score,
+             (unsigned)snapshot.color_rgb565,
+             badge_threat_class_name(snapshot.dominant_class),
+             snapshot.entity_count > 0
+                ? badge_threat_category_name(snapshot.entities[0].category)
+                : badge_threat_category_name(BADGE_THREAT_CATEGORY_NONE),
+             (int)snapshot.dominant_proximity,
+             (unsigned long)snapshot.active_counts[BADGE_THREAT_DRONE],
+             (unsigned long)snapshot.active_counts[BADGE_THREAT_META],
+             (unsigned long)snapshot.active_counts[BADGE_THREAT_TRACKER],
+             (unsigned long)snapshot.active_counts[BADGE_THREAT_WIFI_ANOMALY],
+             (unsigned long)snapshot.active_counts[BADGE_THREAT_BLE],
+             (unsigned long)snapshot.active_counts[BADGE_THREAT_OTHER]);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    int64_t last_upload_ms = http_upload_get_last_success_ms();
+    int64_t upload_age_s = -1;
+    if (last_upload_ms > 0) {
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        upload_age_s = now_ms >= last_upload_ms ? (now_ms - last_upload_ms) / 1000 : 0;
+    }
+    httpd_resp_send_chunk(req, ",\"reporting\":{\"network_mode\":", HTTPD_RESP_USE_STRLEN);
+#ifdef FOF_BADGE_VARIANT
+    json_chunk_string(req, badge_runtime_network_mode_name(
+        badge_runtime_get_network_mode()));
+    snprintf(buf, sizeof(buf),
+             ",\"backend_enabled\":%s,\"network_ttl_s\":%d",
+             badge_runtime_get_network_mode() == BADGE_RUNTIME_NETWORK_BACKEND ? "true" : "false",
+             badge_runtime_get_network_ttl_s());
+#else
+    json_chunk_string(req, badge_mode_to_string(mode));
+    snprintf(buf, sizeof(buf),
+             ",\"backend_enabled\":%s,\"network_ttl_s\":0",
+             badge_mode_backend_enabled(mode) ? "true" : "false");
+#endif
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    snprintf(buf, sizeof(buf),
+             ",\"wifi_sta\":%s,\"standalone\":%s,"
+             "\"uploads_ok\":%d,\"uploads_fail\":%d,"
+             "\"last_upload_age_s\":%lld}",
+             wifi_sta_is_connected() ? "true" : "false",
+             wifi_sta_is_standalone() ? "true" : "false",
+             http_upload_get_success_count(),
+             http_upload_get_fail_count(),
+             (long long)upload_age_s);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+#ifdef FOF_BADGE_VARIANT
+    snprintf(buf, sizeof(buf), ",\"safe_mode\":%s,\"safe_reason\":",
+             badge_runtime_is_safe_mode() ? "true" : "false");
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, badge_runtime_safe_reason());
+#endif
+    httpd_resp_send_chunk(req, ",\"entities\":[", HTTPD_RESP_USE_STRLEN);
+
+    for (int i = 0; i < snapshot.entity_count; i++) {
+        const badge_threat_snapshot_entity_t *entity = &snapshot.entities[i];
+        snprintf(buf, sizeof(buf), "%s{\"label\":", i > 0 ? "," : "");
+        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, entity->label);
+        httpd_resp_send_chunk(req, ",\"detail\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, entity->detail);
+        snprintf(buf, sizeof(buf),
+                 ",\"class\":\"%s\",\"category\":\"%s\",\"code\":\"%s\","
+                 "\"score\":%d,\"evidence_quality\":%u,"
+                 "\"display_rank\":%d,\"age_s\":%d,"
+                 "\"last_seen_s\":%d,\"rssi\":%d,\"best_rssi\":%d,"
+                 "\"events\":%lu,\"seen_count\":%lu,\"group_count\":%lu,"
+                 "\"proximity_level\":%d,\"stale\":%s",
+                 badge_threat_class_name(entity->cls),
+                 badge_threat_category_name(entity->category),
+                 badge_threat_category_code(entity->category),
+                 entity->score,
+                 (unsigned)entity->evidence_quality,
+                 entity->display_rank,
+                 entity->age_s,
+                 entity->last_seen_s,
+                 entity->rssi,
+                 entity->best_rssi,
+                 (unsigned long)entity->event_count,
+                 (unsigned long)entity->seen_count,
+                 (unsigned long)entity->group_count,
+                 (int)entity->proximity_level,
+                 entity->stale ? "true" : "false");
+        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+        if (entity->has_location) {
+            snprintf(buf, sizeof(buf),
+                     ",\"lat\":%.7f,\"lon\":%.7f,\"altitude_m\":%.1f",
+                     entity->latitude, entity->longitude, entity->altitude_m);
+            httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+        }
+        if (entity->has_operator_location) {
+            snprintf(buf, sizeof(buf),
+                     ",\"operator_lat\":%.7f,\"operator_lon\":%.7f",
+                     entity->operator_lat, entity->operator_lon);
+            httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+        }
+        if (entity->operator_id[0] != '\0') {
+            httpd_resp_send_chunk(req, ",\"operator_id\":", HTTPD_RESP_USE_STRLEN);
+            json_chunk_string(req, entity->operator_id);
+        }
+        httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    httpd_resp_send_chunk(req, "],\"scanners\":[", HTTPD_RESP_USE_STRLEN);
+    bool badge_ble_connected = uart_rx_is_ble_scanner_connected();
+    bool badge_wifi_connected = uart_rx_is_wifi_scanner_connected();
+    badge_status_chunk_scanner(req, "ble", 0,
+                               badge_ble_connected,
+                               badge_wifi_connected,
+                               uart_rx_get_ble_scanner_info(),
+                               true);
+#if CONFIG_DUAL_SCANNER
+    badge_status_chunk_scanner(req, "wifi", 1,
+                               badge_wifi_connected,
+                               badge_ble_connected,
+                               uart_rx_get_wifi_scanner_info(),
+                               false);
+#endif
+    httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+#ifdef FOF_BADGE_VARIANT
+static int badge_control_ttl_s(const cJSON *root)
+{
+    const cJSON *ttl = cJSON_GetObjectItemCaseSensitive(root, "ttl_s");
+    return cJSON_IsNumber(ttl) ? ttl->valueint : 0;
+}
+
+static bool badge_control_bool(const cJSON *root, const char *key, bool fallback)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
+    if (!item) {
+        return fallback;
+    }
+    if (cJSON_IsBool(item)) {
+        return cJSON_IsTrue(item);
+    }
+    if (cJSON_IsNumber(item)) {
+        return item->valueint != 0;
+    }
+    return fallback;
+}
+
+static void badge_control_send_network_result(httpd_req_t *req,
+                                              bool applied)
+{
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+             "{\"ok\":true,\"applied\":%s,\"network_mode\":\"%s\","
+             "\"network_ttl_s\":%d,\"reboot_required\":false}",
+             applied ? "true" : "false",
+             badge_runtime_network_mode_name(badge_runtime_get_network_mode()),
+             badge_runtime_get_network_ttl_s());
+    httpd_resp_sendstr(req, buf);
+}
+#endif
+
+static esp_err_t badge_control_post_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    char body[512] = {0};
+    int received = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (received <= 0) {
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"no body\"}");
+        return ESP_OK;
+    }
+
+    cJSON *root = cJSON_ParseWithLength(body, received);
+    if (!root) {
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"invalid json\"}");
+        return ESP_OK;
+    }
+
+    const cJSON *cmd_item = cJSON_GetObjectItemCaseSensitive(root, "cmd");
+    const char *cmd = cJSON_IsString(cmd_item) ? cmd_item->valuestring : "";
+
+    if (strcmp(cmd, "status") == 0) {
+        cJSON_Delete(root);
+        return badge_status_json_handler(req);
+    }
+    if (strcmp(cmd, "network") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        const cJSON *mode_item = cJSON_GetObjectItemCaseSensitive(root, "mode");
+        badge_runtime_network_mode_t runtime_mode;
+        if (!cJSON_IsString(mode_item) ||
+            !badge_runtime_parse_network_mode(mode_item->valuestring, &runtime_mode)) {
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"invalid network mode\"}");
+        } else {
+            bool applied = badge_runtime_request_network(
+                runtime_mode,
+                badge_control_ttl_s(root),
+                "http"
+            );
+            badge_control_send_network_result(req, applied);
+        }
+#else
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"network sessions are badge-only\"}");
+#endif
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+    if (strcmp(cmd, "set_mode") == 0) {
+        const cJSON *mode_item = cJSON_GetObjectItemCaseSensitive(root, "mode");
+#ifdef FOF_BADGE_VARIANT
+        badge_runtime_network_mode_t runtime_mode;
+        bool persist_mode = badge_control_bool(root, "persist", false);
+        if (!cJSON_IsString(mode_item) ||
+            !badge_runtime_parse_network_mode(mode_item->valuestring, &runtime_mode)) {
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"invalid mode\"}");
+        } else {
+            if (persist_mode) {
+                badge_mode_t persisted_mode;
+                if (badge_mode_parse(mode_item->valuestring, &persisted_mode)) {
+                    badge_mode_set(persisted_mode);
+                }
+            }
+            bool applied = badge_runtime_request_network(
+                runtime_mode,
+                persist_mode ? -1 : badge_control_ttl_s(root),
+                "http_set_mode"
+            );
+            badge_control_send_network_result(req, applied);
+        }
+#else
+        badge_mode_t mode;
+        if (!cJSON_IsString(mode_item) ||
+            !badge_mode_parse(mode_item->valuestring, &mode)) {
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"invalid mode\"}");
+        } else if (badge_mode_set(mode)) {
+            httpd_resp_sendstr(req, "{\"ok\":true,\"reboot_required\":true}");
+        } else {
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"mode save failed\"}");
+        }
+#endif
+    } else if (strcmp(cmd, "set_backend") == 0) {
+        const cJSON *url = cJSON_GetObjectItemCaseSensitive(root, "url");
+        const cJSON *ssid = cJSON_GetObjectItemCaseSensitive(root, "wifi_ssid");
+        const cJSON *pass = cJSON_GetObjectItemCaseSensitive(root, "wifi_pass");
+        const cJSON *enable = cJSON_GetObjectItemCaseSensitive(root, "enable");
+        if (cJSON_IsString(url) && url->valuestring[0]) {
+            nvs_config_set_string("backend_url", url->valuestring);
+        }
+        if (cJSON_IsString(ssid) && ssid->valuestring[0]) {
+            nvs_config_set_string("wifi_ssid", ssid->valuestring);
+        }
+        if (cJSON_IsString(pass) && pass->valuestring[0]) {
+            nvs_config_set_string("wifi_pass", pass->valuestring);
+        }
+        if ((cJSON_IsBool(enable) && cJSON_IsTrue(enable)) ||
+            (cJSON_IsNumber(enable) && enable->valueint != 0)) {
+#ifdef FOF_BADGE_VARIANT
+            badge_mode_set(BADGE_MODE_BACKEND);
+            bool applied = badge_runtime_request_network(
+                BADGE_RUNTIME_NETWORK_BACKEND,
+                badge_control_ttl_s(root) > 0 ? badge_control_ttl_s(root) : -1,
+                "http_set_backend"
+            );
+            badge_control_send_network_result(req, applied);
+            cJSON_Delete(root);
+            return ESP_OK;
+#else
+            badge_mode_set(BADGE_MODE_BACKEND);
+#endif
+        }
+        httpd_resp_sendstr(req, "{\"ok\":true,\"reboot_required\":true}");
+    } else if (strcmp(cmd, "set_display_debug") == 0) {
+        const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+        nvs_config_set_string("badge_display_debug",
+                              (cJSON_IsBool(enabled) && cJSON_IsTrue(enabled)) ? "1" : "0");
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+    } else if (strcmp(cmd, "reboot") == 0) {
+        httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"rebooting\"}");
+        cJSON_Delete(root);
+        vTaskDelay(pdMS_TO_TICKS(250));
+        esp_restart();
+        return ESP_OK;
+    } else if (strcmp(cmd, "bootloader") == 0) {
+        httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"bootloader\"}");
+        cJSON_Delete(root);
+        vTaskDelay(pdMS_TO_TICKS(250));
+        REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+        esp_restart();
+        return ESP_OK;
+    } else {
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"unknown command\"}");
+    }
+
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t badge_html_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req,
+        "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>FoF Badge</title><style>"
+        "body{font-family:-apple-system,system-ui,sans-serif;background:#0d1117;color:#e6edf3;margin:0;padding:16px}"
+        ".c{max-width:560px;margin:auto}.r{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;margin:10px 0}"
+        "button,select{font:inherit;padding:9px 12px;border-radius:6px;border:1px solid #30363d;background:#1f6feb;color:white;margin:4px}"
+        "select{background:#0d1117;color:#e6edf3}.muted{color:#8b949e}.ok{color:#3fb950}.warn{color:#d29922}.err{color:#f85149}"
+        "</style></head><body><div class=\"c\"><h1>FoF Badge</h1>"
+        "<div class=\"r\"><div id=\"status\" class=\"muted\">Loading...</div></div>"
+        "<div class=\"r\"><label>Mode </label><select id=\"mode\"><option value=\"local_ap\">Local AP</option><option value=\"backend\">Backend</option><option value=\"usb_only\">USB Only</option></select>"
+        "<button onclick=\"setMode()\">Save Mode</button><button onclick=\"ctl('reboot')\">Reboot</button><button onclick=\"ctl('bootloader')\">Bootloader</button></div>"
+        "<div class=\"r\"><label><input id=\"dbg\" type=\"checkbox\"> Display debug</label><button onclick=\"setDebug()\">Save Debug</button></div>"
+        "<div class=\"r\"><input id=\"fw\" type=\"file\"><button onclick=\"ota()\">OTA Update</button><div id=\"otaStatus\" class=\"muted\"></div></div>"
+        "<div class=\"r\"><a style=\"color:#58a6ff\" href=\"/setup\">Wi-Fi/backend setup</a> · <a style=\"color:#58a6ff\" href=\"/api/status\">debug JSON</a></div>"
+        "<script>"
+        "async function load(){let r=await fetch('/api/badge/status');let d=await r.json();mode.value=d.mode;dbg.checked=!!d.display_debug;"
+        "let ents=(d.entities||[]).map(e=>e.label+' '+e.score).join(' · ')||'Clear';"
+        "status.innerHTML='<b>'+d.mode_label+'</b><br>Threat '+Math.round(d.threat_score)+'<br>DRN '+d.counts.drone+' META '+d.counts.meta+' TAG '+d.counts.tracker+'<br>'+ents+'<br><span class=\"muted\">AP '+d.ap_ssid+' · '+d.ap_url+'</span>'}"
+        "async function ctl(cmd){await fetch('/api/badge/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd})});setTimeout(load,700)}"
+        "async function setMode(){await fetch('/api/badge/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:'set_mode',mode:mode.value,persist:true})});load()}"
+        "async function setDebug(){await fetch('/api/badge/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:'set_display_debug',enabled:dbg.checked})});load()}"
+        "async function ota(){let f=fw.files[0];if(!f){otaStatus.textContent='Choose a firmware .bin';return;}otaStatus.textContent='Uploading...';let r=await fetch('/api/ota',{method:'POST',body:f});otaStatus.textContent=await r.text()}"
+        "load();setInterval(load,2000)</script></div></body></html>");
+    return ESP_OK;
+}
+
+static const httpd_uri_t uri_badge_html = {
+    .uri      = "/badge",
+    .method   = HTTP_GET,
+    .handler  = badge_html_handler,
+};
+
+static const httpd_uri_t uri_badge_status_json = {
+    .uri      = "/api/badge/status",
+    .method   = HTTP_GET,
+    .handler  = badge_status_json_handler,
+};
+
+static const httpd_uri_t uri_badge_control_post = {
+    .uri      = "/api/badge/control",
+    .method   = HTTP_POST,
+    .handler  = badge_control_post_handler,
 };
 
 /* ── Public API ────────────────────────────────────────────────────────── */
@@ -1464,11 +2095,15 @@ static esp_err_t calibration_mode_stop_handler(httpd_req_t *req)
 
 void http_status_init(void)
 {
+    static bool s_started = false;
+    if (s_started) {
+        return;
+    }
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port    = CONFIG_HTTP_STATUS_PORT;
     config.task_priority  = CONFIG_HTTP_STATUS_PRIORITY;
     config.stack_size     = CONFIG_HTTP_STATUS_STACK;
-    config.max_uri_handlers = 21;   /* status/setup/scan/connect/ota*3/fw*3/cal-mode*3/health + headroom */
+    config.max_uri_handlers = 26;   /* status/setup/scan/connect/ota*3/fw*3/cal-mode*3/badge*3/health + headroom */
     config.max_open_sockets = 4;    /* Browsers often hold status, setup, favicon, and API sockets briefly. */
     config.lru_purge_enable = true; /* Close idle connections aggressively */
     config.recv_wait_timeout  = 60;  /* 60s timeout for large OTA uploads */
@@ -1481,6 +2116,7 @@ void http_status_init(void)
                  esp_err_to_name(err));
         return;
     }
+    s_started = true;
 
     esp_err_t r;
     r = httpd_register_uri_handler(server, &uri_status_html);  if (r != ESP_OK) ESP_LOGE(TAG, "Failed /: %s", esp_err_to_name(r));
@@ -1492,6 +2128,9 @@ void http_status_init(void)
     r = httpd_register_uri_handler(server, &uri_ota_post);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_ota_info);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota/info: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_ota_relay);    if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota/relay: %s", esp_err_to_name(r));
+    r = httpd_register_uri_handler(server, &uri_badge_html);   if (r != ESP_OK) ESP_LOGE(TAG, "Failed /badge: %s", esp_err_to_name(r));
+    r = httpd_register_uri_handler(server, &uri_badge_status_json); if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/badge/status: %s", esp_err_to_name(r));
+    r = httpd_register_uri_handler(server, &uri_badge_control_post); if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/badge/control: %s", esp_err_to_name(r));
 
     /* Scanner firmware store + relay endpoints */
     fw_store_register(server);

@@ -8,6 +8,7 @@
  */
 
 #include "oled_display.h"
+#include "detection_types.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -386,7 +387,54 @@ void oled_set_version(const char *version)
     }
 }
 
-void oled_update(int detection_count, int active_drones, uint8_t wifi_channel,
+static bool contains_nocase_ascii(const char *haystack, const char *needle)
+{
+    if (!haystack || !needle || needle[0] == '\0') return false;
+    for (const char *h = haystack; *h; h++) {
+        const char *a = h;
+        const char *b = needle;
+        while (*a && *b) {
+            char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a - 'A' + 'a') : *a;
+            char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b - 'A' + 'a') : *b;
+            if (ca != cb) break;
+            a++;
+            b++;
+        }
+        if (*b == '\0') return true;
+    }
+    return false;
+}
+
+static bool source_is_drone(uint8_t source, const char *manufacturer)
+{
+    if (source == DETECTION_SRC_BLE_FINGERPRINT) {
+        return contains_nocase_ascii(manufacturer, "drone");
+    }
+    return source == DETECTION_SRC_BLE_RID ||
+           source == DETECTION_SRC_WIFI_SSID ||
+           source == DETECTION_SRC_WIFI_DJI_IE ||
+           source == DETECTION_SRC_WIFI_BEACON ||
+           source == DETECTION_SRC_WIFI_OUI;
+}
+
+static const char *detection_label_short(uint8_t source, const char *manufacturer)
+{
+    if (source_is_drone(source, manufacturer)) return "DRONE";
+    if (source == DETECTION_SRC_BLE_FINGERPRINT) {
+        if (contains_nocase_ascii(manufacturer, "meta")) return "META";
+        if (contains_nocase_ascii(manufacturer, "tag") ||
+            contains_nocase_ascii(manufacturer, "tile") ||
+            contains_nocase_ascii(manufacturer, "tracker") ||
+            contains_nocase_ascii(manufacturer, "findmy")) return "TRACK";
+        return "BLE";
+    }
+    if (source == DETECTION_SRC_WIFI_PROBE_REQUEST) return "PROBE";
+    if (source == DETECTION_SRC_WIFI_ASSOC) return "ASSOC";
+    if (source == DETECTION_SRC_WIFI_AP_INVENTORY) return "AP";
+    return "EVENT";
+}
+
+void oled_update(int detection_count, int active_tracks, uint8_t wifi_channel,
                  int ble_count, int wifi_count, uint32_t uptime_s)
 {
     if (!s_initialized) {
@@ -419,9 +467,9 @@ void oled_update(int detection_count, int active_drones, uint8_t wifi_channel,
     /* Line 1: Separator */
     fb_draw_hline(0, 107, 9);
 
-    /* Line 2: Drones + Channel */
-    snprintf(line, sizeof(line), "Drones:%-3d Ch:%d",
-             active_drones, wifi_channel);
+    /* Line 2: Active tracks + channel */
+    snprintf(line, sizeof(line), "Tracks:%-3d Ch:%d",
+             active_tracks, wifi_channel);
     fb_draw_string(0, 12, line);
 
     /* Line 3: BLE + WiFi counts */
@@ -447,8 +495,8 @@ void oled_update(int detection_count, int active_drones, uint8_t wifi_channel,
     oled_flush();
 }
 
-void oled_show_detection(const char *drone_id, const char *manufacturer,
-                         float confidence, int rssi)
+void oled_show_detection(const char *detection_id, const char *manufacturer,
+                         uint8_t source, float confidence, int rssi)
 {
     if (!s_initialized) {
         return;
@@ -460,8 +508,10 @@ void oled_show_detection(const char *drone_id, const char *manufacturer,
     /* Line 5: Separator */
     fb_draw_hline(0, 127, 42);
 
-    /* Line 6: Drone ID + signal bars */
-    snprintf(line, sizeof(line), "%.17s", drone_id ? drone_id : "???");
+    /* Line 6: Detection class + ID + signal bars */
+    snprintf(line, sizeof(line), "%s %.11s",
+             detection_label_short(source, manufacturer),
+             detection_id ? detection_id : "???");
     fb_draw_string(0, 45, line);
     fb_draw_signal_bars(116, 52, rssi);  /* right-aligned, bottom of line 6 */
 
@@ -474,8 +524,8 @@ void oled_show_detection(const char *drone_id, const char *manufacturer,
     oled_flush();
 }
 
-void oled_show_detection_paged(const char *drone_id, const char *manufacturer,
-                               float confidence, int rssi,
+void oled_show_detection_paged(const char *detection_id, const char *manufacturer,
+                               uint8_t source, float confidence, int rssi,
                                int page_current, int page_total)
 {
     if (!s_initialized) {
@@ -487,10 +537,12 @@ void oled_show_detection_paged(const char *drone_id, const char *manufacturer,
     /* Line 5: Separator */
     fb_draw_hline(0, 127, 42);
 
-    /* Line 6: Drone ID + page indicator or signal bars */
+    const char *label = detection_label_short(source, manufacturer);
+
+    /* Line 6: Detection class + ID + page indicator or signal bars */
     if (page_total > 1) {
         /* Truncated ID + page indicator */
-        snprintf(line, sizeof(line), "%.14s", drone_id ? drone_id : "???");
+        snprintf(line, sizeof(line), "%s %.8s", label, detection_id ? detection_id : "???");
         fb_draw_string(0, 45, line);
 
         /* Right-aligned page indicator (e.g. "2/5") */
@@ -500,8 +552,8 @@ void oled_show_detection_paged(const char *drone_id, const char *manufacturer,
         int px = 128 - len * 6;  /* 6px per char */
         fb_draw_string(px, 45, page_str);
     } else {
-        /* Single drone: full ID + signal bars (identical to oled_show_detection) */
-        snprintf(line, sizeof(line), "%.17s", drone_id ? drone_id : "???");
+        /* Single detection: class + ID + signal bars. */
+        snprintf(line, sizeof(line), "%s %.11s", label, detection_id ? detection_id : "???");
         fb_draw_string(0, 45, line);
         fb_draw_signal_bars(116, 52, rssi);
     }
