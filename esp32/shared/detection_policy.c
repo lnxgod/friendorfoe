@@ -265,6 +265,29 @@ bool fof_policy_should_drop_low_value(uint8_t source,
            !fof_policy_is_priority_ble_fingerprint(manufacturer);
 }
 
+uint32_t fof_policy_ble_fingerprint_reemit_ms(const char *manufacturer)
+{
+    return fof_policy_is_priority_ble_fingerprint(manufacturer)
+        ? 5000U
+        : 60000U;
+}
+
+bool fof_policy_ble_meta_should_reacquire(bool ble_scanning,
+                                          bool host_synced,
+                                          int64_t meta_age_s,
+                                          uint32_t adv_seen_delta,
+                                          bool calibration_active,
+                                          bool ota_active)
+{
+    if (!ble_scanning || !host_synced || calibration_active || ota_active) {
+        return false;
+    }
+    if (meta_age_s < 30 || adv_seen_delta == 0) {
+        return false;
+    }
+    return true;
+}
+
 bool fof_policy_is_controller_class_ble(uint8_t source,
                                         const char *manufacturer)
 {
@@ -302,6 +325,7 @@ bool fof_policy_should_shed_low_priority(uint8_t source,
         return true;
     }
     if (source == DETECTION_SRC_BLE_FINGERPRINT &&
+        !fof_policy_is_priority_ble_fingerprint(manufacturer) &&
         !fof_policy_is_controller_class_ble(source, manufacturer) &&
         queue_depth >= (queue_capacity * 7U / 10U)) {
         return true;
@@ -486,7 +510,7 @@ bool fof_policy_scan_profile_allows_source(const char *scan_profile,
         return !source_is_wifi(source);
     }
     if (ascii_eq_nocase(scan_profile, "wifi_primary")) {
-        return !source_is_ble(source);
+        return source != DETECTION_SRC_BLE_RID;
     }
     if (ascii_eq_nocase(scan_profile, "calibration")) {
         return source == DETECTION_SRC_BLE_FINGERPRINT;

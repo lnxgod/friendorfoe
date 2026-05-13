@@ -23,6 +23,9 @@
 #include "uart_rx.h"
 #include "nvs_config.h"
 #include "version.h"
+#ifdef FOF_BADGE_VARIANT
+#include "badge_runtime.h"
+#endif
 #endif
 
 /* ── Tunables ────────────────────────────────────────────────────────────── */
@@ -301,6 +304,9 @@ static esp_err_t try_self_update_uplink(const char *backend_base)
 
     ESP_LOGW(TAG, "uplink-s3 OTA complete (%d bytes, crc=%lu) — restarting",
              received, (unsigned long)crc);
+#ifdef FOF_BADGE_VARIANT
+    badge_runtime_arm_expected_reboot("auto_ota");
+#endif
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
     return ESP_OK;  /* unreachable */

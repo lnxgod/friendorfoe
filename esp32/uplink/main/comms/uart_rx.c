@@ -13,12 +13,16 @@
 #include "badge_threat_policy.h"
 #include "led_status.h"
 #include "fw_store.h"
+#ifdef FOF_BADGE_VARIANT
+#include "badge_runtime.h"
+#endif
 
 #include <string.h>
 #include <stdio.h>
 #include <stdatomic.h>
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
@@ -83,7 +87,36 @@ static portMUX_TYPE        s_recent_lock = portMUX_INITIALIZER_UNLOCKED;
 #ifdef FOF_BADGE_VARIANT
 static badge_threat_state_t s_badge_threat_state;
 static bool                 s_badge_threat_state_ready = false;
-static portMUX_TYPE         s_badge_threat_lock = portMUX_INITIALIZER_UNLOCKED;
+static SemaphoreHandle_t    s_badge_threat_mutex = NULL;
+static portMUX_TYPE         s_badge_threat_init_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static bool badge_threat_lock_state(TickType_t wait_ticks)
+{
+    if (!s_badge_threat_mutex) {
+        SemaphoreHandle_t created = xSemaphoreCreateMutex();
+        if (!created) {
+            ESP_LOGE(TAG, "Failed to create badge threat mutex");
+            return false;
+        }
+        portENTER_CRITICAL(&s_badge_threat_init_lock);
+        if (!s_badge_threat_mutex) {
+            s_badge_threat_mutex = created;
+            created = NULL;
+        }
+        portEXIT_CRITICAL(&s_badge_threat_init_lock);
+        if (created) {
+            vSemaphoreDelete(created);
+        }
+    }
+    return xSemaphoreTake(s_badge_threat_mutex, wait_ticks) == pdTRUE;
+}
+
+static void badge_threat_unlock_state(void)
+{
+    if (s_badge_threat_mutex) {
+        xSemaphoreGive(s_badge_threat_mutex);
+    }
+}
 
 static void badge_threat_ensure_ready(void)
 {
@@ -100,7 +133,9 @@ static bool badge_ingest_detection(const drone_detection_t *det,
         return false;
     }
     int64_t now_ms = esp_timer_get_time() / 1000;
-    portENTER_CRITICAL(&s_badge_threat_lock);
+    if (!badge_threat_lock_state(pdMS_TO_TICKS(50))) {
+        return false;
+    }
     badge_threat_ensure_ready();
     bool visible = badge_threat_state_ingest(
         &s_badge_threat_state,
@@ -108,7 +143,7 @@ static bool badge_ingest_detection(const drone_detection_t *det,
         now_ms,
         event_out
     );
-    portEXIT_CRITICAL(&s_badge_threat_lock);
+    badge_threat_unlock_state();
     return visible;
 }
 
@@ -152,34 +187,38 @@ static bool badge_status_counter_advanced(uint32_t current, uint32_t previous)
     return current > previous;
 }
 
+static bool scanner_status_ssid_is_fresh(const char *ssid, int64_t age_s)
+{
+    return badge_threat_status_ssid_is_fresh(ssid, age_s);
+}
+
+static bool scanner_wifi_drone_ssid_is_fresh(const scanner_info_t *info)
+{
+    return scanner_status_ssid_is_fresh(
+        info ? info->wifi_last_drone_ssid : NULL,
+        info ? info->wifi_last_drone_ssid_age_s : -1
+    );
+}
+
+static bool scanner_wifi_notable_ssid_is_fresh(const scanner_info_t *info)
+{
+    return scanner_status_ssid_is_fresh(
+        info ? info->wifi_last_notable_ssid : NULL,
+        info ? info->wifi_last_notable_ssid_age_s : -1
+    );
+}
+
+static bool scanner_meta_status_is_fresh(const scanner_info_t *info)
+{
+    return info &&
+           info->ble_meta_seen > 0 &&
+           info->ble_meta_last_seen_age_s >= 0 &&
+           info->ble_meta_last_seen_age_s <= 90;
+}
+
 static int8_t badge_status_rssi_or(int8_t rssi, int8_t fallback)
 {
     return rssi < 0 ? rssi : fallback;
-}
-
-static void badge_ingest_ble_meta_status_event(int scanner_id,
-                                               const scanner_info_t *info)
-{
-    drone_detection_t det = {0};
-    det.source = DETECTION_SRC_BLE_FINGERPRINT;
-    det.confidence = 0.78f;
-    det.rssi = badge_status_rssi_or(info ? info->ble_dbg_priv_rssi : 0, -58);
-    snprintf(det.drone_id, sizeof(det.drone_id), "status:ble:meta:%d", scanner_id);
-    strncpy(det.manufacturer, "Meta Glasses", sizeof(det.manufacturer) - 1);
-    if (info) {
-        strncpy(det.ble_name, info->ble_dbg_priv_name, sizeof(det.ble_name) - 1);
-        strncpy(det.class_reason,
-                info->ble_dbg_priv_reason[0] ? info->ble_dbg_priv_reason : "status:meta",
-                sizeof(det.class_reason) - 1);
-        det.ble_company_id = info->ble_dbg_priv_cid;
-        if (info->ble_dbg_priv_svc0 != 0) {
-            det.ble_service_uuids[0] = info->ble_dbg_priv_svc0;
-            det.ble_svc_uuid_count = 1;
-        }
-    } else {
-        strncpy(det.class_reason, "status:meta", sizeof(det.class_reason) - 1);
-    }
-    (void)badge_ingest_detection(&det, NULL);
 }
 
 static void badge_ingest_ble_tracker_status_event(int scanner_id,
@@ -225,12 +264,33 @@ static void badge_ingest_ble_near_status_event(int scanner_id,
     (void)badge_ingest_detection(&det, NULL);
 }
 
+static void badge_ingest_ble_meta_status_event(const scanner_info_t *info)
+{
+    if (!scanner_meta_status_is_fresh(info)) {
+        return;
+    }
+
+    drone_detection_t det = {0};
+    det.source = DETECTION_SRC_BLE_FINGERPRINT;
+    det.confidence = 0.42f;
+    det.rssi = badge_status_rssi_or(info->ble_meta_last_rssi, -58);
+    snprintf(det.drone_id, sizeof(det.drone_id), "meta:weak:status");
+    strncpy(det.manufacturer, "Meta Glasses", sizeof(det.manufacturer) - 1);
+    strncpy(det.model, "Weak Meta", sizeof(det.model) - 1);
+    strncpy(det.class_reason, "weak_meta:scanner_status",
+            sizeof(det.class_reason) - 1);
+    (void)badge_ingest_detection(&det, NULL);
+}
+
 static void badge_ingest_wifi_drone_status_event(int scanner_id,
                                                  const scanner_info_t *info)
 {
-    const char *ssid = (info && info->wifi_last_drone_ssid[0])
+    const char *ssid = scanner_wifi_drone_ssid_is_fresh(info)
         ? info->wifi_last_drone_ssid
-        : "Drone SSID";
+        : NULL;
+    if (!ssid) {
+        return;
+    }
     drone_detection_t det = {0};
     det.source = DETECTION_SRC_WIFI_SSID;
     det.confidence = 0.35f;
@@ -244,7 +304,7 @@ static void badge_ingest_wifi_drone_status_event(int scanner_id,
 static void badge_ingest_wifi_notable_status_event(int scanner_id,
                                                    const scanner_info_t *info)
 {
-    const char *ssid = (info && info->wifi_last_notable_ssid[0])
+    const char *ssid = scanner_wifi_notable_ssid_is_fresh(info)
         ? info->wifi_last_notable_ssid
         : "Notable SSID";
     const char *label = fof_policy_ssid_is_notable(ssid)
@@ -270,9 +330,12 @@ static void badge_ingest_scanner_status_evidence(int scanner_id,
     }
 
     badge_status_seen_t *seen = &s_badge_status_seen[scanner_id];
-    if (badge_status_counter_advanced(info->ble_meta_seen, seen->ble_meta_seen)) {
-        badge_ingest_ble_meta_status_event(scanner_id, info);
-    }
+    /* Scanner Meta status is allowed to refresh exactly one weak presence
+     * bucket. Strong fingerprint identities still drive real multi-pair
+     * counts, and the weak bucket expires as soon as scanner Meta freshness
+     * goes quiet.
+     */
+    badge_ingest_ble_meta_status_event(info);
     if (badge_status_counter_advanced(info->ble_tracker_seen, seen->ble_tracker_seen)) {
         badge_ingest_ble_tracker_status_event(scanner_id, info);
     }
@@ -341,10 +404,16 @@ void uart_rx_get_badge_threat_snapshot(badge_threat_snapshot_t *out)
     }
 #ifdef FOF_BADGE_VARIANT
     int64_t now_ms = esp_timer_get_time() / 1000;
-    portENTER_CRITICAL(&s_badge_threat_lock);
+    if (!badge_threat_lock_state(pdMS_TO_TICKS(50))) {
+        memset(out, 0, sizeof(*out));
+        out->color_rgb565 = badge_threat_score_to_rgb565(0.0f);
+        strncpy(out->top_label, "Watching", sizeof(out->top_label) - 1);
+        strncpy(out->ticker, "Watching", sizeof(out->ticker) - 1);
+        return;
+    }
     badge_threat_ensure_ready();
     badge_threat_state_snapshot(&s_badge_threat_state, now_ms, out);
-    portEXIT_CRITICAL(&s_badge_threat_lock);
+    badge_threat_unlock_state();
 #else
     memset(out, 0, sizeof(*out));
     out->color_rgb565 = badge_threat_score_to_rgb565(0.0f);
@@ -667,6 +736,53 @@ static void json_copy_string(const cJSON *obj, const char *key,
     out[out_len - 1] = '\0';
 }
 
+static int64_t scanner_status_ssid_age_s(int64_t now_ms, int64_t seen_ms)
+{
+    if (seen_ms <= 0 || now_ms < seen_ms) {
+        return -1;
+    }
+    return (now_ms - seen_ms) / 1000;
+}
+
+static void json_update_scanner_ssid_freshness(const cJSON *obj,
+                                               const char *key,
+                                               char *out,
+                                               size_t out_len,
+                                               uint32_t previous_emit,
+                                               uint32_t current_emit,
+                                               int64_t now_ms,
+                                               int64_t *seen_ms,
+                                               int64_t *age_s)
+{
+    if (!out || out_len == 0 || !seen_ms || !age_s) {
+        return;
+    }
+
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (!item) {
+        *age_s = scanner_status_ssid_age_s(now_ms, *seen_ms);
+        return;
+    }
+
+    const char *value = (cJSON_IsString(item) && item->valuestring)
+        ? item->valuestring
+        : "";
+    if (value[0] == '\0') {
+        out[0] = '\0';
+        *seen_ms = 0;
+        *age_s = -1;
+        return;
+    }
+
+    bool changed = strcmp(out, value) != 0;
+    strncpy(out, value, out_len - 1);
+    out[out_len - 1] = '\0';
+    if (changed || current_emit > previous_emit || *seen_ms <= 0) {
+        *seen_ms = now_ms;
+    }
+    *age_s = scanner_status_ssid_age_s(now_ms, *seen_ms);
+}
+
 static void json_get_string_or_array_csv(const cJSON *obj,
                                          const char *key,
                                          char *out,
@@ -921,6 +1037,7 @@ static void handle_status(const cJSON *root, int scanner_id)
     /* Attack / anomaly counters */
     {
         scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        int64_t now_ms = esp_timer_get_time() / 1000;
         info->deauth_count  = (uint16_t)json_get_int(root, "deauth", 0);
         info->disassoc_count = (uint16_t)json_get_int(root, "disassoc", 0);
         info->auth_count    = (uint16_t)json_get_int(root, "auth_fr", 0);
@@ -968,16 +1085,34 @@ static void handle_status(const cJSON *root, int scanner_id)
                                                              (double)info->wifi_last_ap_count);
         info->wifi_last_scan_age_s = (int64_t)json_get_double(root, "wifi_last_scan_age_s",
                                                               (double)info->wifi_last_scan_age_s);
+        uint32_t previous_drone_ssid_emit = info->wifi_drone_ssid_emit;
+        uint32_t previous_notable_ssid_emit = info->wifi_notable_ssid_emit;
         info->wifi_drone_ssid_emit = (uint32_t)json_get_double(root, "wifi_drone_ssid_emit",
                                                                (double)info->wifi_drone_ssid_emit);
         info->wifi_notable_ssid_emit = (uint32_t)json_get_double(root, "wifi_notable_ssid_emit",
                                                                  (double)info->wifi_notable_ssid_emit);
-        json_copy_string(root, "wifi_last_drone_ssid",
-                         info->wifi_last_drone_ssid,
-                         sizeof(info->wifi_last_drone_ssid));
-        json_copy_string(root, "wifi_last_notable_ssid",
-                         info->wifi_last_notable_ssid,
-                         sizeof(info->wifi_last_notable_ssid));
+        json_update_scanner_ssid_freshness(
+            root,
+            "wifi_last_drone_ssid",
+            info->wifi_last_drone_ssid,
+            sizeof(info->wifi_last_drone_ssid),
+            previous_drone_ssid_emit,
+            info->wifi_drone_ssid_emit,
+            now_ms,
+            &info->wifi_last_drone_ssid_seen_ms,
+            &info->wifi_last_drone_ssid_age_s
+        );
+        json_update_scanner_ssid_freshness(
+            root,
+            "wifi_last_notable_ssid",
+            info->wifi_last_notable_ssid,
+            sizeof(info->wifi_last_notable_ssid),
+            previous_notable_ssid_emit,
+            info->wifi_notable_ssid_emit,
+            now_ms,
+            &info->wifi_last_notable_ssid_seen_ms,
+            &info->wifi_last_notable_ssid_age_s
+        );
         info->wifi_oui_emit = (uint32_t)json_get_double(root, "wifi_oui_emit",
                                                         (double)info->wifi_oui_emit);
         info->wifi_soft_ssid_emit = (uint32_t)json_get_double(root, "wifi_soft_ssid_emit",
@@ -985,8 +1120,41 @@ static void handle_status(const cJSON *root, int scanner_id)
         info->wifi_hot_ch = (uint32_t)json_get_double(root, "wifi_hot_ch",
                                                       (double)info->wifi_hot_ch);
         info->ble_adv_seen = (uint32_t)json_get_double(root, "ble_adv_seen", (double)info->ble_adv_seen);
+        info->ble_any_seen = (uint32_t)json_get_double(root, "ble_any_seen", (double)info->ble_any_seen);
+        info->ble_any_with_payload_seen = (uint32_t)json_get_double(root, "ble_any_with_payload_seen", (double)info->ble_any_with_payload_seen);
+        info->ble_any_empty_seen = (uint32_t)json_get_double(root, "ble_any_empty_seen", (double)info->ble_any_empty_seen);
+        info->ble_any_last_rssi = (int8_t)json_get_double(root, "ble_any_last_rssi", (double)info->ble_any_last_rssi);
+        info->ble_any_best_rssi = (int8_t)json_get_double(root, "ble_any_best_rssi", (double)info->ble_any_best_rssi);
+        info->ble_any_last_len = (uint8_t)json_get_double(root, "ble_any_last_len", (double)info->ble_any_last_len);
+        info->ble_any_last_props = (uint8_t)json_get_double(root, "ble_any_last_props", (double)info->ble_any_last_props);
+        info->ble_any_last_addr_type = (uint8_t)json_get_double(root, "ble_any_last_addr_type", (double)info->ble_any_last_addr_type);
         info->ble_fp_emit = (uint32_t)json_get_double(root, "ble_fp_emit", (double)info->ble_fp_emit);
         info->ble_meta_seen = (uint32_t)json_get_double(root, "ble_meta_seen", (double)info->ble_meta_seen);
+        info->ble_meta_last_seen_age_s = (int64_t)json_get_double(
+            root, "ble_meta_last_seen_age_s", -1.0
+        );
+        info->ble_meta_last_emit_age_s = (int64_t)json_get_double(
+            root, "ble_meta_last_emit_age_s", -1.0
+        );
+        info->ble_meta_last_hash = (uint32_t)json_get_double(
+            root, "ble_meta_last_hash", (double)info->ble_meta_last_hash
+        );
+        info->ble_meta_last_rssi = (int8_t)json_get_double(
+            root, "ble_meta_last_rssi", (double)info->ble_meta_last_rssi
+        );
+        json_copy_string(root, "ble_meta_last_reason",
+                         info->ble_meta_last_reason,
+                         sizeof(info->ble_meta_last_reason));
+        json_copy_string(root, "ble_meta_identity",
+                         info->ble_meta_identity,
+                         sizeof(info->ble_meta_identity));
+        info->ble_meta_weak_age_s = (int64_t)json_get_double(
+            root, "ble_meta_weak_age_s", -1.0
+        );
+        info->ble_meta_reacquire_count = (uint32_t)json_get_double(
+            root, "ble_meta_reacquire_count",
+            (double)info->ble_meta_reacquire_count
+        );
         info->ble_tracker_seen = (uint32_t)json_get_double(root, "ble_tracker_seen", (double)info->ble_tracker_seen);
         info->ble_privacy_candidate_seen = (uint32_t)json_get_double(
             root, "ble_privacy_candidate_seen", (double)info->ble_privacy_candidate_seen
@@ -1027,6 +1195,18 @@ static void handle_status(const cJSON *root, int scanner_id)
         );
         info->ble_sync_last_rc = (int)json_get_double(
             root, "ble_sync_last_rc", (double)info->ble_sync_last_rc
+        );
+        const cJSON *ble_focus_active = cJSON_GetObjectItemCaseSensitive(root, "ble_focus_active");
+        if (ble_focus_active) {
+            info->ble_focus_active = cJSON_IsTrue(ble_focus_active) ||
+                                     (cJSON_IsNumber(ble_focus_active) &&
+                                      ble_focus_active->valueint != 0);
+        }
+        info->ble_focus_age_s = (int64_t)json_get_double(
+            root, "ble_focus_age_s", -1.0
+        );
+        info->ble_focus_target_adv_count = (uint32_t)json_get_double(
+            root, "ble_focus_target_adv_count", (double)info->ble_focus_target_adv_count
         );
         info->rid_service_seen = (uint32_t)json_get_double(root, "rid_service_seen", (double)info->rid_service_seen);
         info->rid_emit = (uint32_t)json_get_double(root, "rid_emit", (double)info->rid_emit);
@@ -1275,6 +1455,18 @@ static void process_line(const char *line, size_t len, int scanner_id)
                                  (cJSON_IsNumber(ble_scanning) &&
                                   ble_scanning->valueint != 0);
         }
+        const cJSON *ble_host_active = cJSON_GetObjectItemCaseSensitive(root, "ble_host_active");
+        if (ble_host_active) {
+            info->ble_host_active = cJSON_IsTrue(ble_host_active) ||
+                                    (cJSON_IsNumber(ble_host_active) &&
+                                     ble_host_active->valueint != 0);
+        }
+        const cJSON *ble_host_synced = cJSON_GetObjectItemCaseSensitive(root, "ble_host_synced");
+        if (ble_host_synced) {
+            info->ble_host_synced = cJSON_IsTrue(ble_host_synced) ||
+                                    (cJSON_IsNumber(ble_host_synced) &&
+                                     ble_host_synced->valueint != 0);
+        }
         const cJSON *wifi_paused = cJSON_GetObjectItemCaseSensitive(root, "wifi_paused");
         if (wifi_paused) {
             info->wifi_paused = cJSON_IsTrue(wifi_paused) ||
@@ -1289,21 +1481,96 @@ static void process_line(const char *line, size_t len, int scanner_id)
                                                              (double)info->wifi_last_ap_count);
         info->wifi_last_scan_age_s = (int64_t)json_get_double(root, "wifi_last_scan_age_s",
                                                               (double)info->wifi_last_scan_age_s);
+        uint32_t previous_drone_ssid_emit = info->wifi_drone_ssid_emit;
+        uint32_t previous_notable_ssid_emit = info->wifi_notable_ssid_emit;
+        int64_t now_ms = esp_timer_get_time() / 1000;
         info->wifi_drone_ssid_emit = (uint32_t)json_get_double(root, "wifi_drone_ssid_emit",
                                                                (double)info->wifi_drone_ssid_emit);
         info->wifi_notable_ssid_emit = (uint32_t)json_get_double(root, "wifi_notable_ssid_emit",
                                                                  (double)info->wifi_notable_ssid_emit);
-        json_copy_string(root, "wifi_last_drone_ssid",
-                         info->wifi_last_drone_ssid,
-                         sizeof(info->wifi_last_drone_ssid));
-        json_copy_string(root, "wifi_last_notable_ssid",
-                         info->wifi_last_notable_ssid,
-                         sizeof(info->wifi_last_notable_ssid));
+        json_update_scanner_ssid_freshness(
+            root,
+            "wifi_last_drone_ssid",
+            info->wifi_last_drone_ssid,
+            sizeof(info->wifi_last_drone_ssid),
+            previous_drone_ssid_emit,
+            info->wifi_drone_ssid_emit,
+            now_ms,
+            &info->wifi_last_drone_ssid_seen_ms,
+            &info->wifi_last_drone_ssid_age_s
+        );
+        json_update_scanner_ssid_freshness(
+            root,
+            "wifi_last_notable_ssid",
+            info->wifi_last_notable_ssid,
+            sizeof(info->wifi_last_notable_ssid),
+            previous_notable_ssid_emit,
+            info->wifi_notable_ssid_emit,
+            now_ms,
+            &info->wifi_last_notable_ssid_seen_ms,
+            &info->wifi_last_notable_ssid_age_s
+        );
         info->ble_adv_seen = (uint32_t)json_get_double(root, "ble_adv_seen", (double)info->ble_adv_seen);
+        info->ble_any_seen = (uint32_t)json_get_double(root, "ble_any_seen", (double)info->ble_any_seen);
+        info->ble_any_with_payload_seen = (uint32_t)json_get_double(root, "ble_any_with_payload_seen", (double)info->ble_any_with_payload_seen);
+        info->ble_any_empty_seen = (uint32_t)json_get_double(root, "ble_any_empty_seen", (double)info->ble_any_empty_seen);
+        info->ble_any_last_rssi = (int8_t)json_get_double(root, "ble_any_last_rssi", (double)info->ble_any_last_rssi);
+        info->ble_any_best_rssi = (int8_t)json_get_double(root, "ble_any_best_rssi", (double)info->ble_any_best_rssi);
+        info->ble_any_last_len = (uint8_t)json_get_double(root, "ble_any_last_len", (double)info->ble_any_last_len);
+        info->ble_any_last_props = (uint8_t)json_get_double(root, "ble_any_last_props", (double)info->ble_any_last_props);
+        info->ble_any_last_addr_type = (uint8_t)json_get_double(root, "ble_any_last_addr_type", (double)info->ble_any_last_addr_type);
+        info->ble_fp_emit = (uint32_t)json_get_double(root, "ble_fp_emit", (double)info->ble_fp_emit);
         info->ble_meta_seen = (uint32_t)json_get_double(root, "ble_meta_seen", (double)info->ble_meta_seen);
+        info->ble_meta_last_seen_age_s = (int64_t)json_get_double(
+            root, "ble_meta_last_seen_age_s", -1.0
+        );
+        info->ble_meta_last_emit_age_s = (int64_t)json_get_double(
+            root, "ble_meta_last_emit_age_s", -1.0
+        );
+        info->ble_meta_last_hash = (uint32_t)json_get_double(
+            root, "ble_meta_last_hash", (double)info->ble_meta_last_hash
+        );
+        info->ble_meta_last_rssi = (int8_t)json_get_double(
+            root, "ble_meta_last_rssi", (double)info->ble_meta_last_rssi
+        );
+        json_copy_string(root, "ble_meta_last_reason",
+                         info->ble_meta_last_reason,
+                         sizeof(info->ble_meta_last_reason));
+        json_copy_string(root, "ble_meta_identity",
+                         info->ble_meta_identity,
+                         sizeof(info->ble_meta_identity));
+        info->ble_meta_weak_age_s = (int64_t)json_get_double(
+            root, "ble_meta_weak_age_s", -1.0
+        );
+        info->ble_meta_reacquire_count = (uint32_t)json_get_double(
+            root, "ble_meta_reacquire_count",
+            (double)info->ble_meta_reacquire_count
+        );
         info->ble_privacy_candidate_seen = (uint32_t)json_get_double(
             root, "ble_privacy_candidate_seen", (double)info->ble_privacy_candidate_seen
         );
+        info->ble_tracker_seen = (uint32_t)json_get_double(root, "ble_tracker_seen", (double)info->ble_tracker_seen);
+        info->ble_near_unknown_seen = (uint32_t)json_get_double(
+            root, "ble_near_unknown_seen", (double)info->ble_near_unknown_seen
+        );
+        info->ble_dbg_near_seen = (uint32_t)json_get_double(root, "ble_dbg_near_seen", (double)info->ble_dbg_near_seen);
+        info->ble_dbg_near_rssi = (int8_t)json_get_double(root, "ble_dbg_near_rssi", (double)info->ble_dbg_near_rssi);
+        json_copy_string(root, "ble_dbg_near_label", info->ble_dbg_near_label, sizeof(info->ble_dbg_near_label));
+        json_copy_string(root, "ble_dbg_near_name", info->ble_dbg_near_name, sizeof(info->ble_dbg_near_name));
+        json_copy_string(root, "ble_dbg_near_reason", info->ble_dbg_near_reason, sizeof(info->ble_dbg_near_reason));
+        info->ble_dbg_near_cid = (uint16_t)json_get_double(root, "ble_dbg_near_cid", (double)info->ble_dbg_near_cid);
+        info->ble_dbg_near_svc0 = (uint16_t)json_get_double(root, "ble_dbg_near_svc0", (double)info->ble_dbg_near_svc0);
+        info->ble_dbg_near_svc_count = (uint8_t)json_get_double(root, "ble_dbg_near_svc_count", (double)info->ble_dbg_near_svc_count);
+        info->ble_dbg_near_payload_len = (uint8_t)json_get_double(root, "ble_dbg_near_payload_len", (double)info->ble_dbg_near_payload_len);
+        info->ble_dbg_priv_seen = (uint32_t)json_get_double(root, "ble_dbg_priv_seen", (double)info->ble_dbg_priv_seen);
+        info->ble_dbg_priv_rssi = (int8_t)json_get_double(root, "ble_dbg_priv_rssi", (double)info->ble_dbg_priv_rssi);
+        json_copy_string(root, "ble_dbg_priv_label", info->ble_dbg_priv_label, sizeof(info->ble_dbg_priv_label));
+        json_copy_string(root, "ble_dbg_priv_name", info->ble_dbg_priv_name, sizeof(info->ble_dbg_priv_name));
+        json_copy_string(root, "ble_dbg_priv_reason", info->ble_dbg_priv_reason, sizeof(info->ble_dbg_priv_reason));
+        info->ble_dbg_priv_cid = (uint16_t)json_get_double(root, "ble_dbg_priv_cid", (double)info->ble_dbg_priv_cid);
+        info->ble_dbg_priv_svc0 = (uint16_t)json_get_double(root, "ble_dbg_priv_svc0", (double)info->ble_dbg_priv_svc0);
+        info->ble_dbg_priv_svc_count = (uint8_t)json_get_double(root, "ble_dbg_priv_svc_count", (double)info->ble_dbg_priv_svc_count);
+        info->ble_dbg_priv_payload_len = (uint8_t)json_get_double(root, "ble_dbg_priv_payload_len", (double)info->ble_dbg_priv_payload_len);
         info->ble_scan_start_count = (uint32_t)json_get_double(
             root, "ble_scan_start_count", (double)info->ble_scan_start_count
         );
@@ -1317,6 +1584,18 @@ static void process_line(const char *line, size_t len, int scanner_id)
                                                                  (double)info->ble_host_restart_count);
         info->ble_sync_last_rc = (int)json_get_double(
             root, "ble_sync_last_rc", (double)info->ble_sync_last_rc
+        );
+        const cJSON *ble_focus_active = cJSON_GetObjectItemCaseSensitive(root, "ble_focus_active");
+        if (ble_focus_active) {
+            info->ble_focus_active = cJSON_IsTrue(ble_focus_active) ||
+                                     (cJSON_IsNumber(ble_focus_active) &&
+                                      ble_focus_active->valueint != 0);
+        }
+        info->ble_focus_age_s = (int64_t)json_get_double(
+            root, "ble_focus_age_s", -1.0
+        );
+        info->ble_focus_target_adv_count = (uint32_t)json_get_double(
+            root, "ble_focus_target_adv_count", (double)info->ble_focus_target_adv_count
         );
         const char *scan_mode = json_get_string(root, JSON_KEY_SCAN_MODE, "normal");
         strncpy(info->scan_mode, scan_mode, sizeof(info->scan_mode) - 1);
@@ -1360,6 +1639,9 @@ static void process_line(const char *line, size_t len, int scanner_id)
         info->radio_restart_count = (uint32_t)json_get_double(root, "radio_restart_count",
                                                               (double)info->radio_restart_count);
         info->received = true;
+#ifdef FOF_BADGE_VARIANT
+        badge_ingest_scanner_status_evidence(scanner_id, info);
+#endif
         ESP_LOGI(TAG, "Scanner[%d] identity: %s v%s (%s) chip=%s toff=%lld tcnt=%u valid=%u state=%s mode=%s",
                  scanner_id, board, ver, caps, chip,
                  (long long)info->toff_ms, info->tcnt,
@@ -1475,7 +1757,55 @@ typedef struct {
     int uart_num;
     int scanner_id;     /* 0=BLE scanner, 1=WiFi scanner */
     const char *label;
+    char *line_buf;
+    uint8_t *read_buf;
 } uart_rx_task_params_t;
+
+static void *uart_rx_alloc_persistent_buffer(size_t size, const char *label)
+{
+    void *buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) {
+        buf = heap_caps_malloc(size, MALLOC_CAP_8BIT);
+    }
+    if (!buf) {
+        ESP_LOGE(TAG, "Failed to allocate %s (%lu bytes)",
+                 label ? label : "UART RX buffer", (unsigned long)size);
+    }
+    return buf;
+}
+
+static bool uart_rx_ensure_task_buffers(uart_rx_task_params_t *params)
+{
+    if (!params) {
+        return false;
+    }
+    if (!params->line_buf) {
+        params->line_buf = (char *)uart_rx_alloc_persistent_buffer(
+            LINE_BUF_SIZE,
+            params->label ? params->label : "UART line buffer"
+        );
+    }
+    if (!params->read_buf) {
+        params->read_buf = (uint8_t *)uart_rx_alloc_persistent_buffer(
+            READ_BUF_SIZE,
+            params->label ? params->label : "UART read buffer"
+        );
+    }
+    return params->line_buf && params->read_buf;
+}
+
+#ifdef FOF_BADGE_VARIANT
+static void note_uart_rx_stack_free(int scanner_id)
+{
+    badge_runtime_note_uart_stack_free((uint8_t)scanner_id,
+        (uint32_t)uxTaskGetStackHighWaterMark(NULL));
+}
+#else
+static void note_uart_rx_stack_free(int scanner_id)
+{
+    (void)scanner_id;
+}
+#endif
 
 static void uart_rx_task(void *arg)
 {
@@ -1483,9 +1813,15 @@ static void uart_rx_task(void *arg)
     int uart_num = params->uart_num;
     int scanner_id = params->scanner_id;
 
-    char line_buf[LINE_BUF_SIZE];
+    char *line_buf = params->line_buf;
+    uint8_t *read_buf = params->read_buf;
     int  line_pos = 0;
-    uint8_t read_buf[READ_BUF_SIZE];
+
+    if (!line_buf || !read_buf) {
+        ESP_LOGE(TAG, "UART RX task missing buffers: %s", params->label);
+        vTaskDelete(NULL);
+        return;
+    }
 
     ESP_LOGI(TAG, "UART RX task started: %s (UART%d)", params->label, uart_num);
 
@@ -1497,7 +1833,10 @@ static void uart_rx_task(void *arg)
         /* Periodic heartbeat so we know the task is alive */
         int64_t now_ms = esp_timer_get_time() / 1000;
         if (now_ms - last_heartbeat_ms > 5000) {
-            ESP_LOGI(TAG, "[%s] heartbeat: %d total bytes received", params->label, total_bytes);
+            note_uart_rx_stack_free(scanner_id);
+            ESP_LOGI(TAG, "[%s] heartbeat: %d total bytes received stack=%lu",
+                     params->label, total_bytes,
+                     (unsigned long)uxTaskGetStackHighWaterMark(NULL));
             last_heartbeat_ms = now_ms;
         }
         /* During OTA relay, pause reading so relay handler can read ACKs directly */
@@ -1507,11 +1846,12 @@ static void uart_rx_task(void *arg)
             continue;
         }
 
-        int bytes_read = uart_read_bytes(uart_num, read_buf, sizeof(read_buf),
+        int bytes_read = uart_read_bytes(uart_num, read_buf, READ_BUF_SIZE,
                                          pdMS_TO_TICKS(100));
         if (bytes_read <= 0) {
             continue;
         }
+        note_uart_rx_stack_free(scanner_id);
         total_bytes += bytes_read;
         note_scanner_raw_activity(scanner_id, now_ms, bytes_read);
 
@@ -1592,15 +1932,23 @@ void uart_rx_init(QueueHandle_t detection_queue)
             ESP_LOGE(TAG, "Failed to create scanner UART TX lock");
         }
     }
+#ifdef FOF_BADGE_VARIANT
+    if (badge_threat_lock_state(pdMS_TO_TICKS(100))) {
+        badge_threat_ensure_ready();
+        badge_threat_unlock_state();
+    }
+#endif
 
     /* BLE scanner on UART1 (always) */
     s_ble_task_params.uart_num = CONFIG_BLE_SCANNER_UART;
+    (void)uart_rx_ensure_task_buffers(&s_ble_task_params);
     init_uart_port(CONFIG_BLE_SCANNER_UART,
                    CONFIG_BLE_SCANNER_RX_PIN, CONFIG_BLE_SCANNER_TX_PIN, "BLE");
 
 #if CONFIG_DUAL_SCANNER
     /* WiFi scanner on UART2 */
     s_wifi_task_params.uart_num = CONFIG_WIFI_SCANNER_UART;
+    (void)uart_rx_ensure_task_buffers(&s_wifi_task_params);
     init_uart_port(CONFIG_WIFI_SCANNER_UART,
                    CONFIG_WIFI_SCANNER_RX_PIN, CONFIG_WIFI_SCANNER_TX_PIN, "WiFi");
 #endif

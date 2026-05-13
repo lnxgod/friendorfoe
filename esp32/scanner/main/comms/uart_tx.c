@@ -51,7 +51,6 @@ static const char *TAG = "fof_uart_tx";
 #define RX_BUF_SIZE         UART_BUF_SIZE
 #define UART_TX_STACK_WARN_BYTES 1024
 #define LOW_PRIORITY_RATE_SLOTS 64
-#define BLE_FINGERPRINT_REEMIT_MS 60000
 #define WIFI_ASSOC_REEMIT_MS     30000
 #define WIFI_PROBE_REEMIT_MS     60000
 #ifdef FOF_BADGE_VARIANT
@@ -469,9 +468,10 @@ static bool should_rate_limit_detection(const drone_detection_t *detection,
         const char *key = detection->bssid[0] ? detection->bssid : detection->drone_id;
         const char *aux = detection->manufacturer[0] ? detection->manufacturer :
                           (detection->model[0] ? detection->model : "");
+        uint32_t window_ms = fof_policy_ble_fingerprint_reemit_ms(aux);
         return !allow_rate_limited_detection(
             s_ble_fp_rate, LOW_PRIORITY_RATE_SLOTS,
-            key, aux, now_ms, BLE_FINGERPRINT_REEMIT_MS,
+            key, aux, now_ms, (int)window_ms,
             detection->confidence, detection->rssi, true, true, false
         );
     }
@@ -896,8 +896,39 @@ void uart_tx_send_status(int ble_count, int wifi_count,
     cJSON_AddNumberToObject(root, "wifi_soft_ssid_emit", wifi_stats.soft_ssid_emit);
     cJSON_AddNumberToObject(root, "wifi_hot_ch", wifi_stats.hot_channel_count);
     cJSON_AddNumberToObject(root, "ble_adv_seen", ble_stats.ble_adv_seen);
+    cJSON_AddNumberToObject(root, "ble_any_seen", ble_stats.ble_any_seen);
+    cJSON_AddNumberToObject(root, "ble_any_with_payload_seen",
+                            ble_stats.ble_any_with_payload_seen);
+    cJSON_AddNumberToObject(root, "ble_any_empty_seen",
+                            ble_stats.ble_any_empty_seen);
+    cJSON_AddNumberToObject(root, "ble_any_last_rssi",
+                            ble_stats.ble_any_last_rssi);
+    cJSON_AddNumberToObject(root, "ble_any_best_rssi",
+                            ble_stats.ble_any_best_rssi);
+    cJSON_AddNumberToObject(root, "ble_any_last_len",
+                            ble_stats.ble_any_last_len);
+    cJSON_AddNumberToObject(root, "ble_any_last_props",
+                            ble_stats.ble_any_last_props);
+    cJSON_AddNumberToObject(root, "ble_any_last_addr_type",
+                            ble_stats.ble_any_last_addr_type);
     cJSON_AddNumberToObject(root, "ble_fp_emit", ble_stats.ble_fp_emit);
     cJSON_AddNumberToObject(root, "ble_meta_seen", ble_stats.ble_meta_seen);
+    cJSON_AddNumberToObject(root, "ble_meta_last_seen_age_s",
+                            (double)ble_stats.ble_meta_last_seen_age_s);
+    cJSON_AddNumberToObject(root, "ble_meta_last_emit_age_s",
+                            (double)ble_stats.ble_meta_last_emit_age_s);
+    cJSON_AddNumberToObject(root, "ble_meta_last_hash",
+                            ble_stats.ble_meta_last_hash);
+    cJSON_AddNumberToObject(root, "ble_meta_last_rssi",
+                            ble_stats.ble_meta_last_rssi);
+    cJSON_AddStringToObject(root, "ble_meta_last_reason",
+                            ble_stats.ble_meta_last_reason);
+    cJSON_AddStringToObject(root, "ble_meta_identity",
+                            ble_stats.ble_meta_identity);
+    cJSON_AddNumberToObject(root, "ble_meta_weak_age_s",
+                            (double)ble_stats.ble_meta_weak_age_s);
+    cJSON_AddNumberToObject(root, "ble_meta_reacquire_count",
+                            ble_stats.ble_meta_reacquire_count);
     cJSON_AddNumberToObject(root, "ble_tracker_seen", ble_stats.ble_tracker_seen);
     cJSON_AddNumberToObject(root, "ble_privacy_candidate_seen",
                             ble_stats.ble_privacy_candidate_seen);
@@ -909,36 +940,12 @@ void uart_tx_send_status(int ble_count, int wifi_count,
                             ble_stats.ble_dbg_near_seen);
     cJSON_AddNumberToObject(root, "ble_dbg_near_rssi",
                             ble_stats.ble_dbg_near_rssi);
-    cJSON_AddStringToObject(root, "ble_dbg_near_label",
-                            ble_stats.ble_dbg_near_label);
-    cJSON_AddStringToObject(root, "ble_dbg_near_name",
-                            ble_stats.ble_dbg_near_name);
-    cJSON_AddStringToObject(root, "ble_dbg_near_reason",
-                            ble_stats.ble_dbg_near_reason);
-    cJSON_AddNumberToObject(root, "ble_dbg_near_cid",
-                            ble_stats.ble_dbg_near_cid);
-    cJSON_AddNumberToObject(root, "ble_dbg_near_svc0",
-                            ble_stats.ble_dbg_near_svc0);
-    cJSON_AddNumberToObject(root, "ble_dbg_near_svc_count",
-                            ble_stats.ble_dbg_near_svc_count);
     cJSON_AddNumberToObject(root, "ble_dbg_near_payload_len",
                             ble_stats.ble_dbg_near_payload_len);
     cJSON_AddNumberToObject(root, "ble_dbg_priv_seen",
                             ble_stats.ble_dbg_priv_seen);
     cJSON_AddNumberToObject(root, "ble_dbg_priv_rssi",
                             ble_stats.ble_dbg_priv_rssi);
-    cJSON_AddStringToObject(root, "ble_dbg_priv_label",
-                            ble_stats.ble_dbg_priv_label);
-    cJSON_AddStringToObject(root, "ble_dbg_priv_name",
-                            ble_stats.ble_dbg_priv_name);
-    cJSON_AddStringToObject(root, "ble_dbg_priv_reason",
-                            ble_stats.ble_dbg_priv_reason);
-    cJSON_AddNumberToObject(root, "ble_dbg_priv_cid",
-                            ble_stats.ble_dbg_priv_cid);
-    cJSON_AddNumberToObject(root, "ble_dbg_priv_svc0",
-                            ble_stats.ble_dbg_priv_svc0);
-    cJSON_AddNumberToObject(root, "ble_dbg_priv_svc_count",
-                            ble_stats.ble_dbg_priv_svc_count);
     cJSON_AddNumberToObject(root, "ble_dbg_priv_payload_len",
                             ble_stats.ble_dbg_priv_payload_len);
     cJSON_AddNumberToObject(root, "ble_host_restart_count",
@@ -951,6 +958,11 @@ void uart_tx_send_status(int ble_count, int wifi_count,
                             ble_stats.ble_scan_last_rc);
     cJSON_AddNumberToObject(root, "ble_sync_last_rc",
                             ble_stats.ble_sync_last_rc);
+    cJSON_AddBoolToObject(root, "ble_focus_active", ble_stats.ble_focus_active);
+    cJSON_AddNumberToObject(root, "ble_focus_age_s",
+                            (double)ble_stats.ble_focus_age_s);
+    cJSON_AddNumberToObject(root, "ble_focus_target_adv_count",
+                            ble_stats.ble_focus_target_adv_count);
     cJSON_AddNumberToObject(root, "rid_service_seen", ble_remote_id_service_seen_count());
     cJSON_AddNumberToObject(root, "rid_emit", ble_remote_id_emit_count());
     cJSON_AddNumberToObject(root, "privacy_seen", ble_remote_id_privacy_seen_count());
@@ -1074,7 +1086,7 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
     ble_remote_id_get_stats(&ble_stats);
     wifi_scanner_stats_t wifi_stats = {0};
     wifi_scanner_get_stats(&wifi_stats);
-    char buf[3072];
+    char buf[4096];
     int64_t fw_backoff_info_ms = s_fw_error_backoff_until_ms - (esp_timer_get_time() / 1000);
     int n = snprintf(buf, sizeof(buf),
              "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
@@ -1083,12 +1095,31 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
              "\"cmd_rx\":%lu,\"cmd_parse_err\":%lu,\"cmd_overflow\":%lu,"
              "\"cmd_stale\":%lu,\"cmd_last_age_s\":%lld,"
              "\"scan_mode\":\"%s\",\"scan_profile\":\"%s\",\"calibration_uuid\":\"%s\","
-             "\"ble_scanning\":%s,\"wifi_paused\":%s,"
+             "\"ble_scanning\":%s,\"ble_host_active\":%s,\"ble_host_synced\":%s,"
+             "\"wifi_paused\":%s,"
              "\"wifi_full_scan_count\":%lu,\"wifi_full_scan_ok\":%lu,"
              "\"wifi_last_ap_count\":%lu,\"wifi_last_scan_age_s\":%lld,"
              "\"wifi_drone_ssid_emit\":%lu,\"wifi_notable_ssid_emit\":%lu,"
-             "\"ble_adv_seen\":%lu,\"ble_privacy_candidate_seen\":%lu,"
-             "\"ble_meta_seen\":%lu,\"ble_scan_start_ok\":%lu,"
+             "\"ble_adv_seen\":%lu,\"ble_any_seen\":%lu,"
+             "\"ble_any_with_payload_seen\":%lu,\"ble_any_empty_seen\":%lu,"
+             "\"ble_any_last_rssi\":%d,\"ble_any_best_rssi\":%d,"
+             "\"ble_any_last_len\":%u,\"ble_any_last_props\":%u,"
+             "\"ble_any_last_addr_type\":%u,"
+             "\"ble_fp_emit\":%lu,\"ble_tracker_seen\":%lu,"
+             "\"ble_near_unknown_seen\":%lu,"
+             "\"ble_privacy_candidate_seen\":%lu,"
+             "\"ble_meta_seen\":%lu,\"ble_meta_last_seen_age_s\":%lld,"
+             "\"ble_meta_last_emit_age_s\":%lld,"
+             "\"ble_meta_last_hash\":%lu,\"ble_meta_last_rssi\":%d,"
+             "\"ble_meta_last_reason\":\"%s\",\"ble_meta_identity\":\"%s\","
+             "\"ble_meta_weak_age_s\":%lld,\"ble_meta_reacquire_count\":%lu,"
+             "\"ble_dbg_near_seen\":%lu,\"ble_dbg_near_rssi\":%d,"
+             "\"ble_dbg_near_payload_len\":%u,"
+             "\"ble_dbg_priv_seen\":%lu,\"ble_dbg_priv_rssi\":%d,"
+             "\"ble_dbg_priv_payload_len\":%u,"
+             "\"ble_focus_active\":%s,\"ble_focus_age_s\":%lld,"
+             "\"ble_focus_target_adv_count\":%lu,"
+             "\"ble_scan_start_ok\":%lu,"
              "\"ble_scan_start_count\":%lu,\"ble_scan_last_rc\":%d,"
              "\"need_firmware\":%s,\"fw_state\":\"%s\",\"target_ver\":\"%s\","
              "\"fw_check_count\":%lu,\"fw_backoff_s\":%lld,\"last_fw_error\":\"%s\","
@@ -1113,6 +1144,8 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
              scanner_scan_profile_label(),
              scanner_calibration_mode_uuid(),
              ble_stats.ble_scanning ? "true" : "false",
+             ble_stats.ble_host_active ? "true" : "false",
+             ble_stats.ble_host_synced ? "true" : "false",
              wifi_scanner_is_paused() ? "true" : "false",
              (unsigned long)wifi_stats.full_scan_count,
              (unsigned long)wifi_stats.full_scan_ok,
@@ -1121,8 +1154,36 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
              (unsigned long)wifi_stats.drone_ssid_emit,
              (unsigned long)wifi_stats.notable_ssid_emit,
              (unsigned long)ble_stats.ble_adv_seen,
+             (unsigned long)ble_stats.ble_any_seen,
+             (unsigned long)ble_stats.ble_any_with_payload_seen,
+             (unsigned long)ble_stats.ble_any_empty_seen,
+             (int)ble_stats.ble_any_last_rssi,
+             (int)ble_stats.ble_any_best_rssi,
+             (unsigned)ble_stats.ble_any_last_len,
+             (unsigned)ble_stats.ble_any_last_props,
+             (unsigned)ble_stats.ble_any_last_addr_type,
+             (unsigned long)ble_stats.ble_fp_emit,
+             (unsigned long)ble_stats.ble_tracker_seen,
+             (unsigned long)ble_stats.ble_near_unknown_seen,
              (unsigned long)ble_stats.ble_privacy_candidate_seen,
              (unsigned long)ble_stats.ble_meta_seen,
+             (long long)ble_stats.ble_meta_last_seen_age_s,
+             (long long)ble_stats.ble_meta_last_emit_age_s,
+             (unsigned long)ble_stats.ble_meta_last_hash,
+             (int)ble_stats.ble_meta_last_rssi,
+             ble_stats.ble_meta_last_reason,
+             ble_stats.ble_meta_identity,
+             (long long)ble_stats.ble_meta_weak_age_s,
+             (unsigned long)ble_stats.ble_meta_reacquire_count,
+             (unsigned long)ble_stats.ble_dbg_near_seen,
+             (int)ble_stats.ble_dbg_near_rssi,
+             (unsigned)ble_stats.ble_dbg_near_payload_len,
+             (unsigned long)ble_stats.ble_dbg_priv_seen,
+             (int)ble_stats.ble_dbg_priv_rssi,
+             (unsigned)ble_stats.ble_dbg_priv_payload_len,
+             ble_stats.ble_focus_active ? "true" : "false",
+             (long long)ble_stats.ble_focus_age_s,
+             (unsigned long)ble_stats.ble_focus_target_adv_count,
              (unsigned long)ble_stats.ble_scan_start_ok,
              (unsigned long)ble_stats.ble_scan_start_count,
              ble_stats.ble_scan_last_rc,
@@ -1148,8 +1209,14 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
                  "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
                  "\"chip\":\"%s\",\"caps\":\"%s\",\"cmd_rx\":%lu,"
                  "\"scan_profile\":\"%s\",\"ble_scanning\":%s,"
+                 "\"ble_host_active\":%s,\"ble_host_synced\":%s,"
                  "\"wifi_paused\":%s,\"ble_adv_seen\":%lu,"
-                 "\"ble_meta_seen\":%lu,\"wifi_drone_ssid_emit\":%lu,"
+                 "\"ble_any_seen\":%lu,\"ble_any_with_payload_seen\":%lu,"
+                 "\"ble_any_empty_seen\":%lu,\"ble_any_last_rssi\":%d,"
+                 "\"ble_any_best_rssi\":%d,\"ble_any_last_len\":%u,"
+                 "\"ble_meta_seen\":%lu,\"ble_meta_last_seen_age_s\":%lld,"
+                 "\"ble_meta_reacquire_count\":%lu,"
+                 "\"ble_focus_active\":%s,\"wifi_drone_ssid_emit\":%lu,"
                  "\"wifi_notable_ssid_emit\":%lu,\"ota_state\":\"%s\","
                  "\"recovery_mode\":\"%s\"}",
                  ver ? ver : "?", board ? board : "?",
@@ -1157,9 +1224,20 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
                  (unsigned long)g_cmd_msg_count,
                  scanner_scan_profile_label(),
                  ble_stats.ble_scanning ? "true" : "false",
+                 ble_stats.ble_host_active ? "true" : "false",
+                 ble_stats.ble_host_synced ? "true" : "false",
                  wifi_scanner_is_paused() ? "true" : "false",
                  (unsigned long)ble_stats.ble_adv_seen,
+                 (unsigned long)ble_stats.ble_any_seen,
+                 (unsigned long)ble_stats.ble_any_with_payload_seen,
+                 (unsigned long)ble_stats.ble_any_empty_seen,
+                 (int)ble_stats.ble_any_last_rssi,
+                 (int)ble_stats.ble_any_best_rssi,
+                 (unsigned)ble_stats.ble_any_last_len,
                  (unsigned long)ble_stats.ble_meta_seen,
+                 (long long)ble_stats.ble_meta_last_seen_age_s,
+                 (unsigned long)ble_stats.ble_meta_reacquire_count,
+                 ble_stats.ble_focus_active ? "true" : "false",
                  (unsigned long)wifi_stats.drone_ssid_emit,
                  (unsigned long)wifi_stats.notable_ssid_emit,
                  uart_ota_state_label(),
@@ -1342,6 +1420,8 @@ static void uart_tx_task(void *arg)
              * restarts BLE/WiFi radios if a scan silently stopped after OTA,
              * role changes, or coexistence churn. */
             scanner_scan_profile_apply();
+            ble_remote_id_meta_reacquire_tick(!scanner_calibration_mode_is_active() &&
+                                              !uart_ota_is_active());
 
             /* Prune stale entries from display cache */
             portENTER_CRITICAL(&s_cache_lock);

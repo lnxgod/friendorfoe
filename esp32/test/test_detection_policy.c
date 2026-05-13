@@ -277,6 +277,35 @@ void test_hidden_camera_ble_is_priority_not_low_value(void)
     ));
 }
 
+void test_priority_ble_fingerprint_is_not_shed_under_pressure(void)
+{
+    TEST_ASSERT_TRUE(fof_policy_should_shed_low_priority(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "Generic BLE",
+        NULL,
+        0,
+        70,
+        100
+    ));
+    TEST_ASSERT_FALSE(fof_policy_should_shed_low_priority(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "Meta Glasses",
+        NULL,
+        0,
+        100,
+        100
+    ));
+}
+
+void test_priority_ble_fingerprint_uses_short_reemit_window(void)
+{
+    uint32_t generic_ms = fof_policy_ble_fingerprint_reemit_ms("Generic BLE");
+    uint32_t meta_ms = fof_policy_ble_fingerprint_reemit_ms("Meta Glasses");
+
+    TEST_ASSERT_TRUE(meta_ms < generic_ms);
+    TEST_ASSERT_TRUE(meta_ms <= 5000U);
+}
+
 void test_scan_profiles_assign_slot_roles_and_calibration_override(void)
 {
     TEST_ASSERT_EQUAL_STRING("ble_primary", fof_policy_slot_role_for_slot(0));
@@ -297,8 +326,14 @@ void test_scan_profile_source_gates_normal_lanes(void)
         "ble_primary", DETECTION_SRC_WIFI_PROBE_REQUEST));
     TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
         "wifi_primary", DETECTION_SRC_WIFI_AP_INVENTORY));
-    TEST_ASSERT_FALSE(fof_policy_scan_profile_allows_source(
+    TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
+        "wifi_primary", DETECTION_SRC_WIFI_SSID));
+    TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
+        "wifi_primary", DETECTION_SRC_WIFI_BEACON));
+    TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
         "wifi_primary", DETECTION_SRC_BLE_FINGERPRINT));
+    TEST_ASSERT_FALSE(fof_policy_scan_profile_allows_source(
+        "wifi_primary", DETECTION_SRC_BLE_RID));
     TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
         "hybrid_failover", DETECTION_SRC_BLE_FINGERPRINT));
     TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
@@ -307,4 +342,30 @@ void test_scan_profile_source_gates_normal_lanes(void)
         "calibration", DETECTION_SRC_BLE_FINGERPRINT));
     TEST_ASSERT_FALSE(fof_policy_scan_profile_allows_source(
         "calibration", DETECTION_SRC_WIFI_AP_INVENTORY));
+}
+
+void test_ble_meta_reacquire_triggers_when_stale_and_advancing(void)
+{
+    TEST_ASSERT_FALSE(fof_policy_ble_meta_should_reacquire(
+        true, true, 29, 8, false, false));
+    TEST_ASSERT_TRUE(fof_policy_ble_meta_should_reacquire(
+        true, true, 30, 1, false, false));
+}
+
+void test_ble_meta_reacquire_blocks_calibration_or_ota(void)
+{
+    TEST_ASSERT_FALSE(fof_policy_ble_meta_should_reacquire(
+        true, true, 60, 4, true, false));
+    TEST_ASSERT_FALSE(fof_policy_ble_meta_should_reacquire(
+        true, true, 60, 4, false, true));
+}
+
+void test_ble_meta_reacquire_requires_scan_sync_and_adv_delta(void)
+{
+    TEST_ASSERT_FALSE(fof_policy_ble_meta_should_reacquire(
+        false, true, 60, 4, false, false));
+    TEST_ASSERT_FALSE(fof_policy_ble_meta_should_reacquire(
+        true, false, 60, 4, false, false));
+    TEST_ASSERT_FALSE(fof_policy_ble_meta_should_reacquire(
+        true, true, 60, 0, false, false));
 }

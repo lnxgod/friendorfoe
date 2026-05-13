@@ -31,6 +31,13 @@ bool fof_policy_should_drop_low_value(uint8_t source,
                                       const char *manufacturer,
                                       const uint8_t ble_svc_uuids_128[][16],
                                       uint8_t ble_svc_uuid_128_count);
+uint32_t fof_policy_ble_fingerprint_reemit_ms(const char *manufacturer);
+bool fof_policy_ble_meta_should_reacquire(bool ble_scanning,
+                                          bool host_synced,
+                                          int64_t meta_age_s,
+                                          uint32_t adv_seen_delta,
+                                          bool calibration_active,
+                                          bool ota_active);
 bool fof_policy_is_controller_class_ble(uint8_t source,
                                         const char *manufacturer);
 bool fof_policy_should_shed_low_priority(uint8_t source,

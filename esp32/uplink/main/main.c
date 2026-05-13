@@ -66,6 +66,9 @@
 #endif
 
 #define FIRMWARE_NAME "uplink-s3"
+#ifdef FOF_BADGE_VARIANT
+#define BADGE_DISPLAY_UPDATE_MS 250
+#endif
 
 static const char *TAG = "main";
 
@@ -141,9 +144,13 @@ static void log_badge_scanner_debug(const char *slot, bool connected,
 
     ESP_LOGW(TAG,
              "BADGE_DEBUG %s connected=1 board=%s ver=%s cmd_rx=%lu cmd_age=%lld "
-             "profile=%s role_ack=%d ble_scan=%d ble_adv=%lu meta=%lu tracker=%lu "
+             "profile=%s role_ack=%d ble_scan=%d host=%d/%d ble_adv=%lu meta=%lu tracker=%lu "
+             "meta_age=%lld meta_emit_age=%lld meta_id=%s meta_hash=%08lX "
+             "meta_rssi=%d meta_reason=%s meta_weak_age=%lld reacq=%lu "
+             "focus=%d/%lld focus_ads=%lu "
              "near=%lu rid=%lu wifi_paused=%d wifi_frames=%lu wifi_full=%lu/%lu rc=%d "
-             "ssid_drone=%lu ssid_notable=%lu last_drone='%s' last_notable='%s'",
+             "ssid_drone=%lu ssid_notable=%lu last_drone='%s' last_drone_age=%lld "
+             "last_notable='%s' last_notable_age=%lld",
              slot,
              info->board[0] ? info->board : "?",
              info->version[0] ? info->version : "?",
@@ -152,9 +159,22 @@ static void log_badge_scanner_debug(const char *slot, bool connected,
              info->scan_profile[0] ? info->scan_profile : "?",
              info->calibration_mode_acked ? 1 : 0,
              info->ble_scanning ? 1 : 0,
+             info->ble_host_active ? 1 : 0,
+             info->ble_host_synced ? 1 : 0,
              (unsigned long)info->ble_adv_seen,
              (unsigned long)info->ble_meta_seen,
              (unsigned long)info->ble_tracker_seen,
+             (long long)info->ble_meta_last_seen_age_s,
+             (long long)info->ble_meta_last_emit_age_s,
+             info->ble_meta_identity[0] ? info->ble_meta_identity : "?",
+             (unsigned long)info->ble_meta_last_hash,
+             (int)info->ble_meta_last_rssi,
+             info->ble_meta_last_reason[0] ? info->ble_meta_last_reason : "?",
+             (long long)info->ble_meta_weak_age_s,
+             (unsigned long)info->ble_meta_reacquire_count,
+             info->ble_focus_active ? 1 : 0,
+             (long long)info->ble_focus_age_s,
+             (unsigned long)info->ble_focus_target_adv_count,
              (unsigned long)info->ble_near_unknown_seen,
              (unsigned long)info->rid_emit,
              info->wifi_paused ? 1 : 0,
@@ -165,12 +185,14 @@ static void log_badge_scanner_debug(const char *slot, bool connected,
              (unsigned long)info->wifi_drone_ssid_emit,
              (unsigned long)info->wifi_notable_ssid_emit,
              info->wifi_last_drone_ssid,
-             info->wifi_last_notable_ssid);
+             (long long)info->wifi_last_drone_ssid_age_s,
+             info->wifi_last_notable_ssid,
+             (long long)info->wifi_last_notable_ssid_age_s);
 }
 
 static void log_badge_debug(uint32_t free_heap, int64_t uptime_s)
 {
-    badge_threat_snapshot_t snap;
+    static badge_threat_snapshot_t snap;
     uart_rx_get_badge_threat_snapshot(&snap);
     int visible_count = 0;
     for (int i = 0; i < snap.entity_count; i++) {
@@ -185,7 +207,10 @@ static void log_badge_debug(uint32_t free_heap, int64_t uptime_s)
 
     ESP_LOGW(TAG,
              "BADGE_DEBUG uplink=%s uptime=%llds heap=%lu detections=%d "
-             "entities=%d visible=%d score=%.2f ble_health=%d wifi_health=%d",
+             "entities=%d visible=%d score=%.2f ble_health=%d wifi_health=%d "
+             "reset=%s reset_expected=%d crash_count=%lu stack_main=%lu "
+             "stack_display=%lu stack_usb=%lu stack_uart_ble=%lu "
+             "stack_uart_wifi=%lu usb_age=%lld recovery=%s",
              FOF_VERSION,
              (long long)uptime_s,
              (unsigned long)free_heap,
@@ -194,7 +219,17 @@ static void log_badge_debug(uint32_t free_heap, int64_t uptime_s)
              visible_count,
              (double)snap.threat_score,
              badge_scanner_control_healthy(ble_info) ? 1 : 0,
-             badge_scanner_control_healthy(wifi_info) ? 1 : 0);
+             badge_scanner_control_healthy(wifi_info) ? 1 : 0,
+             badge_runtime_last_reset_reason_name(),
+             badge_runtime_last_reset_expected() ? 1 : 0,
+             (unsigned long)badge_runtime_crash_count(),
+             (unsigned long)badge_runtime_main_stack_free(),
+             (unsigned long)badge_runtime_display_stack_free(),
+             (unsigned long)badge_runtime_usb_stack_free(),
+             (unsigned long)badge_runtime_uart_ble_stack_free(),
+             (unsigned long)badge_runtime_uart_wifi_stack_free(),
+             (long long)badge_runtime_usb_control_age_s(),
+             badge_runtime_recovery_mode());
     log_badge_scanner_debug("ble", ble_connected, ble_info);
     log_badge_scanner_debug("wifi", wifi_connected, wifi_info);
 }
@@ -255,7 +290,9 @@ static bool reset_reason_is_unhealthy_for_rollback(esp_reset_reason_t reason)
                  reason == ESP_RST_TASK_WDT ||
                  reason == ESP_RST_WDT;
 #ifdef FOF_BADGE_VARIANT
-    crash = crash || reason == ESP_RST_SW;
+    crash = crash ||
+            (reason == ESP_RST_SW &&
+             !badge_runtime_reset_reason_was_expected_software((uint32_t)reason));
 #endif
     return crash;
 }
@@ -309,6 +346,9 @@ static void rollback_and_reboot_or_restart(const char *reason)
          * fallback partition), fall back to a normal restart. */
     }
     ESP_LOGE(TAG, "WATCHDOG REBOOT: %s", reason);
+#ifdef FOF_BADGE_VARIANT
+    badge_runtime_arm_expected_reboot(reason ? reason : "watchdog");
+#endif
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
 }
@@ -378,6 +418,8 @@ static void display_task(void *arg)
 #ifdef FOF_BADGE_VARIANT
         badge_runtime_note_display_alive();
         badge_runtime_note_scanner_uart_alive(scanner_ok);
+        badge_runtime_note_display_stack_free(
+            (uint32_t)uxTaskGetStackHighWaterMark(NULL));
 #endif
 
 #ifndef FOF_BADGE_VARIANT
@@ -408,7 +450,7 @@ static void display_task(void *arg)
         }
 
 #ifdef FOF_BADGE_VARIANT
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(BADGE_DISPLAY_UPDATE_MS));
 #else
         vTaskDelay(pdMS_TO_TICKS(CONFIG_DISPLAY_UPDATE_MS));
 #endif
@@ -503,6 +545,9 @@ void app_main(void)
     badge_mode_t badge_mode = badge_mode_get();
     bool badge_backend_enabled = badge_mode_backend_enabled(badge_mode);
     bool badge_ap_enabled = badge_mode_ap_enabled(badge_mode);
+#ifdef FOF_BADGE_VARIANT
+    bool badge_safe_usb = badge_runtime_is_safe_mode();
+#endif
 #ifndef FOF_BADGE_VARIANT
     badge_mode = BADGE_MODE_BACKEND;
     badge_backend_enabled = true;
@@ -539,8 +584,10 @@ void app_main(void)
     badge_mode = badge_mode_get();
     badge_backend_enabled = badge_mode_backend_enabled(badge_mode);
     badge_ap_enabled = badge_mode_ap_enabled(badge_mode);
-    oled_show_boot_status("USB Ready", badge_mode_display_name(badge_mode),
-                          "network off");
+    badge_safe_usb = badge_runtime_is_safe_mode();
+    oled_show_boot_status(badge_safe_usb ? "USB RECOVERY" : "USB Ready",
+                          badge_mode_display_name(badge_mode),
+                          badge_safe_usb ? badge_runtime_safe_reason() : "network off");
 #endif
 
     /* ── 3. Create default event loop ─────────────────────────────────── */
@@ -563,15 +610,19 @@ void app_main(void)
              badge_backend_configured() ? 1 : 0,
              badge_runtime_is_safe_mode() ? 1 : 0);
     wifi_sta_set_force_standalone(true);
-    badge_runtime_network_mode_t boot_network = badge_boot_network_mode(badge_mode);
+    badge_safe_usb = badge_runtime_is_safe_mode();
+    badge_runtime_network_mode_t boot_network = badge_safe_usb
+        ? BADGE_RUNTIME_NETWORK_OFF
+        : badge_boot_network_mode(badge_mode);
     badge_runtime_request_network(
         boot_network,
         boot_network == BADGE_RUNTIME_NETWORK_BACKEND ? -1 : 0,
         "boot_persisted_mode");
     badge_backend_enabled = boot_network == BADGE_RUNTIME_NETWORK_BACKEND;
     badge_ap_enabled = boot_network == BADGE_RUNTIME_NETWORK_LOCAL_AP;
-    oled_show_boot_status("USB Ready", badge_mode_display_name(badge_mode),
-                          badge_runtime_is_safe_mode() ? "SAFE" :
+    oled_show_boot_status(badge_safe_usb ? "USB RECOVERY" : "USB Ready",
+                          badge_mode_display_name(badge_mode),
+                          badge_safe_usb ? "safe_usb" :
                           badge_runtime_network_mode_name(
                               badge_runtime_get_network_mode()));
 #else
@@ -598,9 +649,9 @@ void app_main(void)
     oled_init();
     oled_update(0, false, false, false, 0, wifi_sta_is_connected(), 0.0f, 0, NULL);
 #else
-    oled_show_boot_status("Starting Scanners",
+    oled_show_boot_status(badge_safe_usb ? "USB RECOVERY" : "Starting Scanners",
                           badge_mode_display_name(badge_mode),
-                          "USB control");
+                          badge_safe_usb ? "safe_usb" : "USB control");
 #endif
 
     /* ── 10. Initialize battery monitor ───────────────────────────────── */
@@ -615,7 +666,15 @@ void app_main(void)
 #endif
 
     /* ── 12. Initialize UART RX ───────────────────────────────────────── */
+#ifdef FOF_BADGE_VARIANT
+    if (!badge_safe_usb) {
+        uart_rx_init(detection_queue);
+    } else {
+        ESP_LOGW(TAG, "Badge safe USB mode: scanner UART driver init held off");
+    }
+#else
     uart_rx_init(detection_queue);
+#endif
 
     /* ── 13. Initialize HTTP upload ───────────────────────────────────── */
     http_upload_init(detection_queue);
@@ -635,7 +694,13 @@ void app_main(void)
      * Follow with \n to flush the scanner's line buffer so it doesn't pollute
      * future JSON commands (the 0xFF bytes are non-newline and would sit in
      * the line accumulator forever). */
-    {
+    if (
+#ifdef FOF_BADGE_VARIANT
+        !badge_safe_usb
+#else
+        true
+#endif
+    ) {
         const uint8_t abort_seq[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, '\n'};
         uart_write_bytes(CONFIG_BLE_SCANNER_UART, (const char *)abort_seq, sizeof(abort_seq));
 #if CONFIG_DUAL_SCANNER
@@ -643,17 +708,34 @@ void app_main(void)
 #endif
         ESP_LOGI(TAG, "Sent OTA abort sequence to all scanners");
         vTaskDelay(pdMS_TO_TICKS(100));
+    } else {
+#ifdef FOF_BADGE_VARIANT
+        ESP_LOGW(TAG, "Badge safe USB mode: skipping scanner OTA abort chatter");
+#endif
     }
 
-    uart_rx_start();
 #ifdef FOF_BADGE_VARIANT
-    badge_runtime_note_scanner_uart_alive(true);
-    http_upload_start();
-    ESP_LOGI(TAG, "Badge build: HTTP upload task active; standalone mode controls upload");
+    if (!badge_safe_usb) {
+        uart_rx_start();
+        badge_runtime_note_scanner_uart_alive(true);
+        http_upload_start();
+        ESP_LOGI(TAG, "Badge build: HTTP upload task active; standalone mode controls upload");
+    } else {
+        ESP_LOGW(TAG, "Badge safe USB mode: scanner RX and HTTP upload tasks held off");
+    }
 #else
+    uart_rx_start();
     http_upload_start();
 #endif
+#ifdef FOF_BADGE_VARIANT
+    if (!badge_safe_usb) {
+        gps_start();
+    } else {
+        ESP_LOGW(TAG, "Badge safe USB mode: GPS task held off");
+    }
+#else
     gps_start();
+#endif
 #ifndef FOF_BADGE_VARIANT
     led_start();
 #endif
@@ -693,14 +775,21 @@ void app_main(void)
     /* ── 16b. Tell scanners to start transmitting ────────────────────── */
     /* Scanners boot silent (start/stop protocol) and wait for this signal. */
     {
+#ifdef FOF_BADGE_VARIANT
+        if (!badge_safe_usb) {
+            uart_rx_send_command("{\"type\":\"ready\"}");
+            send_badge_scan_profiles();
+            ESP_LOGW(TAG, "Sent ready signal to all scanners — detections enabled");
+            oled_show_boot_status("Scanner Ready", badge_mode_display_name(badge_mode),
+                                  "USB control");
+        } else {
+            ESP_LOGW(TAG, "Badge safe USB mode: scanner ready signal held off");
+            oled_show_boot_status("USB RECOVERY", badge_mode_display_name(badge_mode),
+                                  badge_runtime_safe_reason());
+        }
+#else
         uart_rx_send_command("{\"type\":\"ready\"}");
-#ifdef FOF_BADGE_VARIANT
-        send_badge_scan_profiles();
-#endif
         ESP_LOGW(TAG, "Sent ready signal to all scanners — detections enabled");
-#ifdef FOF_BADGE_VARIANT
-        oled_show_boot_status("Scanner Ready", badge_mode_display_name(badge_mode),
-                              "USB control");
 #endif
     }
 
@@ -755,7 +844,20 @@ void app_main(void)
 
 #ifdef FOF_BADGE_VARIANT
             badge_runtime_poll();
+            if (badge_runtime_usb_control_recovery_due(uptime_s)) {
+                snprintf(reason, sizeof(reason), "usb_control_age=%llds",
+                         (long long)badge_runtime_usb_control_age_s());
+                ESP_LOGE(TAG, "Badge USB control watchdog entering safe USB mode: %s",
+                         reason);
+                oled_show_boot_status("USB RECOVERY", "restarting", reason);
+                badge_runtime_force_safe_mode(true, "usb_control_stale");
+                badge_runtime_arm_expected_reboot("usb_recovery");
+                vTaskDelay(pdMS_TO_TICKS(120));
+                esp_restart();
+            }
             badge_runtime_note_scanner_uart_alive(uart_rx_is_scanner_connected());
+            badge_runtime_note_main_stack_free(
+                (uint32_t)uxTaskGetStackHighWaterMark(NULL));
             if (badge_runtime_health_can_mark_ota_valid(free_heap, uptime_s)) {
                 badge_runtime_mark_stable();
                 rollback_mark_valid();
@@ -781,7 +883,11 @@ void app_main(void)
              * missed it during boot or rebooted independently. Keep it off
              * the UART while a scanner relay owns the link; even one JSON
              * line in the binary OTA stream can corrupt a chunk. */
-            if (!fw_store_is_relay_active() && !http_upload_is_paused()) {
+            if (
+#ifdef FOF_BADGE_VARIANT
+                !badge_runtime_is_safe_mode() &&
+#endif
+                !fw_store_is_relay_active() && !http_upload_is_paused()) {
                 uart_rx_send_command("{\"type\":\"ready\"}");
 #ifdef FOF_BADGE_VARIANT
                 send_badge_scan_profiles();

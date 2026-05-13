@@ -543,15 +543,26 @@ static int append_scanner_info(char *buf,
                  ",\"wifi_full_scan_last_rc\":%d,\"wifi_last_ap_count\":%lu"
                  ",\"wifi_last_scan_age_s\":%lld"
                  ",\"wifi_drone_ssid_emit\":%lu,\"wifi_notable_ssid_emit\":%lu"
+                 ",\"wifi_last_drone_ssid_age_s\":%lld"
+                 ",\"wifi_last_notable_ssid_age_s\":%lld"
                  ",\"wifi_oui_emit\":%lu,\"wifi_soft_ssid_emit\":%lu"
                  ",\"wifi_hot_ch\":%lu"
                  ",\"ble_adv_seen\":%lu,\"ble_fp_emit\":%lu"
-                 ",\"ble_meta_seen\":%lu,\"ble_tracker_seen\":%lu"
+                 ",\"ble_meta_seen\":%lu"
+                 ",\"ble_meta_last_seen_age_s\":%lld"
+                 ",\"ble_meta_last_emit_age_s\":%lld"
+                 ",\"ble_meta_last_hash\":%lu"
+                 ",\"ble_meta_last_rssi\":%d"
+                 ",\"ble_meta_weak_age_s\":%lld"
+                 ",\"ble_meta_reacquire_count\":%lu"
+                 ",\"ble_tracker_seen\":%lu"
                  ",\"ble_privacy_candidate_seen\":%lu,\"ble_near_unknown_seen\":%lu"
                  ",\"ble_drop_profile\":%lu,\"ble_drop_rate\":%lu"
                  ",\"ble_host_restart_count\":%lu"
                  ",\"ble_scan_start_count\":%lu,\"ble_scan_start_ok\":%lu"
                  ",\"ble_scan_last_rc\":%d,\"ble_sync_last_rc\":%d"
+                 ",\"ble_focus_active\":%s,\"ble_focus_age_s\":%lld"
+                 ",\"ble_focus_target_adv_count\":%lu"
                  ",\"need_firmware\":%s,\"fw_state\":\"%s\",\"target_ver\":\"%s\""
                  ",\"fw_check_count\":%lu,\"fw_backoff_s\":%lld,\"last_fw_error\":\"%s\"",
                  info->ble_scanning ? "true" : "false",
@@ -568,12 +579,20 @@ static int append_scanner_info(char *buf,
                  (long long)info->wifi_last_scan_age_s,
                  (unsigned long)info->wifi_drone_ssid_emit,
                  (unsigned long)info->wifi_notable_ssid_emit,
+                 (long long)info->wifi_last_drone_ssid_age_s,
+                 (long long)info->wifi_last_notable_ssid_age_s,
                  (unsigned long)info->wifi_oui_emit,
                  (unsigned long)info->wifi_soft_ssid_emit,
                  (unsigned long)info->wifi_hot_ch,
                  (unsigned long)info->ble_adv_seen,
                  (unsigned long)info->ble_fp_emit,
                  (unsigned long)info->ble_meta_seen,
+                 (long long)info->ble_meta_last_seen_age_s,
+                 (long long)info->ble_meta_last_emit_age_s,
+                 (unsigned long)info->ble_meta_last_hash,
+                 (int)info->ble_meta_last_rssi,
+                 (long long)info->ble_meta_weak_age_s,
+                 (unsigned long)info->ble_meta_reacquire_count,
                  (unsigned long)info->ble_tracker_seen,
                  (unsigned long)info->ble_privacy_candidate_seen,
                  (unsigned long)info->ble_near_unknown_seen,
@@ -584,6 +603,9 @@ static int append_scanner_info(char *buf,
                  (unsigned long)info->ble_scan_start_ok,
                  info->ble_scan_last_rc,
                  info->ble_sync_last_rc,
+                 info->ble_focus_active ? "true" : "false",
+                 (long long)info->ble_focus_age_s,
+                 (unsigned long)info->ble_focus_target_adv_count,
                  info->need_firmware ? "true" : "false",
                  info->fw_update_state[0] ? info->fw_update_state : "idle",
                  info->fw_target_version,
@@ -593,6 +615,8 @@ static int append_scanner_info(char *buf,
     if(n>0) off+=n;
     off = append_json_string_field(off, "wifi_last_drone_ssid", info->wifi_last_drone_ssid);
     off = append_json_string_field(off, "wifi_last_notable_ssid", info->wifi_last_notable_ssid);
+    off = append_json_string_field(off, "ble_meta_last_reason", info->ble_meta_last_reason);
+    off = append_json_string_field(off, "ble_meta_identity", info->ble_meta_identity);
     off = append_json_string_field(off, "ota_state",
                                    info->ota_state[0] ? info->ota_state : "idle");
     off = append_json_string_field(off, "ota_session_id", info->ota_session_id);
@@ -680,7 +704,8 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     BUF_APPEND(
         ",\"reporting\":{\"network_mode\":\"%s\",\"backend_enabled\":%s,"
         "\"network_ttl_s\":%d,\"wifi_sta\":%s,\"standalone\":%s,"
-        "\"uploads_ok\":%d,\"uploads_fail\":%d,\"last_upload_age_s\":%lld}",
+        "\"uploads_ok\":%d,\"uploads_fail\":%d,\"last_upload_age_s\":%lld,"
+        "\"usb_control_age_s\":%lld,\"recovery_mode\":\"%s\"}",
         badge_runtime_network_mode_name(badge_runtime_get_network_mode()),
         badge_runtime_get_network_mode() == BADGE_RUNTIME_NETWORK_BACKEND ? "true" : "false",
         badge_runtime_get_network_ttl_s(),
@@ -688,7 +713,9 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
         wifi_sta_is_standalone() ? "true" : "false",
         s_success_count,
         s_fail_count,
-        (long long)last_upload_age_s
+        (long long)last_upload_age_s,
+        (long long)badge_runtime_usb_control_age_s(),
+        badge_runtime_recovery_mode()
     );
 #else
     BUF_APPEND(

@@ -61,7 +61,7 @@ static const char *TAG = "serial_cfg";
 #define RESP_BOOTLOADER "FOF_BOOTLOADER:OK\n"
 #define RESP_REBOOT     "FOF_REBOOT:OK\n"
 
-#define CONTROL_STACK_BYTES 6144
+#define CONTROL_STACK_BYTES 12288  /* Full badge status JSON includes scanner diagnostics. */
 #define SERIAL_FW_BUF_SIZE 512
 #define SERIAL_FW_IDLE_TIMEOUT_MS 30000
 
@@ -69,6 +69,7 @@ static bool s_control_task_started = false;
 static bool s_serial_fw_rx_active = false;
 static int64_t s_serial_fw_last_rx_ms = 0;
 
+static void handle_control_line(const char *line);
 static void print_json_escaped_string(const char *value);
 static void print_scanner_status_json(const char *name, uint8_t scanner_id,
                                       bool connected, bool peer_connected,
@@ -101,6 +102,9 @@ static void reboot_to_download_mode(void)
 {
     ESP_LOGW(TAG, "USB serial requested ROM download mode");
     send_response(RESP_BOOTLOADER);
+#ifdef FOF_BADGE_VARIANT
+    badge_runtime_arm_expected_reboot("usb_bootloader");
+#endif
     vTaskDelay(pdMS_TO_TICKS(120));
     REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
     esp_restart();
@@ -110,6 +114,9 @@ static void reboot_app(void)
 {
     ESP_LOGW(TAG, "USB serial requested app restart");
     send_response(RESP_REBOOT);
+#ifdef FOF_BADGE_VARIANT
+    badge_runtime_arm_expected_reboot("usb_reboot");
+#endif
     vTaskDelay(pdMS_TO_TICKS(120));
     esp_restart();
 }
@@ -173,7 +180,10 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
                "\"wifi_full_scan_err\":%lu,\"wifi_full_scan_last_rc\":%d,"
                "\"wifi_last_ap_count\":%lu,\"wifi_last_scan_age_s\":%lld,"
                "\"wifi_drone_ssid_emit\":%lu,"
-               "\"wifi_notable_ssid_emit\":%lu,\"wifi_last_drone_ssid\":",
+               "\"wifi_notable_ssid_emit\":%lu,"
+               "\"wifi_last_drone_ssid_age_s\":%lld,"
+               "\"wifi_last_notable_ssid_age_s\":%lld,"
+               "\"wifi_last_drone_ssid\":",
                (unsigned long)info->cmd_rx_count,
                (long long)info->cmd_last_age_s,
                (unsigned long)info->cmd_parse_error_count,
@@ -191,28 +201,59 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
                (unsigned long)info->wifi_last_ap_count,
                (long long)info->wifi_last_scan_age_s,
                (unsigned long)info->wifi_drone_ssid_emit,
-               (unsigned long)info->wifi_notable_ssid_emit);
+               (unsigned long)info->wifi_notable_ssid_emit,
+               (long long)info->wifi_last_drone_ssid_age_s,
+               (long long)info->wifi_last_notable_ssid_age_s);
         print_json_escaped_string(info->wifi_last_drone_ssid);
         printf(",\"wifi_last_notable_ssid\":");
         print_json_escaped_string(info->wifi_last_notable_ssid);
         printf(",\"wifi_oui_emit\":%lu,"
                "\"wifi_soft_ssid_emit\":%lu,\"wifi_hot_ch\":%lu,"
-               "\"ble_adv_seen\":%lu,\"ble_fp_emit\":%lu,"
-               "\"ble_meta_seen\":%lu,\"ble_tracker_seen\":%lu,"
+               "\"ble_adv_seen\":%lu,\"ble_any_seen\":%lu,"
+               "\"ble_any_with_payload_seen\":%lu,"
+               "\"ble_any_empty_seen\":%lu,"
+               "\"ble_any_last_rssi\":%d,\"ble_any_best_rssi\":%d,"
+               "\"ble_any_last_len\":%u,\"ble_any_last_props\":%u,"
+               "\"ble_any_last_addr_type\":%u,"
+               "\"ble_fp_emit\":%lu,"
+               "\"ble_meta_seen\":%lu,"
+               "\"ble_meta_last_seen_age_s\":%lld,"
+               "\"ble_meta_last_emit_age_s\":%lld,"
+               "\"ble_meta_last_hash\":%lu,"
+               "\"ble_meta_last_rssi\":%d,"
+               "\"ble_meta_weak_age_s\":%lld,"
+               "\"ble_meta_reacquire_count\":%lu,"
+               "\"ble_tracker_seen\":%lu,"
                "\"ble_privacy_candidate_seen\":%lu,"
                "\"ble_near_unknown_seen\":%lu,"
                "\"ble_drop_profile\":%lu,\"ble_drop_rate\":%lu,"
                "\"ble_host_restart_count\":%lu,"
                "\"ble_scan_start_count\":%lu,\"ble_scan_start_ok\":%lu,"
                "\"ble_scan_last_rc\":%d,\"ble_sync_last_rc\":%d,"
+               "\"ble_focus_active\":%s,\"ble_focus_age_s\":%lld,"
+               "\"ble_focus_target_adv_count\":%lu,"
                "\"rid_service_seen\":%lu,\"rid_emit\":%lu,"
                "\"privacy_seen\":%lu",
                (unsigned long)info->wifi_oui_emit,
                (unsigned long)info->wifi_soft_ssid_emit,
                (unsigned long)info->wifi_hot_ch,
                (unsigned long)info->ble_adv_seen,
+               (unsigned long)info->ble_any_seen,
+               (unsigned long)info->ble_any_with_payload_seen,
+               (unsigned long)info->ble_any_empty_seen,
+               (int)info->ble_any_last_rssi,
+               (int)info->ble_any_best_rssi,
+               (unsigned)info->ble_any_last_len,
+               (unsigned)info->ble_any_last_props,
+               (unsigned)info->ble_any_last_addr_type,
                (unsigned long)info->ble_fp_emit,
                (unsigned long)info->ble_meta_seen,
+               (long long)info->ble_meta_last_seen_age_s,
+               (long long)info->ble_meta_last_emit_age_s,
+               (unsigned long)info->ble_meta_last_hash,
+               (int)info->ble_meta_last_rssi,
+               (long long)info->ble_meta_weak_age_s,
+               (unsigned long)info->ble_meta_reacquire_count,
                (unsigned long)info->ble_tracker_seen,
                (unsigned long)info->ble_privacy_candidate_seen,
                (unsigned long)info->ble_near_unknown_seen,
@@ -223,40 +264,25 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
                (unsigned long)info->ble_scan_start_ok,
                info->ble_scan_last_rc,
                info->ble_sync_last_rc,
+               info->ble_focus_active ? "true" : "false",
+               (long long)info->ble_focus_age_s,
+               (unsigned long)info->ble_focus_target_adv_count,
                (unsigned long)info->rid_service_seen,
                (unsigned long)info->rid_emit,
                (unsigned long)info->privacy_seen);
+        printf(",\"ble_meta_last_reason\":");
+        print_json_escaped_string(info->ble_meta_last_reason);
+        printf(",\"ble_meta_identity\":");
+        print_json_escaped_string(info->ble_meta_identity);
         printf(",\"ble_dbg_near_seen\":%lu,\"ble_dbg_near_rssi\":%d,"
-               "\"ble_dbg_near_label\":",
-               (unsigned long)info->ble_dbg_near_seen,
-               (int)info->ble_dbg_near_rssi);
-        print_json_escaped_string(info->ble_dbg_near_label);
-        printf(",\"ble_dbg_near_name\":");
-        print_json_escaped_string(info->ble_dbg_near_name);
-        printf(",\"ble_dbg_near_reason\":");
-        print_json_escaped_string(info->ble_dbg_near_reason);
-        printf(",\"ble_dbg_near_cid\":%u,\"ble_dbg_near_svc0\":%u,"
-               "\"ble_dbg_near_svc_count\":%u,"
                "\"ble_dbg_near_payload_len\":%u,"
                "\"ble_dbg_priv_seen\":%lu,\"ble_dbg_priv_rssi\":%d,"
-               "\"ble_dbg_priv_label\":",
-               (unsigned)info->ble_dbg_near_cid,
-               (unsigned)info->ble_dbg_near_svc0,
-               (unsigned)info->ble_dbg_near_svc_count,
+               "\"ble_dbg_priv_payload_len\":%u,\"fw_state\":",
+               (unsigned long)info->ble_dbg_near_seen,
+               (int)info->ble_dbg_near_rssi,
                (unsigned)info->ble_dbg_near_payload_len,
                (unsigned long)info->ble_dbg_priv_seen,
-               (int)info->ble_dbg_priv_rssi);
-        print_json_escaped_string(info->ble_dbg_priv_label);
-        printf(",\"ble_dbg_priv_name\":");
-        print_json_escaped_string(info->ble_dbg_priv_name);
-        printf(",\"ble_dbg_priv_reason\":");
-        print_json_escaped_string(info->ble_dbg_priv_reason);
-        printf(",\"ble_dbg_priv_cid\":%u,\"ble_dbg_priv_svc0\":%u,"
-               "\"ble_dbg_priv_svc_count\":%u,"
-               "\"ble_dbg_priv_payload_len\":%u,\"fw_state\":",
-               (unsigned)info->ble_dbg_priv_cid,
-               (unsigned)info->ble_dbg_priv_svc0,
-               (unsigned)info->ble_dbg_priv_svc_count,
+               (int)info->ble_dbg_priv_rssi,
                (unsigned)info->ble_dbg_priv_payload_len);
         print_json_escaped_string(info->fw_update_state[0] ? info->fw_update_state : "idle");
         printf(",\"target_ver\":");
@@ -285,6 +311,10 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
 
 static void send_badge_status_response(void)
 {
+#ifdef FOF_BADGE_VARIANT
+    badge_runtime_note_usb_stack_free(
+        (uint32_t)uxTaskGetStackHighWaterMark(NULL));
+#endif
     badge_threat_snapshot_t snapshot;
     uart_rx_get_badge_threat_snapshot(&snapshot);
 
@@ -317,11 +347,27 @@ static void send_badge_status_response(void)
     print_json_escaped_string(
         badge_runtime_network_mode_name(badge_runtime_get_network_mode()));
     printf(",\"network_ttl_s\":%d,\"display_alive\":%s,"
-           "\"usb_control_alive\":%s,\"scanner_uart_alive\":%s",
+           "\"usb_control_alive\":%s,\"scanner_uart_alive\":%s,"
+           "\"reset_reason\":",
            badge_runtime_get_network_ttl_s(),
            badge_runtime_display_alive() ? "true" : "false",
            badge_runtime_usb_control_alive() ? "true" : "false",
            badge_runtime_scanner_uart_alive() ? "true" : "false");
+    print_json_escaped_string(badge_runtime_last_reset_reason_name());
+    printf(",\"reset_reason_code\":%lu,\"reset_expected\":%s,"
+           "\"usb_control_age_s\":%lld,\"recovery_mode\":",
+           (unsigned long)badge_runtime_last_reset_reason(),
+           badge_runtime_last_reset_expected() ? "true" : "false",
+           (long long)badge_runtime_usb_control_age_s());
+    print_json_escaped_string(badge_runtime_recovery_mode());
+    printf(",\"stack_main_free\":%lu,\"stack_display_free\":%lu,"
+           "\"stack_usb_free\":%lu,\"stack_uart_ble_free\":%lu,"
+           "\"stack_uart_wifi_free\":%lu",
+           (unsigned long)badge_runtime_main_stack_free(),
+           (unsigned long)badge_runtime_display_stack_free(),
+           (unsigned long)badge_runtime_usb_stack_free(),
+           (unsigned long)badge_runtime_uart_ble_stack_free(),
+           (unsigned long)badge_runtime_uart_wifi_stack_free());
 #endif
     printf(",\"threat_score\":%.1f,\"color_rgb565\":%u",
            snapshot.threat_score, (unsigned)snapshot.color_rgb565);
@@ -358,9 +404,24 @@ static void send_badge_status_response(void)
         ? badge_threat_category_name(snapshot.entities[0].category)
         : badge_threat_category_name(BADGE_THREAT_CATEGORY_NONE));
     printf(",\"dominant_proximity\":%d", (int)snapshot.dominant_proximity);
-    printf(",\"counts\":{\"drone\":%lu,\"meta\":%lu,\"tracker\":%lu,"
+    uint32_t active_remote_id = badge_threat_snapshot_count_active(
+        &snapshot,
+        BADGE_THREAT_DRONE,
+        BADGE_THREAT_CATEGORY_DRONE,
+        false
+    );
+    uint32_t active_drone_ssid = badge_threat_snapshot_count_active(
+        &snapshot,
+        BADGE_THREAT_DRONE,
+        BADGE_THREAT_CATEGORY_SSID,
+        false
+    );
+    printf(",\"counts\":{\"drone\":%lu,\"remote_id\":%lu,"
+           "\"drone_ssid\":%lu,\"meta\":%lu,\"tracker\":%lu,"
            "\"wifi_anomaly\":%lu,\"ble\":%lu,\"other\":%lu}",
            (unsigned long)snapshot.active_counts[BADGE_THREAT_DRONE],
+           (unsigned long)active_remote_id,
+           (unsigned long)active_drone_ssid,
            (unsigned long)snapshot.active_counts[BADGE_THREAT_META],
            (unsigned long)snapshot.active_counts[BADGE_THREAT_TRACKER],
            (unsigned long)snapshot.active_counts[BADGE_THREAT_WIFI_ANOMALY],
@@ -379,6 +440,8 @@ static void send_badge_status_response(void)
         print_json_escaped_string(badge_threat_category_name(entity->category));
         printf(",\"code\":");
         print_json_escaped_string(badge_threat_category_code(entity->category));
+        printf(",\"display_id\":");
+        print_json_escaped_string(entity->display_id);
         printf(",\"score\":%d,\"evidence_quality\":%u,"
                "\"display_rank\":%d,\"age_s\":%d,\"last_seen_s\":%d,"
                "\"rssi\":%d,\"best_rssi\":%d,\"events\":%lu,"
@@ -535,6 +598,12 @@ static void handle_fw_upload_begin(cJSON *root)
 
 static void handle_scanner_display_control(cJSON *root, const char *cmd_name)
 {
+#ifdef FOF_BADGE_VARIANT
+    if (badge_runtime_is_safe_mode()) {
+        send_control_error("safe mode blocks scanner display control");
+        return;
+    }
+#endif
     cJSON *scanner_cmd = cJSON_CreateObject();
     if (!scanner_cmd) {
         send_control_error("no memory");
@@ -846,6 +915,9 @@ static void handle_ctl_command(const char *json)
             send_control_error("no pending OTA image");
         } else {
             send_response("FOF_CTL_OK:{\"message\":\"rollback\",\"reboot_required\":true}\n");
+#ifdef FOF_BADGE_VARIANT
+            badge_runtime_arm_expected_reboot("usb_rollback");
+#endif
             vTaskDelay(pdMS_TO_TICKS(120));
             esp_ota_mark_app_invalid_rollback_and_reboot();
         }
@@ -1006,6 +1078,14 @@ bool serial_config_listen(int timeout_ms)
             send_response(RESP_SAVED);
             ESP_LOGI(TAG, "Configuration saved to NVS");
             break;
+        } else if (strcmp(line, CMD_PING) == 0 ||
+                   strcmp(line, CMD_STATUS) == 0 ||
+                   strcmp(line, CMD_REBOOT) == 0 ||
+                   strcmp(line, CMD_BOOTLOADER) == 0 ||
+                   strcmp(line, CMD_DOWNLOAD) == 0 ||
+                   strcmp(line, CMD_FLASH) == 0 ||
+                   strncmp(line, CMD_CTL, strlen(CMD_CTL)) == 0) {
+            handle_control_line(line);
         } else if (strlen(line) > 0) {
             char msg[96];
             snprintf(msg, sizeof(msg), "%sunknown command\n", RESP_ERROR);
@@ -1089,11 +1169,23 @@ static void serial_control_task(void *arg)
     char line[LINE_BUF_SIZE];
     uint8_t fw_buf[SERIAL_FW_BUF_SIZE];
     int pos = 0;
+#ifdef FOF_BADGE_VARIANT
+    int64_t last_heartbeat_ms = 0;
+#endif
 
     fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
     ESP_LOGI(TAG, "Runtime USB serial control listener ready");
 
     while (1) {
+#ifdef FOF_BADGE_VARIANT
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        if (last_heartbeat_ms == 0 || (now_ms - last_heartbeat_ms) >= 1000) {
+            badge_runtime_note_usb_control_alive();
+            badge_runtime_note_usb_stack_free(
+                (uint32_t)uxTaskGetStackHighWaterMark(NULL));
+            last_heartbeat_ms = now_ms;
+        }
+#endif
         if (s_serial_fw_rx_active) {
             uint32_t remaining = fw_store_serial_upload_remaining();
             if (remaining == 0) {
