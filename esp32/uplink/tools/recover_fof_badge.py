@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import glob
 import json
 import os
 import re
@@ -24,6 +25,13 @@ from typing import Iterable
 try:
     import serial
 except Exception as exc:  # pragma: no cover - operator-facing failure path
+    fallback_python = Path.home() / ".platformio" / "penv" / "bin" / "python"
+    if (fallback_python.exists() and
+            os.environ.get("FOF_RECOVERY_NO_PENV") != "1" and
+            Path(sys.executable).resolve() != fallback_python.resolve()):
+        env = os.environ.copy()
+        env["FOF_RECOVERY_NO_PENV"] = "1"
+        os.execve(str(fallback_python), [str(fallback_python), *sys.argv], env)
     print(f"pyserial is required: {exc}", file=sys.stderr)
     sys.exit(2)
 
@@ -33,11 +41,13 @@ except Exception:  # pragma: no cover - optional recovery acceleration
     usb = None
 
 
-DEFAULT_PORT = "/dev/cu.usbmodem1101"
+DEFAULT_PORT = None
 DEFAULT_ENV = "uplink-s3-fof_badge"
 DEFAULT_VERIFY_SECONDS = 60
 BAUDS = (115200, 921600)
 FLASH_BAUDS = (115200, 460800, 921600)
+HARD_RESET_SYNC_WINDOW_S = 180
+APP_RECOVERY_WINDOW_S = 25
 BOOT_MARKERS = (
     "FOF_READY",
     "FOF_TIMEOUT",
@@ -65,6 +75,7 @@ PASS_LOG_MARKERS = (
     "HTTP status server disabled by badge mode",
     "Sent ready signal to all scanners",
 )
+STATUS_RE = re.compile(r"^FOF_STATUS:(\{[^\r\n]*\})\r?$", re.MULTILINE)
 
 
 def repo_paths() -> tuple[Path, Path, Path]:
@@ -124,22 +135,28 @@ def run_stream(cmd: list[str], cwd: Path, timeout: float | None = None) -> int:
         cwd=str(cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        bufsize=0,
     )
     start = time.time()
     assert proc.stdout is not None
+    os.set_blocking(proc.stdout.fileno(), False)
     try:
         while True:
             ready, _, _ = select.select([proc.stdout], [], [], 0.2)
             if ready:
-                line = proc.stdout.readline()
-                if line:
-                    log_process_line(line)
+                try:
+                    chunk = proc.stdout.read()
+                except BlockingIOError:
+                    chunk = b""
+                if chunk:
+                    log_process_line(chunk.decode("utf-8", "replace"))
             if proc.poll() is not None:
-                rest = proc.stdout.read()
+                try:
+                    rest = proc.stdout.read()
+                except BlockingIOError:
+                    rest = b""
                 if rest:
-                    log_process_line(rest)
+                    log_process_line(rest.decode("utf-8", "replace"))
                 return int(proc.returncode)
             if timeout and time.time() - start > timeout:
                 proc.terminate()
@@ -222,12 +239,41 @@ def lsof_pids(paths: Iterable[str]) -> list[int]:
     return pids
 
 
-def paired_serial_ports(port: str) -> list[str]:
+def discover_usbmodem_ports() -> list[str]:
+    ports: list[str] = []
+    for pattern in ("/dev/cu.usbmodem*", "/dev/tty.usbmodem*"):
+        ports.extend(glob.glob(pattern))
+    return sorted(dict.fromkeys(ports), key=lambda p: (0 if "/dev/cu." in p else 1, p))
+
+
+def detect_usb_port(required: bool = True) -> str | None:
+    ports = [p for p in discover_usbmodem_ports() if "/dev/cu." in p]
+    if not ports:
+        if required:
+            raise RuntimeError("no badge USB serial port found; pass --port")
+        return None
+    if len(ports) > 1:
+        raise RuntimeError(
+            "multiple USB serial ports found; pass --port:\n" +
+            "\n".join(f"  {p}" for p in ports)
+        )
+    return ports[0]
+
+
+def paired_serial_ports(port: str | None) -> list[str]:
+    if not port:
+        return []
     ports = [port]
     if "/dev/cu." in port:
         ports.append(port.replace("/dev/cu.", "/dev/tty."))
     elif "/dev/tty." in port:
         ports.append(port.replace("/dev/tty.", "/dev/cu."))
+    return list(dict.fromkeys(ports))
+
+
+def candidate_serial_ports(preferred_port: str | None) -> list[str]:
+    ports = paired_serial_ports(preferred_port)
+    ports.extend(discover_usbmodem_ports())
     return list(dict.fromkeys(ports))
 
 
@@ -252,7 +298,7 @@ def usb_reset_esp32s3_jtag() -> bool:
     return False
 
 
-def kill_stale_processes(port: str) -> None:
+def kill_stale_processes(port: str | None) -> None:
     log("Cleaning stale local monitor/camera/serial holders...")
     patterns = (
         r"ffmpeg.*avfoundation",
@@ -263,8 +309,9 @@ def kill_stale_processes(port: str) -> None:
     for pattern in patterns:
         for pid in pgrep(pattern):
             kill_pid(pid, pattern)
-    for pid in lsof_pids(paired_serial_ports(port)):
-        kill_pid(pid, port)
+    if port:
+        for pid in lsof_pids(paired_serial_ports(port)):
+            kill_pid(pid, port)
     time.sleep(0.5)
 
 
@@ -284,7 +331,9 @@ def normal_upload(env: str, port: str) -> bool:
     )
 
 
-def esptool_write_flash(port: str, env: str, before: str, attempts: int, baud: int = 460800) -> bool:
+def esptool_write_flash(port: str, env: str, before: str, attempts: int,
+                        baud: int = 460800,
+                        timeout_s: float | None = None) -> bool:
     build_dir = UPLINK_DIR / ".pio" / "build" / env
     files = {
         "bootloader": build_dir / "bootloader.bin",
@@ -313,6 +362,13 @@ def esptool_write_flash(port: str, env: str, before: str, attempts: int, baud: i
         "--after",
         "hard-reset",
         "write-flash",
+        "-z",
+        "--flash-mode",
+        "dio",
+        "--flash-freq",
+        "80m",
+        "--flash-size",
+        "8MB",
         "0x0",
         str(files["bootloader"]),
         "0x8000",
@@ -323,7 +379,9 @@ def esptool_write_flash(port: str, env: str, before: str, attempts: int, baud: i
         str(files["firmware"]),
     ]
     log(f"Trying esptool write-flash before={before} baud={baud} attempts={attempts}...")
-    return run_stream(cmd, UPLINK_DIR, timeout=max(45, attempts * 2.5)) == 0
+    if timeout_s is None:
+        timeout_s = max(45, attempts * 2.5) if attempts > 0 else HARD_RESET_SYNC_WINDOW_S
+    return run_stream(cmd, UPLINK_DIR, timeout=timeout_s) == 0
 
 
 def set_lines(ser: serial.Serial, dtr: bool, rts: bool) -> None:
@@ -416,15 +474,52 @@ def touch_1200(port: str) -> None:
     time.sleep(2.0)
 
 
-def any_candidate_port_present(port: str) -> bool:
-    return any(Path(candidate).exists() for candidate in paired_serial_ports(port))
+def latest_status_from_text(text: str) -> dict | None:
+    latest = None
+    for match in STATUS_RE.finditer(text):
+        try:
+            latest = json.loads(match.group(1))
+        except json.JSONDecodeError as exc:
+            log(f"Invalid FOF_STATUS JSON: {exc}")
+    return latest
 
 
-def try_flash_matrix(port: str, env: str, attempts: int) -> bool:
+def request_status(ser: serial.Serial) -> None:
+    ser.write(b"\nFOF_STATUS\n")
+    ser.flush()
+
+
+def clear_forced_safe_mode(ser: serial.Serial) -> None:
+    ser.write(
+        b'\nFOF_CTL:{"cmd":"safe_mode","enabled":false,'
+        b'"reason":"post_flash_clear"}\n'
+    )
+    ser.flush()
+
+
+def request_reboot(ser: serial.Serial) -> None:
+    ser.write(b"\nFOF_REBOOT\n")
+    ser.flush()
+
+
+def wait_for_serial_port(port: str, timeout_s: float) -> bool:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if Path(port).exists():
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def any_candidate_port_present(port: str | None) -> bool:
+    return any(Path(candidate).exists() for candidate in candidate_serial_ports(port))
+
+
+def try_flash_matrix(port: str | None, env: str, attempts: int) -> str | None:
     if not any_candidate_port_present(port):
-        return False
+        return None
     usb_reset_esp32s3_jtag()
-    for candidate in paired_serial_ports(port):
+    for candidate in candidate_serial_ports(port):
         if not Path(candidate).exists():
             continue
         for baud in FLASH_BAUDS:
@@ -434,25 +529,39 @@ def try_flash_matrix(port: str, env: str, attempts: int) -> bool:
                     break
                 if esptool_write_flash(candidate, env, before=before,
                                        attempts=attempts, baud=baud):
-                    return True
-    return False
+                    return candidate
+    return None
 
 
-def no_button_catcher_upload(port: str, env: str, timeout_s: int | None) -> bool:
+def long_rom_catcher_pass(port: str | None, env: str,
+                          window_s: int) -> str | None:
+    for candidate in candidate_serial_ports(port):
+        if not Path(candidate).exists():
+            continue
+        log(f"Hard-reset catcher waiting for ROM sync on {candidate} for {window_s}s")
+        if esptool_write_flash(candidate, env, before="no-reset",
+                               attempts=0, baud=460800,
+                               timeout_s=window_s):
+            return candidate
+    return None
+
+
+def no_button_catcher_upload(port: str | None, env: str,
+                             timeout_s: int | None) -> str | None:
     log("")
-    log("Entering no-button USB catcher. AP recovery is disabled.")
-    log("Leave the script running; unplug/replug USB-C whenever the badge loops.")
-    log("The catcher will spam early USB commands, toggle DTR/RTS/1200-baud,")
-    log("and immediately try full ROM write-flash whenever the port appears.")
+    log("Entering hard-reset USB catcher. AP recovery is disabled.")
+    log("Leave the script running; power-cycle or hard-reset the badge whenever ready.")
+    log("The catcher keeps esptool in no-reset ROM sync for long windows,")
+    log("then briefly tries app USB bootloader commands before waiting again.")
     start = time.time()
     attempt = 0
     last_present = any_candidate_port_present(port)
-    log(f"Initial port state: {'present' if last_present else 'missing'} ({', '.join(paired_serial_ports(port))})")
+    log(f"Initial port state: {'present' if last_present else 'missing'} ({', '.join(candidate_serial_ports(port))})")
 
     while timeout_s is None or time.time() - start < timeout_s:
         present = any_candidate_port_present(port)
         if present != last_present:
-            log(f"USB port {'appeared' if present else 'disappeared'}: {', '.join(paired_serial_ports(port))}")
+            log(f"USB port {'appeared' if present else 'disappeared'}: {', '.join(candidate_serial_ports(port))}")
             last_present = present
             if present:
                 time.sleep(0.35)
@@ -465,28 +574,55 @@ def no_button_catcher_upload(port: str, env: str, timeout_s: int | None) -> bool
         if attempt == 1 or (attempt % 5) == 0:
             kill_stale_processes(port)
 
-        log(f"No-button catcher attempt {attempt}")
-        usb_reset_esp32s3_jtag()
-        for candidate in paired_serial_ports(port):
-            if Path(candidate).exists():
-                serial_recovery_pass(candidate)
-        if try_flash_matrix(port, env, attempts=8):
-            return True
+        log(f"Hard-reset catcher attempt {attempt}")
+        flashed_port = long_rom_catcher_pass(port, env, HARD_RESET_SYNC_WINDOW_S)
+        if flashed_port:
+            return flashed_port
 
-        for candidate in paired_serial_ports(port):
+        log(f"Trying app-command recovery for {APP_RECOVERY_WINDOW_S}s before next ROM wait")
+        app_deadline = time.time() + APP_RECOVERY_WINDOW_S
+        usb_reset_esp32s3_jtag()
+        while time.time() < app_deadline:
+            for candidate in candidate_serial_ports(port):
+                if Path(candidate).exists():
+                    serial_recovery_pass(candidate)
+            flashed_port = try_flash_matrix(port, env, attempts=2)
+            if flashed_port:
+                return flashed_port
+            time.sleep(0.25)
+
+        for candidate in candidate_serial_ports(port):
             if Path(candidate).exists():
                 touch_1200(candidate)
-        if try_flash_matrix(port, env, attempts=6):
-            return True
+        flashed_port = try_flash_matrix(port, env, attempts=2)
+        if flashed_port:
+            return flashed_port
 
         log(f"Catcher attempt {attempt} complete; still waiting for ROM sync.")
         time.sleep(0.25)
 
-    log("No-button catcher timed out before flashing.")
-    return False
+    log("Hard-reset catcher timed out before flashing.")
+    return None
 
 
-def verify_serial(port: str, seconds: int) -> tuple[bool, str]:
+def log_status_summary(status: dict) -> None:
+    counts = status.get("counts") if isinstance(status.get("counts"), dict) else {}
+    log(
+        "FOF_STATUS ok: "
+        f"version={status.get('version')} mode={status.get('mode')} "
+        f"safe={status.get('safe_mode')} recovery={status.get('recovery_mode')} "
+        f"reset={status.get('reset_reason')} expected={status.get('reset_expected')} "
+        f"crashes={status.get('crash_count')} "
+        f"usb_age={status.get('usb_control_age_s')}s "
+        f"stack_usb={status.get('stack_usb_free')} "
+        f"stack_uart_ble={status.get('stack_uart_ble_free')} "
+        f"stack_uart_wifi={status.get('stack_uart_wifi_free')} "
+        f"drone={counts.get('drone')} meta={counts.get('meta')}"
+    )
+
+
+def collect_boot_status(port: str, seconds: int,
+                        require_pass_markers: bool) -> tuple[bool, str, dict | None]:
     log(f"Verifying serial boot for {seconds}s...")
     reboot_count = 0
     data = ""
@@ -495,7 +631,12 @@ def verify_serial(port: str, seconds: int) -> tuple[bool, str]:
             ser.dtr = False
             ser.rts = False
             end = time.time() + seconds
+            last_status_request = 0.0
             while time.time() < end:
+                now = time.time()
+                if now - last_status_request >= 5.0:
+                    request_status(ser)
+                    last_status_request = now
                 chunk = ser.read(4096)
                 if chunk:
                     log_serial_bytes(chunk)
@@ -504,36 +645,88 @@ def verify_serial(port: str, seconds: int) -> tuple[bool, str]:
                     data += text
                     reboot_count += text.count("Rebooting...")
                     if any(marker in data for marker in BAD_LOG_MARKERS):
-                        return False, data
+                        return False, data, None
                     if reboot_count >= 2:
-                        return False, data
+                        return False, data, None
 
-            log("Requesting FOF_STATUS over USB...")
-            ser.write(b"\nFOF_STATUS\n")
-            ser.flush()
+            log("Requesting final FOF_STATUS over USB...")
+            request_status(ser)
             data += read_text(ser, 3.0)
     except Exception as exc:
         log(f"serial verify failed: {exc}")
+        return False, data, None
+
+    if require_pass_markers:
+        missing = [marker for marker in PASS_LOG_MARKERS if marker not in data]
+    else:
+        missing = []
+    if missing:
+        log("Missing required boot markers: " + ", ".join(missing))
+        return False, data, None
+
+    status = latest_status_from_text(data)
+    if not status:
+        log("Missing FOF_STATUS JSON response")
+        return False, data, None
+    if status.get("mode") not in {"local_ap", "backend", "usb_only"}:
+        log("FOF_STATUS JSON missing valid mode")
+        return False, data, status
+    log_status_summary(status)
+    return True, data, status
+
+
+def clear_safe_mode_and_reboot(port: str) -> tuple[bool, str]:
+    data = ""
+    try:
+        with serial.Serial(port, 115200, timeout=0.2, write_timeout=0.5) as ser:
+            ser.dtr = False
+            ser.rts = False
+            log("Clearing forced safe USB mode after flash...")
+            clear_forced_safe_mode(ser)
+            data += read_text(ser, 2.0)
+            if "FOF_CTL_OK" not in data:
+                log("Safe-mode clear did not return FOF_CTL_OK")
+                return False, data
+            request_status(ser)
+            data += read_text(ser, 2.0)
+            status = latest_status_from_text(data)
+            if status:
+                log_status_summary(status)
+            log("Rebooting once so normal scanner/display tasks start outside safe USB mode...")
+            request_reboot(ser)
+            data += read_text(ser, 1.0)
+    except Exception as exc:
+        log(f"safe-mode clear failed: {exc}")
         return False, data
+
+    time.sleep(2.0)
+    wait_for_serial_port(port, 20)
+    return True, data
+
+
+def verify_serial(port: str, seconds: int) -> tuple[bool, str]:
+    ok, data, status = collect_boot_status(port, seconds, require_pass_markers=False)
+    if not ok or not status:
+        return False, data
+    if status.get("safe_mode") or int(status.get("crash_count") or 0) > 0:
+        cleared, clear_log = clear_safe_mode_and_reboot(port)
+        data += clear_log
+        if not cleared:
+            return False, data
+        ok, normal_data, normal_status = collect_boot_status(
+            port, seconds, require_pass_markers=True)
+        data += normal_data
+        if not ok or not normal_status:
+            return False, data
+        if normal_status.get("safe_mode"):
+            log("Badge remained in safe mode after post-flash clear and reboot")
+            return False, data
+        return True, data
 
     missing = [marker for marker in PASS_LOG_MARKERS if marker not in data]
     if missing:
         log("Missing required boot markers: " + ", ".join(missing))
         return False, data
-
-    match = re.search(r"FOF_STATUS:(\{.*?\})(?:\r?\n|$)", data, re.DOTALL)
-    if not match:
-        log("Missing FOF_STATUS JSON response")
-        return False, data
-    try:
-        status = json.loads(match.group(1))
-    except json.JSONDecodeError as exc:
-        log(f"Invalid FOF_STATUS JSON: {exc}")
-        return False, data
-    if status.get("mode") not in {"local_ap", "backend", "usb_only"}:
-        log("FOF_STATUS JSON missing valid mode")
-        return False, data
-    log(f"FOF_STATUS ok: mode={status.get('mode')} threat={status.get('threat_score')}")
     return True, data
 
 
@@ -581,12 +774,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-dir", default=None)
     parser.add_argument("--skip-camera", action="store_true")
     parser.add_argument("--skip-normal-upload", action="store_true")
+    parser.add_argument("--hard-reset-catcher", action="store_true",
+                        help="Skip short recovery and wait in long no-reset ROM sync windows")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    port = args.port
+    try:
+        port = args.port or detect_usb_port(required=False)
+    except RuntimeError as exc:
+        log(str(exc))
+        return 2
     env = args.env
     setup_logging(args.log_dir)
 
@@ -597,28 +796,38 @@ def main() -> int:
         log("PlatformIO esptool runtime not found")
         return 2
 
-    if not Path(port).exists():
+    if port and not Path(port).exists():
         log(f"Port not currently present: {port}; catcher will wait for USB replug")
+    elif not port:
+        log("No badge USB serial port currently present; catcher will wait for USB replug")
     kill_stale_processes(port)
-    usb_reset_esp32s3_jtag()
+    if port:
+        usb_reset_esp32s3_jtag()
     if not build_firmware(env):
         return 1
 
     flashed = False
-    if not args.skip_normal_upload and Path(port).exists():
+    flashed_port = port
+    if not args.skip_normal_upload and not args.hard_reset_catcher and port and Path(port).exists():
         flashed = normal_upload(env, port)
     elif args.skip_normal_upload:
         log("Skipping normal upload by request.")
+    elif args.hard_reset_catcher:
+        log("Skipping normal upload for hard-reset catcher mode.")
     else:
         log("Skipping normal upload because the port is not present.")
     if not flashed:
         timeout = None if args.operator_timeout == 0 else args.operator_timeout
-        flashed = no_button_catcher_upload(port, env, timeout)
+        flashed_port = no_button_catcher_upload(port, env, timeout)
+        flashed = flashed_port is not None
     if not flashed:
         log("Recovery failed before flashing.")
         return 1
 
-    ok, _serial_log = verify_serial(port, args.verify_seconds)
+    if not flashed_port:
+        log("Recovery flashed but no verification port was recorded.")
+        return 1
+    ok, _serial_log = verify_serial(flashed_port, args.verify_seconds)
     if not ok:
         log("Serial verification failed.")
         return 1

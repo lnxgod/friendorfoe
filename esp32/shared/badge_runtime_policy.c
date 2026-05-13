@@ -123,3 +123,22 @@ bool badge_runtime_can_mark_valid(bool safe_mode,
     }
     return free_heap_bytes >= 12000;
 }
+
+bool badge_runtime_usb_recovery_due(bool safe_mode,
+                                    bool usb_control_alive,
+                                    int64_t usb_control_age_s,
+                                    int64_t uptime_s,
+                                    int64_t stale_after_s,
+                                    int64_t boot_grace_s)
+{
+    if (safe_mode) {
+        return false;
+    }
+    if (uptime_s < boot_grace_s) {
+        return false;
+    }
+    if (!usb_control_alive) {
+        return true;
+    }
+    return usb_control_age_s >= stale_after_s;
+}

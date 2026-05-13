@@ -134,12 +134,15 @@ static const name_pattern_entry_t s_name_db[] = {
     { "RB Meta",         "Meta",            "Smart Glasses", 0.95f, true,  false },
     { "Ray-Ban Meta",    "Meta",            "Smart Glasses", 0.95f, true,  false },
     { "Ray-Ban Stories", "Meta",            "Smart Glasses", 0.95f, true,  false },
+    { "Ray Ban Meta",    "Meta",            "Smart Glasses", 0.95f, true,  false },
+    { "RayBan Meta",     "Meta",            "Smart Glasses", 0.95f, true,  false },
     /* Newer Oakley Meta frame names seen in advertising local name */
     { "Oakley Meta",     "Meta",            "Smart Glasses", 0.95f, true,  false },
     { "Oakley HSTN",     "Meta",            "Smart Glasses", 0.95f, true,  false },
     { "Oakley ALPH",     "Meta",            "Smart Glasses", 0.95f, true,  false },
     { "OAK",             "Meta",            "Smart Glasses", 0.70f, true,  false }, /* Oakley short prefix */
     { "RB-",             "Meta",            "Smart Glasses", 0.70f, true,  false }, /* Ray-Ban short prefix */
+    { "RAYBAN",          "Meta",            "Smart Glasses", 0.70f, true,  false },
     { "Wayfarer",        "Meta",            "Smart Glasses", 0.75f, true,  false }, /* Ray-Ban model */
     { "Meta Neural",     "Meta",            "Smart Glasses", 0.90f, false, false },
     { "Meta Quest",      "Meta",            "VR Headset",   0.95f, false, false },
@@ -390,7 +393,7 @@ bool glasses_check_advertisement(
 
     /* 4. Check GAP Appearance for eyeglasses (low confidence booster) */
     if (appearance == GAP_APPEARANCE_EYEGLASSES && best_conf == 0.0f) {
-        best_conf = 0.50f;
+        best_conf = 0.62f;
         best_mfr = "Unknown";
         best_type = "Smart Glasses";
         best_camera = true;  /* assume camera — safer */

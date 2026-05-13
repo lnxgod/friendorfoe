@@ -75,7 +75,7 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                                        const scanner_info_t *info,
                                        bool first)
 {
-    char buf[1536];
+    char buf[2048];
     const bool calibration = info && strcmp(info->scan_mode, "calibration") == 0;
     const char *expected = calibration
         ? fof_policy_scan_profile_for_slot(scanner_id, true)
@@ -127,13 +127,28 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  "\"cmd_overflow\":%lu,\"ble_scanning\":%s,"
                  "\"ble_host_active\":%s,\"ble_host_synced\":%s,"
                  "\"wifi_paused\":%s,"
-                 "\"ble_adv_seen\":%lu,\"ble_fp_emit\":%lu,"
-                 "\"ble_meta_seen\":%lu,\"ble_tracker_seen\":%lu,"
+                 "\"ble_adv_seen\":%lu,\"ble_any_seen\":%lu,"
+                 "\"ble_any_with_payload_seen\":%lu,"
+                 "\"ble_any_empty_seen\":%lu,"
+                 "\"ble_any_last_rssi\":%d,\"ble_any_best_rssi\":%d,"
+                 "\"ble_any_last_len\":%u,\"ble_any_last_props\":%u,"
+                 "\"ble_any_last_addr_type\":%u,"
+                 "\"ble_fp_emit\":%lu,"
+                 "\"ble_meta_seen\":%lu,"
+                 "\"ble_meta_last_seen_age_s\":%lld,"
+                 "\"ble_meta_last_emit_age_s\":%lld,"
+                 "\"ble_meta_last_hash\":%lu,"
+                 "\"ble_meta_last_rssi\":%d,"
+                 "\"ble_meta_weak_age_s\":%lld,"
+                 "\"ble_meta_reacquire_count\":%lu,"
+                 "\"ble_tracker_seen\":%lu,"
                  "\"ble_privacy_candidate_seen\":%lu,\"ble_near_unknown_seen\":%lu,"
                  "\"ble_drop_profile\":%lu,\"ble_drop_rate\":%lu,"
                  "\"ble_host_restart_count\":%lu,"
                  "\"ble_scan_start_count\":%lu,\"ble_scan_start_ok\":%lu,"
                  "\"ble_scan_last_rc\":%d,\"ble_sync_last_rc\":%d,"
+                 "\"ble_focus_active\":%s,\"ble_focus_age_s\":%lld,"
+                 "\"ble_focus_target_adv_count\":%lu,"
                  "\"rid_service_seen\":%lu,\"rid_emit\":%lu,\"privacy_seen\":%lu,"
                  "\"wifi_total_frames\":%lu,\"wifi_beacon_frames\":%lu,"
                  "\"wifi_full_scan_count\":%lu,\"wifi_full_scan_ok\":%lu,"
@@ -147,7 +162,9 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  "\"ota_total\":%lu,\"recovery_mode\":\"%s\","
                  "\"safe_reason\":\"%s\",\"rollback_pending\":%s,"
                  "\"crash_count\":%lu,\"radio_restart_count\":%lu,"
-                 "\"wifi_drone_ssid_emit\":%lu,\"wifi_notable_ssid_emit\":%lu",
+                 "\"wifi_drone_ssid_emit\":%lu,\"wifi_notable_ssid_emit\":%lu,"
+                 "\"wifi_last_drone_ssid_age_s\":%lld,"
+                 "\"wifi_last_notable_ssid_age_s\":%lld",
                  info->version,
                  info->board,
                  (unsigned long)info->cmd_rx_count,
@@ -159,8 +176,22 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  info->ble_host_synced ? "true" : "false",
                  info->wifi_paused ? "true" : "false",
                  (unsigned long)info->ble_adv_seen,
+                 (unsigned long)info->ble_any_seen,
+                 (unsigned long)info->ble_any_with_payload_seen,
+                 (unsigned long)info->ble_any_empty_seen,
+                 (int)info->ble_any_last_rssi,
+                 (int)info->ble_any_best_rssi,
+                 (unsigned)info->ble_any_last_len,
+                 (unsigned)info->ble_any_last_props,
+                 (unsigned)info->ble_any_last_addr_type,
                  (unsigned long)info->ble_fp_emit,
                  (unsigned long)info->ble_meta_seen,
+                 (long long)info->ble_meta_last_seen_age_s,
+                 (long long)info->ble_meta_last_emit_age_s,
+                 (unsigned long)info->ble_meta_last_hash,
+                 (int)info->ble_meta_last_rssi,
+                 (long long)info->ble_meta_weak_age_s,
+                 (unsigned long)info->ble_meta_reacquire_count,
                  (unsigned long)info->ble_tracker_seen,
                  (unsigned long)info->ble_privacy_candidate_seen,
                  (unsigned long)info->ble_near_unknown_seen,
@@ -171,6 +202,9 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  (unsigned long)info->ble_scan_start_ok,
                  info->ble_scan_last_rc,
                  info->ble_sync_last_rc,
+                 info->ble_focus_active ? "true" : "false",
+                 (long long)info->ble_focus_age_s,
+                 (unsigned long)info->ble_focus_target_adv_count,
                  (unsigned long)info->rid_service_seen,
                  (unsigned long)info->rid_emit,
                  (unsigned long)info->privacy_seen,
@@ -198,12 +232,18 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  (unsigned long)info->crash_count,
                  (unsigned long)info->radio_restart_count,
                  (unsigned long)info->wifi_drone_ssid_emit,
-                 (unsigned long)info->wifi_notable_ssid_emit);
+                 (unsigned long)info->wifi_notable_ssid_emit,
+                 (long long)info->wifi_last_drone_ssid_age_s,
+                 (long long)info->wifi_last_notable_ssid_age_s);
         httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
         httpd_resp_send_chunk(req, ",\"wifi_last_drone_ssid\":", HTTPD_RESP_USE_STRLEN);
         json_chunk_string(req, info->wifi_last_drone_ssid);
         httpd_resp_send_chunk(req, ",\"wifi_last_notable_ssid\":", HTTPD_RESP_USE_STRLEN);
         json_chunk_string(req, info->wifi_last_notable_ssid);
+        httpd_resp_send_chunk(req, ",\"ble_meta_last_reason\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->ble_meta_last_reason);
+        httpd_resp_send_chunk(req, ",\"ble_meta_identity\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->ble_meta_identity);
     }
     httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
 }
@@ -696,9 +736,30 @@ static esp_err_t status_json_handler(httpd_req_t *req)
     json_chunk_string(req, badge_runtime_network_mode_name(
         badge_runtime_get_network_mode()));
     snprintf(buf, sizeof(buf),
-             ",\"backend_enabled\":%s,\"network_ttl_s\":%d",
+             ",\"backend_enabled\":%s,\"network_ttl_s\":%d,"
+             "\"reset_reason\":",
              badge_runtime_get_network_mode() == BADGE_RUNTIME_NETWORK_BACKEND ? "true" : "false",
              badge_runtime_get_network_ttl_s());
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, badge_runtime_last_reset_reason_name());
+    snprintf(buf, sizeof(buf),
+             ",\"reset_reason_code\":%lu,\"reset_expected\":%s,"
+             "\"usb_control_age_s\":%lld,\"recovery_mode\":",
+             (unsigned long)badge_runtime_last_reset_reason(),
+             badge_runtime_last_reset_expected() ? "true" : "false",
+             (long long)badge_runtime_usb_control_age_s());
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, badge_runtime_recovery_mode());
+    snprintf(buf, sizeof(buf),
+             ",\"crash_count\":%lu,\"stack_main_free\":%lu,"
+             "\"stack_display_free\":%lu,\"stack_usb_free\":%lu,"
+             "\"stack_uart_ble_free\":%lu,\"stack_uart_wifi_free\":%lu",
+             (unsigned long)badge_runtime_crash_count(),
+             (unsigned long)badge_runtime_main_stack_free(),
+             (unsigned long)badge_runtime_display_stack_free(),
+             (unsigned long)badge_runtime_usb_stack_free(),
+             (unsigned long)badge_runtime_uart_ble_stack_free(),
+             (unsigned long)badge_runtime_uart_wifi_stack_free());
 #else
     json_chunk_string(req, standalone ? "standalone" : "backend");
     snprintf(buf, sizeof(buf),
@@ -1046,6 +1107,9 @@ static esp_err_t connect_post_handler(httpd_req_t *req)
     httpd_resp_sendstr(req, "{\"ok\":true}");
 
     /* Reboot after short delay to apply new WiFi config */
+#ifdef FOF_BADGE_VARIANT
+    badge_runtime_arm_expected_reboot("http_wifi_config");
+#endif
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
 
@@ -1164,6 +1228,7 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
         badge_runtime_get_network_mode(),
         badge_runtime_post_ota_hold_ttl_s(badge_runtime_get_network_mode(), 0)
     );
+    badge_runtime_arm_expected_reboot("http_ota");
 #endif
 
     httpd_resp_set_type(req, "application/json");
@@ -1554,7 +1619,19 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
                                                sizeof(debug_value)) &&
                          strcmp(debug_value, "1") == 0;
 
-    char buf[256];
+    char buf[384];
+    uint32_t active_remote_id = badge_threat_snapshot_count_active(
+        &snapshot,
+        BADGE_THREAT_DRONE,
+        BADGE_THREAT_CATEGORY_DRONE,
+        false
+    );
+    uint32_t active_drone_ssid = badge_threat_snapshot_count_active(
+        &snapshot,
+        BADGE_THREAT_DRONE,
+        BADGE_THREAT_CATEGORY_SSID,
+        false
+    );
     snprintf(buf, sizeof(buf),
              "{\"version\":\"%s\",\"mode\":\"%s\",\"mode_label\":",
              FOF_VERSION, badge_mode_to_string(mode));
@@ -1581,7 +1658,8 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
              "\"threat_score\":%.1f,\"color_rgb565\":%u,"
              "\"dominant_class\":\"%s\",\"dominant_category\":\"%s\","
              "\"dominant_proximity\":%d,"
-             "\"counts\":{\"drone\":%lu,\"meta\":%lu,\"tracker\":%lu,"
+             "\"counts\":{\"drone\":%lu,\"remote_id\":%lu,"
+             "\"drone_ssid\":%lu,\"meta\":%lu,\"tracker\":%lu,"
              "\"wifi_anomaly\":%lu,\"ble\":%lu,\"other\":%lu}",
              wifi_sta_is_connected() ? "true" : "false",
 #ifdef FOF_BADGE_VARIANT
@@ -1600,6 +1678,8 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
                 : badge_threat_category_name(BADGE_THREAT_CATEGORY_NONE),
              (int)snapshot.dominant_proximity,
              (unsigned long)snapshot.active_counts[BADGE_THREAT_DRONE],
+             (unsigned long)active_remote_id,
+             (unsigned long)active_drone_ssid,
              (unsigned long)snapshot.active_counts[BADGE_THREAT_META],
              (unsigned long)snapshot.active_counts[BADGE_THREAT_TRACKER],
              (unsigned long)snapshot.active_counts[BADGE_THREAT_WIFI_ANOMALY],
@@ -1618,9 +1698,30 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
     json_chunk_string(req, badge_runtime_network_mode_name(
         badge_runtime_get_network_mode()));
     snprintf(buf, sizeof(buf),
-             ",\"backend_enabled\":%s,\"network_ttl_s\":%d",
+             ",\"backend_enabled\":%s,\"network_ttl_s\":%d,"
+             "\"reset_reason\":",
              badge_runtime_get_network_mode() == BADGE_RUNTIME_NETWORK_BACKEND ? "true" : "false",
              badge_runtime_get_network_ttl_s());
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, badge_runtime_last_reset_reason_name());
+    snprintf(buf, sizeof(buf),
+             ",\"reset_reason_code\":%lu,\"reset_expected\":%s,"
+             "\"usb_control_age_s\":%lld,\"recovery_mode\":",
+             (unsigned long)badge_runtime_last_reset_reason(),
+             badge_runtime_last_reset_expected() ? "true" : "false",
+             (long long)badge_runtime_usb_control_age_s());
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, badge_runtime_recovery_mode());
+    snprintf(buf, sizeof(buf),
+             ",\"crash_count\":%lu,\"stack_main_free\":%lu,"
+             "\"stack_display_free\":%lu,\"stack_usb_free\":%lu,"
+             "\"stack_uart_ble_free\":%lu,\"stack_uart_wifi_free\":%lu",
+             (unsigned long)badge_runtime_crash_count(),
+             (unsigned long)badge_runtime_main_stack_free(),
+             (unsigned long)badge_runtime_display_stack_free(),
+             (unsigned long)badge_runtime_usb_stack_free(),
+             (unsigned long)badge_runtime_uart_ble_stack_free(),
+             (unsigned long)badge_runtime_uart_wifi_stack_free());
 #else
     json_chunk_string(req, badge_mode_to_string(mode));
     snprintf(buf, sizeof(buf),
@@ -1654,6 +1755,8 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
         json_chunk_string(req, entity->label);
         httpd_resp_send_chunk(req, ",\"detail\":", HTTPD_RESP_USE_STRLEN);
         json_chunk_string(req, entity->detail);
+        httpd_resp_send_chunk(req, ",\"display_id\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, entity->display_id);
         snprintf(buf, sizeof(buf),
                  ",\"class\":\"%s\",\"category\":\"%s\",\"code\":\"%s\","
                  "\"score\":%d,\"evidence_quality\":%u,"
@@ -1868,12 +1971,18 @@ static esp_err_t badge_control_post_handler(httpd_req_t *req)
     } else if (strcmp(cmd, "reboot") == 0) {
         httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"rebooting\"}");
         cJSON_Delete(root);
+#ifdef FOF_BADGE_VARIANT
+        badge_runtime_arm_expected_reboot("http_reboot");
+#endif
         vTaskDelay(pdMS_TO_TICKS(250));
         esp_restart();
         return ESP_OK;
     } else if (strcmp(cmd, "bootloader") == 0) {
         httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"bootloader\"}");
         cJSON_Delete(root);
+#ifdef FOF_BADGE_VARIANT
+        badge_runtime_arm_expected_reboot("http_bootloader");
+#endif
         vTaskDelay(pdMS_TO_TICKS(250));
         REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
         esp_restart();

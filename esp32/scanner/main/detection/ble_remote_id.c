@@ -97,8 +97,26 @@ static uint32_t         s_odid_emit = 0;
 static uint32_t         s_privacy_seen = 0;
 static uint32_t         s_ble_service_trace_seen = 0;
 static uint32_t         s_ble_adv_seen = 0;
+static uint32_t         s_ble_any_seen = 0;
+static uint32_t         s_ble_any_with_payload_seen = 0;
+static uint32_t         s_ble_any_empty_seen = 0;
+static int8_t           s_ble_any_last_rssi = 0;
+static int8_t           s_ble_any_best_rssi = -127;
+static uint8_t          s_ble_any_last_len = 0;
+static uint8_t          s_ble_any_last_props = 0;
+static uint8_t          s_ble_any_last_addr_type = 0;
 static uint32_t         s_ble_fp_emit = 0;
 static uint32_t         s_ble_meta_seen = 0;
+static int64_t          s_ble_meta_last_seen_ms = 0;
+static int64_t          s_ble_meta_last_emit_ms = 0;
+static uint32_t         s_ble_meta_last_hash = 0;
+static int8_t           s_ble_meta_last_rssi = 0;
+static char             s_ble_meta_last_reason[32] = {0};
+static char             s_ble_meta_identity[16] = {0};
+static int64_t          s_ble_meta_last_weak_ms = 0;
+static uint32_t         s_ble_meta_reacquire_count = 0;
+static uint32_t         s_ble_meta_reacquire_adv_seen = 0;
+static int64_t          s_ble_meta_last_reacquire_ms = 0;
 static uint32_t         s_ble_tracker_seen = 0;
 static uint32_t         s_ble_privacy_candidate_seen = 0;
 static uint32_t         s_ble_near_unknown_seen = 0;
@@ -121,6 +139,26 @@ static badge_ble_diag_t s_ble_dbg_priv = {0};
 
 static const char *badge_ble_privacy_reason(const ble_fingerprint_t *fp,
                                             int8_t rssi);
+
+static void badge_ble_note_any_packet(int8_t rssi,
+                                      int payload_len,
+                                      uint8_t props,
+                                      uint8_t addr_type)
+{
+    s_ble_any_seen++;
+    if (payload_len > 0) {
+        s_ble_any_with_payload_seen++;
+    } else {
+        s_ble_any_empty_seen++;
+    }
+    s_ble_any_last_rssi = rssi;
+    if (s_ble_any_seen == 1 || rssi > s_ble_any_best_rssi) {
+        s_ble_any_best_rssi = rssi;
+    }
+    s_ble_any_last_len = payload_len > 255 ? 255 : (payload_len < 0 ? 0 : (uint8_t)payload_len);
+    s_ble_any_last_props = props;
+    s_ble_any_last_addr_type = addr_type;
+}
 
 static void diag_copy_text(char *dst, size_t dst_len, const char *src)
 {
@@ -294,6 +332,25 @@ static int64_t now_ms(void)
     return (int64_t)(esp_timer_get_time() / 1000LL);
 }
 
+static void badge_ble_note_meta(uint32_t hash, int8_t rssi,
+                                const char *reason,
+                                const char *identity,
+                                bool weak)
+{
+    int64_t ts = now_ms();
+    s_ble_meta_seen++;
+    s_ble_meta_last_seen_ms = ts;
+    s_ble_meta_last_hash = hash;
+    s_ble_meta_last_rssi = rssi;
+    snprintf(s_ble_meta_last_reason, sizeof(s_ble_meta_last_reason),
+             "%s", reason ? reason : "");
+    snprintf(s_ble_meta_identity, sizeof(s_ble_meta_identity),
+             "%s", identity ? identity : (weak ? "weak" : "strong_fp"));
+    if (weak) {
+        s_ble_meta_last_weak_ms = ts;
+    }
+}
+
 static bool badge_ble_has_structured_hint(const ble_fingerprint_t *fp)
 {
     if (!fp) {
@@ -307,16 +364,84 @@ static bool badge_ble_has_structured_hint(const ble_fingerprint_t *fp)
            fp->payload_len >= 12;
 }
 
+static char badge_ascii_lower(char ch)
+{
+    return (ch >= 'A' && ch <= 'Z') ? (char)(ch - 'A' + 'a') : ch;
+}
+
+static bool badge_text_contains_nocase(const char *haystack, const char *needle)
+{
+    if (!haystack || !needle || needle[0] == '\0') {
+        return false;
+    }
+    for (const char *h = haystack; *h; h++) {
+        const char *a = h;
+        const char *b = needle;
+        while (*a && *b && badge_ascii_lower(*a) == badge_ascii_lower(*b)) {
+            a++;
+            b++;
+        }
+        if (*b == '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool badge_ble_name_mentions_meta_glasses(const char *name)
+{
+    if (!name || name[0] == '\0') {
+        return false;
+    }
+    return badge_text_contains_nocase(name, "meta") ||
+           badge_text_contains_nocase(name, "ray-ban") ||
+           badge_text_contains_nocase(name, "rayban") ||
+           badge_text_contains_nocase(name, "oakley") ||
+           badge_text_contains_nocase(name, "wayfarer") ||
+           strncmp(name, "RB-", 3) == 0 ||
+           strncmp(name, "RB ", 3) == 0 ||
+           strncmp(name, "OAK", 3) == 0;
+}
+
+static bool badge_ble_uuid_is_meta(uint16_t uuid)
+{
+    return uuid == 0xFD5F || uuid == 0xFEB7 || uuid == 0xFEB8;
+}
+
+static bool badge_ble_has_meta_hint(const ble_fingerprint_t *fp)
+{
+    if (!fp) {
+        return false;
+    }
+    if (fp->device_type == BLE_DEV_META_GLASSES ||
+        fp->device_type == BLE_DEV_META_DEVICE) {
+        return true;
+    }
+    if (fp->company_id == 0x0D53 || fp->company_id == 0x01AB ||
+        fp->company_id == 0x058E) {
+        return true;
+    }
+    if (badge_ble_name_mentions_meta_glasses(fp->local_name)) {
+        return true;
+    }
+    for (uint8_t i = 0; i < fp->svc_uuid_count; i++) {
+        if (badge_ble_uuid_is_meta(fp->service_uuids[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool badge_ble_is_privacy_candidate(const ble_fingerprint_t *fp,
                                            int8_t rssi)
 {
     if (!fp || fp->device_type != BLE_DEV_UNKNOWN) {
         return false;
     }
-    if (rssi >= -50) {
+    if (rssi >= -58) {
         return true;
     }
-    return rssi >= -65 && badge_ble_has_structured_hint(fp);
+    return rssi >= -72 && badge_ble_has_structured_hint(fp);
 }
 
 static const char *badge_ble_privacy_reason(const ble_fingerprint_t *fp,
@@ -345,11 +470,11 @@ static bool badge_ble_unknown_diag_should_emit(uint32_t fp_hash,
     static uint32_t s_last_hash = 0;
     static int8_t   s_best_rssi = -127;
 
-    if (rssi < -48) {
+    if (rssi < -72) {
         return false;
     }
     if (s_last_emit_ms == 0 ||
-        (now_ms - s_last_emit_ms) >= 15000 ||
+        (now_ms - s_last_emit_ms) >= 7000 ||
         (fp_hash == s_last_hash && rssi > (s_best_rssi + 8))) {
         s_last_emit_ms = now_ms;
         s_last_hash = fp_hash;
@@ -413,7 +538,8 @@ static uint32_t badge_glasses_hash(const uint8_t mac[6])
     return h;
 }
 
-static void badge_emit_glasses_detection(const glasses_detection_t *gdet)
+static void badge_emit_glasses_detection(const glasses_detection_t *gdet,
+                                         uint32_t fp_hash)
 {
 #if defined(FOF_BADGE_VARIANT)
     static struct {
@@ -449,16 +575,29 @@ static void badge_emit_glasses_detection(const glasses_detection_t *gdet)
     const bool is_meta = strcmp(gdet->manufacturer, "Meta") == 0;
     const char *label = is_meta ? "Meta Glasses" :
         (gdet->device_type[0] ? gdet->device_type : "Smart Glasses");
-    snprintf(det.drone_id, sizeof(det.drone_id), "BLE:%08lX:%s",
-             (unsigned long)hash, label);
     snprintf(det.manufacturer, sizeof(det.manufacturer), "%s", label);
-    snprintf(det.model, sizeof(det.model), "%s",
-             gdet->device_type[0] ? gdet->device_type : "Smart Glasses");
     strncpy(det.ble_name, gdet->device_name, sizeof(det.ble_name) - 1);
-    strncpy(det.class_reason, gdet->match_reason, sizeof(det.class_reason) - 1);
+    bool strong_detector_identity = fp_hash != 0 && gdet->confidence >= 0.70f;
+    if (strong_detector_identity) {
+        snprintf(det.drone_id, sizeof(det.drone_id), "BLE:%08lX:%s",
+                 (unsigned long)fp_hash, label);
+        snprintf(det.model, sizeof(det.model), "FP:%08lX",
+                 (unsigned long)fp_hash);
+        snprintf(det.class_reason, sizeof(det.class_reason), "%s",
+                 gdet->match_reason[0] ? gdet->match_reason : "glasses_detector");
+        badge_ble_note_meta(fp_hash, gdet->rssi, det.class_reason,
+                            "detector_fp", false);
+    } else {
+        snprintf(det.drone_id, sizeof(det.drone_id), "meta:weak:glasses");
+        snprintf(det.model, sizeof(det.model), "Weak Meta");
+        snprintf(det.class_reason, sizeof(det.class_reason), "weak_meta:%s",
+                 gdet->match_reason[0] ? gdet->match_reason : "glasses_detector");
+        badge_ble_note_meta(hash, gdet->rssi, det.class_reason, "weak", true);
+    }
     (void)xQueueSend(s_detection_queue, &det, 0);
 #else
     (void)gdet;
+    (void)fp_hash;
 #endif
 }
 #endif
@@ -685,6 +824,10 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         static uint32_t s_legacy_adv_rx = 0;
         s_legacy_adv_rx++;
         s_ble_adv_seen++;
+        badge_ble_note_any_packet(disc->rssi,
+                                  disc->length_data,
+                                  (uint8_t)(disc->event_type & 0xFF),
+                                  disc->addr.type);
         if (s_legacy_adv_rx % 500 == 1) {
             ESP_LOGD(TAG, "BLE legacy_adv (total=%lu rssi=%d len=%d)",
                      (unsigned long)s_legacy_adv_rx, disc->rssi,
@@ -702,6 +845,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         bool is_meta_device = fp.device_type == BLE_DEV_META_GLASSES ||
                               fp.device_type == BLE_DEV_META_DEVICE;
 #if defined(FOF_BADGE_VARIANT)
+        badge_ble_diag_update(&s_ble_dbg_near, &fp, disc->rssi, "BLE");
         bool badge_nearby_ble_diag = badge_ble_is_privacy_candidate(&fp, disc->rssi);
 #else
         bool badge_nearby_ble_diag = false;
@@ -709,7 +853,8 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         bool privacy_candidate = is_meta_device || fp.is_tracker || badge_nearby_ble_diag;
         bool known_privacy_candidate = is_meta_device || fp.is_tracker;
         if (is_meta_device) {
-            s_ble_meta_seen++;
+            badge_ble_note_meta(fp.hash, disc->rssi, fp.class_reason,
+                                "strong_fp", false);
         }
         if (fp.is_tracker) {
             s_ble_tracker_seen++;
@@ -766,6 +911,8 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             }
             bool badge_nearby_ble_diag_emit = badge_nearby_ble_diag &&
                 badge_ble_unknown_diag_should_emit(fp.hash, disc->rssi, now_ms);
+            bool badge_weak_meta_emit = badge_nearby_ble_diag_emit &&
+                badge_ble_has_meta_hint(&fp);
 
             static uint8_t  last_macs[50][6];
             static int64_t  last_times[50];
@@ -780,7 +927,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             } else if (fp.is_tracker || is_meta_device) {
                 rate_limit_ms = 1000;
             } else if (badge_nearby_ble_diag_emit) {
-                rate_limit_ms = 15000;
+                rate_limit_ms = 7000;
             } else if (fp.device_type == BLE_DEV_FLIPPER_ZERO) {
                 rate_limit_ms = 1000;
             } else if (ble_rid_is_focused()) {
@@ -816,6 +963,9 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 &fp, is_calibration_beacon, is_focus_target, is_meta_device,
                 disc->rssi
             );
+            if (badge_nearby_ble_diag_emit) {
+                should_emit = true;
+            }
             if (!recently_sent && should_emit) {
                 memcpy(last_macs[mac_idx], disc->addr.val, 6);
                 last_times[mac_idx] = now_ms;
@@ -851,18 +1001,34 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 const char *device_label = is_calibration_beacon
                     ? "Calibration Beacon"
                     : (badge_nearby_ble_diag_emit ? "BLE Nearby" : fp.type_name);
-                snprintf(det.drone_id, sizeof(det.drone_id),
-                         "BLE:%08lX:%s",
-                         (unsigned long)fp.hash, device_label);
+                if (badge_weak_meta_emit) {
+                    snprintf(det.drone_id, sizeof(det.drone_id),
+                             "meta:weak:near");
+                    snprintf(det.manufacturer, sizeof(det.manufacturer),
+                             "Meta Glasses");
+                    snprintf(det.model, sizeof(det.model), "Weak Meta");
+                    snprintf(det.class_reason, sizeof(det.class_reason),
+                             "weak_meta:%s", badge_ble_privacy_reason(&fp, disc->rssi));
+                    badge_ble_note_meta(fp.hash, disc->rssi, det.class_reason,
+                                        "weak_near", true);
+                } else {
+                    snprintf(det.drone_id, sizeof(det.drone_id),
+                             "BLE:%08lX:%s",
+                             (unsigned long)fp.hash, device_label);
 
-                snprintf(det.bssid, sizeof(det.bssid),
-                         "%02X:%02X:%02X:%02X:%02X:%02X",
-                         disc->addr.val[5], disc->addr.val[4], disc->addr.val[3],
-                         disc->addr.val[2], disc->addr.val[1], disc->addr.val[0]);
-                snprintf(det.manufacturer, sizeof(det.manufacturer),
-                         "%s", device_label);
-                snprintf(det.model, sizeof(det.model),
-                         "FP:%08lX", (unsigned long)fp.hash);
+                    snprintf(det.bssid, sizeof(det.bssid),
+                             "%02X:%02X:%02X:%02X:%02X:%02X",
+                             disc->addr.val[5], disc->addr.val[4], disc->addr.val[3],
+                             disc->addr.val[2], disc->addr.val[1], disc->addr.val[0]);
+                    snprintf(det.manufacturer, sizeof(det.manufacturer),
+                             "%s", device_label);
+                    snprintf(det.model, sizeof(det.model),
+                             "FP:%08lX", (unsigned long)fp.hash);
+                    if (badge_nearby_ble_diag_emit) {
+                        snprintf(det.class_reason, sizeof(det.class_reason),
+                                 "ble_near:%s", badge_ble_privacy_reason(&fp, disc->rssi));
+                    }
+                }
 
                 det.ble_company_id = fp.company_id;
                 det.ble_apple_type = fp.apple_type;
@@ -870,11 +1036,13 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 det.ble_payload_len = fp.payload_len;
                 det.ble_addr_type = disc->addr.type;
                 strncpy(det.ble_name, fp.local_name, sizeof(det.ble_name) - 1);
-                if (badge_nearby_ble_diag_emit && fp.class_reason[0] == '\0') {
+                if (badge_weak_meta_emit) {
+                    /* Weak Meta presence reason already set above. */
+                } else if (det.class_reason[0] == '\0' && fp.class_reason[0] == '\0') {
                     strncpy(det.class_reason,
                             badge_ble_privacy_reason(&fp, disc->rssi),
                             sizeof(det.class_reason) - 1);
-                } else {
+                } else if (det.class_reason[0] == '\0') {
                     strncpy(det.class_reason, fp.class_reason, sizeof(det.class_reason) - 1);
                 }
                 memcpy(det.ble_apple_auth, fp.apple_auth, 3);
@@ -921,6 +1089,9 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
                 if (xQueueSend(s_detection_queue, &det, 0) == pdTRUE) {
                     s_ble_fp_emit++;
+                    if (is_meta_device) {
+                        s_ble_meta_last_emit_ms = now_ms;
+                    }
                 }
             } else if (privacy_candidate || (!should_emit && fp.device_type != BLE_DEV_UNKNOWN)) {
                 s_ble_drop_rate++;
@@ -953,7 +1124,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                         appearance, disc->rssi, &gdet)) {
                     s_privacy_seen++;
                     xQueueSend(s_glasses_queue, &gdet, pdMS_TO_TICKS(5));
-                    badge_emit_glasses_detection(&gdet);
+                    badge_emit_glasses_detection(&gdet, fp.hash);
                 }
             }
         }
@@ -968,6 +1139,10 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         static uint32_t s_ext_adv_rx = 0;
         s_ext_adv_rx++;
         s_ble_adv_seen++;
+        badge_ble_note_any_packet(ext->rssi,
+                                  ext->length_data,
+                                  (uint8_t)(ext->props & 0xFF),
+                                  ext->addr.type);
         if (s_ext_adv_rx % 500 == 1) {
             ESP_LOGD(TAG, "BLE ext_adv (total=%lu rssi=%d len=%d ble4=%d)",
                      (unsigned long)s_ext_adv_rx, ext->rssi,
@@ -1000,15 +1175,19 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             }
         }
 
-        /* Send BLE devices to detection queue, deduplicated by fingerprint hash */
-        if (s_detection_queue != NULL) {
-            int64_t now_ms = esp_timer_get_time() / 1000;
-
-            /* Compute fingerprint first to dedup by hash, not MAC */
-            ble_fingerprint_t fp;
+        ble_fingerprint_t fp = {0};
+        bool fp_ready = false;
+        if (ext->data != NULL && ext->length_data > 0) {
             ble_fingerprint_compute(ext->data, ext->length_data,
                                     ext->addr.type,
                                     (uint8_t)(ext->props & 0xFF), &fp);
+            fp_ready = true;
+        }
+
+        /* Send BLE devices to detection queue, deduplicated by fingerprint hash */
+        if (s_detection_queue != NULL && fp_ready) {
+            int64_t now_ms = esp_timer_get_time() / 1000;
+
             bool is_calibration_beacon = fof_policy_ble_has_calibration_uuid_le(
                 fp.service_uuids_128,
                 fp.svc_uuid_128_count
@@ -1016,6 +1195,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             bool is_meta_device = fp.device_type == BLE_DEV_META_GLASSES ||
                                   fp.device_type == BLE_DEV_META_DEVICE;
 #if defined(FOF_BADGE_VARIANT)
+            badge_ble_diag_update(&s_ble_dbg_near, &fp, ext->rssi, "BLE");
             bool badge_nearby_ble_diag = badge_ble_is_privacy_candidate(&fp, ext->rssi);
 #else
             bool badge_nearby_ble_diag = false;
@@ -1023,7 +1203,8 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             bool privacy_candidate = is_meta_device || fp.is_tracker || badge_nearby_ble_diag;
             bool known_privacy_candidate = is_meta_device || fp.is_tracker;
             if (is_meta_device) {
-                s_ble_meta_seen++;
+                badge_ble_note_meta(fp.hash, ext->rssi, fp.class_reason,
+                                    "strong_fp", false);
             }
             if (fp.is_tracker) {
                 s_ble_tracker_seen++;
@@ -1055,6 +1236,8 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             }
             bool badge_nearby_ble_diag_emit = badge_nearby_ble_diag &&
                 badge_ble_unknown_diag_should_emit(fp.hash, ext->rssi, now_ms);
+            bool badge_weak_meta_emit = badge_nearby_ble_diag_emit &&
+                badge_ble_has_meta_hint(&fp);
 
             /* Rate limit: drones/trackers fast, others moderate
              * Focus target: 200ms (5 reports/sec for maximum resolution) */
@@ -1071,7 +1254,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             } else if (fp.is_tracker || is_meta_device) {
                 rate_limit_ms = 1000;   /* Trackers: every 1s */
             } else if (badge_nearby_ble_diag_emit) {
-                rate_limit_ms = 15000;  /* One compact unknown-BLE diagnostic */
+                rate_limit_ms = 7000;   /* Compact weak Meta presence refresh */
             } else if (fp.device_type == BLE_DEV_FLIPPER_ZERO) {
                 rate_limit_ms = 1000;   /* Security tool: every 1s */
             } else if (ble_rid_is_focused()) {
@@ -1107,6 +1290,9 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 &fp, is_calibration_beacon, is_focus_target, is_meta_device,
                 ext->rssi
             );
+            if (badge_nearby_ble_diag_emit) {
+                should_emit = true;
+            }
             if (!recently_sent && should_emit) {
                 memcpy(last_macs[mac_idx], ext->addr.val, 6);
                 last_times[mac_idx] = now_ms;
@@ -1144,22 +1330,38 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 const char *device_label = is_calibration_beacon
                     ? "Calibration Beacon"
                     : (badge_nearby_ble_diag_emit ? "BLE Nearby" : fp.type_name);
-                snprintf(det.drone_id, sizeof(det.drone_id),
-                         "BLE:%08lX:%s",
-                         (unsigned long)fp.hash, device_label);
+                if (badge_weak_meta_emit) {
+                    snprintf(det.drone_id, sizeof(det.drone_id),
+                             "meta:weak:near");
+                    snprintf(det.manufacturer, sizeof(det.manufacturer),
+                             "Meta Glasses");
+                    snprintf(det.model, sizeof(det.model), "Weak Meta");
+                    snprintf(det.class_reason, sizeof(det.class_reason),
+                             "weak_meta:%s", badge_ble_privacy_reason(&fp, ext->rssi));
+                    badge_ble_note_meta(fp.hash, ext->rssi, det.class_reason,
+                                        "weak_near", true);
+                } else {
+                    snprintf(det.drone_id, sizeof(det.drone_id),
+                             "BLE:%08lX:%s",
+                             (unsigned long)fp.hash, device_label);
 
-                snprintf(det.bssid, sizeof(det.bssid),
-                         "%02X:%02X:%02X:%02X:%02X:%02X",
-                         ext->addr.val[5], ext->addr.val[4], ext->addr.val[3],
-                         ext->addr.val[2], ext->addr.val[1], ext->addr.val[0]);
+                    snprintf(det.bssid, sizeof(det.bssid),
+                             "%02X:%02X:%02X:%02X:%02X:%02X",
+                             ext->addr.val[5], ext->addr.val[4], ext->addr.val[3],
+                             ext->addr.val[2], ext->addr.val[1], ext->addr.val[0]);
 
-                /* Store device type in manufacturer field */
-                snprintf(det.manufacturer, sizeof(det.manufacturer),
-                         "%s", device_label);
+                    /* Store device type in manufacturer field */
+                    snprintf(det.manufacturer, sizeof(det.manufacturer),
+                             "%s", device_label);
 
-                /* Store fingerprint hash in model field for backend correlation */
-                snprintf(det.model, sizeof(det.model),
-                         "FP:%08lX", (unsigned long)fp.hash);
+                    /* Store fingerprint hash in model field for backend correlation */
+                    snprintf(det.model, sizeof(det.model),
+                             "FP:%08lX", (unsigned long)fp.hash);
+                    if (badge_nearby_ble_diag_emit) {
+                        snprintf(det.class_reason, sizeof(det.class_reason),
+                                 "ble_near:%s", badge_ble_privacy_reason(&fp, ext->rssi));
+                    }
+                }
 
                 /* BLE-specific fields for backend device fingerprinting */
                 det.ble_company_id = fp.company_id;
@@ -1168,11 +1370,13 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 det.ble_payload_len = fp.payload_len;
                 det.ble_addr_type = ext->addr.type;
                 strncpy(det.ble_name, fp.local_name, sizeof(det.ble_name) - 1);
-                if (badge_nearby_ble_diag_emit && fp.class_reason[0] == '\0') {
+                if (badge_weak_meta_emit) {
+                    /* Weak Meta presence reason already set above. */
+                } else if (det.class_reason[0] == '\0' && fp.class_reason[0] == '\0') {
                     strncpy(det.class_reason,
                             badge_ble_privacy_reason(&fp, ext->rssi),
                             sizeof(det.class_reason) - 1);
-                } else {
+                } else if (det.class_reason[0] == '\0') {
                     strncpy(det.class_reason, fp.class_reason, sizeof(det.class_reason) - 1);
                 }
 
@@ -1226,6 +1430,9 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
                 if (xQueueSend(s_detection_queue, &det, 0) == pdTRUE) {
                     s_ble_fp_emit++;
+                    if (is_meta_device) {
+                        s_ble_meta_last_emit_ms = now_ms;
+                    }
                 }
             } else if (privacy_candidate || (!should_emit && fp.device_type != BLE_DEV_UNKNOWN)) {
                 s_ble_drop_rate++;
@@ -1258,7 +1465,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                         appearance, ext->rssi, &gdet)) {
                     s_privacy_seen++;
                     xQueueSend(s_glasses_queue, &gdet, pdMS_TO_TICKS(5));
-                    badge_emit_glasses_detection(&gdet);
+                    badge_emit_glasses_detection(&gdet, fp_ready ? fp.hash : 0);
                 }
             }
         }
@@ -1537,6 +1744,47 @@ bool ble_remote_id_is_scanning(void)
     return s_scanning;
 }
 
+void ble_remote_id_meta_reacquire_tick(bool allow_restart)
+{
+    uint32_t adv_delta = s_ble_adv_seen - s_ble_meta_reacquire_adv_seen;
+    s_ble_meta_reacquire_adv_seen = s_ble_adv_seen;
+
+    if (!allow_restart) {
+        return;
+    }
+
+    int64_t tick_now_ms = now_ms();
+    int64_t meta_age_s = s_ble_meta_last_seen_ms > 0
+        ? (tick_now_ms - s_ble_meta_last_seen_ms) / 1000
+        : (s_host_start_ms > 0 ? (tick_now_ms - s_host_start_ms) / 1000 : 0);
+    if (s_ble_meta_last_reacquire_ms > 0 &&
+        (tick_now_ms - s_ble_meta_last_reacquire_ms) < 60000) {
+        return;
+    }
+
+    bool host_synced = s_host_synced || s_scanning;
+    if (!fof_policy_ble_meta_should_reacquire(s_scanning,
+                                              host_synced,
+                                              meta_age_s,
+                                              adv_delta,
+                                              false,
+                                              false)) {
+        return;
+    }
+
+    ESP_LOGW(TAG, "Meta not refreshed for %llds while BLE traffic continues (delta=%lu); restarting discovery",
+             (long long)meta_age_s,
+             (unsigned long)adv_delta);
+    int rc = ble_gap_disc_cancel();
+    if (rc != 0 && rc != BLE_HS_EALREADY) {
+        ESP_LOGW(TAG, "ble_gap_disc_cancel() during Meta reacquire failed: %d", rc);
+    }
+    s_scanning = false;
+    s_ble_meta_last_reacquire_ms = tick_now_ms;
+    s_ble_meta_reacquire_count++;
+    ble_remote_id_start_scan_internal();
+}
+
 void ble_remote_id_get_stats(ble_remote_id_stats_t *out)
 {
     if (!out) {
@@ -1544,11 +1792,36 @@ void ble_remote_id_get_stats(ble_remote_id_stats_t *out)
     }
     memset(out, 0, sizeof(*out));
     out->ble_scanning = s_scanning;
-    out->ble_host_active = s_host_task_active;
-    out->ble_host_synced = s_host_synced;
+    out->ble_host_active = s_host_task_active || s_host_task_requested || s_scanning;
+    out->ble_host_synced = s_host_synced || s_scanning;
     out->ble_adv_seen = s_ble_adv_seen;
+    out->ble_any_seen = s_ble_any_seen;
+    out->ble_any_with_payload_seen = s_ble_any_with_payload_seen;
+    out->ble_any_empty_seen = s_ble_any_empty_seen;
+    out->ble_any_last_rssi = s_ble_any_last_rssi;
+    out->ble_any_best_rssi = s_ble_any_best_rssi == -127 ? 0 : s_ble_any_best_rssi;
+    out->ble_any_last_len = s_ble_any_last_len;
+    out->ble_any_last_props = s_ble_any_last_props;
+    out->ble_any_last_addr_type = s_ble_any_last_addr_type;
     out->ble_fp_emit = s_ble_fp_emit;
     out->ble_meta_seen = s_ble_meta_seen;
+    int64_t stats_now_ms = now_ms();
+    out->ble_meta_last_seen_age_s = s_ble_meta_last_seen_ms > 0
+        ? (stats_now_ms - s_ble_meta_last_seen_ms) / 1000
+        : -1;
+    out->ble_meta_last_emit_age_s = s_ble_meta_last_emit_ms > 0
+        ? (stats_now_ms - s_ble_meta_last_emit_ms) / 1000
+        : -1;
+    out->ble_meta_last_hash = s_ble_meta_last_hash;
+    out->ble_meta_last_rssi = s_ble_meta_last_rssi;
+    strncpy(out->ble_meta_last_reason, s_ble_meta_last_reason,
+            sizeof(out->ble_meta_last_reason) - 1);
+    strncpy(out->ble_meta_identity, s_ble_meta_identity,
+            sizeof(out->ble_meta_identity) - 1);
+    out->ble_meta_weak_age_s = s_ble_meta_last_weak_ms > 0
+        ? (stats_now_ms - s_ble_meta_last_weak_ms) / 1000
+        : -1;
+    out->ble_meta_reacquire_count = s_ble_meta_reacquire_count;
     out->ble_tracker_seen = s_ble_tracker_seen;
     out->ble_privacy_candidate_seen = s_ble_privacy_candidate_seen;
     out->ble_near_unknown_seen = s_ble_near_unknown_seen;
@@ -1582,13 +1855,34 @@ void ble_remote_id_get_stats(ble_remote_id_stats_t *out)
     out->ble_scan_start_ok = s_ble_scan_start_ok;
     out->ble_scan_last_rc = s_ble_scan_last_rc;
     out->ble_sync_last_rc = s_ble_sync_last_rc;
+    out->ble_focus_active = ble_rid_is_focused();
+    out->ble_focus_age_s = out->ble_focus_active
+        ? (stats_now_ms - s_ble_focus.start_ms) / 1000
+        : -1;
+    out->ble_focus_target_adv_count = s_ble_focus.target_adv_count;
 }
 
 void ble_remote_id_reset_profile_counters(void)
 {
     s_ble_adv_seen = 0;
+    s_ble_any_seen = 0;
+    s_ble_any_with_payload_seen = 0;
+    s_ble_any_empty_seen = 0;
+    s_ble_any_last_rssi = 0;
+    s_ble_any_best_rssi = -127;
+    s_ble_any_last_len = 0;
+    s_ble_any_last_props = 0;
+    s_ble_any_last_addr_type = 0;
     s_ble_fp_emit = 0;
     s_ble_meta_seen = 0;
+    s_ble_meta_last_seen_ms = 0;
+    s_ble_meta_last_emit_ms = 0;
+    s_ble_meta_last_hash = 0;
+    s_ble_meta_last_rssi = 0;
+    s_ble_meta_last_reason[0] = '\0';
+    s_ble_meta_identity[0] = '\0';
+    s_ble_meta_last_weak_ms = 0;
+    s_ble_meta_reacquire_adv_seen = s_ble_adv_seen;
     s_ble_tracker_seen = 0;
     s_ble_privacy_candidate_seen = 0;
     s_ble_near_unknown_seen = 0;

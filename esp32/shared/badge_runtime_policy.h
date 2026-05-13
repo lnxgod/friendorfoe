@@ -15,6 +15,7 @@ typedef enum {
 
 typedef enum {
     BADGE_RUNTIME_RESET_CLEAN = 0,
+    BADGE_RUNTIME_RESET_EXPECTED_SW,
     BADGE_RUNTIME_RESET_CRASH,
 } badge_runtime_reset_class_t;
 
@@ -46,6 +47,12 @@ bool badge_runtime_can_mark_valid(bool safe_mode,
                                   uint32_t free_heap_bytes,
                                   int64_t uptime_s,
                                   int64_t stable_after_s);
+bool badge_runtime_usb_recovery_due(bool safe_mode,
+                                    bool usb_control_alive,
+                                    int64_t usb_control_age_s,
+                                    int64_t uptime_s,
+                                    int64_t stale_after_s,
+                                    int64_t boot_grace_s);
 
 #ifdef __cplusplus
 }

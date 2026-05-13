@@ -3,6 +3,9 @@
 This is badge-only. It targets one badge trio: uplink MCU, BLE scanner MCU,
 and Wi-Fi scanner MCU.
 
+For the broader badge boundary, end-user flashing expectations, and display
+policy, see [FoF Badge Notes](fof_badge_notes.md).
+
 ## Direct Scanner USB Flash
 
 Use this when a scanner is stuck, quiet, or showing stale relay state.

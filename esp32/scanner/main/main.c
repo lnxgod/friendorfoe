@@ -256,6 +256,49 @@ static void send_scanner_debug_status(void)
         uart_tx_get_current_channel(),
         (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ)
     );
+#ifdef FOF_BADGE_VARIANT
+    ble_remote_id_stats_t ble_stats = {0};
+    ble_remote_id_get_stats(&ble_stats);
+    ESP_LOGI(TAG,
+             "BADGE_META_DEBUG meta=%lu age=%lld weak_age=%lld id=%s "
+             "reason=%s rssi=%d hash=%08lx near=%lu near_label=%s "
+             "near_name=%s near_reason=%s near_rssi=%d near_cid=%04x "
+             "near_svc0=%04x near_svc_count=%u near_len=%u "
+             "priv=%lu priv_label=%s priv_name=%s priv_reason=%s "
+             "priv_rssi=%d priv_cid=%04x priv_svc0=%04x priv_svc_count=%u "
+             "adv=%lu any=%lu payload=%lu best=%d host=%d/%d reacq=%lu",
+             (unsigned long)ble_stats.ble_meta_seen,
+             (long long)ble_stats.ble_meta_last_seen_age_s,
+             (long long)ble_stats.ble_meta_weak_age_s,
+             ble_stats.ble_meta_identity[0] ? ble_stats.ble_meta_identity : "?",
+             ble_stats.ble_meta_last_reason[0] ? ble_stats.ble_meta_last_reason : "?",
+             (int)ble_stats.ble_meta_last_rssi,
+             (unsigned long)ble_stats.ble_meta_last_hash,
+             (unsigned long)ble_stats.ble_dbg_near_seen,
+             ble_stats.ble_dbg_near_label[0] ? ble_stats.ble_dbg_near_label : "?",
+             ble_stats.ble_dbg_near_name[0] ? ble_stats.ble_dbg_near_name : "?",
+             ble_stats.ble_dbg_near_reason[0] ? ble_stats.ble_dbg_near_reason : "?",
+             (int)ble_stats.ble_dbg_near_rssi,
+             ble_stats.ble_dbg_near_cid,
+             ble_stats.ble_dbg_near_svc0,
+             (unsigned)ble_stats.ble_dbg_near_svc_count,
+             (unsigned)ble_stats.ble_dbg_near_payload_len,
+             (unsigned long)ble_stats.ble_dbg_priv_seen,
+             ble_stats.ble_dbg_priv_label[0] ? ble_stats.ble_dbg_priv_label : "?",
+             ble_stats.ble_dbg_priv_name[0] ? ble_stats.ble_dbg_priv_name : "?",
+             ble_stats.ble_dbg_priv_reason[0] ? ble_stats.ble_dbg_priv_reason : "?",
+             (int)ble_stats.ble_dbg_priv_rssi,
+             ble_stats.ble_dbg_priv_cid,
+             ble_stats.ble_dbg_priv_svc0,
+             (unsigned)ble_stats.ble_dbg_priv_svc_count,
+             (unsigned long)ble_stats.ble_adv_seen,
+             (unsigned long)ble_stats.ble_any_seen,
+             (unsigned long)ble_stats.ble_any_with_payload_seen,
+             (int)ble_stats.ble_any_best_rssi,
+             ble_stats.ble_host_active ? 1 : 0,
+             ble_stats.ble_host_synced ? 1 : 0,
+             (unsigned long)ble_stats.ble_meta_reacquire_count);
+#endif
 }
 
 #ifdef FOF_BADGE_VARIANT

@@ -21,10 +21,17 @@ bool badge_runtime_arm_reboot_network_hold(badge_runtime_network_mode_t mode,
                                            int ttl_s);
 void badge_runtime_poll(void);
 void badge_runtime_force_safe_mode(bool enabled, const char *reason);
+void badge_runtime_arm_expected_reboot(const char *reason);
+bool badge_runtime_reset_reason_was_expected_software(uint32_t reset_reason);
+bool badge_runtime_usb_control_recovery_due(int64_t uptime_s);
 
 void badge_runtime_note_display_alive(void);
 void badge_runtime_note_usb_control_alive(void);
 void badge_runtime_note_scanner_uart_alive(bool alive);
+void badge_runtime_note_display_stack_free(uint32_t words);
+void badge_runtime_note_main_stack_free(uint32_t words);
+void badge_runtime_note_usb_stack_free(uint32_t words);
+void badge_runtime_note_uart_stack_free(uint8_t scanner_id, uint32_t words);
 bool badge_runtime_health_can_mark_ota_valid(uint32_t free_heap_bytes,
                                              int64_t uptime_s);
 void badge_runtime_mark_stable(void);
@@ -35,9 +42,19 @@ bool badge_runtime_is_safe_mode(void);
 const char *badge_runtime_safe_reason(void);
 uint32_t badge_runtime_crash_count(void);
 bool badge_runtime_pending_verify(void);
+uint32_t badge_runtime_last_reset_reason(void);
+const char *badge_runtime_last_reset_reason_name(void);
+bool badge_runtime_last_reset_expected(void);
+int64_t badge_runtime_usb_control_age_s(void);
+const char *badge_runtime_recovery_mode(void);
 bool badge_runtime_display_alive(void);
 bool badge_runtime_usb_control_alive(void);
 bool badge_runtime_scanner_uart_alive(void);
+uint32_t badge_runtime_display_stack_free(void);
+uint32_t badge_runtime_main_stack_free(void);
+uint32_t badge_runtime_usb_stack_free(void);
+uint32_t badge_runtime_uart_ble_stack_free(void);
+uint32_t badge_runtime_uart_wifi_stack_free(void);
 
 #ifdef __cplusplus
 }
