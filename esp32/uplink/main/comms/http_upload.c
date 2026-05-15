@@ -533,12 +533,12 @@ static int append_scanner_info(char *buf,
      * uplink's epoch broadcast. tcnt = #broadcasts seen, toff = applied
      * offset (0 means none usable). Visible via /detections/nodes/status. */
     n = snprintf(&buf[off], max-off,
-                 ",\"toff\":%lld,\"tcnt\":%u,\"time_valid_count\":%lu"
+                 ",\"toff\":%lld,\"tcnt\":%lu,\"time_valid_count\":%lu"
                  ",\"time_last_valid_age_s\":%lld,\"time_sync_state\":\"%s\""
                  ",\"cmd_rx\":%lu,\"cmd_parse_err\":%lu,\"cmd_overflow\":%lu"
                  ",\"cmd_stale\":%lu,\"cmd_last_age_s\":%lld"
                  ",\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\",\"calibration_mode_acked\":%s",
-                 (long long)info->toff_ms, info->tcnt,
+                 (long long)info->toff_ms, (unsigned long)info->tcnt,
                  (unsigned long)info->time_valid_count,
                  (long long)info->time_last_valid_age_s,
                  info->time_sync_state[0] ? info->time_sync_state : "unknown",
@@ -660,7 +660,6 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     gps_position_t gps_pos = {0};
     gps_get_position(&gps_pos);
     int64_t ts_ms = (scan_ts_ms > 0) ? scan_ts_ms : time_sync_get_epoch_ms();
-    const esp_app_desc_t *app = esp_app_get_description();
     const char *wifi_ssid = wifi_sta_get_ssid();
 
     int off = 0;
@@ -785,7 +784,7 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
         off = append_json_string_field(off, "model", d->model);
         off = append_json_string_field(off, "ssid", d->ssid);
         off = append_json_string_field(off, "bssid", d->bssid);
-        if (d->freq_mhz != 0) BUF_APPEND(",\"channel\":%d", d->freq_mhz);
+        if (d->freq_mhz != 0) BUF_APPEND(",\"channel\":%ld", (long)d->freq_mhz);
         if (d->wifi_auth_mode != 0xFF) BUF_APPEND(",\"auth_m\":%d", d->wifi_auth_mode);
         if (d->operator_lat != 0.0 || d->operator_lon != 0.0)
             BUF_APPEND(",\"operator_lat\":%.7f,\"operator_lon\":%.7f", d->operator_lat, d->operator_lon);
@@ -1367,7 +1366,6 @@ static void drain_offline_buffer(void)
         return;
     }
 
-    int remaining = ring_buffer_count(s_offline_buffer);
     int drained = 0;
 
     offline_batch_t batch;

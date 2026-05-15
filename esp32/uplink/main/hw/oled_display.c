@@ -517,9 +517,9 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     {
         const scanner_info_t *ble_info = uart_rx_get_ble_scanner_info();
         const scanner_info_t *wifi_info = uart_rx_get_wifi_scanner_info();
-        snprintf(line, sizeof(line), "B:%s W:%s",
-                 ble_info ? ble_info->version : (ble_scanner_ok ? "ok" : "--"),
-                 wifi_info ? wifi_info->version : (wifi_scanner_ok ? "ok" : "--"));
+        const char *ble_ver = ble_info ? ble_info->version : (ble_scanner_ok ? "ok" : "--");
+        const char *wifi_ver = wifi_info ? wifi_info->version : (wifi_scanner_ok ? "ok" : "--");
+        snprintf(line, sizeof(line), "B:%.8s W:%.8s", ble_ver, wifi_ver);
     }
     fb_draw_string(0, 22, line);
 

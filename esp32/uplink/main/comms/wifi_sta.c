@@ -42,7 +42,6 @@ static int                s_retry_count      = 0;
 /* Multi-SSID credential list */
 static const wifi_credential_t s_wifi_creds[] = CONFIG_WIFI_CREDENTIALS;
 static int  s_current_cred_idx  = 0;    /* Index into s_wifi_creds */
-static int  s_scan_attempts     = 0;
 
 /* Exponential backoff parameters */
 #define BACKOFF_BASE_MS     1000
