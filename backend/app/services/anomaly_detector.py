@@ -96,6 +96,9 @@ class AnomalyDetector:
         "Flipper", "Flipper Zero", "Pwnagotchi", "Marauder",
         # Spooky-device classes (v0.62, name-pattern detection on scanner)
         "Card Skimmer", "Hidden Camera", "Flock Surveillance", "Flock Safety",
+        "Camera Near", "Body Camera", "Fleet Camera", "Surveillance Camera",
+        "Venue Beacon", "Event Badge", "Mobile Key Lock", "BLE HID",
+        "Auracast",
     }
 
     def __init__(self):

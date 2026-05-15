@@ -32,6 +32,7 @@
 /* ── Apple Continuity sub-types ─────────────────────────────────────────── */
 
 #define APPLE_COMPANY_ID        0x004C
+#define APPLE_TYPE_IBEACON      0x02
 #define APPLE_TYPE_AIRDROP      0x05
 #define APPLE_TYPE_HOMEKIT      0x06
 #define APPLE_TYPE_AIRPODS      0x07
@@ -85,6 +86,10 @@
 #define TILE_SVC_UUID2          0xFEEC
 #define GOOGLE_FASTPAIR_UUID    0xFE2C
 #define GOOGLE_FMDN_UUID        0xFE2C  /* Google Find My Device Network */
+#define EDDYSTONE_SVC_UUID      0xFEAA
+#define BLE_HID_SVC_UUID        0x1812
+#define BLE_AUDIO_BASS_UUID     0x184F  /* Broadcast Audio Scan Service */
+#define BLE_AUDIO_PACS_UUID     0x1850  /* Published Audio Capabilities */
 #define APPLE_FINDMY_SVC        0xFD6F  /* Apple Find My network */
 #define SAMSUNG_SMARTTAG_SVC1   0xFD59  /* SmartTag factory/non-registered */
 #define SAMSUNG_SMARTTAG_SVC2   0xFD5A  /* SmartTag registered */
@@ -131,6 +136,11 @@ static const char *s_type_names[] = {
     [BLE_DEV_FITNESS_TRACKER]  = "Fitness Tracker",
     [BLE_DEV_SMARTWATCH]       = "Smartwatch",
     [BLE_DEV_BEACON]           = "Beacon",
+    [BLE_DEV_VENUE_BEACON]     = "Venue Beacon",
+    [BLE_DEV_EVENT_BADGE]      = "Event Badge",
+    [BLE_DEV_MOBILE_KEY_LOCK]  = "Mobile Key Lock",
+    [BLE_DEV_BLE_HID]          = "BLE HID",
+    [BLE_DEV_AURACAST_AUDIO]   = "Auracast",
     [BLE_DEV_TRACKER_GENERIC]  = "Tracker (Generic)",
     [BLE_DEV_PEBBLEBEE]        = "Pebblebee",
     [BLE_DEV_CHIPOLO]          = "Chipolo",
@@ -184,6 +194,9 @@ static ble_device_type_t classify_apple(uint8_t continuity_type,
 
     case APPLE_TYPE_AIRPODS:
         return BLE_DEV_APPLE_AIRPODS;
+
+    case APPLE_TYPE_IBEACON:
+        return BLE_DEV_BEACON;
 
     case APPLE_TYPE_NEARBY_INFO:
     case APPLE_TYPE_NEARBY_ACT:
@@ -249,6 +262,69 @@ static bool name_mentions_meta_glasses(const char *name)
            strncasecmp(name, "OAK", 3) == 0;
 }
 
+static bool name_mentions_venue_beacon(const char *name)
+{
+    return contains_case_insensitive(name, "ibeacon") ||
+           contains_case_insensitive(name, "eddystone") ||
+           contains_case_insensitive(name, "estimote") ||
+           contains_case_insensitive(name, "kontakt") ||
+           contains_case_insensitive(name, "gimbal") ||
+           contains_case_insensitive(name, "retailnext") ||
+           contains_case_insensitive(name, "vergesense") ||
+           contains_case_insensitive(name, "beaconstac") ||
+           contains_case_insensitive(name, "radiusnetworks") ||
+           contains_case_insensitive(name, "location beacon");
+}
+
+static bool name_mentions_event_badge(const char *name)
+{
+    return contains_case_insensitive(name, "event badge") ||
+           contains_case_insensitive(name, "smart badge") ||
+           contains_case_insensitive(name, "attendee badge") ||
+           contains_case_insensitive(name, "conference badge") ||
+           contains_case_insensitive(name, "expo badge") ||
+           contains_case_insensitive(name, "klik") ||
+           contains_case_insensitive(name, "bizzabo") ||
+           contains_case_insensitive(name, "cvent") ||
+           contains_case_insensitive(name, "wristband");
+}
+
+static bool name_mentions_mobile_key_lock(const char *name)
+{
+    return contains_case_insensitive(name, "dormakaba") ||
+           contains_case_insensitive(name, "saflok") ||
+           contains_case_insensitive(name, "vingcard") ||
+           contains_case_insensitive(name, "assa") ||
+           contains_case_insensitive(name, "abloy") ||
+           contains_case_insensitive(name, "salto") ||
+           contains_case_insensitive(name, "onity") ||
+           contains_case_insensitive(name, "kaba") ||
+           contains_case_insensitive(name, "august") ||
+           contains_case_insensitive(name, "schlage") ||
+           contains_case_insensitive(name, "yale") ||
+           contains_case_insensitive(name, "level lock") ||
+           contains_case_insensitive(name, "mobile key") ||
+           contains_case_insensitive(name, "mobile access");
+}
+
+static bool name_mentions_ble_hid(const char *name)
+{
+    return contains_case_insensitive(name, "ble keyboard") ||
+           contains_case_insensitive(name, "keyboard") ||
+           contains_case_insensitive(name, "ble mouse") ||
+           contains_case_insensitive(name, "mouse") ||
+           contains_case_insensitive(name, "presenter") ||
+           strcasecmp(name ? name : "", "hid") == 0 ||
+           strncasecmp(name ? name : "", "HID-", 4) == 0;
+}
+
+static bool name_mentions_auracast(const char *name)
+{
+    return contains_case_insensitive(name, "auracast") ||
+           contains_case_insensitive(name, "le audio") ||
+           contains_case_insensitive(name, "broadcast audio");
+}
+
 /* ── Main fingerprint computation ───────────────────────────────────────── */
 
 void ble_fingerprint_compute(const uint8_t *data, int length,
@@ -282,6 +358,9 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     bool has_meta_svc = false;
     bool has_meta_rayban_svc = false;  /* 0xFD5F = Ray-Ban specific */
     bool has_meta_quest_svc = false;   /* 0xFEB8 without 0xFD5F = Quest */
+    bool has_eddystone_svc = false;
+    bool has_hid_svc = false;
+    bool has_ble_audio_svc = false;
     uint16_t first_meta_svc = 0;
 
     /* Local name capture for spooky-device pattern matching (v0.62+) */
@@ -370,6 +449,9 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 if (uuid == APPLE_FINDMY_SVC)    has_findmy_svc = true;
                 if (uuid == TILE_SVC_UUID || uuid == TILE_SVC_UUID2) has_tile_svc = true;
                 if (uuid == GOOGLE_FASTPAIR_UUID || uuid == GOOGLE_FMDN_UUID) has_fastpair_svc = true;
+                if (uuid == EDDYSTONE_SVC_UUID) has_eddystone_svc = true;
+                if (uuid == BLE_HID_SVC_UUID) has_hid_svc = true;
+                if (uuid == BLE_AUDIO_BASS_UUID || uuid == BLE_AUDIO_PACS_UUID) has_ble_audio_svc = true;
                 if (uuid == SAMSUNG_SMARTTAG_SVC1 || uuid == SAMSUNG_SMARTTAG_SVC2 || uuid == SAMSUNG_SMARTTAG_LOST) has_smarttag_svc = true;
                 if (uuid == META_RAYBANGEN2_SVC || uuid == META_SVC_UUID1 || uuid == META_SVC_UUID2) has_meta_svc = true;
                 if ((uuid == META_RAYBANGEN2_SVC || uuid == META_SVC_UUID1 || uuid == META_SVC_UUID2) &&
@@ -420,6 +502,9 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
 
                 if (svc_uuid == APPLE_FINDMY_SVC) has_findmy_svc = true;
                 if (svc_uuid == TILE_SVC_UUID || svc_uuid == TILE_SVC_UUID2) has_tile_svc = true;
+                if (svc_uuid == EDDYSTONE_SVC_UUID) has_eddystone_svc = true;
+                if (svc_uuid == BLE_HID_SVC_UUID) has_hid_svc = true;
+                if (svc_uuid == BLE_AUDIO_BASS_UUID || svc_uuid == BLE_AUDIO_PACS_UUID) has_ble_audio_svc = true;
                 if (svc_uuid == SAMSUNG_SMARTTAG_SVC1 || svc_uuid == SAMSUNG_SMARTTAG_SVC2 || svc_uuid == SAMSUNG_SMARTTAG_LOST) has_smarttag_svc = true;
                 if (svc_uuid == META_RAYBANGEN2_SVC || svc_uuid == META_SVC_UUID1 || svc_uuid == META_SVC_UUID2) has_meta_svc = true;
                 if ((svc_uuid == META_RAYBANGEN2_SVC || svc_uuid == META_SVC_UUID1 || svc_uuid == META_SVC_UUID2) &&
@@ -504,6 +589,15 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     } else if (has_fastpair_svc || company_id == GOOGLE_COMPANY_ID) {
         fp->device_type = BLE_DEV_GOOGLE_FINDMY;
         fp->is_tracker = (mfr_data_len <= 12);
+    } else if (has_hid_svc) {
+        fp->device_type = BLE_DEV_BLE_HID;
+        strncpy(fp->class_reason, "uuid16:0x1812", sizeof(fp->class_reason) - 1);
+    } else if (has_eddystone_svc) {
+        fp->device_type = BLE_DEV_VENUE_BEACON;
+        strncpy(fp->class_reason, "uuid16:0xFEAA", sizeof(fp->class_reason) - 1);
+    } else if (has_ble_audio_svc) {
+        fp->device_type = BLE_DEV_AURACAST_AUDIO;
+        strncpy(fp->class_reason, "uuid16:ble_audio", sizeof(fp->class_reason) - 1);
     } else if (company_id == META_COMPANY_ID || company_id == META_TECH_COMPANY_ID
                || company_id == META_LUXOTTICA_CID || has_meta_svc ||
                name_mentions_meta_glasses(local_name)) {
@@ -597,6 +691,31 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
             fp->device_type = BLE_DEV_CARD_SKIMMER;
             fp->is_tracker = true;
             strncpy(fp->class_reason, "default_uart_ble_name", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_mobile_key_lock(local_name)) {
+            fp->device_type = BLE_DEV_MOBILE_KEY_LOCK;
+            fp->is_tracker = false;
+            strncpy(fp->class_reason, "name:mobile_key_lock", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_event_badge(local_name)) {
+            fp->device_type = BLE_DEV_EVENT_BADGE;
+            fp->is_tracker = false;
+            strncpy(fp->class_reason, "name:event_badge", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_ble_hid(local_name)) {
+            fp->device_type = BLE_DEV_BLE_HID;
+            fp->is_tracker = false;
+            strncpy(fp->class_reason, "name:ble_hid", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_auracast(local_name)) {
+            fp->device_type = BLE_DEV_AURACAST_AUDIO;
+            fp->is_tracker = false;
+            strncpy(fp->class_reason, "name:auracast", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_venue_beacon(local_name)) {
+            fp->device_type = BLE_DEV_VENUE_BEACON;
+            fp->is_tracker = false;
+            strncpy(fp->class_reason, "name:venue_beacon", sizeof(fp->class_reason) - 1);
         }
         /* Explicit camera-like names remain suspect camera evidence. */
         else if (strncmp(local_name, "HIDVCAM", 6) == 0 ||

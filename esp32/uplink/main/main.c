@@ -33,6 +33,9 @@
 #include "serial_config.h"
 #include "badge_mode.h"
 #include "badge_runtime.h"
+#ifdef FOF_BADGE_VARIANT
+#include "badge_display_policy_runtime.h"
+#endif
 #include "detection_types.h"
 #include "detection_policy.h"
 #include "uart_protocol.h"
@@ -540,6 +543,7 @@ void app_main(void)
 
 #ifdef FOF_BADGE_VARIANT
     badge_runtime_init(s_ota_pending_verify);
+    badge_display_policy_runtime_init();
 #endif
 
     badge_mode_t badge_mode = badge_mode_get();

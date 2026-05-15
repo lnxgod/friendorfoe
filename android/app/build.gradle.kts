@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 82
-        versionName = "0.63.20-controlpath-recovery"
+        versionCode = 83
+        versionName = "0.64.37-badge-privacy"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

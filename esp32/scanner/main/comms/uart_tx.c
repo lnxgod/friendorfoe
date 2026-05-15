@@ -22,6 +22,7 @@
 #include "calibration_mode.h"
 #include "scanner_rollback.h"
 #include "led_status.h"
+#include "badge_display_policy.h"
 
 #include "cJSON.h"
 
@@ -128,6 +129,13 @@ static char s_fw_update_state[16] = "idle";
 static char s_fw_last_error[48] = {0};
 static uint32_t s_fw_check_count = 0;
 static int64_t s_fw_error_backoff_until_ms = 0;
+#ifdef FOF_BADGE_VARIANT
+static badge_display_policy_t s_display_policy;
+static uint32_t s_display_policy_hash = 0;
+static uint32_t s_display_policy_ack_hash = 0;
+static uint32_t s_display_policy_filtered[BADGE_DISPLAY_POLICY_CLASS_COUNT];
+static portMUX_TYPE s_display_policy_lock = portMUX_INITIALIZER_UNLOCKED;
+#endif
 
 bool uart_tx_is_enabled(void) { return s_tx_enabled; }
 void uart_tx_set_enabled(bool enabled) {
@@ -452,6 +460,106 @@ static void note_uart_drop(const drone_detection_t *detection,
     }
 }
 
+#ifdef FOF_BADGE_VARIANT
+static void display_policy_init_once(void)
+{
+    if (s_display_policy.version == BADGE_DISPLAY_POLICY_VERSION &&
+        s_display_policy_hash != 0) {
+        return;
+    }
+    badge_display_policy_defaults(&s_display_policy);
+    s_display_policy_hash = badge_display_policy_hash(&s_display_policy);
+    s_display_policy_ack_hash = s_display_policy_hash;
+}
+
+bool uart_tx_set_display_policy_json(const char *json,
+                                     uint32_t expected_hash,
+                                     char *err,
+                                     size_t err_len)
+{
+    badge_display_policy_t policy;
+    if (!badge_display_policy_parse_json(json, &policy, err, err_len)) {
+        return false;
+    }
+    uint32_t hash = badge_display_policy_hash(&policy);
+    if (expected_hash != 0 && expected_hash != hash) {
+        if (err && err_len > 0) {
+            snprintf(err, err_len, "hash mismatch");
+        }
+        return false;
+    }
+    portENTER_CRITICAL(&s_display_policy_lock);
+    s_display_policy = policy;
+    s_display_policy_hash = hash;
+    s_display_policy_ack_hash = hash;
+    portEXIT_CRITICAL(&s_display_policy_lock);
+    ESP_LOGI(TAG, "Display policy applied hash=%lu",
+             (unsigned long)hash);
+    return true;
+}
+
+void uart_tx_reset_display_policy(void)
+{
+    badge_display_policy_t policy;
+    badge_display_policy_defaults(&policy);
+    portENTER_CRITICAL(&s_display_policy_lock);
+    s_display_policy = policy;
+    s_display_policy_hash = badge_display_policy_hash(&s_display_policy);
+    s_display_policy_ack_hash = s_display_policy_hash;
+    memset(s_display_policy_filtered, 0, sizeof(s_display_policy_filtered));
+    portEXIT_CRITICAL(&s_display_policy_lock);
+}
+
+uint32_t uart_tx_display_policy_hash(void)
+{
+    display_policy_init_once();
+    return s_display_policy_hash;
+}
+
+uint32_t uart_tx_display_policy_ack_hash(void)
+{
+    display_policy_init_once();
+    return s_display_policy_ack_hash;
+}
+
+uint32_t uart_tx_display_policy_filtered_count(
+    badge_display_policy_class_t cls)
+{
+    if ((int)cls < 0 || cls >= BADGE_DISPLAY_POLICY_CLASS_COUNT) {
+        cls = BADGE_DISPLAY_CLASS_SCANNER_STATUS;
+    }
+    return s_display_policy_filtered[cls];
+}
+
+static bool display_policy_allows_detection(const drone_detection_t *det,
+                                            bool *breakthrough_out)
+{
+    display_policy_init_once();
+    bool safety = false;
+    badge_display_policy_class_t cls =
+        badge_display_policy_class_for_detection(det);
+    badge_display_policy_t policy;
+    portENTER_CRITICAL(&s_display_policy_lock);
+    policy = s_display_policy;
+    portEXIT_CRITICAL(&s_display_policy_lock);
+    bool allowed = badge_display_policy_allows_detection(&policy, det,
+                                                         &safety, &cls);
+    if (!allowed) {
+        s_display_policy_filtered[cls]++;
+    }
+    if (breakthrough_out) {
+        const badge_display_class_policy_t *cfg = &policy.classes[cls];
+        bool normally_blocked =
+            !cfg->enabled ||
+            cfg->lane == BADGE_DISPLAY_LANE_OFF ||
+            badge_display_proximity_for_rssi(det ? det->rssi : -100) <
+                cfg->min_proximity;
+        *breakthrough_out = allowed && safety && normally_blocked;
+    }
+    return allowed;
+}
+#endif
+
 static bool should_rate_limit_detection(const drone_detection_t *detection,
                                         int64_t now_ms)
 {
@@ -580,6 +688,9 @@ static void maybe_warn_uart_tx_stack_headroom(void)
 void uart_tx_init(void)
 {
     s_uart_mutex = xSemaphoreCreateMutex();
+#ifdef FOF_BADGE_VARIANT
+    display_policy_init_once();
+#endif
 
     uart_config_t uart_config = {
         .baud_rate  = UART_BAUD_RATE,
@@ -966,6 +1077,24 @@ void uart_tx_send_status(int ble_count, int wifi_count,
     cJSON_AddNumberToObject(root, "rid_service_seen", ble_remote_id_service_seen_count());
     cJSON_AddNumberToObject(root, "rid_emit", ble_remote_id_emit_count());
     cJSON_AddNumberToObject(root, "privacy_seen", ble_remote_id_privacy_seen_count());
+#ifdef FOF_BADGE_VARIANT
+    cJSON_AddNumberToObject(root, "display_policy_hash",
+                            uart_tx_display_policy_hash());
+    cJSON_AddNumberToObject(root, "display_policy_ack_hash",
+                            uart_tx_display_policy_ack_hash());
+    cJSON *filtered = cJSON_CreateObject();
+    if (filtered) {
+        for (int i = 0; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; i++) {
+            badge_display_policy_class_t cls = (badge_display_policy_class_t)i;
+            cJSON_AddNumberToObject(
+                filtered,
+                badge_display_policy_class_key(cls),
+                uart_tx_display_policy_filtered_count(cls)
+            );
+        }
+        cJSON_AddItemToObject(root, "filtered_counts", filtered);
+    }
+#endif
     cJSON_AddStringToObject(root, JSON_KEY_SCAN_MODE, scanner_calibration_mode_label());
     cJSON_AddStringToObject(root, JSON_KEY_SCAN_PROFILE, scanner_scan_profile_label());
     cjson_add_string_if(root, JSON_KEY_CALIBRATION_UUID, scanner_calibration_mode_uuid());
@@ -1336,6 +1465,22 @@ static void uart_tx_task(void *arg)
                 note_uart_drop(&det, UART_DROP_PRESSURE);
                 continue;
             }
+
+#ifdef FOF_BADGE_VARIANT
+            bool filter_breakthrough = false;
+            if (!display_policy_allows_detection(&det, &filter_breakthrough)) {
+                note_uart_drop(&det, UART_DROP_LOW_VALUE);
+                continue;
+            }
+            if (filter_breakthrough &&
+                !strstr(det.class_reason, "filter")) {
+                size_t used = strlen(det.class_reason);
+                if (used + 8 < sizeof(det.class_reason)) {
+                    strncat(det.class_reason, " filter",
+                            sizeof(det.class_reason) - used - 1);
+                }
+            }
+#endif
 
             if (fof_policy_should_drop_low_value(det.source,
                                                  det.confidence,

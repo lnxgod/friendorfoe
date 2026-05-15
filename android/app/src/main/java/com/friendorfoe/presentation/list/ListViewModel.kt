@@ -8,6 +8,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.badge.BadgeUsbRepository
+import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
@@ -133,6 +134,14 @@ class ListViewModel @Inject constructor(
             version = "android-upload",
             firmware = firmware
         )
+    }
+
+    fun applyBadgeDisplayPolicy(policy: BadgeDisplayPolicy) {
+        badgeUsbRepository.applyDisplayPolicy(policy)
+    }
+
+    fun resetBadgeDisplayPolicy() {
+        badgeUsbRepository.resetDisplayPolicy()
     }
 
     private val _userPosition = MutableStateFlow(

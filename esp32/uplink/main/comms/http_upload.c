@@ -20,6 +20,7 @@
 #include "detection_policy.h"
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
+#include "badge_display_policy_runtime.h"
 #endif
 
 #include <string.h>
@@ -117,6 +118,21 @@ static void maybe_send_scan_profile_commands(int64_t now_ms)
                  "{\"type\":\"scan_profile\",\"%s\":\"%s\"}",
                  JSON_KEY_SCAN_PROFILE, profile);
         uart_rx_send_command_to_scanner(1, cmd);
+    }
+#endif
+
+#ifdef FOF_BADGE_VARIANT
+    char policy_cmd[BADGE_DISPLAY_POLICY_JSON_MAX + 128] = {0};
+    badge_display_policy_runtime_command_json(policy_cmd, sizeof(policy_cmd));
+    if (policy_cmd[0]) {
+        if (ble_connected) {
+            uart_rx_send_command_to_scanner(0, policy_cmd);
+        }
+#if CONFIG_DUAL_SCANNER
+        if (wifi_connected) {
+            uart_rx_send_command_to_scanner(1, policy_cmd);
+        }
+#endif
     }
 #endif
 }
@@ -838,119 +854,7 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
 
 /* ── HTTP POST with retry ──────────────────────────────────────────────── */
 
-/**
- * Ensure the persistent HTTP client is initialized.
- * Reuses the same TCP connection (keep-alive) to avoid socket exhaustion.
- */
 static bool s_using_fallback_url = false;
-static char s_resolved_url[256] = {0};  /* Cached resolved URL (IP instead of hostname) */
-
-/**
- * Resolve mDNS/hostname to IP and cache it.
- * Falls back to original URL if resolution fails.
- */
-static void resolve_and_cache_url(const char *backend_url)
-{
-    /* Already resolved? */
-    if (s_resolved_url[0]) return;
-
-    /* Extract hostname from URL like "http://fof-server.local:8000" */
-    const char *host_start = strstr(backend_url, "://");
-    if (!host_start) {
-        snprintf(s_resolved_url, sizeof(s_resolved_url), "%s%s", backend_url, CONFIG_UPLOAD_ENDPOINT);
-        return;
-    }
-    host_start += 3;
-
-    char hostname[64] = {0};
-    const char *port_start = strchr(host_start, ':');
-    const char *path_start = strchr(host_start, '/');
-    int host_len;
-    if (port_start && (!path_start || port_start < path_start))
-        host_len = port_start - host_start;
-    else if (path_start)
-        host_len = path_start - host_start;
-    else
-        host_len = strlen(host_start);
-    if (host_len >= (int)sizeof(hostname)) host_len = sizeof(hostname) - 1;
-    memcpy(hostname, host_start, host_len);
-
-    /* Try DNS/mDNS resolution */
-    struct addrinfo hints = { .ai_family = AF_INET };
-    struct addrinfo *res = NULL;
-    int err = getaddrinfo(hostname, NULL, &hints, &res);
-    if (err == 0 && res) {
-        struct sockaddr_in *addr = (struct sockaddr_in *)res->ai_addr;
-        char ip_str[16];
-        inet_ntoa_r(addr->sin_addr, ip_str, sizeof(ip_str));
-        freeaddrinfo(res);
-
-        /* Build URL with resolved IP instead of hostname */
-        const char *after_host = host_start + host_len;  /* ":8000/..." */
-        snprintf(s_resolved_url, sizeof(s_resolved_url), "http://%s%s%s",
-                 ip_str, after_host, CONFIG_UPLOAD_ENDPOINT);
-        ESP_LOGW(TAG, "Resolved %s → %s (cached)", hostname, ip_str);
-    } else {
-        /* Resolution failed — use original URL */
-        snprintf(s_resolved_url, sizeof(s_resolved_url), "%s%s", backend_url, CONFIG_UPLOAD_ENDPOINT);
-        ESP_LOGW(TAG, "mDNS resolve failed for %s — using as-is", hostname);
-        s_resolved_url[0] = '\0';  /* Don't cache failure — retry next time */
-    }
-}
-
-/* Dead code — replaced by raw_socket_connect() above */
-#if 0
-static bool ensure_http_client_UNUSED(void)
-{
-    if (s_http_client) {
-        return true;
-    }
-
-    char backend_url[128] = {0};
-    if (s_using_fallback_url) {
-        strncpy(backend_url, CONFIG_BACKEND_URL_FALLBACK, sizeof(backend_url) - 1);
-        ESP_LOGI(TAG, "Using fallback backend URL: %s", backend_url);
-    } else {
-        nvs_config_get_backend_url(backend_url, sizeof(backend_url));
-    }
-
-    /* Resolve hostname to IP and cache */
-    resolve_and_cache_url(backend_url);
-
-    char url[256];
-    if (s_resolved_url[0]) {
-        strncpy(url, s_resolved_url, sizeof(url) - 1);
-    } else {
-        snprintf(url, sizeof(url), "%s%s", backend_url, CONFIG_UPLOAD_ENDPOINT);
-    }
-
-    esp_http_client_config_t config = {
-        .url              = url,
-        .method           = HTTP_METHOD_POST,
-        .timeout_ms       = HTTP_TIMEOUT_MS,
-        .buffer_size      = 1024,          /* Must fit HTTP response headers from uvicorn */
-        .keep_alive_enable = true,         /* Reuse TCP connection to avoid alloc churn */
-    };
-
-    s_http_client = esp_http_client_init(&config);
-    if (!s_http_client) {
-        ESP_LOGE(TAG, "Failed to init HTTP client");
-        return false;
-    }
-
-    esp_http_client_set_header(s_http_client, "Content-Type", "application/json");
-    ESP_LOGI(TAG, "HTTP client created: %s (timeout=%dms, keep-alive)", url, HTTP_TIMEOUT_MS);
-    return true;
-}
-
-/**
- * Destroy and recreate the HTTP client (call after persistent errors).
- */
-static void reset_http_client(void)
-{
-    raw_socket_close();
-}
-#endif  /* dead code */
 
 /* ── Raw socket HTTP POST — ZERO heap allocation ─────────────────────────
  * Uses a persistent TCP socket with static buffers instead of esp_http_client
@@ -973,7 +877,6 @@ static void raw_socket_forget_endpoint_cache(void)
     memset(&s_cached_addr, 0, sizeof(s_cached_addr));
     s_addr_cached = false;
     s_cached_backend_url[0] = '\0';
-    s_resolved_url[0] = '\0';
 }
 
 static bool parse_backend_host_port(const char *backend_url,

@@ -4,6 +4,9 @@ These notes are badge-only. They describe the handheld badge trio and should
 not be treated as production scanner-node behavior unless a change explicitly
 ports the same behavior to production.
 
+For the operator-facing badge quick start, current version matrix, Android
+install flow, and runtime checks, start with [Badge README](badge/README.md).
+
 ## Badge Boundary
 
 - Uplink badge target: `uplink-s3-fof_badge`.
@@ -27,6 +30,47 @@ ports the same behavior to production.
   scanner-side telemetry changes.
 - Safe USB mode is preferred over automatic ROM bootloader entry because it
   keeps status and control available to normal users.
+
+## Recovery Modes And Status Facts
+
+`FOF_STATUS` over USB and `/api/badge/status` over the temporary AP/backend
+session are the source of truth. The LCD is intentionally a small awareness
+surface and should not be expected to show every recovery field.
+
+Top-level badge `recovery_mode` values:
+
+- `normal`: USB control is alive and the badge is not in safe mode.
+- `usb_wait`: boot is still waiting for the USB control task heartbeat.
+- `usb_stale`: USB control heartbeat has gone stale after the boot grace
+  window. The runtime watchdog should arm an expected reboot and come back in
+  safe USB mode.
+- `safe_usb`: badge safe mode. Heavy scanner/network behavior is held back;
+  USB control and simple status remain available.
+
+Scanner-object `recovery_mode` values are separate from the top-level badge
+mode:
+
+- `normal`: scanner image is running normally.
+- `ota_pending`: scanner image is pending ESP-IDF OTA validation.
+- `safe_uart`: scanner UART-only recovery. Radios stay off, but the scanner
+  keeps emitting recovery/status lines and accepts OTA/reboot/bootloader/safe
+  clear commands.
+
+Planned badge software restarts must call `badge_runtime_arm_expected_reboot()`
+before `esp_restart()` or ROM bootloader entry. This keeps intentional USB,
+OTA, rollback, and recovery restarts from incrementing the crash-loop counter.
+Unplanned `ESP_RST_SW`, panic, interrupt watchdog, task watchdog, and watchdog
+resets remain unhealthy.
+
+Common USB recovery commands:
+
+- `FOF_PING`: returns `FOF_PONG:<version>`.
+- `FOF_STATUS`: returns the badge status JSON, including scanner objects.
+- `FOF_BOOTLOADER`, `FOF_DOWNLOAD`, or `FOF_FLASH`: reboot into ESP32 ROM
+  download mode.
+- `FOF_REBOOT`: expected software reboot back into the app.
+- `FOF_CTL:{"cmd":"safe_mode","enabled":false,"reason":"post_flash_clear"}`:
+  clear forced badge safe mode and reset the badge crash counter.
 
 ## Badge Display Policy
 

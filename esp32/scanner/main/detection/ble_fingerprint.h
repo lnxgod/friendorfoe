@@ -38,6 +38,11 @@ typedef enum {
     BLE_DEV_FITNESS_TRACKER,
     BLE_DEV_SMARTWATCH,
     BLE_DEV_BEACON,             /* iBeacon, Eddystone */
+    BLE_DEV_VENUE_BEACON,       /* Venue / retail location beacons */
+    BLE_DEV_EVENT_BADGE,        /* Smart event badges / wristbands */
+    BLE_DEV_MOBILE_KEY_LOCK,    /* Hotel / mobile-key / smart locks */
+    BLE_DEV_BLE_HID,            /* BLE HID input devices */
+    BLE_DEV_AURACAST_AUDIO,     /* LE Audio / Auracast broadcast hints */
     BLE_DEV_TRACKER_GENERIC,    /* Unknown tracker type */
     BLE_DEV_PEBBLEBEE,          /* Pebblebee Clip / Card / Tag (CID 0x015E) */
     BLE_DEV_CHIPOLO,            /* Chipolo ONE / CARD trackers */

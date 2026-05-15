@@ -9,6 +9,7 @@
 
 #include "detection_types.h"
 #include "badge_threat_policy.h"
+#include "badge_display_policy.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
@@ -198,6 +199,9 @@ typedef struct {
     uint32_t cmd_overflow_count;
     uint32_t cmd_stale_count;
     int64_t  cmd_last_age_s;
+    uint32_t display_policy_hash;
+    uint32_t display_policy_ack_hash;
+    uint32_t display_policy_filtered[BADGE_DISPLAY_POLICY_CLASS_COUNT];
     char     scan_mode[16];
     char     scan_profile[24];
     char     calibration_uuid[48];

@@ -47,6 +47,12 @@ interface SensorMapApiService {
         @Query("drone_only") droneOnly: Boolean = false,
     ): ProbeDevicesDto
 
+    @GET("detections/devices/live")
+    suspend fun getLivePrivacyDevices(
+        @Query("min_confidence") minConfidence: Float = 0f,
+        @Query("trackers_only") trackersOnly: Boolean = false,
+    ): LivePrivacyDevicesDto
+
     @GET("detections/wifi/ap-inventory")
     suspend fun getWifiApInventory(
         @Query("max_age_s") maxAgeS: Int = 86400,
@@ -144,6 +150,53 @@ data class RelatedEntityDto(
     @SerializedName("relation_type") val relationType: String,
     val confidence: Float = 0f,
     val reason: String? = null,
+)
+
+data class LivePrivacyDevicesDto(
+    val devices: List<LivePrivacyDeviceDto> = emptyList(),
+    val summary: LivePrivacySummaryDto = LivePrivacySummaryDto(),
+)
+
+data class LivePrivacySummaryDto(
+    @SerializedName("total_tracked") val totalTracked: Int = 0,
+    val active: Int = 0,
+    @SerializedName("physical_devices") val physicalDevices: Int = 0,
+    @SerializedName("trackers_active") val trackersActive: Int = 0,
+    val classified: Int = 0,
+    val unclassified: Int = 0,
+    @SerializedName("privacy_kind_counts") val privacyKindCounts: Map<String, Int> = emptyMap(),
+    @SerializedName("apple_continuity_subtypes") val appleContinuitySubtypes: Map<String, Int> = emptyMap(),
+    @SerializedName("beacon_density") val beaconDensity: Int = 0,
+)
+
+data class LivePrivacyDeviceDto(
+    val fingerprint: String? = null,
+    @SerializedName("device_type") val deviceType: String? = null,
+    val manufacturer: String? = null,
+    @SerializedName("is_tracker") val isTracker: Boolean = false,
+    @SerializedName("current_rssi") val currentRssi: Int? = null,
+    @SerializedName("avg_rssi") val avgRssi: Float? = null,
+    @SerializedName("first_seen") val firstSeen: Double? = null,
+    @SerializedName("last_seen") val lastSeen: Double? = null,
+    @SerializedName("idle_s") val idleS: Double? = null,
+    @SerializedName("last_bssid") val lastBssid: String? = null,
+    val source: String? = null,
+    val confidence: Float = 0f,
+    @SerializedName("seen_by") val seenBy: List<String> = emptyList(),
+    @SerializedName("sensor_count") val sensorCount: Int = 0,
+    @SerializedName("mac_rotations") val macRotations: Int = 0,
+    @SerializedName("ble_ja3") val bleJa3: String? = null,
+    @SerializedName("ble_company_id") val bleCompanyId: Int? = null,
+    @SerializedName("ble_apple_type") val bleAppleType: Int? = null,
+    @SerializedName("ble_apple_flags") val bleAppleFlags: Int? = null,
+    @SerializedName("ble_svc_uuids") val bleSvcUuids: String? = null,
+    @SerializedName("privacy_kind") val privacyKind: String? = null,
+    @SerializedName("risk_level") val riskLevel: String? = null,
+    @SerializedName("display_label") val displayLabel: String? = null,
+    @SerializedName("display_detail") val displayDetail: String? = null,
+    val evidence: List<String>? = null,
+    @SerializedName("privacy_evidence") val privacyEvidence: List<Map<String, Any?>> = emptyList(),
+    @SerializedName("apple_continuity") val appleContinuity: Map<String, Any?>? = null,
 )
 
 data class SensorDto(

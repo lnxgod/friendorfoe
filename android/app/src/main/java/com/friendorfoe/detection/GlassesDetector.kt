@@ -33,6 +33,7 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     ALPR_CAMERA("ALPR / Plate Readers", "\uD83D\uDE94", 2),
     BODY_CAMERA("Body Cameras", "\uD83D\uDCF9", 2),
     VEHICLE_CAMERA("Vehicle Cameras", "\uD83D\uDE97", 2),
+    MOBILE_KEY_LOCK("Mobile Key Locks", "\uD83D\uDD12", 2),
     BABY_MONITOR("Baby Monitors", "\uD83D\uDC76", 2),
     THERMAL_CAMERA("Thermal Cameras", "\uD83C\uDF21\uFE0F", 2),
     CONFERENCE_CAMERA("Conference Cameras", "\uD83C\uDFA5", 2),
@@ -49,12 +50,17 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     ACTION_CAMERA("Action Cameras", "\uD83C\uDFA5", 1),
     DASH_CAMERA("Dash Cameras", "\uD83D\uDE99", 1),
     BLE_TRACKER("BLE Trackers", "\uD83D\uDCCD", 1),
+    VENUE_BEACON("Venue Beacons", "\uD83D\uDCCD", 1),
+    EVENT_BADGE("Event Badges", "\uD83C\uDF9F\uFE0F", 1),
+    BLE_HID("BLE Input Devices", "\u2328\uFE0F", 1),
     IOT_DEVICE("IoT Devices", "\uD83D\uDCE1", 1),
     // Threat level 0 — informational
     SMART_TV("Smart TVs", "\uD83D\uDCFA", 0),
     DRONE_CONTROLLER("Drone Controllers", "\uD83C\uDFAE", 0),
     E_SCOOTER("E-Scooters", "\uD83D\uDEF4", 0),
     FINDMY("FindMy / AirTags", "\uD83D\uDCF1", 0),
+    AURACAST("Auracast / LE Audio", "\uD83D\uDD0A", 0),
+    APPLE_CONTINUITY("Apple Continuity", "\u2139\uFE0F", 0),
     INFORMATIONAL("Informational", "\u2139\uFE0F", 0),
 }
 
@@ -295,6 +301,9 @@ class GlassesDetector @Inject constructor(
             // AirTag / FindMy separated into their own low-priority section
             deviceType.contains("AirTag", ignoreCase = true) -> PrivacyCategory.FINDMY
             deviceType.contains("FindMy", ignoreCase = true) -> PrivacyCategory.FINDMY
+            deviceType.contains("Apple Continuity", ignoreCase = true) -> PrivacyCategory.APPLE_CONTINUITY
+            deviceType.contains("AirDrop", ignoreCase = true) -> PrivacyCategory.APPLE_CONTINUITY
+            deviceType.contains("Handoff", ignoreCase = true) -> PrivacyCategory.APPLE_CONTINUITY
             // ALPR / license plate readers
             deviceType.contains("ALPR", ignoreCase = true) -> PrivacyCategory.ALPR_CAMERA
             deviceType.contains("Plate Reader", ignoreCase = true) -> PrivacyCategory.ALPR_CAMERA
@@ -304,6 +313,14 @@ class GlassesDetector @Inject constructor(
             deviceType.contains("Doorbell Camera", ignoreCase = true) -> PrivacyCategory.DOORBELL_CAMERA
             deviceType.contains("Doorbell", ignoreCase = true) -> PrivacyCategory.DOORBELL_CAMERA
             deviceType.contains("Police Camera", ignoreCase = true) -> PrivacyCategory.BODY_CAMERA
+            deviceType.contains("Mobile Key Lock", ignoreCase = true) -> PrivacyCategory.MOBILE_KEY_LOCK
+            deviceType.contains("Mobile Access", ignoreCase = true) -> PrivacyCategory.MOBILE_KEY_LOCK
+            deviceType.contains("Event Badge", ignoreCase = true) -> PrivacyCategory.EVENT_BADGE
+            deviceType.contains("Venue Beacon", ignoreCase = true) -> PrivacyCategory.VENUE_BEACON
+            deviceType.contains("BLE HID", ignoreCase = true) -> PrivacyCategory.BLE_HID
+            deviceType.contains("HID Near", ignoreCase = true) -> PrivacyCategory.BLE_HID
+            deviceType.contains("Auracast", ignoreCase = true) -> PrivacyCategory.AURACAST
+            deviceType.contains("LE Audio", ignoreCase = true) -> PrivacyCategory.AURACAST
             deviceType.contains("Tracker", ignoreCase = true) -> PrivacyCategory.BLE_TRACKER
             deviceType.contains("Hidden Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
             deviceType.contains("Spy Camera", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA

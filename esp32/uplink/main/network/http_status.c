@@ -43,6 +43,7 @@
 #include "detection_policy.h"
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
+#include "badge_display_policy_runtime.h"
 #endif
 
 static const char *TAG = "http_status";
@@ -244,6 +245,21 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
         json_chunk_string(req, info->ble_meta_last_reason);
         httpd_resp_send_chunk(req, ",\"ble_meta_identity\":", HTTPD_RESP_USE_STRLEN);
         json_chunk_string(req, info->ble_meta_identity);
+        snprintf(buf, sizeof(buf),
+                 ",\"display_policy_hash\":%lu,"
+                 "\"display_policy_ack_hash\":%lu,\"filtered_counts\":{",
+                 (unsigned long)info->display_policy_hash,
+                 (unsigned long)info->display_policy_ack_hash);
+        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+        for (int i = 0; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; i++) {
+            badge_display_policy_class_t cls = (badge_display_policy_class_t)i;
+            snprintf(buf, sizeof(buf), "%s\"%s\":%lu",
+                     i == 0 ? "" : ",",
+                     badge_display_policy_class_key(cls),
+                     (unsigned long)info->display_policy_filtered[i]);
+            httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+        }
+        httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
     }
     httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
 }
@@ -1687,6 +1703,27 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
              (unsigned long)snapshot.active_counts[BADGE_THREAT_OTHER]);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
+#ifdef FOF_BADGE_VARIANT
+    char policy_json[BADGE_DISPLAY_POLICY_JSON_MAX] = {0};
+    badge_display_policy_runtime_json(policy_json, sizeof(policy_json));
+    snprintf(buf, sizeof(buf), ",\"display_policy_hash\":%lu,\"display_policy\":",
+             (unsigned long)badge_display_policy_runtime_hash());
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req,
+                          policy_json[0] ? policy_json : "{\"version\":1,\"classes\":{}}",
+                          HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, ",\"filtered_counts\":{", HTTPD_RESP_USE_STRLEN);
+    for (int i = 0; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; i++) {
+        badge_display_policy_class_t cls = (badge_display_policy_class_t)i;
+        snprintf(buf, sizeof(buf), "%s\"%s\":%lu",
+                 i == 0 ? "" : ",",
+                 badge_display_policy_class_key(cls),
+                 (unsigned long)badge_display_policy_runtime_filtered_count(cls));
+        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    }
+    httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
+#endif
+
     int64_t last_upload_ms = http_upload_get_last_success_ms();
     int64_t upload_age_s = -1;
     if (last_upload_ms > 0) {
@@ -1853,12 +1890,42 @@ static void badge_control_send_network_result(httpd_req_t *req,
              badge_runtime_get_network_ttl_s());
     httpd_resp_sendstr(req, buf);
 }
+
+static void badge_control_send_display_policy_result(httpd_req_t *req,
+                                                     const char *message,
+                                                     bool persisted)
+{
+    bool ble_sent = false;
+    bool wifi_sent = false;
+    char cmd[BADGE_DISPLAY_POLICY_JSON_MAX + 128] = {0};
+    badge_display_policy_runtime_command_json(cmd, sizeof(cmd));
+    if (cmd[0]) {
+        ble_sent = uart_rx_send_command_to_scanner_checked(0, cmd);
+#if CONFIG_DUAL_SCANNER
+        wifi_sent = uart_rx_send_command_to_scanner_checked(1, cmd);
+#else
+        wifi_sent = true;
+#endif
+    }
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{\"ok\":true,\"message\":\"%s\","
+             "\"display_policy_hash\":%lu,\"persisted\":%s,"
+             "\"ble_sent\":%s,\"wifi_sent\":%s,"
+             "\"reboot_required\":false}",
+             message ? message : "display policy",
+             (unsigned long)badge_display_policy_runtime_hash(),
+             persisted ? "true" : "false",
+             ble_sent ? "true" : "false",
+             wifi_sent ? "true" : "false");
+    httpd_resp_sendstr(req, buf);
+}
 #endif
 
 static esp_err_t badge_control_post_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
-    char body[512] = {0};
+    char body[2048] = {0};
     int received = httpd_req_recv(req, body, sizeof(body) - 1);
     if (received <= 0) {
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"no body\"}");
@@ -1968,6 +2035,50 @@ static esp_err_t badge_control_post_handler(httpd_req_t *req)
         nvs_config_set_string("badge_display_debug",
                               (cJSON_IsBool(enabled) && cJSON_IsTrue(enabled)) ? "1" : "0");
         httpd_resp_sendstr(req, "{\"ok\":true}");
+    } else if (strcmp(cmd, "badge_display_policy") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        const cJSON *policy_item = cJSON_GetObjectItemCaseSensitive(root, "policy");
+        if (!policy_item) {
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"missing policy\"}");
+        } else {
+            char *policy_json = cJSON_PrintUnformatted(policy_item);
+            badge_display_policy_t policy;
+            char err[64] = {0};
+            bool parsed = policy_json &&
+                badge_display_policy_parse_json(policy_json, &policy, err, sizeof(err));
+            if (policy_json) {
+                cJSON_free(policy_json);
+            }
+            if (!parsed) {
+                char resp[128];
+                snprintf(resp, sizeof(resp),
+                         "{\"ok\":false,\"error\":\"%s\"}",
+                         err[0] ? err : "invalid display policy");
+                httpd_resp_sendstr(req, resp);
+            } else {
+                bool persist = badge_control_bool(root, "persist", false);
+                if (!badge_display_policy_runtime_set(&policy, persist)) {
+                    httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"policy save failed\"}");
+                } else {
+                    badge_control_send_display_policy_result(req,
+                                                            "display policy updated",
+                                                            persist);
+                }
+            }
+        }
+#else
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"badge-only command\"}");
+#endif
+    } else if (strcmp(cmd, "badge_display_policy_reset") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        bool persist = badge_control_bool(root, "persist", false);
+        badge_display_policy_runtime_reset(persist);
+        badge_control_send_display_policy_result(req,
+                                                "display policy reset",
+                                                persist);
+#else
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"badge-only command\"}");
+#endif
     } else if (strcmp(cmd, "reboot") == 0) {
         httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"rebooting\"}");
         cJSON_Delete(root);

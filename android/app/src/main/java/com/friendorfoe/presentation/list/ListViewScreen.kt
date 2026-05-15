@@ -28,8 +28,11 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,8 +54,12 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.badge.BadgeUsbDetection
+import com.friendorfoe.data.badge.BadgeDisplayClassPolicy
+import com.friendorfoe.data.badge.BadgeDisplayPolicy
+import com.friendorfoe.data.badge.BadgeDisplayPolicyClasses
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
+import com.friendorfoe.data.badge.defaultBadgeDisplayPolicy
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
@@ -122,7 +129,10 @@ fun ListViewScreen(
             onSetMode = viewModel::setBadgeMode,
             onReboot = viewModel::rebootBadge,
             onBootloader = viewModel::badgeBootloader,
-            onFlashScannerFirmware = viewModel::flashBadgeScannerFirmware
+            onFlashScannerFirmware = viewModel::flashBadgeScannerFirmware,
+            onApplyDisplayPolicy = viewModel::applyBadgeDisplayPolicy,
+            onResetDisplayPolicy = viewModel::resetBadgeDisplayPolicy,
+            onRefreshDisplayPolicy = viewModel::refreshBadgeStatus
         )
 
         if (skyObjects.isEmpty()) {
@@ -158,7 +168,10 @@ private fun BadgeUsbPanel(
     onSetMode: (String) -> Unit,
     onReboot: () -> Unit,
     onBootloader: () -> Unit,
-    onFlashScannerFirmware: (String, String, ByteArray) -> Unit
+    onFlashScannerFirmware: (String, String, ByteArray) -> Unit,
+    onApplyDisplayPolicy: (BadgeDisplayPolicy) -> Unit,
+    onResetDisplayPolicy: () -> Unit,
+    onRefreshDisplayPolicy: () -> Unit
 ) {
     val context = LocalContext.current
     var pendingFirmwareUart by remember { mutableStateOf("ble") }
@@ -191,6 +204,12 @@ private fun BadgeUsbPanel(
     val badgeStatus = state.controlStatus
     val controlsAvailable = state.status == BadgeUsbStatus.CONNECTED ||
         state.status == BadgeUsbStatus.AP_CONNECTED
+    var filtersExpanded by remember { mutableStateOf(false) }
+    var draftPolicy by remember { mutableStateOf(badgeStatus?.displayPolicy ?: defaultBadgeDisplayPolicy()) }
+
+    LaunchedEffect(badgeStatus?.displayPolicyHash) {
+        badgeStatus?.displayPolicy?.let { draftPolicy = it }
+    }
 
     Surface(
         modifier = Modifier
@@ -318,6 +337,21 @@ private fun BadgeUsbPanel(
                             Text("Flash WiFi")
                         }
                     }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    BadgeDisplayFiltersSection(
+                        expanded = filtersExpanded,
+                        onExpandedChange = { filtersExpanded = it },
+                        policy = draftPolicy,
+                        displayPolicyHash = badgeStatus.displayPolicyHash,
+                        filteredCounts = badgeStatus.filteredCounts,
+                        onPolicyChange = { draftPolicy = it },
+                        onApply = { onApplyDisplayPolicy(draftPolicy) },
+                        onReset = {
+                            draftPolicy = defaultBadgeDisplayPolicy()
+                            onResetDisplayPolicy()
+                        },
+                        onRefresh = onRefreshDisplayPolicy
+                    )
                 }
             }
 
@@ -369,6 +403,170 @@ private fun badgeDetectionText(detection: BadgeUsbDetection): String {
     val rssi = if (detection.rssi < 0) " ${detection.rssi}dBm" else ""
     return "$label  $confidence%$rssi"
 }
+
+@Composable
+private fun BadgeDisplayFiltersSection(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    policy: BadgeDisplayPolicy,
+    displayPolicyHash: Long,
+    filteredCounts: Map<String, Int>,
+    onPolicyChange: (BadgeDisplayPolicy) -> Unit,
+    onApply: () -> Unit,
+    onReset: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                MaterialTheme.colorScheme.surface.copy(alpha = 0.45f),
+                RoundedCornerShape(8.dp)
+            )
+            .padding(8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Display Filters",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Badge-only LCD and scanner emission policy  #$displayPolicyHash",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            OutlinedButton(onClick = { onExpandedChange(!expanded) }) {
+                Text(if (expanded) "Hide" else "Edit")
+            }
+        }
+
+        if (!expanded) return@Column
+
+        Spacer(modifier = Modifier.height(8.dp))
+        BadgeDisplayPolicyClasses.forEach { info ->
+            val config = policy.classes[info.key] ?: BadgeDisplayClassPolicy()
+            val filtered = filteredCounts[info.key].orZero()
+            BadgeDisplayClassRow(
+                label = info.label,
+                filtered = filtered,
+                config = config,
+                onChange = { next ->
+                    onPolicyChange(
+                        policy.copy(classes = policy.classes + (info.key to next))
+                    )
+                }
+            )
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 6.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Button(onClick = onApply) {
+                Text("Apply")
+            }
+            OutlinedButton(onClick = onReset) {
+                Text("Reset Defaults")
+            }
+            OutlinedButton(onClick = onRefresh) {
+                Text("Refresh")
+            }
+        }
+    }
+}
+
+@Composable
+private fun BadgeDisplayClassRow(
+    label: String,
+    filtered: Int,
+    config: BadgeDisplayClassPolicy,
+    onChange: (BadgeDisplayClassPolicy) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = "Suppressed $filtered  |  Priority ${config.priority}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = config.enabled,
+                onCheckedChange = { onChange(config.copy(enabled = it)) }
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Lane",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("off", "lower", "top", "both").forEach { lane ->
+                OutlinedButton(
+                    onClick = { onChange(config.copy(lane = lane)) },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = lane.uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (config.lane == lane) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Minimum proximity",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("present", "near", "close").forEach { prox ->
+                OutlinedButton(
+                    onClick = { onChange(config.copy(minProximity = prox)) },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = prox.uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (config.minProximity == prox) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+        Slider(
+            value = config.priority.toFloat(),
+            onValueChange = {
+                onChange(config.copy(priority = it.toInt().coerceIn(0, 100)))
+            },
+            valueRange = 0f..100f
+        )
+    }
+}
+
+private fun Int?.orZero(): Int = this ?: 0
 
 private fun friendlyBadgeLabel(detection: BadgeUsbDetection): String {
     val text = "${detection.manufacturer} ${detection.id}".lowercase()

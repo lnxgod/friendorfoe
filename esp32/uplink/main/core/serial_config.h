@@ -44,14 +44,18 @@ bool serial_config_listen(int timeout_ms);
 /**
  * Start a low-priority USB serial control listener for runtime maintenance.
  *
- * Supported commands:
+ * Supported runtime recovery commands:
  *   FOF_PING        -> FOF_PONG:<version>
- *   FOF_REBOOT      -> restart the app
- *   FOF_BOOTLOADER  -> restart into ESP32 ROM download mode for esptool
+ *   FOF_STATUS      -> machine-readable badge/scanner status JSON
+ *   FOF_REBOOT      -> expected software restart back into the app
+ *   FOF_BOOTLOADER  -> expected restart into ESP32 ROM download mode
+ *   FOF_DOWNLOAD    -> alias for FOF_BOOTLOADER
+ *   FOF_FLASH       -> alias for FOF_BOOTLOADER
+ *   FOF_CTL:{...}   -> JSON control, including safe_mode/network/fw relay
  *
- * This is intentionally separate from the startup config window so flashing
- * tools can request bootloader mode from a running badge without physical
- * BOOT/RESET access.
+ * These are also accepted by the badge startup config window so no-button
+ * recovery tools can catch a freshly power-cycled badge before display/scanner
+ * work starts.
  */
 void serial_config_start_control_task(void);
 

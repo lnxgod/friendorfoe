@@ -4,7 +4,8 @@ This is badge-only. It targets one badge trio: uplink MCU, BLE scanner MCU,
 and Wi-Fi scanner MCU.
 
 For the broader badge boundary, end-user flashing expectations, and display
-policy, see [FoF Badge Notes](fof_badge_notes.md).
+policy, see [FoF Badge Notes](fof_badge_notes.md). For the operator quick
+start and current badge version matrix, see [Badge README](badge/README.md).
 
 ## Direct Scanner USB Flash
 
@@ -56,8 +57,12 @@ Watch these fields in `FOF_STATUS` or `/api/badge/status`:
 - `fw_state`: `current`, `offered`, `ready`, `updating`, `deferred`, `error`, or `recovery`.
 - `fw_backoff_s`: retry delay after a failed relay.
 - `ota_state`: `idle`, `staging`, `validating`, `flashing`, or `rebooting`.
-- `recovery_mode`: `normal`, `ota_pending`, or `safe_uart`.
+- Scanner-object `recovery_mode`: `normal`, `ota_pending`, or `safe_uart`.
 - `last_fw_error`: last scanner-side OTA/relay failure reason.
+
+The top-level badge `recovery_mode` is a different uplink field. Its current
+values are `normal`, `usb_wait`, `usb_stale`, and `safe_usb`; see
+[FoF Badge Notes](fof_badge_notes.md) for the no-button USB recovery contract.
 
 ## Scanner Safe Mode
 

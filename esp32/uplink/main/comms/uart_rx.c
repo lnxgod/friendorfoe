@@ -480,7 +480,7 @@ static bool send_json_line_to_scanner_locked(int scanner_id, const char *json_cm
         return false;
     }
 
-    char line[384];
+    char line[BADGE_DISPLAY_POLICY_JSON_MAX + 160];
     size_t len = strlen(json_cmd);
     while (len > 0 && (json_cmd[len - 1] == '\n' || json_cmd[len - 1] == '\r')) {
         len--;
@@ -1229,6 +1229,26 @@ static void handle_status(const cJSON *root, int scanner_id)
         info->cmd_overflow_count = (uint32_t)json_get_double(root, "cmd_overflow", (double)info->cmd_overflow_count);
         info->cmd_stale_count = (uint32_t)json_get_double(root, "cmd_stale", (double)info->cmd_stale_count);
         info->cmd_last_age_s = (int64_t)json_get_double(root, "cmd_last_age_s", (double)info->cmd_last_age_s);
+        info->display_policy_hash = (uint32_t)json_get_double(
+            root, "display_policy_hash", (double)info->display_policy_hash
+        );
+        info->display_policy_ack_hash = (uint32_t)json_get_double(
+            root, "display_policy_ack_hash",
+            (double)(info->display_policy_ack_hash
+                         ? info->display_policy_ack_hash
+                         : info->display_policy_hash)
+        );
+        const cJSON *filtered = cJSON_GetObjectItemCaseSensitive(root, "filtered_counts");
+        if (cJSON_IsObject(filtered)) {
+            for (int i = 0; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; i++) {
+                badge_display_policy_class_t cls = (badge_display_policy_class_t)i;
+                info->display_policy_filtered[i] = (uint32_t)json_get_double(
+                    filtered,
+                    badge_display_policy_class_key(cls),
+                    (double)info->display_policy_filtered[i]
+                );
+            }
+        }
         const char *scan_mode = json_get_string(root, JSON_KEY_SCAN_MODE, info->scan_mode[0] ? info->scan_mode : "normal");
         strncpy(info->scan_mode, scan_mode, sizeof(info->scan_mode) - 1);
         info->scan_mode[sizeof(info->scan_mode) - 1] = '\0';
@@ -1731,6 +1751,16 @@ static void process_line(const char *line, size_t len, int scanner_id)
                  view,
                  page_lock ? 1 : 0,
                  (page_j && cJSON_IsNumber(page_j)) ? page_j->valueint : -1);
+    } else if (strcmp(msg_type, "display_policy_ack") == 0) {
+        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        info->display_policy_ack_hash = (uint32_t)json_get_double(
+            root, "hash", (double)info->display_policy_ack_hash
+        );
+        info->cmd_rx_count++;
+        info->cmd_last_age_s = 0;
+        info->received = true;
+        ESP_LOGI(TAG, "Scanner[%d] display policy ack hash=%lu",
+                 scanner_id, (unsigned long)info->display_policy_ack_hash);
     } else if (strncmp(msg_type, "ota_", 4) == 0 ||
                strcmp(msg_type, "stop_ack") == 0) {
         /* OTA/control response from scanner — capture for relay diagnostics. */

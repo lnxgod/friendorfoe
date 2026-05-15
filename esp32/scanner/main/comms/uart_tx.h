@@ -12,8 +12,10 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "detection_types.h"
+#include "badge_display_policy.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
@@ -116,6 +118,18 @@ bool uart_tx_firmware_backoff_active(void);
  * stop_ack, ota_nack, etc. Caller must provide valid null-terminated JSON.
  */
 void uart_tx_send_raw_json(const char *json_str);
+
+#ifdef FOF_BADGE_VARIANT
+bool uart_tx_set_display_policy_json(const char *json,
+                                     uint32_t expected_hash,
+                                     char *err,
+                                     size_t err_len);
+void uart_tx_reset_display_policy(void);
+uint32_t uart_tx_display_policy_hash(void);
+uint32_t uart_tx_display_policy_ack_hash(void);
+uint32_t uart_tx_display_policy_filtered_count(
+    badge_display_policy_class_t cls);
+#endif
 
 /** Get cumulative BLE detection count. */
 int uart_tx_get_ble_count(void);
