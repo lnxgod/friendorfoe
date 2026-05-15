@@ -14,5 +14,5 @@ idf_component_register(
     INCLUDE_DIRS "." "comms" "core" "hw" "detection"
                  "../../scanner/main/detection"
                  "../../shared"
-    REQUIRES bt driver nvs_flash esp_timer json esp_wifi esp_event esp_netif
+    REQUIRES bt driver nvs_flash esp_timer cjson esp_wifi esp_event esp_netif
 )
