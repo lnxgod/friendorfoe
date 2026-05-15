@@ -8,6 +8,7 @@ class FakeSensorMapApiService : SensorMapApiService {
     var events = EventsDto()
     var eventStats = EventStatsDto()
     var probeDevices = ProbeDevicesDto()
+    var livePrivacyDevices = LivePrivacyDevicesDto()
     var wifiApInventory = WifiApInventoryDto()
     var calibrationModel = CalibrationModelDto()
     var health = HealthDto(status = "ok", version = "test", redis = "ok", database = "ok")
@@ -32,6 +33,7 @@ class FakeSensorMapApiService : SensorMapApiService {
     }
 
     override suspend fun getProbeDevices(maxAgeS: Int, droneOnly: Boolean): ProbeDevicesDto = probeDevices
+    override suspend fun getLivePrivacyDevices(minConfidence: Float, trackersOnly: Boolean): LivePrivacyDevicesDto = livePrivacyDevices
     override suspend fun getWifiApInventory(maxAgeS: Int): WifiApInventoryDto = wifiApInventory
     override suspend fun getCalibrationModel(): CalibrationModelDto = calibrationModel
     override suspend fun getHealth(): HealthDto = health

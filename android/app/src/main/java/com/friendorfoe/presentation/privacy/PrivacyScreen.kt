@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,11 +27,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.friendorfoe.data.badge.BadgeUsbState
+import com.friendorfoe.data.badge.BadgeUsbStatus
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.PrivacyCategory
 
@@ -56,6 +63,22 @@ fun PrivacyScreen(
     val categorized by viewModel.categorizedDetections.collectAsStateWithLifecycle()
     val totalCount by viewModel.totalCount.collectAsStateWithLifecycle()
     val threatCount by viewModel.threatCount.collectAsStateWithLifecycle()
+    val badgeUsbState by viewModel.badgeUsbState.collectAsStateWithLifecycle()
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.startBadgeUsb()
+                Lifecycle.Event.ON_PAUSE -> viewModel.stopBadgeUsb()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     // Track expanded categories (high-threat auto-expanded)
     val expandedCategories = remember {
@@ -63,10 +86,14 @@ fun PrivacyScreen(
             PrivacyCategory.HIDDEN_CAMERA, PrivacyCategory.ATTACK_TOOL,
             PrivacyCategory.ULTRASONIC_BEACON, PrivacyCategory.RETAIL_TRACKER,
             PrivacyCategory.SURVEILLANCE_CAMERA, PrivacyCategory.ALPR_CAMERA,
+            PrivacyCategory.MOBILE_KEY_LOCK,
             PrivacyCategory.BABY_MONITOR, PrivacyCategory.THERMAL_CAMERA,
             PrivacyCategory.CONFERENCE_CAMERA, PrivacyCategory.VIDEO_INTERCOM,
             PrivacyCategory.SMART_SPEAKER, PrivacyCategory.SMART_HOME_HUB,
-            PrivacyCategory.GPS_TRACKER, PrivacyCategory.OBD_TRACKER))
+            PrivacyCategory.GPS_TRACKER, PrivacyCategory.OBD_TRACKER,
+            PrivacyCategory.VENUE_BEACON, PrivacyCategory.EVENT_BADGE,
+            PrivacyCategory.BLE_HID, PrivacyCategory.AURACAST,
+            PrivacyCategory.APPLE_CONTINUITY))
     }
 
     // Track collapsed sections (all expanded by default)
@@ -138,6 +165,18 @@ fun PrivacyScreen(
                 }
             }
         }
+
+        BadgeUsbStatusRow(
+            state = badgeUsbState,
+            onAction = {
+                if (badgeUsbState.status == BadgeUsbStatus.CONNECTED ||
+                    badgeUsbState.status == BadgeUsbStatus.AP_CONNECTED) {
+                    viewModel.refreshBadgeStatus()
+                } else {
+                    viewModel.connectBadgeUsb()
+                }
+            }
+        )
 
         // Status bar
         Row(
@@ -286,6 +325,67 @@ fun PrivacyScreen(
             viewModel = viewModel,
             onDismiss = { trackingTarget = null }
         )
+    }
+}
+
+@Composable
+private fun BadgeUsbStatusRow(
+    state: BadgeUsbState,
+    onAction: () -> Unit
+) {
+    val connected = state.status == BadgeUsbStatus.CONNECTED ||
+        state.status == BadgeUsbStatus.AP_CONNECTED
+    val accent = when (state.status) {
+        BadgeUsbStatus.CONNECTED,
+        BadgeUsbStatus.AP_CONNECTED -> Color(0xFF2E7D32)
+        BadgeUsbStatus.CONNECTING -> MaterialTheme.colorScheme.primary
+        BadgeUsbStatus.PERMISSION_NEEDED -> Color(0xFF1565C0)
+        BadgeUsbStatus.ERROR -> MaterialTheme.colorScheme.error
+        BadgeUsbStatus.DISCONNECTED -> MaterialTheme.colorScheme.outline
+    }
+    val counts = state.controlStatus?.counts
+    val summary = if (counts != null) {
+        "DRN ${counts.drone}  META ${counts.meta}  TAG ${counts.tracker}  WIFI ${counts.wifiAnomaly}"
+    } else {
+        state.message
+    }
+    val scannerSummary = state.controlStatus?.scanners
+        ?.joinToString("  ") {
+            "${it.uart.ifBlank { "?" }.uppercase()} ${it.health.ifBlank { if (it.connected) "ok" else "missing" }}"
+        }
+        .orEmpty()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onAction)
+            .background(accent.copy(alpha = if (connected) 0.10f else 0.06f))
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "USB-C",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = accent,
+            modifier = Modifier.width(58.dp)
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = if (connected) "Badge live privacy feed" else state.message,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = if (scannerSummary.isNotBlank()) "$summary  |  $scannerSummary" else summary,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 

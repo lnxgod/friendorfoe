@@ -6,7 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.64.37-badge-privacy] - 2026-05-14
+
 ### Added
+- **FoF Badge privacy release.** Android/backend/badge firmware now share
+  `0.64.37-badge-privacy` so APKs, FastAPI health, and XIAO badge firmware
+  identify the same testable build while production S3 firmware remains on
+  `0.63.0-svc156`.
+- **Android USB-C badge privacy feed.** The Privacy screen now starts/stops
+  the badge USB reader with lifecycle events, merges badge/backend privacy
+  detections with local phone detections, and shows live badge scanner/count
+  status directly in the privacy view.
+- **Android badge display-filter controls.** The List badge panel can inspect,
+  edit, apply, reset, and refresh badge LCD/scanner display policy by class
+  (`drone`, `meta`, `tracker`, `camera`, `flock`, `auracast`, etc.), including
+  lane, minimum proximity, priority, and filtered-count telemetry.
+- **Backend privacy-device presentation API.** Live BLE/WiFi device rows now
+  carry privacy labels, risk levels, sanitized Apple Continuity subtype detail,
+  evidence summaries, and aggregate privacy counts for Android/dashboard use.
+- **Badge display policy runtime.** Badge uplinks persist display policy,
+  expose policy hashes/status over USB and `/api/badge/status`, forward policy
+  updates to scanners, and track per-class filtered counts.
+- **Dedicated badge docs.** Added [docs/badge/README.md](docs/badge/README.md)
+  as the operator entry point for badge versions, flashing, recovery, Android
+  testing, and display-filter expectations.
 - **`SECURITY.md`** — vulnerability-disclosure email (lnxgod@gmail.com),
   supported versions, dual-use posture statement explicitly ruling out
   active injection / deauth / packet crafting in this codebase, and
@@ -30,12 +53,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `wifi_probe_request` source.
 
 ### Changed
-- **README freshened for live deployment.** Added top-of-file deployment
-  banner naming current firmware (v0.63.0-svc156), self-healing fleet
-  section describing auto-OTA + ESP-IDF rollback + scanner crash-loop
-  guard, Bayesian fusion + cross-stack parity callouts, multi-node
-  triangulation summary, production-deployment note for `FOF_CAL_TOKEN`,
-  and links into the new docs/.
+- **README live-deployment banner updated.** It now names the Android/backend
+  version, production S3 firmware version, and badge firmware version
+  separately so badge work does not accidentally look like a production-node
+  firmware bump.
+- **Backend firmware-readiness diagnostics.** Diagnostics now accept current
+  production firmware (`0.63.0-svc156`) and current badge firmware
+  (`0.64.37-badge-privacy`) as expected instead of flagging badge hardware as
+  drift by default.
+- **Privacy categories expanded across stack.** Android, backend enrichment,
+  and ESP32 badge policy now preserve richer classes for Meta Glasses, trackers,
+  skimmers, cameras, Flock/ALPR, mobile locks, BLE HID, venue beacons, event
+  badges, Auracast, and Apple Continuity.
+- **README production-fleet context expanded.** Added self-healing fleet
+  details for production firmware `0.63.0-svc156`, auto-OTA + ESP-IDF
+  rollback + scanner crash-loop guard, Bayesian fusion + cross-stack parity
+  callouts, multi-node triangulation summary, production-deployment note for
+  `FOF_CAL_TOKEN`, and links into the new docs/.
 - **Repo root cleaned** for public-facing readability: removed
   `facebook.md`, `reddit.md`, `x.md` (social-media post drafts), removed
   `map-filters.md` and `map-snapshot.md` (Playwright accessibility-tree
@@ -46,6 +80,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it's a placeholder overridden at deploy time via NVS `backend_url`.
 
 ### Fixed
+- **Badge scanner relay retry state.** Failed scanner relay attempts clear the
+  ready latch, surface clearer firmware/recovery states, and allow scanner-
+  originated retry without forcing a same-version rewrite during normal flows.
+- **Badge LCD signal noise.** Display policy, dedupe, proximity gating, and
+  evidence quality keep generic BLE/privacy noise from pushing active Meta,
+  tracker, drone, or WiFi attack evidence off the badge screen.
 - **Scanner OTA verification.** Backend scanner OTA now treats every relay mode
   as unverified until the scanner heartbeat reports the target firmware version.
   Auto mode can try staged, staged-legacy, and direct legacy relay paths, but

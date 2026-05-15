@@ -973,6 +973,115 @@ void test_badge_skimmer_names_produce_skim_rows(void)
     TEST_ASSERT_EQUAL_STRING("HC-05", event.detail);
 }
 
+void test_badge_privacy_pack_maps_camera_lock_hid_labels(void)
+{
+    badge_threat_event_t event;
+
+    drone_detection_t cam = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:CAM:01",
+        "Hidden Camera (suspect)",
+        0.75f,
+        -58
+    );
+    strncpy(cam.class_reason, "explicit_camera_ble_name", sizeof(cam.class_reason) - 1);
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&cam, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_CAMERA, event.category);
+    TEST_ASSERT_EQUAL_STRING("Camera Near", event.label);
+
+    drone_detection_t lock = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:LOCK:01",
+        "Mobile Key Lock",
+        0.70f,
+        -62
+    );
+    strncpy(lock.class_reason, "name:mobile_key_lock", sizeof(lock.class_reason) - 1);
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&lock, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_LOCK, event.category);
+    TEST_ASSERT_EQUAL_STRING("Lock Near", event.label);
+
+    drone_detection_t hid = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:HID:01",
+        "BLE HID",
+        0.60f,
+        -60
+    );
+    strncpy(hid.class_reason, "uuid16:0x1812", sizeof(hid.class_reason) - 1);
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&hid, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_HID, event.category);
+    TEST_ASSERT_EQUAL_STRING("HID Near", event.label);
+}
+
+void test_badge_venue_beacons_aggregate_instead_of_flooding(void)
+{
+    badge_threat_state_t state;
+    badge_threat_snapshot_t snapshot;
+    badge_threat_state_init(&state);
+
+    drone_detection_t beacon1 = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:BEACON:01",
+        "Venue Beacon",
+        0.60f,
+        -58
+    );
+    strncpy(beacon1.model, "FP:BEACON01", sizeof(beacon1.model) - 1);
+    strncpy(beacon1.class_reason, "uuid16:0xFEAA", sizeof(beacon1.class_reason) - 1);
+    drone_detection_t beacon2 = beacon1;
+    strncpy(beacon2.drone_id, "BLE:BEACON:02", sizeof(beacon2.drone_id) - 1);
+    strncpy(beacon2.model, "FP:BEACON02", sizeof(beacon2.model) - 1);
+    beacon2.rssi = -61;
+
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &beacon1, 1000, NULL));
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &beacon2, 1200, NULL));
+    badge_threat_state_snapshot(&state, 1500, &snapshot);
+
+    TEST_ASSERT_EQUAL_INT(1, snapshot.entity_count);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_BEACON, snapshot.entities[0].category);
+    TEST_ASSERT_EQUAL_UINT32(2, snapshot.entities[0].seen_count);
+}
+
+void test_badge_generic_apple_continuity_does_not_become_lcd_alert(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t apple = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:APPLE:NEARBY",
+        "Apple Device",
+        0.70f,
+        -44
+    );
+    apple.ble_company_id = 0x004C;
+    apple.ble_apple_type = 0x10;
+    strncpy(apple.class_reason, "apple continuity nearby info", sizeof(apple.class_reason) - 1);
+
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&apple, &event));
+}
+
+void test_badge_close_findmy_tracker_promotes_tracker_near(void)
+{
+    badge_threat_state_t state;
+    badge_threat_snapshot_t snapshot;
+    badge_threat_state_init(&state);
+
+    drone_detection_t tag = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:FINDMY:CLOSE",
+        "FindMy Accessory",
+        0.52f,
+        -52
+    );
+
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &tag, 1000, NULL));
+    badge_threat_state_snapshot(&state, 1200, &snapshot);
+
+    TEST_ASSERT_EQUAL_INT(1, snapshot.entity_count);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_TRACKER, snapshot.entities[0].cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_TAG_CLOSE, snapshot.entities[0].category);
+}
+
 void test_badge_generic_drone_without_evidence_is_hidden(void)
 {
     badge_threat_event_t event;
@@ -1594,6 +1703,119 @@ void test_badge_meta_count_ignores_scanner_seen_group_count(void)
     TEST_ASSERT_EQUAL_UINT32(1, badge_threat_snapshot_meta_glasses_count(&snapshot));
 }
 
+void test_badge_meta_top_rotation_uses_strong_identities(void)
+{
+    badge_threat_state_t state;
+    badge_threat_snapshot_t snapshot;
+    badge_threat_state_init(&state);
+
+    drone_detection_t meta1 = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:11112222:Meta Glasses",
+        "Meta Glasses",
+        0.85f,
+        -44
+    );
+    strncpy(meta1.model, "FP:11112222", sizeof(meta1.model) - 1);
+    drone_detection_t meta2 = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:33334444:Meta Glasses",
+        "Meta Glasses",
+        0.82f,
+        -57
+    );
+    strncpy(meta2.model, "FP:33334444", sizeof(meta2.model) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &meta1, 1000, NULL));
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &meta2, 1100, NULL));
+    badge_threat_state_snapshot(&state, 1300, &snapshot);
+
+    int pos0 = 0;
+    int total0 = 0;
+    const badge_threat_snapshot_entity_t *first =
+        badge_threat_snapshot_meta_glasses_at(&snapshot, 0, &pos0, &total0);
+    int pos1 = 0;
+    int total1 = 0;
+    const badge_threat_snapshot_entity_t *second =
+        badge_threat_snapshot_meta_glasses_at(&snapshot, 1, &pos1, &total1);
+
+    TEST_ASSERT_NOT_NULL(first);
+    TEST_ASSERT_NOT_NULL(second);
+    TEST_ASSERT_EQUAL_INT(1, pos0);
+    TEST_ASSERT_EQUAL_INT(2, total0);
+    TEST_ASSERT_EQUAL_INT(2, pos1);
+    TEST_ASSERT_EQUAL_INT(2, total1);
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(first->display_id, second->display_id));
+    TEST_ASSERT_EQUAL_UINT32(2, badge_threat_snapshot_meta_glasses_count(&snapshot));
+}
+
+void test_badge_meta_top_rotation_weak_presence_is_single(void)
+{
+    badge_threat_state_t state;
+    badge_threat_snapshot_t snapshot;
+    badge_threat_state_init(&state);
+
+    drone_detection_t weak_a = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "meta:weak:glasses:a",
+        "Meta Glasses",
+        0.55f,
+        -54
+    );
+    strncpy(weak_a.class_reason, "weak_meta:glasses_detector",
+            sizeof(weak_a.class_reason) - 1);
+    drone_detection_t weak_b = weak_a;
+    strncpy(weak_b.drone_id, "meta:weak:glasses:b",
+            sizeof(weak_b.drone_id) - 1);
+    weak_b.rssi = -47;
+
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &weak_a, 1000, NULL));
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &weak_b, 1100, NULL));
+    badge_threat_state_snapshot(&state, 1300, &snapshot);
+
+    int pos = 0;
+    int total = 0;
+    const badge_threat_snapshot_entity_t *top =
+        badge_threat_snapshot_meta_glasses_at(&snapshot, 7, &pos, &total);
+
+    TEST_ASSERT_NOT_NULL(top);
+    TEST_ASSERT_EQUAL_INT(1, pos);
+    TEST_ASSERT_EQUAL_INT(1, total);
+    TEST_ASSERT_EQUAL_UINT32(0, strlen(top->display_id));
+    TEST_ASSERT_EQUAL_UINT32(1, badge_threat_snapshot_meta_glasses_count(&snapshot));
+}
+
+void test_badge_lower_meta_evidence_hidden_when_top_meta_active(void)
+{
+    badge_threat_snapshot_t snapshot = {0};
+    snapshot.entity_count = 2;
+    snapshot.entities[0].active = true;
+    snapshot.entities[0].cls = BADGE_THREAT_META;
+    snapshot.entities[0].category = BADGE_THREAT_CATEGORY_GLASS;
+    strncpy(snapshot.entities[0].label, "Meta Glasses",
+            sizeof(snapshot.entities[0].label) - 1);
+    strncpy(snapshot.entities[0].display_id, "CAFE",
+            sizeof(snapshot.entities[0].display_id) - 1);
+    snapshot.entities[1].active = true;
+    snapshot.entities[1].cls = BADGE_THREAT_TRACKER;
+    snapshot.entities[1].category = BADGE_THREAT_CATEGORY_TAG_CLOSE;
+    strncpy(snapshot.entities[1].label, "AirTag",
+            sizeof(snapshot.entities[1].label) - 1);
+
+    TEST_ASSERT_FALSE(badge_threat_snapshot_should_show_lower_meta_evidence(
+        &snapshot,
+        &snapshot.entities[0],
+        true
+    ));
+    TEST_ASSERT_TRUE(badge_threat_snapshot_should_show_lower_meta_evidence(
+        &snapshot,
+        &snapshot.entities[0],
+        false
+    ));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_BLE,
+                      badge_threat_snapshot_entity_display_lane(&snapshot.entities[1]));
+}
+
 void test_badge_meta_same_fingerprint_from_two_scanners_counts_once(void)
 {
     badge_threat_state_t state;
@@ -1859,6 +2081,215 @@ void test_badge_meta_proximity_percent_tracks_rssi(void)
     TEST_ASSERT_EQUAL_UINT8(0, badge_threat_snapshot_entity_proximity_percent(&close));
 }
 
+void test_badge_meta_signal_percent_uses_latest_rssi_and_decays(void)
+{
+    badge_threat_state_t state;
+    badge_threat_snapshot_t snapshot;
+    badge_threat_state_init(&state);
+
+    drone_detection_t meta = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:FACEB00C:Meta Glasses",
+        "Meta Glasses",
+        0.92f,
+        -42
+    );
+    strncpy(meta.model, "FP:FACEB00C", sizeof(meta.model) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &meta, 1000, NULL));
+    badge_threat_state_snapshot(&state, 2000, &snapshot);
+
+    uint8_t strong = badge_threat_snapshot_entity_signal_percent(&snapshot.entities[0]);
+    TEST_ASSERT_TRUE(strong > 85);
+    TEST_ASSERT_EQUAL_INT(-42, snapshot.entities[0].rssi);
+    TEST_ASSERT_EQUAL_INT(-42, snapshot.entities[0].best_rssi);
+
+    meta.rssi = -72;
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &meta, 3000, NULL));
+    badge_threat_state_snapshot(&state, 3500, &snapshot);
+
+    uint8_t weaker = badge_threat_snapshot_entity_signal_percent(&snapshot.entities[0]);
+    TEST_ASSERT_TRUE(weaker < strong);
+    TEST_ASSERT_EQUAL_INT(-72, snapshot.entities[0].rssi);
+    TEST_ASSERT_EQUAL_INT(-42, snapshot.entities[0].best_rssi);
+    TEST_ASSERT_TRUE(weaker <
+        badge_threat_snapshot_entity_proximity_percent(&snapshot.entities[0]));
+
+    badge_threat_state_snapshot(&state, 30000, &snapshot);
+    uint8_t faded = badge_threat_snapshot_entity_signal_percent(&snapshot.entities[0]);
+    TEST_ASSERT_TRUE(faded < weaker);
+
+    meta.rssi = -71;
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &meta, 31000, NULL));
+    badge_threat_state_snapshot(&state, 31500, &snapshot);
+    TEST_ASSERT_TRUE(
+        badge_threat_snapshot_entity_signal_percent(&snapshot.entities[0]) > faded);
+}
+
+static badge_threat_snapshot_entity_t badge_test_meta_item_with_rssi(int8_t rssi)
+{
+    badge_threat_snapshot_entity_t item = {0};
+    item.active = true;
+    item.stale = false;
+    item.cls = BADGE_THREAT_META;
+    item.category = BADGE_THREAT_CATEGORY_GLASS;
+    item.rssi = rssi;
+    item.best_rssi = rssi;
+    item.last_seen_s = 0;
+    strncpy(item.label, "Meta Glasses", sizeof(item.label) - 1);
+    strncpy(item.display_id, "BEEF", sizeof(item.display_id) - 1);
+    return item;
+}
+
+void test_badge_meta_signal_percent_calibrates_ice_to_fire_rssi(void)
+{
+    badge_threat_snapshot_entity_t item = badge_test_meta_item_with_rssi(-88);
+    TEST_ASSERT_EQUAL_UINT8(0, badge_threat_snapshot_entity_signal_percent(&item));
+
+    item.rssi = -80;
+    item.best_rssi = -80;
+    TEST_ASSERT_EQUAL_UINT8(25, badge_threat_snapshot_entity_signal_percent(&item));
+
+    item.rssi = -72;
+    item.best_rssi = -72;
+    TEST_ASSERT_EQUAL_UINT8(55, badge_threat_snapshot_entity_signal_percent(&item));
+
+    item.rssi = -64;
+    item.best_rssi = -64;
+    TEST_ASSERT_EQUAL_UINT8(85, badge_threat_snapshot_entity_signal_percent(&item));
+
+    item.rssi = -60;
+    item.best_rssi = -60;
+    TEST_ASSERT_EQUAL_UINT8(100, badge_threat_snapshot_entity_signal_percent(&item));
+}
+
+void test_badge_meta_heat_ignores_count_boost(void)
+{
+    badge_threat_snapshot_entity_t meta = badge_test_meta_item_with_rssi(-80);
+    uint8_t signal = badge_threat_snapshot_entity_signal_percent(&meta);
+
+    TEST_ASSERT_EQUAL_UINT8(
+        signal,
+        badge_threat_snapshot_entity_heat_percent(&meta, 1));
+    TEST_ASSERT_EQUAL_UINT8(
+        signal,
+        badge_threat_snapshot_entity_heat_percent(&meta, 4));
+
+    badge_threat_snapshot_entity_t drone = {0};
+    drone.active = true;
+    drone.stale = false;
+    drone.cls = BADGE_THREAT_DRONE;
+    drone.category = BADGE_THREAT_CATEGORY_DRONE;
+    drone.best_rssi = -80;
+    drone.proximity_level = BADGE_THREAT_PROX_PRESENT;
+
+    TEST_ASSERT_EQUAL_UINT8(
+        badge_threat_snapshot_entity_proximity_percent(&drone),
+        badge_threat_snapshot_entity_heat_percent(&drone, 1));
+    TEST_ASSERT_TRUE(
+        badge_threat_snapshot_entity_heat_percent(&drone, 4) >
+        badge_threat_snapshot_entity_heat_percent(&drone, 1));
+}
+
+void test_badge_top_count_color_follows_meta_heat(void)
+{
+    badge_threat_snapshot_entity_t meta = badge_test_meta_item_with_rssi(-80);
+    uint16_t icy = badge_threat_snapshot_entity_heat_color_rgb565(&meta, 4);
+
+    TEST_ASSERT_EQUAL_HEX16(
+        badge_threat_heat_percent_to_rgb565(
+            badge_threat_snapshot_entity_signal_percent(&meta)),
+        icy);
+
+    meta.rssi = -60;
+    meta.best_rssi = -60;
+    uint16_t red = badge_threat_snapshot_entity_heat_color_rgb565(&meta, 1);
+    TEST_ASSERT_EQUAL_HEX16(0xF800, red);
+    TEST_ASSERT_NOT_EQUAL(icy, red);
+}
+
+void test_badge_top_count_color_follows_drone_count_heat(void)
+{
+    badge_threat_snapshot_entity_t drone = {0};
+    drone.active = true;
+    drone.stale = false;
+    drone.cls = BADGE_THREAT_DRONE;
+    drone.category = BADGE_THREAT_CATEGORY_DRONE;
+    drone.best_rssi = -80;
+    drone.proximity_level = BADGE_THREAT_PROX_PRESENT;
+    strncpy(drone.label, "Remote ID", sizeof(drone.label) - 1);
+
+    uint16_t single = badge_threat_snapshot_entity_heat_color_rgb565(&drone, 1);
+    uint16_t crowded = badge_threat_snapshot_entity_heat_color_rgb565(&drone, 4);
+
+    TEST_ASSERT_EQUAL_HEX16(
+        badge_threat_proximity_percent_to_rgb565(
+            badge_threat_snapshot_entity_proximity_percent(&drone)),
+        single);
+    TEST_ASSERT_NOT_EQUAL(single, crowded);
+    TEST_ASSERT_EQUAL_HEX16(
+        badge_threat_proximity_percent_to_rgb565(
+            badge_threat_snapshot_entity_heat_percent(&drone, 4)),
+        crowded);
+}
+
+void test_badge_top_detail_formats_compact_large_text(void)
+{
+    badge_threat_snapshot_t snapshot = {0};
+    snapshot.entity_count = 1;
+    snapshot.entities[0] = badge_test_meta_item_with_rssi(-64);
+    char detail[56];
+
+    TEST_ASSERT_TRUE(badge_threat_format_top_detail(
+        &snapshot, &snapshot.entities[0], detail, sizeof(detail)));
+    TEST_ASSERT_EQUAL_STRING("META #BEEF -64dB", detail);
+    TEST_ASSERT_TRUE(badge_threat_top_detail_uses_large_text(detail, 19));
+
+    memset(&snapshot, 0, sizeof(snapshot));
+    snapshot.entity_count = 1;
+    snapshot.entities[0].active = true;
+    snapshot.entities[0].cls = BADGE_THREAT_DRONE;
+    snapshot.entities[0].category = BADGE_THREAT_CATEGORY_DRONE;
+    snapshot.entities[0].best_rssi = -58;
+    strncpy(snapshot.entities[0].label, "Remote ID",
+            sizeof(snapshot.entities[0].label) - 1);
+    TEST_ASSERT_TRUE(badge_threat_format_top_detail(
+        &snapshot, &snapshot.entities[0], detail, sizeof(detail)));
+    TEST_ASSERT_EQUAL_STRING("1 drone near -58dB", detail);
+    TEST_ASSERT_TRUE(badge_threat_top_detail_uses_large_text(detail, 19));
+
+    snapshot.entity_count = 2;
+    snapshot.entities[1].active = true;
+    snapshot.entities[1].cls = BADGE_THREAT_DRONE;
+    snapshot.entities[1].category = BADGE_THREAT_CATEGORY_SSID;
+    strncpy(snapshot.entities[1].label, "Drone SSID",
+            sizeof(snapshot.entities[1].label) - 1);
+    strncpy(snapshot.entities[1].detail, "ssid FoF-Drone",
+            sizeof(snapshot.entities[1].detail) - 1);
+    TEST_ASSERT_TRUE(badge_threat_format_top_detail(
+        &snapshot, &snapshot.entities[0], detail, sizeof(detail)));
+    TEST_ASSERT_EQUAL_STRING("RID x1 SSID x1", detail);
+    TEST_ASSERT_TRUE(badge_threat_top_detail_uses_large_text(detail, 19));
+}
+
+void test_badge_top_detail_large_text_rejects_long_rows(void)
+{
+    TEST_ASSERT_TRUE(
+        badge_threat_top_detail_uses_large_text("RID x1 SSID x1", 19));
+    TEST_ASSERT_FALSE(
+        badge_threat_top_detail_uses_large_text(
+            "ssid very-long-network-name", 19));
+}
+
+void test_badge_heat_color_runs_ice_to_fire(void)
+{
+    TEST_ASSERT_NOT_EQUAL(
+        badge_threat_heat_percent_to_rgb565(0),
+        badge_threat_heat_percent_to_rgb565(100)
+    );
+    TEST_ASSERT_EQUAL_HEX16(0xF800, badge_threat_heat_percent_to_rgb565(100));
+}
+
 void test_badge_heat_percent_combines_proximity_and_count(void)
 {
     uint8_t single_far = badge_threat_heat_percent(20, 1);
@@ -1883,6 +2314,17 @@ void test_badge_marquee_offset_advances_for_long_lower_lane_text(void)
     TEST_ASSERT_EQUAL_UINT32(1, badge_threat_marquee_offset(24, 10, 2, 2));
     TEST_ASSERT_NOT_EQUAL(0, badge_threat_marquee_offset(24, 10, 6, 2));
     TEST_ASSERT_EQUAL_UINT32(1, badge_threat_marquee_offset(24, 10, 1, 0));
+}
+
+void test_badge_fast_marquee_offset_is_twenty_percent_faster(void)
+{
+    size_t old_offset = badge_threat_marquee_offset(40, 10, 20, 2);
+    size_t fast_offset = badge_threat_marquee_offset_rate(40, 10, 20, 3, 5);
+
+    TEST_ASSERT_EQUAL_UINT32(10, old_offset);
+    TEST_ASSERT_EQUAL_UINT32(12, fast_offset);
+    TEST_ASSERT_TRUE(fast_offset > old_offset);
+    TEST_ASSERT_EQUAL_UINT32(0, badge_threat_marquee_offset_rate(8, 8, 20, 3, 5));
 }
 
 void test_badge_viewed_remote_id_suppresses_only_same_drone(void)

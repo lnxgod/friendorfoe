@@ -524,7 +524,8 @@ class BLEEnricher:
                 device_type = parts[2]
 
         is_tracker = device_type in ("AirTag", "FindMy Accessory", "Tile Tracker",
-                                     "SmartTag", "Google Tracker", "Tracker (Generic)")
+                                     "SmartTag", "Google Tracker", "Tracker (Generic)",
+                                     "Pebblebee", "Chipolo")
 
         if fp in self.devices:
             dev = self.devices[fp]
@@ -721,6 +722,16 @@ class BLEEnricher:
             return "Meta Smart Glasses"
         if mfr_raw == "Flipper Zero":
             return "Flipper Zero"
+        if mfr_raw == "Venue Beacon":
+            return "Venue Beacon"
+        if mfr_raw == "Event Badge":
+            return "Event Badge"
+        if mfr_raw == "Mobile Key Lock":
+            return "Mobile Key Lock"
+        if mfr_raw == "BLE HID":
+            return "BLE HID"
+        if mfr_raw == "Auracast":
+            return "Auracast"
         if mfr_raw in ("Vehicle", "Vehicle (Tesla)"):
             return mfr_raw
         if mfr_raw == "Camera":
@@ -812,8 +823,8 @@ class BLEEnricher:
             return "Security Cam"
         if mfr == "iRobot":
             return "Robot Vacuum"
-        if mfr == "August":
-            return "Smart Lock"
+        if mfr in ("August", "Yale"):
+            return "Mobile Key Lock"
         if mfr == "Tesla":
             return "Vehicle (Tesla)"
         if mfr in ("Microsoft", "Xbox"):
@@ -874,8 +885,6 @@ class BLEEnricher:
             return "Wearable"
         if mfr == "Beats":
             return "Audio Device"
-        if mfr == "Yale":
-            return "Smart Lock"
         if mfr == "Chamberlain":
             return "Garage Door"
         if mfr == "Abbott":

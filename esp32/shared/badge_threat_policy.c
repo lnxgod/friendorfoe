@@ -76,6 +76,8 @@ static bool text_mentions_tracker(const char *text)
            contains_nocase(text, "tile") ||
            contains_nocase(text, "tracker") ||
            contains_nocase(text, "smarttag") ||
+           contains_nocase(text, "google tag") ||
+           contains_nocase(text, "google tracker") ||
            contains_nocase(text, "chipolo") ||
            contains_nocase(text, "pebblebee");
 }
@@ -113,6 +115,93 @@ static bool text_mentions_hidden_camera(const char *text)
            contains_nocase(text, "hidvcam") ||
            contains_nocase(text, "hdwificam") ||
            contains_nocase(text, "lookcam");
+}
+
+static bool text_mentions_camera_privacy(const char *text)
+{
+    return text_mentions_hidden_camera(text) ||
+           contains_nocase(text, "camera") ||
+           contains_nocase(text, "body cam") ||
+           contains_nocase(text, "bodycam") ||
+           contains_nocase(text, "dash cam") ||
+           contains_nocase(text, "dashcam") ||
+           contains_nocase(text, "fleet cam") ||
+           contains_nocase(text, "conference cam") ||
+           contains_nocase(text, "security cam") ||
+           contains_nocase(text, "action cam") ||
+           contains_nocase(text, "gopro") ||
+           contains_nocase(text, "axon") ||
+           contains_nocase(text, "samsara") ||
+           contains_nocase(text, "verkada") ||
+           contains_nocase(text, "hikvision") ||
+           contains_nocase(text, "dahua");
+}
+
+static bool text_mentions_venue_beacon(const char *text)
+{
+    return contains_nocase(text, "venue beacon") ||
+           contains_nocase(text, "ibeacon") ||
+           contains_nocase(text, "eddystone") ||
+           contains_nocase(text, "estimote") ||
+           contains_nocase(text, "kontakt") ||
+           contains_nocase(text, "gimbal") ||
+           contains_nocase(text, "retailnext") ||
+           contains_nocase(text, "vergesense") ||
+           contains_nocase(text, "beaconstac") ||
+           contains_nocase(text, "radiusnetworks") ||
+           contains_nocase(text, "venue") ||
+           strcmp(text ? text : "", "Beacon") == 0;
+}
+
+static bool text_mentions_event_badge(const char *text)
+{
+    return contains_nocase(text, "event badge") ||
+           contains_nocase(text, "smart badge") ||
+           contains_nocase(text, "attendee badge") ||
+           contains_nocase(text, "conference badge") ||
+           contains_nocase(text, "expo badge") ||
+           contains_nocase(text, "event tag") ||
+           contains_nocase(text, "wristband") ||
+           contains_nocase(text, "bizzabo") ||
+           contains_nocase(text, "cvent") ||
+           contains_nocase(text, "klik");
+}
+
+static bool text_mentions_mobile_key_lock(const char *text)
+{
+    return contains_nocase(text, "mobile key") ||
+           contains_nocase(text, "mobile access") ||
+           contains_nocase(text, "mobile key lock") ||
+           contains_nocase(text, "smart lock") ||
+           contains_nocase(text, "dormakaba") ||
+           contains_nocase(text, "saflok") ||
+           contains_nocase(text, "vingcard") ||
+           contains_nocase(text, "assa") ||
+           contains_nocase(text, "abloy") ||
+           contains_nocase(text, "salto") ||
+           contains_nocase(text, "onity") ||
+           contains_nocase(text, "kaba") ||
+           contains_nocase(text, "august") ||
+           contains_nocase(text, "schlage") ||
+           contains_nocase(text, "yale") ||
+           contains_nocase(text, "level lock");
+}
+
+static bool text_mentions_ble_hid(const char *text)
+{
+    return contains_nocase(text, "ble hid") ||
+           contains_nocase(text, "keyboard") ||
+           contains_nocase(text, "mouse") ||
+           contains_nocase(text, "input device") ||
+           contains_nocase(text, "presenter") ||
+           strcmp(text ? text : "", "BLE HID") == 0;
+}
+
+static bool text_mentions_auracast(const char *text)
+{
+    return contains_nocase(text, "auracast") ||
+           contains_nocase(text, "le audio") ||
+           contains_nocase(text, "broadcast audio");
 }
 
 static bool text_mentions_ambient_demo_ssid(const char *text)
@@ -164,15 +253,16 @@ static bool detection_mentions_any(const drone_detection_t *det,
            predicate(det->ssid);
 }
 
-static bool detection_is_close_airtag(const drone_detection_t *det)
+static bool detection_is_close_tracker(const drone_detection_t *det)
 {
-    if (!det || det->source != DETECTION_SRC_BLE_FINGERPRINT || det->rssi < -50) {
+    if (!det || det->source != DETECTION_SRC_BLE_FINGERPRINT || det->rssi < -55) {
         return false;
     }
-    return contains_nocase(det->manufacturer, "airtag") ||
-           contains_nocase(det->model, "airtag") ||
-           contains_nocase(det->ble_name, "airtag") ||
-           contains_nocase(det->drone_id, "airtag");
+    return text_mentions_tracker(det->manufacturer) ||
+           text_mentions_tracker(det->model) ||
+           text_mentions_tracker(det->ble_name) ||
+           text_mentions_tracker(det->drone_id) ||
+           text_mentions_tracker(det->class_reason);
 }
 
 static bool detection_has_notable_ssid(const drone_detection_t *det)
@@ -225,8 +315,14 @@ static int category_priority(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_FLOCK:     return 60;
         case BADGE_THREAT_CATEGORY_GLASS:     return 50;
         case BADGE_THREAT_CATEGORY_SKIM:      return 40;
+        case BADGE_THREAT_CATEGORY_CAMERA:    return 38;
+        case BADGE_THREAT_CATEGORY_LOCK:      return 36;
+        case BADGE_THREAT_CATEGORY_HID:       return 32;
         case BADGE_THREAT_CATEGORY_WIFI:      return 30;
+        case BADGE_THREAT_CATEGORY_EVENT_BADGE: return 24;
         case BADGE_THREAT_CATEGORY_TAG_CLOSE: return 20;
+        case BADGE_THREAT_CATEGORY_BEACON:    return 16;
+        case BADGE_THREAT_CATEGORY_AUDIO:     return 14;
         case BADGE_THREAT_CATEGORY_PRIVACY:   return 15;
         default:                              return 0;
     }
@@ -516,6 +612,16 @@ static void copy_ble_detail(char *out, const drone_detection_t *det)
         snprintf(detail, sizeof(detail), "default BLE module");
     } else if (det && contains_nocase(det->class_reason, "explicit_camera_ble_name")) {
         snprintf(detail, sizeof(detail), "camera BLE name");
+    } else if (det && contains_nocase(det->class_reason, "mobile_key_lock")) {
+        snprintf(detail, sizeof(detail), "mobile key signal");
+    } else if (det && contains_nocase(det->class_reason, "event_badge")) {
+        snprintf(detail, sizeof(detail), "badge signal");
+    } else if (det && contains_nocase(det->class_reason, "venue_beacon")) {
+        snprintf(detail, sizeof(detail), "location beacon");
+    } else if (det && contains_nocase(det->class_reason, "ble_hid")) {
+        snprintf(detail, sizeof(detail), "input device");
+    } else if (det && contains_nocase(det->class_reason, "auracast")) {
+        snprintf(detail, sizeof(detail), "broadcast audio");
     } else if (det && contains_nocase(det->class_reason, "strong BLE near")) {
         snprintf(detail, sizeof(detail), "strong BLE near");
     } else if (det && contains_nocase(det->class_reason, "structured BLE")) {
@@ -686,6 +792,7 @@ static bool entity_is_weak_meta_presence(const badge_threat_entity_t *entity);
 
 static void make_event_key(const drone_detection_t *det,
                            badge_threat_class_t cls,
+                           badge_threat_category_t category,
                            char *out,
                            size_t out_len)
 {
@@ -737,6 +844,37 @@ static void make_event_key(const drone_detection_t *det,
         }
         if (cls == BADGE_THREAT_TRACKER) {
             snprintf(out, out_len, "PRIV:TAG:%s", name[0] ? name : "tracker");
+            return;
+        }
+        if (category == BADGE_THREAT_CATEGORY_BEACON) {
+            snprintf(out, out_len, "PRIV:BEACON:AREA");
+            return;
+        }
+        if (category == BADGE_THREAT_CATEGORY_EVENT_BADGE) {
+            snprintf(out, out_len, "PRIV:EVENT:AREA");
+            return;
+        }
+        if (category == BADGE_THREAT_CATEGORY_AUDIO) {
+            snprintf(out, out_len, "PRIV:AUDIO:AREA");
+            return;
+        }
+        if (category == BADGE_THREAT_CATEGORY_CAMERA ||
+            category == BADGE_THREAT_CATEGORY_SKIM ||
+            category == BADGE_THREAT_CATEGORY_LOCK ||
+            category == BADGE_THREAT_CATEGORY_HID ||
+            category == BADGE_THREAT_CATEGORY_FLOCK) {
+            char identity[40] = {0};
+            if (detection_copy_ble_fingerprint_identity(det,
+                                                        identity,
+                                                        sizeof(identity))) {
+                snprintf(out, out_len, "PRIV:%d:%s",
+                         (int)category,
+                         identity);
+                return;
+            }
+            snprintf(out, out_len, "PRIV:%d:%s",
+                     (int)category,
+                     name[0] ? name : "signal");
             return;
         }
         if (det->rssi < 0 && det->rssi >= -60) {
@@ -797,6 +935,12 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
     const bool mfr_glasses = detection_mentions_any(det, text_mentions_glasses);
     const bool mfr_skimmer = detection_mentions_any(det, text_mentions_skimmer);
     const bool mfr_hidden_camera = detection_mentions_any(det, text_mentions_hidden_camera);
+    const bool mfr_camera = detection_mentions_any(det, text_mentions_camera_privacy);
+    const bool mfr_beacon = detection_mentions_any(det, text_mentions_venue_beacon);
+    const bool mfr_event_badge = detection_mentions_any(det, text_mentions_event_badge);
+    const bool mfr_lock = detection_mentions_any(det, text_mentions_mobile_key_lock);
+    const bool mfr_hid = detection_mentions_any(det, text_mentions_ble_hid);
+    const bool mfr_auracast = detection_mentions_any(det, text_mentions_auracast);
     const bool mfr_security = text_mentions_security_device(det->manufacturer) ||
                               text_mentions_security_device(det->model) ||
                               text_mentions_security_device(det->ble_name) ||
@@ -922,24 +1066,63 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
         event->evidence_quality = detector_weak_meta ? 5 : 7;
         (void)weak_meta;
     } else if (det->source == DETECTION_SRC_BLE_FINGERPRINT &&
-               (mfr_skimmer || mfr_hidden_camera || mfr_security)) {
+               (mfr_skimmer || mfr_camera || mfr_hidden_camera ||
+                mfr_event_badge || mfr_beacon || mfr_lock ||
+                mfr_hid || mfr_auracast || mfr_security)) {
+        if ((mfr_skimmer || mfr_beacon || mfr_event_badge ||
+             mfr_hid || mfr_auracast) &&
+            det->rssi < -72 &&
+            det->confidence < 0.70f) {
+            return false;
+        }
         event->cls = BADGE_THREAT_OTHER;
-        event->category = BADGE_THREAT_CATEGORY_SKIM;
         if (mfr_skimmer) {
+            event->category = BADGE_THREAT_CATEGORY_SKIM;
             copy_label(event->label, "Skimmer");
-        } else if (mfr_hidden_camera || contains_nocase(det->manufacturer, "camera")) {
-            copy_label(event->label, "Hidden Cam");
+            event->base_score = 66.0f;
+            event->evidence_quality = 7;
+        } else if (mfr_camera || mfr_hidden_camera) {
+            event->category = BADGE_THREAT_CATEGORY_CAMERA;
+            copy_label(event->label, "Camera Near");
+            event->base_score = 58.0f;
+            event->evidence_quality = 6;
+        } else if (mfr_lock) {
+            event->category = BADGE_THREAT_CATEGORY_LOCK;
+            copy_label(event->label, "Lock Near");
+            event->base_score = 50.0f;
+            event->evidence_quality = 6;
+        } else if (mfr_hid) {
+            event->category = BADGE_THREAT_CATEGORY_HID;
+            copy_label(event->label, "HID Near");
+            event->base_score = 34.0f;
+            event->evidence_quality = 4;
+        } else if (mfr_event_badge) {
+            event->category = BADGE_THREAT_CATEGORY_EVENT_BADGE;
+            copy_label(event->label, "Event Badge");
+            event->base_score = 36.0f;
+            event->evidence_quality = 4;
+        } else if (mfr_beacon) {
+            event->category = BADGE_THREAT_CATEGORY_BEACON;
+            copy_label(event->label, "Venue Beacon");
+            event->base_score = 28.0f;
+            event->evidence_quality = 3;
+        } else if (mfr_auracast) {
+            event->category = BADGE_THREAT_CATEGORY_AUDIO;
+            copy_label(event->label, "Auracast");
+            event->base_score = 22.0f;
+            event->evidence_quality = 3;
         } else {
+            event->category = BADGE_THREAT_CATEGORY_PRIVACY;
             copy_label(event->label, "Security Tool");
+            event->base_score = 52.0f;
+            event->evidence_quality = 5;
         }
         copy_ble_detail(event->detail, det);
         if (event->detail[0] == '\0') {
             copy_detail(event->detail, det->manufacturer[0] ? det->manufacturer : "privacy evidence");
         }
-        event->base_score = mfr_skimmer ? 66.0f : 58.0f;
-        event->evidence_quality = mfr_skimmer ? 7 : 6;
     } else if (det->source == DETECTION_SRC_BLE_FINGERPRINT && mfr_tracker) {
-        if (!detection_is_close_airtag(det)) {
+        if (!detection_is_close_tracker(det)) {
             return false;
         }
         event->cls = BADGE_THREAT_TRACKER;
@@ -999,7 +1182,8 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
     event->ttl_ms = ttl_for_class(event->cls);
     finalize_event_rank(event);
     event->lcd_visible = true;
-    make_event_key(det, event->cls, event->key, sizeof(event->key));
+    make_event_key(det, event->cls, event->category,
+                   event->key, sizeof(event->key));
     return event->key[0] != '\0' && badge_threat_label_is_lcd_safe(event->label);
 }
 
@@ -1073,6 +1257,7 @@ bool badge_threat_state_ingest(badge_threat_state_t *state,
         copy_label(entity->label, event.label);
         copy_detail(entity->detail, event.detail);
         entity->first_seen_ms = now_ms;
+        entity->last_rssi = det->rssi;
         entity->strongest_rssi = det->rssi;
         strncpy(entity->key, event.key, sizeof(entity->key) - 1);
     }
@@ -1087,6 +1272,9 @@ bool badge_threat_state_ingest(badge_threat_state_t *state,
     }
     entity->last_seen_ms = now_ms;
     entity->event_count++;
+    if (det->rssi < 0) {
+        entity->last_rssi = det->rssi;
+    }
     if (det->confidence > entity->peak_confidence) {
         entity->peak_confidence = det->confidence;
     }
@@ -1390,7 +1578,11 @@ void badge_threat_state_snapshot(badge_threat_state_t *state,
         }
 
         bool stale = entity_is_display_stale(entity, age_ms);
-        badge_threat_proximity_t prox = proximity_for_rssi(entity->strongest_rssi);
+        int8_t display_rssi = entity->strongest_rssi;
+        if (entity->cls == BADGE_THREAT_META && entity->last_rssi < 0) {
+            display_rssi = entity->last_rssi;
+        }
+        badge_threat_proximity_t prox = proximity_for_rssi(display_rssi);
         float proximity_floor = stale ? 0.0f :
             proximity_floor_for_class(entity->cls, prox);
         float display_score = score;
@@ -1438,7 +1630,7 @@ void badge_threat_state_snapshot(badge_threat_state_t *state,
             .score = (int)(display_score + 0.5f),
             .evidence_quality = entity->evidence_quality,
             .display_rank = entity->display_rank,
-            .rssi = entity->strongest_rssi,
+            .rssi = entity->last_rssi < 0 ? entity->last_rssi : entity->strongest_rssi,
             .best_rssi = entity->strongest_rssi,
             .event_count = entity->event_count,
             .seen_count = entity->event_count,
@@ -1555,6 +1747,12 @@ const char *badge_threat_category_code(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_FLOCK:     return "FLK";
         case BADGE_THREAT_CATEGORY_GLASS:     return "GLS";
         case BADGE_THREAT_CATEGORY_SKIM:      return "SKIM";
+        case BADGE_THREAT_CATEGORY_CAMERA:    return "CAM";
+        case BADGE_THREAT_CATEGORY_BEACON:    return "BCN";
+        case BADGE_THREAT_CATEGORY_EVENT_BADGE: return "EVT";
+        case BADGE_THREAT_CATEGORY_LOCK:      return "LOCK";
+        case BADGE_THREAT_CATEGORY_HID:       return "HID";
+        case BADGE_THREAT_CATEGORY_AUDIO:     return "AUD";
         case BADGE_THREAT_CATEGORY_WIFI:      return "WIFI";
         case BADGE_THREAT_CATEGORY_TAG_CLOSE: return "TAG";
         case BADGE_THREAT_CATEGORY_PRIVACY:   return "PRV";
@@ -1570,6 +1768,12 @@ const char *badge_threat_category_name(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_FLOCK:     return "FLOCK";
         case BADGE_THREAT_CATEGORY_GLASS:     return "GLASS";
         case BADGE_THREAT_CATEGORY_SKIM:      return "SKIM";
+        case BADGE_THREAT_CATEGORY_CAMERA:    return "CAMERA";
+        case BADGE_THREAT_CATEGORY_BEACON:    return "BEACON";
+        case BADGE_THREAT_CATEGORY_EVENT_BADGE: return "EVENT";
+        case BADGE_THREAT_CATEGORY_LOCK:      return "LOCK";
+        case BADGE_THREAT_CATEGORY_HID:       return "HID";
+        case BADGE_THREAT_CATEGORY_AUDIO:     return "AUDIO";
         case BADGE_THREAT_CATEGORY_WIFI:      return "WIFI";
         case BADGE_THREAT_CATEGORY_TAG_CLOSE: return "TAG";
         case BADGE_THREAT_CATEGORY_PRIVACY:   return "PRIV";
@@ -1707,6 +1911,57 @@ uint32_t badge_threat_snapshot_drone_evidence_count(
     return count;
 }
 
+static uint32_t badge_threat_snapshot_remote_id_drone_count(
+    const badge_threat_snapshot_t *snapshot)
+{
+    if (!snapshot) {
+        return 0;
+    }
+    uint32_t count = 0;
+    for (int i = 0; i < snapshot->entity_count; i++) {
+        const badge_threat_snapshot_entity_t *item = &snapshot->entities[i];
+        if (item->active && !item->stale &&
+            badge_threat_snapshot_entity_is_remote_id_drone(item)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static uint32_t badge_threat_snapshot_drone_ssid_count(
+    const badge_threat_snapshot_t *snapshot)
+{
+    if (!snapshot) {
+        return 0;
+    }
+    uint32_t count = 0;
+    char seen_keys[BADGE_THREAT_SNAPSHOT_ENTITIES][BADGE_THREAT_VIEW_KEY_LEN] = {{0}};
+    size_t seen_count = 0;
+    for (int i = 0; i < snapshot->entity_count; i++) {
+        const badge_threat_snapshot_entity_t *item = &snapshot->entities[i];
+        if (!item->active || item->stale ||
+            item->cls != BADGE_THREAT_DRONE ||
+            item->category != BADGE_THREAT_CATEGORY_SSID) {
+            continue;
+        }
+        char key[BADGE_THREAT_VIEW_KEY_LEN] = {0};
+        if (!badge_threat_snapshot_entity_view_key(item, key, sizeof(key)) ||
+            badge_threat_snapshot_entity_view_key_seen(
+                item,
+                (const char (*)[BADGE_THREAT_VIEW_KEY_LEN])seen_keys,
+                seen_count)) {
+            continue;
+        }
+        if (seen_count < BADGE_THREAT_SNAPSHOT_ENTITIES) {
+            snprintf(seen_keys[seen_count], sizeof(seen_keys[seen_count]),
+                     "%s", key);
+            seen_count++;
+        }
+        count++;
+    }
+    return count;
+}
+
 uint32_t badge_threat_snapshot_entity_ordinal(const badge_threat_snapshot_t *snapshot,
                                               const badge_threat_snapshot_entity_t *item,
                                               badge_threat_class_t cls,
@@ -1783,21 +2038,55 @@ uint32_t badge_threat_snapshot_meta_glasses_count(
 const badge_threat_snapshot_entity_t *badge_threat_snapshot_best_meta_glasses(
     const badge_threat_snapshot_t *snapshot)
 {
+    return badge_threat_snapshot_meta_glasses_at(snapshot, 0, NULL, NULL);
+}
+
+const badge_threat_snapshot_entity_t *badge_threat_snapshot_meta_glasses_at(
+    const badge_threat_snapshot_t *snapshot,
+    uint32_t phase,
+    int *pos_out,
+    int *total_out)
+{
+    if (pos_out) *pos_out = 0;
+    if (total_out) *total_out = 0;
     if (!snapshot) {
         return NULL;
     }
+
+    int strong_count = 0;
     for (int i = 0; i < snapshot->entity_count; i++) {
         const badge_threat_snapshot_entity_t *item = &snapshot->entities[i];
         if (!item->stale &&
             badge_threat_snapshot_entity_is_meta_glasses(item) &&
             item->display_id[0] != '\0') {
-            return item;
+            strong_count++;
         }
     }
+    if (strong_count > 0) {
+        int target = (int)(phase % (uint32_t)strong_count);
+        int seen = 0;
+        for (int i = 0; i < snapshot->entity_count; i++) {
+            const badge_threat_snapshot_entity_t *item = &snapshot->entities[i];
+            if (item->stale ||
+                !badge_threat_snapshot_entity_is_meta_glasses(item) ||
+                item->display_id[0] == '\0') {
+                continue;
+            }
+            if (seen == target) {
+                if (pos_out) *pos_out = target + 1;
+                if (total_out) *total_out = strong_count;
+                return item;
+            }
+            seen++;
+        }
+    }
+
     for (int i = 0; i < snapshot->entity_count; i++) {
         const badge_threat_snapshot_entity_t *item = &snapshot->entities[i];
         if (!item->stale &&
             badge_threat_snapshot_entity_is_meta_glasses(item)) {
+            if (pos_out) *pos_out = 1;
+            if (total_out) *total_out = 1;
             return item;
         }
     }
@@ -1812,6 +2101,48 @@ void badge_threat_format_meta_glasses_title(char *out, size_t out_len)
     snprintf(out, out_len, "META GLASSES");
 }
 
+static uint8_t badge_threat_rssi_to_percent(int8_t rssi)
+{
+    if (rssi <= -90) return 0;
+    if (rssi >= -40) return 100;
+    return (uint8_t)(((rssi + 90) * 100 + 25) / 50);
+}
+
+static uint8_t badge_threat_lerp_percent(int rssi,
+                                          int low_rssi,
+                                          uint8_t low_percent,
+                                          int high_rssi,
+                                          uint8_t high_percent)
+{
+    int span = high_rssi - low_rssi;
+    if (span <= 0) {
+        return low_percent;
+    }
+    int delta = ((int)high_percent - (int)low_percent) *
+                (rssi - low_rssi);
+    int rounded = delta >= 0 ? delta + span / 2 : delta - span / 2;
+    int percent = (int)low_percent + rounded / span;
+    if (percent < 0) return 0;
+    if (percent > 100) return 100;
+    return (uint8_t)percent;
+}
+
+static uint8_t badge_threat_meta_rssi_to_percent(int8_t rssi)
+{
+    if (rssi <= -88) return 0;
+    if (rssi >= -60) return 100;
+    if (rssi <= -80) {
+        return badge_threat_lerp_percent(rssi, -88, 0, -80, 25);
+    }
+    if (rssi <= -72) {
+        return badge_threat_lerp_percent(rssi, -80, 25, -72, 55);
+    }
+    if (rssi <= -64) {
+        return badge_threat_lerp_percent(rssi, -72, 55, -64, 85);
+    }
+    return badge_threat_lerp_percent(rssi, -64, 85, -60, 100);
+}
+
 uint8_t badge_threat_snapshot_entity_proximity_percent(
     const badge_threat_snapshot_entity_t *item)
 {
@@ -1819,10 +2150,7 @@ uint8_t badge_threat_snapshot_entity_proximity_percent(
         return 0;
     }
     if (item->best_rssi < 0) {
-        int rssi = item->best_rssi;
-        if (rssi <= -90) return 0;
-        if (rssi >= -40) return 100;
-        return (uint8_t)(((rssi + 90) * 100 + 25) / 50);
+        return badge_threat_rssi_to_percent(item->best_rssi);
     }
     switch (item->proximity_level) {
         case BADGE_THREAT_PROX_CLOSE:  return 100;
@@ -1830,6 +2158,47 @@ uint8_t badge_threat_snapshot_entity_proximity_percent(
         case BADGE_THREAT_PROX_PRESENT:return 35;
         default:                       return 0;
     }
+}
+
+uint8_t badge_threat_snapshot_entity_signal_percent(
+    const badge_threat_snapshot_entity_t *item)
+{
+    if (!item || !item->active || item->stale) {
+        return 0;
+    }
+
+    uint8_t percent = 0;
+    int8_t rssi = item->rssi < 0 ? item->rssi : item->best_rssi;
+    if (rssi < 0) {
+        percent = badge_threat_snapshot_entity_is_meta_glasses(item)
+            ? badge_threat_meta_rssi_to_percent(rssi)
+            : badge_threat_rssi_to_percent(rssi);
+    } else {
+        percent = badge_threat_snapshot_entity_proximity_percent(item);
+    }
+
+    int age_s = item->last_seen_s >= 0 ? item->last_seen_s : item->age_s;
+    if (age_s <= 4) {
+        return percent;
+    }
+
+    uint32_t decay = (uint32_t)(age_s - 4) * 2U;
+    return decay >= percent ? 0 : (uint8_t)(percent - decay);
+}
+
+uint8_t badge_threat_snapshot_entity_heat_percent(
+    const badge_threat_snapshot_entity_t *item,
+    uint32_t live_count)
+{
+    if (!item || !item->active || item->stale) {
+        return 0;
+    }
+    if (badge_threat_snapshot_entity_is_meta_glasses(item)) {
+        return badge_threat_snapshot_entity_signal_percent(item);
+    }
+    return badge_threat_heat_percent(
+        badge_threat_snapshot_entity_proximity_percent(item),
+        live_count);
 }
 
 uint8_t badge_threat_heat_percent(uint8_t base_percent, uint32_t live_count)
@@ -1856,6 +2225,126 @@ uint16_t badge_threat_proximity_percent_to_rgb565(uint8_t percent)
     return badge_threat_score_to_rgb565((float)percent);
 }
 
+uint16_t badge_threat_heat_percent_to_rgb565(uint8_t percent)
+{
+    static const uint8_t stops[][3] = {
+        {  70, 220, 255 },
+        {  30, 255, 185 },
+        { 255, 240,  30 },
+        { 255, 120,   0 },
+        { 255,   0,   0 },
+    };
+
+    if (percent > 100) {
+        percent = 100;
+    }
+    int seg = (int)(percent / 25U);
+    if (seg >= 4) {
+        seg = 3;
+        percent = 100;
+    }
+    float t = ((float)percent - (float)(seg * 25)) / 25.0f;
+    return rgb565(
+        lerp_u8(stops[seg][0], stops[seg + 1][0], t),
+        lerp_u8(stops[seg][1], stops[seg + 1][1], t),
+        lerp_u8(stops[seg][2], stops[seg + 1][2], t)
+    );
+}
+
+uint16_t badge_threat_snapshot_entity_heat_color_rgb565(
+    const badge_threat_snapshot_entity_t *item,
+    uint32_t live_count)
+{
+    uint8_t heat = badge_threat_snapshot_entity_heat_percent(item, live_count);
+    if (badge_threat_snapshot_entity_is_meta_glasses(item)) {
+        return badge_threat_heat_percent_to_rgb565(heat);
+    }
+    return badge_threat_proximity_percent_to_rgb565(heat);
+}
+
+bool badge_threat_format_top_detail(
+    const badge_threat_snapshot_t *snapshot,
+    const badge_threat_snapshot_entity_t *item,
+    char *out,
+    size_t out_len)
+{
+    if (!out || out_len == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    if (!item) {
+        return false;
+    }
+
+    if (item->cls == BADGE_THREAT_DRONE &&
+        (badge_threat_snapshot_entity_is_remote_id_drone(item) ||
+         item->category == BADGE_THREAT_CATEGORY_SSID)) {
+        uint32_t rid_count = badge_threat_snapshot_remote_id_drone_count(snapshot);
+        uint32_t ssid_count = badge_threat_snapshot_drone_ssid_count(snapshot);
+        uint32_t count = badge_threat_snapshot_drone_evidence_count(snapshot);
+        if (count == 0) {
+            count = 1;
+        }
+        if (rid_count > 0 && ssid_count > 0) {
+            snprintf(out, out_len, "RID x%lu SSID x%lu",
+                     (unsigned long)rid_count,
+                     (unsigned long)ssid_count);
+        } else if (rid_count > 0 && item->best_rssi < 0) {
+            snprintf(out, out_len, "%lu drone%s near %ddB",
+                     (unsigned long)count,
+                     count == 1 ? "" : "s",
+                     item->best_rssi);
+        } else if (ssid_count > 0) {
+            snprintf(out, out_len, "%lu drone SSID%s live",
+                     (unsigned long)count,
+                     count == 1 ? "" : "s");
+        } else {
+            snprintf(out, out_len, "%lu drone%s near",
+                     (unsigned long)count,
+                     count == 1 ? "" : "s");
+        }
+        return true;
+    }
+
+    if (badge_threat_snapshot_entity_is_meta_glasses(item)) {
+        uint32_t count = badge_threat_snapshot_meta_glasses_count(snapshot);
+        if (count == 0) {
+            count = 1;
+        }
+        int8_t rssi = item->rssi < 0 ? item->rssi : item->best_rssi;
+        if (item->display_id[0] != '\0') {
+            if (rssi < 0) {
+                snprintf(out, out_len, "META #%s %ddB",
+                         item->display_id,
+                         rssi);
+            } else {
+                snprintf(out, out_len, "META #%s near", item->display_id);
+            }
+        } else if (rssi < 0) {
+            snprintf(out, out_len, "%lu glass%s %ddB",
+                     (unsigned long)count,
+                     count == 1 ? "" : "es",
+                     rssi);
+        } else {
+            snprintf(out, out_len, "%lu glass%s near",
+                     (unsigned long)count,
+                     count == 1 ? "" : "es");
+        }
+        return true;
+    }
+
+    return false;
+}
+
+bool badge_threat_top_detail_uses_large_text(const char *detail,
+                                             size_t visible_chars)
+{
+    if (!detail || visible_chars == 0) {
+        return false;
+    }
+    return strlen(detail) <= visible_chars;
+}
+
 static void badge_threat_snapshot_entity_view_title(
     const badge_threat_snapshot_entity_t *item,
     char *out,
@@ -1877,6 +2366,24 @@ static void badge_threat_snapshot_entity_view_title(
             return;
         case BADGE_THREAT_CATEGORY_SKIM:
             snprintf(out, out_len, "SKIMMER");
+            return;
+        case BADGE_THREAT_CATEGORY_CAMERA:
+            snprintf(out, out_len, "CAMERA NEAR");
+            return;
+        case BADGE_THREAT_CATEGORY_BEACON:
+            snprintf(out, out_len, "BEACON AREA");
+            return;
+        case BADGE_THREAT_CATEGORY_EVENT_BADGE:
+            snprintf(out, out_len, "EVENT BADGE");
+            return;
+        case BADGE_THREAT_CATEGORY_LOCK:
+            snprintf(out, out_len, "LOCK NEAR");
+            return;
+        case BADGE_THREAT_CATEGORY_HID:
+            snprintf(out, out_len, "HID NEAR");
+            return;
+        case BADGE_THREAT_CATEGORY_AUDIO:
+            snprintf(out, out_len, "AURACAST");
             return;
         case BADGE_THREAT_CATEGORY_TAG_CLOSE:
             snprintf(out, out_len, "TRACKER");
@@ -1978,6 +2485,12 @@ badge_threat_display_lane_t badge_threat_snapshot_entity_display_lane(
         item->category == BADGE_THREAT_CATEGORY_GLASS ||
         item->category == BADGE_THREAT_CATEGORY_TAG_CLOSE ||
         item->category == BADGE_THREAT_CATEGORY_SKIM ||
+        item->category == BADGE_THREAT_CATEGORY_CAMERA ||
+        item->category == BADGE_THREAT_CATEGORY_BEACON ||
+        item->category == BADGE_THREAT_CATEGORY_EVENT_BADGE ||
+        item->category == BADGE_THREAT_CATEGORY_LOCK ||
+        item->category == BADGE_THREAT_CATEGORY_HID ||
+        item->category == BADGE_THREAT_CATEGORY_AUDIO ||
         item->category == BADGE_THREAT_CATEGORY_FLOCK ||
         item->category == BADGE_THREAT_CATEGORY_PRIVACY) {
         return BADGE_THREAT_DISPLAY_LANE_BLE;
@@ -2000,19 +2513,47 @@ bool badge_threat_snapshot_should_show_lower_drone_evidence(
     return badge_threat_snapshot_drone_evidence_count(snapshot) > 1;
 }
 
-size_t badge_threat_marquee_offset(size_t text_len,
-                                   size_t visible_chars,
-                                   uint32_t frame,
-                                   uint32_t step_frames)
+bool badge_threat_snapshot_should_show_lower_meta_evidence(
+    const badge_threat_snapshot_t *snapshot,
+    const badge_threat_snapshot_entity_t *item,
+    bool top_meta_active)
+{
+    if (!snapshot || !item || !item->active || item->stale ||
+        !badge_threat_snapshot_entity_is_meta_glasses(item)) {
+        return false;
+    }
+    (void)snapshot;
+    return !top_meta_active;
+}
+
+size_t badge_threat_marquee_offset_rate(size_t text_len,
+                                        size_t visible_chars,
+                                        uint32_t frame,
+                                        uint32_t step_chars,
+                                        uint32_t step_frames)
 {
     if (visible_chars == 0 || text_len <= visible_chars) {
         return 0;
+    }
+    if (step_chars == 0) {
+        step_chars = 1;
     }
     if (step_frames == 0) {
         step_frames = 1;
     }
     size_t cycle = text_len + 3U;
-    return (size_t)((frame / step_frames) % (uint32_t)cycle);
+    uint64_t scaled = ((uint64_t)frame * (uint64_t)step_chars) /
+                      (uint64_t)step_frames;
+    return (size_t)(scaled % (uint32_t)cycle);
+}
+
+size_t badge_threat_marquee_offset(size_t text_len,
+                                   size_t visible_chars,
+                                   uint32_t frame,
+                                   uint32_t step_frames)
+{
+    return badge_threat_marquee_offset_rate(text_len, visible_chars, frame,
+                                            1, step_frames);
 }
 
 void badge_threat_format_drone_near_title(const badge_threat_snapshot_t *snapshot,

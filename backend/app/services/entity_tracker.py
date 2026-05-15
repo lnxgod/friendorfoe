@@ -79,12 +79,16 @@ class EntityTracker:
     # Manufacturer-name substrings that auto-categorize an entity as "threat".
     # Matched case-insensitively against entity.manufacturers union and label.
     HIGH_RISK_KEYWORDS = (
-        "AirTag", "FindMy", "Tile Tracker", "SmartTag", "Chipolo", "Pebblebee",
+        "AirTag", "FindMy", "Tile Tracker", "SmartTag", "Google Tracker",
+        "Chipolo", "Pebblebee", "Tracker",
         "Meta Glasses", "Meta Smart Glasses", "Ray-Ban Meta", "Oakley Meta",
         "Meta Quest", "Meta VR",
         "Flipper", "Pwnagotchi", "Marauder",
         # v0.62 spooky-device classes from scanner-side name-pattern detection
         "Card Skimmer", "Hidden Camera", "Flock Surveillance", "Flock Safety",
+        "Camera Near", "Body Camera", "Fleet Camera", "Surveillance Camera",
+        "Venue Beacon", "Event Badge", "Mobile Key Lock", "BLE HID",
+        "Auracast",
     )
 
     @classmethod

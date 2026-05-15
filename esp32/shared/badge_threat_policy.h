@@ -45,6 +45,12 @@ typedef enum {
     BADGE_THREAT_CATEGORY_FLOCK,
     BADGE_THREAT_CATEGORY_GLASS,
     BADGE_THREAT_CATEGORY_SKIM,
+    BADGE_THREAT_CATEGORY_CAMERA,
+    BADGE_THREAT_CATEGORY_BEACON,
+    BADGE_THREAT_CATEGORY_EVENT_BADGE,
+    BADGE_THREAT_CATEGORY_LOCK,
+    BADGE_THREAT_CATEGORY_HID,
+    BADGE_THREAT_CATEGORY_AUDIO,
     BADGE_THREAT_CATEGORY_WIFI,
     BADGE_THREAT_CATEGORY_TAG_CLOSE,
     BADGE_THREAT_CATEGORY_PRIVACY,
@@ -99,6 +105,7 @@ typedef struct {
     float current_score;
     uint8_t evidence_quality;
     int display_rank;
+    int8_t last_rssi;
     int8_t strongest_rssi;
     uint32_t event_count;
 } badge_threat_entity_t;
@@ -197,11 +204,32 @@ uint32_t badge_threat_snapshot_meta_glasses_count(
     const badge_threat_snapshot_t *snapshot);
 const badge_threat_snapshot_entity_t *badge_threat_snapshot_best_meta_glasses(
     const badge_threat_snapshot_t *snapshot);
+const badge_threat_snapshot_entity_t *badge_threat_snapshot_meta_glasses_at(
+    const badge_threat_snapshot_t *snapshot,
+    uint32_t phase,
+    int *pos_out,
+    int *total_out);
 void badge_threat_format_meta_glasses_title(char *out, size_t out_len);
 uint8_t badge_threat_snapshot_entity_proximity_percent(
     const badge_threat_snapshot_entity_t *item);
+uint8_t badge_threat_snapshot_entity_signal_percent(
+    const badge_threat_snapshot_entity_t *item);
+uint8_t badge_threat_snapshot_entity_heat_percent(
+    const badge_threat_snapshot_entity_t *item,
+    uint32_t live_count);
 uint8_t badge_threat_heat_percent(uint8_t base_percent, uint32_t live_count);
 uint16_t badge_threat_proximity_percent_to_rgb565(uint8_t percent);
+uint16_t badge_threat_heat_percent_to_rgb565(uint8_t percent);
+uint16_t badge_threat_snapshot_entity_heat_color_rgb565(
+    const badge_threat_snapshot_entity_t *item,
+    uint32_t live_count);
+bool badge_threat_format_top_detail(
+    const badge_threat_snapshot_t *snapshot,
+    const badge_threat_snapshot_entity_t *item,
+    char *out,
+    size_t out_len);
+bool badge_threat_top_detail_uses_large_text(const char *detail,
+                                             size_t visible_chars);
 bool badge_threat_snapshot_entity_view_key(
     const badge_threat_snapshot_entity_t *item,
     char *out,
@@ -215,10 +243,19 @@ badge_threat_display_lane_t badge_threat_snapshot_entity_display_lane(
 bool badge_threat_snapshot_should_show_lower_drone_evidence(
     const badge_threat_snapshot_t *snapshot,
     const badge_threat_snapshot_entity_t *item);
+bool badge_threat_snapshot_should_show_lower_meta_evidence(
+    const badge_threat_snapshot_t *snapshot,
+    const badge_threat_snapshot_entity_t *item,
+    bool top_meta_active);
 size_t badge_threat_marquee_offset(size_t text_len,
                                    size_t visible_chars,
                                    uint32_t frame,
                                    uint32_t step_frames);
+size_t badge_threat_marquee_offset_rate(size_t text_len,
+                                        size_t visible_chars,
+                                        uint32_t frame,
+                                        uint32_t step_chars,
+                                        uint32_t step_frames);
 bool badge_threat_status_ssid_is_fresh(const char *ssid, int64_t age_s);
 
 #ifdef __cplusplus

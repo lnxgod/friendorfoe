@@ -21,6 +21,7 @@
 #include "detection_policy.h"
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
+#include "badge_display_policy_runtime.h"
 #endif
 
 #include <string.h>
@@ -43,7 +44,7 @@
 
 static const char *TAG = "serial_cfg";
 
-#define LINE_BUF_SIZE   512
+#define LINE_BUF_SIZE   2048
 #define CMD_PREFIX      "FOF_SET:"
 #define CMD_CTL         "FOF_CTL:"
 #define CMD_STATUS      "FOF_STATUS"
@@ -79,6 +80,7 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
 static const char *ALLOWED_KEYS[] = {
     "wifi_ssid", "wifi_pass", "backend_url", "device_id",
     "ap_ssid", "ap_pass", "badge_mode", "badge_display_debug",
+    "badge_display_policy_v1",
     NULL
 };
 
@@ -270,6 +272,18 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
                (unsigned long)info->rid_service_seen,
                (unsigned long)info->rid_emit,
                (unsigned long)info->privacy_seen);
+        printf(",\"display_policy_hash\":%lu,"
+               "\"display_policy_ack_hash\":%lu,"
+               "\"filtered_counts\":{",
+               (unsigned long)info->display_policy_hash,
+               (unsigned long)info->display_policy_ack_hash);
+        for (int i = 0; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; i++) {
+            badge_display_policy_class_t cls = (badge_display_policy_class_t)i;
+            printf("%s", i == 0 ? "" : ",");
+            print_json_escaped_string(badge_display_policy_class_key(cls));
+            printf(":%lu", (unsigned long)info->display_policy_filtered[i]);
+        }
+        printf("}");
         printf(",\"ble_meta_last_reason\":");
         print_json_escaped_string(info->ble_meta_last_reason);
         printf(",\"ble_meta_identity\":");
@@ -308,6 +322,45 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
     }
     printf("}");
 }
+
+#ifdef FOF_BADGE_VARIANT
+static void print_display_policy_status_fields(void)
+{
+    char policy_json[BADGE_DISPLAY_POLICY_JSON_MAX] = {0};
+    badge_display_policy_runtime_json(policy_json, sizeof(policy_json));
+    printf(",\"display_policy_hash\":%lu,\"display_policy\":%s,"
+           "\"filtered_counts\":{",
+           (unsigned long)badge_display_policy_runtime_hash(),
+           policy_json[0] ? policy_json : "{\"version\":1,\"classes\":{}}");
+    for (int i = 0; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; i++) {
+        badge_display_policy_class_t cls = (badge_display_policy_class_t)i;
+        printf("%s", i == 0 ? "" : ",");
+        print_json_escaped_string(badge_display_policy_class_key(cls));
+        printf(":%lu", (unsigned long)
+               badge_display_policy_runtime_filtered_count(cls));
+    }
+    printf("}");
+}
+
+static void forward_display_policy_to_scanners(bool *ble_sent,
+                                               bool *wifi_sent)
+{
+    char cmd[BADGE_DISPLAY_POLICY_JSON_MAX + 128] = {0};
+    badge_display_policy_runtime_command_json(cmd, sizeof(cmd));
+    bool ble_ok = false;
+    bool wifi_ok = false;
+    if (cmd[0]) {
+        ble_ok = uart_rx_send_command_to_scanner_checked(0, cmd);
+#if CONFIG_DUAL_SCANNER
+        wifi_ok = uart_rx_send_command_to_scanner_checked(1, cmd);
+#else
+        wifi_ok = true;
+#endif
+    }
+    if (ble_sent) *ble_sent = ble_ok;
+    if (wifi_sent) *wifi_sent = wifi_ok;
+}
+#endif
 
 static void send_badge_status_response(void)
 {
@@ -427,6 +480,9 @@ static void send_badge_status_response(void)
            (unsigned long)snapshot.active_counts[BADGE_THREAT_WIFI_ANOMALY],
            (unsigned long)snapshot.active_counts[BADGE_THREAT_BLE],
            (unsigned long)snapshot.active_counts[BADGE_THREAT_OTHER]);
+#ifdef FOF_BADGE_VARIANT
+    print_display_policy_status_fields();
+#endif
     printf(",\"entities\":[");
     for (int i = 0; i < snapshot.entity_count; i++) {
         const badge_threat_snapshot_entity_t *entity = &snapshot.entities[i];
@@ -725,6 +781,71 @@ static void handle_safe_mode_command(cJSON *root)
     );
     send_control_ok(on ? "safe mode enabled" : "safe mode disabled", false);
 }
+
+static void handle_display_policy_command(cJSON *root)
+{
+    const cJSON *policy_item = cJSON_GetObjectItemCaseSensitive(root, "policy");
+    if (!policy_item) {
+        send_control_error("missing policy");
+        return;
+    }
+    char *policy_json = cJSON_PrintUnformatted(policy_item);
+    if (!policy_json) {
+        send_control_error("no memory");
+        return;
+    }
+
+    badge_display_policy_t policy;
+    char err[64] = {0};
+    bool parsed = badge_display_policy_parse_json(policy_json, &policy,
+                                                  err, sizeof(err));
+    cJSON_free(policy_json);
+    if (!parsed) {
+        send_control_error(err[0] ? err : "invalid display policy");
+        return;
+    }
+
+    bool persist = ctl_bool_value(
+        cJSON_GetObjectItemCaseSensitive(root, "persist"),
+        false);
+    if (!badge_display_policy_runtime_set(&policy, persist)) {
+        send_control_error("display policy save failed");
+        return;
+    }
+
+    bool ble_sent = false;
+    bool wifi_sent = false;
+    forward_display_policy_to_scanners(&ble_sent, &wifi_sent);
+    printf("FOF_CTL_OK:{\"message\":\"display policy updated\","
+           "\"display_policy_hash\":%lu,\"persisted\":%s,"
+           "\"ble_sent\":%s,\"wifi_sent\":%s,"
+           "\"reboot_required\":false}\n",
+           (unsigned long)badge_display_policy_runtime_hash(),
+           persist ? "true" : "false",
+           ble_sent ? "true" : "false",
+           wifi_sent ? "true" : "false");
+    fflush(stdout);
+}
+
+static void handle_display_policy_reset_command(cJSON *root)
+{
+    bool persist = ctl_bool_value(
+        cJSON_GetObjectItemCaseSensitive(root, "persist"),
+        false);
+    badge_display_policy_runtime_reset(persist);
+    bool ble_sent = false;
+    bool wifi_sent = false;
+    forward_display_policy_to_scanners(&ble_sent, &wifi_sent);
+    printf("FOF_CTL_OK:{\"message\":\"display policy reset\","
+           "\"display_policy_hash\":%lu,\"persisted\":%s,"
+           "\"ble_sent\":%s,\"wifi_sent\":%s,"
+           "\"reboot_required\":false}\n",
+           (unsigned long)badge_display_policy_runtime_hash(),
+           persist ? "true" : "false",
+           ble_sent ? "true" : "false",
+           wifi_sent ? "true" : "false");
+    fflush(stdout);
+}
 #endif
 
 static void handle_ctl_command(const char *json)
@@ -832,6 +953,18 @@ static void handle_ctl_command(const char *json)
         handle_safe_mode_command(root);
 #else
         send_control_error("safe mode is badge-only");
+#endif
+    } else if (strcmp(cmd, "badge_display_policy") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        handle_display_policy_command(root);
+#else
+        send_control_error("badge display policy is badge-only");
+#endif
+    } else if (strcmp(cmd, "badge_display_policy_reset") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        handle_display_policy_reset_command(root);
+#else
+        send_control_error("badge display policy is badge-only");
 #endif
     } else if (strcmp(cmd, "scanner_display") == 0 ||
                strcmp(cmd, "scanner_trigger") == 0 ||

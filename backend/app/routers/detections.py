@@ -52,6 +52,10 @@ from app.services.rf_reference import reference_status as rf_reference_status
 from app.services.applied_calibration import AppliedCalibrationStore
 from app.services.calibration_mode import CalibrationModeCoordinator
 from app.services.phone_calibration import PhoneCalibrationManager
+from app.services.privacy_devices import (
+    classify_privacy_device,
+    privacy_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -616,15 +620,24 @@ def _uplink_time_sync_health(info: dict | None) -> str:
     return "unknown"
 
 
-_EXPECTED_BACKEND_VERSION = "0.63.20-controlpath-recovery"
-_EXPECTED_FIRMWARE_VERSION = "0.63.0-svc153"
+_EXPECTED_BACKEND_VERSION = "0.64.37-badge-privacy"
+_EXPECTED_FIRMWARE_VERSION = "0.63.0-svc156"
+_EXPECTED_BADGE_FIRMWARE_VERSION = "0.64.37-badge-privacy"
+
+
+def _expected_firmware_versions_label() -> str:
+    return f"{_EXPECTED_FIRMWARE_VERSION} or {_EXPECTED_BADGE_FIRMWARE_VERSION}"
 
 
 def _firmware_version_state(version: str | None) -> str:
     if not version:
         return "unknown"
     v = str(version)
-    if _EXPECTED_FIRMWARE_VERSION in v or _EXPECTED_BACKEND_VERSION in v:
+    if (
+        _EXPECTED_FIRMWARE_VERSION in v
+        or _EXPECTED_BADGE_FIRMWARE_VERSION in v
+        or _EXPECTED_BACKEND_VERSION in v
+    ):
         return "current"
     return "drift"
 
@@ -1904,7 +1917,13 @@ async def get_live_devices(
             ble_apple_flags=entry.get("ble_apple_flags"),
         )
         entry.update(_rf_meta_subset(rf_meta))
+        privacy_fields = classify_privacy_device(entry)
+        privacy_fields["privacy_evidence"] = privacy_fields.get("evidence", [])
+        if entry.get("evidence"):
+            privacy_fields.pop("evidence", None)
+        entry.update(privacy_fields)
     summary = _ble_enricher.get_summary()
+    summary.update(privacy_summary(devices))
     return {"devices": devices, "summary": summary}
 
 
@@ -2133,7 +2152,7 @@ async def get_detection_diagnostics(
             system_warnings.append({
                 "code": "uplink_firmware_drift",
                 "severity": "warning",
-                "message": f"{node_id} reports {version}; expected {_EXPECTED_FIRMWARE_VERSION}",
+                "message": f"{node_id} reports {version}; expected {_expected_firmware_versions_label()}",
                 "device_id": node_id,
             })
         else:
@@ -2166,7 +2185,7 @@ async def get_detection_diagnostics(
                 system_warnings.append({
                     "code": "scanner_firmware_drift",
                     "severity": "warning",
-                    "message": f"{node_id}/{sc.get('uart', '?')} reports {sc_ver}; expected {_EXPECTED_FIRMWARE_VERSION}",
+                    "message": f"{node_id}/{sc.get('uart', '?')} reports {sc_ver}; expected {_expected_firmware_versions_label()}",
                     "device_id": node_id,
                     "uart": sc.get("uart"),
                 })
@@ -2290,6 +2309,8 @@ async def get_detection_diagnostics(
         "firmware_readiness": {
             "expected_backend_version": _EXPECTED_BACKEND_VERSION,
             "expected_firmware_version": _EXPECTED_FIRMWARE_VERSION,
+            "expected_badge_firmware_version": _EXPECTED_BADGE_FIRMWARE_VERSION,
+            "expected_firmware_versions": _expected_firmware_versions_label(),
             "uplink_versions_seen": dict(firmware_versions),
             "scanner_versions_seen": dict(scanner_versions),
             "current_count": current_fw,

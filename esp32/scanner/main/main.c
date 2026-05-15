@@ -638,6 +638,42 @@ static void handle_display_control_command(cJSON *root)
              s_display_page);
 }
 
+#ifdef FOF_BADGE_VARIANT
+static void handle_display_policy_command(cJSON *root)
+{
+    const cJSON *hash_j = cJSON_GetObjectItem(root, "hash");
+    uint32_t expected_hash = cJSON_IsNumber(hash_j)
+        ? (uint32_t)hash_j->valuedouble
+        : 0U;
+    const cJSON *policy_j = cJSON_GetObjectItem(root, "policy");
+    char *policy_json = cJSON_PrintUnformatted(policy_j ? policy_j : root);
+    char err[64] = {0};
+    bool ok = policy_json &&
+        uart_tx_set_display_policy_json(policy_json, expected_hash,
+                                        err, sizeof(err));
+    if (policy_json) {
+        cJSON_free(policy_json);
+    }
+
+    char ack[192];
+    if (ok) {
+        snprintf(ack, sizeof(ack),
+                 "{\"type\":\"display_policy_ack\",\"hash\":%lu}",
+                 (unsigned long)uart_tx_display_policy_hash());
+    } else {
+        snprintf(ack, sizeof(ack),
+                 "{\"type\":\"display_policy_ack\",\"ok\":false,"
+                 "\"hash\":%lu,\"error\":\"%s\"}",
+                 (unsigned long)uart_tx_display_policy_hash(),
+                 err[0] ? err : "invalid_policy");
+    }
+    uart_tx_send_raw_json(ack);
+    ESP_LOGI(TAG, "Display policy command %s hash=%lu",
+             ok ? "ok" : "failed",
+             (unsigned long)uart_tx_display_policy_hash());
+}
+#endif
+
 /* ── UART command listener (lock-on from uplink) ──────────────────────── */
 
 static void send_cal_mode_ack(bool ok_flag)
@@ -782,7 +818,7 @@ static void handle_fw_offer(cJSON *root, const char *board)
 static void uart_cmd_listener_task(void *arg)
 {
     uint8_t buf[256];
-    char line[256];
+    char line[BADGE_DISPLAY_POLICY_JSON_MAX + 160];
     int line_pos = 0;
     TickType_t line_started_tick = 0;
 
@@ -1051,6 +1087,11 @@ static void uart_cmd_listener_task(void *arg)
 
                         } else if (type && strcmp(type, "display_control") == 0) {
                             handle_display_control_command(root);
+
+                        } else if (type && strcmp(type, "display_policy") == 0) {
+#ifdef FOF_BADGE_VARIANT
+                            handle_display_policy_command(root);
+#endif
 
                         } else if (type && strcmp(type, MSG_TYPE_TIME) == 0) {
                             /* Uplink broadcasts its epoch-ms every 10s.

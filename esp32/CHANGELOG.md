@@ -4,6 +4,43 @@ All notable changes to the ESP32 hardware edition of Friend or Foe.
 
 ## [Unreleased]
 
+## [0.64.37-badge-privacy] - 2026-05-14
+
+### Added
+- **Badge firmware version track bumped to `0.64.37-badge-privacy`.** This is
+  badge-only XIAO ESP32-S3 firmware; production `uplink-s3`,
+  `scanner-s3-combo`, and `scanner-s3-combo-seed` remain on `0.63.0-svc156`.
+- **Badge display policy engine.** Shared badge policy code defines display
+  classes, default lanes/priorities, proximity thresholds, JSON parsing,
+  hashing, and filtered-count accounting for badge LCD/scanner emission rules.
+- **Persistent badge display policy runtime.** Badge uplinks can store/reset
+  policy in NVS, expose current policy over `FOF_STATUS` and
+  `/api/badge/status`, and forward policy commands to both scanner UART slots.
+- **Native display-policy regression tests.** New Unity coverage validates
+  default policy, parser guardrails, hashing, display-class mapping, and filter
+  decisions.
+
+### Changed
+- **Badge threat snapshots are richer.** Scanner/uplink telemetry now carries
+  detail labels, display IDs, evidence quality, display rank, proximity,
+  seen/group counts, best RSSI, stale state, policy hashes, and per-class
+  filtered counts.
+- **Badge LCD lanes are policy-aware.** Drone, Meta Glasses, trackers,
+  WiFi attacks, skimmers, cameras, Flock/ALPR, locks, HID, beacons, event
+  badges, Auracast, and scanner-status rows can be enabled, lane-routed,
+  priority-ranked, and proximity-gated independently.
+- **Badge HTTP/USB control buffers enlarged for policy JSON.** Badge control
+  requests and serial commands can carry the full display policy without
+  truncating class configuration.
+
+### Fixed
+- **Scanner relay recovery after failed updates.** Badge scanner relay failures
+  clear stale ready state, report recovery/backoff facts, and let scanner-
+  originated `fw_check` retry cleanly after the short badge backoff.
+- **Badge display dedupe and suppression.** Lower lanes dedupe repeated
+  scanner evidence and avoid repeating a single live drone item while keeping
+  high-priority Meta/drone/tracker evidence visible.
+
 ## [0.63.0-svc156] - 2026-04-30
 
 ### Added

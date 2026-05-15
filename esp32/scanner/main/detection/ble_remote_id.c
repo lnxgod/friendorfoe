@@ -510,13 +510,22 @@ static bool badge_ble_should_emit_detection(const ble_fingerprint_t *fp,
         case BLE_DEV_HIDDEN_CAMERA:
         case BLE_DEV_FLIPPER_ZERO:
             return true;
+        case BLE_DEV_MOBILE_KEY_LOCK:
+        case BLE_DEV_BLE_HID:
+            return rssi >= -72;
+        case BLE_DEV_EVENT_BADGE:
+            return rssi >= -70;
+        case BLE_DEV_VENUE_BEACON:
+        case BLE_DEV_BEACON:
+        case BLE_DEV_AURACAST_AUDIO:
+            return rssi >= -65;
         default:
             break;
     }
     if (is_meta_device) {
         return true;
     }
-    return fp->is_tracker && rssi >= -50;
+    return fp->is_tracker && rssi >= -55;
 #else
     (void)fp;
     (void)is_calibration_beacon;

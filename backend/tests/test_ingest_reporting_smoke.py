@@ -8,6 +8,8 @@ from app.main import app
 from app.routers import detections
 from app.services.database import create_tables
 
+SMOKE_VERSION = "0.64.37-badge-privacy"
+
 
 @pytest_asyncio.fixture
 async def client(monkeypatch: pytest.MonkeyPatch):
@@ -26,7 +28,7 @@ def _smoke_batch(device_id: str = "uplink_SMOKE01") -> dict:
         "device_lon": -122.444,
         "device_alt": 12.0,
         "timestamp": int(time.time()),
-        "firmware_version": "0.63.20-controlpath-recovery",
+        "firmware_version": SMOKE_VERSION,
         "board_type": "uplink-s3",
         "scan_profile": "field",
         "reporting": {
@@ -42,7 +44,7 @@ def _smoke_batch(device_id: str = "uplink_SMOKE01") -> dict:
                 "uart": "ble",
                 "connected": True,
                 "board": "scanner-s3-combo",
-                "ver": "0.63.20-controlpath-recovery",
+                "ver": SMOKE_VERSION,
                 "caps": "ble,wifi",
                 "health": "ok",
                 "role_acked": True,
@@ -69,14 +71,14 @@ async def test_empty_detection_batch_creates_dashboard_visible_node(client: Asyn
     nodes = nodes_resp.json()["nodes"]
     node = next(n for n in nodes if n["device_id"] == "uplink_SMOKE01")
     assert node["online"] is True
-    assert node["firmware_version"] == "0.63.20-controlpath-recovery"
+    assert node["firmware_version"] == SMOKE_VERSION
     assert node["board_type"] == "uplink-s3"
     assert node["total_batches"] == 1
     assert node["total_detections"] == 0
     assert node["ip"] == "127.0.0.1"
     assert node["scanners"][0]["uart"] == "ble"
     assert node["scanners"][0]["connected"] is True
-    assert node["scanners"][0]["ver"] == "0.63.20-controlpath-recovery"
+    assert node["scanners"][0]["ver"] == SMOKE_VERSION
     assert node["scanners"][0]["health"] == "ok"
     assert node["scanners"][0]["ble_adv_seen"] == 42
     assert node["reporting"]["network_mode"] == "backend"

@@ -65,11 +65,23 @@ data class BadgeThreatCounts(
 
 data class BadgeThreatEntity(
     val label: String,
+    val detail: String = "",
     val threatClass: String,
+    val category: String = "",
+    val code: String = "",
+    val displayId: String = "",
     val score: Int,
+    val evidenceQuality: Int = 0,
+    val displayRank: Int = 0,
     val ageSeconds: Int,
+    val lastSeenSeconds: Int = 0,
     val rssi: Int,
+    val bestRssi: Int = 0,
     val events: Int,
+    val seenCount: Int = 0,
+    val groupCount: Int = 0,
+    val proximityLevel: Int = 0,
+    val stale: Boolean = false,
     val lat: Double? = null,
     val lon: Double? = null,
     val altitudeM: Float? = null,
@@ -114,11 +126,89 @@ data class BadgeScannerStatus(
     val wifiNotableSsidEmit: Int = 0,
     val wifiLastDroneSsid: String = "",
     val wifiLastNotableSsid: String = "",
+    val displayPolicyHash: Long = 0,
+    val displayPolicyAckHash: Long = 0,
+    val filteredCounts: Map<String, Int> = emptyMap(),
     val firmwareState: String = "",
     val targetVersion: String = "",
     val otaState: String = "",
     val lastFirmwareError: String = ""
 )
+
+data class BadgeDisplayClassPolicy(
+    val enabled: Boolean = true,
+    val lane: String = "lower",
+    val minProximity: String = "present",
+    val priority: Int = 50
+)
+
+data class BadgeDisplayPolicy(
+    val version: Int = 1,
+    val classes: Map<String, BadgeDisplayClassPolicy> = defaultBadgeDisplayPolicyClasses()
+) {
+    fun toJsonObject(): JsonObject = JsonObject().apply {
+        addProperty("version", version)
+        add("classes", JsonObject().apply {
+            classes.forEach { (key, config) ->
+                add(key, JsonObject().apply {
+                    addProperty("enabled", config.enabled)
+                    addProperty("lane", config.lane)
+                    addProperty("min_proximity", config.minProximity)
+                    addProperty("priority", config.priority.coerceIn(0, 100))
+                })
+            }
+        })
+    }
+}
+
+data class BadgeDisplayPolicyClassInfo(
+    val key: String,
+    val label: String
+)
+
+val BadgeDisplayPolicyClasses = listOf(
+    BadgeDisplayPolicyClassInfo("drone", "Drone"),
+    BadgeDisplayPolicyClassInfo("meta", "Meta Glasses"),
+    BadgeDisplayPolicyClassInfo("tracker", "Tracker"),
+    BadgeDisplayPolicyClassInfo("wifi_attack", "WiFi Attack"),
+    BadgeDisplayPolicyClassInfo("skimmer", "Skimmer"),
+    BadgeDisplayPolicyClassInfo("camera", "Camera"),
+    BadgeDisplayPolicyClassInfo("flock", "Flock/ALPR"),
+    BadgeDisplayPolicyClassInfo("lock", "Lock"),
+    BadgeDisplayPolicyClassInfo("hid", "BLE HID"),
+    BadgeDisplayPolicyClassInfo("beacon", "Venue Beacon"),
+    BadgeDisplayPolicyClassInfo("event_badge", "Event Badge"),
+    BadgeDisplayPolicyClassInfo("auracast", "Auracast"),
+    BadgeDisplayPolicyClassInfo("scanner_status", "Scanner Status")
+)
+
+fun defaultBadgeDisplayPolicyClasses(): Map<String, BadgeDisplayClassPolicy> = mapOf(
+    "drone" to BadgeDisplayClassPolicy(true, "both", "present", 100),
+    "meta" to BadgeDisplayClassPolicy(true, "both", "present", 95),
+    "tracker" to BadgeDisplayClassPolicy(true, "lower", "near", 70),
+    "wifi_attack" to BadgeDisplayClassPolicy(true, "both", "present", 90),
+    "skimmer" to BadgeDisplayClassPolicy(true, "both", "near", 88),
+    "camera" to BadgeDisplayClassPolicy(true, "lower", "near", 65),
+    "flock" to BadgeDisplayClassPolicy(true, "both", "present", 85),
+    "lock" to BadgeDisplayClassPolicy(true, "lower", "near", 55),
+    "hid" to BadgeDisplayClassPolicy(true, "lower", "close", 45),
+    "beacon" to BadgeDisplayClassPolicy(true, "lower", "near", 30),
+    "event_badge" to BadgeDisplayClassPolicy(true, "lower", "near", 35),
+    "auracast" to BadgeDisplayClassPolicy(true, "lower", "near", 20),
+    "scanner_status" to BadgeDisplayClassPolicy(true, "lower", "present", 10)
+)
+
+fun defaultBadgeDisplayPolicy(): BadgeDisplayPolicy =
+    BadgeDisplayPolicy(classes = defaultBadgeDisplayPolicyClasses())
+
+fun badgeDisplayPolicyCommandJson(
+    policy: BadgeDisplayPolicy,
+    persist: Boolean = true
+): JsonObject = JsonObject().apply {
+    addProperty("cmd", "badge_display_policy")
+    addProperty("persist", persist)
+    add("policy", policy.toJsonObject())
+}
 
 data class BadgeFirmwareProgress(
     val kind: String = "",
@@ -140,7 +230,10 @@ data class BadgeControlStatus(
     val reporting: BadgeReportingStatus = BadgeReportingStatus(),
     val counts: BadgeThreatCounts = BadgeThreatCounts(),
     val entities: List<BadgeThreatEntity> = emptyList(),
-    val scanners: List<BadgeScannerStatus> = emptyList()
+    val scanners: List<BadgeScannerStatus> = emptyList(),
+    val displayPolicy: BadgeDisplayPolicy = defaultBadgeDisplayPolicy(),
+    val displayPolicyHash: Long = 0,
+    val filteredCounts: Map<String, Int> = emptyMap()
 )
 
 data class BadgeUsbState(
@@ -334,6 +427,17 @@ class BadgeUsbRepository @Inject constructor(
             addProperty("cmd", "fw_relay")
             addProperty("uart", uart)
             addProperty("force", force)
+        })
+    }
+
+    fun applyDisplayPolicy(policy: BadgeDisplayPolicy, persist: Boolean = true) {
+        sendControl(badgeDisplayPolicyCommandJson(policy, persist))
+    }
+
+    fun resetDisplayPolicy(persist: Boolean = true) {
+        sendControl(JsonObject().apply {
+            addProperty("cmd", "badge_display_policy_reset")
+            addProperty("persist", persist)
         })
     }
 
@@ -732,21 +836,71 @@ class BadgeUsbRepository @Inject constructor(
         }.getOrNull()
     }
 
+    private fun parseDisplayPolicy(obj: JsonObject?): BadgeDisplayPolicy {
+        if (obj == null) return defaultBadgeDisplayPolicy()
+        val classesObj = runCatching { obj.getAsJsonObject("classes") }.getOrNull()
+            ?: return defaultBadgeDisplayPolicy()
+        val defaults = defaultBadgeDisplayPolicyClasses()
+        val parsed = defaults.toMutableMap()
+        BadgeDisplayPolicyClasses.forEach { info ->
+            val classObj = runCatching { classesObj.getAsJsonObject(info.key) }.getOrNull()
+            if (classObj != null) {
+                val fallback = defaults.getValue(info.key)
+                parsed[info.key] = BadgeDisplayClassPolicy(
+                    enabled = classObj.optBoolean("enabled", fallback.enabled),
+                    lane = classObj.optString("lane").ifBlank { fallback.lane },
+                    minProximity = classObj.optString("min_proximity")
+                        .ifBlank { fallback.minProximity },
+                    priority = classObj.optInt("priority", fallback.priority).coerceIn(0, 100)
+                )
+            }
+        }
+        return BadgeDisplayPolicy(
+            version = obj.optInt("version", 1),
+            classes = parsed
+        )
+    }
+
+    private fun parseIntMap(obj: JsonObject?): Map<String, Int> {
+        if (obj == null) return emptyMap()
+        return obj.entrySet().associate { (key, value) ->
+            key to runCatching { value.asInt }.getOrDefault(0)
+        }
+    }
+
     private fun parseStatus(json: String): BadgeControlStatus? {
         return runCatching {
             val obj = JsonParser.parseString(json).asJsonObject
             val countsObj = obj.getAsJsonObject("counts")
             val reportingObj = obj.getAsJsonObject("reporting")
+            val displayPolicy = parseDisplayPolicy(
+                runCatching { obj.getAsJsonObject("display_policy") }.getOrNull()
+            )
+            val filteredCounts = parseIntMap(
+                runCatching { obj.getAsJsonObject("filtered_counts") }.getOrNull()
+            )
             val entities = obj.getAsJsonArray("entities")?.mapNotNull { element ->
                 runCatching {
                     val e = element.asJsonObject
                     BadgeThreatEntity(
                         label = e.optString("label"),
+                        detail = e.optString("detail"),
                         threatClass = e.optString("class"),
+                        category = e.optString("category"),
+                        code = e.optString("code"),
+                        displayId = e.optString("display_id"),
                         score = e.optInt("score"),
+                        evidenceQuality = e.optInt("evidence_quality"),
+                        displayRank = e.optInt("display_rank"),
                         ageSeconds = e.optInt("age_s"),
+                        lastSeenSeconds = e.optInt("last_seen_s"),
                         rssi = e.optInt("rssi"),
+                        bestRssi = e.optInt("best_rssi"),
                         events = e.optInt("events"),
+                        seenCount = e.optInt("seen_count"),
+                        groupCount = e.optInt("group_count"),
+                        proximityLevel = e.optInt("proximity_level"),
+                        stale = e.optBoolean("stale"),
                         lat = e.optDoubleOrNull("lat"),
                         lon = e.optDoubleOrNull("lon"),
                         altitudeM = e.optFloatOrNull("altitude_m"),
@@ -784,6 +938,11 @@ class BadgeUsbRepository @Inject constructor(
                         wifiNotableSsidEmit = s.optInt("wifi_notable_ssid_emit"),
                         wifiLastDroneSsid = s.optString("wifi_last_drone_ssid"),
                         wifiLastNotableSsid = s.optString("wifi_last_notable_ssid"),
+                        displayPolicyHash = s.optLong("display_policy_hash"),
+                        displayPolicyAckHash = s.optLong("display_policy_ack_hash"),
+                        filteredCounts = parseIntMap(
+                            runCatching { s.getAsJsonObject("filtered_counts") }.getOrNull()
+                        ),
                         firmwareState = s.optString("fw_state"),
                         targetVersion = s.optString("target_ver"),
                         otaState = s.optString("ota_state"),
@@ -820,7 +979,10 @@ class BadgeUsbRepository @Inject constructor(
                     other = countsObj?.get("other")?.asInt ?: 0
                 ),
                 entities = entities,
-                scanners = scanners
+                scanners = scanners,
+                displayPolicy = displayPolicy,
+                displayPolicyHash = obj.optLong("display_policy_hash"),
+                filteredCounts = filteredCounts
             )
         }.getOrNull()
     }

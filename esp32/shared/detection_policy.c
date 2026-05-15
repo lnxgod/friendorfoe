@@ -159,6 +159,11 @@ bool fof_policy_is_priority_ble_fingerprint(const char *manufacturer)
            strcmp(mfr, "Meta Device") == 0 ||
            strcmp(mfr, "Flipper Zero") == 0 ||
            strcmp(mfr, "Card Skimmer (suspect)") == 0 ||
+           strcmp(mfr, "Venue Beacon") == 0 ||
+           strcmp(mfr, "Event Badge") == 0 ||
+           strcmp(mfr, "Mobile Key Lock") == 0 ||
+           strcmp(mfr, "BLE HID") == 0 ||
+           strcmp(mfr, "Auracast") == 0 ||
            strcmp(mfr, "Camera") == 0 ||
            strcmp(mfr, "Hidden Camera (suspect)") == 0 ||
            strcmp(mfr, "Flock Surveillance") == 0;

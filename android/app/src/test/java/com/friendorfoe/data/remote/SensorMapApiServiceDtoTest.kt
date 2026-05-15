@@ -231,4 +231,44 @@ class SensorMapApiServiceDtoTest {
         assertEquals("wifi_ap", dto.aps.first().deviceClass)
         assertEquals("public_oui", dto.aps.first().macIdentityKind)
     }
+
+    @Test
+    fun parses_live_privacy_devices_payload() {
+        val json = """
+            {
+              "devices": [
+                {
+                  "fingerprint": "FP:BEEFCAFE",
+                  "device_type": "Venue Beacon",
+                  "manufacturer": "Estimote",
+                  "current_rssi": -62,
+                  "privacy_kind": "VENUE_BEACON",
+                  "risk_level": "info",
+                  "display_label": "BEACON AREA",
+                  "display_detail": "Estimote -62dB",
+                  "privacy_evidence": [
+                    {"field": "ble_svc_uuids", "value": "FEAA"}
+                  ],
+                  "apple_continuity": {
+                    "activity": "ibeacon",
+                    "auth_tag_hash": "safe"
+                  }
+                }
+              ],
+              "summary": {
+                "privacy_kind_counts": {"VENUE_BEACON": 1},
+                "apple_continuity_subtypes": {"iBeacon": 1},
+                "beacon_density": 1
+              }
+            }
+        """.trimIndent()
+
+        val dto = gson.fromJson(json, LivePrivacyDevicesDto::class.java)
+
+        assertEquals("VENUE_BEACON", dto.devices.first().privacyKind)
+        assertEquals("BEACON AREA", dto.devices.first().displayLabel)
+        assertEquals(1, dto.summary.privacyKindCounts["VENUE_BEACON"])
+        assertEquals(1, dto.summary.beaconDensity)
+        assertTrue(dto.devices.first().privacyEvidence.isNotEmpty())
+    }
 }
