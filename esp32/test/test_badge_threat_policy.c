@@ -3,6 +3,7 @@
 #include "badge_threat_policy.h"
 #include "detection_types.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static drone_detection_t make_detection(uint8_t source,
@@ -722,7 +723,7 @@ void test_badge_remote_id_without_human_fields_hides_raw_hex_detail(void)
     TEST_ASSERT_TRUE(badge_threat_classify_detection(&rid, &event));
     TEST_ASSERT_EQUAL(BADGE_THREAT_DRONE, event.cls);
     TEST_ASSERT_EQUAL_STRING("Remote ID", event.label);
-    TEST_ASSERT_EQUAL_STRING("Remote ID signal", event.detail);
+    TEST_ASSERT_EQUAL_STRING("RID decoded", event.detail);
     TEST_ASSERT_NULL(strstr(event.detail, "AA"));
     TEST_ASSERT_NULL(strstr(event.detail, ":"));
 }
@@ -757,6 +758,69 @@ void test_badge_tracker_label_names_airtag(void)
     TEST_ASSERT_EQUAL(BADGE_THREAT_TRACKER, event.cls);
     TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_TAG_CLOSE, event.category);
     TEST_ASSERT_EQUAL_STRING("AirTag", event.label);
+}
+
+void test_badge_tracker_detail_formats_friendly_type(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t google = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:ABCD:rotating",
+        "Google Tracker",
+        0.55f,
+        -43
+    );
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&google, &event));
+    TEST_ASSERT_EQUAL_STRING("Google Tag", event.label);
+
+    drone_detection_t findmy = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:FINDMY:rotating",
+        "Find My accessory",
+        0.55f,
+        -43
+    );
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&findmy, &event));
+    TEST_ASSERT_EQUAL_STRING("Find My", event.label);
+
+    badge_threat_state_t state;
+    badge_threat_snapshot_t snapshot;
+    badge_threat_state_init(&state);
+    drone_detection_t tag = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:12345678:AirTag",
+        "AirTag",
+        0.50f,
+        -44
+    );
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &tag, 1000, NULL));
+    badge_threat_state_snapshot(&state, 1200, &snapshot);
+
+    char detail[56];
+    TEST_ASSERT_TRUE(badge_threat_format_top_detail(
+        &snapshot, &snapshot.entities[0], detail, sizeof(detail)));
+    TEST_ASSERT_EQUAL_STRING("AirTag -44dB 0s", detail);
+}
+
+void test_badge_tracker_status_detail_uses_stable_tracker_wording(void)
+{
+    badge_threat_snapshot_t snapshot = {0};
+    snapshot.entity_count = 1;
+    snapshot.entities[0].active = true;
+    snapshot.entities[0].cls = BADGE_THREAT_TRACKER;
+    snapshot.entities[0].category = BADGE_THREAT_CATEGORY_TAG_CLOSE;
+    snapshot.entities[0].rssi = -46;
+    snapshot.entities[0].best_rssi = -46;
+    snapshot.entities[0].last_seen_s = 8;
+    strncpy(snapshot.entities[0].label, "Tracker",
+            sizeof(snapshot.entities[0].label) - 1);
+    strncpy(snapshot.entities[0].detail, "status:tracker",
+            sizeof(snapshot.entities[0].detail) - 1);
+
+    char detail[56];
+    TEST_ASSERT_TRUE(badge_threat_format_top_detail(
+        &snapshot, &snapshot.entities[0], detail, sizeof(detail)));
+    TEST_ASSERT_EQUAL_STRING("Tracker -46dB 8s", detail);
 }
 
 void test_badge_far_airtag_is_hidden_unless_close(void)
@@ -934,6 +998,27 @@ void test_badge_flock_ble_name_produces_flock_camera(void)
     TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
     TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
     TEST_ASSERT_TRUE(strstr(event.detail, "Flock") != NULL);
+}
+
+void test_badge_flock_wifi_oui_produces_flock_camera_not_drone(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t flock = make_detection(
+        DETECTION_SRC_WIFI_OUI,
+        "B4:1E:52:AA:BB:CC",
+        "Flock Safety",
+        0.70f,
+        -48
+    );
+    strncpy(flock.bssid, "B4:1E:52:AA:BB:CC", sizeof(flock.bssid) - 1);
+    strncpy(flock.class_reason, "Flock Safety ALPR/camera",
+            sizeof(flock.class_reason) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&flock, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_WIFI_ANOMALY, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
+    TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
+    TEST_ASSERT_TRUE(strstr(event.detail, "B4:1E:52") != NULL);
 }
 
 void test_badge_meta_rayban_category_is_glass(void)
@@ -1405,13 +1490,30 @@ void test_badge_drone_evidence_count_includes_rid_and_ssid(void)
 
 void test_badge_lower_lane_hides_single_drone_evidence(void)
 {
+    badge_threat_snapshot_t snapshot = {0};
+    snapshot.entity_count = 1;
+    snapshot.entities[0].active = true;
+    snapshot.entities[0].cls = BADGE_THREAT_DRONE;
+    snapshot.entities[0].category = BADGE_THREAT_CATEGORY_DRONE;
+    strncpy(snapshot.entities[0].label, "Remote ID",
+            sizeof(snapshot.entities[0].label) - 1);
+
+    TEST_ASSERT_EQUAL_UINT32(1, badge_threat_snapshot_drone_evidence_count(&snapshot));
+    TEST_ASSERT_FALSE(badge_threat_snapshot_should_show_lower_drone_evidence(
+        &snapshot,
+        &snapshot.entities[0]
+    ));
+}
+
+void test_badge_lower_lane_shows_single_drone_with_rid_detail(void)
+{
     badge_threat_state_t state;
     badge_threat_snapshot_t snapshot;
     badge_threat_state_init(&state);
 
     drone_detection_t rid = make_detection(
         DETECTION_SRC_BLE_RID,
-        "RID-LOWER-ONLY",
+        "RID-LOWER-DETAIL",
         "OpenDroneID",
         0.90f,
         -50
@@ -1421,7 +1523,8 @@ void test_badge_lower_lane_hides_single_drone_evidence(void)
     badge_threat_state_snapshot(&state, 1300, &snapshot);
 
     TEST_ASSERT_EQUAL_UINT32(1, badge_threat_snapshot_drone_evidence_count(&snapshot));
-    TEST_ASSERT_FALSE(badge_threat_snapshot_should_show_lower_drone_evidence(
+    TEST_ASSERT_TRUE(snapshot.entities[0].display_id[0] != '\0');
+    TEST_ASSERT_TRUE(badge_threat_snapshot_should_show_lower_drone_evidence(
         &snapshot,
         &snapshot.entities[0]
     ));
@@ -1513,6 +1616,41 @@ void test_badge_drone_evidence_count_includes_two_rid_and_ssid(void)
         false
     ));
     TEST_ASSERT_EQUAL_UINT32(3, badge_threat_snapshot_drone_evidence_count(&snapshot));
+}
+
+void test_badge_drone_aggregate_heat_uses_strongest_evidence(void)
+{
+    badge_threat_snapshot_t snapshot = {0};
+    snapshot.entity_count = 2;
+    snapshot.entities[0].active = true;
+    snapshot.entities[0].cls = BADGE_THREAT_DRONE;
+    snapshot.entities[0].category = BADGE_THREAT_CATEGORY_DRONE;
+    snapshot.entities[0].rssi = -82;
+    snapshot.entities[0].best_rssi = -82;
+    strncpy(snapshot.entities[0].label, "Remote ID",
+            sizeof(snapshot.entities[0].label) - 1);
+    strncpy(snapshot.entities[0].display_id, "1111",
+            sizeof(snapshot.entities[0].display_id) - 1);
+
+    snapshot.entities[1].active = true;
+    snapshot.entities[1].cls = BADGE_THREAT_DRONE;
+    snapshot.entities[1].category = BADGE_THREAT_CATEGORY_SSID;
+    snapshot.entities[1].rssi = -56;
+    snapshot.entities[1].best_rssi = -56;
+    strncpy(snapshot.entities[1].label, "Drone SSID",
+            sizeof(snapshot.entities[1].label) - 1);
+    strncpy(snapshot.entities[1].detail, "ssid FOF-Drone",
+            sizeof(snapshot.entities[1].detail) - 1);
+
+    const badge_threat_snapshot_entity_t *strongest =
+        badge_threat_snapshot_strongest_drone_evidence(&snapshot);
+    TEST_ASSERT_EQUAL_PTR(&snapshot.entities[1], strongest);
+    uint8_t expected = badge_threat_heat_percent(
+        badge_threat_snapshot_entity_proximity_percent(&snapshot.entities[1]),
+        2);
+    TEST_ASSERT_EQUAL_UINT8(expected,
+                            badge_threat_snapshot_drone_aggregate_heat_percent(&snapshot));
+    TEST_ASSERT_TRUE(badge_threat_snapshot_drone_aggregate_heat_percent(&snapshot) > 0);
 }
 
 void test_badge_display_lane_splits_ble_and_wifi_items(void)
@@ -1769,8 +1907,8 @@ void test_badge_meta_top_rotation_weak_presence_is_single(void)
             sizeof(weak_b.drone_id) - 1);
     weak_b.rssi = -47;
 
-    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &weak_a, 1000, NULL));
-    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &weak_b, 1100, NULL));
+    TEST_ASSERT_FALSE(badge_threat_state_ingest(&state, &weak_a, 1000, NULL));
+    TEST_ASSERT_FALSE(badge_threat_state_ingest(&state, &weak_b, 1100, NULL));
     badge_threat_state_snapshot(&state, 1300, &snapshot);
 
     int pos = 0;
@@ -1778,11 +1916,10 @@ void test_badge_meta_top_rotation_weak_presence_is_single(void)
     const badge_threat_snapshot_entity_t *top =
         badge_threat_snapshot_meta_glasses_at(&snapshot, 7, &pos, &total);
 
-    TEST_ASSERT_NOT_NULL(top);
-    TEST_ASSERT_EQUAL_INT(1, pos);
-    TEST_ASSERT_EQUAL_INT(1, total);
-    TEST_ASSERT_EQUAL_UINT32(0, strlen(top->display_id));
-    TEST_ASSERT_EQUAL_UINT32(1, badge_threat_snapshot_meta_glasses_count(&snapshot));
+    TEST_ASSERT_NULL(top);
+    TEST_ASSERT_EQUAL_INT(0, pos);
+    TEST_ASSERT_EQUAL_INT(0, total);
+    TEST_ASSERT_EQUAL_UINT32(0, badge_threat_snapshot_meta_glasses_count(&snapshot));
 }
 
 void test_badge_lower_meta_evidence_hidden_when_top_meta_active(void)
@@ -1901,15 +2038,12 @@ void test_badge_two_weak_meta_signals_count_as_single_presence(void)
             sizeof(weak_b.drone_id) - 1);
     weak_b.rssi = -47;
 
-    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &weak_a, 1000, NULL));
-    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &weak_b, 1100, NULL));
+    TEST_ASSERT_FALSE(badge_threat_state_ingest(&state, &weak_a, 1000, NULL));
+    TEST_ASSERT_FALSE(badge_threat_state_ingest(&state, &weak_b, 1100, NULL));
     badge_threat_state_snapshot(&state, 1300, &snapshot);
 
-    TEST_ASSERT_EQUAL_INT(1, snapshot.entity_count);
-    TEST_ASSERT_EQUAL_UINT32(1, badge_threat_snapshot_meta_glasses_count(&snapshot));
-    TEST_ASSERT_EQUAL_STRING("Meta Glasses", snapshot.entities[0].label);
-    TEST_ASSERT_EQUAL_UINT32(0, strlen(snapshot.entities[0].display_id));
-    TEST_ASSERT_EQUAL_INT(-47, snapshot.entities[0].best_rssi);
+    TEST_ASSERT_EQUAL_INT(0, snapshot.entity_count);
+    TEST_ASSERT_EQUAL_UINT32(0, badge_threat_snapshot_meta_glasses_count(&snapshot));
 }
 
 void test_badge_strong_meta_plus_weak_duplicate_counts_once(void)
@@ -1938,10 +2072,10 @@ void test_badge_strong_meta_plus_weak_duplicate_counts_once(void)
             sizeof(weak.class_reason) - 1);
 
     TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &strong, 1000, NULL));
-    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &weak, 1100, NULL));
+    TEST_ASSERT_FALSE(badge_threat_state_ingest(&state, &weak, 1100, NULL));
     badge_threat_state_snapshot(&state, 1300, &snapshot);
 
-    TEST_ASSERT_EQUAL_INT(2, snapshot.entity_count);
+    TEST_ASSERT_EQUAL_INT(1, snapshot.entity_count);
     TEST_ASSERT_EQUAL_UINT32(1, badge_threat_snapshot_meta_glasses_count(&snapshot));
     TEST_ASSERT_TRUE(badge_threat_snapshot_best_meta_glasses(&snapshot)->display_id[0] != '\0');
 }
@@ -1962,17 +2096,15 @@ void test_badge_weak_meta_presence_expires_after_live_window(void)
     strncpy(weak.class_reason, "weak_meta:glasses_detector",
             sizeof(weak.class_reason) - 1);
 
-    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &weak, 1000, NULL));
+    TEST_ASSERT_FALSE(badge_threat_state_ingest(&state, &weak, 1000, NULL));
     badge_threat_state_snapshot(&state, 1000 + 80000, &snapshot);
 
-    TEST_ASSERT_EQUAL_INT(1, snapshot.entity_count);
-    TEST_ASSERT_FALSE(snapshot.entities[0].stale);
-    TEST_ASSERT_EQUAL_UINT32(1, badge_threat_snapshot_meta_glasses_count(&snapshot));
+    TEST_ASSERT_EQUAL_INT(0, snapshot.entity_count);
+    TEST_ASSERT_EQUAL_UINT32(0, badge_threat_snapshot_meta_glasses_count(&snapshot));
 
     badge_threat_state_snapshot(&state, 1000 + 90001, &snapshot);
 
-    TEST_ASSERT_EQUAL_INT(1, snapshot.entity_count);
-    TEST_ASSERT_TRUE(snapshot.entities[0].stale);
+    TEST_ASSERT_EQUAL_INT(0, snapshot.entity_count);
     TEST_ASSERT_EQUAL_UINT32(0, badge_threat_snapshot_meta_glasses_count(&snapshot));
 }
 
@@ -2269,6 +2401,42 @@ void test_badge_top_detail_formats_compact_large_text(void)
     TEST_ASSERT_TRUE(badge_threat_format_top_detail(
         &snapshot, &snapshot.entities[0], detail, sizeof(detail)));
     TEST_ASSERT_EQUAL_STRING("RID x1 SSID x1", detail);
+    TEST_ASSERT_TRUE(badge_threat_top_detail_uses_large_text(detail, 19));
+
+    memset(&snapshot, 0, sizeof(snapshot));
+    snapshot.entity_count = 1;
+    snapshot.entities[0].active = true;
+    snapshot.entities[0].cls = BADGE_THREAT_WIFI_ANOMALY;
+    snapshot.entities[0].category = BADGE_THREAT_CATEGORY_WIFI;
+    snapshot.entities[0].rssi = -63;
+    snapshot.entities[0].best_rssi = -63;
+    strncpy(snapshot.entities[0].label, "Deauth",
+            sizeof(snapshot.entities[0].label) - 1);
+    TEST_ASSERT_TRUE(badge_threat_format_top_detail(
+        &snapshot, &snapshot.entities[0], detail, sizeof(detail)));
+    TEST_ASSERT_EQUAL_STRING("DEAUTH -63dB", detail);
+    TEST_ASSERT_TRUE(badge_threat_top_detail_uses_large_text(detail, 19));
+}
+
+void test_badge_wifi_attack_top_detail_includes_count_and_age(void)
+{
+    badge_threat_snapshot_t snapshot = {0};
+    snapshot.entity_count = 1;
+    snapshot.entities[0].active = true;
+    snapshot.entities[0].cls = BADGE_THREAT_WIFI_ANOMALY;
+    snapshot.entities[0].category = BADGE_THREAT_CATEGORY_WIFI;
+    snapshot.entities[0].rssi = 0;
+    snapshot.entities[0].best_rssi = 0;
+    snapshot.entities[0].last_seen_s = 14;
+    strncpy(snapshot.entities[0].label, "Deauth",
+            sizeof(snapshot.entities[0].label) - 1);
+    strncpy(snapshot.entities[0].detail, "deauth count:6",
+            sizeof(snapshot.entities[0].detail) - 1);
+
+    char detail[56];
+    TEST_ASSERT_TRUE(badge_threat_format_top_detail(
+        &snapshot, &snapshot.entities[0], detail, sizeof(detail)));
+    TEST_ASSERT_EQUAL_STRING("DEAUTH x6 14s", detail);
     TEST_ASSERT_TRUE(badge_threat_top_detail_uses_large_text(detail, 19));
 }
 
@@ -2654,4 +2822,14 @@ void test_badge_drone_snapshot_preserves_drone_and_operator_coords(void)
     TEST_ASSERT_DOUBLE_WITHIN(0.0001, 37.3300, snapshot.entities[0].operator_lat);
     TEST_ASSERT_DOUBLE_WITHIN(0.0001, -122.4400, snapshot.entities[0].operator_lon);
     TEST_ASSERT_EQUAL_STRING("OP-123", snapshot.entities[0].operator_id);
+
+    char detail[56];
+    char expected[32];
+    snprintf(expected, sizeof(expected), "RID #%s 37.334,-122.445",
+             snapshot.entities[0].display_id);
+    TEST_ASSERT_TRUE(badge_threat_format_top_detail(
+        &snapshot, &snapshot.entities[0], detail, sizeof(detail)));
+    TEST_ASSERT_EQUAL_STRING(expected, detail);
+    TEST_ASSERT_TRUE(badge_threat_snapshot_should_show_lower_drone_evidence(
+        &snapshot, &snapshot.entities[0]));
 }

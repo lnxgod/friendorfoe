@@ -4,6 +4,42 @@ All notable changes to the ESP32 hardware edition of Friend or Foe.
 
 ## [Unreleased]
 
+## [0.64.38-badge-live] - 2026-05-16
+
+### Added
+- **Badge live-evidence version bump to `0.64.38-badge-live`.** Badge firmware,
+  Android, and backend move together while production S3 firmware remains on
+  `0.63.0-svc156`.
+- **RID-priority scanner telemetry.** BLE Remote ID detections now break
+  through UART queue pressure with RID drop/evict counters exposed in scanner
+  status.
+- **Badge recovery controls for scanners.** The uplink can clear scanner safe
+  mode/crash history over UART and scanner recovery acknowledgements are
+  reported back through `FOF_STATUS`.
+
+### Changed
+- **Badge LCD live lanes are calmer and more specific.** Top drone and BLE
+  tiles keep aggregate awareness, lower BLE/WiFi lanes carry deduped detail,
+  Meta/top heat bars use calibrated signal color, and noisy diagnostics are
+  coalesced.
+- **Remote ID display prefers useful facts.** Drone rows show `DRONE NEAR`
+  with a count, RID display IDs, RSSI heat, and compact GPS/operator hints when
+  available instead of vague Remote ID status text.
+- **Tracker and BLE hints are friendlier.** Tracker rows prefer AirTag,
+  Find My, Tile, SmartTag, Google Tag, Chipolo, and Pebblebee wording; strong
+  generic BLE status includes the best available type/name/service hint.
+
+### Fixed
+- **Remote ID no longer disappears behind scanner-status fallback.** Scanner
+  `rid_emit` now reflects successful emission, real RID entities reach the
+  badge snapshot, and the LCD fallback is labeled `RID WAIT` only when the
+  scanner has seen service frames but no ID has decoded yet.
+- **Scanner safe-mode loops after badge relay are recoverable.** Safe-mode
+  clears reset the scanner crash counter and stale forced-safe reason so a
+  fixed scanner build can return to normal operation.
+- **WiFi/Meta display contention reduced.** Higher-risk WiFi/privacy evidence
+  can outrank Meta while Meta remains visible when it is genuinely active.
+
 ## [0.64.37-badge-privacy] - 2026-05-14
 
 ### Added

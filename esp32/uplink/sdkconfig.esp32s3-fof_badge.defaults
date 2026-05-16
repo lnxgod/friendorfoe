@@ -43,6 +43,12 @@ CONFIG_HTTPD_MAX_URI_LEN=1024
 # FreeRTOS
 CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_UNICORE=n
+# Badge startup does USB recovery/status, scanner cache checks, display boot
+# updates, and watchdog ownership from app_main. Keep this separate from the
+# production uplink defaults so badge recovery does not overflow before USB
+# control can come up.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+CONFIG_MAIN_TASK_STACK_SIZE=12288
 
 # Watchdog
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=30

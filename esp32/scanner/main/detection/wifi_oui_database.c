@@ -1,7 +1,7 @@
 /**
  * Friend or Foe -- WiFi OUI Database
  *
- * 29 OUI entries ported from Android WifiOuiDatabase.kt.
+ * OUI entries ported from Android/backend RF reference data.
  * Stored as raw 3-byte OUI prefixes for fast comparison against BSSIDs
  * extracted from WiFi beacon frames.
  *
@@ -76,6 +76,9 @@ static const oui_table_entry_t OUI_TABLE[] = {
 
     /* ── Realtek (high false-positive: used in many budget Chinese drones) ── */
     { { 0x00, 0xE0, 0x4C }, { "Generic/Realtek", "Realtek Semiconductor",         true  } },
+
+    /* ── Privacy infrastructure ────────────────────────────────────────────── */
+    { { 0xB4, 0x1E, 0x52 }, { "Flock Safety",    "Flock Safety ALPR/camera",      false } },
 };
 
 #define OUI_TABLE_SIZE  (sizeof(OUI_TABLE) / sizeof(OUI_TABLE[0]))

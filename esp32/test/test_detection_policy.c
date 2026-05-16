@@ -3,6 +3,7 @@
 #include "ble_fingerprint.h"
 #include "detection_policy.h"
 #include "detection_types.h"
+#include "wifi_oui_database.h"
 
 #include <string.h>
 
@@ -39,6 +40,16 @@ void test_fof_drone_ssids_are_notable_but_ambient_fof_is_not(void)
     TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("TeamCharityCase"));
 }
 
+void test_wifi_oui_database_includes_flock_safety(void)
+{
+    const uint8_t flock_oui[3] = {0xB4, 0x1E, 0x52};
+    const oui_entry_t *entry = wifi_oui_lookup_raw(flock_oui);
+
+    TEST_ASSERT_NOT_NULL(entry);
+    TEST_ASSERT_EQUAL_STRING("Flock Safety", entry->manufacturer);
+    TEST_ASSERT_FALSE(entry->high_false_positive);
+}
+
 void test_probe_rate_aux_changes_when_identity_changes(void)
 {
     char aux_a[16];
@@ -65,6 +76,25 @@ void test_queue_shedding_prefers_diagnostic_sources_first(void)
         DETECTION_SRC_BLE_FINGERPRINT, "Apple Device", NULL, 0, 70, 100));
     TEST_ASSERT_TRUE(fof_policy_should_shed_low_priority(
         DETECTION_SRC_WIFI_ASSOC, "WiFi-Assoc", NULL, 0, 80, 100));
+}
+
+void test_ble_remote_id_is_never_shed_under_queue_pressure(void)
+{
+    TEST_ASSERT_FALSE(fof_policy_should_drop_low_value(
+        DETECTION_SRC_BLE_RID,
+        0.60f,
+        "OpenDroneID",
+        NULL,
+        0
+    ));
+    TEST_ASSERT_FALSE(fof_policy_should_shed_low_priority(
+        DETECTION_SRC_BLE_RID,
+        "OpenDroneID",
+        NULL,
+        0,
+        100,
+        100
+    ));
 }
 
 void test_ap_inventory_dedupe_key_uses_bssid(void)
@@ -330,7 +360,7 @@ void test_scan_profile_source_gates_normal_lanes(void)
         "wifi_primary", DETECTION_SRC_WIFI_SSID));
     TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
         "wifi_primary", DETECTION_SRC_WIFI_BEACON));
-    TEST_ASSERT_TRUE(fof_policy_scan_profile_allows_source(
+    TEST_ASSERT_FALSE(fof_policy_scan_profile_allows_source(
         "wifi_primary", DETECTION_SRC_BLE_FINGERPRINT));
     TEST_ASSERT_FALSE(fof_policy_scan_profile_allows_source(
         "wifi_primary", DETECTION_SRC_BLE_RID));

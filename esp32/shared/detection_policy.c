@@ -515,7 +515,7 @@ bool fof_policy_scan_profile_allows_source(const char *scan_profile,
         return !source_is_wifi(source);
     }
     if (ascii_eq_nocase(scan_profile, "wifi_primary")) {
-        return source != DETECTION_SRC_BLE_RID;
+        return source_is_wifi(source);
     }
     if (ascii_eq_nocase(scan_profile, "calibration")) {
         return source == DETECTION_SRC_BLE_FINGERPRINT;

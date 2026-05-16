@@ -216,6 +216,21 @@ static bool scanner_meta_status_is_fresh(const scanner_info_t *info)
            info->ble_meta_last_seen_age_s <= 90;
 }
 
+static bool scanner_meta_status_has_strong_identity(const scanner_info_t *info)
+{
+    if (!info || !scanner_meta_status_is_fresh(info)) {
+        return false;
+    }
+    if (info->ble_meta_last_hash == 0) {
+        return false;
+    }
+    if (strstr(info->ble_meta_last_reason, "weak_meta") != NULL) {
+        return false;
+    }
+    return strcmp(info->ble_meta_identity, "strong_fp") == 0 ||
+           strcmp(info->ble_meta_identity, "detector_fp") == 0;
+}
+
 static int8_t badge_status_rssi_or(int8_t rssi, int8_t fallback)
 {
     return rssi < 0 ? rssi : fallback;
@@ -266,18 +281,23 @@ static void badge_ingest_ble_near_status_event(int scanner_id,
 
 static void badge_ingest_ble_meta_status_event(const scanner_info_t *info)
 {
-    if (!scanner_meta_status_is_fresh(info)) {
+    if (!scanner_meta_status_has_strong_identity(info)) {
         return;
     }
 
     drone_detection_t det = {0};
     det.source = DETECTION_SRC_BLE_FINGERPRINT;
-    det.confidence = 0.42f;
+    det.confidence = 0.72f;
     det.rssi = badge_status_rssi_or(info->ble_meta_last_rssi, -58);
-    snprintf(det.drone_id, sizeof(det.drone_id), "meta:weak:status");
+    snprintf(det.drone_id, sizeof(det.drone_id), "BLE:%08lX:Meta Glasses",
+             (unsigned long)info->ble_meta_last_hash);
     strncpy(det.manufacturer, "Meta Glasses", sizeof(det.manufacturer) - 1);
-    strncpy(det.model, "Weak Meta", sizeof(det.model) - 1);
-    strncpy(det.class_reason, "weak_meta:scanner_status",
+    snprintf(det.model, sizeof(det.model), "FP:%08lX",
+             (unsigned long)info->ble_meta_last_hash);
+    strncpy(det.class_reason,
+            info->ble_meta_last_reason[0]
+                ? info->ble_meta_last_reason
+                : "scanner_status:meta_fp",
             sizeof(det.class_reason) - 1);
     (void)badge_ingest_detection(&det, NULL);
 }
@@ -607,6 +627,8 @@ static bool msg_type_is_scanner_originated(const char *msg_type)
            strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0 ||
            strcmp(msg_type, "scan_profile_ack") == 0 ||
            strcmp(msg_type, "display_control_ack") == 0 ||
+           strcmp(msg_type, "recovery_ack") == 0 ||
+           strcmp(msg_type, "scanner_recovery") == 0 ||
            strcmp(msg_type, MSG_TYPE_FW_CHECK) == 0 ||
            strcmp(msg_type, MSG_TYPE_FW_READY) == 0 ||
            strncmp(msg_type, "ota_", 4) == 0;
@@ -1210,6 +1232,8 @@ static void handle_status(const cJSON *root, int scanner_id)
         );
         info->rid_service_seen = (uint32_t)json_get_double(root, "rid_service_seen", (double)info->rid_service_seen);
         info->rid_emit = (uint32_t)json_get_double(root, "rid_emit", (double)info->rid_emit);
+        info->rid_queue_drop = (uint32_t)json_get_double(root, "rid_queue_drop", (double)info->rid_queue_drop);
+        info->rid_queue_evict = (uint32_t)json_get_double(root, "rid_queue_evict", (double)info->rid_queue_evict);
         info->privacy_seen = (uint32_t)json_get_double(root, "privacy_seen", (double)info->privacy_seen);
         info->toff_ms = (int64_t)json_get_double(root, "toff", (double)info->toff_ms);
         info->tcnt = (uint32_t)json_get_int(root, "tcnt", (int)info->tcnt);
@@ -1667,6 +1691,25 @@ static void process_line(const char *line, size_t len, int scanner_id)
                  (long long)info->toff_ms, info->tcnt,
                  info->time_valid_count, info->time_sync_state,
                  info->scan_mode[0] ? info->scan_mode : "normal");
+    } else if (strcmp(msg_type, "recovery_ack") == 0 ||
+               strcmp(msg_type, "scanner_recovery") == 0) {
+        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        const char *mode = json_get_string(root, "recovery_mode", NULL);
+        if (!mode) {
+            mode = json_get_string(root, "mode", NULL);
+        }
+        if (mode && mode[0]) {
+            strncpy(info->recovery_mode, mode, sizeof(info->recovery_mode) - 1);
+            info->recovery_mode[sizeof(info->recovery_mode) - 1] = '\0';
+        }
+        json_copy_string(root, "safe_reason", info->safe_reason, sizeof(info->safe_reason));
+        info->crash_count = (uint32_t)json_get_double(root, "crash_count", (double)info->crash_count);
+        ESP_LOGW(TAG, "Scanner[%d] recovery: type=%s mode=%s reason=%s crash=%lu",
+                 scanner_id,
+                 msg_type,
+                 info->recovery_mode[0] ? info->recovery_mode : "?",
+                 info->safe_reason,
+                 (unsigned long)info->crash_count);
     } else if (strcmp(msg_type, MSG_TYPE_FW_CHECK) == 0) {
         const char *board = json_get_string(root, "board", "");
         const char *ver = json_get_string(root, "ver", "");

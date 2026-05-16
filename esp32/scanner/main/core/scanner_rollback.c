@@ -141,6 +141,18 @@ static void nvs_set_u32_value(const char *key, uint32_t value)
     nvs_close(h);
 }
 
+static void nvs_erase_key_value(const char *key)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_open failed; %s not erased", key);
+        return;
+    }
+    nvs_erase_key(h, key);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 static void safe_reason_load(char *out, size_t out_len)
 {
     if (!out || out_len == 0) return;
@@ -274,8 +286,13 @@ void scanner_rollback_force_safe_mode(bool enabled, const char *reason)
                 sizeof(s_safe_reason) - 1);
         s_safe_reason[sizeof(s_safe_reason) - 1] = '\0';
     } else {
+        crash_count_store(0);
+        nvs_set_u32_value(NVS_KEY_FORCE_SAFE, 0);
+        nvs_erase_key_value(NVS_KEY_SAFE_REASON);
+        s_crash_count = 0;
         s_safe_mode_requested = false;
         s_safe_reason[0] = '\0';
+        uart_tx_clear_firmware_error();
     }
 }
 
@@ -283,6 +300,7 @@ void scanner_rollback_clear_crash_state(void)
 {
     crash_count_store(0);
     nvs_set_u32_value(NVS_KEY_FORCE_SAFE, 0);
+    nvs_erase_key_value(NVS_KEY_SAFE_REASON);
     s_crash_count = 0;
     s_safe_mode_requested = false;
     s_safe_reason[0] = '\0';

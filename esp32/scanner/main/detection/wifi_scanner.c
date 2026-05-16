@@ -1415,14 +1415,16 @@ static void process_scan_results(void)
         uint8_t *bssid = ap_list[i].bssid;
         uint16_t ch = ap_list[i].primary;
 
-        if (ssid[0] == '\0') continue;
-
         /* Classify only useful scan hits. Generic unmatched APs create a lot
          * of queue/UART noise and don't materially help drone detection. */
         const drone_ssid_pattern_t *pattern = wifi_ssid_match(ssid);
         bool soft = (!pattern && wifi_ssid_match_soft(ssid));
         const oui_entry_t *oui = wifi_oui_lookup_raw(bssid);
         bool strong_oui = (oui && !oui->high_false_positive);
+
+        if (ssid[0] == '\0' && !strong_oui) {
+            continue;
+        }
 
         drone_detection_t det;
         init_detection(&det, bssid, rssi, ssid);
@@ -1453,6 +1455,8 @@ static void process_scan_results(void)
             det.confidence = 0.40f;
             strncpy(det.manufacturer, oui->manufacturer,
                     sizeof(det.manufacturer) - 1);
+            strncpy(det.class_reason, oui->full_name,
+                    sizeof(det.class_reason) - 1);
             format_bssid(bssid, det.drone_id, sizeof(det.drone_id));
             s_oui_emit++;
             update_hot_channel(ch);

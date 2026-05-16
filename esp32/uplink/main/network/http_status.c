@@ -131,6 +131,9 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  "\"ble_adv_seen\":%lu,\"ble_any_seen\":%lu,"
                  "\"ble_any_with_payload_seen\":%lu,"
                  "\"ble_any_empty_seen\":%lu,"
+                 "\"uart_tx_dropped\":%lu,\"uart_tx_high_water\":%lu,"
+                 "\"tx_queue_depth\":%lu,\"tx_queue_capacity\":%lu,"
+                 "\"tx_queue_pressure_pct\":%lu,"
                  "\"ble_any_last_rssi\":%d,\"ble_any_best_rssi\":%d,"
                  "\"ble_any_last_len\":%u,\"ble_any_last_props\":%u,"
                  "\"ble_any_last_addr_type\":%u,"
@@ -150,7 +153,9 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  "\"ble_scan_last_rc\":%d,\"ble_sync_last_rc\":%d,"
                  "\"ble_focus_active\":%s,\"ble_focus_age_s\":%lld,"
                  "\"ble_focus_target_adv_count\":%lu,"
-                 "\"rid_service_seen\":%lu,\"rid_emit\":%lu,\"privacy_seen\":%lu,"
+                 "\"rid_service_seen\":%lu,\"rid_emit\":%lu,"
+                 "\"rid_queue_drop\":%lu,\"rid_queue_evict\":%lu,"
+                 "\"privacy_seen\":%lu,"
                  "\"wifi_total_frames\":%lu,\"wifi_beacon_frames\":%lu,"
                  "\"wifi_full_scan_count\":%lu,\"wifi_full_scan_ok\":%lu,"
                  "\"wifi_full_scan_err\":%lu,\"wifi_full_scan_last_rc\":%d,"
@@ -180,6 +185,11 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  (unsigned long)info->ble_any_seen,
                  (unsigned long)info->ble_any_with_payload_seen,
                  (unsigned long)info->ble_any_empty_seen,
+                 (unsigned long)info->uart_tx_dropped,
+                 (unsigned long)info->uart_tx_high_water,
+                 (unsigned long)info->tx_queue_depth,
+                 (unsigned long)info->tx_queue_capacity,
+                 (unsigned long)info->tx_queue_pressure_pct,
                  (int)info->ble_any_last_rssi,
                  (int)info->ble_any_best_rssi,
                  (unsigned)info->ble_any_last_len,
@@ -208,6 +218,8 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  (unsigned long)info->ble_focus_target_adv_count,
                  (unsigned long)info->rid_service_seen,
                  (unsigned long)info->rid_emit,
+                 (unsigned long)info->rid_queue_drop,
+                 (unsigned long)info->rid_queue_evict,
                  (unsigned long)info->privacy_seen,
                  (unsigned long)info->wifi_total_frames,
                  (unsigned long)info->wifi_beacon_frames,
@@ -245,6 +257,40 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
         json_chunk_string(req, info->ble_meta_last_reason);
         httpd_resp_send_chunk(req, ",\"ble_meta_identity\":", HTTPD_RESP_USE_STRLEN);
         json_chunk_string(req, info->ble_meta_identity);
+        httpd_resp_send_chunk(req, ",\"ble_dbg_near_label\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->ble_dbg_near_label);
+        httpd_resp_send_chunk(req, ",\"ble_dbg_near_name\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->ble_dbg_near_name);
+        httpd_resp_send_chunk(req, ",\"ble_dbg_near_reason\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->ble_dbg_near_reason);
+        httpd_resp_send_chunk(req, ",\"ble_dbg_priv_label\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->ble_dbg_priv_label);
+        httpd_resp_send_chunk(req, ",\"ble_dbg_priv_name\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->ble_dbg_priv_name);
+        httpd_resp_send_chunk(req, ",\"ble_dbg_priv_reason\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->ble_dbg_priv_reason);
+        snprintf(buf, sizeof(buf),
+                 ",\"ble_dbg_near_seen\":%lu,\"ble_dbg_near_rssi\":%d,"
+                 "\"ble_dbg_near_cid\":%u,\"ble_dbg_near_svc0\":%u,"
+                 "\"ble_dbg_near_svc_count\":%u,"
+                 "\"ble_dbg_near_payload_len\":%u,"
+                 "\"ble_dbg_priv_seen\":%lu,\"ble_dbg_priv_rssi\":%d,"
+                 "\"ble_dbg_priv_cid\":%u,\"ble_dbg_priv_svc0\":%u,"
+                 "\"ble_dbg_priv_svc_count\":%u,"
+                 "\"ble_dbg_priv_payload_len\":%u",
+                 (unsigned long)info->ble_dbg_near_seen,
+                 (int)info->ble_dbg_near_rssi,
+                 (unsigned)info->ble_dbg_near_cid,
+                 (unsigned)info->ble_dbg_near_svc0,
+                 (unsigned)info->ble_dbg_near_svc_count,
+                 (unsigned)info->ble_dbg_near_payload_len,
+                 (unsigned long)info->ble_dbg_priv_seen,
+                 (int)info->ble_dbg_priv_rssi,
+                 (unsigned)info->ble_dbg_priv_cid,
+                 (unsigned)info->ble_dbg_priv_svc0,
+                 (unsigned)info->ble_dbg_priv_svc_count,
+                 (unsigned)info->ble_dbg_priv_payload_len);
+        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
         snprintf(buf, sizeof(buf),
                  ",\"display_policy_hash\":%lu,"
                  "\"display_policy_ack_hash\":%lu,\"filtered_counts\":{",
