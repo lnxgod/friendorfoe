@@ -8,7 +8,7 @@ from app.main import app
 from app.routers import detections
 from app.services.database import create_tables
 
-SMOKE_VERSION = "0.64.37-badge-privacy"
+SMOKE_VERSION = "0.64.38-badge-live"
 
 
 @pytest_asyncio.fixture

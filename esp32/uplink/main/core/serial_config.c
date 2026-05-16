@@ -214,6 +214,9 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
                "\"ble_adv_seen\":%lu,\"ble_any_seen\":%lu,"
                "\"ble_any_with_payload_seen\":%lu,"
                "\"ble_any_empty_seen\":%lu,"
+               "\"uart_tx_dropped\":%lu,\"uart_tx_high_water\":%lu,"
+               "\"tx_queue_depth\":%lu,\"tx_queue_capacity\":%lu,"
+               "\"tx_queue_pressure_pct\":%lu,"
                "\"ble_any_last_rssi\":%d,\"ble_any_best_rssi\":%d,"
                "\"ble_any_last_len\":%u,\"ble_any_last_props\":%u,"
                "\"ble_any_last_addr_type\":%u,"
@@ -235,6 +238,7 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
                "\"ble_focus_active\":%s,\"ble_focus_age_s\":%lld,"
                "\"ble_focus_target_adv_count\":%lu,"
                "\"rid_service_seen\":%lu,\"rid_emit\":%lu,"
+               "\"rid_queue_drop\":%lu,\"rid_queue_evict\":%lu,"
                "\"privacy_seen\":%lu",
                (unsigned long)info->wifi_oui_emit,
                (unsigned long)info->wifi_soft_ssid_emit,
@@ -243,6 +247,11 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
                (unsigned long)info->ble_any_seen,
                (unsigned long)info->ble_any_with_payload_seen,
                (unsigned long)info->ble_any_empty_seen,
+               (unsigned long)info->uart_tx_dropped,
+               (unsigned long)info->uart_tx_high_water,
+               (unsigned long)info->tx_queue_depth,
+               (unsigned long)info->tx_queue_capacity,
+               (unsigned long)info->tx_queue_pressure_pct,
                (int)info->ble_any_last_rssi,
                (int)info->ble_any_best_rssi,
                (unsigned)info->ble_any_last_len,
@@ -271,6 +280,8 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
                (unsigned long)info->ble_focus_target_adv_count,
                (unsigned long)info->rid_service_seen,
                (unsigned long)info->rid_emit,
+               (unsigned long)info->rid_queue_drop,
+               (unsigned long)info->rid_queue_evict,
                (unsigned long)info->privacy_seen);
         printf(",\"display_policy_hash\":%lu,"
                "\"display_policy_ack_hash\":%lu,"
@@ -288,15 +299,37 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
         print_json_escaped_string(info->ble_meta_last_reason);
         printf(",\"ble_meta_identity\":");
         print_json_escaped_string(info->ble_meta_identity);
+        printf(",\"ble_dbg_near_label\":");
+        print_json_escaped_string(info->ble_dbg_near_label);
+        printf(",\"ble_dbg_near_name\":");
+        print_json_escaped_string(info->ble_dbg_near_name);
+        printf(",\"ble_dbg_near_reason\":");
+        print_json_escaped_string(info->ble_dbg_near_reason);
+        printf(",\"ble_dbg_priv_label\":");
+        print_json_escaped_string(info->ble_dbg_priv_label);
+        printf(",\"ble_dbg_priv_name\":");
+        print_json_escaped_string(info->ble_dbg_priv_name);
+        printf(",\"ble_dbg_priv_reason\":");
+        print_json_escaped_string(info->ble_dbg_priv_reason);
         printf(",\"ble_dbg_near_seen\":%lu,\"ble_dbg_near_rssi\":%d,"
+               "\"ble_dbg_near_cid\":%u,\"ble_dbg_near_svc0\":%u,"
+               "\"ble_dbg_near_svc_count\":%u,"
                "\"ble_dbg_near_payload_len\":%u,"
                "\"ble_dbg_priv_seen\":%lu,\"ble_dbg_priv_rssi\":%d,"
+               "\"ble_dbg_priv_cid\":%u,\"ble_dbg_priv_svc0\":%u,"
+               "\"ble_dbg_priv_svc_count\":%u,"
                "\"ble_dbg_priv_payload_len\":%u,\"fw_state\":",
                (unsigned long)info->ble_dbg_near_seen,
                (int)info->ble_dbg_near_rssi,
+               (unsigned)info->ble_dbg_near_cid,
+               (unsigned)info->ble_dbg_near_svc0,
+               (unsigned)info->ble_dbg_near_svc_count,
                (unsigned)info->ble_dbg_near_payload_len,
                (unsigned long)info->ble_dbg_priv_seen,
                (int)info->ble_dbg_priv_rssi,
+               (unsigned)info->ble_dbg_priv_cid,
+               (unsigned)info->ble_dbg_priv_svc0,
+               (unsigned)info->ble_dbg_priv_svc_count,
                (unsigned)info->ble_dbg_priv_payload_len);
         print_json_escaped_string(info->fw_update_state[0] ? info->fw_update_state : "idle");
         printf(",\"target_ver\":");
@@ -368,7 +401,7 @@ static void send_badge_status_response(void)
     badge_runtime_note_usb_stack_free(
         (uint32_t)uxTaskGetStackHighWaterMark(NULL));
 #endif
-    badge_threat_snapshot_t snapshot;
+    static badge_threat_snapshot_t snapshot;
     uart_rx_get_badge_threat_snapshot(&snapshot);
 
     badge_mode_t mode = badge_mode_get();
@@ -732,6 +765,60 @@ static void handle_scanner_display_control(cJSON *root, const char *cmd_name)
     fflush(stdout);
 }
 
+static void handle_scanner_safe_mode_control(cJSON *root)
+{
+#ifdef FOF_BADGE_VARIANT
+    cJSON *scanner_cmd = cJSON_CreateObject();
+    if (!scanner_cmd) {
+        send_control_error("no memory");
+        return;
+    }
+
+    const cJSON *enabled_item = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+    bool enabled = ctl_bool_value(enabled_item, true);
+    cJSON_AddStringToObject(scanner_cmd, "type", "safe_mode");
+    cJSON_AddBoolToObject(scanner_cmd, "enabled", enabled);
+
+    char *payload = cJSON_PrintUnformatted(scanner_cmd);
+    cJSON_Delete(scanner_cmd);
+    if (!payload) {
+        send_control_error("no memory");
+        return;
+    }
+
+    const cJSON *uart_item = cJSON_GetObjectItemCaseSensitive(root, "uart");
+    const char *uart = cJSON_IsString(uart_item) ? uart_item->valuestring : "all";
+    bool ble_sent = false;
+    bool wifi_sent = false;
+    if (strcmp(uart, "ble") == 0 || strcmp(uart, "0") == 0) {
+        ble_sent = uart_rx_send_command_to_scanner_checked(0, payload);
+    } else if (strcmp(uart, "wifi") == 0 || strcmp(uart, "1") == 0) {
+        wifi_sent = uart_rx_send_command_to_scanner_checked(1, payload);
+    } else if (strcmp(uart, "all") == 0 || strcmp(uart, "*") == 0) {
+        ble_sent = uart_rx_send_command_to_scanner_checked(0, payload);
+#if CONFIG_DUAL_SCANNER
+        wifi_sent = uart_rx_send_command_to_scanner_checked(1, payload);
+#endif
+    } else {
+        cJSON_free(payload);
+        send_control_error("uart must be ble, wifi, or all");
+        return;
+    }
+    cJSON_free(payload);
+
+    printf("FOF_CTL_OK:{\"message\":\"scanner safe mode command sent\","
+           "\"ble_sent\":%s,\"wifi_sent\":%s,\"enabled\":%s,"
+           "\"reboot_required\":true}\n",
+           ble_sent ? "true" : "false",
+           wifi_sent ? "true" : "false",
+           enabled ? "true" : "false");
+    fflush(stdout);
+#else
+    (void)root;
+    send_control_error("scanner safe mode is badge-only");
+#endif
+}
+
 #ifdef FOF_BADGE_VARIANT
 static void send_network_ok(const char *message, bool applied)
 {
@@ -970,6 +1057,9 @@ static void handle_ctl_command(const char *json)
                strcmp(cmd, "scanner_trigger") == 0 ||
                strcmp(cmd, "trigger") == 0) {
         handle_scanner_display_control(root, cmd);
+    } else if (strcmp(cmd, "scanner_safe_mode") == 0 ||
+               strcmp(cmd, "scanner_recovery") == 0) {
+        handle_scanner_safe_mode_control(root);
     } else if (strcmp(cmd, "fw_stage_metadata") == 0) {
 #ifdef FOF_BADGE_VARIANT
         const esp_partition_t *partition = fw_store_get_target_partition();

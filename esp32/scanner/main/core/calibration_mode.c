@@ -54,15 +54,7 @@ static void apply_normal_profile_radios(void)
         wifi_scanner_pause();
         ensure_ble_radio_enabled(true);
     } else if (profile_is_wifi_primary()) {
-#ifdef FOF_BADGE_VARIANT
-        /* Badge hardware has to remain demo-recoverable if the dedicated BLE
-         * slot goes stale. Keeping NimBLE alive avoids the stop/restart path
-         * that can leave a scanner host-active but unsynced after failover.
-         */
-        ensure_ble_radio_enabled(true);
-#else
         ensure_ble_radio_enabled(false);
-#endif
         wifi_scanner_resume();
     } else {
         ensure_ble_radio_enabled(true);

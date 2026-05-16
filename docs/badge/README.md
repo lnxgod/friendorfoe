@@ -6,8 +6,8 @@ used for walk-up privacy/drone awareness and Android USB-C testing.
 
 ## Current Versions
 
-- Android app/backend: `0.64.37-badge-privacy`
-- FoF Badge firmware: `0.64.37-badge-privacy`
+- Android app/backend: `0.64.38-badge-live`
+- FoF Badge firmware: `0.64.38-badge-live`
 - Production S3 firmware: `0.63.0-svc156`
 
 Keep those tracks separate. The badge firmware uses `FOF_BADGE_VARIANT`,
@@ -29,21 +29,19 @@ uplink assigns the active role and scanner profile at runtime.
 
 ## What This Release Tests
 
-`0.64.37-badge-privacy` is the badge privacy/display-policy release:
+`0.64.38-badge-live` is the badge live-evidence release:
 
-- Android Privacy screen reads the badge over USB-C and merges badge evidence
-  with phone-local and backend privacy detections.
-- Android List screen exposes badge display filters for drone, Meta Glasses,
-  trackers, WiFi attacks, skimmers, cameras, Flock/ALPR, locks, BLE HID,
-  beacons, event badges, Auracast, and scanner-status rows.
-- Badge uplink persists display policy, reports policy hashes and filtered
-  counts over `FOF_STATUS` and `/api/badge/status`, and forwards policy updates
-  to both scanners.
-- Badge scanners report richer threat/entity facts: evidence quality, display
-  rank, display ID, proximity, best RSSI, seen/group counts, stale state, and
-  policy acknowledgements.
-- Scanner relay retry state is safer after a failed relay and can retry from
-  scanner-originated `fw_check` after the badge backoff.
+- The badge keeps drone, Meta Glasses, tracker, WiFi attack, and scanner health
+  evidence separated into calm top awareness tiles plus BLE/WiFi lower lanes.
+- Remote ID evidence is prioritized through scanner UART pressure, carries
+  display IDs, RSSI, GPS/operator fields, and avoids ambiguous `RID SIGNAL`
+  rows once a real RID entity is decoded.
+- Badge scanners expose RID drop/evict counters, richer BLE hints, recovery
+  mode, crash counts, and policy acknowledgements in `FOF_STATUS`.
+- Safe USB and scanner safe-mode recovery remain part of the badge-only flow;
+  scanner crash history can be cleared from the uplink after a successful fix.
+- Android/backend stay on the same badge version so USB-C badge testing and
+  backend ingest status agree with the firmware release.
 
 ## Build And Flash
 
@@ -106,7 +104,7 @@ Expected healthy status facts:
 
 - Top-level `recovery_mode` is `normal`.
 - Both scanners are connected and report `scanner-s3-combo-fof_badge`.
-- Uplink and scanners report `0.64.37-badge-privacy`.
+- Uplink and scanners report `0.64.38-badge-live`.
 - `display_policy_hash` is non-zero.
 - Scanner `display_policy_ack_hash` catches up to the uplink policy hash.
 

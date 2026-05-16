@@ -21,6 +21,7 @@
 #include "detection_types.h"
 #include "detection_policy.h"
 #include "core/task_priorities.h"
+#include "comms/uart_tx.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -64,6 +65,7 @@ static const char *TAG = "ble_rid";
 
 /** ODID message size per ASTM F3411 */
 #define ODID_MESSAGE_SIZE           25
+#define ODID_PRIORITY_REEMIT_MS     500
 
 /* ESP-IDF's FreeRTOS port uses byte-sized StackType_t on Xtensa. Badge
  * privacy classification runs inside the NimBLE host callback, and 4 KB
@@ -87,6 +89,7 @@ typedef struct {
     bool        in_use;         /* Slot is occupied */
     odid_state_t odid;          /* Accumulated ODID message state */
     int64_t     last_seen_ms;   /* Timestamp of last advertisement */
+    int64_t     last_emit_ms;   /* Last queued RID summary for UART TX */
 } ble_device_slot_t;
 
 /* ── Module state ──────────────────────────────────────────────────────────── */
@@ -94,6 +97,8 @@ typedef struct {
 static QueueHandle_t    s_detection_queue = NULL;
 static uint32_t         s_odid_service_seen = 0;
 static uint32_t         s_odid_emit = 0;
+static uint32_t         s_odid_queue_drop = 0;
+static uint32_t         s_odid_queue_evict = 0;
 static uint32_t         s_privacy_seen = 0;
 static uint32_t         s_ble_service_trace_seen = 0;
 static uint32_t         s_ble_adv_seen = 0;
@@ -364,74 +369,6 @@ static bool badge_ble_has_structured_hint(const ble_fingerprint_t *fp)
            fp->payload_len >= 12;
 }
 
-static char badge_ascii_lower(char ch)
-{
-    return (ch >= 'A' && ch <= 'Z') ? (char)(ch - 'A' + 'a') : ch;
-}
-
-static bool badge_text_contains_nocase(const char *haystack, const char *needle)
-{
-    if (!haystack || !needle || needle[0] == '\0') {
-        return false;
-    }
-    for (const char *h = haystack; *h; h++) {
-        const char *a = h;
-        const char *b = needle;
-        while (*a && *b && badge_ascii_lower(*a) == badge_ascii_lower(*b)) {
-            a++;
-            b++;
-        }
-        if (*b == '\0') {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool badge_ble_name_mentions_meta_glasses(const char *name)
-{
-    if (!name || name[0] == '\0') {
-        return false;
-    }
-    return badge_text_contains_nocase(name, "meta") ||
-           badge_text_contains_nocase(name, "ray-ban") ||
-           badge_text_contains_nocase(name, "rayban") ||
-           badge_text_contains_nocase(name, "oakley") ||
-           badge_text_contains_nocase(name, "wayfarer") ||
-           strncmp(name, "RB-", 3) == 0 ||
-           strncmp(name, "RB ", 3) == 0 ||
-           strncmp(name, "OAK", 3) == 0;
-}
-
-static bool badge_ble_uuid_is_meta(uint16_t uuid)
-{
-    return uuid == 0xFD5F || uuid == 0xFEB7 || uuid == 0xFEB8;
-}
-
-static bool badge_ble_has_meta_hint(const ble_fingerprint_t *fp)
-{
-    if (!fp) {
-        return false;
-    }
-    if (fp->device_type == BLE_DEV_META_GLASSES ||
-        fp->device_type == BLE_DEV_META_DEVICE) {
-        return true;
-    }
-    if (fp->company_id == 0x0D53 || fp->company_id == 0x01AB ||
-        fp->company_id == 0x058E) {
-        return true;
-    }
-    if (badge_ble_name_mentions_meta_glasses(fp->local_name)) {
-        return true;
-    }
-    for (uint8_t i = 0; i < fp->svc_uuid_count; i++) {
-        if (badge_ble_uuid_is_meta(fp->service_uuids[i])) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static bool badge_ble_is_privacy_candidate(const ble_fingerprint_t *fp,
                                            int8_t rssi)
 {
@@ -597,11 +534,14 @@ static void badge_emit_glasses_detection(const glasses_detection_t *gdet,
         badge_ble_note_meta(fp_hash, gdet->rssi, det.class_reason,
                             "detector_fp", false);
     } else {
-        snprintf(det.drone_id, sizeof(det.drone_id), "meta:weak:glasses");
-        snprintf(det.model, sizeof(det.model), "Weak Meta");
-        snprintf(det.class_reason, sizeof(det.class_reason), "weak_meta:%s",
-                 gdet->match_reason[0] ? gdet->match_reason : "glasses_detector");
-        badge_ble_note_meta(hash, gdet->rssi, det.class_reason, "weak", true);
+        /* Weak glasses-detector hits are useful diagnostics but produced false
+         * top-tile Meta alerts in noisy rooms. Keep the scanner debug state and
+         * wait for a fingerprint-backed identity before emitting a badge threat.
+         */
+        badge_ble_note_meta(hash, gdet->rssi,
+                            gdet->match_reason[0] ? gdet->match_reason : "glasses_detector",
+                            "weak", true);
+        return;
     }
     (void)xQueueSend(s_detection_queue, &det, 0);
 #else
@@ -653,6 +593,25 @@ static ble_device_slot_t *find_or_alloc_device(const uint8_t mac[6])
     odid_state_init(&slot->odid, mac_str, slot->last_seen_ms);
 
     return slot;
+}
+
+static bool enqueue_odid_detection_priority(const drone_detection_t *det)
+{
+    if (!det) {
+        return false;
+    }
+
+    bool evicted = false;
+    if (uart_tx_enqueue_priority_detection(det, &evicted)) {
+        if (evicted) {
+            s_odid_queue_evict++;
+        }
+        s_odid_emit++;
+        return true;
+    }
+
+    s_odid_queue_drop++;
+    return false;
 }
 
 /* ── ODID service data extraction and parsing ──────────────────────────────── */
@@ -754,6 +713,7 @@ static void process_odid_service_data(const uint8_t mac[6],
 
     /* Parse the ODID message into the accumulated state (depth=0 for top-level) */
     odid_parse_message(odid_msg, (size_t)odid_len, &slot->odid, 0);
+    int64_t ts = now_ms();
     if (skip_len > 0) {
         ESP_LOGD(TAG, "BLE RID service payload len=%d skip=%d odid_len=%d",
                  data_len, skip_len, odid_len);
@@ -763,6 +723,10 @@ static void process_odid_service_data(const uint8_t mac[6],
     drone_detection_t det;
     if (odid_state_to_detection(&slot->odid, "rid_",
                                 DETECTION_SRC_BLE_RID, &det)) {
+        if (slot->last_emit_ms != 0 &&
+            (ts - slot->last_emit_ms) < ODID_PRIORITY_REEMIT_MS) {
+            return;
+        }
         det.rssi = rssi;
         snprintf(det.bssid, sizeof(det.bssid),
                  "%02X:%02X:%02X:%02X:%02X:%02X",
@@ -775,7 +739,6 @@ static void process_odid_service_data(const uint8_t mac[6],
                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         }
 
-        int64_t ts = now_ms();
         det.first_seen_ms = ts;
         det.last_updated_ms = ts;
 
@@ -783,9 +746,8 @@ static void process_odid_service_data(const uint8_t mac[6],
                  det.drone_id, det.latitude, det.longitude,
                  det.altitude_m, rssi);
 
-        if (s_detection_queue) {
-            xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
-            s_odid_emit++;
+        if (enqueue_odid_detection_priority(&det)) {
+            slot->last_emit_ms = ts;
         }
     }
 }
@@ -920,8 +882,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             }
             bool badge_nearby_ble_diag_emit = badge_nearby_ble_diag &&
                 badge_ble_unknown_diag_should_emit(fp.hash, disc->rssi, now_ms);
-            bool badge_weak_meta_emit = badge_nearby_ble_diag_emit &&
-                badge_ble_has_meta_hint(&fp);
+            bool badge_weak_meta_emit = false;
 
             static uint8_t  last_macs[50][6];
             static int64_t  last_times[50];
@@ -1245,8 +1206,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             }
             bool badge_nearby_ble_diag_emit = badge_nearby_ble_diag &&
                 badge_ble_unknown_diag_should_emit(fp.hash, ext->rssi, now_ms);
-            bool badge_weak_meta_emit = badge_nearby_ble_diag_emit &&
-                badge_ble_has_meta_hint(&fp);
+            bool badge_weak_meta_emit = false;
 
             /* Rate limit: drones/trackers fast, others moderate
              * Focus target: 200ms (5 reports/sec for maximum resolution) */
@@ -1869,6 +1829,8 @@ void ble_remote_id_get_stats(ble_remote_id_stats_t *out)
         ? (stats_now_ms - s_ble_focus.start_ms) / 1000
         : -1;
     out->ble_focus_target_adv_count = s_ble_focus.target_adv_count;
+    out->rid_queue_drop = s_odid_queue_drop;
+    out->rid_queue_evict = s_odid_queue_evict;
 }
 
 void ble_remote_id_reset_profile_counters(void)
@@ -1900,6 +1862,8 @@ void ble_remote_id_reset_profile_counters(void)
     s_privacy_seen = 0;
     s_odid_service_seen = 0;
     s_odid_emit = 0;
+    s_odid_queue_drop = 0;
+    s_odid_queue_evict = 0;
     s_ble_service_trace_seen = 0;
 }
 

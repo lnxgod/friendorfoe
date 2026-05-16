@@ -4,8 +4,8 @@
  * Friend or Foe -- WiFi OUI (Organizationally Unique Identifier) Database
  *
  * Lookup table mapping MAC address OUI prefixes (first 3 bytes) to known
- * drone hardware manufacturers. Even drones with hidden or generic SSIDs
- * still broadcast their hardware OUI in the BSSID.
+ * drone/privacy hardware manufacturers. Even devices with hidden or generic
+ * SSIDs still broadcast their hardware OUI in the BSSID.
  *
  * Ported from Android WifiOuiDatabase.kt.
  */

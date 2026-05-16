@@ -39,6 +39,22 @@ void uart_tx_init(void);
 void uart_tx_send_detection(const drone_detection_t *detection);
 
 /**
+ * Queue a high-priority detection for the UART TX task.
+ *
+ * Badge Remote ID packets must not compete with high-volume BLE privacy
+ * diagnostics in the regular scanner queue.  This queue is drained before the
+ * normal detection queue; when full it evicts its oldest priority item.
+ *
+ * @param detection    Detection to queue.
+ * @param evicted_out  Optional: set true when an older priority item was
+ *                     evicted to make room.
+ * @return true when queued for TX, false when no priority queue was available
+ *         or the item could not be enqueued.
+ */
+bool uart_tx_enqueue_priority_detection(const drone_detection_t *detection,
+                                        bool *evicted_out);
+
+/**
  * Send a periodic status heartbeat over UART.
  * Format: {"type":"status","ble_count":N,"wifi_count":N,"ch":N,"uptime_s":N}\n
  */

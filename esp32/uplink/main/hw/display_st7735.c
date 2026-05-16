@@ -1523,6 +1523,9 @@ static void badge_viewed_mark_entity(
     if (badge_threat_snapshot_entity_view_key(item, key, sizeof(key))) {
         badge_viewed_mark_key(viewed, key);
     }
+    if (badge_threat_snapshot_entity_is_meta_glasses(item)) {
+        badge_viewed_mark_key(viewed, "META:*");
+    }
 }
 
 static bool badge_viewed_has_remote_id(
@@ -2305,10 +2308,18 @@ static bool scanner_status_notable_ssid_fresh(const scanner_info_t *info)
 
 static bool scanner_status_meta_fresh(const scanner_info_t *info)
 {
-    return info &&
-           info->ble_meta_seen > 0 &&
-           info->ble_meta_last_seen_age_s >= 0 &&
-           info->ble_meta_last_seen_age_s <= 90;
+    if (!info ||
+        info->ble_meta_seen == 0 ||
+        info->ble_meta_last_seen_age_s < 0 ||
+        info->ble_meta_last_seen_age_s > 90 ||
+        info->ble_meta_last_hash == 0) {
+        return false;
+    }
+    if (strstr(info->ble_meta_last_reason, "weak_meta") != NULL) {
+        return false;
+    }
+    return strcmp(info->ble_meta_identity, "strong_fp") == 0 ||
+           strcmp(info->ble_meta_identity, "detector_fp") == 0;
 }
 
 static uint32_t scanner_status_max_u32(uint32_t a, uint32_t b)
@@ -2436,6 +2447,111 @@ static const scanner_info_t *scanner_status_best_ble_live_info(uint32_t *payload
     if (payload_out) *payload_out = payload;
     if (empty_out) *empty_out = empty;
     return best;
+}
+
+static bool badge_text_has_value(const char *s)
+{
+    return s && s[0] != '\0' && strcmp(s, "?") != 0;
+}
+
+static bool badge_text_contains_nocase(const char *haystack, const char *needle)
+{
+    if (!haystack || !needle || !needle[0]) {
+        return false;
+    }
+    size_t needle_len = strlen(needle);
+    for (const char *p = haystack; *p; p++) {
+        size_t i = 0;
+        while (i < needle_len && p[i]) {
+            char a = p[i];
+            char b = needle[i];
+            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+            if (a != b) {
+                break;
+            }
+            i++;
+        }
+        if (i == needle_len) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool badge_ble_label_is_generic(const char *label)
+{
+    return !badge_text_has_value(label) ||
+           strcmp(label, "BLE") == 0 ||
+           strcmp(label, "BLE Nearby") == 0 ||
+           badge_text_contains_nocase(label, "unknown");
+}
+
+static void format_ble_signal_status(const scanner_info_t *info,
+                                     char *label_out,
+                                     size_t label_len,
+                                     char *detail_out,
+                                     size_t detail_len)
+{
+    if (!label_out || label_len == 0 || !detail_out || detail_len == 0) {
+        return;
+    }
+    snprintf(label_out, label_len, "BLE SIGNAL");
+    detail_out[0] = '\0';
+    if (!info) {
+        snprintf(detail_out, detail_len, "strong BLE");
+        return;
+    }
+
+    const char *guess = info->ble_dbg_near_label;
+    const char *name = info->ble_dbg_near_name;
+    const char *reason = info->ble_dbg_near_reason;
+    int rssi = info->ble_dbg_near_rssi < 0
+        ? info->ble_dbg_near_rssi
+        : info->ble_any_best_rssi;
+
+    if (!badge_ble_label_is_generic(guess)) {
+        if (badge_text_contains_nocase(guess, "tracker") ||
+            badge_text_contains_nocase(guess, "airtag") ||
+            badge_text_contains_nocase(guess, "tile") ||
+            badge_text_contains_nocase(guess, "tag")) {
+            snprintf(label_out, label_len, "TRACKER?");
+        } else if (badge_text_contains_nocase(guess, "hid") ||
+                   badge_text_contains_nocase(guess, "keyboard") ||
+                   badge_text_contains_nocase(guess, "mouse")) {
+            snprintf(label_out, label_len, "HID?");
+        } else if (badge_text_contains_nocase(guess, "camera")) {
+            snprintf(label_out, label_len, "CAMERA?");
+        } else if (badge_text_contains_nocase(guess, "lock")) {
+            snprintf(label_out, label_len, "LOCK?");
+        } else {
+            snprintf(label_out, label_len, "%.23s", guess);
+        }
+    }
+
+    char hint[28] = {0};
+    if (badge_text_has_value(name)) {
+        snprintf(hint, sizeof(hint), "%.20s", name);
+    } else if (!badge_ble_label_is_generic(guess)) {
+        snprintf(hint, sizeof(hint), "%.20s", guess);
+    } else if (info->ble_dbg_near_svc0 != 0) {
+        snprintf(hint, sizeof(hint), "svc %04X", (unsigned)info->ble_dbg_near_svc0);
+    } else if (info->ble_dbg_near_cid != 0) {
+        snprintf(hint, sizeof(hint), "cid %04X", (unsigned)info->ble_dbg_near_cid);
+    } else if (badge_text_has_value(reason)) {
+        snprintf(hint, sizeof(hint), "%.20s", reason);
+    } else {
+        snprintf(hint, sizeof(hint), "unknown BLE");
+    }
+
+    if (badge_text_has_value(name) && info->ble_dbg_near_svc0 != 0) {
+        snprintf(detail_out, detail_len, "%.18s svc%04X %ddB",
+                 name, (unsigned)info->ble_dbg_near_svc0, rssi);
+    } else if (rssi < 0) {
+        snprintf(detail_out, detail_len, "%s %ddB", hint, rssi);
+    } else {
+        snprintf(detail_out, detail_len, "%s active", hint);
+    }
 }
 
 static void draw_scanner_health_line(int y, bool ble_scanner_ok,
@@ -2599,6 +2715,7 @@ static int build_scanner_diag_rows(badge_display_diag_t *rows, int max_rows,
         const scanner_info_t *ble_live =
             scanner_status_best_ble_live_info(&payload, NULL);
         uint32_t tracker_seen = scanner_status_ble_tracker_seen_max();
+        char ble_label_buf[24];
         const char *label = "BLE CLEAR";
         if (meta && meta->ble_focus_active) {
             label = "META SIGNAL";
@@ -2614,14 +2731,14 @@ static int build_scanner_diag_rows(badge_display_diag_t *rows, int max_rows,
             label = "META SIGNAL";
             snprintf(detail, sizeof(detail), "seen %llds ago",
                      (long long)meta->ble_meta_last_seen_age_s);
-        } else if (ble_live && ble_live->ble_any_best_rssi >= -60) {
-            label = "BLE SIGNAL";
-            (void)payload;
-            snprintf(detail, sizeof(detail), "strong BLE %ddB",
-                     (int)ble_live->ble_any_best_rssi);
         } else if (tracker_seen > 0) {
             label = "TAG SIGNAL";
             snprintf(detail, sizeof(detail), "tag signals active");
+        } else if (ble_live && ble_live->ble_any_best_rssi >= -60) {
+            (void)payload;
+            format_ble_signal_status(ble_live, ble_label_buf, sizeof(ble_label_buf),
+                                     detail, sizeof(detail));
+            label = ble_label_buf;
         } else {
             snprintf(detail, sizeof(detail), "scanning BLE ads");
         }
@@ -2667,8 +2784,9 @@ static int build_scanner_diag_rows(badge_display_diag_t *rows, int max_rows,
                 : ssid->wifi_last_notable_ssid;
             snprintf(detail, sizeof(detail), "ssid %.31s", name);
         } else if (rid_seen > 0) {
-            label = "DRONE RID";
-            snprintf(detail, sizeof(detail), "Remote ID signal");
+            label = "RID WAIT";
+            snprintf(detail, sizeof(detail), "decoding %lu service frames",
+                     (unsigned long)cap3(rid_seen));
         } else {
             snprintf(detail, sizeof(detail), "scanning WiFi frames");
         }
@@ -2918,6 +3036,8 @@ static uint32_t badge_drone_evidence_count(
     const badge_threat_snapshot_t *snapshot);
 static uint32_t badge_meta_glasses_count(
     const badge_threat_snapshot_t *snapshot);
+static int badge_top_tile_rank(const badge_threat_snapshot_t *snapshot,
+                               const badge_threat_snapshot_entity_t *item);
 
 static badge_display_min_proximity_t badge_display_policy_entity_prox(
     const badge_threat_snapshot_entity_t *item)
@@ -3139,6 +3259,7 @@ static const badge_threat_snapshot_entity_t *select_top_wifi_badge_item(
     }
 
     uint32_t drone_count = badge_drone_evidence_count(snapshot);
+    const badge_threat_snapshot_entity_t *drone = NULL;
     if (drone_count > 0) {
         for (int i = 0; i < snapshot->entity_count; i++) {
             const badge_threat_snapshot_entity_t *item = &snapshot->entities[i];
@@ -3146,11 +3267,44 @@ static const badge_threat_snapshot_entity_t *select_top_wifi_badge_item(
                 if (!badge_display_policy_allows_entity_lane(item, true)) {
                     continue;
                 }
-                if (pos_out) *pos_out = 1;
-                if (total_out) *total_out = (int)drone_count;
-                return item;
+                drone = item;
+                break;
             }
         }
+    }
+
+    const badge_threat_snapshot_entity_t *best_wifi = NULL;
+    for (int i = 0; i < snapshot->entity_count; i++) {
+        const badge_threat_snapshot_entity_t *item = &snapshot->entities[i];
+        if (!item->active || item->stale || !badge_item_is_wifi_concern(item)) {
+            continue;
+        }
+        if (badge_item_is_drone_evidence(item)) {
+            continue;
+        }
+        if (!badge_display_policy_allows_entity_lane(item, true)) {
+            continue;
+        }
+        if (!best_wifi ||
+            badge_top_tile_rank(snapshot, item) >
+            badge_top_tile_rank(snapshot, best_wifi)) {
+            best_wifi = item;
+        }
+    }
+
+    if (best_wifi &&
+        (!drone ||
+         badge_top_tile_rank(snapshot, best_wifi) >
+         badge_top_tile_rank(snapshot, drone))) {
+        if (pos_out) *pos_out = 1;
+        if (total_out) *total_out = 1;
+        return best_wifi;
+    }
+
+    if (drone) {
+        if (pos_out) *pos_out = 1;
+        if (total_out) *total_out = (int)drone_count;
+        return drone;
     }
 
     return select_rotating_badge_item(snapshot, badge_item_is_wifi_concern,
@@ -3186,19 +3340,18 @@ static const badge_threat_snapshot_entity_t *select_top_ble_badge_item(
         if (!badge_display_policy_allows_entity_lane(item, true)) {
             continue;
         }
-        if (item->category != BADGE_THREAT_CATEGORY_SKIM &&
-            item->category != BADGE_THREAT_CATEGORY_CAMERA &&
-            item->category != BADGE_THREAT_CATEGORY_LOCK &&
-            item->category != BADGE_THREAT_CATEGORY_FLOCK) {
+        if (badge_item_is_meta_glasses(item)) {
             continue;
         }
-        if (!override || item->score > override->score ||
-            (item->score == override->score &&
-             item->display_rank > override->display_rank)) {
+        if (!override ||
+            badge_top_tile_rank(snapshot, item) >
+            badge_top_tile_rank(snapshot, override)) {
             override = item;
         }
     }
-    if (override && (!meta || override->score >= meta->score + 8)) {
+    if (override && (!meta ||
+                     badge_top_tile_rank(snapshot, override) >
+                     badge_top_tile_rank(snapshot, meta))) {
         if (pos_out) *pos_out = 1;
         if (total_out) *total_out = 1;
         return override;
@@ -3298,6 +3451,78 @@ static uint32_t badge_meta_glasses_count(
     return badge_threat_snapshot_meta_glasses_count(snapshot);
 }
 
+static int badge_top_tile_rank(const badge_threat_snapshot_t *snapshot,
+                               const badge_threat_snapshot_entity_t *item)
+{
+    if (!item || !item->active) {
+        return 0;
+    }
+
+    int base = 0;
+    switch (item->category) {
+        case BADGE_THREAT_CATEGORY_FLOCK:
+            base = 1200;
+            break;
+        case BADGE_THREAT_CATEGORY_SKIM:
+            base = 1160;
+            break;
+        case BADGE_THREAT_CATEGORY_WIFI:
+            base = 1120;
+            break;
+        case BADGE_THREAT_CATEGORY_CAMERA:
+            base = 1080;
+            break;
+        case BADGE_THREAT_CATEGORY_LOCK:
+            base = 980;
+            break;
+        case BADGE_THREAT_CATEGORY_HID:
+            base = 940;
+            break;
+        case BADGE_THREAT_CATEGORY_TAG_CLOSE:
+            base = 920;
+            break;
+        case BADGE_THREAT_CATEGORY_DRONE:
+        case BADGE_THREAT_CATEGORY_SSID:
+            base = 900;
+            break;
+        case BADGE_THREAT_CATEGORY_GLASS:
+            base = 700;
+            break;
+        case BADGE_THREAT_CATEGORY_PRIVACY:
+            base = 620;
+            break;
+        case BADGE_THREAT_CATEGORY_EVENT_BADGE:
+            base = 560;
+            break;
+        case BADGE_THREAT_CATEGORY_BEACON:
+            base = 500;
+            break;
+        case BADGE_THREAT_CATEGORY_AUDIO:
+            base = 460;
+            break;
+        default:
+            base = 320;
+            break;
+    }
+
+    if (badge_item_is_drone_evidence(item)) {
+        uint32_t count = badge_drone_evidence_count(snapshot);
+        if (count > 1U) {
+            base += (int)((count - 1U) * 40U);
+        }
+    } else if (badge_item_is_meta_glasses(item) &&
+               item->display_id[0] == '\0') {
+        base -= 140;
+    }
+    if (item->stale) {
+        base -= 500;
+    }
+    base += item->score;
+    base += (int)item->proximity_level * 28;
+    base += (int)item->evidence_quality * 4;
+    return base;
+}
+
 static uint32_t badge_item_heat_count(
     const badge_threat_snapshot_t *snapshot,
     const badge_threat_snapshot_entity_t *item)
@@ -3348,6 +3573,26 @@ static uint16_t badge_item_heat_color_for_snapshot(
         badge_item_heat_count(snapshot, item));
 }
 
+static uint8_t badge_top_item_heat_percent(
+    const badge_threat_snapshot_t *snapshot,
+    const badge_threat_snapshot_entity_t *item)
+{
+    if (badge_item_is_drone_evidence(item)) {
+        return badge_threat_snapshot_drone_aggregate_heat_percent(snapshot);
+    }
+    return badge_item_heat_percent(snapshot, item);
+}
+
+static uint16_t badge_top_item_heat_color_for_snapshot(
+    const badge_threat_snapshot_t *snapshot,
+    const badge_threat_snapshot_entity_t *item)
+{
+    if (badge_item_is_drone_evidence(item)) {
+        return badge_threat_snapshot_drone_aggregate_heat_color_rgb565(snapshot);
+    }
+    return badge_item_heat_color_for_snapshot(snapshot, item);
+}
+
 static char badge_ascii_upper(char ch)
 {
     return (ch >= 'a' && ch <= 'z') ? (char)(ch - 'a' + 'A') : ch;
@@ -3367,6 +3612,24 @@ static void badge_copy_upper(char *out, size_t out_len, const char *src)
         i++;
     }
     out[i] = '\0';
+}
+
+static void format_tracker_title_for_lcd(
+    char *out,
+    size_t out_len,
+    const badge_threat_snapshot_entity_t *item)
+{
+    if (!out || out_len == 0) {
+        return;
+    }
+    const char *label = item ? item->label : NULL;
+    if (label && label[0] != '\0' &&
+        strcmp(label, "Tracker") != 0 &&
+        !lcd_text_looks_raw_id(label)) {
+        badge_copy_upper(out, out_len, label);
+    } else {
+        snprintf(out, out_len, "TRACKER");
+    }
 }
 
 static void format_badge_title_for_snapshot(
@@ -3416,7 +3679,7 @@ static void format_badge_title_for_snapshot(
             snprintf(out, out_len, "AURACAST");
             return;
         case BADGE_THREAT_CATEGORY_TAG_CLOSE:
-            snprintf(out, out_len, "TRACKER");
+            format_tracker_title_for_lcd(out, out_len, item);
             return;
         case BADGE_THREAT_CATEGORY_SSID:
             snprintf(out, out_len, "%s", item->cls == BADGE_THREAT_DRONE
@@ -3526,8 +3789,8 @@ static void draw_top_concern_tile(int y, badge_ui_domain_t domain,
     if (!scanner_ok && !item) {
         bg = rgb565_mix_color(COL_PANEL_2, COL_DIMRED, 58);
     }
-    int bar_percent = item ? (int)badge_item_heat_percent(snapshot, item) : 0;
-    uint16_t bar_color = item ? badge_item_heat_color_for_snapshot(snapshot, item)
+    int bar_percent = item ? (int)badge_top_item_heat_percent(snapshot, item) : 0;
+    uint16_t bar_color = item ? badge_top_item_heat_color_for_snapshot(snapshot, item)
                               : color;
 
     fb_fill_rect(0, y, LCD_W, h, bg);
@@ -3756,7 +4019,10 @@ static void draw_billboard_row(int y, int h,
 
     char detail[80];
     char clean[32];
-    if (badge_item_is_remote_id_drone(item) && item->display_id[0]) {
+    if (item->cls == BADGE_THREAT_TRACKER &&
+        badge_threat_format_top_detail(snapshot, item, detail, sizeof(detail))) {
+        clean[0] = '\0';
+    } else if (badge_item_is_remote_id_drone(item) && item->display_id[0]) {
         snprintf(clean, sizeof(clean), "RID #%s", item->display_id);
     } else if (badge_item_is_remote_id_drone(item)) {
         snprintf(clean, sizeof(clean), "RID signal");
@@ -3765,12 +4031,14 @@ static void draw_billboard_row(int y, int h,
     } else {
         clean_badge_detail(clean, sizeof(clean), item);
     }
-    char summary[36];
-    format_badge_summary(summary, sizeof(summary), item);
-    if (clean[0]) {
-        snprintf(detail, sizeof(detail), "%.31s  %.36s", clean, summary);
-    } else {
-        snprintf(detail, sizeof(detail), "%s", summary);
+    if (item->cls != BADGE_THREAT_TRACKER || detail[0] == '\0') {
+        char summary[36];
+        format_badge_summary(summary, sizeof(summary), item);
+        if (clean[0]) {
+            snprintf(detail, sizeof(detail), "%.31s  %.36s", clean, summary);
+        } else {
+            snprintf(detail, sizeof(detail), "%s", summary);
+        }
     }
     fb_draw_string_fast_marquee(8, y + 19, detail, LCD_W - 12,
                                 item->stale ? COL_DARKGRAY
@@ -3978,16 +4246,20 @@ static int build_billboard_status_rows(
     uint32_t empty_seen = 0;
     const scanner_info_t *ble_live =
         scanner_status_best_ble_live_info(NULL, &empty_seen);
+    uint32_t tracker_seen = scanner_status_ble_tracker_seen_max();
     if (badge_meta_glasses_count(snapshot) == 0 && ble_live &&
+        (!snapshot || snapshot->active_counts[BADGE_THREAT_TRACKER] == 0) &&
+        tracker_seen == 0 &&
         ble_live->ble_any_best_rssi >= -60) {
         (void)empty_seen;
-        snprintf(detail, sizeof(detail), "strong BLE %ddB",
-                 (int)ble_live->ble_any_best_rssi);
+        char label[24];
+        format_ble_signal_status(ble_live, label, sizeof(label),
+                                 detail, sizeof(detail));
         add_billboard_status_row(rows, max_rows, &count, snapshot,
                                  pinned_ble, pinned_wifi,
                                  viewed,
                                  BADGE_UI_DOMAIN_PRIVACY,
-                                 "BLE SIGNAL", detail, "", false);
+                                 label, detail, "", false);
     }
 
     uint32_t active_rid = badge_remote_id_drone_count(snapshot);
@@ -3996,8 +4268,9 @@ static int build_billboard_status_rows(
         active_rid == 0 &&
         rid_seen > 0) {
         char label[24];
-        snprintf(label, sizeof(label), "DRONE RID");
-        snprintf(detail, sizeof(detail), "Remote ID signal");
+        snprintf(label, sizeof(label), "RID WAIT");
+        snprintf(detail, sizeof(detail), "decoding %lu service frames",
+                 (unsigned long)cap3(rid_seen));
         add_billboard_status_row(rows, max_rows, &count, snapshot,
                                  pinned_ble, pinned_wifi,
                                  viewed,
@@ -4511,8 +4784,13 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
         badge_viewed_mark_entity(&viewed, top_wifi);
     }
 
+    bool wifi_first = badge_top_tile_rank(snapshot, top_wifi) >
+                      badge_top_tile_rank(snapshot, top_ble);
+    int ble_y = wifi_first ? 39 : 0;
+    int wifi_y = wifi_first ? 0 : 39;
+
     draw_top_concern_tile(
-        0,
+        ble_y,
         BADGE_UI_DOMAIN_PRIVACY,
         "BLE",
         top_ble,
@@ -4520,11 +4798,11 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
         top_ble_total,
         snapshot,
         ble_scanner_ok,
-        ble_scanner_ok ? "No BLE concern" : "BLE scanner offline",
-        ble_scanner_ok ? "Watching tags and glasses" : "Check BLE scanner"
+        ble_scanner_ok ? "CLEAR" : "BLE scanner offline",
+        ble_scanner_ok ? "No tags/glasses" : "Check BLE scanner"
     );
     draw_top_concern_tile(
-        39,
+        wifi_y,
         BADGE_UI_DOMAIN_WIFI,
         "WiFi",
         top_wifi,
@@ -4532,8 +4810,8 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
         top_wifi_total,
         snapshot,
         wifi_scanner_ok,
-        wifi_scanner_ok ? "No WiFi concern" : "WiFi scanner offline",
-        wifi_scanner_ok ? "Watching SSIDs and attacks" : "Check WiFi scanner"
+        wifi_scanner_ok ? "CLEAR" : "WiFi scanner offline",
+        wifi_scanner_ok ? "No SSID/attack" : "Check WiFi scanner"
     );
 
     draw_badge_billboards(snapshot, ble_scanner_ok, wifi_scanner_ok,

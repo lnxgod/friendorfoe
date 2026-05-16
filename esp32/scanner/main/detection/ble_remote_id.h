@@ -90,6 +90,8 @@ typedef struct {
     bool     ble_focus_active;
     int64_t  ble_focus_age_s;
     uint32_t ble_focus_target_adv_count;
+    uint32_t rid_queue_drop;
+    uint32_t rid_queue_evict;
 } ble_remote_id_stats_t;
 
 bool ble_remote_id_is_scanning(void);

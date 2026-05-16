@@ -217,9 +217,15 @@ uint8_t badge_threat_snapshot_entity_signal_percent(
 uint8_t badge_threat_snapshot_entity_heat_percent(
     const badge_threat_snapshot_entity_t *item,
     uint32_t live_count);
+const badge_threat_snapshot_entity_t *badge_threat_snapshot_strongest_drone_evidence(
+    const badge_threat_snapshot_t *snapshot);
+uint8_t badge_threat_snapshot_drone_aggregate_heat_percent(
+    const badge_threat_snapshot_t *snapshot);
 uint8_t badge_threat_heat_percent(uint8_t base_percent, uint32_t live_count);
 uint16_t badge_threat_proximity_percent_to_rgb565(uint8_t percent);
 uint16_t badge_threat_heat_percent_to_rgb565(uint8_t percent);
+uint16_t badge_threat_snapshot_drone_aggregate_heat_color_rgb565(
+    const badge_threat_snapshot_t *snapshot);
 uint16_t badge_threat_snapshot_entity_heat_color_rgb565(
     const badge_threat_snapshot_entity_t *item,
     uint32_t live_count);

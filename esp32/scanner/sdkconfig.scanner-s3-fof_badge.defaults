@@ -41,6 +41,11 @@ CONFIG_SPIRAM_CACHE_WORKAROUND=y
 # FreeRTOS
 CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_UNICORE=n
+# Badge scanners run early recovery/status/OTA handshakes plus richer BLE/WiFi
+# diagnostics than production scanner nodes. Keep this badge-only so production
+# scanner memory behavior stays separate.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+CONFIG_MAIN_TASK_STACK_SIZE=12288
 
 # Watchdog
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=30

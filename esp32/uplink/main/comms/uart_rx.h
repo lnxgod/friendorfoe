@@ -181,6 +181,8 @@ typedef struct {
     uint32_t ble_focus_target_adv_count;
     uint32_t rid_service_seen;
     uint32_t rid_emit;
+    uint32_t rid_queue_drop;
+    uint32_t rid_queue_evict;
     uint32_t privacy_seen;
 
     /* Time-sync diagnostic (v0.60+): scanner's epoch-ms offset against its

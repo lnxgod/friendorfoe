@@ -1193,13 +1193,15 @@ static void uart_cmd_listener_task(void *arg)
                                 ? (cJSON_IsTrue(enabled) ||
                                    (cJSON_IsNumber(enabled) && enabled->valueint != 0))
                                 : true;
-                            scanner_rollback_force_safe_mode(
-                                on,
-                                on ? "scanner_cmd" : ""
-                            );
+                            if (on) {
+                                scanner_rollback_force_safe_mode(true, "scanner_cmd");
+                            } else {
+                                scanner_rollback_clear_crash_state();
+                            }
                             uart_tx_send_raw_json(on
                                 ? "{\"type\":\"recovery_ack\",\"mode\":\"safe_uart\",\"reboot\":true}"
-                                : "{\"type\":\"recovery_ack\",\"mode\":\"normal\",\"reboot\":true}");
+                                : "{\"type\":\"recovery_ack\",\"mode\":\"normal\",\"reboot\":true,"
+                                  "\"cleared\":true,\"crash_count\":0}");
                             uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(250));
                             vTaskDelay(pdMS_TO_TICKS(120));
                             esp_restart();

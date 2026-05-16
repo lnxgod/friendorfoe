@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 83
-        versionName = "0.64.37-badge-privacy"
+        versionCode = 84
+        versionName = "0.64.38-badge-live"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
