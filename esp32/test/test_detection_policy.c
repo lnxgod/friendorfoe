@@ -43,11 +43,34 @@ void test_fof_drone_ssids_are_notable_but_ambient_fof_is_not(void)
 void test_wifi_oui_database_includes_flock_safety(void)
 {
     const uint8_t flock_oui[3] = {0xB4, 0x1E, 0x52};
+    const uint8_t flock_field_oui[3] = {0x14, 0x5A, 0xFC};
+    const uint8_t flock_wildcard_oui[3] = {0x82, 0x6B, 0xF2};
     const oui_entry_t *entry = wifi_oui_lookup_raw(flock_oui);
+    const oui_entry_t *field = wifi_oui_lookup_raw(flock_field_oui);
+    const oui_entry_t *wildcard = wifi_oui_lookup_raw(flock_wildcard_oui);
 
     TEST_ASSERT_NOT_NULL(entry);
     TEST_ASSERT_EQUAL_STRING("Flock Safety", entry->manufacturer);
     TEST_ASSERT_FALSE(entry->high_false_positive);
+    TEST_ASSERT_NOT_NULL(field);
+    TEST_ASSERT_EQUAL_STRING("Flock Safety", field->manufacturer);
+    TEST_ASSERT_FALSE(field->high_false_positive);
+    TEST_ASSERT_NOT_NULL(wildcard);
+    TEST_ASSERT_TRUE(strstr(wildcard->full_name, "wildcard") != NULL);
+}
+
+void test_flock_ssid_patterns_are_notable_for_badge(void)
+{
+    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("Penguin-1234567890"));
+    TEST_ASSERT_EQUAL_STRING("Flock SSID",
+                             fof_policy_notable_ssid_label("Penguin-1234567890"));
+    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("ALPR-maint"));
+    TEST_ASSERT_EQUAL_STRING("Flock SSID",
+                             fof_policy_notable_ssid_label("ALPR-maint"));
+    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("1234567890"));
+    TEST_ASSERT_EQUAL_STRING("Flock SSID",
+                             fof_policy_notable_ssid_label("1234567890"));
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("123456789"));
 }
 
 void test_probe_rate_aux_changes_when_identity_changes(void)
@@ -255,7 +278,7 @@ void test_ble_fingerprint_meta_rayban_uuid_is_human_evidence(void)
     TEST_ASSERT_EQUAL_UINT16(0xFD5F, fp.service_uuids[0]);
 }
 
-void test_ble_fingerprint_meta_service_uuid_keeps_exact_reason(void)
+void test_ble_fingerprint_meta_service_uuid_keeps_generic_meta_reason(void)
 {
     static const uint8_t adv[] = {
         4, 0x16, 0xB7, 0xFE, 0x00
@@ -264,12 +287,13 @@ void test_ble_fingerprint_meta_service_uuid_keeps_exact_reason(void)
 
     ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
 
-    TEST_ASSERT_EQUAL(BLE_DEV_META_GLASSES, fp.device_type);
+    TEST_ASSERT_EQUAL(BLE_DEV_META_DEVICE, fp.device_type);
+    TEST_ASSERT_EQUAL_STRING("Meta Device", fp.type_name);
     TEST_ASSERT_EQUAL_STRING("uuid16:0xFEB7", fp.class_reason);
     TEST_ASSERT_EQUAL_UINT16(0xFEB7, fp.service_uuids[0]);
 }
 
-void test_ble_fingerprint_meta_feb8_is_high_recall_glasses(void)
+void test_ble_fingerprint_meta_feb8_is_generic_meta_device(void)
 {
     static const uint8_t adv[] = {
         3, 0x03, 0xB8, 0xFE
@@ -278,7 +302,8 @@ void test_ble_fingerprint_meta_feb8_is_high_recall_glasses(void)
 
     ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
 
-    TEST_ASSERT_EQUAL(BLE_DEV_META_GLASSES, fp.device_type);
+    TEST_ASSERT_EQUAL(BLE_DEV_META_DEVICE, fp.device_type);
+    TEST_ASSERT_EQUAL_STRING("Meta Device", fp.type_name);
     TEST_ASSERT_EQUAL_STRING("uuid16:0xFEB8", fp.class_reason);
 }
 

@@ -37,6 +37,7 @@
 #include "wifi_ap.h"
 #include "battery.h"
 #include "http_upload.h"
+#include "oled_display.h"
 #include "nvs_config.h"
 #include "badge_mode.h"
 #include "version.h"
@@ -76,7 +77,11 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                                        const scanner_info_t *info,
                                        bool first)
 {
-    char buf[2048];
+    char *buf = (char *)psram_alloc(2048);
+    if (!buf) {
+        httpd_resp_send_chunk(req, first ? "{}" : ",{}", HTTPD_RESP_USE_STRLEN);
+        return;
+    }
     const bool calibration = info && strcmp(info->scan_mode, "calibration") == 0;
     const char *expected = calibration
         ? fof_policy_scan_profile_for_slot(scanner_id, true)
@@ -308,6 +313,7 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
         httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
     }
     httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
+    psram_free(buf);
 }
 
 static const char *time_source_name(int source_mode)
@@ -705,12 +711,16 @@ static esp_err_t status_json_handler(httpd_req_t *req)
     bool standalone = wifi_sta_is_standalone();
     bool scanner_ok = uart_rx_is_scanner_connected();
 
-    char buf[1400];
+    char *buf = (char *)psram_alloc(1400);
+    if (!buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "status scratch alloc failed");
+        return ESP_OK;
+    }
 
     /* Heap / PSRAM snapshot for S3 N16R8 boards. */
     size_t heap_internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     size_t heap_internal_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
-    size_t psram_free  = psram_free_size();
+    size_t psram_free_bytes  = psram_free_size();
     size_t psram_total = psram_total_size();
     extern volatile int64_t g_last_backend_epoch_ms;
     extern volatile int g_last_time_fetch_perf;
@@ -762,7 +772,7 @@ static esp_err_t status_json_handler(httpd_req_t *req)
         uart_rx_get_node_calibration_uuid(),
         batt_pct, batt_v,
         (unsigned)heap_internal_free, (unsigned)heap_internal_total,
-        (unsigned)psram_free, (unsigned)psram_total,
+        (unsigned)psram_free_bytes, (unsigned)psram_total,
         http_upload_get_offline_count(), http_upload_get_offline_capacity(),
         time_source_name(g_time_source_mode),
         g_last_time_fetch_ok ? "true" : "false",
@@ -877,6 +887,7 @@ static esp_err_t status_json_handler(httpd_req_t *req)
 
     /* Finish */
     httpd_resp_send_chunk(req, NULL, 0);
+    psram_free(buf);
     return ESP_OK;
 }
 
@@ -1668,6 +1679,84 @@ static void json_chunk_string(httpd_req_t *req, const char *value)
     httpd_resp_send_chunk(req, "\"", 1);
 }
 
+#ifdef FOF_BADGE_VARIANT
+static void badge_status_chunk_display_state(httpd_req_t *req)
+{
+    oled_badge_display_state_t state;
+    bool active = oled_badge_get_display_state(&state);
+    char buf[512];
+
+    snprintf(buf, sizeof(buf),
+             ",\"display_state\":{\"active\":%s,\"detail_mode\":%s,"
+             "\"detail_page\":%d,\"focus_index\":%d,\"focus_total\":%d,"
+             "\"item_index\":%d,\"item_total\":%d,\"lane\":",
+             active ? "true" : "false",
+             state.detail_mode ? "true" : "false",
+             state.detail_page,
+             state.focus_index,
+             state.focus_total,
+             state.item_index,
+             state.item_total);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, state.lane);
+    httpd_resp_send_chunk(req, ",\"title\":", HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, state.title);
+    httpd_resp_send_chunk(req, ",\"detail\":", HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, state.detail);
+    httpd_resp_send_chunk(req, ",\"evidence\":", HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, state.evidence);
+    httpd_resp_send_chunk(req, ",\"entity_key\":", HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, state.entity_key);
+    httpd_resp_send_chunk(req, ",\"display_id\":", HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, state.display_id);
+    httpd_resp_send_chunk(req, ",\"class\":", HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, state.threat_class);
+    httpd_resp_send_chunk(req, ",\"category\":", HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, state.category);
+    httpd_resp_send_chunk(req, ",\"code\":", HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, state.code);
+    httpd_resp_send_chunk(req, ",\"source\":", HTTPD_RESP_USE_STRLEN);
+    json_chunk_string(req, state.source);
+    snprintf(buf, sizeof(buf),
+             ",\"score\":%d,\"confidence_pct\":%d,\"evidence_quality\":%d,"
+             "\"display_rank\":%d,\"age_s\":%d,\"last_seen_s\":%d,"
+             "\"rssi\":%d,\"best_rssi\":%d,\"events\":%lu,"
+             "\"seen_count\":%lu,\"group_count\":%lu,"
+             "\"proximity_level\":%d,\"stale\":%s",
+             state.score,
+             state.confidence_pct,
+             state.evidence_quality,
+             state.display_rank,
+             state.age_s,
+             state.last_seen_s,
+             state.rssi,
+             state.best_rssi,
+             (unsigned long)state.events,
+             (unsigned long)state.seen_count,
+             (unsigned long)state.group_count,
+             state.proximity_level,
+             state.stale ? "true" : "false");
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    if (state.has_location) {
+        snprintf(buf, sizeof(buf),
+                 ",\"lat\":%.7f,\"lon\":%.7f,\"altitude_m\":%.1f",
+                 state.latitude, state.longitude, state.altitude_m);
+        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    }
+    if (state.has_operator_location) {
+        snprintf(buf, sizeof(buf),
+                 ",\"operator_lat\":%.7f,\"operator_lon\":%.7f",
+                 state.operator_lat, state.operator_lon);
+        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    }
+    if (state.operator_id[0] != '\0') {
+        httpd_resp_send_chunk(req, ",\"operator_id\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, state.operator_id);
+    }
+    httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
+}
+#endif
+
 static esp_err_t badge_status_json_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -1768,6 +1857,7 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
         httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
     }
     httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
+    badge_status_chunk_display_state(req);
 #endif
 
     int64_t last_upload_ms = http_upload_get_last_success_ms();
@@ -1798,13 +1888,22 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
     snprintf(buf, sizeof(buf),
              ",\"crash_count\":%lu,\"stack_main_free\":%lu,"
              "\"stack_display_free\":%lu,\"stack_usb_free\":%lu,"
-             "\"stack_uart_ble_free\":%lu,\"stack_uart_wifi_free\":%lu",
+             "\"stack_uart_ble_free\":%lu,\"stack_uart_wifi_free\":%lu,"
+             "\"heap_internal_free\":%lu,\"heap_internal_min_free\":%lu,"
+             "\"heap_internal_largest\":%lu,\"psram_total\":%lu,"
+             "\"psram_free\":%lu,\"psram_largest\":%lu",
              (unsigned long)badge_runtime_crash_count(),
              (unsigned long)badge_runtime_main_stack_free(),
              (unsigned long)badge_runtime_display_stack_free(),
              (unsigned long)badge_runtime_usb_stack_free(),
              (unsigned long)badge_runtime_uart_ble_stack_free(),
-             (unsigned long)badge_runtime_uart_wifi_stack_free());
+             (unsigned long)badge_runtime_uart_wifi_stack_free(),
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned long)heap_caps_get_total_size(MALLOC_CAP_SPIRAM),
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 #else
     json_chunk_string(req, badge_mode_to_string(mode));
     snprintf(buf, sizeof(buf),
@@ -1838,11 +1937,14 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
         json_chunk_string(req, entity->label);
         httpd_resp_send_chunk(req, ",\"detail\":", HTTPD_RESP_USE_STRLEN);
         json_chunk_string(req, entity->detail);
+        httpd_resp_send_chunk(req, ",\"evidence\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, entity->evidence);
         httpd_resp_send_chunk(req, ",\"display_id\":", HTTPD_RESP_USE_STRLEN);
         json_chunk_string(req, entity->display_id);
         snprintf(buf, sizeof(buf),
                  ",\"class\":\"%s\",\"category\":\"%s\",\"code\":\"%s\","
-                 "\"score\":%d,\"evidence_quality\":%u,"
+                 "\"source\":\"%s\",\"source_id\":%u,"
+                 "\"score\":%d,\"confidence_pct\":%d,\"evidence_quality\":%u,"
                  "\"display_rank\":%d,\"age_s\":%d,"
                  "\"last_seen_s\":%d,\"rssi\":%d,\"best_rssi\":%d,"
                  "\"events\":%lu,\"seen_count\":%lu,\"group_count\":%lu,"
@@ -1850,7 +1952,10 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
                  badge_threat_class_name(entity->cls),
                  badge_threat_category_name(entity->category),
                  badge_threat_category_code(entity->category),
+                 badge_threat_source_code(entity->source),
+                 (unsigned)entity->source,
                  entity->score,
+                 entity->confidence_pct,
                  (unsigned)entity->evidence_quality,
                  entity->display_rank,
                  entity->age_s,
@@ -1971,14 +2076,20 @@ static void badge_control_send_display_policy_result(httpd_req_t *req,
 static esp_err_t badge_control_post_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
-    char body[2048] = {0};
-    int received = httpd_req_recv(req, body, sizeof(body) - 1);
+    char *body = (char *)psram_calloc(1, 2048);
+    if (!body) {
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"body alloc failed\"}");
+        return ESP_OK;
+    }
+    int received = httpd_req_recv(req, body, 2047);
     if (received <= 0) {
+        psram_free(body);
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"no body\"}");
         return ESP_OK;
     }
 
     cJSON *root = cJSON_ParseWithLength(body, received);
+    psram_free(body);
     if (!root) {
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"invalid json\"}");
         return ESP_OK;
@@ -2122,6 +2233,18 @@ static esp_err_t badge_control_post_handler(httpd_req_t *req)
         badge_control_send_display_policy_result(req,
                                                 "display policy reset",
                                                 persist);
+#else
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"badge-only command\"}");
+#endif
+    } else if (strcmp(cmd, "display_nav") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        const cJSON *action = cJSON_GetObjectItemCaseSensitive(root, "action");
+        if (!cJSON_IsString(action) ||
+            !oled_badge_handle_nav_command(action->valuestring)) {
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"invalid display nav action\"}");
+        } else {
+            httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"display nav updated\",\"reboot_required\":false}");
+        }
 #else
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"badge-only command\"}");
 #endif

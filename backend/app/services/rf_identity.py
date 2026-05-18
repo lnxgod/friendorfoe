@@ -76,7 +76,28 @@ _FRIENDLY_OUI_HINTS = {
     "E8:27:25": {"brand": "Axis", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
 }
 
+for _flock_prefix in (
+    "B4:1E:52", "14:5A:FC", "3C:91:80", "70:C9:4E", "D8:F3:BC",
+    "80:30:49", "B8:35:32", "74:4C:A1", "08:3A:88", "9C:2F:9D",
+    "C0:35:32", "94:08:53", "E4:AA:EA", "F4:6A:DD", "F8:A2:D6",
+    "24:B2:B9", "00:F4:8D", "D0:39:57", "E8:D0:FC", "E0:4F:43",
+    "B8:1E:A4", "70:08:94", "58:8E:81", "EC:1B:BD", "3C:71:BF",
+    "58:00:E3", "90:35:EA", "5C:93:A2", "64:6E:69", "48:27:EA",
+    "82:6B:F2", "EC:62:60",
+):
+    _FRIENDLY_OUI_HINTS.setdefault(
+        _flock_prefix,
+        {"brand": "Flock Surveillance", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
+    )
+
 _SSID_FAMILY_PATTERNS = (
+    {
+        "patterns": ("flock*", "flk-*", "alpr*", "penguin-*"),
+        "device_family": "camera_or_video",
+        "device_class": "surveillance_camera",
+        "confidence": 0.82,
+        "label": "Flock/ALPR SSID pattern",
+    },
     {
         "patterns": ("esp_*", "esp-*", "esp32*", "esp8266*", "espressif*", "wled*", "tasmota*", "shelly*"),
         "device_family": "esp32_or_iot_dev_board",

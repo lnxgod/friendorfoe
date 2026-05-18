@@ -39,4 +39,14 @@ class BadgeDisplayPolicyTest {
         assertFalse(beacon.get("enabled").asBoolean)
         assertEquals("lower", beacon.get("lane").asString)
     }
+
+    @Test
+    fun displayNavCommandBuildsExpectedBadgeControlPayload() {
+        val json = JsonParser.parseString(
+            badgeDisplayNavCommandJson("next").toString()
+        ).asJsonObject
+
+        assertEquals("display_nav", json.get("cmd").asString)
+        assertEquals("next", json.get("action").asString)
+    }
 }

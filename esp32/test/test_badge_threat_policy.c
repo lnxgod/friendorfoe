@@ -687,7 +687,7 @@ void test_badge_meta_structured_evidence_beats_tracker_label(void)
     TEST_ASSERT_TRUE(event.base_score >= 80.0f);
 }
 
-void test_badge_meta_uuid_detail_is_human_not_raw_hex(void)
+void test_badge_generic_meta_service_does_not_become_glasses_alert(void)
 {
     badge_threat_event_t event;
     drone_detection_t meta = make_detection(
@@ -701,12 +701,7 @@ void test_badge_meta_uuid_detail_is_human_not_raw_hex(void)
     meta.ble_svc_uuid_count = 1;
     strncpy(meta.class_reason, "uuid16:0xFEB8", sizeof(meta.class_reason) - 1);
 
-    TEST_ASSERT_TRUE(badge_threat_classify_detection(&meta, &event));
-    TEST_ASSERT_EQUAL(BADGE_THREAT_META, event.cls);
-    TEST_ASSERT_EQUAL_STRING("Meta Glasses", event.label);
-    TEST_ASSERT_EQUAL_STRING("Meta service", event.detail);
-    TEST_ASSERT_NULL(strstr(event.detail, "0x"));
-    TEST_ASSERT_NULL(strstr(event.detail, "cid"));
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&meta, &event));
 }
 
 void test_badge_remote_id_without_human_fields_hides_raw_hex_detail(void)
@@ -998,6 +993,14 @@ void test_badge_flock_ble_name_produces_flock_camera(void)
     TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
     TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
     TEST_ASSERT_TRUE(strstr(event.detail, "Flock") != NULL);
+
+    badge_threat_snapshot_entity_t item = {
+        .active = true,
+        .cls = event.cls,
+        .category = event.category,
+    };
+    TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_BLE,
+                      badge_threat_snapshot_entity_display_lane(&item));
 }
 
 void test_badge_flock_wifi_oui_produces_flock_camera_not_drone(void)
@@ -1019,6 +1022,110 @@ void test_badge_flock_wifi_oui_produces_flock_camera_not_drone(void)
     TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
     TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
     TEST_ASSERT_TRUE(strstr(event.detail, "B4:1E:52") != NULL);
+    TEST_ASSERT_EQUAL(DETECTION_SRC_WIFI_OUI, event.source);
+    TEST_ASSERT_TRUE(strstr(event.evidence, "Flock") != NULL);
+    TEST_ASSERT_TRUE(strstr(event.evidence, "OUI") != NULL);
+
+    badge_threat_snapshot_entity_t item = {
+        .active = true,
+        .cls = event.cls,
+        .category = event.category,
+    };
+    TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_WIFI,
+                      badge_threat_snapshot_entity_display_lane(&item));
+}
+
+void test_badge_privacy_evidence_survives_snapshot(void)
+{
+    badge_threat_state_t state;
+    badge_threat_snapshot_t snapshot;
+    badge_threat_state_init(&state);
+
+    drone_detection_t flock = make_detection(
+        DETECTION_SRC_WIFI_OUI,
+        "B4:1E:52:AA:BB:CC",
+        "Flock Safety",
+        0.82f,
+        -51
+    );
+    strncpy(flock.bssid, "B4:1E:52:AA:BB:CC", sizeof(flock.bssid) - 1);
+    strncpy(flock.class_reason, "Flock Safety ALPR/camera registered OUI",
+            sizeof(flock.class_reason) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &flock, 1000, NULL));
+    badge_threat_state_snapshot(&state, 1200, &snapshot);
+
+    TEST_ASSERT_EQUAL_INT(1, snapshot.entity_count);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, snapshot.entities[0].category);
+    TEST_ASSERT_EQUAL(DETECTION_SRC_WIFI_OUI, snapshot.entities[0].source);
+    TEST_ASSERT_EQUAL_INT(82, snapshot.entities[0].confidence_pct);
+    TEST_ASSERT_TRUE(strstr(snapshot.entities[0].evidence, "Flock") != NULL);
+    TEST_ASSERT_TRUE(strstr(snapshot.entities[0].evidence, "OUI") != NULL);
+}
+
+void test_badge_flock_field_oui_and_wildcard_probe_produce_flock_camera(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t field = make_detection(
+        DETECTION_SRC_WIFI_OUI,
+        "14:5A:FC:A9:10:EF",
+        "Flock Safety",
+        0.70f,
+        -48
+    );
+    strncpy(field.bssid, "14:5A:FC:A9:10:EF", sizeof(field.bssid) - 1);
+    strncpy(field.class_reason, "Flock Safety ALPR/camera field OUI",
+            sizeof(field.class_reason) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&field, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_WIFI_ANOMALY, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
+    TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
+
+    drone_detection_t probe = make_detection(
+        DETECTION_SRC_WIFI_PROBE_REQUEST,
+        "flock_probe_82:6B:F2:00:00:01",
+        "Flock Safety",
+        0.88f,
+        -52
+    );
+    strncpy(probe.bssid, "82:6B:F2:00:00:01", sizeof(probe.bssid) - 1);
+    strncpy(probe.class_reason, "Flock wildcard probe",
+            sizeof(probe.class_reason) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&probe, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
+    TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
+
+    drone_detection_t data = make_detection(
+        DETECTION_SRC_WIFI_ASSOC,
+        "flock_data_14:5A:FC:A9:10:EF",
+        "Flock Safety",
+        0.72f,
+        -57
+    );
+    strncpy(data.bssid, "14:5A:FC:A9:10:EF", sizeof(data.bssid) - 1);
+    strncpy(data.class_reason, "Flock data frame sta",
+            sizeof(data.class_reason) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&data, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_WIFI_ANOMALY, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
+    TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
+
+    drone_detection_t ssid = make_detection(
+        DETECTION_SRC_WIFI_ASSOC,
+        "Penguin-1234567890",
+        "Flock SSID",
+        0.55f,
+        -54
+    );
+    strncpy(ssid.ssid, "Penguin-1234567890", sizeof(ssid.ssid) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&ssid, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_WIFI_ANOMALY, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
+    TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
 }
 
 void test_badge_meta_rayban_category_is_glass(void)
@@ -1097,6 +1204,30 @@ void test_badge_privacy_pack_maps_camera_lock_hid_labels(void)
     TEST_ASSERT_TRUE(badge_threat_classify_detection(&hid, &event));
     TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_HID, event.category);
     TEST_ASSERT_EQUAL_STRING("HID Near", event.label);
+    TEST_ASSERT_TRUE(strstr(event.detail, "HID") != NULL);
+    TEST_ASSERT_TRUE(strstr(event.evidence, "0x1812") != NULL);
+}
+
+void test_badge_privacy_evidence_reason_names_ble_source(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t meta = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:META:CID",
+        "Meta",
+        0.76f,
+        -62
+    );
+    meta.ble_company_id = 0x0D53;
+    strncpy(meta.class_reason, "mfr_cid:0x0D53", sizeof(meta.class_reason) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&meta, &event));
+    TEST_ASSERT_EQUAL(DETECTION_SRC_BLE_FINGERPRINT, event.source);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_GLASS, event.category);
+    TEST_ASSERT_TRUE(strstr(event.evidence, "0x0D53") != NULL);
+    TEST_ASSERT_TRUE(strstr(event.evidence, "Luxottica") != NULL);
+    TEST_ASSERT_EQUAL_STRING("ble_fingerprint",
+                             badge_threat_source_code(event.source));
 }
 
 void test_badge_venue_beacons_aggregate_instead_of_flooding(void)
@@ -1691,12 +1822,26 @@ void test_badge_display_lane_splits_ble_and_wifi_items(void)
                       badge_threat_snapshot_entity_display_lane(&meta));
     TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_BLE,
                       badge_threat_snapshot_entity_display_lane(&tag));
-    TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_WIFI,
+    TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_BLE,
                       badge_threat_snapshot_entity_display_lane(&rid));
     TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_WIFI,
                       badge_threat_snapshot_entity_display_lane(&ssid));
     TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_WIFI,
                       badge_threat_snapshot_entity_display_lane(&wifi));
+    badge_threat_snapshot_entity_t wifi_flock = {
+        .active = true,
+        .cls = BADGE_THREAT_WIFI_ANOMALY,
+        .category = BADGE_THREAT_CATEGORY_FLOCK,
+    };
+    badge_threat_snapshot_entity_t ble_flock = {
+        .active = true,
+        .cls = BADGE_THREAT_OTHER,
+        .category = BADGE_THREAT_CATEGORY_FLOCK,
+    };
+    TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_WIFI,
+                      badge_threat_snapshot_entity_display_lane(&wifi_flock));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_BLE,
+                      badge_threat_snapshot_entity_display_lane(&ble_flock));
     TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_NONE,
                       badge_threat_snapshot_entity_display_lane(&inactive));
 }

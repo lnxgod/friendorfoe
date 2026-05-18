@@ -37,6 +37,11 @@ install flow, and runtime checks, start with [Badge README](badge/README.md).
 session are the source of truth. The LCD is intentionally a small awareness
 surface and should not be expected to show every recovery field.
 
+Android Privacy is the operator drill-down surface for the badge. It should
+preserve `display_state`, entity evidence/source/confidence, RSSI/best RSSI,
+GPS/operator facts, scanner health, crash/reset state, stack, heap, and PSRAM
+fields from `FOF_STATUS` without requiring LCD layout changes.
+
 Top-level badge `recovery_mode` values:
 
 - `normal`: USB control is alive and the badge is not in safe mode.
