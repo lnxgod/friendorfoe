@@ -357,7 +357,6 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     bool has_smarttag_svc = false;
     bool has_meta_svc = false;
     bool has_meta_rayban_svc = false;  /* 0xFD5F = Ray-Ban specific */
-    bool has_meta_quest_svc = false;   /* 0xFEB8 without 0xFD5F = Quest */
     bool has_eddystone_svc = false;
     bool has_hid_svc = false;
     bool has_ble_audio_svc = false;
@@ -459,7 +458,6 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                     first_meta_svc = uuid;
                 }
                 if (uuid == META_RAYBANGEN2_SVC) has_meta_rayban_svc = true;
-                if (uuid == META_SVC_UUID2 && !has_meta_rayban_svc) has_meta_quest_svc = true;
 
                 /* Collect service UUIDs for UART serialization */
                 if (fp->svc_uuid_count < 4) {
@@ -512,7 +510,6 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                     first_meta_svc = svc_uuid;
                 }
                 if (svc_uuid == META_RAYBANGEN2_SVC) has_meta_rayban_svc = true;
-                if (svc_uuid == META_SVC_UUID2 && !has_meta_rayban_svc) has_meta_quest_svc = true;
 
                 if (fp->svc_uuid_count < 4) {
                     fp->service_uuids[fp->svc_uuid_count++] = svc_uuid;
@@ -565,7 +562,14 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
 
     /* ── Classify device type ──────────────────────────────────────────── */
 
-    if (company_id == APPLE_COMPANY_ID) {
+    if (local_name_len > 0 &&
+        (strncmp(local_name, "Flock",  5) == 0 ||
+         strncmp(local_name, "FLOCK",  5) == 0 ||
+         strncmp(local_name, "FlockOS", 7) == 0)) {
+        fp->device_type = BLE_DEV_FLOCK_SAFETY;
+        fp->is_tracker = true;
+        strncpy(fp->class_reason, "flock_ble_name", sizeof(fp->class_reason) - 1);
+    } else if (company_id == APPLE_COMPANY_ID) {
         fp->device_type = classify_apple(apple_type, mfr_data, mfr_data_len);
         fp->is_tracker = (apple_type == APPLE_TYPE_FINDMY);
     } else if (has_findmy_svc) {
@@ -611,15 +615,12 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
          *   local name contains "Ray-Ban" / "RB Meta" / "Oakley Meta"
          * - Quest headset: 0xFEB8 without 0xFD5F, or name contains "Quest"
          * - Other Meta: portals, controllers, Neural Band, etc. */
-        if (has_meta_rayban_svc || has_meta_svc ||
+        if (has_meta_rayban_svc ||
             company_id == META_LUXOTTICA_CID ||
             name_mentions_meta_glasses(local_name)) {
             fp->device_type = BLE_DEV_META_GLASSES;
             if (has_meta_rayban_svc) {
                 strncpy(fp->class_reason, "uuid16:0xFD5F", sizeof(fp->class_reason) - 1);
-            } else if (has_meta_svc && first_meta_svc != 0) {
-                snprintf(fp->class_reason, sizeof(fp->class_reason),
-                         "uuid16:0x%04X", first_meta_svc);
             } else if (company_id == META_LUXOTTICA_CID) {
                 strncpy(fp->class_reason, "mfr_cid:0x0D53", sizeof(fp->class_reason) - 1);
             } else {
@@ -627,7 +628,12 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
             }
         } else {
             fp->device_type = BLE_DEV_META_DEVICE;
-            strncpy(fp->class_reason, "mfr_cid:meta", sizeof(fp->class_reason) - 1);
+            if (has_meta_svc && first_meta_svc != 0) {
+                snprintf(fp->class_reason, sizeof(fp->class_reason),
+                         "uuid16:0x%04X", first_meta_svc);
+            } else {
+                strncpy(fp->class_reason, "mfr_cid:meta", sizeof(fp->class_reason) - 1);
+            }
         }
     } else if (company_id == FLIPPER_COMPANY_ID) {
         fp->device_type = BLE_DEV_FLIPPER_ZERO;

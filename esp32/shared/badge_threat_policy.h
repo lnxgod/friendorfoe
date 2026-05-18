@@ -13,6 +13,7 @@ extern "C" {
 #define BADGE_THREAT_KEY_LEN            96
 #define BADGE_THREAT_LABEL_LEN          24
 #define BADGE_THREAT_DETAIL_LEN         32
+#define BADGE_THREAT_EVIDENCE_LEN       48
 #define BADGE_THREAT_MAX_ENTITIES       32
 #define BADGE_THREAT_SNAPSHOT_ENTITIES  12
 #define BADGE_THREAT_TICKER_LEN         96
@@ -68,6 +69,9 @@ typedef struct {
     char key[BADGE_THREAT_KEY_LEN];
     char label[BADGE_THREAT_LABEL_LEN];
     char detail[BADGE_THREAT_DETAIL_LEN];
+    char evidence[BADGE_THREAT_EVIDENCE_LEN];
+    uint8_t source;
+    float confidence;
     double latitude;
     double longitude;
     float altitude_m;
@@ -90,6 +94,8 @@ typedef struct {
     char key[BADGE_THREAT_KEY_LEN];
     char label[BADGE_THREAT_LABEL_LEN];
     char detail[BADGE_THREAT_DETAIL_LEN];
+    char evidence[BADGE_THREAT_EVIDENCE_LEN];
+    uint8_t last_source;
     int64_t first_seen_ms;
     int64_t last_seen_ms;
     double latitude;
@@ -117,6 +123,7 @@ typedef struct {
     badge_threat_category_t category;
     char label[BADGE_THREAT_LABEL_LEN];
     char detail[BADGE_THREAT_DETAIL_LEN];
+    char evidence[BADGE_THREAT_EVIDENCE_LEN];
     char display_id[BADGE_THREAT_DISPLAY_ID_LEN];
     double latitude;
     double longitude;
@@ -129,6 +136,8 @@ typedef struct {
     int age_s;
     int last_seen_s;
     int score;
+    int confidence_pct;
+    uint8_t source;
     uint8_t evidence_quality;
     int display_rank;
     int8_t rssi;
@@ -176,6 +185,7 @@ const char *badge_threat_class_code(badge_threat_class_t cls);
 const char *badge_threat_class_name(badge_threat_class_t cls);
 const char *badge_threat_category_code(badge_threat_category_t category);
 const char *badge_threat_category_name(badge_threat_category_t category);
+const char *badge_threat_source_code(uint8_t source);
 uint16_t badge_threat_score_to_rgb565(float score);
 bool badge_threat_label_is_lcd_safe(const char *label);
 uint32_t badge_threat_snapshot_count_active(const badge_threat_snapshot_t *snapshot,

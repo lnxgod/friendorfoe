@@ -62,6 +62,24 @@ static bool ascii_contains_nocase(const char *haystack, const char *needle)
     return false;
 }
 
+static bool ssid_mentions_flock(const char *ssid)
+{
+    bool legacy_numeric = false;
+    if (ssid) {
+        size_t len = strlen(ssid);
+        legacy_numeric = len == 10;
+        for (size_t i = 0; legacy_numeric && i < len; i++) {
+            legacy_numeric = isdigit((unsigned char)ssid[i]) != 0;
+        }
+    }
+    return ascii_contains_nocase(ssid, "flock") ||
+           ascii_contains_nocase(ssid, "flockos") ||
+           ascii_contains_nocase(ssid, "flk-") ||
+           ascii_contains_nocase(ssid, "alpr") ||
+           ascii_contains_nocase(ssid, "penguin-") ||
+           legacy_numeric;
+}
+
 bool fof_policy_probe_should_ignore_broadcast(const char *ssid)
 {
     return !ssid || ssid[0] == '\0';
@@ -89,7 +107,7 @@ bool fof_policy_ssid_is_notable(const char *ssid)
         drone_like ||
         ascii_contains_nocase(ssid, "camera") ||
         ascii_contains_nocase(ssid, "cam") ||
-        ascii_contains_nocase(ssid, "flock") ||
+        ssid_mentions_flock(ssid) ||
         ascii_contains_nocase(ssid, "skimmer");
 
     /* Badge instrument mode is not an AP inventory.  These are our own/demo
@@ -108,10 +126,14 @@ bool fof_policy_ssid_is_notable(const char *ssid)
     if (drone_like) {
         return true;
     }
+    if (ssid_mentions_flock(ssid)) {
+        return true;
+    }
 
     static const char *tokens[] = {
         "defcon", "dc33", "drone", "uav", "fpv", "remoteid",
-        "remote-id", "camera", "cam", "flock", "skimmer",
+        "remote-id", "camera", "cam", "flock", "flockos", "flk-",
+        "alpr", "penguin-", "skimmer",
         "pwnagotchi", "marauder", "pineapple", "evil", "twin",
     };
     for (size_t i = 0; i < sizeof(tokens) / sizeof(tokens[0]); i++) {
@@ -130,7 +152,7 @@ const char *fof_policy_notable_ssid_label(const char *ssid)
         ascii_contains_nocase(ssid, "remoteid") ||
         ascii_contains_nocase(ssid, "remote-id") ||
         ascii_contains_nocase(ssid, "rid-")) return "Drone SSID";
-    if (ascii_contains_nocase(ssid, "flock")) return "Flock SSID";
+    if (ssid_mentions_flock(ssid)) return "Flock SSID";
     if (ascii_contains_nocase(ssid, "camera") ||
         ascii_contains_nocase(ssid, "cam")) return "Camera SSID";
     if (ascii_contains_nocase(ssid, "skimmer")) return "Skimmer SSID";

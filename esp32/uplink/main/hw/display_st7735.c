@@ -11,9 +11,11 @@
  * Pinout (Seeed XIAO ESP32-S3 edge):
  *   SDA (MOSI) = GPIO9
  *   SCK        = GPIO7
- *   CS         = GPIO8 primary, GPIO44 legacy/bring-up pad also driven
+ *   CS         = GPIO44
  *   RES        = GPIO6
  *   DC         = GPIO5
+ *   BTN1       = GPIO8  to GND (active-low)
+ *   BTN2       = GPIO43 to GND (active-low)
  *   BL/LED     = tied high (no PWM control)
  *
  * Framebuffer: 128 * 160 * 2 = 40 960 bytes, allocated from PSRAM.
@@ -28,6 +30,7 @@
 #include "badge_threat_policy.h"
 #include "badge_runtime.h"
 #include "badge_display_policy_runtime.h"
+#include "badge_button_gesture.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -43,6 +46,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "esp_rom_sys.h"  /* esp_rom_delay_us for bit-bang fallback */
 
 static const char *TAG = "st7735";
@@ -51,10 +55,19 @@ static const char *TAG = "st7735";
 
 #define ST7735_PIN_MOSI     9
 #define ST7735_PIN_SCK      7
-#define ST7735_PIN_CS_PRIMARY 8
-#define ST7735_PIN_CS_LEGACY  44
+#define ST7735_PIN_CS       44
 #define ST7735_PIN_DC       5
 #define ST7735_PIN_RES      6
+#define BADGE_BUTTON_TRIFORCE_PIN 8
+#define BADGE_BUTTON_QR_PIN       43
+#define BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH 0
+#define BADGE_BUTTON_QR_ACTIVE_HIGH       0
+#define BADGE_BUTTON_POLL_MS      20
+#define BADGE_BUTTON_DEBOUNCE_MS  60
+#define BADGE_BUTTON_LONG_MS      850
+#define BADGE_BUTTON_DOUBLE_TAP_MS 320
+#define BADGE_DETAIL_TIMEOUT_MS   30000
+#define BADGE_BUTTON_STACK_WORDS  4096
 /* Backlight: panel BL pin is wired directly to 3V3 on this badge build,
  * so the firmware does not drive it. -1 disables the GPIO drive path. */
 #define ST7735_PIN_BL       (-1)
@@ -138,6 +151,56 @@ static int                 s_spi_error_count = 0;
 static uint32_t s_anim_frame = 0;
 static uint32_t s_queue_page_frame = 0;
 
+typedef enum {
+    BADGE_BUTTON_OVERLAY_NONE = 0,
+    BADGE_BUTTON_OVERLAY_TRIFORCE,
+    BADGE_BUTTON_OVERLAY_QR,
+} badge_button_overlay_t;
+
+typedef enum {
+    BADGE_BUTTON_ID_NEXT = 0,
+    BADGE_BUTTON_ID_DETAIL = 1,
+} badge_button_id_t;
+
+static volatile badge_button_overlay_t s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
+static TaskHandle_t s_button_task = NULL;
+
+static volatile int s_focus_index = 0;
+static volatile bool s_detail_mode = false;
+static volatile int s_detail_page = 0;
+static volatile int64_t s_last_button_ms = 0;
+static oled_badge_button_state_t s_button_diag = {0};
+static badge_button_gesture_t s_b2_gesture = {0};
+
+typedef struct {
+    bool active;
+    bool is_entity;
+    bool severe;
+    int y;
+    int h;
+    char lane[16];
+    char title[32];
+    char detail[OLED_BADGE_STATE_TEXT_LEN];
+    char stat[12];
+    char key[OLED_BADGE_STATE_KEY_LEN];
+    int item_index;
+    int item_total;
+    badge_threat_snapshot_entity_t entity;
+} badge_focus_entry_t;
+
+#define BADGE_FOCUS_ENTRY_MAX 4
+
+typedef struct {
+    badge_focus_entry_t entries[BADGE_FOCUS_ENTRY_MAX];
+    int count;
+    int focus_index;
+    bool detail_mode;
+    int detail_page;
+    uint32_t generation;
+} badge_focus_model_t;
+
+static badge_focus_model_t s_focus_model = {0};
+
 static bool display_lock(TickType_t wait_ticks)
 {
     if (!s_display_mutex) return true;
@@ -151,23 +214,18 @@ static void display_unlock(void)
     }
 }
 
-/* Drive both known badge CS pads. Early bring-up notes and boards disagree
- * between GPIO8 and GPIO44; with no MISO line there is no reliable way to
- * probe the wired pad, so selecting both keeps either wiring alive. */
 static inline void st_cs_set(int level)
 {
-    gpio_set_level(ST7735_PIN_CS_PRIMARY, level);
-    gpio_set_level(ST7735_PIN_CS_LEGACY, level);
+    gpio_set_level(ST7735_PIN_CS, level);
 }
 
 static inline uint64_t st_cs_pin_mask(void)
 {
-    return (1ULL << ST7735_PIN_CS_PRIMARY) | (1ULL << ST7735_PIN_CS_LEGACY);
+    return (1ULL << ST7735_PIN_CS);
 }
 
 /* SPI callbacks use transaction.user as a 0/1 flag to drive DC and manually
- * assert CS. Manual CS is intentional: it lets us select GPIO8 and GPIO44
- * together instead of trusting one stale pin map. */
+ * assert CS on the badge's GPIO44 panel select line. */
 static void st7735_spi_pre_cb(spi_transaction_t *t)
 {
     int dc = (int)(intptr_t)t->user;
@@ -179,6 +237,453 @@ static void st7735_spi_post_cb(spi_transaction_t *t)
 {
     (void)t;
     st_cs_set(1);
+}
+
+typedef struct {
+    int pin;
+    int diag_index;
+    bool active_high;
+    badge_button_id_t id;
+    badge_button_overlay_t overlay;
+    bool last_raw_pressed;
+    bool stable_pressed;
+    bool long_sent;
+    bool boot_ignored;
+    TickType_t changed_tick;
+    TickType_t pressed_tick;
+} badge_button_state_t;
+
+static int64_t badge_now_ms(void)
+{
+    return (int64_t)(esp_timer_get_time() / 1000LL);
+}
+
+static void badge_button_note_activity(void)
+{
+    s_last_button_ms = badge_now_ms();
+}
+
+static void badge_button_diag_note_raw(const badge_button_state_t *button,
+                                       bool raw_pressed,
+                                       int raw_level)
+{
+    if (!button) {
+        return;
+    }
+    if (button->diag_index == 0) {
+        s_button_diag.b1_active_high = button->active_high;
+        s_button_diag.b1_raw_level = raw_level;
+        s_button_diag.b1_raw_pressed = raw_pressed;
+        s_button_diag.b1_stable_pressed = button->stable_pressed;
+        s_button_diag.b1_boot_ignored = button->boot_ignored;
+    } else {
+        s_button_diag.b2_active_high = button->active_high;
+        s_button_diag.b2_raw_level = raw_level;
+        s_button_diag.b2_raw_pressed = raw_pressed;
+        s_button_diag.b2_stable_pressed = button->stable_pressed;
+        s_button_diag.b2_boot_ignored = button->boot_ignored;
+    }
+}
+
+static void badge_button_diag_note_edge(const badge_button_state_t *button)
+{
+    if (!button) {
+        return;
+    }
+    if (button->diag_index == 0) {
+        s_button_diag.b1_raw_edges++;
+        s_button_diag.b1_last_event_ms = badge_now_ms();
+    } else {
+        s_button_diag.b2_raw_edges++;
+        s_button_diag.b2_last_event_ms = badge_now_ms();
+    }
+}
+
+static void badge_button_diag_note_stable(const badge_button_state_t *button,
+                                          bool pressed)
+{
+    if (!button) {
+        return;
+    }
+    if (button->diag_index == 0) {
+        s_button_diag.b1_stable_pressed = pressed;
+        s_button_diag.b1_boot_ignored = button->boot_ignored;
+        if (!pressed) {
+            s_button_diag.b1_releases++;
+        }
+        s_button_diag.b1_last_event_ms = badge_now_ms();
+    } else {
+        s_button_diag.b2_stable_pressed = pressed;
+        s_button_diag.b2_boot_ignored = button->boot_ignored;
+        if (!pressed) {
+            s_button_diag.b2_releases++;
+        }
+        s_button_diag.b2_last_event_ms = badge_now_ms();
+    }
+}
+
+static void badge_button_diag_note_short(const badge_button_state_t *button)
+{
+    if (!button) {
+        return;
+    }
+    if (button->diag_index == 0) {
+        s_button_diag.b1_short_presses++;
+        s_button_diag.b1_last_event_ms = badge_now_ms();
+    } else {
+        s_button_diag.b2_short_presses++;
+        s_button_diag.b2_last_event_ms = badge_now_ms();
+    }
+}
+
+static void badge_button_diag_note_long(const badge_button_state_t *button)
+{
+    if (!button) {
+        return;
+    }
+    if (button->diag_index == 0) {
+        s_button_diag.b1_long_presses++;
+        s_button_diag.b1_last_event_ms = badge_now_ms();
+    } else {
+        s_button_diag.b2_long_presses++;
+        s_button_diag.b2_last_event_ms = badge_now_ms();
+    }
+}
+
+static void badge_button_diag_note_b2_double(void)
+{
+    s_button_diag.b2_double_taps++;
+    s_button_diag.b2_last_event_ms = badge_now_ms();
+}
+
+static void badge_button_diag_set_b2_pending(void)
+{
+    s_button_diag.b2_pending_single =
+        badge_button_gesture_pending_single(&s_b2_gesture);
+}
+
+static void badge_button_diag_set_b2_gesture(const char *gesture)
+{
+    snprintf(s_button_diag.b2_last_gesture,
+             sizeof(s_button_diag.b2_last_gesture),
+             "%s",
+             gesture ? gesture : "");
+    badge_button_diag_set_b2_pending();
+}
+
+static bool badge_button_is_pressed(int pin, bool active_high)
+{
+    int level = gpio_get_level(pin);
+    return active_high ? (level != 0) : (level == 0);
+}
+
+static bool badge_button_level_is_pressed(int level, bool active_high)
+{
+    return active_high ? (level != 0) : (level == 0);
+}
+
+static void badge_display_nav_next(void)
+{
+    badge_button_note_activity();
+    s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
+    s_detail_page = 0;
+    int count = s_focus_model.count > 0 ? s_focus_model.count : BADGE_FOCUS_ENTRY_MAX;
+    if (count <= 0) {
+        count = 1;
+    }
+    s_focus_index = (s_focus_index + 1) % count;
+}
+
+static void badge_display_nav_detail(void)
+{
+    badge_button_note_activity();
+    s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
+    if (s_detail_mode) {
+        s_detail_mode = false;
+        s_detail_page = 0;
+    } else {
+        s_detail_mode = true;
+        s_detail_page = 0;
+    }
+}
+
+static void badge_display_nav_page(void)
+{
+    badge_button_note_activity();
+    s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
+    s_detail_page = (s_detail_page + 1) % 3;
+}
+
+static void badge_button_toggle_overlay(badge_button_overlay_t overlay)
+{
+    badge_button_note_activity();
+    s_detail_mode = false;
+    s_detail_page = 0;
+    badge_button_overlay_t current = s_button_overlay;
+    s_button_overlay = (current == overlay) ? BADGE_BUTTON_OVERLAY_NONE : overlay;
+}
+
+static void badge_button_working_single_press(void)
+{
+    if (s_button_overlay != BADGE_BUTTON_OVERLAY_NONE) {
+        badge_button_note_activity();
+        s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
+        s_detail_mode = false;
+        s_detail_page = 0;
+        return;
+    }
+    if (s_detail_mode) {
+        badge_display_nav_page();
+    } else {
+        badge_display_nav_next();
+    }
+}
+
+static void badge_button_working_double_press(void)
+{
+    if (s_button_overlay != BADGE_BUTTON_OVERLAY_NONE) {
+        badge_button_note_activity();
+        s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
+        s_detail_mode = false;
+        s_detail_page = 0;
+        return;
+    }
+    badge_display_nav_detail();
+}
+
+static void badge_button_working_long_press(void)
+{
+    badge_button_note_activity();
+    s_detail_mode = false;
+    s_detail_page = 0;
+    if (s_button_overlay == BADGE_BUTTON_OVERLAY_QR) {
+        s_button_overlay = BADGE_BUTTON_OVERLAY_TRIFORCE;
+    } else {
+        s_button_overlay = BADGE_BUTTON_OVERLAY_QR;
+    }
+}
+
+static void badge_button_dispatch_b2_gesture(badge_button_gesture_event_t event)
+{
+    switch (event) {
+    case BADGE_BUTTON_GESTURE_SINGLE:
+        badge_button_diag_set_b2_gesture("single");
+        badge_button_working_single_press();
+        break;
+    case BADGE_BUTTON_GESTURE_DOUBLE:
+        badge_button_diag_note_b2_double();
+        badge_button_diag_set_b2_gesture("double");
+        badge_button_working_double_press();
+        break;
+    case BADGE_BUTTON_GESTURE_LONG:
+        badge_button_diag_set_b2_gesture("long");
+        badge_button_working_long_press();
+        break;
+    case BADGE_BUTTON_GESTURE_NONE:
+    default:
+        badge_button_diag_set_b2_pending();
+        break;
+    }
+}
+
+static void badge_button_short_press(badge_button_id_t id)
+{
+    if (s_button_overlay != BADGE_BUTTON_OVERLAY_NONE) {
+        badge_button_note_activity();
+        s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
+        return;
+    }
+    if (s_detail_mode) {
+        if (id == BADGE_BUTTON_ID_NEXT) {
+            badge_display_nav_page();
+        } else {
+            badge_display_nav_detail();
+        }
+        return;
+    }
+    if (id == BADGE_BUTTON_ID_NEXT) {
+        badge_display_nav_next();
+    } else {
+        badge_display_nav_detail();
+    }
+}
+
+static void badge_button_poll_one(badge_button_state_t *button, TickType_t now)
+{
+    int raw_level = gpio_get_level(button->pin);
+    bool raw_pressed = badge_button_level_is_pressed(raw_level,
+                                                     button->active_high);
+    badge_button_diag_note_raw(button, raw_pressed, raw_level);
+    TickType_t debounce_ticks = pdMS_TO_TICKS(BADGE_BUTTON_DEBOUNCE_MS);
+    if (debounce_ticks == 0) debounce_ticks = 1;
+    TickType_t long_ticks = pdMS_TO_TICKS(BADGE_BUTTON_LONG_MS);
+    if (long_ticks == 0) long_ticks = 1;
+
+    if (raw_pressed != button->last_raw_pressed) {
+        button->last_raw_pressed = raw_pressed;
+        button->changed_tick = now;
+        badge_button_diag_note_edge(button);
+        return;
+    }
+
+    if (raw_pressed == button->stable_pressed) {
+        return;
+    }
+    if ((TickType_t)(now - button->changed_tick) < debounce_ticks) {
+        return;
+    }
+
+    button->stable_pressed = raw_pressed;
+    if (button->stable_pressed) {
+        button->pressed_tick = now;
+        button->long_sent = false;
+        button->boot_ignored = false;
+        badge_button_diag_note_stable(button, true);
+        return;
+    }
+
+    bool boot_ignored = button->boot_ignored;
+    TickType_t held_ticks = now - button->pressed_tick;
+    bool long_press = held_ticks >= long_ticks;
+    button->boot_ignored = false;
+    badge_button_diag_note_stable(button, false);
+    if (boot_ignored) {
+        button->long_sent = false;
+    } else if (long_press) {
+        button->long_sent = true;
+        badge_button_diag_note_long(button);
+        if (button->diag_index == 1) {
+            badge_button_dispatch_b2_gesture(
+                badge_button_gesture_note_long(&s_b2_gesture,
+                                               (uint32_t)badge_now_ms()));
+        } else {
+            badge_button_toggle_overlay(button->overlay);
+        }
+    } else if (!button->long_sent) {
+        badge_button_diag_note_short(button);
+        if (button->diag_index == 1) {
+            badge_button_gesture_event_t event =
+                badge_button_gesture_note_tap(&s_b2_gesture,
+                                              (uint32_t)badge_now_ms());
+            if (event == BADGE_BUTTON_GESTURE_NONE) {
+                badge_button_diag_set_b2_gesture("pending");
+            } else {
+                badge_button_dispatch_b2_gesture(event);
+            }
+        } else {
+            badge_button_short_press(button->id);
+        }
+    }
+}
+
+static void badge_button_poll_hold(badge_button_state_t *button, TickType_t now)
+{
+    (void)button;
+    (void)now;
+}
+
+static void badge_button_task(void *arg)
+{
+    (void)arg;
+    badge_button_gesture_init(&s_b2_gesture, BADGE_BUTTON_DOUBLE_TAP_MS);
+    badge_button_diag_set_b2_gesture("");
+    TickType_t now = xTaskGetTickCount();
+    bool triforce_pressed_at_boot = badge_button_is_pressed(
+        BADGE_BUTTON_TRIFORCE_PIN,
+        BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH);
+    bool qr_pressed_at_boot = badge_button_is_pressed(
+        BADGE_BUTTON_QR_PIN,
+        BADGE_BUTTON_QR_ACTIVE_HIGH);
+    badge_button_state_t buttons[] = {
+        {
+            .pin = BADGE_BUTTON_TRIFORCE_PIN,
+            .diag_index = 0,
+            .active_high = BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH,
+            .id = BADGE_BUTTON_ID_DETAIL,
+            .overlay = BADGE_BUTTON_OVERLAY_TRIFORCE,
+            .last_raw_pressed = triforce_pressed_at_boot,
+            .stable_pressed = triforce_pressed_at_boot,
+            .long_sent = triforce_pressed_at_boot,
+            .boot_ignored = triforce_pressed_at_boot,
+            .changed_tick = now,
+            .pressed_tick = now,
+        },
+        {
+            .pin = BADGE_BUTTON_QR_PIN,
+            .diag_index = 1,
+            .active_high = BADGE_BUTTON_QR_ACTIVE_HIGH,
+            .id = BADGE_BUTTON_ID_NEXT,
+            .overlay = BADGE_BUTTON_OVERLAY_QR,
+            .last_raw_pressed = qr_pressed_at_boot,
+            .stable_pressed = qr_pressed_at_boot,
+            .long_sent = qr_pressed_at_boot,
+            .boot_ignored = qr_pressed_at_boot,
+            .changed_tick = now,
+            .pressed_tick = now,
+        },
+    };
+    s_button_diag.b1_raw_pressed = triforce_pressed_at_boot;
+    s_button_diag.b1_stable_pressed = triforce_pressed_at_boot;
+    s_button_diag.b1_boot_ignored = triforce_pressed_at_boot;
+    s_button_diag.b1_active_high = BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH;
+    s_button_diag.b1_raw_level = gpio_get_level(BADGE_BUTTON_TRIFORCE_PIN);
+    s_button_diag.b2_raw_pressed = qr_pressed_at_boot;
+    s_button_diag.b2_stable_pressed = qr_pressed_at_boot;
+    s_button_diag.b2_boot_ignored = qr_pressed_at_boot;
+    s_button_diag.b2_active_high = BADGE_BUTTON_QR_ACTIVE_HIGH;
+    s_button_diag.b2_raw_level = gpio_get_level(BADGE_BUTTON_QR_PIN);
+
+    while (true) {
+        now = xTaskGetTickCount();
+        for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
+            badge_button_poll_one(&buttons[i], now);
+            badge_button_poll_hold(&buttons[i], now);
+            if (buttons[i].diag_index == 1 &&
+                !buttons[i].stable_pressed &&
+                !buttons[i].last_raw_pressed) {
+                badge_button_dispatch_b2_gesture(
+                    badge_button_gesture_poll(&s_b2_gesture,
+                                              (uint32_t)badge_now_ms()));
+            }
+        }
+        badge_button_diag_set_b2_pending();
+        vTaskDelay(pdMS_TO_TICKS(BADGE_BUTTON_POLL_MS));
+    }
+}
+
+static void badge_buttons_start(void)
+{
+    if (s_button_task) return;
+
+    gpio_reset_pin(BADGE_BUTTON_TRIFORCE_PIN);
+    gpio_reset_pin(BADGE_BUTTON_QR_PIN);
+
+    gpio_config_t button_io = {
+        .pin_bit_mask = (1ULL << BADGE_BUTTON_TRIFORCE_PIN) |
+                        (1ULL << BADGE_BUTTON_QR_PIN),
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    esp_err_t err = gpio_config(&button_io);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Badge button GPIO config failed: %d", err);
+        return;
+    }
+
+    BaseType_t ok = xTaskCreate(badge_button_task, "badge_buttons",
+                                BADGE_BUTTON_STACK_WORDS,
+                                NULL, 3, &s_button_task);
+    if (ok != pdPASS) {
+        s_button_task = NULL;
+        ESP_LOGE(TAG, "Badge button task start failed");
+        return;
+    }
+    ESP_LOGI(TAG, "Badge buttons active: GPIO%d=detail/Triforce active-%s GPIO%d=next/QR active-low",
+             BADGE_BUTTON_TRIFORCE_PIN,
+             BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH ? "high" : "low",
+             BADGE_BUTTON_QR_PIN);
 }
 
 /* ── 5x7 ASCII font (printable chars 0x20-0x7E) ───────────────────────── */
@@ -606,12 +1111,11 @@ static void diag_pin_blink(void)
     const struct { int pin; const char *name; } pins[] = {
         { ST7735_PIN_MOSI, "MOSI/SDA  GPIO9" },
         { ST7735_PIN_SCK,  "SCK       GPIO7" },
-        { ST7735_PIN_CS_PRIMARY, "CS primary GPIO8" },
-        { ST7735_PIN_CS_LEGACY,  "CS legacy  GPIO44" },
+        { ST7735_PIN_CS,   "CS        GPIO44" },
         { ST7735_PIN_DC,   "DC/A0     GPIO5" },
         { ST7735_PIN_RES,  "RES/RST   GPIO6" },
 #if ST7735_PIN_BL >= 0
-        { ST7735_PIN_BL,   "BL/LED    GPIO8" },
+        { ST7735_PIN_BL,   "BL/LED" },
 #endif
     };
     int n = sizeof(pins) / sizeof(pins[0]);
@@ -735,15 +1239,13 @@ static void bb_pin_setup_outputs(void)
 {
     gpio_reset_pin(ST7735_PIN_MOSI);
     gpio_reset_pin(ST7735_PIN_SCK);
-    gpio_reset_pin(ST7735_PIN_CS_PRIMARY);
-    gpio_reset_pin(ST7735_PIN_CS_LEGACY);
+    gpio_reset_pin(ST7735_PIN_CS);
     gpio_reset_pin(ST7735_PIN_DC);
     /* RES already configured as output earlier; re-set direction in case
      * gpio_reset_pin elsewhere wiped it. */
     gpio_set_direction(ST7735_PIN_MOSI, GPIO_MODE_OUTPUT);
     gpio_set_direction(ST7735_PIN_SCK,  GPIO_MODE_OUTPUT);
-    gpio_set_direction(ST7735_PIN_CS_PRIMARY, GPIO_MODE_OUTPUT);
-    gpio_set_direction(ST7735_PIN_CS_LEGACY,  GPIO_MODE_OUTPUT);
+    gpio_set_direction(ST7735_PIN_CS,   GPIO_MODE_OUTPUT);
     gpio_set_direction(ST7735_PIN_DC,   GPIO_MODE_OUTPUT);
     gpio_set_direction(ST7735_PIN_RES,  GPIO_MODE_OUTPUT);
     st_cs_set(1);
@@ -1130,7 +1632,7 @@ static void draw_triforce_flip(uint32_t frame, uint16_t drone_color,
     }
 }
 
-static void splash_show(void)
+static void draw_triforce_splash_static(uint16_t triforce_color)
 {
     fb_clear(COL_BLACK);
 
@@ -1142,7 +1644,7 @@ static void splash_show(void)
         fb_set_pixel(sx, sy, COL_GRAY);
     }
 
-    draw_triforce(COL_LINK_GREEN);
+    draw_triforce(triforce_color);
 
     /* Title */
     fb_draw_string_centered(LCD_W / 2, 108, "FRIEND OR FOE", COL_WHITE, COL_BLACK, 1);
@@ -1152,6 +1654,11 @@ static void splash_show(void)
 
     /* Light tagline */
     fb_draw_string_centered(LCD_W / 2, 140, "FIELD SIGNALS", COL_SOFT_GREEN, COL_BLACK, 1);
+}
+
+static void splash_show(void)
+{
+    draw_triforce_splash_static(COL_LINK_GREEN);
 
     st_flush();
 
@@ -1162,6 +1669,65 @@ static void splash_show(void)
         st_flush();
         vTaskDelay(pdMS_TO_TICKS(360));
     }
+}
+
+static const char *const s_gamechangers_qr_rows[] = {
+    "1111111011100110001111111",
+    "1000001010011100101000001",
+    "1011101011110110001011101",
+    "1011101001001100101011101",
+    "1011101011100000101011101",
+    "1000001001111100101000001",
+    "1111111010101010101111111",
+    "0000000001001111100000000",
+    "1001111110110010110010111",
+    "1011100110111001000111110",
+    "0111101000000111111101001",
+    "0000010000110010101101111",
+    "1000011111101001101100001",
+    "1101010100001111100010010",
+    "1100101111100101110011111",
+    "1000100000110000111101101",
+    "1010101101011100111110110",
+    "0000000011000100100010110",
+    "1111111011111110101010001",
+    "1000001011111101100010000",
+    "1011101010100001111110000",
+    "1011101010110111011000011",
+    "1011101000110101010011111",
+    "1000001000000000001110111",
+    "1111111011101000101001001",
+};
+
+static void draw_gamechangers_qr_screen(void)
+{
+    enum {
+        QR_MODULES = 25,
+        QR_QUIET_MODULES = 4,
+        QR_SCALE = 3,
+    };
+    const int qr_px = (QR_MODULES + QR_QUIET_MODULES * 2) * QR_SCALE;
+    const int x0 = (LCD_W - qr_px) / 2;
+    const int y0 = 9;
+    const int module_x0 = x0 + QR_QUIET_MODULES * QR_SCALE;
+    const int module_y0 = y0 + QR_QUIET_MODULES * QR_SCALE;
+
+    fb_clear(COL_BLACK);
+    fb_fill_rect(x0, y0, qr_px, qr_px, COL_WHITE);
+    for (int row = 0; row < QR_MODULES; row++) {
+        const char *bits = s_gamechangers_qr_rows[row];
+        for (int col = 0; col < QR_MODULES; col++) {
+            if (bits[col] == '1') {
+                fb_fill_rect(module_x0 + col * QR_SCALE,
+                             module_y0 + row * QR_SCALE,
+                             QR_SCALE, QR_SCALE, COL_BLACK);
+            }
+        }
+    }
+
+    fb_draw_string_centered(LCD_W / 2, 116, "SCAN BADGE", COL_LINK_BRIGHT, COL_BLACK, 1);
+    fb_draw_string_centered(LCD_W / 2, 131, "gamechangersai.org", COL_WHITE, COL_BLACK, 1);
+    fb_draw_string_centered(LCD_W / 2, 146, "BTN2 QR", COL_GRAY, COL_BLACK, 1);
 }
 
 /* ── Status layout helpers ─────────────────────────────────────────────── */
@@ -2767,7 +3333,6 @@ static int build_scanner_diag_rows(badge_display_diag_t *rows, int max_rows,
         if (!ssid) {
             ssid = scanner_status_freshest_notable_ssid_info();
         }
-        uint32_t rid_seen = scanner_status_rid_seen_max();
         const char *label = "WIFI CLEAR";
         if (wifi_anom) {
             label = "WIFI ATTACK";
@@ -2783,10 +3348,6 @@ static int build_scanner_diag_rows(badge_display_diag_t *rows, int max_rows,
                 ? ssid->wifi_last_drone_ssid
                 : ssid->wifi_last_notable_ssid;
             snprintf(detail, sizeof(detail), "ssid %.31s", name);
-        } else if (rid_seen > 0) {
-            label = "RID WAIT";
-            snprintf(detail, sizeof(detail), "decoding %lu service frames",
-                     (unsigned long)cap3(rid_seen));
         } else {
             snprintf(detail, sizeof(detail), "scanning WiFi frames");
         }
@@ -2846,16 +3407,29 @@ static void draw_scanner_bottom_strip(int y, bool ble_scanner_ok,
     char line[36];
     snprintf(line, sizeof(line), "BLE %s  WIFI %s",
              proof_word(ble_state), proof_word(wifi_state));
+    int64_t uptime_s = esp_timer_get_time() / 1000000LL;
+    char uptime_label[16];
+    if (uptime_s < 3600) {
+        snprintf(uptime_label, sizeof(uptime_label), "U%lld:%02lld",
+                 (long long)(uptime_s / 60),
+                 (long long)(uptime_s % 60));
+    } else {
+        snprintf(uptime_label, sizeof(uptime_label), "U%lldh%02lld",
+                 (long long)(uptime_s / 3600),
+                 (long long)((uptime_s / 60) % 60));
+    }
     const bool safe_usb = badge_runtime_is_safe_mode();
     const bool usb_alive = badge_runtime_usb_control_alive();
     const char *usb_label = safe_usb ? "SAFE" : (usb_alive ? "USBC" : "USB?");
+    char right_label[24];
+    snprintf(right_label, sizeof(right_label), "%s %s", uptime_label, usb_label);
     uint16_t usb_color = safe_usb ? COL_GOLD :
                          (usb_alive ? COL_LINK_BRIGHT : COL_DARKGRAY);
-    int usb_w = tiny_pixel_width(usb_label);
+    int usb_w = tiny_pixel_width(right_label);
     int left_w = LCD_W - usb_w - 14;
     if (left_w < 40) left_w = 40;
     fb_draw_tiny_string_fit(4, y + 4, line, left_w, fg, bg);
-    fb_draw_tiny_string(LCD_W - usb_w - 4, y + 4, usb_label, usb_color, bg);
+    fb_draw_tiny_string(LCD_W - usb_w - 4, y + 4, right_label, usb_color, bg);
 }
 
 static void draw_watch_eye(int cx, int cy, int w, int h, int gaze,
@@ -2950,8 +3524,7 @@ static bool scanner_status_has_badge_evidence(void)
     uint32_t disassoc = 0;
     bool beacon = false;
     bool wifi_anom = scanner_status_wifi_anomaly_summary(&deauth, &disassoc, &beacon);
-    uint32_t wifi_evidence = scanner_status_rid_seen_max() > 0 ? 1U : 0U;
-    wifi_evidence += wifi_anom ? 1U : 0U;
+    uint32_t wifi_evidence = wifi_anom ? 1U : 0U;
     if (scanner_status_freshest_drone_ssid_info()) {
         wifi_evidence++;
     }
@@ -2981,49 +3554,6 @@ static bool badge_item_is_weak_meta_glasses(
     return badge_item_is_meta_glasses(item) && item->display_id[0] == '\0';
 }
 
-static bool badge_item_is_wifi_concern(const badge_threat_snapshot_entity_t *item)
-{
-    if (!item || !item->active) {
-        return false;
-    }
-    if ((badge_item_is_drone_ssid(item) ||
-         badge_threat_snapshot_entity_is_remote_id_drone(item)) &&
-        item->stale) {
-        return false;
-    }
-    return item->cls == BADGE_THREAT_DRONE ||
-           item->cls == BADGE_THREAT_WIFI_ANOMALY ||
-           item->category == BADGE_THREAT_CATEGORY_WIFI ||
-           item->category == BADGE_THREAT_CATEGORY_SSID;
-}
-
-static bool badge_item_is_ble_concern(const badge_threat_snapshot_entity_t *item)
-{
-    if (!item || !item->active) {
-        return false;
-    }
-    if (badge_item_is_wifi_concern(item) || item->cls == BADGE_THREAT_DRONE) {
-        return false;
-    }
-    return item->cls == BADGE_THREAT_META ||
-           item->cls == BADGE_THREAT_TRACKER ||
-           item->cls == BADGE_THREAT_OTHER ||
-           item->cls == BADGE_THREAT_BLE ||
-           item->category == BADGE_THREAT_CATEGORY_GLASS ||
-           item->category == BADGE_THREAT_CATEGORY_TAG_CLOSE ||
-           item->category == BADGE_THREAT_CATEGORY_SKIM ||
-           item->category == BADGE_THREAT_CATEGORY_CAMERA ||
-           item->category == BADGE_THREAT_CATEGORY_BEACON ||
-           item->category == BADGE_THREAT_CATEGORY_EVENT_BADGE ||
-           item->category == BADGE_THREAT_CATEGORY_LOCK ||
-           item->category == BADGE_THREAT_CATEGORY_HID ||
-           item->category == BADGE_THREAT_CATEGORY_AUDIO ||
-           item->category == BADGE_THREAT_CATEGORY_FLOCK ||
-           item->category == BADGE_THREAT_CATEGORY_PRIVACY;
-}
-
-typedef bool (*badge_item_predicate_fn)(const badge_threat_snapshot_entity_t *);
-
 static bool badge_item_is_remote_id_drone(
     const badge_threat_snapshot_entity_t *item);
 static bool badge_item_is_drone_evidence(
@@ -3038,6 +3568,9 @@ static uint32_t badge_meta_glasses_count(
     const badge_threat_snapshot_t *snapshot);
 static int badge_top_tile_rank(const badge_threat_snapshot_t *snapshot,
                                const badge_threat_snapshot_entity_t *item);
+static uint8_t badge_top_item_heat_percent(
+    const badge_threat_snapshot_t *snapshot,
+    const badge_threat_snapshot_entity_t *item);
 
 static badge_display_min_proximity_t badge_display_policy_entity_prox(
     const badge_threat_snapshot_entity_t *item)
@@ -3181,187 +3714,208 @@ static bool badge_display_policy_allows_status_lane(badge_ui_domain_t domain,
     return badge_display_policy_lane_includes(policy->classes[cls].lane, false);
 }
 
-static int badge_item_match_count(const badge_threat_snapshot_t *snapshot,
-                                  badge_item_predicate_fn predicate,
-                                  bool fresh_only)
+static bool badge_top_item_same_view(
+    const badge_threat_snapshot_entity_t *a,
+    const badge_threat_snapshot_entity_t *b)
 {
-    if (!snapshot || !predicate) {
+    if (!a || !b) {
+        return false;
+    }
+    if (a == b) {
+        return true;
+    }
+    char key_a[BADGE_THREAT_VIEW_KEY_LEN] = {0};
+    char key_b[BADGE_THREAT_VIEW_KEY_LEN] = {0};
+    if (!badge_threat_snapshot_entity_view_key(a, key_a, sizeof(key_a)) ||
+        !badge_threat_snapshot_entity_view_key(b, key_b, sizeof(key_b))) {
+        return false;
+    }
+    return strcmp(key_a, key_b) == 0;
+}
+
+static bool badge_top_items_conflict(
+    const badge_threat_snapshot_entity_t *candidate,
+    const badge_threat_snapshot_entity_t *selected)
+{
+    if (!candidate || !selected) {
+        return false;
+    }
+    if (badge_top_item_same_view(candidate, selected)) {
+        return true;
+    }
+    /* The large drone tile is an aggregate alert. Keep it to one top row, then
+     * let the protocol-specific lower rows carry any additional RID/SSID detail. */
+    if (badge_item_is_drone_evidence(candidate) &&
+        badge_item_is_drone_evidence(selected)) {
+        return true;
+    }
+    return false;
+}
+
+static bool badge_top_candidate_allowed(
+    const badge_threat_snapshot_entity_t *item)
+{
+    if (!item || !item->active || item->stale) {
+        return false;
+    }
+    if (badge_threat_snapshot_entity_display_lane(item) ==
+        BADGE_THREAT_DISPLAY_LANE_NONE) {
+        return false;
+    }
+    return badge_display_policy_allows_entity_lane(item, true);
+}
+
+static bool badge_top_candidate_better(
+    const badge_threat_snapshot_t *snapshot,
+    const badge_threat_snapshot_entity_t *candidate,
+    const badge_threat_snapshot_entity_t *best)
+{
+    if (!candidate) {
+        return false;
+    }
+    if (!best) {
+        return true;
+    }
+    int candidate_rank = badge_top_tile_rank(snapshot, candidate);
+    int best_rank = badge_top_tile_rank(snapshot, best);
+    if (candidate_rank != best_rank) {
+        return candidate_rank > best_rank;
+    }
+    uint8_t candidate_heat = badge_top_item_heat_percent(snapshot, candidate);
+    uint8_t best_heat = badge_top_item_heat_percent(snapshot, best);
+    if (candidate_heat != best_heat) {
+        return candidate_heat > best_heat;
+    }
+    int8_t candidate_rssi = candidate->rssi < 0 ? candidate->rssi
+                                                 : candidate->best_rssi;
+    int8_t best_rssi = best->rssi < 0 ? best->rssi : best->best_rssi;
+    if (candidate_rssi < 0 && best_rssi < 0 && candidate_rssi != best_rssi) {
+        return candidate_rssi > best_rssi;
+    }
+    return candidate->display_rank > best->display_rank;
+}
+
+static int badge_top_item_position(
+    const badge_threat_snapshot_t *snapshot,
+    const badge_threat_snapshot_entity_t *item,
+    int *total_out)
+{
+    if (total_out) {
+        *total_out = 1;
+    }
+    if (!snapshot || !item) {
         return 0;
     }
-    int count = 0;
-    for (int i = 0; i < snapshot->entity_count; i++) {
-        const badge_threat_snapshot_entity_t *item = &snapshot->entities[i];
-        if (fresh_only && item->stale) {
-            continue;
+    if (badge_item_is_drone_evidence(item)) {
+        uint32_t count = badge_drone_evidence_count(snapshot);
+        if (total_out) {
+            *total_out = (int)count;
         }
-        if (predicate(item) && badge_display_policy_allows_entity_lane(item, true)) {
-            count++;
-        }
+        return (int)badge_threat_snapshot_entity_ordinal(
+            snapshot,
+            item,
+            BADGE_THREAT_DRONE,
+            BADGE_THREAT_CATEGORY_NONE,
+            false);
     }
-    return count;
+    if (badge_item_is_meta_glasses(item)) {
+        uint32_t count = badge_meta_glasses_count(snapshot);
+        if (total_out) {
+            *total_out = (int)count;
+        }
+        return (int)badge_threat_snapshot_entity_ordinal(
+            snapshot,
+            item,
+            BADGE_THREAT_META,
+            BADGE_THREAT_CATEGORY_GLASS,
+            false);
+    }
+    return 1;
 }
 
-static const badge_threat_snapshot_entity_t *select_rotating_badge_item(
+static void select_top_global_badge_items(
     const badge_threat_snapshot_t *snapshot,
-    badge_item_predicate_fn predicate,
-    uint32_t phase,
-    int *pos_out,
-    int *total_out)
+    const badge_threat_snapshot_entity_t *out_items[2],
+    int out_pos[2],
+    int out_total[2])
 {
-    if (pos_out) *pos_out = 0;
-    if (total_out) *total_out = 0;
-    if (!snapshot || !predicate) {
-        return NULL;
+    if (out_items) {
+        out_items[0] = NULL;
+        out_items[1] = NULL;
+    }
+    if (out_pos) {
+        out_pos[0] = 0;
+        out_pos[1] = 0;
+    }
+    if (out_total) {
+        out_total[0] = 0;
+        out_total[1] = 0;
+    }
+    if (!snapshot || !out_items) {
+        return;
     }
 
-    int fresh_count = badge_item_match_count(snapshot, predicate, true);
-    bool fresh_only = fresh_count > 0;
-    int total = fresh_only
-        ? fresh_count
-        : badge_item_match_count(snapshot, predicate, false);
-    if (total <= 0) {
-        return NULL;
-    }
-
-    int target = (int)(phase % (uint32_t)total);
-    int seen = 0;
-    for (int i = 0; i < snapshot->entity_count; i++) {
-        const badge_threat_snapshot_entity_t *item = &snapshot->entities[i];
-        if (fresh_only && item->stale) {
-            continue;
-        }
-        if (!predicate(item)) {
-            continue;
-        }
-        if (!badge_display_policy_allows_entity_lane(item, true)) {
-            continue;
-        }
-        if (seen == target) {
-            if (pos_out) *pos_out = target + 1;
-            if (total_out) *total_out = total;
-            return item;
-        }
-        seen++;
-    }
-    return NULL;
-}
-
-static const badge_threat_snapshot_entity_t *select_top_wifi_badge_item(
-    const badge_threat_snapshot_t *snapshot,
-    uint32_t phase,
-    int *pos_out,
-    int *total_out)
-{
-    if (pos_out) *pos_out = 0;
-    if (total_out) *total_out = 0;
-    if (!snapshot) {
-        return NULL;
-    }
-
-    uint32_t drone_count = badge_drone_evidence_count(snapshot);
-    const badge_threat_snapshot_entity_t *drone = NULL;
-    if (drone_count > 0) {
+    for (int slot = 0; slot < 2; slot++) {
+        const badge_threat_snapshot_entity_t *best = NULL;
         for (int i = 0; i < snapshot->entity_count; i++) {
             const badge_threat_snapshot_entity_t *item = &snapshot->entities[i];
-            if (!item->stale && badge_item_is_drone_evidence(item)) {
-                if (!badge_display_policy_allows_entity_lane(item, true)) {
-                    continue;
+            if (!badge_top_candidate_allowed(item)) {
+                continue;
+            }
+            bool conflicts = false;
+            for (int prior = 0; prior < slot; prior++) {
+                if (badge_top_items_conflict(item, out_items[prior])) {
+                    conflicts = true;
+                    break;
                 }
-                drone = item;
-                break;
+            }
+            if (conflicts) {
+                continue;
+            }
+            if (badge_top_candidate_better(snapshot, item, best)) {
+                best = item;
+            }
+        }
+        out_items[slot] = best;
+        if (best) {
+            int total = 1;
+            int pos = badge_top_item_position(snapshot, best, &total);
+            if (out_pos) {
+                out_pos[slot] = pos > 0 ? pos : 1;
+            }
+            if (out_total) {
+                out_total[slot] = total > 0 ? total : 1;
             }
         }
     }
-
-    const badge_threat_snapshot_entity_t *best_wifi = NULL;
-    for (int i = 0; i < snapshot->entity_count; i++) {
-        const badge_threat_snapshot_entity_t *item = &snapshot->entities[i];
-        if (!item->active || item->stale || !badge_item_is_wifi_concern(item)) {
-            continue;
-        }
-        if (badge_item_is_drone_evidence(item)) {
-            continue;
-        }
-        if (!badge_display_policy_allows_entity_lane(item, true)) {
-            continue;
-        }
-        if (!best_wifi ||
-            badge_top_tile_rank(snapshot, item) >
-            badge_top_tile_rank(snapshot, best_wifi)) {
-            best_wifi = item;
-        }
-    }
-
-    if (best_wifi &&
-        (!drone ||
-         badge_top_tile_rank(snapshot, best_wifi) >
-         badge_top_tile_rank(snapshot, drone))) {
-        if (pos_out) *pos_out = 1;
-        if (total_out) *total_out = 1;
-        return best_wifi;
-    }
-
-    if (drone) {
-        if (pos_out) *pos_out = 1;
-        if (total_out) *total_out = (int)drone_count;
-        return drone;
-    }
-
-    return select_rotating_badge_item(snapshot, badge_item_is_wifi_concern,
-                                      phase, pos_out, total_out);
 }
 
-static const badge_threat_snapshot_entity_t *select_top_ble_badge_item(
-    const badge_threat_snapshot_t *snapshot,
-    uint32_t phase,
-    int *pos_out,
-    int *total_out)
+static badge_ui_domain_t badge_domain_for_display_lane(
+    badge_threat_display_lane_t lane)
 {
-    if (pos_out) *pos_out = 0;
-    if (total_out) *total_out = 0;
-    if (!snapshot) {
-        return NULL;
-    }
+    return lane == BADGE_THREAT_DISPLAY_LANE_WIFI
+        ? BADGE_UI_DOMAIN_WIFI
+        : BADGE_UI_DOMAIN_PRIVACY;
+}
 
-    const badge_threat_snapshot_entity_t *meta =
-        badge_threat_snapshot_meta_glasses_at(snapshot, phase,
-                                             pos_out, total_out);
-    if (meta && !badge_display_policy_allows_entity_lane(meta, true)) {
-        meta = NULL;
-        if (pos_out) *pos_out = 0;
-        if (total_out) *total_out = 0;
-    }
-    const badge_threat_snapshot_entity_t *override = NULL;
-    for (int i = 0; i < snapshot->entity_count; i++) {
-        const badge_threat_snapshot_entity_t *item = &snapshot->entities[i];
-        if (!item->active || item->stale || !badge_item_is_ble_concern(item)) {
-            continue;
-        }
-        if (!badge_display_policy_allows_entity_lane(item, true)) {
-            continue;
-        }
-        if (badge_item_is_meta_glasses(item)) {
-            continue;
-        }
-        if (!override ||
-            badge_top_tile_rank(snapshot, item) >
-            badge_top_tile_rank(snapshot, override)) {
-            override = item;
-        }
-    }
-    if (override && (!meta ||
-                     badge_top_tile_rank(snapshot, override) >
-                     badge_top_tile_rank(snapshot, meta))) {
-        if (pos_out) *pos_out = 1;
-        if (total_out) *total_out = 1;
-        return override;
-    }
-    if (meta) {
-        return meta;
-    }
+static badge_threat_display_lane_t badge_top_item_lane(
+    const badge_threat_snapshot_entity_t *item)
+{
+    badge_threat_display_lane_t lane =
+        badge_threat_snapshot_entity_display_lane(item);
+    return lane == BADGE_THREAT_DISPLAY_LANE_NONE
+        ? BADGE_THREAT_DISPLAY_LANE_BLE
+        : lane;
+}
 
-    return select_rotating_badge_item(snapshot, badge_item_is_ble_concern,
-                                      phase, pos_out, total_out);
+static const char *badge_top_lane_label(badge_threat_display_lane_t lane)
+{
+    return lane == BADGE_THREAT_DISPLAY_LANE_WIFI ? "WiFi" : "BLE";
+}
+
+static const char *badge_top_focus_label(badge_threat_display_lane_t lane)
+{
+    return lane == BADGE_THREAT_DISPLAY_LANE_WIFI ? "TOP WIFI" : "TOP BLE";
 }
 
 static void format_badge_age(char *out, size_t out_len,
@@ -4262,22 +4816,6 @@ static int build_billboard_status_rows(
                                  label, detail, "", false);
     }
 
-    uint32_t active_rid = badge_remote_id_drone_count(snapshot);
-    uint32_t rid_seen = scanner_status_rid_seen_max();
-    if (!badge_viewed_has_remote_id(viewed) &&
-        active_rid == 0 &&
-        rid_seen > 0) {
-        char label[24];
-        snprintf(label, sizeof(label), "RID WAIT");
-        snprintf(detail, sizeof(detail), "decoding %lu service frames",
-                 (unsigned long)cap3(rid_seen));
-        add_billboard_status_row(rows, max_rows, &count, snapshot,
-                                 pinned_ble, pinned_wifi,
-                                 viewed,
-                                 BADGE_UI_DOMAIN_WIFI,
-                                 label, detail, "", false);
-    }
-
     if (count < max_rows) {
         badge_display_diag_t diag_rows[4];
         int diag_count = build_scanner_diag_rows(
@@ -4554,6 +5092,163 @@ static const badge_billboard_candidate_t *badge_billboard_select_candidate(
     return &candidates[pos];
 }
 
+static void badge_focus_model_reset(void)
+{
+    memset(&s_focus_model, 0, sizeof(s_focus_model));
+}
+
+static void badge_focus_entry_common(badge_focus_entry_t *entry,
+                                     const char *lane,
+                                     const char *title,
+                                     const char *detail,
+                                     int y,
+                                     int h,
+                                     int item_index,
+                                     int item_total)
+{
+    if (!entry) {
+        return;
+    }
+    entry->active = true;
+    entry->y = y;
+    entry->h = h;
+    entry->item_index = item_index;
+    entry->item_total = item_total;
+    snprintf(entry->lane, sizeof(entry->lane), "%s", lane ? lane : "");
+    snprintf(entry->title, sizeof(entry->title), "%s", title ? title : "");
+    snprintf(entry->detail, sizeof(entry->detail), "%s", detail ? detail : "");
+}
+
+static void badge_focus_add_idle(const char *lane,
+                                 const char *title,
+                                 const char *detail,
+                                 int y,
+                                 int h)
+{
+    if (s_focus_model.count >= BADGE_FOCUS_ENTRY_MAX) {
+        return;
+    }
+    badge_focus_entry_t *entry = &s_focus_model.entries[s_focus_model.count++];
+    memset(entry, 0, sizeof(*entry));
+    badge_focus_entry_common(entry, lane, title, detail, y, h, 0, 0);
+    snprintf(entry->key, sizeof(entry->key), "IDLE:%s", lane ? lane : "");
+}
+
+static void badge_focus_add_entity(const badge_threat_snapshot_t *snapshot,
+                                   const badge_threat_snapshot_entity_t *item,
+                                   const char *lane,
+                                   int y,
+                                   int h,
+                                   int item_index,
+                                   int item_total)
+{
+    if (!item || s_focus_model.count >= BADGE_FOCUS_ENTRY_MAX) {
+        badge_focus_add_idle(lane, "CLEAR", "No focused signal", y, h);
+        return;
+    }
+    badge_focus_entry_t *entry = &s_focus_model.entries[s_focus_model.count++];
+    memset(entry, 0, sizeof(*entry));
+    entry->is_entity = true;
+    entry->entity = *item;
+
+    char title[32];
+    char detail[OLED_BADGE_STATE_TEXT_LEN];
+    format_badge_title_for_snapshot(title, sizeof(title), item, snapshot);
+    if (!badge_threat_format_top_detail(snapshot, item, detail, sizeof(detail))) {
+        char clean[32];
+        char summary[36];
+        clean_badge_detail(clean, sizeof(clean), item);
+        format_badge_summary(summary, sizeof(summary), item);
+        if (clean[0]) {
+            snprintf(detail, sizeof(detail), "%.31s  %.36s", clean, summary);
+        } else {
+            snprintf(detail, sizeof(detail), "%s", summary);
+        }
+    }
+    badge_focus_entry_common(entry, lane, title, detail, y, h,
+                             item_index, item_total);
+    if (!badge_threat_snapshot_entity_view_key(item, entry->key,
+                                               sizeof(entry->key))) {
+        snprintf(entry->key, sizeof(entry->key), "ENT:%s:%s",
+                 title, detail);
+    }
+}
+
+static void badge_focus_add_candidate(const badge_threat_snapshot_t *snapshot,
+                                      const badge_billboard_candidate_t *candidate,
+                                      const char *lane,
+                                      const char *idle_title,
+                                      const char *idle_detail,
+                                      int y,
+                                      int h,
+                                      int item_index,
+                                      int item_total)
+{
+    if (!candidate) {
+        badge_focus_add_idle(lane, idle_title, idle_detail, y, h);
+        return;
+    }
+    if (candidate->is_entity && candidate->entity) {
+        badge_focus_add_entity(snapshot, candidate->entity, lane, y, h,
+                               item_index, item_total);
+        return;
+    }
+    if (s_focus_model.count >= BADGE_FOCUS_ENTRY_MAX) {
+        return;
+    }
+    badge_focus_entry_t *entry = &s_focus_model.entries[s_focus_model.count++];
+    memset(entry, 0, sizeof(*entry));
+    entry->severe = candidate->diag.severe;
+    entry->stat[0] = '\0';
+    snprintf(entry->stat, sizeof(entry->stat), "%s", candidate->diag.stat);
+    badge_focus_entry_common(entry, lane,
+                             candidate->diag.label,
+                             candidate->diag.detail,
+                             y, h, item_index, item_total);
+    snprintf(entry->key, sizeof(entry->key), "%s",
+             candidate->key[0] ? candidate->key : candidate->diag.label);
+}
+
+static void badge_focus_model_finish(void)
+{
+    if (s_focus_model.count <= 0) {
+        s_focus_model.count = 0;
+        s_focus_index = 0;
+    } else if (s_focus_index < 0 || s_focus_index >= s_focus_model.count) {
+        s_focus_index = 0;
+    }
+    s_focus_model.focus_index = s_focus_index;
+    s_focus_model.detail_mode = s_detail_mode;
+    s_focus_model.detail_page = s_detail_page;
+    s_focus_model.generation++;
+}
+
+static const badge_focus_entry_t *badge_focus_current_entry(void)
+{
+    int idx = s_focus_model.focus_index;
+    if (idx < 0 || idx >= s_focus_model.count) {
+        return NULL;
+    }
+    return &s_focus_model.entries[idx];
+}
+
+static void draw_focus_outline(void)
+{
+    if (s_button_overlay != BADGE_BUTTON_OVERLAY_NONE || s_detail_mode) {
+        return;
+    }
+    const badge_focus_entry_t *entry = badge_focus_current_entry();
+    if (!entry || !entry->active || entry->h <= 0) {
+        return;
+    }
+    uint16_t color = entry->severe ? COL_GOLD : COL_LINK_BRIGHT;
+    fb_fill_rect(1, entry->y + 1, LCD_W - 2, 1, color);
+    fb_fill_rect(1, entry->y + entry->h - 2, LCD_W - 2, 1, color);
+    fb_fill_rect(1, entry->y + 1, 1, entry->h - 2, color);
+    fb_fill_rect(LCD_W - 2, entry->y + 1, 1, entry->h - 2, color);
+    fb_draw_tiny_string(LCD_W - 18, entry->y + 3, "SEL", color, COL_BLACK);
+}
+
 static void draw_billboard_candidate_lane(
     int y,
     int h,
@@ -4617,6 +5312,15 @@ static void draw_badge_billboards(const badge_threat_snapshot_t *snapshot,
     const badge_billboard_candidate_t *wifi_candidate =
         badge_billboard_select_candidate(wifi_candidates, wifi_total, 1, &wifi_pos);
 
+    badge_focus_add_candidate(snapshot, ble_candidate, "LOWER BLE",
+                              ble_scanner_ok ? "BLE CLEAR" : "BLE OFFLINE",
+                              ble_scanner_ok ? "No extra glasses or tags" : "Check BLE scanner",
+                              y0, row_h, ble_pos, ble_total);
+    badge_focus_add_candidate(snapshot, wifi_candidate, "LOWER WIFI",
+                              wifi_scanner_ok ? "WIFI CLEAR" : "WIFI OFFLINE",
+                              wifi_scanner_ok ? "No SSID or attack" : "Check WiFi scanner",
+                              y0 + row_h + row_gap, row_h, wifi_pos, wifi_total);
+
     if (ble_candidate) {
         draw_billboard_candidate_lane(y0, row_h, snapshot, ble_candidate);
     } else {
@@ -4650,6 +5354,7 @@ static void draw_badge_billboards(const badge_threat_snapshot_t *snapshot,
         fb_draw_tiny_string(LCD_W - tiny_pixel_width(page) - 4,
                             bottom_y - 8, page, COL_DARKGRAY, COL_PANEL_2);
     }
+    badge_focus_model_finish();
 }
 
 static void draw_evidence_queue(const badge_threat_snapshot_t *snapshot,
@@ -4765,61 +5470,272 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
 
     draw_threat_background(snapshot);
 
-    uint32_t slot_phase = s_queue_page_frame / 32;
-    int top_ble_pos = 0;
-    int top_ble_total = 0;
-    int top_wifi_pos = 0;
-    int top_wifi_total = 0;
-    const badge_threat_snapshot_entity_t *top_ble =
-        select_top_ble_badge_item(snapshot, slot_phase,
-                                  &top_ble_pos, &top_ble_total);
-    const badge_threat_snapshot_entity_t *top_wifi =
-        select_top_wifi_badge_item(snapshot, slot_phase + 1,
-                                   &top_wifi_pos, &top_wifi_total);
-    bool top_wifi_is_drone_aggregate = badge_item_is_drone_evidence(top_wifi) &&
-        badge_drone_evidence_count(snapshot) > 0;
+    const badge_threat_snapshot_entity_t *top_items[2] = {0};
+    int top_pos[2] = {0};
+    int top_total[2] = {0};
+    select_top_global_badge_items(snapshot, top_items, top_pos, top_total);
     badge_display_viewed_t viewed = {0};
-    badge_viewed_mark_entity(&viewed, top_ble);
-    if (!top_wifi_is_drone_aggregate) {
-        badge_viewed_mark_entity(&viewed, top_wifi);
+    badge_viewed_mark_entity(&viewed, top_items[0]);
+    badge_viewed_mark_entity(&viewed, top_items[1]);
+
+    badge_focus_model_reset();
+    badge_threat_display_lane_t other_lane = badge_top_item_lane(top_items[0]);
+    for (int slot = 0; slot < 2; slot++) {
+        const int y = slot == 0 ? 0 : 39;
+        const badge_threat_snapshot_entity_t *item = top_items[slot];
+        badge_threat_display_lane_t lane = item
+            ? badge_top_item_lane(item)
+            : (slot == 0
+                ? BADGE_THREAT_DISPLAY_LANE_BLE
+                : (other_lane == BADGE_THREAT_DISPLAY_LANE_WIFI
+                    ? BADGE_THREAT_DISPLAY_LANE_BLE
+                    : BADGE_THREAT_DISPLAY_LANE_WIFI));
+        badge_ui_domain_t domain = badge_domain_for_display_lane(lane);
+        bool scanner_ok = lane == BADGE_THREAT_DISPLAY_LANE_WIFI
+            ? wifi_scanner_ok
+            : ble_scanner_ok;
+        const char *lane_label = badge_top_lane_label(lane);
+        const char *focus_label = badge_top_focus_label(lane);
+        const char *clear_label = lane == BADGE_THREAT_DISPLAY_LANE_WIFI
+            ? (wifi_scanner_ok ? "WIFI CLEAR" : "WIFI OFFLINE")
+            : (ble_scanner_ok ? "BLE CLEAR" : "BLE OFFLINE");
+        const char *clear_detail = lane == BADGE_THREAT_DISPLAY_LANE_WIFI
+            ? (wifi_scanner_ok ? "No SSID/attack" : "Check WiFi scanner")
+            : (ble_scanner_ok ? "No tags/glasses" : "Check BLE scanner");
+
+        if (item) {
+            badge_focus_add_entity(snapshot, item, focus_label, y, 37,
+                                   top_pos[slot], top_total[slot]);
+        } else {
+            badge_focus_add_idle(focus_label, clear_label, clear_detail, y, 37);
+        }
+        draw_top_concern_tile(
+            y,
+            domain,
+            lane_label,
+            item,
+            top_pos[slot],
+            top_total[slot],
+            snapshot,
+            scanner_ok,
+            clear_label,
+            clear_detail
+        );
     }
 
-    bool wifi_first = badge_top_tile_rank(snapshot, top_wifi) >
-                      badge_top_tile_rank(snapshot, top_ble);
-    int ble_y = wifi_first ? 39 : 0;
-    int wifi_y = wifi_first ? 0 : 39;
-
-    draw_top_concern_tile(
-        ble_y,
-        BADGE_UI_DOMAIN_PRIVACY,
-        "BLE",
-        top_ble,
-        top_ble_pos,
-        top_ble_total,
-        snapshot,
-        ble_scanner_ok,
-        ble_scanner_ok ? "CLEAR" : "BLE scanner offline",
-        ble_scanner_ok ? "No tags/glasses" : "Check BLE scanner"
-    );
-    draw_top_concern_tile(
-        wifi_y,
-        BADGE_UI_DOMAIN_WIFI,
-        "WiFi",
-        top_wifi,
-        top_wifi_pos,
-        top_wifi_total,
-        snapshot,
-        wifi_scanner_ok,
-        wifi_scanner_ok ? "CLEAR" : "WiFi scanner offline",
-        wifi_scanner_ok ? "No SSID/attack" : "Check WiFi scanner"
-    );
-
     draw_badge_billboards(snapshot, ble_scanner_ok, wifi_scanner_ok,
-                          top_ble,
-                          top_wifi_is_drone_aggregate ? NULL : top_wifi,
+                          top_items[0],
+                          top_items[1],
                           &viewed,
                           backend_ok, wifi_network_ok);
+    draw_focus_outline();
     draw_scanner_bottom_strip(148, ble_scanner_ok, wifi_scanner_ok);
+}
+
+static void draw_detail_pair(int y, const char *label, const char *value)
+{
+    if (!value || value[0] == '\0') {
+        return;
+    }
+    fb_draw_tiny_string(8, y, label ? label : "", COL_DARKGRAY, COL_BLACK);
+    fb_draw_string_fit(45, y - 1, value, LCD_W - 50, COL_WHITE, COL_BLACK);
+}
+
+static void draw_badge_focused_detail_screen(void)
+{
+    const badge_focus_entry_t *entry = badge_focus_current_entry();
+    fb_clear(COL_BLACK);
+    if (!entry || !entry->active) {
+        fb_draw_string_centered(LCD_W / 2, 58, "NO SIGNAL", COL_GRAY, COL_BLACK, 1);
+        fb_draw_string_centered(LCD_W / 2, 78, "Press B1", COL_DARKGRAY, COL_BLACK, 1);
+        return;
+    }
+
+    uint16_t color = entry->severe ? COL_GOLD :
+        entry->is_entity ? ui_category_base_color(entry->entity.category) : COL_LINK_BRIGHT;
+    fb_fill_rect(0, 0, LCD_W, 15, rgb565_mix_color(COL_PANEL_2, color, 45));
+    fb_draw_tiny_string(6, 4, entry->lane, color, COL_PANEL_2);
+    char page[16];
+    snprintf(page, sizeof(page), "%d/3", s_detail_page + 1);
+    fb_draw_tiny_string(LCD_W - tiny_pixel_width(page) - 5, 4,
+                        page, COL_GRAY, COL_PANEL_2);
+    fb_draw_string_fit(6, 20, entry->title, LCD_W - 12, COL_WHITE, COL_BLACK);
+    fb_draw_string_fast_marquee(6, 34, entry->detail, LCD_W - 12,
+                                rgb565_mix_color(COL_WHITE, color, 86),
+                                COL_BLACK);
+
+    if (s_detail_page == 0) {
+        char value[48];
+        snprintf(value, sizeof(value), "score %d  rssi %ddB",
+                 entry->is_entity ? entry->entity.score : 0,
+                 entry->is_entity ? entry->entity.rssi : 0);
+        draw_detail_pair(58, "HEAT", value);
+        if (entry->is_entity) {
+            snprintf(value, sizeof(value), "best %ddB  prox %d",
+                     entry->entity.best_rssi,
+                     (int)entry->entity.proximity_level);
+            draw_detail_pair(74, "RF", value);
+            snprintf(value, sizeof(value), "age %ds  seen %ds",
+                     entry->entity.age_s, entry->entity.last_seen_s);
+            draw_detail_pair(90, "TIME", value);
+            snprintf(value, sizeof(value), "events %lu  count %lu",
+                     (unsigned long)entry->entity.event_count,
+                     (unsigned long)entry->entity.seen_count);
+            draw_detail_pair(106, "OBS", value);
+        } else {
+            draw_detail_pair(74, "STAT", entry->stat);
+        }
+    } else if (s_detail_page == 1) {
+        if (entry->is_entity && entry->entity.has_location) {
+            char value[48];
+            snprintf(value, sizeof(value), "%.6f", entry->entity.latitude);
+            draw_detail_pair(58, "LAT", value);
+            snprintf(value, sizeof(value), "%.6f", entry->entity.longitude);
+            draw_detail_pair(74, "LON", value);
+            snprintf(value, sizeof(value), "%.1fm", entry->entity.altitude_m);
+            draw_detail_pair(90, "ALT", value);
+        } else {
+            draw_detail_pair(58, "GPS", "not in signal");
+        }
+        if (entry->is_entity && entry->entity.has_operator_location) {
+            char value[48];
+            snprintf(value, sizeof(value), "%.6f", entry->entity.operator_lat);
+            draw_detail_pair(106, "OPLAT", value);
+            snprintf(value, sizeof(value), "%.6f", entry->entity.operator_lon);
+            draw_detail_pair(122, "OPLON", value);
+        }
+        if (entry->is_entity && entry->entity.operator_id[0] != '\0') {
+            draw_detail_pair(138, "OPID", entry->entity.operator_id);
+        }
+    } else {
+        if (entry->is_entity) {
+            draw_detail_pair(58, "CLASS", badge_threat_class_name(entry->entity.cls));
+            draw_detail_pair(74, "CAT", badge_threat_category_name(entry->entity.category));
+            draw_detail_pair(90, "CODE", badge_threat_category_code(entry->entity.category));
+            draw_detail_pair(106, "SRC", badge_threat_source_code(entry->entity.source));
+            draw_detail_pair(122, "WHY",
+                             entry->entity.evidence[0] ? entry->entity.evidence :
+                             entry->entity.detail);
+            draw_detail_pair(138, entry->entity.display_id[0] ? "ID" : "KEY",
+                             entry->entity.display_id[0] ? entry->entity.display_id :
+                             entry->key);
+        } else {
+            draw_detail_pair(58, "TYPE", "status row");
+            draw_detail_pair(74, "STAT", entry->stat);
+            draw_detail_pair(90, "KEY", entry->key);
+        }
+    }
+
+    fb_draw_tiny_string(6, 151, "B2 page  dbl back", COL_DARKGRAY, COL_BLACK);
+}
+
+bool oled_badge_get_display_state(oled_badge_display_state_t *out)
+{
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!display_lock(pdMS_TO_TICKS(80))) {
+        return false;
+    }
+    const badge_focus_entry_t *entry = badge_focus_current_entry();
+    out->detail_mode = s_detail_mode;
+    out->detail_page = s_detail_page;
+    out->focus_index = s_focus_model.focus_index;
+    out->focus_total = s_focus_model.count;
+    if (!entry || !entry->active) {
+        display_unlock();
+        return false;
+    }
+
+    out->active = true;
+    out->item_index = entry->item_index;
+    out->item_total = entry->item_total;
+    snprintf(out->lane, sizeof(out->lane), "%s", entry->lane);
+    snprintf(out->title, sizeof(out->title), "%s", entry->title);
+    snprintf(out->detail, sizeof(out->detail), "%s", entry->detail);
+    snprintf(out->entity_key, sizeof(out->entity_key), "%s", entry->key);
+    if (entry->is_entity) {
+        const badge_threat_snapshot_entity_t *entity = &entry->entity;
+        snprintf(out->evidence, sizeof(out->evidence), "%s",
+                 entity->evidence);
+        snprintf(out->display_id, sizeof(out->display_id), "%s", entity->display_id);
+        snprintf(out->threat_class, sizeof(out->threat_class), "%s",
+                 badge_threat_class_name(entity->cls));
+        snprintf(out->category, sizeof(out->category), "%s",
+                 badge_threat_category_name(entity->category));
+        snprintf(out->code, sizeof(out->code), "%s",
+                 badge_threat_category_code(entity->category));
+        snprintf(out->source, sizeof(out->source), "%s",
+                 badge_threat_source_code(entity->source));
+        out->score = entity->score;
+        out->confidence_pct = entity->confidence_pct;
+        out->evidence_quality = entity->evidence_quality;
+        out->display_rank = entity->display_rank;
+        out->age_s = entity->age_s;
+        out->last_seen_s = entity->last_seen_s;
+        out->rssi = entity->rssi;
+        out->best_rssi = entity->best_rssi;
+        out->events = entity->event_count;
+        out->seen_count = entity->seen_count;
+        out->group_count = entity->group_count;
+        out->proximity_level = entity->proximity_level;
+        out->stale = entity->stale;
+        out->has_location = entity->has_location;
+        out->latitude = entity->latitude;
+        out->longitude = entity->longitude;
+        out->altitude_m = entity->altitude_m;
+        out->has_operator_location = entity->has_operator_location;
+        out->operator_lat = entity->operator_lat;
+        out->operator_lon = entity->operator_lon;
+        snprintf(out->operator_id, sizeof(out->operator_id), "%s",
+                 entity->operator_id);
+    } else {
+        snprintf(out->threat_class, sizeof(out->threat_class), "status");
+        snprintf(out->category, sizeof(out->category), "%s", entry->stat);
+    }
+    display_unlock();
+    return true;
+}
+
+bool oled_badge_get_button_state(oled_badge_button_state_t *out)
+{
+    if (!out) {
+        return false;
+    }
+    *out = s_button_diag;
+    return true;
+}
+
+bool oled_badge_handle_nav_command(const char *action)
+{
+    if (!action || action[0] == '\0') {
+        return false;
+    }
+    if (strcmp(action, "next") == 0) {
+        if (s_detail_mode) {
+            badge_display_nav_page();
+        } else {
+            badge_display_nav_next();
+        }
+        return true;
+    }
+    if (strcmp(action, "detail") == 0 || strcmp(action, "select") == 0) {
+        badge_display_nav_detail();
+        return true;
+    }
+    if (strcmp(action, "page") == 0) {
+        badge_display_nav_page();
+        return true;
+    }
+    if (strcmp(action, "back") == 0 || strcmp(action, "close") == 0) {
+        badge_button_note_activity();
+        s_detail_mode = false;
+        s_detail_page = 0;
+        s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
+        return true;
+    }
+    return false;
 }
 
 static void draw_boot_screen(const char *stage, const char *mode, const char *line)
@@ -4855,14 +5771,11 @@ void oled_init(void)
         }
     }
 
-    /* Reset every pin we're about to use — ESP32-S3 boot ROM leaves
-     * GPIO43/44 tied to U0TXD/U0RXD with internal pullups even when the
-     * console is routed to USB-JTAG. gpio_reset_pin() detaches them from
-     * any prior peripheral so the SPI matrix gets a clean slate. */
+    /* Reset every panel pin we're about to use so the SPI matrix gets a
+     * clean slate before the badge buttons claim GPIO8/GPIO43 as inputs. */
     gpio_reset_pin(ST7735_PIN_MOSI);
     gpio_reset_pin(ST7735_PIN_SCK);
-    gpio_reset_pin(ST7735_PIN_CS_PRIMARY);
-    gpio_reset_pin(ST7735_PIN_CS_LEGACY);
+    gpio_reset_pin(ST7735_PIN_CS);
     gpio_reset_pin(ST7735_PIN_DC);
     gpio_reset_pin(ST7735_PIN_RES);
 #if ST7735_PIN_BL >= 0
@@ -4945,8 +5858,10 @@ void oled_init(void)
     st7735_panel_init();
 
     s_initialized = true;
-    ESP_LOGI(TAG, "ST7735 initialized (128x160, SPI3 @ %d MHz, CS GPIO%d+GPIO%d)",
-             ST7735_SPI_HZ / 1000000, ST7735_PIN_CS_PRIMARY, ST7735_PIN_CS_LEGACY);
+    ESP_LOGI(TAG, "ST7735 initialized (128x160, SPI3 @ %d MHz, CS GPIO%d)",
+             ST7735_SPI_HZ / 1000000, ST7735_PIN_CS);
+
+    badge_buttons_start();
 
     /* Show the badge splash once the panel is configured. The heavy color
      * diagnostics stay compiled in for bench bring-up, but normal boot keeps
@@ -4965,6 +5880,28 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     if (!s_initialized) return;
     if (!display_lock(pdMS_TO_TICKS(30))) return;
 
+    s_anim_frame++;
+    if (s_detail_mode && s_last_button_ms > 0 &&
+        (badge_now_ms() - s_last_button_ms) > BADGE_DETAIL_TIMEOUT_MS) {
+        s_detail_mode = false;
+        s_detail_page = 0;
+    }
+    badge_button_overlay_t overlay = s_button_overlay;
+    if (overlay == BADGE_BUTTON_OVERLAY_TRIFORCE) {
+        draw_triforce_splash_static(COL_LINK_GREEN);
+        s_queue_page_frame++;
+        st_flush();
+        display_unlock();
+        return;
+    }
+    if (overlay == BADGE_BUTTON_OVERLAY_QR) {
+        draw_gamechangers_qr_screen();
+        s_queue_page_frame++;
+        st_flush();
+        display_unlock();
+        return;
+    }
+
     static badge_threat_snapshot_t snapshot;
     uart_rx_get_badge_threat_snapshot(&snapshot);
 
@@ -4976,10 +5913,12 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     uint16_t wifi_color = ui_domain_color(&snapshot, BADGE_UI_DOMAIN_WIFI);
 
     (void)device_id;
-    s_anim_frame++;
     draw_badge_dashboard(&snapshot, ble_scanner_ok, wifi_scanner_ok,
                          backend_ok, wifi_network_ok,
                          drone_color, privacy_color, wifi_color, accent);
+    if (s_detail_mode) {
+        draw_badge_focused_detail_screen();
+    }
     s_queue_page_frame++;
 
     st_flush();

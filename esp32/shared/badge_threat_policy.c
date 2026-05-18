@@ -78,17 +78,18 @@ static bool text_mentions_drone(const char *text)
            contains_nocase(text, "remoteid");
 }
 
-static bool text_mentions_meta(const char *text)
+static bool text_mentions_meta_glasses(const char *text)
 {
-    return contains_nocase(text, "meta") ||
+    return contains_nocase(text, "meta glasses") ||
            contains_nocase(text, "ray-ban") ||
            contains_nocase(text, "rayban") ||
            contains_nocase(text, "rb meta") ||
-           contains_nocase(text, "rb-") ||
            contains_nocase(text, "wayfarer") ||
            contains_nocase(text, "oakley") ||
            contains_nocase(text, "luxottica") ||
-           contains_nocase(text, "quest");
+           contains_nocase(text, "name:meta_glasses") ||
+           contains_nocase(text, "0x0D53") ||
+           contains_nocase(text, "0xFD5F");
 }
 
 static bool text_mentions_tracker(const char *text)
@@ -257,7 +258,7 @@ static bool detection_is_ambient_demo_ssid(const drone_detection_t *det)
 
 static bool text_mentions_glasses(const char *text)
 {
-    return text_mentions_meta(text) ||
+    return text_mentions_meta_glasses(text) ||
            contains_nocase(text, "glasses") ||
            contains_nocase(text, "eyewear") ||
            contains_nocase(text, "spectacles");
@@ -397,27 +398,23 @@ static bool wifi_anomaly_is_lcd_worthy(const drone_detection_t *det)
     return false;
 }
 
-static bool ble_company_is_meta(uint16_t company_id)
+static bool ble_company_is_meta_glasses(uint16_t company_id)
 {
-    return company_id == 0x01AB ||  /* Meta Platforms */
-           company_id == 0x058E ||  /* Meta Platforms Technologies */
-           company_id == 0x0D53;    /* Luxottica / Ray-Ban + Oakley frames */
+    return company_id == 0x0D53;    /* Luxottica / Ray-Ban + Oakley frames */
 }
 
-static bool ble_services_mention_meta(const drone_detection_t *det)
+static bool ble_services_mention_meta_glasses(const drone_detection_t *det)
 {
     if (!det) {
         return false;
     }
     for (uint8_t i = 0; i < det->ble_svc_uuid_count && i < 4; i++) {
         uint16_t uuid = det->ble_service_uuids[i];
-        if (uuid == 0xFD5F || uuid == 0xFEB7 || uuid == 0xFEB8) {
+        if (uuid == 0xFD5F) {
             return true;
         }
     }
-    return contains_nocase(det->ble_svc_uuids_raw, "fd5f") ||
-           contains_nocase(det->ble_svc_uuids_raw, "feb7") ||
-           contains_nocase(det->ble_svc_uuids_raw, "feb8");
+    return contains_nocase(det->ble_svc_uuids_raw, "fd5f");
 }
 
 static bool detection_has_meta_evidence(const drone_detection_t *det)
@@ -425,16 +422,12 @@ static bool detection_has_meta_evidence(const drone_detection_t *det)
     if (!det) {
         return false;
     }
-    return text_mentions_meta(det->manufacturer) ||
-           text_mentions_meta(det->model) ||
-           text_mentions_meta(det->ble_name) ||
-           text_mentions_meta(det->class_reason) ||
-           ble_company_is_meta(det->ble_company_id) ||
-           ble_services_mention_meta(det) ||
-           contains_nocase(det->class_reason, "0x01AB") ||
-           contains_nocase(det->class_reason, "0x058E") ||
-           contains_nocase(det->class_reason, "0x0D53") ||
-           contains_nocase(det->class_reason, "0xFD5F");
+    return text_mentions_meta_glasses(det->manufacturer) ||
+           text_mentions_meta_glasses(det->model) ||
+           text_mentions_meta_glasses(det->ble_name) ||
+           text_mentions_meta_glasses(det->class_reason) ||
+           ble_company_is_meta_glasses(det->ble_company_id) ||
+           ble_services_mention_meta_glasses(det);
 }
 
 static bool class_reason_is_raw_evidence(const char *reason)
@@ -461,6 +454,30 @@ static void copy_detail(char *out, const char *detail)
     }
     strncpy(out, detail ? detail : "", BADGE_THREAT_DETAIL_LEN - 1);
     out[BADGE_THREAT_DETAIL_LEN - 1] = '\0';
+}
+
+static void copy_evidence(char *out, const char *evidence)
+{
+    if (!out) {
+        return;
+    }
+    strncpy(out, evidence ? evidence : "", BADGE_THREAT_EVIDENCE_LEN - 1);
+    out[BADGE_THREAT_EVIDENCE_LEN - 1] = '\0';
+}
+
+static void copy_trimmed_reason(char *out, size_t out_len, const char *reason)
+{
+    if (!out || out_len == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!reason) {
+        return;
+    }
+    while (*reason == ' ' || *reason == '\t' || *reason == ':') {
+        reason++;
+    }
+    snprintf(out, out_len, "%.*s", (int)(out_len - 1), reason);
 }
 
 static void copy_first_csv_token(char *out, size_t out_len, const char *text)
@@ -615,6 +632,130 @@ static void copy_drone_label_and_detail(badge_threat_event_t *event,
     copy_detail(event->detail, detail);
 }
 
+static void format_detection_evidence(char *out,
+                                      size_t out_len,
+                                      const drone_detection_t *det)
+{
+    if (!out || out_len == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!det) {
+        return;
+    }
+
+    const char *reason = det->class_reason;
+    switch (det->source) {
+        case DETECTION_SRC_BLE_RID:
+            snprintf(out, out_len, "BLE Remote ID");
+            return;
+        case DETECTION_SRC_WIFI_DJI_IE:
+            snprintf(out, out_len, "DJI vendor IE");
+            return;
+        case DETECTION_SRC_WIFI_BEACON:
+            snprintf(out, out_len, "WiFi Remote ID");
+            return;
+        case DETECTION_SRC_WIFI_SSID:
+            if (det->ssid[0] != '\0') {
+                snprintf(out, out_len, "ssid %.38s", det->ssid);
+            } else {
+                snprintf(out, out_len, "WiFi SSID pattern");
+            }
+            return;
+        case DETECTION_SRC_WIFI_OUI:
+            if (contains_nocase(reason, "flock")) {
+                if (contains_nocase(reason, "registered")) {
+                    snprintf(out, out_len, "Flock registered OUI");
+                } else if (contains_nocase(reason, "field")) {
+                    snprintf(out, out_len, "Flock field OUI");
+                } else {
+                    snprintf(out, out_len, "Flock WiFi OUI");
+                }
+            } else if (det->bssid[0] != '\0') {
+                snprintf(out, out_len, "WiFi OUI %.17s", det->bssid);
+            } else {
+                snprintf(out, out_len, "WiFi OUI");
+            }
+            return;
+        case DETECTION_SRC_WIFI_PROBE_REQUEST:
+        case DETECTION_SRC_WIFI_ASSOC:
+            if (contains_nocase(reason, "flock")) {
+                if (contains_nocase(reason, "wildcard") ||
+                    contains_nocase(reason, "probe")) {
+                    snprintf(out, out_len, "Flock probe match");
+                } else if (contains_nocase(reason, "data")) {
+                    snprintf(out, out_len, "Flock data frame");
+                } else {
+                    snprintf(out, out_len, "Flock WiFi evidence");
+                }
+            } else if (contains_nocase(reason, "deauth")) {
+                snprintf(out, out_len, "WiFi deauth frames");
+            } else if (contains_nocase(reason, "disassoc")) {
+                snprintf(out, out_len, "WiFi disassoc frames");
+            } else if (contains_nocase(reason, "beacon spam")) {
+                snprintf(out, out_len, "WiFi beacon spam");
+            } else if (contains_nocase(reason, "evil") ||
+                       contains_nocase(reason, "twin")) {
+                snprintf(out, out_len, "WiFi evil twin hint");
+            } else if (det->ssid[0] != '\0') {
+                snprintf(out, out_len, "ssid %.38s", det->ssid);
+            } else if (det->probed_ssids[0] != '\0') {
+                snprintf(out, out_len, "probe %.37s", det->probed_ssids);
+            } else {
+                snprintf(out, out_len, "WiFi frame evidence");
+            }
+            return;
+        case DETECTION_SRC_BLE_FINGERPRINT:
+            if (contains_nocase(reason, "flock_ble_name")) {
+                snprintf(out, out_len, "BLE name Flock");
+            } else if (contains_nocase(reason, "0x0D53")) {
+                snprintf(out, out_len, "CID 0x0D53 Luxottica");
+            } else if (contains_nocase(reason, "0xFD5F")) {
+                snprintf(out, out_len, "svc 0xFD5F Meta");
+            } else if (contains_nocase(reason, "0xFEB7") ||
+                       contains_nocase(reason, "0xFEB8")) {
+                snprintf(out, out_len, "svc 0xFEB7/8 Meta");
+            } else if (contains_nocase(reason, "0x1812") ||
+                       contains_nocase(reason, "ble_hid")) {
+                snprintf(out, out_len, "svc 0x1812 HID");
+            } else if (contains_nocase(reason, "0xFEAA") ||
+                       contains_nocase(reason, "venue_beacon")) {
+                snprintf(out, out_len, "svc 0xFEAA beacon");
+            } else if (contains_nocase(reason, "ble_audio") ||
+                       contains_nocase(reason, "auracast")) {
+                snprintf(out, out_len, "LE Audio broadcast");
+            } else if (contains_nocase(reason, "default_uart_ble_name")) {
+                snprintf(out, out_len, "BLE UART module name");
+            } else if (contains_nocase(reason, "explicit_camera_ble_name")) {
+                snprintf(out, out_len, "BLE camera name");
+            } else if (contains_nocase(reason, "mobile_key_lock")) {
+                snprintf(out, out_len, "BLE lock/mobile key");
+            } else if (contains_nocase(reason, "event_badge")) {
+                snprintf(out, out_len, "BLE event badge");
+            } else if (contains_nocase(reason, "weak_meta")) {
+                snprintf(out, out_len, "weak Meta presence");
+            } else if (det->ble_company_id != 0) {
+                snprintf(out, out_len, "CID 0x%04X",
+                         (unsigned)det->ble_company_id);
+            } else if (det->ble_svc_uuid_count > 0) {
+                snprintf(out, out_len, "svc 0x%04X",
+                         (unsigned)det->ble_service_uuids[0]);
+            } else if (det->ble_name[0] != '\0') {
+                snprintf(out, out_len, "BLE name %.36s", det->ble_name);
+            } else if (reason && reason[0] != '\0') {
+                copy_trimmed_reason(out, out_len, reason);
+            } else {
+                snprintf(out, out_len, "BLE fingerprint");
+            }
+            return;
+        default:
+            if (reason && reason[0] != '\0') {
+                copy_trimmed_reason(out, out_len, reason);
+            }
+            return;
+    }
+}
+
 static void copy_ble_detail(char *out, const drone_detection_t *det)
 {
     char detail[BADGE_THREAT_DETAIL_LEN] = {0};
@@ -648,7 +789,13 @@ static void copy_ble_detail(char *out, const drone_detection_t *det)
         snprintf(detail, sizeof(detail), "location beacon");
     } else if (det && contains_nocase(det->class_reason, "ble_hid")) {
         snprintf(detail, sizeof(detail), "input device");
+    } else if (det && contains_nocase(det->class_reason, "0x1812")) {
+        snprintf(detail, sizeof(detail), "HID input service");
+    } else if (det && contains_nocase(det->class_reason, "0xFEAA")) {
+        snprintf(detail, sizeof(detail), "Eddystone beacon");
     } else if (det && contains_nocase(det->class_reason, "auracast")) {
+        snprintf(detail, sizeof(detail), "broadcast audio");
+    } else if (det && contains_nocase(det->class_reason, "ble_audio")) {
         snprintf(detail, sizeof(detail), "broadcast audio");
     } else if (det && contains_nocase(det->class_reason, "strong BLE near")) {
         snprintf(detail, sizeof(detail), "strong BLE near");
@@ -947,6 +1094,8 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
     }
     memset(event, 0, sizeof(*event));
     event->cls = BADGE_THREAT_IGNORE;
+    event->source = det->source;
+    event->confidence = det->confidence;
 
     if (detection_is_ambient_demo_ssid(det)) {
         return false;
@@ -1075,18 +1224,12 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
         }
         event->cls = BADGE_THREAT_META;
         event->category = BADGE_THREAT_CATEGORY_GLASS;
-        if (contains_nocase(det->manufacturer, "glasses") ||
-            contains_nocase(det->model, "glasses") ||
-            contains_nocase(det->ble_name, "glasses") ||
-            contains_nocase(det->class_reason, "0x0D53") ||
-            contains_nocase(det->class_reason, "0xFD5F") ||
-            contains_nocase(det->class_reason, "0xFEB7") ||
-            contains_nocase(det->class_reason, "0xFEB8") ||
+        if (text_mentions_meta_glasses(det->manufacturer) ||
+            text_mentions_meta_glasses(det->model) ||
+            text_mentions_meta_glasses(det->ble_name) ||
+            text_mentions_meta_glasses(det->class_reason) ||
             det->ble_company_id == 0x0D53 ||
-            ble_services_mention_meta(det) ||
-            contains_nocase(det->manufacturer, "ray") ||
-            contains_nocase(det->ble_name, "ray") ||
-            contains_nocase(det->manufacturer, "oakley")) {
+            ble_services_mention_meta_glasses(det)) {
             copy_label(event->label, "Meta Glasses");
         } else {
             copy_label(event->label, "Meta Device");
@@ -1229,6 +1372,7 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
     }
     event->base_score = clamp_score(event->base_score);
     event->ttl_ms = ttl_for_class(event->cls);
+    format_detection_evidence(event->evidence, sizeof(event->evidence), det);
     finalize_event_rank(event);
     event->lcd_visible = true;
     make_event_key(det, event->cls, event->category,
@@ -1305,6 +1449,8 @@ bool badge_threat_state_ingest(badge_threat_state_t *state,
         entity->category = event.category;
         copy_label(entity->label, event.label);
         copy_detail(entity->detail, event.detail);
+        copy_evidence(entity->evidence, event.evidence);
+        entity->last_source = event.source;
         entity->first_seen_ms = now_ms;
         entity->last_rssi = det->rssi;
         entity->strongest_rssi = det->rssi;
@@ -1316,9 +1462,15 @@ bool badge_threat_state_ingest(badge_threat_state_t *state,
         entity->category = event.category;
         copy_label(entity->label, event.label);
         copy_detail(entity->detail, event.detail);
+        copy_evidence(entity->evidence, event.evidence);
+        entity->last_source = event.source;
     } else if (entity->detail[0] == '\0' && event.detail[0] != '\0') {
         copy_detail(entity->detail, event.detail);
     }
+    if (entity->evidence[0] == '\0' && event.evidence[0] != '\0') {
+        copy_evidence(entity->evidence, event.evidence);
+    }
+    entity->last_source = event.source;
     entity->last_seen_ms = now_ms;
     entity->event_count++;
     if (det->rssi < 0) {
@@ -1677,6 +1829,8 @@ void badge_threat_state_snapshot(badge_threat_state_t *state,
             .age_s = (int)(age_ms / 1000),
             .last_seen_s = (int)(age_ms / 1000),
             .score = (int)(display_score + 0.5f),
+            .confidence_pct = (int)(entity->peak_confidence * 100.0f + 0.5f),
+            .source = entity->last_source,
             .evidence_quality = entity->evidence_quality,
             .display_rank = entity->display_rank,
             .rssi = entity->last_rssi < 0 ? entity->last_rssi : entity->strongest_rssi,
@@ -1695,6 +1849,7 @@ void badge_threat_state_snapshot(badge_threat_state_t *state,
         };
         copy_label(item.label, entity->label);
         copy_detail(item.detail, entity->detail);
+        copy_evidence(item.evidence, entity->evidence);
         copy_snapshot_display_id(item.display_id, sizeof(item.display_id), entity);
         strncpy(item.operator_id, entity->operator_id,
                 sizeof(item.operator_id) - 1);
@@ -1827,6 +1982,22 @@ const char *badge_threat_category_name(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_TAG_CLOSE: return "TAG";
         case BADGE_THREAT_CATEGORY_PRIVACY:   return "PRIV";
         default:                              return "WATCH";
+    }
+}
+
+const char *badge_threat_source_code(uint8_t source)
+{
+    switch (source) {
+        case DETECTION_SRC_BLE_RID:             return "ble_rid";
+        case DETECTION_SRC_WIFI_SSID:           return "wifi_ssid";
+        case DETECTION_SRC_WIFI_DJI_IE:         return "wifi_dji_ie";
+        case DETECTION_SRC_WIFI_BEACON:         return "wifi_rid";
+        case DETECTION_SRC_WIFI_OUI:            return "wifi_oui";
+        case DETECTION_SRC_WIFI_PROBE_REQUEST:  return "wifi_probe";
+        case DETECTION_SRC_BLE_FINGERPRINT:     return "ble_fingerprint";
+        case DETECTION_SRC_WIFI_ASSOC:          return "wifi_assoc";
+        case DETECTION_SRC_WIFI_AP_INVENTORY:   return "wifi_inventory";
+        default:                                return "unknown";
     }
 }
 
@@ -2773,10 +2944,13 @@ badge_threat_display_lane_t badge_threat_snapshot_entity_display_lane(
     if (!item || !item->active) {
         return BADGE_THREAT_DISPLAY_LANE_NONE;
     }
-    if (item->cls == BADGE_THREAT_DRONE ||
-        item->cls == BADGE_THREAT_WIFI_ANOMALY ||
+    if (badge_threat_snapshot_entity_is_remote_id_drone(item)) {
+        return BADGE_THREAT_DISPLAY_LANE_BLE;
+    }
+    if (item->cls == BADGE_THREAT_WIFI_ANOMALY ||
+        item->category == BADGE_THREAT_CATEGORY_WIFI ||
         item->category == BADGE_THREAT_CATEGORY_SSID ||
-        item->category == BADGE_THREAT_CATEGORY_WIFI) {
+        item->cls == BADGE_THREAT_DRONE) {
         return BADGE_THREAT_DISPLAY_LANE_WIFI;
     }
     if (item->cls == BADGE_THREAT_META ||

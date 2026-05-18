@@ -390,7 +390,11 @@ static void display_task(void *arg)
                 oled_show_detection(recent[i].drone_id, recent[i].manufacturer,
                                     recent[i].source, recent[i].confidence, recent[i].rssi);
                 serial_config_emit_badge_detection(recent[i].drone_id, recent[i].manufacturer,
+                                                   recent[i].badge_label,
+                                                   recent[i].badge_class_name,
+                                                   recent[i].badge_entity_key,
                                                    recent[i].source, recent[i].confidence,
+                                                   recent[i].threat_score,
                                                    recent[i].rssi);
             }
 #else
@@ -784,8 +788,8 @@ void app_main(void)
             uart_rx_send_command("{\"type\":\"ready\"}");
             send_badge_scan_profiles();
             ESP_LOGW(TAG, "Sent ready signal to all scanners — detections enabled");
-            oled_show_boot_status("Scanner Ready", badge_mode_display_name(badge_mode),
-                                  "USB control");
+            /* The display task is already running; let it own the LCD from
+             * here so boot status does not linger over the live threat view. */
         } else {
             ESP_LOGW(TAG, "Badge safe USB mode: scanner ready signal held off");
             oled_show_boot_status("USB RECOVERY", badge_mode_display_name(badge_mode),

@@ -438,8 +438,8 @@ class SkyObjectRepository @Inject constructor(
     /** Called from collectWifi to also check WiFi SSIDs for privacy threats. */
     private fun checkWifiForPrivacy(drone: com.friendorfoe.domain.model.Drone) {
         if (!detectionPrefs.privacyEnabled) return
-        val ssid = drone.ssid ?: return
         val bssid = drone.bssid ?: return
+        val ssid = drone.ssid.orEmpty()
         val rssi = drone.signalStrengthDbm ?: -80
         val detection = GlassesDetector.checkWifiSsid(ssid, bssid, rssi) ?: return
         glassesMap[detection.fingerprintKey] = detection

@@ -97,6 +97,35 @@ def test_friendly_camera_oui_adds_family_without_hidden_camera_overclaim():
     assert any("Curated OUI prefix: Ring" in e for e in meta["evidence"])
 
 
+def test_flock_field_oui_adds_alpr_camera_family():
+    meta = enrich_rf_evidence(
+        source="wifi_oui",
+        bssid="14:5A:FC:A9:10:EF",
+        ssid="",
+        classification="wifi_device",
+    )
+
+    assert meta["mac_is_randomized"] is False
+    assert meta["brand"] == "Flock Surveillance"
+    assert meta["brand_source"] == "friendly_oui"
+    assert meta["oui_prefix"] == "14:5A:FC"
+    assert meta["device_family"] == "camera_or_video"
+    assert meta["device_class"] == "surveillance_camera"
+
+
+def test_flock_penguin_ssid_adds_alpr_camera_family():
+    meta = enrich_rf_evidence(
+        source="wifi_ap_inventory",
+        bssid="AA:BB:CC:12:34:56",
+        ssid="Penguin-1234567890",
+        classification="wifi_device",
+    )
+
+    assert meta["device_family"] == "camera_or_video"
+    assert meta["device_class"] == "surveillance_camera"
+    assert meta["family_source"] == "ssid_pattern"
+
+
 def test_randomized_wled_ssid_gets_iot_family_not_fake_brand():
     meta = enrich_rf_evidence(
         source="wifi_ap_inventory",

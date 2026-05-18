@@ -147,6 +147,18 @@ class PrivacyViewModel @Inject constructor(
         badgeUsbRepository.requestStatus()
     }
 
+    fun badgeNextFocus() {
+        badgeUsbRepository.displayNav("next")
+    }
+
+    fun badgeToggleDetail() {
+        badgeUsbRepository.displayNav("detail")
+    }
+
+    fun badgeBackFromDetail() {
+        badgeUsbRepository.displayNav("back")
+    }
+
     fun startDirectionScan(mac: String) {
         bleTracker.startDirectionScan(mac)
     }
@@ -257,6 +269,10 @@ class PrivacyViewModel @Inject constructor(
             if (code.isNotBlank()) put("code", code)
             if (displayId.isNotBlank()) put("display_id", displayId)
             if (detail.isNotBlank()) put("detail", detail)
+            if (evidence.isNotBlank()) put("evidence", evidence)
+            if (source.isNotBlank()) put("badge_source", source)
+            if (sourceId != 0) put("badge_source_id", sourceId.toString())
+            if (confidencePct > 0) put("confidence", "$confidencePct%")
             put("score", score.toString())
             put("age_s", ageSeconds.toString())
             put("events", events.toString())

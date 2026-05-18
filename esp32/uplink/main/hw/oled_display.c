@@ -581,6 +581,20 @@ void oled_show_detection(const char *detection_id, const char *manufacturer,
     oled_flush();
 }
 
+bool oled_badge_get_display_state(oled_badge_display_state_t *out)
+{
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+    return false;
+}
+
+bool oled_badge_handle_nav_command(const char *action)
+{
+    (void)action;
+    return false;
+}
+
 void oled_clear(void)
 {
     if (!s_initialized) {

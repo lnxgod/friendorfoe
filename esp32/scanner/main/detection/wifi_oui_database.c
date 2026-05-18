@@ -77,8 +77,43 @@ static const oui_table_entry_t OUI_TABLE[] = {
     /* ── Realtek (high false-positive: used in many budget Chinese drones) ── */
     { { 0x00, 0xE0, 0x4C }, { "Generic/Realtek", "Realtek Semiconductor",         true  } },
 
-    /* ── Privacy infrastructure ────────────────────────────────────────────── */
-    { { 0xB4, 0x1E, 0x52 }, { "Flock Safety",    "Flock Safety ALPR/camera",      false } },
+    /* ── Privacy infrastructure / ALPR ───────────────────────────────────────
+     * B4:1E:52 is the registered Flock Safety OUI. The additional prefixes are
+     * community field-observed Flock/ALPR infrastructure signatures from passive
+     * 2.4 GHz captures; keep the label explicit so downstream UI can separate
+     * field intelligence from ordinary vendor registry matches. */
+    { { 0xB4, 0x1E, 0x52 }, { "Flock Safety",    "Flock Safety ALPR/camera registered OUI", false } },
+    { { 0x14, 0x5A, 0xFC }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x3C, 0x91, 0x80 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x70, 0xC9, 0x4E }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0xD8, 0xF3, 0xBC }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x80, 0x30, 0x49 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0xB8, 0x35, 0x32 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x74, 0x4C, 0xA1 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x08, 0x3A, 0x88 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x9C, 0x2F, 0x9D }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0xC0, 0x35, 0x32 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x94, 0x08, 0x53 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0xE4, 0xAA, 0xEA }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0xF4, 0x6A, 0xDD }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0xF8, 0xA2, 0xD6 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x24, 0xB2, 0xB9 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x00, 0xF4, 0x8D }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0xD0, 0x39, 0x57 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0xE8, 0xD0, 0xFC }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0xE0, 0x4F, 0x43 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0xB8, 0x1E, 0xA4 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x70, 0x08, 0x94 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x58, 0x8E, 0x81 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0xEC, 0x1B, 0xBD }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x3C, 0x71, 0xBF }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x58, 0x00, 0xE3 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x90, 0x35, 0xEA }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x5C, 0x93, 0xA2 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x64, 0x6E, 0x69 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x48, 0x27, 0xEA }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
+    { { 0x82, 0x6B, 0xF2 }, { "Flock Safety",    "Flock Safety ALPR/camera wildcard-probe field OUI", false } },
+    { { 0xEC, 0x62, 0x60 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
 };
 
 #define OUI_TABLE_SIZE  (sizeof(OUI_TABLE) / sizeof(OUI_TABLE[0]))

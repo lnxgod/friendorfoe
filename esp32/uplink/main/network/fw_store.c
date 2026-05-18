@@ -1848,7 +1848,11 @@ static esp_err_t fw_info_handler(httpd_req_t *req)
     if (has_fw) nvs_config_get_string(NVS_FW_NAME, name, sizeof(name));
 
     int64_t now_ms = esp_timer_get_time() / 1000;
-    char resp[1800];
+    char *resp = (char *)psram_alloc(1800);
+    if (!resp) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Firmware info alloc failed");
+        return ESP_OK;
+    }
     if (has_fw) {
         snprintf(resp, sizeof(resp),
                  "{\"stored\":true,\"size\":%lu,\"checksum\":%lu,"
@@ -1908,6 +1912,7 @@ static esp_err_t fw_info_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp);
+    psram_free(resp);
     return ESP_OK;
 }
 

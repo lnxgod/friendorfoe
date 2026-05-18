@@ -67,8 +67,12 @@ void serial_config_start_control_task(void);
  */
 void serial_config_emit_badge_detection(const char *detection_id,
                                         const char *manufacturer,
+                                        const char *badge_label,
+                                        const char *badge_class,
+                                        const char *badge_entity_key,
                                         uint8_t source,
                                         float confidence,
+                                        float threat_score,
                                         int rssi);
 
 #ifdef __cplusplus

@@ -4,6 +4,35 @@ All notable changes to the ESP32 hardware edition of Friend or Foe.
 
 ## [Unreleased]
 
+## [0.64.39-badge-usb-detail] - 2026-05-18
+
+### Added
+- **Badge firmware version bump to `0.64.39-badge-usb-detail`.** This remains
+  the FoF Badge XIAO track; production S3 firmware remains on
+  `0.63.0-svc156`.
+- **Evidence/source/confidence fields for badge status.** Badge threat events
+  now carry concise evidence reasons, detection source codes, and confidence
+  percent through entity state, snapshots, LCD focus/detail mode,
+  `FOF_STATUS`, and `/api/badge/status`.
+- **One-button field navigation support.** BTN2 can cycle focus, open/exit
+  detail mode with double tap, page detail fields, and long-hold the QR /
+  Triforce demo flow while BTN1 remains diagnostic-only for the current
+  GPIO8 hardware issue.
+
+### Changed
+- **Privacy evidence wording is more useful.** Flock/ALPR WiFi hits can say
+  whether they came from registered/field OUI, probe, data frame, or SSID
+  evidence; BLE privacy hints identify Meta/Luxottica CIDs, Meta services,
+  HID service `0x1812`, Eddystone beacons, Auracast, camera names, mobile-key
+  locks, event badges, and UART-module/skimmer names.
+- **Badge LCD detail mode shows why.** Entity detail pages now show `SRC` and
+  `WHY` rows so field testers can tell whether a privacy alert came from BLE
+  fingerprinting, WiFi OUI/probe/SSID, or Remote ID evidence.
+
+### Fixed
+- **Android badge detail parity.** The firmware now exposes the fields Android
+  needs for advanced USB-C drill-down without changing scanner wire protocol.
+
 ## [0.64.38-badge-live] - 2026-05-16
 
 ### Added

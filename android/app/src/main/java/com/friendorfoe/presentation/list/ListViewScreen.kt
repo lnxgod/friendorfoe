@@ -571,6 +571,7 @@ private fun Int?.orZero(): Int = this ?: 0
 private fun friendlyBadgeLabel(detection: BadgeUsbDetection): String {
     val text = "${detection.manufacturer} ${detection.id}".lowercase()
     return when {
+        "flock" in text || "alpr" in text -> "Flock / ALPR"
         "meta" in text || "ray-ban" in text || "rayban" in text || "oakley" in text -> "Meta Glasses"
         "dji" in text -> "DJI Drone"
         "remote" in text || detection.source == 0 || detection.source == 3 -> "Remote ID"

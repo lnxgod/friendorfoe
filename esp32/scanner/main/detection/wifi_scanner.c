@@ -297,6 +297,61 @@ static void init_detection(drone_detection_t *det, const uint8_t *bssid,
     det->last_updated_ms = ts;
 }
 
+#ifdef FOF_BADGE_VARIANT
+static bool mac_is_group_or_local_admin(const uint8_t *mac)
+{
+    return !mac || (mac[0] & 0x01) || (mac[0] & 0x02);
+}
+
+static const oui_entry_t *lookup_flock_frame_oui(const uint8_t *mac)
+{
+    if (mac_is_group_or_local_admin(mac)) {
+        return NULL;
+    }
+
+    const oui_entry_t *oui = wifi_oui_lookup_raw(mac);
+    if (!oui || !oui->manufacturer || oui->high_false_positive) {
+        return NULL;
+    }
+
+    return strstr(oui->manufacturer, "Flock") ? oui : NULL;
+}
+
+static void emit_flock_data_frame_detection(const uint8_t *flock_mac,
+                                            const uint8_t *peer_mac,
+                                            const char *role,
+                                            const oui_entry_t *oui,
+                                            int8_t rssi)
+{
+    if (!s_detection_queue || !flock_mac || !oui || !role) {
+        return;
+    }
+
+    drone_detection_t det;
+    init_detection(&det, flock_mac, rssi, "");
+    det.source = DETECTION_SRC_WIFI_ASSOC;
+    det.confidence = 0.72f;
+    strncpy(det.manufacturer, oui->manufacturer, sizeof(det.manufacturer) - 1);
+    snprintf(det.class_reason, sizeof(det.class_reason),
+             "Flock data frame %s", role);
+    snprintf(det.drone_id, sizeof(det.drone_id),
+             "flock_data_%02X:%02X:%02X:%02X:%02X:%02X",
+             flock_mac[0], flock_mac[1], flock_mac[2],
+             flock_mac[3], flock_mac[4], flock_mac[5]);
+    if (peer_mac) {
+        snprintf(det.probed_ssids, sizeof(det.probed_ssids),
+                 "peer %02X:%02X:%02X:%02X:%02X:%02X",
+                 peer_mac[0], peer_mac[1], peer_mac[2],
+                 peer_mac[3], peer_mac[4], peer_mac[5]);
+    }
+
+    add_channel_heat(s_current_channel, 4);
+    ESP_LOGI(TAG, "Flock data frame %s=%s RSSI=%d ~%.0fm",
+             role, det.bssid, rssi, det.estimated_distance_m);
+    xQueueSend(s_detection_queue, &det, 0);
+}
+#endif
+
 /* ── Beacon frame parser ───────────────────────────────────────────────────── */
 
 /**
@@ -606,6 +661,8 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
 
             strncpy(det.manufacturer, oui->manufacturer,
                     sizeof(det.manufacturer) - 1);
+            strncpy(det.class_reason, oui->full_name,
+                    sizeof(det.class_reason) - 1);
 
             /* Use BSSID as drone_id since SSID may be hidden */
             format_bssid(bssid, det.drone_id, sizeof(det.drone_id));
@@ -846,6 +903,8 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
     int probed_pos = 0;
     uint32_t ie_hash = 0x811c9dc5;  /* FNV1a offset basis */
     uint8_t wifi_gen = 0;           /* 0=unknown/older, 4=n, 5=ac, 6=ax */
+    bool ssid_ie_present = false;
+    bool wildcard_ssid_ie = false;
     int offset = 24;
 
     while (offset + 2 <= frame_len) {
@@ -882,6 +941,8 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
 
         switch (tag_id) {
             case 0:  /* SSID */
+                ssid_ie_present = true;
+                wildcard_ssid_ie = (tag_len == 0);
                 if (tag_len > 0 && tag_len <= 32) {
                     memcpy(ssid, &frame[tag_data_offset], tag_len);
                     ssid[tag_len] = '\0';
@@ -930,16 +991,25 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
     }
     probed_ssids[probed_pos] = '\0';
 
+    const oui_entry_t *src_oui = wifi_oui_lookup_raw(src_mac);
+    const bool flock_wildcard_probe =
+        ssid_ie_present &&
+        wildcard_ssid_ie &&
+        src_oui &&
+        src_oui->manufacturer &&
+        strstr(src_oui->manufacturer, "Flock") != NULL;
+
     /* Drop broadcast probes — they flood UART/queue/heap for zero value.
-     * Every phone sends these constantly. Only targeted probes (with SSID) matter. */
+     * Exception: field research has observed Flock ALPR nodes sending wildcard
+     * probe requests from known Flock/ALPR OUIs. Keep that high-value signature. */
     bool is_broadcast = fof_policy_probe_should_ignore_broadcast(ssid);
-    if (is_broadcast) {
+    if (is_broadcast && !flock_wildcard_probe) {
         return;
     }
 
     /* Rate-limit: 1 per MAC+SSID pair per 5 seconds */
     int64_t ts = now_ms();
-    if (!probe_rate_limit_allow(src_mac, ssid, ts)) {
+    if (!probe_rate_limit_allow(src_mac, is_broadcast ? "(wildcard)" : ssid, ts)) {
         return;
     }
 
@@ -952,13 +1022,14 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
     }
 
 #ifdef FOF_BADGE_VARIANT
-    const bool notable = fof_policy_ssid_is_notable(ssid);
-    if (!pattern && !notable) {
+    const bool notable = !is_broadcast && fof_policy_ssid_is_notable(ssid);
+    if (!pattern && !notable && !flock_wildcard_probe) {
         return;
     }
 #endif
 
-    float conf = pattern ? fof_policy_probe_confidence(true) :
+    float conf = flock_wildcard_probe ? 0.88f :
+                 pattern ? fof_policy_probe_confidence(true) :
 #ifdef FOF_BADGE_VARIANT
                  (notable ? 0.55f :
 #endif
@@ -967,7 +1038,8 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
                  )
 #endif
                  ;
-    const char *mfr = pattern ? pattern->manufacturer :
+    const char *mfr = flock_wildcard_probe ? src_oui->manufacturer :
+                      pattern ? pattern->manufacturer :
 #ifdef FOF_BADGE_VARIANT
                       (notable ? fof_policy_notable_ssid_label(ssid) :
 #endif
@@ -985,7 +1057,7 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
 
     /* Build detection with full probe fingerprint */
     drone_detection_t det;
-    init_detection(&det, src_mac, rssi, is_broadcast ? "(broadcast)" : ssid);
+    init_detection(&det, src_mac, rssi, is_broadcast ? "" : ssid);
     det.source = DETECTION_SRC_WIFI_PROBE_REQUEST;
     det.confidence = conf;
     det.freq_mhz = (channel <= 13) ? (2407 + channel * 5) : (5000 + channel * 5);
@@ -994,14 +1066,21 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
     strncpy(det.probed_ssids, probed_ssids, sizeof(det.probed_ssids) - 1);
 
     strncpy(det.manufacturer, mfr, sizeof(det.manufacturer) - 1);
+    if (flock_wildcard_probe) {
+        strncpy(det.class_reason, "Flock wildcard probe",
+                sizeof(det.class_reason) - 1);
+    }
 
     /* drone_id format: "probe_XX:XX:XX:XX:XX:XX" */
     snprintf(det.drone_id, sizeof(det.drone_id),
-             "probe_%02X:%02X:%02X:%02X:%02X:%02X",
+             "%s%02X:%02X:%02X:%02X:%02X:%02X",
+             flock_wildcard_probe ? "flock_probe_" : "probe_",
              src_mac[0], src_mac[1], src_mac[2],
              src_mac[3], src_mac[4], src_mac[5]);
 
-    if (pattern) {
+    if (flock_wildcard_probe) {
+        add_channel_heat(channel, 5);  /* Flock wildcard probe = high-value. */
+    } else if (pattern) {
         add_channel_heat(channel, 4);  /* Drone SSID probe = medium heat */
 #ifdef FOF_BADGE_VARIANT
     } else if (notable) {
@@ -1011,8 +1090,9 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
         add_channel_heat(channel, 2);  /* Soft match probe = low heat */
     }
 
-    ESP_LOGD(TAG, "Probe req: MAC=%s SSID=\"%s\" RSSI=%d conf=%.2f",
-             det.bssid, ssid, rssi, conf);
+    ESP_LOGD(TAG, "Probe req: MAC=%s SSID=\"%s\" RSSI=%d conf=%.2f%s",
+             det.bssid, ssid, rssi, conf,
+             flock_wildcard_probe ? " flock_wildcard" : "");
 
     if (s_detection_queue) {
         xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
@@ -1088,6 +1168,18 @@ static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         int64_t now = now_ms();
         if (wifi_assoc_seen_recently(sta_p, bssid_p, now)) return;
 #ifdef FOF_BADGE_VARIANT
+        const oui_entry_t *sta_flock_oui = lookup_flock_frame_oui(sta_p);
+        if (sta_flock_oui) {
+            emit_flock_data_frame_detection(sta_p, bssid_p, "sta",
+                                            sta_flock_oui, p->rx_ctrl.rssi);
+            return;
+        }
+        const oui_entry_t *bssid_flock_oui = lookup_flock_frame_oui(bssid_p);
+        if (bssid_flock_oui) {
+            emit_flock_data_frame_detection(bssid_p, sta_p, "bssid",
+                                            bssid_flock_oui, p->rx_ctrl.rssi);
+            return;
+        }
         /* Badge mode is a local blue-team instrument. Ordinary AP<->STA data
          * traffic is useful for lab inventory, but it drowns the talk badge in
          * non-actionable rows. Keep deauth/disassoc counters and real drone/RID

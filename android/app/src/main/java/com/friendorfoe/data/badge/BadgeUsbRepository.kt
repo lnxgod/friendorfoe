@@ -49,9 +49,52 @@ enum class BadgeUsbStatus {
 data class BadgeUsbDetection(
     val id: String,
     val manufacturer: String,
+    val badgeLabel: String = "",
+    val badgeClass: String = "",
+    val badgeEntityKey: String = "",
     val source: Int,
     val confidence: Float,
+    val threatScore: Float = 0f,
     val rssi: Int
+)
+
+data class BadgeDisplayState(
+    val active: Boolean = false,
+    val detailMode: Boolean = false,
+    val detailPage: Int = 0,
+    val focusIndex: Int = 0,
+    val focusTotal: Int = 0,
+    val itemIndex: Int = 0,
+    val itemTotal: Int = 0,
+    val lane: String = "",
+    val title: String = "",
+    val detail: String = "",
+    val evidence: String = "",
+    val entityKey: String = "",
+    val displayId: String = "",
+    val threatClass: String = "",
+    val category: String = "",
+    val code: String = "",
+    val source: String = "",
+    val score: Int = 0,
+    val confidencePct: Int = 0,
+    val evidenceQuality: Int = 0,
+    val displayRank: Int = 0,
+    val ageSeconds: Int = 0,
+    val lastSeenSeconds: Int = 0,
+    val rssi: Int = 0,
+    val bestRssi: Int = 0,
+    val events: Int = 0,
+    val seenCount: Int = 0,
+    val groupCount: Int = 0,
+    val proximityLevel: Int = 0,
+    val stale: Boolean = false,
+    val lat: Double? = null,
+    val lon: Double? = null,
+    val altitudeM: Float? = null,
+    val operatorLat: Double? = null,
+    val operatorLon: Double? = null,
+    val operatorId: String? = null
 )
 
 data class BadgeThreatCounts(
@@ -66,11 +109,15 @@ data class BadgeThreatCounts(
 data class BadgeThreatEntity(
     val label: String,
     val detail: String = "",
+    val evidence: String = "",
     val threatClass: String,
     val category: String = "",
     val code: String = "",
     val displayId: String = "",
+    val source: String = "",
+    val sourceId: Int = 0,
     val score: Int,
+    val confidencePct: Int = 0,
     val evidenceQuality: Int = 0,
     val displayRank: Int = 0,
     val ageSeconds: Int,
@@ -210,6 +257,11 @@ fun badgeDisplayPolicyCommandJson(
     add("policy", policy.toJsonObject())
 }
 
+fun badgeDisplayNavCommandJson(action: String): JsonObject = JsonObject().apply {
+    addProperty("cmd", "display_nav")
+    addProperty("action", action)
+}
+
 data class BadgeFirmwareProgress(
     val kind: String = "",
     val ok: Boolean? = null,
@@ -233,7 +285,27 @@ data class BadgeControlStatus(
     val scanners: List<BadgeScannerStatus> = emptyList(),
     val displayPolicy: BadgeDisplayPolicy = defaultBadgeDisplayPolicy(),
     val displayPolicyHash: Long = 0,
-    val filteredCounts: Map<String, Int> = emptyMap()
+    val filteredCounts: Map<String, Int> = emptyMap(),
+    val displayState: BadgeDisplayState? = null,
+    val safeMode: Boolean = false,
+    val safeReason: String = "",
+    val resetReason: String = "",
+    val resetReasonCode: Long = 0,
+    val resetExpected: Boolean = false,
+    val crashCount: Int = 0,
+    val recoveryMode: String = "",
+    val usbControlAgeSeconds: Long? = null,
+    val stackMainFree: Int = 0,
+    val stackDisplayFree: Int = 0,
+    val stackUsbFree: Int = 0,
+    val stackUartBleFree: Int = 0,
+    val stackUartWifiFree: Int = 0,
+    val heapInternalFree: Long = 0,
+    val heapInternalMinFree: Long = 0,
+    val heapInternalLargest: Long = 0,
+    val psramTotal: Long = 0,
+    val psramFree: Long = 0,
+    val psramLargest: Long = 0
 )
 
 data class BadgeUsbState(
@@ -261,6 +333,7 @@ class BadgeUsbRepository @Inject constructor(
         private const val READ_TIMEOUT_MS = 250
         private const val WRITE_TIMEOUT_MS = 250
         private const val AP_POLL_INTERVAL_MS = 2500L
+        private const val USB_STATUS_POLL_INTERVAL_MS = 2000L
         private const val MAX_RECENT_DETECTIONS = 20
         private const val MAX_LINE_CHARS = 8192
         private const val FW_CHUNK_BYTES = 1024
@@ -281,6 +354,7 @@ class BadgeUsbRepository @Inject constructor(
     private var receiverRegistered = false
     private var readJob: Job? = null
     private var apPollJob: Job? = null
+    private var usbStatusPollJob: Job? = null
     private var activeConnection: android.hardware.usb.UsbDeviceConnection? = null
     private var activeInterface: UsbInterface? = null
     private var activeOutEndpoint: UsbEndpoint? = null
@@ -441,6 +515,10 @@ class BadgeUsbRepository @Inject constructor(
         })
     }
 
+    fun displayNav(action: String) {
+        sendControl(badgeDisplayNavCommandJson(action))
+    }
+
     fun flashScannerFirmware(
         uart: String,
         name: String,
@@ -503,6 +581,27 @@ class BadgeUsbRepository @Inject constructor(
         }
     }
 
+    private fun startUsbStatusPoller() {
+        if (usbStatusPollJob?.isActive == true) return
+        usbStatusPollJob = scope.launch {
+            var pollsWithoutStatus = 0
+            while (isActive && hasUsbCommandPath()) {
+                writeLine("FOF_STATUS")
+                delay(USB_STATUS_POLL_INTERVAL_MS)
+                if (state.value.controlStatus == null) {
+                    pollsWithoutStatus++
+                    if (pollsWithoutStatus >= 3) {
+                        setState {
+                            it.copy(message = "USB connected; waiting for badge status")
+                        }
+                    }
+                } else {
+                    pollsWithoutStatus = 0
+                }
+            }
+        }
+    }
+
     private fun registerReceiverIfNeeded() {
         if (receiverRegistered) return
 
@@ -543,7 +642,8 @@ class BadgeUsbRepository @Inject constructor(
                 it.copy(
                     status = BadgeUsbStatus.CONNECTING,
                     deviceName = device.displayName(),
-                    message = "Opening badge USB serial"
+                    message = "Opening badge USB serial",
+                    controlStatus = null
                 )
             }
 
@@ -596,6 +696,7 @@ class BadgeUsbRepository @Inject constructor(
             writeLine("FOF_PING")
             writeLine("FOF_STATUS")
             startReader(connection, port.inEndpoint, device.displayName())
+            startUsbStatusPoller()
         }
     }
 
@@ -800,8 +901,12 @@ class BadgeUsbRepository @Inject constructor(
             BadgeUsbDetection(
                 id = obj.get("id")?.asString.orEmpty(),
                 manufacturer = obj.get("manufacturer")?.asString.orEmpty(),
+                badgeLabel = obj.optString("badge_label"),
+                badgeClass = obj.optString("badge_class"),
+                badgeEntityKey = obj.optString("badge_entity_key"),
                 source = obj.get("source")?.asInt ?: -1,
                 confidence = obj.get("confidence")?.asFloat ?: 0f,
+                threatScore = obj.optFloat("threat_score"),
                 rssi = obj.get("rssi")?.asInt ?: 0
             )
         }.getOrNull()
@@ -868,16 +973,61 @@ class BadgeUsbRepository @Inject constructor(
         }
     }
 
+    private fun parseDisplayState(obj: JsonObject?): BadgeDisplayState? {
+        if (obj == null) return null
+        return BadgeDisplayState(
+            active = obj.optBoolean("active"),
+            detailMode = obj.optBoolean("detail_mode"),
+            detailPage = obj.optInt("detail_page"),
+            focusIndex = obj.optInt("focus_index"),
+            focusTotal = obj.optInt("focus_total"),
+            itemIndex = obj.optInt("item_index"),
+            itemTotal = obj.optInt("item_total"),
+            lane = obj.optString("lane"),
+            title = obj.optString("title"),
+            detail = obj.optString("detail"),
+            evidence = obj.optString("evidence"),
+            entityKey = obj.optString("entity_key"),
+            displayId = obj.optString("display_id"),
+            threatClass = obj.optString("class"),
+            category = obj.optString("category"),
+            code = obj.optString("code"),
+            source = obj.optString("source"),
+            score = obj.optInt("score"),
+            confidencePct = obj.optInt("confidence_pct"),
+            evidenceQuality = obj.optInt("evidence_quality"),
+            displayRank = obj.optInt("display_rank"),
+            ageSeconds = obj.optInt("age_s"),
+            lastSeenSeconds = obj.optInt("last_seen_s"),
+            rssi = obj.optInt("rssi"),
+            bestRssi = obj.optInt("best_rssi"),
+            events = obj.optInt("events"),
+            seenCount = obj.optInt("seen_count"),
+            groupCount = obj.optInt("group_count"),
+            proximityLevel = obj.optInt("proximity_level"),
+            stale = obj.optBoolean("stale"),
+            lat = obj.optDoubleOrNull("lat"),
+            lon = obj.optDoubleOrNull("lon"),
+            altitudeM = obj.optFloatOrNull("altitude_m"),
+            operatorLat = obj.optDoubleOrNull("operator_lat"),
+            operatorLon = obj.optDoubleOrNull("operator_lon"),
+            operatorId = obj.optString("operator_id").ifBlank { null }
+        )
+    }
+
     private fun parseStatus(json: String): BadgeControlStatus? {
         return runCatching {
             val obj = JsonParser.parseString(json).asJsonObject
-            val countsObj = obj.getAsJsonObject("counts")
-            val reportingObj = obj.getAsJsonObject("reporting")
+            val countsObj = runCatching { obj.getAsJsonObject("counts") }.getOrNull()
+            val reportingObj = runCatching { obj.getAsJsonObject("reporting") }.getOrNull()
             val displayPolicy = parseDisplayPolicy(
                 runCatching { obj.getAsJsonObject("display_policy") }.getOrNull()
             )
             val filteredCounts = parseIntMap(
                 runCatching { obj.getAsJsonObject("filtered_counts") }.getOrNull()
+            )
+            val displayState = parseDisplayState(
+                runCatching { obj.getAsJsonObject("display_state") }.getOrNull()
             )
             val entities = obj.getAsJsonArray("entities")?.mapNotNull { element ->
                 runCatching {
@@ -885,11 +1035,15 @@ class BadgeUsbRepository @Inject constructor(
                     BadgeThreatEntity(
                         label = e.optString("label"),
                         detail = e.optString("detail"),
+                        evidence = e.optString("evidence"),
                         threatClass = e.optString("class"),
                         category = e.optString("category"),
                         code = e.optString("code"),
                         displayId = e.optString("display_id"),
+                        source = e.optString("source"),
+                        sourceId = e.optInt("source_id"),
                         score = e.optInt("score"),
+                        confidencePct = e.optInt("confidence_pct"),
                         evidenceQuality = e.optInt("evidence_quality"),
                         displayRank = e.optInt("display_rank"),
                         ageSeconds = e.optInt("age_s"),
@@ -971,18 +1125,71 @@ class BadgeUsbRepository @Inject constructor(
                     lastUploadAgeSeconds = reportingObj?.optLongOrNull("last_upload_age_s")
                 ),
                 counts = BadgeThreatCounts(
-                    drone = countsObj?.get("drone")?.asInt ?: 0,
-                    meta = countsObj?.get("meta")?.asInt ?: 0,
-                    tracker = countsObj?.get("tracker")?.asInt ?: 0,
-                    wifiAnomaly = countsObj?.get("wifi_anomaly")?.asInt ?: 0,
-                    ble = countsObj?.get("ble")?.asInt ?: 0,
-                    other = countsObj?.get("other")?.asInt ?: 0
+                    drone = countsObj?.optInt("drone") ?: 0,
+                    meta = countsObj?.optInt("meta") ?: 0,
+                    tracker = countsObj?.optInt("tracker") ?: 0,
+                    wifiAnomaly = countsObj?.optInt("wifi_anomaly") ?: 0,
+                    ble = countsObj?.optInt("ble") ?: 0,
+                    other = countsObj?.optInt("other") ?: 0
                 ),
                 entities = entities,
                 scanners = scanners,
                 displayPolicy = displayPolicy,
                 displayPolicyHash = obj.optLong("display_policy_hash"),
-                filteredCounts = filteredCounts
+                filteredCounts = filteredCounts,
+                displayState = displayState,
+                safeMode = obj.optBoolean("safe_mode"),
+                safeReason = obj.optString("safe_reason"),
+                resetReason = obj.optString("reset_reason")
+                    .ifBlank { reportingObj?.optString("reset_reason").orEmpty() },
+                resetReasonCode = obj.optLong("reset_reason_code").takeIf { it != 0L }
+                    ?: reportingObj?.optLong("reset_reason_code")
+                    ?: 0L,
+                resetExpected = if (obj.get("reset_expected") != null) {
+                    obj.optBoolean("reset_expected")
+                } else {
+                    reportingObj?.optBoolean("reset_expected") ?: false
+                },
+                crashCount = obj.optInt("crash_count").takeIf { it != 0 }
+                    ?: reportingObj?.optInt("crash_count")
+                    ?: 0,
+                recoveryMode = obj.optString("recovery_mode")
+                    .ifBlank { reportingObj?.optString("recovery_mode").orEmpty() },
+                usbControlAgeSeconds = obj.optLongOrNull("usb_control_age_s")
+                    ?: reportingObj?.optLongOrNull("usb_control_age_s"),
+                stackMainFree = obj.optInt("stack_main_free").takeIf { it != 0 }
+                    ?: reportingObj?.optInt("stack_main_free")
+                    ?: 0,
+                stackDisplayFree = obj.optInt("stack_display_free").takeIf { it != 0 }
+                    ?: reportingObj?.optInt("stack_display_free")
+                    ?: 0,
+                stackUsbFree = obj.optInt("stack_usb_free").takeIf { it != 0 }
+                    ?: reportingObj?.optInt("stack_usb_free")
+                    ?: 0,
+                stackUartBleFree = obj.optInt("stack_uart_ble_free").takeIf { it != 0 }
+                    ?: reportingObj?.optInt("stack_uart_ble_free")
+                    ?: 0,
+                stackUartWifiFree = obj.optInt("stack_uart_wifi_free").takeIf { it != 0 }
+                    ?: reportingObj?.optInt("stack_uart_wifi_free")
+                    ?: 0,
+                heapInternalFree = obj.optLong("heap_internal_free").takeIf { it != 0L }
+                    ?: reportingObj?.optLong("heap_internal_free")
+                    ?: 0L,
+                heapInternalMinFree = obj.optLong("heap_internal_min_free").takeIf { it != 0L }
+                    ?: reportingObj?.optLong("heap_internal_min_free")
+                    ?: 0L,
+                heapInternalLargest = obj.optLong("heap_internal_largest").takeIf { it != 0L }
+                    ?: reportingObj?.optLong("heap_internal_largest")
+                    ?: 0L,
+                psramTotal = obj.optLong("psram_total").takeIf { it != 0L }
+                    ?: reportingObj?.optLong("psram_total")
+                    ?: 0L,
+                psramFree = obj.optLong("psram_free").takeIf { it != 0L }
+                    ?: reportingObj?.optLong("psram_free")
+                    ?: 0L,
+                psramLargest = obj.optLong("psram_largest").takeIf { it != 0L }
+                    ?: reportingObj?.optLong("psram_largest")
+                    ?: 0L
             )
         }.getOrNull()
     }
@@ -1026,6 +1233,8 @@ class BadgeUsbRepository @Inject constructor(
     private fun disconnectLocked() {
         readJob?.cancel()
         readJob = null
+        usbStatusPollJob?.cancel()
+        usbStatusPollJob = null
         val connection = activeConnection
         val usbInterface = activeInterface
         if (connection != null && usbInterface != null) {

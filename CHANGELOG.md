@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.64.39-badge-usb-detail] - 2026-05-18
+
+### Added
+- **Android USB-C badge detail release.** Android, backend smoke tests, and
+  FoF Badge firmware now share `0.64.39-badge-usb-detail` while production S3
+  firmware remains on `0.63.0-svc156`.
+- **Privacy Badge Detail Panel fields.** Android parses and displays badge
+  `display_state`, entity evidence/source/confidence, RSSI/best RSSI, age,
+  seen counts, GPS/operator fields, scanner health, reset/crash state, stack,
+  heap, PSRAM, display-policy, and filtered-count telemetry.
+- **Continuous USB-C status polling.** Once Android claims the badge USB serial
+  interface it keeps polling `FOF_STATUS` every two seconds, clears stale cached
+  status on reconnect, and reports when USB is open but badge status has not
+  arrived.
+
+### Changed
+- **Badge privacy rows carry evidence into Android categories.** Badge-derived
+  Privacy detections now preserve evidence strings, badge source names/source
+  IDs, and confidence percent for drill-down without crowding the LCD.
+- **Badge docs/version matrix refreshed.** README and badge docs now identify
+  Android/backend, badge firmware, and production firmware as separate tracks.
+
+### Fixed
+- **USB/AP status parsing is more tolerant.** Android now accepts missing
+  `counts` or `reporting` objects from older/intermediate badge firmware
+  instead of dropping the whole status payload.
+
 ## [0.64.37-badge-privacy] - 2026-05-14
 
 ### Added

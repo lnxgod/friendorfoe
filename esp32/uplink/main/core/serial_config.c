@@ -17,6 +17,7 @@
 #include "wifi_ap.h"
 #include "fw_store.h"
 #include "http_upload.h"
+#include "oled_display.h"
 #include "version.h"
 #include "detection_policy.h"
 #ifdef FOF_BADGE_VARIANT
@@ -35,6 +36,7 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "cJSON.h"
@@ -375,6 +377,122 @@ static void print_display_policy_status_fields(void)
     printf("}");
 }
 
+static void print_badge_display_state_field(void)
+{
+    oled_badge_display_state_t state;
+    bool active = oled_badge_get_display_state(&state);
+    printf(",\"display_state\":{\"active\":%s,\"detail_mode\":%s,"
+           "\"detail_page\":%d,\"focus_index\":%d,\"focus_total\":%d,"
+           "\"item_index\":%d,\"item_total\":%d,\"lane\":",
+           active ? "true" : "false",
+           state.detail_mode ? "true" : "false",
+           state.detail_page,
+           state.focus_index,
+           state.focus_total,
+           state.item_index,
+           state.item_total);
+    print_json_escaped_string(state.lane);
+    printf(",\"title\":");
+    print_json_escaped_string(state.title);
+    printf(",\"detail\":");
+    print_json_escaped_string(state.detail);
+    printf(",\"evidence\":");
+    print_json_escaped_string(state.evidence);
+    printf(",\"entity_key\":");
+    print_json_escaped_string(state.entity_key);
+    printf(",\"display_id\":");
+    print_json_escaped_string(state.display_id);
+    printf(",\"class\":");
+    print_json_escaped_string(state.threat_class);
+    printf(",\"category\":");
+    print_json_escaped_string(state.category);
+    printf(",\"code\":");
+    print_json_escaped_string(state.code);
+    printf(",\"source\":");
+    print_json_escaped_string(state.source);
+    printf(",\"score\":%d,\"confidence_pct\":%d,"
+           "\"evidence_quality\":%d,\"display_rank\":%d,"
+           "\"age_s\":%d,\"last_seen_s\":%d,\"rssi\":%d,\"best_rssi\":%d,"
+           "\"events\":%lu,\"seen_count\":%lu,\"group_count\":%lu,"
+           "\"proximity_level\":%d,\"stale\":%s",
+           state.score,
+           state.confidence_pct,
+           state.evidence_quality,
+           state.display_rank,
+           state.age_s,
+           state.last_seen_s,
+           state.rssi,
+           state.best_rssi,
+           (unsigned long)state.events,
+           (unsigned long)state.seen_count,
+           (unsigned long)state.group_count,
+           state.proximity_level,
+           state.stale ? "true" : "false");
+    if (state.has_location) {
+        printf(",\"lat\":%.7f,\"lon\":%.7f,\"altitude_m\":%.1f",
+               state.latitude, state.longitude, state.altitude_m);
+    }
+    if (state.has_operator_location) {
+        printf(",\"operator_lat\":%.7f,\"operator_lon\":%.7f",
+               state.operator_lat, state.operator_lon);
+    }
+    if (state.operator_id[0] != '\0') {
+        printf(",\"operator_id\":");
+        print_json_escaped_string(state.operator_id);
+    }
+    printf("}");
+}
+
+static void print_badge_button_state_field(void)
+{
+    oled_badge_button_state_t buttons = {0};
+    (void)oled_badge_get_button_state(&buttons);
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    int64_t b1_age = buttons.b1_last_event_ms > 0 && now_ms >= buttons.b1_last_event_ms
+        ? (now_ms - buttons.b1_last_event_ms) / 1000
+        : -1;
+    int64_t b2_age = buttons.b2_last_event_ms > 0 && now_ms >= buttons.b2_last_event_ms
+        ? (now_ms - buttons.b2_last_event_ms) / 1000
+        : -1;
+    printf(",\"buttons\":{\"b1_pin\":8,\"b1_active_high\":%s,"
+           "\"b1_raw_level\":%d,\"b1_raw_pressed\":%s,"
+           "\"b1_stable_pressed\":%s,\"b1_boot_ignored\":%s,"
+           "\"b1_raw_edges\":%lu,\"b1_short_presses\":%lu,"
+           "\"b1_long_presses\":%lu,\"b1_releases\":%lu,"
+           "\"b1_last_event_age_s\":%lld,"
+           "\"b2_pin\":43,\"b2_active_high\":%s,"
+           "\"b2_raw_level\":%d,\"b2_raw_pressed\":%s,"
+           "\"b2_stable_pressed\":%s,\"b2_boot_ignored\":%s,"
+           "\"b2_raw_edges\":%lu,\"b2_short_presses\":%lu,"
+           "\"b2_double_taps\":%lu,\"b2_long_presses\":%lu,"
+           "\"b2_releases\":%lu,\"b2_last_event_age_s\":%lld,"
+           "\"b2_pending_single\":%s,\"b2_last_gesture\":",
+           buttons.b1_active_high ? "true" : "false",
+           buttons.b1_raw_level,
+           buttons.b1_raw_pressed ? "true" : "false",
+           buttons.b1_stable_pressed ? "true" : "false",
+           buttons.b1_boot_ignored ? "true" : "false",
+           (unsigned long)buttons.b1_raw_edges,
+           (unsigned long)buttons.b1_short_presses,
+           (unsigned long)buttons.b1_long_presses,
+           (unsigned long)buttons.b1_releases,
+           (long long)b1_age,
+           buttons.b2_active_high ? "true" : "false",
+           buttons.b2_raw_level,
+           buttons.b2_raw_pressed ? "true" : "false",
+           buttons.b2_stable_pressed ? "true" : "false",
+           buttons.b2_boot_ignored ? "true" : "false",
+           (unsigned long)buttons.b2_raw_edges,
+           (unsigned long)buttons.b2_short_presses,
+           (unsigned long)buttons.b2_double_taps,
+           (unsigned long)buttons.b2_long_presses,
+           (unsigned long)buttons.b2_releases,
+           (long long)b2_age,
+           buttons.b2_pending_single ? "true" : "false");
+    print_json_escaped_string(buttons.b2_last_gesture);
+    printf("}");
+}
+
 static void forward_display_policy_to_scanners(bool *ble_sent,
                                                bool *wifi_sent)
 {
@@ -407,6 +525,7 @@ static void send_badge_status_response(void)
     badge_mode_t mode = badge_mode_get();
     printf("FOF_STATUS:{\"version\":");
     print_json_escaped_string(FOF_VERSION);
+    printf(",\"uptime_s\":%lld", (long long)(esp_timer_get_time() / 1000000LL));
     printf(",\"mode\":");
     print_json_escaped_string(badge_mode_to_string(mode));
     printf(",\"mode_label\":");
@@ -448,12 +567,21 @@ static void send_badge_status_response(void)
     print_json_escaped_string(badge_runtime_recovery_mode());
     printf(",\"stack_main_free\":%lu,\"stack_display_free\":%lu,"
            "\"stack_usb_free\":%lu,\"stack_uart_ble_free\":%lu,"
-           "\"stack_uart_wifi_free\":%lu",
+           "\"stack_uart_wifi_free\":%lu,"
+           "\"heap_internal_free\":%lu,\"heap_internal_min_free\":%lu,"
+           "\"heap_internal_largest\":%lu,\"psram_total\":%lu,"
+           "\"psram_free\":%lu,\"psram_largest\":%lu",
            (unsigned long)badge_runtime_main_stack_free(),
            (unsigned long)badge_runtime_display_stack_free(),
            (unsigned long)badge_runtime_usb_stack_free(),
            (unsigned long)badge_runtime_uart_ble_stack_free(),
-           (unsigned long)badge_runtime_uart_wifi_stack_free());
+           (unsigned long)badge_runtime_uart_wifi_stack_free(),
+           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+           (unsigned long)heap_caps_get_total_size(MALLOC_CAP_SPIRAM),
+           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+           (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 #endif
     printf(",\"threat_score\":%.1f,\"color_rgb565\":%u",
            snapshot.threat_score, (unsigned)snapshot.color_rgb565);
@@ -515,6 +643,8 @@ static void send_badge_status_response(void)
            (unsigned long)snapshot.active_counts[BADGE_THREAT_OTHER]);
 #ifdef FOF_BADGE_VARIANT
     print_display_policy_status_fields();
+    print_badge_display_state_field();
+    print_badge_button_state_field();
 #endif
     printf(",\"entities\":[");
     for (int i = 0; i < snapshot.entity_count; i++) {
@@ -523,6 +653,8 @@ static void send_badge_status_response(void)
         print_json_escaped_string(entity->label);
         printf(",\"detail\":");
         print_json_escaped_string(entity->detail);
+        printf(",\"evidence\":");
+        print_json_escaped_string(entity->evidence);
         printf(",\"class\":");
         print_json_escaped_string(badge_threat_class_name(entity->cls));
         printf(",\"category\":");
@@ -531,12 +663,17 @@ static void send_badge_status_response(void)
         print_json_escaped_string(badge_threat_category_code(entity->category));
         printf(",\"display_id\":");
         print_json_escaped_string(entity->display_id);
-        printf(",\"score\":%d,\"evidence_quality\":%u,"
+        printf(",\"source\":");
+        print_json_escaped_string(badge_threat_source_code(entity->source));
+        printf(",\"source_id\":%u,\"score\":%d,\"confidence_pct\":%d,"
+               "\"evidence_quality\":%u,"
                "\"display_rank\":%d,\"age_s\":%d,\"last_seen_s\":%d,"
                "\"rssi\":%d,\"best_rssi\":%d,\"events\":%lu,"
                "\"seen_count\":%lu,\"group_count\":%lu,"
                "\"proximity_level\":%d,\"stale\":%s",
+               (unsigned)entity->source,
                entity->score,
+               entity->confidence_pct,
                (unsigned)entity->evidence_quality,
                entity->display_rank,
                entity->age_s,
@@ -1053,6 +1190,18 @@ static void handle_ctl_command(const char *json)
 #else
         send_control_error("badge display policy is badge-only");
 #endif
+    } else if (strcmp(cmd, "display_nav") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        const cJSON *action = cJSON_GetObjectItemCaseSensitive(root, "action");
+        if (!cJSON_IsString(action) ||
+            !oled_badge_handle_nav_command(action->valuestring)) {
+            send_control_error("invalid display nav action");
+        } else {
+            send_control_ok("display nav updated", false);
+        }
+#else
+        send_control_error("display nav is badge-only");
+#endif
     } else if (strcmp(cmd, "scanner_display") == 0 ||
                strcmp(cmd, "scanner_trigger") == 0 ||
                strcmp(cmd, "trigger") == 0) {
@@ -1524,15 +1673,26 @@ static void print_json_escaped_string(const char *value)
 
 void serial_config_emit_badge_detection(const char *detection_id,
                                         const char *manufacturer,
+                                        const char *badge_label,
+                                        const char *badge_class,
+                                        const char *badge_entity_key,
                                         uint8_t source,
                                         float confidence,
+                                        float threat_score,
                                         int rssi)
 {
     printf("FOF_DET:{\"id\":");
     print_json_escaped_string(detection_id);
     printf(",\"manufacturer\":");
     print_json_escaped_string(manufacturer);
-    printf(",\"source\":%u,\"confidence\":%.3f,\"rssi\":%d}\n",
-           (unsigned)source, confidence, rssi);
+    printf(",\"badge_label\":");
+    print_json_escaped_string(badge_label);
+    printf(",\"badge_class\":");
+    print_json_escaped_string(badge_class);
+    printf(",\"badge_entity_key\":");
+    print_json_escaped_string(badge_entity_key);
+    printf(",\"source\":%u,\"confidence\":%.3f,"
+           "\"threat_score\":%.1f,\"rssi\":%d}\n",
+           (unsigned)source, confidence, threat_score, rssi);
     fflush(stdout);
 }
