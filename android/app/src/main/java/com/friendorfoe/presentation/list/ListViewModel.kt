@@ -9,6 +9,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.badge.BadgeUsbRepository
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
+import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
@@ -142,6 +143,14 @@ class ListViewModel @Inject constructor(
 
     fun resetBadgeDisplayPolicy() {
         badgeUsbRepository.resetDisplayPolicy()
+    }
+
+    fun applyBadgeTheme(theme: BadgeTheme) {
+        badgeUsbRepository.applyBadgeTheme(theme)
+    }
+
+    fun resetBadgeTheme() {
+        badgeUsbRepository.resetBadgeTheme()
     }
 
     private val _userPosition = MutableStateFlow(

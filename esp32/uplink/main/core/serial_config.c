@@ -23,6 +23,8 @@
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
 #include "badge_display_policy_runtime.h"
+#include "badge_theme_runtime.h"
+#include "badge_ble_control.h"
 #endif
 
 #include <string.h>
@@ -643,7 +645,15 @@ static void send_badge_status_response(void)
            (unsigned long)snapshot.active_counts[BADGE_THREAT_OTHER]);
 #ifdef FOF_BADGE_VARIANT
     print_display_policy_status_fields();
+    char theme_json[BADGE_THEME_JSON_MAX] = {0};
+    badge_theme_runtime_json(theme_json, sizeof(theme_json));
+    printf(",\"theme_hash\":%lu,\"theme\":",
+           (unsigned long)badge_theme_runtime_hash());
+    printf("%s", theme_json[0] ? theme_json : "{\"version\":1}");
     print_badge_display_state_field();
+    char ble_status[192];
+    badge_ble_control_status_json(ble_status, sizeof(ble_status));
+    printf(",\"ble_control\":%s", ble_status[0] ? ble_status : "{\"enabled\":false}");
     print_badge_button_state_field();
 #endif
     printf(",\"entities\":[");
@@ -1070,6 +1080,58 @@ static void handle_display_policy_reset_command(cJSON *root)
            wifi_sent ? "true" : "false");
     fflush(stdout);
 }
+
+static void handle_badge_theme_command(cJSON *root)
+{
+    const cJSON *theme_item = cJSON_GetObjectItemCaseSensitive(root, "theme");
+    if (!theme_item) {
+        send_control_error("missing theme");
+        return;
+    }
+    char *theme_json = cJSON_PrintUnformatted(theme_item);
+    if (!theme_json) {
+        send_control_error("no memory");
+        return;
+    }
+
+    badge_theme_t theme;
+    char err[64] = {0};
+    bool parsed = badge_theme_parse_json(theme_json, &theme, err, sizeof(err));
+    cJSON_free(theme_json);
+    if (!parsed) {
+        send_control_error(err[0] ? err : "invalid badge theme");
+        return;
+    }
+
+    bool persist = ctl_bool_value(
+        cJSON_GetObjectItemCaseSensitive(root, "persist"),
+        false);
+    if (!badge_theme_runtime_set(&theme, persist)) {
+        send_control_error("badge theme save failed");
+        return;
+    }
+
+    printf("FOF_CTL_OK:{\"message\":\"badge theme updated\","
+           "\"theme_hash\":%lu,\"persisted\":%s,"
+           "\"reboot_required\":false}\n",
+           (unsigned long)badge_theme_runtime_hash(),
+           persist ? "true" : "false");
+    fflush(stdout);
+}
+
+static void handle_badge_theme_reset_command(cJSON *root)
+{
+    bool persist = ctl_bool_value(
+        cJSON_GetObjectItemCaseSensitive(root, "persist"),
+        false);
+    badge_theme_runtime_reset(persist);
+    printf("FOF_CTL_OK:{\"message\":\"badge theme reset\","
+           "\"theme_hash\":%lu,\"persisted\":%s,"
+           "\"reboot_required\":false}\n",
+           (unsigned long)badge_theme_runtime_hash(),
+           persist ? "true" : "false");
+    fflush(stdout);
+}
 #endif
 
 static void handle_ctl_command(const char *json)
@@ -1189,6 +1251,18 @@ static void handle_ctl_command(const char *json)
         handle_display_policy_reset_command(root);
 #else
         send_control_error("badge display policy is badge-only");
+#endif
+    } else if (strcmp(cmd, "badge_theme") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        handle_badge_theme_command(root);
+#else
+        send_control_error("badge theme is badge-only");
+#endif
+    } else if (strcmp(cmd, "badge_theme_reset") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        handle_badge_theme_reset_command(root);
+#else
+        send_control_error("badge theme is badge-only");
 #endif
     } else if (strcmp(cmd, "display_nav") == 0) {
 #ifdef FOF_BADGE_VARIANT

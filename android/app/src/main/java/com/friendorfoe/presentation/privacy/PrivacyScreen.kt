@@ -20,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,12 +38,18 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.badge.BadgeControlStatus
+import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.badge.BadgeDisplayState
+import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
+import com.friendorfoe.data.badge.defaultBadgeDisplayPolicy
+import com.friendorfoe.data.badge.defaultBadgeTheme
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.PrivacyCategory
+import com.friendorfoe.presentation.badge.BadgeAppearanceSection
+import com.friendorfoe.presentation.badge.BadgeDisplayFiltersSection
 
 /** Section group definition for threat-level grouping */
 private data class SectionGroup(
@@ -174,7 +181,9 @@ fun PrivacyScreen(
             state = badgeUsbState,
             onAction = {
                 if (badgeUsbState.status == BadgeUsbStatus.CONNECTED ||
-                    badgeUsbState.status == BadgeUsbStatus.AP_CONNECTED) {
+                    badgeUsbState.status == BadgeUsbStatus.AP_CONNECTED ||
+                    badgeUsbState.status == BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED ||
+                    badgeUsbState.status == BadgeUsbStatus.BLE_CONNECTED) {
                     viewModel.refreshBadgeStatus()
                 } else {
                     viewModel.connectBadgeUsb()
@@ -188,6 +197,10 @@ fun PrivacyScreen(
             onDetail = viewModel::badgeToggleDetail,
             onBack = viewModel::badgeBackFromDetail,
             onRefresh = viewModel::refreshBadgeStatus,
+            onApplyDisplayPolicy = viewModel::applyBadgeDisplayPolicy,
+            onResetDisplayPolicy = viewModel::resetBadgeDisplayPolicy,
+            onApplyTheme = viewModel::applyBadgeTheme,
+            onResetTheme = viewModel::resetBadgeTheme,
             onEntityDetails = { selectedBadgeEntity = it }
         )
 
@@ -354,10 +367,14 @@ private fun BadgeUsbStatusRow(
     onAction: () -> Unit
 ) {
     val connected = state.status == BadgeUsbStatus.CONNECTED ||
-        state.status == BadgeUsbStatus.AP_CONNECTED
+        state.status == BadgeUsbStatus.AP_CONNECTED ||
+        state.status == BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED ||
+        state.status == BadgeUsbStatus.BLE_CONNECTED
     val accent = when (state.status) {
         BadgeUsbStatus.CONNECTED,
-        BadgeUsbStatus.AP_CONNECTED -> Color(0xFF2E7D32)
+        BadgeUsbStatus.AP_CONNECTED,
+        BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
+        BadgeUsbStatus.BLE_CONNECTED -> Color(0xFF2E7D32)
         BadgeUsbStatus.CONNECTING -> MaterialTheme.colorScheme.primary
         BadgeUsbStatus.PERMISSION_NEEDED -> Color(0xFF1565C0)
         BadgeUsbStatus.ERROR -> MaterialTheme.colorScheme.error
@@ -374,6 +391,23 @@ private fun BadgeUsbStatusRow(
             "${it.uart.ifBlank { "?" }.uppercase()} ${it.health.ifBlank { if (it.connected) "ok" else "missing" }}"
         }
         .orEmpty()
+    val transportLabel = when (state.status) {
+        BadgeUsbStatus.CONNECTED -> state.transportLabel.ifBlank { "USB-C" }
+        BadgeUsbStatus.AP_CONNECTED -> state.transportLabel.ifBlank { "Badge AP" }
+        BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED -> state.transportLabel.ifBlank { "Debug Bridge" }
+        BadgeUsbStatus.BLE_CONNECTED -> state.transportLabel.ifBlank { "BLE" }
+        BadgeUsbStatus.CONNECTING,
+        BadgeUsbStatus.PERMISSION_NEEDED -> "USB-C"
+        BadgeUsbStatus.ERROR,
+        BadgeUsbStatus.DISCONNECTED -> "Badge"
+    }
+    val headline = when (state.status) {
+        BadgeUsbStatus.CONNECTED -> "USB-C badge live privacy feed"
+        BadgeUsbStatus.AP_CONNECTED -> "Badge AP live privacy feed"
+        BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED -> "Debug Bridge badge live privacy feed"
+        BadgeUsbStatus.BLE_CONNECTED -> "BLE badge live privacy feed"
+        else -> state.message
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -383,15 +417,15 @@ private fun BadgeUsbStatusRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = "USB-C",
+            text = transportLabel,
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.Bold,
             color = accent,
-            modifier = Modifier.width(58.dp)
+            modifier = Modifier.width(72.dp)
         )
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = if (connected) "Badge live privacy feed" else state.message,
+                text = headline,
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -416,13 +450,29 @@ private fun BadgeDetailPanel(
     onDetail: () -> Unit,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
+    onApplyDisplayPolicy: (BadgeDisplayPolicy) -> Unit,
+    onResetDisplayPolicy: () -> Unit,
+    onApplyTheme: (BadgeTheme) -> Unit,
+    onResetTheme: () -> Unit,
     onEntityDetails: (BadgeThreatEntity) -> Unit
 ) {
     val status = state.controlStatus ?: return
     val connected = state.status == BadgeUsbStatus.CONNECTED ||
-        state.status == BadgeUsbStatus.AP_CONNECTED
+        state.status == BadgeUsbStatus.AP_CONNECTED ||
+        state.status == BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED ||
+        state.status == BadgeUsbStatus.BLE_CONNECTED
     val display = status.displayState
     val accent = badgeHealthColor(status)
+    var filtersExpanded by remember { mutableStateOf(false) }
+    var appearanceExpanded by remember { mutableStateOf(false) }
+    var draftPolicy by remember { mutableStateOf(status.displayPolicy) }
+    var draftTheme by remember { mutableStateOf(status.theme) }
+    LaunchedEffect(status.displayPolicyHash) {
+        draftPolicy = status.displayPolicy
+    }
+    LaunchedEffect(status.themeHash) {
+        draftTheme = status.theme
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -495,6 +545,27 @@ private fun BadgeDetailPanel(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+        if (status.bleControl.enabled || status.bleControl.lastError.isNotBlank()) {
+            Text(
+                text = buildString {
+                    append("BLE tether ")
+                    append(if (status.bleControl.enabled) "ready" else "off")
+                    if (status.bleControl.connected) append(" connected")
+                    if (status.bleControl.bonded) append(" bonded")
+                    if (status.bleControl.encrypted) append(" encrypted")
+                    status.bleControl.pairingAgeSeconds
+                        ?.takeIf { it >= 0 }
+                        ?.let { append(" pair ${it}/${status.bleControl.pairingWindowSeconds}s") }
+                    if (status.bleControl.lastError.isNotBlank()) {
+                        append("  |  ${status.bleControl.lastError}")
+                    }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
 
         val filtered = status.filteredCounts.filterValues { it > 0 }
         if (filtered.isNotEmpty()) {
@@ -519,6 +590,38 @@ private fun BadgeDetailPanel(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+
+        if (connected) {
+            Spacer(modifier = Modifier.height(8.dp))
+            BadgeAppearanceSection(
+                expanded = appearanceExpanded,
+                onExpandedChange = { appearanceExpanded = it },
+                theme = draftTheme,
+                themeHash = status.themeHash,
+                onThemeChange = { draftTheme = it },
+                onApply = { onApplyTheme(draftTheme) },
+                onReset = {
+                    draftTheme = defaultBadgeTheme()
+                    onResetTheme()
+                },
+                onRefresh = onRefresh
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            BadgeDisplayFiltersSection(
+                expanded = filtersExpanded,
+                onExpandedChange = { filtersExpanded = it },
+                policy = draftPolicy,
+                displayPolicyHash = status.displayPolicyHash,
+                filteredCounts = status.filteredCounts,
+                onPolicyChange = { draftPolicy = it },
+                onApply = { onApplyDisplayPolicy(draftPolicy) },
+                onReset = {
+                    draftPolicy = defaultBadgeDisplayPolicy()
+                    onResetDisplayPolicy()
+                },
+                onRefresh = onRefresh
             )
         }
 

@@ -30,7 +30,9 @@
 #include "badge_threat_policy.h"
 #include "badge_runtime.h"
 #include "badge_display_policy_runtime.h"
+#include "badge_theme_runtime.h"
 #include "badge_button_gesture.h"
+#include "badge_ble_control.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -68,6 +70,7 @@ static const char *TAG = "st7735";
 #define BADGE_BUTTON_DOUBLE_TAP_MS 320
 #define BADGE_DETAIL_TIMEOUT_MS   30000
 #define BADGE_BUTTON_STACK_WORDS  4096
+#define BADGE_BUTTON1_ENABLE_ACTIONS 0
 /* Backlight: panel BL pin is wired directly to 3V3 on this badge build,
  * so the firmware does not drive it. -1 disables the GPIO drive path. */
 #define ST7735_PIN_BL       (-1)
@@ -155,6 +158,7 @@ typedef enum {
     BADGE_BUTTON_OVERLAY_NONE = 0,
     BADGE_BUTTON_OVERLAY_TRIFORCE,
     BADGE_BUTTON_OVERLAY_QR,
+    BADGE_BUTTON_OVERLAY_BLE_PAIR,
 } badge_button_overlay_t;
 
 typedef enum {
@@ -456,10 +460,18 @@ static void badge_button_working_long_press(void)
     badge_button_note_activity();
     s_detail_mode = false;
     s_detail_page = 0;
+    if (s_button_overlay == BADGE_BUTTON_OVERLAY_BLE_PAIR) {
+        s_button_overlay = BADGE_BUTTON_OVERLAY_QR;
+        return;
+    }
     if (s_button_overlay == BADGE_BUTTON_OVERLAY_QR) {
         s_button_overlay = BADGE_BUTTON_OVERLAY_TRIFORCE;
     } else {
-        s_button_overlay = BADGE_BUTTON_OVERLAY_QR;
+        if (badge_ble_control_open_pairing_window()) {
+            s_button_overlay = BADGE_BUTTON_OVERLAY_BLE_PAIR;
+        } else {
+            s_button_overlay = BADGE_BUTTON_OVERLAY_QR;
+        }
     }
 }
 
@@ -556,7 +568,7 @@ static void badge_button_poll_one(badge_button_state_t *button, TickType_t now)
             badge_button_dispatch_b2_gesture(
                 badge_button_gesture_note_long(&s_b2_gesture,
                                                (uint32_t)badge_now_ms()));
-        } else {
+        } else if (BADGE_BUTTON1_ENABLE_ACTIONS) {
             badge_button_toggle_overlay(button->overlay);
         }
     } else if (!button->long_sent) {
@@ -570,7 +582,7 @@ static void badge_button_poll_one(badge_button_state_t *button, TickType_t now)
             } else {
                 badge_button_dispatch_b2_gesture(event);
             }
-        } else {
+        } else if (BADGE_BUTTON1_ENABLE_ACTIONS) {
             badge_button_short_press(button->id);
         }
     }
@@ -680,7 +692,7 @@ static void badge_buttons_start(void)
         ESP_LOGE(TAG, "Badge button task start failed");
         return;
     }
-    ESP_LOGI(TAG, "Badge buttons active: GPIO%d=detail/Triforce active-%s GPIO%d=next/QR active-low",
+    ESP_LOGI(TAG, "Badge buttons active: GPIO%d=diag-only active-%s GPIO%d=next/detail/QR active-low",
              BADGE_BUTTON_TRIFORCE_PIN,
              BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH ? "high" : "low",
              BADGE_BUTTON_QR_PIN);
@@ -1049,6 +1061,24 @@ static uint16_t rgb565_mix_color(uint16_t a, uint16_t b, uint8_t t)
     uint16_t g = (uint16_t)((ag * inv + bg * t) / 255);
     uint16_t bl = (uint16_t)((ab * inv + bb * t) / 255);
     return (uint16_t)((r << 11) | (g << 5) | bl);
+}
+
+static uint16_t badge_theme_panel_color(uint16_t fallback)
+{
+    const badge_theme_t *theme = badge_theme_runtime_get();
+    uint16_t bg = badge_theme_background_color(theme);
+    if (bg == COL_BLACK) {
+        return badge_theme_apply_brightness(theme, fallback);
+    }
+    return rgb565_mix_color(bg, fallback, 80);
+}
+
+static uint16_t badge_theme_accent(badge_theme_accent_t accent,
+                                   uint16_t fallback)
+{
+    const badge_theme_t *theme = badge_theme_runtime_get();
+    uint16_t color = badge_theme_accent_color(theme, accent);
+    return color ? color : badge_theme_apply_brightness(theme, fallback);
 }
 
 /* Draw a single character at (x,y), with optional integer scale (1, 2, 3).
@@ -1730,6 +1760,22 @@ static void draw_gamechangers_qr_screen(void)
     fb_draw_string_centered(LCD_W / 2, 146, "BTN2 QR", COL_GRAY, COL_BLACK, 1);
 }
 
+static void draw_ble_pairing_screen(void)
+{
+    fb_clear(COL_BLACK);
+    fb_draw_string_centered(LCD_W / 2, 26, "BLE TETHER", COL_LINK_BRIGHT, COL_BLACK, 1);
+    fb_fill_rect(14, 45, LCD_W - 28, 52, COL_PANEL_2);
+    fb_draw_string_centered(LCD_W / 2, 54, "PAIR PHONE", COL_WHITE, COL_PANEL_2, 1);
+    fb_draw_string_centered(LCD_W / 2, 70, "FoF Badge", COL_SOFT_GREEN, COL_PANEL_2, 1);
+    if (badge_ble_control_pairing_active()) {
+        fb_draw_string_centered(LCD_W / 2, 86, "10 SEC WINDOW", COL_GRAY, COL_PANEL_2, 1);
+    } else {
+        fb_draw_string_centered(LCD_W / 2, 86, "BLE DISABLED", COL_RED, COL_PANEL_2, 1);
+    }
+    fb_draw_string_centered(LCD_W / 2, 120, "BTN2 tap exits", COL_GRAY, COL_BLACK, 1);
+    fb_draw_string_centered(LCD_W / 2, 137, "hold: QR demo", COL_DARKGRAY, COL_BLACK, 1);
+}
+
 /* ── Status layout helpers ─────────────────────────────────────────────── */
 
 typedef enum {
@@ -1837,20 +1883,28 @@ static uint16_t ui_domain_color(const badge_threat_snapshot_t *snapshot,
 static uint16_t ui_domain_base_color(badge_ui_domain_t domain)
 {
     switch (domain) {
-        case BADGE_UI_DOMAIN_DRONE:   return COL_GOLD;
-        case BADGE_UI_DOMAIN_PRIVACY: return COL_ROSE;
-        case BADGE_UI_DOMAIN_WIFI:    return COL_CYAN;
-        default:                      return COL_SOFT_GREEN;
+        case BADGE_UI_DOMAIN_DRONE:
+            return badge_theme_accent(BADGE_THEME_ACCENT_DRONE, COL_GOLD);
+        case BADGE_UI_DOMAIN_PRIVACY:
+            return badge_theme_accent(BADGE_THEME_ACCENT_META, COL_ROSE);
+        case BADGE_UI_DOMAIN_WIFI:
+            return badge_theme_accent(BADGE_THEME_ACCENT_WIFI_ATTACK, COL_CYAN);
+        default:
+            return badge_theme_accent(BADGE_THEME_ACCENT_CLEAR, COL_SOFT_GREEN);
     }
 }
 
 static uint16_t ui_category_base_color(badge_threat_category_t category)
 {
     switch (category) {
-        case BADGE_THREAT_CATEGORY_DRONE:     return COL_GOLD;
-        case BADGE_THREAT_CATEGORY_SSID:      return COL_YELLOW;
-        case BADGE_THREAT_CATEGORY_FLOCK:     return COL_VIOLET;
-        case BADGE_THREAT_CATEGORY_GLASS:     return COL_ROSE;
+        case BADGE_THREAT_CATEGORY_DRONE:
+            return badge_theme_accent(BADGE_THEME_ACCENT_DRONE, COL_GOLD);
+        case BADGE_THREAT_CATEGORY_SSID:
+            return badge_theme_accent(BADGE_THEME_ACCENT_DRONE, COL_YELLOW);
+        case BADGE_THREAT_CATEGORY_FLOCK:
+            return badge_theme_accent(BADGE_THEME_ACCENT_FLOCK, COL_VIOLET);
+        case BADGE_THREAT_CATEGORY_GLASS:
+            return badge_theme_accent(BADGE_THEME_ACCENT_META, COL_ROSE);
         case BADGE_THREAT_CATEGORY_SKIM:      return COL_SKIM_RED;
         case BADGE_THREAT_CATEGORY_CAMERA:    return COL_SKIM_RED;
         case BADGE_THREAT_CATEGORY_BEACON:    return rgb565_scale_color(COL_CYAN, 82);
@@ -1858,30 +1912,40 @@ static uint16_t ui_category_base_color(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_LOCK:      return COL_GOLD;
         case BADGE_THREAT_CATEGORY_HID:       return COL_CYAN;
         case BADGE_THREAT_CATEGORY_AUDIO:     return rgb565_scale_color(COL_LINK_BRIGHT, 90);
-        case BADGE_THREAT_CATEGORY_WIFI:      return COL_CYAN;
-        case BADGE_THREAT_CATEGORY_TAG_CLOSE: return rgb565_scale_color(COL_ROSE, 105);
-        case BADGE_THREAT_CATEGORY_PRIVACY:   return COL_ROSE;
-        default:                              return COL_SOFT_GREEN;
+        case BADGE_THREAT_CATEGORY_WIFI:
+            return badge_theme_accent(BADGE_THEME_ACCENT_WIFI_ATTACK, COL_CYAN);
+        case BADGE_THREAT_CATEGORY_TAG_CLOSE:
+            return badge_theme_accent(BADGE_THEME_ACCENT_TRACKER,
+                                      rgb565_scale_color(COL_ROSE, 105));
+        case BADGE_THREAT_CATEGORY_PRIVACY:
+            return badge_theme_accent(BADGE_THEME_ACCENT_META, COL_ROSE);
+        default:
+            return badge_theme_accent(BADGE_THEME_ACCENT_CLEAR, COL_SOFT_GREEN);
     }
 }
 
 static uint16_t ui_domain_deep_color(badge_ui_domain_t domain)
 {
     switch (domain) {
-        case BADGE_UI_DOMAIN_DRONE:   return COL_DEEP_GOLD;
-        case BADGE_UI_DOMAIN_PRIVACY: return COL_DEEP_ROSE;
-        case BADGE_UI_DOMAIN_WIFI:    return COL_DEEP_CYAN;
-        default:                      return 0x0108;
+        case BADGE_UI_DOMAIN_DRONE:
+            return rgb565_scale_color(ui_domain_base_color(domain), 82);
+        case BADGE_UI_DOMAIN_PRIVACY:
+            return rgb565_scale_color(ui_domain_base_color(domain), 70);
+        case BADGE_UI_DOMAIN_WIFI:
+            return rgb565_scale_color(ui_domain_base_color(domain), 72);
+        default:
+            return badge_theme_panel_color(0x0108);
     }
 }
 
 static uint16_t ui_category_deep_color(badge_threat_category_t category)
 {
     switch (category) {
-        case BADGE_THREAT_CATEGORY_DRONE:     return COL_DEEP_GOLD;
-        case BADGE_THREAT_CATEGORY_SSID:      return COL_GOLD_DARK;
-        case BADGE_THREAT_CATEGORY_FLOCK:     return COL_DEEP_VIOLET;
-        case BADGE_THREAT_CATEGORY_GLASS:     return COL_DEEP_ROSE;
+        case BADGE_THREAT_CATEGORY_DRONE:
+        case BADGE_THREAT_CATEGORY_SSID:
+        case BADGE_THREAT_CATEGORY_FLOCK:
+        case BADGE_THREAT_CATEGORY_GLASS:
+            return rgb565_scale_color(ui_category_base_color(category), 76);
         case BADGE_THREAT_CATEGORY_SKIM:      return COL_DEEP_SKIM;
         case BADGE_THREAT_CATEGORY_CAMERA:    return COL_DEEP_SKIM;
         case BADGE_THREAT_CATEGORY_BEACON:    return COL_DEEP_CYAN;
@@ -1889,10 +1953,12 @@ static uint16_t ui_category_deep_color(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_LOCK:      return COL_GOLD_DARK;
         case BADGE_THREAT_CATEGORY_HID:       return COL_DEEP_CYAN;
         case BADGE_THREAT_CATEGORY_AUDIO:     return COL_DEEP_CYAN;
-        case BADGE_THREAT_CATEGORY_WIFI:      return COL_DEEP_CYAN;
-        case BADGE_THREAT_CATEGORY_TAG_CLOSE: return rgb565_scale_color(COL_DEEP_ROSE, 88);
-        case BADGE_THREAT_CATEGORY_PRIVACY:   return COL_DEEP_ROSE;
-        default:                              return 0x0108;
+        case BADGE_THREAT_CATEGORY_WIFI:
+        case BADGE_THREAT_CATEGORY_TAG_CLOSE:
+        case BADGE_THREAT_CATEGORY_PRIVACY:
+            return rgb565_scale_color(ui_category_base_color(category), 76);
+        default:
+            return badge_theme_panel_color(0x0108);
     }
 }
 
@@ -1956,6 +2022,10 @@ static void draw_threat_background(const badge_threat_snapshot_t *snapshot)
     uint16_t bg = rgb565_mix_color(rgb565_scale_color(deep, 120),
                                    rgb565_scale_color(base, 70),
                                    mix);
+    uint16_t theme_bg = badge_theme_background_color(badge_theme_runtime_get());
+    if (theme_bg != COL_BLACK) {
+        bg = rgb565_mix_color(theme_bg, bg, 118);
+    }
     fb_fill_rect(0, 0, LCD_W, LCD_H, bg);
 
     uint16_t band = rgb565_mix_color(bg, rgb565_scale_color(base, 110), 52);
@@ -5896,6 +5966,13 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     }
     if (overlay == BADGE_BUTTON_OVERLAY_QR) {
         draw_gamechangers_qr_screen();
+        s_queue_page_frame++;
+        st_flush();
+        display_unlock();
+        return;
+    }
+    if (overlay == BADGE_BUTTON_OVERLAY_BLE_PAIR) {
+        draw_ble_pairing_screen();
         s_queue_page_frame++;
         st_flush();
         display_unlock();

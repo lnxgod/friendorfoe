@@ -1,6 +1,8 @@
 package com.friendorfoe.presentation.privacy
 
 import androidx.lifecycle.ViewModel
+import com.friendorfoe.data.badge.BadgeDisplayPolicy
+import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbRepository
 import com.friendorfoe.data.badge.BadgeUsbState
@@ -159,6 +161,22 @@ class PrivacyViewModel @Inject constructor(
         badgeUsbRepository.displayNav("back")
     }
 
+    fun applyBadgeDisplayPolicy(policy: BadgeDisplayPolicy) {
+        badgeUsbRepository.applyDisplayPolicy(policy)
+    }
+
+    fun resetBadgeDisplayPolicy() {
+        badgeUsbRepository.resetDisplayPolicy()
+    }
+
+    fun applyBadgeTheme(theme: BadgeTheme) {
+        badgeUsbRepository.applyBadgeTheme(theme)
+    }
+
+    fun resetBadgeTheme() {
+        badgeUsbRepository.resetBadgeTheme()
+    }
+
     fun startDirectionScan(mac: String) {
         bleTracker.startDirectionScan(mac)
     }
@@ -241,111 +259,6 @@ class PrivacyViewModel @Inject constructor(
         else -> com.friendorfoe.detection.GlassesDetector.categorizeDeviceType(fallbackType)
     }
 
-    private fun BadgeUsbState.toPrivacyDetections(): List<GlassesDetection> {
-        val status = controlStatus ?: return emptyList()
-        val now = Instant.now()
-        return status.entities.mapNotNull { it.toPrivacyDetection(now) }
-    }
-
-    private fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetection? {
-        if (stale) return null
-        val category = categoryForBadgeEntity()
-        val title = badgeDeviceType()
-        val stableId = displayId.ifBlank { operatorId ?: detail.ifBlank { label } }
-        val displayName = detail.ifBlank { displayId.ifBlank { operatorId.orEmpty() } }
-        val key = "badge:${threatClass.ifBlank { "threat" }}:" +
-            "${code.ifBlank { this@toPrivacyDetection.category }}:${stableId.ifBlank { title }}"
-        val rssiNow = when {
-            rssi != 0 -> rssi
-            bestRssi != 0 -> bestRssi
-            else -> -100
-        }
-        val detailMap = buildMap {
-            put("source", "usb_badge")
-            if (threatClass.isNotBlank()) put("class", threatClass)
-            if (this@toPrivacyDetection.category.isNotBlank()) {
-                put("category", this@toPrivacyDetection.category)
-            }
-            if (code.isNotBlank()) put("code", code)
-            if (displayId.isNotBlank()) put("display_id", displayId)
-            if (detail.isNotBlank()) put("detail", detail)
-            if (evidence.isNotBlank()) put("evidence", evidence)
-            if (source.isNotBlank()) put("badge_source", source)
-            if (sourceId != 0) put("badge_source_id", sourceId.toString())
-            if (confidencePct > 0) put("confidence", "$confidencePct%")
-            put("score", score.toString())
-            put("age_s", ageSeconds.toString())
-            put("events", events.toString())
-            if (seenCount > 0) put("seen", seenCount.toString())
-            if (groupCount > 1) put("group", groupCount.toString())
-            operatorId?.let { put("operator_id", it) }
-        }
-        return GlassesDetection(
-            mac = key,
-            deviceName = displayName.takeIf { it.isNotBlank() },
-            deviceType = title,
-            manufacturer = "FoF Badge",
-            hasCamera = category in setOf(
-                PrivacyCategory.HIDDEN_CAMERA,
-                PrivacyCategory.SURVEILLANCE_CAMERA,
-                PrivacyCategory.ALPR_CAMERA,
-                PrivacyCategory.BODY_CAMERA,
-                PrivacyCategory.VEHICLE_CAMERA,
-            ),
-            rssi = rssiNow,
-            confidence = (score / 100f).coerceIn(0f, 1f),
-            matchReason = "badge:${threatClass.ifBlank { this.category.ifBlank { "privacy" } }}",
-            firstSeen = now.minusSeconds(ageSeconds.coerceAtLeast(0).toLong()),
-            lastSeen = now.minusSeconds(lastSeenSeconds.coerceAtLeast(0).toLong()),
-            details = detailMap,
-            category = category,
-            fingerprintKey = key,
-            seenMacs = setOf(key)
-        )
-    }
-
-    private fun BadgeThreatEntity.categoryForBadgeEntity(): PrivacyCategory {
-        val cls = threatClass.lowercase()
-        val cat = category.uppercase()
-        val catCode = code.uppercase()
-        return when {
-            cls == "meta" || cat == "GLASS" || catCode == "GLS" -> PrivacyCategory.SMART_GLASSES
-            cls == "tracker" || cat == "TAG" || catCode == "TAG" -> PrivacyCategory.BLE_TRACKER
-            cls == "wifi_anomaly" || cat == "WIFI" || catCode == "WIFI" -> PrivacyCategory.ATTACK_TOOL
-            cls == "drone" || cat == "DRONE" || cat == "SSID" ||
-                catCode == "DRN" || catCode == "SSID" -> PrivacyCategory.DRONE_CONTROLLER
-            cat == "FLOCK" || catCode == "FLK" -> PrivacyCategory.ALPR_CAMERA
-            cat == "SKIM" || catCode == "SKIM" -> PrivacyCategory.ATTACK_TOOL
-            cat == "CAMERA" || catCode == "CAM" -> PrivacyCategory.SURVEILLANCE_CAMERA
-            cat == "BEACON" || catCode == "BCN" -> PrivacyCategory.VENUE_BEACON
-            cat == "EVENT" || catCode == "EVT" -> PrivacyCategory.EVENT_BADGE
-            cat == "LOCK" || catCode == "LOCK" -> PrivacyCategory.MOBILE_KEY_LOCK
-            cat == "HID" || catCode == "HID" -> PrivacyCategory.BLE_HID
-            cat == "AUDIO" || catCode == "AUD" -> PrivacyCategory.AURACAST
-            else -> PrivacyCategory.INFORMATIONAL
-        }
-    }
-
-    private fun BadgeThreatEntity.badgeDeviceType(): String {
-        val cat = category.uppercase()
-        val catCode = code.uppercase()
-        return when {
-            threatClass.equals("drone", ignoreCase = true) &&
-                (cat == "SSID" || catCode == "SSID") -> "Drone SSID"
-            threatClass.equals("drone", ignoreCase = true) -> "Remote ID Drone"
-            cat == "FLOCK" || catCode == "FLK" -> "Flock / ALPR Camera"
-            cat == "SKIM" || catCode == "SKIM" -> "Skimmer"
-            cat == "CAMERA" || catCode == "CAM" -> "Camera Near"
-            cat == "BEACON" || catCode == "BCN" -> "Venue Beacon"
-            cat == "EVENT" || catCode == "EVT" -> "Event Badge"
-            cat == "LOCK" || catCode == "LOCK" -> "Mobile Key Lock"
-            cat == "HID" || catCode == "HID" -> "BLE Input Device"
-            cat == "AUDIO" || catCode == "AUD" -> "Auracast / LE Audio"
-            label.isNotBlank() -> label
-            else -> "Badge Privacy Signal"
-        }
-    }
-
     private fun mergePrivacyDetections(
         local: List<GlassesDetection>,
         backend: List<GlassesDetection>,
@@ -371,5 +284,109 @@ class PrivacyViewModel @Inject constructor(
         val seconds = this.toLong()
         val nanos = ((this - seconds.toDouble()) * 1_000_000_000.0).toLong()
         return Instant.ofEpochSecond(seconds, nanos)
+    }
+}
+
+internal fun BadgeUsbState.toPrivacyDetections(now: Instant = Instant.now()): List<GlassesDetection> {
+    val status = controlStatus ?: return emptyList()
+    return status.entities.mapNotNull { it.toPrivacyDetection(now) }
+}
+
+internal fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetection? {
+    if (stale) return null
+    val category = categoryForBadgeEntity()
+    val title = badgeDeviceType()
+    val stableId = displayId.ifBlank { operatorId ?: detail.ifBlank { label } }
+    val displayName = detail.ifBlank { displayId.ifBlank { operatorId.orEmpty() } }
+    val key = "badge:${threatClass.ifBlank { "threat" }}:" +
+        "${code.ifBlank { this@toPrivacyDetection.category }}:${stableId.ifBlank { title }}"
+    val rssiNow = when {
+        rssi != 0 -> rssi
+        bestRssi != 0 -> bestRssi
+        else -> -100
+    }
+    val detailMap = buildMap {
+        put("source", "usb_badge")
+        if (threatClass.isNotBlank()) put("class", threatClass)
+        if (this@toPrivacyDetection.category.isNotBlank()) {
+            put("category", this@toPrivacyDetection.category)
+        }
+        if (code.isNotBlank()) put("code", code)
+        if (displayId.isNotBlank()) put("display_id", displayId)
+        if (detail.isNotBlank()) put("detail", detail)
+        if (evidence.isNotBlank()) put("evidence", evidence)
+        if (source.isNotBlank()) put("badge_source", source)
+        if (sourceId != 0) put("badge_source_id", sourceId.toString())
+        if (confidencePct > 0) put("confidence", "$confidencePct%")
+        put("score", score.toString())
+        put("age_s", ageSeconds.toString())
+        put("events", events.toString())
+        if (seenCount > 0) put("seen", seenCount.toString())
+        if (groupCount > 1) put("group", groupCount.toString())
+        operatorId?.let { put("operator_id", it) }
+    }
+    return GlassesDetection(
+        mac = key,
+        deviceName = displayName.takeIf { it.isNotBlank() },
+        deviceType = title,
+        manufacturer = "FoF Badge",
+        hasCamera = category in setOf(
+            PrivacyCategory.HIDDEN_CAMERA,
+            PrivacyCategory.SURVEILLANCE_CAMERA,
+            PrivacyCategory.ALPR_CAMERA,
+            PrivacyCategory.BODY_CAMERA,
+            PrivacyCategory.VEHICLE_CAMERA,
+        ),
+        rssi = rssiNow,
+        confidence = (score / 100f).coerceIn(0f, 1f),
+        matchReason = "badge:${threatClass.ifBlank { this.category.ifBlank { "privacy" } }}",
+        firstSeen = now.minusSeconds(ageSeconds.coerceAtLeast(0).toLong()),
+        lastSeen = now.minusSeconds(lastSeenSeconds.coerceAtLeast(0).toLong()),
+        details = detailMap,
+        category = category,
+        fingerprintKey = key,
+        seenMacs = setOf(key)
+    )
+}
+
+private fun BadgeThreatEntity.categoryForBadgeEntity(): PrivacyCategory {
+    val cls = threatClass.lowercase()
+    val cat = category.uppercase()
+    val catCode = code.uppercase()
+    return when {
+        cls == "meta" || cat == "GLASS" || catCode == "GLS" -> PrivacyCategory.SMART_GLASSES
+        cls == "tracker" || cat == "TAG" || catCode == "TAG" -> PrivacyCategory.BLE_TRACKER
+        cls == "wifi_anomaly" || cat == "WIFI" || catCode == "WIFI" -> PrivacyCategory.ATTACK_TOOL
+        cls == "drone" || cat == "DRONE" || cat == "SSID" ||
+            catCode == "DRN" || catCode == "SSID" -> PrivacyCategory.DRONE_CONTROLLER
+        cat == "FLOCK" || catCode == "FLK" -> PrivacyCategory.ALPR_CAMERA
+        cat == "SKIM" || catCode == "SKIM" -> PrivacyCategory.ATTACK_TOOL
+        cat == "CAMERA" || catCode == "CAM" -> PrivacyCategory.SURVEILLANCE_CAMERA
+        cat == "BEACON" || catCode == "BCN" -> PrivacyCategory.VENUE_BEACON
+        cat == "EVENT" || catCode == "EVT" -> PrivacyCategory.EVENT_BADGE
+        cat == "LOCK" || catCode == "LOCK" -> PrivacyCategory.MOBILE_KEY_LOCK
+        cat == "HID" || catCode == "HID" -> PrivacyCategory.BLE_HID
+        cat == "AUDIO" || catCode == "AUD" -> PrivacyCategory.AURACAST
+        else -> PrivacyCategory.INFORMATIONAL
+    }
+}
+
+private fun BadgeThreatEntity.badgeDeviceType(): String {
+    val cat = category.uppercase()
+    val catCode = code.uppercase()
+    return when {
+        threatClass.equals("drone", ignoreCase = true) &&
+            (cat == "SSID" || catCode == "SSID") -> "Drone SSID"
+        threatClass.equals("drone", ignoreCase = true) -> "Remote ID Drone"
+        cat == "FLOCK" || catCode == "FLK" -> "Flock / ALPR Camera"
+        cat == "SKIM" || catCode == "SKIM" -> "Skimmer"
+        cat == "CAMERA" || catCode == "CAM" -> "Camera Near"
+        cat == "BEACON" || catCode == "BCN" -> "Venue Beacon"
+        cat == "EVENT" || catCode == "EVT" -> "Event Badge"
+        cat == "LOCK" || catCode == "LOCK" -> "Mobile Key Lock"
+        cat == "HID" || catCode == "HID" -> "BLE Input Device"
+        cat == "AUDIO" || catCode == "AUD" -> "Auracast / LE Audio"
+        label.isNotBlank() -> label
+        else -> "Badge Privacy Signal"
     }
 }

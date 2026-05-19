@@ -28,9 +28,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -54,12 +52,12 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.badge.BadgeUsbDetection
-import com.friendorfoe.data.badge.BadgeDisplayClassPolicy
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
-import com.friendorfoe.data.badge.BadgeDisplayPolicyClasses
+import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
 import com.friendorfoe.data.badge.defaultBadgeDisplayPolicy
+import com.friendorfoe.data.badge.defaultBadgeTheme
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
@@ -67,6 +65,8 @@ import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
 import com.friendorfoe.detection.BleTracker
 import com.friendorfoe.detection.GlassesDetection
+import com.friendorfoe.presentation.badge.BadgeAppearanceSection
+import com.friendorfoe.presentation.badge.BadgeDisplayFiltersSection
 import com.friendorfoe.presentation.filter.FilterBar
 import com.friendorfoe.presentation.util.categoryBadge
 import com.friendorfoe.presentation.util.categoryColor
@@ -132,6 +132,8 @@ fun ListViewScreen(
             onFlashScannerFirmware = viewModel::flashBadgeScannerFirmware,
             onApplyDisplayPolicy = viewModel::applyBadgeDisplayPolicy,
             onResetDisplayPolicy = viewModel::resetBadgeDisplayPolicy,
+            onApplyTheme = viewModel::applyBadgeTheme,
+            onResetTheme = viewModel::resetBadgeTheme,
             onRefreshDisplayPolicy = viewModel::refreshBadgeStatus
         )
 
@@ -171,6 +173,8 @@ private fun BadgeUsbPanel(
     onFlashScannerFirmware: (String, String, ByteArray) -> Unit,
     onApplyDisplayPolicy: (BadgeDisplayPolicy) -> Unit,
     onResetDisplayPolicy: () -> Unit,
+    onApplyTheme: (BadgeTheme) -> Unit,
+    onResetTheme: () -> Unit,
     onRefreshDisplayPolicy: () -> Unit
 ) {
     val context = LocalContext.current
@@ -195,6 +199,8 @@ private fun BadgeUsbPanel(
     val accent = when (state.status) {
         BadgeUsbStatus.CONNECTED -> Color(0xFF2E7D32)
         BadgeUsbStatus.AP_CONNECTED -> Color(0xFF2E7D32)
+        BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED -> Color(0xFF2E7D32)
+        BadgeUsbStatus.BLE_CONNECTED -> Color(0xFF2E7D32)
         BadgeUsbStatus.CONNECTING -> MaterialTheme.colorScheme.primary
         BadgeUsbStatus.PERMISSION_NEEDED -> Color(0xFF1565C0)
         BadgeUsbStatus.ERROR -> MaterialTheme.colorScheme.error
@@ -203,12 +209,30 @@ private fun BadgeUsbPanel(
     val latest = state.detections.firstOrNull()
     val badgeStatus = state.controlStatus
     val controlsAvailable = state.status == BadgeUsbStatus.CONNECTED ||
-        state.status == BadgeUsbStatus.AP_CONNECTED
+        state.status == BadgeUsbStatus.AP_CONNECTED ||
+        state.status == BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED ||
+        state.status == BadgeUsbStatus.BLE_CONNECTED
+    val transportLabel = when (state.status) {
+        BadgeUsbStatus.CONNECTED -> state.transportLabel.ifBlank { "USB-C" }
+        BadgeUsbStatus.AP_CONNECTED -> state.transportLabel.ifBlank { "Badge AP" }
+        BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED -> state.transportLabel.ifBlank { "Debug Bridge" }
+        BadgeUsbStatus.BLE_CONNECTED -> state.transportLabel.ifBlank { "BLE" }
+        BadgeUsbStatus.CONNECTING,
+        BadgeUsbStatus.PERMISSION_NEEDED -> "USB-C"
+        BadgeUsbStatus.ERROR,
+        BadgeUsbStatus.DISCONNECTED -> "offline"
+    }
     var filtersExpanded by remember { mutableStateOf(false) }
+    var appearanceExpanded by remember { mutableStateOf(false) }
+    var scannerUpdatesExpanded by remember { mutableStateOf(false) }
     var draftPolicy by remember { mutableStateOf(badgeStatus?.displayPolicy ?: defaultBadgeDisplayPolicy()) }
+    var draftTheme by remember { mutableStateOf(badgeStatus?.theme ?: defaultBadgeTheme()) }
 
     LaunchedEffect(badgeStatus?.displayPolicyHash) {
         badgeStatus?.displayPolicy?.let { draftPolicy = it }
+    }
+    LaunchedEffect(badgeStatus?.themeHash) {
+        badgeStatus?.theme?.let { draftTheme = it }
     }
 
     Surface(
@@ -230,7 +254,7 @@ private fun BadgeUsbPanel(
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Badge Control",
+                        text = "Badge Control  |  $transportLabel",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold
                     )
@@ -323,20 +347,68 @@ private fun BadgeUsbPanel(
                             Text("Bootloader")
                         }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(onClick = {
-                            pendingFirmwareUart = "ble"
-                            firmwarePicker.launch(arrayOf("application/octet-stream", "*/*"))
-                        }) {
-                            Text("Flash BLE")
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(8.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Scanner Firmware Updates",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Advanced recovery for badge-side scanner slots",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = { scannerUpdatesExpanded = !scannerUpdatesExpanded }
+                            ) {
+                                Text(if (scannerUpdatesExpanded) "Hide" else "Open")
+                            }
                         }
-                        OutlinedButton(onClick = {
-                            pendingFirmwareUart = "wifi"
-                            firmwarePicker.launch(arrayOf("application/octet-stream", "*/*"))
-                        }) {
-                            Text("Flash WiFi")
+                        if (scannerUpdatesExpanded) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(onClick = {
+                                    pendingFirmwareUart = "ble"
+                                    firmwarePicker.launch(arrayOf("application/octet-stream", "*/*"))
+                                }) {
+                                    Text("Update slot A")
+                                }
+                                OutlinedButton(onClick = {
+                                    pendingFirmwareUart = "wifi"
+                                    firmwarePicker.launch(arrayOf("application/octet-stream", "*/*"))
+                                }) {
+                                    Text("Update slot B")
+                                }
+                            }
                         }
                     }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    BadgeAppearanceSection(
+                        expanded = appearanceExpanded,
+                        onExpandedChange = { appearanceExpanded = it },
+                        theme = draftTheme,
+                        themeHash = badgeStatus.themeHash,
+                        onThemeChange = { draftTheme = it },
+                        onApply = { onApplyTheme(draftTheme) },
+                        onReset = {
+                            draftTheme = defaultBadgeTheme()
+                            onResetTheme()
+                        },
+                        onRefresh = onRefreshDisplayPolicy
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
                     BadgeDisplayFiltersSection(
                         expanded = filtersExpanded,
@@ -403,170 +475,6 @@ private fun badgeDetectionText(detection: BadgeUsbDetection): String {
     val rssi = if (detection.rssi < 0) " ${detection.rssi}dBm" else ""
     return "$label  $confidence%$rssi"
 }
-
-@Composable
-private fun BadgeDisplayFiltersSection(
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
-    policy: BadgeDisplayPolicy,
-    displayPolicyHash: Long,
-    filteredCounts: Map<String, Int>,
-    onPolicyChange: (BadgeDisplayPolicy) -> Unit,
-    onApply: () -> Unit,
-    onReset: () -> Unit,
-    onRefresh: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                MaterialTheme.colorScheme.surface.copy(alpha = 0.45f),
-                RoundedCornerShape(8.dp)
-            )
-            .padding(8.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Display Filters",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Badge-only LCD and scanner emission policy  #$displayPolicyHash",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            OutlinedButton(onClick = { onExpandedChange(!expanded) }) {
-                Text(if (expanded) "Hide" else "Edit")
-            }
-        }
-
-        if (!expanded) return@Column
-
-        Spacer(modifier = Modifier.height(8.dp))
-        BadgeDisplayPolicyClasses.forEach { info ->
-            val config = policy.classes[info.key] ?: BadgeDisplayClassPolicy()
-            val filtered = filteredCounts[info.key].orZero()
-            BadgeDisplayClassRow(
-                label = info.label,
-                filtered = filtered,
-                config = config,
-                onChange = { next ->
-                    onPolicyChange(
-                        policy.copy(classes = policy.classes + (info.key to next))
-                    )
-                }
-            )
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 6.dp),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(onClick = onApply) {
-                Text("Apply")
-            }
-            OutlinedButton(onClick = onReset) {
-                Text("Reset Defaults")
-            }
-            OutlinedButton(onClick = onRefresh) {
-                Text("Refresh")
-            }
-        }
-    }
-}
-
-@Composable
-private fun BadgeDisplayClassRow(
-    label: String,
-    filtered: Int,
-    config: BadgeDisplayClassPolicy,
-    onChange: (BadgeDisplayClassPolicy) -> Unit
-) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    text = "Suppressed $filtered  |  Priority ${config.priority}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = config.enabled,
-                onCheckedChange = { onChange(config.copy(enabled = it)) }
-            )
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "Lane",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf("off", "lower", "top", "both").forEach { lane ->
-                OutlinedButton(
-                    onClick = { onChange(config.copy(lane = lane)) },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = lane.uppercase(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (config.lane == lane) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                        maxLines = 1
-                    )
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "Minimum proximity",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf("present", "near", "close").forEach { prox ->
-                OutlinedButton(
-                    onClick = { onChange(config.copy(minProximity = prox)) },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = prox.uppercase(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (config.minProximity == prox) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                        maxLines = 1
-                    )
-                }
-            }
-        }
-        Slider(
-            value = config.priority.toFloat(),
-            onValueChange = {
-                onChange(config.copy(priority = it.toInt().coerceIn(0, 100)))
-            },
-            valueRange = 0f..100f
-        )
-    }
-}
-
-private fun Int?.orZero(): Int = this ?: 0
 
 private fun friendlyBadgeLabel(detection: BadgeUsbDetection): String {
     val text = "${detection.manufacturer} ${detection.id}".lowercase()

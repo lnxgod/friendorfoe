@@ -45,6 +45,8 @@
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
 #include "badge_display_policy_runtime.h"
+#include "badge_theme_runtime.h"
+#include "badge_ble_control.h"
 #endif
 
 static const char *TAG = "http_status";
@@ -1857,7 +1859,21 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
         httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
     }
     httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
+    char theme_json[BADGE_THEME_JSON_MAX] = {0};
+    badge_theme_runtime_json(theme_json, sizeof(theme_json));
+    snprintf(buf, sizeof(buf), ",\"theme_hash\":%lu,\"theme\":",
+             (unsigned long)badge_theme_runtime_hash());
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req,
+                          theme_json[0] ? theme_json : "{\"version\":1}",
+                          HTTPD_RESP_USE_STRLEN);
     badge_status_chunk_display_state(req);
+    char ble_status[192];
+    badge_ble_control_status_json(ble_status, sizeof(ble_status));
+    httpd_resp_send_chunk(req, ",\"ble_control\":", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req,
+                          ble_status[0] ? ble_status : "{\"enabled\":false}",
+                          HTTPD_RESP_USE_STRLEN);
 #endif
 
     int64_t last_upload_ms = http_upload_get_last_success_ms();
@@ -2233,6 +2249,60 @@ static esp_err_t badge_control_post_handler(httpd_req_t *req)
         badge_control_send_display_policy_result(req,
                                                 "display policy reset",
                                                 persist);
+#else
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"badge-only command\"}");
+#endif
+    } else if (strcmp(cmd, "badge_theme") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        const cJSON *theme_item = cJSON_GetObjectItemCaseSensitive(root, "theme");
+        if (!theme_item) {
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"missing theme\"}");
+        } else {
+            char *theme_json = cJSON_PrintUnformatted(theme_item);
+            badge_theme_t theme;
+            char err[64] = {0};
+            bool parsed = theme_json &&
+                badge_theme_parse_json(theme_json, &theme, err, sizeof(err));
+            if (theme_json) {
+                cJSON_free(theme_json);
+            }
+            if (!parsed) {
+                char resp[128];
+                snprintf(resp, sizeof(resp),
+                         "{\"ok\":false,\"error\":\"%s\"}",
+                         err[0] ? err : "invalid badge theme");
+                httpd_resp_sendstr(req, resp);
+            } else {
+                bool persist = badge_control_bool(root, "persist", false);
+                if (!badge_theme_runtime_set(&theme, persist)) {
+                    httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"theme save failed\"}");
+                } else {
+                    char resp[160];
+                    snprintf(resp, sizeof(resp),
+                             "{\"ok\":true,\"message\":\"badge theme updated\","
+                             "\"theme_hash\":%lu,\"persisted\":%s,"
+                             "\"reboot_required\":false}",
+                             (unsigned long)badge_theme_runtime_hash(),
+                             persist ? "true" : "false");
+                    httpd_resp_sendstr(req, resp);
+                }
+            }
+        }
+#else
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"badge-only command\"}");
+#endif
+    } else if (strcmp(cmd, "badge_theme_reset") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        bool persist = badge_control_bool(root, "persist", false);
+        badge_theme_runtime_reset(persist);
+        char resp[160];
+        snprintf(resp, sizeof(resp),
+                 "{\"ok\":true,\"message\":\"badge theme reset\","
+                 "\"theme_hash\":%lu,\"persisted\":%s,"
+                 "\"reboot_required\":false}",
+                 (unsigned long)badge_theme_runtime_hash(),
+                 persist ? "true" : "false");
+        httpd_resp_sendstr(req, resp);
 #else
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"badge-only command\"}");
 #endif

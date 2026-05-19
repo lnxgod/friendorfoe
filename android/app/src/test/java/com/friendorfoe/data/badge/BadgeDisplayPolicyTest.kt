@@ -19,6 +19,15 @@ class BadgeDisplayPolicyTest {
     }
 
     @Test
+    fun policyClassInfoKeysAreUniqueAndMatchDefaults() {
+        val infoKeys = BadgeDisplayPolicyClasses.map { it.key }
+        val defaultKeys = defaultBadgeDisplayPolicy().classes.keys
+
+        assertEquals(infoKeys.distinct(), infoKeys)
+        assertEquals(defaultKeys, infoKeys.toSet())
+    }
+
+    @Test
     fun commandJsonBuildsExpectedBadgeControlPayload() {
         val policy = defaultBadgeDisplayPolicy().let {
             it.copy(
@@ -48,5 +57,39 @@ class BadgeDisplayPolicyTest {
 
         assertEquals("display_nav", json.get("cmd").asString)
         assertEquals("next", json.get("action").asString)
+    }
+
+    @Test
+    fun defaultThemeContainsSafeAccentDefaults() {
+        val theme = defaultBadgeTheme()
+
+        assertEquals("field", theme.palette)
+        assertEquals("dark", theme.background)
+        assertEquals(100, theme.brightness)
+        assertEquals(BadgeThemeAccentClasses.map { it.key }.toSet(), theme.accents.keys)
+        assertEquals(BadgeThemeAccentClasses.map { it.key }.distinct(),
+            BadgeThemeAccentClasses.map { it.key })
+    }
+
+    @Test
+    fun themeCommandJsonBuildsExpectedBadgeControlPayload() {
+        val theme = defaultBadgeTheme().copy(
+            palette = "night",
+            background = "scanline",
+            brightness = 70,
+            accents = defaultBadgeThemeAccents() + ("meta" to 0xF800)
+        )
+
+        val json = JsonParser.parseString(
+            badgeThemeCommandJson(theme, persist = true).toString()
+        ).asJsonObject
+
+        assertEquals("badge_theme", json.get("cmd").asString)
+        assertTrue(json.get("persist").asBoolean)
+        val themeObj = json.getAsJsonObject("theme")
+        assertEquals("night", themeObj.get("palette").asString)
+        assertEquals("scanline", themeObj.get("background").asString)
+        assertEquals(70, themeObj.get("brightness").asInt)
+        assertEquals(0xF800, themeObj.getAsJsonObject("accents").get("meta").asInt)
     }
 }
