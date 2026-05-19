@@ -79,7 +79,8 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                                        const scanner_info_t *info,
                                        bool first)
 {
-    char *buf = (char *)psram_alloc(2048);
+    enum { SCANNER_STATUS_BUF_LEN = 2048 };
+    char *buf = (char *)psram_alloc(SCANNER_STATUS_BUF_LEN);
     if (!buf) {
         httpd_resp_send_chunk(req, first ? "{}" : ",{}", HTTPD_RESP_USE_STRLEN);
         return;
@@ -100,7 +101,7 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
          (!cmd_fresh ? "cmd_wait" :
           (info && scanner_id == 0 && !info->ble_scanning ? "ble_off" : "ok")));
 
-    snprintf(buf, sizeof(buf),
+    snprintf(buf, SCANNER_STATUS_BUF_LEN,
              "%s{\"slot\":%u,\"uart\":\"%s\",\"connected\":%s,"
              "\"slot_role\":\"%s\",\"expected_scan_profile\":\"%s\","
              "\"scan_profile\":\"%s\",\"role_acked\":%s,\"health\":\"%s\"",
@@ -117,7 +118,7 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
 
     scanner_uart_diag_t uart_diag = {0};
     uart_rx_get_scanner_uart_diag(scanner_id, &uart_diag);
-    snprintf(buf, sizeof(buf),
+    snprintf(buf, SCANNER_STATUS_BUF_LEN,
              ",\"uart_raw_seen\":%s,\"uart_raw_age_s\":%lld,"
              "\"uart_raw_bytes\":%lu,\"uart_line_overflow\":%lu,"
              "\"uart_json_err\":%lu",
@@ -129,7 +130,7 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     if (info) {
-        snprintf(buf, sizeof(buf),
+        snprintf(buf, SCANNER_STATUS_BUF_LEN,
                  ",\"ver\":\"%s\",\"board\":\"%s\",\"cmd_rx\":%lu,"
                  "\"cmd_last_age_s\":%lld,\"cmd_parse_err\":%lu,"
                  "\"cmd_overflow\":%lu,\"ble_scanning\":%s,"
@@ -276,7 +277,7 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
         json_chunk_string(req, info->ble_dbg_priv_name);
         httpd_resp_send_chunk(req, ",\"ble_dbg_priv_reason\":", HTTPD_RESP_USE_STRLEN);
         json_chunk_string(req, info->ble_dbg_priv_reason);
-        snprintf(buf, sizeof(buf),
+        snprintf(buf, SCANNER_STATUS_BUF_LEN,
                  ",\"ble_dbg_near_seen\":%lu,\"ble_dbg_near_rssi\":%d,"
                  "\"ble_dbg_near_cid\":%u,\"ble_dbg_near_svc0\":%u,"
                  "\"ble_dbg_near_svc_count\":%u,"
@@ -298,7 +299,7 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  (unsigned)info->ble_dbg_priv_svc_count,
                  (unsigned)info->ble_dbg_priv_payload_len);
         httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
-        snprintf(buf, sizeof(buf),
+        snprintf(buf, SCANNER_STATUS_BUF_LEN,
                  ",\"display_policy_hash\":%lu,"
                  "\"display_policy_ack_hash\":%lu,\"filtered_counts\":{",
                  (unsigned long)info->display_policy_hash,
@@ -306,7 +307,7 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
         httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
         for (int i = 0; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; i++) {
             badge_display_policy_class_t cls = (badge_display_policy_class_t)i;
-            snprintf(buf, sizeof(buf), "%s\"%s\":%lu",
+            snprintf(buf, SCANNER_STATUS_BUF_LEN, "%s\"%s\":%lu",
                      i == 0 ? "" : ",",
                      badge_display_policy_class_key(cls),
                      (unsigned long)info->display_policy_filtered[i]);
@@ -713,7 +714,8 @@ static esp_err_t status_json_handler(httpd_req_t *req)
     bool standalone = wifi_sta_is_standalone();
     bool scanner_ok = uart_rx_is_scanner_connected();
 
-    char *buf = (char *)psram_alloc(1400);
+    enum { STATUS_JSON_BUF_LEN = 1400 };
+    char *buf = (char *)psram_alloc(STATUS_JSON_BUF_LEN);
     if (!buf) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "status scratch alloc failed");
         return ESP_OK;
@@ -746,7 +748,7 @@ static esp_err_t status_json_handler(httpd_req_t *req)
     extern volatile int g_last_time_fetch_port;
 
     /* Open JSON object */
-    snprintf(buf, sizeof(buf),
+    snprintf(buf, STATUS_JSON_BUF_LEN,
         "{\"device_id\":\"%s\",\"uptime_s\":%lld,"
         "\"gps\":{\"fix\":%s,\"lat\":%.6f,\"lon\":%.6f,\"satellites\":%d},"
         "\"wifi_sta\":%s,\"ap_clients\":%d,"
@@ -809,14 +811,14 @@ static esp_err_t status_json_handler(httpd_req_t *req)
 #ifdef FOF_BADGE_VARIANT
     json_chunk_string(req, badge_runtime_network_mode_name(
         badge_runtime_get_network_mode()));
-    snprintf(buf, sizeof(buf),
+    snprintf(buf, STATUS_JSON_BUF_LEN,
              ",\"backend_enabled\":%s,\"network_ttl_s\":%d,"
              "\"reset_reason\":",
              badge_runtime_get_network_mode() == BADGE_RUNTIME_NETWORK_BACKEND ? "true" : "false",
              badge_runtime_get_network_ttl_s());
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
     json_chunk_string(req, badge_runtime_last_reset_reason_name());
-    snprintf(buf, sizeof(buf),
+    snprintf(buf, STATUS_JSON_BUF_LEN,
              ",\"reset_reason_code\":%lu,\"reset_expected\":%s,"
              "\"usb_control_age_s\":%lld,\"recovery_mode\":",
              (unsigned long)badge_runtime_last_reset_reason(),
@@ -824,7 +826,7 @@ static esp_err_t status_json_handler(httpd_req_t *req)
              (long long)badge_runtime_usb_control_age_s());
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
     json_chunk_string(req, badge_runtime_recovery_mode());
-    snprintf(buf, sizeof(buf),
+    snprintf(buf, STATUS_JSON_BUF_LEN,
              ",\"crash_count\":%lu,\"stack_main_free\":%lu,"
              "\"stack_display_free\":%lu,\"stack_usb_free\":%lu,"
              "\"stack_uart_ble_free\":%lu,\"stack_uart_wifi_free\":%lu",
@@ -836,12 +838,12 @@ static esp_err_t status_json_handler(httpd_req_t *req)
              (unsigned long)badge_runtime_uart_wifi_stack_free());
 #else
     json_chunk_string(req, standalone ? "standalone" : "backend");
-    snprintf(buf, sizeof(buf),
+    snprintf(buf, STATUS_JSON_BUF_LEN,
              ",\"backend_enabled\":%s,\"network_ttl_s\":0",
              standalone ? "false" : "true");
 #endif
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
-    snprintf(buf, sizeof(buf),
+    snprintf(buf, STATUS_JSON_BUF_LEN,
              ",\"wifi_sta\":%s,\"standalone\":%s,"
              "\"uploads_ok\":%d,\"uploads_fail\":%d,"
              "\"last_upload_age_s\":%lld},",
@@ -861,7 +863,7 @@ static esp_err_t status_json_handler(httpd_req_t *req)
 
     for (int i = 0; i < n; i++) {
         int age_sec = (int)((now_ms - recent[i].timestamp_ms) / 1000);
-        snprintf(buf, sizeof(buf),
+        snprintf(buf, STATUS_JSON_BUF_LEN,
             "%s{\"drone_id\":\"%s\",\"source\":\"%s\","
             "\"confidence\":%.2f,\"rssi\":%d,\"age_s\":%d}",
             i > 0 ? "," : "",

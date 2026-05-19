@@ -1848,13 +1848,14 @@ static esp_err_t fw_info_handler(httpd_req_t *req)
     if (has_fw) nvs_config_get_string(NVS_FW_NAME, name, sizeof(name));
 
     int64_t now_ms = esp_timer_get_time() / 1000;
-    char *resp = (char *)psram_alloc(1800);
+    enum { FW_INFO_RESP_LEN = 1800 };
+    char *resp = (char *)psram_alloc(FW_INFO_RESP_LEN);
     if (!resp) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Firmware info alloc failed");
         return ESP_OK;
     }
     if (has_fw) {
-        snprintf(resp, sizeof(resp),
+        snprintf(resp, FW_INFO_RESP_LEN,
                  "{\"stored\":true,\"size\":%lu,\"checksum\":%lu,"
                  "\"version\":\"%s\",\"name\":\"%s\",\"partition\":\"%s\","
                  "\"auto_update_enabled\":true,\"auto_relay_cooldown_s\":%d,"
@@ -1904,7 +1905,7 @@ static esp_err_t fw_info_handler(httpd_req_t *req)
                  s_last_relay[1].scanner_version,
                  s_last_relay[1].scanner_fw_state);
     } else {
-        snprintf(resp, sizeof(resp),
+        snprintf(resp, FW_INFO_RESP_LEN,
                  "{\"stored\":false,\"auto_update_enabled\":true,"
                  "\"auto_relay_cooldown_s\":%d}",
                  (int)(FW_AUTO_RELAY_COOLDOWN_MS / 1000));
