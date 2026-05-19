@@ -805,10 +805,10 @@ static void copy_ble_detail(char *out, const drone_detection_t *det)
                        contains_nocase(det->class_reason, "privacy signal"))) {
         snprintf(detail, sizeof(detail), "strong BLE near");
     } else if (det && det->class_reason[0] != '\0') {
-        snprintf(detail, sizeof(detail), "%s",
-                 class_reason_is_raw_evidence(det->class_reason)
-                    ? "BLE evidence"
-                    : det->class_reason);
+        const char *reason = class_reason_is_raw_evidence(det->class_reason)
+            ? "BLE evidence"
+            : det->class_reason;
+        snprintf(detail, sizeof(detail), "%.31s", reason);
     } else if (det && det->drone_id[0] != '\0') {
         snprintf(detail, sizeof(detail), "BLE signal");
     }
