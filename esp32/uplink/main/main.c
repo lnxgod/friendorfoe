@@ -35,6 +35,8 @@
 #include "badge_runtime.h"
 #ifdef FOF_BADGE_VARIANT
 #include "badge_display_policy_runtime.h"
+#include "badge_theme_runtime.h"
+#include "badge_ble_control.h"
 #endif
 #include "detection_types.h"
 #include "detection_policy.h"
@@ -548,6 +550,8 @@ void app_main(void)
 #ifdef FOF_BADGE_VARIANT
     badge_runtime_init(s_ota_pending_verify);
     badge_display_policy_runtime_init();
+    badge_theme_runtime_init();
+    badge_ble_control_init();
 #endif
 
     badge_mode_t badge_mode = badge_mode_get();

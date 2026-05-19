@@ -21,7 +21,7 @@
  * for ESP-IDF's PROJECT_VER metadata based on the PIOENV env var.
  */
 #define FOF_VERSION_PROD  "0.63.0-svc156"
-#define FOF_VERSION_BADGE "0.64.39-badge-usb-detail"
+#define FOF_VERSION_BADGE "0.64.40-badge-ble-theme"
 
 #if defined(FOF_BADGE_VARIANT)
 #define FOF_VERSION FOF_VERSION_BADGE

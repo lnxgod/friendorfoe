@@ -4,6 +4,27 @@ All notable changes to the ESP32 hardware edition of Friend or Foe.
 
 ## [Unreleased]
 
+## [0.64.40-badge-ble-theme] - 2026-05-18
+
+### Added
+- **Badge firmware version bump to `0.64.40-badge-ble-theme`.** The FoF Badge
+  XIAO track now carries the Android BLE/theme prototype while production S3
+  firmware remains on `0.63.0-svc156`.
+- **Badge-only BLE control transport.** BTN2 opens a 10-second BLE pairing
+  window, bonded phones can reconnect later, and encrypted/bonded control
+  writes share the same `FOF_CTL` parser used by USB-C and Badge AP.
+- **Persistent badge theme v1.** The badge accepts `badge_theme` and
+  `badge_theme_reset`, stores safe palettes/background/brightness/accent colors
+  in NVS, and exposes `theme`, `theme_hash`, and `ble_control` in `FOF_STATUS`
+  plus `/api/badge/status`.
+
+### Changed
+- **Android badge controls are release-facing.** Privacy and List badge panels
+  can edit badge appearance, prefer USB-C then bonded BLE then Badge AP, and
+  keep Debug Bridge as a debug-build fallback.
+- **LCD theme rendering is guarded.** User accents can style the badge without
+  hiding critical red/yellow threat states.
+
 ## [0.64.39-badge-usb-detail] - 2026-05-18
 
 ### Added

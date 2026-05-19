@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 85
-        versionName = "0.64.39-badge-usb-detail"
+        versionCode = 86
+        versionName = "0.64.40-badge-ble-theme"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

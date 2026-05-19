@@ -6,8 +6,8 @@ used for walk-up privacy/drone awareness and Android USB-C testing.
 
 ## Current Versions
 
-- Android app/backend: `0.64.39-badge-usb-detail`
-- FoF Badge firmware: `0.64.39-badge-usb-detail`
+- Android app/backend: `0.64.40-badge-ble-theme`
+- FoF Badge firmware: `0.64.40-badge-ble-theme`
 - Production S3 firmware: `0.63.0-svc156`
 
 Keep those tracks separate. The badge firmware uses `FOF_BADGE_VARIANT`,
@@ -29,13 +29,19 @@ uplink assigns the active role and scanner profile at runtime.
 
 ## What This Release Tests
 
-`0.64.39-badge-usb-detail` is the badge USB-C detail release:
+`0.64.40-badge-ble-theme` is the badge BLE/theme control release:
 
 - The badge keeps drone, Meta Glasses, tracker, WiFi attack, and scanner health
   evidence separated into calm top awareness tiles plus BLE/WiFi lower lanes.
 - Android can connect directly over USB-C, continuously poll `FOF_STATUS`, and
   show badge evidence, source, confidence, RSSI, GPS/operator facts, scanner
   health, reset/crash state, stack, heap, and PSRAM diagnostics in Privacy.
+- Badge-only BLE control can be opened with BTN2 for a 10-second pairing window;
+  bonded phones can reconnect later and use the same status/control parser as
+  USB-C, Badge AP, and the debug bridge.
+- Android exposes safe badge appearance controls for palette, background,
+  brightness, and per-class threat accents; the badge persists theme v1 in NVS
+  and reports `theme`, `theme_hash`, and `ble_control` in status.
 - Remote ID evidence is prioritized through scanner UART pressure, carries
   display IDs, RSSI, GPS/operator fields, and avoids ambiguous `RID SIGNAL`
   rows once a real RID entity is decoded.
@@ -107,7 +113,8 @@ Expected healthy status facts:
 
 - Top-level `recovery_mode` is `normal`.
 - Both scanners are connected and report `scanner-s3-combo-fof_badge`.
-- Uplink and scanners report `0.64.39-badge-usb-detail`.
+- Uplink and scanners report `0.64.40-badge-ble-theme` after the matching badge
+  images are flashed.
 - `display_policy_hash` is non-zero.
 - Scanner `display_policy_ack_hash` catches up to the uplink policy hash.
 
