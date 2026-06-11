@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Android update check now has a real release version to find.** The Android
+  app version is bumped to `0.64.43-privacy-signals` so GitHub Releases can
+  publish a newer APK than the installed `0.64.40-badge-ble-theme` build.
+
 ### Changed
 - **README now reflects the current Codex-first workflow.** Claude is credited
   for the initial bootstrap, while Codex is documented as the day-to-day

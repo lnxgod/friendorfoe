@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 86
-        versionName = "0.64.40-badge-ble-theme"
+        versionCode = 87
+        versionName = "0.64.43-privacy-signals"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

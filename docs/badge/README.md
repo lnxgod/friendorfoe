@@ -6,7 +6,7 @@ used for walk-up privacy/drone awareness and Android USB-C testing.
 
 ## Current Versions
 
-- Android app: `0.64.40-badge-ble-theme`
+- Android app: `0.64.43-privacy-signals`
 - Backend: `0.64.38-badge-live`
 - FoF Badge firmware: `0.64.41-badge-radio-fix`
 - Production S3 firmware: `0.64.43-privacy-signals`
