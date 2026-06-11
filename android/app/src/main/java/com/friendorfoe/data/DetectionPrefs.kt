@@ -78,9 +78,9 @@ class DetectionPrefs @Inject constructor(
         get() = prefs.getString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL) ?: DEFAULT_BACKEND_URL
         set(value) = prefs.edit().putString(KEY_BACKEND_URL, value).apply()
 
-    /** Backend-only mode — disable all local detection, rely solely on ESP32 sensors */
+    /** Backend-only mode — phone sensors off; ESP32/API/badge feeds remain available. */
     var backendOnlyMode: Boolean
-        get() = prefs.getBoolean(KEY_BACKEND_ONLY, true)  // ON by default
+        get() = prefs.getBoolean(KEY_BACKEND_ONLY, false)
         set(value) = prefs.edit().putBoolean(KEY_BACKEND_ONLY, value).apply()
 
     /** Bearer token for the calibration walk endpoints.

@@ -68,12 +68,15 @@ private val sectionGroups = listOf(
 
 @Composable
 fun PrivacyScreen(
+    onNavigateToEmfSweep: (() -> Unit)? = null,
+    onNavigateToIrCameraScan: (() -> Unit)? = null,
     viewModel: PrivacyViewModel = hiltViewModel()
 ) {
     val categorized by viewModel.categorizedDetections.collectAsStateWithLifecycle()
     val totalCount by viewModel.totalCount.collectAsStateWithLifecycle()
     val threatCount by viewModel.threatCount.collectAsStateWithLifecycle()
     val badgeUsbState by viewModel.badgeUsbState.collectAsStateWithLifecycle()
+    val backendOnlyMode by viewModel.backendOnlyMode.collectAsStateWithLifecycle()
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -233,6 +236,17 @@ fun PrivacyScreen(
             onEntityDetails = { selectedBadgeEntity = it }
         )
 
+        if (backendOnlyMode) {
+            BackendOnlyPausedRow(
+                onUsePhoneScanner = viewModel::enablePhonePrivacyScanning
+            )
+        }
+
+        SweepToolsRow(
+            onNavigateToEmfSweep = onNavigateToEmfSweep,
+            onNavigateToIrCameraScan = onNavigateToIrCameraScan
+        )
+
         // Status bar
         Row(
             modifier = Modifier
@@ -387,6 +401,83 @@ fun PrivacyScreen(
             viewModel = viewModel,
             onDismiss = { trackingTarget = null }
         )
+    }
+}
+
+@Composable
+private fun BackendOnlyPausedRow(
+    onUsePhoneScanner: () -> Unit
+) {
+    val accent = Color(0xFF1565C0)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(accent.copy(alpha = 0.10f))
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "PHONE",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = accent,
+            modifier = Modifier.width(56.dp)
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Local privacy scan paused",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "Backend-only mode is on; badge/API feeds still work.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        TextButton(onClick = onUsePhoneScanner) {
+            Text("Use Phone")
+        }
+    }
+}
+
+@Composable
+private fun SweepToolsRow(
+    onNavigateToEmfSweep: (() -> Unit)?,
+    onNavigateToIrCameraScan: (() -> Unit)?
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "Sweep",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(56.dp)
+        )
+        TextButton(
+            onClick = { onNavigateToEmfSweep?.invoke() },
+            enabled = onNavigateToEmfSweep != null,
+            modifier = Modifier.weight(1f)
+        ) {
+            Text("EMF")
+        }
+        TextButton(
+            onClick = { onNavigateToIrCameraScan?.invoke() },
+            enabled = onNavigateToIrCameraScan != null,
+            modifier = Modifier.weight(1f)
+        ) {
+            Text("IR Camera")
+        }
     }
 }
 

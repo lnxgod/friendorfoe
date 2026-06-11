@@ -38,6 +38,9 @@ class PrivacyViewModel @Inject constructor(
     private val privacyAlertNotifier: PrivacyAlertNotifier,
 ) : ViewModel() {
 
+    private val _backendOnlyMode = MutableStateFlow(skyObjectRepository.prefs.backendOnlyMode)
+    val backendOnlyMode: StateFlow<Boolean> = _backendOnlyMode.asStateFlow()
+
     init {
         skyObjectRepository.ensureStarted(0.0, 0.0)
         // Poll the WifiAnomalyDetector every 15 s. Surfaces Pwnagotchi beacons
@@ -156,11 +159,13 @@ class PrivacyViewModel @Inject constructor(
 
     /** Clear all detections and rescan fresh */
     fun refreshDetections() {
+        syncBackendMode()
         skyObjectRepository.refreshPrivacyDetections()
         badgeUsbRepository.requestStatus()
     }
 
     fun startBadgeUsb() {
+        syncBackendMode()
         badgeUsbRepository.start()
     }
 
@@ -174,6 +179,14 @@ class PrivacyViewModel @Inject constructor(
 
     fun refreshBadgeStatus() {
         badgeUsbRepository.requestStatus()
+    }
+
+    fun enablePhonePrivacyScanning() {
+        if (skyObjectRepository.prefs.backendOnlyMode) {
+            skyObjectRepository.prefs.backendOnlyMode = false
+            skyObjectRepository.restartDetectionSources()
+        }
+        _backendOnlyMode.value = false
     }
 
     fun badgeNextFocus() {
@@ -210,6 +223,10 @@ class PrivacyViewModel @Inject constructor(
 
     fun finishDirectionScan(): BleTracker.DirectionResult? {
         return bleTracker.finishDirectionScan()
+    }
+
+    private fun syncBackendMode() {
+        _backendOnlyMode.value = skyObjectRepository.prefs.backendOnlyMode
     }
 
     private fun LivePrivacyDeviceDto.toGlassesDetection(): GlassesDetection? {

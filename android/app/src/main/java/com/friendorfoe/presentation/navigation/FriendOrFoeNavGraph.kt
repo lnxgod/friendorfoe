@@ -101,7 +101,14 @@ fun FriendOrFoeNavGraph(
         }
 
         composable(Screen.Privacy.route) {
-            com.friendorfoe.presentation.privacy.PrivacyScreen()
+            com.friendorfoe.presentation.privacy.PrivacyScreen(
+                onNavigateToEmfSweep = {
+                    navController.navigate(Screen.EmfSweep.route) { launchSingleTop = true }
+                },
+                onNavigateToIrCameraScan = {
+                    navController.navigate(Screen.IrCameraScan.route) { launchSingleTop = true }
+                }
+            )
         }
 
         composable(Screen.EmfSweep.route) {
