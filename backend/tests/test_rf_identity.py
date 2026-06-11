@@ -97,6 +97,77 @@ def test_friendly_camera_oui_adds_family_without_hidden_camera_overclaim():
     assert any("Curated OUI prefix: Ring" in e for e in meta["evidence"])
 
 
+@pytest.mark.parametrize(
+    ("bssid", "brand"),
+    [
+        ("E0:A7:00:12:34:56", "Verkada"),
+        ("CC:47:BD:12:34:56", "Rhombus"),
+        ("2C:42:05:12:34:56", "Lytx"),
+        ("C0:56:E3:12:34:56", "Hikvision"),
+        ("94:EC:13:12:34:56", "EZVIZ"),
+    ],
+)
+def test_researched_privacy_oui_hints_add_camera_family(bssid, brand):
+    meta = enrich_rf_evidence(
+        source="wifi_ap_inventory",
+        bssid=bssid,
+        ssid="",
+        classification="wifi_device",
+    )
+
+    assert meta["brand"] == brand
+    assert meta["brand_source"] == "friendly_oui"
+    assert meta["device_family"] == "camera_or_video"
+    assert meta["device_class"] == "surveillance_camera"
+
+
+@pytest.mark.parametrize(
+    ("company_id", "brand_token"),
+    [
+        (0x0C19, "Arlo"),
+        (0x0E25, "Hikvision"),
+        (0x0D5B, "Axis"),
+    ],
+)
+def test_privacy_ble_company_ids_prefer_camera_family(company_id, brand_token):
+    meta = enrich_rf_evidence(
+        source="ble_fingerprint",
+        classification="ble_device",
+        ble_company_id=company_id,
+    )
+
+    assert brand_token.lower() in str(meta["brand"]).lower()
+    assert meta["device_family"] == "camera_or_video"
+    assert meta["family_source"] == "vendor_keyword"
+
+
+@pytest.mark.parametrize(
+    ("service_uuids", "brand", "device_family", "device_class"),
+    [
+        ("FCB2", "DULT", "tracker", "tracker"),
+        ("FD3A", "Verkada", "camera_or_video", "surveillance_camera"),
+        ("FDA9", "Rhombus", "camera_or_video", "surveillance_camera"),
+        ("1812", "Bluetooth SIG", "input_device", "ble_hid"),
+        ("184F", "Bluetooth SIG", "audio", "auracast"),
+    ],
+)
+def test_privacy_ble_service_uuids_enrich_identity(service_uuids, brand, device_family, device_class):
+    meta = enrich_rf_evidence(
+        source="ble_fingerprint",
+        classification="ble_device",
+        ble_svc_uuids=service_uuids,
+    )
+
+    assert meta["brand"] == brand
+    assert meta["brand_source"] == "privacy_ble_service_uuid"
+    assert meta["device_family"] == device_family
+    assert meta["device_class"] == device_class
+    assert meta["family_source"] == "privacy_ble_service_uuid"
+    assert meta["identity_source"] == "ble_service_uuid"
+    assert any("Privacy BLE service UUID" in item for item in meta["evidence"])
+    assert any(ref["id"] == "privacy_ble_service_uuid" for ref in meta["reference_sources"])
+
+
 def test_flock_field_oui_adds_alpr_camera_family():
     meta = enrich_rf_evidence(
         source="wifi_oui",

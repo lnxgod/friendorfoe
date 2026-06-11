@@ -11,19 +11,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ESP32_DIR="$(dirname "$SCRIPT_DIR")"
 FW_DIR="$SCRIPT_DIR/firmware"
+PIO_BIN="${PIO:-}"
+if [[ -z "$PIO_BIN" ]]; then
+  if [[ -x "$ESP32_DIR/.venv312/bin/pio" ]]; then
+    PIO_BIN="$ESP32_DIR/.venv312/bin/pio"
+  else
+    PIO_BIN="pio"
+  fi
+fi
 
 echo "=== Building Scanner firmware (ESP32-S3) ==="
 cd "$ESP32_DIR/scanner"
-pio run -e scanner-s3-combo
+"$PIO_BIN" run -e scanner-s3-combo
 
 echo ""
 echo "=== Building Seed Scanner firmware (ESP32-S3) ==="
-pio run -e scanner-s3-combo-seed
+"$PIO_BIN" run -e scanner-s3-combo-seed
 
 echo ""
 echo "=== Building Uplink firmware (ESP32-S3) ==="
 cd "$ESP32_DIR/uplink"
-pio run -e uplink-s3
+"$PIO_BIN" run -e uplink-s3
 
 echo ""
 echo "=== Copying binaries to web-flasher/firmware/ ==="

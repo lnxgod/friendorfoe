@@ -81,6 +81,33 @@ def test_findmy_remains_tracker_privacy_kind():
     assert enriched["display_label"] == "TRACKER NEAR"
 
 
+def test_ble_service_uuid_privacy_signatures_classify_without_text_labels():
+    tracker = classify_privacy_device({
+        "source": "ble_fingerprint",
+        "ble_svc_uuids": "FCB2",
+        "current_rssi": -55,
+    })
+    assert tracker["privacy_kind"] == "TRACKER_NEAR"
+    assert tracker["display_label"] == "TRACKER NEAR"
+
+    camera = classify_privacy_device({
+        "source": "ble_fingerprint",
+        "ble_svc_uuids": "0000fd3a-0000-1000-8000-00805f9b34fb",
+        "current_rssi": -57,
+    })
+    assert camera["privacy_kind"] == "CAMERA_NEAR"
+    assert camera["display_label"] == "CAMERA NEAR"
+    assert any(item["field"] == "ble_service_signature" for item in camera["evidence"])
+
+    hid = classify_privacy_device({
+        "source": "ble_fingerprint",
+        "ble_svc_uuids": "1812",
+        "current_rssi": -58,
+    })
+    assert hid["privacy_kind"] == "BLE_HID"
+    assert hid["display_label"] == "HID NEAR"
+
+
 def test_privacy_signature_catalog_matches_wifi_privacy_aps():
     assert validate_privacy_signature_catalog() == []
 
@@ -88,6 +115,29 @@ def test_privacy_signature_catalog_matches_wifi_privacy_aps():
     assert tapo is not None
     assert tapo["manufacturer"] == "TP-Link"
     assert tapo["class_reason"] == "privacy:camera:tapo"
+
+    swann = match_privacy_wifi_ssid("Swann-SWIFI-1a2b3c")
+    assert swann is not None
+    assert swann["manufacturer"] == "Swann"
+    assert swann["class_reason"] == "privacy:camera:swann"
+
+    viofo = match_privacy_wifi_ssid("VIOFO-A229-Pro")
+    assert viofo is not None
+    assert viofo["manufacturer"] == "Viofo"
+    assert viofo["class_reason"] == "privacy:dashcam:viofo"
+
+    arlo = match_privacy_wifi_ssid("Arlo-VMB-1234567")
+    assert arlo is not None
+    assert arlo["manufacturer"] == "Arlo"
+
+    deauther = match_privacy_wifi_ssid("pwnd")
+    assert deauther is not None
+    assert deauther["privacy_kind"] == "WIFI_ATTACK_TOOL"
+    assert deauther["class_reason"] == "attack_tool:deauther"
+
+    pineapple = match_privacy_wifi_ssid("Pineapple_ABCD")
+    assert pineapple is not None
+    assert pineapple["confidence"] == 0.95
 
     assert match_privacy_wifi_ssid("Campus-WiFi") is None
     assert match_privacy_wifi_ssid("UFO-Arcade") is None
@@ -111,8 +161,8 @@ def test_wifi_privacy_ap_maps_to_camera_privacy_kind():
 def test_attack_tool_wifi_ap_maps_to_wifi_tool_privacy_kind():
     enriched = classify_privacy_device({
         "source": "wifi_ap_inventory",
-        "ssid": "Advanced-Deauther",
-        "manufacturer": "Deauther",
+        "ssid": "pwnd",
+        "manufacturer": "Spacehuhn",
         "device_type": "Attack Tool",
         "class_reason": "attack_tool:deauther",
         "current_rssi": -62,

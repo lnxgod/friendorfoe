@@ -68,13 +68,31 @@ class PrivacyCategoryMappingTest {
         assertEquals("TP-Link", tapo.manufacturer)
 
         val deauther = GlassesDetector.checkWifiSsid(
-            ssid = "Advanced-Deauther",
+            ssid = "pwnd",
             bssid = "AA:BB:CC:00:00:03",
             rssi = -48
         )
         assertNotNull(deauther)
         assertEquals(PrivacyCategory.ATTACK_TOOL, deauther!!.category)
-        assertEquals("Generic", deauther.manufacturer)
+        assertEquals("Spacehuhn", deauther.manufacturer)
+
+        val viofo = GlassesDetector.checkWifiSsid(
+            ssid = "VIOFO-A229-Pro",
+            bssid = "AA:BB:CC:00:00:04",
+            rssi = -50
+        )
+        assertNotNull(viofo)
+        assertEquals(PrivacyCategory.DASH_CAMERA, viofo!!.category)
+        assertEquals("Viofo", viofo.manufacturer)
+
+        val marauder = GlassesDetector.checkWifiSsid(
+            ssid = "ESP32Marauder",
+            bssid = "AA:BB:CC:00:00:05",
+            rssi = -55
+        )
+        assertNotNull(marauder)
+        assertEquals(PrivacyCategory.ATTACK_TOOL, marauder!!.category)
+        assertEquals("ESP32Marauder", marauder.manufacturer)
     }
 
     @Test

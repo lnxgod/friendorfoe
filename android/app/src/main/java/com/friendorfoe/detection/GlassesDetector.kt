@@ -262,6 +262,7 @@ class GlassesDetector @Inject constructor(
             WifiPattern("BlackVue", "BlackVue", "Dash Camera", 0.90f, true),
             WifiPattern("DR900", "BlackVue", "Dash Camera", 0.85f, true),
             WifiPattern("DR750", "BlackVue", "Dash Camera", 0.85f, true),
+            WifiPattern("VIOFO", "Viofo", "Dash Camera", 0.85f, true),
             WifiPattern("VIOFO_", "Viofo", "Dash Camera", 0.85f, true),
             WifiPattern("70mai_", "70mai", "Dash Camera", 0.85f, true),
             WifiPattern("Nextbase", "Nextbase", "Dash Camera", 0.85f, true),
@@ -278,6 +279,7 @@ class GlassesDetector @Inject constructor(
             WifiPattern("Axon Body", "Axon", "Body Camera", 0.90f, true),
             WifiPattern("WGVISTA", "Motorola", "Body Camera", 0.85f, true),
             // Attack tools
+            WifiPattern("Pineapple_", "Hak5", "Attack Tool", 0.95f, false),
             WifiPattern("Pineapple", "Hak5", "Attack Tool", 0.90f, false),
             // Smart home cameras (setup mode)
             WifiPattern("Ring Setup", "Ring", "Doorbell Camera", 0.85f, true),
@@ -321,7 +323,11 @@ class GlassesDetector @Inject constructor(
             WifiPattern("Spypoint-", "Spypoint", "Trail Camera", 0.85f, true),
             // Deauther / attack tools
             WifiPattern("pwned", "Spacehuhn", "Attack Tool", 0.95f, false),
+            WifiPattern("pwnd", "Spacehuhn", "Attack Tool", 0.95f, false),
             WifiPattern("Advanced-Deauther", "Generic", "Attack Tool", 0.95f, false),
+            WifiPattern("Marauder", "ESP32Marauder", "Attack Tool", 0.90f, false),
+            WifiPattern("ESP32Marauder", "ESP32Marauder", "Attack Tool", 0.90f, false),
+            WifiPattern("pwnagotchi", "Pwnagotchi", "Attack Tool", 0.90f, false),
         )
 
         /** Assign a privacy category based on device type string. Used by both BLE and WiFi paths. */
@@ -523,6 +529,13 @@ class GlassesDetector @Inject constructor(
         MfrEntry(0x0413, "DJI", "Action Camera", 0.80f, true),
         MfrEntry(0x08A9, "Insta360", "Action Camera", 0.85f, true),
         // IoT / Camera ecosystems
+        MfrEntry(0x0870, "Wyze", "Surveillance Camera", 0.80f, true),
+        MfrEntry(0x0C19, "Arlo", "Surveillance Camera", 0.80f, true),
+        MfrEntry(0x0D5B, "Axis", "Surveillance Camera", 0.80f, true),
+        MfrEntry(0x0E25, "Hikvision", "Surveillance Camera", 0.80f, true),
+        MfrEntry(0x0A65, "Lytx", "Fleet Dashcam", 0.80f, true),
+        MfrEntry(0x0B6B, "Samsara", "Fleet Dashcam", 0.80f, true),
+        MfrEntry(0x0909, "70mai", "Dash Camera", 0.80f, true),
         MfrEntry(0x07D0, "Tuya", "IoT Camera", 0.65f, true),
         MfrEntry(0x02D3, "Ring", "Doorbell Camera", 0.75f, true),
     )
@@ -554,6 +567,21 @@ class GlassesDetector @Inject constructor(
         UuidEntry(0xFE2C, "Google", "Fast Pair", 0.50f, false), // below threshold
         // Action cameras
         UuidEntry(0xFEA6, "GoPro", "Action Camera", 0.90f, true),
+        // Camera / fleet service UUIDs assigned by Bluetooth SIG
+        UuidEntry(0xFC81, "Axon", "Body Camera", 0.90f, true),
+        UuidEntry(0xFC86, "Samsara", "Fleet Dashcam", 0.85f, true),
+        UuidEntry(0xFC87, "Samsara", "Fleet Dashcam", 0.85f, true),
+        UuidEntry(0xFE9B, "Samsara", "Fleet Dashcam", 0.85f, true),
+        UuidEntry(0xFC6D, "Motive", "Fleet Dashcam", 0.85f, true),
+        UuidEntry(0xFC70, "Motive", "Fleet Dashcam", 0.85f, true),
+        UuidEntry(0xFD3A, "Verkada", "Surveillance Camera", 0.85f, true),
+        UuidEntry(0xFD3B, "Verkada", "Surveillance Camera", 0.85f, true),
+        UuidEntry(0xFD7B, "Wyze", "Surveillance Camera", 0.80f, true),
+        UuidEntry(0xFDA9, "Rhombus", "Surveillance Camera", 0.85f, true),
+        UuidEntry(0xFD8E, "Motorola", "Body Camera", 0.80f, true),
+        UuidEntry(0xFD4D, "70mai", "Dash Camera", 0.80f, true),
+        UuidEntry(0xFD4E, "70mai", "Dash Camera", 0.80f, true),
+        UuidEntry(0xFD50, "Tuya", "IoT Camera", 0.65f, true),
         // Samsung wearables
         UuidEntry(0xFD6A, "Samsung", "Galaxy Ring", 0.85f, false),
         UuidEntry(0xFD69, "Samsung", "Galaxy Ring", 0.85f, false),

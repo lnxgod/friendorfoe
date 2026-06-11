@@ -157,6 +157,26 @@ async def test_scanner_readiness_filters_gate_canary_device_and_uart(
 
 
 @pytest.mark.asyncio
+async def test_scanner_readiness_flags_missing_target_version(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def missing_version(name: str) -> None:
+        assert name == "scanner-s3-combo"
+        return None
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", missing_version)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/nodes/firmware/scanner/readiness")
+
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["scanners"][0]["target_version"] == ""
+    assert "target_version_unknown" in payload["scanners"][0]["blockers"]
+
+
+@pytest.mark.asyncio
 async def test_stage_fleet_records_version_size_and_crc(monkeypatch: pytest.MonkeyPatch):
     calls: list[str] = []
 
@@ -181,6 +201,73 @@ async def test_stage_fleet_records_version_size_and_crc(monkeypatch: pytest.Monk
     assert all(row["size"] == 19 for row in payload["results"])
     assert all(row["crc32"] for row in payload["results"])
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_stage_fleet_uses_scanner_board_for_mixed_variants(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    now = time.time()
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {
+            "uplink_MIXED": {
+                "device_id": "uplink_MIXED",
+                "ip": "192.168.1.50",
+                "last_seen": now,
+                "scanners": [
+                    {
+                        "uart": "ble",
+                        "board": "scanner-s3-combo-seed",
+                        "ver": "0.64.42-node-redeploy",
+                        "cmd_rx": 1,
+                        "fw_check_count": 1,
+                    },
+                    {
+                        "uart": "wifi",
+                        "board": "scanner-s3-combo",
+                        "ver": "0.64.42-node-redeploy",
+                        "cmd_rx": 1,
+                        "fw_check_count": 1,
+                    },
+                ],
+            },
+        },
+    )
+
+    async def fake_binary(name: str) -> bytes:
+        assert name in {"scanner-s3-combo-seed", "scanner-s3-combo"}
+        return f"{name} firmware".encode()
+
+    async def fake_version(name: str) -> str:
+        assert name in {"scanner-s3-combo-seed", "scanner-s3-combo"}
+        return "0.64.43-privacy-signals"
+
+    uploads: list[str] = []
+
+    async def fake_run_subprocess(cmd, **kwargs):
+        url = next((part for part in cmd if isinstance(part, str) and part.startswith("http://")), "")
+        uploads.append(url)
+        return _completed(cmd, b'{"ok":true,"stored":true,"size":19,"checksum":1234}')
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", fake_binary)
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", fake_version)
+    monkeypatch.setattr(nodes, "_run_subprocess", fake_run_subprocess)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/nodes/firmware/scanner/stage-fleet")
+
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["ok"] is True
+    assert {row["firmware"] for row in payload["results"]} == {
+        "scanner-s3-combo-seed",
+        "scanner-s3-combo",
+    }
+    assert any("name=scanner-s3-combo-seed" in url for url in uploads)
+    assert any("name=scanner-s3-combo&" in url for url in uploads)
 
 
 @pytest.mark.asyncio

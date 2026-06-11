@@ -186,7 +186,7 @@ bool fof_policy_ssid_is_notable(const char *ssid)
         "defcon", "dc33", "drone", "uav", "fpv", "remoteid",
         "remote-id", "camera", "flock", "flockos", "flk-",
         "alpr", "penguin-", "skimmer",
-        "pwnagotchi", "marauder", "pineapple", "deauther", "pwned",
+        "pwnagotchi", "marauder", "pineapple", "deauther", "pwned", "pwnd",
         "evil", "twin",
     };
     for (size_t i = 0; i < sizeof(tokens) / sizeof(tokens[0]); i++) {
@@ -212,7 +212,8 @@ const char *fof_policy_notable_ssid_label(const char *ssid)
     if (ascii_contains_nocase(ssid, "marauder")) return "Marauder";
     if (ascii_contains_nocase(ssid, "pineapple")) return "Pineapple";
     if (ascii_contains_nocase(ssid, "deauther") ||
-        ascii_contains_nocase(ssid, "pwned")) return "Deauther";
+        ascii_contains_nocase(ssid, "pwned") ||
+        ascii_contains_nocase(ssid, "pwnd")) return "Deauther";
     if (ascii_contains_nocase(ssid, "evil") ||
         ascii_contains_nocase(ssid, "twin")) return "EvilTwin SSID";
     return "Notable SSID";

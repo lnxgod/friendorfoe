@@ -9,7 +9,7 @@ used for walk-up privacy/drone awareness and Android USB-C testing.
 - Android app: `0.64.40-badge-ble-theme`
 - Backend: `0.64.38-badge-live`
 - FoF Badge firmware: `0.64.41-badge-radio-fix`
-- Production S3 firmware: `0.64.42-node-redeploy`
+- Production S3 firmware: `0.64.43-privacy-signals`
 
 Keep those tracks separate. The badge firmware uses `FOF_BADGE_VARIANT`,
 badge-specific pinning, a Waveshare ST7735 display, USB-C control, local AP

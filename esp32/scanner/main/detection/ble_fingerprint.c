@@ -69,6 +69,13 @@
 #define TESLA_COMPANY_ID        0x04F6  /* Tesla, Inc. */
 /* Cameras & Drones */
 #define GOPRO_COMPANY_ID        0x02DF  /* GoPro */
+#define WYZE_COMPANY_ID         0x0870  /* Wyze Labs */
+#define SEVENTYMAI_COMPANY_ID   0x0909  /* 70mai */
+#define LYTX_COMPANY_ID         0x0A65  /* Lytx fleet cameras */
+#define SAMSARA_COMPANY_ID      0x0B6B  /* Samsara fleet cameras */
+#define ARLO_COMPANY_ID         0x0C19  /* Arlo */
+#define AXIS_COMPANY_ID         0x0D5B  /* Axis Communications */
+#define HIKVISION_COMPANY_ID    0x0E25  /* Hikvision */
 #define PARROT_COMPANY_ID       0x0289  /* Parrot Drones SAS */
 #define AUTEL_COMPANY_ID        0x0986  /* Autel Robotics */
 /* Gaming */
@@ -91,12 +98,26 @@
 #define BLE_AUDIO_BASS_UUID     0x184F  /* Broadcast Audio Scan Service */
 #define BLE_AUDIO_PACS_UUID     0x1850  /* Published Audio Capabilities */
 #define APPLE_FINDMY_SVC        0xFD6F  /* Apple Find My network */
+#define DULT_TRACKER_SVC_UUID   0xFCB2  /* Detecting Unwanted Location Trackers */
 #define SAMSUNG_SMARTTAG_SVC1   0xFD59  /* SmartTag factory/non-registered */
 #define SAMSUNG_SMARTTAG_SVC2   0xFD5A  /* SmartTag registered */
 #define SAMSUNG_SMARTTAG_LOST   0xFD69  /* SmartTag offline finding / lost mode */
 #define META_RAYBANGEN2_SVC     0xFD5F  /* Meta Ray-Ban Gen 2 */
 #define META_SVC_UUID1          0xFEB7  /* Meta Platforms, Inc. */
 #define META_SVC_UUID2          0xFEB8  /* Meta Platforms, Inc. */
+#define AXON_SVC_UUID           0xFC81  /* Axon Enterprise */
+#define SAMSARA_SVC_UUID1       0xFC86  /* Samsara Networks */
+#define SAMSARA_SVC_UUID2       0xFC87  /* Samsara Networks */
+#define SAMSARA_SVC_UUID3       0xFE9B  /* Samsara Networks */
+#define MOTIVE_SVC_UUID1        0xFC6D  /* Motive Technologies */
+#define MOTIVE_SVC_UUID2        0xFC70  /* Motive Technologies */
+#define VERKADA_SVC_UUID1       0xFD3A  /* Verkada */
+#define VERKADA_SVC_UUID2       0xFD3B  /* Verkada */
+#define SEVENTYMAI_SVC_UUID1    0xFD4D  /* 70mai */
+#define SEVENTYMAI_SVC_UUID2    0xFD4E  /* 70mai */
+#define WYZE_SVC_UUID           0xFD7B  /* Wyze Labs */
+#define MOTOROLA_SOLUTIONS_SVC  0xFD8E  /* Motorola Solutions */
+#define RHOMBUS_SVC_UUID        0xFDA9  /* Rhombus Systems */
 
 /* ── FNV-1a hash ────────────────────────────────────────────────────────── */
 
@@ -325,6 +346,45 @@ static bool name_mentions_auracast(const char *name)
            contains_case_insensitive(name, "broadcast audio");
 }
 
+static bool uuid_is_privacy_camera_service(uint16_t uuid)
+{
+    switch (uuid) {
+    case AXON_SVC_UUID:
+    case SAMSARA_SVC_UUID1:
+    case SAMSARA_SVC_UUID2:
+    case SAMSARA_SVC_UUID3:
+    case MOTIVE_SVC_UUID1:
+    case MOTIVE_SVC_UUID2:
+    case VERKADA_SVC_UUID1:
+    case VERKADA_SVC_UUID2:
+    case SEVENTYMAI_SVC_UUID1:
+    case SEVENTYMAI_SVC_UUID2:
+    case WYZE_SVC_UUID:
+    case MOTOROLA_SOLUTIONS_SVC:
+    case RHOMBUS_SVC_UUID:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool company_is_privacy_camera_vendor(uint16_t company_id)
+{
+    switch (company_id) {
+    case GOPRO_COMPANY_ID:
+    case WYZE_COMPANY_ID:
+    case SEVENTYMAI_COMPANY_ID:
+    case LYTX_COMPANY_ID:
+    case SAMSARA_COMPANY_ID:
+    case ARLO_COMPANY_ID:
+    case AXIS_COMPANY_ID:
+    case HIKVISION_COMPANY_ID:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /* ── Main fingerprint computation ───────────────────────────────────────── */
 
 void ble_fingerprint_compute(const uint8_t *data, int length,
@@ -352,6 +412,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     const uint8_t *mfr_data = NULL;
     int mfr_data_len = 0;
     bool has_findmy_svc = false;
+    bool has_dult_svc = false;
     bool has_tile_svc = false;
     bool has_fastpair_svc = false;
     bool has_smarttag_svc = false;
@@ -361,6 +422,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     bool has_hid_svc = false;
     bool has_ble_audio_svc = false;
     uint16_t first_meta_svc = 0;
+    uint16_t first_privacy_camera_svc = 0;
 
     /* Local name capture for spooky-device pattern matching (v0.62+) */
     char    local_name[32]   = {0};
@@ -446,6 +508,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 hash = fnv1a_u16(hash, uuid);
 
                 if (uuid == APPLE_FINDMY_SVC)    has_findmy_svc = true;
+                if (uuid == DULT_TRACKER_SVC_UUID) has_dult_svc = true;
                 if (uuid == TILE_SVC_UUID || uuid == TILE_SVC_UUID2) has_tile_svc = true;
                 if (uuid == GOOGLE_FASTPAIR_UUID || uuid == GOOGLE_FMDN_UUID) has_fastpair_svc = true;
                 if (uuid == EDDYSTONE_SVC_UUID) has_eddystone_svc = true;
@@ -458,6 +521,10 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                     first_meta_svc = uuid;
                 }
                 if (uuid == META_RAYBANGEN2_SVC) has_meta_rayban_svc = true;
+                if (uuid_is_privacy_camera_service(uuid) &&
+                    first_privacy_camera_svc == 0) {
+                    first_privacy_camera_svc = uuid;
+                }
 
                 /* Collect service UUIDs for UART serialization */
                 if (fp->svc_uuid_count < 4) {
@@ -499,6 +566,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 hash = fnv1a_u16(hash, svc_uuid);
 
                 if (svc_uuid == APPLE_FINDMY_SVC) has_findmy_svc = true;
+                if (svc_uuid == DULT_TRACKER_SVC_UUID) has_dult_svc = true;
                 if (svc_uuid == TILE_SVC_UUID || svc_uuid == TILE_SVC_UUID2) has_tile_svc = true;
                 if (svc_uuid == EDDYSTONE_SVC_UUID) has_eddystone_svc = true;
                 if (svc_uuid == BLE_HID_SVC_UUID) has_hid_svc = true;
@@ -510,6 +578,10 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                     first_meta_svc = svc_uuid;
                 }
                 if (svc_uuid == META_RAYBANGEN2_SVC) has_meta_rayban_svc = true;
+                if (uuid_is_privacy_camera_service(svc_uuid) &&
+                    first_privacy_camera_svc == 0) {
+                    first_privacy_camera_svc = svc_uuid;
+                }
 
                 if (fp->svc_uuid_count < 4) {
                     fp->service_uuids[fp->svc_uuid_count++] = svc_uuid;
@@ -587,6 +659,10 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     } else if (has_smarttag_svc) {
         fp->device_type = BLE_DEV_SAMSUNG_SMARTTAG;
         fp->is_tracker = true;
+    } else if (has_dult_svc) {
+        fp->device_type = BLE_DEV_TRACKER_GENERIC;
+        fp->is_tracker = true;
+        strncpy(fp->class_reason, "uuid16:0xFCB2", sizeof(fp->class_reason) - 1);
     } else if (company_id == SAMSUNG_COMPANY_ID) {
         /* Samsung device without SmartTag service UUIDs = phone */
         fp->device_type = BLE_DEV_SAMSUNG_PHONE;
@@ -602,6 +678,10 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     } else if (has_ble_audio_svc) {
         fp->device_type = BLE_DEV_AURACAST_AUDIO;
         strncpy(fp->class_reason, "uuid16:ble_audio", sizeof(fp->class_reason) - 1);
+    } else if (first_privacy_camera_svc != 0) {
+        fp->device_type = BLE_DEV_CAMERA;
+        snprintf(fp->class_reason, sizeof(fp->class_reason),
+                 "camera_service_uuid:0x%04X", first_privacy_camera_svc);
     } else if (company_id == META_COMPANY_ID || company_id == META_TECH_COMPANY_ID
                || company_id == META_LUXOTTICA_CID || has_meta_svc ||
                name_mentions_meta_glasses(local_name)) {
@@ -648,8 +728,10 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
         fp->device_type = BLE_DEV_SMART_HOME;
     } else if (company_id == TESLA_COMPANY_ID) {
         fp->device_type = BLE_DEV_VEHICLE;
-    } else if (company_id == GOPRO_COMPANY_ID) {
+    } else if (company_is_privacy_camera_vendor(company_id)) {
         fp->device_type = BLE_DEV_CAMERA;
+        snprintf(fp->class_reason, sizeof(fp->class_reason),
+                 "camera_company_id:0x%04X", company_id);
     } else if (company_id == PARROT_COMPANY_ID || company_id == AUTEL_COMPANY_ID) {
         fp->device_type = BLE_DEV_DRONE_OTHER;
     } else if (company_id == NINTENDO_COMPANY_ID) {

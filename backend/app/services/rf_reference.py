@@ -38,6 +38,7 @@ SOURCE_LABELS = {
     "wifi_fingerprint_v2": "WiFi fingerprint v2",
     "drone_signature_reference": "Curated drone SSID reference",
     "privacy_rf_signature": "Curated privacy RF signature",
+    "privacy_ble_service_uuid": "Curated privacy BLE service UUID",
     "randomized_mac": "Randomized/private MAC rule",
     "none_randomized_mac": "No vendor from randomized MAC",
 }
@@ -51,6 +52,7 @@ STATIC_SOURCE_URLS = {
     "wifi_fingerprint_v2": "local:derived/wifi-ie-auth-channel-fingerprint",
     "drone_signature_reference": "local:backend/app/services/drone_signature_reference.py",
     "privacy_rf_signature": "local:backend/app/services/privacy_rf_signatures.json",
+    "privacy_ble_service_uuid": "local:backend/app/services/privacy_ble_signatures.py",
     "randomized_mac": "local:derived/mac-locally-administered-bit",
     "none_randomized_mac": "local:derived/no-mac-vendor-for-randomized-address",
 }

@@ -11,10 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for the initial bootstrap, while Codex is documented as the day-to-day
   engineering partner for implementation, firmware/version work, tests,
   review, and release prep.
-- **Production node firmware target refreshed.** README, backend firmware
-  readiness expectations, ESP32 version metadata, and web flasher manifests
-  now identify production S3 firmware as `0.64.42-node-redeploy`; the FoF
-  Badge track remains separate at `0.64.41-badge-radio-fix`.
+- **Production node privacy firmware target refreshed.** README, backend
+  firmware readiness expectations, ESP32 version metadata, and web flasher
+  manifests now identify production S3 firmware as
+  `0.64.43-privacy-signals`; the FoF Badge track remains separate at
+  `0.64.41-badge-radio-fix`.
 
 ## [0.64.39-badge-usb-detail] - 2026-05-18
 

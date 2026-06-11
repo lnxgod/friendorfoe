@@ -99,6 +99,7 @@ static const fof_privacy_wifi_signature_t WIFI_SIGNATURES[] = {
     { "SimpliSafe-", FOF_PRIVACY_MATCH_PREFIX, "SimpliSafe", "Surveillance Camera", "CAMERA_NEAR", "privacy:camera:simplisafe", 0.80f, true, false },
     { "Blink-", FOF_PRIVACY_MATCH_PREFIX, "Blink", "Surveillance Camera", "CAMERA_NEAR", "privacy:camera:blink", 0.80f, true, false },
     { "BLINK-", FOF_PRIVACY_MATCH_PREFIX, "Blink", "Surveillance Camera", "CAMERA_NEAR", "privacy:camera:blink", 0.80f, true, false },
+    { "Arlo-VMB", FOF_PRIVACY_MATCH_PREFIX, "Arlo", "IP Camera", "CAMERA_NEAR", "privacy:camera:arlo", 0.78f, true, false },
     { "RemoBellS_", FOF_PRIVACY_MATCH_PREFIX, "Remo+", "Doorbell Camera", "CAMERA_NEAR", "privacy:doorbell:remobell", 0.80f, true, false },
     { "RemoBellW_", FOF_PRIVACY_MATCH_PREFIX, "Remo+", "Doorbell Camera", "CAMERA_NEAR", "privacy:doorbell:remobell", 0.80f, true, false },
     { "Axon Body", FOF_PRIVACY_MATCH_PREFIX, "Axon", "Body Camera", "CAMERA_NEAR", "privacy:bodycam:axon", 0.90f, true, false },
@@ -106,6 +107,7 @@ static const fof_privacy_wifi_signature_t WIFI_SIGNATURES[] = {
     { "BlackVue", FOF_PRIVACY_MATCH_PREFIX, "BlackVue", "Dash Camera", "CAMERA_NEAR", "privacy:dashcam:blackvue", 0.90f, true, false },
     { "DR900", FOF_PRIVACY_MATCH_PREFIX, "BlackVue", "Dash Camera", "CAMERA_NEAR", "privacy:dashcam:blackvue", 0.85f, true, false },
     { "DR750", FOF_PRIVACY_MATCH_PREFIX, "BlackVue", "Dash Camera", "CAMERA_NEAR", "privacy:dashcam:blackvue", 0.85f, true, false },
+    { "VIOFO", FOF_PRIVACY_MATCH_PREFIX, "Viofo", "Dash Camera", "CAMERA_NEAR", "privacy:dashcam:viofo", 0.85f, true, false },
     { "VIOFO_", FOF_PRIVACY_MATCH_PREFIX, "Viofo", "Dash Camera", "CAMERA_NEAR", "privacy:dashcam:viofo", 0.85f, true, false },
     { "70mai_", FOF_PRIVACY_MATCH_PREFIX, "70mai", "Dash Camera", "CAMERA_NEAR", "privacy:dashcam:70mai", 0.85f, true, false },
     { "Nextbase", FOF_PRIVACY_MATCH_PREFIX, "Nextbase", "Dash Camera", "CAMERA_NEAR", "privacy:dashcam:nextbase", 0.85f, true, false },
@@ -126,8 +128,10 @@ static const fof_privacy_wifi_signature_t WIFI_SIGNATURES[] = {
     { "ELSAG-", FOF_PRIVACY_MATCH_PREFIX, "Leonardo", "ALPR Camera", "FLOCK_ALPR", "privacy:alpr:elsag", 0.85f, true, false },
 
     /* Passive attack-tool indicators */
+    { "Pineapple_", FOF_PRIVACY_MATCH_PREFIX, "Hak5", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:pineapple", 0.95f, false, true },
     { "Pineapple", FOF_PRIVACY_MATCH_PREFIX, "Hak5", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:pineapple", 0.90f, false, true },
     { "pwned", FOF_PRIVACY_MATCH_PREFIX, "Spacehuhn", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:deauther", 0.95f, false, true },
+    { "pwnd", FOF_PRIVACY_MATCH_PREFIX, "Spacehuhn", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:deauther", 0.95f, false, true },
     { "Advanced-Deauther", FOF_PRIVACY_MATCH_PREFIX, "Deauther", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:deauther", 0.95f, false, true },
     { "Marauder", FOF_PRIVACY_MATCH_PREFIX, "ESP32Marauder", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:marauder", 0.90f, false, true },
     { "ESP32Marauder", FOF_PRIVACY_MATCH_PREFIX, "ESP32Marauder", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:marauder", 0.90f, false, true },

@@ -39,6 +39,102 @@
       "false_positive_policy": "requires_dash_boundary"
     },
     {
+      "pattern": "Arlo-VMB",
+      "match_type": "prefix",
+      "manufacturer": "Arlo",
+      "device_type": "IP Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.78,
+      "has_camera": true,
+      "class_reason": "privacy:camera:arlo",
+      "source_note": "Arlo base-station setup/network naming observed as VMB-prefixed camera infrastructure.",
+      "false_positive_policy": "specific_product_prefix"
+    },
+    {
+      "pattern": "Swann-SWIFI-",
+      "match_type": "prefix",
+      "manufacturer": "Swann",
+      "device_type": "Surveillance Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.85,
+      "has_camera": true,
+      "class_reason": "privacy:camera:swann",
+      "source_note": "Swann support documents Swann-SWIFI-xxxxxx camera setup access points.",
+      "false_positive_policy": "specific_setup_prefix"
+    },
+    {
+      "pattern": "Verkada-",
+      "match_type": "prefix",
+      "manufacturer": "Verkada",
+      "device_type": "Surveillance Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.88,
+      "has_camera": true,
+      "class_reason": "privacy:camera:verkada",
+      "source_note": "Existing shared firmware signature for Verkada-prefixed camera infrastructure.",
+      "false_positive_policy": "specific_vendor_prefix"
+    },
+    {
+      "pattern": "Rhombus-",
+      "match_type": "prefix",
+      "manufacturer": "Rhombus",
+      "device_type": "Surveillance Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.85,
+      "has_camera": true,
+      "class_reason": "privacy:camera:rhombus",
+      "source_note": "Existing shared firmware signature for Rhombus-prefixed camera infrastructure.",
+      "false_positive_policy": "specific_vendor_prefix"
+    },
+    {
+      "pattern": "EZVIZ_",
+      "match_type": "prefix",
+      "manufacturer": "EZVIZ",
+      "device_type": "Surveillance Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.8,
+      "has_camera": true,
+      "class_reason": "privacy:camera:ezviz",
+      "source_note": "Existing shared firmware signature for EZVIZ camera setup access points.",
+      "false_positive_policy": "specific_vendor_prefix"
+    },
+    {
+      "pattern": "Lorex_",
+      "match_type": "prefix",
+      "manufacturer": "Lorex",
+      "device_type": "Surveillance Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.8,
+      "has_camera": true,
+      "class_reason": "privacy:camera:lorex",
+      "source_note": "Existing shared firmware signature for Lorex camera setup access points.",
+      "false_positive_policy": "specific_vendor_prefix"
+    },
+    {
+      "pattern": "SimpliSafe-",
+      "match_type": "prefix",
+      "manufacturer": "SimpliSafe",
+      "device_type": "Surveillance Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.8,
+      "has_camera": true,
+      "class_reason": "privacy:camera:simplisafe",
+      "source_note": "Existing shared firmware signature for SimpliSafe camera/security setup prefixes.",
+      "false_positive_policy": "specific_vendor_prefix"
+    },
+    {
+      "pattern": "Blink-",
+      "match_type": "prefix",
+      "manufacturer": "Blink",
+      "device_type": "Surveillance Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.8,
+      "has_camera": true,
+      "class_reason": "privacy:camera:blink",
+      "source_note": "Existing shared firmware signature for Blink camera setup prefixes.",
+      "false_positive_policy": "specific_vendor_prefix"
+    },
+    {
       "pattern": "BlackVue",
       "match_type": "prefix",
       "manufacturer": "BlackVue",
@@ -49,6 +145,54 @@
       "class_reason": "privacy:dashcam:blackvue",
       "source_note": "BlackVue manuals document built-in dashcam Wi-Fi.",
       "false_positive_policy": "brand_prefix"
+    },
+    {
+      "pattern": "VIOFO",
+      "match_type": "prefix",
+      "manufacturer": "Viofo",
+      "device_type": "Dash Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.85,
+      "has_camera": true,
+      "class_reason": "privacy:dashcam:viofo",
+      "source_note": "VIOFO support documents camera SSIDs named with VIOFO and camera model.",
+      "false_positive_policy": "brand_dashcam_prefix"
+    },
+    {
+      "pattern": "70mai_",
+      "match_type": "prefix",
+      "manufacturer": "70mai",
+      "device_type": "Dash Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.85,
+      "has_camera": true,
+      "class_reason": "privacy:dashcam:70mai",
+      "source_note": "Existing shared firmware signature for 70mai dashcam Wi-Fi prefixes.",
+      "false_positive_policy": "brand_dashcam_prefix"
+    },
+    {
+      "pattern": "Thinkware",
+      "match_type": "prefix",
+      "manufacturer": "Thinkware",
+      "device_type": "Dash Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.85,
+      "has_camera": true,
+      "class_reason": "privacy:dashcam:thinkware",
+      "source_note": "Thinkware dashcam manuals document thinkware Wi-Fi SSID setup.",
+      "false_positive_policy": "brand_dashcam_prefix"
+    },
+    {
+      "pattern": "Nextbase",
+      "match_type": "prefix",
+      "manufacturer": "Nextbase",
+      "device_type": "Dash Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.85,
+      "has_camera": true,
+      "class_reason": "privacy:dashcam:nextbase",
+      "source_note": "Nextbase dashcam manuals expose camera Wi-Fi SSID/network information.",
+      "false_positive_policy": "brand_dashcam_prefix"
     },
     {
       "pattern": "GoPro",
@@ -87,6 +231,30 @@
       "false_positive_policy": "specific_product_prefix"
     },
     {
+      "pattern": "Flock-",
+      "match_type": "prefix",
+      "manufacturer": "Flock Safety",
+      "device_type": "ALPR Camera",
+      "privacy_kind": "FLOCK_ALPR",
+      "confidence": 0.88,
+      "has_camera": true,
+      "class_reason": "privacy:alpr:flock",
+      "source_note": "Existing local Flock/ALPR shared firmware signature.",
+      "false_positive_policy": "specific_alpr_prefix"
+    },
+    {
+      "pattern": "FLK-",
+      "match_type": "prefix",
+      "manufacturer": "Flock Safety",
+      "device_type": "ALPR Camera",
+      "privacy_kind": "FLOCK_ALPR",
+      "confidence": 0.85,
+      "has_camera": true,
+      "class_reason": "privacy:alpr:flock",
+      "source_note": "Existing local Flock/ALPR shared firmware signature.",
+      "false_positive_policy": "specific_alpr_prefix"
+    },
+    {
       "pattern": "Penguin-",
       "match_type": "prefix",
       "manufacturer": "Flock Safety",
@@ -97,6 +265,30 @@
       "class_reason": "privacy:alpr:flock",
       "source_note": "Existing local Flock/ALPR field signature.",
       "false_positive_policy": "specific_alpr_prefix"
+    },
+    {
+      "pattern": "ELSAG-",
+      "match_type": "prefix",
+      "manufacturer": "Leonardo",
+      "device_type": "ALPR Camera",
+      "privacy_kind": "FLOCK_ALPR",
+      "confidence": 0.85,
+      "has_camera": true,
+      "class_reason": "privacy:alpr:elsag",
+      "source_note": "Existing shared firmware signature for ELSAG ALPR equipment.",
+      "false_positive_policy": "specific_alpr_prefix"
+    },
+    {
+      "pattern": "Pineapple_",
+      "match_type": "prefix",
+      "manufacturer": "Hak5",
+      "device_type": "Attack Tool",
+      "privacy_kind": "WIFI_ATTACK_TOOL",
+      "confidence": 0.95,
+      "has_camera": false,
+      "class_reason": "attack_tool:pineapple",
+      "source_note": "Hak5 documents WiFi Pineapple setup SSIDs as Pineapple_XXXX.",
+      "false_positive_policy": "tool_default_setup_ssid"
     },
     {
       "pattern": "Pineapple",
@@ -123,6 +315,18 @@
       "false_positive_policy": "tool_default_ssid"
     },
     {
+      "pattern": "pwnd",
+      "match_type": "prefix",
+      "manufacturer": "Spacehuhn",
+      "device_type": "Attack Tool",
+      "privacy_kind": "WIFI_ATTACK_TOOL",
+      "confidence": 0.95,
+      "has_camera": false,
+      "class_reason": "attack_tool:deauther",
+      "source_note": "Spacehuhn Deauther web-interface docs document the pwnd AP SSID.",
+      "false_positive_policy": "tool_default_ssid"
+    },
+    {
       "pattern": "Advanced-Deauther",
       "match_type": "prefix",
       "manufacturer": "Deauther",
@@ -144,6 +348,30 @@
       "has_camera": false,
       "class_reason": "attack_tool:marauder",
       "source_note": "ESP32 Marauder AP/tool name.",
+      "false_positive_policy": "tool_name_or_correlated_anomaly"
+    },
+    {
+      "pattern": "ESP32Marauder",
+      "match_type": "prefix",
+      "manufacturer": "ESP32Marauder",
+      "device_type": "Attack Tool",
+      "privacy_kind": "WIFI_ATTACK_TOOL",
+      "confidence": 0.9,
+      "has_camera": false,
+      "class_reason": "attack_tool:marauder",
+      "source_note": "ESP32 Marauder AP/tool name.",
+      "false_positive_policy": "tool_name_or_correlated_anomaly"
+    },
+    {
+      "pattern": "pwnagotchi",
+      "match_type": "prefix",
+      "manufacturer": "Pwnagotchi",
+      "device_type": "Attack Tool",
+      "privacy_kind": "WIFI_ATTACK_TOOL",
+      "confidence": 0.9,
+      "has_camera": false,
+      "class_reason": "attack_tool:pwnagotchi",
+      "source_note": "Existing shared firmware signature for Pwnagotchi Wi-Fi tooling.",
       "false_positive_policy": "tool_name_or_correlated_anomaly"
     }
   ]

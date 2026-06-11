@@ -15,6 +15,7 @@ from app.services.apple_continuity import decode_apple_continuity
 from app.services.ble_company_lookup import lookup_company as _legacy_lookup_company
 from app.services.drone_signature_reference import drone_wifi_ssid_matches
 from app.services.oui_db import is_random_mac
+from app.services.privacy_ble_signatures import first_privacy_ble_service_match
 from app.services.privacy_signature_catalog import match_privacy_wifi_ssid
 from app.services.rf_reference import lookup_ble_company, resolve_mac, source_details, ssid_pattern_hints
 from app.services.wifi_fingerprint import build_wifi_fingerprint_v2
@@ -91,6 +92,25 @@ for _flock_prefix in (
         {"brand": "Flock Surveillance", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
     )
 
+for _brand, _device_class, _prefixes in (
+    ("Verkada", "surveillance_camera", ("E0:A7:00",)),
+    ("Rhombus", "surveillance_camera", ("CC:47:BD",)),
+    ("Axon", "surveillance_camera", ("00:25:DF",)),
+    ("Lytx", "surveillance_camera", ("2C:42:05", "50:DF:95", "58:A7:48", "70:E4:6E")),
+    ("Samsara", "surveillance_camera", ("28:EA:5B", "C0:D3:91")),
+    ("Motive", "surveillance_camera", ("C4:A5:59",)),
+    ("Thinkware", "surveillance_camera", ("00:1F:4F",)),
+    ("GoPro", "surveillance_camera", ("04:41:69", "04:57:47", "24:74:F7", "AC:04:AA", "D4:32:60", "D4:D9:19", "D8:96:85", "F4:DD:9E")),
+    ("Hikvision", "surveillance_camera", ("C0:56:E3", "28:57:BE", "44:19:B6", "54:C4:15", "4C:BD:8F", "00:BC:99")),
+    ("Dahua", "surveillance_camera", ("3C:EF:8C", "A0:BD:1D", "E0:50:8B", "08:ED:ED", "14:A7:8B", "24:52:6A", "38:AF:29")),
+    ("EZVIZ", "surveillance_camera", ("94:EC:13", "20:BB:BC", "58:8F:CF", "64:F2:FB", "78:C1:AE")),
+):
+    for _prefix in _prefixes:
+        _FRIENDLY_OUI_HINTS.setdefault(
+            _prefix,
+            {"brand": _brand, "device_family": "camera_or_video", "device_class": _device_class},
+        )
+
 _SSID_FAMILY_PATTERNS = (
     {
         "patterns": ("flock*", "flk-*", "alpr*", "penguin-*"),
@@ -125,7 +145,7 @@ _SSID_FAMILY_PATTERNS = (
 _VENDOR_FAMILY_RULES = (
     (("espressif", "esp32", "esp8266"), "esp32_or_iot_dev_board", 0.86),
     (("dji", "parrot", "skydio", "autel"), "drone_or_controller", 0.85),
-    (("hikvision", "dahua", "ezviz", "axis", "arlo", "reolink", "wyze", "ring camera", "vstarcam"), "camera_or_video", 0.82),
+    (("hikvision", "dahua", "ezviz", "axis", "arlo", "reolink", "wyze", "ring camera", "vstarcam", "verkada", "rhombus", "samsara", "motive", "lytx", "axon", "blackvue", "viofo", "thinkware", "nextbase", "gopro", "70mai"), "camera_or_video", 0.82),
     (("ring",), "smart_home_iot", 0.66),
     (("tp-link", "tplink", "netgear", "ubiquiti", "unifi", "ruckus", "aruba", "cisco", "meraki", "mikrotik", "linksys", "asus"), "network_infrastructure", 0.78),
     (("apple", "samsung", "google", "xiaomi", "huawei", "oneplus", "oppo", "vivo"), "phone_tablet_or_pc", 0.70),
@@ -220,8 +240,13 @@ def _friendly_oui_hint(mac: str | None) -> dict[str, Any] | None:
 def _device_class_from_name(name: str | None, reason: str | None) -> tuple[str | None, float | None]:
     name_l = (name or "").lower()
     reason_l = (reason or "").lower()
-    if reason_l in ("explicit_camera_ble_name", "camera_service_uuid", "camera_company_id", "strong_camera_classifier") or any(
-        token in name_l for token in _EXPLICIT_CAMERA_NAME_TOKENS
+    if (
+        reason_l in ("explicit_camera_ble_name", "camera_service_uuid", "camera_company_id", "strong_camera_classifier")
+        or reason_l.startswith("camera_service_uuid:")
+        or reason_l.startswith("camera_company_id:")
+        or any(
+            token in name_l for token in _EXPLICIT_CAMERA_NAME_TOKENS
+        )
     ):
         return "suspect_camera", 0.75
     if reason_l == "ambiguous_iot_ble_name" or any(token in name_l for token in _AMBIGUOUS_IOT_NAME_TOKENS):
@@ -395,6 +420,7 @@ def identity_source_for_detection(
     ie_hash: str | None = None,
     ble_ja3: str | None = None,
     ble_company_id: int | None = None,
+    ble_svc_uuids: str | None = None,
     ble_name: str | None = None,
     ssid: str | None = None,
     bssid: str | None = None,
@@ -406,6 +432,8 @@ def identity_source_for_detection(
         return "ble_ja3"
     if source_l.startswith("ble") and ble_company_id:
         return "ble_company_id"
+    if source_l.startswith("ble") and first_privacy_ble_service_match(ble_svc_uuids):
+        return "ble_service_uuid"
     if source_l.startswith("ble") and ble_name:
         return "ble_name"
     if ssid and source_l in ("wifi_ssid", "wifi_ap_inventory"):
@@ -450,6 +478,7 @@ def enrich_rf_evidence(
     group_rollup = _mac_oui_rollup(macs)
     known_networks = _known_network_labels(probed_ssids, ssid)
     ssid_hint = _ssid_family_hint(probed_ssids, ssid)
+    ble_service_hint = first_privacy_ble_service_match(ble_svc_uuids)
     apple_continuity = decode_apple_continuity(
         raw_mfr_hex=ble_raw_mfr,
         apple_type=ble_apple_type,
@@ -504,6 +533,17 @@ def enrich_rf_evidence(
             brand_source = "apple_continuity"
             brand_confidence = float(apple_continuity.get("confidence") or 0.70)
             vendor_long = "Apple Continuity"
+
+    if ble_service_hint:
+        uuid_hex = str(ble_service_hint["uuid16_hex"])
+        evidence.append(
+            f"Privacy BLE service UUID 0x{uuid_hex}: {ble_service_hint['class_reason']}"
+        )
+        if not brand:
+            brand = str(ble_service_hint["manufacturer"])
+            brand_source = "privacy_ble_service_uuid"
+            brand_confidence = float(ble_service_hint.get("confidence") or 0.70)
+            vendor_long = str(ble_service_hint.get("source_note") or brand)
 
     if not brand and friendly_oui:
         brand = str(friendly_oui["brand"])
@@ -623,6 +663,12 @@ def enrich_rf_evidence(
             device_class = str(ssid_hint["device_class"])
             device_class_confidence = float(ssid_hint["confidence"])
 
+    if ble_service_hint and (
+        not device_class or device_class in ("ble_device", "unknown_device")
+    ):
+        device_class = str(ble_service_hint["device_class"])
+        device_class_confidence = float(ble_service_hint.get("confidence") or 0.70)
+
     if friendly_oui and (not device_class or device_class in ("wifi_device", "wifi_ap", "ble_device", "unknown_device")):
         device_class = str(friendly_oui["device_class"])
         device_class_confidence = 0.70
@@ -630,6 +676,7 @@ def enrich_rf_evidence(
     device_family: str | None = None
     family_source: str | None = None
     family_confidence: float | None = None
+    vendor_hint = _vendor_family_hint(brand, vendor_long, manufacturer)
     if known_networks and known_networks[0].get("device_family"):
         device_family = str(known_networks[0]["device_family"])
         family_source = "known_network_label"
@@ -646,6 +693,10 @@ def enrich_rf_evidence(
         device_family = str(ssid_hint["device_family"])
         family_source = str(ssid_hint["source"])
         family_confidence = float(ssid_hint["confidence"])
+    elif ble_service_hint:
+        device_family = str(ble_service_hint["device_family"])
+        family_source = "privacy_ble_service_uuid"
+        family_confidence = float(ble_service_hint.get("confidence") or 0.70)
     elif device_class == "hostile_tool":
         device_family = "wifi_attack_tool"
         family_source = "device_class"
@@ -654,11 +705,14 @@ def enrich_rf_evidence(
         device_family = "camera_or_video"
         family_source = "device_class"
         family_confidence = float(device_class_confidence or 0.60)
+    elif vendor_hint and vendor_hint.get("device_family") == "camera_or_video":
+        device_family = str(vendor_hint["device_family"])
+        family_source = str(vendor_hint["source"])
+        family_confidence = float(vendor_hint["confidence"])
     elif ble_category in _BLE_CATEGORY_FAMILY:
         device_family, family_confidence = _BLE_CATEGORY_FAMILY[ble_category]
         family_source = "ble_company_category"
     else:
-        vendor_hint = _vendor_family_hint(brand, vendor_long, manufacturer)
         if vendor_hint:
             device_family = str(vendor_hint["device_family"])
             family_source = str(vendor_hint["source"])
@@ -710,6 +764,7 @@ def enrich_rf_evidence(
         "group_oui_majority" if brand_source == "group_oui_majority" else None,
         "operator_ssid_override" if known_networks else None,
         str(ssid_hint.get("source") or "ssid_pattern") if ssid_hint else None,
+        "privacy_ble_service_uuid" if ble_service_hint else None,
         "friendly_oui" if friendly_oui else None,
         "apple_continuity" if apple_continuity else None,
         "wifi_fingerprint_v2" if wifi_fingerprint_v2 else None,
@@ -760,6 +815,7 @@ def enrich_rf_evidence(
             ie_hash=ie_hash,
             ble_ja3=ble_ja3,
             ble_company_id=ble_company_id,
+            ble_svc_uuids=ble_svc_uuids,
             ble_name=ble_name,
             ssid=ssid,
             bssid=mac,

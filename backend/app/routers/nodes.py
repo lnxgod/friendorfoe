@@ -226,7 +226,7 @@ async def _scanner_targets(
             if not target_fw.startswith("scanner-"):
                 continue
             if target_fw not in version_cache:
-                version_cache[target_fw] = await _firmware_mgr.get_firmware_version(target_fw) or target_fw
+                version_cache[target_fw] = await _firmware_mgr.get_firmware_version(target_fw) or ""
             targets.append({
                 "device_id": node_id,
                 "ip": ip,

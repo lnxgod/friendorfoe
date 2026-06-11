@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from app.services.privacy_ble_signatures import first_privacy_ble_service_match
+
 
 TRACKER_KIND = "TRACKER_NEAR"
 
@@ -144,6 +146,7 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     text = _text_blob(entry)
     rssi = _current_rssi(entry)
     services = str(entry.get("ble_svc_uuids") or "").lower()
+    service_match = first_privacy_ble_service_match(services)
     is_tracker = bool(entry.get("is_tracker"))
     apple_subtypes = apple_continuity_subtypes(entry)
     has_apple = bool(entry.get("apple_continuity") or entry.get("ble_apple_type"))
@@ -159,6 +162,8 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
         "deauther", "marauder", "wifi attack"
     )):
         kind = "WIFI_ATTACK_TOOL"
+    elif service_match:
+        kind = str(service_match["privacy_kind"])
     elif any(token in text for token in (
         "hidden camera", "spy cam", "camera", "body cam", "dashcam",
         "dash cam", "fleet cam", "conference cam", "axon", "samsara",
@@ -219,6 +224,11 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
         value = entry.get(key)
         if value:
             evidence.append({"field": key, "value": value})
+    if service_match:
+        evidence.append({
+            "field": "ble_service_signature",
+            "value": f"{service_match['uuid16_hex']} {service_match['class_reason']}",
+        })
     if apple_subtypes:
         evidence.append({"field": "apple_subtypes", "value": apple_subtypes})
 
