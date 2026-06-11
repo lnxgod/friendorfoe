@@ -1337,9 +1337,11 @@ void app_main(void)
     scanner_rollback_init();
 
     /* ── 1b. Initialize TCP/IP network interface (required for radio subsystem) ── */
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_NETIF);
     ESP_ERROR_CHECK(esp_netif_init());
 
     /* ── 2. Initialize default event loop ─────────────────────────────── */
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_EVENT_LOOP);
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     /* ── 3. Create shared detection queue ─────────────────────────────── */
@@ -1377,6 +1379,7 @@ void app_main(void)
     ESP_LOGI(TAG, "BOOT button on GPIO%d (tap=scroll, 2x=privacy)", BOOT_BUTTON_GPIO);
 
     /* ── 6. Initialize UART TX (hardware setup, no task yet) ──────────── */
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_UART);
     uart_tx_init();
 
     /* ── 7. Set scanner identity before any UART status/check messages ── */
@@ -1417,17 +1420,32 @@ void app_main(void)
                             3072, NULL, tskIDLE_PRIORITY + 1, NULL,
                             tskNO_AFFINITY);
 
-    /* ── 9. Initialize WiFi scanner (sets up promiscuous mode) ────────── */
-    wifi_scanner_init(detection_queue);
+    /* ── 9. Initialize radios ───────────────────────────────────────────
+     * Badge scanners need BLE privacy/Remote ID to survive noisy WiFi work,
+     * so give NimBLE first claim on controller/internal heap. */
 #ifdef FOF_BADGE_VARIANT
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_BLE_INIT);
+    ble_remote_id_init(detection_queue);
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_BLE_READY);
+    ESP_LOGI(TAG, "BLE Remote ID scanner initialised");
+
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_WIFI_INIT);
+    wifi_scanner_init(detection_queue);
     wifi_scanner_pause();
     ESP_LOGW(TAG, "Badge boot: WiFi paused until BLE host gets first sync window");
-#endif
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_WIFI_READY);
+    ESP_LOGI(TAG, "WiFi scanner initialised");
+#else
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_WIFI_INIT);
+    wifi_scanner_init(detection_queue);
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_WIFI_READY);
     ESP_LOGI(TAG, "WiFi scanner initialised");
 
-    /* ── 9b. Initialize BLE scanner (NimBLE) ─────────────────────────── */
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_BLE_INIT);
     ble_remote_id_init(detection_queue);
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_BLE_READY);
     ESP_LOGI(TAG, "BLE Remote ID scanner initialised");
+#endif
 
 #if CONFIG_FOF_GLASSES_DETECTION
     /* ── 9c. Create glasses detection queue and wire to BLE scanner ───── */
@@ -1464,6 +1482,7 @@ void app_main(void)
 #endif
     s_radios_ready = true;
     scanner_scan_profile_apply();
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_NORMAL);
     ESP_LOGI(TAG, "Scan profile radios applied after radio startup");
 
     /* ── 11. Start LED task ──────────────────────────────────────────── */

@@ -22,6 +22,9 @@ def _text_blob(entry: dict[str, Any]) -> str:
         "display_label",
         "display_detail",
         "source",
+        "ssid",
+        "model",
+        "class_reason",
         "ble_svc_uuids",
         "device_class",
         "device_family",
@@ -40,6 +43,8 @@ def _risk_for_kind(kind: str, rssi: int | None) -> str:
     close = rssi is not None and rssi >= -60
     nearby = rssi is not None and rssi >= -72
     if kind in {"SKIMMER", "CAMERA_NEAR", "FLOCK_ALPR"}:
+        return "high" if close else "medium"
+    if kind == "WIFI_ATTACK_TOOL":
         return "high" if close else "medium"
     if kind == "TRACKER_NEAR":
         return "high" if close else "medium"
@@ -67,6 +72,7 @@ def _display_label_for_kind(kind: str) -> str:
         "BLE_HID": "HID NEAR",
         "AURACAST": "AURACAST",
         "APPLE_CONTINUITY": "APPLE CONTINUITY",
+        "WIFI_ATTACK_TOOL": "WIFI TOOL",
     }.get(kind, "PRIVACY SIGNAL")
 
 
@@ -149,6 +155,11 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     )):
         kind = "SKIMMER"
     elif any(token in text for token in (
+        "attack_tool", "attack tool", "pwnagotchi", "pineapple",
+        "deauther", "marauder", "wifi attack"
+    )):
+        kind = "WIFI_ATTACK_TOOL"
+    elif any(token in text for token in (
         "hidden camera", "spy cam", "camera", "body cam", "dashcam",
         "dash cam", "fleet cam", "conference cam", "axon", "samsara",
         "verkada", "hikvision", "dahua", "gopro"
@@ -204,7 +215,7 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     display_detail = " ".join(detail_parts).strip()
 
     evidence = []
-    for key in ("device_type", "manufacturer", "source", "ble_svc_uuids"):
+    for key in ("device_type", "manufacturer", "source", "ssid", "class_reason", "ble_svc_uuids"):
         value = entry.get(key)
         if value:
             evidence.append({"field": key, "value": value})

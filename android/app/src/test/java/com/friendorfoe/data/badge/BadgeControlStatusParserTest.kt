@@ -227,4 +227,59 @@ class BadgeControlStatusParserTest {
         assertEquals(2, scanner.filteredCounts.getValue("beacon"))
         assertEquals("DroneNet", scanner.wifiLastDroneSsid)
     }
+
+    @Test
+    fun parsesBadgeEvilTwinEntityEvidence() {
+        val status = parseBadgeControlStatus(
+            """
+            {
+              "version":"0.64.40-badge-ble-theme",
+              "mode":"usb_only",
+              "counts":{"wifi_anomaly":1},
+              "entities":[{
+                "label":"Evil Twin",
+                "detail":"ssid CafeWiFi",
+                "evidence":"Evil Twin: open clone vs WPA2; ref 00:11:22:33:44:55 ch6",
+                "class":"wifi_anomaly",
+                "category":"WIFI",
+                "code":"WIFI",
+                "display_id":"66:77:88:99:AA:BB",
+                "source":"wifi_assoc",
+                "source_id":7,
+                "ssid":"CafeWiFi",
+                "bssid":"66:77:88:99:AA:BB",
+                "auth_m":0,
+                "freq_mhz":2437,
+                "score":88,
+                "confidence_pct":82,
+                "evidence_quality":6,
+                "display_rank":30642,
+                "age_s":3,
+                "last_seen_s":1,
+                "rssi":-48,
+                "best_rssi":-48,
+                "events":1,
+                "seen_count":1,
+                "group_count":1,
+                "proximity_level":3,
+                "stale":false
+              }]
+            }
+            """.trimIndent()
+        )
+
+        assertNotNull(status)
+        status!!
+        val entity = status.entities.single()
+        assertEquals("Evil Twin", entity.label)
+        assertEquals("ssid CafeWiFi", entity.detail)
+        assertEquals("66:77:88:99:AA:BB", entity.displayId)
+        assertEquals("CafeWiFi", entity.ssid)
+        assertEquals("66:77:88:99:AA:BB", entity.bssid)
+        assertEquals(0, entity.authMode)
+        assertEquals(2437, entity.freqMhz)
+        assertEquals("wifi_assoc", entity.source)
+        assertEquals(-48, entity.rssi)
+        assertTrue(entity.evidence.contains("open clone"))
+    }
 }

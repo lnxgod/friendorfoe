@@ -70,6 +70,10 @@ typedef struct {
     char label[BADGE_THREAT_LABEL_LEN];
     char detail[BADGE_THREAT_DETAIL_LEN];
     char evidence[BADGE_THREAT_EVIDENCE_LEN];
+    char ssid[33];
+    char bssid[18];
+    uint8_t wifi_auth_mode;
+    int32_t freq_mhz;
     uint8_t source;
     float confidence;
     double latitude;
@@ -95,6 +99,10 @@ typedef struct {
     char label[BADGE_THREAT_LABEL_LEN];
     char detail[BADGE_THREAT_DETAIL_LEN];
     char evidence[BADGE_THREAT_EVIDENCE_LEN];
+    char ssid[33];
+    char bssid[18];
+    uint8_t wifi_auth_mode;
+    int32_t freq_mhz;
     uint8_t last_source;
     int64_t first_seen_ms;
     int64_t last_seen_ms;
@@ -125,6 +133,10 @@ typedef struct {
     char detail[BADGE_THREAT_DETAIL_LEN];
     char evidence[BADGE_THREAT_EVIDENCE_LEN];
     char display_id[BADGE_THREAT_DISPLAY_ID_LEN];
+    char ssid[33];
+    char bssid[18];
+    uint8_t wifi_auth_mode;
+    int32_t freq_mhz;
     double latitude;
     double longitude;
     float altitude_m;
@@ -210,6 +222,8 @@ bool badge_threat_snapshot_entity_is_remote_id_drone(
     const badge_threat_snapshot_entity_t *item);
 bool badge_threat_snapshot_entity_is_meta_glasses(
     const badge_threat_snapshot_entity_t *item);
+bool badge_threat_snapshot_entity_is_evil_twin(
+    const badge_threat_snapshot_entity_t *item);
 uint32_t badge_threat_snapshot_meta_glasses_count(
     const badge_threat_snapshot_t *snapshot);
 const badge_threat_snapshot_entity_t *badge_threat_snapshot_best_meta_glasses(
@@ -246,6 +260,8 @@ bool badge_threat_format_top_detail(
     size_t out_len);
 bool badge_threat_top_detail_uses_large_text(const char *detail,
                                              size_t visible_chars);
+bool badge_threat_top_detail_uses_marquee(const char *detail,
+                                          size_t visible_chars);
 bool badge_threat_snapshot_entity_view_key(
     const badge_threat_snapshot_entity_t *item,
     char *out,

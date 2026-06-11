@@ -54,6 +54,7 @@ import com.friendorfoe.detection.RoiConfirmationEngine
 import com.friendorfoe.sensor.CompassBiasEstimator
 import com.friendorfoe.sensor.SkyPositionMapper
 import com.friendorfoe.sensor.TrajectoryPredictor
+import com.friendorfoe.sensor.VisualFocusRepository
 import com.friendorfoe.sensor.VisualCorrelationEngine
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Session
@@ -97,6 +98,7 @@ class ArViewModel @Inject constructor(
     private val locationManager: LocationManager,
     private val arCoreOrientationProvider: ArCoreOrientationProvider,
     private val visualCorrelationEngine: VisualCorrelationEngine,
+    private val visualFocusRepository: VisualFocusRepository,
     private val skyObjectFilter: SkyObjectFilter,
     private val weatherRepository: WeatherRepository,
     private val darkTargetScorer: DarkTargetScorer,
@@ -1029,6 +1031,7 @@ class ArViewModel @Inject constructor(
             val scored = visualDetectionAnalyzer.scoredDetections.value
             val visuals = visualDetections.filter { it.skyScore > 0.2f || it.motionScore > 0.3f }
             _unmatchedVisuals.value = visuals
+            visualFocusRepository.updateVisible(emptyList(), nowMs)
             emptyList()
         } else {
             // Apply compass bias correction from visual-radio calibration
@@ -1110,6 +1113,7 @@ class ArViewModel @Inject constructor(
                     pos.copy(positionConfidence = (pos.positionConfidence * 1.2f).coerceAtMost(1f))
                 } else pos
             }
+            visualFocusRepository.updateVisible(boostedPositions, nowMs)
 
             // Score dark targets (unmatched visuals with no radio correlation)
             val currentAcoustic = _acousticResult.value

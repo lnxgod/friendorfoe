@@ -6,9 +6,10 @@ used for walk-up privacy/drone awareness and Android USB-C testing.
 
 ## Current Versions
 
-- Android app/backend: `0.64.40-badge-ble-theme`
-- FoF Badge firmware: `0.64.40-badge-ble-theme`
-- Production S3 firmware: `0.63.0-svc156`
+- Android app: `0.64.40-badge-ble-theme`
+- Backend: `0.64.38-badge-live`
+- FoF Badge firmware: `0.64.41-badge-radio-fix`
+- Production S3 firmware: `0.64.42-node-redeploy`
 
 Keep those tracks separate. The badge firmware uses `FOF_BADGE_VARIANT`,
 badge-specific pinning, a Waveshare ST7735 display, USB-C control, local AP
@@ -29,7 +30,9 @@ uplink assigns the active role and scanner profile at runtime.
 
 ## What This Release Tests
 
-`0.64.40-badge-ble-theme` is the badge BLE/theme control release:
+`0.64.41-badge-radio-fix` is the current badge radio-fix release, carrying the
+BLE/theme control work forward while keeping the badge track separate from the
+production node redeploy firmware:
 
 - The badge keeps drone, Meta Glasses, tracker, WiFi attack, and scanner health
   evidence separated into calm top awareness tiles plus BLE/WiFi lower lanes.
@@ -49,8 +52,9 @@ uplink assigns the active role and scanner profile at runtime.
   mode, crash counts, and policy acknowledgements in `FOF_STATUS`.
 - Safe USB and scanner safe-mode recovery remain part of the badge-only flow;
   scanner crash history can be cleared from the uplink after a successful fix.
-- Android/backend stay on the same badge version so USB-C badge testing and
-  backend ingest status agree with the firmware release.
+- Backend ingest status expects the badge firmware track separately from the
+  production S3 node track so USB-C badge testing and fleet node redeploys can
+  move independently.
 
 ## Build And Flash
 
@@ -113,7 +117,7 @@ Expected healthy status facts:
 
 - Top-level `recovery_mode` is `normal`.
 - Both scanners are connected and report `scanner-s3-combo-fof_badge`.
-- Uplink and scanners report `0.64.40-badge-ble-theme` after the matching badge
+- Uplink and scanners report `0.64.41-badge-radio-fix` after the matching badge
   images are flashed.
 - `display_policy_hash` is non-zero.
 - Scanner `display_policy_ack_hash` catches up to the uplink policy hash.

@@ -123,7 +123,7 @@ def test_flock_penguin_ssid_adds_alpr_camera_family():
 
     assert meta["device_family"] == "camera_or_video"
     assert meta["device_class"] == "surveillance_camera"
-    assert meta["family_source"] == "ssid_pattern"
+    assert meta["family_source"] == "privacy_rf_signature"
 
 
 def test_randomized_wled_ssid_gets_iot_family_not_fake_brand():

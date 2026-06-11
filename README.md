@@ -9,7 +9,7 @@
 
 Friend or Foe is an open-source **privacy awareness** and **airspace detection** platform for Android and ESP32. It passively scans Bluetooth and WiFi signals around you to detect surveillance devices, tracking beacons, hidden cameras, smart glasses, and drones — then identifies every aircraft overhead using augmented reality. No accounts, no signups, no API keys. Install and go.
 
-> **Live deployment** — current Android/backend **v0.64.39-badge-usb-detail**, production S3 firmware **v0.63.0-svc156**, and FoF Badge firmware **v0.64.39-badge-usb-detail**. Production S3 nodes stay on the end-to-end auto-OTA track: backend hosts the latest firmware, uplinks self-update on a 30-min poll, scanners self-recover from bad images via ESP-IDF rollback. Badge setup and recovery start at [docs/badge/README.md](docs/badge/README.md). See [esp32/CHANGELOG.md](esp32/CHANGELOG.md) for firmware history and [CHANGELOG.md](CHANGELOG.md) for backend / Android.
+> **Live deployment** — current Android **v0.64.40-badge-ble-theme**, backend **v0.64.38-badge-live**, production S3 firmware **v0.64.42-node-redeploy**, and FoF Badge firmware **v0.64.41-badge-radio-fix**. Production S3 nodes stay on the end-to-end auto-OTA track: backend hosts the latest firmware, uplinks self-update on a 30-min poll, scanners self-recover from bad images via ESP-IDF rollback. Badge setup and recovery start at [docs/badge/README.md](docs/badge/README.md). See [esp32/CHANGELOG.md](esp32/CHANGELOG.md) for firmware history and [CHANGELOG.md](CHANGELOG.md) for backend / Android.
 
 ### What It Detects
 
@@ -34,7 +34,7 @@ Friend or Foe is an open-source **privacy awareness** and **airspace detection**
 | **Drones** | DJI, Skydio, Parrot, Autel + 190+ SSID patterns | BLE Remote ID + WiFi + visual ML |
 | **Aircraft** | Commercial, military, GA, helicopter, cargo, emergency | ADS-B transponder + AR overlay |
 
-This project was **built with AI** — Claude, Codex, Gemini, and Grok working together. Released by [GAMECHANGERSai](https://gamechangersai.org). See the [CHANGELOG](CHANGELOG.md) for version history.
+This project is **built with AI**. Claude helped bootstrap the first pass, and Codex is now the day-to-day engineering partner for repo maintenance, firmware work, review, testing, and release prep, with Gemini and Grok contributing research and design direction. Released by [GAMECHANGERSai](https://gamechangersai.org). See the [CHANGELOG](CHANGELOG.md) for version history.
 
 ---
 
@@ -364,7 +364,7 @@ friendorfoe/
 │       └── static/dashboard.html      # Real-time sensor dashboard (12 tabs)
 ├── esp32/                             # ESP32 hardware edition
 │   ├── scanner/                       # Scanner firmware (S3 + C5)
-│   ├── uplink/                        # Uplink firmware (C3)
+│   ├── uplink/                        # Uplink firmware (S3)
 │   ├── shared/                        # Shared UART protocol, types
 │   └── web-flasher/                   # Browser-based firmware flasher
 ├── images/                            # Aircraft reference photos (Wikimedia CC)
@@ -443,7 +443,7 @@ python3 scripts/preflight.py
 
 ## Built With AI
 
-This project wasn't built with just one AI — it was built with **all of them**. We tested every major AI platform and used each one where it was strongest. The git history tells the story:
+This project wasn't built with just one AI. Claude helped bootstrap the earliest architecture, and the project now runs primarily through **Codex-assisted development**: planning, repo edits, firmware/version work, tests, reviews, and release prep happen conversationally with Codex in the loop. Other AI systems still show up where they are strongest, but Codex is the default engineering cockpit. The git history tells the story:
 
 | Date | What Happened |
 |------|--------------|
@@ -459,15 +459,15 @@ This project wasn't built with just one AI — it was built with **all of them**
 
 | AI | Role |
 |----|------|
-| **[Claude](https://claude.ai)** (Anthropic) | Primary coding agent — architecture, implementation, pair-programming |
+| **[Codex](https://chatgpt.com)** (OpenAI) | Primary coding agent today — implementation, repo maintenance, tests, reviews, firmware/version updates, release prep |
+| **[Claude](https://claude.ai)** (Anthropic) | Initial coding agent — early architecture, first implementation pass, pair-programming |
 | **[Grok](https://grok.com)** (xAI) | Design direction and research |
-| **[Codex](https://chatgpt.com)** (OpenAI) | Security review and consulting |
 | **[Gemini](https://gemini.google.com)** (Google) | Tech stack research — evaluating libraries, frameworks, and approaches |
 | **[ML Kit](https://developers.google.com/ml-kit)** (Google) | On-device visual object detection (runs directly on the phone) |
 
 **What is vibe coding?** It's a collaborative, conversational approach to software development where a human and AI build together in real time. Instead of writing every line by hand, you describe what you want, iterate on ideas, debug together, and let the AI handle the boilerplate while you focus on the vision and architecture. It's programming by vibes — and it works.
 
-Friend or Foe was built with multiple AIs, each contributing where they excel. Claude served as the primary coding partner — from initial architecture through sensor fusion algorithms, Bayesian math, and vector drawable artwork. Grok helped shape the design direction. Codex performed the security audit before open-sourcing. Gemini researched which technologies and frameworks to use. And ML Kit runs on-device, powering visual detection without any cloud dependency. Every file in this repo was shaped by human-AI collaboration.
+Friend or Foe was built with multiple AIs, each contributing where they excel. Claude served as the initial coding partner for the earliest architecture and first implementation wave. Codex is now the primary engineering partner for ongoing development, firmware deployment work, testing, review, and release hygiene. Grok helped shape the design direction. Gemini researched which technologies and frameworks to use. And ML Kit runs on-device, powering visual detection without any cloud dependency. Every file in this repo was shaped by human-AI collaboration.
 
 **We believe the future of software development is using the right AI for the right job**, and we're open-sourcing this project so you can see what that looks like in practice.
 

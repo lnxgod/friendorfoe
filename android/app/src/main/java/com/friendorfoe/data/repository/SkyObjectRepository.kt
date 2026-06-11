@@ -15,6 +15,7 @@ import com.friendorfoe.detection.GlassesDetector
 import com.friendorfoe.detection.RemoteIdScanner
 import com.friendorfoe.detection.WifiDroneScanner
 import com.friendorfoe.detection.WifiNanRemoteIdScanner
+import com.friendorfoe.detection.WifiPrivacyScanner
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
@@ -57,6 +58,7 @@ class SkyObjectRepository @Inject constructor(
     private val remoteIdScanner: RemoteIdScanner,
     private val wifiDroneScanner: WifiDroneScanner,
     private val wifiNanRemoteIdScanner: WifiNanRemoteIdScanner,
+    private val wifiPrivacyScanner: WifiPrivacyScanner,
     private val glassesDetector: GlassesDetector,
     val bleTracker: BleTracker,
     private val ultrasonicDetector: com.friendorfoe.detection.UltrasonicDetector,
@@ -142,19 +144,16 @@ class SkyObjectRepository @Inject constructor(
     /** Toggle privacy detection on/off. */
     fun setPrivacyDetectionEnabled(enabled: Boolean) {
         detectionPrefs.privacyEnabled = enabled
-        if (!enabled) {
-            glassesJob?.cancel()
-            glassesJob = null
-            glassesUpdateJob?.cancel()
-            glassesUpdateJob = null
-            glassesMap.clear()
-            _glassesDetections.value = emptyList()
-            glassesDetector.stopScanning()
-        } else if (isRunning.get()) {
-            // Cancel any stale collector before launching a new one
-            glassesJob?.cancel()
-            glassesJob = scope.launch { collectGlasses() }
-        }
+        restartDetectionSources()
+    }
+
+    /** Restart running collectors so About toggles take effect immediately. */
+    fun restartDetectionSources() {
+        if (!isRunning.get()) return
+        val latitude = userLatitude
+        val longitude = userLongitude
+        stop()
+        ensureStarted(latitude, longitude)
     }
 
     /** Get the position trail for a given object ID. */
@@ -185,24 +184,30 @@ class SkyObjectRepository @Inject constructor(
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         userLatitude = latitude
         userLongitude = longitude
+        bleTracker.recordUserLocation(latitude, longitude)
         Log.i(TAG, "Starting all detection sources at ($latitude, $longitude)")
 
-        // Start ADS-B polling (if enabled)
+        // ADS-B is API/backend-backed. Backend-only disables local phone sensors,
+        // not network aircraft feeds.
         if (detectionPrefs.adsbEnabled) {
             adsbPoller.start(latitude, longitude)
         }
 
         // Collect from all sources (respecting per-source toggles)
+        val localPhoneSensorsEnabled = !detectionPrefs.backendOnlyMode
         collectionJob = scope.launch {
             if (detectionPrefs.adsbEnabled) launch { collectAdsb() }
-            if (detectionPrefs.bleRidEnabled) launch { collectRemoteId() }
-            if (detectionPrefs.bleRidEnabled) launch { collectWifiNan() }
-            if (detectionPrefs.wifiEnabled) launch { collectWifi() }
-            if (detectionPrefs.privacyEnabled) {
-                glassesJob = launch { collectGlasses() }
+            if (localPhoneSensorsEnabled) {
+                if (detectionPrefs.bleRidEnabled) launch { collectRemoteId() }
+                if (detectionPrefs.bleRidEnabled) launch { collectWifiNan() }
+                if (detectionPrefs.wifiEnabled) launch { collectWifi() }
+                if (detectionPrefs.privacyEnabled) {
+                    glassesJob = launch { collectGlasses() }
+                    launch { collectWifiPrivacy() }
+                }
+                if (detectionPrefs.stalkerDetectionEnabled) launch { collectStalkerAlerts() }
+                if (detectionPrefs.ultrasonicEnabled) launch { collectUltrasonic() }
             }
-            if (detectionPrefs.stalkerDetectionEnabled) launch { collectStalkerAlerts() }
-            if (detectionPrefs.ultrasonicEnabled) launch { collectUltrasonic() }
         }
     }
 
@@ -247,6 +252,7 @@ class SkyObjectRepository @Inject constructor(
     fun updatePosition(latitude: Double, longitude: Double) {
         userLatitude = latitude
         userLongitude = longitude
+        bleTracker.recordUserLocation(latitude, longitude)
         adsbPoller.updatePosition(latitude, longitude)
     }
 
@@ -319,9 +325,15 @@ class SkyObjectRepository @Inject constructor(
                 }
                 Log.d(TAG, "WiFi updated: drone ${drone.ssid}")
             }
-            // Also check WiFi SSIDs for privacy threats (hidden cameras, etc.)
-            checkWifiForPrivacy(drone)
             rebuildMergedList()
+        }
+    }
+
+    /** Collect privacy devices from every visible WiFi result, not only drone SSIDs. */
+    private suspend fun collectWifiPrivacy() {
+        wifiPrivacyScanner.startScanning().collect { detection ->
+            glassesMap[detection.fingerprintKey] = detection
+            updateGlassesList()
         }
     }
 
@@ -433,17 +445,6 @@ class SkyObjectRepository @Inject constructor(
             kotlinx.coroutines.delay(30_000L) // Check every 30 seconds
             _stalkerAlerts.value = bleTracker.checkForFollowers()
         }
-    }
-
-    /** Called from collectWifi to also check WiFi SSIDs for privacy threats. */
-    private fun checkWifiForPrivacy(drone: com.friendorfoe.domain.model.Drone) {
-        if (!detectionPrefs.privacyEnabled) return
-        val bssid = drone.bssid ?: return
-        val ssid = drone.ssid.orEmpty()
-        val rssi = drone.signalStrengthDbm ?: -80
-        val detection = GlassesDetector.checkWifiSsid(ssid, bssid, rssi) ?: return
-        glassesMap[detection.fingerprintKey] = detection
-        updateGlassesList()
     }
 
     /**

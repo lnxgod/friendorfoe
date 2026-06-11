@@ -66,6 +66,56 @@ const char *fof_policy_slot_role_for_slot(uint8_t scanner_id);
 bool fof_policy_scan_profile_allows_source(const char *scan_profile,
                                            uint8_t source);
 
+#define FOF_POLICY_EVIL_TWIN_SSID_SLOTS 16
+#define FOF_POLICY_EVIL_TWIN_AP_SLOTS   4
+#define FOF_POLICY_EVIL_TWIN_MAX_SSID_LEN 33
+
+typedef struct {
+    bool in_use;
+    uint8_t bssid[6];
+    int8_t rssi;
+    uint8_t channel;
+    uint8_t auth_mode;
+    int64_t last_seen_ms;
+    int64_t last_alert_ms;
+} fof_policy_evil_twin_ap_t;
+
+typedef struct {
+    bool in_use;
+    char ssid[33];
+    int64_t last_used_ms;
+    fof_policy_evil_twin_ap_t aps[FOF_POLICY_EVIL_TWIN_AP_SLOTS];
+} fof_policy_evil_twin_ssid_t;
+
+typedef struct {
+    fof_policy_evil_twin_ssid_t ssids[FOF_POLICY_EVIL_TWIN_SSID_SLOTS];
+} fof_policy_evil_twin_state_t;
+
+typedef struct {
+    char ssid[33];
+    uint8_t suspect_bssid[6];
+    uint8_t reference_bssid[6];
+    int8_t suspect_rssi;
+    uint8_t suspect_channel;
+    uint8_t suspect_auth_mode;
+    uint8_t reference_auth_mode;
+    bool mixed_open;
+    bool strong_clone;
+    char detail[48];
+} fof_policy_evil_twin_alert_t;
+
+void fof_policy_evil_twin_state_init(fof_policy_evil_twin_state_t *state);
+bool fof_policy_evil_twin_observe(fof_policy_evil_twin_state_t *state,
+                                  const char *ssid,
+                                  const uint8_t bssid[6],
+                                  int8_t rssi,
+                                  uint8_t channel,
+                                  uint8_t auth_mode,
+                                  int64_t now_ms,
+                                  fof_policy_evil_twin_alert_t *out);
+const char *fof_policy_wifi_auth_label(uint8_t auth_mode);
+uint8_t fof_policy_wifi_beacon_auth_mode(const uint8_t *frame, size_t frame_len);
+
 #ifdef __cplusplus
 }
 #endif

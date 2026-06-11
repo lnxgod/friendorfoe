@@ -2,6 +2,11 @@ from app.services.privacy_devices import (
     classify_privacy_device,
     privacy_summary,
 )
+from app.services.privacy_signature_catalog import (
+    match_privacy_wifi_ssid,
+    validate_privacy_signature_catalog,
+)
+from app.services.rf_identity import enrich_rf_evidence
 
 
 def test_privacy_device_fields_for_skimmer():
@@ -74,3 +79,62 @@ def test_findmy_remains_tracker_privacy_kind():
 
     assert enriched["privacy_kind"] == "TRACKER_NEAR"
     assert enriched["display_label"] == "TRACKER NEAR"
+
+
+def test_privacy_signature_catalog_matches_wifi_privacy_aps():
+    assert validate_privacy_signature_catalog() == []
+
+    tapo = match_privacy_wifi_ssid("Tapo_Cam_ABCD")
+    assert tapo is not None
+    assert tapo["manufacturer"] == "TP-Link"
+    assert tapo["class_reason"] == "privacy:camera:tapo"
+
+    assert match_privacy_wifi_ssid("Campus-WiFi") is None
+    assert match_privacy_wifi_ssid("UFO-Arcade") is None
+
+
+def test_wifi_privacy_ap_maps_to_camera_privacy_kind():
+    enriched = classify_privacy_device({
+        "source": "wifi_ap_inventory",
+        "ssid": "Ring Setup 12",
+        "manufacturer": "Ring",
+        "device_type": "Doorbell Camera",
+        "class_reason": "privacy:doorbell:ring",
+        "current_rssi": -52,
+    })
+
+    assert enriched["privacy_kind"] == "CAMERA_NEAR"
+    assert enriched["risk_level"] == "high"
+    assert enriched["display_label"] == "CAMERA NEAR"
+
+
+def test_attack_tool_wifi_ap_maps_to_wifi_tool_privacy_kind():
+    enriched = classify_privacy_device({
+        "source": "wifi_ap_inventory",
+        "ssid": "Advanced-Deauther",
+        "manufacturer": "Deauther",
+        "device_type": "Attack Tool",
+        "class_reason": "attack_tool:deauther",
+        "current_rssi": -62,
+    })
+
+    assert enriched["privacy_kind"] == "WIFI_ATTACK_TOOL"
+    assert enriched["display_label"] == "WIFI TOOL"
+
+
+def test_rf_identity_uses_privacy_signature_for_wifi_inventory():
+    meta = enrich_rf_evidence(
+        source="wifi_ap_inventory",
+        drone_id="privacy_wifi:001122334455",
+        bssid="00:11:22:33:44:55",
+        ssid="Tapo_Cam_ABCD",
+        manufacturer="TP-Link",
+        model="IP Camera",
+        classification="wifi_device",
+        class_reason="privacy:camera:tapo",
+    )
+
+    assert meta["device_class"] == "suspect_camera"
+    assert meta["device_family"] == "camera_or_video"
+    assert meta["family_source"] == "privacy_rf_signature"
+    assert any("privacy:camera:tapo" in item for item in meta["evidence"])

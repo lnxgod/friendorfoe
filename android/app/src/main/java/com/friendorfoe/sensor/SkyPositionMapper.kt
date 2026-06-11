@@ -36,6 +36,9 @@ class SkyPositionMapper {
 
         /** Max visual range for drones: ~2 km — small objects invisible further */
         private const val MAX_DRONE_VISUAL_RANGE_M = 2_000.0
+
+        /** Normalized screen margin used to identify objects close enough for visual rescue. */
+        private const val NEAR_VIEWPORT_MARGIN = 0.35f
     }
 
     /**
@@ -113,12 +116,18 @@ class SkyPositionMapper {
         val screenX = (0.5 + azimuthOffsetRad / (2.0 * halfHFovRad)).toFloat()
         // Elevation is inverted: higher elevation = lower screen Y (toward top)
         val screenY = (0.5 - elevationOffsetRad / (2.0 * halfVFovRad)).toFloat()
+        val isNearViewport = !isInView && withinRange && aboveHorizon &&
+            screenX in -NEAR_VIEWPORT_MARGIN..(1f + NEAR_VIEWPORT_MARGIN) &&
+            screenY in -NEAR_VIEWPORT_MARGIN..(1f + NEAR_VIEWPORT_MARGIN)
 
         return ScreenPosition(
             skyObject = skyObject,
             screenX = screenX.coerceIn(0f, 1f),
             screenY = screenY.coerceIn(0f, 1f),
+            rawScreenX = screenX,
+            rawScreenY = screenY,
             isInView = isInView,
+            isNearViewport = isNearViewport,
             bearingDegrees = normalizeAngle360(bearingDeg),
             elevationDegrees = elevationDeg,
             distanceMeters = slantDistance,
@@ -267,12 +276,18 @@ class SkyPositionMapper {
         val halfVFovRad = fovCalculator.verticalFovRadians / 2.0
         val screenX = (0.5 + azimuthOffsetRad / (2.0 * halfHFovRad)).toFloat()
         val screenY = (0.5 - elevationOffsetRad / (2.0 * halfVFovRad)).toFloat()
+        val isNearViewport = !isInView && withinRange && aboveHorizon &&
+            screenX in -NEAR_VIEWPORT_MARGIN..(1f + NEAR_VIEWPORT_MARGIN) &&
+            screenY in -NEAR_VIEWPORT_MARGIN..(1f + NEAR_VIEWPORT_MARGIN)
 
         return ScreenPosition(
             skyObject = skyObject,
             screenX = screenX.coerceIn(0f, 1f),
             screenY = screenY.coerceIn(0f, 1f),
+            rawScreenX = screenX,
+            rawScreenY = screenY,
             isInView = isInView,
+            isNearViewport = isNearViewport,
             bearingDegrees = normalizeAngle360(bearingDeg),
             elevationDegrees = elevationDeg,
             distanceMeters = slantDistance,

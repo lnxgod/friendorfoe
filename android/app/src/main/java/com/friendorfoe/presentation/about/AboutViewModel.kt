@@ -27,22 +27,44 @@ class AboutViewModel @Inject constructor(
     val stalkerEnabled: Boolean get() = detectionPrefs.stalkerDetectionEnabled
     val ultrasonicEnabled: Boolean get() = detectionPrefs.ultrasonicEnabled
     val wifiAnomalyEnabled: Boolean get() = detectionPrefs.wifiAnomalyEnabled
+    val privacyNotificationsEnabled: Boolean get() = detectionPrefs.privacyNotificationsEnabled
     val sensorBackendEnabled: Boolean get() = detectionPrefs.sensorBackendEnabled
     val backendUrl: String get() = detectionPrefs.backendUrl
     val backendOnlyMode: Boolean get() = detectionPrefs.backendOnlyMode
 
-    fun setAdsbEnabled(enabled: Boolean) { detectionPrefs.adsbEnabled = enabled }
-    fun setBleRidEnabled(enabled: Boolean) { detectionPrefs.bleRidEnabled = enabled }
-    fun setWifiEnabled(enabled: Boolean) { detectionPrefs.wifiEnabled = enabled }
+    fun setAdsbEnabled(enabled: Boolean) {
+        detectionPrefs.adsbEnabled = enabled
+        skyObjectRepository.restartDetectionSources()
+    }
+    fun setBleRidEnabled(enabled: Boolean) {
+        detectionPrefs.bleRidEnabled = enabled
+        skyObjectRepository.restartDetectionSources()
+    }
+    fun setWifiEnabled(enabled: Boolean) {
+        detectionPrefs.wifiEnabled = enabled
+        skyObjectRepository.restartDetectionSources()
+    }
     fun setPrivacyEnabled(enabled: Boolean) {
         skyObjectRepository.setPrivacyDetectionEnabled(enabled)
     }
-    fun setStalkerEnabled(enabled: Boolean) { detectionPrefs.stalkerDetectionEnabled = enabled }
-    fun setUltrasonicEnabled(enabled: Boolean) { detectionPrefs.ultrasonicEnabled = enabled }
+    fun setStalkerEnabled(enabled: Boolean) {
+        detectionPrefs.stalkerDetectionEnabled = enabled
+        skyObjectRepository.restartDetectionSources()
+    }
+    fun setUltrasonicEnabled(enabled: Boolean) {
+        detectionPrefs.ultrasonicEnabled = enabled
+        skyObjectRepository.restartDetectionSources()
+    }
     fun setWifiAnomalyEnabled(enabled: Boolean) { detectionPrefs.wifiAnomalyEnabled = enabled }
+    fun setPrivacyNotificationsEnabled(enabled: Boolean) {
+        detectionPrefs.privacyNotificationsEnabled = enabled
+    }
     fun setSensorBackendEnabled(enabled: Boolean) { detectionPrefs.sensorBackendEnabled = enabled }
     fun setBackendUrl(url: String) { detectionPrefs.backendUrl = url }
-    fun setBackendOnlyMode(enabled: Boolean) { detectionPrefs.backendOnlyMode = enabled }
+    fun setBackendOnlyMode(enabled: Boolean) {
+        detectionPrefs.backendOnlyMode = enabled
+        skyObjectRepository.restartDetectionSources()
+    }
 
     // Connection test
     private val _connectionStatus = MutableStateFlow<String?>(null)

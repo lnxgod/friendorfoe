@@ -6,7 +6,10 @@ import java.time.Duration
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Tracks BLE devices over time to detect:
@@ -81,11 +84,17 @@ class BleTracker @Inject constructor() {
         val threatLevel: Int // 1=low, 2=medium, 3=high
     )
 
+    private data class UserPoint(
+        val latitude: Double,
+        val longitude: Double,
+        val timestamp: Instant
+    )
+
     // All tracked BLE devices keyed by MAC
     private val trackedDevices = java.util.concurrent.ConcurrentHashMap<String, TrackedDevice>()
 
     // User location history for movement detection
-    private val userLocations = mutableListOf<Pair<Location, Instant>>()
+    private val userLocations = mutableListOf<UserPoint>()
 
     // Direction finding state
     @Volatile private var directionScanTarget: String? = null
@@ -105,8 +114,33 @@ class BleTracker @Inject constructor() {
         userLat: Double,
         userLon: Double,
         compassBearing: Float
+    ) = recordSightingAt(
+        mac = mac,
+        rssi = rssi,
+        deviceName = deviceName,
+        deviceType = deviceType,
+        manufacturer = manufacturer,
+        hasCamera = hasCamera,
+        userLat = userLat,
+        userLon = userLon,
+        compassBearing = compassBearing,
+        timestamp = Instant.now()
+    )
+
+    internal fun recordSightingAt(
+        mac: String,
+        rssi: Int,
+        deviceName: String?,
+        deviceType: String?,
+        manufacturer: String?,
+        hasCamera: Boolean,
+        userLat: Double,
+        userLon: Double,
+        compassBearing: Float,
+        timestamp: Instant
     ) {
-        val now = Instant.now()
+        recordUserLocation(userLat, userLon, timestamp)
+
         val device = trackedDevices.computeIfAbsent(mac) {
             TrackedDevice(
                 mac = mac,
@@ -114,11 +148,11 @@ class BleTracker @Inject constructor() {
                 deviceType = deviceType,
                 manufacturer = manufacturer,
                 hasCamera = hasCamera,
-                firstSeen = now
+                firstSeen = timestamp
             )
         }
 
-        device.lastSeen = now
+        device.lastSeen = timestamp
         if (rssi > device.peakRssi) device.peakRssi = rssi
 
         // Update name/type if we got better info
@@ -126,7 +160,7 @@ class BleTracker @Inject constructor() {
             trackedDevices[mac] = device.copy(deviceName = deviceName)
         }
 
-        val sighting = Sighting(rssi, userLat, userLon, compassBearing, now)
+        val sighting = Sighting(rssi, userLat, userLon, compassBearing, timestamp)
         synchronized(device.sightings) {
             device.sightings.add(sighting)
             if (device.sightings.size > MAX_SIGHTINGS) {
@@ -144,11 +178,27 @@ class BleTracker @Inject constructor() {
      * Update user location for movement tracking.
      */
     fun updateUserLocation(location: Location) {
+        recordUserLocation(location.latitude, location.longitude, Instant.now())
+    }
+
+    internal fun recordUserLocation(
+        latitude: Double,
+        longitude: Double,
+        timestamp: Instant = Instant.now()
+    ) {
+        if (!isValidLocation(latitude, longitude)) return
         synchronized(userLocations) {
-            userLocations.add(location to Instant.now())
+            val last = userLocations.lastOrNull()
+            if (last != null &&
+                Duration.between(last.timestamp, timestamp).seconds < 5 &&
+                distanceMeters(last.latitude, last.longitude, latitude, longitude) < 3.0
+            ) {
+                return
+            }
+            userLocations.add(UserPoint(latitude, longitude, timestamp))
             // Keep last 5 minutes
-            val cutoff = Instant.now().minusSeconds(300)
-            userLocations.removeAll { it.second.isBefore(cutoff) }
+            val cutoff = timestamp.minusSeconds(300)
+            userLocations.removeAll { it.timestamp.isBefore(cutoff) }
         }
     }
 
@@ -159,7 +209,10 @@ class BleTracker @Inject constructor() {
      * @return list of stalker alerts
      */
     fun checkForFollowers(): List<StalkerAlert> {
-        val now = Instant.now()
+        return checkForFollowersAt(Instant.now())
+    }
+
+    internal fun checkForFollowersAt(now: Instant): List<StalkerAlert> {
         val alerts = mutableListOf<StalkerAlert>()
 
         // Calculate how far the user has moved
@@ -190,7 +243,10 @@ class BleTracker @Inject constructor() {
                     else -> 1
                 }
                 alerts.add(StalkerAlert(device, "following", threatLevel))
-                Log.w(TAG, "STALKER ALERT: ${device.deviceType ?: device.mac} following for ${duration / 1000}s across ${uniqueLocations.size} locations")
+                safeLogWarning(
+                    "STALKER ALERT: ${device.deviceType ?: device.mac} following for " +
+                        "${duration / 1000}s across ${uniqueLocations.size} locations"
+                )
             } else if (userMovement < 20.0 && duration > FOLLOW_MIN_DURATION_MS) {
                 // User stationary, device lingering nearby
                 val threatLevel = if (device.hasCamera) 2 else 1
@@ -284,11 +340,36 @@ class BleTracker @Inject constructor() {
     private fun calculateUserMovement(): Double {
         synchronized(userLocations) {
             if (userLocations.size < 2) return 0.0
-            val first = userLocations.first().first
-            val last = userLocations.last().first
-            return first.distanceTo(last).toDouble()
+            val first = userLocations.first()
+            val last = userLocations.last()
+            return distanceMeters(first.latitude, first.longitude, last.latitude, last.longitude)
         }
     }
 
+    private fun isValidLocation(latitude: Double, longitude: Double): Boolean {
+        if (latitude == 0.0 && longitude == 0.0) return false
+        return latitude in -90.0..90.0 && longitude in -180.0..180.0
+    }
+
+    private fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val earthRadiusM = 6_371_000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val rLat1 = Math.toRadians(lat1)
+        val rLat2 = Math.toRadians(lat2)
+        val a = sin(dLat / 2) * sin(dLat / 2) +
+            cos(rLat1) * cos(rLat2) * sin(dLon / 2) * sin(dLon / 2)
+        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return earthRadiusM * c
+    }
+
     private fun Double.format(digits: Int) = "%.${digits}f".format(this)
+
+    private fun safeLogWarning(message: String) {
+        try {
+            Log.w(TAG, message)
+        } catch (_: RuntimeException) {
+            // Android Log is not available in plain JVM unit tests.
+        }
+    }
 }

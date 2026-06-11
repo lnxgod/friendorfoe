@@ -14,13 +14,14 @@
 /* Mirrors of esp_reset_reason_t values used by the pure policy. */
 #define RST_POWERON   1
 #define RST_EXT       2
-#define RST_PANIC     3
-#define RST_INT_WDT   4
-#define RST_TASK_WDT  5
-#define RST_WDT       6
-#define RST_DEEPSLEEP 7
-#define RST_BROWNOUT  8
-#define RST_SDIO      9
+#define RST_SW        3
+#define RST_PANIC     4
+#define RST_INT_WDT   5
+#define RST_TASK_WDT  6
+#define RST_WDT       7
+#define RST_DEEPSLEEP 8
+#define RST_BROWNOUT  9
+#define RST_SDIO      10
 
 /* Default crash-loop threshold matches CRASH_LOOP_THRESHOLD in the .c. */
 #define THRESHOLD 3u
@@ -42,6 +43,15 @@ void test_brownout_does_not_count_as_crash(void)
     TEST_ASSERT_EQUAL(ROLLBACK_ACTION_NONE, d.action);
     TEST_ASSERT_FALSE(d.reset_was_crash);
     TEST_ASSERT_EQUAL_UINT32(0, d.new_crash_count);
+}
+
+void test_software_restart_does_not_count_as_crash(void)
+{
+    rollback_decision_t d = scanner_rollback_decide(
+        RST_SW, /* pending_verify=*/false, /* prior=*/2, THRESHOLD);
+    TEST_ASSERT_EQUAL(ROLLBACK_ACTION_NONE, d.action);
+    TEST_ASSERT_FALSE(d.reset_was_crash);
+    TEST_ASSERT_EQUAL_UINT32(2, d.new_crash_count);
 }
 
 void test_panic_increments_counter(void)

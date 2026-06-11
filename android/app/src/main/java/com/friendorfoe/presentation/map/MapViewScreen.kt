@@ -84,6 +84,7 @@ fun MapViewScreen(
     val detailState by detailViewModel.detailState.collectAsStateWithLifecycle()
     val followCompass by viewModel.followCompass.collectAsStateWithLifecycle()
     val compassHeading by viewModel.compassHeading.collectAsStateWithLifecycle()
+    val activeVisualFocusIds by viewModel.activeVisualFocusIds.collectAsStateWithLifecycle()
     val sensorDrones by viewModel.sensorDrones.collectAsStateWithLifecycle()
     val remoteSensors by viewModel.remoteSensors.collectAsStateWithLifecycle()
     val remoteSearchResults by viewModel.remoteSearchResults.collectAsStateWithLifecycle()
@@ -240,7 +241,13 @@ fun MapViewScreen(
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                             title = getMarkerTitle(obj)
                             snippet = getMarkerSnippet(obj)
-                            icon = createCategoryMarkerDrawable(context, obj.category, color, getHeading(obj))
+                            icon = createCategoryMarkerDrawable(
+                                context = context,
+                                category = obj.category,
+                                color = color,
+                                heading = getHeading(obj),
+                                visuallyConfirmed = obj.id in activeVisualFocusIds
+                            )
                             setOnMarkerClickListener { _, _ ->
                                 viewModel.selectObject(obj.id)
                                 true
@@ -681,4 +688,3 @@ private fun buildSensorDroneSnippet(drone: LocatedDroneDto): String {
     drone.accuracyM?.let { parts.add("Accuracy: ~${it.toInt()}m") }
     return parts.joinToString(", ")
 }
-

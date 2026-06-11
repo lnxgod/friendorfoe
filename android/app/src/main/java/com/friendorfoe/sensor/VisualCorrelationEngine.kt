@@ -29,6 +29,9 @@ class VisualCorrelationEngine @Inject constructor(
         /** Additional threshold allowance when data is stale (scales with 1-confidence) */
         private const val MATCH_THRESHOLD_STALE_BONUS = 0.045f
 
+        /** Looser threshold for a visible blob rescuing a just-off-screen radio projection. */
+        private const val RESCUE_MATCH_THRESHOLD = 0.45f
+
         /** Blend weight for radio position (visual = 1 - RADIO_WEIGHT) */
         private const val RADIO_WEIGHT = 0.4f
 
@@ -69,21 +72,25 @@ class VisualCorrelationEngine @Inject constructor(
 
         val result = mutableListOf<ScreenPosition>()
 
-        // Sort radio positions by distance to nearest detection (greedy closest-first matching)
+        // Sort radio positions by distance to nearest detection (greedy closest-first matching).
+        // Near-viewport positions use raw coordinates so visual detections can rescue
+        // labels that projection math placed just outside the camera frame.
         val positionsWithMinDist = radioPositions.map { pos ->
-            val minDist = if (pos.isInView) {
+            val canMatch = pos.isInView || pos.isNearViewport
+            val minDist = if (canMatch) {
                 visualDetections.indices.minOfOrNull { idx ->
-                    hypot(pos.screenX - visualDetections[idx].centerX,
-                          pos.screenY - visualDetections[idx].centerY)
+                    matchDistance(pos, visualDetections[idx])
                 } ?: Float.MAX_VALUE
             } else Float.MAX_VALUE
             pos to minDist
         }.sortedBy { it.second }
 
-        // Only attempt visual matching for the 2 closest in-view radio positions
-        val inViewPositions = positionsWithMinDist.filter { it.first.isInView }.take(MAX_VISUAL_MATCH_CANDIDATES)
-        val remainingPositions = positionsWithMinDist.filter { !it.first.isInView } +
-            positionsWithMinDist.filter { it.first.isInView }.drop(MAX_VISUAL_MATCH_CANDIDATES)
+        // Only attempt visual matching for the closest in-view or near-viewport radio positions.
+        val matchCandidates = positionsWithMinDist
+            .filter { it.first.isInView || it.first.isNearViewport }
+            .take(MAX_VISUAL_MATCH_CANDIDATES)
+        val candidateIds = matchCandidates.map { it.first.skyObject.id }.toSet()
+        val remainingPositions = positionsWithMinDist.filter { it.first.skyObject.id !in candidateIds }
 
         // Add remaining positions without visual matching
         for ((radioPos, _) in remainingPositions) {
@@ -93,21 +100,23 @@ class VisualCorrelationEngine @Inject constructor(
         // Match only top candidates
         val matchedDetectionIndices = mutableSetOf<Int>()
 
-        for ((radioPos, _) in inViewPositions) {
+        for ((radioPos, _) in matchCandidates) {
             // Adaptive threshold: tighter when data is fresh, looser when stale/extrapolated
-            val effectiveThreshold = MATCH_THRESHOLD_BASE +
-                MATCH_THRESHOLD_STALE_BONUS * (1f - radioPos.positionConfidence) +
-                if (radioPos.trackHeadingDegrees != null && radioPos.isExtrapolated) 0.02f else 0f
+            val effectiveThreshold = if (radioPos.isInView) {
+                MATCH_THRESHOLD_BASE +
+                    MATCH_THRESHOLD_STALE_BONUS * (1f - radioPos.positionConfidence) +
+                    if (radioPos.trackHeadingDegrees != null && radioPos.isExtrapolated) 0.02f else 0f
+            } else {
+                RESCUE_MATCH_THRESHOLD +
+                    MATCH_THRESHOLD_STALE_BONUS * (1f - radioPos.positionConfidence)
+            }
 
             // Find nearest unmatched visual detection
             var bestIdx = -1
             var bestDist = Float.MAX_VALUE
             for (idx in visualDetections.indices) {
                 if (idx in matchedDetectionIndices) continue
-                val dist = hypot(
-                    radioPos.screenX - visualDetections[idx].centerX,
-                    radioPos.screenY - visualDetections[idx].centerY
-                )
+                val dist = matchDistance(radioPos, visualDetections[idx])
                 if (dist < bestDist) {
                     bestDist = dist
                     bestIdx = idx
@@ -118,6 +127,19 @@ class VisualCorrelationEngine @Inject constructor(
                 // Match found — blend radio and visual positions
                 matchedDetectionIndices.add(bestIdx)
                 val visual = visualDetections[bestIdx]
+
+                if (!radioPos.isInView && radioPos.isNearViewport) {
+                    smoothedPositions[radioPos.skyObject.id] = visual.centerX to visual.centerY
+                    result.add(radioPos.copy(
+                        screenX = visual.centerX.coerceIn(0f, 1f),
+                        screenY = visual.centerY.coerceIn(0f, 1f),
+                        isInView = true,
+                        isNearViewport = false,
+                        visuallyConfirmed = true,
+                        matchedDetection = visual
+                    ))
+                    continue
+                }
 
                 // Dynamic blend weight: trust radio more when prediction is confident,
                 // trust visual more when data is stale
@@ -180,6 +202,11 @@ class VisualCorrelationEngine @Inject constructor(
      * When no visual match exists, decay smoothed position back toward radio position.
      */
     private fun decayToRadio(pos: ScreenPosition): ScreenPosition {
+        if (!pos.isInView) {
+            smoothedPositions.remove(pos.skyObject.id)
+            return pos
+        }
+
         val prev = smoothedPositions[pos.skyObject.id]
         return if (prev != null) {
             val decayedX = prev.first + SMOOTHING_ALPHA * (pos.screenX - prev.first)
@@ -197,5 +224,11 @@ class VisualCorrelationEngine @Inject constructor(
     fun reset() {
         smoothedPositions.clear()
         unknownObjectClassifier.reset()
+    }
+
+    private fun matchDistance(pos: ScreenPosition, visual: VisualDetection): Float {
+        val baseX = if (pos.isInView) pos.screenX else pos.rawScreenX
+        val baseY = if (pos.isInView) pos.screenY else pos.rawScreenY
+        return hypot(baseX - visual.centerX, baseY - visual.centerY)
     }
 }

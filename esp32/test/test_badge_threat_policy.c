@@ -1208,6 +1208,51 @@ void test_badge_privacy_pack_maps_camera_lock_hid_labels(void)
     TEST_ASSERT_TRUE(strstr(event.evidence, "0x1812") != NULL);
 }
 
+void test_badge_privacy_wifi_inventory_becomes_camera_row(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t ring = make_detection(
+        DETECTION_SRC_WIFI_AP_INVENTORY,
+        "privacy_wifi:001122334455",
+        "Ring",
+        0.85f,
+        -50
+    );
+    strncpy(ring.model, "Doorbell Camera", sizeof(ring.model) - 1);
+    strncpy(ring.ssid, "Ring Setup 12", sizeof(ring.ssid) - 1);
+    strncpy(ring.bssid, "00:11:22:33:44:55", sizeof(ring.bssid) - 1);
+    strncpy(ring.class_reason, "privacy:doorbell:ring",
+            sizeof(ring.class_reason) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&ring, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_OTHER, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_CAMERA, event.category);
+    TEST_ASSERT_EQUAL_STRING("Doorbell Cam", event.label);
+    TEST_ASSERT_EQUAL_STRING("ssid Ring Setup 12", event.detail);
+}
+
+void test_badge_attack_tool_wifi_inventory_becomes_wifi_row(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t tool = make_detection(
+        DETECTION_SRC_WIFI_AP_INVENTORY,
+        "attack_wifi:AABBCCDDEEFF",
+        "Hak5",
+        0.90f,
+        -46
+    );
+    strncpy(tool.model, "Attack Tool", sizeof(tool.model) - 1);
+    strncpy(tool.ssid, "Pineapple_5G", sizeof(tool.ssid) - 1);
+    strncpy(tool.class_reason, "attack_tool:pineapple",
+            sizeof(tool.class_reason) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&tool, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_WIFI_ANOMALY, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_WIFI, event.category);
+    TEST_ASSERT_EQUAL_STRING("Pineapple", event.label);
+    TEST_ASSERT_EQUAL_STRING("ssid Pineapple_5G", event.detail);
+}
+
 void test_badge_privacy_evidence_reason_names_ble_source(void)
 {
     badge_threat_event_t event;
@@ -1345,6 +1390,64 @@ void test_badge_disassoc_status_event_gets_specific_wifi_label(void)
     TEST_ASSERT_TRUE(badge_threat_classify_detection(&disassoc, &event));
     TEST_ASSERT_EQUAL(BADGE_THREAT_WIFI_ANOMALY, event.cls);
     TEST_ASSERT_EQUAL_STRING("Disassoc", event.label);
+}
+
+void test_badge_evil_twin_maps_to_wifi_alert_with_ssid_detail(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t evil = make_detection(
+        DETECTION_SRC_WIFI_ASSOC,
+        "evil:CafeWiFi:99AABB",
+        "Evil Twin",
+        0.82f,
+        -48
+    );
+    strncpy(evil.ssid, "CafeWiFi", sizeof(evil.ssid) - 1);
+    strncpy(evil.bssid, "66:77:88:99:AA:BB", sizeof(evil.bssid) - 1);
+    strncpy(evil.class_reason, "Evil Twin: open clone vs WPA2",
+            sizeof(evil.class_reason) - 1);
+    evil.wifi_auth_mode = 0;
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&evil, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_WIFI_ANOMALY, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_WIFI, event.category);
+    TEST_ASSERT_EQUAL_STRING("Evil Twin", event.label);
+    TEST_ASSERT_EQUAL_STRING("ssid CafeWiFi", event.detail);
+    TEST_ASSERT_EQUAL_STRING("CafeWiFi", event.ssid);
+    TEST_ASSERT_EQUAL_STRING("66:77:88:99:AA:BB", event.bssid);
+    TEST_ASSERT_EQUAL_UINT8(0, event.wifi_auth_mode);
+    TEST_ASSERT_TRUE(strstr(event.evidence, "Evil Twin") != NULL);
+
+    badge_threat_state_t state;
+    badge_threat_snapshot_t snapshot;
+    badge_threat_state_init(&state);
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &evil, 1000, NULL));
+    badge_threat_state_snapshot(&state, 2000, &snapshot);
+    TEST_ASSERT_EQUAL_INT(1, snapshot.entity_count);
+    TEST_ASSERT_EQUAL_STRING("CafeWiFi", snapshot.entities[0].ssid);
+    TEST_ASSERT_EQUAL_STRING("66:77:88:99:AA:BB", snapshot.entities[0].bssid);
+    TEST_ASSERT_EQUAL_UINT8(0, snapshot.entities[0].wifi_auth_mode);
+}
+
+void test_badge_evil_twin_overrides_notable_ssid_bucket(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t evil = make_detection(
+        DETECTION_SRC_WIFI_ASSOC,
+        "evil:Penguin:112233",
+        "Evil Twin",
+        0.82f,
+        -52
+    );
+    strncpy(evil.ssid, "Penguin-12345", sizeof(evil.ssid) - 1);
+    strncpy(evil.class_reason, "Evil Twin: open clone vs WPA2",
+            sizeof(evil.class_reason) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&evil, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_WIFI_ANOMALY, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_WIFI, event.category);
+    TEST_ASSERT_EQUAL_STRING("Evil Twin", event.label);
+    TEST_ASSERT_EQUAL_STRING("ssid Penguin-12345", event.detail);
 }
 
 void test_badge_strong_normal_wifi_assoc_is_ignored(void)
@@ -2585,12 +2688,39 @@ void test_badge_wifi_attack_top_detail_includes_count_and_age(void)
     TEST_ASSERT_TRUE(badge_threat_top_detail_uses_large_text(detail, 19));
 }
 
+void test_badge_evil_twin_top_detail_prefers_ssid_and_rssi(void)
+{
+    badge_threat_snapshot_t snapshot = {0};
+    snapshot.entity_count = 1;
+    snapshot.entities[0].active = true;
+    snapshot.entities[0].cls = BADGE_THREAT_WIFI_ANOMALY;
+    snapshot.entities[0].category = BADGE_THREAT_CATEGORY_WIFI;
+    snapshot.entities[0].rssi = -48;
+    snapshot.entities[0].best_rssi = -48;
+    strncpy(snapshot.entities[0].label, "Evil Twin",
+            sizeof(snapshot.entities[0].label) - 1);
+    strncpy(snapshot.entities[0].detail, "ssid CafeWiFi",
+            sizeof(snapshot.entities[0].detail) - 1);
+    strncpy(snapshot.entities[0].evidence, "Evil Twin: open clone vs WPA2",
+            sizeof(snapshot.entities[0].evidence) - 1);
+
+    char detail[56];
+    TEST_ASSERT_TRUE(badge_threat_format_top_detail(
+        &snapshot, &snapshot.entities[0], detail, sizeof(detail)));
+    TEST_ASSERT_EQUAL_STRING("ssid CafeWiFi open clone vs WPA2 -48dB", detail);
+    TEST_ASSERT_FALSE(badge_threat_top_detail_uses_large_text(detail, 19));
+    TEST_ASSERT_TRUE(badge_threat_top_detail_uses_marquee(detail, 19));
+}
+
 void test_badge_top_detail_large_text_rejects_long_rows(void)
 {
     TEST_ASSERT_TRUE(
         badge_threat_top_detail_uses_large_text("RID x1 SSID x1", 19));
     TEST_ASSERT_FALSE(
         badge_threat_top_detail_uses_large_text(
+            "ssid very-long-network-name", 19));
+    TEST_ASSERT_TRUE(
+        badge_threat_top_detail_uses_marquee(
             "ssid very-long-network-name", 19));
 }
 
@@ -2769,6 +2899,28 @@ void test_badge_view_key_non_rid_uses_category_title_detail(void)
     ));
     TEST_ASSERT_TRUE(strstr(key, "DRONE SSID") != NULL);
     TEST_ASSERT_TRUE(strstr(key, "ssid DJI-Mini-Live") != NULL);
+}
+
+void test_badge_evil_twin_view_key_uses_evil_twin_title(void)
+{
+    badge_threat_snapshot_entity_t item = {0};
+    char key[BADGE_THREAT_VIEW_KEY_LEN];
+    item.active = true;
+    item.cls = BADGE_THREAT_WIFI_ANOMALY;
+    item.category = BADGE_THREAT_CATEGORY_SSID;
+    strncpy(item.label, "Evil Twin", sizeof(item.label) - 1);
+    strncpy(item.detail, "ssid CafeWiFi", sizeof(item.detail) - 1);
+    strncpy(item.evidence, "Evil Twin: open clone vs WPA2",
+            sizeof(item.evidence) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_snapshot_entity_is_evil_twin(&item));
+    TEST_ASSERT_TRUE(badge_threat_snapshot_entity_view_key(
+        &item,
+        key,
+        sizeof(key)
+    ));
+    TEST_ASSERT_TRUE(strstr(key, "EVIL TWIN") != NULL);
+    TEST_ASSERT_FALSE(strstr(key, "WIFI SSID") != NULL);
 }
 
 void test_badge_drone_ssid_uses_short_display_lifetime(void)

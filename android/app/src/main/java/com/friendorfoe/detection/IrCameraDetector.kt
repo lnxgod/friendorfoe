@@ -57,15 +57,24 @@ class IrCameraDetector @Inject constructor() {
 
         val width = bitmap.width
         val height = bitmap.height
-        val gridW = width / GRID_CELL_SIZE
-        val gridH = height / GRID_CELL_SIZE
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        return analyzePixels(width, height, pixels)
+    }
+
+    internal fun analyzePixelsForTest(width: Int, height: Int, pixels: IntArray): List<IrSource> {
+        return analyzePixels(width, height, pixels)
+    }
+
+    private fun analyzePixels(width: Int, height: Int, pixels: IntArray): List<IrSource> {
+        if (width <= 0 || height <= 0 || pixels.size < width * height) return emptyList()
+
+        val gridW = (width / GRID_CELL_SIZE).coerceAtLeast(1)
+        val gridH = (height / GRID_CELL_SIZE).coerceAtLeast(1)
 
         // Count bright, low-saturation pixels per grid cell
         val gridCounts = IntArray(gridW * gridH)
         val gridBrightness = IntArray(gridW * gridH)
-
-        val pixels = IntArray(width * height)
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
         for (y in 0 until height) {
             for (x in 0 until width) {
@@ -131,7 +140,8 @@ class IrCameraDetector @Inject constructor() {
         persistenceMap.keys.retainAll(currentFrameCells)
 
         if (results.isNotEmpty()) {
-            Log.i(TAG, "IR sources detected: ${results.size} (persistence: ${results.maxOf { persistenceMap[0] ?: 0 }})")
+            val maxPersistence = currentFrameCells.maxOfOrNull { persistenceMap[it] ?: 0 } ?: 0
+            safeLogInfo("IR sources detected: ${results.size} (persistence: $maxPersistence)")
         }
 
         return results
@@ -140,5 +150,13 @@ class IrCameraDetector @Inject constructor() {
     /** Reset persistence tracking (e.g., when scan mode is entered) */
     fun reset() {
         persistenceMap.clear()
+    }
+
+    private fun safeLogInfo(message: String) {
+        try {
+            Log.i(TAG, message)
+        } catch (_: RuntimeException) {
+            // Android Log is not available in plain JVM unit tests.
+        }
     }
 }

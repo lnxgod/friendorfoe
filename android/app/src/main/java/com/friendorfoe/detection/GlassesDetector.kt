@@ -38,6 +38,9 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     THERMAL_CAMERA("Thermal Cameras", "\uD83C\uDF21\uFE0F", 2),
     CONFERENCE_CAMERA("Conference Cameras", "\uD83C\uDFA5", 2),
     VIDEO_INTERCOM("Video Intercoms", "\uD83D\uDEAA", 2),
+    VOICE_RECORDER("Voice Recorders", "\uD83C\uDFA4", 2),
+    SMART_PEN("Smart Pens", "\u270F\uFE0F", 2),
+    PAYMENT_READER("Payment Readers", "\uD83D\uDCB3", 2),
     // Threat level 1 — nearby devices
     DOORBELL_CAMERA("Doorbell Cameras", "\uD83D\uDEAA", 1),
     SMART_SPEAKER("Smart Speakers", "\uD83D\uDD0A", 1),
@@ -195,6 +198,20 @@ class GlassesDetector @Inject constructor(
             WifiPattern("HIDVCAM", "Generic", "Hidden Camera", 0.90f, true),
             WifiPattern("GW_AP", "Yoosee", "IP Camera", 0.75f, true),
             WifiPattern("JXLCAM", "Generic", "Spy Camera", 0.85f, true),
+            WifiPattern("LookCam", "LookCam", "Hidden Camera", 0.82f, true),
+            WifiPattern("CamHi", "CamHi", "Hidden Camera", 0.82f, true),
+            WifiPattern("Foscam_", "Foscam", "IP Camera", 0.82f, true),
+            WifiPattern("Wansview_", "Wansview", "IP Camera", 0.82f, true),
+            WifiPattern("VStarcam", "VStarcam", "IP Camera", 0.80f, true),
+            WifiPattern("Imou-", "Imou", "IP Camera", 0.80f, true),
+            WifiPattern("UBOX-", "UBOX", "Hidden Camera", 0.80f, true),
+            WifiPattern("WIFICAMERA", "Generic", "Hidden Camera", 0.80f, true),
+            WifiPattern("Littlelf_", "Littlelf", "IP Camera", 0.78f, true),
+            WifiPattern("ieGeek_", "ieGeek", "IP Camera", 0.78f, true),
+            WifiPattern("BOAVISION", "BOAVISION", "IP Camera", 0.78f, true),
+            WifiPattern("HeimVision", "HeimVision", "IP Camera", 0.78f, true),
+            WifiPattern("LaView_", "LaView", "IP Camera", 0.78f, true),
+            WifiPattern("Q-See", "Q-See", "IP Camera", 0.78f, true),
             WifiPattern("iCam-", "iCam365", "Hidden Camera", 0.80f, true),
             WifiPattern("iCam365-", "iCam365", "Hidden Camera", 0.80f, true),
             WifiPattern("XM-", "XMeye", "IP Camera", 0.80f, true),
@@ -344,6 +361,13 @@ class GlassesDetector @Inject constructor(
             deviceType.contains("Action Camera", ignoreCase = true) -> PrivacyCategory.ACTION_CAMERA
             deviceType.contains("Dash Camera", ignoreCase = true) -> PrivacyCategory.DASH_CAMERA
             deviceType.contains("Endoscope", ignoreCase = true) -> PrivacyCategory.HIDDEN_CAMERA
+            deviceType.contains("Voice Recorder", ignoreCase = true) -> PrivacyCategory.VOICE_RECORDER
+            deviceType.contains("Audio Recorder", ignoreCase = true) -> PrivacyCategory.VOICE_RECORDER
+            deviceType.contains("Smart Pen", ignoreCase = true) -> PrivacyCategory.SMART_PEN
+            deviceType.contains("Payment Reader", ignoreCase = true) -> PrivacyCategory.PAYMENT_READER
+            deviceType.contains("Card Reader", ignoreCase = true) -> PrivacyCategory.PAYMENT_READER
+            deviceType.contains("POS Reader", ignoreCase = true) -> PrivacyCategory.PAYMENT_READER
+            deviceType.contains("Skimmer", ignoreCase = true) -> PrivacyCategory.ATTACK_TOOL
             // Ultrasonic beacons
             deviceType.contains("Ultrasonic", ignoreCase = true) -> PrivacyCategory.ULTRASONIC_BEACON
             // Retail tracking
@@ -617,6 +641,18 @@ class GlassesDetector @Inject constructor(
         NameEntry("ICD-", "Sony", "Voice Recorder", 0.85f, false),
         NameEntry("PCM-", "Sony", "Voice Recorder", 0.85f, false),
         NameEntry("Livescribe", "Livescribe", "Smart Pen", 0.85f, false),
+        // Payment readers — high-signal BLE names, surfaced as awareness only.
+        NameEntry("Square Reader", "Square", "Payment Reader", 0.90f, false),
+        NameEntry("Square Terminal", "Square", "Payment Reader", 0.90f, false),
+        NameEntry("Stripe Reader", "Stripe", "Payment Reader", 0.90f, false),
+        NameEntry("BBPOS", "BBPOS", "Payment Reader", 0.90f, false),
+        NameEntry("Chipper", "BBPOS", "Payment Reader", 0.85f, false),
+        NameEntry("WisePad", "BBPOS", "Payment Reader", 0.85f, false),
+        NameEntry("SumUp", "SumUp", "Payment Reader", 0.90f, false),
+        NameEntry("Clover Go", "Clover", "Payment Reader", 0.90f, false),
+        NameEntry("Shopify Tap", "Shopify", "Payment Reader", 0.85f, false),
+        NameEntry("PayPal Here", "PayPal", "Payment Reader", 0.85f, false),
+        NameEntry("Zettle", "PayPal", "Payment Reader", 0.85f, false),
         // OBD2 / vehicle trackers (bonded for data)
         NameEntry("OBDII", "Generic", "OBD Tracker", 0.75f, false),
         NameEntry("OBD2", "Generic", "OBD Tracker", 0.75f, false),

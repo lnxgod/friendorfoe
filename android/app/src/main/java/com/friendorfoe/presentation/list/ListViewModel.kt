@@ -15,12 +15,15 @@ import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
 import com.friendorfoe.domain.usecase.FilterEngine
+import com.friendorfoe.sensor.VisualFocusRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -39,6 +42,7 @@ import javax.inject.Inject
 class ListViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
     private val badgeUsbRepository: BadgeUsbRepository,
+    private val visualFocusRepository: VisualFocusRepository,
     private val locationManager: LocationManager
 ) : ViewModel() {
 
@@ -48,6 +52,13 @@ class ListViewModel @Inject constructor(
         private const val LOCATION_UPDATE_DISTANCE_M = 10f
     }
 
+    private val visualFocusClock = flow {
+        while (true) {
+            emit(System.currentTimeMillis())
+            delay(1000L)
+        }
+    }
+
     private val _filterState = MutableStateFlow(FilterState())
     val filterState: StateFlow<FilterState> = _filterState.asStateFlow()
 
@@ -55,15 +66,24 @@ class ListViewModel @Inject constructor(
         _filterState.value = filterState
     }
 
-    /** All detected sky objects filtered and sorted by confidence (highest first), then distance. */
+    val activeVisualFocusIds: StateFlow<Set<String>> = combine(
+        visualFocusRepository.entries,
+        visualFocusClock
+    ) { entries, nowMs ->
+        entries.filterValues { nowMs - it.lastSeenMs <= VisualFocusRepository.DEFAULT_TTL_MS }.keys
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptySet()
+    )
+
+    /** All detected sky objects filtered and sorted by visible focus, confidence, then distance. */
     val skyObjects: StateFlow<List<SkyObject>> = combine(
         skyObjectRepository.skyObjects,
-        _filterState
-    ) { objects, filter ->
-        FilterEngine.applyFilters(objects, filter).sortedWith(
-            compareByDescending<SkyObject> { it.confidence }
-                .thenBy { it.distanceMeters ?: Double.MAX_VALUE }
-        )
+        _filterState,
+        activeVisualFocusIds
+    ) { objects, filter, visualFocusIds ->
+        sortSkyObjectsForList(FilterEngine.applyFilters(objects, filter), visualFocusIds)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -233,4 +253,15 @@ class ListViewModel @Inject constructor(
         stopLocationUpdates()
         stopBadgeUsb()
     }
+}
+
+internal fun sortSkyObjectsForList(
+    objects: List<SkyObject>,
+    activeVisualFocusIds: Set<String>
+): List<SkyObject> {
+    return objects.sortedWith(
+        compareByDescending<SkyObject> { it.id in activeVisualFocusIds }
+            .thenByDescending { it.confidence }
+            .thenBy { it.distanceMeters ?: Double.MAX_VALUE }
+    )
 }

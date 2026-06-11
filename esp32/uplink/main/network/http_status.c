@@ -1721,12 +1721,23 @@ static void badge_status_chunk_display_state(httpd_req_t *req)
     json_chunk_string(req, state.code);
     httpd_resp_send_chunk(req, ",\"source\":", HTTPD_RESP_USE_STRLEN);
     json_chunk_string(req, state.source);
+    if (state.ssid[0] != '\0') {
+        httpd_resp_send_chunk(req, ",\"ssid\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, state.ssid);
+    }
+    if (state.bssid[0] != '\0') {
+        httpd_resp_send_chunk(req, ",\"bssid\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, state.bssid);
+    }
     snprintf(buf, sizeof(buf),
-             ",\"score\":%d,\"confidence_pct\":%d,\"evidence_quality\":%d,"
+             ",\"auth_m\":%d,\"freq_mhz\":%d,"
+             "\"score\":%d,\"confidence_pct\":%d,\"evidence_quality\":%d,"
              "\"display_rank\":%d,\"age_s\":%d,\"last_seen_s\":%d,"
              "\"rssi\":%d,\"best_rssi\":%d,\"events\":%lu,"
              "\"seen_count\":%lu,\"group_count\":%lu,"
              "\"proximity_level\":%d,\"stale\":%s",
+             state.wifi_auth_mode,
+             state.freq_mhz,
              state.score,
              state.confidence_pct,
              state.evidence_quality,
@@ -1959,6 +1970,24 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
         json_chunk_string(req, entity->evidence);
         httpd_resp_send_chunk(req, ",\"display_id\":", HTTPD_RESP_USE_STRLEN);
         json_chunk_string(req, entity->display_id);
+        if (entity->ssid[0] != '\0') {
+            httpd_resp_send_chunk(req, ",\"ssid\":", HTTPD_RESP_USE_STRLEN);
+            json_chunk_string(req, entity->ssid);
+        }
+        if (entity->bssid[0] != '\0') {
+            httpd_resp_send_chunk(req, ",\"bssid\":", HTTPD_RESP_USE_STRLEN);
+            json_chunk_string(req, entity->bssid);
+        }
+        if (entity->wifi_auth_mode != 0xFF) {
+            snprintf(buf, sizeof(buf), ",\"auth_m\":%d",
+                     (int)entity->wifi_auth_mode);
+            httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+        }
+        if (entity->freq_mhz > 0) {
+            snprintf(buf, sizeof(buf), ",\"freq_mhz\":%d",
+                     (int)entity->freq_mhz);
+            httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+        }
         snprintf(buf, sizeof(buf),
                  ",\"class\":\"%s\",\"category\":\"%s\",\"code\":\"%s\","
                  "\"source\":\"%s\",\"source_id\":%u,"

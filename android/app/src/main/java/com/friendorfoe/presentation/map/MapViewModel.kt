@@ -18,6 +18,7 @@ import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
 import com.friendorfoe.domain.usecase.FilterEngine
 import com.friendorfoe.sensor.SensorFusionEngine
+import com.friendorfoe.sensor.VisualFocusRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -38,6 +39,7 @@ class MapViewModel @Inject constructor(
     private val aircraftRepository: AircraftRepository,
     private val locationManager: LocationManager,
     private val sensorFusionEngine: SensorFusionEngine,
+    private val visualFocusRepository: VisualFocusRepository,
     private val sensorMapApiService: SensorMapApiService
 ) : ViewModel() {
 
@@ -104,6 +106,24 @@ class MapViewModel @Inject constructor(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = emptyList()
+    )
+
+    private val visualFocusClock = kotlinx.coroutines.flow.flow {
+        while (true) {
+            emit(System.currentTimeMillis())
+            delay(1000L)
+        }
+    }
+
+    val activeVisualFocusIds: StateFlow<Set<String>> = combine(
+        visualFocusRepository.entries,
+        visualFocusClock
+    ) { entries, nowMs ->
+        entries.filterValues { nowMs - it.lastSeenMs <= VisualFocusRepository.DEFAULT_TTL_MS }.keys
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptySet()
     )
 
     private val _userPosition = MutableStateFlow(

@@ -68,4 +68,46 @@ class BadgePrivacyMapperTest {
 
         assertNull(entity.toPrivacyDetection(Instant.parse("2026-05-18T12:00:00Z")))
     }
+
+    @Test
+    fun mapsBadgeEvilTwinIntoAttackToolWithEvidenceDetails() {
+        val entity = BadgeThreatEntity(
+            label = "Evil Twin",
+            detail = "ssid CafeWiFi",
+            evidence = "Evil Twin: open clone vs WPA2; ref 00:11:22:33:44:55 ch6",
+            threatClass = "wifi_anomaly",
+            category = "WIFI",
+            code = "WIFI",
+            displayId = "66:77:88:99:AA:BB",
+            source = "wifi_assoc",
+            sourceId = 7,
+            ssid = "CafeWiFi",
+            bssid = "66:77:88:99:AA:BB",
+            authMode = 0,
+            freqMhz = 2437,
+            score = 88,
+            confidencePct = 82,
+            ageSeconds = 3,
+            lastSeenSeconds = 1,
+            rssi = -48,
+            bestRssi = -48,
+            events = 1,
+        )
+
+        val detection = entity.toPrivacyDetection(Instant.parse("2026-05-18T12:00:00Z"))
+
+        assertNotNull(detection)
+        detection!!
+        assertEquals("Evil Twin", detection.deviceType)
+        assertEquals(PrivacyCategory.ATTACK_TOOL, detection.category)
+        assertEquals("ssid CafeWiFi", detection.deviceName)
+        assertEquals("66:77:88:99:AA:BB", detection.details.getValue("display_id"))
+        assertEquals("CafeWiFi", detection.details.getValue("ssid"))
+        assertEquals("66:77:88:99:AA:BB", detection.details.getValue("bssid"))
+        assertEquals("0", detection.details.getValue("auth_m"))
+        assertEquals("2437", detection.details.getValue("freq_mhz"))
+        assertEquals("wifi_assoc", detection.details.getValue("badge_source"))
+        assertEquals("Evil Twin: open clone vs WPA2; ref 00:11:22:33:44:55 ch6",
+            detection.details.getValue("evidence"))
+    }
 }

@@ -65,6 +65,20 @@ def test_wifi_assoc_is_wifi_device():
     assert conf == 0.1
 
 
+def test_wifi_ap_inventory_attack_tool_is_hostile_tool():
+    cls, conf = classify_detection(
+        source="wifi_ap_inventory",
+        confidence=0.55,
+        ssid="Pineapple_5G",
+        drone_id="attack_wifi:AABBCCDDEEFF",
+        manufacturer="Hak5",
+        model="Attack Tool",
+    )
+
+    assert cls == "hostile_tool"
+    assert conf >= 0.85
+
+
 def test_legacy_generic_ble_rid_is_not_confirmed_drone():
     cls, _ = classify_detection(
         source="ble_rid",

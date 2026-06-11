@@ -37,6 +37,7 @@ SOURCE_LABELS = {
     "apple_continuity": "Apple Continuity BLE evidence",
     "wifi_fingerprint_v2": "WiFi fingerprint v2",
     "drone_signature_reference": "Curated drone SSID reference",
+    "privacy_rf_signature": "Curated privacy RF signature",
     "randomized_mac": "Randomized/private MAC rule",
     "none_randomized_mac": "No vendor from randomized MAC",
 }
@@ -49,6 +50,7 @@ STATIC_SOURCE_URLS = {
     "apple_continuity": "https://github.com/furiousMAC/continuity",
     "wifi_fingerprint_v2": "local:derived/wifi-ie-auth-channel-fingerprint",
     "drone_signature_reference": "local:backend/app/services/drone_signature_reference.py",
+    "privacy_rf_signature": "local:backend/app/services/privacy_rf_signatures.json",
     "randomized_mac": "local:derived/mac-locally-administered-bit",
     "none_randomized_mac": "local:derived/no-mac-vendor-for-randomized-address",
 }

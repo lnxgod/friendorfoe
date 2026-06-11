@@ -1588,8 +1588,16 @@ void ble_remote_id_init(QueueHandle_t detection_queue)
     s_detection_queue = detection_queue;
     memset(s_devices, 0, sizeof(s_devices));
 
-    /* Initialize NimBLE */
-    ESP_ERROR_CHECK(nimble_port_init());
+    /* Initialize NimBLE. Keep this fail-soft: a controller/heap init error
+     * should not panic the scanner into UART recovery and take WiFi down too.
+     */
+    int rc = nimble_port_init();
+    if (rc != ESP_OK) {
+        s_ble_sync_last_rc = rc;
+        s_initialized = false;
+        ESP_LOGE(TAG, "nimble_port_init failed: %d", rc);
+        return;
+    }
 
     /* Configure host callbacks */
     ble_hs_cfg.sync_cb = ble_on_sync;

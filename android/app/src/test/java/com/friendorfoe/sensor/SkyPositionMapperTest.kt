@@ -260,6 +260,25 @@ class SkyPositionMapperTest {
     }
 
     @Test
+    fun `object just above top edge keeps raw projection and near viewport flag`() {
+        val userPos = Position(latitude = 40.0, longitude = -74.0, altitudeMeters = 0.0)
+        val fovCalc = CameraFovCalculator()
+
+        // About 1.1km north and 530m above the user: slightly above the default
+        // 45 degree vertical FOV when the camera is level.
+        val objectPos = Position(latitude = 40.01, longitude = -74.0, altitudeMeters = 530.0)
+        val aircraft = createTestAircraft("HIGH1", objectPos)
+        val orientation = DeviceOrientation(azimuthDegrees = 0f, pitchDegrees = 0f, rollDegrees = 0f)
+
+        val pos = mapper.mapToScreen(userPos, listOf(aircraft), orientation, fovCalc).single()
+
+        assertFalse("Strict FOV should still mark it out of view", pos.isInView)
+        assertTrue("High edge object should be eligible for visual rescue", pos.isNearViewport)
+        assertTrue("Raw Y should preserve the above-screen projection", pos.rawScreenY < 0f)
+        assertEquals("Clamped Y stays at top edge for existing callers", 0f, pos.screenY, 0.001f)
+    }
+
+    @Test
     fun `multiple objects are all mapped`() {
         val userPos = Position(latitude = 40.0, longitude = -74.0, altitudeMeters = 0.0)
         val fovCalc = CameraFovCalculator()

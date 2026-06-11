@@ -26,6 +26,7 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_STALKER = "detection_stalker_enabled"
         private const val KEY_ULTRASONIC = "detection_ultrasonic_enabled"
         private const val KEY_WIFI_ANOMALY = "detection_wifi_anomaly_enabled"
+        private const val KEY_PRIVACY_NOTIFICATIONS = "privacy_notifications_enabled"
         private const val KEY_IGNORED_MACS = "privacy_ignored_macs"
         private const val KEY_SENSOR_BACKEND = "sensor_backend_enabled"
         private const val KEY_BACKEND_URL = "sensor_backend_url"
@@ -62,6 +63,10 @@ class DetectionPrefs @Inject constructor(
     var wifiAnomalyEnabled: Boolean
         get() = prefs.getBoolean(KEY_WIFI_ANOMALY, true)
         set(value) = prefs.edit().putBoolean(KEY_WIFI_ANOMALY, value).apply()
+
+    var privacyNotificationsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_PRIVACY_NOTIFICATIONS, true)
+        set(value) = prefs.edit().putBoolean(KEY_PRIVACY_NOTIFICATIONS, value).apply()
 
     /** Sensor backend (ESP32 network) — enabled by default */
     var sensorBackendEnabled: Boolean

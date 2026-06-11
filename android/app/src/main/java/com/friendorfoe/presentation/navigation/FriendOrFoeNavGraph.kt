@@ -104,6 +104,18 @@ fun FriendOrFoeNavGraph(
             com.friendorfoe.presentation.privacy.PrivacyScreen()
         }
 
+        composable(Screen.EmfSweep.route) {
+            com.friendorfoe.presentation.privacy.EmfSweepScreen(
+                onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(Screen.IrCameraScan.route) {
+            com.friendorfoe.presentation.privacy.IrCameraScanScreen(
+                onBack = { navController.popBackStack() }
+            )
+        }
+
         composable(Screen.Calibrate.route) {
             com.friendorfoe.presentation.calibrate.CalibrateScreen(
                 onBack = { navController.popBackStack() }
@@ -117,6 +129,15 @@ fun FriendOrFoeNavGraph(
                 viewModel = aboutViewModel,
                 onNavigateToCalibrate = {
                     navController.navigate(Screen.Calibrate.route) { launchSingleTop = true }
+                },
+                onNavigateToEmfSweep = {
+                    navController.navigate(Screen.EmfSweep.route) { launchSingleTop = true }
+                },
+                onNavigateToIrCameraScan = {
+                    navController.navigate(Screen.IrCameraScan.route) { launchSingleTop = true }
+                },
+                onNavigateToPrivacy = {
+                    navController.navigate(Screen.Privacy.route) { launchSingleTop = true }
                 }
             )
         }

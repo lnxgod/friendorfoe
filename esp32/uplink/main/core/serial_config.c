@@ -412,11 +412,22 @@ static void print_badge_display_state_field(void)
     print_json_escaped_string(state.code);
     printf(",\"source\":");
     print_json_escaped_string(state.source);
-    printf(",\"score\":%d,\"confidence_pct\":%d,"
+    if (state.ssid[0] != '\0') {
+        printf(",\"ssid\":");
+        print_json_escaped_string(state.ssid);
+    }
+    if (state.bssid[0] != '\0') {
+        printf(",\"bssid\":");
+        print_json_escaped_string(state.bssid);
+    }
+    printf(",\"auth_m\":%d,\"freq_mhz\":%d,"
+           "\"score\":%d,\"confidence_pct\":%d,"
            "\"evidence_quality\":%d,\"display_rank\":%d,"
            "\"age_s\":%d,\"last_seen_s\":%d,\"rssi\":%d,\"best_rssi\":%d,"
            "\"events\":%lu,\"seen_count\":%lu,\"group_count\":%lu,"
            "\"proximity_level\":%d,\"stale\":%s",
+           state.wifi_auth_mode,
+           state.freq_mhz,
            state.score,
            state.confidence_pct,
            state.evidence_quality,
@@ -675,7 +686,22 @@ static void send_badge_status_response(void)
         print_json_escaped_string(entity->display_id);
         printf(",\"source\":");
         print_json_escaped_string(badge_threat_source_code(entity->source));
-        printf(",\"source_id\":%u,\"score\":%d,\"confidence_pct\":%d,"
+        if (entity->ssid[0] != '\0') {
+            printf(",\"ssid\":");
+            print_json_escaped_string(entity->ssid);
+        }
+        if (entity->bssid[0] != '\0') {
+            printf(",\"bssid\":");
+            print_json_escaped_string(entity->bssid);
+        }
+        if (entity->wifi_auth_mode != 0xFF) {
+            printf(",\"auth_m\":%d", (int)entity->wifi_auth_mode);
+        }
+        if (entity->freq_mhz > 0) {
+            printf(",\"freq_mhz\":%d", (int)entity->freq_mhz);
+        }
+        printf(",\"source_id\":%u,"
+               "\"score\":%d,\"confidence_pct\":%d,"
                "\"evidence_quality\":%u,"
                "\"display_rank\":%d,\"age_s\":%d,\"last_seen_s\":%d,"
                "\"rssi\":%d,\"best_rssi\":%d,\"events\":%lu,"

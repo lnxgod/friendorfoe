@@ -3,6 +3,7 @@
 #include "ble_fingerprint.h"
 #include "detection_policy.h"
 #include "detection_types.h"
+#include "privacy_rf_signatures.h"
 #include "wifi_oui_database.h"
 
 #include <string.h>
@@ -71,6 +72,72 @@ void test_flock_ssid_patterns_are_notable_for_badge(void)
     TEST_ASSERT_EQUAL_STRING("Flock SSID",
                              fof_policy_notable_ssid_label("1234567890"));
     TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("123456789"));
+}
+
+void test_notable_ssid_camera_token_avoids_campus_false_positive(void)
+{
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("Campus-WiFi"));
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("CambridgeGuest"));
+    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("Lobby-Cam"));
+    TEST_ASSERT_EQUAL_STRING("Camera SSID",
+                             fof_policy_notable_ssid_label("Lobby-Cam"));
+}
+
+void test_notable_ssid_attack_tool_labels(void)
+{
+    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("pwned"));
+    TEST_ASSERT_EQUAL_STRING("Deauther",
+                             fof_policy_notable_ssid_label("pwned"));
+    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("Advanced-Deauther"));
+    TEST_ASSERT_EQUAL_STRING("Deauther",
+                             fof_policy_notable_ssid_label("Advanced-Deauther"));
+}
+
+void test_privacy_wifi_signature_catalog_matches_key_ssids(void)
+{
+    const fof_privacy_wifi_signature_t *tapo =
+        fof_privacy_match_wifi_ssid("Tapo_Cam_ABCD");
+    TEST_ASSERT_NOT_NULL(tapo);
+    TEST_ASSERT_EQUAL_STRING("TP-Link", tapo->manufacturer);
+    TEST_ASSERT_EQUAL_STRING("privacy:camera:tapo", tapo->class_reason);
+    TEST_ASSERT_FALSE(tapo->attack_tool);
+
+    const fof_privacy_wifi_signature_t *ring =
+        fof_privacy_match_wifi_ssid("Ring Setup 12");
+    TEST_ASSERT_NOT_NULL(ring);
+    TEST_ASSERT_EQUAL_STRING("Ring", ring->manufacturer);
+    TEST_ASSERT_EQUAL_STRING("privacy:doorbell:ring", ring->class_reason);
+
+    const fof_privacy_wifi_signature_t *tool =
+        fof_privacy_match_wifi_ssid("Advanced-Deauther");
+    TEST_ASSERT_NOT_NULL(tool);
+    TEST_ASSERT_TRUE(tool->attack_tool);
+    TEST_ASSERT_EQUAL_STRING("attack_tool:deauther", tool->class_reason);
+}
+
+void test_privacy_wifi_signature_catalog_rejects_broad_patterns(void)
+{
+    TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("HolyCowGuest"));
+    TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("UFO-Arcade"));
+    TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("Campus-WiFi"));
+
+    size_t count = 0;
+    const fof_privacy_wifi_signature_t *signatures =
+        fof_privacy_wifi_signatures(&count);
+    TEST_ASSERT_NOT_NULL(signatures);
+    TEST_ASSERT_TRUE(count > 0);
+    for (size_t i = 0; i < count; i++) {
+        TEST_ASSERT_NOT_NULL(signatures[i].pattern);
+        TEST_ASSERT_NOT_NULL(signatures[i].manufacturer);
+        TEST_ASSERT_NOT_NULL(signatures[i].device_type);
+        TEST_ASSERT_NOT_NULL(signatures[i].privacy_kind);
+        TEST_ASSERT_NOT_NULL(signatures[i].class_reason);
+        TEST_ASSERT_FALSE_MESSAGE(
+            fof_privacy_pattern_is_banned_broad(signatures[i].pattern),
+            signatures[i].pattern
+        );
+        TEST_ASSERT_TRUE(signatures[i].confidence >= 0.70f);
+    }
 }
 
 void test_probe_rate_aux_changes_when_identity_changes(void)
@@ -179,6 +246,131 @@ void test_calibration_ble_uuid_is_recognized_and_kept(void)
         "180f,cafe9a86-0000-1000-8000-a21607f068aa,abcd",
         "cafe1111-0000-1000-8000-a21607f068aa"
     ));
+}
+
+static size_t test_make_beacon(uint8_t *frame,
+                               size_t frame_len,
+                               uint16_t capabilities,
+                               const uint8_t *ies,
+                               size_t ies_len)
+{
+    memset(frame, 0, frame_len);
+    frame[0] = 0x80;
+    frame[34] = (uint8_t)(capabilities & 0xFFu);
+    frame[35] = (uint8_t)(capabilities >> 8);
+    if (ies && ies_len > 0) {
+        memcpy(&frame[36], ies, ies_len);
+    }
+    return 36u + ies_len;
+}
+
+void test_wifi_beacon_auth_mode_extracts_open_wpa_and_rsn(void)
+{
+    uint8_t frame[64];
+    const uint8_t wpa_ie[] = {221, 4, 0x00, 0x50, 0xF2, 0x01};
+    const uint8_t rsn_ie[] = {48, 2, 0x01, 0x00};
+
+    size_t len = test_make_beacon(frame, sizeof(frame), 0, NULL, 0);
+    TEST_ASSERT_EQUAL_UINT8(0, fof_policy_wifi_beacon_auth_mode(frame, len));
+
+    len = test_make_beacon(frame, sizeof(frame), 0x0010u, NULL, 0);
+    TEST_ASSERT_EQUAL_UINT8(1, fof_policy_wifi_beacon_auth_mode(frame, len));
+
+    len = test_make_beacon(frame, sizeof(frame), 0x0010u,
+                           wpa_ie, sizeof(wpa_ie));
+    TEST_ASSERT_EQUAL_UINT8(2, fof_policy_wifi_beacon_auth_mode(frame, len));
+
+    len = test_make_beacon(frame, sizeof(frame), 0x0010u,
+                           rsn_ie, sizeof(rsn_ie));
+    TEST_ASSERT_EQUAL_UINT8(3, fof_policy_wifi_beacon_auth_mode(frame, len));
+    TEST_ASSERT_EQUAL_UINT8(0xFF, fof_policy_wifi_beacon_auth_mode(NULL, 0));
+}
+
+void test_evil_twin_open_clone_same_ssid_alerts_once(void)
+{
+    fof_policy_evil_twin_state_t state;
+    fof_policy_evil_twin_alert_t alert;
+    const uint8_t secured[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+    const uint8_t open[6] = {0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB};
+
+    fof_policy_evil_twin_state_init(&state);
+    TEST_ASSERT_FALSE(fof_policy_evil_twin_observe(
+        &state, "CafeWiFi", secured, -52, 6, 3, 1000, &alert));
+    TEST_ASSERT_TRUE(fof_policy_evil_twin_observe(
+        &state, "CafeWiFi", open, -49, 6, 0, 2000, &alert));
+    TEST_ASSERT_EQUAL_STRING("CafeWiFi", alert.ssid);
+    TEST_ASSERT_TRUE(alert.mixed_open);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(open, alert.suspect_bssid, 6);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(secured, alert.reference_bssid, 6);
+    TEST_ASSERT_EQUAL_STRING("open clone vs WPA2", alert.detail);
+
+    TEST_ASSERT_FALSE(fof_policy_evil_twin_observe(
+        &state, "CafeWiFi", open, -48, 6, 0, 3000, &alert));
+}
+
+void test_evil_twin_same_oui_secured_mesh_does_not_alert(void)
+{
+    fof_policy_evil_twin_state_t state;
+    fof_policy_evil_twin_alert_t alert;
+    const uint8_t ap1[6] = {0x00, 0x11, 0x22, 0x01, 0x02, 0x03};
+    const uint8_t ap2[6] = {0x00, 0x11, 0x22, 0x04, 0x05, 0x06};
+
+    fof_policy_evil_twin_state_init(&state);
+    TEST_ASSERT_FALSE(fof_policy_evil_twin_observe(
+        &state, "HomeMesh", ap1, -42, 1, 3, 1000, &alert));
+    TEST_ASSERT_FALSE(fof_policy_evil_twin_observe(
+        &state, "HomeMesh", ap2, -45, 6, 3, 2000, &alert));
+}
+
+void test_evil_twin_hidden_and_stale_observations_do_not_alert(void)
+{
+    fof_policy_evil_twin_state_t state;
+    fof_policy_evil_twin_alert_t alert;
+    const uint8_t secured[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+    const uint8_t open[6] = {0x70, 0x80, 0x90, 0xA0, 0xB0, 0xC0};
+
+    fof_policy_evil_twin_state_init(&state);
+    TEST_ASSERT_FALSE(fof_policy_evil_twin_observe(
+        &state, "", secured, -50, 1, 3, 1000, &alert));
+    TEST_ASSERT_FALSE(fof_policy_evil_twin_observe(
+        &state, "Lobby", secured, -50, 1, 3, 1000, &alert));
+    TEST_ASSERT_FALSE(fof_policy_evil_twin_observe(
+        &state, "Lobby", open, -48, 1, 0, 62001, &alert));
+}
+
+void test_evil_twin_accepts_full_length_ssid_without_overread(void)
+{
+    fof_policy_evil_twin_state_t state;
+    fof_policy_evil_twin_alert_t alert;
+    char ssid[FOF_POLICY_EVIL_TWIN_MAX_SSID_LEN];
+    const uint8_t secured[6] = {0x12, 0x34, 0x56, 0x10, 0x20, 0x30};
+    const uint8_t open[6] = {0x98, 0x76, 0x54, 0x40, 0x50, 0x60};
+
+    memset(ssid, 'A', 32);
+    ssid[32] = '\0';
+    fof_policy_evil_twin_state_init(&state);
+    TEST_ASSERT_FALSE(fof_policy_evil_twin_observe(
+        &state, ssid, secured, -54, 6, 3, 1000, &alert));
+    TEST_ASSERT_TRUE(fof_policy_evil_twin_observe(
+        &state, ssid, open, -50, 6, 0, 2000, &alert));
+    TEST_ASSERT_EQUAL_STRING(ssid, alert.ssid);
+}
+
+void test_evil_twin_strong_different_oui_security_clone_alerts(void)
+{
+    fof_policy_evil_twin_state_t state;
+    fof_policy_evil_twin_alert_t alert;
+    const uint8_t ap1[6] = {0x00, 0x11, 0x22, 0x01, 0x02, 0x03};
+    const uint8_t ap2[6] = {0x66, 0x77, 0x88, 0x04, 0x05, 0x06};
+
+    fof_policy_evil_twin_state_init(&state);
+    TEST_ASSERT_FALSE(fof_policy_evil_twin_observe(
+        &state, "CorpSecure", ap1, -56, 11, 3, 1000, &alert));
+    TEST_ASSERT_TRUE(fof_policy_evil_twin_observe(
+        &state, "CorpSecure", ap2, -54, 11, 6, 2000, &alert));
+    TEST_ASSERT_TRUE(alert.strong_clone);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(ap2, alert.suspect_bssid, 6);
+    TEST_ASSERT_EQUAL_STRING("WPA3 clone vs WPA2", alert.detail);
 }
 
 void test_dedupe_key_groups_probe_ie_hash_across_rotated_macs(void)

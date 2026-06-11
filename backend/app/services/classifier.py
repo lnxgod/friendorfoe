@@ -275,6 +275,16 @@ def classify_detection(
     if manufacturer == "Pwnagotchi" or (drone_id or "").lower() == "pwnagotchi":
         return "hostile_tool", max(confidence, 0.90)
 
+    tool_text = " ".join(
+        value for value in (manufacturer or "", model or "", ssid or "", drone_id or "")
+        if value
+    ).lower()
+    if source in ("wifi_ap_inventory", "wifi_assoc", "wifi_oui", "wifi_probe_request") and any(
+        token in tool_text
+        for token in ("attack tool", "pwnagotchi", "pineapple", "deauther", "marauder")
+    ):
+        return "hostile_tool", max(confidence, 0.85)
+
     # 4. Real drone protocols → confirmed_drone.
     if source in CONFIRMED_DRONE_SOURCES:
         # Weak-confidence drone-protocol frames get downgraded to likely_drone

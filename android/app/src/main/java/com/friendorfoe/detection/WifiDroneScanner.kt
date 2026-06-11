@@ -1,28 +1,14 @@
 package com.friendorfoe.detection
 
-import android.Manifest
 import android.annotation.SuppressLint
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.net.wifi.ScanResult
-import android.net.wifi.WifiManager
-import android.os.Build
 import android.util.Log
-import androidx.core.content.ContextCompat
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.Position
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.transform
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -49,8 +35,7 @@ import kotlin.math.pow
  */
 @Singleton
 class WifiDroneScanner @Inject constructor(
-    @ApplicationContext private val context: Context,
-    private val wifiManager: WifiManager
+    private val wifiScanCoordinator: WifiScanCoordinator
 ) {
 
     companion object {
@@ -67,15 +52,6 @@ class WifiDroneScanner @Inject constructor(
          * 2.0 = free space, 2.5 = light obstruction typical of outdoor drone use.
          */
         private const val PATH_LOSS_EXPONENT = 2.5
-
-        /** Maximum scans allowed within the throttle window (Android limit). */
-        private const val MAX_SCANS_IN_WINDOW = 4
-
-        /** Throttle window duration in milliseconds (2 minutes). */
-        private const val THROTTLE_WINDOW_MS = 2 * 60 * 1000L
-
-        /** Interval between scan attempts in milliseconds (30 seconds). */
-        private const val SCAN_INTERVAL_MS = 30_000L
 
         /**
          * Known drone SSID patterns mapped to manufacturer names.
@@ -128,7 +104,7 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("X1 PRO", "HOVERAir"),
             // HOVER- removed: too generic, redundant with 8 more specific HOVER patterns above
             // Holy Stone
-            DronePattern("HOLY", "Holy Stone"),
+            // HOLY removed: too broad, specific Holy Stone prefixes remain below
             DronePattern("HS-", "Holy Stone"),
             // Other known brands
             DronePattern("SIMREX-", "SIMREX"),
@@ -186,7 +162,7 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("RCDrone", "Generic"),
             DronePattern("RC-DRONE", "Generic"),
             DronePattern("RCTOY", "Generic"),
-            DronePattern("UFO-", "Generic"),
+            // UFO- removed: too broad, WiFiUFO/FH8610UFO variants remain below
             // Chinese brands commonly using WiFi UAV-type apps
             DronePattern("JJRC-", "JJRC"),
             DronePattern("MJX-", "MJX"),
@@ -311,6 +287,13 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("ACS2", "XAG"),                     // XAG ACS2 controller hotspot
         )
 
+        internal fun matchDroneManufacturerForTest(ssid: String): String? {
+            val upper = ssid.uppercase()
+            return DRONE_SSID_PATTERNS.firstOrNull { pattern ->
+                upper.startsWith(pattern.prefix.uppercase())
+            }?.manufacturer
+        }
+
         /**
          * Check if an SSID looks like a cheap generic drone hotspot.
          * These drones broadcast very short, generic SSIDs like "WIFI_9", "WIFI_123",
@@ -345,9 +328,6 @@ class WifiDroneScanner @Inject constructor(
         }
     }
 
-    /** Timestamps of recent scan requests for throttle enforcement. */
-    private val scanTimestamps = java.util.concurrent.ConcurrentLinkedDeque<Long>()
-
     /** Partial state accumulators for ASTM F3411 WiFi Beacon Remote ID, keyed by BSSID. */
     private val wifiBeaconRidStates = mutableMapOf<String, OpenDroneIdParser.DronePartialState>()
 
@@ -362,100 +342,14 @@ class WifiDroneScanner @Inject constructor(
      *
      * Requires NEARBY_WIFI_DEVICES (Android 13+) or ACCESS_FINE_LOCATION + CHANGE_WIFI_STATE.
      */
-    @SuppressLint("MissingPermission")
-    fun startScanning(): Flow<Drone> = callbackFlow {
-        // Check required permissions before scanning
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES)
-                != PackageManager.PERMISSION_GRANTED) {
-                Log.w(TAG, "NEARBY_WIFI_DEVICES permission not granted, skipping WiFi scan")
-                close()
-                return@callbackFlow
-            }
-        } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED) {
-            Log.w(TAG, "ACCESS_FINE_LOCATION permission not granted, skipping WiFi scan")
-            close()
-            return@callbackFlow
-        }
-
-        Log.i(TAG, "Starting WiFi drone scanner")
-
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(ctx: Context, intent: Intent) {
-                if (intent.action == WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) {
-                    val success = intent.getBooleanExtra(
-                        WifiManager.EXTRA_RESULTS_UPDATED, false
-                    )
-                    Log.d(TAG, "WiFi scan results available, success=$success")
-
-                    processScanResults().forEach { drone ->
-                        trySend(drone)
-                    }
-                }
-            }
-        }
-
-        val filter = IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
-        context.registerReceiver(receiver, filter)
-
-        // Launch a coroutine to periodically trigger scans
-        val scanJob = launch {
-            while (isActive) {
-                triggerScanIfAllowed()
-                delay(SCAN_INTERVAL_MS)
-            }
-        }
-
-        awaitClose {
-            Log.i(TAG, "Stopping WiFi drone scanner")
-            scanJob.cancel()
-            try {
-                context.unregisterReceiver(receiver)
-            } catch (e: Exception) {
-                Log.w(TAG, "Error unregistering WiFi receiver", e)
-            }
-        }
+    fun startScanning(): Flow<Drone> = wifiScanCoordinator.scanResults().transform { scanResults ->
+        processScanResults(scanResults).forEach { emit(it) }
     }
 
     /** Stop scanning (for imperative callers; flow-based callers cancel the coroutine). */
     fun stopScanning() {
-        scanTimestamps.clear()
         wifiBeaconRidStates.clear()
         frenchDriStates.clear()
-    }
-
-    /**
-     * Trigger a WiFi scan if the throttle limit has not been reached.
-     *
-     * Android limits foreground apps to 4 scans per 2 minutes.
-     * We track recent scan timestamps and skip if we've hit the limit.
-     */
-    @Suppress("DEPRECATION")
-    private fun triggerScanIfAllowed() {
-        val now = System.currentTimeMillis()
-
-        // Remove scan timestamps outside the throttle window
-        var oldest = scanTimestamps.peekFirst()
-        while (oldest != null && now - oldest > THROTTLE_WINDOW_MS) {
-            scanTimestamps.pollFirst()
-            oldest = scanTimestamps.peekFirst()
-        }
-
-        if (scanTimestamps.size >= MAX_SCANS_IN_WINDOW) {
-            Log.d(TAG, "WiFi scan throttled (${scanTimestamps.size} scans in last 2 min)")
-            return
-        }
-
-        @SuppressLint("MissingPermission")
-        val started = wifiManager.startScan()
-        if (started) {
-            scanTimestamps.add(now)
-            Log.d(TAG, "WiFi scan initiated (${scanTimestamps.size}/$MAX_SCANS_IN_WINDOW in window)")
-        } else {
-            Log.d(TAG, "WiFi startScan() returned false (throttled by OS)")
-            // Even if startScan returns false, cached results may still be available
-        }
     }
 
     /**
@@ -471,9 +365,7 @@ class WifiDroneScanner @Inject constructor(
      * startScan() is throttled).
      */
     @SuppressLint("MissingPermission")
-    private fun processScanResults(): List<Drone> {
-        @Suppress("DEPRECATION")
-        val scanResults = wifiManager.scanResults ?: return emptyList()
+    private fun processScanResults(scanResults: List<ScanResult>): List<Drone> {
         val now = Instant.now()
         val drones = mutableListOf<Drone>()
         val seenBssids = mutableSetOf<String>()

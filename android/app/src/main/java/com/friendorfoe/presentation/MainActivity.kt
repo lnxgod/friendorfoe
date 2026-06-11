@@ -98,6 +98,11 @@ fun FriendOrFoeApp() {
                 ) {
                     add(Manifest.permission.NEARBY_WIFI_DEVICES)
                 }
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED
+                ) {
+                    add(Manifest.permission.POST_NOTIFICATIONS)
+                }
             }
         }
         if (missing.isNotEmpty()) {
@@ -114,7 +119,9 @@ fun FriendOrFoeApp() {
         currentDestination?.route != Screen.DroneGuide.route &&
         currentDestination?.route != Screen.AircraftGuide.route &&
         currentDestination?.route != Screen.ReferenceGuide.route &&
-        currentDestination?.route != Screen.Calibrate.route
+        currentDestination?.route != Screen.Calibrate.route &&
+        currentDestination?.route != Screen.EmfSweep.route &&
+        currentDestination?.route != Screen.IrCameraScan.route
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),

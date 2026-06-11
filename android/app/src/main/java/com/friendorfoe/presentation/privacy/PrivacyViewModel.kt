@@ -35,6 +35,7 @@ class PrivacyViewModel @Inject constructor(
     private val wifiAnomalyDetector: WifiAnomalyDetector,
     private val sensorMapApiService: SensorMapApiService,
     private val badgeUsbRepository: BadgeUsbRepository,
+    private val privacyAlertNotifier: PrivacyAlertNotifier,
 ) : ViewModel() {
 
     init {
@@ -45,9 +46,17 @@ class PrivacyViewModel @Inject constructor(
         viewModelScope.launch {
             while (true) {
                 try {
+                    if (!skyObjectRepository.prefs.wifiAnomalyEnabled ||
+                        skyObjectRepository.prefs.backendOnlyMode
+                    ) {
+                        _wifiAnomalies.value = emptyList()
+                        delay(15_000)
+                        continue
+                    }
                     val anomalies = wifiAnomalyDetector.analyze()
                     if (anomalies.isNotEmpty()) {
                         _wifiAnomalies.value = anomalies
+                        anomalies.forEach(privacyAlertNotifier::notifyWifiAnomaly)
                     } else if (_wifiAnomalies.value.isNotEmpty()) {
                         // decay stale alerts after 60 s of no new hits
                         val latest = _wifiAnomalies.value.maxOfOrNull { it.timestamp.toEpochMilli() } ?: 0L
@@ -116,6 +125,24 @@ class PrivacyViewModel @Inject constructor(
 
     /** BLE tracker for direction finding */
     val bleTracker: BleTracker = skyObjectRepository.bleTracker
+
+    init {
+        viewModelScope.launch {
+            privacyDetections.collect { detections ->
+                detections.forEach(privacyAlertNotifier::notifyDetection)
+            }
+        }
+        viewModelScope.launch {
+            stalkerAlerts.collect { alerts ->
+                alerts.forEach(privacyAlertNotifier::notifyStalker)
+            }
+        }
+        viewModelScope.launch {
+            ultrasonicAlerts.collect { alerts ->
+                alerts.forEach(privacyAlertNotifier::notifyUltrasonic)
+            }
+        }
+    }
 
     /** Live RSSI for the device being tracked (updated every BLE advertisement) */
     fun getTrackedDeviceRssi(mac: String): Int? {
@@ -254,6 +281,7 @@ class PrivacyViewModel @Inject constructor(
         "FLOCK_ALPR" -> PrivacyCategory.ALPR_CAMERA
         "CAMERA_NEAR" -> PrivacyCategory.SURVEILLANCE_CAMERA
         "SKIMMER" -> PrivacyCategory.ATTACK_TOOL
+        "PAYMENT_READER" -> PrivacyCategory.PAYMENT_READER
         "TRACKER_NEAR" -> PrivacyCategory.BLE_TRACKER
         "META_GLASSES" -> PrivacyCategory.SMART_GLASSES
         else -> com.friendorfoe.detection.GlassesDetector.categorizeDeviceType(fallbackType)
@@ -296,7 +324,9 @@ internal fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetectio
     if (stale) return null
     val category = categoryForBadgeEntity()
     val title = badgeDeviceType()
-    val stableId = displayId.ifBlank { operatorId ?: detail.ifBlank { label } }
+    val stableId = bssid.ifBlank {
+        displayId.ifBlank { operatorId ?: detail.ifBlank { label } }
+    }
     val displayName = detail.ifBlank { displayId.ifBlank { operatorId.orEmpty() } }
     val key = "badge:${threatClass.ifBlank { "threat" }}:" +
         "${code.ifBlank { this@toPrivacyDetection.category }}:${stableId.ifBlank { title }}"
@@ -313,6 +343,10 @@ internal fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetectio
         }
         if (code.isNotBlank()) put("code", code)
         if (displayId.isNotBlank()) put("display_id", displayId)
+        if (ssid.isNotBlank()) put("ssid", ssid)
+        if (bssid.isNotBlank()) put("bssid", bssid)
+        if (authMode >= 0) put("auth_m", authMode.toString())
+        if (freqMhz > 0) put("freq_mhz", freqMhz.toString())
         if (detail.isNotBlank()) put("detail", detail)
         if (evidence.isNotBlank()) put("evidence", evidence)
         if (source.isNotBlank()) put("badge_source", source)

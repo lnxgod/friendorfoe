@@ -18,13 +18,26 @@ fun createCategoryMarkerDrawable(
     context: Context,
     category: ObjectCategory,
     color: Int,
-    heading: Float
+    heading: Float,
+    visuallyConfirmed: Boolean = false
 ): Drawable {
     val density = context.resources.displayMetrics.density
     val config = MARKER_CONFIG[category] ?: MarkerConfig(18, 1.5f)
-    val sizePx = (config.sizeDp * density).toInt()
+    val sizeDp = config.sizeDp + if (visuallyConfirmed) 8 else 0
+    val sizePx = (sizeDp * density).toInt()
     val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
+    val cx = sizePx / 2f
+    val cy = sizePx / 2f
+
+    if (visuallyConfirmed) {
+        val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = 0xFF76FF03.toInt()
+            style = Paint.Style.STROKE
+            strokeWidth = 2.5f * density
+        }
+        canvas.drawCircle(cx, cy, sizePx / 2f - 3f * density, ringPaint)
+    }
 
     canvas.save()
     canvas.rotate(heading, sizePx / 2f, sizePx / 2f)
@@ -39,8 +52,6 @@ fun createCategoryMarkerDrawable(
         strokeWidth = config.borderWidth * density
     }
 
-    val cx = sizePx / 2f
-    val cy = sizePx / 2f
     val u = sizePx / 10f
 
     val path = when (category) {

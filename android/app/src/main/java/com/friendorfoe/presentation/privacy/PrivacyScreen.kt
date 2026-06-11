@@ -99,6 +99,8 @@ fun PrivacyScreen(
             PrivacyCategory.MOBILE_KEY_LOCK,
             PrivacyCategory.BABY_MONITOR, PrivacyCategory.THERMAL_CAMERA,
             PrivacyCategory.CONFERENCE_CAMERA, PrivacyCategory.VIDEO_INTERCOM,
+            PrivacyCategory.VOICE_RECORDER, PrivacyCategory.SMART_PEN,
+            PrivacyCategory.PAYMENT_READER,
             PrivacyCategory.SMART_SPEAKER, PrivacyCategory.SMART_HOME_HUB,
             PrivacyCategory.GPS_TRACKER, PrivacyCategory.OBD_TRACKER,
             PrivacyCategory.VENUE_BEACON, PrivacyCategory.EVENT_BADGE,
@@ -114,6 +116,7 @@ fun PrivacyScreen(
     var trackingTarget by remember { mutableStateOf<GlassesDetection?>(null) }
     val ultrasonicAlerts by viewModel.ultrasonicAlerts.collectAsStateWithLifecycle()
     val wifiAnomalies by viewModel.wifiAnomalies.collectAsStateWithLifecycle()
+    val stalkerAlerts by viewModel.stalkerAlerts.collectAsStateWithLifecycle()
 
     Column(modifier = Modifier.fillMaxSize()) {
         // WiFi anomaly banner (Pwnagotchi, evil twin, karma attack)
@@ -170,6 +173,32 @@ fun PrivacyScreen(
                     )
                     Text(
                         text = "${"%.0f".format(alert.frequencyHz)} Hz \u2022 SNR ${"%.1f".format(alert.snrDb)} dB \u2022 ${alert.persistenceFrames} frames",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        if (stalkerAlerts.isNotEmpty()) {
+            val alert = stalkerAlerts.maxByOrNull { it.threatLevel } ?: stalkerAlerts.first()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFFD32F2F).copy(alpha = 0.15f))
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = "\uD83D\uDCCD", modifier = Modifier.width(28.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "BLE Follower Alert",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFD32F2F)
+                    )
+                    Text(
+                        text = "${alert.device.deviceName ?: alert.device.deviceType ?: alert.device.mac} appears ${alert.reason}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -734,6 +763,10 @@ private fun BadgeEntityDetailDialog(
                 if (entity.category.isNotBlank()) DetailRow("Category", entity.category)
                 if (entity.code.isNotBlank()) DetailRow("Code", entity.code)
                 if (entity.source.isNotBlank()) DetailRow("Source", entity.source)
+                if (entity.ssid.isNotBlank()) DetailRow("SSID", entity.ssid)
+                if (entity.bssid.isNotBlank()) DetailRow("BSSID", entity.bssid)
+                if (entity.authMode >= 0) DetailRow("WiFi Auth", badgeWifiAuthLabel(entity.authMode))
+                if (entity.freqMhz > 0) DetailRow("Frequency", "${entity.freqMhz} MHz")
                 if (entity.displayId.isNotBlank()) DetailRow("Display ID", entity.displayId)
                 DetailRow("Score", "${entity.score}")
                 if (entity.confidencePct > 0) DetailRow("Confidence", "${entity.confidencePct}%")
@@ -754,6 +787,21 @@ private fun BadgeEntityDetailDialog(
             TextButton(onClick = onDismiss) { Text("Close") }
         }
     )
+}
+
+private fun badgeWifiAuthLabel(authMode: Int): String = when (authMode) {
+    0 -> "Open"
+    1 -> "WEP"
+    2 -> "WPA"
+    3 -> "WPA2"
+    4 -> "WPA/WPA2"
+    5 -> "WPA2 Enterprise"
+    6 -> "WPA3"
+    7 -> "WPA2/WPA3"
+    8 -> "WAPI"
+    9 -> "OWE"
+    10 -> "WPA3 Enterprise"
+    else -> "Unknown ($authMode)"
 }
 
 @Composable

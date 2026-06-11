@@ -15,6 +15,7 @@ from app.services.apple_continuity import decode_apple_continuity
 from app.services.ble_company_lookup import lookup_company as _legacy_lookup_company
 from app.services.drone_signature_reference import drone_wifi_ssid_matches
 from app.services.oui_db import is_random_mac
+from app.services.privacy_signature_catalog import match_privacy_wifi_ssid
 from app.services.rf_reference import lookup_ble_company, resolve_mac, source_details, ssid_pattern_hints
 from app.services.wifi_fingerprint import build_wifi_fingerprint_v2
 
@@ -262,6 +263,29 @@ def _known_network_labels(ssids: list[str] | None, ssid: str | None = None) -> l
 
 def _ssid_family_hint(ssids: list[str] | None, ssid: str | None = None) -> dict[str, Any] | None:
     values = [s for s in [ssid, *(ssids or [])] if s and s != "(broadcast)"]
+    for value in values:
+        catalog_match = match_privacy_wifi_ssid(value)
+        if catalog_match:
+            kind = str(catalog_match.get("privacy_kind") or "")
+            if kind == "WIFI_ATTACK_TOOL":
+                device_family = "wifi_attack_tool"
+                device_class = "hostile_tool"
+            elif kind == "FLOCK_ALPR":
+                device_family = "camera_or_video"
+                device_class = "surveillance_camera"
+            else:
+                device_family = "camera_or_video"
+                device_class = "suspect_camera"
+            return {
+                "device_family": device_family,
+                "device_class": device_class,
+                "confidence": float(catalog_match.get("confidence") or 0.70),
+                "source": "privacy_rf_signature",
+                "evidence": (
+                    f"Privacy RF signature {catalog_match.get('class_reason')}: "
+                    f"{catalog_match.get('matched_ssid')}"
+                ),
+            }
     for hint in ssid_pattern_hints(ssids, ssid):
         if hint.get("device_class") == "known_owned":
             continue
@@ -529,6 +553,17 @@ def enrich_rf_evidence(
 
     device_class, device_class_confidence = _device_class_from_name(ble_name, class_reason)
     if not device_class:
+        reason_l = (class_reason or "").lower()
+        if "attack_tool:" in reason_l:
+            device_class = "hostile_tool"
+            device_class_confidence = 0.85
+        elif "privacy:alpr" in reason_l:
+            device_class = "surveillance_camera"
+            device_class_confidence = 0.82
+        elif "privacy:" in reason_l:
+            device_class = "suspect_camera"
+            device_class_confidence = 0.78
+    if not device_class:
         if "hidden camera" in mfr.lower():
             device_class = "suspect_camera"
             device_class_confidence = 0.45
@@ -611,6 +646,10 @@ def enrich_rf_evidence(
         device_family = str(ssid_hint["device_family"])
         family_source = str(ssid_hint["source"])
         family_confidence = float(ssid_hint["confidence"])
+    elif device_class == "hostile_tool":
+        device_family = "wifi_attack_tool"
+        family_source = "device_class"
+        family_confidence = float(device_class_confidence or 0.75)
     elif device_class in ("suspect_camera", "surveillance_camera"):
         device_family = "camera_or_video"
         family_source = "device_class"
@@ -670,7 +709,7 @@ def enrich_rf_evidence(
         group_rollup.get("majority_vendor_source") if brand_source == "group_oui_majority" else None,
         "group_oui_majority" if brand_source == "group_oui_majority" else None,
         "operator_ssid_override" if known_networks else None,
-        "ssid_pattern" if ssid_hint else None,
+        str(ssid_hint.get("source") or "ssid_pattern") if ssid_hint else None,
         "friendly_oui" if friendly_oui else None,
         "apple_continuity" if apple_continuity else None,
         "wifi_fingerprint_v2" if wifi_fingerprint_v2 else None,

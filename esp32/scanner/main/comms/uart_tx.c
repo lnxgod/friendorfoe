@@ -51,7 +51,11 @@ static const char *TAG = "fof_uart_tx";
 #endif
 #define RX_BUF_SIZE         UART_BUF_SIZE
 #define UART_TX_STACK_WARN_BYTES 1024
+#ifdef FOF_BADGE_VARIANT
+#define LOW_PRIORITY_RATE_SLOTS 32
+#else
 #define LOW_PRIORITY_RATE_SLOTS 64
+#endif
 #define WIFI_ASSOC_REEMIT_MS     30000
 #define WIFI_PROBE_REEMIT_MS     60000
 #define SCANNER_INFO_JSON_BUF_SIZE 6144

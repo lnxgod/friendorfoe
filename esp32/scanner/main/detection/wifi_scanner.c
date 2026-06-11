@@ -23,6 +23,7 @@
 #include "constants.h"
 #include "detection_types.h"
 #include "detection_policy.h"
+#include "privacy_rf_signatures.h"
 #include "calibration_mode.h"
 #include "core/task_priorities.h"
 
@@ -97,6 +98,7 @@ static bool          s_next_is_5ghz = false; /* interleave toggle */
 /* ── Forward declarations ─────────────────────────────────────────────────── */
 static void add_channel_heat(uint16_t ch, uint8_t points);
 static void decay_channel_heat(void);
+static void update_hot_channel(uint16_t ch);
 
 /* ── Lock-on mode ─────────────────────────────────────────────────────────── */
 
@@ -120,6 +122,7 @@ static uint32_t s_full_scan_count = 0;
 static uint32_t s_full_scan_ok = 0;
 static uint32_t s_full_scan_err = 0;
 static int      s_full_scan_last_rc = 0;
+static bool     s_wifi_initialized = false;
 static uint32_t s_last_ap_count = 0;
 static int64_t  s_last_scan_ms = 0;
 static uint32_t s_drone_ssid_emit = 0;
@@ -128,6 +131,9 @@ static char     s_last_drone_ssid[33] = {0};
 static char     s_last_notable_ssid[33] = {0};
 static uint32_t s_oui_emit = 0;
 static uint32_t s_soft_ssid_emit = 0;
+#ifdef FOF_BADGE_VARIANT
+static fof_policy_evil_twin_state_t s_evil_twin_state;
+#endif
 
 static void remember_status_ssid(char out[33], const char *ssid)
 {
@@ -298,6 +304,51 @@ static void init_detection(drone_detection_t *det, const uint8_t *bssid,
 }
 
 #ifdef FOF_BADGE_VARIANT
+static void emit_evil_twin_detection(const fof_policy_evil_twin_alert_t *alert)
+{
+    if (!alert || !s_detection_queue) {
+        return;
+    }
+
+    drone_detection_t det;
+    init_detection(&det, alert->suspect_bssid, alert->suspect_rssi,
+                   alert->ssid);
+    det.source = DETECTION_SRC_WIFI_ASSOC;
+    det.confidence = alert->mixed_open ? 0.82f : 0.72f;
+    det.wifi_auth_mode = alert->suspect_auth_mode;
+    det.freq_mhz = (alert->suspect_channel <= 13)
+        ? (2407 + alert->suspect_channel * 5)
+        : (5000 + alert->suspect_channel * 5);
+
+    strncpy(det.manufacturer, "Evil Twin", sizeof(det.manufacturer) - 1);
+    strncpy(det.model,
+            alert->mixed_open ? "mixed-security" : "strong-clone",
+            sizeof(det.model) - 1);
+    snprintf(det.drone_id, sizeof(det.drone_id),
+             "evil:%.24s:%02X%02X%02X",
+             alert->ssid,
+             alert->suspect_bssid[3],
+             alert->suspect_bssid[4],
+             alert->suspect_bssid[5]);
+    snprintf(det.class_reason, sizeof(det.class_reason),
+             "Evil Twin: %.30s", alert->detail);
+    snprintf(det.probed_ssids, sizeof(det.probed_ssids),
+             "ssid %.24s ref %02X:%02X:%02X:%02X:%02X:%02X ch%u",
+             alert->ssid,
+             alert->reference_bssid[0], alert->reference_bssid[1],
+             alert->reference_bssid[2], alert->reference_bssid[3],
+             alert->reference_bssid[4], alert->reference_bssid[5],
+             (unsigned)alert->suspect_channel);
+
+    ESP_LOGW(TAG, "EVIL TWIN: ssid=\"%s\" suspect=%s reason=%s RSSI=%d",
+             det.ssid, det.bssid, alert->detail, det.rssi);
+    xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
+    update_hot_channel(alert->suspect_channel);
+    add_channel_heat(alert->suspect_channel, 5);
+}
+#endif
+
+#ifdef FOF_BADGE_VARIANT
 static bool mac_is_group_or_local_admin(const uint8_t *mac)
 {
     return !mac || (mac[0] & 0x01) || (mac[0] & 0x02);
@@ -351,6 +402,49 @@ static void emit_flock_data_frame_detection(const uint8_t *flock_mac,
     xQueueSend(s_detection_queue, &det, 0);
 }
 #endif
+
+static bool emit_privacy_wifi_detection(const fof_privacy_wifi_signature_t *sig,
+                                        const uint8_t *bssid,
+                                        int8_t rssi,
+                                        const char *ssid,
+                                        uint8_t auth_mode,
+                                        uint16_t channel,
+                                        int64_t ts_ms)
+{
+    if (!sig || !bssid || !ssid || ssid[0] == '\0') {
+        return false;
+    }
+    if (!beacon_rate_limit_allow(bssid, rssi, ts_ms)) {
+        return true;
+    }
+
+    drone_detection_t det;
+    init_detection(&det, bssid, rssi, ssid);
+    det.source = DETECTION_SRC_WIFI_AP_INVENTORY;
+    det.confidence = sig->confidence;
+    det.wifi_auth_mode = auth_mode;
+    det.freq_mhz = (channel <= 13) ? (2407 + channel * 5) : (5000 + channel * 5);
+    strncpy(det.manufacturer, sig->manufacturer, sizeof(det.manufacturer) - 1);
+    strncpy(det.model, sig->device_type, sizeof(det.model) - 1);
+    strncpy(det.class_reason, sig->class_reason, sizeof(det.class_reason) - 1);
+    snprintf(det.drone_id, sizeof(det.drone_id),
+             "%s:%02X%02X%02X%02X%02X%02X",
+             sig->attack_tool ? "attack_wifi" : "privacy_wifi",
+             bssid[0], bssid[1], bssid[2],
+             bssid[3], bssid[4], bssid[5]);
+
+    ESP_LOGI(TAG, "%s SSID: \"%s\" (%s/%s) RSSI=%d ~%.0fm",
+             sig->attack_tool ? "Attack-tool" : "Privacy",
+             ssid, sig->manufacturer, sig->device_type,
+             rssi, det.estimated_distance_m);
+
+    update_hot_channel(channel);
+    add_channel_heat(channel, sig->attack_tool ? 4 : 2);
+    if (s_detection_queue) {
+        xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
+    }
+    return true;
+}
 
 /* ── Beacon frame parser ───────────────────────────────────────────────────── */
 
@@ -476,6 +570,9 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
         }
     }
 
+    uint8_t beacon_auth_mode =
+        fof_policy_wifi_beacon_auth_mode(frame, (size_t)frame_len);
+
     /* ── Detection pipeline ───────────────────────────────────────────────── */
     drone_detection_t det;
 
@@ -486,6 +583,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
             init_detection(&det, bssid, rssi, ssid);
             det.source = DETECTION_SRC_WIFI_DJI_IE;
             det.confidence = 0.85f;
+            det.wifi_auth_mode = beacon_auth_mode;
             det.latitude = dji_data.latitude;
             det.longitude = dji_data.longitude;
             det.altitude_m = dji_data.altitude_m;
@@ -536,6 +634,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
                 /* Fill in WiFi-specific fields the ODID parser doesn't set */
                 rid_det.rssi = rssi;
                 rid_det.estimated_distance_m = estimate_distance(rssi);
+                rid_det.wifi_auth_mode = beacon_auth_mode;
                 strncpy(rid_det.bssid, bssid_str, sizeof(rid_det.bssid) - 1);
                 if (ssid[0] != '\0') {
                     strncpy(rid_det.ssid, ssid, sizeof(rid_det.ssid) - 1);
@@ -574,6 +673,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
                                         DETECTION_SRC_WIFI_BEACON, &fr_det)) {
                 fr_det.rssi = rssi;
                 fr_det.estimated_distance_m = estimate_distance(rssi);
+                fr_det.wifi_auth_mode = beacon_auth_mode;
                 strncpy(fr_det.bssid, bssid_str2, sizeof(fr_det.bssid) - 1);
                 if (ssid[0] != '\0') {
                     strncpy(fr_det.ssid, ssid, sizeof(fr_det.ssid) - 1);
@@ -620,6 +720,37 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
 
     int64_t beacon_ts = now_ms();
 
+    #ifdef FOF_BADGE_VARIANT
+    if (ssid[0] != '\0') {
+        fof_policy_evil_twin_alert_t evil_twin;
+        if (fof_policy_evil_twin_observe(
+                &s_evil_twin_state,
+                ssid,
+                bssid,
+                rssi,
+                (uint8_t)s_current_channel,
+                beacon_auth_mode,
+                beacon_ts,
+                &evil_twin)) {
+            emit_evil_twin_detection(&evil_twin);
+            return;
+        }
+    }
+    #endif
+
+    /* Privacy APs are intentionally separated from drone SSID detections so
+     * setup hotspots for cameras, doorbells, dashcams, and passive attack
+     * tooling do not get folded into the drone lane. */
+    if (ssid[0] != '\0') {
+        const fof_privacy_wifi_signature_t *privacy =
+            fof_privacy_match_wifi_ssid(ssid);
+        if (privacy && emit_privacy_wifi_detection(
+                privacy, bssid, rssi, ssid, beacon_auth_mode,
+                s_current_channel, beacon_ts)) {
+            return;
+        }
+    }
+
     /* Priority 3: SSID pattern match */
     if (ssid[0] != '\0') {
         const drone_ssid_pattern_t *pattern = wifi_ssid_match(ssid);
@@ -630,6 +761,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
             init_detection(&det, bssid, rssi, ssid);
             det.source = DETECTION_SRC_WIFI_SSID;
             det.confidence = 0.30f;
+            det.wifi_auth_mode = beacon_auth_mode;
 
             strncpy(det.manufacturer, pattern->manufacturer,
                     sizeof(det.manufacturer) - 1);
@@ -658,6 +790,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
             init_detection(&det, bssid, rssi, ssid);
             det.source = DETECTION_SRC_WIFI_OUI;
             det.confidence = 0.40f;
+            det.wifi_auth_mode = beacon_auth_mode;
 
             strncpy(det.manufacturer, oui->manufacturer,
                     sizeof(det.manufacturer) - 1);
@@ -695,6 +828,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
         init_detection(&det, bssid, rssi, ssid);
         det.source = DETECTION_SRC_WIFI_SSID;
         det.confidence = 0.30f;
+        det.wifi_auth_mode = beacon_auth_mode;
 
         strncpy(det.manufacturer, "Drone Likely", sizeof(det.manufacturer) - 1);
         strncpy(det.drone_id, ssid, sizeof(det.drone_id) - 1);
@@ -717,7 +851,13 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
  * out of PSRAM per policy rule 7 because this cache is iterated per packet).
  * Drone-protocol sources (BLE RID, DJI IE, Beacon RID) are exempt from this
  * rate limit anyway — see feedback_rid_top_priority.md. */
+#ifdef FOF_BADGE_VARIANT
+#define BEACON_CACHE_SLOTS        512
+#define PROBE_CACHE_SLOTS         64
+#else
 #define BEACON_CACHE_SLOTS        1024
+#define PROBE_CACHE_SLOTS         128
+#endif
 #define BEACON_RATE_LIMIT_MS      30000   /* re-report each BSSID at most every 30s */
 #define BEACON_RSSI_DELTA_DB      5       /* unless RSSI shifted by >= 5 dB */
 
@@ -829,9 +969,7 @@ static bool ap_inventory_rate_limit_allow(const uint8_t *bssid,
 
 /* ── Probe request rate-limit cache ───────────────────────────────────────── */
 
-/* Bumped from 16 to 128 on S3 — crowded networks have far more than 16
- * concurrent probers, causing the LRU to overwrite before entries expire. */
-#define PROBE_CACHE_SLOTS       128
+/* Badge builds keep this bounded to preserve radio-init heap. */
 #define PROBE_RATE_LIMIT_MS     5000    /* 1 detection per MAC+SSID pair per 5s */
 
 typedef struct {
@@ -1506,6 +1644,8 @@ static void process_scan_results(void)
         int8_t rssi = ap_list[i].rssi;
         uint8_t *bssid = ap_list[i].bssid;
         uint16_t ch = ap_list[i].primary;
+        const fof_privacy_wifi_signature_t *privacy =
+            ssid[0] != '\0' ? fof_privacy_match_wifi_ssid(ssid) : NULL;
 
         /* Classify only useful scan hits. Generic unmatched APs create a lot
          * of queue/UART noise and don't materially help drone detection. */
@@ -1513,6 +1653,27 @@ static void process_scan_results(void)
         bool soft = (!pattern && wifi_ssid_match_soft(ssid));
         const oui_entry_t *oui = wifi_oui_lookup_raw(bssid);
         bool strong_oui = (oui && !oui->high_false_positive);
+
+#ifdef FOF_BADGE_VARIANT
+        fof_policy_evil_twin_alert_t evil_twin;
+        if (fof_policy_evil_twin_observe(
+                &s_evil_twin_state,
+                ssid,
+                bssid,
+                rssi,
+                (uint8_t)ch,
+                (uint8_t)ap_list[i].authmode,
+                scan_ts,
+                &evil_twin)) {
+            emit_evil_twin_detection(&evil_twin);
+        }
+#endif
+
+        if (privacy && emit_privacy_wifi_detection(
+                privacy, bssid, rssi, ssid, (uint8_t)ap_list[i].authmode,
+                ch, scan_ts)) {
+            continue;
+        }
 
         if (ssid[0] == '\0' && !strong_oui) {
             continue;
@@ -1693,6 +1854,7 @@ static void wifi_scan_task(void *arg)
 void wifi_scanner_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
+    s_wifi_initialized = false;
 
     /* Set device phase from MAC address for affine channel hopping diversity.
      * Each sensor gets a different phase so they scan different channels. */
@@ -1706,19 +1868,26 @@ void wifi_scanner_init(QueueHandle_t detection_queue)
 
     /* Initialize WiFi in STA mode (needed for active scan + promiscuous) */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    esp_err_t err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) goto fail;
+    err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if (err != ESP_OK) goto fail;
+    err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) goto fail;
+    err = esp_wifi_start();
+    if (err != ESP_OK) goto fail;
 
     /* Capture management + data frames. MGMT for drones/probes/beacons,
      * DATA for AP↔STA association tracking (v0.61+ Marauder parity). */
     wifi_promiscuous_filter_t filter = {
         .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
     };
-    ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filter));
-    ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(wifi_promiscuous_cb));
-    ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
+    err = esp_wifi_set_promiscuous_filter(&filter);
+    if (err != ESP_OK) goto fail;
+    err = esp_wifi_set_promiscuous_rx_cb(wifi_promiscuous_cb);
+    if (err != ESP_OK) goto fail;
+    err = esp_wifi_set_promiscuous(true);
+    if (err != ESP_OK) goto fail;
 
     /* Start on channel 1 */
     s_current_channel = 1;
@@ -1727,13 +1896,31 @@ void wifi_scanner_init(QueueHandle_t detection_queue)
     s_idx_5ghz = 0;
     s_next_is_5ghz = false;
 #endif
-    ESP_ERROR_CHECK(esp_wifi_set_channel(s_current_channel, WIFI_SECOND_CHAN_NONE));
+    err = esp_wifi_set_channel(s_current_channel, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) goto fail;
 
+    s_wifi_initialized = true;
     ESP_LOGI(TAG, "WiFi promiscuous scanner initialized");
+    return;
+
+fail:
+    s_full_scan_last_rc = (int)err;
+    s_full_scan_err++;
+    s_wifi_scan_paused = true;
+    ESP_LOGE(TAG, "WiFi scanner init failed: %s (%d)",
+             esp_err_to_name(err), (int)err);
+    (void)esp_wifi_set_promiscuous(false);
+    (void)esp_wifi_stop();
+    (void)esp_wifi_deinit();
 }
 
 void wifi_scanner_start(void)
 {
+    if (!s_wifi_initialized) {
+        ESP_LOGW(TAG, "WiFi scan task not started; WiFi init failed rc=%d",
+                 s_full_scan_last_rc);
+        return;
+    }
     xTaskCreatePinnedToCore(
         wifi_scan_task,
         "wifi_scan",
@@ -1758,7 +1945,9 @@ void wifi_scanner_set_channel(uint16_t channel)
 #endif
     if (valid) {
         s_current_channel = channel;
-        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+        if (s_wifi_initialized) {
+            esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+        }
     }
 }
 
@@ -1780,6 +1969,9 @@ bool wifi_scanner_is_5ghz_enabled(void)
 
 bool wifi_scanner_lockon(uint8_t channel, const char *bssid, int duration_s)
 {
+    if (!s_wifi_initialized) {
+        return false;
+    }
     if (channel < 1 || channel > 13) return false;
     if (duration_s != 30 && duration_s != 60 && duration_s != 90) duration_s = 60;
 
@@ -1867,14 +2059,18 @@ void wifi_scanner_reset_fc_histogram(void)
 void wifi_scanner_pause(void)
 {
     s_wifi_scan_paused = true;
-    esp_wifi_set_promiscuous(false);
+    if (s_wifi_initialized) {
+        esp_wifi_set_promiscuous(false);
+    }
     ESP_LOGW(TAG, "WiFi scanning PAUSED (OTA in progress)");
 }
 
 void wifi_scanner_resume(void)
 {
     s_wifi_scan_paused = false;
-    esp_wifi_set_promiscuous(true);
+    if (s_wifi_initialized) {
+        esp_wifi_set_promiscuous(true);
+    }
     ESP_LOGW(TAG, "WiFi scanning RESUMED");
 }
 

@@ -78,6 +78,10 @@ typedef struct {
     char category[16];
     char code[8];
     char source[24];
+    char ssid[33];
+    char bssid[18];
+    int wifi_auth_mode;
+    int freq_mhz;
     int score;
     int confidence_pct;
     int evidence_quality;

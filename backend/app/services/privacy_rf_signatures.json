@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "description": "Curated passive privacy RF signatures for badge/backend presentation.",
+  "wifi": [
+    {
+      "pattern": "Tapo_Cam_",
+      "match_type": "prefix",
+      "manufacturer": "TP-Link",
+      "device_type": "IP Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.88,
+      "has_camera": true,
+      "class_reason": "privacy:camera:tapo",
+      "source_note": "TP-Link support documents Tapo_Cam_XXXX setup networks.",
+      "false_positive_policy": "specific_setup_prefix"
+    },
+    {
+      "pattern": "Ring Setup",
+      "match_type": "prefix",
+      "manufacturer": "Ring",
+      "device_type": "Doorbell Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.85,
+      "has_camera": true,
+      "class_reason": "privacy:doorbell:ring",
+      "source_note": "Ring support documents Ring setup networks.",
+      "false_positive_policy": "specific_setup_prefix"
+    },
+    {
+      "pattern": "Ring-",
+      "match_type": "prefix",
+      "manufacturer": "Ring",
+      "device_type": "Doorbell Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.8,
+      "has_camera": true,
+      "class_reason": "privacy:doorbell:ring",
+      "source_note": "Ring setup/direct-connect network prefix.",
+      "false_positive_policy": "requires_dash_boundary"
+    },
+    {
+      "pattern": "BlackVue",
+      "match_type": "prefix",
+      "manufacturer": "BlackVue",
+      "device_type": "Dash Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.9,
+      "has_camera": true,
+      "class_reason": "privacy:dashcam:blackvue",
+      "source_note": "BlackVue manuals document built-in dashcam Wi-Fi.",
+      "false_positive_policy": "brand_prefix"
+    },
+    {
+      "pattern": "GoPro",
+      "match_type": "prefix",
+      "manufacturer": "GoPro",
+      "device_type": "Action Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.9,
+      "has_camera": true,
+      "class_reason": "privacy:actioncam:gopro",
+      "source_note": "GoPro cameras expose camera Wi-Fi names.",
+      "false_positive_policy": "brand_prefix"
+    },
+    {
+      "pattern": "Insta360",
+      "match_type": "prefix",
+      "manufacturer": "Insta360",
+      "device_type": "Action Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.9,
+      "has_camera": true,
+      "class_reason": "privacy:actioncam:insta360",
+      "source_note": "Insta360 cameras expose camera Wi-Fi names.",
+      "false_positive_policy": "brand_prefix"
+    },
+    {
+      "pattern": "Axon Body",
+      "match_type": "prefix",
+      "manufacturer": "Axon",
+      "device_type": "Body Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.9,
+      "has_camera": true,
+      "class_reason": "privacy:bodycam:axon",
+      "source_note": "Body-camera local network naming pattern.",
+      "false_positive_policy": "specific_product_prefix"
+    },
+    {
+      "pattern": "Penguin-",
+      "match_type": "prefix",
+      "manufacturer": "Flock Safety",
+      "device_type": "ALPR Camera",
+      "privacy_kind": "FLOCK_ALPR",
+      "confidence": 0.82,
+      "has_camera": true,
+      "class_reason": "privacy:alpr:flock",
+      "source_note": "Existing local Flock/ALPR field signature.",
+      "false_positive_policy": "specific_alpr_prefix"
+    },
+    {
+      "pattern": "Pineapple",
+      "match_type": "prefix",
+      "manufacturer": "Hak5",
+      "device_type": "Attack Tool",
+      "privacy_kind": "WIFI_ATTACK_TOOL",
+      "confidence": 0.9,
+      "has_camera": false,
+      "class_reason": "attack_tool:pineapple",
+      "source_note": "Hak5 documents WiFi Pineapple SSID pool behavior.",
+      "false_positive_policy": "tool_name_or_correlated_anomaly"
+    },
+    {
+      "pattern": "pwned",
+      "match_type": "prefix",
+      "manufacturer": "Spacehuhn",
+      "device_type": "Attack Tool",
+      "privacy_kind": "WIFI_ATTACK_TOOL",
+      "confidence": 0.95,
+      "has_camera": false,
+      "class_reason": "attack_tool:deauther",
+      "source_note": "Spacehuhn Deauther default AP SSID.",
+      "false_positive_policy": "tool_default_ssid"
+    },
+    {
+      "pattern": "Advanced-Deauther",
+      "match_type": "prefix",
+      "manufacturer": "Deauther",
+      "device_type": "Attack Tool",
+      "privacy_kind": "WIFI_ATTACK_TOOL",
+      "confidence": 0.95,
+      "has_camera": false,
+      "class_reason": "attack_tool:deauther",
+      "source_note": "Common deauther AP naming pattern.",
+      "false_positive_policy": "tool_default_ssid"
+    },
+    {
+      "pattern": "Marauder",
+      "match_type": "prefix",
+      "manufacturer": "ESP32Marauder",
+      "device_type": "Attack Tool",
+      "privacy_kind": "WIFI_ATTACK_TOOL",
+      "confidence": 0.9,
+      "has_camera": false,
+      "class_reason": "attack_tool:marauder",
+      "source_note": "ESP32 Marauder AP/tool name.",
+      "false_positive_policy": "tool_name_or_correlated_anomaly"
+    }
+  ]
+}

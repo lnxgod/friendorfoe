@@ -88,6 +88,7 @@ fun ListViewScreen(
     viewModel: ListViewModel = hiltViewModel()
 ) {
     val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
+    val activeVisualFocusIds by viewModel.activeVisualFocusIds.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val badgeUsbState by viewModel.badgeUsbState.collectAsStateWithLifecycle()
 
@@ -149,6 +150,7 @@ fun ListViewScreen(
                 ) { skyObject ->
                     SkyObjectItem(
                         skyObject = skyObject,
+                        isVisuallyConfirmed = skyObject.id in activeVisualFocusIds,
                         onClick = { onObjectTapped(skyObject.id) }
                     )
                     HorizontalDivider(
@@ -518,6 +520,7 @@ private fun EmptyListState() {
 @Composable
 private fun SkyObjectItem(
     skyObject: SkyObject,
+    isVisuallyConfirmed: Boolean,
     onClick: () -> Unit
 ) {
     val rowBackground = when (skyObject.category) {
@@ -600,6 +603,16 @@ private fun SkyObjectItem(
         }
 
         Spacer(modifier = Modifier.width(8.dp))
+
+        if (isVisuallyConfirmed) {
+            Icon(
+                imageVector = Icons.Default.Visibility,
+                contentDescription = "Camera confirmed",
+                modifier = Modifier.size(18.dp),
+                tint = Color(0xFF76FF03)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+        }
 
         // Detection source icon
         Icon(

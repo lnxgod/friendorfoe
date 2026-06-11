@@ -585,6 +585,7 @@ bool oled_badge_get_display_state(oled_badge_display_state_t *out)
 {
     if (out) {
         memset(out, 0, sizeof(*out));
+        out->wifi_auth_mode = -1;
     }
     return false;
 }

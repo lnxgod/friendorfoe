@@ -55,4 +55,61 @@ class PrivacyCategoryMappingTest {
         assertEquals(PrivacyCategory.ALPR_CAMERA, penguin!!.category)
         assertEquals("Flock Safety", penguin.manufacturer)
     }
+
+    @Test
+    fun maps_wifi_privacy_ssids_to_camera_and_attack_categories() {
+        val tapo = GlassesDetector.checkWifiSsid(
+            ssid = "Tapo_Cam_ABCD",
+            bssid = "AA:BB:CC:00:00:02",
+            rssi = -52
+        )
+        assertNotNull(tapo)
+        assertEquals(PrivacyCategory.HIDDEN_CAMERA, tapo!!.category)
+        assertEquals("TP-Link", tapo.manufacturer)
+
+        val deauther = GlassesDetector.checkWifiSsid(
+            ssid = "Advanced-Deauther",
+            bssid = "AA:BB:CC:00:00:03",
+            rssi = -48
+        )
+        assertNotNull(deauther)
+        assertEquals(PrivacyCategory.ATTACK_TOOL, deauther!!.category)
+        assertEquals("Generic", deauther.manufacturer)
+    }
+
+    @Test
+    fun maps_recorder_pen_and_payment_reader_categories() {
+        assertEquals(
+            PrivacyCategory.VOICE_RECORDER,
+            GlassesDetector.categorizeDeviceType("Voice Recorder")
+        )
+        assertEquals(
+            PrivacyCategory.SMART_PEN,
+            GlassesDetector.categorizeDeviceType("Smart Pen")
+        )
+        assertEquals(
+            PrivacyCategory.PAYMENT_READER,
+            GlassesDetector.categorizeDeviceType("Payment Reader")
+        )
+        assertEquals(
+            PrivacyCategory.PAYMENT_READER,
+            GlassesDetector.categorizeDeviceType("Card Reader")
+        )
+    }
+
+    @Test
+    fun keeps_medical_hearing_and_personal_devices_informational() {
+        assertEquals(
+            PrivacyCategory.INFORMATIONAL,
+            GlassesDetector.categorizeDeviceType("Hearing Aid")
+        )
+        assertEquals(
+            PrivacyCategory.INFORMATIONAL,
+            GlassesDetector.categorizeDeviceType("CGM Sensor")
+        )
+        assertEquals(
+            PrivacyCategory.INFORMATIONAL,
+            GlassesDetector.categorizeDeviceType("Personal Device")
+        )
+    }
 }

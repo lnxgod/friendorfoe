@@ -48,6 +48,12 @@ sealed class Screen(val route: String) {
     /** Privacy scanner screen */
     data object Privacy : Screen("privacy")
 
+    /** Close-range magnetometer sweep for hidden electronics */
+    data object EmfSweep : Screen("emf_sweep")
+
+    /** Front-camera IR LED scan for night-vision camera emitters */
+    data object IrCameraScan : Screen("ir_camera_scan")
+
     /** Calibration walk: phone advertises BLE from known GPS so the
      *  backend can fit a per-listener path-loss model for triangulation. */
     data object Calibrate : Screen("calibrate")

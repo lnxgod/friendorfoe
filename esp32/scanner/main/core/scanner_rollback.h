@@ -87,6 +87,21 @@ uint32_t scanner_rollback_crash_count(void);
 /** True when the scanner should stay in UART-only recovery mode. */
 bool scanner_rollback_safe_mode_requested(void);
 
+typedef enum {
+    SCANNER_BOOT_STAGE_UNKNOWN = 0,
+    SCANNER_BOOT_STAGE_ROLLBACK,
+    SCANNER_BOOT_STAGE_NETIF,
+    SCANNER_BOOT_STAGE_EVENT_LOOP,
+    SCANNER_BOOT_STAGE_UART,
+    SCANNER_BOOT_STAGE_WIFI_INIT,
+    SCANNER_BOOT_STAGE_WIFI_READY,
+    SCANNER_BOOT_STAGE_BLE_INIT,
+    SCANNER_BOOT_STAGE_BLE_READY,
+    SCANNER_BOOT_STAGE_NORMAL,
+} scanner_boot_stage_t;
+
+void scanner_rollback_note_boot_stage(scanner_boot_stage_t stage);
+
 /** Human-readable recovery mode label for status/debug surfaces. */
 const char *scanner_rollback_recovery_mode(void);
 

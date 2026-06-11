@@ -57,6 +57,9 @@ fun AboutScreen(
     onBack: () -> Unit,
     viewModel: AboutViewModel? = null,
     onNavigateToCalibrate: (() -> Unit)? = null,
+    onNavigateToEmfSweep: (() -> Unit)? = null,
+    onNavigateToIrCameraScan: (() -> Unit)? = null,
+    onNavigateToPrivacy: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
 
@@ -193,6 +196,7 @@ fun AboutScreen(
                     PermissionRow("Location", "Calculate bearing and distance to aircraft")
                     PermissionRow("Bluetooth", "Detect drones via Remote ID")
                     PermissionRow("WiFi", "Detect drones via WiFi signals")
+                    PermissionRow("Notifications", "High-risk privacy alerts")
                 }
             }
 
@@ -327,13 +331,33 @@ fun AboutScreen(
                             initialValue = viewModel.ultrasonicEnabled,
                             onToggle = { viewModel.setUltrasonicEnabled(it) }
                         )
+                        SettingsToggle(
+                            title = "High-Risk Notifications",
+                            description = "Send Android notifications for camera, tracker, attack, follower, and ultrasonic alerts",
+                            initialValue = viewModel.privacyNotificationsEnabled,
+                            onToggle = { viewModel.setPrivacyNotificationsEnabled(it) }
+                        )
                     }
                 }
                 item {
                     SectionCard(title = "Sweep Tools") {
-                        BulletItem("EMF Sweep — Use magnetometer to find hidden electronics at close range")
-                        BulletItem("IR Camera Scan — Use front camera to detect night-vision IR LEDs in dark rooms")
-                        BulletItem("BLE Direction Finder — Rotate 360° to locate a detected BLE device")
+                        SweepToolRow(
+                            title = "EMF Sweep",
+                            description = "Magnetometer close-range scan",
+                            onClick = onNavigateToEmfSweep
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        SweepToolRow(
+                            title = "IR Camera Scan",
+                            description = "Front-camera IR source scan",
+                            onClick = onNavigateToIrCameraScan
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        SweepToolRow(
+                            title = "BLE Direction Finder",
+                            description = "Track a detected BLE device",
+                            onClick = onNavigateToPrivacy
+                        )
                     }
                 }
             }
@@ -360,6 +384,40 @@ fun AboutScreen(
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
+    }
+}
+
+@Composable
+private fun SweepToolRow(
+    title: String,
+    description: String,
+    onClick: (() -> Unit)?
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = onClick != null) { onClick?.invoke() }
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text(
+            text = "Open",
+            style = MaterialTheme.typography.labelLarge,
+            color = if (onClick != null) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

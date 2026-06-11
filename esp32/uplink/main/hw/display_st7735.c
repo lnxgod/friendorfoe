@@ -3661,6 +3661,9 @@ static badge_display_policy_class_t badge_display_policy_entity_class(
     if (!item) {
         return BADGE_DISPLAY_CLASS_SCANNER_STATUS;
     }
+    if (badge_threat_snapshot_entity_is_evil_twin(item)) {
+        return BADGE_DISPLAY_CLASS_WIFI_ATTACK;
+    }
     switch (item->category) {
         case BADGE_THREAT_CATEGORY_DRONE:
         case BADGE_THREAT_CATEGORY_SSID:
@@ -4081,6 +4084,9 @@ static int badge_top_tile_rank(const badge_threat_snapshot_t *snapshot,
     if (!item || !item->active) {
         return 0;
     }
+    if (badge_threat_snapshot_entity_is_evil_twin(item)) {
+        return 1120 + item->score;
+    }
 
     int base = 0;
     switch (item->category) {
@@ -4268,6 +4274,10 @@ static void format_badge_title_for_snapshot(
     if (!item) {
         return;
     }
+    if (badge_threat_snapshot_entity_is_evil_twin(item)) {
+        snprintf(out, out_len, "EVIL TWIN");
+        return;
+    }
     if (snapshot && badge_item_is_drone_evidence(item) &&
         badge_drone_evidence_count(snapshot) > 0) {
         badge_threat_format_drone_near_title(snapshot, out, out_len);
@@ -4317,6 +4327,11 @@ static void format_badge_title_for_snapshot(
             }
             return;
         case BADGE_THREAT_CATEGORY_WIFI:
+            if (strstr(item->label, "Evil") || strstr(item->label, "Twin") ||
+                strstr(item->detail, "evil") || strstr(item->detail, "twin")) {
+                snprintf(out, out_len, "EVIL TWIN");
+                return;
+            }
             snprintf(out, out_len, "WIFI ALERT");
             return;
         case BADGE_THREAT_CATEGORY_PRIVACY:
@@ -4495,6 +4510,9 @@ static void draw_top_concern_tile(int y, badge_ui_domain_t domain,
         if (badge_threat_top_detail_uses_large_text(detail, large_chars)) {
             fb_draw_string_fit(8, y + 23, detail, detail_max,
                                detail_color, bg);
+        } else if (badge_threat_top_detail_uses_marquee(detail, large_chars)) {
+            fb_draw_string_fast_marquee(8, y + 23, detail, detail_max,
+                                        detail_color, bg);
         } else {
             int tiny_detail_max = LCD_W - 12 - tw - 5;
             if (tiny_detail_max < 64) tiny_detail_max = LCD_W - 12;
@@ -5705,6 +5723,7 @@ bool oled_badge_get_display_state(oled_badge_display_state_t *out)
         return false;
     }
     memset(out, 0, sizeof(*out));
+    out->wifi_auth_mode = -1;
     if (!display_lock(pdMS_TO_TICKS(80))) {
         return false;
     }
@@ -5738,6 +5757,12 @@ bool oled_badge_get_display_state(oled_badge_display_state_t *out)
                  badge_threat_category_code(entity->category));
         snprintf(out->source, sizeof(out->source), "%s",
                  badge_threat_source_code(entity->source));
+        snprintf(out->ssid, sizeof(out->ssid), "%s", entity->ssid);
+        snprintf(out->bssid, sizeof(out->bssid), "%s", entity->bssid);
+        out->wifi_auth_mode = entity->wifi_auth_mode == 0xFF
+            ? -1
+            : (int)entity->wifi_auth_mode;
+        out->freq_mhz = entity->freq_mhz;
         out->score = entity->score;
         out->confidence_pct = entity->confidence_pct;
         out->evidence_quality = entity->evidence_quality;

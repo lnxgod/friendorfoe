@@ -2,7 +2,6 @@ package com.friendorfoe.detection
 
 import android.annotation.SuppressLint
 import android.net.wifi.ScanResult
-import android.net.wifi.WifiManager
 import android.util.Log
 import java.time.Instant
 import javax.inject.Inject
@@ -23,7 +22,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class WifiAnomalyDetector @Inject constructor(
-    private val wifiManager: WifiManager
+    private val wifiScanCoordinator: WifiScanCoordinator
 ) {
     companion object {
         private const val TAG = "WifiAnomalyDetector"
@@ -47,8 +46,8 @@ class WifiAnomalyDetector @Inject constructor(
      */
     @SuppressLint("MissingPermission")
     fun analyze(): List<WifiAnomaly> {
-        @Suppress("DEPRECATION")
-        val scanResults = wifiManager.scanResults ?: return emptyList()
+        val scanResults = wifiScanCoordinator.currentResults.value
+        if (scanResults.isEmpty()) return emptyList()
         val anomalies = mutableListOf<WifiAnomaly>()
         val now = Instant.now()
 
