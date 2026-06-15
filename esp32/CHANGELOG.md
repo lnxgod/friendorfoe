@@ -5,10 +5,14 @@ All notable changes to the ESP32 hardware edition of Friend or Foe.
 ## [Unreleased]
 
 ### Changed
-- **Production S3 privacy firmware bump to `0.64.43-privacy-signals`.**
+- **Production S3 Bluetooth catalog firmware bump to `0.64.44-ble-catalog`.**
   `uplink-s3`, `scanner-s3-combo`, and `scanner-s3-combo-seed` now share
-  the new production node version for privacy-signal OTA rollout while the
-  FoF Badge XIAO track remains separate at `0.64.41-badge-radio-fix`.
+  the new production node version for the expanded BLE tracker catalog while
+  the FoF Badge XIAO track remains separate at `0.64.41-badge-radio-fix`.
+- **BLE tracker signatures refreshed from current public specs.** Apple Find My
+  accessory UUIDs (`0xFD44`/`0xFD43`) and Chipolo UUIDs (`0xFE33`/`0xFE65`) are
+  now first-class tracker evidence, while `0xFD6F` stays Exposure Notification
+  and broad Nordic/TI/Unikey company IDs no longer masquerade as trackers.
 - **Web flasher manifests updated for the production node fleet.** Browser
   flashing and backend local-build OTA metadata now point at the same
   production node version.

@@ -20,7 +20,8 @@ object BleSignatures {
     const val CID_SAMSUNG           = 0x0075
     const val CID_GOOGLE            = 0x00E0
     const val CID_DJI               = 0x2CA5
-    const val CID_TILE              = 0x0059
+    const val CID_TILE              = 0x067C
+    const val CID_CHIPOLO           = 0x08C3
     const val CID_META              = 0x01AB
     const val CID_META_TECH         = 0x058E
     /** Luxottica — frame manufacturer for Ray-Ban Meta & Oakley Meta.
@@ -55,8 +56,12 @@ object BleSignatures {
 
     const val SVC_TILE_1            = 0xFEED
     const val SVC_TILE_2            = 0xFEEC
+    const val SVC_CHIPOLO_1         = 0xFE33
+    const val SVC_CHIPOLO_2         = 0xFE65
     const val SVC_GOOGLE_FASTPAIR   = 0xFE2C
-    const val SVC_APPLE_FIND_MY     = 0xFD6F
+    const val SVC_APPLE_FIND_MY     = 0xFD44
+    const val SVC_APPLE_FIND_MY_FW  = 0xFD43
+    const val SVC_EXPOSURE_NOTIFY   = 0xFD6F
     const val SVC_SAMSUNG_TAG_1    = 0xFD59
     const val SVC_SAMSUNG_TAG_2    = 0xFD5A
     const val SVC_SAMSUNG_TAG_LOST = 0xFD69

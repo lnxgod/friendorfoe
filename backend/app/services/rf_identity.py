@@ -149,7 +149,7 @@ _VENDOR_FAMILY_RULES = (
     (("ring",), "smart_home_iot", 0.66),
     (("tp-link", "tplink", "netgear", "ubiquiti", "unifi", "ruckus", "aruba", "cisco", "meraki", "mikrotik", "linksys", "asus"), "network_infrastructure", 0.78),
     (("apple", "samsung", "google", "xiaomi", "huawei", "oneplus", "oppo", "vivo"), "phone_tablet_or_pc", 0.70),
-    (("tile", "chipolo", "airtag"), "tracker", 0.82),
+    (("tile", "chipolo", "pebblebee", "airtag", "smarttag", "moto tag"), "tracker", 0.82),
     (("bose", "jbl", "harman", "sony", "sennheiser", "jabra", "beats", "sonos"), "audio", 0.74),
     (("fitbit", "garmin", "polar", "whoop", "oura"), "wearable", 0.78),
     (("tuya", "shelly", "philips hue", "ecobee", "honeywell", "ikea"), "smart_home_iot", 0.74),

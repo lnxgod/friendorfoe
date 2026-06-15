@@ -145,6 +145,8 @@ def test_privacy_ble_company_ids_prefer_camera_family(company_id, brand_token):
     ("service_uuids", "brand", "device_family", "device_class"),
     [
         ("FCB2", "DULT", "tracker", "tracker"),
+        ("FD44", "Apple", "tracker", "tracker"),
+        ("FE33", "Chipolo", "tracker", "tracker"),
         ("FD3A", "Verkada", "camera_or_video", "surveillance_camera"),
         ("FDA9", "Rhombus", "camera_or_video", "surveillance_camera"),
         ("1812", "Bluetooth SIG", "input_device", "ble_hid"),

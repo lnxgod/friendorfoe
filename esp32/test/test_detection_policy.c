@@ -512,6 +512,89 @@ void test_ble_fingerprint_luxottica_cid_is_meta_glasses(void)
     TEST_ASSERT_EQUAL_STRING("mfr_cid:0x0D53", fp.class_reason);
 }
 
+void test_ble_fingerprint_findmy_uuid_is_tracker(void)
+{
+    static const uint8_t adv[] = {
+        3, 0x03, 0x44, 0xFD
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_EQUAL(BLE_DEV_APPLE_FINDMY, fp.device_type);
+    TEST_ASSERT_TRUE(fp.is_tracker);
+    TEST_ASSERT_EQUAL_STRING("uuid16:0xFD44", fp.class_reason);
+    TEST_ASSERT_EQUAL_UINT16(0xFD44, fp.service_uuids[0]);
+}
+
+void test_ble_fingerprint_exposure_notification_is_not_findmy_tracker(void)
+{
+    static const uint8_t adv[] = {
+        3, 0x03, 0x6F, 0xFD
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_EQUAL(BLE_DEV_UNKNOWN, fp.device_type);
+    TEST_ASSERT_FALSE(fp.is_tracker);
+    TEST_ASSERT_EQUAL_UINT16(0xFD6F, fp.service_uuids[0]);
+}
+
+void test_ble_fingerprint_chipolo_member_uuid_is_tracker(void)
+{
+    static const uint8_t adv[] = {
+        3, 0x03, 0x33, 0xFE
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_EQUAL(BLE_DEV_CHIPOLO, fp.device_type);
+    TEST_ASSERT_TRUE(fp.is_tracker);
+    TEST_ASSERT_EQUAL_STRING("uuid16:0xFE33", fp.class_reason);
+    TEST_ASSERT_EQUAL_UINT16(0xFE33, fp.service_uuids[0]);
+}
+
+void test_ble_fingerprint_chipolo_company_id_is_tracker(void)
+{
+    static const uint8_t adv[] = {
+        3, 0xFF, 0xC3, 0x08
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_EQUAL(BLE_DEV_CHIPOLO, fp.device_type);
+    TEST_ASSERT_TRUE(fp.is_tracker);
+}
+
+void test_ble_fingerprint_nordic_company_id_is_not_tile_tracker(void)
+{
+    static const uint8_t adv[] = {
+        3, 0xFF, 0x59, 0x00
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_EQUAL(BLE_DEV_UNKNOWN, fp.device_type);
+    TEST_ASSERT_FALSE(fp.is_tracker);
+}
+
+void test_ble_fingerprint_unikey_company_id_is_not_pebblebee_tracker(void)
+{
+    static const uint8_t adv[] = {
+        3, 0xFF, 0x5E, 0x01
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_EQUAL(BLE_DEV_UNKNOWN, fp.device_type);
+    TEST_ASSERT_FALSE(fp.is_tracker);
+}
+
 void test_hidden_camera_ble_is_priority_not_low_value(void)
 {
     TEST_ASSERT_TRUE(fof_policy_is_priority_ble_fingerprint("Hidden Camera (suspect)"));

@@ -242,7 +242,7 @@ async def test_stage_fleet_uses_scanner_board_for_mixed_variants(
 
     async def fake_version(name: str) -> str:
         assert name in {"scanner-s3-combo-seed", "scanner-s3-combo"}
-        return "0.64.43-privacy-signals"
+        return "0.64.44-ble-catalog"
 
     uploads: list[str] = []
 

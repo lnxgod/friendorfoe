@@ -90,6 +90,29 @@ def test_ble_service_uuid_privacy_signatures_classify_without_text_labels():
     assert tracker["privacy_kind"] == "TRACKER_NEAR"
     assert tracker["display_label"] == "TRACKER NEAR"
 
+    findmy = classify_privacy_device({
+        "source": "ble_fingerprint",
+        "ble_svc_uuids": "FD44",
+        "current_rssi": -54,
+    })
+    assert findmy["privacy_kind"] == "TRACKER_NEAR"
+    assert findmy["display_label"] == "TRACKER NEAR"
+
+    chipolo = classify_privacy_device({
+        "source": "ble_fingerprint",
+        "ble_svc_uuids": "FE33",
+        "current_rssi": -56,
+    })
+    assert chipolo["privacy_kind"] == "TRACKER_NEAR"
+    assert any(item["field"] == "ble_service_signature" for item in chipolo["evidence"])
+
+    exposure = classify_privacy_device({
+        "source": "ble_fingerprint",
+        "ble_svc_uuids": "FD6F",
+        "current_rssi": -55,
+    })
+    assert exposure["privacy_kind"] != "TRACKER_NEAR"
+
     camera = classify_privacy_device({
         "source": "ble_fingerprint",
         "ble_svc_uuids": "0000fd3a-0000-1000-8000-00805f9b34fb",

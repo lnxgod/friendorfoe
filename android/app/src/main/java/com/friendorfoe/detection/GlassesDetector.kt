@@ -516,9 +516,10 @@ class GlassesDetector @Inject constructor(
         MfrEntry(0x0BC6, "TCL", "Smart Glasses", 0.70f, true),
         MfrEntry(0x0962, "Rokid", "Smart Glasses", 0.75f, true),
         // Amazon CID 0x0171 removed — too broad, matches Echo/Fire/Kindle/Ring
-        // Trackers / Stalkerware
-        MfrEntry(0x000D, "Tile", "BLE Tracker", 0.85f, false),
-        MfrEntry(0x067C, "Tile", "BLE Tracker", 0.85f, false),
+        // Trackers / Stalkerware. Keep these to current SIG company IDs;
+        // tracker-chip vendors like Nordic/TI are too broad to classify.
+        MfrEntry(BleSignatures.CID_TILE, "Tile", "BLE Tracker", 0.85f, false),
+        MfrEntry(BleSignatures.CID_CHIPOLO, "Chipolo", "BLE Tracker", 0.85f, false),
         // Samsung CID 0x0075 removed — matches ALL Samsung devices (phones, watches, buds)
         // SmartTag detected by UUID 0xFD5A/0xFD59 instead (much more specific)
         // Wearables with cameras/sensors
@@ -559,12 +560,17 @@ class GlassesDetector @Inject constructor(
         UuidEntry(0xFE45, "Snap", "Smart Glasses", 0.80f, true),
         UuidEntry(0xFE15, "Amazon", "Smart Glasses", 0.70f, false),
         // Trackers / Stalkerware
-        UuidEntry(0xFD5A, "Samsung", "BLE Tracker", 0.90f, false),
-        UuidEntry(0xFD59, "Samsung", "BLE Tracker", 0.85f, false),
-        UuidEntry(0xFEED, "Tile", "BLE Tracker", 0.85f, false),
-        UuidEntry(0xFEEC, "Tile", "BLE Tracker", 0.85f, false),
+        UuidEntry(BleSignatures.SVC_APPLE_FIND_MY, "Apple", "Find My Tracker", 0.90f, false),
+        UuidEntry(BleSignatures.SVC_APPLE_FIND_MY_FW, "Apple", "Find My Tracker", 0.75f, false),
+        UuidEntry(BleSignatures.SVC_SAMSUNG_TAG_2, "Samsung", "BLE Tracker", 0.90f, false),
+        UuidEntry(BleSignatures.SVC_SAMSUNG_TAG_1, "Samsung", "BLE Tracker", 0.85f, false),
+        UuidEntry(BleSignatures.SVC_SAMSUNG_TAG_LOST, "Samsung", "BLE Tracker", 0.85f, false),
+        UuidEntry(BleSignatures.SVC_TILE_1, "Tile", "BLE Tracker", 0.85f, false),
+        UuidEntry(BleSignatures.SVC_TILE_2, "Tile", "BLE Tracker", 0.85f, false),
+        UuidEntry(BleSignatures.SVC_CHIPOLO_1, "Chipolo", "BLE Tracker", 0.85f, false),
+        UuidEntry(BleSignatures.SVC_CHIPOLO_2, "Chipolo", "BLE Tracker", 0.85f, false),
         UuidEntry(0xFCB2, "DULT", "BLE Tracker", 0.90f, false),
-        UuidEntry(0xFE2C, "Google", "Fast Pair", 0.50f, false), // below threshold
+        UuidEntry(BleSignatures.SVC_GOOGLE_FASTPAIR, "Google", "Fast Pair", 0.50f, false), // below threshold
         // Action cameras
         UuidEntry(0xFEA6, "GoPro", "Action Camera", 0.90f, true),
         // Camera / fleet service UUIDs assigned by Bluetooth SIG
@@ -584,7 +590,7 @@ class GlassesDetector @Inject constructor(
         UuidEntry(0xFD50, "Tuya", "IoT Camera", 0.65f, true),
         // Samsung wearables
         UuidEntry(0xFD6A, "Samsung", "Galaxy Ring", 0.85f, false),
-        UuidEntry(0xFD69, "Samsung", "Galaxy Ring", 0.85f, false),
+        UuidEntry(BleSignatures.SVC_EXPOSURE_NOTIFY, "Apple/Google", "Exposure Notification", 0.35f, false),
         // Retail Tracking — below threshold, informational only
         UuidEntry(0xFEAA, "Google", "Eddystone Beacon", 0.50f, false),
         // IoT ecosystems
@@ -805,6 +811,9 @@ class GlassesDetector @Inject constructor(
         NameEntry("Chipolo", "Chipolo", "BLE Tracker", 0.85f, false),
         NameEntry("Pebblebee", "Pebblebee", "BLE Tracker", 0.85f, false),
         NameEntry("eufy SmartTrack", "Eufy", "BLE Tracker", 0.85f, false),
+        NameEntry("SmartTrack", "Eufy", "BLE Tracker", 0.75f, false),
+        NameEntry("Moto Tag", "Motorola", "BLE Tracker", 0.85f, false),
+        NameEntry("TrackR", "TrackR", "BLE Tracker", 0.80f, false),
         NameEntry("Nutale", "Nutale", "BLE Tracker", 0.80f, false),
         // Camera accessories / remotes
         NameEntry("AB Shutter3", "Generic", "Camera Remote", 0.80f, false, exact = true),

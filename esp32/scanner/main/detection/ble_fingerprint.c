@@ -18,7 +18,8 @@
  *   Apple:    Company 0x004C, Continuity types: 0x12=FindMy, 0x07=AirPods,
  *             0x0F=NearbyAction, 0x10=NearbyInfo, 0x05=AirDrop, 0x09=AirPlay
  *   Samsung:  Company 0x0075
- *   Tile:     Service UUID 0xFEED or 0xFEEC
+ *   Tile:     Company 0x067C, service UUID 0xFEED or 0xFEEC
+ *   Chipolo:  Company 0x08C3, service UUID 0xFE33 or 0xFE65
  *   Google:   Company 0x00E0 (Google), FastPair service 0xFE2C
  *   DJI:      Company 0x2CA5
  */
@@ -48,9 +49,8 @@
 #define GOOGLE_COMPANY_ID       0x00E0
 #define MICROSOFT_COMPANY_ID    0x0006
 #define DJI_COMPANY_ID          0x2CA5
-#define TILE_COMPANY_ID         0x0059  /* Tile Inc */
-#define PEBBLEBEE_COMPANY_ID    0x015E  /* Pebblebee Clip / Card / Tag — Marauder parity */
-#define CHIPOLO_COMPANY_ID      0x033F  /* Chipolo ONE / CARD trackers */
+#define TILE_COMPANY_ID         0x067C  /* Tile, Inc. */
+#define CHIPOLO_COMPANY_ID      0x08C3  /* CHIPOLO d.o.o. */
 #define META_COMPANY_ID         0x01AB  /* Meta Platforms, Inc. */
 #define META_TECH_COMPANY_ID    0x058E  /* Meta Platforms Technologies */
 #define META_LUXOTTICA_CID      0x0D53  /* Luxottica — Ray-Ban / Oakley Meta frames */
@@ -91,13 +91,17 @@
 
 #define TILE_SVC_UUID           0xFEED
 #define TILE_SVC_UUID2          0xFEEC
+#define CHIPOLO_SVC_UUID1       0xFE33
+#define CHIPOLO_SVC_UUID2       0xFE65
 #define GOOGLE_FASTPAIR_UUID    0xFE2C
 #define GOOGLE_FMDN_UUID        0xFE2C  /* Google Find My Device Network */
 #define EDDYSTONE_SVC_UUID      0xFEAA
 #define BLE_HID_SVC_UUID        0x1812
 #define BLE_AUDIO_BASS_UUID     0x184F  /* Broadcast Audio Scan Service */
 #define BLE_AUDIO_PACS_UUID     0x1850  /* Published Audio Capabilities */
-#define APPLE_FINDMY_SVC        0xFD6F  /* Apple Find My network */
+#define APPLE_FINDMY_SVC        0xFD44  /* Apple Find My network */
+#define APPLE_FINDMY_FW_SVC     0xFD43  /* Apple Find My firmware update */
+#define EXPOSURE_NOTIFY_SVC     0xFD6F  /* GAEN/contact-tracing, not Find My */
 #define DULT_TRACKER_SVC_UUID   0xFCB2  /* Detecting Unwanted Location Trackers */
 #define SAMSUNG_SMARTTAG_SVC1   0xFD59  /* SmartTag factory/non-registered */
 #define SAMSUNG_SMARTTAG_SVC2   0xFD5A  /* SmartTag registered */
@@ -346,6 +350,30 @@ static bool name_mentions_auracast(const char *name)
            contains_case_insensitive(name, "broadcast audio");
 }
 
+static bool name_mentions_chipolo(const char *name)
+{
+    return contains_case_insensitive(name, "chipolo");
+}
+
+static bool name_mentions_pebblebee(const char *name)
+{
+    return contains_case_insensitive(name, "pebblebee");
+}
+
+static bool name_mentions_ble_tracker(const char *name)
+{
+    if (!name || name[0] == '\0') {
+        return false;
+    }
+    return strncasecmp(name, "Tile", 4) == 0 ||
+           contains_case_insensitive(name, "airtag") ||
+           contains_case_insensitive(name, "smarttag") ||
+           contains_case_insensitive(name, "smarttrack") ||
+           contains_case_insensitive(name, "moto tag") ||
+           contains_case_insensitive(name, "trackr") ||
+           contains_case_insensitive(name, "nutale");
+}
+
 static bool uuid_is_privacy_camera_service(uint16_t uuid)
 {
     switch (uuid) {
@@ -414,6 +442,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     bool has_findmy_svc = false;
     bool has_dult_svc = false;
     bool has_tile_svc = false;
+    bool has_chipolo_svc = false;
     bool has_fastpair_svc = false;
     bool has_smarttag_svc = false;
     bool has_meta_svc = false;
@@ -421,6 +450,8 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     bool has_eddystone_svc = false;
     bool has_hid_svc = false;
     bool has_ble_audio_svc = false;
+    uint16_t first_findmy_svc = 0;
+    uint16_t first_chipolo_svc = 0;
     uint16_t first_meta_svc = 0;
     uint16_t first_privacy_camera_svc = 0;
 
@@ -507,9 +538,16 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 uint16_t uuid = (uint16_t)ad_data[i] | ((uint16_t)ad_data[i + 1] << 8);
                 hash = fnv1a_u16(hash, uuid);
 
-                if (uuid == APPLE_FINDMY_SVC)    has_findmy_svc = true;
+                if (uuid == APPLE_FINDMY_SVC || uuid == APPLE_FINDMY_FW_SVC) {
+                    has_findmy_svc = true;
+                    if (first_findmy_svc == 0) first_findmy_svc = uuid;
+                }
                 if (uuid == DULT_TRACKER_SVC_UUID) has_dult_svc = true;
                 if (uuid == TILE_SVC_UUID || uuid == TILE_SVC_UUID2) has_tile_svc = true;
+                if (uuid == CHIPOLO_SVC_UUID1 || uuid == CHIPOLO_SVC_UUID2) {
+                    has_chipolo_svc = true;
+                    if (first_chipolo_svc == 0) first_chipolo_svc = uuid;
+                }
                 if (uuid == GOOGLE_FASTPAIR_UUID || uuid == GOOGLE_FMDN_UUID) has_fastpair_svc = true;
                 if (uuid == EDDYSTONE_SVC_UUID) has_eddystone_svc = true;
                 if (uuid == BLE_HID_SVC_UUID) has_hid_svc = true;
@@ -565,9 +603,17 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                 uint16_t svc_uuid = (uint16_t)ad_data[0] | ((uint16_t)ad_data[1] << 8);
                 hash = fnv1a_u16(hash, svc_uuid);
 
-                if (svc_uuid == APPLE_FINDMY_SVC) has_findmy_svc = true;
+                if (svc_uuid == APPLE_FINDMY_SVC || svc_uuid == APPLE_FINDMY_FW_SVC) {
+                    has_findmy_svc = true;
+                    if (first_findmy_svc == 0) first_findmy_svc = svc_uuid;
+                }
                 if (svc_uuid == DULT_TRACKER_SVC_UUID) has_dult_svc = true;
                 if (svc_uuid == TILE_SVC_UUID || svc_uuid == TILE_SVC_UUID2) has_tile_svc = true;
+                if (svc_uuid == CHIPOLO_SVC_UUID1 || svc_uuid == CHIPOLO_SVC_UUID2) {
+                    has_chipolo_svc = true;
+                    if (first_chipolo_svc == 0) first_chipolo_svc = svc_uuid;
+                }
+                if (svc_uuid == GOOGLE_FASTPAIR_UUID || svc_uuid == GOOGLE_FMDN_UUID) has_fastpair_svc = true;
                 if (svc_uuid == EDDYSTONE_SVC_UUID) has_eddystone_svc = true;
                 if (svc_uuid == BLE_HID_SVC_UUID) has_hid_svc = true;
                 if (svc_uuid == BLE_AUDIO_BASS_UUID || svc_uuid == BLE_AUDIO_PACS_UUID) has_ble_audio_svc = true;
@@ -647,15 +693,20 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     } else if (has_findmy_svc) {
         fp->device_type = BLE_DEV_APPLE_FINDMY;
         fp->is_tracker = true;
+        if (first_findmy_svc != 0) {
+            snprintf(fp->class_reason, sizeof(fp->class_reason),
+                     "uuid16:0x%04X", first_findmy_svc);
+        }
     } else if (has_tile_svc || company_id == TILE_COMPANY_ID) {
         fp->device_type = BLE_DEV_TILE_TRACKER;
         fp->is_tracker = true;
-    } else if (company_id == PEBBLEBEE_COMPANY_ID) {
-        fp->device_type = BLE_DEV_PEBBLEBEE;
-        fp->is_tracker = true;
-    } else if (company_id == CHIPOLO_COMPANY_ID) {
+    } else if (has_chipolo_svc || company_id == CHIPOLO_COMPANY_ID) {
         fp->device_type = BLE_DEV_CHIPOLO;
         fp->is_tracker = true;
+        if (first_chipolo_svc != 0) {
+            snprintf(fp->class_reason, sizeof(fp->class_reason),
+                     "uuid16:0x%04X", first_chipolo_svc);
+        }
     } else if (has_smarttag_svc) {
         fp->device_type = BLE_DEV_SAMSUNG_SMARTTAG;
         fp->is_tracker = true;
@@ -666,9 +717,10 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     } else if (company_id == SAMSUNG_COMPANY_ID) {
         /* Samsung device without SmartTag service UUIDs = phone */
         fp->device_type = BLE_DEV_SAMSUNG_PHONE;
-    } else if (has_fastpair_svc || company_id == GOOGLE_COMPANY_ID) {
-        fp->device_type = BLE_DEV_GOOGLE_FINDMY;
-        fp->is_tracker = (mfr_data_len <= 12);
+    } else if (has_fastpair_svc) {
+        fp->device_type = BLE_DEV_UNKNOWN;
+        fp->is_tracker = false;
+        strncpy(fp->class_reason, "uuid16:0xFE2C", sizeof(fp->class_reason) - 1);
     } else if (has_hid_svc) {
         fp->device_type = BLE_DEV_BLE_HID;
         strncpy(fp->class_reason, "uuid16:0x1812", sizeof(fp->class_reason) - 1);
@@ -804,6 +856,21 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
             fp->device_type = BLE_DEV_VENUE_BEACON;
             fp->is_tracker = false;
             strncpy(fp->class_reason, "name:venue_beacon", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_chipolo(local_name)) {
+            fp->device_type = BLE_DEV_CHIPOLO;
+            fp->is_tracker = true;
+            strncpy(fp->class_reason, "name:chipolo", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_pebblebee(local_name)) {
+            fp->device_type = BLE_DEV_PEBBLEBEE;
+            fp->is_tracker = true;
+            strncpy(fp->class_reason, "name:pebblebee", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_ble_tracker(local_name)) {
+            fp->device_type = BLE_DEV_TRACKER_GENERIC;
+            fp->is_tracker = true;
+            strncpy(fp->class_reason, "name:ble_tracker", sizeof(fp->class_reason) - 1);
         }
         /* Explicit camera-like names remain suspect camera evidence. */
         else if (strncmp(local_name, "HIDVCAM", 6) == 0 ||

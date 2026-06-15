@@ -621,7 +621,7 @@ def _uplink_time_sync_health(info: dict | None) -> str:
 
 
 _EXPECTED_BACKEND_VERSION = "0.64.38-badge-live"
-_EXPECTED_FIRMWARE_VERSION = "0.64.43-privacy-signals"
+_EXPECTED_FIRMWARE_VERSION = "0.64.44-ble-catalog"
 _EXPECTED_BADGE_FIRMWARE_VERSION = "0.64.41-badge-radio-fix"
 
 
