@@ -39,6 +39,7 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     CONFERENCE_CAMERA("Conference Cameras", "\uD83C\uDFA5", 2),
     VIDEO_INTERCOM("Video Intercoms", "\uD83D\uDEAA", 2),
     VOICE_RECORDER("Voice Recorders", "\uD83C\uDFA4", 2),
+    REMOTE_LISTENING("Possible Listening", "\uD83C\uDFA7", 2),
     SMART_PEN("Smart Pens", "\u270F\uFE0F", 2),
     PAYMENT_READER("Payment Readers", "\uD83D\uDCB3", 2),
     // Threat level 1 — nearby devices
@@ -340,6 +341,8 @@ class GlassesDetector @Inject constructor(
             deviceType.contains("Apple Continuity", ignoreCase = true) -> PrivacyCategory.APPLE_CONTINUITY
             deviceType.contains("AirDrop", ignoreCase = true) -> PrivacyCategory.APPLE_CONTINUITY
             deviceType.contains("Handoff", ignoreCase = true) -> PrivacyCategory.APPLE_CONTINUITY
+            deviceType.contains("Remote Listening", ignoreCase = true) -> PrivacyCategory.REMOTE_LISTENING
+            deviceType.contains("Possible Listening", ignoreCase = true) -> PrivacyCategory.REMOTE_LISTENING
             // ALPR / license plate readers
             deviceType.contains("ALPR", ignoreCase = true) -> PrivacyCategory.ALPR_CAMERA
             deviceType.contains("Plate Reader", ignoreCase = true) -> PrivacyCategory.ALPR_CAMERA
@@ -483,6 +486,38 @@ class GlassesDetector @Inject constructor(
                 return "${hex.substring(0, 2)}:${hex.substring(2, 4)}:${hex.substring(4, 6)}"
             }
             return null
+        }
+
+        private fun appleRemoteListeningMatch(
+            apple: AppleContinuityDecoder.AppleContinuity?,
+            rssi: Int,
+        ): Triple<Float, String, String>? {
+            val flags = apple?.flagsByte ?: return null
+            val airpodsConnected = flags and BleSignatures.APPLE_FLAG_AIRPODS_IN != 0
+            if (!airpodsConnected) return null
+
+            val activity = apple.activity
+            val activeAudioPath = activity in setOf(1, 2, 3)
+            val close = rssi >= -60
+            if (!activeAudioPath && !close) return null
+
+            val activityLabel = when (activity) {
+                1 -> "audio"
+                2 -> "phone"
+                3 -> "video"
+                else -> null
+            }
+            val confidence = when {
+                activeAudioPath && close -> 0.82f
+                activeAudioPath -> 0.74f
+                else -> 0.62f
+            }
+            val detail = if (activityLabel != null) {
+                "AirPods connected + $activityLabel activity"
+            } else {
+                "AirPods connected nearby"
+            }
+            return Triple(confidence, detail, "apple_remote_listening")
         }
     }
 
@@ -1273,6 +1308,17 @@ class GlassesDetector @Inject constructor(
             val appleData = mfrData.get(0x004C) // Apple Inc. Company ID
             if (appleData != null && appleData.size >= 3) {
                 val appleType = appleData[0].toInt() and 0xFF
+                val appleContinuity = AppleContinuityDecoder.decode(appleData)
+                appleRemoteListeningMatch(appleContinuity, rssi)?.let { match ->
+                    val (confidence, detail, reason) = match
+                    if (confidence > bestConf) {
+                        bestConf = confidence
+                        bestMfr = "Apple"
+                        bestType = "Possible Remote Listening"
+                        bestCamera = false
+                        bestReason = "$reason:$detail"
+                    }
+                }
                 if (appleType == 0x12 && appleData.size >= 3) {
                     // FindMy type 0x12 — but only flag as tracker if it looks like
                     // an actual AirTag/accessory. Check length byte = 0x19 (25 bytes)
@@ -1402,6 +1448,10 @@ class GlassesDetector @Inject constructor(
 
         // Assign category based on device type
         val category = categorize(bestType)
+        if (category == PrivacyCategory.REMOTE_LISTENING) {
+            parsedDetails["Listening Signal"] = bestReason.substringAfter(":", "AirPods connected")
+            parsedDetails["Limit"] = "Possible path only; BLE cannot confirm Live Listen or intent"
+        }
 
         val now = Instant.now()
         // Tag whether this is YOUR device or someone else's

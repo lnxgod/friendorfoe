@@ -246,6 +246,7 @@ class PrivacyViewModel @Inject constructor(
             source?.let { put("source", it) }
             if (sensorCount > 0) put("sensors", sensorCount.toString())
             if (macRotations > 0) put("mac_rotations", macRotations.toString())
+            bleActivity?.let { put("apple_activity", it.toString()) }
             if (privacyEvidence.isNotEmpty()) put("evidence", privacyEvidence.joinToString("; ") { it.toString() })
             appleContinuity?.let { put("apple_continuity", it.toString()) }
         }
@@ -295,6 +296,7 @@ class PrivacyViewModel @Inject constructor(
         "BLE_HID" -> PrivacyCategory.BLE_HID
         "AURACAST" -> PrivacyCategory.AURACAST
         "APPLE_CONTINUITY" -> PrivacyCategory.APPLE_CONTINUITY
+        "REMOTE_LISTENING" -> PrivacyCategory.REMOTE_LISTENING
         "FLOCK_ALPR" -> PrivacyCategory.ALPR_CAMERA
         "CAMERA_NEAR" -> PrivacyCategory.SURVEILLANCE_CAMERA
         "SKIMMER" -> PrivacyCategory.ATTACK_TOOL
@@ -417,6 +419,7 @@ private fun BadgeThreatEntity.categoryForBadgeEntity(): PrivacyCategory {
         cat == "EVENT" || catCode == "EVT" -> PrivacyCategory.EVENT_BADGE
         cat == "LOCK" || catCode == "LOCK" -> PrivacyCategory.MOBILE_KEY_LOCK
         cat == "HID" || catCode == "HID" -> PrivacyCategory.BLE_HID
+        cat == "LISTEN" || catCode == "LIS" -> PrivacyCategory.REMOTE_LISTENING
         cat == "AUDIO" || catCode == "AUD" -> PrivacyCategory.AURACAST
         else -> PrivacyCategory.INFORMATIONAL
     }
@@ -436,6 +439,7 @@ private fun BadgeThreatEntity.badgeDeviceType(): String {
         cat == "EVENT" || catCode == "EVT" -> "Event Badge"
         cat == "LOCK" || catCode == "LOCK" -> "Mobile Key Lock"
         cat == "HID" || catCode == "HID" -> "BLE Input Device"
+        cat == "LISTEN" || catCode == "LIS" -> "Possible Listening"
         cat == "AUDIO" || catCode == "AUD" -> "Auracast / LE Audio"
         label.isNotBlank() -> label
         else -> "Badge Privacy Signal"

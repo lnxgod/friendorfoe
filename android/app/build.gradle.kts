@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 88
-        versionName = "0.64.44-ble-catalog"
+        versionCode = 89
+        versionName = "0.64.45-privacy-listening"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

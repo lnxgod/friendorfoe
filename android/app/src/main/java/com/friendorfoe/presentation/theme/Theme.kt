@@ -36,36 +36,40 @@ private val AppTypography = Typography(
 
 private val AppShapes = Shapes(
     small = RoundedCornerShape(8.dp),
-    medium = RoundedCornerShape(12.dp),
-    large = RoundedCornerShape(16.dp),
-    extraLarge = RoundedCornerShape(24.dp),
+    medium = RoundedCornerShape(8.dp),
+    large = RoundedCornerShape(12.dp),
+    extraLarge = RoundedCornerShape(16.dp),
 )
 
-// Color scheme inspired by aviation/radar aesthetics
+// Color scheme tuned for a calm aviation/privacy operations console.
 private val DarkColorScheme = darkColorScheme(
-    primary = Color(0xFF4FC3F7),        // Light blue - sky/aviation
-    secondary = Color(0xFF81C784),       // Green - friendly/commercial
-    tertiary = Color(0xFFFFB74D),        // Amber - general aviation
-    background = Color(0xFF121212),
-    surface = Color(0xFF1E1E1E),
-    error = Color(0xFFEF5350),           // Red - military/alert
-    onPrimary = Color.Black,
-    onSecondary = Color.Black,
-    onBackground = Color.White,
-    onSurface = Color.White
+    primary = Color(0xFF7DD3FC),
+    secondary = Color(0xFF86EFAC),
+    tertiary = Color(0xFFFBBF24),
+    background = Color(0xFF0B1117),
+    surface = Color(0xFF101820),
+    surfaceVariant = Color(0xFF263241),
+    error = Color(0xFFF87171),
+    onPrimary = Color(0xFF06131D),
+    onSecondary = Color(0xFF06160B),
+    onBackground = Color(0xFFE5EEF7),
+    onSurface = Color(0xFFE5EEF7),
+    onSurfaceVariant = Color(0xFFB7C4D2),
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Color(0xFF0288D1),
-    secondary = Color(0xFF388E3C),
-    tertiary = Color(0xFFF57C00),
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
+    primary = Color(0xFF0369A1),
+    secondary = Color(0xFF2E7D32),
+    tertiary = Color(0xFFB45309),
+    background = Color(0xFFF6F8FB),
+    surface = Color(0xFFFFFFFF),
+    surfaceVariant = Color(0xFFE3EAF2),
     error = Color(0xFFD32F2F),
     onPrimary = Color.White,
     onSecondary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F)
+    onBackground = Color(0xFF17202A),
+    onSurface = Color(0xFF17202A),
+    onSurfaceVariant = Color(0xFF566575),
 )
 
 @Composable

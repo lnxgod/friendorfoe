@@ -455,6 +455,7 @@ class EnrichedDevice:
     ble_apple_auth: str = ""        # Apple auth tag hex (entity linking)
     ble_svc_uuids: str = ""         # Comma-separated service UUIDs (hex)
     ble_apple_flags: int = 0        # Apple Nearby Info data-flags byte
+    ble_activity: int = 0           # Apple activity code (0=idle, 1=audio, 2=phone, 3=video)
 
 
 # ---------------------------------------------------------------------------
@@ -582,6 +583,7 @@ class BLEEnricher:
                 ble_ad_type_count=kwargs.get("ble_ad_type_count", 0) or 0,
                 ble_payload_len=kwargs.get("ble_payload_len", 0) or 0,
                 ble_addr_type=kwargs.get("ble_addr_type", 0) or 0,
+                ble_activity=kwargs.get("ble_activity", 0) or 0,
             )
 
         # Update BLE fields if provided (may arrive after initial creation)
@@ -631,6 +633,12 @@ class BLEEnricher:
         flags = kwargs.get("ble_apple_flags")
         if flags and flags > 0:
             dev.ble_apple_flags = flags
+        activity = kwargs.get("ble_activity")
+        if activity is not None:
+            try:
+                dev.ble_activity = int(activity)
+            except (TypeError, ValueError):
+                pass
 
     # Apple Continuity sub-type → descriptive label.
     # NOTE 2026-04-16: Per the furiousMAC reverse-engineering of Nearby Info
@@ -698,7 +706,10 @@ class BLEEnricher:
         state = self._APPLE_STATE_INFO.get(dev.ble_apple_type)
         if not state:
             return None
-        return dict(state)  # Return a copy
+        result = dict(state)  # Return a copy
+        if dev.ble_activity:
+            result["activity_hint"] = {1: "audio", 2: "phone", 3: "video"}.get(dev.ble_activity)
+        return result
 
     def _infer_device_category(self, dev: EnrichedDevice) -> str:
         """Infer device category from behavior when type is Unknown.
@@ -1035,6 +1046,7 @@ class BLEEnricher:
                 "ble_addr_type": dev.ble_addr_type or None,
                 "ble_svc_uuids": dev.ble_svc_uuids or None,
                 "ble_apple_flags": dev.ble_apple_flags or None,
+                "ble_activity": dev.ble_activity or None,
                 "apple_state": self._decode_apple_state(dev),
             }
 

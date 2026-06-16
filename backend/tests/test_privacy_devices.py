@@ -68,6 +68,60 @@ def test_apple_continuity_is_sanitized_and_informational():
     assert "auth_tag" not in enriched["apple_continuity"]
 
 
+def test_apple_airpods_connected_audio_promotes_remote_listening_kind():
+    entry = {
+        "device_type": "Apple Device",
+        "manufacturer": "Apple",
+        "current_rssi": -56,
+        "ble_apple_type": 0x10,
+        "apple_continuity": {
+            "activity": "audio",
+            "flags": ["airpods_connected", "screen_on"],
+            "remote_listening": {
+                "label": "Possible Apple remote listening path",
+                "risk_hint": "medium",
+                "confidence": 0.72,
+                "signals": ["airpods_connected", "apple_activity_audio"],
+                "limitations": [
+                    "Passive BLE cannot confirm Live Listen, microphone use, audio content, or intent."
+                ],
+            },
+        },
+    }
+
+    enriched = classify_privacy_device(entry)
+
+    assert enriched["privacy_kind"] == "REMOTE_LISTENING"
+    assert enriched["risk_level"] == "high"
+    assert enriched["display_label"] == "POSSIBLE LISTENING"
+    assert "AirPods connected" in enriched["display_detail"]
+    assert any(item["field"] == "remote_listening" for item in enriched["evidence"])
+
+
+def test_airpods_connected_without_activity_or_close_rssi_stays_informational():
+    entry = {
+        "device_type": "Apple Device",
+        "manufacturer": "Apple",
+        "current_rssi": -76,
+        "ble_apple_type": 0x10,
+        "apple_continuity": {
+            "activity": "idle",
+            "flags": ["airpods_connected"],
+            "remote_listening": {
+                "label": "Apple AirPods connection nearby",
+                "risk_hint": "low",
+                "confidence": 0.48,
+                "signals": ["airpods_connected"],
+            },
+        },
+    }
+
+    enriched = classify_privacy_device(entry)
+
+    assert enriched["privacy_kind"] == "APPLE_CONTINUITY"
+    assert enriched["risk_level"] == "info"
+
+
 def test_findmy_remains_tracker_privacy_kind():
     enriched = classify_privacy_device({
         "device_type": "FindMy Accessory",

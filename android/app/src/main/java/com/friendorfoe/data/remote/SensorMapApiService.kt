@@ -189,6 +189,7 @@ data class LivePrivacyDeviceDto(
     @SerializedName("ble_company_id") val bleCompanyId: Int? = null,
     @SerializedName("ble_apple_type") val bleAppleType: Int? = null,
     @SerializedName("ble_apple_flags") val bleAppleFlags: Int? = null,
+    @SerializedName("ble_activity") val bleActivity: Int? = null,
     @SerializedName("ble_svc_uuids") val bleSvcUuids: String? = null,
     @SerializedName("privacy_kind") val privacyKind: String? = null,
     @SerializedName("risk_level") val riskLevel: String? = null,

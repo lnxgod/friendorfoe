@@ -14,6 +14,7 @@ from app.services.privacy_ble_signatures import first_privacy_ble_service_match
 
 
 TRACKER_KIND = "TRACKER_NEAR"
+REMOTE_LISTENING_KIND = "REMOTE_LISTENING"
 
 
 def _text_blob(entry: dict[str, Any]) -> str:
@@ -48,6 +49,8 @@ def _risk_for_kind(kind: str, rssi: int | None) -> str:
         return "high" if close else "medium"
     if kind == "WIFI_ATTACK_TOOL":
         return "high" if close else "medium"
+    if kind == REMOTE_LISTENING_KIND:
+        return "high" if close else "medium"
     if kind == "TRACKER_NEAR":
         return "high" if close else "medium"
     if kind == "MOBILE_KEY_LOCK":
@@ -74,6 +77,7 @@ def _display_label_for_kind(kind: str) -> str:
         "BLE_HID": "HID NEAR",
         "AURACAST": "AURACAST",
         "APPLE_CONTINUITY": "APPLE CONTINUITY",
+        REMOTE_LISTENING_KIND: "POSSIBLE LISTENING",
         "WIFI_ATTACK_TOOL": "WIFI TOOL",
     }.get(kind, "PRIVACY SIGNAL")
 
@@ -142,6 +146,71 @@ def apple_continuity_subtypes(entry: dict[str, Any]) -> list[str]:
     return deduped
 
 
+def apple_remote_listening_hint(
+    entry: dict[str, Any],
+    rssi: int | None = None,
+) -> dict[str, Any] | None:
+    raw = sanitize_apple_continuity(entry.get("apple_continuity"))
+    if not isinstance(raw, dict):
+        return None
+
+    hint = raw.get("remote_listening")
+    if not isinstance(hint, dict):
+        flags = raw.get("flags")
+        activity = raw.get("activity")
+        flags_set = {str(flag) for flag in flags} if isinstance(flags, list) else set()
+        if "airpods_connected" not in flags_set:
+            return None
+        hint = {
+            "label": "Apple AirPods connection nearby",
+            "risk_hint": "low",
+            "confidence": 0.48,
+            "signals": ["airpods_connected"],
+            "evidence": "Apple AirPods connected flag observed",
+        }
+        if activity in {"audio", "phone", "video"}:
+            hint.update({
+                "label": "Possible Apple remote listening path",
+                "risk_hint": "medium",
+                "confidence": 0.72,
+                "signals": ["airpods_connected", f"apple_activity_{activity}"],
+                "evidence": f"Possible remote listening path: AirPods connected with {activity} activity",
+            })
+
+    signals = {str(item) for item in hint.get("signals", []) if item}
+    confidence = float(hint.get("confidence") or 0.0)
+    close = rssi is not None and rssi >= -60
+    active_path = any(
+        signal in signals
+        for signal in ("apple_activity_audio", "apple_activity_phone", "apple_activity_video")
+    )
+
+    # Require more than generic AirPods proximity before creating a privacy alert.
+    if "airpods_connected" not in signals:
+        return None
+    if not active_path and not close:
+        return None
+
+    risk_level = "high" if close and active_path else "medium"
+    detail_bits = []
+    if active_path:
+        detail_bits.append("AirPods connected + audio activity")
+    else:
+        detail_bits.append("AirPods connected")
+    if rssi is not None:
+        detail_bits.append(f"{rssi}dB")
+
+    result = dict(hint)
+    result.update({
+        "privacy_kind": REMOTE_LISTENING_KIND,
+        "risk_level": risk_level,
+        "display_detail": " ".join(detail_bits),
+    })
+    if confidence < 0.55 and close:
+        result["confidence"] = 0.60
+    return result
+
+
 def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     text = _text_blob(entry)
     rssi = _current_rssi(entry)
@@ -150,6 +219,7 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     is_tracker = bool(entry.get("is_tracker"))
     apple_subtypes = apple_continuity_subtypes(entry)
     has_apple = bool(entry.get("apple_continuity") or entry.get("ble_apple_type"))
+    remote_listening = apple_remote_listening_hint(entry, rssi)
 
     if "flock" in text or "alpr" in text:
         kind = "FLOCK_ALPR"
@@ -201,6 +271,8 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
         kind = "VENUE_BEACON"
     elif any(token in text for token in ("auracast", "le audio", "broadcast audio")):
         kind = "AURACAST"
+    elif remote_listening:
+        kind = REMOTE_LISTENING_KIND
     elif has_apple:
         kind = "APPLE_CONTINUITY"
     else:
@@ -209,13 +281,15 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     label = _display_label_for_kind(kind)
     detail_parts = []
     subtype_detail = ", ".join(apple_subtypes[:3])
-    if subtype_detail and kind == "APPLE_CONTINUITY":
+    if remote_listening and kind == REMOTE_LISTENING_KIND:
+        detail_parts.append(str(remote_listening["display_detail"]))
+    elif subtype_detail and kind == "APPLE_CONTINUITY":
         detail_parts.append(subtype_detail)
     elif entry.get("manufacturer") and entry.get("manufacturer") != "Unknown":
         detail_parts.append(str(entry["manufacturer"]))
     elif entry.get("device_type"):
         detail_parts.append(str(entry["device_type"]))
-    if rssi is not None:
+    if rssi is not None and not (remote_listening and kind == REMOTE_LISTENING_KIND):
         detail_parts.append(f"{rssi}dB")
     display_detail = " ".join(detail_parts).strip()
 
@@ -231,10 +305,23 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
         })
     if apple_subtypes:
         evidence.append({"field": "apple_subtypes", "value": apple_subtypes})
+    if remote_listening:
+        evidence.append({
+            "field": "remote_listening",
+            "value": {
+                "confidence": remote_listening.get("confidence"),
+                "signals": remote_listening.get("signals", []),
+                "limitations": remote_listening.get("limitations", []),
+            },
+        })
 
     return {
         "privacy_kind": kind,
-        "risk_level": _risk_for_kind(kind, rssi),
+        "risk_level": (
+            str(remote_listening["risk_level"])
+            if remote_listening and kind == REMOTE_LISTENING_KIND
+            else _risk_for_kind(kind, rssi)
+        ),
         "display_label": label,
         "display_detail": display_detail,
         "evidence": evidence,

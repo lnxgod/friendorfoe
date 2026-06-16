@@ -59,6 +59,8 @@ ACTIVITY_HINTS = {
     3: "video",
 }
 
+REMOTE_LISTENING_ACTIVITIES = {"audio", "phone", "video"}
+
 
 def decode_apple_continuity(
     *,
@@ -123,6 +125,14 @@ def decode_apple_continuity(
         evidence.append("Apple auth tag hash present")
         confidence = max(confidence, 0.72)
 
+    remote_listening = _remote_listening_hint(
+        flags=flags,
+        activity=activity,
+        message_types=message_types,
+    )
+    if remote_listening:
+        evidence.append(str(remote_listening["evidence"]))
+
     return {
         "label": label,
         "confidence": round(confidence, 2),
@@ -135,6 +145,7 @@ def decode_apple_continuity(
         "nearby_actions": sorted(set(nearby_actions)),
         "auth_tag_present": bool(auth_hash),
         "auth_tag_hash": auth_hash,
+        "remote_listening": remote_listening,
         "evidence": evidence,
     }
 
@@ -226,3 +237,62 @@ def _hash_auth_tag(value: str | None) -> str | None:
         or "friendorfoe-local-rf-correlation"
     ).encode("utf-8")
     return hmac.new(key, raw, hashlib.sha256).hexdigest()[:24]
+
+
+def _remote_listening_hint(
+    *,
+    flags: list[str],
+    activity: str | None,
+    message_types: list[str],
+) -> dict[str, Any] | None:
+    """Return a cautious remote-listening hint from passive Apple BLE metadata."""
+
+    airpods_connected = "airpods_connected" in flags
+    airpods_nearby = "AirPods" in message_types
+    active_audio_path = activity in REMOTE_LISTENING_ACTIVITIES
+
+    if not airpods_connected and not airpods_nearby:
+        return None
+
+    signals: list[str] = []
+    if airpods_connected:
+        signals.append("airpods_connected")
+    if airpods_nearby:
+        signals.append("airpods_nearby")
+    if active_audio_path:
+        signals.append(f"apple_activity_{activity}")
+
+    if airpods_connected and active_audio_path:
+        return {
+            "label": "Possible Apple remote listening path",
+            "risk_hint": "medium",
+            "confidence": 0.72,
+            "signals": signals,
+            "evidence": f"Possible remote listening path: AirPods connected with {activity} activity",
+            "limitations": [
+                "Passive BLE cannot confirm Live Listen, microphone use, audio content, or intent.",
+            ],
+        }
+
+    if airpods_connected:
+        return {
+            "label": "Apple AirPods connection nearby",
+            "risk_hint": "low",
+            "confidence": 0.48,
+            "signals": signals,
+            "evidence": "Apple AirPods connected flag observed",
+            "limitations": [
+                "AirPods connected is a proximity hint, not proof of room listening.",
+            ],
+        }
+
+    return {
+        "label": "AirPods nearby",
+        "risk_hint": "low",
+        "confidence": 0.35,
+        "signals": signals,
+        "evidence": "AirPods advertisement observed",
+        "limitations": [
+            "AirPods proximity alone does not indicate remote listening.",
+        ],
+    }

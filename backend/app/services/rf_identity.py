@@ -533,6 +533,25 @@ def enrich_rf_evidence(
             brand_source = "apple_continuity"
             brand_confidence = float(apple_continuity.get("confidence") or 0.70)
             vendor_long = "Apple Continuity"
+    apple_remote_listening = (
+        apple_continuity.get("remote_listening")
+        if isinstance(apple_continuity, dict)
+        else None
+    )
+    apple_remote_signals = (
+        set(str(item) for item in apple_remote_listening.get("signals", []))
+        if isinstance(apple_remote_listening, dict)
+        else set()
+    )
+    apple_remote_active = any(
+        signal in apple_remote_signals
+        for signal in ("apple_activity_audio", "apple_activity_phone", "apple_activity_video")
+    )
+    apple_remote_confidence = (
+        float(apple_remote_listening.get("confidence") or 0.0)
+        if isinstance(apple_remote_listening, dict)
+        else 0.0
+    )
 
     if ble_service_hint:
         uuid_hex = str(ble_service_hint["uuid16_hex"])
@@ -592,6 +611,9 @@ def enrich_rf_evidence(
         evidence.append(f"Scanner class label: {mfr}")
 
     device_class, device_class_confidence = _device_class_from_name(ble_name, class_reason)
+    if not device_class and apple_remote_active and apple_remote_confidence >= 0.55:
+        device_class = "possible_remote_listening"
+        device_class_confidence = apple_remote_confidence
     if not device_class:
         reason_l = (class_reason or "").lower()
         if "attack_tool:" in reason_l:
@@ -701,6 +723,10 @@ def enrich_rf_evidence(
         device_family = "wifi_attack_tool"
         family_source = "device_class"
         family_confidence = float(device_class_confidence or 0.75)
+    elif device_class == "possible_remote_listening":
+        device_family = "apple_audio"
+        family_source = "apple_continuity"
+        family_confidence = float(device_class_confidence or 0.65)
     elif device_class in ("suspect_camera", "surveillance_camera"):
         device_family = "camera_or_video"
         family_source = "device_class"
@@ -869,6 +895,11 @@ def build_detection_explanation(
         primary_reason = "Known infrastructure"
         confidence_band = "known"
         recommended_action = "ignore_known"
+    elif meta.get("device_class") == "possible_remote_listening":
+        primary_reason = "Possible remote listening path"
+        confidence_band = "possible"
+        recommended_action = "inspect_room"
+        limitations.append("Passive BLE cannot confirm Live Listen, microphone use, audio content, or intent")
     elif meta.get("apple_continuity"):
         primary_reason = "Apple Continuity BLE"
         confidence_band = "possible"

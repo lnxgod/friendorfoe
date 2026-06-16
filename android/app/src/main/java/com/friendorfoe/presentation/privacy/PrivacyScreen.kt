@@ -50,6 +50,11 @@ import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.presentation.badge.BadgeAppearanceSection
 import com.friendorfoe.presentation.badge.BadgeDisplayFiltersSection
+import com.friendorfoe.presentation.components.FofActionRow
+import com.friendorfoe.presentation.components.FofEmptyState
+import com.friendorfoe.presentation.components.FofSection
+import com.friendorfoe.presentation.components.FofStatusStrip
+import com.friendorfoe.presentation.components.FofTone
 
 /** Section group definition for threat-level grouping */
 private data class SectionGroup(
@@ -102,7 +107,8 @@ fun PrivacyScreen(
             PrivacyCategory.MOBILE_KEY_LOCK,
             PrivacyCategory.BABY_MONITOR, PrivacyCategory.THERMAL_CAMERA,
             PrivacyCategory.CONFERENCE_CAMERA, PrivacyCategory.VIDEO_INTERCOM,
-            PrivacyCategory.VOICE_RECORDER, PrivacyCategory.SMART_PEN,
+            PrivacyCategory.VOICE_RECORDER, PrivacyCategory.REMOTE_LISTENING,
+            PrivacyCategory.SMART_PEN,
             PrivacyCategory.PAYMENT_READER,
             PrivacyCategory.SMART_SPEAKER, PrivacyCategory.SMART_HOME_HUB,
             PrivacyCategory.GPS_TRACKER, PrivacyCategory.OBD_TRACKER,
@@ -125,88 +131,40 @@ fun PrivacyScreen(
         // WiFi anomaly banner (Pwnagotchi, evil twin, karma attack)
         if (wifiAnomalies.isNotEmpty()) {
             val worst = wifiAnomalies.maxByOrNull { it.threatLevel } ?: wifiAnomalies.first()
-            val (emoji, title) = when (worst.type) {
-                "pwnagotchi"   -> "\u26A0\uFE0F" to "Pwnagotchi Detected!"
-                "evil_twin"    -> "\uD83D\uDEA8" to "Evil Twin AP Detected!"
-                "karma_attack" -> "\uD83D\uDEA8" to "Karma Attack Detected!"
-                "rogue_ap"     -> "\u26A0\uFE0F" to "Rogue AP Detected!"
-                else           -> "\u26A0\uFE0F" to "WiFi Anomaly"
+            val title = when (worst.type) {
+                "pwnagotchi" -> "Pwnagotchi detected"
+                "evil_twin" -> "Evil twin AP detected"
+                "karma_attack" -> "Karma attack detected"
+                "rogue_ap" -> "Rogue AP detected"
+                else -> "WiFi anomaly"
             }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFFD32F2F).copy(alpha = 0.15f))
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(text = emoji, modifier = Modifier.width(28.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFD32F2F)
-                    )
-                    Text(
-                        text = worst.details,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+            FofStatusStrip(
+                label = "WIFI",
+                title = title,
+                detail = worst.details,
+                tone = FofTone.Danger
+            )
         }
 
         // Ultrasonic beacon alert banner (high priority, above everything)
         if (ultrasonicAlerts.isNotEmpty()) {
             val alert = ultrasonicAlerts.last()
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFFD32F2F).copy(alpha = 0.15f))
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(text = "\uD83D\uDD0A", modifier = Modifier.width(28.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Ultrasonic Beacon Detected!",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFD32F2F)
-                    )
-                    Text(
-                        text = "${"%.0f".format(alert.frequencyHz)} Hz \u2022 SNR ${"%.1f".format(alert.snrDb)} dB \u2022 ${alert.persistenceFrames} frames",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+            FofStatusStrip(
+                label = "ULTRA",
+                title = "Ultrasonic beacon detected",
+                detail = "${"%.0f".format(alert.frequencyHz)} Hz | SNR ${"%.1f".format(alert.snrDb)} dB | ${alert.persistenceFrames} frames",
+                tone = FofTone.Danger
+            )
         }
 
         if (stalkerAlerts.isNotEmpty()) {
             val alert = stalkerAlerts.maxByOrNull { it.threatLevel } ?: stalkerAlerts.first()
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFFD32F2F).copy(alpha = 0.15f))
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(text = "\uD83D\uDCCD", modifier = Modifier.width(28.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "BLE Follower Alert",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFD32F2F)
-                    )
-                    Text(
-                        text = "${alert.device.deviceName ?: alert.device.deviceType ?: alert.device.mac} appears ${alert.reason}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+            FofStatusStrip(
+                label = "BLE",
+                title = "Follower alert",
+                detail = "${alert.device.deviceName ?: alert.device.deviceType ?: alert.device.mac} appears ${alert.reason}",
+                tone = FofTone.Danger
+            )
         }
 
         BadgeUsbStatusRow(
@@ -247,63 +205,24 @@ fun PrivacyScreen(
             onNavigateToIrCameraScan = onNavigateToIrCameraScan
         )
 
-        // Status bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    if (threatCount > 0) MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
-                    else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-                )
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = if (threatCount > 0) "\uD83D\uDEA8" else "\uD83D\uDD12",
-                modifier = Modifier.width(28.dp)
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = if (threatCount > 0) "Privacy Threats Detected"
-                           else "Privacy Scanner Active",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = if (threatCount > 0) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "$totalCount device${if (totalCount != 1) "s" else ""} detected" +
-                           if (threatCount > 0) " \u2022 $threatCount threat${if (threatCount != 1) "s" else ""}" else "",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
+        FofStatusStrip(
+            label = "SCAN",
+            title = if (threatCount > 0) "Privacy threats detected" else "Privacy scanner active",
+            detail = "$totalCount device${if (totalCount != 1) "s" else ""} detected" +
+                if (threatCount > 0) " | $threatCount threat${if (threatCount != 1) "s" else ""}" else "",
+            tone = if (threatCount > 0) FofTone.Danger else FofTone.Primary
+        )
 
         if (categorized.isEmpty()) {
             // Empty state
-            Column(
+            FofEmptyState(
+                title = "No privacy devices detected",
+                detail = "Scanning for smart glasses, cameras, trackers, speakers, locks, and other nearby devices.",
+                label = "PRIVACY",
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(text = "\uD83D\uDD12", style = MaterialTheme.typography.displaySmall)
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "No privacy devices detected",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Scanning for smart glasses, cameras, trackers,\nspeakers, locks, and other devices nearby",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
-            }
+                    .padding(32.dp)
+            )
         } else {
             // Sectioned category tree
             LazyColumn(modifier = Modifier.fillMaxSize()) {
@@ -408,40 +327,14 @@ fun PrivacyScreen(
 private fun BackendOnlyPausedRow(
     onUsePhoneScanner: () -> Unit
 ) {
-    val accent = Color(0xFF1565C0)
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(accent.copy(alpha = 0.10f))
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = "PHONE",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Bold,
-            color = accent,
-            modifier = Modifier.width(56.dp)
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "Local privacy scan paused",
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = "Backend-only mode is on; badge/API feeds still work.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        TextButton(onClick = onUsePhoneScanner) {
-            Text("Use Phone")
-        }
-    }
+    FofStatusStrip(
+        label = "PHONE",
+        title = "Local privacy scan paused",
+        detail = "Backend-only mode is on; badge/API feeds still work.",
+        tone = FofTone.Primary,
+        actionLabel = "Use Phone",
+        onAction = onUsePhoneScanner
+    )
 }
 
 @Composable
@@ -449,35 +342,24 @@ private fun SweepToolsRow(
     onNavigateToEmfSweep: (() -> Unit)?,
     onNavigateToIrCameraScan: (() -> Unit)?
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f))
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically
+    FofSection(
+        title = "Sweep Tools",
+        subtitle = "Run close-range checks when a signal needs a second look.",
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        Text(
-            text = "Sweep",
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(56.dp)
-        )
-        TextButton(
-            onClick = { onNavigateToEmfSweep?.invoke() },
+        FofActionRow(
+            title = "EMF Sweep",
+            description = "Magnetometer check for nearby electronics",
             enabled = onNavigateToEmfSweep != null,
-            modifier = Modifier.weight(1f)
-        ) {
-            Text("EMF")
-        }
-        TextButton(
-            onClick = { onNavigateToIrCameraScan?.invoke() },
+            onClick = onNavigateToEmfSweep
+        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        FofActionRow(
+            title = "IR Camera Scan",
+            description = "Front-camera scan for active IR light sources",
             enabled = onNavigateToIrCameraScan != null,
-            modifier = Modifier.weight(1f)
-        ) {
-            Text("IR Camera")
-        }
+            onClick = onNavigateToIrCameraScan
+        )
     }
 }
 
@@ -490,16 +372,6 @@ private fun BadgeUsbStatusRow(
         state.status == BadgeUsbStatus.AP_CONNECTED ||
         state.status == BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED ||
         state.status == BadgeUsbStatus.BLE_CONNECTED
-    val accent = when (state.status) {
-        BadgeUsbStatus.CONNECTED,
-        BadgeUsbStatus.AP_CONNECTED,
-        BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
-        BadgeUsbStatus.BLE_CONNECTED -> Color(0xFF2E7D32)
-        BadgeUsbStatus.CONNECTING -> MaterialTheme.colorScheme.primary
-        BadgeUsbStatus.PERMISSION_NEEDED -> Color(0xFF1565C0)
-        BadgeUsbStatus.ERROR -> MaterialTheme.colorScheme.error
-        BadgeUsbStatus.DISCONNECTED -> MaterialTheme.colorScheme.outline
-    }
     val counts = state.controlStatus?.counts
     val summary = if (counts != null) {
         "DRN ${counts.drone}  META ${counts.meta}  TAG ${counts.tracker}  WIFI ${counts.wifiAnomaly}"
@@ -528,39 +400,24 @@ private fun BadgeUsbStatusRow(
         BadgeUsbStatus.BLE_CONNECTED -> "BLE badge live privacy feed"
         else -> state.message
     }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onAction)
-            .background(accent.copy(alpha = if (connected) 0.10f else 0.06f))
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = transportLabel,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
-            color = accent,
-            modifier = Modifier.width(72.dp)
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = headline,
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = if (scannerSummary.isNotBlank()) "$summary  |  $scannerSummary" else summary,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
+    val tone = when (state.status) {
+        BadgeUsbStatus.CONNECTED,
+        BadgeUsbStatus.AP_CONNECTED,
+        BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
+        BadgeUsbStatus.BLE_CONNECTED -> FofTone.Success
+        BadgeUsbStatus.CONNECTING,
+        BadgeUsbStatus.PERMISSION_NEEDED -> FofTone.Primary
+        BadgeUsbStatus.ERROR -> FofTone.Danger
+        BadgeUsbStatus.DISCONNECTED -> FofTone.Neutral
     }
+    FofStatusStrip(
+        label = transportLabel.uppercase().take(8),
+        title = headline,
+        detail = if (scannerSummary.isNotBlank()) "$summary  |  $scannerSummary" else summary,
+        tone = tone,
+        actionLabel = if (connected) "Refresh" else "Connect",
+        onAction = onAction
+    )
 }
 
 @Composable

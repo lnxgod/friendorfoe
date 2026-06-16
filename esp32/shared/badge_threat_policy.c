@@ -235,6 +235,27 @@ static bool text_mentions_auracast(const char *text)
            contains_nocase(text, "broadcast audio");
 }
 
+static bool apple_activity_is_audio_path(uint8_t activity)
+{
+    return activity == 1 || activity == 2 || activity == 3;
+}
+
+static bool detection_is_apple_remote_listening(const drone_detection_t *det)
+{
+    if (!det || det->source != DETECTION_SRC_BLE_FINGERPRINT) {
+        return false;
+    }
+    if (det->ble_company_id != 0x004C ||
+        (det->ble_apple_type != 0x10 && det->ble_apple_type != 0x0F)) {
+        return false;
+    }
+    if ((det->ble_apple_flags & 0x01) == 0) {
+        return false;
+    }
+    return apple_activity_is_audio_path(det->ble_apple_activity) ||
+           (det->rssi < 0 && det->rssi >= -60);
+}
+
 static bool text_mentions_ambient_demo_ssid(const char *text)
 {
     return contains_nocase(text, "teamcharitycase") ||
@@ -365,6 +386,7 @@ static int category_priority(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_CAMERA:    return 38;
         case BADGE_THREAT_CATEGORY_LOCK:      return 36;
         case BADGE_THREAT_CATEGORY_HID:       return 32;
+        case BADGE_THREAT_CATEGORY_LISTENING: return 34;
         case BADGE_THREAT_CATEGORY_WIFI:      return 30;
         case BADGE_THREAT_CATEGORY_EVENT_BADGE: return 24;
         case BADGE_THREAT_CATEGORY_TAG_CLOSE: return 20;
@@ -821,6 +843,15 @@ static void copy_ble_detail(char *out, const drone_detection_t *det)
         snprintf(detail, sizeof(detail), "broadcast audio");
     } else if (det && contains_nocase(det->class_reason, "ble_audio")) {
         snprintf(detail, sizeof(detail), "broadcast audio");
+    } else if (det && detection_is_apple_remote_listening(det)) {
+        if (apple_activity_is_audio_path(det->ble_apple_activity)) {
+            const char *activity = det->ble_apple_activity == 2 ? "phone" :
+                                   det->ble_apple_activity == 3 ? "video" :
+                                   "audio";
+            snprintf(detail, sizeof(detail), "AirPods %s", activity);
+        } else {
+            snprintf(detail, sizeof(detail), "AirPods nearby");
+        }
     } else if (det && contains_nocase(det->class_reason, "strong BLE near")) {
         snprintf(detail, sizeof(detail), "strong BLE near");
     } else if (det && contains_nocase(det->class_reason, "structured BLE")) {
@@ -1066,6 +1097,10 @@ static void make_event_key(const drone_detection_t *det,
             snprintf(out, out_len, "PRIV:AUDIO:AREA");
             return;
         }
+        if (category == BADGE_THREAT_CATEGORY_LISTENING) {
+            snprintf(out, out_len, "PRIV:LISTEN:APPLE");
+            return;
+        }
         if (category == BADGE_THREAT_CATEGORY_CAMERA ||
             category == BADGE_THREAT_CATEGORY_SKIM ||
             category == BADGE_THREAT_CATEGORY_LOCK ||
@@ -1157,6 +1192,7 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
     const bool mfr_lock = detection_mentions_any(det, text_mentions_mobile_key_lock);
     const bool mfr_hid = detection_mentions_any(det, text_mentions_ble_hid);
     const bool mfr_auracast = detection_mentions_any(det, text_mentions_auracast);
+    const bool apple_remote_listening = detection_is_apple_remote_listening(det);
     const bool mfr_security = text_mentions_security_device(det->manufacturer) ||
                               text_mentions_security_device(det->model) ||
                               text_mentions_security_device(det->ble_name) ||
@@ -1315,6 +1351,20 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
         event->base_score = 68.0f;
         event->evidence_quality = 7;
         (void)weak_meta;
+    } else if (apple_remote_listening) {
+        event->cls = BADGE_THREAT_OTHER;
+        event->category = BADGE_THREAT_CATEGORY_LISTENING;
+        copy_label(event->label, "Possible Listening");
+        copy_ble_detail(event->detail, det);
+        if (event->detail[0] == '\0') {
+            copy_detail(event->detail, "AirPods signal");
+        }
+        event->base_score = apple_activity_is_audio_path(det->ble_apple_activity)
+            ? 56.0f
+            : 44.0f;
+        event->evidence_quality = apple_activity_is_audio_path(det->ble_apple_activity)
+            ? 6
+            : 5;
     } else if (det->source == DETECTION_SRC_BLE_FINGERPRINT &&
                (mfr_skimmer || mfr_camera || mfr_hidden_camera ||
                 mfr_event_badge || mfr_beacon || mfr_lock ||
@@ -2113,6 +2163,7 @@ const char *badge_threat_category_code(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_LOCK:      return "LOCK";
         case BADGE_THREAT_CATEGORY_HID:       return "HID";
         case BADGE_THREAT_CATEGORY_AUDIO:     return "AUD";
+        case BADGE_THREAT_CATEGORY_LISTENING: return "LIS";
         case BADGE_THREAT_CATEGORY_WIFI:      return "WIFI";
         case BADGE_THREAT_CATEGORY_TAG_CLOSE: return "TAG";
         case BADGE_THREAT_CATEGORY_PRIVACY:   return "PRV";
@@ -2134,6 +2185,7 @@ const char *badge_threat_category_name(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_LOCK:      return "LOCK";
         case BADGE_THREAT_CATEGORY_HID:       return "HID";
         case BADGE_THREAT_CATEGORY_AUDIO:     return "AUDIO";
+        case BADGE_THREAT_CATEGORY_LISTENING: return "LISTEN";
         case BADGE_THREAT_CATEGORY_WIFI:      return "WIFI";
         case BADGE_THREAT_CATEGORY_TAG_CLOSE: return "TAG";
         case BADGE_THREAT_CATEGORY_PRIVACY:   return "PRIV";
@@ -3017,6 +3069,20 @@ bool badge_threat_format_top_detail(
         return true;
     }
 
+    if (item->category == BADGE_THREAT_CATEGORY_LISTENING) {
+        int8_t rssi = item->rssi < 0 ? item->rssi : item->best_rssi;
+        if (item->detail[0] != '\0' && rssi < 0) {
+            snprintf(out, out_len, "%.24s %ddB", item->detail, rssi);
+        } else if (item->detail[0] != '\0') {
+            snprintf(out, out_len, "%.31s", item->detail);
+        } else if (rssi < 0) {
+            snprintf(out, out_len, "AirPods %ddB", rssi);
+        } else {
+            snprintf(out, out_len, "AirPods connected");
+        }
+        return true;
+    }
+
     return false;
 }
 
@@ -3081,6 +3147,9 @@ static void badge_threat_snapshot_entity_view_title(
             return;
         case BADGE_THREAT_CATEGORY_AUDIO:
             snprintf(out, out_len, "AURACAST");
+            return;
+        case BADGE_THREAT_CATEGORY_LISTENING:
+            snprintf(out, out_len, "LISTENING");
             return;
         case BADGE_THREAT_CATEGORY_TAG_CLOSE:
             snprintf(out, out_len, "%s",
@@ -3194,6 +3263,7 @@ badge_threat_display_lane_t badge_threat_snapshot_entity_display_lane(
         item->category == BADGE_THREAT_CATEGORY_LOCK ||
         item->category == BADGE_THREAT_CATEGORY_HID ||
         item->category == BADGE_THREAT_CATEGORY_AUDIO ||
+        item->category == BADGE_THREAT_CATEGORY_LISTENING ||
         item->category == BADGE_THREAT_CATEGORY_FLOCK ||
         item->category == BADGE_THREAT_CATEGORY_PRIVACY) {
         return BADGE_THREAT_DISPLAY_LANE_BLE;

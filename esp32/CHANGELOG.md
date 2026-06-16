@@ -5,6 +5,14 @@ All notable changes to the ESP32 hardware edition of Friend or Foe.
 ## [Unreleased]
 
 ### Changed
+- **Privacy listening firmware bump to `0.64.45-privacy-listening`.**
+  `uplink-s3`, `scanner-s3-combo`, and `scanner-s3-combo-seed` now advertise
+  the listening-awareness release, while the FoF Badge XIAO track moves to
+  `0.64.42-badge-listening`.
+- **Badge AirPods listening awareness.** Badge threat policy now promotes
+  connected AirPods with Apple audio/phone/video activity, or very close
+  connected AirPods, into a `Possible Listening` BLE display row while generic
+  Apple Continuity packets remain hidden.
 - **Production S3 Bluetooth catalog firmware bump to `0.64.44-ble-catalog`.**
   `uplink-s3`, `scanner-s3-combo`, and `scanner-s3-combo-seed` now share
   the new production node version for the expanded BLE tracker catalog while

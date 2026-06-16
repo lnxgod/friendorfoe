@@ -79,6 +79,22 @@ def test_apple_continuity_decodes_tlvs_and_hashes_auth_tags():
     assert decoded["label"] == "Apple Device"
 
 
+def test_apple_continuity_marks_possible_remote_listening_path():
+    decoded = decode_apple_continuity(
+        apple_type=0x10,
+        apple_flags=0x01,
+        apple_activity=1,
+    )
+
+    assert decoded is not None
+    hint = decoded["remote_listening"]
+    assert hint["label"] == "Possible Apple remote listening path"
+    assert hint["risk_hint"] == "medium"
+    assert hint["confidence"] >= 0.7
+    assert "airpods_connected" in hint["signals"]
+    assert "apple_activity_audio" in hint["signals"]
+
+
 def test_empty_apple_flag_does_not_create_fake_apple_evidence():
     assert decode_apple_continuity(apple_flags=0) is None
 

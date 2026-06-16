@@ -620,9 +620,9 @@ def _uplink_time_sync_health(info: dict | None) -> str:
     return "unknown"
 
 
-_EXPECTED_BACKEND_VERSION = "0.64.38-badge-live"
-_EXPECTED_FIRMWARE_VERSION = "0.64.44-ble-catalog"
-_EXPECTED_BADGE_FIRMWARE_VERSION = "0.64.41-badge-radio-fix"
+_EXPECTED_BACKEND_VERSION = "0.64.45-privacy-listening"
+_EXPECTED_FIRMWARE_VERSION = "0.64.45-privacy-listening"
+_EXPECTED_BADGE_FIRMWARE_VERSION = "0.64.42-badge-listening"
 
 
 def _expected_firmware_versions_label() -> str:
@@ -1225,6 +1225,7 @@ async def ingest_drone_detections(
             ble_adv_interval=det.ble_adv_interval,
             ble_svc_uuids=det.ble_svc_uuids,
             ble_apple_flags=ainfo,
+            ble_activity=det.ble_activity,
         )
 
         alerts = _rf_anomaly_detector.process_event(
@@ -1915,6 +1916,7 @@ async def get_live_devices(
             ble_svc_uuids=entry.get("ble_svc_uuids"),
             ble_apple_type=entry.get("ble_apple_type"),
             ble_apple_flags=entry.get("ble_apple_flags"),
+            ble_activity=entry.get("ble_activity"),
         )
         entry.update(_rf_meta_subset(rf_meta))
         privacy_fields = classify_privacy_device(entry)

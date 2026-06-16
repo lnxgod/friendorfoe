@@ -170,6 +170,30 @@ def test_privacy_ble_service_uuids_enrich_identity(service_uuids, brand, device_
     assert any(ref["id"] == "privacy_ble_service_uuid" for ref in meta["reference_sources"])
 
 
+def test_airpods_connected_audio_gets_remote_listening_identity_explanation():
+    meta = enrich_rf_evidence(
+        source="ble_fingerprint",
+        classification="unknown_device",
+        ble_company_id=0x004C,
+        ble_apple_type=0x10,
+        ble_apple_flags=0x01,
+        ble_activity=1,
+    )
+
+    assert str(meta["brand"]).startswith("Apple")
+    assert meta["device_class"] == "possible_remote_listening"
+    assert meta["device_family"] == "apple_audio"
+    assert meta["apple_continuity"]["remote_listening"]["risk_hint"] == "medium"
+
+    explanation = build_detection_explanation(
+        source="ble_fingerprint",
+        classification="unknown_device",
+        rf_meta=meta,
+    )
+    assert explanation["primary_reason"] == "Possible remote listening path"
+    assert explanation["recommended_action"] == "inspect_room"
+
+
 def test_flock_field_oui_adds_alpr_camera_family():
     meta = enrich_rf_evidence(
         source="wifi_oui",

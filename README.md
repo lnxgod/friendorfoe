@@ -9,7 +9,7 @@
 
 Friend or Foe is an open-source **privacy awareness** and **airspace detection** platform for Android and ESP32. It passively scans Bluetooth and WiFi signals around you to detect surveillance devices, tracking beacons, hidden cameras, smart glasses, and drones — then identifies every aircraft overhead using augmented reality. No accounts, no signups, no API keys. Install and go.
 
-> **Live deployment** — current Android **v0.64.43-privacy-signals**, backend **v0.64.38-badge-live**, production S3 firmware **v0.64.43-privacy-signals**, and FoF Badge firmware **v0.64.41-badge-radio-fix**. Production S3 nodes stay on the end-to-end auto-OTA track: backend hosts the latest firmware, uplinks self-update on a 30-min poll, scanners self-recover from bad images via ESP-IDF rollback. Badge setup and recovery start at [docs/badge/README.md](docs/badge/README.md). See [esp32/CHANGELOG.md](esp32/CHANGELOG.md) for firmware history and [CHANGELOG.md](CHANGELOG.md) for backend / Android.
+> **Live deployment** — current Android **v0.64.45-privacy-listening**, backend **v0.64.45-privacy-listening**, production S3 firmware **v0.64.45-privacy-listening**, and FoF Badge firmware **v0.64.42-badge-listening**. Production S3 nodes stay on the end-to-end auto-OTA track: backend hosts the latest firmware, uplinks self-update on a 30-min poll, scanners self-recover from bad images via ESP-IDF rollback. Badge setup and recovery start at [docs/badge/README.md](docs/badge/README.md). See [esp32/CHANGELOG.md](esp32/CHANGELOG.md) for firmware history and [CHANGELOG.md](CHANGELOG.md) for backend / Android.
 
 ### What It Detects
 

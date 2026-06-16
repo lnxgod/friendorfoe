@@ -126,6 +126,8 @@ void test_badge_attack_tool_wifi_inventory_becomes_wifi_row(void);
 void test_badge_privacy_evidence_reason_names_ble_source(void);
 void test_badge_venue_beacons_aggregate_instead_of_flooding(void);
 void test_badge_generic_apple_continuity_does_not_become_lcd_alert(void);
+void test_badge_apple_airpods_audio_promotes_listening_row(void);
+void test_badge_apple_airpods_far_idle_stays_hidden(void);
 void test_badge_close_findmy_tracker_promotes_tracker_near(void);
 void test_badge_generic_drone_without_evidence_is_hidden(void);
 void test_badge_deauth_status_event_gets_wifi_label(void);
@@ -379,6 +381,8 @@ int main(void)
     RUN_TEST(test_badge_privacy_evidence_reason_names_ble_source);
     RUN_TEST(test_badge_venue_beacons_aggregate_instead_of_flooding);
     RUN_TEST(test_badge_generic_apple_continuity_does_not_become_lcd_alert);
+    RUN_TEST(test_badge_apple_airpods_audio_promotes_listening_row);
+    RUN_TEST(test_badge_apple_airpods_far_idle_stays_hidden);
     RUN_TEST(test_badge_close_findmy_tracker_promotes_tracker_near);
     RUN_TEST(test_badge_generic_drone_without_evidence_is_hidden);
     RUN_TEST(test_badge_deauth_status_event_gets_wifi_label);

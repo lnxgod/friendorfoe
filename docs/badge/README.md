@@ -6,10 +6,10 @@ used for walk-up privacy/drone awareness and Android USB-C testing.
 
 ## Current Versions
 
-- Android app: `0.64.43-privacy-signals`
-- Backend: `0.64.38-badge-live`
-- FoF Badge firmware: `0.64.41-badge-radio-fix`
-- Production S3 firmware: `0.64.43-privacy-signals`
+- Android app: `0.64.45-privacy-listening`
+- Backend: `0.64.45-privacy-listening`
+- FoF Badge firmware: `0.64.42-badge-listening`
+- Production S3 firmware: `0.64.45-privacy-listening`
 
 Keep those tracks separate. The badge firmware uses `FOF_BADGE_VARIANT`,
 badge-specific pinning, a Waveshare ST7735 display, USB-C control, local AP
@@ -30,12 +30,15 @@ uplink assigns the active role and scanner profile at runtime.
 
 ## What This Release Tests
 
-`0.64.41-badge-radio-fix` is the current badge radio-fix release, carrying the
-BLE/theme control work forward while keeping the badge track separate from the
-production node redeploy firmware:
+`0.64.42-badge-listening` is the current badge listening-awareness release,
+carrying the BLE/theme control work forward while keeping the badge track
+separate from the production node firmware:
 
 - The badge keeps drone, Meta Glasses, tracker, WiFi attack, and scanner health
   evidence separated into calm top awareness tiles plus BLE/WiFi lower lanes.
+- Apple AirPods Continuity packets with connected AirPods plus audio/phone/video
+  activity, or connected AirPods very close to the badge, show as a cautious
+  `Possible Listening` row instead of generic Apple BLE noise.
 - Android can connect directly over USB-C, continuously poll `FOF_STATUS`, and
   show badge evidence, source, confidence, RSSI, GPS/operator facts, scanner
   health, reset/crash state, stack, heap, and PSRAM diagnostics in Privacy.
@@ -117,7 +120,7 @@ Expected healthy status facts:
 
 - Top-level `recovery_mode` is `normal`.
 - Both scanners are connected and report `scanner-s3-combo-fof_badge`.
-- Uplink and scanners report `0.64.41-badge-radio-fix` after the matching badge
+- Uplink and scanners report `0.64.42-badge-listening` after the matching badge
   images are flashed.
 - `display_policy_hash` is non-zero.
 - Scanner `display_policy_ack_hash` catches up to the uplink policy hash.

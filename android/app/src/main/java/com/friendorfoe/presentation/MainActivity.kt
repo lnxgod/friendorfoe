@@ -13,14 +13,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -31,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -127,18 +129,21 @@ fun FriendOrFoeApp() {
         modifier = Modifier.fillMaxSize(),
         bottomBar = {
             if (showBottomBar) {
-                NavigationBar {
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    tonalElevation = 0.dp
+                ) {
                     // 7 items — Material 3 NavigationBar handles this by
                     // shrinking labels; keeps every top-level destination
                     // one tap away instead of buried in menus.
                     val bottomNavItems = listOf(
                         BottomNavItem("AR",       Screen.ArView.route,    Icons.Default.Visibility),
                         BottomNavItem("Map",      Screen.MapView.route,   Icons.Default.Map),
-                        BottomNavItem("List",     Screen.ListView.route,  Icons.Default.List),
+                        BottomNavItem("List",     Screen.ListView.route,  Icons.AutoMirrored.Filled.List),
                         BottomNavItem("Privacy",  Screen.Privacy.route,   Icons.Default.Shield),
-                        BottomNavItem("Calibrate", Screen.Calibrate.route, Icons.Default.Tune),
+                        BottomNavItem("Cal",      Screen.Calibrate.route, Icons.Default.Tune),
                         BottomNavItem("History",  Screen.History.route,   Icons.Default.History),
-                        BottomNavItem("About",    Screen.About.route,     Icons.Default.Info),
+                        BottomNavItem("Info",     Screen.About.route,     Icons.Default.Info),
                     )
 
                     bottomNavItems.forEach { item ->

@@ -1321,6 +1321,71 @@ void test_badge_generic_apple_continuity_does_not_become_lcd_alert(void)
     TEST_ASSERT_FALSE(badge_threat_classify_detection(&apple, &event));
 }
 
+void test_badge_apple_airpods_audio_promotes_listening_row(void)
+{
+    badge_threat_event_t event;
+    badge_threat_state_t state;
+    badge_threat_snapshot_t snapshot;
+    badge_threat_state_init(&state);
+    drone_detection_t apple = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:APPLE:AIRPODS:AUDIO",
+        "Apple Device",
+        0.70f,
+        -58
+    );
+    apple.ble_company_id = 0x004C;
+    apple.ble_apple_type = 0x10;
+    apple.ble_apple_flags = 0x01;
+    apple.ble_apple_activity = 1;
+    strncpy(apple.class_reason, "apple continuity nearby info",
+            sizeof(apple.class_reason) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&apple, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_OTHER, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_LISTENING, event.category);
+    TEST_ASSERT_EQUAL_STRING("Possible Listening", event.label);
+    TEST_ASSERT_EQUAL_STRING("AirPods audio", event.detail);
+    TEST_ASSERT_EQUAL_STRING("LIS", badge_threat_category_code(event.category));
+    TEST_ASSERT_EQUAL_STRING("LISTEN", badge_threat_category_name(event.category));
+
+    TEST_ASSERT_TRUE(badge_threat_state_ingest(&state, &apple, 1000, NULL));
+    badge_threat_state_snapshot(&state, 1200, &snapshot);
+
+    TEST_ASSERT_EQUAL_INT(1, snapshot.entity_count);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_LISTENING,
+                      snapshot.entities[0].category);
+    TEST_ASSERT_EQUAL_STRING("Possible Listening", snapshot.entities[0].label);
+    TEST_ASSERT_EQUAL_STRING("AirPods audio", snapshot.entities[0].detail);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_BLE,
+                      badge_threat_snapshot_entity_display_lane(&snapshot.entities[0]));
+
+    char detail[56];
+    TEST_ASSERT_TRUE(badge_threat_format_top_detail(
+        &snapshot, &snapshot.entities[0], detail, sizeof(detail)));
+    TEST_ASSERT_EQUAL_STRING("AirPods audio -58dB", detail);
+}
+
+void test_badge_apple_airpods_far_idle_stays_hidden(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t apple = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:APPLE:AIRPODS:IDLE",
+        "Apple Device",
+        0.70f,
+        -76
+    );
+    apple.ble_company_id = 0x004C;
+    apple.ble_apple_type = 0x10;
+    apple.ble_apple_flags = 0x01;
+    apple.ble_apple_activity = 0;
+    strncpy(apple.class_reason, "apple continuity nearby info",
+            sizeof(apple.class_reason) - 1);
+
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&apple, &event));
+}
+
 void test_badge_close_findmy_tracker_promotes_tracker_near(void)
 {
     badge_threat_state_t state;
