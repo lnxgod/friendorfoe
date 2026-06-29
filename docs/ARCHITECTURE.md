@@ -104,7 +104,8 @@ a validated-but-still-crashing image. Both layers are described in
 ## Reproducibility
 
 Each platform has its own build path; full commands in the top-level
-[`../README.md`](../README.md) and [`../CLAUDE.md`](../CLAUDE.md).
+[`../README.md`](../README.md) and [`../AGENTS.md`](../AGENTS.md). The legacy
+[`../CLAUDE.md`](../CLAUDE.md) is retained only for older Claude tooling.
 Native (host-only) tests cover detection policy, SSID patterns, OpenDroneID
 parsing, DJI IE parsing, scanner rollback policy, and fw_auto_check
 decision logic — `cd esp32 && pio test -e test`. Backend tests cover the

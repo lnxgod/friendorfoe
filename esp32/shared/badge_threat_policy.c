@@ -33,6 +33,36 @@ static bool contains_nocase(const char *haystack, const char *needle)
     return false;
 }
 
+static bool starts_nocase(const char *text, const char *prefix)
+{
+    if (!text || !prefix || prefix[0] == '\0') {
+        return false;
+    }
+    while (*prefix) {
+        if (*text == '\0' || ascii_lower(*text) != ascii_lower(*prefix)) {
+            return false;
+        }
+        text++;
+        prefix++;
+    }
+    return true;
+}
+
+static bool equals_nocase(const char *a, const char *b)
+{
+    if (!a || !b) {
+        return false;
+    }
+    while (*a && *b) {
+        if (ascii_lower(*a) != ascii_lower(*b)) {
+            return false;
+        }
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
 static uint32_t parse_count_token(const char *text)
 {
     if (!text) {
@@ -106,19 +136,32 @@ static bool text_mentions_tracker(const char *text)
            contains_nocase(text, "pebblebee");
 }
 
+static bool text_mentions_flock(const char *text)
+{
+    return equals_nocase(text, "flock") ||
+           starts_nocase(text, "flock-") ||
+           starts_nocase(text, "flock_") ||
+           starts_nocase(text, "flockos") ||
+           contains_nocase(text, "flock safety") ||
+           contains_nocase(text, "flock camera") ||
+           contains_nocase(text, "flock alpr") ||
+           contains_nocase(text, "privacy:alpr:flock") ||
+           contains_nocase(text, "flock_ble_name") ||
+           contains_nocase(text, "flock registered oui") ||
+           contains_nocase(text, "flock field oui") ||
+           contains_nocase(text, "flock wildcard") ||
+           contains_nocase(text, "flock probe") ||
+           contains_nocase(text, "flock data");
+}
+
 static bool text_mentions_security_device(const char *text)
 {
     return contains_nocase(text, "flipper") ||
            contains_nocase(text, "pwnagotchi") ||
            contains_nocase(text, "camera") ||
            contains_nocase(text, "skimmer") ||
-           contains_nocase(text, "flock") ||
+           text_mentions_flock(text) ||
            contains_nocase(text, "surveillance");
-}
-
-static bool text_mentions_flock(const char *text)
-{
-    return contains_nocase(text, "flock");
 }
 
 static bool text_mentions_evil_twin(const char *text)
@@ -436,9 +479,6 @@ static bool wifi_anomaly_is_lcd_worthy(const drone_detection_t *det)
     if (det->source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
         return det->confidence >= 0.62f ||
                (det->rssi < 0 && det->rssi >= -50);
-    }
-    if (det->source == DETECTION_SRC_WIFI_ASSOC) {
-        return det->confidence >= 0.55f;
     }
     return false;
 }

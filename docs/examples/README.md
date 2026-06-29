@@ -1,6 +1,10 @@
 # Friend or Foe — Live Examples
 
-This folder contains redacted screenshots and JSON samples from a live Friend or Foe deployment running firmware **v0.63.0-svc156** with the backend on **v0.63.20-controlpath-recovery**. Use these as reference for what the platform produces in normal operation.
+This folder contains historical, redacted screenshots and JSON samples from a
+live Friend or Foe sensor deployment running firmware **v0.63.0-svc156** with
+the backend on **v0.63.20-controlpath-recovery**. They remain useful for the
+sensor-platform side of the Packet Village story, but the canonical project
+entry point is now the badge-focused [root README](../../README.md).
 
 ## Privacy posture
 

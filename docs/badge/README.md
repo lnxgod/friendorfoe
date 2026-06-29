@@ -1,8 +1,15 @@
 # FoF Badge
 
-This folder is the operator entry point for the handheld FoF Badge. The badge is
-not the production sensor-node fleet: it is a three-board XIAO ESP32-S3 assembly
-used for walk-up privacy/drone awareness and Android USB-C testing.
+This folder is the operator entry point for the handheld FoF Badge. For the
+Packet Village talk, this is the main artifact: a three-board XIAO ESP32-S3
+assembly for walk-up privacy/drone awareness, Android control, and conversion
+into a fixed sensor platform.
+
+The badge is not just a demo shell. It shares the same scanner/uplink split,
+badge threat policy, display policy, backend ingest shape, and firmware relay
+ideas used by the production sensor-node fleet. The practical story is: wear it
+or carry it during the event, then give it stable power and a backend URL to
+make it part of a larger RF sensor deployment.
 
 ## Current Versions
 
@@ -36,6 +43,10 @@ separate from the production node firmware:
 
 - The badge keeps drone, Meta Glasses, tracker, WiFi attack, and scanner health
   evidence separated into calm top awareness tiles plus BLE/WiFi lower lanes.
+- Flock / ALPR camera rows require explicit evidence: known Flock OUIs, Flock
+  data frames, BLE names, or narrow SSIDs such as `Flock-*`, `Flock_*`,
+  `FlockOS*`, `FLK-*`, `ALPR-*`, and `Penguin-*`. Bare numeric SSIDs and broad
+  Flock-like names are intentionally suppressed.
 - Apple AirPods Continuity packets with connected AirPods plus audio/phone/video
   activity, or connected AirPods very close to the badge, show as a cautious
   `Possible Listening` row instead of generic Apple BLE noise.
@@ -48,6 +59,10 @@ separate from the production node firmware:
 - Android exposes safe badge appearance controls for palette, background,
   brightness, and per-class threat accents; the badge persists theme v1 in NVS
   and reports `theme`, `theme_hash`, and `ble_control` in status.
+- The Android badge console now concentrates badge operations: colors, row
+  density presets, listen-class toggles, scanner firmware upload/relay,
+  recovery commands, and mode selection. True title/detail text sizing needs
+  the next display-policy schema before the firmware can apply it.
 - Remote ID evidence is prioritized through scanner UART pressure, carries
   display IDs, RSSI, GPS/operator fields, and avoids ambiguous `RID SIGNAL`
   rows once a real RID entity is decoded.
@@ -96,6 +111,21 @@ Then connect the badge over USB-C, grant USB permission, and check:
   `Display Filters` editor.
 - Display Filters: apply/reset should update `display_policy_hash`; scanner
   objects should eventually report matching `display_policy_ack_hash`.
+
+## Sensor Platform Conversion
+
+To convert a badge into a fixed sensor:
+
+1. Give the uplink stable power and Wi-Fi credentials.
+2. Point it at the FastAPI backend used for the sensor fleet.
+3. Register the badge location as a sensor-node position.
+4. Keep the BLE-primary and Wi-Fi-primary scanner roles intact.
+5. Use Android for field checks, local display policy, recovery, and firmware
+   relay; use the backend dashboard for long-running correlation.
+
+The badge remains useful as an operator display even when mounted. If the local
+LCD is distracting, use display filters from Android to quiet classes or move
+lower-priority evidence out of the top lanes.
 
 ## Runtime Checks
 

@@ -25,6 +25,16 @@ import androidx.compose.ui.unit.dp
 import com.friendorfoe.data.badge.BadgeDisplayClassPolicy
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.badge.BadgeDisplayPolicyClasses
+import com.friendorfoe.data.badge.defaultBadgeDisplayPolicyClasses
+
+private enum class BadgeRowDensityPreset(val label: String) {
+    Focus("Focus"),
+    Balanced("Balanced"),
+    Full("Full")
+}
+
+private val highSignalClasses = setOf("drone", "meta", "wifi_attack", "skimmer", "flock")
+private val mediumSignalClasses = setOf("tracker", "camera", "lock")
 
 @Composable
 fun BadgeDisplayFiltersSection(
@@ -55,7 +65,7 @@ fun BadgeDisplayFiltersSection(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Badge-only LCD and scanner emission policy  #$displayPolicyHash",
+                    text = "Badge LCD row density and scanner emission policy  #$displayPolicyHash",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -69,6 +79,30 @@ fun BadgeDisplayFiltersSection(
 
         if (!expanded) return@Column
 
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Row density",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf(
+                BadgeRowDensityPreset.Focus,
+                BadgeRowDensityPreset.Balanced,
+                BadgeRowDensityPreset.Full
+            ).forEach { preset ->
+                OutlinedButton(
+                    onClick = { onPolicyChange(policy.withRowDensityPreset(preset)) },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = preset.label.uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
         Spacer(modifier = Modifier.height(8.dp))
         BadgeDisplayPolicyClasses.forEach { info ->
             val config = policy.classes[info.key] ?: BadgeDisplayClassPolicy()
@@ -100,6 +134,41 @@ fun BadgeDisplayFiltersSection(
             }
         }
     }
+}
+
+private fun BadgeDisplayPolicy.withRowDensityPreset(
+    preset: BadgeRowDensityPreset
+): BadgeDisplayPolicy {
+    val defaults = defaultBadgeDisplayPolicyClasses()
+    val next = when (preset) {
+        BadgeRowDensityPreset.Balanced -> defaults
+        BadgeRowDensityPreset.Focus -> defaults.mapValues { (key, config) ->
+            when (key) {
+                in highSignalClasses -> config.copy(
+                    enabled = true,
+                    lane = "both",
+                    minProximity = "present",
+                    priority = (config.priority + 5).coerceAtMost(100)
+                )
+                in mediumSignalClasses -> config.copy(
+                    enabled = true,
+                    lane = "lower",
+                    minProximity = "close",
+                    priority = (config.priority + 10).coerceAtMost(100)
+                )
+                else -> config.copy(enabled = false, lane = "off")
+            }
+        }
+        BadgeRowDensityPreset.Full -> defaults.mapValues { (key, config) ->
+            config.copy(
+                enabled = true,
+                lane = if (key in highSignalClasses) "both" else "lower",
+                minProximity = "present",
+                priority = config.priority.coerceAtLeast(25)
+            )
+        }
+    }
+    return copy(classes = next)
 }
 
 @Composable

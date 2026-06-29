@@ -1,545 +1,255 @@
-🌍 **[English](README.md)** | [עברית](README.he.md) | [Українська](README.uk.md) | [العربية](README.ar.md) | [Türkçe](README.tr.md) | [Azərbaycan](README.az.md) | [Türkmen](README.tk.md) | [پښتو](README.ps.md) | [اردو](README.ur.md) | [Kurdî](README.ku.md) | [Հայերեն](README.hy.md) | [ქართული](README.ka.md) | [فارسی](README.fa.md)
+# Friend or Foe Badge
 
-# Friend or Foe — Privacy Awareness & Airspace Detection
+Pocket RF awareness for Packet Village, and a path from a handheld badge to a
+deployable sensor platform.
 
 [![Android Build](https://github.com/lnxgod/friendorfoe/actions/workflows/android-build.yml/badge.svg)](https://github.com/lnxgod/friendorfoe/actions/workflows/android-build.yml)
 [![ESP32 Build](https://github.com/lnxgod/friendorfoe/actions/workflows/esp32-web-flasher.yml/badge.svg)](https://github.com/lnxgod/friendorfoe/actions/workflows/esp32-web-flasher.yml)
 
-**Know what's watching you. Know what's flying above you.**
+Friend or Foe started as an Android aircraft and drone identification app. The
+current center of gravity is the FoF Badge: a three-board ESP32-S3 handheld
+that listens passively for nearby RF evidence, shows the most useful signals on
+a small display, and can hand a live feed to Android over USB-C, BLE, local AP,
+or a debug bridge.
 
-Friend or Foe is an open-source **privacy awareness** and **airspace detection** platform for Android and ESP32. It passively scans Bluetooth and WiFi signals around you to detect surveillance devices, tracking beacons, hidden cameras, smart glasses, and drones — then identifies every aircraft overhead using augmented reality. No accounts, no signups, no API keys. Install and go.
+For the Packet Village talk, the badge is the story: a conference-wearable
+privacy and drone awareness device that can also be converted into a fixed
+sensor node. Same radios, same policy engine, same Android control surface,
+same backend ingest path. Walk around with it during the day; mount it later as
+part of a multi-node sensor platform.
 
-> **Live deployment** — current Android **v0.64.45-privacy-listening**, backend **v0.64.45-privacy-listening**, production S3 firmware **v0.64.45-privacy-listening**, and FoF Badge firmware **v0.64.42-badge-listening**. Production S3 nodes stay on the end-to-end auto-OTA track: backend hosts the latest firmware, uplinks self-update on a 30-min poll, scanners self-recover from bad images via ESP-IDF rollback. Badge setup and recovery start at [docs/badge/README.md](docs/badge/README.md). See [esp32/CHANGELOG.md](esp32/CHANGELOG.md) for firmware history and [CHANGELOG.md](CHANGELOG.md) for backend / Android.
+> Current tracks: Android/backend/production S3 firmware are on
+> `0.64.45-privacy-listening`; badge firmware is on
+> `0.64.42-badge-listening`. The badge and production sensor fleet intentionally
+> move on separate firmware tracks.
 
-### What It Detects
+## What The Badge Does
 
-| Category | Examples | Method |
-|----------|----------|--------|
-| **Smart Glasses** | Meta Ray-Ban, Oakley Meta, Snap Spectacles, Xreal, Vuzix, Google Glass, Bose Frames | BLE manufacturer ID + service UUID |
-| **Surveillance Cameras** | Nest Cam, Arlo, Wyze, eufy, SimpliSafe, Verkada, Rhombus, Reolink | BLE setup + WiFi SSID |
-| **ALPR / Plate Readers** | Flock Safety, Leonardo ELSAG, Genetec AutoVu, Vigilant/Motorola | BLE name + WiFi SSID |
-| **Doorbell Cameras** | Ring, Nest Hello, eufy Doorbell, Blink | WiFi SSID + BLE setup |
-| **Hidden Cameras** | WiFi spy cams, IP cameras, nanny cams, Tapo, Hikvision, Dahua, Amcrest | WiFi SSID patterns + BLE names |
-| **BLE Trackers** | Apple AirTag, Samsung SmartTag, Tile, Chipolo, Pebblebee, Eufy SmartTrack, Nutale | BLE service UUID + manufacturer data |
-| **Body Cameras** | Axon Body, Axon Fleet, Motorola VISTA, WatchGuard | BLE + WiFi signatures |
-| **Attack Tools** | Flipper Zero, WiFi Pineapple | BLE name + WiFi SSID |
-| **Vehicle Cameras** | Tesla Sentry Mode | BLE advertisement |
-| **Action Cameras** | GoPro, Insta360, DJI Action | WiFi SSID patterns |
-| **Dash Cameras** | BlackVue, Viofo, 70mai, Nextbase, Thinkware, DDPai | WiFi SSID patterns |
-| **Endoscope Cameras** | DEPSTECH, Jetion (peeping tools) | WiFi SSID + BLE |
-| **Evil Twin / Rogue APs** | WiFi Pineapple, karma attacks, SSID spoofing | WiFi anomaly analysis |
-| **Ultrasonic Beacons** | SilverPush, Lisnr, Shopkick tracking tones | Microphone FFT (18-22 kHz) |
-| **Hidden Electronics** | Cameras behind walls, concealed recorders | Magnetometer EMF sweep |
-| **Night Vision Cameras** | IR LED arrays from hidden cameras | Front camera IR detection |
-| **Drones** | DJI, Skydio, Parrot, Autel + 190+ SSID patterns | BLE Remote ID + WiFi + visual ML |
-| **Aircraft** | Commercial, military, GA, helicopter, cargo, emergency | ADS-B transponder + AR overlay |
+- Shows walk-up awareness for privacy and drone signals without needing a cloud
+  account, SIM card, or paid API.
+- Separates top-level alerts from lower-priority BLE and Wi-Fi lanes so the
+  display stays readable in a noisy venue.
+- Connects to Android for a richer live view, display filters, theme controls,
+  diagnostics, and firmware workflows.
+- Can be re-used as a sensor node by giving it stable power, a backend URL, and
+  a fixed position.
+- Keeps local recovery practical: USB-C status, safe scanner relay flashing,
+  local AP control, and scanner crash/status reporting are built into the badge
+  flow.
 
-This project is **built with AI**. Claude helped bootstrap the first pass, and Codex is now the day-to-day engineering partner for repo maintenance, firmware work, review, testing, and release prep, with Gemini and Grok contributing research and design direction. Released by [GAMECHANGERSai](https://gamechangersai.org). See the [CHANGELOG](CHANGELOG.md) for version history.
+## Badge Hardware
 
----
+One physical badge trio contains:
 
-## Two Ways to Detect
+| Board | PlatformIO environment | Job |
+|-------|------------------------|-----|
+| Uplink MCU | `uplink-s3-fof_badge` | Display, USB-C, local AP, backend/client control, scanner relay flashing |
+| BLE-primary scanner MCU | `scanner-s3-combo-fof_badge` | BLE Remote ID, BLE fingerprints, privacy-device BLE evidence |
+| Wi-Fi-primary scanner MCU | `scanner-s3-combo-fof_badge` | Wi-Fi beacons/probes/data frames, SSID/OUI evidence, drone Wi-Fi evidence |
 
-### Android App — Point and Identify
+The two scanner boards run the same firmware image. The uplink assigns runtime
+roles and scanner profiles, which is what lets the same physical design behave
+like a handheld badge or a stationary sensor.
 
-Install the APK, grant permissions — privacy scanning and aircraft detection start immediately. BLE scans for smart glasses, trackers, and hidden cameras nearby. WiFi scans for spy camera SSIDs. ADS-B identifies aircraft overhead with AR labels. No accounts, no API keys.
+## What It Listens For
 
-**Download:** [GitHub Releases](https://github.com/lnxgod/friendorfoe/releases)
+Friend or Foe is passive. It listens for signals already being broadcast and
+tries to explain them with conservative labels.
 
-### ESP32 Hardware Edition — Deploy and Walk Away
+| Category | Examples | Evidence |
+|----------|----------|----------|
+| Remote ID drones | ASTM/OpenDroneID, DJI DroneID, Wi-Fi Beacon RID | BLE, Wi-Fi vendor IEs, beacon frames |
+| Drone Wi-Fi | DJI, Skydio, Parrot, Autel, test drones | SSID patterns, OUI hints, Bayesian fusion |
+| Smart glasses | Ray-Ban Meta, Oakley Meta, Snap Spectacles, Xreal, Vuzix | BLE names, service UUIDs, manufacturer data |
+| Trackers | AirTag/Find My, Tile, SmartTag, Chipolo, Pebblebee | BLE service UUIDs and company data |
+| Possible listening | Apple Continuity with connected AirPods and nearby audio activity | BLE manufacturer data, activity flags, RSSI |
+| Cameras and tools | Hidden/IP cameras, body cams, dash cams, Wi-Fi Pineapple, deauth tools | BLE names, Wi-Fi setup SSIDs, curated signatures |
+| Flock / ALPR | Flock Safety, ELSAG-style ALPR evidence | Known OUIs, Flock data frames, BLE names, narrow SSIDs |
+| Evil twin / rogue AP | Open clones, karma-style attacks, suspicious SSID reuse | Wi-Fi auth/channel/BSSID anomaly policy |
 
-Always-on, unattended detection. Build for ~$25-40 per node:
+Flock / ALPR detection is intentionally strict. The badge accepts known Flock
+OUIs, Flock data frames, BLE names, and narrow SSIDs such as `Flock-*`,
+`Flock_*`, `FlockOS*`, `FLK-*`, `ALPR-*`, and `Penguin-*`. Bare numeric SSIDs
+and broad Flock-like names are suppressed so the badge does not fill with noisy
+venue Wi-Fi.
 
-- **Scanner** (ESP32-S3 combo or seed) — BLE Remote ID + WiFi promiscuous frame capture, Bayesian fusion, BLE fingerprinting, and Android-led calibration mode
-- **Uplink** (ESP32-S3) — GPS, OLED status display, WiFi backhaul to backend, dual scanner UART, OTA firmware relay
-- **FoF Badge** (three XIAO ESP32-S3 boards) — handheld privacy/drone badge with USB-C Android feed, local AP status, scanner relay flashing, safe USB recovery, and badge-only LCD display filters
-- **Multi-node sensor network** — Deploy 2-4 nodes for triangulated device positioning on the real-time map
-- **Android-led RF calibration** — Phone walk workflow puts the live S3 fleet into calibration mode and collects RSSI samples for triangulation tuning
-- **Real-time dashboard** — 12-tab web UI with map, device tracking, alerts, entity correlation, anomaly detection, probe analysis, and sensor management
-- **Flash from your browser** — no toolchain needed: [**ESP32 Web Flasher**](https://lnxgod.github.io/friendorfoe/)
-- Hardware setup: [INSTALL.md](esp32/INSTALL.md)
-- Badge setup and test notes: [docs/badge/README.md](docs/badge/README.md)
+## Android As Badge Console
 
----
+Android is the operator console for the badge. The connected badge control
+center receives live status/events and gives the operator first-class controls
+from the app:
 
-## Privacy Detection
+- Appearance: palette, background, brightness, and per-class threat accents.
+- Display policy: enable or hide alert classes, choose BLE/Wi-Fi/both lanes,
+  proximity rules, row-density presets, and display priorities.
+- Firmware: upload and relay scanner firmware through the badge instead of
+  reaching for a separate flashing script. Uplink firmware remains on the safe
+  USB/script path.
+- Diagnostics: scanner role, firmware version, crash count, heap/stack, PSRAM,
+  display policy hashes, scanner acknowledgement hashes, and recovery mode.
 
-Friend or Foe passively monitors BLE advertisements and WiFi networks around you, matching against a database of **300+ known surveillance device signatures**:
+True title/detail text sizing and explicit row-count limits need the next
+badge display-policy schema; the app does not fake those settings until the
+firmware can apply them.
 
-### BLE Detection (Android + ESP32)
-- **16 smart glasses brands** — Meta Ray-Ban, Oakley Meta, Meta Neural Band, Snap Spectacles, Google Glass, Vuzix, Bose Frames, Amazon Echo Frames, Xreal, Brilliant Labs, TCL RayNeo, Rokid, INMO, Even Realities, Solos
-- **11 surveillance camera brands** — Nest Cam, Arlo, Wyze Cam, eufy, SimpliSafe, Verkada, Rhombus, Reolink, Nest Doorbell, eufy Doorbell, eufy Floodlight
-- **5 ALPR / plate reader brands** — Flock Safety, Leonardo ELSAG, Genetec AutoVu, Vigilant/Motorola, plus WiFi SSID patterns
-- **5 police / fleet cameras** — Axon Body, Axon Signal, Axon Fleet, Motorola VISTA, WatchGuard
-- **7 tracker/stalkerware signatures** — Apple AirTag (FindMy type 0x12), Samsung SmartTag (UUID 0xFD5A), Tile (UUID 0xFEED), DULT protocol (UUID 0xFCB2), Chipolo, Pebblebee, Nutale
-- **7 hidden camera BLE name patterns** — V380, IPC, CLOUDCAM, HIDVCAM, HDWiFiCam, LookCam
-- **Vehicle cameras** — Tesla Sentry Mode (BLE name)
-- **Attack tools** — Flipper Zero (BLE name)
+Relevant Android code lives under:
 
-### WiFi Detection (Android)
-- **30+ hidden camera SSID patterns** — MV*, YDXJ_*, IPC-*, IP_CAM_*, Wyze_*, Reolink_*, Tapo_*, Hik-*, Amcrest_*, Blink-*, Arlo-*, Ring-*, and more
-- **5 surveillance / ALPR SSIDs** — Verkada-*, Rhombus-*, Flock-*, FLK-*, ELSAG-*
-- **4 doorbell / smart home SSIDs** — Ring Setup*, Ring-*, SimpliSafe-*, BLINK-*
-- **3 action camera SSIDs** — GoPro*, Insta360*, OsmoAction*
-- **10 dash camera SSIDs** — BlackVue*, DR900*, DR750*, VIOFO_*, 70mai_*, Nextbase*, Thinkware*, DDPai_*, Rexing_*, Akaso_*
-- **2 body camera WiFi patterns** — Axon Body*, WGVISTA*
-- **Attack tools** — Pineapple*
+- `android/app/src/main/java/com/friendorfoe/data/badge/`
+- `android/app/src/main/java/com/friendorfoe/presentation/badge/`
+- `android/app/src/main/java/com/friendorfoe/presentation/privacy/`
 
-Privacy detection is **on by default** and can be toggled in Settings (About screen).
+## From Badge To Sensor Platform
 
----
+The Packet Village demo is a badge, but the architecture is a sensor platform:
 
-## Airspace Detection
+1. Put the badge or production S3 node in a fixed location.
+2. Give the uplink Wi-Fi credentials and a backend URL.
+3. Register the node with a stable name and position.
+4. Let it POST detections to the FastAPI backend.
+5. Add more nodes for correlation, triangulation, and RF anomaly history.
 
-- **AR Viewfinder** — Live camera view with color-coded floating labels on aircraft and drones. Labels show callsign, type, altitude, and distance.
-- **Multi-Source Detection** — Four independent methods:
-  - ADS-B transponder data (commercial flights, general aviation)
-  - FAA Remote ID via Bluetooth LE (compliant drones)
-  - WiFi SSID pattern matching (190+ drone manufacturer patterns)
-  - Visual detection with ML Kit (camera-based object recognition)
-- **Smart Classification** — 10 categories: Commercial, GA, Military, Helicopter, Government, Emergency, Cargo, Drone, Ground Vehicle, Unknown
-- **Bayesian Sensor Fusion** — Log-odds evidence combination across all sensors
-- **Aircraft Database** — 193 type codes, 135 airlines, 62 countries, 134 bundled photos, 10 vector silhouette categories
-- **2D Map View** — OpenStreetMap with category markers, distance rings, dark mode support
-- **Detail Cards** — Full aircraft/drone details with external lookup links
-- **History Log** — Persistent detection database, searchable and filterable
-- **Drone Reference Guide** — 30+ drone types from consumer to military UCAVs
+Once deployed, the backend groups BLE fingerprints, Wi-Fi probe identities, AP
+inventory, drone evidence, and node health into live entities. With multiple
+nodes, it can localize signals with RSSI-based triangulation and smooth them
+with an EKF. The dashboard becomes the long-running view; Android remains the
+field console.
 
----
+## Repo Map
 
-## How It Works
+| Path | Purpose |
+|------|---------|
+| `android/` | Kotlin + Jetpack Compose app, badge console, privacy views, AR/list/map screens |
+| `backend/` | FastAPI ingest, enrichment, dashboard, triangulation, calibration, firmware endpoints |
+| `esp32/scanner/` | ESP32-S3 scanner firmware for BLE/Wi-Fi detection |
+| `esp32/uplink/` | ESP32-S3 uplink firmware, display, USB-C/local AP control, OTA relay |
+| `esp32/shared/` | Shared C detection policy, badge display policy, themes, signatures, protocol types |
+| `docs/badge/` | Badge operator notes and current badge version matrix |
+| `scripts/` | Badge flashing, debug bridge, recovery, and utility scripts |
 
-### Detection Sources
+## Build And Test
 
-| Source | What It Detects | Range | Confidence |
-|--------|----------------|-------|-----------|
-| **ADS-B** | Commercial & GA aircraft with transponders | ~250 NM | Very High (0.95) |
-| **Remote ID (BLE)** | FAA-compliant drones (250g+) | ~300m | High (0.85) |
-| **WiFi SSID** | DJI, Skydio, Parrot, budget drones | ~100m | Moderate (0.3-0.85) |
-| **Visual (ML Kit)** | Anything visible in camera | Line of sight | Variable |
+Android debug build:
 
-### Sensor Fusion & AR
-
-The app fuses accelerometer, magnetometer, and gyroscope data to determine exactly where the phone is pointing. Aircraft positions (lat/lon/altitude) are projected onto the camera view using haversine distance calculations and camera FOV geometry.
-
-**ARCore + Compass Hybrid**: ARCore provides excellent tracking when the camera sees ground features, but struggles when pointed at featureless sky — exactly when you need it most. The app automatically falls back to compass-math orientation when ARCore loses tracking, providing seamless labels in all conditions.
-
-### Bayesian Sensor Fusion (Cross-Stack)
-
-Detection confidence is a Bayesian posterior, not a max-of-sources heuristic. Each source contributes a likelihood ratio (BLE Remote ID = 50, DJI DroneID IE = 30, OUI = 5, SSID = 3, etc.); the engine combines them in log-odds with a 30-second half-life decay and clamps at ±7 to keep one noisy frame from saturating. Math walk-through with a worked example: [`docs/BAYESIAN_FUSION.md`](docs/BAYESIAN_FUSION.md).
-
-**Cross-stack parity**: the same fusion math, OpenDroneID parser, DJI IE parser, and WiFi Beacon RID parser run byte-for-byte identically in Android Kotlin and ESP32 C. Native test suites on both stacks pin the parity (`./gradlew test` and `pio test -e test`).
-
-### Multi-Node Triangulation
-
-When two or more sensor nodes hear the same drone, the backend localizes it: 3+ sensors → Gauss-Newton non-linear least squares; 2 → circle-circle intersection; 1 → RSSI range circle. An EKF smooths the output and an inter-node calibration walk (run from the Android app) tunes the path-loss exponent and per-listener offsets for the site. Math + limitations: [`docs/TRIANGULATION.md`](docs/TRIANGULATION.md).
-
-### Self-Healing Fleet (Auto-OTA)
-
-The fleet maintains itself without manual flashing:
-
-- **Backend** hosts the latest firmware at `GET /nodes/firmware/latest/{name}` (metadata + sha256) and `GET /nodes/firmware/download/{name}` (binary, ETag-cacheable).
-- **Uplinks** poll every 30 minutes (`fw_auto_check`); if a newer image is available they self-OTA and refresh the cached scanner image stored in the `fw_store` partition.
-- **Scanners** request firmware from the uplink via the existing `fw_check` / `fw_offer` / `fw_ready` UART protocol; the uplink relays from its local cache.
-- **Rollback** is wired on every layer: a fresh OTA boots in `PENDING_VERIFY`; if the watchdog fires before the image proves itself (uplink: WiFi-associated, scanner: 60 s of stable uptime), `esp_ota_mark_app_invalid_rollback_and_reboot()` reverts to the previous slot.
-- **Crash-loop guard** on scanners: 3 consecutive panic boots on a *validated* image surface as `last_fw_error: "crash_loop:N"` in heartbeat, and the next `fw_check` re-pulls the cached firmware from the uplink — recovery without USB.
-
-Pipeline diagram: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Threat model + privacy considerations: [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md). Vulnerability disclosure: [`SECURITY.md`](SECURITY.md).
-
-> **Production deployments**: set `FOF_CAL_TOKEN` (backend env) before exposing `/detections/calibration/*` beyond your LAN. The dev default is intentionally weak so a fresh phone + fresh backend pair without setup; the backend logs a warning at boot when the env is unset.
-
-### Architecture
-
-```
-┌──────────────────────────────────────────────────┐
-│  Android App (Kotlin + Jetpack Compose)          │
-│                                                  │
-│  ┌─────────┐ ┌─────────┐ ┌──────────┐          │
-│  │ AR View │ │   Map   │ │   List   │  ...UI   │
-│  └────┬────┘ └────┬────┘ └────┬─────┘          │
-│       │           │           │                  │
-│  ┌────┴───────────┴───────────┴─────┐           │
-│  │         ViewModels (MVVM)        │           │
-│  └────┬─────────────────────┬───────┘           │
-│       │                     │                    │
-│  ┌────┴────┐          ┌────┴──────┐             │
-│  │ Sensor  │          │ Detection │             │
-│  │ Fusion  │          │  Sources  │             │
-│  │ Engine  │          │           │             │
-│  │         │          │ • ADS-B   │             │
-│  │ • ARCore│          │ • BLE RID │             │
-│  │ • Accel │          │ • WiFi    │             │
-│  │ • Gyro  │          │ • Visual  │             │
-│  │ • Mag   │          │           │             │
-│  └─────────┘          └─────┬─────┘             │
-│                             │                    │
-│                    ┌────────┴────────┐           │
-│                    │ Bayesian Fusion │           │
-│                    │   Engine        │           │
-│                    └────────┬────────┘           │
-│                             │                    │
-└─────────────────────────────┼────────────────────┘
-                              │ HTTP
-                    ┌─────────┴─────────┐
-                    │  Backend (FastAPI) │
-                    │  • Aircraft fetch  │
-                    │  • Enrichment      │
-                    │  • Caching (Redis) │
-                    └─────────┬─────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              │               │               │
-         adsb.fi     airplanes.live     OpenSky
-        (primary)     (fallback)      (fallback)
-
-┌──────────────────────────────────────────────────┐
-│  ESP32 Sensor Network (deploy 2-4 nodes)         │
-│                                                  │
-│  ┌──────────────────┐    UART     ┌───────────┐ │
-│  │  Scanner (S3/C5) │───921600───→│  Uplink   │ │
-│  │  • BLE Remote ID │   baud      │  (C3/S3)  │ │
-│  │  • WiFi Promisc  │            │  • GPS    │ │
-│  │  • BLE Fingerpr  │            │  • OLED   │ │
-│  │  • Bayesian      │            │  • WiFi   │ │
-│  │    Fusion        │            │  • OTA    │ │
-│  └──────────────────┘            └─────┬─────┘ │
-│                                        │        │
-└────────────────────────────────────────┼────────┘
-                                         │ HTTP POST
-                               ┌─────────┴─────────┐
-                               │  Backend (FastAPI) │
-                               │  • Triangulation   │
-                               │  • Classification  │
-                               │  • Calibration     │
-                               │  • Entity Tracking │
-                               │  • Anomaly Detect  │
-                               │  • Web Dashboard   │
-                               └───────────────────┘
-```
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- **Android Studio** Hedgehog (2023.1.1) or later
-- **JDK 17**
-- **Android SDK 35** (compileSdk) with minSdk 26 (Android 8.0+)
-- An Android device with GPS, compass, and camera (emulator works for list/map views but not AR)
-
-> **No accounts or signups needed.** The app connects directly to free public ADS-B APIs — no backend setup, no API keys, no accounts.
-
-### Quick Start — Android Only
-
-The app connects directly to free public ADS-B APIs — no backend setup or accounts needed. Aircraft photos and the drone reference guide are bundled in the APK. To just build and run:
-
-```bash
+```sh
 cd android
 ./gradlew assembleDebug
-# Install on connected device:
-adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Or download the latest pre-built APK from [**GitHub Releases**](https://github.com/lnxgod/friendorfoe/releases).
+Focused Android badge/privacy tests:
 
-### Backend Setup (Optional for Android — required for ESP32 sensor network)
+```sh
+cd android
+./gradlew testDebugUnitTest --tests com.friendorfoe.detection.PrivacyCategoryMappingTest
+./gradlew testDebugUnitTest --tests com.friendorfoe.presentation.privacy.BadgePrivacyMapperTest
+```
 
-The backend serves two roles:
-1. **Aircraft enrichment** (Android) — Photos, airline names, registration lookups
-2. **Sensor platform** (ESP32) — Detection ingestion, triangulation, entity tracking, anomaly detection, real-time dashboard
+Backend setup and tests:
 
-**Requires Python 3.11+ and optionally Redis for caching.**
-
-```bash
+```sh
 cd backend
-
-# Create virtual environment
 python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-
-# Install dependencies
+source .venv/bin/activate
 pip install -r requirements.txt
-
-# Copy environment config
-cp .env.example .env
-
-# Run the server
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+pytest tests -v
 ```
 
-**With Docker** (includes Redis + PostgreSQL):
+ESP32 native policy tests:
 
-```bash
-cd backend
-docker compose up
+```sh
+cd esp32
+pio test -e test
 ```
 
-The API and dashboard will be available at `http://localhost:8000`. Health check: `http://localhost:8000/health`. Real-time sensor dashboard: `http://localhost:8000/dashboard.html`
+Build badge firmware:
 
-### Connecting the App to Your Backend
+```sh
+cd esp32/uplink
+pio run -e uplink-s3-fof_badge
 
-Update the backend URL in the Android app's network configuration to point to your server's IP address.
-
----
-
-## Tech Stack
-
-### Android App
-
-| Component | Library | Version |
-|-----------|---------|---------|
-| Language | Kotlin | 1.9.22 |
-| UI | Jetpack Compose + Material 3 | 2024.02.00 |
-| AR | ARCore | 1.41.0 |
-| Camera | CameraX | 1.3.1 |
-| ML | ML Kit Object Detection | 17.0.1 |
-| DI | Hilt | 2.50 |
-| HTTP | Retrofit + OkHttp | 2.9.0 / 4.12.0 |
-| Database | Room | 2.6.1 |
-| Images | Coil | 2.5.0 |
-| Maps | OSMDroid | 6.1.18 |
-| Async | Coroutines + Flow | 1.7.3 |
-
-### Backend
-
-| Component | Library | Version |
-|-----------|---------|---------|
-| Framework | FastAPI | 0.115.6 |
-| Server | Uvicorn | 0.34.0 |
-| HTTP Client | httpx | 0.28.1 |
-| Cache | Redis | 5.2.1 |
-| Database | SQLAlchemy + asyncpg | 2.0.36 |
-| Validation | Pydantic | 2.10.4 |
-
----
-
-## Project Structure
-
-```
-friendorfoe/
-├── android/                           # Android app
-│   └── app/src/main/java/com/friendorfoe/
-│       ├── data/
-│       │   ├── local/                 # Room database (history, tracking)
-│       │   ├── remote/                # Retrofit API services & DTOs
-│       │   └── repository/            # Data repositories
-│       ├── detection/                 # Detection engines
-│       │   ├── AdsbPoller.kt          # ADS-B data polling
-│       │   ├── RemoteIdScanner.kt     # BLE Remote ID scanning
-│       │   ├── WifiDroneScanner.kt    # WiFi SSID detection
-│       │   ├── BayesianFusionEngine.kt # Multi-sensor confidence fusion
-│       │   ├── MilitaryClassifier.kt  # Military aircraft identification
-│       │   └── VisualDetection*.kt    # ML Kit visual detection
-│       ├── domain/model/              # Domain models (Aircraft, Drone, SkyObject)
-│       ├── di/                        # Hilt dependency injection
-│       ├── presentation/
-│       │   ├── ar/                    # AR viewfinder screen
-│       │   ├── map/                   # OpenStreetMap view
-│       │   ├── list/                  # Sortable object list
-│       │   ├── detail/                # Full object detail cards
-│       │   ├── drones/                # Drone reference guide browser
-│       │   ├── history/               # Detection history
-│       │   ├── welcome/               # Welcome/launch screen
-│       │   ├── about/                 # App info
-│       │   └── util/                  # AircraftPhotos, CategoryColors, DroneDatabase
-│       └── sensor/                    # Sensor fusion & positioning
-├── backend/                           # Python FastAPI server
-│   └── app/
-│       ├── main.py                    # FastAPI entry point
-│       ├── config.py                  # Environment configuration
-│       ├── routers/
-│       │   ├── aircraft.py            # Aircraft API endpoints
-│       │   ├── detections.py          # ESP32 detection ingestion + dashboard APIs
-│       │   └── nodes.py               # Sensor node management
-│       ├── services/
-│       │   ├── adsb.py                # Multi-source ADS-B fetching
-│       │   ├── enrichment.py          # Aircraft data enrichment
-│       │   ├── classifier.py          # Detection classification engine
-│       │   ├── triangulation.py       # Multilateration + EKF positioning
-│       │   ├── calibration.py         # Inter-node RF calibration
-│       │   ├── anomaly_detector.py    # RF anomaly detection
-│       │   ├── entity_tracker.py      # Entity correlation (MAC grouping)
-│       │   └── enrichment_ble.py      # BLE manufacturer database (~500 OUIs)
-│       └── static/dashboard.html      # Real-time sensor dashboard (12 tabs)
-├── esp32/                             # ESP32 hardware edition
-│   ├── scanner/                       # Scanner firmware (S3 + C5)
-│   ├── uplink/                        # Uplink firmware (S3)
-│   ├── shared/                        # Shared UART protocol, types
-│   └── web-flasher/                   # Browser-based firmware flasher
-├── images/                            # Aircraft reference photos (Wikimedia CC)
-├── scripts/                           # Utility scripts (photo downloader)
-├── macos/                             # macOS companion (early stage)
-└── docs/                              # Design documents
+cd ../scanner
+pio run -e scanner-s3-combo-fof_badge
 ```
 
----
+Flash a badge from the repo root:
 
-## API Endpoints
-
-### Aircraft (Android app)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Health check (Redis, DB status) |
-| `GET` | `/aircraft/nearby?lat=&lon=&radius_nm=` | Aircraft near a position |
-| `GET` | `/aircraft/{icao_hex}/detail` | Enriched aircraft details |
-
-### Sensor Network (ESP32 nodes)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/detections/drones` | Batch ingestion from ESP32 nodes |
-| `GET` | `/detections/drones/map` | Triangulated device positions for map |
-| `GET` | `/detections/grouped` | Grouped detections with classification |
-| `GET` | `/detections/devices/live` | Live BLE device fingerprints |
-| `GET` | `/detections/entities` | Correlated entity list |
-| `GET` | `/detections/anomalies` | RF anomaly alerts |
-| `GET` | `/detections/drone-alerts` | Active drone alerts |
-| `POST` | `/detections/calibrate` | Start inter-node RF calibration |
-| `GET` | `/detections/calibrate/matrix` | Node-pair RSSI/distance matrix |
-| `GET` | `/detections/nodes/status` | Sensor node health and firmware info |
-| `POST` | `/nodes` | Register sensor node with GPS position |
-| `PUT` | `/nodes/{device_id}` | Update node position/name |
-
----
-
-## Contributing
-
-Contributions are welcome! Whether it's bug fixes, new detection methods, UI improvements, or documentation — we'd love your help.
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### TDD and Live-Code Workflow
-
-Firmware and triangulation changes hit live hardware, so the default workflow is
-test-first and canary-first. The short version:
-
-- write or tighten the failing test first
-- run local preflight before calling a change ready
-- update changelogs in the same change
-
-Playbook: [docs/tdd-live-playbook.md](docs/tdd-live-playbook.md)
-
-Local preflight:
-
-```bash
-python3 scripts/preflight.py
+```sh
+python3 scripts/fof_badge_flash.py --transport usb --port /dev/cu.usbmodemXXXX
 ```
 
-### Ideas for Contributors
+Useful recovery variants:
 
-- Additional aircraft type code mappings
-- Improved WiFi drone manufacturer fingerprints
-- Night mode / dark theme for the AR overlay
-- Flight path prediction and trajectory visualization
-- Social features (share sightings, community reports)
-- iOS port using the macOS Swift foundation
-- Integration with additional ADS-B data sources
+```sh
+python3 scripts/fof_badge_flash.py --transport usb --only uplink --port /dev/cu.usbmodemXXXX
+python3 scripts/fof_badge_flash.py --transport usb --only scanners --port /dev/cu.usbmodemXXXX
+python3 scripts/fof_badge_flash.py --manual-scanner ble --port /dev/cu.usbmodemYYYY
+python3 scripts/fof_badge_flash.py --manual-scanner wifi --port /dev/cu.usbmodemZZZZ
+```
 
----
+## Runtime Checks
 
-## Built With AI
+USB serial:
 
-This project wasn't built with just one AI. Claude helped bootstrap the earliest architecture, and the project now runs primarily through **Codex-assisted development**: planning, repo edits, firmware/version work, tests, reviews, and release prep happen conversationally with Codex in the loop. Other AI systems still show up where they are strongest, but Codex is the default engineering cockpit. The git history tells the story:
+```text
+FOF_PING
+FOF_STATUS
+FOF_CTL:{"cmd":"badge_display_policy_reset","persist":true}
+```
 
-| Date | What Happened |
-|------|--------------|
-| **March 12** | 13 commits — **8,500+ lines** in ~2 hours. Build-ready APK with AR viewfinder, four detection sources, Bayesian sensor fusion, map view, and history tracking. |
-| **March 14** | Open-source release. 120+ aircraft silhouettes, 134 bundled photos, welcome screen, security review. |
-| **March 18-21** | ESP32 hardware edition: Scanner + Uplink firmware, UART protocol, web flasher, 27 unit tests. |
-| **March 25-27** | Privacy detection: 303 BLE rules, surveillance cameras, ALPR readers, trackers, ultrasonic beacons. PostgreSQL backend. |
-| **March 27-April 6** | Sensor platform: 3-board nodes, OTA updates, BLE fingerprinting, lock-on system, dashboard with 12 tabs. |
-| **April 6-15** | Detection engine: Anomaly detection, entity correlation, triangulation + EKF, RF calibration, heap stability, raw socket HTTP. |
-| **Total** | **40,000+ lines** of Kotlin, Python, C, and HTML across 200+ commits. 4-node sensor network deployed and operational. |
+Badge local AP:
 
-### AI Roles
+```sh
+curl http://192.168.4.1/api/badge/status
+curl -X POST http://192.168.4.1/api/badge/control \
+  -H 'content-type: application/json' \
+  -d '{"cmd":"badge_display_policy_reset","persist":true}'
+```
 
-| AI | Role |
-|----|------|
-| **[Codex](https://chatgpt.com)** (OpenAI) | Primary coding agent today — implementation, repo maintenance, tests, reviews, firmware/version updates, release prep |
-| **[Claude](https://claude.ai)** (Anthropic) | Initial coding agent — early architecture, first implementation pass, pair-programming |
-| **[Grok](https://grok.com)** (xAI) | Design direction and research |
-| **[Gemini](https://gemini.google.com)** (Google) | Tech stack research — evaluating libraries, frameworks, and approaches |
-| **[ML Kit](https://developers.google.com/ml-kit)** (Google) | On-device visual object detection (runs directly on the phone) |
+Healthy badge facts:
 
-**What is vibe coding?** It's a collaborative, conversational approach to software development where a human and AI build together in real time. Instead of writing every line by hand, you describe what you want, iterate on ideas, debug together, and let the AI handle the boilerplate while you focus on the vision and architecture. It's programming by vibes — and it works.
+- Top-level `recovery_mode` is `normal`.
+- Both scanners are connected and report `scanner-s3-combo-fof_badge`.
+- Uplink and scanners report the current badge firmware version.
+- `display_policy_hash` is non-zero.
+- Scanner `display_policy_ack_hash` catches up to the uplink policy hash.
 
-Friend or Foe was built with multiple AIs, each contributing where they excel. Claude served as the initial coding partner for the earliest architecture and first implementation wave. Codex is now the primary engineering partner for ongoing development, firmware deployment work, testing, review, and release hygiene. Grok helped shape the design direction. Gemini researched which technologies and frameworks to use. And ML Kit runs on-device, powering visual detection without any cloud dependency. Every file in this repo was shaped by human-AI collaboration.
+## Talk Track
 
-**We believe the future of software development is using the right AI for the right job**, and we're open-sourcing this project so you can see what that looks like in practice.
+The badge makes a good Packet Village talk because it is understandable at
+three depths:
 
----
+- Walk-up: "What is my badge hearing right now?"
+- Builder: "How do three tiny ESP32-S3 boards become a useful RF instrument?"
+- Platform: "How does a handheld demo become a fixed sensor network with
+  backend correlation, firmware updates, and triangulation?"
 
-## About GAMECHANGERSai
+The important design choice is the conversion path. The badge is not a dead-end
+novelty; it is the smallest operator-friendly shape of the same system that can
+run as a fleet.
 
-**[GAMECHANGERSai](https://gamechangersai.org)** is a 501(c)(3) nonprofit dedicated to creating hands-on, AI-powered learning experiences for kids and families.
+## Docs
 
-> *"Playful AI games that teach every learner to build and remix."*
+- Badge operator guide: [docs/badge/README.md](docs/badge/README.md)
+- Badge recovery: [docs/badge_scanner_recovery.md](docs/badge_scanner_recovery.md)
+- Badge boundary notes: [docs/fof_badge_notes.md](docs/fof_badge_notes.md)
+- Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Threat model: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)
+- Bayesian fusion: [docs/BAYESIAN_FUSION.md](docs/BAYESIAN_FUSION.md)
+- Triangulation: [docs/TRIANGULATION.md](docs/TRIANGULATION.md)
 
-Through our platform, learners develop real, transferable skills:
+## AI Workflow
 
-- **Creative Coding** — Building functional programs with AI as a co-pilot
-- **Systems Thinking** — Understanding how complex pieces interact and how to debug them
-- **Resource Management** — Strategic planning and optimization
-- **Ethical Reasoning** — Learning to ask "should we?" alongside "can we?" when using AI
+Friend or Foe is built with AI-assisted engineering. Claude helped bootstrap
+the earliest Android architecture and first implementation wave. Codex is now
+the primary engineering orchestrator for repo maintenance, firmware work,
+reviews, tests, Android badge controls, docs, and release prep. Grok contributed
+design direction, Gemini helped with technology-stack research, and ML Kit runs
+on-device for visual detection.
 
-**Friend or Foe is proof that these skills are real.** The same creative coding, systems thinking, and AI collaboration that kids learn on our platform were used to build this fully functional aircraft identification system. What starts as a game becomes a tool. What starts as play becomes expertise.
+## Security And Configuration
 
-We're committed to giving back to the open-source community. By releasing Friend or Foe publicly, we hope to:
+Start from `backend/.env.example`. Do not commit filled `.env` files, OpenSky
+credentials, Android signing material, or generated ESP32 Wi-Fi headers such as
+`esp32/uplink/main/core/wifi_credentials.h`.
 
-- **Inspire** developers and learners to explore what's possible with AI-assisted development
-- **Demonstrate** that AI is a creative partner, not a replacement — every decision in this app was guided by human judgment
-- **Show** that the skills our kids are learning aren't just for games — they're the foundation for building real, useful technology
-
-Visit us at **[gamechangersai.org](https://gamechangersai.org)** to learn more about our mission.
-
----
-
-## Data Sources & Attribution
-
-Friend or Foe is 100% free to use — every data source below is open and requires **no API keys or paid accounts**.
-
-### ADS-B Aircraft Position Data
-
-The app uses a three-tier fallback chain so you always get aircraft data even if one source is down:
-
-| Priority | Source | API Endpoint | What It Provides | Auth |
-|----------|--------|-------------|------------------|------|
-| 1st | **[adsb.fi](https://adsb.fi)** | `opendata.adsb.fi/api` | Real-time aircraft positions, callsigns, altitude, speed, heading, squawk codes | Free, no key |
-| 2nd | **[airplanes.live](https://airplanes.live)** | `api.airplanes.live` | Same data as adsb.fi (compatible ADSBx v2 format) | Free, no key |
-| 3rd | **[OpenSky Network](https://opensky-network.org)** | `opensky-network.org/api` | ICAO state vectors — position, velocity, heading, vertical rate | Free, no key (optional account for higher rate limits) |
-
-All three sources provide live ADS-B transponder data from worldwide receiver networks. The app queries by GPS coordinates and radius, and automatically falls through to the next source on failure or timeout.
-
-### Enrichment & Supporting Data
-
-| Source | What It Provides | Auth |
-|--------|------------------|------|
-| **[Planespotters.net](https://planespotters.net)** | Aircraft photos by ICAO hex code — shown on detail cards | Free, no key |
-| **[Open-Meteo](https://open-meteo.com)** | Current weather (cloud cover, wind speed, conditions) — used to adjust detection parameters | Free, no key |
-| **[OpenStreetMap](https://openstreetmap.org)** | Map tiles via OSMDroid for the 2D map view | Free, no key |
-
-### On-Device Detection (No External APIs)
-
-These detection methods run entirely on the phone with no network calls:
-
-- **FAA Remote ID (Bluetooth LE)** — Scans for compliant drone broadcasts within ~300m
-- **WiFi SSID Matching** — Identifies DJI, Skydio, Parrot, and 100+ other drone manufacturers by WiFi patterns
-- **Visual Detection (ML Kit)** — Camera-based object recognition running on-device
-- **Military Classification** — Callsign patterns, squawk codes, and operator database (all bundled locally)
-
----
-
-## License
-
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
-
-You are free to use, modify, and distribute this software for any purpose. We just ask that you keep the copyright notice and give credit where it's due.
-
----
-
-*Made with curiosity, code, and every AI we could get our hands on.*
-*Released with love by [GAMECHANGERSai](https://gamechangersai.org).*
+Friend or Foe is a passive awareness tool. It should explain what it heard,
+show uncertainty, and avoid overclaiming identity from weak RF evidence.

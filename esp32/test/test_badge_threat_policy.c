@@ -976,6 +976,34 @@ void test_badge_plain_fof_ssid_is_suppressed_as_ambient(void)
     TEST_ASSERT_FALSE(badge_threat_classify_detection(&ssid, &event));
 }
 
+void test_badge_broad_flock_like_ssids_are_suppressed(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t ssid = make_detection(
+        DETECTION_SRC_WIFI_ASSOC,
+        "ssid:false-flock",
+        "Notable SSID",
+        0.55f,
+        -47
+    );
+    strncpy(ssid.ssid, "FlockGuest", sizeof(ssid.ssid) - 1);
+    strncpy(ssid.class_reason, "Notable SSID", sizeof(ssid.class_reason) - 1);
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&ssid, &event));
+
+    memset(&event, 0, sizeof(event));
+    memset(&ssid, 0, sizeof(ssid));
+    ssid = make_detection(
+        DETECTION_SRC_WIFI_ASSOC,
+        "ssid:false-numeric",
+        "Notable SSID",
+        0.55f,
+        -47
+    );
+    strncpy(ssid.ssid, "1234567890", sizeof(ssid.ssid) - 1);
+    strncpy(ssid.class_reason, "Notable SSID", sizeof(ssid.class_reason) - 1);
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&ssid, &event));
+}
+
 void test_badge_flock_ble_name_produces_flock_camera(void)
 {
     badge_threat_event_t event;

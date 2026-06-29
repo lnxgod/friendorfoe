@@ -62,15 +62,21 @@ void test_wifi_oui_database_includes_flock_safety(void)
 
 void test_flock_ssid_patterns_are_notable_for_badge(void)
 {
+    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("Flock-Field-Bridge"));
+    TEST_ASSERT_EQUAL_STRING("Flock SSID",
+                             fof_policy_notable_ssid_label("Flock-Field-Bridge"));
+    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("FlockOS-Field-Bridge"));
+    TEST_ASSERT_EQUAL_STRING("Flock SSID",
+                             fof_policy_notable_ssid_label("FlockOS-Field-Bridge"));
     TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("Penguin-1234567890"));
     TEST_ASSERT_EQUAL_STRING("Flock SSID",
                              fof_policy_notable_ssid_label("Penguin-1234567890"));
     TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("ALPR-maint"));
     TEST_ASSERT_EQUAL_STRING("Flock SSID",
                              fof_policy_notable_ssid_label("ALPR-maint"));
-    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("1234567890"));
-    TEST_ASSERT_EQUAL_STRING("Flock SSID",
-                             fof_policy_notable_ssid_label("1234567890"));
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("FlockGuest"));
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("ALPRmaint"));
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("1234567890"));
     TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("123456789"));
 }
 
@@ -113,6 +119,12 @@ void test_privacy_wifi_signature_catalog_matches_key_ssids(void)
     TEST_ASSERT_NOT_NULL(tool);
     TEST_ASSERT_TRUE(tool->attack_tool);
     TEST_ASSERT_EQUAL_STRING("attack_tool:deauther", tool->class_reason);
+
+    const fof_privacy_wifi_signature_t *flock =
+        fof_privacy_match_wifi_ssid("FlockOS-Field-Bridge");
+    TEST_ASSERT_NOT_NULL(flock);
+    TEST_ASSERT_EQUAL_STRING("Flock Safety", flock->manufacturer);
+    TEST_ASSERT_EQUAL_STRING("privacy:alpr:flock", flock->class_reason);
 }
 
 void test_privacy_wifi_signature_catalog_rejects_broad_patterns(void)
@@ -120,6 +132,9 @@ void test_privacy_wifi_signature_catalog_rejects_broad_patterns(void)
     TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("HolyCowGuest"));
     TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("UFO-Arcade"));
     TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("Campus-WiFi"));
+    TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("MVP Guest"));
+    TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("FlockGuest"));
+    TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("ALPRmaint"));
 
     size_t count = 0;
     const fof_privacy_wifi_signature_t *signatures =

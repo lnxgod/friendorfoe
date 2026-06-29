@@ -113,7 +113,7 @@ for _brand, _device_class, _prefixes in (
 
 _SSID_FAMILY_PATTERNS = (
     {
-        "patterns": ("flock*", "flk-*", "alpr*", "penguin-*"),
+        "patterns": ("flock-*", "flock_*", "flockos*", "flk-*", "alpr-*", "alpr_*", "penguin-*"),
         "device_family": "camera_or_video",
         "device_class": "surveillance_camera",
         "confidence": 0.82,

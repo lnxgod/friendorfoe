@@ -181,6 +181,31 @@ class PrivacyViewModel @Inject constructor(
         badgeUsbRepository.requestStatus()
     }
 
+    fun setBadgeMode(mode: String) {
+        badgeUsbRepository.setMode(mode)
+    }
+
+    fun rebootBadge() {
+        badgeUsbRepository.rebootBadge()
+    }
+
+    fun badgeBootloader() {
+        badgeUsbRepository.enterBootloader()
+    }
+
+    fun relayBadgeScannerFirmware(uart: String) {
+        badgeUsbRepository.relayScannerFirmware(uart)
+    }
+
+    fun flashBadgeScannerFirmware(uart: String, name: String, firmware: ByteArray) {
+        badgeUsbRepository.flashScannerFirmware(
+            uart = uart,
+            name = name,
+            version = "android-upload",
+            firmware = firmware
+        )
+    }
+
     fun enablePhonePrivacyScanning() {
         if (skyObjectRepository.prefs.backendOnlyMode) {
             skyObjectRepository.prefs.backendOnlyMode = false

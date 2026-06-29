@@ -188,7 +188,6 @@ class GlassesDetector @Inject constructor(
 
         private val wifiSsidPatterns = listOf(
             // Hidden cameras / spy cameras — app ecosystems
-            WifiPattern("MV", "V380", "Hidden Camera", 0.85f, true),
             WifiPattern("V380-", "V380", "Hidden Camera", 0.85f, true),
             WifiPattern("YDXJ_", "YI", "IP Camera", 0.85f, true),
             WifiPattern("IPC-", "Generic", "IP Camera", 0.75f, true),
@@ -291,10 +290,12 @@ class GlassesDetector @Inject constructor(
             // Surveillance / ALPR cameras
             WifiPattern("Verkada-", "Verkada", "Surveillance Camera", 0.90f, true),
             WifiPattern("Rhombus-", "Rhombus", "Surveillance Camera", 0.85f, true),
-            WifiPattern("Flock", "Flock Safety", "ALPR Camera", 0.90f, true),
-            WifiPattern("Flock-", "Flock Safety", "ALPR Camera", 0.85f, true),
+            WifiPattern("Flock-", "Flock Safety", "ALPR Camera", 0.88f, true),
+            WifiPattern("Flock_", "Flock Safety", "ALPR Camera", 0.86f, true),
+            WifiPattern("FlockOS", "Flock Safety", "ALPR Camera", 0.86f, true),
             WifiPattern("FLK-", "Flock Safety", "ALPR Camera", 0.85f, true),
-            WifiPattern("ALPR", "Flock Safety", "ALPR Camera", 0.82f, true),
+            WifiPattern("ALPR-", "Flock Safety", "ALPR Camera", 0.82f, true),
+            WifiPattern("ALPR_", "Flock Safety", "ALPR Camera", 0.82f, true),
             WifiPattern("Penguin-", "Flock Safety", "ALPR Camera", 0.82f, true),
             WifiPattern("ELSAG-", "Leonardo", "ALPR Camera", 0.85f, true),
             // Smart speakers / hubs (setup AP mode)

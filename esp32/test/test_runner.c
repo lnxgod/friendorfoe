@@ -114,6 +114,7 @@ void test_badge_notable_ssid_ranks_above_flock_and_glasses(void);
 void test_badge_notable_ssid_suffixes_group_for_readability(void);
 void test_badge_teamcharitycase_ssid_is_suppressed(void);
 void test_badge_plain_fof_ssid_is_suppressed_as_ambient(void);
+void test_badge_broad_flock_like_ssids_are_suppressed(void);
 void test_badge_flock_ble_name_produces_flock_camera(void);
 void test_badge_flock_wifi_oui_produces_flock_camera_not_drone(void);
 void test_badge_privacy_evidence_survives_snapshot(void);
@@ -369,6 +370,7 @@ int main(void)
     RUN_TEST(test_badge_notable_ssid_suffixes_group_for_readability);
     RUN_TEST(test_badge_teamcharitycase_ssid_is_suppressed);
     RUN_TEST(test_badge_plain_fof_ssid_is_suppressed_as_ambient);
+    RUN_TEST(test_badge_broad_flock_like_ssids_are_suppressed);
     RUN_TEST(test_badge_flock_ble_name_produces_flock_camera);
     RUN_TEST(test_badge_flock_wifi_oui_produces_flock_camera_not_drone);
     RUN_TEST(test_badge_privacy_evidence_survives_snapshot);

@@ -24,7 +24,7 @@ async def client(monkeypatch: pytest.MonkeyPatch):
 def _smoke_batch(device_id: str = "uplink_SMOKE01") -> dict:
     return {
         "device_id": device_id,
-        "device_lat": 37.033,
+        "device_lat": 35.333,
         "device_lon": -122.444,
         "device_alt": 12.0,
         "timestamp": int(time.time()),

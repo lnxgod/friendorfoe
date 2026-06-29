@@ -1,5 +1,7 @@
 package com.friendorfoe.presentation.privacy
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,8 +16,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -187,6 +192,11 @@ fun PrivacyScreen(
             onDetail = viewModel::badgeToggleDetail,
             onBack = viewModel::badgeBackFromDetail,
             onRefresh = viewModel::refreshBadgeStatus,
+            onSetMode = viewModel::setBadgeMode,
+            onReboot = viewModel::rebootBadge,
+            onBootloader = viewModel::badgeBootloader,
+            onRelayScannerFirmware = viewModel::relayBadgeScannerFirmware,
+            onFlashScannerFirmware = viewModel::flashBadgeScannerFirmware,
             onApplyDisplayPolicy = viewModel::applyBadgeDisplayPolicy,
             onResetDisplayPolicy = viewModel::resetBadgeDisplayPolicy,
             onApplyTheme = viewModel::applyBadgeTheme,
@@ -427,6 +437,11 @@ private fun BadgeDetailPanel(
     onDetail: () -> Unit,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
+    onSetMode: (String) -> Unit,
+    onReboot: () -> Unit,
+    onBootloader: () -> Unit,
+    onRelayScannerFirmware: (String) -> Unit,
+    onFlashScannerFirmware: (String, String, ByteArray) -> Unit,
     onApplyDisplayPolicy: (BadgeDisplayPolicy) -> Unit,
     onResetDisplayPolicy: () -> Unit,
     onApplyTheme: (BadgeTheme) -> Unit,
@@ -442,6 +457,7 @@ private fun BadgeDetailPanel(
     val accent = badgeHealthColor(status)
     var filtersExpanded by remember { mutableStateOf(false) }
     var appearanceExpanded by remember { mutableStateOf(false) }
+    var operationsExpanded by remember { mutableStateOf(false) }
     var draftPolicy by remember { mutableStateOf(status.displayPolicy) }
     var draftTheme by remember { mutableStateOf(status.theme) }
     LaunchedEffect(status.displayPolicyHash) {
@@ -459,7 +475,7 @@ private fun BadgeDetailPanel(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Badge Detail Panel",
+                    text = "Badge Control Center",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = accent
@@ -572,6 +588,17 @@ private fun BadgeDetailPanel(
 
         if (connected) {
             Spacer(modifier = Modifier.height(8.dp))
+            BadgeOperationsSection(
+                expanded = operationsExpanded,
+                onExpandedChange = { operationsExpanded = it },
+                state = state,
+                onSetMode = onSetMode,
+                onReboot = onReboot,
+                onBootloader = onBootloader,
+                onRelayScannerFirmware = onRelayScannerFirmware,
+                onFlashScannerFirmware = onFlashScannerFirmware
+            )
+            Spacer(modifier = Modifier.height(8.dp))
             BadgeAppearanceSection(
                 expanded = appearanceExpanded,
                 onExpandedChange = { appearanceExpanded = it },
@@ -604,6 +631,171 @@ private fun BadgeDetailPanel(
 
         status.entities.take(6).forEach { entity ->
             BadgeEntityRow(entity = entity, onClick = { onEntityDetails(entity) })
+        }
+    }
+}
+
+@Composable
+private fun BadgeOperationsSection(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    state: BadgeUsbState,
+    onSetMode: (String) -> Unit,
+    onReboot: () -> Unit,
+    onBootloader: () -> Unit,
+    onRelayScannerFirmware: (String) -> Unit,
+    onFlashScannerFirmware: (String, String, ByteArray) -> Unit
+) {
+    val context = LocalContext.current
+    var pendingFirmwareUart by remember { mutableStateOf("ble") }
+    val firmwarePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val bytes = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            }.getOrNull()
+            if (bytes != null && bytes.isNotEmpty()) {
+                val name = uri.lastPathSegment
+                    ?.substringAfterLast('/')
+                    ?.substringAfterLast(':')
+                    ?.ifBlank { null }
+                    ?: "scanner-s3-combo-fof_badge.bin"
+                onFlashScannerFirmware(pendingFirmwareUart, name, bytes)
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                MaterialTheme.colorScheme.surface.copy(alpha = 0.45f),
+                MaterialTheme.shapes.small
+            )
+            .padding(8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Badge Operations",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = listOfNotNull(
+                        state.transportLabel.ifBlank { null },
+                        state.controlStatus?.modeLabel?.ifBlank { null },
+                        state.firmwareProgress?.stage?.ifBlank { null }
+                    ).joinToString("  |  ").ifBlank { state.message },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            OutlinedButton(onClick = { onExpandedChange(!expanded) }) {
+                Text(if (expanded) "Hide" else "Open")
+            }
+        }
+
+        if (!expanded) return@Column
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Mode",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            OutlinedButton(
+                onClick = { onSetMode("local_ap") },
+                modifier = Modifier.weight(1f)
+            ) { Text("Local AP", maxLines = 1) }
+            OutlinedButton(
+                onClick = { onSetMode("backend") },
+                modifier = Modifier.weight(1f)
+            ) { Text("Backend", maxLines = 1) }
+            OutlinedButton(
+                onClick = { onSetMode("usb_only") },
+                modifier = Modifier.weight(1f)
+            ) { Text("USB", maxLines = 1) }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Scanner Firmware",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Button(
+                onClick = {
+                    pendingFirmwareUart = "ble"
+                    firmwarePicker.launch(arrayOf("application/octet-stream", "*/*"))
+                },
+                modifier = Modifier.weight(1f)
+            ) { Text("BLE Slot", maxLines = 1) }
+            Button(
+                onClick = {
+                    pendingFirmwareUart = "wifi"
+                    firmwarePicker.launch(arrayOf("application/octet-stream", "*/*"))
+                },
+                modifier = Modifier.weight(1f)
+            ) { Text("WiFi Slot", maxLines = 1) }
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp)
+        ) {
+            OutlinedButton(
+                onClick = { onRelayScannerFirmware("ble") },
+                modifier = Modifier.weight(1f)
+            ) { Text("Relay BLE", maxLines = 1) }
+            OutlinedButton(
+                onClick = { onRelayScannerFirmware("wifi") },
+                modifier = Modifier.weight(1f)
+            ) { Text("Relay WiFi", maxLines = 1) }
+        }
+
+        state.firmwareProgress?.let { progress ->
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = progress.error.ifBlank {
+                    "${progress.kind} ${progress.uart.ifBlank { "scanner" }} ${progress.stage} ${progress.percent}%"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (progress.error.isBlank()) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            OutlinedButton(
+                onClick = onReboot,
+                modifier = Modifier.weight(1f)
+            ) { Text("Reboot", maxLines = 1) }
+            OutlinedButton(
+                onClick = onBootloader,
+                modifier = Modifier.weight(1f)
+            ) { Text("Bootloader", maxLines = 1) }
         }
     }
 }

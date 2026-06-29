@@ -2,6 +2,7 @@ package com.friendorfoe.detection
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class PrivacyCategoryMappingTest {
@@ -54,6 +55,40 @@ class PrivacyCategoryMappingTest {
         assertNotNull(penguin)
         assertEquals(PrivacyCategory.ALPR_CAMERA, penguin!!.category)
         assertEquals("Flock Safety", penguin.manufacturer)
+
+        val flockOs = GlassesDetector.checkWifiSsid(
+            ssid = "FlockOS-Field-Bridge",
+            bssid = "AA:BB:CC:00:00:06",
+            rssi = -60
+        )
+        assertNotNull(flockOs)
+        assertEquals(PrivacyCategory.ALPR_CAMERA, flockOs!!.category)
+        assertEquals("Flock Safety", flockOs.manufacturer)
+    }
+
+    @Test
+    fun rejects_broad_wifi_privacy_false_positives() {
+        assertNull(
+            GlassesDetector.checkWifiSsid(
+                ssid = "MVP Guest",
+                bssid = "AA:BB:CC:00:00:06",
+                rssi = -52
+            )
+        )
+        assertNull(
+            GlassesDetector.checkWifiSsid(
+                ssid = "FlockGuest",
+                bssid = "AA:BB:CC:00:00:07",
+                rssi = -52
+            )
+        )
+        assertNull(
+            GlassesDetector.checkWifiSsid(
+                ssid = "1234567890",
+                bssid = "AA:BB:CC:00:00:08",
+                rssi = -52
+            )
+        )
     }
 
     @Test

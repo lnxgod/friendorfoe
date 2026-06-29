@@ -122,7 +122,7 @@ async def test_detection_batch_round_trips_time_sync_to_node_status(client: Asyn
         "/detections/drones",
         json={
             "device_id": "uplink_TIME01",
-            "device_lat": 37.0,
+            "device_lat": 35.3,
             "device_lon": -122.3,
             "device_alt": 0.0,
             "timestamp": int(time.time()),

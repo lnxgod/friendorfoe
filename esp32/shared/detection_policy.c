@@ -2,7 +2,6 @@
 
 #include "detection_types.h"
 
-#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -40,6 +39,22 @@ static bool ascii_eq_nocase(const char *a, const char *b)
         b++;
     }
     return *a == '\0' && *b == '\0';
+}
+
+static bool ascii_starts_nocase(const char *text, const char *prefix)
+{
+    if (!text || !prefix || prefix[0] == '\0') {
+        return false;
+    }
+    while (*prefix) {
+        if (*text == '\0' ||
+            ascii_tolower_char(*text) != ascii_tolower_char(*prefix)) {
+            return false;
+        }
+        text++;
+        prefix++;
+    }
+    return true;
 }
 
 static bool ascii_contains_nocase(const char *haystack, const char *needle)
@@ -110,20 +125,15 @@ static bool ssid_mentions_camera(const char *ssid)
 
 static bool ssid_mentions_flock(const char *ssid)
 {
-    bool legacy_numeric = false;
-    if (ssid) {
-        size_t len = strlen(ssid);
-        legacy_numeric = len == 10;
-        for (size_t i = 0; legacy_numeric && i < len; i++) {
-            legacy_numeric = isdigit((unsigned char)ssid[i]) != 0;
-        }
-    }
-    return ascii_contains_nocase(ssid, "flock") ||
-           ascii_contains_nocase(ssid, "flockos") ||
-           ascii_contains_nocase(ssid, "flk-") ||
-           ascii_contains_nocase(ssid, "alpr") ||
-           ascii_contains_nocase(ssid, "penguin-") ||
-           legacy_numeric;
+    return ascii_eq_nocase(ssid, "flock") ||
+           ascii_starts_nocase(ssid, "flock-") ||
+           ascii_starts_nocase(ssid, "flock_") ||
+           ascii_starts_nocase(ssid, "flockos") ||
+           ascii_starts_nocase(ssid, "flk-") ||
+           ascii_eq_nocase(ssid, "alpr") ||
+           ascii_starts_nocase(ssid, "alpr-") ||
+           ascii_starts_nocase(ssid, "alpr_") ||
+           ascii_starts_nocase(ssid, "penguin-");
 }
 
 bool fof_policy_probe_should_ignore_broadcast(const char *ssid)
@@ -184,8 +194,7 @@ bool fof_policy_ssid_is_notable(const char *ssid)
 
     static const char *tokens[] = {
         "defcon", "dc33", "drone", "uav", "fpv", "remoteid",
-        "remote-id", "camera", "flock", "flockos", "flk-",
-        "alpr", "penguin-", "skimmer",
+        "remote-id", "camera", "skimmer",
         "pwnagotchi", "marauder", "pineapple", "deauther", "pwned", "pwnd",
         "evil", "twin",
     };

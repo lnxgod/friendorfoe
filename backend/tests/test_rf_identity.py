@@ -223,6 +223,33 @@ def test_flock_penguin_ssid_adds_alpr_camera_family():
     assert meta["family_source"] == "privacy_rf_signature"
 
 
+def test_flockos_ssid_adds_alpr_camera_family():
+    meta = enrich_rf_evidence(
+        source="wifi_ap_inventory",
+        bssid="AA:BB:CC:12:34:57",
+        ssid="FlockOS-Field-Bridge",
+        classification="wifi_device",
+    )
+
+    assert meta["device_family"] == "camera_or_video"
+    assert meta["device_class"] == "surveillance_camera"
+    assert meta["family_source"] == "privacy_rf_signature"
+
+
+@pytest.mark.parametrize("ssid", ["FlockGuest", "ALPRmaint", "1234567890"])
+def test_broad_flock_like_ssids_do_not_add_alpr_camera_family(ssid):
+    meta = enrich_rf_evidence(
+        source="wifi_ap_inventory",
+        bssid="AA:BB:CC:12:34:58",
+        ssid=ssid,
+        classification="wifi_device",
+    )
+
+    assert meta["device_family"] != "camera_or_video"
+    assert meta["device_class"] != "surveillance_camera"
+    assert meta["family_source"] != "privacy_rf_signature"
+
+
 def test_randomized_wled_ssid_gets_iot_family_not_fake_brand():
     meta = enrich_rf_evidence(
         source="wifi_ap_inventory",

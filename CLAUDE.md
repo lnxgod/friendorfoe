@@ -1,6 +1,9 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This legacy file remains for older Claude Code tooling. Codex is now the
+primary engineering orchestrator for this repository; use `AGENTS.md` as the
+current agent contract for repo structure, commands, testing, PR notes, and
+security guidance.
 
 ## Project Overview
 
