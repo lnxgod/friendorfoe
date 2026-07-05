@@ -216,7 +216,7 @@ internal fun AircraftDetailContent(
             DetailRow("Registration", detail?.registration ?: aircraft.registration ?: "Unknown")
             DetailRow("Type", detail?.aircraftType ?: aircraft.aircraftType ?: "Unknown")
             DetailRow("Model", detail?.aircraftDescription ?: aircraft.aircraftModel ?: "Unknown")
-            DetailRow("Operator", detail?.operator ?: aircraft.airline ?: "Unknown")
+            DetailRow("Operator", detail?.operator ?: aircraft.operatorName ?: aircraft.airline ?: "Unknown")
             IcaoCountryLookup.countryFromIcaoHex(aircraft.icaoHex)?.let { country ->
                 DetailRow("Country", country)
             }
@@ -802,7 +802,7 @@ private fun AircraftHeader(aircraft: Aircraft, detail: AircraftDetailDto?) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                 )
-                val airline = detail?.operator ?: aircraft.airline
+                val airline = detail?.operator ?: aircraft.operatorName ?: aircraft.airline
                 if (airline != null) {
                     Text(
                         text = airline,

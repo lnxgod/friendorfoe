@@ -84,6 +84,7 @@ class AircraftRepository @Inject constructor(
     }
 
     private val detailCache = ConcurrentHashMap<String, CachedDetail>()
+    private val metadataCache = ConcurrentHashMap<String, CachedDetail>()
 
     /**
      * Fetch nearby aircraft from all ADS-B providers in parallel and merge results.
@@ -131,9 +132,18 @@ class AircraftRepository @Inject constructor(
             }
         }
 
+        val tacticalEnricher = AircraftTacticalEnricher { aircraft ->
+            getAircraftMetadata(aircraft.icaoHex)
+        }
+        val enrichedAircraft = tacticalEnricher.enrichAircraft(
+            userLatitude = latitude,
+            userLongitude = longitude,
+            aircraft = merged.values.toList()
+        )
+
         val finalSource = if (contributingSources.size > 1) DataSource.MULTI else contributingSources.first()
-        Log.d(TAG, "Multi-source merged: ${merged.size} aircraft from ${contributingSources.joinToString()}")
-        Result.success(NearbyResult(aircraft = merged.values.toList(), source = finalSource))
+        Log.d(TAG, "Multi-source merged: ${enrichedAircraft.size} aircraft from ${contributingSources.joinToString()}")
+        Result.success(NearbyResult(aircraft = enrichedAircraft, source = finalSource))
     }
 
     private suspend fun fetchAdsbFi(lat: Double, lon: Double, radiusNm: Int): Pair<List<Aircraft>, DataSource>? {
@@ -275,6 +285,48 @@ class AircraftRepository @Inject constructor(
     }
 
     /**
+     * Fetch lightweight owner/type/registration metadata for close-range alert classification.
+     *
+     * This intentionally uses a separate cache from full detail lookups so alert enrichment
+     * does not replace a later detail-screen response that may include route information.
+     */
+    private suspend fun getAircraftMetadata(icaoHex: String): AircraftDetailDto? {
+        val key = icaoHex.lowercase()
+        metadataCache[key]?.let { cached ->
+            if (!cached.isExpired()) {
+                return cached.detail
+            } else {
+                metadataCache.remove(key)
+            }
+        }
+
+        return try {
+            val hexDbData = hexDbApi.getAircraft(icaoHex.uppercase())
+            val detail = AircraftDetailDto(
+                icaoHex = key,
+                callsign = null,
+                registration = hexDbData.registration,
+                aircraftType = hexDbData.icaoTypeCode,
+                aircraftDescription = hexDbData.type,
+                operator = hexDbData.registeredOwners,
+                photo = null,
+                route = null,
+                country = null
+            )
+
+            if (metadataCache.size >= DETAIL_CACHE_MAX_SIZE) {
+                val oldest = metadataCache.entries.minByOrNull { it.value.timestampMs }
+                oldest?.let { metadataCache.remove(it.key) }
+            }
+            metadataCache[key] = CachedDetail(detail)
+            detail
+        } catch (e: Exception) {
+            Log.d(TAG, "HexDB tactical metadata unavailable for $icaoHex: ${e.message}")
+            null
+        }
+    }
+
+    /**
      * Convert an ADSBx v2 format aircraft (adsb.fi / airplanes.live) to an Aircraft domain object.
      * Converts units: alt_baro ft→m, gs knots→m/s, baro_rate fpm→m/s.
      */
@@ -284,7 +336,7 @@ class AircraftRepository @Inject constructor(
 
         // alt_baro can be Int or "ground"
         val altitudeM = when (altBaro) {
-            is Number -> (altBaro as Number).toDouble() * FT_TO_M
+            is Number -> altBaro.toDouble() * FT_TO_M
             "ground", "Ground" -> 0.0
             else -> altGeom?.let { it.toDouble() * FT_TO_M } ?: 0.0
         }
@@ -302,6 +354,8 @@ class AircraftRepository @Inject constructor(
             ownerName = ownerOperator,
             operatorName = operator
         )
+        val cleanOperator = ownerOperator?.trim()?.ifBlank { null }
+            ?: operator?.trim()?.ifBlank { null }
 
         return Aircraft(
             id = icao,
@@ -324,6 +378,7 @@ class AircraftRepository @Inject constructor(
                 AircraftDatabase.matchByTypeCode(typeCode)?.name
             },
             airline = cleanCallsign?.let { AirlineLookup.matchByCallsign(it)?.name },
+            operatorName = cleanOperator,
             squawk = squawk,
             isOnGround = onGround,
             classificationSignals = signals.ifEmpty { null }

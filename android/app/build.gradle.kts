@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 97
-        versionName = "0.64.54-android-stronger-police-military"
+        versionCode = 98
+        versionName = "0.64.55-android-police-owner-enrichment"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

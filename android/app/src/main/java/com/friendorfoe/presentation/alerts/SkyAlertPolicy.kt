@@ -147,11 +147,7 @@ class SkyAlertPolicy(
             priority: Int
         ): SkyAlertCandidate? {
             if (rangeRequired && aircraft.distanceMeters == null) return null
-            val label = aircraft.callsign
-                ?: aircraft.registration
-                ?: aircraft.aircraftModel
-                ?: aircraft.aircraftType
-                ?: aircraft.icaoHex
+            val label = aircraft.alertLabel()
             val distanceText = aircraft.distanceMeters?.let(::formatDistance)
             return SkyAlertCandidate(
                 key = "sky:$keyPrefix:${aircraft.id}",
@@ -160,6 +156,22 @@ class SkyAlertPolicy(
                 priority = priority,
                 distanceMeters = aircraft.distanceMeters
             )
+        }
+
+        private fun Aircraft.alertLabel(): String {
+            val identifier = callsign
+                ?: registration
+                ?: aircraftModel
+                ?: aircraftType
+                ?: icaoHex
+            return if (
+                category in setOf(ObjectCategory.GOVERNMENT, ObjectCategory.MILITARY) &&
+                !operatorName.isNullOrBlank()
+            ) {
+                listOf(operatorName, identifier).joinToString(" - ")
+            } else {
+                identifier
+            }
         }
 
         private fun Aircraft.isWithinTacticalRange(): Boolean =

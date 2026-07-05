@@ -29,7 +29,7 @@ object FilterEngine {
             val searchable = when (obj) {
                 is Aircraft -> listOfNotNull(
                     obj.callsign, obj.registration, obj.icaoHex,
-                    obj.aircraftModel, obj.aircraftType, obj.airline
+                    obj.aircraftModel, obj.aircraftType, obj.airline, obj.operatorName
                 )
                 is Drone -> listOfNotNull(
                     obj.droneId, obj.manufacturer, obj.model, obj.ssid

@@ -21,6 +21,7 @@ import java.time.Instant
  * @property aircraftType ICAO type designator (e.g., "B738"), null if unknown
  * @property aircraftModel Human-readable model (e.g., "Boeing 737-800"), null if unknown
  * @property airline Operating airline name, null if unknown or private
+ * @property operatorName Registered owner/operator name from ADS-B metadata or enrichment
  * @property origin Departure airport IATA code, null if unknown
  * @property destination Arrival airport IATA code, null if unknown
  * @property squawk Transponder squawk code, null if not available
@@ -44,6 +45,7 @@ data class Aircraft(
     val aircraftType: String? = null,
     val aircraftModel: String? = null,
     val airline: String? = null,
+    val operatorName: String? = null,
     val origin: String? = null,
     val destination: String? = null,
     val squawk: String? = null,

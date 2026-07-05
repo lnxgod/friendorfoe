@@ -89,6 +89,22 @@ class SkyAlertPolicyTest {
     }
 
     @Test
+    fun policeAlertBodyIncludesOperatorNameWhenAvailable() {
+        val candidate = SkyAlertPolicy.candidateFor(
+            aircraft(
+                category = ObjectCategory.GOVERNMENT,
+                distanceMeters = 10.0 * METERS_PER_MILE,
+                operatorName = "SAN DIEGO COUNTY SHERIFF"
+            ),
+            settings
+        )
+
+        assertNotNull(candidate)
+        requireNotNull(candidate)
+        assertTrue(candidate.body.contains("SAN DIEGO COUNTY SHERIFF"))
+    }
+
+    @Test
     fun disabledSettingsSuppressCandidates() {
         val disabled = SkyAlertSettings(
             droneAlertsEnabled = false,
@@ -144,7 +160,8 @@ class SkyAlertPolicyTest {
 
     private fun aircraft(
         category: ObjectCategory,
-        distanceMeters: Double?
+        distanceMeters: Double?,
+        operatorName: String? = null
     ) = Aircraft(
         id = "aircraft-$category",
         position = Position(37.0, -122.0, 1000.0),
@@ -153,7 +170,8 @@ class SkyAlertPolicyTest {
         lastUpdated = NOW,
         distanceMeters = distanceMeters,
         icaoHex = "ABC123",
-        callsign = category.name.take(6)
+        callsign = category.name.take(6),
+        operatorName = operatorName
     )
 
     companion object {
