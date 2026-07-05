@@ -186,7 +186,7 @@ class AppleContinuityDecoderTest {
     }
 
     @Test
-    fun `Nearby Info still classifies as Apple Continuity when not listening`() {
+    fun `idle Nearby Info does not surface as Apple Continuity row`() {
         val bytes = byteArrayOf(
             0x10,
             0x01, 0x02, 0x03,  // auth
@@ -197,9 +197,35 @@ class AppleContinuityDecoderTest {
 
         val match = GlassesDetector.appleContinuityMatchForTest(result, rssi = -82)
 
+        assertNull(match)
+    }
+
+    @Test
+    fun `known Nearby Action classifies as Apple Continuity row`() {
+        val bytes = byteArrayOf(
+            0x0F,
+            0x0B,              // Wi-Fi Password Share
+            0x11, 0x22, 0x33,
+            0x00
+        )
+        val result = AppleContinuityDecoder.decode(bytes)!!
+
+        val match = GlassesDetector.appleContinuityMatchForTest(result, rssi = -82)
+
         assertNotNull(match)
-        assertEquals("Apple Continuity Nearby Info", match!!.second)
-        assertTrue(match.third.startsWith("apple_continuity:"))
+        assertEquals("Apple Continuity Nearby Action", match!!.second)
+        assertEquals("apple_continuity:Wi-Fi Password Share", match.third)
+    }
+
+    @Test
+    fun `AirPods subtype classifies as Apple Continuity row`() {
+        val result = AppleContinuityDecoder.decode(byteArrayOf(0x07, 0x19, 0x01, 0x02, 0x20, 0x75))!!
+
+        val match = GlassesDetector.appleContinuityMatchForTest(result, rssi = -82)
+
+        assertNotNull(match)
+        assertEquals("Apple Continuity AirPods", match!!.second)
+        assertEquals("apple_continuity:AirPods", match.third)
     }
 
     @Test

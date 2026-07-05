@@ -531,23 +531,28 @@ class GlassesDetector @Inject constructor(
             rssi: Int,
         ): Triple<Float, String, String>? {
             val continuity = apple ?: return null
-            val type = when (continuity.subType) {
-                BleSignatures.APPLE_NEARBY_INFO -> "Apple Continuity Nearby Info"
-                BleSignatures.APPLE_NEARBY_ACTION -> "Apple Continuity Nearby Action"
-                BleSignatures.APPLE_AIRDROP -> "Apple AirDrop"
-                BleSignatures.APPLE_HANDOFF -> "Apple Handoff"
-                BleSignatures.APPLE_AIRPLAY -> "Apple Continuity AirPlay"
-                BleSignatures.APPLE_TETHER_SOURCE -> "Apple Continuity iPhone Tethering"
-                BleSignatures.APPLE_TETHER_TARGET -> "Apple Continuity Tether Target"
-                BleSignatures.APPLE_AIRPODS -> "Apple Continuity AirPods"
+            val (type, detail, baseConfidence) = when (continuity.subType) {
+                BleSignatures.APPLE_NEARBY_INFO -> return null
+                BleSignatures.APPLE_NEARBY_ACTION -> {
+                    val action = continuity.nearbyActionSubType
+                        ?.let(BleSignatures::nearbyActionName)
+                        ?: return null
+                    Triple("Apple Continuity Nearby Action", action, 0.66f)
+                }
+                BleSignatures.APPLE_AIRDROP -> Triple("Apple AirDrop", "AirDrop", 0.64f)
+                BleSignatures.APPLE_HANDOFF -> Triple("Apple Handoff", "Handoff", 0.64f)
+                BleSignatures.APPLE_AIRPLAY -> Triple("Apple Continuity AirPlay", "AirPlay", 0.64f)
+                BleSignatures.APPLE_TETHER_SOURCE -> {
+                    Triple("Apple Continuity iPhone Tethering", "Personal Hotspot source", 0.68f)
+                }
+                BleSignatures.APPLE_TETHER_TARGET -> {
+                    Triple("Apple Continuity Tether Target", "Personal Hotspot target", 0.62f)
+                }
+                BleSignatures.APPLE_AIRPODS -> Triple("Apple Continuity AirPods", "AirPods", 0.66f)
                 else -> return null
             }
             val close = rssi >= -70
-            val confidence = if (close) 0.66f else 0.60f
-            val detail = continuity.flagLabel()
-                ?: continuity.nearbyActionSubType
-                    ?.let(BleSignatures::nearbyActionName)
-                ?: continuity.enrichedLabel()
+            val confidence = if (close) (baseConfidence + 0.04f).coerceAtMost(0.74f) else baseConfidence
             return Triple(confidence, type, "apple_continuity:$detail")
         }
     }

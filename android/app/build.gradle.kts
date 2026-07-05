@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 93
-        versionName = "0.64.50-android-wifi-apple-details"
+        versionCode = 94
+        versionName = "0.64.51-android-continuity-tighten"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
