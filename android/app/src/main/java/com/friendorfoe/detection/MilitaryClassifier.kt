@@ -5,10 +5,11 @@ import com.friendorfoe.domain.model.ObjectCategory
 /**
  * Multi-signal scoring classifier for military and government aircraft.
  *
- * Uses three signal types from ADS-B data:
+ * Uses live ADS-B and metadata signals:
  * 1. ICAO hex address ranges (known military allocations)
  * 2. Callsign patterns (military/government call prefixes)
  * 3. ICAO type designator codes (military aircraft types)
+ * 4. readsb database flags and owner/operator names when feeds provide them
  *
  * Scoring: each signal contributes a score. If the total meets the threshold,
  * the aircraft is classified as MILITARY or GOVERNMENT.
@@ -31,13 +32,44 @@ object MilitaryClassifier {
         icaoHex: String?,
         callsign: String?,
         typeCode: String?,
-        registration: String?
+        registration: String?,
+        dbFlags: Int? = null,
+        ownerName: String? = null,
+        operatorName: String? = null
     ): ClassificationResult {
         val signals = mutableListOf<String>()
         var score = 0
         var isGovernment = false
 
-        // Signal 1: ICAO hex range
+        // Signal 1: readsb/tar1090 database flags. Bit 0 marks military aircraft
+        // when the upstream receiver has a database file loaded.
+        if (dbFlags != null && dbFlags and 1 == 1) {
+            score += 45
+            signals.add("DBFLAGS:MILITARY")
+        }
+
+        // Signal 2: public aircraft registration patterns
+        if (registration != null) {
+            val regResult = checkRegistration(registration.uppercase().trim())
+            if (regResult != null) {
+                score += 45
+                signals.add("REG:${regResult.tag}")
+                if (regResult.isGovernment) isGovernment = true
+            }
+        }
+
+        // Signal 3: owner/operator names from aircraft databases, when present.
+        for (name in listOfNotNull(ownerName, operatorName)) {
+            val ownerResult = checkOwner(name.uppercase().trim())
+            if (ownerResult != null) {
+                score += 45
+                signals.add("OWNER:${ownerResult.tag}")
+                if (ownerResult.isGovernment) isGovernment = true
+                break
+            }
+        }
+
+        // Signal 4: ICAO hex range
         if (icaoHex != null) {
             val hexResult = checkIcaoHex(icaoHex.lowercase())
             if (hexResult != null) {
@@ -47,17 +79,17 @@ object MilitaryClassifier {
             }
         }
 
-        // Signal 2: Callsign pattern
+        // Signal 5: Callsign pattern
         if (callsign != null) {
             val csResult = checkCallsign(callsign.uppercase().trim())
             if (csResult != null) {
-                score += 35
+                score += csResult.score
                 signals.add("CALLSIGN:${csResult.tag}")
                 if (csResult.isGovernment) isGovernment = true
             }
         }
 
-        // Signal 3: Type code
+        // Signal 6: Type code
         if (typeCode != null) {
             val typeResult = checkTypeCode(typeCode.uppercase().trim())
             if (typeResult != null) {
@@ -168,7 +200,8 @@ object MilitaryClassifier {
     private data class CallsignPattern(
         val regex: Regex,
         val tag: String,
-        val isGovernment: Boolean = false
+        val isGovernment: Boolean = false,
+        val score: Int = 35
     )
 
     private val callsignPatterns: List<CallsignPattern> by lazy {
@@ -216,33 +249,94 @@ object MilitaryClassifier {
             CallsignPattern(Regex("^CNF\\d+"), "CANADIAN_AF"),
             CallsignPattern(Regex("^ASF\\d+"), "AUSTRALIAN_AF"),
             // Government / law enforcement
-            CallsignPattern(Regex("^EXEC\\d*"), "EXECUTIVE", isGovernment = true),
-            CallsignPattern(Regex("^SAMP\\d+"), "SAM_PRIORITY", isGovernment = true),
-            CallsignPattern(Regex("^COAST\\d+"), "COAST_GUARD", isGovernment = true),
-            CallsignPattern(Regex("^CBP\\d+"), "CBP", isGovernment = true),
-            CallsignPattern(Regex("^PAT\\d+"), "BORDER_PATROL", isGovernment = true),
-            CallsignPattern(Regex("^COPTER\\d+"), "LAW_ENFORCEMENT", isGovernment = true),
-            CallsignPattern(Regex("^OMAHA\\d*"), "SECRET_SERVICE", isGovernment = true),
-            CallsignPattern(Regex("^SWORD\\d+"), "US_MARSHALS", isGovernment = true),
-            CallsignPattern(Regex("^TIGER\\d+"), "DEA", isGovernment = true),
-            CallsignPattern(Regex("^ICE\\d+"), "ICE", isGovernment = true),
-            CallsignPattern(Regex("^NARC\\d+"), "DRUG_ENFORCEMENT", isGovernment = true),
-            CallsignPattern(Regex("^FED\\d+"), "FEDERAL", isGovernment = true),
-            CallsignPattern(Regex("^TROOPER\\d+"), "STATE_POLICE", isGovernment = true),
-            CallsignPattern(Regex("^NIGHTWATCH"), "NAOC", isGovernment = true),
-            CallsignPattern(Regex("^ANGEL\\d+"), "PRESIDENTIAL_SUPPORT", isGovernment = true),
+            CallsignPattern(Regex("^EXEC\\d*"), "EXECUTIVE", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^SAMP\\d+"), "SAM_PRIORITY", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^COAST\\d+"), "COAST_GUARD", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^CBP\\d+"), "CBP", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^PAT\\d+"), "BORDER_PATROL", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^USBP\\d*"), "BORDER_PATROL", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^COPTER\\d*"), "LAW_ENFORCEMENT", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^POLICE\\d*"), "LAW_ENFORCEMENT", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^SHERIFF\\d*"), "LAW_ENFORCEMENT", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^PATROL\\d*"), "LAW_ENFORCEMENT", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^TROOPER\\d*"), "STATE_POLICE", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^CHP\\d*"), "HIGHWAY_PATROL", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^NYPD\\d*"), "LAW_ENFORCEMENT", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^LAPD\\d*"), "LAW_ENFORCEMENT", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^FBI\\d*"), "FBI", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^DEA\\d*"), "DEA", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^DHS\\d*"), "DHS", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^OMAHA\\d*"), "SECRET_SERVICE", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^SWORD\\d+"), "US_MARSHALS", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^TIGER\\d+"), "DEA", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^ICE\\d+"), "ICE", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^NARC\\d+"), "DRUG_ENFORCEMENT", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^FED\\d+"), "FEDERAL", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^NIGHTWATCH"), "NAOC", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^ANGEL\\d+"), "PRESIDENTIAL_SUPPORT", isGovernment = true, score = 45),
             // Emergency / medevac
             CallsignPattern(Regex("^LIFEGUARD"), "LIFEGUARD"),
             CallsignPattern(Regex("^MEDEVAC"), "MEDEVAC"),
         )
     }
 
-    private data class CallsignResult(val tag: String, val isGovernment: Boolean)
+    private data class CallsignResult(val tag: String, val isGovernment: Boolean, val score: Int)
 
     private fun checkCallsign(callsign: String): CallsignResult? {
         for (pattern in callsignPatterns) {
             if (pattern.regex.containsMatchIn(callsign)) {
-                return CallsignResult(tag = pattern.tag, isGovernment = pattern.isGovernment)
+                return CallsignResult(
+                    tag = pattern.tag,
+                    isGovernment = pattern.isGovernment,
+                    score = pattern.score
+                )
+            }
+        }
+        return null
+    }
+
+    // ---- Public registration and ownership signals ----
+
+    private data class RegistrationResult(val tag: String, val isGovernment: Boolean)
+
+    private fun checkRegistration(registration: String): RegistrationResult? {
+        return if (Regex("^N[1-9][0-9]?$").matches(registration)) {
+            RegistrationResult("FAA_INTERNAL", isGovernment = true)
+        } else {
+            null
+        }
+    }
+
+    private data class OwnerPattern(
+        val regex: Regex,
+        val tag: String,
+        val isGovernment: Boolean
+    )
+
+    private val ownerPatterns: List<OwnerPattern> by lazy {
+        listOf(
+            OwnerPattern(Regex("\\b(USAF|UNITED STATES AIR FORCE|US AIR FORCE)\\b"), "USAF", false),
+            OwnerPattern(Regex("\\b(US ARMY|UNITED STATES ARMY|DEPARTMENT OF THE ARMY)\\b"), "US_ARMY", false),
+            OwnerPattern(Regex("\\b(US NAVY|UNITED STATES NAVY|DEPARTMENT OF THE NAVY)\\b"), "US_NAVY", false),
+            OwnerPattern(Regex("\\b(US MARINE CORPS|UNITED STATES MARINE CORPS)\\b"), "USMC", false),
+            OwnerPattern(Regex("\\b(NATIONAL GUARD|AIR NATIONAL GUARD)\\b"), "NATIONAL_GUARD", false),
+            OwnerPattern(Regex("\\b(POLICE|SHERIFF|HIGHWAY PATROL|STATE TROOPER|PUBLIC SAFETY)\\b"), "PUBLIC_SAFETY", true),
+            OwnerPattern(Regex("\\b(DEPT OF PUBLIC SAFETY|DEPARTMENT OF PUBLIC SAFETY)\\b"), "PUBLIC_SAFETY", true),
+            OwnerPattern(Regex("\\b(BORDER PATROL|CUSTOMS|CBP|HOMELAND SECURITY|DHS)\\b"), "FEDERAL_ENFORCEMENT", true),
+            OwnerPattern(Regex("\\b(FBI|DEA|US MARSHAL|UNITED STATES MARSHAL|SECRET SERVICE)\\b"), "FEDERAL_ENFORCEMENT", true),
+            OwnerPattern(Regex("\\b(COAST GUARD|USCG)\\b"), "COAST_GUARD", true),
+            OwnerPattern(Regex("\\b(STATE OF|CITY OF|COUNTY OF|COMMONWEALTH OF)\\b"), "GOV_OWNER", true),
+            OwnerPattern(Regex("\\b(FEDERAL AVIATION ADMINISTRATION|FAA)\\b"), "FAA", true)
+        )
+    }
+
+    private data class OwnerResult(val tag: String, val isGovernment: Boolean)
+
+    private fun checkOwner(name: String): OwnerResult? {
+        val normalized = name.replace(Regex("\\s+"), " ")
+        for (pattern in ownerPatterns) {
+            if (pattern.regex.containsMatchIn(normalized)) {
+                return OwnerResult(pattern.tag, pattern.isGovernment)
             }
         }
         return null

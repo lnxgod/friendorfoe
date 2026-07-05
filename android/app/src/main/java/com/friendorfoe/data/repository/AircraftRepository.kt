@@ -297,7 +297,10 @@ class AircraftRepository @Inject constructor(
             typeCode = t,
             registration = r,
             adsbCategory = category,
-            squawk = squawk
+            squawk = squawk,
+            dbFlags = dbFlags,
+            ownerName = ownerOperator,
+            operatorName = operator
         )
 
         return Aircraft(
@@ -342,7 +345,7 @@ class AircraftRepository @Inject constructor(
      * Priority order:
      * 1. Emergency squawk (7500/7600/7700)
      * 2. Emergency callsigns (LIFEGUARD/MEDEVAC)
-     * 3. Military/Government classifier (ICAO hex, callsign, type code)
+     * 3. Military/Government classifier (ICAO hex, callsign, type code, db flags, owner/operator)
      * 4. Cargo airline prefixes
      * 5. ADS-B category A7 → HELICOPTER
      * 6. ADS-B category B* → GROUND_VEHICLE
@@ -355,7 +358,10 @@ class AircraftRepository @Inject constructor(
         typeCode: String?,
         registration: String?,
         adsbCategory: String?,
-        squawk: String?
+        squawk: String?,
+        dbFlags: Int? = null,
+        ownerName: String? = null,
+        operatorName: String? = null
     ): Pair<ObjectCategory, List<String>> {
         val signals = mutableListOf<String>()
 
@@ -381,7 +387,15 @@ class AircraftRepository @Inject constructor(
         }
 
         // 3. Military/Government classifier
-        val milResult = MilitaryClassifier.classify(hex, callsign, typeCode, registration)
+        val milResult = MilitaryClassifier.classify(
+            icaoHex = hex,
+            callsign = callsign,
+            typeCode = typeCode,
+            registration = registration,
+            dbFlags = dbFlags,
+            ownerName = ownerName,
+            operatorName = operatorName
+        )
         if (milResult.category != null) {
             signals.addAll(milResult.signals)
             return milResult.category to signals
@@ -451,7 +465,7 @@ class AircraftRepository @Inject constructor(
         val categoryInt = if (state.size > 17) (state[17] as? Double)?.toInt() else null
 
         // Apply classification pipeline (OpenSky has no type code or ADS-B category string)
-        val openSkyBase = mapCategory(categoryInt)
+        val openSkyBase = mapOpenSkyCategory(categoryInt)
         val (classifiedCategory, signals) = classifyAircraft(
             hex = icao,
             callsign = callsign,
@@ -487,16 +501,22 @@ class AircraftRepository @Inject constructor(
         )
     }
 
-    /**
-     * Map OpenSky integer category to domain ObjectCategory.
-     */
-    private fun mapCategory(category: Int?): ObjectCategory {
-        return when (category) {
-            2 -> ObjectCategory.GENERAL_AVIATION
-            3, 4, 5, 6 -> ObjectCategory.COMMERCIAL
-            7 -> ObjectCategory.MILITARY
-            8 -> ObjectCategory.HELICOPTER
-            else -> ObjectCategory.UNKNOWN
-        }
+}
+
+/**
+ * Map OpenSky integer category to domain ObjectCategory.
+ *
+ * OpenSky category 7 is high-performance aircraft, not a military flag.
+ */
+internal fun mapOpenSkyCategory(category: Int?): ObjectCategory {
+    return when (category) {
+        2 -> ObjectCategory.GENERAL_AVIATION
+        3, 4, 5, 6 -> ObjectCategory.COMMERCIAL
+        7 -> ObjectCategory.GENERAL_AVIATION
+        8 -> ObjectCategory.HELICOPTER
+        14 -> ObjectCategory.DRONE
+        16 -> ObjectCategory.EMERGENCY
+        17 -> ObjectCategory.GROUND_VEHICLE
+        else -> ObjectCategory.UNKNOWN
     }
 }

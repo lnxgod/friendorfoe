@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 95
-        versionName = "0.64.52-android-alerts-distance"
+        versionCode = 96
+        versionName = "0.64.53-android-privacy-sky-alerts"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

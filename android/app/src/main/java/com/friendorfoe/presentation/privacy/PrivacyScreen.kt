@@ -53,6 +53,7 @@ import com.friendorfoe.data.badge.defaultBadgeDisplayPolicy
 import com.friendorfoe.data.badge.defaultBadgeTheme
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.PrivacyCategory
+import com.friendorfoe.presentation.alerts.SkyAlertCandidate
 import com.friendorfoe.presentation.badge.BadgeAppearanceSection
 import com.friendorfoe.presentation.badge.BadgeDisplayFiltersSection
 import com.friendorfoe.presentation.components.FofActionRow
@@ -131,6 +132,7 @@ fun PrivacyScreen(
     val ultrasonicAlerts by viewModel.ultrasonicAlerts.collectAsStateWithLifecycle()
     val wifiAnomalies by viewModel.wifiAnomalies.collectAsStateWithLifecycle()
     val stalkerAlerts by viewModel.stalkerAlerts.collectAsStateWithLifecycle()
+    val skyAlertCandidates by viewModel.skyAlertCandidates.collectAsStateWithLifecycle()
 
     Column(modifier = Modifier.fillMaxSize()) {
         // WiFi anomaly banner (Pwnagotchi, evil twin, karma attack)
@@ -223,19 +225,19 @@ fun PrivacyScreen(
             tone = if (threatCount > 0) FofTone.Danger else FofTone.Primary
         )
 
-        if (categorized.isEmpty()) {
-            // Empty state
-            FofEmptyState(
-                title = "No privacy devices detected",
-                detail = "Scanning for smart glasses, cameras, trackers, speakers, locks, and other nearby devices.",
-                label = "PRIVACY",
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(32.dp)
-            )
-        } else {
-            // Sectioned category tree
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            if (categorized.isEmpty()) {
+                item(key = "empty_privacy_devices") {
+                    FofEmptyState(
+                        title = "No privacy devices detected",
+                        detail = "Scanning for smart glasses, cameras, trackers, speakers, locks, and other nearby devices.",
+                        label = "PRIVACY",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(32.dp)
+                    )
+                }
+            } else {
                 for (section in sectionGroups) {
                     // Get categories in this section that have detections
                     val sectionCategories = categorized.filter { it.key.threatLevel == section.threatLevel }
@@ -296,6 +298,9 @@ fun PrivacyScreen(
                         }
                     }
                 }
+            }
+            item(key = "sky_alerts_footer") {
+                SkyAlertsFooter(candidates = skyAlertCandidates)
             }
         }
     }
@@ -370,6 +375,46 @@ private fun SweepToolsRow(
             enabled = onNavigateToIrCameraScan != null,
             onClick = onNavigateToIrCameraScan
         )
+    }
+}
+
+@Composable
+private fun SkyAlertsFooter(
+    candidates: List<SkyAlertCandidate>
+) {
+    FofSection(
+        title = "Sky Alerts",
+        subtitle = "Current alert matches",
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        if (candidates.isEmpty()) {
+            Text(
+                text = "No sky alerts in current settings",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 12.dp)
+            )
+        } else {
+            val visibleCandidates = candidates.take(8)
+            visibleCandidates.forEachIndexed { index, candidate ->
+                FofActionRow(
+                    title = candidate.title,
+                    description = candidate.body.ifBlank { "Nearby object" },
+                    trailingLabel = ""
+                )
+                if (index != visibleCandidates.lastIndex) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+            if (candidates.size > visibleCandidates.size) {
+                Text(
+                    text = "${candidates.size - visibleCandidates.size} more",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+        }
     }
 }
 

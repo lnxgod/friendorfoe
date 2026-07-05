@@ -33,5 +33,8 @@ data class AdsbxAircraft(
     val t: String?,
     val r: String?,
     @SerializedName("seen_pos") val seenPos: Double?,
-    val squawk: String? = null
+    val squawk: String? = null,
+    @SerializedName("dbFlags") val dbFlags: Int? = null,
+    @SerializedName("ownOp") val ownerOperator: String? = null,
+    @SerializedName("op") val operator: String? = null
 )

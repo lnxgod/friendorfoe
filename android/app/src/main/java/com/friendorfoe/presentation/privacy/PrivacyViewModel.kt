@@ -13,6 +13,9 @@ import com.friendorfoe.detection.BleTracker
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.detection.WifiAnomalyDetector
+import com.friendorfoe.presentation.alerts.SkyAlertCandidate
+import com.friendorfoe.presentation.alerts.SkyAlertPolicy
+import com.friendorfoe.presentation.alerts.SkyAlertSettings
 import com.friendorfoe.sensor.SensorFusionEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
@@ -20,6 +23,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import androidx.lifecycle.viewModelScope
@@ -40,6 +45,20 @@ class PrivacyViewModel @Inject constructor(
 
     private val _backendOnlyMode = MutableStateFlow(skyObjectRepository.prefs.backendOnlyMode)
     val backendOnlyMode: StateFlow<Boolean> = _backendOnlyMode.asStateFlow()
+
+    private val skyAlertSettings = flow {
+        while (true) {
+            emit(currentSkyAlertSettings())
+            delay(2_000)
+        }
+    }.distinctUntilChanged()
+
+    val skyAlertCandidates: StateFlow<List<SkyAlertCandidate>> = combine(
+        skyObjectRepository.skyObjects,
+        skyAlertSettings
+    ) { objects, settings ->
+        SkyAlertPolicy.candidatesFor(objects, settings)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
         skyObjectRepository.ensureStarted(0.0, 0.0)
@@ -237,6 +256,14 @@ class PrivacyViewModel @Inject constructor(
     fun resetBadgeDisplayPolicy() {
         badgeUsbRepository.resetDisplayPolicy()
     }
+
+    private fun currentSkyAlertSettings(): SkyAlertSettings =
+        SkyAlertSettings(
+            droneAlertsEnabled = skyObjectRepository.prefs.droneAlertsEnabled,
+            helicopterAlertsEnabled = skyObjectRepository.prefs.helicopterAlertsEnabled,
+            militaryAlertsEnabled = skyObjectRepository.prefs.militaryAlertsEnabled,
+            policeAlertsEnabled = skyObjectRepository.prefs.policeAlertsEnabled
+        )
 
     fun applyBadgeTheme(theme: BadgeTheme) {
         badgeUsbRepository.applyBadgeTheme(theme)

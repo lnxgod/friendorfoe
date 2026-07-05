@@ -16,7 +16,9 @@ data class SkyAlertSettings(
 data class SkyAlertCandidate(
     val key: String,
     val title: String,
-    val body: String
+    val body: String,
+    val priority: Int = 100,
+    val distanceMeters: Double? = null
 )
 
 class SkyAlertPolicy(
@@ -52,6 +54,21 @@ class SkyAlertPolicy(
             is Aircraft -> aircraftCandidate(skyObject, settings)
         }
 
+        fun candidatesFor(
+            skyObjects: List<SkyObject>,
+            settings: SkyAlertSettings
+        ): List<SkyAlertCandidate> {
+            return skyObjects
+                .mapNotNull { candidateFor(it, settings) }
+                .distinctBy { it.key }
+                .sortedWith(
+                    compareBy<SkyAlertCandidate> { it.priority }
+                        .thenBy { it.distanceMeters ?: Double.MAX_VALUE }
+                        .thenBy { it.title }
+                        .thenBy { it.body }
+                )
+        }
+
         private fun droneCandidate(
             drone: Drone,
             settings: SkyAlertSettings
@@ -67,7 +84,9 @@ class SkyAlertPolicy(
             return SkyAlertCandidate(
                 key = "sky:drone:${drone.id}",
                 title = "Drone nearby",
-                body = "$label detected${rangeText?.let { " around ${formatDistance(it)}" } ?: ""}"
+                body = "$label detected${rangeText?.let { " around ${formatDistance(it)}" } ?: ""}",
+                priority = 0,
+                distanceMeters = rangeText
             )
         }
 
@@ -75,12 +94,22 @@ class SkyAlertPolicy(
             aircraft: Aircraft,
             settings: SkyAlertSettings
         ): SkyAlertCandidate? {
+            if (settings.droneAlertsEnabled && aircraft.category == ObjectCategory.DRONE) {
+                return aircraftCandidate(
+                    keyPrefix = "uav",
+                    title = "Drone nearby",
+                    aircraft = aircraft,
+                    rangeRequired = false,
+                    priority = 0
+                )
+            }
             if (settings.helicopterAlertsEnabled && aircraft.category == ObjectCategory.HELICOPTER) {
                 return aircraftCandidate(
                     keyPrefix = "helicopter",
                     title = "Helicopter nearby",
                     aircraft = aircraft,
-                    rangeRequired = false
+                    rangeRequired = false,
+                    priority = 1
                 )
             }
             if (settings.militaryAlertsEnabled &&
@@ -91,7 +120,8 @@ class SkyAlertPolicy(
                     keyPrefix = "military",
                     title = "Military aircraft nearby",
                     aircraft = aircraft,
-                    rangeRequired = true
+                    rangeRequired = true,
+                    priority = 3
                 )
             }
             if (settings.policeAlertsEnabled &&
@@ -102,7 +132,8 @@ class SkyAlertPolicy(
                     keyPrefix = "police",
                     title = "Police / emergency vehicle nearby",
                     aircraft = aircraft,
-                    rangeRequired = true
+                    rangeRequired = true,
+                    priority = 2
                 )
             }
             return null
@@ -112,7 +143,8 @@ class SkyAlertPolicy(
             keyPrefix: String,
             title: String,
             aircraft: Aircraft,
-            rangeRequired: Boolean
+            rangeRequired: Boolean,
+            priority: Int
         ): SkyAlertCandidate? {
             if (rangeRequired && aircraft.distanceMeters == null) return null
             val label = aircraft.callsign
@@ -124,7 +156,9 @@ class SkyAlertPolicy(
             return SkyAlertCandidate(
                 key = "sky:$keyPrefix:${aircraft.id}",
                 title = title,
-                body = listOfNotNull(label, distanceText).joinToString(" - ")
+                body = listOfNotNull(label, distanceText).joinToString(" - "),
+                priority = priority,
+                distanceMeters = aircraft.distanceMeters
             )
         }
 

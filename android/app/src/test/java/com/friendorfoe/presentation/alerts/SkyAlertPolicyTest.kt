@@ -43,6 +43,18 @@ class SkyAlertPolicyTest {
     }
 
     @Test
+    fun adsbUavAlertsUseDroneSettingAndDoNotRequireDistance() {
+        val candidate = SkyAlertPolicy.candidateFor(
+            aircraft(category = ObjectCategory.DRONE, distanceMeters = null),
+            settings
+        )
+
+        assertNotNull(candidate)
+        requireNotNull(candidate)
+        assertEquals("Drone nearby", candidate.title)
+    }
+
+    @Test
     fun militaryAlertsAreLimitedToFifteenMiles() {
         val near = SkyAlertPolicy.candidateFor(
             aircraft(category = ObjectCategory.MILITARY, distanceMeters = 14.9 * METERS_PER_MILE),
@@ -89,6 +101,21 @@ class SkyAlertPolicyTest {
         assertNull(SkyAlertPolicy.candidateFor(aircraft(ObjectCategory.HELICOPTER, null), disabled))
         assertNull(SkyAlertPolicy.candidateFor(aircraft(ObjectCategory.MILITARY, 1.0), disabled))
         assertNull(SkyAlertPolicy.candidateFor(aircraft(ObjectCategory.GOVERNMENT, 1.0), disabled))
+    }
+
+    @Test
+    fun candidatesForReturnsOnlyObjectsThatWouldAlert() {
+        val candidates = SkyAlertPolicy.candidatesFor(
+            skyObjects = listOf(
+                aircraft(ObjectCategory.COMMERCIAL, 1.0 * METERS_PER_MILE),
+                aircraft(ObjectCategory.GOVERNMENT, 10.0 * METERS_PER_MILE),
+                aircraft(ObjectCategory.MILITARY, 17.0 * METERS_PER_MILE),
+                drone(distanceMeters = null)
+            ),
+            settings = settings
+        )
+
+        assertEquals(listOf("Drone nearby", "Police / emergency vehicle nearby"), candidates.map { it.title })
     }
 
     @Test
