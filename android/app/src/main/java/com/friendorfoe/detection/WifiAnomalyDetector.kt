@@ -26,6 +26,144 @@ class WifiAnomalyDetector @Inject constructor(
 ) {
     companion object {
         private const val TAG = "WifiAnomalyDetector"
+
+        internal fun analyzeNetworksForTest(networks: List<WifiNetwork>): List<WifiAnomaly> {
+            return analyzeNetworks(networks, mutableMapOf(), Instant.now())
+        }
+
+        private fun analyzeNetworks(
+            networks: List<WifiNetwork>,
+            bssidSsidHistory: MutableMap<String, MutableSet<String>>,
+            now: Instant
+        ): List<WifiAnomaly> {
+            if (networks.isEmpty()) return emptyList()
+            val anomalies = mutableListOf<WifiAnomaly>()
+
+            // Pwnagotchi default BSSID — deliberately attention-getting. Marauder
+            // matches on this; any hit on our LAN is a deliberate pen-test beacon.
+            for (network in networks) {
+                if (network.bssid.equals(BleSignatures.PWNAGOTCHI_BSSID, ignoreCase = true)) {
+                    anomalies.add(WifiAnomaly(
+                        type = "pwnagotchi",
+                        ssid = network.ssid.ifBlank { "(hidden)" },
+                        details = "Pwnagotchi device detected — source MAC ${network.bssid} is the default " +
+                            "Pwnagotchi pen-test beacon. It attempts to capture WPA handshakes passively.",
+                        threatLevel = 3,
+                        bssids = listOf(network.bssid),
+                        evidence = listOf(network.toEvidence()),
+                        timestamp = now
+                    ))
+                    safeLogWarning("PWNAGOTCHI: ${network.bssid} (ssid=${network.ssid})")
+                }
+            }
+
+            // Group by SSID
+            val bySSID = networks
+                .filter { it.ssid.isNotBlank() }
+                .groupBy { it.ssid }
+
+            for ((ssid, results) in bySSID) {
+                if (results.size < 2) continue
+
+                // Check 1: Mixed security (HIGH threat — classic evil twin)
+                val securities = results.map { getSecurityType(it.capabilities) }.toSet()
+                if (securities.size > 1 && securities.contains("OPEN")) {
+                    val evidence = results.map { it.toEvidence() }
+                    anomalies.add(WifiAnomaly(
+                        type = "evil_twin",
+                        ssid = ssid,
+                        details = "Same SSID with mixed security: ${securities.joinToString(" + ")}. " +
+                            "An open AP alongside a secured one is a classic evil twin attack. " +
+                            "Observed APs: ${evidence.joinToString("; ") { it.summary() }}",
+                        threatLevel = 3,
+                        bssids = evidence.map { it.bssid },
+                        evidence = evidence,
+                        timestamp = now
+                    ))
+                    safeLogWarning("EVIL TWIN: '$ssid' has mixed security: $securities")
+                    continue
+                }
+            }
+
+            // Check 3: Karma attack — single BSSID broadcasting many SSIDs
+            for (network in networks) {
+                if (network.ssid.isBlank()) continue
+
+                val history = bssidSsidHistory.getOrPut(network.bssid) { mutableSetOf() }
+                history.add(network.ssid)
+
+                if (history.size >= 5) {
+                    anomalies.add(WifiAnomaly(
+                        type = "karma_attack",
+                        ssid = network.bssid,
+                        details = "Single AP (${network.bssid}) broadcasting ${history.size} different SSIDs: " +
+                            "${history.take(5).joinToString(", ")}${if (history.size > 5) "..." else ""}. " +
+                            "This is characteristic of a WiFi Pineapple karma attack.",
+                        threatLevel = 3,
+                        bssids = listOf(network.bssid),
+                        evidence = listOf(network.toEvidence()),
+                        timestamp = now
+                    ))
+                    safeLogWarning("KARMA ATTACK: ${network.bssid} broadcasting ${history.size} SSIDs")
+                }
+            }
+
+            // Prune old BSSID history (keep last 50 entries)
+            if (bssidSsidHistory.size > 50) {
+                val toRemove = bssidSsidHistory.keys.take(bssidSsidHistory.size - 50)
+                toRemove.forEach { bssidSsidHistory.remove(it) }
+            }
+
+            return anomalies
+        }
+
+        private fun WifiNetwork.toEvidence(): WifiAnomalyEvidence {
+            return WifiAnomalyEvidence(
+                bssid = bssid,
+                security = getSecurityType(capabilities),
+                rssi = rssi,
+                frequencyMhz = frequencyMhz
+            )
+        }
+
+        private fun getSecurityType(capabilities: String?): String {
+            val caps = capabilities ?: return "UNKNOWN"
+            return when {
+                caps.contains("WPA3") -> "WPA3"
+                caps.contains("WPA2") -> "WPA2"
+                caps.contains("WPA") -> "WPA"
+                caps.contains("WEP") -> "WEP"
+                else -> "OPEN"
+            }
+        }
+
+        private fun safeLogWarning(message: String) {
+            try {
+                Log.w(TAG, message)
+            } catch (_: RuntimeException) {
+                // Android Log is not available in plain JVM unit tests.
+            }
+        }
+    }
+
+    data class WifiNetwork(
+        val ssid: String,
+        val bssid: String,
+        val capabilities: String?,
+        val rssi: Int,
+        val frequencyMhz: Int
+    )
+
+    data class WifiAnomalyEvidence(
+        val bssid: String,
+        val security: String,
+        val rssi: Int,
+        val frequencyMhz: Int
+    ) {
+        fun summary(): String {
+            val frequency = if (frequencyMhz > 0) ", ${frequencyMhz}MHz" else ""
+            return "$bssid $security, ${rssi}dBm$frequency"
+        }
     }
 
     data class WifiAnomaly(
@@ -34,6 +172,7 @@ class WifiAnomalyDetector @Inject constructor(
         val details: String,
         val threatLevel: Int,   // 1=low, 2=medium, 3=high
         val bssids: List<String>,
+        val evidence: List<WifiAnomalyEvidence> = emptyList(),
         val timestamp: Instant
     )
 
@@ -47,93 +186,16 @@ class WifiAnomalyDetector @Inject constructor(
     @SuppressLint("MissingPermission")
     fun analyze(): List<WifiAnomaly> {
         val scanResults = wifiScanCoordinator.currentResults.value
-        if (scanResults.isEmpty()) return emptyList()
-        val anomalies = mutableListOf<WifiAnomaly>()
-        val now = Instant.now()
-
-        // Pwnagotchi default BSSID — deliberately attention-getting. Marauder
-        // matches on this; any hit on our LAN is a deliberate pen-test beacon.
-        for (result in scanResults) {
-            if (result.BSSID?.equals(BleSignatures.PWNAGOTCHI_BSSID, ignoreCase = true) == true) {
-                anomalies.add(WifiAnomaly(
-                    type = "pwnagotchi",
-                    ssid = result.SSID ?: "(hidden)",
-                    details = "Pwnagotchi device detected — source MAC ${result.BSSID} is the default " +
-                        "Pwnagotchi pen-test beacon. It attempts to capture WPA handshakes passively.",
-                    threatLevel = 3,
-                    bssids = listOf(result.BSSID),
-                    timestamp = now
-                ))
-                Log.w(TAG, "PWNAGOTCHI: ${result.BSSID} (ssid=${result.SSID})")
-            }
+        val networks = scanResults.mapNotNull { result ->
+            val bssid = result.BSSID ?: return@mapNotNull null
+            WifiNetwork(
+                ssid = result.SSID.orEmpty(),
+                bssid = bssid,
+                capabilities = result.capabilities,
+                rssi = result.level,
+                frequencyMhz = result.frequency
+            )
         }
-
-        // Group by SSID
-        val bySSID = scanResults
-            .filter { it.SSID?.isNotBlank() == true }
-            .groupBy { it.SSID ?: "" }
-
-        for ((ssid, results) in bySSID) {
-            if (results.size < 2) continue
-
-            // Check 1: Mixed security (HIGH threat — classic evil twin)
-            val securities = results.map { getSecurityType(it) }.toSet()
-            if (securities.size > 1 && securities.contains("OPEN")) {
-                anomalies.add(WifiAnomaly(
-                    type = "evil_twin",
-                    ssid = ssid,
-                    details = "Same SSID with mixed security: ${securities.joinToString(" + ")}. " +
-                        "An open AP alongside a secured one is a classic evil twin attack.",
-                    threatLevel = 3,
-                    bssids = results.map { it.BSSID },
-                    timestamp = now
-                ))
-                Log.w(TAG, "EVIL TWIN: '$ssid' has mixed security: $securities")
-                continue
-            }
-        }
-
-        // Check 3: Karma attack — single BSSID broadcasting many SSIDs
-        for (result in scanResults) {
-            val bssid = result.BSSID ?: continue
-            val ssid = result.SSID ?: continue
-            if (ssid.isBlank()) continue
-
-            val history = bssidSsidHistory.getOrPut(bssid) { mutableSetOf() }
-            history.add(ssid)
-
-            if (history.size >= 5) {
-                anomalies.add(WifiAnomaly(
-                    type = "karma_attack",
-                    ssid = bssid,
-                    details = "Single AP ($bssid) broadcasting ${history.size} different SSIDs: " +
-                        "${history.take(5).joinToString(", ")}${if (history.size > 5) "..." else ""}. " +
-                        "This is characteristic of a WiFi Pineapple karma attack.",
-                    threatLevel = 3,
-                    bssids = listOf(bssid),
-                    timestamp = now
-                ))
-                Log.w(TAG, "KARMA ATTACK: $bssid broadcasting ${history.size} SSIDs")
-            }
-        }
-
-        // Prune old BSSID history (keep last 50 entries)
-        if (bssidSsidHistory.size > 50) {
-            val toRemove = bssidSsidHistory.keys.take(bssidSsidHistory.size - 50)
-            toRemove.forEach { bssidSsidHistory.remove(it) }
-        }
-
-        return anomalies
-    }
-
-    private fun getSecurityType(result: ScanResult): String {
-        val caps = result.capabilities ?: return "UNKNOWN"
-        return when {
-            caps.contains("WPA3") -> "WPA3"
-            caps.contains("WPA2") -> "WPA2"
-            caps.contains("WPA") -> "WPA"
-            caps.contains("WEP") -> "WEP"
-            else -> "OPEN"
-        }
+        return analyzeNetworks(networks, bssidSsidHistory, Instant.now())
     }
 }

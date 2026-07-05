@@ -186,6 +186,23 @@ class AppleContinuityDecoderTest {
     }
 
     @Test
+    fun `Nearby Info still classifies as Apple Continuity when not listening`() {
+        val bytes = byteArrayOf(
+            0x10,
+            0x01, 0x02, 0x03,  // auth
+            0x10,              // iOS nibble, idle activity
+            0x01               // AirPods connected flag
+        )
+        val result = AppleContinuityDecoder.decode(bytes)!!
+
+        val match = GlassesDetector.appleContinuityMatchForTest(result, rssi = -82)
+
+        assertNotNull(match)
+        assertEquals("Apple Continuity Nearby Info", match!!.second)
+        assertTrue(match.third.startsWith("apple_continuity:"))
+    }
+
+    @Test
     fun `AirPods with active phone activity classifies as remote listening`() {
         val bytes = byteArrayOf(
             0x10,

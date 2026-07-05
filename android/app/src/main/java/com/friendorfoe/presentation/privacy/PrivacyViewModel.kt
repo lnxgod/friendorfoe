@@ -96,8 +96,12 @@ class PrivacyViewModel @Inject constructor(
         skyObjectRepository.glassesDetections,
         _backendPrivacyDetections,
         badgeUsbRepository.state,
-    ) { local, backend, badge ->
-        mergePrivacyDetections(local, backend + badge.toPrivacyDetections())
+        _wifiAnomalies,
+    ) { local, backend, badge, wifiAnomalies ->
+        mergePrivacyDetections(
+            local,
+            backend + badge.toPrivacyDetections() + wifiAnomalies.map { it.toPrivacyDetection() }
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /** All privacy detections, grouped by category */
@@ -312,6 +316,52 @@ class PrivacyViewModel @Inject constructor(
             !lastBssid.isNullOrBlank() -> "mac:$lastBssid"
             else -> "backend:${displayLabel ?: deviceType ?: privacyKind ?: "privacy"}"
         }
+    }
+
+    private fun WifiAnomalyDetector.WifiAnomaly.toPrivacyDetection(): GlassesDetection {
+        val title = when (type) {
+            "pwnagotchi" -> "Pwnagotchi"
+            "evil_twin" -> "Evil Twin"
+            "karma_attack" -> "Karma Attack"
+            "rogue_ap" -> "Rogue AP"
+            else -> "WiFi Anomaly"
+        }
+        val detailMap = buildMap {
+            put("source", "android_wifi_anomaly")
+            put("type", type)
+            put("ssid", ssid)
+            put("detail", details)
+            if (bssids.isNotEmpty()) put("bssids", bssids.joinToString(", "))
+            evidence.forEachIndexed { index, item ->
+                put(
+                    "ap_${index + 1}",
+                    "${item.bssid} ${item.security}, ${item.rssi}dBm" +
+                        if (item.frequencyMhz > 0) ", ${item.frequencyMhz}MHz" else ""
+                )
+            }
+        }
+        val primaryBssid = bssids.firstOrNull() ?: "wifi:$type:$ssid"
+        val key = "wifi_anomaly:$type:$ssid:${bssids.sorted().joinToString(",")}"
+        return GlassesDetection(
+            mac = primaryBssid,
+            deviceName = ssid,
+            deviceType = title,
+            manufacturer = "WiFi",
+            hasCamera = false,
+            rssi = evidence.maxByOrNull { it.rssi }?.rssi ?: -100,
+            confidence = when (threatLevel) {
+                3 -> 0.95f
+                2 -> 0.80f
+                else -> 0.65f
+            },
+            matchReason = "wifi_anomaly:$type",
+            firstSeen = timestamp,
+            lastSeen = timestamp,
+            details = detailMap,
+            category = PrivacyCategory.ATTACK_TOOL,
+            fingerprintKey = key,
+            seenMacs = bssids.toSet().ifEmpty { setOf(primaryBssid) }
+        )
     }
 
     private fun categoryForPrivacyKind(kind: String?, fallbackType: String): PrivacyCategory = when (kind) {

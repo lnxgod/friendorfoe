@@ -494,6 +494,11 @@ class GlassesDetector @Inject constructor(
             rssi: Int,
         ): Triple<Float, String, String>? = appleRemoteListeningMatch(apple, rssi)
 
+        internal fun appleContinuityMatchForTest(
+            apple: AppleContinuityDecoder.AppleContinuity?,
+            rssi: Int,
+        ): Triple<Float, String, String>? = appleContinuityMatch(apple, rssi)
+
         private fun appleRemoteListeningMatch(
             apple: AppleContinuityDecoder.AppleContinuity?,
             rssi: Int,
@@ -519,6 +524,31 @@ class GlassesDetector @Inject constructor(
             }
             val detail = "AirPods connected + $activityLabel activity"
             return Triple(confidence, detail, "apple_remote_listening")
+        }
+
+        private fun appleContinuityMatch(
+            apple: AppleContinuityDecoder.AppleContinuity?,
+            rssi: Int,
+        ): Triple<Float, String, String>? {
+            val continuity = apple ?: return null
+            val type = when (continuity.subType) {
+                BleSignatures.APPLE_NEARBY_INFO -> "Apple Continuity Nearby Info"
+                BleSignatures.APPLE_NEARBY_ACTION -> "Apple Continuity Nearby Action"
+                BleSignatures.APPLE_AIRDROP -> "Apple AirDrop"
+                BleSignatures.APPLE_HANDOFF -> "Apple Handoff"
+                BleSignatures.APPLE_AIRPLAY -> "Apple Continuity AirPlay"
+                BleSignatures.APPLE_TETHER_SOURCE -> "Apple Continuity iPhone Tethering"
+                BleSignatures.APPLE_TETHER_TARGET -> "Apple Continuity Tether Target"
+                BleSignatures.APPLE_AIRPODS -> "Apple Continuity AirPods"
+                else -> return null
+            }
+            val close = rssi >= -70
+            val confidence = if (close) 0.66f else 0.60f
+            val detail = continuity.flagLabel()
+                ?: continuity.nearbyActionSubType
+                    ?.let(BleSignatures::nearbyActionName)
+                ?: continuity.enrichedLabel()
+            return Triple(confidence, type, "apple_continuity:$detail")
         }
     }
 
@@ -1318,6 +1348,16 @@ class GlassesDetector @Inject constructor(
                         bestType = "Possible Remote Listening"
                         bestCamera = false
                         bestReason = "$reason:$detail"
+                    }
+                }
+                appleContinuityMatch(appleContinuity, rssi)?.let { match ->
+                    val (confidence, type, reason) = match
+                    if (confidence > bestConf) {
+                        bestConf = confidence
+                        bestMfr = "Apple"
+                        bestType = type
+                        bestCamera = false
+                        bestReason = reason
                     }
                 }
                 if (appleType == 0x12 && appleData.size >= 3) {
