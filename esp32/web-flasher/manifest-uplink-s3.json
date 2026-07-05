@@ -1,6 +1,6 @@
 {
   "name": "Friend or Foe Uplink (ESP32-S3)",
-  "version": "0.64.45-privacy-listening",
+  "version": "0.64.47-rssi-drone-range",
   "builds": [
     {
       "chipFamily": "ESP32-S3",

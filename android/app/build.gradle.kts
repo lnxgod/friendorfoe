@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 89
-        versionName = "0.64.45-privacy-listening"
+        versionCode = 90
+        versionName = "0.64.47-rssi-drone-range"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

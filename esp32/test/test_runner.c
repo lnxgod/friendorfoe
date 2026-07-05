@@ -35,6 +35,7 @@ void test_fof_drone_test_ssids(void);
 void test_budget_drone_prefixes(void);
 void test_all_patterns_valid(void);
 void test_null_ssid(void);
+void test_rssi_distance_uses_field_calibrated_scale(void);
 void test_probe_broadcasts_still_drop(void);
 void test_hard_probe_matches_keep_elevated_confidence(void);
 void test_generic_targeted_probes_are_not_low_value_dropped(void);
@@ -291,6 +292,7 @@ int main(void)
     RUN_TEST(test_budget_drone_prefixes);
     RUN_TEST(test_all_patterns_valid);
     RUN_TEST(test_null_ssid);
+    RUN_TEST(test_rssi_distance_uses_field_calibrated_scale);
     RUN_TEST(test_probe_broadcasts_still_drop);
     RUN_TEST(test_hard_probe_matches_keep_elevated_confidence);
     RUN_TEST(test_generic_targeted_probes_are_not_low_value_dropped);

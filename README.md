@@ -19,7 +19,7 @@ same backend ingest path. Walk around with it during the day; mount it later as
 part of a multi-node sensor platform.
 
 > Current tracks: Android/backend/production S3 firmware are on
-> `0.64.45-privacy-listening`; badge firmware is on
+> `0.64.47-rssi-drone-range`; badge firmware is on
 > `0.64.42-badge-listening`. The badge and production sensor fleet intentionally
 > move on separate firmware tracks.
 

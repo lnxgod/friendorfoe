@@ -66,10 +66,20 @@ def test_ingest_falls_back_to_backend_rssi_when_scanner_distance_missing():
 
     obs = tracker.observations["privacy-cam-2"]["sensor-a"]
     assert obs.scanner_estimated_distance_m is None
-    assert obs.backend_estimated_distance_m == pytest.approx(10.0)
-    assert obs.estimated_distance_m == pytest.approx(10.0)
+    assert obs.backend_estimated_distance_m == pytest.approx(
+        rssi_to_distance_m(-65, indoor=False, device_id="sensor-a")
+    )
+    assert obs.estimated_distance_m == pytest.approx(
+        rssi_to_distance_m(-65, indoor=False, device_id="sensor-a")
+    )
     assert obs.distance_source == "backend_rssi"
     assert obs.range_model == "global_outdoor"
+
+
+def test_default_rssi_range_uses_field_calibrated_scale():
+    assert rssi_to_distance_m(-55, indoor=False) == pytest.approx(1.0)
+    assert rssi_to_distance_m(-78, indoor=False) == pytest.approx(10.0, rel=0.04)
+    assert rssi_to_distance_m(-101, indoor=False) == pytest.approx(100.0, rel=0.04)
 
 
 def test_trusted_calibration_makes_backend_rssi_range_authoritative():
@@ -101,8 +111,8 @@ def test_trusted_calibration_makes_backend_rssi_range_authoritative():
         assert obs.distance_source == "backend_rssi"
     finally:
         update_calibration(
-            rssi_ref=-40,
-            path_loss=2.5,
+            rssi_ref=-55.0,
+            path_loss=2.3,
             per_listener_model={},
             trusted=False,
         )
@@ -345,8 +355,8 @@ async def test_tracking_diagnostics_exposes_range_inputs(monkeypatch, client: As
 
     payload = resp.json()
     assert payload["stats"]["current_range_source_counts"]["scanner"] == 1
-    assert payload["stats"]["range_defaults"]["rssi_ref"] == -40
-    assert payload["stats"]["range_defaults"]["path_loss_outdoor"] == pytest.approx(2.5)
+    assert payload["stats"]["range_defaults"]["rssi_ref"] == -55.0
+    assert payload["stats"]["range_defaults"]["path_loss_outdoor"] == pytest.approx(2.3)
 
     drone = next(d for d in payload["drones"] if d["drone_id"] == "privacy-cam-3")
     assert drone["last_emit"]["position_source"] == "stationary_range_only"

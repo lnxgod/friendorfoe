@@ -27,4 +27,20 @@ class WifiDroneScannerPatternTest {
         )
         assertTrue(DroneDatabase.matchByWifiSsid("HolyStoneFPV_1234").isNotEmpty())
     }
+
+    @Test
+    fun android_drone_patterns_keep_remote_id_and_dji_quicktransfer_variants() {
+        assertEquals(
+            "DJI",
+            WifiDroneScanner.matchDroneManufacturerForTest("RID-1234567890")
+        )
+        assertEquals(
+            "DJI",
+            WifiDroneScanner.matchDroneManufacturerForTest("DJI-Mini4Pro-123456")
+        )
+        assertEquals(
+            "DJI",
+            WifiDroneScanner.matchDroneManufacturerForTest("DJI_Neo_123456")
+        )
+    }
 }

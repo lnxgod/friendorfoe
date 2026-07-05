@@ -13,10 +13,10 @@ make it part of a larger RF sensor deployment.
 
 ## Current Versions
 
-- Android app: `0.64.45-privacy-listening`
-- Backend: `0.64.45-privacy-listening`
+- Android app: `0.64.47-rssi-drone-range`
+- Backend: `0.64.47-rssi-drone-range`
 - FoF Badge firmware: `0.64.42-badge-listening`
-- Production S3 firmware: `0.64.45-privacy-listening`
+- Production S3 firmware: `0.64.47-rssi-drone-range`
 
 Keep those tracks separate. The badge firmware uses `FOF_BADGE_VARIANT`,
 badge-specific pinning, a Waveshare ST7735 display, USB-C control, local AP

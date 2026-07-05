@@ -171,6 +171,7 @@ class RemoteIdScanner @Inject constructor(
         synchronized(tempState) {
             tempState.lastUpdated = now
             tempState.signalStrengthDbm = result.rssi
+            tempState.estimatedDistanceMeters = RssiDistanceEstimator.estimateBleRemoteId(result.rssi)
             OpenDroneIdParser.parseMessage(messageData, tempState)
         }
 
@@ -184,6 +185,7 @@ class RemoteIdScanner @Inject constructor(
             // Copy latest data from the MAC-keyed state to the serial-keyed state
             canonicalState.lastUpdated = now
             canonicalState.signalStrengthDbm = result.rssi
+            canonicalState.estimatedDistanceMeters = tempState.estimatedDistanceMeters
             canonicalState.droneId = serial
             canonicalState.latitude = tempState.latitude
             canonicalState.longitude = tempState.longitude

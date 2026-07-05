@@ -1,6 +1,6 @@
 {
   "name": "Friend or Foe Seed Scanner (ESP32-S3 BLE+WiFi)",
-  "version": "0.64.45-privacy-listening",
+  "version": "0.64.47-rssi-drone-range",
   "builds": [
     {
       "chipFamily": "ESP32-S3",

@@ -25,6 +25,7 @@
 #include "detection_policy.h"
 #include "privacy_rf_signatures.h"
 #include "calibration_mode.h"
+#include "rssi_distance.h"
 #include "core/task_priorities.h"
 
 #include <stdlib.h>
@@ -41,7 +42,6 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
-#include <math.h>
 
 /* ── Constants ─────────────────────────────────────────────────────────────── */
 
@@ -247,25 +247,6 @@ static bool rssi_track_update(const uint8_t *bssid, int8_t rssi)
     return (hi - lo) >= RSSI_MOVE_THRESHOLD;
 }
 
-/* ── Helper: distance estimation from RSSI ─────────────────────────────────── */
-
-/**
- * Estimate distance from RSSI using the log-distance path loss model.
- *
- *   d = 10^((RSSI_ref - RSSI) / (10 * n))
- *
- * @param rssi  Measured signal strength in dBm
- * @return Estimated distance in meters, clamped to [0.5, 5000.0]
- */
-static double estimate_distance(int8_t rssi)
-{
-    double exponent = (double)(RSSI_REF - rssi) / (10.0 * PATH_LOSS_EXPONENT);
-    double dist = pow(10.0, exponent);
-    if (dist < 0.5)    dist = 0.5;
-    if (dist > 5000.0)  dist = 5000.0;
-    return dist;
-}
-
 /* ── Helper: format BSSID bytes to string ──────────────────────────────────── */
 
 static void format_bssid(const uint8_t *mac, char *out, size_t out_len)
@@ -288,7 +269,7 @@ static void init_detection(drone_detection_t *det, const uint8_t *bssid,
 {
     memset(det, 0, sizeof(*det));
     det->rssi = rssi;
-    det->estimated_distance_m = estimate_distance(rssi);
+    det->estimated_distance_m = rssi_distance_estimate_m(rssi);
     det->wifi_auth_mode = 0xFF;  /* unknown unless caller sets it */
 
     format_bssid(bssid, det->bssid, sizeof(det->bssid));
@@ -633,7 +614,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
                                         DETECTION_SRC_WIFI_BEACON, &rid_det)) {
                 /* Fill in WiFi-specific fields the ODID parser doesn't set */
                 rid_det.rssi = rssi;
-                rid_det.estimated_distance_m = estimate_distance(rssi);
+                rid_det.estimated_distance_m = rssi_distance_estimate_m(rssi);
                 rid_det.wifi_auth_mode = beacon_auth_mode;
                 strncpy(rid_det.bssid, bssid_str, sizeof(rid_det.bssid) - 1);
                 if (ssid[0] != '\0') {
@@ -672,7 +653,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
             if (odid_state_to_detection(&fr_state, "fr_",
                                         DETECTION_SRC_WIFI_BEACON, &fr_det)) {
                 fr_det.rssi = rssi;
-                fr_det.estimated_distance_m = estimate_distance(rssi);
+                fr_det.estimated_distance_m = rssi_distance_estimate_m(rssi);
                 fr_det.wifi_auth_mode = beacon_auth_mode;
                 strncpy(fr_det.bssid, bssid_str2, sizeof(fr_det.bssid) - 1);
                 if (ssid[0] != '\0') {

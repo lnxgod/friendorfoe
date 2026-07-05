@@ -12,7 +12,6 @@ import kotlinx.coroutines.flow.transform
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.pow
 
 /**
  * WiFi SSID pattern scanner for detecting older or non-compliant drones.
@@ -40,18 +39,6 @@ class WifiDroneScanner @Inject constructor(
 
     companion object {
         private const val TAG = "WifiDroneScanner"
-
-        /**
-         * RSSI reference at 1 meter distance (dBm).
-         * Typical for WiFi direct/hotspot from a drone at close range.
-         */
-        private const val RSSI_REF = -40
-
-        /**
-         * Path loss exponent for outdoor line-of-sight propagation.
-         * 2.0 = free space, 2.5 = light obstruction typical of outdoor drone use.
-         */
-        private const val PATH_LOSS_EXPONENT = 2.5
 
         /**
          * Known drone SSID patterns mapped to manufacturer names.
@@ -195,6 +182,7 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("DJI-Mavic3Classic-", "DJI"),
             DronePattern("DJI-Avata2-", "DJI"),
             DronePattern("DJI-Neo-", "DJI"),
+            DronePattern("DJI_Neo_", "DJI"),
             DronePattern("DJI_FPV_", "DJI"),
             DronePattern("DJI_Goggles_", "DJI"),
             DronePattern("DJI-Goggles3-", "DJI"),
@@ -592,13 +580,6 @@ class WifiDroneScanner @Inject constructor(
     /**
      * Estimate distance from RSSI using the log-distance path loss model.
      *
-     * Formula: d = 10^((RSSI_ref - RSSI) / (10 * n))
-     *
-     * Where:
-     *   RSSI_ref = reference RSSI at 1 meter (-40 dBm typical for drone hotspot)
-     *   n = path loss exponent (2.5 for outdoor with light obstruction)
-     *   RSSI = measured signal strength in dBm
-     *
      * This is a rough approximation. Actual distance varies significantly with
      * environment, antenna orientation, obstacles, etc.
      *
@@ -606,8 +587,7 @@ class WifiDroneScanner @Inject constructor(
      * @return Estimated distance in meters
      */
     private fun estimateDistance(rssi: Int): Double {
-        val exponent = (RSSI_REF - rssi) / (10.0 * PATH_LOSS_EXPONENT)
-        return 10.0.pow(exponent).coerceIn(0.5, 5000.0)
+        return RssiDistanceEstimator.estimateWifiDrone(rssi)
     }
 
     /** Map Android's ScanResult.channelWidth constants to integer MHz values. */

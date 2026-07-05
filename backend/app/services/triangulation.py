@@ -31,10 +31,14 @@ logger = logging.getLogger(__name__)
 EARTH_RADIUS_M = 6_371_000.0
 
 # RSSI → distance model
-# Match the ESP32 firmware defaults until calibration overrides them.
+# Field-calibrated fallback shared with Android and ESP32 until calibration
+# overrides it. RSSI-only range remains diagnostic unless a trusted model is
+# active.
 # Mutable calibration values — updated by CalibrationManager.
-RSSI_REF = -40          # dBm at 1 meter (firmware default)
-PATH_LOSS_EXPONENT = 2.5
+RSSI_REF = -55.0        # dBm at 1 meter
+PATH_LOSS_EXPONENT = 2.3
+RSSI_DISTANCE_MIN_M = 0.5
+RSSI_DISTANCE_MAX_M = 5000.0
 
 # Per-listener residual offset (dB) — captures systematic bias per receiver.
 # Set by update_calibration() from the calibration result. Looked up at
@@ -409,7 +413,7 @@ def rssi_to_distance_m(rssi: int, indoor: bool = False,
         n = PATH_LOSS_INDOOR if indoor else PATH_LOSS_OUTDOOR
     exponent = (rssi_ref - rssi) / (10.0 * n)
     d = 10.0 ** exponent
-    return max(1.0, min(d, 200.0))  # Clamp to 200m max — property scale
+    return max(RSSI_DISTANCE_MIN_M, min(d, RSSI_DISTANCE_MAX_M))
 
 
 # ---------------------------------------------------------------------------

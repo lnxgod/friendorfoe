@@ -29,8 +29,10 @@ extern "C" {
 
 /* ── RSSI-based distance estimation ──────────────────────────────────────── */
 
-#define RSSI_REF                   -40     /* dBm at 1 metre */
-#define PATH_LOSS_EXPONENT          2.5
+#define RSSI_REF                   -55.0   /* dBm at 1 metre */
+#define PATH_LOSS_EXPONENT          2.3
+#define RSSI_DISTANCE_MIN_M         0.5
+#define RSSI_DISTANCE_MAX_M      5000.0
 
 /* ── Detection lifecycle ─────────────────────────────────────────────────── */
 
