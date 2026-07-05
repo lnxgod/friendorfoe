@@ -50,6 +50,36 @@ class BadgeDisplayPolicyTest {
     }
 
     @Test
+    fun disablingDroneClassSendsExplicitOffLane() {
+        val policy = defaultBadgeDisplayPolicy().withClassEnabled("drone", enabled = false)
+
+        val drone = policy.classes.getValue("drone")
+        assertFalse(drone.enabled)
+        assertEquals("off", drone.lane)
+
+        val json = JsonParser.parseString(
+            badgeDisplayPolicyCommandJson(policy, persist = true).toString()
+        ).asJsonObject
+
+        val droneJson = json.getAsJsonObject("policy")
+            .getAsJsonObject("classes")
+            .getAsJsonObject("drone")
+        assertFalse(droneJson.get("enabled").asBoolean)
+        assertEquals("off", droneJson.get("lane").asString)
+    }
+
+    @Test
+    fun enablingDroneClassRestoresDefaultLaneAfterBeingOff() {
+        val disabled = defaultBadgeDisplayPolicy().withClassEnabled("drone", enabled = false)
+        val enabled = disabled.withClassEnabled("drone", enabled = true)
+        val defaultDrone = defaultBadgeDisplayPolicy().classes.getValue("drone")
+
+        assertTrue(enabled.classes.getValue("drone").enabled)
+        assertEquals(defaultDrone.lane, enabled.classes.getValue("drone").lane)
+        assertEquals(defaultDrone.minProximity, enabled.classes.getValue("drone").minProximity)
+    }
+
+    @Test
     fun displayNavCommandBuildsExpectedBadgeControlPayload() {
         val json = JsonParser.parseString(
             badgeDisplayNavCommandJson("next").toString()

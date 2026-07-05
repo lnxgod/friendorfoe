@@ -39,6 +39,8 @@ class WifiDroneScanner @Inject constructor(
 
     companion object {
         private const val TAG = "WifiDroneScanner"
+        private val REMOTE_ID_SSID_RE =
+            Regex("^(RID[0-9][A-Z0-9]{3,}|RID[_ ][A-Z0-9]{4,}|ODID[-_ ][A-Z0-9]{4,}|OPEN[_-]?DRONE[_-]?ID([-_ ][A-Z0-9]{4,})?)$")
 
         /**
          * Known drone SSID patterns mapped to manufacturer names.
@@ -178,7 +180,9 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("WIFI FPV", "Generic"),
             // DJI newer model-specific SSIDs (QuickTransfer / direct connect)
             DronePattern("DJI-Mini4Pro-", "DJI"),
+            DronePattern("DJI-Mini4K-", "DJI"),
             DronePattern("DJI-Air3-", "DJI"),
+            DronePattern("DJI-Air3S-", "DJI"),
             DronePattern("DJI-Mavic3Classic-", "DJI"),
             DronePattern("DJI-Avata2-", "DJI"),
             DronePattern("DJI-Neo-", "DJI"),
@@ -279,7 +283,16 @@ class WifiDroneScanner @Inject constructor(
             val upper = ssid.uppercase()
             return DRONE_SSID_PATTERNS.firstOrNull { pattern ->
                 upper.startsWith(pattern.prefix.uppercase())
-            }?.manufacturer
+            }?.manufacturer ?: matchRemoteIdSsidPattern(ssid)?.manufacturer
+        }
+
+        private fun matchRemoteIdSsidPattern(ssid: String): DronePattern? {
+            val upper = ssid.trim().uppercase()
+            return if (REMOTE_ID_SSID_RE.matches(upper)) {
+                DronePattern(upper.takeWhile { it != '-' && it != '_' && it != ' ' }, "Remote ID")
+            } else {
+                null
+            }
         }
 
         /**
@@ -554,7 +567,7 @@ class WifiDroneScanner @Inject constructor(
         val upper = ssid.uppercase()
         return DRONE_SSID_PATTERNS.firstOrNull { pattern ->
             upper.startsWith(pattern.prefix.uppercase())
-        }
+        } ?: matchRemoteIdSsidPattern(ssid)
     }
 
     /**

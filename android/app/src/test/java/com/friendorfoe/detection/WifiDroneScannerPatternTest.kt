@@ -35,12 +35,44 @@ class WifiDroneScannerPatternTest {
             WifiDroneScanner.matchDroneManufacturerForTest("RID-1234567890")
         )
         assertEquals(
+            "Remote ID",
+            WifiDroneScanner.matchDroneManufacturerForTest("RID12345")
+        )
+        assertEquals(
+            "Remote ID",
+            WifiDroneScanner.matchDroneManufacturerForTest("RID_ANSICTA123456")
+        )
+        assertEquals(
+            "Remote ID",
+            WifiDroneScanner.matchDroneManufacturerForTest("OpenDroneID-ANSICTA123456")
+        )
+        assertEquals(
+            "Remote ID",
+            WifiDroneScanner.matchDroneManufacturerForTest("ODID_ANSICTA123456")
+        )
+        assertEquals(
             "DJI",
             WifiDroneScanner.matchDroneManufacturerForTest("DJI-Mini4Pro-123456")
         )
         assertEquals(
             "DJI",
+            WifiDroneScanner.matchDroneManufacturerForTest("DJI-Mini4K-123456")
+        )
+        assertEquals(
+            "DJI",
+            WifiDroneScanner.matchDroneManufacturerForTest("DJI-Air3S-123456")
+        )
+        assertEquals(
+            "DJI",
             WifiDroneScanner.matchDroneManufacturerForTest("DJI_Neo_123456")
         )
+    }
+
+    @Test
+    fun android_remote_id_patterns_do_not_match_common_rid_prefix_words() {
+        assertNull(WifiDroneScanner.matchDroneManufacturerForTest("Ridgewood-WiFi"))
+        assertNull(WifiDroneScanner.matchDroneManufacturerForTest("RideShareGuest"))
+        assertNull(WifiDroneScanner.matchDroneManufacturerForTest("OpenDroneOffice"))
+        assertNull(WifiDroneScanner.matchDroneManufacturerForTest("ODIDGuest"))
     }
 }

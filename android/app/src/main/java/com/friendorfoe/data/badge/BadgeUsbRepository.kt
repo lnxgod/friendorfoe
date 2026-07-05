@@ -251,6 +251,23 @@ data class BadgeDisplayPolicy(
     }
 }
 
+fun BadgeDisplayPolicy.withClassEnabled(key: String, enabled: Boolean): BadgeDisplayPolicy {
+    val defaults = defaultBadgeDisplayPolicyClasses()
+    val current = classes[key] ?: defaults[key] ?: return this
+    val next = if (enabled) {
+        val fallback = defaults.getValue(key)
+        current.copy(
+            enabled = true,
+            lane = if (current.lane == "off") fallback.lane else current.lane,
+            minProximity = if (current.lane == "off") fallback.minProximity else current.minProximity,
+            priority = if (current.lane == "off") fallback.priority else current.priority
+        )
+    } else {
+        current.copy(enabled = false, lane = "off")
+    }
+    return copy(classes = classes + (key to next))
+}
+
 data class BadgeDisplayPolicyClassInfo(
     val key: String,
     val label: String

@@ -282,4 +282,29 @@ class BadgeControlStatusParserTest {
         assertEquals(-48, entity.rssi)
         assertTrue(entity.evidence.contains("open clone"))
     }
+
+    @Test
+    fun parsesDroneDisplayClassDisabledFromBadgeStatus() {
+        val status = parseBadgeControlStatus(
+            """
+            {
+              "mode":"usb_only",
+              "display_policy":{
+                "version":1,
+                "classes":{
+                  "drone":{"enabled":false,"lane":"off","min_proximity":"present","priority":100}
+                }
+              },
+              "filtered_counts":{"drone":4}
+            }
+            """.trimIndent()
+        )
+
+        assertNotNull(status)
+        status!!
+        val dronePolicy = status.displayPolicy.classes.getValue("drone")
+        assertFalse(dronePolicy.enabled)
+        assertEquals("off", dronePolicy.lane)
+        assertEquals(4, status.filteredCounts.getValue("drone"))
+    }
 }

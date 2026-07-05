@@ -26,6 +26,7 @@ import com.friendorfoe.data.badge.BadgeDisplayClassPolicy
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.badge.BadgeDisplayPolicyClasses
 import com.friendorfoe.data.badge.defaultBadgeDisplayPolicyClasses
+import com.friendorfoe.data.badge.withClassEnabled
 
 private enum class BadgeRowDensityPreset(val label: String) {
     Focus("Focus"),
@@ -108,12 +109,17 @@ fun BadgeDisplayFiltersSection(
             val config = policy.classes[info.key] ?: BadgeDisplayClassPolicy()
             val filtered = filteredCounts[info.key] ?: 0
             BadgeDisplayClassRow(
+                policyKey = info.key,
                 label = info.label,
                 filtered = filtered,
                 config = config,
-                onChange = { next ->
+                onChange = { key, next ->
                     onPolicyChange(
-                        policy.copy(classes = policy.classes + (info.key to next))
+                        if (next.enabled != config.enabled) {
+                            policy.withClassEnabled(key, next.enabled)
+                        } else {
+                            policy.copy(classes = policy.classes + (key to next))
+                        }
                     )
                 }
             )
@@ -173,10 +179,11 @@ private fun BadgeDisplayPolicy.withRowDensityPreset(
 
 @Composable
 private fun BadgeDisplayClassRow(
+    policyKey: String,
     label: String,
     filtered: Int,
     config: BadgeDisplayClassPolicy,
-    onChange: (BadgeDisplayClassPolicy) -> Unit
+    onChange: (String, BadgeDisplayClassPolicy) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -194,7 +201,7 @@ private fun BadgeDisplayClassRow(
             }
             Switch(
                 checked = config.enabled,
-                onCheckedChange = { onChange(config.copy(enabled = it)) }
+                onCheckedChange = { onChange(policyKey, config.copy(enabled = it)) }
             )
         }
         Spacer(modifier = Modifier.height(4.dp))
@@ -206,7 +213,7 @@ private fun BadgeDisplayClassRow(
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("off", "lower", "top", "both").forEach { lane ->
                 OutlinedButton(
-                    onClick = { onChange(config.copy(lane = lane)) },
+                    onClick = { onChange(policyKey, config.copy(lane = lane)) },
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
@@ -231,7 +238,7 @@ private fun BadgeDisplayClassRow(
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("present", "near", "close").forEach { prox ->
                 OutlinedButton(
-                    onClick = { onChange(config.copy(minProximity = prox)) },
+                    onClick = { onChange(policyKey, config.copy(minProximity = prox)) },
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
@@ -250,7 +257,7 @@ private fun BadgeDisplayClassRow(
         Slider(
             value = config.priority.toFloat(),
             onValueChange = {
-                onChange(config.copy(priority = it.toInt().coerceIn(0, 100)))
+                onChange(policyKey, config.copy(priority = it.toInt().coerceIn(0, 100)))
             },
             valueRange = 0f..100f
         )
