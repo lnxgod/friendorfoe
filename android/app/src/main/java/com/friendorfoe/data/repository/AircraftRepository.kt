@@ -84,7 +84,7 @@ class AircraftRepository @Inject constructor(
     }
 
     private val detailCache = ConcurrentHashMap<String, CachedDetail>()
-    private val metadataCache = ConcurrentHashMap<String, CachedDetail>()
+    private val metadataCache = AircraftMetadataCache()
 
     /**
      * Fetch nearby aircraft from all ADS-B providers in parallel and merge results.
@@ -291,19 +291,21 @@ class AircraftRepository @Inject constructor(
      * does not replace a later detail-screen response that may include route information.
      */
     private suspend fun getAircraftMetadata(icaoHex: String): AircraftDetailDto? {
-        val key = icaoHex.lowercase()
-        metadataCache[key]?.let { cached ->
-            if (!cached.isExpired()) {
-                return cached.detail
-            } else {
-                metadataCache.remove(key)
+        return metadataCache.getOrLoad(icaoHex) { key ->
+            val hexDbData = try {
+                hexDbApi.getAircraft(key.uppercase())
+            } catch (e: HttpException) {
+                if (e.code() == 404) {
+                    return@getOrLoad AircraftMetadataCache.LookupResult.NotFound
+                }
+                Log.d(TAG, "HexDB tactical metadata HTTP ${e.code()} for $key")
+                return@getOrLoad AircraftMetadataCache.LookupResult.Failed
+            } catch (e: Exception) {
+                Log.d(TAG, "HexDB tactical metadata unavailable for $key: ${e.message}")
+                return@getOrLoad AircraftMetadataCache.LookupResult.Failed
             }
-        }
-
-        return try {
-            val hexDbData = hexDbApi.getAircraft(icaoHex.uppercase())
             val detail = AircraftDetailDto(
-                icaoHex = key,
+                icaoHex = key.lowercase(),
                 callsign = null,
                 registration = hexDbData.registration,
                 aircraftType = hexDbData.icaoTypeCode,
@@ -313,16 +315,7 @@ class AircraftRepository @Inject constructor(
                 route = null,
                 country = null
             )
-
-            if (metadataCache.size >= DETAIL_CACHE_MAX_SIZE) {
-                val oldest = metadataCache.entries.minByOrNull { it.value.timestampMs }
-                oldest?.let { metadataCache.remove(it.key) }
-            }
-            metadataCache[key] = CachedDetail(detail)
-            detail
-        } catch (e: Exception) {
-            Log.d(TAG, "HexDB tactical metadata unavailable for $icaoHex: ${e.message}")
-            null
+            AircraftMetadataCache.LookupResult.Found(detail)
         }
     }
 

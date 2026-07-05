@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 98
-        versionName = "0.64.55-android-police-owner-enrichment"
+        versionCode = 99
+        versionName = "0.64.56-android-metadata-cache"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
