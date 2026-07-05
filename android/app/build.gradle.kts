@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 99
-        versionName = "0.64.56-android-metadata-cache"
+        versionCode = 100
+        versionName = "0.64.57-android-cache-increase"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

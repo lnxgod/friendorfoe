@@ -89,6 +89,88 @@ class AircraftMetadataCacheTest {
     }
 
     @Test
+    fun defaultSuccessCacheKeepsMetadataForOneDay() = runTest {
+        var nowMs = 1_000L
+        var loadCount = 0
+        val cache = AircraftMetadataCache(nowMs = { nowMs })
+
+        val first = cache.getOrLoad("abc123") {
+            loadCount += 1
+            AircraftMetadataCache.LookupResult.Found(detail("abc123"))
+        }
+        nowMs += 24 * 60 * 60 * 1000L
+        val second = cache.getOrLoad("abc123") {
+            loadCount += 1
+            error("Default positive cache should survive a full day")
+        }
+
+        assertSame(first, second)
+        assertEquals(1, loadCount)
+    }
+
+    @Test
+    fun defaultMissCacheKeepsNotFoundForHalfDay() = runTest {
+        var nowMs = 1_000L
+        var loadCount = 0
+        val cache = AircraftMetadataCache(nowMs = { nowMs })
+
+        val first = cache.getOrLoad("abc123") {
+            loadCount += 1
+            AircraftMetadataCache.LookupResult.NotFound
+        }
+        nowMs += 12 * 60 * 60 * 1000L
+        val second = cache.getOrLoad("abc123") {
+            loadCount += 1
+            error("Default miss cache should survive half a day")
+        }
+
+        assertNull(first)
+        assertNull(second)
+        assertEquals(1, loadCount)
+    }
+
+    @Test
+    fun defaultErrorCacheKeepsFailuresForFifteenMinutes() = runTest {
+        var nowMs = 1_000L
+        var loadCount = 0
+        val cache = AircraftMetadataCache(nowMs = { nowMs })
+
+        val first = cache.getOrLoad("abc123") {
+            loadCount += 1
+            AircraftMetadataCache.LookupResult.Failed
+        }
+        nowMs += 15 * 60 * 1000L
+        val second = cache.getOrLoad("abc123") {
+            loadCount += 1
+            error("Default error cache should survive fifteen minutes")
+        }
+
+        assertNull(first)
+        assertNull(second)
+        assertEquals(1, loadCount)
+    }
+
+    @Test
+    fun defaultCacheKeepsMoreThanFiveHundredAircraft() = runTest {
+        var nowMs = 1_000L
+        val cache = AircraftMetadataCache(nowMs = { nowMs })
+
+        repeat(501) { index ->
+            val hex = index.toString(16).padStart(6, '0')
+            cache.getOrLoad(hex) {
+                AircraftMetadataCache.LookupResult.Found(detail(hex))
+            }
+            nowMs += 1_000L
+        }
+
+        val first = cache.getOrLoad("000000") {
+            error("Default metadata cache should retain more than 500 aircraft")
+        }
+
+        assertEquals("000000", first!!.icaoHex)
+    }
+
+    @Test
     fun concurrentRequestsForSameHexShareOneProviderCall() = runTest {
         var loadCount = 0
         val started = CompletableDeferred<Unit>()

@@ -106,11 +106,11 @@ internal class AircraftMetadataCache(
         icaoHex.trim().lowercase()
 
     companion object {
-        private const val DEFAULT_MAX_SIZE = 500
+        private const val DEFAULT_MAX_SIZE = 2_500
         private const val MINUTE_MS = 60 * 1000L
         private const val HOUR_MS = 60 * MINUTE_MS
-        private const val SUCCESS_TTL_MS = 6 * HOUR_MS
-        private const val MISS_TTL_MS = 6 * HOUR_MS
-        private const val ERROR_TTL_MS = 5 * MINUTE_MS
+        private const val SUCCESS_TTL_MS = 24 * HOUR_MS
+        private const val MISS_TTL_MS = 12 * HOUR_MS
+        private const val ERROR_TTL_MS = 15 * MINUTE_MS
     }
 }
