@@ -594,7 +594,7 @@ internal fun DroneDetailContent(
                     DetailRow("Signal", "$it dBm")
                 }
                 drone.estimatedDistanceMeters?.let {
-                    DetailRow("Est. Distance", formatDistance(it) + " (signal)")
+                    DetailRow("Signal Range", formatDistance(it) + " RSSI-derived")
                 }
             }
         }

@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 94
-        versionName = "0.64.51-android-continuity-tighten"
+        versionCode = 95
+        versionName = "0.64.52-android-alerts-distance"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -3,27 +3,32 @@ package com.friendorfoe.detection
 import kotlin.math.pow
 
 object RssiDistanceEstimator {
-    private const val WIFI_DRONE_RSSI_REF_DBM = -55.0
-    private const val WIFI_DRONE_PATH_LOSS = 2.3
-    private const val BLE_REMOTE_ID_RSSI_REF_DBM = -59.0
-    private const val BLE_REMOTE_ID_PATH_LOSS = 2.0
+    private const val FSPL_2_4_GHZ_AT_1M_DB = 40.05
+    private const val WIFI_DRONE_DEFAULT_TX_POWER_DBM = 13.2
+    private const val WIFI_DRONE_PATH_LOSS = 2.4
+    private const val BLE_REMOTE_ID_DEFAULT_TX_POWER_DBM = 1.8
+    private const val BLE_REMOTE_ID_PATH_LOSS = 2.3
 
-    fun estimateWifiDrone(rssi: Int): Double =
+    fun estimateWifiDrone(rssi: Int, txPowerDbm: Int? = null): Double =
         estimate(
             rssi = rssi,
-            referenceRssiAtOneMeter = WIFI_DRONE_RSSI_REF_DBM,
+            referenceRssiAtOneMeter = referenceRssiAtOneMeter(
+                txPowerDbm?.toDouble() ?: WIFI_DRONE_DEFAULT_TX_POWER_DBM
+            ),
             pathLossExponent = WIFI_DRONE_PATH_LOSS,
-            minMeters = 0.5,
-            maxMeters = 5000.0
+            minMeters = 1.0,
+            maxMeters = 10000.0
         )
 
-    fun estimateBleRemoteId(rssi: Int): Double =
+    fun estimateBleRemoteId(rssi: Int, txPowerDbm: Int? = null): Double =
         estimate(
             rssi = rssi,
-            referenceRssiAtOneMeter = BLE_REMOTE_ID_RSSI_REF_DBM,
+            referenceRssiAtOneMeter = referenceRssiAtOneMeter(
+                txPowerDbm?.toDouble() ?: BLE_REMOTE_ID_DEFAULT_TX_POWER_DBM
+            ),
             pathLossExponent = BLE_REMOTE_ID_PATH_LOSS,
-            minMeters = 0.1,
-            maxMeters = 1000.0
+            minMeters = 0.5,
+            maxMeters = 5000.0
         )
 
     fun estimate(
@@ -36,4 +41,7 @@ object RssiDistanceEstimator {
         val exponent = (referenceRssiAtOneMeter - rssi) / (10.0 * pathLossExponent)
         return 10.0.pow(exponent).coerceIn(minMeters, maxMeters)
     }
+
+    private fun referenceRssiAtOneMeter(txPowerDbm: Double): Double =
+        txPowerDbm - FSPL_2_4_GHZ_AT_1M_DB
 }

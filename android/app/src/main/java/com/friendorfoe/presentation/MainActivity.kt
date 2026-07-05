@@ -40,8 +40,10 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.friendorfoe.presentation.navigation.FriendOrFoeNavGraph
 import com.friendorfoe.presentation.navigation.Screen
+import com.friendorfoe.presentation.alerts.SkyAlertMonitorViewModel
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import dagger.hilt.android.AndroidEntryPoint
+import androidx.hilt.navigation.compose.hiltViewModel
 
 /**
  * Main entry point for the Friend or Foe app.
@@ -69,6 +71,7 @@ fun FriendOrFoeApp() {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
+    SkyAlertMonitor()
 
     // Request Location + BT + WiFi permissions at app startup (not Camera — that stays AR-only)
     val startupPermissionLauncher = rememberLauncherForActivityResult(
@@ -182,6 +185,11 @@ fun FriendOrFoeApp() {
             FriendOrFoeNavGraph(navController = navController)
         }
     }
+}
+
+@Composable
+private fun SkyAlertMonitor() {
+    hiltViewModel<SkyAlertMonitorViewModel>()
 }
 
 private data class BottomNavItem(

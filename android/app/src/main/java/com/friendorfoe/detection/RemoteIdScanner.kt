@@ -171,7 +171,11 @@ class RemoteIdScanner @Inject constructor(
         synchronized(tempState) {
             tempState.lastUpdated = now
             tempState.signalStrengthDbm = result.rssi
-            tempState.estimatedDistanceMeters = RssiDistanceEstimator.estimateBleRemoteId(result.rssi)
+            val txPowerDbm = result.txPower.takeIf { it != ScanResult.TX_POWER_NOT_PRESENT }
+            tempState.estimatedDistanceMeters = RssiDistanceEstimator.estimateBleRemoteId(
+                rssi = result.rssi,
+                txPowerDbm = txPowerDbm
+            )
             OpenDroneIdParser.parseMessage(messageData, tempState)
         }
 

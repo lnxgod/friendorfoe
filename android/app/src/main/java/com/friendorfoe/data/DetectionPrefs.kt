@@ -27,6 +27,10 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_ULTRASONIC = "detection_ultrasonic_enabled"
         private const val KEY_WIFI_ANOMALY = "detection_wifi_anomaly_enabled"
         private const val KEY_PRIVACY_NOTIFICATIONS = "privacy_notifications_enabled"
+        private const val KEY_DRONE_ALERTS = "alert_drones_enabled"
+        private const val KEY_HELICOPTER_ALERTS = "alert_helicopters_enabled"
+        private const val KEY_MILITARY_ALERTS = "alert_military_enabled"
+        private const val KEY_POLICE_ALERTS = "alert_police_enabled"
         private const val KEY_IGNORED_MACS = "privacy_ignored_macs"
         private const val KEY_SENSOR_BACKEND = "sensor_backend_enabled"
         private const val KEY_BACKEND_URL = "sensor_backend_url"
@@ -67,6 +71,22 @@ class DetectionPrefs @Inject constructor(
     var privacyNotificationsEnabled: Boolean
         get() = prefs.getBoolean(KEY_PRIVACY_NOTIFICATIONS, true)
         set(value) = prefs.edit().putBoolean(KEY_PRIVACY_NOTIFICATIONS, value).apply()
+
+    var droneAlertsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_DRONE_ALERTS, true)
+        set(value) = prefs.edit().putBoolean(KEY_DRONE_ALERTS, value).apply()
+
+    var helicopterAlertsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_HELICOPTER_ALERTS, true)
+        set(value) = prefs.edit().putBoolean(KEY_HELICOPTER_ALERTS, value).apply()
+
+    var militaryAlertsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_MILITARY_ALERTS, true)
+        set(value) = prefs.edit().putBoolean(KEY_MILITARY_ALERTS, value).apply()
+
+    var policeAlertsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_POLICE_ALERTS, true)
+        set(value) = prefs.edit().putBoolean(KEY_POLICE_ALERTS, value).apply()
 
     /** Sensor backend (ESP32 network) — enabled by default */
     var sensorBackendEnabled: Boolean

@@ -31,7 +31,7 @@ class OpenDroneIdParserTest {
         assertEquals(37.7749, drone.position.latitude, 0.0001)
         assertEquals(-122.4194, drone.position.longitude, 0.0001)
         assertEquals(-79, drone.signalStrengthDbm)
-        assertEquals(10.0, drone.estimatedDistanceMeters ?: -1.0, 0.25)
+        assertEquals(60.0, drone.estimatedDistanceMeters ?: -1.0, 6.0)
     }
 
     private fun basicIdMessage(serial: String): ByteArray {

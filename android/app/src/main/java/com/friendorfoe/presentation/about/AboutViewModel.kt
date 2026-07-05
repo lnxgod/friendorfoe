@@ -28,6 +28,10 @@ class AboutViewModel @Inject constructor(
     val ultrasonicEnabled: Boolean get() = detectionPrefs.ultrasonicEnabled
     val wifiAnomalyEnabled: Boolean get() = detectionPrefs.wifiAnomalyEnabled
     val privacyNotificationsEnabled: Boolean get() = detectionPrefs.privacyNotificationsEnabled
+    val droneAlertsEnabled: Boolean get() = detectionPrefs.droneAlertsEnabled
+    val helicopterAlertsEnabled: Boolean get() = detectionPrefs.helicopterAlertsEnabled
+    val militaryAlertsEnabled: Boolean get() = detectionPrefs.militaryAlertsEnabled
+    val policeAlertsEnabled: Boolean get() = detectionPrefs.policeAlertsEnabled
     val sensorBackendEnabled: Boolean get() = detectionPrefs.sensorBackendEnabled
     val backendUrl: String get() = detectionPrefs.backendUrl
     val backendOnlyMode: Boolean get() = detectionPrefs.backendOnlyMode
@@ -59,6 +63,10 @@ class AboutViewModel @Inject constructor(
     fun setPrivacyNotificationsEnabled(enabled: Boolean) {
         detectionPrefs.privacyNotificationsEnabled = enabled
     }
+    fun setDroneAlertsEnabled(enabled: Boolean) { detectionPrefs.droneAlertsEnabled = enabled }
+    fun setHelicopterAlertsEnabled(enabled: Boolean) { detectionPrefs.helicopterAlertsEnabled = enabled }
+    fun setMilitaryAlertsEnabled(enabled: Boolean) { detectionPrefs.militaryAlertsEnabled = enabled }
+    fun setPoliceAlertsEnabled(enabled: Boolean) { detectionPrefs.policeAlertsEnabled = enabled }
     fun setSensorBackendEnabled(enabled: Boolean) { detectionPrefs.sensorBackendEnabled = enabled }
     fun setBackendUrl(url: String) { detectionPrefs.backendUrl = url }
     fun setBackendOnlyMode(enabled: Boolean) {

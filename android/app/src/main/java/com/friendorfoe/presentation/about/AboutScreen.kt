@@ -306,6 +306,34 @@ fun AboutScreen(
                     }
                 }
                 item {
+                    SectionCard(title = "Alert Notifications") {
+                        SettingsToggle(
+                            title = "Drone Alerts",
+                            description = "Notify when any Remote ID or WiFi drone is detected",
+                            initialValue = viewModel.droneAlertsEnabled,
+                            onToggle = { viewModel.setDroneAlertsEnabled(it) }
+                        )
+                        SettingsToggle(
+                            title = "Helicopter Alerts",
+                            description = "Notify when a helicopter is detected at any visible range",
+                            initialValue = viewModel.helicopterAlertsEnabled,
+                            onToggle = { viewModel.setHelicopterAlertsEnabled(it) }
+                        )
+                        SettingsToggle(
+                            title = "Military Alerts",
+                            description = "Notify for military aircraft within 15 mi",
+                            initialValue = viewModel.militaryAlertsEnabled,
+                            onToggle = { viewModel.setMilitaryAlertsEnabled(it) }
+                        )
+                        SettingsToggle(
+                            title = "Police / Emergency Alerts",
+                            description = "Notify for government, emergency, or ADS-B ground vehicles within 15 mi",
+                            initialValue = viewModel.policeAlertsEnabled,
+                            onToggle = { viewModel.setPoliceAlertsEnabled(it) }
+                        )
+                    }
+                }
+                item {
                     SectionCard(title = "Privacy Detection") {
                         SettingsToggle(
                             title = "Privacy Scanner",
