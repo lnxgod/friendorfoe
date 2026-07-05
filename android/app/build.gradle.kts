@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 96
-        versionName = "0.64.53-android-privacy-sky-alerts"
+        versionCode = 97
+        versionName = "0.64.54-android-stronger-police-military"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

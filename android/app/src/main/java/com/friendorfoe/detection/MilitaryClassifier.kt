@@ -93,8 +93,8 @@ object MilitaryClassifier {
         if (typeCode != null) {
             val typeResult = checkTypeCode(typeCode.uppercase().trim())
             if (typeResult != null) {
-                score += 25
-                signals.add("TYPE:${typeResult}")
+                score += typeResult.score
+                signals.add("TYPE:${typeResult.tag}")
             }
         }
 
@@ -207,14 +207,14 @@ object MilitaryClassifier {
     private val callsignPatterns: List<CallsignPattern> by lazy {
         listOf(
             // US Military
-            CallsignPattern(Regex("^RCH\\d+"), "REACH_AMC"),
-            CallsignPattern(Regex("^EVAC\\d*"), "EVAC"),
+            CallsignPattern(Regex("^RCH\\d+"), "REACH_AMC", score = 45),
+            CallsignPattern(Regex("^EVAC\\d*"), "EVAC", score = 45),
             CallsignPattern(Regex("^DUKE\\d+"), "DUKE"),
-            CallsignPattern(Regex("^NAVY\\d*"), "NAVY"),
-            CallsignPattern(Regex("^ARMY\\d*"), "ARMY"),
+            CallsignPattern(Regex("^NAVY\\d*"), "NAVY", score = 45),
+            CallsignPattern(Regex("^ARMY\\d*"), "ARMY", score = 45),
             CallsignPattern(Regex("^TOPCAT\\d*"), "TOPCAT"),
-            CallsignPattern(Regex("^TEAL\\d+"), "TEAL"),
-            CallsignPattern(Regex("^ORDER\\d+"), "ORDER"),
+            CallsignPattern(Regex("^TEAL\\d+"), "TEAL", score = 45),
+            CallsignPattern(Regex("^ORDER\\d+"), "ORDER", score = 45),
             CallsignPattern(Regex("^MOOSE\\d+"), "MOOSE"),
             CallsignPattern(Regex("^PACK\\d+"), "PACK"),
             CallsignPattern(Regex("^RAGE\\d+"), "RAGE"),
@@ -224,30 +224,33 @@ object MilitaryClassifier {
             CallsignPattern(Regex("^SKULL\\d+"), "SKULL"),
             CallsignPattern(Regex("^KNIFE\\d+"), "KNIFE"),
             CallsignPattern(Regex("^TABOO\\d+"), "TABOO"),
-            CallsignPattern(Regex("^SNTRY\\d*"), "SENTRY"),
+            CallsignPattern(Regex("^SNTRY\\d*"), "SENTRY", score = 45),
             CallsignPattern(Regex("^GUCCI\\d+"), "GUCCI"),
             CallsignPattern(Regex("^ROCKY\\d+"), "ROCKY"),
             CallsignPattern(Regex("^STONE\\d+"), "STONE"),
             // Generic US military prefixes
-            CallsignPattern(Regex("^AF[0-9]"), "USAF"),
-            CallsignPattern(Regex("^MC[0-9]"), "USMC"),
+            CallsignPattern(Regex("^AF[0-9]"), "USAF", score = 45),
+            CallsignPattern(Regex("^MC[0-9]"), "USMC", score = 45),
             // International military
-            CallsignPattern(Regex("^BAF\\d+"), "BELGIAN_AF"),
-            CallsignPattern(Regex("^GAF\\d+"), "GERMAN_AF"),
-            CallsignPattern(Regex("^FAF\\d+"), "FRENCH_AF"),
-            CallsignPattern(Regex("^RAF\\d+"), "ROYAL_AF"),
-            CallsignPattern(Regex("^IAF\\d+"), "ISRAELI_AF"),
-            CallsignPattern(Regex("^IAM\\d+"), "ITALIAN_AF"),
-            CallsignPattern(Regex("^SUI\\d+"), "SWISS_AF"),
-            CallsignPattern(Regex("^NOR\\d+"), "NORWEGIAN_AF"),
-            CallsignPattern(Regex("^DAF\\d+"), "DANISH_AF"),
-            CallsignPattern(Regex("^PLF\\d+"), "POLISH_AF"),
-            CallsignPattern(Regex("^HAF\\d+"), "GREEK_AF"),
-            CallsignPattern(Regex("^TKF\\d+"), "TURKISH_AF"),
-            CallsignPattern(Regex("^SWF\\d+"), "SWEDISH_AF"),
-            CallsignPattern(Regex("^RNF\\d+"), "DUTCH_AF"),
-            CallsignPattern(Regex("^CNF\\d+"), "CANADIAN_AF"),
-            CallsignPattern(Regex("^ASF\\d+"), "AUSTRALIAN_AF"),
+            CallsignPattern(Regex("^BAF\\d+"), "BELGIAN_AF", score = 45),
+            CallsignPattern(Regex("^GAF\\d+"), "GERMAN_AF", score = 45),
+            CallsignPattern(Regex("^FAF\\d+"), "FRENCH_AF", score = 45),
+            CallsignPattern(Regex("^RAF\\d+"), "ROYAL_AF", score = 45),
+            CallsignPattern(Regex("^IAF\\d+"), "ISRAELI_AF", score = 45),
+            CallsignPattern(Regex("^IAM\\d+"), "ITALIAN_AF", score = 45),
+            CallsignPattern(Regex("^SUI\\d+"), "SWISS_AF", score = 45),
+            CallsignPattern(Regex("^NOR\\d+"), "NORWEGIAN_AF", score = 45),
+            CallsignPattern(Regex("^DAF\\d+"), "DANISH_AF", score = 45),
+            CallsignPattern(Regex("^PLF\\d+"), "POLISH_AF", score = 45),
+            CallsignPattern(Regex("^HAF\\d+"), "GREEK_AF", score = 45),
+            CallsignPattern(Regex("^TKF\\d+"), "TURKISH_AF", score = 45),
+            CallsignPattern(Regex("^SWF\\d+"), "SWEDISH_AF", score = 45),
+            CallsignPattern(Regex("^RNF\\d+"), "DUTCH_AF", score = 45),
+            CallsignPattern(Regex("^CNF\\d+"), "CANADIAN_AF", score = 45),
+            CallsignPattern(Regex("^ASF\\d+"), "AUSTRALIAN_AF", score = 45),
+            CallsignPattern(Regex("^RRR\\d+"), "RAF_ASCOT", score = 45),
+            CallsignPattern(Regex("^CFC\\d+"), "CANFORCE", score = 45),
+            CallsignPattern(Regex("^ASY\\d+"), "AUSSIE_AF", score = 45),
             // Government / law enforcement
             CallsignPattern(Regex("^EXEC\\d*"), "EXECUTIVE", isGovernment = true, score = 45),
             CallsignPattern(Regex("^SAMP\\d+"), "SAM_PRIORITY", isGovernment = true, score = 45),
@@ -259,6 +262,10 @@ object MilitaryClassifier {
             CallsignPattern(Regex("^POLICE\\d*"), "LAW_ENFORCEMENT", isGovernment = true, score = 45),
             CallsignPattern(Regex("^SHERIFF\\d*"), "LAW_ENFORCEMENT", isGovernment = true, score = 45),
             CallsignPattern(Regex("^PATROL\\d*"), "LAW_ENFORCEMENT", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^DPS\\d+"), "PUBLIC_SAFETY", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^CALFIRE\\d*"), "PUBLIC_SAFETY", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^FIRE\\d+"), "PUBLIC_SAFETY", isGovernment = true, score = 45),
+            CallsignPattern(Regex("^RESCUE\\d+"), "PUBLIC_SAFETY", isGovernment = true, score = 45),
             CallsignPattern(Regex("^TROOPER\\d*"), "STATE_POLICE", isGovernment = true, score = 45),
             CallsignPattern(Regex("^CHP\\d*"), "HIGHWAY_PATROL", isGovernment = true, score = 45),
             CallsignPattern(Regex("^NYPD\\d*"), "LAW_ENFORCEMENT", isGovernment = true, score = 45),
@@ -344,7 +351,9 @@ object MilitaryClassifier {
 
     // ---- Signal 3: Military Type Codes ----
 
-    private val militaryTypeCodes: Set<String> by lazy {
+    private data class TypeCodeResult(val tag: String, val score: Int)
+
+    private val highConfidenceMilitaryTypeCodes: Set<String> by lazy {
         setOf(
             // Fighters
             "F16", "F15", "F18", "FA18", "F22", "F35",
@@ -359,11 +368,11 @@ object MilitaryClassifier {
             // Bombers
             "B1", "B1B", "B2", "B52", "B52H",
             "TU95", "TU160", "TU22", "TU16", // TU16 = H-6 (Chinese license)
-            // Transport
-            "C130", "C17", "C17A", "C30J", "C5", "C5M", "C2", "C295W",
+            // Transport, tanker, and special mission aircraft with strong military signal
+            "C17", "C17A", "C5", "C5M", "C2",
             "KC10", "KC46", "KC135",
             "A400", "A400M",
-            "C160", "AN12", "AN22", "AN72", "AN124", "AN225",
+            "C160", "AN22",
             "IL76", "Y20",                    // Y-20 Chinese heavy transport
             // Helicopters (military)
             "H60", "UH60", "HH60", "MH60", "SH60",
@@ -385,21 +394,33 @@ object MilitaryClassifier {
             "SR71",
             // UAV (military)
             "RQ4", "MQ9", "MQ1", "RQ7", "RQ170",
+            // Attack
+            "AC130", "F117", "AV8B", "EA18",
+            // Tankers / Special
+            "A330MRTT", "MRTT"
+        )
+    }
+
+    private val supportingMilitaryTypeCodes: Set<String> by lazy {
+        setOf(
+            // Dual-use, retired, or civilian-operated ex-military types.
+            "C130", "C30J", "C295W",
+            "AN12", "AN72", "AN124", "AN225",
             // Trainers
             "T6", "T38", "T45",
             "PC21", "PC7",
             "HAWK",
-            // Attack
-            "AC130", "F117", "AV8B", "EA18",
             // Misc
             "C12",
-            // Tankers / Special
-            "A330MRTT", "MRTT",
             "C295", "CN35"
         )
     }
 
-    private fun checkTypeCode(typeCode: String): String? {
-        return if (typeCode in militaryTypeCodes) typeCode else null
+    private fun checkTypeCode(typeCode: String): TypeCodeResult? {
+        return when (typeCode) {
+            in highConfidenceMilitaryTypeCodes -> TypeCodeResult(typeCode, score = 45)
+            in supportingMilitaryTypeCodes -> TypeCodeResult(typeCode, score = 25)
+            else -> null
+        }
     }
 }

@@ -35,6 +35,66 @@ class MilitaryClassifierTest {
     }
 
     @Test
+    fun militaryTransportCallsignAloneClassifiesAsMilitary() {
+        val result = MilitaryClassifier.classify(
+            icaoHex = null,
+            callsign = "RCH123",
+            typeCode = null,
+            registration = null
+        )
+
+        assertEquals(ObjectCategory.MILITARY, result.category)
+        assertTrue(result.signals.contains("CALLSIGN:REACH_AMC"))
+    }
+
+    @Test
+    fun exclusiveMilitaryTypeCodeAloneClassifiesAsMilitary() {
+        val result = MilitaryClassifier.classify(
+            icaoHex = null,
+            callsign = null,
+            typeCode = "C17",
+            registration = null
+        )
+
+        assertEquals(ObjectCategory.MILITARY, result.category)
+        assertTrue(result.signals.contains("TYPE:C17"))
+    }
+
+    @Test
+    fun dualUseMilitaryTypeCodeNeedsAnotherSignal() {
+        val weakResult = MilitaryClassifier.classify(
+            icaoHex = null,
+            callsign = null,
+            typeCode = "C130",
+            registration = null
+        )
+        val combinedResult = MilitaryClassifier.classify(
+            icaoHex = null,
+            callsign = "HAWK1",
+            typeCode = "C130",
+            registration = null
+        )
+
+        assertEquals(null, weakResult.category)
+        assertEquals(ObjectCategory.MILITARY, combinedResult.category)
+        assertTrue(combinedResult.signals.contains("CALLSIGN:HAWK"))
+        assertTrue(combinedResult.signals.contains("TYPE:C130"))
+    }
+
+    @Test
+    fun emergencyPublicSafetyCallsignClassifiesAsGovernment() {
+        val result = MilitaryClassifier.classify(
+            icaoHex = null,
+            callsign = "CALFIRE12",
+            typeCode = null,
+            registration = null
+        )
+
+        assertEquals(ObjectCategory.GOVERNMENT, result.category)
+        assertTrue(result.signals.contains("CALLSIGN:PUBLIC_SAFETY"))
+    }
+
+    @Test
     fun ownerNameClassifiesPublicSafetyAircraftAsGovernment() {
         val result = MilitaryClassifier.classify(
             icaoHex = null,
@@ -46,5 +106,19 @@ class MilitaryClassifierTest {
 
         assertEquals(ObjectCategory.GOVERNMENT, result.category)
         assertTrue(result.signals.contains("OWNER:PUBLIC_SAFETY"))
+    }
+
+    @Test
+    fun ownerNameClassifiesMilitaryAircraftAsMilitary() {
+        val result = MilitaryClassifier.classify(
+            icaoHex = null,
+            callsign = null,
+            typeCode = null,
+            registration = null,
+            ownerName = "UNITED STATES AIR FORCE"
+        )
+
+        assertEquals(ObjectCategory.MILITARY, result.category)
+        assertTrue(result.signals.contains("OWNER:USAF"))
     }
 }
