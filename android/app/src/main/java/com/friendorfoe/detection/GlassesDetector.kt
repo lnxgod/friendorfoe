@@ -489,6 +489,11 @@ class GlassesDetector @Inject constructor(
             return null
         }
 
+        internal fun appleRemoteListeningMatchForTest(
+            apple: AppleContinuityDecoder.AppleContinuity?,
+            rssi: Int,
+        ): Triple<Float, String, String>? = appleRemoteListeningMatch(apple, rssi)
+
         private fun appleRemoteListeningMatch(
             apple: AppleContinuityDecoder.AppleContinuity?,
             rssi: Int,
@@ -500,24 +505,19 @@ class GlassesDetector @Inject constructor(
             val activity = apple.activity
             val activeAudioPath = activity in setOf(1, 2, 3)
             val close = rssi >= -60
-            if (!activeAudioPath && !close) return null
+            if (!activeAudioPath) return null
 
             val activityLabel = when (activity) {
                 1 -> "audio"
                 2 -> "phone"
                 3 -> "video"
-                else -> null
+                else -> return null
             }
             val confidence = when {
                 activeAudioPath && close -> 0.82f
-                activeAudioPath -> 0.74f
-                else -> 0.62f
+                else -> 0.74f
             }
-            val detail = if (activityLabel != null) {
-                "AirPods connected + $activityLabel activity"
-            } else {
-                "AirPods connected nearby"
-            }
+            val detail = "AirPods connected + $activityLabel activity"
             return Triple(confidence, detail, "apple_remote_listening")
         }
     }

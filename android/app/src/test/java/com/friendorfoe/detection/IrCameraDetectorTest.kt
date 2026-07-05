@@ -22,6 +22,34 @@ class IrCameraDetectorTest {
     }
 
     @Test
+    fun reports_persistent_purple_ir_cluster() {
+        val detector = IrCameraDetector()
+        val pixels = darkFrame()
+        putBlock(pixels, x = 20, y = 20, color = 0xFFFF70FF.toInt())
+
+        assertTrue(detector.analyzePixelsForTest(WIDTH, HEIGHT, pixels).isEmpty())
+
+        val results = detector.analyzePixelsForTest(WIDTH, HEIGHT, pixels)
+
+        assertEquals(1, results.size)
+        assertTrue(results.single().confidence >= 0.6f)
+        assertTrue(results.single().brightness >= 200)
+    }
+
+    @Test
+    fun flags_lit_room_and_suppresses_sources() {
+        val detector = IrCameraDetector()
+        val pixels = IntArray(WIDTH * HEIGHT) { 0xFF9A9A9A.toInt() }
+        putBlock(pixels, x = 20, y = 20, color = 0xFFFFFFFF.toInt())
+
+        val analysis = detector.analyzePixelsWithEnvironmentForTest(WIDTH, HEIGHT, pixels)
+
+        assertTrue(analysis.roomTooBright)
+        assertTrue(analysis.ambientBrightness >= 96)
+        assertTrue(analysis.sources.isEmpty())
+    }
+
+    @Test
     fun rejects_bright_saturated_color_cluster() {
         val detector = IrCameraDetector()
         val pixels = darkFrame()

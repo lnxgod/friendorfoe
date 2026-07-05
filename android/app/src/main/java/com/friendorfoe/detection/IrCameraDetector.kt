@@ -2,6 +2,7 @@ package com.friendorfoe.detection
 
 import android.graphics.Bitmap
 import android.util.Log
+import kotlin.math.abs
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -14,7 +15,7 @@ import javax.inject.Singleton
  *
  * Usage: User activates "IR Scan" mode, turns off room lights, and
  * slowly pans the front camera around the room. The detector analyzes
- * each frame for bright saturated clusters that persist across frames.
+ * each frame for bright near-white or purple clusters that persist across frames.
  */
 @Singleton
 class IrCameraDetector @Inject constructor() {
@@ -23,16 +24,19 @@ class IrCameraDetector @Inject constructor() {
         private const val TAG = "IrCameraDetector"
 
         /** Minimum pixel brightness to consider as potential IR (0-255) */
-        private const val BRIGHTNESS_THRESHOLD = 220
+        private const val BRIGHTNESS_THRESHOLD = 200
 
         /** Minimum cluster size in pixels to report */
         private const val MIN_CLUSTER_PIXELS = 4
 
         /** Minimum saturation — IR appears as white/purple, not colored */
-        private const val MAX_SATURATION = 60 // low saturation = near-white
+        private const val MAX_SATURATION = 85 // low saturation = near-white
 
         /** Grid cell size for spatial clustering */
         private const val GRID_CELL_SIZE = 16
+
+        /** Average scene brightness where IR LEDs wash out into ambient light. */
+        private const val ROOM_TOO_BRIGHT_AVERAGE = 96
     }
 
     data class IrSource(
@@ -41,6 +45,12 @@ class IrCameraDetector @Inject constructor() {
         val brightness: Int,   // Peak brightness 0-255
         val clusterSize: Int,  // Number of bright pixels in cluster
         val confidence: Float  // 0.0-1.0
+    )
+
+    data class FrameAnalysis(
+        val sources: List<IrSource>,
+        val ambientBrightness: Int,
+        val roomTooBright: Boolean
     )
 
     // Persistence tracking: grid cell -> consecutive frame count
@@ -53,7 +63,13 @@ class IrCameraDetector @Inject constructor() {
      * @return List of detected IR sources, empty if none found
      */
     fun analyzeFrame(bitmap: Bitmap): List<IrSource> {
-        if (bitmap.isRecycled) return emptyList()
+        return analyzeFrameWithEnvironment(bitmap).sources
+    }
+
+    fun analyzeFrameWithEnvironment(bitmap: Bitmap): FrameAnalysis {
+        if (bitmap.isRecycled) {
+            return FrameAnalysis(emptyList(), ambientBrightness = 0, roomTooBright = false)
+        }
 
         val width = bitmap.width
         val height = bitmap.height
@@ -63,11 +79,21 @@ class IrCameraDetector @Inject constructor() {
     }
 
     internal fun analyzePixelsForTest(width: Int, height: Int, pixels: IntArray): List<IrSource> {
+        return analyzePixels(width, height, pixels).sources
+    }
+
+    internal fun analyzePixelsWithEnvironmentForTest(
+        width: Int,
+        height: Int,
+        pixels: IntArray
+    ): FrameAnalysis {
         return analyzePixels(width, height, pixels)
     }
 
-    private fun analyzePixels(width: Int, height: Int, pixels: IntArray): List<IrSource> {
-        if (width <= 0 || height <= 0 || pixels.size < width * height) return emptyList()
+    private fun analyzePixels(width: Int, height: Int, pixels: IntArray): FrameAnalysis {
+        if (width <= 0 || height <= 0 || pixels.size < width * height) {
+            return FrameAnalysis(emptyList(), ambientBrightness = 0, roomTooBright = false)
+        }
 
         val gridW = (width / GRID_CELL_SIZE).coerceAtLeast(1)
         val gridH = (height / GRID_CELL_SIZE).coerceAtLeast(1)
@@ -75,6 +101,7 @@ class IrCameraDetector @Inject constructor() {
         // Count bright, low-saturation pixels per grid cell
         val gridCounts = IntArray(gridW * gridH)
         val gridBrightness = IntArray(gridW * gridH)
+        var brightnessSum = 0L
 
         for (y in 0 until height) {
             for (x in 0 until width) {
@@ -84,12 +111,13 @@ class IrCameraDetector @Inject constructor() {
                 val b = pixel and 0xFF
 
                 val brightness = maxOf(r, g, b)
+                brightnessSum += brightness
                 val minC = minOf(r, g, b)
                 val saturation = if (brightness > 0) {
                     ((brightness - minC) * 255) / brightness
                 } else 0
 
-                if (brightness >= BRIGHTNESS_THRESHOLD && saturation <= MAX_SATURATION) {
+                if (isPotentialIrPixel(r, g, b, brightness, saturation)) {
                     val gx = (x / GRID_CELL_SIZE).coerceAtMost(gridW - 1)
                     val gy = (y / GRID_CELL_SIZE).coerceAtMost(gridH - 1)
                     val idx = gy * gridW + gx
@@ -99,6 +127,12 @@ class IrCameraDetector @Inject constructor() {
                     }
                 }
             }
+        }
+
+        val ambientBrightness = (brightnessSum / (width * height)).toInt()
+        if (ambientBrightness >= ROOM_TOO_BRIGHT_AVERAGE) {
+            persistenceMap.clear()
+            return FrameAnalysis(emptyList(), ambientBrightness, roomTooBright = true)
         }
 
         // Find cells with enough bright pixels
@@ -144,7 +178,26 @@ class IrCameraDetector @Inject constructor() {
             safeLogInfo("IR sources detected: ${results.size} (persistence: $maxPersistence)")
         }
 
-        return results
+        return FrameAnalysis(results, ambientBrightness, roomTooBright = false)
+    }
+
+    private fun isPotentialIrPixel(
+        r: Int,
+        g: Int,
+        b: Int,
+        brightness: Int,
+        saturation: Int
+    ): Boolean {
+        if (brightness < BRIGHTNESS_THRESHOLD) return false
+        if (saturation <= MAX_SATURATION) return true
+
+        // Front cameras often render 850nm IR LEDs as magenta/purple rather
+        // than pure white. Require both red and blue to be bright so saturated
+        // red, green, or blue LEDs do not trip the detector.
+        return r >= 170 &&
+            b >= 170 &&
+            g <= 190 &&
+            abs(r - b) <= 85
     }
 
     /** Reset persistence tracking (e.g., when scan mode is entered) */

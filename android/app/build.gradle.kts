@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 91
-        versionName = "0.64.48-android-badge-drone"
+        versionCode = 92
+        versionName = "0.64.49-android-ir-apple-decode"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

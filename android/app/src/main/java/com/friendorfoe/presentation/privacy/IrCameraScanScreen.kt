@@ -67,6 +67,7 @@ fun IrCameraScanScreen(
     viewModel: IrCameraScanViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    var cameraLens by remember { mutableStateOf(IrCameraLens.STARTING) }
     var cameraGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -136,8 +137,35 @@ fun IrCameraScanScreen(
         ) {
             IrCameraPreview(
                 onFrame = viewModel::analyzeFrame,
+                onCameraLensChanged = { cameraLens = it },
                 modifier = Modifier.fillMaxSize()
             )
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.58f))
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                val statusText = when {
+                    state.roomTooBright -> "Too much ambient light. Dark room required."
+                    cameraLens == IrCameraLens.BACK_FALLBACK -> "Front camera unavailable. IR scan may be unreliable."
+                    cameraLens == IrCameraLens.UNAVAILABLE -> "No camera available."
+                    cameraLens == IrCameraLens.FRONT -> "Front camera active. Dark room required."
+                    else -> "Starting front camera. Dark room required."
+                }
+                Text(
+                    text = statusText,
+                    color = if (state.roomTooBright || cameraLens != IrCameraLens.FRONT) {
+                        Color(0xFFFFEB3B)
+                    } else {
+                        Color.White
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
             Canvas(modifier = Modifier.fillMaxSize()) {
                 state.sources.forEach { source ->
                     val center = Offset(source.x * size.width, source.y * size.height)
@@ -171,7 +199,7 @@ fun IrCameraScanScreen(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Frames ${state.framesAnalyzed}  Peak ${state.peakCount}",
+                    text = "Frames ${state.framesAnalyzed}  Peak ${state.peakCount}  Ambient ${state.ambientBrightness}",
                     color = Color.White.copy(alpha = 0.78f),
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -180,9 +208,17 @@ fun IrCameraScanScreen(
     }
 }
 
+private enum class IrCameraLens {
+    STARTING,
+    FRONT,
+    BACK_FALLBACK,
+    UNAVAILABLE
+}
+
 @Composable
 private fun IrCameraPreview(
     onFrame: (Bitmap) -> Unit,
+    onCameraLensChanged: (IrCameraLens) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -228,12 +264,25 @@ private fun IrCameraPreview(
                         }
                     }
                 val selector = runCatching {
-                    if (cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
-                        CameraSelector.DEFAULT_FRONT_CAMERA
-                    } else {
-                        CameraSelector.DEFAULT_BACK_CAMERA
+                    when {
+                        cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) -> {
+                            onCameraLensChanged(IrCameraLens.FRONT)
+                            CameraSelector.DEFAULT_FRONT_CAMERA
+                        }
+                        cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) -> {
+                            onCameraLensChanged(IrCameraLens.BACK_FALLBACK)
+                            CameraSelector.DEFAULT_BACK_CAMERA
+                        }
+                        else -> {
+                            onCameraLensChanged(IrCameraLens.UNAVAILABLE)
+                            null
+                        }
                     }
-                }.getOrDefault(CameraSelector.DEFAULT_BACK_CAMERA)
+                }.getOrNull()
+                if (selector == null) {
+                    cameraProvider.unbindAll()
+                    return@addListener
+                }
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
             }, ContextCompat.getMainExecutor(ctx))
@@ -246,18 +295,7 @@ private fun IrCameraPreview(
 private fun ImageProxy.toBitmapSafe(): Bitmap? {
     return try {
         if (planes.size < 3) return null
-        val yBuffer = planes[0].buffer
-        val uBuffer = planes[1].buffer
-        val vBuffer = planes[2].buffer
-
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
-        val nv21 = ByteArray(ySize + uSize + vSize)
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
-
+        val nv21 = toNv21()
         val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
         val out = ByteArrayOutputStream()
         yuvImage.compressToJpeg(Rect(0, 0, width, height), 80, out)
@@ -265,5 +303,76 @@ private fun ImageProxy.toBitmapSafe(): Bitmap? {
         BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
     } catch (_: Exception) {
         null
+    }
+}
+
+private fun ImageProxy.toNv21(): ByteArray {
+    val ySize = width * height
+    val uvWidth = width / 2
+    val uvHeight = height / 2
+    val out = ByteArray(ySize + uvWidth * uvHeight * 2)
+
+    copyPlaneToOutput(
+        plane = planes[0],
+        planeWidth = width,
+        planeHeight = height,
+        output = out,
+        outputOffset = 0,
+        outputPixelStride = 1
+    )
+    copyPlaneToOutput(
+        plane = planes[2],
+        planeWidth = uvWidth,
+        planeHeight = uvHeight,
+        output = out,
+        outputOffset = ySize,
+        outputPixelStride = 2
+    )
+    copyPlaneToOutput(
+        plane = planes[1],
+        planeWidth = uvWidth,
+        planeHeight = uvHeight,
+        output = out,
+        outputOffset = ySize + 1,
+        outputPixelStride = 2
+    )
+
+    return out
+}
+
+private fun copyPlaneToOutput(
+    plane: ImageProxy.PlaneProxy,
+    planeWidth: Int,
+    planeHeight: Int,
+    output: ByteArray,
+    outputOffset: Int,
+    outputPixelStride: Int
+) {
+    val buffer = plane.buffer.duplicate()
+    val rowStride = plane.rowStride
+    val pixelStride = plane.pixelStride
+    val rowBuffer = ByteArray(rowStride)
+    var outputIndex = outputOffset
+
+    for (row in 0 until planeHeight) {
+        val rowStart = row * rowStride
+        val rowLength = if (pixelStride == 1 && outputPixelStride == 1) {
+            planeWidth
+        } else {
+            (planeWidth - 1) * pixelStride + 1
+        }
+        buffer.position(rowStart)
+        if (pixelStride == 1 && outputPixelStride == 1) {
+            buffer.get(output, outputIndex, planeWidth)
+            outputIndex += planeWidth
+        } else {
+            buffer.get(rowBuffer, 0, rowLength)
+            var inputIndex = 0
+            repeat(planeWidth) {
+                output[outputIndex] = rowBuffer[inputIndex]
+                outputIndex += outputPixelStride
+                inputIndex += pixelStride
+            }
+        }
     }
 }

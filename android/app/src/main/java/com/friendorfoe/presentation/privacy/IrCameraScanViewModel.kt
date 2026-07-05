@@ -13,7 +13,9 @@ import kotlinx.coroutines.flow.update
 data class IrCameraScanUiState(
     val sources: List<IrCameraDetector.IrSource> = emptyList(),
     val framesAnalyzed: Long = 0,
-    val peakCount: Int = 0
+    val peakCount: Int = 0,
+    val ambientBrightness: Int = 0,
+    val roomTooBright: Boolean = false
 )
 
 @HiltViewModel
@@ -24,12 +26,14 @@ class IrCameraScanViewModel @Inject constructor(
     val uiState: StateFlow<IrCameraScanUiState> = _uiState.asStateFlow()
 
     fun analyzeFrame(bitmap: Bitmap) {
-        val sources = irCameraDetector.analyzeFrame(bitmap)
+        val analysis = irCameraDetector.analyzeFrameWithEnvironment(bitmap)
         _uiState.update { state ->
             state.copy(
-                sources = sources,
+                sources = analysis.sources,
                 framesAnalyzed = state.framesAnalyzed + 1,
-                peakCount = maxOf(state.peakCount, sources.size)
+                peakCount = maxOf(state.peakCount, analysis.sources.size),
+                ambientBrightness = analysis.ambientBrightness,
+                roomTooBright = analysis.roomTooBright
             )
         }
     }

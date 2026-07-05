@@ -107,6 +107,19 @@ class AppleContinuityDecoderTest {
     }
 
     @Test
+    fun `Nearby Info decodes activity from low nibble`() {
+        val bytes = byteArrayOf(
+            0x10,
+            0x11, 0x22, 0x33,   // auth
+            0xF2.toByte(),       // high nibble iOS, low nibble phone activity
+            0x01                // flags
+        )
+        val result = AppleContinuityDecoder.decode(bytes)!!
+        assertEquals(0xF, result.iosVersionNibble)
+        assertEquals(2, result.activity)
+    }
+
+    @Test
     fun `Nearby Info decodes data-flags byte with bit combinations`() {
         // flagsByte = 0x05 = AirPods + Watch paired
         val bytes = byteArrayOf(
@@ -157,5 +170,34 @@ class AppleContinuityDecoderTest {
         val bytes = byteArrayOf(0x12, 0x19, 0x00)
         val result = AppleContinuityDecoder.decode(bytes)!!
         assertEquals("AirTag", result.enrichedLabel())
+    }
+
+    @Test
+    fun `AirPods nearby without active audio does not classify as remote listening`() {
+        val bytes = byteArrayOf(
+            0x10,
+            0x01, 0x02, 0x03,  // auth
+            0x10,              // iOS nibble, idle activity
+            0x01               // AirPods connected flag
+        )
+        val result = AppleContinuityDecoder.decode(bytes)!!
+
+        assertNull(GlassesDetector.appleRemoteListeningMatchForTest(result, rssi = -45))
+    }
+
+    @Test
+    fun `AirPods with active phone activity classifies as remote listening`() {
+        val bytes = byteArrayOf(
+            0x10,
+            0x01, 0x02, 0x03,  // auth
+            0x12,              // iOS nibble, phone activity
+            0x01               // AirPods connected flag
+        )
+        val result = AppleContinuityDecoder.decode(bytes)!!
+
+        val match = GlassesDetector.appleRemoteListeningMatchForTest(result, rssi = -45)
+
+        assertNotNull(match)
+        assertEquals("apple_remote_listening", match!!.third)
     }
 }

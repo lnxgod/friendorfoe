@@ -37,7 +37,8 @@ object AppleContinuityDecoder {
      * @property subType   raw mfr_data[2] byte (Continuity type).
      * @property deviceType see classification rules above.
      * @property authTag   bytes +3..+5 for types 0x0F / 0x10 (rotates slower than MAC).
-     * @property activity  byte +6 for types 0x0F / 0x10 (0=idle, 1=audio, 2=phone, 3=video).
+     * @property activity  byte +6 activity code; Nearby Info (0x10) stores it
+     *                     in the low nibble (0=idle, 1=audio, 2=phone, 3=video).
      * @property flagsByte byte +7 for types 0x0F / 0x10; decode bits via
      *                     [BleSignatures.APPLE_FLAG_*].
      * @property iosVersionNibble high nibble of byte +6 for type 0x10 — iOS major version.
@@ -94,10 +95,10 @@ object AppleContinuityDecoder {
 
         // Nearby Info (0x10) / Nearby Action (0x0F) share the same deep layout.
         // Match the ESP32 firmware byte offsets byte-for-byte — the firmware
-        // uses CID-inclusive `ad_data[3..5]` for auth, `ad_data[6]` for
-        // activity, `ad_data[7]` for flags. This Kotlin decoder receives
+        // uses CID-inclusive `ad_data[3..5]` for auth, `ad_data[6]` for the
+        // activity/iOS byte, `ad_data[7]` for flags. This Kotlin decoder receives
         // mfrData starting from the Continuity type byte (ad_data[2]), so
-        // the Kotlin indices are: mfrData[1..3] auth, [4] activity, [5] flags.
+        // the Kotlin indices are: mfrData[1..3] auth, [4] activity/iOS, [5] flags.
         //
         // Reference: esp32/scanner/main/detection/ble_fingerprint.c lines 276–296.
         val authTag: ByteArray?
@@ -107,11 +108,14 @@ object AppleContinuityDecoder {
         val nearbyActionSubType: Int?
 
         if (subType == BleSignatures.APPLE_NEARBY_INFO || subType == BleSignatures.APPLE_NEARBY_ACTION) {
+            val activityByte = if (mfrData.size >= 5) mfrData[4].toInt() and 0xFF else null
             authTag = if (mfrData.size >= 4) byteArrayOf(mfrData[1], mfrData[2], mfrData[3]) else null
-            activity = if (mfrData.size >= 5) mfrData[4].toInt() and 0xFF else null
+            activity = activityByte?.let {
+                if (subType == BleSignatures.APPLE_NEARBY_INFO) it and 0x0F else it
+            }
             flagsByte = if (mfrData.size >= 6) mfrData[5].toInt() and 0xFF else null
-            iosVersionNibble = if (subType == BleSignatures.APPLE_NEARBY_INFO && mfrData.size >= 5) {
-                (mfrData[4].toInt() and 0xF0) ushr 4
+            iosVersionNibble = if (subType == BleSignatures.APPLE_NEARBY_INFO) {
+                activityByte?.let { (it and 0xF0) ushr 4 }
             } else null
             // Nearby Action (0x0F) puts the action sub-type in the sub-length
             // slot at mfrData[1]. We re-read it here as a typed helper.
