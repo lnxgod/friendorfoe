@@ -521,12 +521,14 @@ private fun SkyObjectItem(
     isVisuallyConfirmed: Boolean,
     onClick: () -> Unit
 ) {
-    val rowBackground = when (skyObject.category) {
-        ObjectCategory.MILITARY -> Modifier.background(Color(0xFFF44336).copy(alpha = 0.08f))
-        ObjectCategory.GOVERNMENT -> Modifier.background(Color(0xFFE65100).copy(alpha = 0.08f))
-        ObjectCategory.EMERGENCY -> Modifier.background(Color(0xFFE91E63).copy(alpha = 0.10f))
-        else -> Modifier
-    }
+    val attentionColor = listAttentionColor(skyObject)
+    val rowBackground = attentionColor
+        ?.let {
+            Modifier.background(
+                it.copy(alpha = if (skyObject.category == ObjectCategory.EMERGENCY) 0.10f else 0.08f)
+            )
+        }
+        ?: Modifier
 
     Row(
         modifier = Modifier
@@ -541,7 +543,7 @@ private fun SkyObjectItem(
             modifier = Modifier
                 .size(12.dp)
                 .clip(CircleShape)
-                .background(categoryColor(skyObject.category))
+                .background(attentionColor ?: categoryColor(skyObject.category))
         )
 
         Spacer(modifier = Modifier.width(12.dp))
@@ -559,7 +561,7 @@ private fun SkyObjectItem(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false)
                 )
-                val badge = listBadgeText(skyObject)?.let { it to Color(0xFFE65100) }
+                val badge = listBadgeVisual(skyObject)?.let { it.label to it.color }
                     ?: categoryBadge(skyObject.category)
                 if (badge != null) {
                     Spacer(modifier = Modifier.width(6.dp))

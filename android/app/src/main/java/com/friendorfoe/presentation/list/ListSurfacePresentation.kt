@@ -1,9 +1,15 @@
 package com.friendorfoe.presentation.list
 
+import androidx.compose.ui.graphics.Color
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
+
+internal data class ListBadgeVisual(
+    val label: String,
+    val color: Color
+)
 
 internal fun listPrimaryText(skyObject: SkyObject): String = when (skyObject) {
     is Aircraft -> {
@@ -40,10 +46,22 @@ internal fun listSecondaryText(skyObject: SkyObject): String = when (skyObject) 
     }
 }
 
-internal fun listBadgeText(skyObject: SkyObject): String? = when (skyObject) {
-    is Aircraft -> publicSafetyBadgeText(skyObject)
+internal fun listBadgeText(skyObject: SkyObject): String? = listBadgeVisual(skyObject)?.label
+
+internal fun listBadgeVisual(skyObject: SkyObject): ListBadgeVisual? = when (skyObject) {
+    is Aircraft -> publicSafetyBadgeText(skyObject)?.let { badge ->
+        ListBadgeVisual(label = badge, color = publicSafetyBadgeColor(badge))
+    }
     else -> null
 }
+
+internal fun listAttentionColor(skyObject: SkyObject): Color? =
+    listBadgeVisual(skyObject)?.color ?: when (skyObject.category) {
+        ObjectCategory.MILITARY -> Color(0xFFF44336)
+        ObjectCategory.GOVERNMENT -> Color(0xFFE65100)
+        ObjectCategory.EMERGENCY -> Color(0xFFE91E63)
+        else -> null
+    }
 
 internal fun listSurfacePriority(skyObject: SkyObject): Int = when (skyObject) {
     is Aircraft -> when {
@@ -58,6 +76,13 @@ internal fun listSurfacePriority(skyObject: SkyObject): Int = when (skyObject) {
     is Drone -> 25
 }
 
+private fun publicSafetyBadgeColor(badge: String): Color = when (badge) {
+    "LAW" -> Color(0xFFE65100)
+    "FIRE" -> Color(0xFFD32F2F)
+    "EMS" -> Color(0xFFE91E63)
+    else -> Color(0xFF1565C0)
+}
+
 private fun publicSafetyAircraftLabel(aircraft: Aircraft): String? {
     if (!isPublicSafetyAircraft(aircraft)) return null
     val agency = when {
@@ -67,6 +92,9 @@ private fun publicSafetyAircraftLabel(aircraft: Aircraft): String? {
         evidenceContains(aircraft, "STATE TROOPER") -> "POLICE"
         evidenceContains(aircraft, "FIRE") -> "FIRE"
         evidenceContains(aircraft, "CALFIRE") -> "FIRE"
+        evidenceContains(aircraft, "MEDEVAC") -> "EMS"
+        evidenceContains(aircraft, "MEDICAL") -> "EMS"
+        evidenceContains(aircraft, "RESCUE") -> "RESCUE"
         else -> "PUBLIC SAFETY"
     }
     return if (isRotorcraft(aircraft)) "$agency HELICOPTER" else "$agency AIRCRAFT"

@@ -111,6 +111,8 @@ import com.friendorfoe.presentation.detail.AircraftDetailContent
 import com.friendorfoe.presentation.detail.DetailState
 import com.friendorfoe.presentation.detail.DetailViewModel
 import com.friendorfoe.presentation.detail.DroneDetailContent
+import com.friendorfoe.presentation.list.listBadgeVisual
+import com.friendorfoe.presentation.list.listPrimaryText
 import com.friendorfoe.presentation.util.categoryBadge
 import com.friendorfoe.presentation.util.categoryColor
 import com.friendorfoe.domain.model.ObjectCategory
@@ -1323,8 +1325,9 @@ private fun DrawScope.drawLabel(
     val primaryLine = getLabelText(skyObject)
     val secondaryLine = getSecondaryLabelText(skyObject, labelInfo.screenPosition.distanceMeters)
 
-    // Compute category badge width before text layout to reserve space
-    val catBadge = categoryBadge(skyObject.category)
+    // Compute category badge width before text layout to reserve space.
+    val catBadge = listBadgeVisual(skyObject)?.let { it.label to it.color }
+        ?: categoryBadge(skyObject.category)
     val catBadgeW = if (catBadge != null) catBadge.first.length * 10f + 8f else 0f
     val textBudget = labelWidth - 16f - if (catBadge != null) catBadgeW + 8f else 0f
 
@@ -1353,7 +1356,7 @@ private fun DrawScope.drawLabel(
         val secondaryEllipsized = ellipsize(secondaryLine, subtextPaint, labelWidth - 16f)
         drawText(secondaryEllipsized, left + 8f, top + 50f, subtextPaint)
 
-        // Category badge (MIL/GOV/HELI/EMG/CGO/GND) in top-right corner
+        // Category/public-safety badge (LAW/FIRE/EMS/PS/MIL/GOV/etc.) in top-right corner
         if (catBadge != null) {
             val (catLabel, catColor) = catBadge
             val catBadgeH = 18f
@@ -1815,11 +1818,7 @@ private fun classificationTagText(
  */
 private fun getLabelText(skyObject: com.friendorfoe.domain.model.SkyObject): String {
     return when (skyObject) {
-        is Aircraft -> {
-            val callsign = skyObject.callsign ?: skyObject.icaoHex
-            val type = skyObject.aircraftType
-            if (type != null) "$callsign $type" else callsign
-        }
+        is Aircraft -> listPrimaryText(skyObject)
         is Drone -> skyObject.droneId.take(14)
     }
 }
