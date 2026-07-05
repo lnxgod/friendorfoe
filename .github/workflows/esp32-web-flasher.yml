@@ -23,6 +23,9 @@ concurrency:
 jobs:
   # ── Build firmware ──────────────────────────────────────────────────────────
   build:
+    # Android-only app releases use tags like vX.Y.Z-android-... so the app's
+    # GitHub update check can see them without packaging firmware assets.
+    if: ${{ !((github.event_name == 'release' && contains(github.event.release.tag_name, 'android')) || (github.event_name != 'release' && contains(github.ref_name, 'android'))) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
