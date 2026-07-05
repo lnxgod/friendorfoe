@@ -261,6 +261,7 @@ internal fun sortSkyObjectsForList(
 ): List<SkyObject> {
     return objects.sortedWith(
         compareByDescending<SkyObject> { it.id in activeVisualFocusIds }
+            .thenByDescending { listSurfacePriority(it) }
             .thenByDescending { it.confidence }
             .thenBy { it.distanceMeters ?: Double.MAX_VALUE }
     )

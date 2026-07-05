@@ -42,17 +42,78 @@ class ListVisiblePriorityTest {
         )
     }
 
-    private fun aircraft(id: String, confidence: Float, distanceMeters: Double): Aircraft {
+    @Test
+    fun `public safety aircraft sort before ordinary aircraft in the list`() {
+        val ordinaryNearby = aircraft(
+            id = "NORM",
+            confidence = 0.99f,
+            distanceMeters = 100.0,
+            category = ObjectCategory.COMMERCIAL
+        )
+        val sheriffHelicopter = aircraft(
+            id = "SHERIFF",
+            confidence = 0.80f,
+            distanceMeters = 2_000.0,
+            category = ObjectCategory.GOVERNMENT,
+            aircraftType = "AS50",
+            aircraftModel = "Eurocopter AS350",
+            operatorName = "SAN DIEGO COUNTY SHERIFF",
+            classificationSignals = listOf("OWNER:PUBLIC_SAFETY")
+        )
+
+        val sorted = sortSkyObjectsForList(
+            listOf(ordinaryNearby, sheriffHelicopter),
+            activeVisualFocusIds = emptySet()
+        )
+
+        assertEquals(listOf("SHERIFF", "NORM"), sorted.map { it.id })
+    }
+
+    @Test
+    fun `sheriff rotorcraft row text calls out sheriff helicopter`() {
+        val sheriffHelicopter = aircraft(
+            id = "ABC123",
+            confidence = 0.95f,
+            distanceMeters = 2_000.0,
+            category = ObjectCategory.GOVERNMENT,
+            aircraftType = "AS50",
+            aircraftModel = "Eurocopter AS350",
+            operatorName = "SAN DIEGO COUNTY SHERIFF",
+            registration = "N123SD",
+            classificationSignals = listOf("OWNER:PUBLIC_SAFETY")
+        )
+
+        assertEquals("SHERIFF HELICOPTER  ABC123", listPrimaryText(sheriffHelicopter))
+        assertEquals("SAN DIEGO COUNTY SHERIFF - Eurocopter AS350 - N123SD", listSecondaryText(sheriffHelicopter))
+        assertEquals("LAW", listBadgeText(sheriffHelicopter))
+    }
+
+    private fun aircraft(
+        id: String,
+        confidence: Float,
+        distanceMeters: Double,
+        category: ObjectCategory = ObjectCategory.COMMERCIAL,
+        aircraftType: String? = null,
+        aircraftModel: String? = null,
+        operatorName: String? = null,
+        registration: String? = null,
+        classificationSignals: List<String>? = null
+    ): Aircraft {
         return Aircraft(
             id = id,
             position = Position(latitude = 40.0, longitude = -74.0, altitudeMeters = 1000.0),
             source = DetectionSource.ADS_B,
-            category = ObjectCategory.COMMERCIAL,
+            category = category,
             confidence = confidence,
             firstSeen = Instant.EPOCH,
             lastUpdated = Instant.EPOCH,
             distanceMeters = distanceMeters,
-            icaoHex = id
+            icaoHex = id,
+            registration = registration,
+            aircraftType = aircraftType,
+            aircraftModel = aircraftModel,
+            operatorName = operatorName,
+            classificationSignals = classificationSignals
         )
     }
 }

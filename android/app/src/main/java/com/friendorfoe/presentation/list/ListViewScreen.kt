@@ -58,9 +58,7 @@ import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
 import com.friendorfoe.data.badge.defaultBadgeDisplayPolicy
 import com.friendorfoe.data.badge.defaultBadgeTheme
-import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
-import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
 import com.friendorfoe.detection.BleTracker
@@ -554,14 +552,15 @@ private fun SkyObjectItem(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = primaryText(skyObject),
+                    text = listPrimaryText(skyObject),
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false)
                 )
-                val badge = categoryBadge(skyObject.category)
+                val badge = listBadgeText(skyObject)?.let { it to Color(0xFFE65100) }
+                    ?: categoryBadge(skyObject.category)
                 if (badge != null) {
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
@@ -576,7 +575,7 @@ private fun SkyObjectItem(
                 }
             }
             Text(
-                text = secondaryText(skyObject),
+                text = listSecondaryText(skyObject),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -621,24 +620,6 @@ private fun SkyObjectItem(
             modifier = Modifier.size(18.dp),
             tint = MaterialTheme.colorScheme.onSurfaceVariant
         )
-    }
-}
-
-/** Returns the primary display text for a sky object (callsign or drone ID). */
-private fun primaryText(skyObject: SkyObject): String = when (skyObject) {
-    is Aircraft -> {
-        val callsign = skyObject.callsign ?: skyObject.icaoHex
-        if (skyObject.aircraftType != null) "$callsign  ${skyObject.aircraftType}" else callsign
-    }
-    is Drone -> skyObject.droneId
-}
-
-/** Returns secondary descriptive text (aircraft type or manufacturer). */
-private fun secondaryText(skyObject: SkyObject): String = when (skyObject) {
-    is Aircraft -> skyObject.aircraftModel ?: skyObject.aircraftType ?: "Unknown aircraft"
-    is Drone -> {
-        val parts = listOfNotNull(skyObject.manufacturer, skyObject.model)
-        if (parts.isNotEmpty()) parts.joinToString(" ") else "Unknown drone"
     }
 }
 
