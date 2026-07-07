@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 102
-        versionName = "0.64.59-android-interface-polish"
+        versionCode = 103
+        versionName = "0.64.60-android-rssi-distance"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
