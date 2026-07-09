@@ -130,7 +130,7 @@ static int badge_ble_status_access(uint16_t conn_handle,
     char theme_json[BADGE_THEME_JSON_MAX];
     badge_ble_control_status_json(ble_json, sizeof(ble_json));
     badge_theme_runtime_json(theme_json, sizeof(theme_json));
-    char json[960];
+    char json[BADGE_THEME_JSON_MAX + sizeof(ble_json) + 192];
     snprintf(json, sizeof(json),
              "{\"version\":\"%s\",\"mode\":\"ble\","
              "\"mode_label\":\"BLE Tether\",\"theme_hash\":%lu,"

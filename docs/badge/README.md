@@ -13,10 +13,10 @@ make it part of a larger RF sensor deployment.
 
 ## Current Versions
 
-- Android app: `0.64.63-privacy-oui`
-- Backend: `0.64.63-privacy-oui`
-- FoF Badge firmware: `0.64.63-badge-privacy-oui`
-- Production S3 firmware: `0.64.63-privacy-oui`
+- Android app: `0.64.64-privacy-oui`
+- Backend: `0.64.64-privacy-oui`
+- FoF Badge firmware: `0.64.64-badge-privacy-oui`
+- Production S3 firmware: `0.64.64-privacy-oui`
 
 Keep those tracks separate. The badge firmware uses `FOF_BADGE_VARIANT`,
 badge-specific pinning, a Waveshare ST7735 display, USB-C control, local AP
@@ -37,7 +37,7 @@ uplink assigns the active role and scanner profile at runtime.
 
 ## What This Release Tests
 
-`0.64.63-badge-privacy-oui` is the current badge privacy/OUI release,
+`0.64.64-badge-privacy-oui` is the current badge privacy/OUI release,
 carrying the BLE/theme control work forward while keeping the badge track
 separate from the production node firmware:
 
@@ -150,7 +150,7 @@ Expected healthy status facts:
 
 - Top-level `recovery_mode` is `normal`.
 - Both scanners are connected and report `scanner-s3-combo-fof_badge`.
-- Uplink and scanners report `0.64.63-badge-privacy-oui` after the matching badge
+- Uplink and scanners report `0.64.64-badge-privacy-oui` after the matching badge
   images are flashed.
 - `display_policy_hash` is non-zero.
 - Scanner `display_policy_ack_hash` catches up to the uplink policy hash.
