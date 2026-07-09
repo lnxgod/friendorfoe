@@ -1,6 +1,6 @@
 {
   "name": "Friend or Foe Uplink (ESP32-S3)",
-  "version": "0.64.61-privacy-oui",
+  "version": "0.64.62-privacy-oui",
   "builds": [
     {
       "chipFamily": "ESP32-S3",

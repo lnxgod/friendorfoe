@@ -11,12 +11,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   backend, ESP32 scanner, and badge policy now treat Flock Safety as the
   registered `B4:1E:52` OUI only, normalize common MAC formats, and reject
   malformed near-matches instead of promoting broad Flock-looking names.
+- **Badge scanner auto-update catalog now includes badge firmware.** Backend
+  firmware metadata now serves `scanner-s3-combo-fof_badge` and
+  `uplink-s3-fof_badge`, and local metadata preserves the badge version track
+  so a single flashed badge uplink can cache and relay the matching scanner
+  image instead of requiring each scanner port to be flashed manually.
 - **RSSI distance fallback now uses the field-calibrated scale.** Android,
   backend, and ESP32 scanner code now share the same RSSI range profile, and
   BLE Remote ID detections carry a rough RSSI range when no RTT range is
   available.
 - **Android update check now has a real release version to find.** The Android
-  app version is bumped to `0.64.61-privacy-oui` so GitHub Releases can
+  app version is bumped to `0.64.62-privacy-oui` so GitHub Releases can
   publish a newer APK than the installed build.
 
 ### Added
@@ -33,8 +38,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **RSSI drone-range release versions refreshed.** README, backend firmware
   readiness expectations, ESP32 version metadata, Android version metadata,
   and web flasher manifests now identify the current production/app/backend
-  release as `0.64.61-privacy-oui`; the FoF Badge track remains separate at
-  `0.64.61-badge-privacy-oui`.
+  release as `0.64.62-privacy-oui`; the FoF Badge track remains separate at
+  `0.64.62-badge-privacy-oui`.
 
 ## [0.64.39-badge-usb-detail] - 2026-05-18
 

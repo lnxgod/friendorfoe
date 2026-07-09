@@ -178,6 +178,8 @@ jobs:
           cp esp32/web-flasher/manifest-scanner.json          _site/
           cp esp32/web-flasher/manifest-scanner-seed.json     _site/
           cp esp32/web-flasher/manifest-uplink-s3.json        _site/
+          cp esp32/web-flasher/manifest-badge-scanner.json    _site/
+          cp esp32/web-flasher/manifest-badge-uplink.json     _site/
 
       - name: Download firmware artifact
         uses: actions/download-artifact@v4

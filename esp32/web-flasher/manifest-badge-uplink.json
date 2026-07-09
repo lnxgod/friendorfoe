@@ -1,0 +1,14 @@
+{
+  "name": "Friend or Foe Badge Uplink (XIAO ESP32-S3)",
+  "version": "0.64.62-badge-privacy-oui",
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "firmware/badge-uplink/bootloader.bin", "offset": 0 },
+        { "path": "firmware/badge-uplink/partition-table.bin", "offset": 32768 },
+        { "path": "firmware/badge-uplink/firmware.bin", "offset": 131072 }
+      ]
+    }
+  ]
+}

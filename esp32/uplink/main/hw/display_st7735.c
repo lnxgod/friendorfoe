@@ -2552,7 +2552,7 @@ static void draw_signal_lane(int y, const badge_threat_snapshot_t *snapshot,
         fb_fill_rect(28, y + 28, bar_w, 2, color);
     }
     if (visible_count > 1) {
-        char page[5];
+        char page[24];
         int pos = (int)((s_queue_page_frame / 28) % (uint32_t)visible_count) + 1;
         snprintf(page, sizeof(page), "%d/%d", pos, visible_count);
         int pw = str_pixel_width(page, 1);
@@ -3478,7 +3478,7 @@ static void draw_scanner_bottom_strip(int y, bool ble_scanner_ok,
     snprintf(line, sizeof(line), "BLE %s  WIFI %s",
              proof_word(ble_state), proof_word(wifi_state));
     int64_t uptime_s = esp_timer_get_time() / 1000000LL;
-    char uptime_label[16];
+    char uptime_label[32];
     if (uptime_s < 3600) {
         snprintf(uptime_label, sizeof(uptime_label), "U%lld:%02lld",
                  (long long)(uptime_s / 60),
@@ -4444,7 +4444,7 @@ static void draw_top_concern_tile(int y, badge_ui_domain_t domain,
             badge_drone_evidence_count(snapshot) > 0;
         bool show_meta_count = badge_item_is_meta_glasses(item) &&
             badge_meta_glasses_count(snapshot) > 0;
-        char count_text[8] = {0};
+        char count_text[12] = {0};
         int count_w = 0;
         if (show_drone_count) {
             uint32_t drone_count = badge_drone_evidence_count(snapshot);
@@ -4485,7 +4485,7 @@ static void draw_top_concern_tile(int y, badge_ui_domain_t domain,
         char detail[56];
         format_top_badge_detail(detail, sizeof(detail), item, snapshot);
 
-        char tag[12];
+        char tag[40];
         if (badge_item_is_drone_evidence(item)) {
             uint32_t rid_count = badge_remote_id_drone_count(snapshot);
             uint32_t ssid_count = badge_drone_ssid_count(snapshot);
@@ -4647,11 +4647,11 @@ static void draw_billboard_row(int y, int h,
     if ((item->category == BADGE_THREAT_CATEGORY_BEACON ||
          item->category == BADGE_THREAT_CATEGORY_EVENT_BADGE) &&
         item->group_count > 1U) {
-        char counted[24];
+        char counted[32];
         snprintf(counted, sizeof(counted), "%.15s x%lu",
                  title,
                  (unsigned long)item->group_count);
-        snprintf(title, sizeof(title), "%s", counted);
+        snprintf(title, sizeof(title), "%.23s", counted);
     }
     fb_draw_string_fast_marquee(label_x, y + 3, title,
                                 LCD_W - label_x - aw - 8,
@@ -5257,7 +5257,7 @@ static void badge_focus_add_entity(const badge_threat_snapshot_t *snapshot,
                              item_index, item_total);
     if (!badge_threat_snapshot_entity_view_key(item, entry->key,
                                                sizeof(entry->key))) {
-        snprintf(entry->key, sizeof(entry->key), "ENT:%s:%s",
+        snprintf(entry->key, sizeof(entry->key), "ENT:%.24s:%.34s",
                  title, detail);
     }
 }
@@ -5293,7 +5293,7 @@ static void badge_focus_add_candidate(const badge_threat_snapshot_t *snapshot,
                              candidate->diag.label,
                              candidate->diag.detail,
                              y, h, item_index, item_total);
-    snprintf(entry->key, sizeof(entry->key), "%s",
+    snprintf(entry->key, sizeof(entry->key), "%.63s",
              candidate->key[0] ? candidate->key : candidate->diag.label);
 }
 
@@ -5431,13 +5431,13 @@ static void draw_badge_billboards(const badge_threat_snapshot_t *snapshot,
     }
 
     if (ble_total > 1) {
-        char page[8];
+        char page[24];
         snprintf(page, sizeof(page), "%d/%d", ble_pos + 1, ble_total);
         fb_draw_tiny_string(LCD_W - tiny_pixel_width(page) - 4,
                             y0 + row_h - 8, page, COL_DARKGRAY, COL_PANEL_2);
     }
     if (wifi_total > 1) {
-        char page[8];
+        char page[24];
         snprintf(page, sizeof(page), "%d/%d", wifi_pos + 1, wifi_total);
         fb_draw_tiny_string(LCD_W - tiny_pixel_width(page) - 4,
                             bottom_y - 8, page, COL_DARKGRAY, COL_PANEL_2);
@@ -5535,7 +5535,7 @@ static void draw_evidence_queue(const badge_threat_snapshot_t *snapshot,
     }
 
     if (visible_entity_count > visible_rows) {
-        char page[8];
+        char page[24];
         snprintf(page, sizeof(page), "%d/%d", start + 1, visible_entity_count);
         fb_draw_tiny_string(LCD_W - tiny_pixel_width(page) - 4,
                             bottom_y - 7, page, COL_DARKGRAY, COL_BLACK);

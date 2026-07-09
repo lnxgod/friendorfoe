@@ -57,7 +57,13 @@ def run_esp32_live_builds() -> None:
         str(REPO_ROOT / "esp32/.venv312/bin/pio"),
         "pio",
     )
-    for env in ("scanner-s3-combo", "scanner-s3-combo-seed", "uplink-s3"):
+    for env in (
+        "scanner-s3-combo",
+        "scanner-s3-combo-seed",
+        "scanner-s3-combo-fof_badge",
+        "uplink-s3",
+        "uplink-s3-fof_badge",
+    ):
         workdir = REPO_ROOT / ("esp32/scanner" if env.startswith("scanner") else "esp32/uplink")
         _run([pio_bin, "run", "-e", env], cwd=workdir)
 

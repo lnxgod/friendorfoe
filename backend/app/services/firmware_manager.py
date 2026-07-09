@@ -33,11 +33,23 @@ FIRMWARE_TYPES = {
         "board": "esp32s3",
         "local_bin": _REPO_ROOT / "esp32/uplink/.pio/build/uplink-s3/firmware.bin",
     },
+    "uplink-s3-fof_badge": {
+        "description": "FoF Badge uplink (Seeed XIAO ESP32-S3)",
+        "asset_pattern": "uplink-s3-fof_badge",
+        "board": "esp32s3",
+        "local_bin": _REPO_ROOT / "esp32/uplink/.pio/build/uplink-s3-fof_badge/firmware.bin",
+    },
     "scanner-s3-combo-seed": {
         "description": "BLE + WiFi scanner (ESP32-S3 Seed/Mini N8R8)",
         "asset_pattern": "scanner-s3-combo-seed",
         "board": "esp32s3",
         "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo-seed/firmware.bin",
+    },
+    "scanner-s3-combo-fof_badge": {
+        "description": "FoF Badge BLE + WiFi scanner (Seeed XIAO ESP32-S3)",
+        "asset_pattern": "scanner-s3-combo-fof_badge",
+        "board": "esp32s3",
+        "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/firmware.bin",
     },
     "scanner-s3-combo": {
         "description": "BLE + WiFi scanner (ESP32-S3)",
@@ -67,13 +79,14 @@ def _parse_app_desc(bin_path: Path) -> dict | None:
         return None
 
 
-def _repo_fof_version() -> str | None:
-    """Read the shared firmware version used by all ESP32 targets."""
+def _repo_fof_version_for_name(name: str) -> str | None:
+    """Read the shared firmware version for a firmware catalog entry."""
+    macro = "FOF_VERSION_BADGE" if name.endswith("fof_badge") else "FOF_VERSION_PROD"
     version_h = _REPO_ROOT / "esp32/shared/version.h"
     try:
         for line in version_h.read_text().splitlines():
             line = line.strip()
-            if line.startswith("#define FOF_VERSION"):
+            if line.startswith(f"#define {macro} "):
                 parts = line.split(maxsplit=2)
                 if len(parts) >= 3:
                     return parts[2].strip().strip('"')
@@ -220,7 +233,7 @@ class FirmwareManager:
         if fw_info:
             local_bin = fw_info.get("local_bin")
             if local_bin and local_bin.exists():
-                fof_version = _repo_fof_version()
+                fof_version = _repo_fof_version_for_name(name)
                 if fof_version:
                     return fof_version
                 desc = _parse_app_desc(local_bin)
@@ -262,7 +275,7 @@ class FirmwareManager:
                 size = len(self._custom_firmware[fw_name])
                 source = "custom"
             elif local_present:
-                version = _repo_fof_version()
+                version = _repo_fof_version_for_name(fw_name)
                 desc = _parse_app_desc(local_bin)
                 version = version or (desc["version"] if desc else "local")
                 try:

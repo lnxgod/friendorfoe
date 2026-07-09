@@ -253,7 +253,7 @@
 <body>
   <div class="container">
     <h1>Friend or Foe <span>ESP32 Flasher</span></h1>
-    <p class="subtitle">Flash current production ESP32-S3 firmware — scanner, seed scanner, and uplink — directly from your browser.</p>
+    <p class="subtitle">Flash current ESP32-S3 firmware — production node, seed node, and FoF Badge — directly from your browser.</p>
 
     <div class="warning">
       <strong>Browser requirement:</strong> Web Serial requires <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>
@@ -311,6 +311,38 @@
           <span slot="not-allowed">Your browser does not support Web Serial</span>
         </esp-web-install-button>
         <div class="desc">Current production uplink target. Config (WiFi/URL) is preserved across updates.</div>
+      </div>
+      <div class="flash-card">
+        <h3>FoF Badge Uplink</h3>
+        <div class="chip">Seeed XIAO ESP32-S3 — badge LCD + dual scanner UART</div>
+        <ul>
+          <li>ST7735 badge display</li>
+          <li>BLE + WiFi scanner slots</li>
+          <li>Firmware cache for badge scanners</li>
+          <li>UART relay updates to attached scanners</li>
+          <li>Runtime identity: uplink-s3-fof_badge</li>
+        </ul>
+        <esp-web-install-button manifest="manifest-badge-uplink.json">
+          <button slot="activate">Flash Badge Uplink</button>
+          <span slot="not-allowed">Your browser does not support Web Serial</span>
+        </esp-web-install-button>
+        <div class="desc">Flash the badge uplink once, then let it stage and relay scanner updates over its UART ports.</div>
+      </div>
+      <div class="flash-card no-config">
+        <h3>FoF Badge Scanner</h3>
+        <div class="chip">Seeed XIAO ESP32-S3 scanner module — no config needed</div>
+        <ul>
+          <li>BLE + WiFi scanner build</li>
+          <li>Badge UART pin mapping</li>
+          <li>Scanner-managed firmware checks</li>
+          <li>OTA receiver with CRC/NACK relay</li>
+          <li>Runtime identity: scanner-s3-combo-fof_badge</li>
+        </ul>
+        <esp-web-install-button manifest="manifest-badge-scanner.json">
+          <button slot="activate">Flash Badge Scanner</button>
+          <span slot="not-allowed">Your browser does not support Web Serial</span>
+        </esp-web-install-button>
+        <div class="desc">Use this for first-time recovery or bench setup; normal scanner updates come through the badge uplink.</div>
       </div>
     </div>
 
@@ -459,7 +491,7 @@ Uplink ESP32-S3 Peripherals:
     </ul>
 
     <p style="margin-top: 2rem; color: var(--text-muted); font-size: 0.85rem; text-align: center;">
-      Friend or Foe ESP32 Drone Detector &mdash; v0.10.0-beta
+      Friend or Foe ESP32 Drone Detector &mdash; v0.64.62-privacy-oui
       &mdash; <a href="https://github.com/lnxgod/friendorfoe/blob/main/esp32/INSTALL.md">Full Install Guide</a>
       &mdash; <a href="https://github.com/lnxgod/friendorfoe/blob/main/esp32/PARITY.md">Detection Parity</a>
       &mdash; <a href="https://github.com/lnxgod/friendorfoe">GitHub</a>

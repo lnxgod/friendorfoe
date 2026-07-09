@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 104
-        versionName = "0.64.61-privacy-oui"
+        versionCode = 105
+        versionName = "0.64.62-privacy-oui"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

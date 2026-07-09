@@ -4,7 +4,9 @@
 #
 # Usage: ./build.sh
 #
-# Output: firmware/scanner/*.bin, firmware/scanner-seed/*.bin, firmware/uplink-s3/*.bin
+# Output: firmware/scanner/*.bin, firmware/scanner-seed/*.bin,
+# firmware/uplink-s3/*.bin, firmware/badge-scanner/*.bin,
+# firmware/badge-uplink/*.bin
 
 set -euo pipefail
 
@@ -34,6 +36,16 @@ cd "$ESP32_DIR/uplink"
 "$PIO_BIN" run -e uplink-s3
 
 echo ""
+echo "=== Building FoF Badge Scanner firmware (XIAO ESP32-S3) ==="
+cd "$ESP32_DIR/scanner"
+"$PIO_BIN" run -e scanner-s3-combo-fof_badge
+
+echo ""
+echo "=== Building FoF Badge Uplink firmware (XIAO ESP32-S3) ==="
+cd "$ESP32_DIR/uplink"
+"$PIO_BIN" run -e uplink-s3-fof_badge
+
+echo ""
 echo "=== Copying binaries to web-flasher/firmware/ ==="
 
 # Scanner binaries
@@ -54,10 +66,24 @@ cp "$ESP32_DIR/uplink/.pio/build/uplink-s3/bootloader.bin"      "$FW_DIR/uplink-
 cp "$ESP32_DIR/uplink/.pio/build/uplink-s3/partitions.bin"       "$FW_DIR/uplink-s3/partition-table.bin"
 cp "$ESP32_DIR/uplink/.pio/build/uplink-s3/firmware.bin"         "$FW_DIR/uplink-s3/"
 
+# Badge scanner binaries
+mkdir -p "$FW_DIR/badge-scanner"
+cp "$ESP32_DIR/scanner/.pio/build/scanner-s3-combo-fof_badge/bootloader.bin" "$FW_DIR/badge-scanner/"
+cp "$ESP32_DIR/scanner/.pio/build/scanner-s3-combo-fof_badge/partitions.bin"  "$FW_DIR/badge-scanner/partition-table.bin"
+cp "$ESP32_DIR/scanner/.pio/build/scanner-s3-combo-fof_badge/firmware.bin"    "$FW_DIR/badge-scanner/"
+
+# Badge uplink binaries
+mkdir -p "$FW_DIR/badge-uplink"
+cp "$ESP32_DIR/uplink/.pio/build/uplink-s3-fof_badge/bootloader.bin" "$FW_DIR/badge-uplink/"
+cp "$ESP32_DIR/uplink/.pio/build/uplink-s3-fof_badge/partitions.bin"  "$FW_DIR/badge-uplink/partition-table.bin"
+cp "$ESP32_DIR/uplink/.pio/build/uplink-s3-fof_badge/firmware.bin"    "$FW_DIR/badge-uplink/"
+
 echo ""
 echo "=== Done ==="
 echo "Scanner: $(ls -lh "$FW_DIR/scanner/firmware.bin" | awk '{print $5}')"
 echo "Seed:    $(ls -lh "$FW_DIR/scanner-seed/firmware.bin" | awk '{print $5}')"
 echo "Uplink:  $(ls -lh "$FW_DIR/uplink-s3/firmware.bin" | awk '{print $5}')"
+echo "Badge scanner: $(ls -lh "$FW_DIR/badge-scanner/firmware.bin" | awk '{print $5}')"
+echo "Badge uplink:  $(ls -lh "$FW_DIR/badge-uplink/firmware.bin" | awk '{print $5}')"
 echo ""
 echo "Serve locally with: cd $SCRIPT_DIR && python3 -m http.server 8080"
