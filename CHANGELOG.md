@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   BLE Remote ID detections carry a rough RSSI range when no RTT range is
   available.
 - **Android update check now has a real release version to find.** The Android
-  app version is bumped to `0.64.62-privacy-oui` so GitHub Releases can
+  app version is bumped to `0.64.63-privacy-oui` so GitHub Releases can
   publish a newer APK than the installed build.
 
 ### Added
@@ -38,8 +38,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **RSSI drone-range release versions refreshed.** README, backend firmware
   readiness expectations, ESP32 version metadata, Android version metadata,
   and web flasher manifests now identify the current production/app/backend
-  release as `0.64.62-privacy-oui`; the FoF Badge track remains separate at
-  `0.64.62-badge-privacy-oui`.
+  release as `0.64.63-privacy-oui`; the FoF Badge track remains separate at
+  `0.64.63-badge-privacy-oui`.
 
 ## [0.64.39-badge-usb-detail] - 2026-05-18
 

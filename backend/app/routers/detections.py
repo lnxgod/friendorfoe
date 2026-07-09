@@ -620,9 +620,9 @@ def _uplink_time_sync_health(info: dict | None) -> str:
     return "unknown"
 
 
-_EXPECTED_BACKEND_VERSION = "0.64.62-privacy-oui"
-_EXPECTED_FIRMWARE_VERSION = "0.64.62-privacy-oui"
-_EXPECTED_BADGE_FIRMWARE_VERSION = "0.64.62-badge-privacy-oui"
+_EXPECTED_BACKEND_VERSION = "0.64.63-privacy-oui"
+_EXPECTED_FIRMWARE_VERSION = "0.64.63-privacy-oui"
+_EXPECTED_BADGE_FIRMWARE_VERSION = "0.64.63-badge-privacy-oui"
 
 
 def _expected_firmware_versions_label() -> str:

@@ -3491,7 +3491,7 @@ static void draw_scanner_bottom_strip(int y, bool ble_scanner_ok,
     const bool safe_usb = badge_runtime_is_safe_mode();
     const bool usb_alive = badge_runtime_usb_control_alive();
     const char *usb_label = safe_usb ? "SAFE" : (usb_alive ? "USBC" : "USB?");
-    char right_label[24];
+    char right_label[48];
     snprintf(right_label, sizeof(right_label), "%s %s", uptime_label, usb_label);
     uint16_t usb_color = safe_usb ? COL_GOLD :
                          (usb_alive ? COL_LINK_BRIGHT : COL_DARKGRAY);

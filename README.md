@@ -19,8 +19,8 @@ same backend ingest path. Walk around with it during the day; mount it later as
 part of a multi-node sensor platform.
 
 > Current tracks: Android/backend/production S3 firmware are on
-> `0.64.62-privacy-oui`; badge firmware is on
-> `0.64.62-badge-privacy-oui`. The badge and production sensor fleet intentionally
+> `0.64.63-privacy-oui`; badge firmware is on
+> `0.64.63-badge-privacy-oui`. The badge and production sensor fleet intentionally
 > move on separate firmware tracks.
 
 ## What The Badge Does
