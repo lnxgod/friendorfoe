@@ -442,7 +442,6 @@ static bool badge_ble_should_emit_detection(const ble_fingerprint_t *fp,
         case BLE_DEV_DRONE_OTHER:
         case BLE_DEV_META_GLASSES:
         case BLE_DEV_META_DEVICE:
-        case BLE_DEV_FLOCK_SAFETY:
         case BLE_DEV_CARD_SKIMMER:
         case BLE_DEV_HIDDEN_CAMERA:
         case BLE_DEV_FLIPPER_ZERO:

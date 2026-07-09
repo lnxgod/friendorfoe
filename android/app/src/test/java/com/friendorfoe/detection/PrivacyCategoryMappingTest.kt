@@ -36,34 +36,62 @@ class PrivacyCategoryMappingTest {
     }
 
     @Test
-    fun maps_flock_wifi_signatures_to_alpr_camera() {
-        val fieldOui = GlassesDetector.checkWifiBssid(
+    fun maps_registered_flock_wifi_oui_to_alpr_camera() {
+        val registeredOui = GlassesDetector.checkWifiBssid(
             ssid = "",
-            bssid = "14:5A:FC:A9:10:EF",
+            bssid = "B4:1E:52:AA:BB:CC",
             rssi = -58
         )
-        assertNotNull(fieldOui)
-        assertEquals(PrivacyCategory.ALPR_CAMERA, fieldOui!!.category)
-        assertEquals("Flock Safety", fieldOui.manufacturer)
-        assertEquals("wifi_oui:flock:14:5A:FC", fieldOui.matchReason)
+        assertNotNull(registeredOui)
+        assertEquals(PrivacyCategory.ALPR_CAMERA, registeredOui!!.category)
+        assertEquals("Flock Safety", registeredOui.manufacturer)
+        assertEquals("wifi_oui:flock:B4:1E:52", registeredOui.matchReason)
 
-        val penguin = GlassesDetector.checkWifiSsid(
-            ssid = "Penguin-1234567890",
-            bssid = "AA:BB:CC:00:00:01",
-            rssi = -64
+        assertNull(
+            GlassesDetector.checkWifiBssid(
+                ssid = "",
+                bssid = "14:5A:FC:A9:10:EF",
+                rssi = -58
+            )
         )
-        assertNotNull(penguin)
-        assertEquals(PrivacyCategory.ALPR_CAMERA, penguin!!.category)
-        assertEquals("Flock Safety", penguin.manufacturer)
+        assertNull(
+            GlassesDetector.checkWifiBssid(
+                ssid = "",
+                bssid = "82:6B:F2:00:00:01",
+                rssi = -58
+            )
+        )
+    }
 
-        val flockOs = GlassesDetector.checkWifiSsid(
-            ssid = "FlockOS-Field-Bridge",
-            bssid = "AA:BB:CC:00:00:06",
-            rssi = -60
+    @Test
+    fun maps_registered_flock_wifi_oui_across_common_mac_formats() {
+        val bssids = listOf(
+            " b4:1e:52:aa:bb:cc ",
+            "B4-1E-52-AA-BB-CC",
+            "B41E52AABBCC",
+            "B41E.52AA.BBCC"
         )
-        assertNotNull(flockOs)
-        assertEquals(PrivacyCategory.ALPR_CAMERA, flockOs!!.category)
-        assertEquals("Flock Safety", flockOs.manufacturer)
+
+        bssids.forEach { bssid ->
+            val detection = GlassesDetector.checkWifiBssid(
+                ssid = "",
+                bssid = bssid,
+                rssi = -58
+            )
+            assertNotNull("Expected Flock OUI for $bssid", detection)
+            assertEquals("Flock Safety", detection!!.manufacturer)
+            assertEquals("wifi_oui:flock:B4:1E:52", detection.matchReason)
+        }
+
+        listOf(
+            "XB4:1E:52:AA:BB:CC",
+            "B4:1E:5Z:AA:BB:CC"
+        ).forEach { bssid ->
+            assertNull(
+                "Malformed near-match should not map to Flock: $bssid",
+                GlassesDetector.checkWifiBssid(ssid = "", bssid = bssid, rssi = -58)
+            )
+        }
     }
 
     @Test
@@ -89,6 +117,21 @@ class PrivacyCategoryMappingTest {
                 rssi = -52
             )
         )
+        listOf(
+            "Flock-Field-Bridge",
+            "FlockOS-Field-Bridge",
+            "FLK-Field",
+            "Penguin-1234567890",
+            "ALPR-maint"
+        ).forEach { ssid ->
+            assertNull(
+                GlassesDetector.checkWifiSsid(
+                    ssid = ssid,
+                    bssid = "AA:BB:CC:00:00:09",
+                    rssi = -52
+                )
+            )
+        }
     }
 
     @Test

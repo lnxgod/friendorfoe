@@ -141,21 +141,24 @@ object WifiOuiDatabase {
 
     /**
      * Extract the OUI prefix (first 3 octets) from a MAC address.
-     * Handles both colon and hyphen separators, and no separator.
+     * Handles colon, hyphen, dot, compact, and harmless outer whitespace.
      *
      * @param bssid Full MAC address string
      * @return Uppercase colon-separated OUI (e.g., "60:60:1F") or null if invalid
      */
     private fun extractOui(bssid: String): String? {
-        val cleaned = bssid.uppercase().replace("-", ":")
-        val parts = cleaned.split(":")
-        if (parts.size >= 3) {
-            return "${parts[0]}:${parts[1]}:${parts[2]}"
-        }
-        // Handle compact format (no separator): "60601F..."
-        val hex = cleaned.replace(":", "")
-        if (hex.length >= 6) {
-            return "${hex.substring(0, 2)}:${hex.substring(2, 4)}:${hex.substring(4, 6)}"
+        val hexChars = mutableListOf<Char>()
+        for (ch in bssid.trim().uppercase()) {
+            if (ch == ':' || ch == '-' || ch == '.') {
+                if (hexChars.isEmpty()) return null
+                continue
+            }
+            if (ch !in '0'..'9' && ch !in 'A'..'F') return null
+            hexChars += ch
+            if (hexChars.size == 6) {
+                val hex = hexChars.joinToString("")
+                return "${hex.substring(0, 2)}:${hex.substring(2, 4)}:${hex.substring(4, 6)}"
+            }
         }
         return null
     }

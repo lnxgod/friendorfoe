@@ -13,10 +13,10 @@ make it part of a larger RF sensor deployment.
 
 ## Current Versions
 
-- Android app: `0.64.47-rssi-drone-range`
-- Backend: `0.64.47-rssi-drone-range`
-- FoF Badge firmware: `0.64.42-badge-listening`
-- Production S3 firmware: `0.64.47-rssi-drone-range`
+- Android app: `0.64.61-privacy-oui`
+- Backend: `0.64.61-privacy-oui`
+- FoF Badge firmware: `0.64.61-badge-privacy-oui`
+- Production S3 firmware: `0.64.61-privacy-oui`
 
 Keep those tracks separate. The badge firmware uses `FOF_BADGE_VARIANT`,
 badge-specific pinning, a Waveshare ST7735 display, USB-C control, local AP
@@ -37,19 +37,19 @@ uplink assigns the active role and scanner profile at runtime.
 
 ## What This Release Tests
 
-`0.64.42-badge-listening` is the current badge listening-awareness release,
+`0.64.61-badge-privacy-oui` is the current badge privacy/OUI release,
 carrying the BLE/theme control work forward while keeping the badge track
 separate from the production node firmware:
 
 - The badge keeps drone, Meta Glasses, tracker, WiFi attack, and scanner health
   evidence separated into calm top awareness tiles plus BLE/WiFi lower lanes.
-- Flock / ALPR camera rows require explicit evidence: known Flock OUIs, Flock
-  data frames, BLE names, or narrow SSIDs such as `Flock-*`, `Flock_*`,
-  `FlockOS*`, `FLK-*`, `ALPR-*`, and `Penguin-*`. Bare numeric SSIDs and broad
-  Flock-like names are intentionally suppressed.
+- Flock / ALPR camera rows require explicit evidence. Flock Safety rows require
+  the registered Wi-Fi OUI `B4:1E:52`; Flock-looking Bluetooth names and SSIDs
+  such as `Flock-*`, `FlockOS*`, `FLK-*`, `ALPR-*`, and `Penguin-*` are not
+  treated as Flock evidence.
 - Apple AirPods Continuity packets with connected AirPods plus audio/phone/video
-  activity, or connected AirPods very close to the badge, show as a cautious
-  `Possible Listening` row instead of generic Apple BLE noise.
+  activity show as a cautious `Possible Listening` row instead of generic Apple
+  BLE noise. Close idle AirPods stay informational.
 - Android can connect directly over USB-C, continuously poll `FOF_STATUS`, and
   show badge evidence, source, confidence, RSSI, GPS/operator facts, scanner
   health, reset/crash state, stack, heap, and PSRAM diagnostics in Privacy.
@@ -150,7 +150,7 @@ Expected healthy status facts:
 
 - Top-level `recovery_mode` is `normal`.
 - Both scanners are connected and report `scanner-s3-combo-fof_badge`.
-- Uplink and scanners report `0.64.42-badge-listening` after the matching badge
+- Uplink and scanners report `0.64.61-badge-privacy-oui` after the matching badge
   images are flashed.
 - `display_policy_hash` is non-zero.
 - Scanner `display_policy_ack_hash` catches up to the uplink policy hash.

@@ -176,15 +176,7 @@ class GlassesDetector @Inject constructor(
             val hasCamera: Boolean
         )
 
-        private val flockOuiPrefixes = setOf(
-            "B4:1E:52", "14:5A:FC", "3C:91:80", "70:C9:4E", "D8:F3:BC",
-            "80:30:49", "B8:35:32", "74:4C:A1", "08:3A:88", "9C:2F:9D",
-            "C0:35:32", "94:08:53", "E4:AA:EA", "F4:6A:DD", "F8:A2:D6",
-            "24:B2:B9", "00:F4:8D", "D0:39:57", "E8:D0:FC", "E0:4F:43",
-            "B8:1E:A4", "70:08:94", "58:8E:81", "EC:1B:BD", "3C:71:BF",
-            "58:00:E3", "90:35:EA", "5C:93:A2", "64:6E:69", "48:27:EA",
-            "82:6B:F2", "EC:62:60"
-        )
+        private val flockOuiPrefixes = setOf("B4:1E:52")
 
         private val wifiSsidPatterns = listOf(
             // Hidden cameras / spy cameras — app ecosystems
@@ -290,13 +282,6 @@ class GlassesDetector @Inject constructor(
             // Surveillance / ALPR cameras
             WifiPattern("Verkada-", "Verkada", "Surveillance Camera", 0.90f, true),
             WifiPattern("Rhombus-", "Rhombus", "Surveillance Camera", 0.85f, true),
-            WifiPattern("Flock-", "Flock Safety", "ALPR Camera", 0.88f, true),
-            WifiPattern("Flock_", "Flock Safety", "ALPR Camera", 0.86f, true),
-            WifiPattern("FlockOS", "Flock Safety", "ALPR Camera", 0.86f, true),
-            WifiPattern("FLK-", "Flock Safety", "ALPR Camera", 0.85f, true),
-            WifiPattern("ALPR-", "Flock Safety", "ALPR Camera", 0.82f, true),
-            WifiPattern("ALPR_", "Flock Safety", "ALPR Camera", 0.82f, true),
-            WifiPattern("Penguin-", "Flock Safety", "ALPR Camera", 0.82f, true),
             WifiPattern("ELSAG-", "Leonardo", "ALPR Camera", 0.85f, true),
             // Smart speakers / hubs (setup AP mode)
             WifiPattern("Sonos_", "Sonos", "Smart Speaker", 0.80f, false),
@@ -455,11 +440,7 @@ class GlassesDetector @Inject constructor(
         fun checkWifiBssid(ssid: String, bssid: String, rssi: Int): GlassesDetection? {
             val oui = extractOui(bssid) ?: return null
             if (oui !in flockOuiPrefixes) return null
-            val confidence = when (oui) {
-                "B4:1E:52" -> 0.95f
-                "14:5A:FC", "3C:91:80" -> 0.90f
-                else -> 0.82f
-            }
+            val confidence = 0.95f
             return GlassesDetection(
                 mac = bssid,
                 deviceName = ssid.ifBlank { null },
@@ -477,14 +458,18 @@ class GlassesDetector @Inject constructor(
         }
 
         private fun extractOui(bssid: String): String? {
-            val cleaned = bssid.uppercase().replace("-", ":")
-            val parts = cleaned.split(":")
-            if (parts.size >= 3 && parts.take(3).all { it.length == 2 }) {
-                return "${parts[0]}:${parts[1]}:${parts[2]}"
-            }
-            val hex = cleaned.replace(":", "")
-            if (hex.length >= 6) {
-                return "${hex.substring(0, 2)}:${hex.substring(2, 4)}:${hex.substring(4, 6)}"
+            val hexChars = mutableListOf<Char>()
+            for (ch in bssid.trim().uppercase()) {
+                if (ch == ':' || ch == '-' || ch == '.') {
+                    if (hexChars.isEmpty()) return null
+                    continue
+                }
+                if (ch !in '0'..'9' && ch !in 'A'..'F') return null
+                hexChars += ch
+                if (hexChars.size == 6) {
+                    val hex = hexChars.joinToString("")
+                    return "${hex.substring(0, 2)}:${hex.substring(2, 4)}:${hex.substring(4, 6)}"
+                }
             }
             return null
         }
@@ -725,8 +710,6 @@ class GlassesDetector @Inject constructor(
         NameEntry("Rhombus", "Rhombus", "Surveillance Camera", 0.85f, true),
         NameEntry("Reolink", "Reolink", "Surveillance Camera", 0.75f, true),
         // ALPR / license plate readers
-        NameEntry("Flock", "Flock Safety", "ALPR Camera", 0.90f, true),
-        NameEntry("FLK-", "Flock Safety", "ALPR Camera", 0.85f, true),
         NameEntry("ELSAG", "Leonardo", "ALPR Camera", 0.90f, true),
         NameEntry("AutoVu", "Genetec", "ALPR Camera", 0.85f, true),
         NameEntry("Vigilant", "Motorola", "ALPR Camera", 0.80f, true),

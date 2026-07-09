@@ -64,9 +64,16 @@ jobs:
       - name: Build Uplink firmware (ESP32-S3)
         run: cd esp32/uplink && pio run -e uplink-s3
 
+      - name: Build Badge Scanner firmware (XIAO ESP32-S3)
+        run: cd esp32/scanner && pio run -e scanner-s3-combo-fof_badge
+
+      - name: Build Badge Uplink firmware (XIAO ESP32-S3)
+        run: cd esp32/uplink && pio run -e uplink-s3-fof_badge
+
       - name: Package firmware binaries
         run: |
           mkdir -p firmware/scanner firmware/scanner-seed firmware/uplink-s3
+          mkdir -p firmware/badge-scanner firmware/badge-uplink
 
           cp esp32/scanner/.pio/build/scanner-s3-combo/bootloader.bin firmware/scanner/
           cp esp32/scanner/.pio/build/scanner-s3-combo/partitions.bin firmware/scanner/partition-table.bin
@@ -79,6 +86,14 @@ jobs:
           cp esp32/uplink/.pio/build/uplink-s3/bootloader.bin firmware/uplink-s3/
           cp esp32/uplink/.pio/build/uplink-s3/partitions.bin firmware/uplink-s3/partition-table.bin
           cp esp32/uplink/.pio/build/uplink-s3/firmware.bin   firmware/uplink-s3/
+
+          cp esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/bootloader.bin firmware/badge-scanner/
+          cp esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/partitions.bin firmware/badge-scanner/partition-table.bin
+          cp esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/firmware.bin   firmware/badge-scanner/
+
+          cp esp32/uplink/.pio/build/uplink-s3-fof_badge/bootloader.bin firmware/badge-uplink/
+          cp esp32/uplink/.pio/build/uplink-s3-fof_badge/partitions.bin firmware/badge-uplink/partition-table.bin
+          cp esp32/uplink/.pio/build/uplink-s3-fof_badge/firmware.bin   firmware/badge-uplink/
 
           echo "=== Firmware sizes ==="
           find firmware -name '*.bin' -exec ls -lh {} \;
@@ -115,16 +130,24 @@ jobs:
           cp firmware/scanner/firmware.bin      /tmp/scanner-s3-combo-${TAG}.bin
           cp firmware/scanner-seed/firmware.bin /tmp/scanner-s3-combo-seed-${TAG}.bin
           cp firmware/uplink-s3/firmware.bin    /tmp/uplink-s3-${TAG}.bin
+          cp firmware/badge-scanner/firmware.bin /tmp/scanner-s3-combo-fof_badge-${TAG}.bin
+          cp firmware/badge-uplink/firmware.bin  /tmp/uplink-s3-fof_badge-${TAG}.bin
           cd firmware/scanner        && tar czf /tmp/scanner-firmware-${TAG}.tar.gz *.bin && cd -
           cd firmware/scanner-seed   && tar czf /tmp/scanner-seed-firmware-${TAG}.tar.gz *.bin && cd -
           cd firmware/uplink-s3      && tar czf /tmp/uplink-s3-firmware-${TAG}.tar.gz *.bin && cd -
+          cd firmware/badge-scanner  && tar czf /tmp/badge-scanner-firmware-${TAG}.tar.gz *.bin && cd -
+          cd firmware/badge-uplink   && tar czf /tmp/badge-uplink-firmware-${TAG}.tar.gz *.bin && cd -
           gh release upload "$TAG" \
             /tmp/scanner-s3-combo-${TAG}.bin \
             /tmp/scanner-s3-combo-seed-${TAG}.bin \
             /tmp/uplink-s3-${TAG}.bin \
+            /tmp/scanner-s3-combo-fof_badge-${TAG}.bin \
+            /tmp/uplink-s3-fof_badge-${TAG}.bin \
             /tmp/scanner-firmware-${TAG}.tar.gz \
             /tmp/scanner-seed-firmware-${TAG}.tar.gz \
             /tmp/uplink-s3-firmware-${TAG}.tar.gz \
+            /tmp/badge-scanner-firmware-${TAG}.tar.gz \
+            /tmp/badge-uplink-firmware-${TAG}.tar.gz \
             --clobber
 
   # ── Deploy web flasher to GitHub Pages ──────────────────────────────────────
@@ -148,6 +171,7 @@ jobs:
       - name: Assemble site
         run: |
           mkdir -p _site/firmware/scanner _site/firmware/scanner-seed _site/firmware/uplink-s3
+          mkdir -p _site/firmware/badge-scanner _site/firmware/badge-uplink
 
           # Web flasher page + manifests
           cp esp32/web-flasher/index.html                    _site/
@@ -183,6 +207,18 @@ jobs:
             echo "Uplink S3 firmware: OK"
           else
             echo "Uplink S3 firmware: MISSING (build may have failed)"
+          fi
+
+          if [ -f _site/firmware/badge-scanner/firmware.bin ]; then
+            echo "Badge scanner firmware: OK"
+          else
+            echo "Badge scanner firmware: MISSING (build may have failed)"
+          fi
+
+          if [ -f _site/firmware/badge-uplink/firmware.bin ]; then
+            echo "Badge uplink firmware: OK"
+          else
+            echo "Badge uplink firmware: MISSING (build may have failed)"
           fi
 
       - name: Setup Pages

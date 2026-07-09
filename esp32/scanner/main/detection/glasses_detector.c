@@ -184,8 +184,6 @@ static const name_pattern_entry_t s_name_db[] = {
     { "Reolink",         "Reolink",         "Surveillance",  0.75f, true,  false },
 
     /* ALPR / license plate readers */
-    { "Flock",           "Flock Safety",    "ALPR Camera",   0.90f, true,  false },
-    { "FLK-",            "Flock Safety",    "ALPR Camera",   0.85f, true,  false },
     { "ELSAG",           "Leonardo",        "ALPR Camera",   0.90f, true,  false },
     { "AutoVu",          "Genetec",         "ALPR Camera",   0.85f, true,  false },
     { "Vigilant",        "Motorola",        "ALPR Camera",   0.80f, true,  false },

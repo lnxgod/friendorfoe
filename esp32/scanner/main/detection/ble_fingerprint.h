@@ -48,7 +48,7 @@ typedef enum {
     BLE_DEV_CHIPOLO,            /* Chipolo ONE / CARD trackers (CID 0x08C3) */
     BLE_DEV_CARD_SKIMMER,       /* Generic BT chipset on gas-pump/ATM skimmers — HC-05/HC-06/BT05/JDY-08/HM-10 */
     BLE_DEV_HIDDEN_CAMERA,      /* Cheap LED-strip / smart-bulb cover (ELK-BLEDOM, BT_BPM, etc.) */
-    BLE_DEV_FLOCK_SAFETY,       /* Flock Safety license-plate-reader / surveillance camera */
+    BLE_DEV_FLOCK_SAFETY,       /* Reserved; Flock is not inferred from BLE names */
     BLE_DEV_META_GLASSES,       /* Meta Ray-Ban / Oakley smart glasses */
     BLE_DEV_META_DEVICE,        /* Meta Quest VR headset, Portal, etc. */
     BLE_DEV_FLIPPER_ZERO,       /* Flipper Zero hacking tool */

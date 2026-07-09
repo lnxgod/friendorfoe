@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.privacy_devices import (
     classify_privacy_device,
     privacy_summary,
@@ -122,6 +124,30 @@ def test_airpods_connected_without_activity_or_close_rssi_stays_informational():
     assert enriched["risk_level"] == "info"
 
 
+def test_close_airpods_connected_idle_stays_informational():
+    entry = {
+        "device_type": "Apple Device",
+        "manufacturer": "Apple",
+        "current_rssi": -48,
+        "ble_apple_type": 0x10,
+        "apple_continuity": {
+            "activity": "idle",
+            "flags": ["airpods_connected"],
+            "remote_listening": {
+                "label": "Apple AirPods connection nearby",
+                "risk_hint": "low",
+                "confidence": 0.48,
+                "signals": ["airpods_connected"],
+            },
+        },
+    }
+
+    enriched = classify_privacy_device(entry)
+
+    assert enriched["privacy_kind"] == "APPLE_CONTINUITY"
+    assert enriched["risk_level"] == "info"
+
+
 def test_findmy_remains_tracker_privacy_kind():
     enriched = classify_privacy_device({
         "device_type": "FindMy Accessory",
@@ -218,6 +244,75 @@ def test_privacy_signature_catalog_matches_wifi_privacy_aps():
 
     assert match_privacy_wifi_ssid("Campus-WiFi") is None
     assert match_privacy_wifi_ssid("UFO-Arcade") is None
+    assert match_privacy_wifi_ssid("Flock-Field-Bridge") is None
+    assert match_privacy_wifi_ssid("FlockOS-Field-Bridge") is None
+    assert match_privacy_wifi_ssid("FLK-Field") is None
+    assert match_privacy_wifi_ssid("Penguin-1234567890") is None
+    assert match_privacy_wifi_ssid("ALPR-maint") is None
+
+
+def test_registered_flock_wifi_oui_maps_to_alpr_privacy_kind():
+    enriched = classify_privacy_device({
+        "source": "wifi_oui",
+        "bssid": "B4:1E:52:AA:BB:CC",
+        "manufacturer": "Flock Safety",
+        "device_type": "ALPR Camera",
+        "class_reason": "wifi_oui:flock:B4:1E:52",
+        "current_rssi": -52,
+    })
+
+    assert enriched["privacy_kind"] == "FLOCK_ALPR"
+    assert enriched["display_label"] == "FLOCK CAM"
+
+
+@pytest.mark.parametrize(
+    "bssid",
+    [
+        " b4:1e:52:aa:bb:cc ",
+        "B4-1E-52-AA-BB-CC",
+        "B41E52AABBCC",
+        "B41E.52AA.BBCC",
+    ],
+)
+def test_registered_flock_wifi_oui_privacy_kind_normalizes_mac_formats(bssid):
+    enriched = classify_privacy_device({
+        "source": "wifi_oui",
+        "bssid": bssid,
+        "manufacturer": "Flock Safety",
+        "device_type": "ALPR Camera",
+        "current_rssi": -52,
+    })
+
+    assert enriched["privacy_kind"] == "FLOCK_ALPR"
+    assert enriched["display_label"] == "FLOCK CAM"
+
+
+@pytest.mark.parametrize("bssid", ["XB4:1E:52:AA:BB:CC", "B4:1E:5Z:AA:BB:CC"])
+def test_malformed_flock_wifi_oui_near_matches_do_not_map_to_privacy_kind(bssid):
+    enriched = classify_privacy_device({
+        "source": "wifi_oui",
+        "bssid": bssid,
+        "manufacturer": "Flock Safety",
+        "device_type": "ALPR Camera",
+        "current_rssi": -52,
+    })
+
+    assert enriched["privacy_kind"] != "FLOCK_ALPR"
+    assert enriched["display_label"] != "FLOCK CAM"
+
+
+def test_flock_ble_name_does_not_map_to_alpr_privacy_kind():
+    enriched = classify_privacy_device({
+        "source": "ble_fingerprint",
+        "manufacturer": "Flock Safety",
+        "device_type": "Flock Camera",
+        "ble_name": "Flock Camera",
+        "class_reason": "flock_ble_name",
+        "current_rssi": -52,
+    })
+
+    assert enriched["privacy_kind"] != "FLOCK_ALPR"
+    assert enriched["display_label"] != "FLOCK CAM"
 
 
 def test_wifi_privacy_ap_maps_to_camera_privacy_kind():

@@ -123,19 +123,6 @@ static bool ssid_mentions_camera(const char *ssid)
            ascii_contains_token_nocase(ssid, "cam");
 }
 
-static bool ssid_mentions_flock(const char *ssid)
-{
-    return ascii_eq_nocase(ssid, "flock") ||
-           ascii_starts_nocase(ssid, "flock-") ||
-           ascii_starts_nocase(ssid, "flock_") ||
-           ascii_starts_nocase(ssid, "flockos") ||
-           ascii_starts_nocase(ssid, "flk-") ||
-           ascii_eq_nocase(ssid, "alpr") ||
-           ascii_starts_nocase(ssid, "alpr-") ||
-           ascii_starts_nocase(ssid, "alpr_") ||
-           ascii_starts_nocase(ssid, "penguin-");
-}
-
 bool fof_policy_probe_should_ignore_broadcast(const char *ssid)
 {
     return !ssid || ssid[0] == '\0';
@@ -163,12 +150,11 @@ bool fof_policy_ssid_is_notable(const char *ssid)
         drone_like ||
         ascii_contains_nocase(ssid, "camera") ||
         ssid_mentions_camera(ssid) ||
-        ssid_mentions_flock(ssid) ||
         ascii_contains_nocase(ssid, "skimmer");
 
     /* Badge instrument mode is not an AP inventory.  These are our own/demo
      * ambient broadcasts and they crowd out higher-value SA like drones,
-     * Flock, glasses, and skimmer/tooling evidence. */
+     * glasses, and skimmer/tooling evidence. */
     if (ascii_contains_nocase(ssid, "teamcharitycase")) {
         return false;
     }
@@ -180,9 +166,6 @@ bool fof_policy_ssid_is_notable(const char *ssid)
         return false;
     }
     if (drone_like) {
-        return true;
-    }
-    if (ssid_mentions_flock(ssid)) {
         return true;
     }
     if (ssid_mentions_camera(ssid)) {
@@ -214,7 +197,6 @@ const char *fof_policy_notable_ssid_label(const char *ssid)
         ascii_contains_nocase(ssid, "remoteid") ||
         ascii_contains_nocase(ssid, "remote-id") ||
         ascii_contains_nocase(ssid, "rid-")) return "Drone SSID";
-    if (ssid_mentions_flock(ssid)) return "Flock SSID";
     if (ssid_mentions_camera(ssid)) return "Camera SSID";
     if (ascii_contains_nocase(ssid, "skimmer")) return "Skimmer SSID";
     if (ascii_contains_nocase(ssid, "pwnagotchi")) return "Pwnagotchi";
@@ -251,8 +233,7 @@ bool fof_policy_is_priority_ble_fingerprint(const char *manufacturer)
            strcmp(mfr, "BLE HID") == 0 ||
            strcmp(mfr, "Auracast") == 0 ||
            strcmp(mfr, "Camera") == 0 ||
-           strcmp(mfr, "Hidden Camera (suspect)") == 0 ||
-           strcmp(mfr, "Flock Surveillance") == 0;
+           strcmp(mfr, "Hidden Camera (suspect)") == 0;
 }
 
 bool fof_policy_ble_uuid128_is_calibration_le(const uint8_t uuid_le[16])

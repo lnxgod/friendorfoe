@@ -171,7 +171,7 @@ static const char *s_type_names[] = {
     [BLE_DEV_CHIPOLO]          = "Chipolo",
     [BLE_DEV_CARD_SKIMMER]     = "Card Skimmer (suspect)",
     [BLE_DEV_HIDDEN_CAMERA]    = "Hidden Camera (suspect)",
-    [BLE_DEV_FLOCK_SAFETY]     = "Flock Surveillance",
+    [BLE_DEV_FLOCK_SAFETY]     = "Reserved",
     [BLE_DEV_META_GLASSES]    = "Meta Glasses",
     [BLE_DEV_META_DEVICE]     = "Meta Device",
     [BLE_DEV_FLIPPER_ZERO]    = "Flipper Zero",
@@ -680,14 +680,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
 
     /* ── Classify device type ──────────────────────────────────────────── */
 
-    if (local_name_len > 0 &&
-        (strncmp(local_name, "Flock",  5) == 0 ||
-         strncmp(local_name, "FLOCK",  5) == 0 ||
-         strncmp(local_name, "FlockOS", 7) == 0)) {
-        fp->device_type = BLE_DEV_FLOCK_SAFETY;
-        fp->is_tracker = true;
-        strncpy(fp->class_reason, "flock_ble_name", sizeof(fp->class_reason) - 1);
-    } else if (company_id == APPLE_COMPANY_ID) {
+    if (company_id == APPLE_COMPANY_ID) {
         fp->device_type = classify_apple(apple_type, mfr_data, mfr_data_len);
         fp->is_tracker = (apple_type == APPLE_TYPE_FINDMY);
     } else if (has_findmy_svc) {
@@ -900,14 +893,6 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
             fp->device_type = BLE_DEV_SMART_HOME;
             fp->is_tracker = false;
             strncpy(fp->class_reason, "ambiguous_iot_ble_name", sizeof(fp->class_reason) - 1);
-        }
-        /* Flock Safety license-plate readers. Marauder has dedicated detection. */
-        else if (strncmp(local_name, "Flock",  5) == 0 ||
-                 strncmp(local_name, "FLOCK",  5) == 0 ||
-                 strncmp(local_name, "FlockOS", 7) == 0) {
-            fp->device_type = BLE_DEV_FLOCK_SAFETY;
-            fp->is_tracker = true;
-            strncpy(fp->class_reason, "flock_ble_name", sizeof(fp->class_reason) - 1);
         }
     }
 

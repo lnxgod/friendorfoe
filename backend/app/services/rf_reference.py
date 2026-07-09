@@ -148,10 +148,23 @@ def reload_reference() -> None:
 
 
 def _hex_mac(mac: str | None) -> str | None:
-    hex_only = re.sub(r"[^0-9A-Fa-f]", "", mac or "").upper()
-    if len(hex_only) < 12:
+    text = str(mac or "").strip()
+    if not text:
         return None
-    return hex_only[:12]
+
+    hex_chars: list[str] = []
+    for ch in text:
+        if ch in ":-.":
+            if not hex_chars:
+                return None
+            continue
+        upper = ch.upper()
+        if upper not in "0123456789ABCDEF":
+            return None
+        hex_chars.append(upper)
+        if len(hex_chars) >= 12:
+            return "".join(hex_chars[:12])
+    return None
 
 
 def _prefix_for_bits(hex_mac: str, bits: int) -> str:

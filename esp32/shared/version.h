@@ -20,8 +20,8 @@
  * (uplink/CMakeLists.txt, scanner/CMakeLists.txt) can pick the right one
  * for ESP-IDF's PROJECT_VER metadata based on the PIOENV env var.
  */
-#define FOF_VERSION_PROD  "0.64.47-rssi-drone-range"
-#define FOF_VERSION_BADGE "0.64.42-badge-listening"
+#define FOF_VERSION_PROD  "0.64.61-privacy-oui"
+#define FOF_VERSION_BADGE "0.64.61-badge-privacy-oui"
 
 #if defined(FOF_BADGE_VARIANT)
 #define FOF_VERSION FOF_VERSION_BADGE

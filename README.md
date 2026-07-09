@@ -19,8 +19,8 @@ same backend ingest path. Walk around with it during the day; mount it later as
 part of a multi-node sensor platform.
 
 > Current tracks: Android/backend/production S3 firmware are on
-> `0.64.47-rssi-drone-range`; badge firmware is on
-> `0.64.42-badge-listening`. The badge and production sensor fleet intentionally
+> `0.64.61-privacy-oui`; badge firmware is on
+> `0.64.61-badge-privacy-oui`. The badge and production sensor fleet intentionally
 > move on separate firmware tracks.
 
 ## What The Badge Does
@@ -64,14 +64,14 @@ tries to explain them with conservative labels.
 | Trackers | AirTag/Find My, Tile, SmartTag, Chipolo, Pebblebee | BLE service UUIDs and company data |
 | Possible listening | Apple Continuity with connected AirPods and nearby audio activity | BLE manufacturer data, activity flags, RSSI |
 | Cameras and tools | Hidden/IP cameras, body cams, dash cams, Wi-Fi Pineapple, deauth tools | BLE names, Wi-Fi setup SSIDs, curated signatures |
-| Flock / ALPR | Flock Safety, ELSAG-style ALPR evidence | Known OUIs, Flock data frames, BLE names, narrow SSIDs |
+| Flock / ALPR | Flock Safety, ELSAG-style ALPR evidence | Registered Flock Safety Wi-Fi OUI, curated ALPR signatures |
 | Evil twin / rogue AP | Open clones, karma-style attacks, suspicious SSID reuse | Wi-Fi auth/channel/BSSID anomaly policy |
 
-Flock / ALPR detection is intentionally strict. The badge accepts known Flock
-OUIs, Flock data frames, BLE names, and narrow SSIDs such as `Flock-*`,
-`Flock_*`, `FlockOS*`, `FLK-*`, `ALPR-*`, and `Penguin-*`. Bare numeric SSIDs
-and broad Flock-like names are suppressed so the badge does not fill with noisy
-venue Wi-Fi.
+Flock / ALPR detection is intentionally strict. Flock Safety rows require the
+IEEE registered Wi-Fi OUI `B4:1E:52`; Flock-looking Bluetooth names and SSIDs
+such as `Flock-*`, `FlockOS*`, `FLK-*`, `ALPR-*`, and `Penguin-*` are not treated
+as Flock evidence. Curated non-Flock ALPR signatures, such as ELSAG SSIDs, stay
+separate.
 
 ## Android As Badge Console
 

@@ -888,13 +888,15 @@ void test_badge_notable_ssid_ranks_above_flock_and_glasses(void)
         -42
     );
     drone_detection_t flock = make_detection(
-        DETECTION_SRC_BLE_FINGERPRINT,
-        "BLE:FLOCK",
+        DETECTION_SRC_WIFI_OUI,
+        "B4:1E:52:AA:BB:CC",
         "Flock Safety",
         0.70f,
         -50
     );
-    strncpy(flock.ble_name, "Flock Camera", sizeof(flock.ble_name) - 1);
+    strncpy(flock.bssid, "B4:1E:52:AA:BB:CC", sizeof(flock.bssid) - 1);
+    strncpy(flock.class_reason, "Flock Safety ALPR/camera registered OUI",
+            sizeof(flock.class_reason) - 1);
     drone_detection_t ssid = make_detection(
         DETECTION_SRC_WIFI_ASSOC,
         "ssid:defcon",
@@ -979,6 +981,13 @@ void test_badge_plain_fof_ssid_is_suppressed_as_ambient(void)
 void test_badge_broad_flock_like_ssids_are_suppressed(void)
 {
     badge_threat_event_t event;
+    const char *blocked[] = {
+        "Flock-Field-Bridge",
+        "FlockOS-Field-Bridge",
+        "FLK-Field",
+        "Penguin-1234567890",
+        "ALPR-maint",
+    };
     drone_detection_t ssid = make_detection(
         DETECTION_SRC_WIFI_ASSOC,
         "ssid:false-flock",
@@ -989,6 +998,21 @@ void test_badge_broad_flock_like_ssids_are_suppressed(void)
     strncpy(ssid.ssid, "FlockGuest", sizeof(ssid.ssid) - 1);
     strncpy(ssid.class_reason, "Notable SSID", sizeof(ssid.class_reason) - 1);
     TEST_ASSERT_FALSE(badge_threat_classify_detection(&ssid, &event));
+
+    for (size_t i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++) {
+        memset(&event, 0, sizeof(event));
+        memset(&ssid, 0, sizeof(ssid));
+        ssid = make_detection(
+            DETECTION_SRC_WIFI_ASSOC,
+            "ssid:unverified-flock",
+            "Notable SSID",
+            0.55f,
+            -47
+        );
+        strncpy(ssid.ssid, blocked[i], sizeof(ssid.ssid) - 1);
+        strncpy(ssid.class_reason, "Notable SSID", sizeof(ssid.class_reason) - 1);
+        TEST_ASSERT_FALSE(badge_threat_classify_detection(&ssid, &event));
+    }
 
     memset(&event, 0, sizeof(event));
     memset(&ssid, 0, sizeof(ssid));
@@ -1004,7 +1028,7 @@ void test_badge_broad_flock_like_ssids_are_suppressed(void)
     TEST_ASSERT_FALSE(badge_threat_classify_detection(&ssid, &event));
 }
 
-void test_badge_flock_ble_name_produces_flock_camera(void)
+void test_badge_flock_ble_name_does_not_produce_flock_camera(void)
 {
     badge_threat_event_t event;
     drone_detection_t flock = make_detection(
@@ -1016,19 +1040,10 @@ void test_badge_flock_ble_name_produces_flock_camera(void)
     );
     strncpy(flock.ble_name, "Flock Camera", sizeof(flock.ble_name) - 1);
 
-    TEST_ASSERT_TRUE(badge_threat_classify_detection(&flock, &event));
-    TEST_ASSERT_EQUAL(BADGE_THREAT_OTHER, event.cls);
-    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
-    TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
-    TEST_ASSERT_TRUE(strstr(event.detail, "Flock") != NULL);
-
-    badge_threat_snapshot_entity_t item = {
-        .active = true,
-        .cls = event.cls,
-        .category = event.category,
-    };
-    TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_BLE,
-                      badge_threat_snapshot_entity_display_lane(&item));
+    if (badge_threat_classify_detection(&flock, &event)) {
+        TEST_ASSERT_NOT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
+        TEST_ASSERT_NOT_EQUAL(0, strcmp("FLOCK Camera", event.label));
+    }
 }
 
 void test_badge_flock_wifi_oui_produces_flock_camera_not_drone(void)
@@ -1063,6 +1078,57 @@ void test_badge_flock_wifi_oui_produces_flock_camera_not_drone(void)
                       badge_threat_snapshot_entity_display_lane(&item));
 }
 
+void test_badge_flock_wifi_oui_normalizes_common_mac_formats(void)
+{
+    const char *valid_bssids[] = {
+        " b4:1e:52:aa:bb:cc ",
+        "B4-1E-52-AA-BB-CC",
+        "B41E52AABBCC",
+        "B41E.52AA.BBCC",
+    };
+
+    for (size_t i = 0; i < sizeof(valid_bssids) / sizeof(valid_bssids[0]); ++i) {
+        badge_threat_event_t event;
+        drone_detection_t flock = make_detection(
+            DETECTION_SRC_WIFI_OUI,
+            valid_bssids[i],
+            "Flock Safety",
+            0.70f,
+            -48
+        );
+        strncpy(flock.bssid, valid_bssids[i], sizeof(flock.bssid) - 1);
+
+        TEST_ASSERT_TRUE(badge_threat_classify_detection(&flock, &event));
+        TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
+        TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
+    }
+}
+
+void test_badge_malformed_flock_oui_near_matches_do_not_produce_flock_camera(void)
+{
+    const char *invalid_bssids[] = {
+        "XB4:1E:52:AA:BB:CC",
+        "B4:1E:5Z:AA:BB:CC",
+    };
+
+    for (size_t i = 0; i < sizeof(invalid_bssids) / sizeof(invalid_bssids[0]); ++i) {
+        badge_threat_event_t event;
+        drone_detection_t flock = make_detection(
+            DETECTION_SRC_WIFI_OUI,
+            invalid_bssids[i],
+            "Flock Safety",
+            0.70f,
+            -48
+        );
+        strncpy(flock.bssid, invalid_bssids[i], sizeof(flock.bssid) - 1);
+
+        if (badge_threat_classify_detection(&flock, &event)) {
+            TEST_ASSERT_NOT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
+            TEST_ASSERT_NOT_EQUAL(0, strcmp("FLOCK Camera", event.label));
+        }
+    }
+}
+
 void test_badge_privacy_evidence_survives_snapshot(void)
 {
     badge_threat_state_t state;
@@ -1091,7 +1157,7 @@ void test_badge_privacy_evidence_survives_snapshot(void)
     TEST_ASSERT_TRUE(strstr(snapshot.entities[0].evidence, "OUI") != NULL);
 }
 
-void test_badge_flock_field_oui_and_wildcard_probe_produce_flock_camera(void)
+void test_badge_unverified_flock_evidence_does_not_produce_flock_camera(void)
 {
     badge_threat_event_t event;
     drone_detection_t field = make_detection(
@@ -1105,10 +1171,10 @@ void test_badge_flock_field_oui_and_wildcard_probe_produce_flock_camera(void)
     strncpy(field.class_reason, "Flock Safety ALPR/camera field OUI",
             sizeof(field.class_reason) - 1);
 
-    TEST_ASSERT_TRUE(badge_threat_classify_detection(&field, &event));
-    TEST_ASSERT_EQUAL(BADGE_THREAT_WIFI_ANOMALY, event.cls);
-    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
-    TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
+    if (badge_threat_classify_detection(&field, &event)) {
+        TEST_ASSERT_NOT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
+        TEST_ASSERT_NOT_EQUAL(0, strcmp("FLOCK Camera", event.label));
+    }
 
     drone_detection_t probe = make_detection(
         DETECTION_SRC_WIFI_PROBE_REQUEST,
@@ -1121,9 +1187,11 @@ void test_badge_flock_field_oui_and_wildcard_probe_produce_flock_camera(void)
     strncpy(probe.class_reason, "Flock wildcard probe",
             sizeof(probe.class_reason) - 1);
 
-    TEST_ASSERT_TRUE(badge_threat_classify_detection(&probe, &event));
-    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
-    TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
+    memset(&event, 0, sizeof(event));
+    if (badge_threat_classify_detection(&probe, &event)) {
+        TEST_ASSERT_NOT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
+        TEST_ASSERT_NOT_EQUAL(0, strcmp("FLOCK Camera", event.label));
+    }
 
     drone_detection_t data = make_detection(
         DETECTION_SRC_WIFI_ASSOC,
@@ -1136,10 +1204,11 @@ void test_badge_flock_field_oui_and_wildcard_probe_produce_flock_camera(void)
     strncpy(data.class_reason, "Flock data frame sta",
             sizeof(data.class_reason) - 1);
 
-    TEST_ASSERT_TRUE(badge_threat_classify_detection(&data, &event));
-    TEST_ASSERT_EQUAL(BADGE_THREAT_WIFI_ANOMALY, event.cls);
-    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
-    TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
+    memset(&event, 0, sizeof(event));
+    if (badge_threat_classify_detection(&data, &event)) {
+        TEST_ASSERT_NOT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
+        TEST_ASSERT_NOT_EQUAL(0, strcmp("FLOCK Camera", event.label));
+    }
 
     drone_detection_t ssid = make_detection(
         DETECTION_SRC_WIFI_ASSOC,
@@ -1150,10 +1219,8 @@ void test_badge_flock_field_oui_and_wildcard_probe_produce_flock_camera(void)
     );
     strncpy(ssid.ssid, "Penguin-1234567890", sizeof(ssid.ssid) - 1);
 
-    TEST_ASSERT_TRUE(badge_threat_classify_detection(&ssid, &event));
-    TEST_ASSERT_EQUAL(BADGE_THREAT_WIFI_ANOMALY, event.cls);
-    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
-    TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
+    memset(&event, 0, sizeof(event));
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&ssid, &event));
 }
 
 void test_badge_meta_rayban_category_is_glass(void)
@@ -1403,6 +1470,26 @@ void test_badge_apple_airpods_far_idle_stays_hidden(void)
         "Apple Device",
         0.70f,
         -76
+    );
+    apple.ble_company_id = 0x004C;
+    apple.ble_apple_type = 0x10;
+    apple.ble_apple_flags = 0x01;
+    apple.ble_apple_activity = 0;
+    strncpy(apple.class_reason, "apple continuity nearby info",
+            sizeof(apple.class_reason) - 1);
+
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&apple, &event));
+}
+
+void test_badge_apple_airpods_close_idle_stays_hidden(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t apple = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:APPLE:AIRPODS:CLOSE_IDLE",
+        "Apple Device",
+        0.70f,
+        -48
     );
     apple.ble_company_id = 0x004C;
     apple.ble_apple_type = 0x10;

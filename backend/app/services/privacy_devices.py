@@ -42,6 +42,43 @@ def _current_rssi(entry: dict[str, Any]) -> int | None:
     return None
 
 
+def _field_starts_with_flock_oui(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+
+    hex_chars: list[str] = []
+    for ch in text:
+        if ch in ":-.":
+            if not hex_chars:
+                return False
+            continue
+        upper = ch.upper()
+        if upper not in "0123456789ABCDEF":
+            return False
+        hex_chars.append(upper)
+        if len(hex_chars) == 6:
+            return "".join(hex_chars) == "B41E52"
+    return False
+
+
+def _has_supported_alpr_evidence(entry: dict[str, Any]) -> bool:
+    source_l = str(entry.get("source") or "").lower()
+    if not source_l.startswith("wifi"):
+        return False
+
+    reason_l = str(entry.get("class_reason") or "").lower()
+    if "privacy:alpr:" in reason_l:
+        return True
+    if "wifi_oui:flock:b4:1e:52" in reason_l:
+        return True
+
+    return any(
+        _field_starts_with_flock_oui(entry.get(field))
+        for field in ("bssid", "mac", "drone_id", "display_id")
+    )
+
+
 def _risk_for_kind(kind: str, rssi: int | None) -> str:
     close = rssi is not None and rssi >= -60
     nearby = rssi is not None and rssi >= -72
@@ -186,9 +223,11 @@ def apple_remote_listening_hint(
     )
 
     # Require more than generic AirPods proximity before creating a privacy alert.
+    # RSSI can raise severity once an active path exists, but proximity alone
+    # should remain an informational Apple Continuity row.
     if "airpods_connected" not in signals:
         return None
-    if not active_path and not close:
+    if not active_path:
         return None
 
     risk_level = "high" if close and active_path else "medium"
@@ -221,7 +260,7 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     has_apple = bool(entry.get("apple_continuity") or entry.get("ble_apple_type"))
     remote_listening = apple_remote_listening_hint(entry, rssi)
 
-    if "flock" in text or "alpr" in text:
+    if _has_supported_alpr_evidence(entry):
         kind = "FLOCK_ALPR"
     elif any(token in text for token in (
         "skimmer", "hc-05", "hc-06", "hm-10", "jdy", "bt05", "free2move"

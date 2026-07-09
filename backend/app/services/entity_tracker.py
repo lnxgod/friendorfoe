@@ -85,7 +85,7 @@ class EntityTracker:
         "Meta Quest", "Meta VR",
         "Flipper", "Pwnagotchi", "Marauder",
         # v0.62 spooky-device classes from scanner-side name-pattern detection
-        "Card Skimmer", "Hidden Camera", "Flock Surveillance", "Flock Safety",
+        "Card Skimmer", "Hidden Camera", "Flock Safety",
         "Camera Near", "Body Camera", "Fleet Camera", "Surveillance Camera",
         "Venue Beacon", "Event Badge", "Mobile Key Lock", "BLE HID",
         "Auracast",

@@ -78,42 +78,9 @@ static const oui_table_entry_t OUI_TABLE[] = {
     { { 0x00, 0xE0, 0x4C }, { "Generic/Realtek", "Realtek Semiconductor",         true  } },
 
     /* ── Privacy infrastructure / ALPR ───────────────────────────────────────
-     * B4:1E:52 is the registered Flock Safety OUI. The additional prefixes are
-     * community field-observed Flock/ALPR infrastructure signatures from passive
-     * 2.4 GHz captures; keep the label explicit so downstream UI can separate
-     * field intelligence from ordinary vendor registry matches. */
+     * B4:1E:52 is the IEEE registered Flock Safety OUI. Keep Flock matching
+     * limited to this registered prefix unless stronger field evidence lands. */
     { { 0xB4, 0x1E, 0x52 }, { "Flock Safety",    "Flock Safety ALPR/camera registered OUI", false } },
-    { { 0x14, 0x5A, 0xFC }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x3C, 0x91, 0x80 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x70, 0xC9, 0x4E }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0xD8, 0xF3, 0xBC }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x80, 0x30, 0x49 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0xB8, 0x35, 0x32 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x74, 0x4C, 0xA1 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x08, 0x3A, 0x88 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x9C, 0x2F, 0x9D }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0xC0, 0x35, 0x32 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x94, 0x08, 0x53 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0xE4, 0xAA, 0xEA }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0xF4, 0x6A, 0xDD }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0xF8, 0xA2, 0xD6 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x24, 0xB2, 0xB9 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x00, 0xF4, 0x8D }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0xD0, 0x39, 0x57 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0xE8, 0xD0, 0xFC }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0xE0, 0x4F, 0x43 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0xB8, 0x1E, 0xA4 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x70, 0x08, 0x94 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x58, 0x8E, 0x81 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0xEC, 0x1B, 0xBD }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x3C, 0x71, 0xBF }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x58, 0x00, 0xE3 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x90, 0x35, 0xEA }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x5C, 0x93, 0xA2 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x64, 0x6E, 0x69 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x48, 0x27, 0xEA }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
-    { { 0x82, 0x6B, 0xF2 }, { "Flock Safety",    "Flock Safety ALPR/camera wildcard-probe field OUI", false } },
-    { { 0xEC, 0x62, 0x60 }, { "Flock Safety",    "Flock Safety ALPR/camera field OUI",      false } },
 };
 
 #define OUI_TABLE_SIZE  (sizeof(OUI_TABLE) / sizeof(OUI_TABLE[0]))
@@ -128,8 +95,13 @@ static int hex_char_to_nibble(char c)
     return -1;
 }
 
+static bool is_ascii_space(char c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
 /**
- * Parse the first 3 colon-separated hex pairs from a BSSID string
+ * Parse the first 3 hex pairs from a BSSID string
  * into a raw 3-byte OUI.
  *
  * @param bssid  String like "60:60:1F:AA:BB:CC"
@@ -140,9 +112,12 @@ static bool parse_oui_from_bssid(const char *bssid, uint8_t out[3])
 {
     if (!bssid) return false;
 
-    /* Expect format "XX:XX:XX:..." -- need at least 8 characters for "XX:XX:XX" */
     int byte_idx = 0;
     int i = 0;
+
+    while (is_ascii_space(bssid[i])) {
+        i++;
+    }
 
     while (byte_idx < 3 && bssid[i] != '\0') {
         int hi = hex_char_to_nibble(bssid[i]);
@@ -155,8 +130,9 @@ static bool parse_oui_from_bssid(const char *bssid, uint8_t out[3])
 
         out[byte_idx++] = (uint8_t)((hi << 4) | lo);
 
-        /* Skip colon or hyphen separator (except after last byte) */
-        if (byte_idx < 3 && (bssid[i] == ':' || bssid[i] == '-')) {
+        /* Skip one common MAC separator (except after the parsed OUI). */
+        if (byte_idx < 3 &&
+            (bssid[i] == ':' || bssid[i] == '-' || bssid[i] == '.')) {
             i++;
         }
     }

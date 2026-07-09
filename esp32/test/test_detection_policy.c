@@ -53,27 +53,45 @@ void test_wifi_oui_database_includes_flock_safety(void)
     TEST_ASSERT_NOT_NULL(entry);
     TEST_ASSERT_EQUAL_STRING("Flock Safety", entry->manufacturer);
     TEST_ASSERT_FALSE(entry->high_false_positive);
-    TEST_ASSERT_NOT_NULL(field);
-    TEST_ASSERT_EQUAL_STRING("Flock Safety", field->manufacturer);
-    TEST_ASSERT_FALSE(field->high_false_positive);
-    TEST_ASSERT_NOT_NULL(wildcard);
-    TEST_ASSERT_TRUE(strstr(wildcard->full_name, "wildcard") != NULL);
+    if (field) {
+        TEST_ASSERT_NOT_EQUAL(0, strcmp("Flock Safety", field->manufacturer));
+    }
+    if (wildcard) {
+        TEST_ASSERT_NOT_EQUAL(0, strcmp("Flock Safety", wildcard->manufacturer));
+    }
 }
 
-void test_flock_ssid_patterns_are_notable_for_badge(void)
+void test_wifi_oui_database_normalizes_flock_safety_mac_formats(void)
 {
-    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("Flock-Field-Bridge"));
-    TEST_ASSERT_EQUAL_STRING("Flock SSID",
-                             fof_policy_notable_ssid_label("Flock-Field-Bridge"));
-    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("FlockOS-Field-Bridge"));
-    TEST_ASSERT_EQUAL_STRING("Flock SSID",
-                             fof_policy_notable_ssid_label("FlockOS-Field-Bridge"));
-    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("Penguin-1234567890"));
-    TEST_ASSERT_EQUAL_STRING("Flock SSID",
-                             fof_policy_notable_ssid_label("Penguin-1234567890"));
-    TEST_ASSERT_TRUE(fof_policy_ssid_is_notable("ALPR-maint"));
-    TEST_ASSERT_EQUAL_STRING("Flock SSID",
-                             fof_policy_notable_ssid_label("ALPR-maint"));
+    const char *valid_bssids[] = {
+        " b4:1e:52:aa:bb:cc ",
+        "B4-1E-52-AA-BB-CC",
+        "B41E52AABBCC",
+        "B41E.52AA.BBCC",
+    };
+    const char *invalid_bssids[] = {
+        "XB4:1E:52:AA:BB:CC",
+        "B4:1E:5Z:AA:BB:CC",
+    };
+
+    for (size_t i = 0; i < sizeof(valid_bssids) / sizeof(valid_bssids[0]); ++i) {
+        const oui_entry_t *entry = wifi_oui_lookup(valid_bssids[i]);
+        TEST_ASSERT_NOT_NULL(entry);
+        TEST_ASSERT_EQUAL_STRING("Flock Safety", entry->manufacturer);
+    }
+
+    for (size_t i = 0; i < sizeof(invalid_bssids) / sizeof(invalid_bssids[0]); ++i) {
+        TEST_ASSERT_NULL(wifi_oui_lookup(invalid_bssids[i]));
+    }
+}
+
+void test_unverified_flock_ssid_patterns_are_not_notable_for_badge(void)
+{
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("Flock-Field-Bridge"));
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("FlockOS-Field-Bridge"));
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("FLK-Field"));
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("Penguin-1234567890"));
+    TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("ALPR-maint"));
     TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("FlockGuest"));
     TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("ALPRmaint"));
     TEST_ASSERT_FALSE(fof_policy_ssid_is_notable("1234567890"));
@@ -120,11 +138,11 @@ void test_privacy_wifi_signature_catalog_matches_key_ssids(void)
     TEST_ASSERT_TRUE(tool->attack_tool);
     TEST_ASSERT_EQUAL_STRING("attack_tool:deauther", tool->class_reason);
 
-    const fof_privacy_wifi_signature_t *flock =
-        fof_privacy_match_wifi_ssid("FlockOS-Field-Bridge");
-    TEST_ASSERT_NOT_NULL(flock);
-    TEST_ASSERT_EQUAL_STRING("Flock Safety", flock->manufacturer);
-    TEST_ASSERT_EQUAL_STRING("privacy:alpr:flock", flock->class_reason);
+    const fof_privacy_wifi_signature_t *elsag =
+        fof_privacy_match_wifi_ssid("ELSAG-Field-Bridge");
+    TEST_ASSERT_NOT_NULL(elsag);
+    TEST_ASSERT_EQUAL_STRING("Leonardo", elsag->manufacturer);
+    TEST_ASSERT_EQUAL_STRING("privacy:alpr:elsag", elsag->class_reason);
 }
 
 void test_privacy_wifi_signature_catalog_rejects_broad_patterns(void)
@@ -134,6 +152,11 @@ void test_privacy_wifi_signature_catalog_rejects_broad_patterns(void)
     TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("Campus-WiFi"));
     TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("MVP Guest"));
     TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("FlockGuest"));
+    TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("Flock-Field-Bridge"));
+    TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("FlockOS-Field-Bridge"));
+    TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("FLK-Field"));
+    TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("Penguin-1234567890"));
+    TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("ALPR-maint"));
     TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid("ALPRmaint"));
 
     size_t count = 0;
@@ -556,6 +579,21 @@ void test_ble_fingerprint_exposure_notification_is_not_findmy_tracker(void)
     TEST_ASSERT_EQUAL_UINT16(0xFD6F, fp.service_uuids[0]);
 }
 
+void test_ble_fingerprint_flock_name_is_not_alpr_evidence(void)
+{
+    static const uint8_t adv[] = {
+        2, 0x01, 0x06,
+        13, 0x09, 'F', 'l', 'o', 'c', 'k', ' ', 'C', 'a', 'm', 'e', 'r', 'a'
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_NOT_EQUAL(BLE_DEV_FLOCK_SAFETY, fp.device_type);
+    TEST_ASSERT_FALSE(fp.is_tracker);
+    TEST_ASSERT_NOT_EQUAL(0, strcmp("flock_ble_name", fp.class_reason));
+}
+
 void test_ble_fingerprint_chipolo_member_uuid_is_tracker(void)
 {
     static const uint8_t adv[] = {
@@ -613,6 +651,7 @@ void test_ble_fingerprint_unikey_company_id_is_not_pebblebee_tracker(void)
 void test_hidden_camera_ble_is_priority_not_low_value(void)
 {
     TEST_ASSERT_TRUE(fof_policy_is_priority_ble_fingerprint("Hidden Camera (suspect)"));
+    TEST_ASSERT_FALSE(fof_policy_is_priority_ble_fingerprint("Flock Surveillance"));
     TEST_ASSERT_FALSE(fof_policy_should_drop_low_value(
         DETECTION_SRC_BLE_FINGERPRINT,
         0.02f,

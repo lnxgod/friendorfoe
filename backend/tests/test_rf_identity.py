@@ -194,46 +194,95 @@ def test_airpods_connected_audio_gets_remote_listening_identity_explanation():
     assert explanation["recommended_action"] == "inspect_room"
 
 
-def test_flock_field_oui_adds_alpr_camera_family():
+def test_registered_flock_oui_adds_alpr_camera_family():
     meta = enrich_rf_evidence(
         source="wifi_oui",
-        bssid="14:5A:FC:A9:10:EF",
+        bssid="B4:1E:52:AA:BB:CC",
         ssid="",
         classification="wifi_device",
     )
 
     assert meta["mac_is_randomized"] is False
-    assert meta["brand"] == "Flock Surveillance"
+    assert meta["brand"] == "Flock Safety"
     assert meta["brand_source"] == "friendly_oui"
-    assert meta["oui_prefix"] == "14:5A:FC"
+    assert meta["oui_prefix"] == "B4:1E:52"
     assert meta["device_family"] == "camera_or_video"
     assert meta["device_class"] == "surveillance_camera"
 
 
-def test_flock_penguin_ssid_adds_alpr_camera_family():
+@pytest.mark.parametrize(
+    "bssid",
+    [
+        " b4:1e:52:aa:bb:cc ",
+        "B4-1E-52-AA-BB-CC",
+        "B41E52AABBCC",
+        "B41E.52AA.BBCC",
+    ],
+)
+def test_registered_flock_oui_is_normalized_across_common_mac_formats(bssid):
     meta = enrich_rf_evidence(
-        source="wifi_ap_inventory",
-        bssid="AA:BB:CC:12:34:56",
-        ssid="Penguin-1234567890",
+        source="wifi_oui",
+        bssid=bssid,
+        ssid="",
         classification="wifi_device",
     )
 
-    assert meta["device_family"] == "camera_or_video"
+    assert meta["brand"] == "Flock Safety"
+    assert meta["brand_source"] == "friendly_oui"
+    assert meta["oui_prefix"] == "B4:1E:52"
     assert meta["device_class"] == "surveillance_camera"
-    assert meta["family_source"] == "privacy_rf_signature"
 
 
-def test_flockos_ssid_adds_alpr_camera_family():
+@pytest.mark.parametrize("bssid", ["XB4:1E:52:AA:BB:CC", "B4:1E:5Z:AA:BB:CC"])
+def test_malformed_flock_oui_near_matches_are_not_normalized(bssid):
+    meta = enrich_rf_evidence(
+        source="wifi_oui",
+        bssid=bssid,
+        ssid="",
+        classification="wifi_device",
+    )
+
+    assert meta["brand"] != "Flock Safety"
+    assert meta["oui_prefix"] != "B4:1E:52"
+    assert meta["device_class"] != "surveillance_camera"
+
+
+@pytest.mark.parametrize("bssid", ["14:5A:FC:A9:10:EF", "82:6B:F2:00:00:01"])
+def test_unverified_flock_field_ouis_do_not_add_alpr_camera_family(bssid):
+    meta = enrich_rf_evidence(
+        source="wifi_oui",
+        bssid=bssid,
+        ssid="",
+        classification="wifi_device",
+    )
+
+    assert meta["brand"] != "Flock Safety"
+    assert meta["brand"] != "Flock Surveillance"
+    assert meta["device_class"] != "surveillance_camera"
+    assert meta["brand_source"] != "friendly_oui"
+
+
+@pytest.mark.parametrize(
+    "ssid",
+    [
+        "Flock-Field-Bridge",
+        "FlockOS-Field-Bridge",
+        "FLK-Field",
+        "Penguin-1234567890",
+        "ALPR-maint",
+    ],
+)
+def test_unverified_flock_ssids_do_not_add_alpr_camera_family(ssid):
     meta = enrich_rf_evidence(
         source="wifi_ap_inventory",
         bssid="AA:BB:CC:12:34:57",
-        ssid="FlockOS-Field-Bridge",
+        ssid=ssid,
         classification="wifi_device",
     )
 
-    assert meta["device_family"] == "camera_or_video"
-    assert meta["device_class"] == "surveillance_camera"
-    assert meta["family_source"] == "privacy_rf_signature"
+    assert meta["device_family"] != "camera_or_video"
+    assert meta["device_class"] != "surveillance_camera"
+    assert meta["family_source"] != "privacy_rf_signature"
 
 
 @pytest.mark.parametrize("ssid", ["FlockGuest", "ALPRmaint", "1234567890"])

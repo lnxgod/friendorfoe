@@ -5,6 +5,10 @@ All notable changes to the ESP32 hardware edition of Friend or Foe.
 ## [Unreleased]
 
 ### Changed
+- **Privacy/OUI firmware bump to `0.64.61-privacy-oui`.**
+  `uplink-s3`, `scanner-s3-combo`, and `scanner-s3-combo-seed` now advertise
+  the stricter Flock OUI release, while the FoF Badge XIAO track moves to
+  `0.64.61-badge-privacy-oui`.
 - **RSSI drone-range firmware bump to `0.64.47-rssi-drone-range`.**
   `uplink-s3`, `scanner-s3-combo`, and `scanner-s3-combo-seed` now advertise
   the listening-awareness release, while the FoF Badge XIAO track moves to

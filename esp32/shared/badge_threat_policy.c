@@ -48,6 +48,24 @@ static bool starts_nocase(const char *text, const char *prefix)
     return true;
 }
 
+static int ascii_hex_value(char ch)
+{
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    return -1;
+}
+
+static bool ascii_is_space(char ch)
+{
+    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
+}
+
+static bool ascii_is_mac_separator(char ch)
+{
+    return ch == ':' || ch == '-' || ch == '.';
+}
+
 static bool equals_nocase(const char *a, const char *b)
 {
     if (!a || !b) {
@@ -138,20 +156,60 @@ static bool text_mentions_tracker(const char *text)
 
 static bool text_mentions_flock(const char *text)
 {
-    return equals_nocase(text, "flock") ||
-           starts_nocase(text, "flock-") ||
-           starts_nocase(text, "flock_") ||
-           starts_nocase(text, "flockos") ||
-           contains_nocase(text, "flock safety") ||
-           contains_nocase(text, "flock camera") ||
-           contains_nocase(text, "flock alpr") ||
-           contains_nocase(text, "privacy:alpr:flock") ||
-           contains_nocase(text, "flock_ble_name") ||
-           contains_nocase(text, "flock registered oui") ||
-           contains_nocase(text, "flock field oui") ||
-           contains_nocase(text, "flock wildcard") ||
-           contains_nocase(text, "flock probe") ||
-           contains_nocase(text, "flock data");
+    return contains_nocase(text, "wifi_oui:flock:b4:1e:52") ||
+           contains_nocase(text, "flock registered oui");
+}
+
+static bool source_can_carry_flock_wifi_oui(uint8_t source)
+{
+    return source == DETECTION_SRC_WIFI_OUI ||
+           source == DETECTION_SRC_WIFI_SSID ||
+           source == DETECTION_SRC_WIFI_ASSOC ||
+           source == DETECTION_SRC_WIFI_AP_INVENTORY ||
+           source == DETECTION_SRC_WIFI_PROBE_REQUEST;
+}
+
+static bool text_starts_with_flock_safety_oui(const char *text)
+{
+    if (!text) {
+        return false;
+    }
+
+    const char *p = text;
+    while (ascii_is_space(*p)) {
+        p++;
+    }
+
+    char prefix[7] = {0};
+    int count = 0;
+    while (*p && count < 6) {
+        if (ascii_is_mac_separator(*p)) {
+            if (count == 0) {
+                return false;
+            }
+            p++;
+            continue;
+        }
+
+        int value = ascii_hex_value(*p);
+        if (value < 0) {
+            return false;
+        }
+        prefix[count++] = (char)(value < 10 ? ('0' + value) : ('A' + value - 10));
+        p++;
+    }
+
+    return count == 6 && strcmp(prefix, "B41E52") == 0;
+}
+
+static bool detection_has_flock_safety_wifi_oui(const drone_detection_t *det)
+{
+    if (!det || !source_can_carry_flock_wifi_oui(det->source)) {
+        return false;
+    }
+    return text_starts_with_flock_safety_oui(det->bssid) ||
+           text_starts_with_flock_safety_oui(det->drone_id) ||
+           contains_nocase(det->class_reason, "wifi_oui:flock:b4:1e:52");
 }
 
 static bool text_mentions_security_device(const char *text)
@@ -295,8 +353,7 @@ static bool detection_is_apple_remote_listening(const drone_detection_t *det)
     if ((det->ble_apple_flags & 0x01) == 0) {
         return false;
     }
-    return apple_activity_is_audio_path(det->ble_apple_activity) ||
-           (det->rssi < 0 && det->rssi >= -60);
+    return apple_activity_is_audio_path(det->ble_apple_activity);
 }
 
 static bool text_mentions_ambient_demo_ssid(const char *text)
@@ -792,9 +849,7 @@ static void format_detection_evidence(char *out,
             }
             return;
         case DETECTION_SRC_BLE_FINGERPRINT:
-            if (contains_nocase(reason, "flock_ble_name")) {
-                snprintf(out, out_len, "BLE name Flock");
-            } else if (contains_nocase(reason, "0x0D53")) {
+            if (contains_nocase(reason, "0x0D53")) {
                 snprintf(out, out_len, "CID 0x0D53 Luxottica");
             } else if (contains_nocase(reason, "0xFD5F")) {
                 snprintf(out, out_len, "svc 0xFD5F Meta");
@@ -861,8 +916,6 @@ static void copy_ble_detail(char *out, const drone_detection_t *det)
         snprintf(detail, sizeof(detail), "Ray-Ban/Oakley hint");
     } else if (det && contains_nocase(det->class_reason, "weak_meta")) {
         snprintf(detail, sizeof(detail), "Meta presence");
-    } else if (det && contains_nocase(det->class_reason, "flock_ble_name")) {
-        snprintf(detail, sizeof(detail), "Flock BLE name");
     } else if (det && contains_nocase(det->class_reason, "default_uart_ble_name")) {
         snprintf(detail, sizeof(detail), "default BLE module");
     } else if (det && contains_nocase(det->class_reason, "explicit_camera_ble_name")) {
@@ -1222,7 +1275,7 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
                              text_mentions_tracker(det->model) ||
                              text_mentions_tracker(det->ble_name);
     const bool mfr_evil_twin = detection_is_evil_twin(det);
-    const bool mfr_flock = detection_mentions_any(det, text_mentions_flock);
+    const bool mfr_flock = detection_has_flock_safety_wifi_oui(det);
     const bool mfr_glasses = detection_mentions_any(det, text_mentions_glasses);
     const bool mfr_skimmer = detection_mentions_any(det, text_mentions_skimmer);
     const bool mfr_hidden_camera = detection_mentions_any(det, text_mentions_hidden_camera);

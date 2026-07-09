@@ -231,66 +231,6 @@
       "false_positive_policy": "specific_product_prefix"
     },
     {
-      "pattern": "Flock-",
-      "match_type": "prefix",
-      "manufacturer": "Flock Safety",
-      "device_type": "ALPR Camera",
-      "privacy_kind": "FLOCK_ALPR",
-      "confidence": 0.88,
-      "has_camera": true,
-      "class_reason": "privacy:alpr:flock",
-      "source_note": "Existing local Flock/ALPR shared firmware signature.",
-      "false_positive_policy": "specific_alpr_prefix"
-    },
-    {
-      "pattern": "Flock_",
-      "match_type": "prefix",
-      "manufacturer": "Flock Safety",
-      "device_type": "ALPR Camera",
-      "privacy_kind": "FLOCK_ALPR",
-      "confidence": 0.86,
-      "has_camera": true,
-      "class_reason": "privacy:alpr:flock",
-      "source_note": "Explicit Flock/ALPR field SSID form kept narrow to avoid broad Flock-like false positives.",
-      "false_positive_policy": "specific_alpr_prefix"
-    },
-    {
-      "pattern": "FlockOS",
-      "match_type": "prefix",
-      "manufacturer": "Flock Safety",
-      "device_type": "ALPR Camera",
-      "privacy_kind": "FLOCK_ALPR",
-      "confidence": 0.86,
-      "has_camera": true,
-      "class_reason": "privacy:alpr:flock",
-      "source_note": "Explicit FlockOS field SSID form, aligned with badge BLE/name handling.",
-      "false_positive_policy": "specific_alpr_prefix"
-    },
-    {
-      "pattern": "FLK-",
-      "match_type": "prefix",
-      "manufacturer": "Flock Safety",
-      "device_type": "ALPR Camera",
-      "privacy_kind": "FLOCK_ALPR",
-      "confidence": 0.85,
-      "has_camera": true,
-      "class_reason": "privacy:alpr:flock",
-      "source_note": "Existing local Flock/ALPR shared firmware signature.",
-      "false_positive_policy": "specific_alpr_prefix"
-    },
-    {
-      "pattern": "Penguin-",
-      "match_type": "prefix",
-      "manufacturer": "Flock Safety",
-      "device_type": "ALPR Camera",
-      "privacy_kind": "FLOCK_ALPR",
-      "confidence": 0.82,
-      "has_camera": true,
-      "class_reason": "privacy:alpr:flock",
-      "source_note": "Existing local Flock/ALPR field signature.",
-      "false_positive_policy": "specific_alpr_prefix"
-    },
-    {
       "pattern": "ELSAG-",
       "match_type": "prefix",
       "manufacturer": "Leonardo",

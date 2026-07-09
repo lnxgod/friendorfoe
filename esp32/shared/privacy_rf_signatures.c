@@ -121,13 +121,6 @@ static const fof_privacy_wifi_signature_t WIFI_SIGNATURES[] = {
     { "CuboAi-", FOF_PRIVACY_MATCH_PREFIX, "CuboAi", "Baby Monitor", "CAMERA_NEAR", "privacy:baby_monitor:cuboai", 0.85f, true, false },
 
     /* ALPR / fleet surveillance */
-    { "Flock-", FOF_PRIVACY_MATCH_PREFIX, "Flock Safety", "ALPR Camera", "FLOCK_ALPR", "privacy:alpr:flock", 0.88f, true, false },
-    { "Flock_", FOF_PRIVACY_MATCH_PREFIX, "Flock Safety", "ALPR Camera", "FLOCK_ALPR", "privacy:alpr:flock", 0.86f, true, false },
-    { "FlockOS", FOF_PRIVACY_MATCH_PREFIX, "Flock Safety", "ALPR Camera", "FLOCK_ALPR", "privacy:alpr:flock", 0.86f, true, false },
-    { "FLK-", FOF_PRIVACY_MATCH_PREFIX, "Flock Safety", "ALPR Camera", "FLOCK_ALPR", "privacy:alpr:flock", 0.85f, true, false },
-    { "Penguin-", FOF_PRIVACY_MATCH_PREFIX, "Flock Safety", "ALPR Camera", "FLOCK_ALPR", "privacy:alpr:flock", 0.82f, true, false },
-    { "ALPR-", FOF_PRIVACY_MATCH_PREFIX, "Flock Safety", "ALPR Camera", "FLOCK_ALPR", "privacy:alpr", 0.82f, true, false },
-    { "ALPR_", FOF_PRIVACY_MATCH_PREFIX, "Flock Safety", "ALPR Camera", "FLOCK_ALPR", "privacy:alpr", 0.82f, true, false },
     { "ELSAG-", FOF_PRIVACY_MATCH_PREFIX, "Leonardo", "ALPR Camera", "FLOCK_ALPR", "privacy:alpr:elsag", 0.85f, true, false },
 
     /* Passive attack-tool indicators */

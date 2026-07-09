@@ -7,12 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **Flock/ALPR evidence now requires explicit Wi-Fi OUI proof.** Android,
+  backend, ESP32 scanner, and badge policy now treat Flock Safety as the
+  registered `B4:1E:52` OUI only, normalize common MAC formats, and reject
+  malformed near-matches instead of promoting broad Flock-looking names.
 - **RSSI distance fallback now uses the field-calibrated scale.** Android,
   backend, and ESP32 scanner code now share the same RSSI range profile, and
   BLE Remote ID detections carry a rough RSSI range when no RTT range is
   available.
 - **Android update check now has a real release version to find.** The Android
-  app version is bumped to `0.64.47-rssi-drone-range` so GitHub Releases can
+  app version is bumped to `0.64.61-privacy-oui` so GitHub Releases can
   publish a newer APK than the installed build.
 
 ### Added
@@ -29,8 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **RSSI drone-range release versions refreshed.** README, backend firmware
   readiness expectations, ESP32 version metadata, Android version metadata,
   and web flasher manifests now identify the current production/app/backend
-  release as `0.64.47-rssi-drone-range`; the FoF Badge track remains separate
-  at `0.64.42-badge-listening`.
+  release as `0.64.61-privacy-oui`; the FoF Badge track remains separate at
+  `0.64.61-badge-privacy-oui`.
 
 ## [0.64.39-badge-usb-detail] - 2026-05-18
 
