@@ -1,0 +1,31 @@
+# Friend or Foe CFP Supporting Files
+
+These files are supplemental evidence for the DEF CON 34 Packet Hacking Village CFP submission.
+
+## Photos
+
+- `photos/01-early-esp32-oled-drone-simulator-rssi-location.jpg` - early ESP drone-detection prototype showing a simulated drone packet path on-device, with location fields redacted for privacy.
+- `photos/02-live-badge-remote-id-meta-glasses-detection.jpg` - live badge display showing Remote ID and privacy-device evidence on the assembled badge prototype.
+- `photos/03-badge-pcb-render-triangle-layout-buttons-battery.jpg` - badge PCB/back-side render showing the triangle form factor, buttons, battery pads, traces, and GameChangersAI mark.
+- `photos/04-live-badge-boot-version-field-signals.jpg` - assembled badge boot/version screen on the bench.
+- `photos/05-seeed-xiao-esp32-s3-batch-for-badges.jpg` - Seeed XIAO ESP32-S3 hardware batch used for badge/sensor prototyping.
+- `photos/06-live-badge-remote-id-meta-glasses-alt-view.jpg` - alternate live badge display photo showing Remote ID and privacy-device evidence.
+- `photos/07-final-badge-hardware-copper-triangle-s3-gps-layout.jpg` - final badge hardware in progress, showing the copper triangle layout, three ESP32-S3 boards, and GPS module placement before display/front-side completion.
+- `photos/08-plastic-mechanical-fit-check-screen-gps-usbc.jpg` - plastic/mechanical fit-check prototype used to test screen placement, GPS module placement, USB-C access, and physical fit before the final badge layout.
+
+The photos and screenshots were re-encoded/stripped for CFP review. Visible GPS/location fields in the included prototype photos have been redacted.
+
+## Screenshots
+
+- `screenshots/01-dashboard-overview-redacted-sensor-evidence.png` - redacted dashboard overview showing backend status, live sensor count, scanner evidence, and recent explained activity.
+- `screenshots/02-ble-tracker-wearable-evidence-redacted.png` - redacted BLE evidence view showing tracker, wearable, IoT, RSSI, age, sensor count, and fingerprint-style grouping.
+- `screenshots/03-wifi-probe-identity-ssid-evidence-redacted.png` - redacted Wi-Fi probe view showing stable probe identities, SSID evidence, OUI hints, and why probe data is treated as clue rather than proof.
+- `screenshots/04-all-detections-confidence-evidence-redacted.png` - redacted grouped detections view showing mixed Wi-Fi/BLE evidence, source labels, RSSI, hits, tags, and confidence/explanation strings.
+
+## Repository
+
+Main project repository:
+
+https://github.com/lnxgod/friendorfoe
+
+The repository contains the Android app, ESP32 firmware, badge firmware, Remote ID parser paths, simulator tooling, flashing/recovery scripts, redacted API samples, and the redaction helper referenced by the CFP. This bundle contains the screenshots and hardware photos.
