@@ -579,6 +579,30 @@ void test_ble_fingerprint_exposure_notification_is_not_findmy_tracker(void)
     TEST_ASSERT_EQUAL_UINT16(0xFD6F, fp.service_uuids[0]);
 }
 
+void test_ble_fingerprint_apple_ibeacon_is_venue_beacon(void)
+{
+    static const uint8_t adv[] = {
+        2, 0x01, 0x06,
+        26, 0xFF,
+        0x4C, 0x00,
+        0x02, 0x15,
+        0xE2, 0xC5, 0x6D, 0xB5, 0xDF, 0xFB, 0x48, 0xD2,
+        0xB0, 0x60, 0xD0, 0xF5, 0xA7, 0x10, 0x96, 0xE0,
+        0x12, 0x34,
+        0xAB, 0xCD,
+        0xC5
+    };
+    ble_fingerprint_t fp;
+
+    ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+
+    TEST_ASSERT_EQUAL_UINT16(0x004C, fp.company_id);
+    TEST_ASSERT_EQUAL_UINT8(0x02, fp.apple_type);
+    TEST_ASSERT_EQUAL(BLE_DEV_VENUE_BEACON, fp.device_type);
+    TEST_ASSERT_EQUAL_STRING("Venue Beacon", fp.type_name);
+    TEST_ASSERT_EQUAL_STRING("ibeacon:0x02", fp.class_reason);
+}
+
 void test_ble_fingerprint_flock_name_is_not_alpr_evidence(void)
 {
     static const uint8_t adv[] = {

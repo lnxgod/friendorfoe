@@ -36,6 +36,26 @@ class PrivacyCategoryMappingTest {
     }
 
     @Test
+    fun maps_confirmed_beacon_protocols_to_venue_beacon_category() {
+        assertEquals(
+            PrivacyCategory.VENUE_BEACON,
+            GlassesDetector.categorizeDeviceType("iBeacon")
+        )
+        assertEquals(
+            PrivacyCategory.VENUE_BEACON,
+            GlassesDetector.categorizeDeviceType("Eddystone Beacon")
+        )
+        assertEquals(
+            PrivacyCategory.VENUE_BEACON,
+            GlassesDetector.categorizeDeviceType("Retail Beacon")
+        )
+        assertEquals(
+            PrivacyCategory.VENUE_BEACON,
+            GlassesDetector.categorizeDeviceType("Location Beacon")
+        )
+    }
+
+    @Test
     fun maps_registered_flock_wifi_oui_to_alpr_camera() {
         val registeredOui = GlassesDetector.checkWifiBssid(
             ssid = "",

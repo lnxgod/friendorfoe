@@ -70,6 +70,55 @@ def test_apple_continuity_is_sanitized_and_informational():
     assert "auth_tag" not in enriched["apple_continuity"]
 
 
+def test_apple_ibeacon_type_maps_to_venue_beacon_alert_with_evidence():
+    entry = {
+        "device_type": "Apple Device",
+        "manufacturer": "Apple",
+        "current_rssi": -58,
+        "source": "ble_fingerprint",
+        "ble_company_id": 0x004C,
+        "ble_apple_type": 0x02,
+        "ibeacon_uuid": "e2c56db5-dffb-48d2-b060-d0f5a71096e0",
+        "ibeacon_major": 4660,
+        "ibeacon_minor": 43981,
+    }
+
+    enriched = classify_privacy_device(entry)
+
+    assert enriched["privacy_kind"] == "VENUE_BEACON"
+    assert enriched["risk_level"] == "medium"
+    assert enriched["display_label"] == "BEACON AREA"
+    assert "iBeacon" in enriched["display_detail"]
+    assert "e2c56db5-dffb-48d2-b060-d0f5a71096e0" in enriched["display_detail"]
+    assert "4660/43981" in enriched["display_detail"]
+    assert "-58dB" in enriched["display_detail"]
+    evidence_fields = {item["field"] for item in enriched["evidence"]}
+    assert {"ble_apple_type", "ibeacon_uuid", "ibeacon_major", "ibeacon_minor"} <= evidence_fields
+
+
+def test_eddystone_metadata_maps_to_venue_beacon_alert_detail():
+    entry = {
+        "device_type": "BLE Device",
+        "manufacturer": "Google",
+        "current_rssi": -64,
+        "source": "ble_fingerprint",
+        "ble_svc_uuids": "0000FEAA-0000-1000-8000-00805F9B34FB",
+        "eddystone_frame_type": "URL",
+        "eddystone_url": "https://www.example.com/",
+    }
+
+    enriched = classify_privacy_device(entry)
+
+    assert enriched["privacy_kind"] == "VENUE_BEACON"
+    assert enriched["risk_level"] == "low"
+    assert enriched["display_label"] == "BEACON AREA"
+    assert "Eddystone" in enriched["display_detail"]
+    assert "URL" in enriched["display_detail"]
+    assert "https://www.example.com/" in enriched["display_detail"]
+    evidence_fields = {item["field"] for item in enriched["evidence"]}
+    assert {"ble_svc_uuids", "eddystone_frame_type", "eddystone_url"} <= evidence_fields
+
+
 def test_apple_airpods_connected_audio_promotes_remote_listening_kind():
     entry = {
         "device_type": "Apple Device",

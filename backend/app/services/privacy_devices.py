@@ -94,7 +94,9 @@ def _risk_for_kind(kind: str, rssi: int | None) -> str:
         return "medium" if nearby else "low"
     if kind in {"BLE_HID", "EVENT_BADGE"}:
         return "medium" if close else "low"
-    if kind in {"VENUE_BEACON", "AURACAST", "APPLE_CONTINUITY"}:
+    if kind == "VENUE_BEACON":
+        return "medium" if close else "low"
+    if kind in {"AURACAST", "APPLE_CONTINUITY"}:
         return "info"
     if kind == "META_GLASSES":
         return "medium" if nearby else "low"
@@ -121,7 +123,7 @@ def _display_label_for_kind(kind: str) -> str:
 
 def _apple_subtype_from_type(apple_type: Any) -> str | None:
     try:
-        code = int(apple_type)
+        code = int(str(apple_type), 0)
     except (TypeError, ValueError):
         return None
     return {
@@ -181,6 +183,76 @@ def apple_continuity_subtypes(entry: dict[str, Any]) -> list[str]:
         if item and item not in deduped:
             deduped.append(item)
     return deduped
+
+
+def _is_apple_ibeacon(entry: dict[str, Any], apple_subtypes: list[str]) -> bool:
+    if any(str(subtype).lower() == "ibeacon" for subtype in apple_subtypes):
+        return True
+    return "ibeacon" in str(entry.get("class_reason") or "").lower()
+
+
+def _first_present(entry: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = entry.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _venue_beacon_detail(
+    entry: dict[str, Any],
+    apple_subtypes: list[str],
+    service_match: dict[str, Any] | None,
+    rssi: int | None,
+) -> str:
+    text = _text_blob(entry)
+    service_uuid = str(service_match.get("uuid16_hex") if service_match else "").lower()
+    is_ibeacon = _is_apple_ibeacon(entry, apple_subtypes)
+    is_eddystone = (
+        service_uuid == "0xfeaa"
+        or "feaa" in str(entry.get("ble_svc_uuids") or "").lower()
+        or "eddystone" in text
+        or any(str(key).startswith("eddystone_") and entry.get(key) for key in entry)
+    )
+
+    if is_ibeacon:
+        protocol = "iBeacon"
+    elif is_eddystone:
+        protocol = "Eddystone"
+    else:
+        protocol = "Venue Beacon"
+
+    parts = [protocol]
+    if protocol == "iBeacon":
+        uuid = _first_present(entry, "ibeacon_uuid", "beacon_uuid")
+        major = _first_present(entry, "ibeacon_major", "beacon_major", "major")
+        minor = _first_present(entry, "ibeacon_minor", "beacon_minor", "minor")
+        if uuid:
+            parts.append(str(uuid))
+        if major is not None and minor is not None:
+            parts.append(f"{major}/{minor}")
+    elif protocol == "Eddystone":
+        frame = _first_present(entry, "eddystone_frame_type", "beacon_frame", "frame_type")
+        url = _first_present(entry, "eddystone_url", "beacon_url", "url")
+        namespace = _first_present(entry, "eddystone_namespace", "beacon_namespace")
+        instance = _first_present(entry, "eddystone_instance", "beacon_instance")
+        eid = _first_present(entry, "eddystone_eid", "beacon_eid")
+        if frame:
+            parts.append(str(frame))
+        if url:
+            parts.append(str(url))
+        elif namespace or instance:
+            parts.append("/".join(str(item) for item in (namespace, instance) if item))
+        elif eid:
+            parts.append(str(eid))
+    else:
+        manufacturer = entry.get("manufacturer")
+        if manufacturer and manufacturer != "Unknown":
+            parts.append(str(manufacturer))
+
+    if rssi is not None:
+        parts.append(f"{rssi}dB")
+    return " ".join(parts).strip()
 
 
 def apple_remote_listening_hint(
@@ -258,6 +330,7 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     is_tracker = bool(entry.get("is_tracker"))
     apple_subtypes = apple_continuity_subtypes(entry)
     has_apple = bool(entry.get("apple_continuity") or entry.get("ble_apple_type"))
+    is_apple_ibeacon = _is_apple_ibeacon(entry, apple_subtypes)
     remote_listening = apple_remote_listening_hint(entry, rssi)
 
     if _has_supported_alpr_evidence(entry):
@@ -271,6 +344,8 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
         "deauther", "marauder", "wifi attack"
     )):
         kind = "WIFI_ATTACK_TOOL"
+    elif is_apple_ibeacon:
+        kind = "VENUE_BEACON"
     elif service_match:
         kind = str(service_match["privacy_kind"])
     elif any(token in text for token in (
@@ -322,20 +397,32 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     subtype_detail = ", ".join(apple_subtypes[:3])
     if remote_listening and kind == REMOTE_LISTENING_KIND:
         detail_parts.append(str(remote_listening["display_detail"]))
+    elif kind == "VENUE_BEACON":
+        detail_parts.append(_venue_beacon_detail(entry, apple_subtypes, service_match, rssi))
     elif subtype_detail and kind == "APPLE_CONTINUITY":
         detail_parts.append(subtype_detail)
     elif entry.get("manufacturer") and entry.get("manufacturer") != "Unknown":
         detail_parts.append(str(entry["manufacturer"]))
     elif entry.get("device_type"):
         detail_parts.append(str(entry["device_type"]))
-    if rssi is not None and not (remote_listening and kind == REMOTE_LISTENING_KIND):
+    if (
+        rssi is not None
+        and not (remote_listening and kind == REMOTE_LISTENING_KIND)
+        and kind != "VENUE_BEACON"
+    ):
         detail_parts.append(f"{rssi}dB")
     display_detail = " ".join(detail_parts).strip()
 
     evidence = []
-    for key in ("device_type", "manufacturer", "source", "ssid", "class_reason", "ble_svc_uuids"):
+    for key in (
+        "device_type", "manufacturer", "source", "ssid", "class_reason",
+        "ble_svc_uuids", "ble_apple_type", "ble_company_id", "ibeacon_uuid",
+        "ibeacon_major", "ibeacon_minor", "beacon_uuid", "beacon_major",
+        "beacon_minor", "eddystone_frame_type", "eddystone_url",
+        "eddystone_namespace", "eddystone_instance", "eddystone_eid",
+    ):
         value = entry.get(key)
-        if value:
+        if value is not None and value != "":
             evidence.append({"field": key, "value": value})
     if service_match:
         evidence.append({

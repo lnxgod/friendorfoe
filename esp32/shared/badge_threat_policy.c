@@ -859,6 +859,8 @@ static void format_detection_evidence(char *out,
             } else if (contains_nocase(reason, "0x1812") ||
                        contains_nocase(reason, "ble_hid")) {
                 snprintf(out, out_len, "svc 0x1812 HID");
+            } else if (contains_nocase(reason, "ibeacon")) {
+                snprintf(out, out_len, "iBeacon beacon");
             } else if (contains_nocase(reason, "0xFEAA") ||
                        contains_nocase(reason, "venue_beacon")) {
                 snprintf(out, out_len, "svc 0xFEAA beacon");
@@ -924,6 +926,8 @@ static void copy_ble_detail(char *out, const drone_detection_t *det)
         snprintf(detail, sizeof(detail), "mobile key signal");
     } else if (det && contains_nocase(det->class_reason, "event_badge")) {
         snprintf(detail, sizeof(detail), "badge signal");
+    } else if (det && contains_nocase(det->class_reason, "ibeacon")) {
+        snprintf(detail, sizeof(detail), "iBeacon beacon");
     } else if (det && contains_nocase(det->class_reason, "venue_beacon")) {
         snprintf(detail, sizeof(detail), "location beacon");
     } else if (det && contains_nocase(det->class_reason, "ble_hid")) {

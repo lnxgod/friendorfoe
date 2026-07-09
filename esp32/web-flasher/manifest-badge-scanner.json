@@ -1,6 +1,6 @@
 {
   "name": "Friend or Foe Badge Scanner (XIAO ESP32-S3 BLE+WiFi)",
-  "version": "0.64.64-badge-privacy-oui",
+  "version": "0.64.65-badge-privacy-beacons",
   "builds": [
     {
       "chipFamily": "ESP32-S3",

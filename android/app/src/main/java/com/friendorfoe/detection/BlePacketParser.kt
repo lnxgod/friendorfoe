@@ -24,12 +24,14 @@ object BlePacketParser {
     private const val AIRPODS_TYPE = 0x07
     private const val IBEACON_TYPE = 0x02
     private const val NEARBY_TYPE = 0x10
+    private const val EDDYSTONE_UID_FRAME = 0x00
     private const val EDDYSTONE_URL_FRAME = 0x10
     private const val EDDYSTONE_TLM_FRAME = 0x20
+    private const val EDDYSTONE_EID_FRAME = 0x30
 
-    private val UUID_FD5A = ParcelUuid.fromString("0000FD5A-0000-1000-8000-00805F9B34FB")
-    private val UUID_FE2C = ParcelUuid.fromString("0000FE2C-0000-1000-8000-00805F9B34FB")
-    private val UUID_FEAA = ParcelUuid.fromString("0000FEAA-0000-1000-8000-00805F9B34FB")
+    private val UUID_FD5A by lazy { ParcelUuid.fromString("0000FD5A-0000-1000-8000-00805F9B34FB") }
+    private val UUID_FE2C by lazy { ParcelUuid.fromString("0000FE2C-0000-1000-8000-00805F9B34FB") }
+    private val UUID_FEAA by lazy { ParcelUuid.fromString("0000FEAA-0000-1000-8000-00805F9B34FB") }
 
     // ── Data classes ──
 
@@ -69,6 +71,17 @@ object BlePacketParser {
     )
 
     data class EddystoneUrlInfo(val url: String, val txPower: Int)
+
+    data class EddystoneUidInfo(
+        val namespaceHex: String,
+        val instanceHex: String,
+        val txPower: Int
+    )
+
+    data class EddystoneEidInfo(
+        val eidHex: String,
+        val txPower: Int
+    )
 
     data class EddystoneTlmInfo(
         val batteryMillivolts: Int,
@@ -136,6 +149,11 @@ object BlePacketParser {
     /** Parse iBeacon (Apple type 0x02) */
     fun parseIBeacon(result: ScanResult): IBeaconInfo? {
         val mfg = result.scanRecord?.getManufacturerSpecificData(APPLE_CID) ?: return null
+        return parseIBeaconManufacturerData(mfg)
+    }
+
+    /** Parse iBeacon manufacturer data after the Apple company ID. */
+    fun parseIBeaconManufacturerData(mfg: ByteArray): IBeaconInfo? {
         if (mfg.size < 23 || u(mfg[0]) != IBEACON_TYPE || u(mfg[1]) != 0x15) return null
         val uuidBytes = mfg.copyOfRange(2, 18)
         val uuid = bytesToUUID(uuidBytes)
@@ -173,6 +191,10 @@ object BlePacketParser {
     /** Parse Eddystone-URL (service data UUID 0xFEAA, frame 0x10) */
     fun parseEddystoneUrl(result: ScanResult): EddystoneUrlInfo? {
         val sd = result.scanRecord?.getServiceData(UUID_FEAA) ?: return null
+        return parseEddystoneUrlServiceData(sd)
+    }
+
+    fun parseEddystoneUrlServiceData(sd: ByteArray): EddystoneUrlInfo? {
         if (sd.size < 3 || u(sd[0]) != EDDYSTONE_URL_FRAME) return null
         val txPower = sd[1].toInt()
         val schemeIdx = u(sd[2])
@@ -188,6 +210,10 @@ object BlePacketParser {
     /** Parse Eddystone-TLM (service data UUID 0xFEAA, frame 0x20) */
     fun parseEddystoneTlm(result: ScanResult): EddystoneTlmInfo? {
         val sd = result.scanRecord?.getServiceData(UUID_FEAA) ?: return null
+        return parseEddystoneTlmServiceData(sd)
+    }
+
+    fun parseEddystoneTlmServiceData(sd: ByteArray): EddystoneTlmInfo? {
         if (sd.size < 14 || u(sd[0]) != EDDYSTONE_TLM_FRAME) return null
         val batteryMv = (u(sd[2]) shl 8) or u(sd[3])
         val tempWhole = sd[4].toInt() // signed
@@ -198,6 +224,35 @@ object BlePacketParser {
         val uptime = ((u(sd[10]).toLong() shl 24) or (u(sd[11]).toLong() shl 16) or
                 (u(sd[12]).toLong() shl 8) or u(sd[13]).toLong()) / 10L
         return EddystoneTlmInfo(batteryMv, temp, pduCount, uptime)
+    }
+
+    /** Parse Eddystone-UID (service data UUID 0xFEAA, frame 0x00). */
+    fun parseEddystoneUid(result: ScanResult): EddystoneUidInfo? {
+        val sd = result.scanRecord?.getServiceData(UUID_FEAA) ?: return null
+        return parseEddystoneUidServiceData(sd)
+    }
+
+    fun parseEddystoneUidServiceData(sd: ByteArray): EddystoneUidInfo? {
+        if (sd.size < 18 || u(sd[0]) != EDDYSTONE_UID_FRAME) return null
+        return EddystoneUidInfo(
+            namespaceHex = sd.copyOfRange(2, 12).toHex(),
+            instanceHex = sd.copyOfRange(12, 18).toHex(),
+            txPower = sd[1].toInt()
+        )
+    }
+
+    /** Parse Eddystone-EID (service data UUID 0xFEAA, frame 0x30). */
+    fun parseEddystoneEid(result: ScanResult): EddystoneEidInfo? {
+        val sd = result.scanRecord?.getServiceData(UUID_FEAA) ?: return null
+        return parseEddystoneEidServiceData(sd)
+    }
+
+    fun parseEddystoneEidServiceData(sd: ByteArray): EddystoneEidInfo? {
+        if (sd.size < 10 || u(sd[0]) != EDDYSTONE_EID_FRAME) return null
+        return EddystoneEidInfo(
+            eidHex = sd.copyOfRange(2, 10).toHex(),
+            txPower = sd[1].toInt()
+        )
     }
 
     /** Estimate distance from TX Power and RSSI */
@@ -413,8 +468,11 @@ object BlePacketParser {
 
         // iBeacon
         parseIBeacon(result)?.let { ib ->
-            details["Beacon UUID"] = ib.uuid.toString().take(8) + "..."
-            details["Major/Minor"] = "${ib.major}/${ib.minor}"
+            details["Beacon Protocol"] = "iBeacon"
+            details["Beacon UUID"] = ib.uuid.toString()
+            details["Beacon Major"] = ib.major.toString()
+            details["Beacon Minor"] = ib.minor.toString()
+            details["Beacon TX"] = "${ib.txPower}dBm"
         }
 
         // Google Fast Pair
@@ -424,14 +482,36 @@ object BlePacketParser {
 
         // Eddystone URL
         parseEddystoneUrl(result)?.let { eu ->
+            details["Beacon Protocol"] = "Eddystone"
+            details["Beacon Frame"] = "URL"
             details["Beacon URL"] = eu.url
+            details["Beacon TX"] = "${eu.txPower}dBm"
+        }
+
+        // Eddystone UID
+        parseEddystoneUid(result)?.let { uid ->
+            details["Beacon Protocol"] = "Eddystone"
+            details["Beacon Frame"] = "UID"
+            details["Beacon Namespace"] = uid.namespaceHex
+            details["Beacon Instance"] = uid.instanceHex
+            details["Beacon TX"] = "${uid.txPower}dBm"
         }
 
         // Eddystone TLM
         parseEddystoneTlm(result)?.let { tlm ->
+            details["Beacon Protocol"] = "Eddystone"
+            details["Beacon Frame"] = "TLM"
             if (tlm.batteryMillivolts > 0) details["Beacon Batt"] = "${tlm.batteryMillivolts}mV"
             details["Beacon Temp"] = "${"%.1f".format(tlm.temperatureC)}°C"
             details["Uptime"] = "${tlm.uptimeSeconds / 3600}h"
+        }
+
+        // Eddystone EID
+        parseEddystoneEid(result)?.let { eid ->
+            details["Beacon Protocol"] = "Eddystone"
+            details["Beacon Frame"] = "EID"
+            details["Beacon EID"] = eid.eidHex
+            details["Beacon TX"] = "${eid.txPower}dBm"
         }
 
         // Distance estimate
@@ -479,4 +559,7 @@ object BlePacketParser {
         for (i in 8..15) lsb = (lsb shl 8) or (bytes[i].toLong() and 0xFF)
         return UUID(msb, lsb)
     }
+
+    private fun ByteArray.toHex(): String =
+        joinToString("") { "%02X".format(u(it)) }
 }

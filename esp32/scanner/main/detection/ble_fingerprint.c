@@ -221,7 +221,7 @@ static ble_device_type_t classify_apple(uint8_t continuity_type,
         return BLE_DEV_APPLE_AIRPODS;
 
     case APPLE_TYPE_IBEACON:
-        return BLE_DEV_BEACON;
+        return BLE_DEV_VENUE_BEACON;
 
     case APPLE_TYPE_NEARBY_INFO:
     case APPLE_TYPE_NEARBY_ACT:
@@ -683,6 +683,9 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     if (company_id == APPLE_COMPANY_ID) {
         fp->device_type = classify_apple(apple_type, mfr_data, mfr_data_len);
         fp->is_tracker = (apple_type == APPLE_TYPE_FINDMY);
+        if (apple_type == APPLE_TYPE_IBEACON) {
+            strncpy(fp->class_reason, "ibeacon:0x02", sizeof(fp->class_reason) - 1);
+        }
     } else if (has_findmy_svc) {
         fp->device_type = BLE_DEV_APPLE_FINDMY;
         fp->is_tracker = true;

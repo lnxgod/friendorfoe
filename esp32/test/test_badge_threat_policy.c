@@ -1399,6 +1399,29 @@ void test_badge_venue_beacons_aggregate_instead_of_flooding(void)
     TEST_ASSERT_EQUAL_UINT32(2, snapshot.entities[0].seen_count);
 }
 
+void test_badge_apple_ibeacon_becomes_venue_beacon_alert(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t beacon = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:IBEACON:01",
+        "Apple",
+        0.72f,
+        -58
+    );
+    beacon.ble_company_id = 0x004C;
+    beacon.ble_apple_type = 0x02;
+    strncpy(beacon.class_reason, "ibeacon:0x02", sizeof(beacon.class_reason) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&beacon, &event));
+    TEST_ASSERT_EQUAL(DETECTION_SRC_BLE_FINGERPRINT, event.source);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_BEACON, event.category);
+    TEST_ASSERT_EQUAL_STRING("Venue Beacon", event.label);
+    TEST_ASSERT_EQUAL_STRING("iBeacon beacon", event.detail);
+    TEST_ASSERT_TRUE(strstr(event.evidence, "iBeacon") != NULL ||
+                     strstr(event.evidence, "ibeacon") != NULL);
+}
+
 void test_badge_generic_apple_continuity_does_not_become_lcd_alert(void)
 {
     badge_threat_event_t event;

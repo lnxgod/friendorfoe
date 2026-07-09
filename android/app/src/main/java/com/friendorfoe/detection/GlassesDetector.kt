@@ -342,6 +342,10 @@ class GlassesDetector @Inject constructor(
             deviceType.contains("Mobile Access", ignoreCase = true) -> PrivacyCategory.MOBILE_KEY_LOCK
             deviceType.contains("Event Badge", ignoreCase = true) -> PrivacyCategory.EVENT_BADGE
             deviceType.contains("Venue Beacon", ignoreCase = true) -> PrivacyCategory.VENUE_BEACON
+            deviceType.contains("iBeacon", ignoreCase = true) -> PrivacyCategory.VENUE_BEACON
+            deviceType.contains("Eddystone Beacon", ignoreCase = true) -> PrivacyCategory.VENUE_BEACON
+            deviceType.contains("Retail Beacon", ignoreCase = true) -> PrivacyCategory.VENUE_BEACON
+            deviceType.contains("Location Beacon", ignoreCase = true) -> PrivacyCategory.VENUE_BEACON
             deviceType.contains("BLE HID", ignoreCase = true) -> PrivacyCategory.BLE_HID
             deviceType.contains("HID Near", ignoreCase = true) -> PrivacyCategory.BLE_HID
             deviceType.contains("Auracast", ignoreCase = true) -> PrivacyCategory.AURACAST
@@ -367,8 +371,6 @@ class GlassesDetector @Inject constructor(
             deviceType.contains("Ultrasonic", ignoreCase = true) -> PrivacyCategory.ULTRASONIC_BEACON
             // Retail tracking
             deviceType.contains("Retail Tracker", ignoreCase = true) -> PrivacyCategory.RETAIL_TRACKER
-            deviceType.contains("Retail Beacon", ignoreCase = true) -> PrivacyCategory.RETAIL_TRACKER
-            deviceType.contains("Location Beacon", ignoreCase = true) -> PrivacyCategory.RETAIL_TRACKER
             // Conference cameras
             deviceType.contains("Conference", ignoreCase = true) -> PrivacyCategory.CONFERENCE_CAMERA
             deviceType.contains("Meeting Camera", ignoreCase = true) -> PrivacyCategory.CONFERENCE_CAMERA
@@ -647,8 +649,8 @@ class GlassesDetector @Inject constructor(
         // Samsung wearables
         UuidEntry(0xFD6A, "Samsung", "Galaxy Ring", 0.85f, false),
         UuidEntry(BleSignatures.SVC_EXPOSURE_NOTIFY, "Apple/Google", "Exposure Notification", 0.35f, false),
-        // Retail Tracking — below threshold, informational only
-        UuidEntry(0xFEAA, "Google", "Eddystone Beacon", 0.50f, false),
+        // Venue/location beacons: confirmed Eddystone protocol.
+        UuidEntry(0xFEAA, "Google", "Eddystone Beacon", 0.70f, false),
         // IoT ecosystems
         // Xiaomi UUID 0xFD2E removed — too broad, matches all Mi Home devices
     )
@@ -1374,9 +1376,9 @@ class GlassesDetector @Inject constructor(
                         }
                     }
                     // Else: iPhone/iPad/Mac FindMy relay — skip entirely (not a tracker)
-                } else if (appleType == 0x02 && appleData.size >= 21) {
-                    // iBeacon (retail tracking) — below threshold, filtered
-                    val c = 0.50f
+                } else if (appleType == 0x02 && appleData.size >= 23) {
+                    // iBeacon is a confirmed venue/location beacon protocol.
+                    val c = 0.72f
                     if (c > bestConf) {
                         bestConf = c; bestMfr = "Apple"; bestType = "iBeacon"
                         bestCamera = false; bestReason = "ibeacon:0x02"
