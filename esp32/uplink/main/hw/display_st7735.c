@@ -3664,47 +3664,8 @@ static badge_display_policy_class_t badge_display_policy_entity_class(
     if (badge_threat_snapshot_entity_is_evil_twin(item)) {
         return BADGE_DISPLAY_CLASS_WIFI_ATTACK;
     }
-    switch (item->category) {
-        case BADGE_THREAT_CATEGORY_DRONE:
-        case BADGE_THREAT_CATEGORY_SSID:
-            return BADGE_DISPLAY_CLASS_DRONE;
-        case BADGE_THREAT_CATEGORY_GLASS:
-            return BADGE_DISPLAY_CLASS_META;
-        case BADGE_THREAT_CATEGORY_TAG_CLOSE:
-            return BADGE_DISPLAY_CLASS_TRACKER;
-        case BADGE_THREAT_CATEGORY_WIFI:
-            return BADGE_DISPLAY_CLASS_WIFI_ATTACK;
-        case BADGE_THREAT_CATEGORY_SKIM:
-            return BADGE_DISPLAY_CLASS_SKIMMER;
-        case BADGE_THREAT_CATEGORY_CAMERA:
-            return BADGE_DISPLAY_CLASS_CAMERA;
-        case BADGE_THREAT_CATEGORY_FLOCK:
-            return BADGE_DISPLAY_CLASS_FLOCK;
-        case BADGE_THREAT_CATEGORY_LOCK:
-            return BADGE_DISPLAY_CLASS_LOCK;
-        case BADGE_THREAT_CATEGORY_HID:
-            return BADGE_DISPLAY_CLASS_HID;
-        case BADGE_THREAT_CATEGORY_BEACON:
-            return BADGE_DISPLAY_CLASS_BEACON;
-        case BADGE_THREAT_CATEGORY_EVENT_BADGE:
-            return BADGE_DISPLAY_CLASS_EVENT_BADGE;
-        case BADGE_THREAT_CATEGORY_AUDIO:
-            return BADGE_DISPLAY_CLASS_AURACAST;
-        default:
-            break;
-    }
-    switch (item->cls) {
-        case BADGE_THREAT_DRONE:
-            return BADGE_DISPLAY_CLASS_DRONE;
-        case BADGE_THREAT_META:
-            return BADGE_DISPLAY_CLASS_META;
-        case BADGE_THREAT_TRACKER:
-            return BADGE_DISPLAY_CLASS_TRACKER;
-        case BADGE_THREAT_WIFI_ANOMALY:
-            return BADGE_DISPLAY_CLASS_WIFI_ATTACK;
-        default:
-            return BADGE_DISPLAY_CLASS_SCANNER_STATUS;
-    }
+    return badge_display_policy_class_for_threat_snapshot(item->category,
+                                                           item->cls);
 }
 
 static bool badge_display_policy_lane_includes(badge_display_lane_t cfg_lane,

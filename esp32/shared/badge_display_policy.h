@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "badge_threat_policy.h"
 #include "detection_types.h"
 
 #ifdef __cplusplus
@@ -77,6 +78,9 @@ size_t badge_display_policy_to_command_json(const badge_display_policy_t *policy
                                             size_t out_len);
 badge_display_policy_class_t badge_display_policy_class_for_detection(
     const drone_detection_t *det);
+badge_display_policy_class_t badge_display_policy_class_for_threat_snapshot(
+    badge_threat_category_t category,
+    badge_threat_class_t cls);
 badge_display_min_proximity_t badge_display_proximity_for_rssi(int8_t rssi);
 bool badge_display_policy_is_safety_floor(badge_display_policy_class_t cls,
                                           badge_display_min_proximity_t prox,

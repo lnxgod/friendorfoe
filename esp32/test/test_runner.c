@@ -213,6 +213,7 @@ void test_badge_display_policy_disabled_beacon_suppresses_normal_detection(void)
 void test_badge_display_policy_drone_breaks_through_disabled_filter(void);
 void test_badge_display_policy_close_tracker_breaks_through_disabled_filter(void);
 void test_badge_ble_attack_display_policy_defaults_to_both_lanes(void);
+void test_badge_snapshot_categories_map_to_display_classes(void);
 void test_badge_theme_json_round_trips_defaults(void);
 void test_badge_theme_parses_safe_custom_accents(void);
 void test_badge_theme_rejects_unsafe_values(void);
@@ -500,6 +501,7 @@ int main(void)
     RUN_TEST(test_badge_display_policy_drone_breaks_through_disabled_filter);
     RUN_TEST(test_badge_display_policy_close_tracker_breaks_through_disabled_filter);
     RUN_TEST(test_badge_ble_attack_display_policy_defaults_to_both_lanes);
+    RUN_TEST(test_badge_snapshot_categories_map_to_display_classes);
     RUN_TEST(test_badge_theme_json_round_trips_defaults);
     RUN_TEST(test_badge_theme_parses_safe_custom_accents);
     RUN_TEST(test_badge_theme_rejects_unsafe_values);

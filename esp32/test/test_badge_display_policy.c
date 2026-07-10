@@ -1,6 +1,7 @@
 #include "unity.h"
 
 #include "badge_display_policy.h"
+#include "badge_threat_policy.h"
 #include "detection_types.h"
 
 #include <string.h>
@@ -137,4 +138,59 @@ void test_badge_ble_attack_display_policy_defaults_to_both_lanes(void)
                             policy.classes[BADGE_DISPLAY_CLASS_BLE_ATTACK].priority);
     TEST_ASSERT_TRUE(badge_display_policy_allows_detection(&policy, &det, NULL, &cls));
     TEST_ASSERT_EQUAL(BADGE_DISPLAY_CLASS_BLE_ATTACK, cls);
+}
+
+void test_badge_snapshot_categories_map_to_display_classes(void)
+{
+    static const struct {
+        badge_threat_category_t category;
+        badge_display_policy_class_t expected;
+    } cases[] = {
+        {BADGE_THREAT_CATEGORY_NONE, BADGE_DISPLAY_CLASS_SCANNER_STATUS},
+        {BADGE_THREAT_CATEGORY_DRONE, BADGE_DISPLAY_CLASS_DRONE},
+        {BADGE_THREAT_CATEGORY_SSID, BADGE_DISPLAY_CLASS_DRONE},
+        {BADGE_THREAT_CATEGORY_FLOCK, BADGE_DISPLAY_CLASS_FLOCK},
+        {BADGE_THREAT_CATEGORY_GLASS, BADGE_DISPLAY_CLASS_META},
+        {BADGE_THREAT_CATEGORY_SKIM, BADGE_DISPLAY_CLASS_SKIMMER},
+        {BADGE_THREAT_CATEGORY_CAMERA, BADGE_DISPLAY_CLASS_CAMERA},
+        {BADGE_THREAT_CATEGORY_BEACON, BADGE_DISPLAY_CLASS_BEACON},
+        {BADGE_THREAT_CATEGORY_EVENT_BADGE, BADGE_DISPLAY_CLASS_EVENT_BADGE},
+        {BADGE_THREAT_CATEGORY_LOCK, BADGE_DISPLAY_CLASS_LOCK},
+        {BADGE_THREAT_CATEGORY_HID, BADGE_DISPLAY_CLASS_HID},
+        {BADGE_THREAT_CATEGORY_AUDIO, BADGE_DISPLAY_CLASS_AURACAST},
+        {BADGE_THREAT_CATEGORY_LISTENING, BADGE_DISPLAY_CLASS_SCANNER_STATUS},
+        {BADGE_THREAT_CATEGORY_WIFI, BADGE_DISPLAY_CLASS_WIFI_ATTACK},
+        {BADGE_THREAT_CATEGORY_TAG_CLOSE, BADGE_DISPLAY_CLASS_TRACKER},
+        {BADGE_THREAT_CATEGORY_PRIVACY, BADGE_DISPLAY_CLASS_SCANNER_STATUS},
+        {BADGE_THREAT_CATEGORY_BLE_SPAM, BADGE_DISPLAY_CLASS_BLE_ATTACK},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        TEST_ASSERT_EQUAL(
+            cases[i].expected,
+            badge_display_policy_class_for_threat_snapshot(
+                cases[i].category,
+                BADGE_THREAT_OTHER));
+    }
+
+    TEST_ASSERT_EQUAL(
+        BADGE_DISPLAY_CLASS_DRONE,
+        badge_display_policy_class_for_threat_snapshot(
+            BADGE_THREAT_CATEGORY_NONE,
+            BADGE_THREAT_DRONE));
+    TEST_ASSERT_EQUAL(
+        BADGE_DISPLAY_CLASS_META,
+        badge_display_policy_class_for_threat_snapshot(
+            BADGE_THREAT_CATEGORY_NONE,
+            BADGE_THREAT_META));
+    TEST_ASSERT_EQUAL(
+        BADGE_DISPLAY_CLASS_TRACKER,
+        badge_display_policy_class_for_threat_snapshot(
+            BADGE_THREAT_CATEGORY_NONE,
+            BADGE_THREAT_TRACKER));
+    TEST_ASSERT_EQUAL(
+        BADGE_DISPLAY_CLASS_WIFI_ATTACK,
+        badge_display_policy_class_for_threat_snapshot(
+            BADGE_THREAT_CATEGORY_NONE,
+            BADGE_THREAT_WIFI_ANOMALY));
 }
