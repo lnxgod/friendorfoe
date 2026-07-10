@@ -10,9 +10,13 @@ import com.friendorfoe.data.remote.LivePrivacyDeviceDto
 import com.friendorfoe.data.remote.SensorMapApiService
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.detection.BleTracker
+import com.friendorfoe.detection.BleInvestigationMode
+import com.friendorfoe.detection.BleInvestigationTarget
 import com.friendorfoe.detection.GlassesDetection
+import com.friendorfoe.detection.PrivacyDetectionOrigin
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.detection.WifiAnomalyDetector
+import com.friendorfoe.detection.elapsedRealtimeMs
 import com.friendorfoe.presentation.alerts.SkyAlertCandidate
 import com.friendorfoe.presentation.alerts.SkyAlertPolicy
 import com.friendorfoe.presentation.alerts.SkyAlertSettings
@@ -331,6 +335,7 @@ class PrivacyViewModel @Inject constructor(
             bleCompanyId = bleCompanyId,
             bleAppleType = bleAppleType,
             bleAppleFlags = bleAppleFlags,
+            origin = PrivacyDetectionOrigin.BACKEND,
         )
     }
 
@@ -387,7 +392,8 @@ class PrivacyViewModel @Inject constructor(
             details = detailMap,
             category = PrivacyCategory.ATTACK_TOOL,
             fingerprintKey = key,
-            seenMacs = bssids.toSet().ifEmpty { setOf(primaryBssid) }
+            seenMacs = bssids.toSet().ifEmpty { setOf(primaryBssid) },
+            origin = PrivacyDetectionOrigin.WIFI,
         )
     }
 
@@ -480,6 +486,26 @@ internal fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetectio
         if (groupCount > 1) put("group", groupCount.toString())
         operatorId?.let { put("operator_id", it) }
     }
+    val isPairingSpam = listOf(code, this@toPrivacyDetection.category, label, detail).any { value ->
+        value.trim().replace('-', '_').replace(' ', '_').uppercase() in setOf("PAIRING_SPAM", "BLE_SPAM")
+    }
+    val investigationTarget = when {
+        isPairingSpam -> BleInvestigationTarget(
+            mode = BleInvestigationMode.PASSIVE_CAPTURE,
+            mac = null,
+            entityKey = key,
+            observedAtElapsedMs = elapsedRealtimeMs(),
+            origin = PrivacyDetectionOrigin.BADGE,
+        )
+        threatClass.equals("ble", ignoreCase = true) && bssid.isNotBlank() -> BleInvestigationTarget(
+            mode = BleInvestigationMode.GATT,
+            mac = bssid,
+            entityKey = key,
+            observedAtElapsedMs = elapsedRealtimeMs(),
+            origin = PrivacyDetectionOrigin.BADGE,
+        )
+        else -> null
+    }
     return GlassesDetection(
         mac = key,
         deviceName = displayName.takeIf { it.isNotBlank() },
@@ -500,7 +526,9 @@ internal fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetectio
         details = detailMap,
         category = category,
         fingerprintKey = key,
-        seenMacs = setOf(key)
+        seenMacs = setOf(key),
+        origin = PrivacyDetectionOrigin.BADGE,
+        investigationTarget = investigationTarget,
     )
 }
 
