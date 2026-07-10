@@ -7,6 +7,12 @@
 #include "uart_protocol.h"
 
 #define JSON_ESCAPED_SIZE(size) ((size) * 2 - 1)
+#define BLE_INV_KNOWN_PROPERTY_MASK ((uint16_t)( \
+    BLE_INV_PROP_BROADCAST | BLE_INV_PROP_READ | \
+    BLE_INV_PROP_WRITE_WITHOUT_RESPONSE | BLE_INV_PROP_WRITE | \
+    BLE_INV_PROP_NOTIFY | BLE_INV_PROP_INDICATE | \
+    BLE_INV_PROP_AUTHENTICATED_SIGNED_WRITES | \
+    BLE_INV_PROP_EXTENDED_PROPERTIES))
 
 typedef struct {
     uint16_t mask;
@@ -137,6 +143,7 @@ static bool properties_to_json(uint16_t properties,
                                size_t out_len)
 {
     if (!out || out_len < 3) return false;
+    if ((properties & (uint16_t)~BLE_INV_KNOWN_PROPERTY_MASK) != 0) return false;
     size_t used = 0;
     out[used++] = '[';
     out[used] = '\0';
@@ -236,9 +243,7 @@ bool ble_investigation_result_accept(ble_investigation_result_t *result,
     if (!result || !chunk) return false;
 
     if (chunk->kind == BLE_INV_CHUNK_BEGIN) {
-        if (result_has_request(result) && !chunk_matches_result(result, chunk)) {
-            return false;
-        }
+        if (result_has_request(result)) return false;
         ble_investigation_result_init(result);
         if (!copy_bounded(result->request_id, sizeof(result->request_id),
                           chunk->request_id, sizeof(chunk->request_id)) ||
@@ -257,6 +262,9 @@ bool ble_investigation_result_accept(ble_investigation_result_t *result,
     }
 
     if (!chunk_matches_result(result, chunk)) return false;
+    if (result->state >= BLE_INV_COMPLETE && result->state <= BLE_INV_CANCELLED) {
+        return false;
+    }
 
     switch (chunk->kind) {
     case BLE_INV_CHUNK_PROGRESS:
@@ -278,8 +286,8 @@ bool ble_investigation_result_accept(ble_investigation_result_t *result,
             }
             ++result->service_count;
         } else {
-            if (chunk->index < BLE_INV_MAX_SERVICES) return false;
             result->truncated = true;
+            return false;
         }
         return true;
 
@@ -298,8 +306,8 @@ bool ble_investigation_result_accept(ble_investigation_result_t *result,
             if (!service_ok || !uuid_ok) result->truncated = true;
             ++result->characteristic_count;
         } else {
-            if (chunk->index < BLE_INV_MAX_CHARS) return false;
             result->truncated = true;
+            return false;
         }
         return true;
 
@@ -315,8 +323,8 @@ bool ble_investigation_result_accept(ble_investigation_result_t *result,
             if (!uuid_ok || !value_ok) result->truncated = true;
             ++result->read_count;
         } else {
-            if (chunk->index < BLE_INV_MAX_READS) return false;
             result->truncated = true;
+            return false;
         }
         return true;
 
@@ -351,6 +359,9 @@ size_t ble_investigation_request_to_json(
     if (!request || !out) return 0;
     const char *mode = ble_investigation_mode_name(request->mode);
     if (!mode) return 0;
+    uint32_t timeout_ms = request->timeout_ms == 0
+        ? BLE_INV_DEFAULT_TIMEOUT_MS
+        : request->timeout_ms;
 
     char request_id[JSON_ESCAPED_SIZE(BLE_INV_REQUEST_ID_LEN)];
     char target_mac[JSON_ESCAPED_SIZE(18)];
@@ -364,15 +375,15 @@ size_t ble_investigation_request_to_json(
     if (target_mac[0] == '\0') {
         return write_json(out, out_len,
             "{\"type\":\"%s\",\"request_id\":\"%s\",\"mode\":\"%s\","
-            "\"target_mac\":null,\"timeout_ms\":%lu}",
+            "\"target\":null,\"timeout_ms\":%lu}",
             MSG_TYPE_BLE_INVESTIGATE, request_id, mode,
-            (unsigned long)request->timeout_ms);
+            (unsigned long)timeout_ms);
     }
     return write_json(out, out_len,
         "{\"type\":\"%s\",\"request_id\":\"%s\",\"mode\":\"%s\","
-        "\"target_mac\":\"%s\",\"timeout_ms\":%lu}",
+        "\"target\":\"%s\",\"timeout_ms\":%lu}",
         MSG_TYPE_BLE_INVESTIGATE, request_id, mode, target_mac,
-        (unsigned long)request->timeout_ms);
+        (unsigned long)timeout_ms);
 }
 
 size_t ble_investigation_chunk_to_json(const ble_investigation_chunk_t *chunk,
@@ -416,7 +427,10 @@ size_t ble_investigation_chunk_to_json(const ble_investigation_chunk_t *chunk,
 
     case BLE_INV_CHUNK_PROGRESS: {
         const char *state = ble_investigation_state_name(chunk->state);
-        if (!state) return 0;
+        if (!state || chunk->state < BLE_INV_QUEUED ||
+            chunk->state > BLE_INV_READING) {
+            return 0;
+        }
         return write_json(out, out_len,
             "{\"type\":\"%s\",\"request_id\":\"%s\",\"state\":\"%s\"}",
             MSG_TYPE_BLE_INV_PROGRESS, request_id, state);
@@ -460,7 +474,8 @@ size_t ble_investigation_chunk_to_json(const ble_investigation_chunk_t *chunk,
 
     case BLE_INV_CHUNK_END: {
         const char *state = ble_investigation_state_name(chunk->state);
-        if (!state ||
+        if (!state || chunk->state < BLE_INV_COMPLETE ||
+            chunk->state > BLE_INV_CANCELLED ||
             !json_escape(summary, sizeof(summary), chunk->summary,
                          sizeof(chunk->summary)) ||
             !json_escape(error, sizeof(error), chunk->error, sizeof(chunk->error))) {

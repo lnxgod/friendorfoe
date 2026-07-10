@@ -263,6 +263,10 @@ void test_ble_investigation_result_defaults_to_idle(void);
 void test_ble_investigation_protocol_emits_bounded_begin_service_char_read_end(void);
 void test_ble_investigation_protocol_caps_service_and_characteristic_counts(void);
 void test_ble_investigation_protocol_rejects_mismatched_request_id(void);
+void test_ble_investigation_result_is_one_shot_and_terminal(void);
+void test_ble_investigation_request_json_uses_target_and_default_timeout(void);
+void test_ble_investigation_chunk_encoder_validates_state_ranges(void);
+void test_ble_investigation_chunk_encoder_rejects_unknown_property_bits(void);
 
 void test_clean_boot_keeps_counter_carried_no_action(void);
 void test_brownout_does_not_count_as_crash(void);
@@ -555,6 +559,10 @@ int main(void)
     RUN_TEST(test_ble_investigation_protocol_emits_bounded_begin_service_char_read_end);
     RUN_TEST(test_ble_investigation_protocol_caps_service_and_characteristic_counts);
     RUN_TEST(test_ble_investigation_protocol_rejects_mismatched_request_id);
+    RUN_TEST(test_ble_investigation_result_is_one_shot_and_terminal);
+    RUN_TEST(test_ble_investigation_request_json_uses_target_and_default_timeout);
+    RUN_TEST(test_ble_investigation_chunk_encoder_validates_state_ranges);
+    RUN_TEST(test_ble_investigation_chunk_encoder_rejects_unknown_property_bits);
 
     RUN_TEST(test_clean_boot_keeps_counter_carried_no_action);
     RUN_TEST(test_brownout_does_not_count_as_crash);

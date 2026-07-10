@@ -120,6 +120,7 @@ class BleInvestigationChunkAssembler(private val requestId: String) {
 
         return when (chunk) {
             is BleInvestigationChunk.Begin -> {
+                if (state != BleInvestigationState.IDLE) return null
                 reset(chunk)
                 null
             }

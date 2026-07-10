@@ -77,6 +77,70 @@ class BleInvestigationModelsTest {
     }
 
     @Test
+    fun `only the first begin chunk is accepted`() {
+        val assembler = BleInvestigationChunkAssembler("req-1")
+        assembler.accept(
+            BleInvestigationChunk.Begin(
+                "req-1",
+                BleInvestigationMode.GATT,
+                "AA:BB:CC:DD:EE:FF",
+            ),
+        )
+        assembler.accept(BleInvestigationChunk.Service("req-1", 0, "1800"))
+
+        assertNull(
+            assembler.accept(
+                BleInvestigationChunk.Begin(
+                    "req-1",
+                    BleInvestigationMode.PASSIVE_CAPTURE,
+                    "11:22:33:44:55:66",
+                ),
+            ),
+        )
+
+        val result = assembler.accept(BleInvestigationChunk.End("req-1", "complete", "done"))
+
+        assertEquals(BleInvestigationMode.GATT, result!!.mode)
+        assertEquals("AA:BB:CC:DD:EE:FF", result.targetMac)
+        assertEquals(listOf("1800"), result.services)
+    }
+
+    @Test
+    fun `terminal assembler rejects every later chunk including repeated end`() {
+        val assembler = BleInvestigationChunkAssembler("req-1")
+        assembler.accept(BleInvestigationChunk.Begin("req-1", BleInvestigationMode.GATT, null))
+        assembler.accept(BleInvestigationChunk.Service("req-1", 0, "1800"))
+        val result = assembler.accept(BleInvestigationChunk.End("req-1", "complete", "done"))
+
+        assertEquals(BleInvestigationState.COMPLETE, result!!.state)
+        assertNull(assembler.accept(BleInvestigationChunk.End("req-1", "failed", "again")))
+        assertNull(
+            assembler.accept(
+                BleInvestigationChunk.Begin(
+                    "req-1",
+                    BleInvestigationMode.PASSIVE_CAPTURE,
+                    "11:22:33:44:55:66",
+                ),
+            ),
+        )
+        assertNull(assembler.accept(BleInvestigationChunk.Progress("req-1", BleInvestigationState.READING)))
+        assertNull(assembler.accept(BleInvestigationChunk.Service("req-1", 0, "BAD0")))
+        assertNull(
+            assembler.accept(
+                BleInvestigationChunk.Characteristic(
+                    "req-1",
+                    0,
+                    "BAD0",
+                    "BAD1",
+                    setOf("read"),
+                ),
+            ),
+        )
+        assertNull(assembler.accept(BleInvestigationChunk.Read("req-1", 0, "BAD1", "00")))
+        assertNull(assembler.accept(BleInvestigationChunk.End("req-1", "complete", "reopened")))
+    }
+
+    @Test
     fun `service characteristic and read limits set truncation flag`() {
         val assembler = BleInvestigationChunkAssembler("req-1")
         assembler.accept(BleInvestigationChunk.Begin("req-1", BleInvestigationMode.GATT, null))

@@ -15,6 +15,7 @@ extern "C" {
 #define BLE_INV_MAX_CHARS 32
 #define BLE_INV_MAX_READS 8
 #define BLE_INV_READ_HEX_LEN 129
+#define BLE_INV_DEFAULT_TIMEOUT_MS 12000
 
 #define BLE_INV_PROP_BROADCAST                    ((uint16_t)0x0001)
 #define BLE_INV_PROP_READ                         ((uint16_t)0x0002)
