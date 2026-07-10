@@ -237,6 +237,12 @@ static void display_unlock(void)
     }
 }
 
+static void badge_button_display_lock(void)
+{
+    while (!display_lock(portMAX_DELAY)) {
+    }
+}
+
 static inline void st_cs_set(int level)
 {
     gpio_set_level(ST7735_PIN_CS, level);
@@ -448,22 +454,21 @@ static void badge_button_toggle_overlay(badge_button_overlay_t overlay)
 
 static void badge_button_working_single_press(void)
 {
-    if (display_lock(pdMS_TO_TICKS(80))) {
-        if (s_investigation_overlay.visible) {
-            s_investigation_overlay.page = badge_investigation_next_page(
-                s_investigation_overlay.state,
-                s_investigation_overlay.page);
-            badge_button_note_activity();
-            display_unlock();
-            return;
-        }
+    badge_button_display_lock();
+    if (s_investigation_overlay.visible) {
+        s_investigation_overlay.page = badge_investigation_next_page(
+            s_investigation_overlay.state,
+            s_investigation_overlay.page);
+        badge_button_note_activity();
         display_unlock();
+        return;
     }
     if (s_button_overlay != BADGE_BUTTON_OVERLAY_NONE) {
         badge_button_note_activity();
         s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
         s_detail_mode = false;
         s_detail_page = 0;
+        display_unlock();
         return;
     }
     if (s_detail_mode) {
@@ -471,27 +476,28 @@ static void badge_button_working_single_press(void)
     } else {
         badge_display_nav_next();
     }
+    display_unlock();
 }
 
 static void badge_button_working_double_press(void)
 {
-    if (display_lock(pdMS_TO_TICKS(80))) {
-        if (s_investigation_overlay.visible) {
-            s_investigation_overlay.visible = false;
-            badge_button_note_activity();
-            display_unlock();
-            return;
-        }
+    badge_button_display_lock();
+    if (s_investigation_overlay.visible) {
+        s_investigation_overlay.visible = false;
+        badge_button_note_activity();
         display_unlock();
+        return;
     }
     if (s_button_overlay != BADGE_BUTTON_OVERLAY_NONE) {
         badge_button_note_activity();
         s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
         s_detail_mode = false;
         s_detail_page = 0;
+        display_unlock();
         return;
     }
     badge_display_nav_detail();
+    display_unlock();
 }
 
 static bool badge_investigation_prepare_overlay(
@@ -499,10 +505,8 @@ static bool badge_investigation_prepare_overlay(
     const char *request_id,
     ble_investigation_mode_t mode)
 {
-    if (!selection || !request_id ||
-        !display_lock(pdMS_TO_TICKS(80))) {
-        return false;
-    }
+    if (!selection || !request_id) return false;
+    badge_button_display_lock();
     memset(&s_investigation_overlay, 0, sizeof(s_investigation_overlay));
     s_investigation_overlay.visible = true;
     s_investigation_overlay.mode = mode;
@@ -529,7 +533,8 @@ static bool badge_investigation_prepare_overlay(
 static void badge_investigation_note_start_error(const char *request_id,
                                                  const char *error)
 {
-    if (!request_id || !display_lock(pdMS_TO_TICKS(80))) return;
+    if (!request_id) return;
+    badge_button_display_lock();
     if (s_investigation_overlay.visible &&
         strcmp(s_investigation_overlay.request_id, request_id) == 0) {
         s_investigation_overlay.state = BLE_INV_FAILED;
@@ -544,7 +549,8 @@ static void badge_investigation_note_start_error(const char *request_id,
 static void badge_display_open_deepest_detail(
     const badge_investigation_selection_t *selection)
 {
-    if (!selection || !display_lock(pdMS_TO_TICKS(80))) return;
+    if (!selection) return;
+    badge_button_display_lock();
     for (int i = 0; i < s_focus_model.count; ++i) {
         badge_focus_entry_t *entry = &s_focus_model.entries[i];
         if (entry->active && strcmp(entry->key, selection->key) == 0) {
@@ -563,7 +569,7 @@ static void badge_button_pair_phone(badge_button_overlay_t previous_overlay)
 {
     if (previous_overlay == BADGE_BUTTON_OVERLAY_BLE_PAIR ||
         previous_overlay == BADGE_BUTTON_OVERLAY_QR) {
-        if (!display_lock(pdMS_TO_TICKS(80))) return;
+        badge_button_display_lock();
         s_detail_mode = false;
         s_detail_page = 0;
         s_button_overlay = previous_overlay == BADGE_BUTTON_OVERLAY_BLE_PAIR
@@ -574,7 +580,7 @@ static void badge_button_pair_phone(badge_button_overlay_t previous_overlay)
     }
 
     bool pairing_open = badge_ble_control_open_pairing_window();
-    if (!display_lock(pdMS_TO_TICKS(80))) return;
+    badge_button_display_lock();
     s_detail_mode = false;
     s_detail_page = 0;
     s_button_overlay = pairing_open
@@ -589,7 +595,7 @@ static void badge_button_working_long_press(void)
     badge_investigation_selection_t selection;
     badge_button_overlay_t previous_overlay;
 
-    if (!display_lock(pdMS_TO_TICKS(80))) return;
+    badge_button_display_lock();
     if (s_investigation_overlay.visible) {
         display_unlock();
         return;
@@ -639,9 +645,9 @@ static void badge_button_working_long_press(void)
 
     char error[BLE_INV_ERROR_LEN] = {0};
     const char *target_mac = mode == BLE_INV_MODE_GATT ? selection.bssid : "";
-    bool started = badge_ble_investigation_start_local(
+    bool started = badge_ble_investigation_start(
         request_id, ble_investigation_mode_name(mode), target_mac,
-        error, sizeof(error));
+        "badge_button", error, sizeof(error));
     if (!started) {
         badge_investigation_note_start_error(request_id, error);
     }
@@ -6066,16 +6072,28 @@ static void draw_badge_investigation_overlay(void)
         draw_detail_pair(62, "SEC", value);
         draw_detail_pair(80, "TRUNC",
                          s_investigation_result.truncated ? "YES" : "NO");
+        char read_evidence[BADGE_INVESTIGATION_READ_EVIDENCE_LEN] = {0};
+        bool have_read_evidence = s_investigation_result.read_count > 0 &&
+            badge_investigation_format_read_evidence(
+                &s_investigation_result.reads[0],
+                read_evidence, sizeof(read_evidence));
+        fb_draw_tiny_string(7, 96, "CAPTURED READ",
+                            COL_DARKGRAY, COL_BLACK);
+        fb_draw_tiny_string_fit(7, 105,
+                                have_read_evidence ? read_evidence : "NONE",
+                                LCD_W - 14,
+                                have_read_evidence ? COL_CYAN : COL_GRAY,
+                                COL_BLACK);
         const char *error = overlay->start_error[0]
             ? overlay->start_error : s_investigation_result.error;
         badge_sanitize_text(value, sizeof(value), error,
                             overlay->start_error[0]
                                 ? sizeof(overlay->start_error)
                                 : sizeof(s_investigation_result.error));
-        fb_draw_tiny_string(7, 103, "ERROR / EVIDENCE",
+        fb_draw_tiny_string(7, 121, "ERROR",
                             COL_DARKGRAY, COL_BLACK);
-        fb_draw_tiny_string_fit(7, 112,
-                                value[0] ? value : "NO ERROR REPORTED",
+        fb_draw_tiny_string_fit(7, 130,
+                                value[0] ? value : "NONE",
                                 LCD_W - 14,
                                 value[0] ? COL_ROSE : COL_GRAY, COL_BLACK);
     }

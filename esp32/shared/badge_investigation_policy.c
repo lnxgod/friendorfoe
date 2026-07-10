@@ -91,3 +91,41 @@ int badge_investigation_next_page(ble_investigation_state_t state, int page)
     if (!badge_investigation_state_is_terminal(state)) return normalized;
     return normalized >= 3 ? 1 : normalized + 1;
 }
+
+static size_t append_sanitized(char *out, size_t out_len, size_t used,
+                               const char *text, size_t text_bound,
+                               size_t max_chars)
+{
+    size_t source_used = 0;
+    while (text && source_used < text_bound && source_used < max_chars &&
+           text[source_used] && used + 1 < out_len) {
+        unsigned char ch = (unsigned char)text[source_used++];
+        out[used++] = ch >= 0x20 && ch <= 0x7e ? (char)ch : '?';
+    }
+    out[used] = '\0';
+    return used;
+}
+
+bool badge_investigation_format_read_evidence(
+    const ble_investigation_read_t *read,
+    char *out,
+    size_t out_len)
+{
+    if (!out || out_len == 0) return false;
+    out[0] = '\0';
+    if (!read || read->uuid[0] == '\0') return false;
+
+    size_t used = append_sanitized(out, out_len, 0,
+                                   read->uuid, sizeof(read->uuid), 8);
+    if (used + 1 < out_len) {
+        out[used++] = ' ';
+        out[used] = '\0';
+    }
+    if (read->value_hex[0]) {
+        used = append_sanitized(out, out_len, used,
+                                read->value_hex, sizeof(read->value_hex), 16);
+    } else {
+        used = append_sanitized(out, out_len, used, "empty", 6, 5);
+    }
+    return used > 0;
+}

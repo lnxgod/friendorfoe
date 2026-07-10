@@ -11,6 +11,8 @@
 extern "C" {
 #endif
 
+#define BADGE_INVESTIGATION_READ_EVIDENCE_LEN 26
+
 typedef enum {
     BADGE_HOLD_PAIR_PHONE = 0,
     BADGE_HOLD_SHOW_DETAIL,
@@ -43,6 +45,10 @@ bool badge_investigation_state_is_terminal(ble_investigation_state_t state);
 int badge_investigation_normalize_page(ble_investigation_state_t state,
                                        int page);
 int badge_investigation_next_page(ble_investigation_state_t state, int page);
+bool badge_investigation_format_read_evidence(
+    const ble_investigation_read_t *read,
+    char *out,
+    size_t out_len);
 
 #ifdef __cplusplus
 }

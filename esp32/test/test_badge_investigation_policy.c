@@ -102,3 +102,31 @@ void test_badge_investigation_active_and_error_states_normalize_overlay_pages(vo
     TEST_ASSERT_EQUAL_INT(3,
         badge_investigation_normalize_page(BLE_INV_COMPLETE, 3));
 }
+
+void test_badge_investigation_successful_read_evidence_is_surfaced_and_bounded(void)
+{
+    ble_investigation_read_t read = {0};
+    char evidence[BADGE_INVESTIGATION_READ_EVIDENCE_LEN];
+    strcpy(read.uuid, "0000ffe1-0000-1000-8000-00805f9b34fb");
+    strcpy(read.value_hex, "4142434445464748494A4B4C4D4E4F50");
+
+    TEST_ASSERT_TRUE(badge_investigation_format_read_evidence(
+        &read, evidence, sizeof(evidence)));
+    TEST_ASSERT_EQUAL_STRING("0000ffe1 4142434445464748", evidence);
+    TEST_ASSERT_LESS_THAN_UINT32(sizeof(evidence), strlen(evidence));
+}
+
+void test_badge_investigation_read_evidence_sanitizes_nonprintable_text(void)
+{
+    ble_investigation_read_t read = {0};
+    char evidence[18];
+    strcpy(read.uuid, "0000f\ne1-0000-1000-8000-00805f9b34fb");
+    strcpy(read.value_hex, "4142\t34445464748");
+
+    TEST_ASSERT_TRUE(badge_investigation_format_read_evidence(
+        &read, evidence, sizeof(evidence)));
+    TEST_ASSERT_NULL(strchr(evidence, '\n'));
+    TEST_ASSERT_NULL(strchr(evidence, '\t'));
+    TEST_ASSERT_NOT_NULL(strchr(evidence, '?'));
+    TEST_ASSERT_LESS_THAN_UINT32(sizeof(evidence), strlen(evidence));
+}
