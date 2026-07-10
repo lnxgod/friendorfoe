@@ -35,6 +35,31 @@ class BleThreatAnalyzerTest {
     }
 
     @Test
+    fun `prompt bookkeeping removes expired signature buckets and dedupe metadata`() {
+        val analyzer = BleThreatAnalyzer()
+
+        repeat(300) { index ->
+            analyzer.observe(prompt(index, index * 300L, structuralHash = index))
+        }
+
+        val snapshot = analyzer.debugSnapshot()
+        assertEquals(256, snapshot.firstSeenIdentities)
+        assertEquals(256, snapshot.signatureBuckets)
+        assertEquals(1, snapshot.dedupeEntries)
+    }
+
+    @Test
+    fun `prompt dedupe metadata stays bounded when prompt capacity evicts samples`() {
+        val analyzer = BleThreatAnalyzer()
+
+        repeat(300) { index ->
+            analyzer.observe(prompt(index, 0, structuralHash = index))
+        }
+
+        assertEquals(256, analyzer.debugSnapshot().dedupeEntries)
+    }
+
+    @Test
     fun `varied crowd does not alert when RSSI spread exceeds twenty dB`() {
         val analyzer = BleThreatAnalyzer()
         val signals = promptBurst(rssiFor = { index, _ -> if (index % 2 == 0) -40 else -64 })
@@ -100,6 +125,17 @@ class BleThreatAnalyzerTest {
         val signals = buildList {
             addAll(promptBurst().flatMap(analyzer::observe))
             addAll(promptBurst(startAtMs = 27_000, indexOffset = 20).flatMap(analyzer::observe))
+        }
+
+        assertEquals(2, signals.filterIsInstance<BleThreatSignal.PairingSpam>().size)
+    }
+
+    @Test
+    fun `pairing spam clears at exactly twenty quiet seconds`() {
+        val analyzer = BleThreatAnalyzer()
+        val signals = buildList {
+            addAll(promptBurst().flatMap(analyzer::observe))
+            addAll(promptBurst(startAtMs = 26_900, indexOffset = 20).flatMap(analyzer::observe))
         }
 
         assertEquals(2, signals.filterIsInstance<BleThreatSignal.PairingSpam>().size)

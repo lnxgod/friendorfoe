@@ -70,6 +70,9 @@ class BleThreatAnalyzer(
 
     internal data class DebugSnapshot(
         val deduplicatedObservations: Int,
+        val firstSeenIdentities: Int,
+        val signatureBuckets: Int,
+        val dedupeEntries: Int,
     )
 
     private data class PromptSample(
@@ -131,13 +134,16 @@ class BleThreatAnalyzer(
 
     internal fun debugSnapshot(): DebugSnapshot = DebugSnapshot(
         deduplicatedObservations = promptWindow.size,
+        firstSeenIdentities = firstSeenOrder.size,
+        signatureBuckets = firstSeenBySignature.size,
+        dedupeEntries = lastDedupeAtMs.size,
     )
 
     private fun observePrompt(observation: BleThreatObservation): BleThreatSignal.PairingSpam? {
         val family = observation.promptFamily ?: return null
         prunePromptState(observation.observedAtMs)
 
-        val dedupeKey = "${observation.mac}|${observation.structuralHash}|$family"
+        val dedupeKey = promptDedupeKey(observation, family)
         val lastSeenAtMs = lastDedupeAtMs[dedupeKey]
         if (lastSeenAtMs != null && observation.observedAtMs - lastSeenAtMs <= DEDUPE_MS) {
             return null
@@ -147,7 +153,7 @@ class BleThreatAnalyzer(
         val signature = PromptSignature(family, observation.structuralHash)
         rememberFirstSeen(signature, observation)
         while (promptWindow.size >= MAX_PROMPT_OBSERVATIONS) {
-            promptWindow.removeFirst()
+            evictOldestPromptSample()
         }
         promptWindow.addLast(PromptSample(observation, signature))
 
@@ -157,7 +163,7 @@ class BleThreatAnalyzer(
     }
 
     private fun prunePromptState(nowMs: Long) {
-        if (promptWindow.isNotEmpty() && nowMs - promptWindow.last.observation.observedAtMs > config.clearAfterMs) {
+        if (promptWindow.isNotEmpty() && nowMs - promptWindow.last.observation.observedAtMs >= config.clearAfterMs) {
             clearPromptState()
             return
         }
@@ -210,11 +216,30 @@ class BleThreatAnalyzer(
         if (firstSeenForSignature.putIfAbsent(observation.mac, observation.observedAtMs) != null) return
 
         while (firstSeenOrder.size >= MAX_PROMPT_OBSERVATIONS) {
-            val oldest = firstSeenOrder.removeFirst()
-            firstSeenBySignature[oldest.signature]?.remove(oldest.mac)
+            evictOldestFirstSeenIdentity()
         }
         firstSeenOrder.addLast(PromptIdentity(signature, observation.mac))
     }
+
+    private fun evictOldestPromptSample() {
+        val oldest = promptWindow.removeFirst()
+        val dedupeKey = promptDedupeKey(oldest.observation, oldest.signature.family)
+        if (lastDedupeAtMs[dedupeKey] == oldest.observation.observedAtMs) {
+            lastDedupeAtMs.remove(dedupeKey)
+        }
+    }
+
+    private fun evictOldestFirstSeenIdentity() {
+        val oldest = firstSeenOrder.removeFirst()
+        val firstSeenForSignature = firstSeenBySignature[oldest.signature] ?: return
+        firstSeenForSignature.remove(oldest.mac)
+        if (firstSeenForSignature.isEmpty()) {
+            firstSeenBySignature.remove(oldest.signature)
+        }
+    }
+
+    private fun promptDedupeKey(observation: BleThreatObservation, family: BlePromptFamily): String =
+        "${observation.mac}|${observation.structuralHash}|$family"
 
     private fun observeSerial(observation: BleThreatObservation): BleThreatSignal.SerialSkimmer? {
         pruneSerialTracks(observation.observedAtMs)
