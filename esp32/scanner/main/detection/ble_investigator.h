@@ -67,6 +67,19 @@ typedef enum {
     BLE_INV_CLEANUP_RESUME_SCAN,
 } ble_investigator_cleanup_action_t;
 
+typedef enum {
+    BLE_INV_PEER_LOOKUP_CONNECTED = 0,
+    BLE_INV_PEER_LOOKUP_NOT_CONNECTED,
+    BLE_INV_PEER_LOOKUP_INDETERMINATE,
+} ble_investigator_peer_lookup_result_t;
+
+typedef enum {
+    BLE_INV_REQUEST_AVAILABLE = 0,
+    BLE_INV_REQUEST_RETRANSMIT,
+    BLE_INV_REQUEST_BUSY_REJECTION,
+    BLE_INV_REQUEST_INVALID,
+} ble_investigator_request_decision_t;
+
 typedef struct {
     uint32_t generation;
     uint16_t expected_conn_handle;
@@ -76,6 +89,7 @@ typedef struct {
     bool end_emitted;
     bool scan_resume_pending;
     bool operation_in_progress;
+    bool deferred_discovery_pending;
 } ble_investigator_runtime_fence_t;
 
 typedef struct {
@@ -103,6 +117,11 @@ void ble_investigator_tick(ble_investigator_t *state, int64_t now_ms);
 void ble_investigator_cancel(ble_investigator_t *state, int64_t now_ms);
 bool ble_investigator_take_result(ble_investigator_t *state,
                                   ble_investigation_result_t *out);
+bool ble_investigator_request_id_is_valid(const char *request_id);
+ble_investigator_request_decision_t ble_investigator_decide_request(
+    bool runtime_busy,
+    const char *active_request_id,
+    const char *incoming_request_id);
 bool ble_investigator_parse_target_mac(const char *text, uint8_t out[6]);
 bool ble_investigator_build_rejection_chunks(
     const char *request_id,
@@ -113,6 +132,8 @@ bool ble_investigator_build_rejection_chunks(
 bool ble_investigator_passive_start_is_ready(
     const ble_investigation_request_t *request,
     bool scanner_scanning);
+bool ble_investigator_scan_start_is_allowed(bool investigation_active,
+                                            bool investigation_resume);
 bool ble_investigator_fingerprint_is_swift_pair(
     const ble_fingerprint_t *fingerprint);
 bool ble_investigator_peer_cache_is_fresh(int64_t last_seen_ms,
@@ -137,6 +158,21 @@ bool ble_investigator_runtime_fence_begin_operation(
 bool ble_investigator_runtime_fence_finish_operation(
     ble_investigator_runtime_fence_t *fence,
     uint32_t generation);
+bool ble_investigator_runtime_reserve_operation(
+    ble_investigator_t *state,
+    ble_investigator_runtime_fence_t *fence,
+    uint32_t generation,
+    ble_investigation_state_t required_state,
+    int64_t now_ms);
+bool ble_investigator_runtime_fence_defer_discovery(
+    ble_investigator_runtime_fence_t *fence,
+    uint32_t generation,
+    uint16_t conn_handle);
+bool ble_investigator_runtime_fence_take_deferred_discovery(
+    ble_investigator_runtime_fence_t *fence,
+    uint32_t generation,
+    bool launch_allowed,
+    uint16_t *conn_handle_out);
 bool ble_investigator_runtime_fence_begin_cleanup(
     ble_investigator_runtime_fence_t *fence,
     uint32_t generation,
@@ -154,6 +190,11 @@ bool ble_investigator_runtime_fence_cleanup_action_failed(
     uint32_t generation,
     ble_investigator_cleanup_action_t action,
     bool radio_absent);
+bool ble_investigator_runtime_fence_reconcile_cancel(
+    ble_investigator_runtime_fence_t *fence,
+    uint32_t generation,
+    ble_investigator_peer_lookup_result_t lookup_result,
+    uint16_t conn_handle);
 bool ble_investigator_runtime_fence_note_connect_result(
     ble_investigator_runtime_fence_t *fence,
     uint32_t generation,
@@ -195,6 +236,8 @@ bool ble_investigator_chunk_fence_finish_emit(
 bool ble_investigator_runtime_start(
     const ble_investigation_request_t *request,
     int64_t now_ms);
+ble_investigator_request_decision_t
+ble_investigator_runtime_decide_request(const char *request_id);
 void ble_investigator_runtime_tick(int64_t now_ms);
 bool ble_investigator_runtime_cancel(const char *request_id, int64_t now_ms);
 bool ble_investigator_runtime_is_busy(void);

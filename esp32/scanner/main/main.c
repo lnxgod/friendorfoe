@@ -678,24 +678,12 @@ static void handle_display_policy_command(cJSON *root)
 
 /* ── UART command listener (lock-on from uplink) ──────────────────────── */
 
-static bool scanner_request_id_is_valid(const char *request_id)
-{
-    if (!request_id) return false;
-    size_t len = strlen(request_id);
-    if (len == 0 || len >= BLE_INV_REQUEST_ID_LEN) return false;
-    for (size_t i = 0; i < len; ++i) {
-        unsigned char ch = (unsigned char)request_id[i];
-        if (ch < 0x21 || ch > 0x7E) return false;
-    }
-    return true;
-}
-
 static void send_ble_investigation_rejection(const char *request_id,
                                              ble_investigation_mode_t mode,
                                              const char *target_mac,
                                              const char *error)
 {
-    if (!scanner_request_id_is_valid(request_id) || !error) return;
+    if (!ble_investigator_request_id_is_valid(request_id) || !error) return;
     ble_investigator_runtime_emit_rejection(
         request_id, mode, target_mac, error);
 }
@@ -709,8 +697,14 @@ static void handle_ble_investigate_command(cJSON *root)
     const char *request_id = cJSON_IsString(request_id_j)
         ? request_id_j->valuestring
         : NULL;
-    if (!scanner_request_id_is_valid(request_id)) {
+    if (!ble_investigator_request_id_is_valid(request_id)) {
         ESP_LOGW(TAG, "Rejected BLE investigation with invalid request_id");
+        return;
+    }
+    ble_investigator_request_decision_t request_decision =
+        ble_investigator_runtime_decide_request(request_id);
+    if (request_decision == BLE_INV_REQUEST_RETRANSMIT) {
+        ESP_LOGD(TAG, "Ignored retransmitted BLE investigation %s", request_id);
         return;
     }
 
@@ -775,7 +769,11 @@ static void handle_ble_investigate_command(cJSON *root)
             request_id, request.mode, request.target_mac, "ota_active");
         return;
     }
-    if (ble_investigator_runtime_is_busy()) {
+    request_decision = ble_investigator_runtime_decide_request(request_id);
+    if (request_decision == BLE_INV_REQUEST_RETRANSMIT) {
+        return;
+    }
+    if (request_decision == BLE_INV_REQUEST_BUSY_REJECTION) {
         send_ble_investigation_rejection(
             request_id, request.mode, request.target_mac, "busy");
         return;
@@ -803,7 +801,7 @@ static void handle_ble_investigation_cancel(cJSON *root)
     const char *request_id = cJSON_IsString(request_id_j)
         ? request_id_j->valuestring
         : NULL;
-    if (!scanner_request_id_is_valid(request_id)) {
+    if (!ble_investigator_request_id_is_valid(request_id)) {
         ESP_LOGW(TAG, "Rejected BLE investigation cancel with invalid request_id");
         return;
     }

@@ -606,6 +606,14 @@ void test_ble_investigator_runtime_fence_handles_no_callback_cleanup_results(voi
                           &fence, generation, NULL));
     TEST_ASSERT_TRUE(ble_investigator_runtime_fence_cleanup_action_failed(
         &fence, generation, BLE_INV_CLEANUP_CANCEL_CONNECT, true));
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_can_release(
+        &fence, generation));
+    TEST_ASSERT_EQUAL(BLE_INV_CLEANUP_CANCEL_CONNECT,
+                      ble_investigator_runtime_fence_next_cleanup_action(
+                          &fence, generation, NULL));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_reconcile_cancel(
+        &fence, generation, BLE_INV_PEER_LOOKUP_NOT_CONNECTED,
+        BLE_INV_CONN_HANDLE_NONE));
     TEST_ASSERT_TRUE(ble_investigator_runtime_fence_can_release(
         &fence, generation));
     TEST_ASSERT_TRUE(ble_investigator_runtime_fence_release(
@@ -666,4 +674,333 @@ void test_ble_investigator_parses_display_mac_to_nimble_byte_order(void)
         "AA:BB:CC:DD:EE:FG", address));
     TEST_ASSERT_FALSE(ble_investigator_parse_target_mac(
         "AA:BB:CC:DD:EE:FF:00", address));
+}
+
+void test_ble_investigator_cancel_reconciliation_adopts_live_peer(void)
+{
+    ble_investigator_runtime_fence_t fence;
+    ble_investigator_runtime_fence_init(&fence);
+    uint32_t generation = ble_investigator_runtime_fence_begin(&fence);
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_mark_connecting(
+        &fence, generation));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_begin_cleanup(
+        &fence, generation, false));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_note_end_emitted(
+        &fence, generation));
+    TEST_ASSERT_EQUAL(BLE_INV_CLEANUP_CANCEL_CONNECT,
+                      ble_investigator_runtime_fence_next_cleanup_action(
+                          &fence, generation, NULL));
+
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_reconcile_cancel(
+        &fence, generation, BLE_INV_PEER_LOOKUP_CONNECTED, 0x0042));
+
+    uint16_t conn_handle = BLE_INV_CONN_HANDLE_NONE;
+    TEST_ASSERT_EQUAL(BLE_INV_CLEANUP_TERMINATE_CONNECTION,
+                      ble_investigator_runtime_fence_next_cleanup_action(
+                          &fence, generation, &conn_handle));
+    TEST_ASSERT_EQUAL_HEX16(0x0042, conn_handle);
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_can_release(
+        &fence, generation));
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_note_disconnected(
+        &fence, generation, 0x0043));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_note_disconnected(
+        &fence, generation, 0x0042));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_can_release(
+        &fence, generation));
+}
+
+void test_ble_investigator_cancel_reconciliation_retries_ambiguous_lookup(void)
+{
+    ble_investigator_runtime_fence_t fence;
+    ble_investigator_runtime_fence_init(&fence);
+    uint32_t generation = ble_investigator_runtime_fence_begin(&fence);
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_mark_connecting(
+        &fence, generation));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_begin_cleanup(
+        &fence, generation, false));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_note_end_emitted(
+        &fence, generation));
+    TEST_ASSERT_EQUAL(BLE_INV_CLEANUP_CANCEL_CONNECT,
+                      ble_investigator_runtime_fence_next_cleanup_action(
+                          &fence, generation, NULL));
+
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_reconcile_cancel(
+        &fence, generation, BLE_INV_PEER_LOOKUP_INDETERMINATE,
+        BLE_INV_CONN_HANDLE_NONE));
+
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_can_release(
+        &fence, generation));
+    TEST_ASSERT_EQUAL(BLE_INV_CLEANUP_CANCEL_CONNECT,
+                      ble_investigator_runtime_fence_next_cleanup_action(
+                          &fence, generation, NULL));
+}
+
+void test_ble_investigator_cancel_reconciliation_requires_definitive_no_link(void)
+{
+    ble_investigator_runtime_fence_t fence;
+    ble_investigator_runtime_fence_init(&fence);
+    uint32_t generation = ble_investigator_runtime_fence_begin(&fence);
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_mark_connecting(
+        &fence, generation));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_begin_cleanup(
+        &fence, generation, false));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_note_end_emitted(
+        &fence, generation));
+    TEST_ASSERT_EQUAL(BLE_INV_CLEANUP_CANCEL_CONNECT,
+                      ble_investigator_runtime_fence_next_cleanup_action(
+                          &fence, generation, NULL));
+
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_reconcile_cancel(
+        &fence, generation, BLE_INV_PEER_LOOKUP_NOT_CONNECTED,
+        BLE_INV_CONN_HANDLE_NONE));
+
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_can_release(
+        &fence, generation));
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_note_connect_result(
+        &fence, generation, false, BLE_INV_CONN_HANDLE_NONE));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_release(
+        &fence, generation));
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_note_connect_result(
+        &fence, generation, false, BLE_INV_CONN_HANDLE_NONE));
+}
+
+static uint32_t prepare_early_connect_handoff(
+    ble_investigator_runtime_fence_t *fence,
+    uint16_t conn_handle)
+{
+    ble_investigator_runtime_fence_init(fence);
+    uint32_t generation = ble_investigator_runtime_fence_begin(fence);
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_begin_operation(
+        fence, generation));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_mark_connecting(
+        fence, generation));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_note_connect_result(
+        fence, generation, true, conn_handle));
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_defer_discovery(
+        fence, generation + 1, conn_handle));
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_defer_discovery(
+        fence, generation, (uint16_t)(conn_handle + 1)));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_defer_discovery(
+        fence, generation, conn_handle));
+    return generation;
+}
+
+void test_ble_investigator_early_connect_defers_discovery_until_call_returns(void)
+{
+    ble_investigator_runtime_fence_t fence;
+    uint32_t generation = prepare_early_connect_handoff(&fence, 0x0051);
+    uint16_t conn_handle = BLE_INV_CONN_HANDLE_NONE;
+
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_take_deferred_discovery(
+        &fence, generation, true, &conn_handle));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_finish_operation(
+        &fence, generation));
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_take_deferred_discovery(
+        &fence, generation + 1, true, &conn_handle));
+    TEST_ASSERT_EQUAL_HEX16(BLE_INV_CONN_HANDLE_NONE, conn_handle);
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_take_deferred_discovery(
+        &fence, generation, true, &conn_handle));
+    TEST_ASSERT_EQUAL_HEX16(0x0051, conn_handle);
+}
+
+void test_ble_investigator_deferred_discovery_obeys_timeout_and_cancel(void)
+{
+    ble_investigator_runtime_fence_t fence;
+    uint32_t generation = prepare_early_connect_handoff(&fence, 0x0052);
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_finish_operation(
+        &fence, generation));
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_take_deferred_discovery(
+        &fence, generation, false, NULL));
+
+    generation = prepare_early_connect_handoff(&fence, 0x0053);
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_begin_cleanup(
+        &fence, generation, false));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_note_end_emitted(
+        &fence, generation));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_finish_operation(
+        &fence, generation));
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_take_deferred_discovery(
+        &fence, generation, true, NULL));
+    TEST_ASSERT_EQUAL(BLE_INV_CLEANUP_TERMINATE_CONNECTION,
+                      ble_investigator_runtime_fence_next_cleanup_action(
+                          &fence, generation, NULL));
+}
+
+void test_ble_investigator_deferred_discovery_launches_only_once(void)
+{
+    ble_investigator_runtime_fence_t fence;
+    uint32_t generation = prepare_early_connect_handoff(&fence, 0x0054);
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_finish_operation(
+        &fence, generation));
+
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_take_deferred_discovery(
+        &fence, generation, true, NULL));
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_take_deferred_discovery(
+        &fence, generation, true, NULL));
+}
+
+void test_ble_investigator_passive_outage_precedes_deadline(void)
+{
+    ble_investigator_t investigator;
+    ble_investigation_request_t request = make_request(
+        BLE_INV_MODE_PASSIVE_CAPTURE, "passive-deadline", 5000);
+    ble_investigator_init(&investigator);
+    TEST_ASSERT_TRUE(ble_investigator_start(&investigator, &request, 1000));
+    ble_investigator_event_t event = {
+        .kind = BLE_INVESTIGATOR_EVENT_SCANNER_UNAVAILABLE,
+    };
+
+    ble_investigator_handle_event(
+        &investigator, &event, investigator.deadline_ms);
+
+    assert_terminal_requires_resume(&investigator, BLE_INV_FAILED);
+    TEST_ASSERT_EQUAL_STRING("scanner_unavailable", investigator.result.error);
+
+    ble_investigator_init(&investigator);
+    TEST_ASSERT_TRUE(ble_investigator_start(&investigator, &request, 2000));
+    ble_investigator_handle_event(
+        &investigator, &event, investigator.deadline_ms + 1);
+
+    assert_terminal_requires_resume(&investigator, BLE_INV_FAILED);
+    TEST_ASSERT_EQUAL_STRING("scanner_unavailable", investigator.result.error);
+}
+
+void test_ble_investigator_passive_result_owns_restart_until_confirmed(void)
+{
+    ble_investigator_t investigator;
+    ble_investigation_request_t request = make_request(
+        BLE_INV_MODE_PASSIVE_CAPTURE, "passive-restart", 5000);
+    ble_investigator_init(&investigator);
+    TEST_ASSERT_TRUE(ble_investigator_start(&investigator, &request, 1000));
+    ble_investigator_event_t event = {
+        .kind = BLE_INVESTIGATOR_EVENT_SCANNER_UNAVAILABLE,
+    };
+    ble_investigator_handle_event(&investigator, &event, 1500);
+
+    ble_investigator_runtime_fence_t fence;
+    ble_investigator_runtime_fence_init(&fence);
+    uint32_t generation = ble_investigator_runtime_fence_begin(&fence);
+    TEST_ASSERT_TRUE(investigator.result_pending);
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_begin_cleanup(
+        &fence, generation, investigator.resume_scan_required));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_note_end_emitted(
+        &fence, generation));
+
+    TEST_ASSERT_EQUAL(BLE_INV_CLEANUP_RESUME_SCAN,
+                      ble_investigator_runtime_fence_next_cleanup_action(
+                          &fence, generation, NULL));
+    TEST_ASSERT_FALSE(ble_investigator_runtime_fence_can_release(
+        &fence, generation));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_note_scan_resumed(
+        &fence, generation));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_can_release(
+        &fence, generation));
+}
+
+void test_ble_investigator_pending_restore_may_restart_scanner(void)
+{
+    TEST_ASSERT_FALSE(ble_investigator_scan_start_is_allowed(true, false));
+    TEST_ASSERT_TRUE(ble_investigator_scan_start_is_allowed(true, true));
+    TEST_ASSERT_TRUE(ble_investigator_scan_start_is_allowed(false, true));
+    TEST_ASSERT_TRUE(ble_investigator_scan_start_is_allowed(false, false));
+}
+
+void test_ble_investigator_request_parser_marks_same_id_as_retransmit(void)
+{
+    char longest_valid[BLE_INV_REQUEST_ID_LEN];
+    memset(longest_valid, 'a', sizeof(longest_valid));
+    longest_valid[sizeof(longest_valid) - 1] = '\0';
+    char too_long[BLE_INV_REQUEST_ID_LEN + 1];
+    memset(too_long, 'b', sizeof(too_long));
+    too_long[sizeof(too_long) - 1] = '\0';
+
+    TEST_ASSERT_TRUE(ble_investigator_request_id_is_valid("req-7"));
+    TEST_ASSERT_TRUE(ble_investigator_request_id_is_valid(longest_valid));
+    TEST_ASSERT_FALSE(ble_investigator_request_id_is_valid(""));
+    TEST_ASSERT_FALSE(ble_investigator_request_id_is_valid("bad id"));
+    TEST_ASSERT_FALSE(ble_investigator_request_id_is_valid(too_long));
+    TEST_ASSERT_EQUAL(BLE_INV_REQUEST_RETRANSMIT,
+                      ble_investigator_decide_request(
+                          true, "req-7", "req-7"));
+    TEST_ASSERT_EQUAL(BLE_INV_REQUEST_AVAILABLE,
+                      ble_investigator_decide_request(
+                          false, NULL, "req-7"));
+    TEST_ASSERT_EQUAL(BLE_INV_REQUEST_INVALID,
+                      ble_investigator_decide_request(
+                          true, "req-7", "bad id"));
+}
+
+void test_ble_investigator_different_busy_id_keeps_visible_rejection(void)
+{
+    TEST_ASSERT_EQUAL(BLE_INV_REQUEST_BUSY_REJECTION,
+                      ble_investigator_decide_request(
+                          true, "req-active", "req-other"));
+
+    ble_investigation_chunk_t chunks[2];
+    TEST_ASSERT_TRUE(ble_investigator_build_rejection_chunks(
+        "req-other", BLE_INV_MODE_GATT, "AA:BB:CC:DD:EE:FF",
+        "busy", chunks));
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_BEGIN, chunks[0].kind);
+    TEST_ASSERT_EQUAL_STRING("req-other", chunks[0].request_id);
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_END, chunks[1].kind);
+    TEST_ASSERT_EQUAL(BLE_INV_FAILED, chunks[1].state);
+    TEST_ASSERT_EQUAL_STRING("req-other", chunks[1].request_id);
+    TEST_ASSERT_EQUAL_STRING("busy", chunks[1].error);
+}
+
+void test_ble_investigator_deadline_blocks_scan_pause_before_reserve_and_cancel(void)
+{
+    ble_investigator_t investigator;
+    ble_investigation_request_t request = make_request(
+        BLE_INV_MODE_GATT, "one-ms", 1);
+    ble_investigator_init(&investigator);
+    TEST_ASSERT_TRUE(ble_investigator_start(&investigator, &request, 1000));
+    TEST_ASSERT_EQUAL_INT64(1001, investigator.deadline_ms);
+
+    ble_investigator_runtime_fence_t fence;
+    ble_investigator_runtime_fence_init(&fence);
+    uint32_t generation = ble_investigator_runtime_fence_begin(&fence);
+
+    TEST_ASSERT_FALSE(ble_investigator_runtime_reserve_operation(
+        &investigator, &fence, generation,
+        BLE_INV_CONNECTING, investigator.deadline_ms));
+
+    assert_terminal_requires_resume(&investigator, BLE_INV_FAILED);
+    TEST_ASSERT_EQUAL_STRING("timeout", investigator.result.error);
+    TEST_ASSERT_FALSE(fence.operation_in_progress);
+
+    ble_investigator_init(&investigator);
+    TEST_ASSERT_TRUE(ble_investigator_start(&investigator, &request, 2000));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_reserve_operation(
+        &investigator, &fence, generation,
+        BLE_INV_CONNECTING, investigator.deadline_ms - 1));
+    TEST_ASSERT_TRUE(fence.operation_in_progress);
+    TEST_ASSERT_FALSE(ble_investigator_prepare_procedure(
+        &investigator, BLE_INV_CONNECTING, investigator.deadline_ms));
+    TEST_ASSERT_TRUE(ble_investigator_runtime_fence_finish_operation(
+        &fence, generation));
+    TEST_ASSERT_FALSE(fence.operation_in_progress);
+    assert_terminal_requires_resume(&investigator, BLE_INV_FAILED);
+    TEST_ASSERT_EQUAL_STRING("timeout", investigator.result.error);
+}
+
+void test_ble_investigator_operation_reservation_fences_old_generation(void)
+{
+    ble_investigator_t investigator;
+    ble_investigation_request_t request = make_request(
+        BLE_INV_MODE_GATT, "generation", 1);
+    ble_investigator_init(&investigator);
+    TEST_ASSERT_TRUE(ble_investigator_start(&investigator, &request, 1000));
+    ble_investigator_t expected = investigator;
+
+    ble_investigator_runtime_fence_t fence;
+    ble_investigator_runtime_fence_init(&fence);
+    uint32_t generation = ble_investigator_runtime_fence_begin(&fence);
+
+    TEST_ASSERT_FALSE(ble_investigator_runtime_reserve_operation(
+        &investigator, &fence, generation + 1,
+        BLE_INV_CONNECTING, investigator.deadline_ms));
+
+    TEST_ASSERT_EQUAL_MEMORY(&expected, &investigator, sizeof(expected));
+    TEST_ASSERT_FALSE(fence.operation_in_progress);
 }

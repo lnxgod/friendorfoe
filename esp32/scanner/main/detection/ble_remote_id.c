@@ -308,7 +308,8 @@ static bool investigation_gatt_is_active(void)
 {
     bool active;
     portENTER_CRITICAL(&s_investigation_lock);
-    active = s_investigation_gatt_active;
+    active = s_investigation_gatt_active ||
+             s_investigation_resume_pending;
     portEXIT_CRITICAL(&s_investigation_lock);
     return active;
 }
@@ -1651,7 +1652,8 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
 static bool ble_remote_id_start_scan_internal(bool investigation_resume)
 {
-    if (investigation_gatt_is_active() && !investigation_resume) {
+    if (!ble_investigator_scan_start_is_allowed(
+            investigation_gatt_is_active(), investigation_resume)) {
         ESP_LOGD(TAG, "BLE scan restart suppressed during GATT investigation");
         return false;
     }
@@ -1935,7 +1937,8 @@ bool ble_remote_id_is_scanning(void)
 bool ble_remote_id_pause_for_investigation(void)
 {
     portENTER_CRITICAL(&s_investigation_lock);
-    if (s_investigation_gatt_active || !s_host_task_active || !s_host_synced) {
+    if (s_investigation_gatt_active || s_investigation_resume_pending ||
+        !s_host_task_active || !s_host_synced) {
         portEXIT_CRITICAL(&s_investigation_lock);
         return false;
     }
@@ -1959,30 +1962,27 @@ bool ble_remote_id_pause_for_investigation(void)
 bool ble_remote_id_resume_after_investigation(void)
 {
     portENTER_CRITICAL(&s_investigation_lock);
-    bool was_active = s_investigation_gatt_active;
-    if (was_active) s_investigation_resume_pending = true;
-    bool should_resume = s_investigation_resume_pending;
-    if (was_active && s_scanning) {
+    bool gatt_active = s_investigation_gatt_active;
+    if (s_scanning) {
         s_investigation_gatt_active = false;
         s_investigation_resume_pending = false;
         portEXIT_CRITICAL(&s_investigation_lock);
         return true;
     }
+    s_investigation_resume_pending = true;
     portEXIT_CRITICAL(&s_investigation_lock);
 
-    if (should_resume && s_host_task_active && s_host_synced && !s_scanning) {
+    if (s_host_task_active && s_host_synced) {
         bool resumed = ble_remote_id_start_scan_internal(true);
-        if (was_active) {
-            ESP_LOGI(TAG,
-                     "BLE scan resume %s after GATT investigation",
-                     resumed ? "completed" : "pending");
-        }
+        ESP_LOGI(TAG,
+                 "BLE scan resume %s after %s investigation",
+                 resumed ? "completed" : "pending",
+                 gatt_active ? "GATT" : "passive");
         return resumed;
     }
-    if (was_active) {
-        ESP_LOGI(TAG, "BLE scan resume pending after GATT investigation");
-    }
-    return !should_resume && s_scanning;
+    ESP_LOGI(TAG, "BLE scan resume pending after %s investigation",
+             gatt_active ? "GATT" : "passive");
+    return false;
 }
 
 void ble_remote_id_note_investigation_advertisement(const uint8_t mac[6],

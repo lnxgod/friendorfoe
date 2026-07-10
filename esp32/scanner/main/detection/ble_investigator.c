@@ -32,7 +32,7 @@ static bool copy_text(char *out, size_t out_len,
     return complete;
 }
 
-static bool request_id_is_valid(const char request_id[BLE_INV_REQUEST_ID_LEN])
+bool ble_investigator_request_id_is_valid(const char *request_id)
 {
     size_t len = bounded_length(request_id, BLE_INV_REQUEST_ID_LEN);
     if (len == 0 || len >= BLE_INV_REQUEST_ID_LEN) return false;
@@ -41,6 +41,28 @@ static bool request_id_is_valid(const char request_id[BLE_INV_REQUEST_ID_LEN])
         if (ch < 0x21 || ch > 0x7E) return false;
     }
     return true;
+}
+
+ble_investigator_request_decision_t ble_investigator_decide_request(
+    bool runtime_busy,
+    const char *active_request_id,
+    const char *incoming_request_id)
+{
+    if (!ble_investigator_request_id_is_valid(incoming_request_id)) {
+        return BLE_INV_REQUEST_INVALID;
+    }
+    if (!runtime_busy) return BLE_INV_REQUEST_AVAILABLE;
+    if (ble_investigator_request_id_is_valid(active_request_id)) {
+        size_t active_len = bounded_length(
+            active_request_id, BLE_INV_REQUEST_ID_LEN);
+        size_t incoming_len = bounded_length(
+            incoming_request_id, BLE_INV_REQUEST_ID_LEN);
+        if (active_len == incoming_len &&
+            memcmp(active_request_id, incoming_request_id, active_len) == 0) {
+            return BLE_INV_REQUEST_RETRANSMIT;
+        }
+    }
+    return BLE_INV_REQUEST_BUSY_REJECTION;
 }
 
 static bool target_is_present(const char target_mac[18])
@@ -92,7 +114,7 @@ bool ble_investigator_build_rejection_chunks(
     const char *error,
     ble_investigation_chunk_t chunks[2])
 {
-    if (!chunks || !request_id_is_valid(request_id) ||
+    if (!chunks || !ble_investigator_request_id_is_valid(request_id) ||
         !error_token_is_valid(error)) {
         return false;
     }
@@ -132,6 +154,12 @@ bool ble_investigator_passive_start_is_ready(
     if (!request) return false;
     if (request->mode == BLE_INV_MODE_GATT) return true;
     return request->mode == BLE_INV_MODE_PASSIVE_CAPTURE && scanner_scanning;
+}
+
+bool ble_investigator_scan_start_is_allowed(bool investigation_active,
+                                            bool investigation_resume)
+{
+    return !investigation_active || investigation_resume;
 }
 
 bool ble_investigator_fingerprint_is_swift_pair(
@@ -260,7 +288,7 @@ bool ble_investigator_start(ble_investigator_t *state,
                             int64_t now_ms)
 {
     if (!state || !request || state->busy || state->result_pending ||
-        !request_id_is_valid(request->request_id) ||
+        !ble_investigator_request_id_is_valid(request->request_id) ||
         (request->mode != BLE_INV_MODE_GATT &&
          request->mode != BLE_INV_MODE_PASSIVE_CAPTURE) ||
         (request->mode == BLE_INV_MODE_GATT && !target_is_present(request->target_mac)) ||
@@ -297,17 +325,19 @@ void ble_investigator_handle_event(ble_investigator_t *state,
                                    int64_t now_ms)
 {
     if (!state || !event || !state->busy) return;
+    if (state->request.mode == BLE_INV_MODE_PASSIVE_CAPTURE &&
+        event->kind == BLE_INVESTIGATOR_EVENT_SCANNER_UNAVAILABLE &&
+        state->state == BLE_INV_SCANNING) {
+        finish(state, BLE_INV_FAILED,
+               "Passive BLE scanner is unavailable",
+               "scanner_unavailable");
+        return;
+    }
     if (now_ms >= state->deadline_ms) {
         ble_investigator_tick(state, now_ms);
         return;
     }
     if (state->request.mode != BLE_INV_MODE_GATT) {
-        if (event->kind == BLE_INVESTIGATOR_EVENT_SCANNER_UNAVAILABLE &&
-            state->state == BLE_INV_SCANNING) {
-            finish(state, BLE_INV_FAILED,
-                   "Passive BLE scanner is unavailable",
-                   "scanner_unavailable");
-        }
         return;
     }
 
@@ -512,6 +542,65 @@ bool ble_investigator_runtime_fence_finish_operation(
     return true;
 }
 
+bool ble_investigator_runtime_reserve_operation(
+    ble_investigator_t *state,
+    ble_investigator_runtime_fence_t *fence,
+    uint32_t generation,
+    ble_investigation_state_t required_state,
+    int64_t now_ms)
+{
+    if (!runtime_fence_matches(fence, generation) ||
+        fence->cleanup_pending || fence->operation_in_progress) {
+        return false;
+    }
+    return ble_investigator_prepare_procedure(
+               state, required_state, now_ms) &&
+           ble_investigator_runtime_fence_begin_operation(
+               fence, generation);
+}
+
+bool ble_investigator_runtime_fence_defer_discovery(
+    ble_investigator_runtime_fence_t *fence,
+    uint32_t generation,
+    uint16_t conn_handle)
+{
+    if (!runtime_fence_matches(fence, generation) ||
+        fence->cleanup_pending || !fence->operation_in_progress ||
+        fence->deferred_discovery_pending ||
+        fence->radio_state != BLE_INV_RADIO_CONNECTED ||
+        conn_handle == BLE_INV_CONN_HANDLE_NONE ||
+        fence->expected_conn_handle != conn_handle) {
+        return false;
+    }
+    fence->deferred_discovery_pending = true;
+    return true;
+}
+
+bool ble_investigator_runtime_fence_take_deferred_discovery(
+    ble_investigator_runtime_fence_t *fence,
+    uint32_t generation,
+    bool launch_allowed,
+    uint16_t *conn_handle_out)
+{
+    if (conn_handle_out) *conn_handle_out = BLE_INV_CONN_HANDLE_NONE;
+    if (!runtime_fence_matches(fence, generation) ||
+        !fence->deferred_discovery_pending ||
+        fence->operation_in_progress) {
+        return false;
+    }
+
+    fence->deferred_discovery_pending = false;
+    if (!launch_allowed || fence->cleanup_pending ||
+        fence->radio_state != BLE_INV_RADIO_CONNECTED ||
+        fence->expected_conn_handle == BLE_INV_CONN_HANDLE_NONE) {
+        return false;
+    }
+    if (conn_handle_out) {
+        *conn_handle_out = fence->expected_conn_handle;
+    }
+    return true;
+}
+
 bool ble_investigator_runtime_fence_begin_cleanup(
     ble_investigator_runtime_fence_t *fence,
     uint32_t generation,
@@ -578,9 +667,7 @@ bool ble_investigator_runtime_fence_cleanup_action_failed(
     }
     if (action == BLE_INV_CLEANUP_CANCEL_CONNECT &&
         fence->radio_state == BLE_INV_RADIO_CANCEL_PENDING) {
-        fence->radio_state = radio_absent
-            ? BLE_INV_RADIO_IDLE
-            : BLE_INV_RADIO_CONNECTING;
+        fence->radio_state = BLE_INV_RADIO_CONNECTING;
         return true;
     }
     if (action == BLE_INV_CLEANUP_TERMINATE_CONNECTION &&
@@ -594,6 +681,39 @@ bool ble_investigator_runtime_fence_cleanup_action_failed(
         return true;
     }
     return false;
+}
+
+bool ble_investigator_runtime_fence_reconcile_cancel(
+    ble_investigator_runtime_fence_t *fence,
+    uint32_t generation,
+    ble_investigator_peer_lookup_result_t lookup_result,
+    uint16_t conn_handle)
+{
+    if (!runtime_fence_matches(fence, generation) ||
+        !fence->cleanup_pending ||
+        fence->radio_state != BLE_INV_RADIO_CANCEL_PENDING) {
+        return false;
+    }
+
+    fence->expected_conn_handle = BLE_INV_CONN_HANDLE_NONE;
+    switch (lookup_result) {
+    case BLE_INV_PEER_LOOKUP_CONNECTED:
+        if (conn_handle == BLE_INV_CONN_HANDLE_NONE) {
+            fence->radio_state = BLE_INV_RADIO_CONNECTING;
+        } else {
+            fence->radio_state = BLE_INV_RADIO_CONNECTED;
+            fence->expected_conn_handle = conn_handle;
+        }
+        return true;
+    case BLE_INV_PEER_LOOKUP_NOT_CONNECTED:
+        fence->radio_state = BLE_INV_RADIO_IDLE;
+        return true;
+    case BLE_INV_PEER_LOOKUP_INDETERMINATE:
+        fence->radio_state = BLE_INV_RADIO_CONNECTING;
+        return true;
+    default:
+        return false;
+    }
 }
 
 bool ble_investigator_runtime_fence_note_connect_result(
@@ -669,6 +789,7 @@ bool ble_investigator_runtime_fence_can_release(
     return runtime_fence_matches(fence, generation) &&
            fence->cleanup_pending && fence->end_emitted &&
            !fence->operation_in_progress &&
+           !fence->deferred_discovery_pending &&
            fence->radio_state == BLE_INV_RADIO_IDLE &&
            fence->expected_conn_handle == BLE_INV_CONN_HANDLE_NONE &&
            !fence->scan_resume_pending;
@@ -839,7 +960,8 @@ typedef struct {
     ble_investigator_t core;
     ble_investigator_runtime_fence_t fence;
     ble_investigator_chunk_fence_t chunks;
-    bool scan_paused;
+    ble_addr_t peer_addr;
+    bool peer_addr_valid;
     int64_t cleanup_retry_after_ms;
     runtime_service_t services[BLE_INV_MAX_SERVICES];
     uint8_t service_count;
@@ -1032,7 +1154,8 @@ static void runtime_cleanup(void)
     if (s_runtime.fence.active && s_runtime.core.result_pending) {
         generation = s_runtime.fence.generation;
         (void)ble_investigator_runtime_fence_begin_cleanup(
-            &s_runtime.fence, generation, s_runtime.scan_paused);
+            &s_runtime.fence, generation,
+            s_runtime.core.resume_scan_required);
         if (!s_runtime.fence.end_emitted) {
             const ble_investigation_result_t *result = &s_runtime.core.result;
             chunk.kind = BLE_INV_CHUNK_END;
@@ -1076,19 +1199,62 @@ static void runtime_cleanup(void)
         if (action == BLE_INV_CLEANUP_CANCEL_CONNECT) {
             int rc = ble_gap_conn_cancel();
             if (rc == 0) goto cleanup_done;
-            bool radio_absent = rc == BLE_HS_EALREADY;
+            if (rc == BLE_HS_EALREADY) {
+                ble_addr_t peer_addr = {0};
+                bool peer_addr_valid = false;
+                portENTER_CRITICAL(&s_runtime_lock);
+                if (runtime_is_current_locked(generation)) {
+                    peer_addr = s_runtime.peer_addr;
+                    peer_addr_valid = s_runtime.peer_addr_valid;
+                }
+                portEXIT_CRITICAL(&s_runtime_lock);
+
+                struct ble_gap_conn_desc description = {0};
+                int lookup_rc = BLE_HS_EUNKNOWN;
+                if (peer_addr_valid) {
+                    lookup_rc = ble_gap_conn_find_by_addr(
+                        &peer_addr, &description);
+                }
+                ble_investigator_peer_lookup_result_t lookup_result =
+                    BLE_INV_PEER_LOOKUP_INDETERMINATE;
+                if (lookup_rc == 0 &&
+                    description.conn_handle != BLE_INV_CONN_HANDLE_NONE) {
+                    lookup_result = BLE_INV_PEER_LOOKUP_CONNECTED;
+                } else if (lookup_rc == BLE_HS_ENOTCONN) {
+                    lookup_result = BLE_INV_PEER_LOOKUP_NOT_CONNECTED;
+                }
+
+                bool reconciled = false;
+                portENTER_CRITICAL(&s_runtime_lock);
+                reconciled =
+                    ble_investigator_runtime_fence_reconcile_cancel(
+                        &s_runtime.fence, generation, lookup_result,
+                        description.conn_handle);
+                if (reconciled) {
+                    s_runtime.cleanup_retry_after_ms =
+                        lookup_result == BLE_INV_PEER_LOOKUP_INDETERMINATE
+                            ? now_ms + BLE_INV_CLEANUP_RETRY_MS
+                            : 0;
+                }
+                portEXIT_CRITICAL(&s_runtime_lock);
+                if (reconciled &&
+                    lookup_result == BLE_INV_PEER_LOOKUP_INDETERMINATE) {
+                    ESP_LOGW(RUNTIME_TAG,
+                             "Peer lookup after connect cancel returned %d",
+                             lookup_rc);
+                    goto cleanup_done;
+                }
+                continue;
+            }
+
             portENTER_CRITICAL(&s_runtime_lock);
             (void)ble_investigator_runtime_fence_cleanup_action_failed(
-                &s_runtime.fence, generation, action, radio_absent);
-            s_runtime.cleanup_retry_after_ms = radio_absent
-                ? 0
-                : now_ms + BLE_INV_CLEANUP_RETRY_MS;
+                &s_runtime.fence, generation, action, false);
+            s_runtime.cleanup_retry_after_ms =
+                now_ms + BLE_INV_CLEANUP_RETRY_MS;
             portEXIT_CRITICAL(&s_runtime_lock);
-            if (!radio_absent) {
-                ESP_LOGW(RUNTIME_TAG, "ble_gap_conn_cancel failed: %d", rc);
-                goto cleanup_done;
-            }
-            continue;
+            ESP_LOGW(RUNTIME_TAG, "ble_gap_conn_cancel failed: %d", rc);
+            goto cleanup_done;
         }
 
         if (action == BLE_INV_CLEANUP_TERMINATE_CONNECTION) {
@@ -1135,7 +1301,7 @@ static void runtime_cleanup(void)
             ble_investigator_take_result(&s_runtime.core, &s_last_result) &&
             ble_investigator_runtime_fence_release(
                 &s_runtime.fence, generation)) {
-            s_runtime.scan_paused = false;
+            s_runtime.peer_addr_valid = false;
             s_runtime.cleanup_retry_after_ms = 0;
             s_runtime.service_count = 0;
             s_runtime.service_index = 0;
@@ -1248,12 +1414,9 @@ static bool runtime_begin_gatt_procedure(
     portENTER_CRITICAL(&s_runtime_lock);
     if (ble_investigator_runtime_fence_accepts_gatt(
             &s_runtime.fence, generation, conn_handle)) {
-        ready = ble_investigator_prepare_procedure(
-            &s_runtime.core, required_state, now_ms);
-        if (ready) {
-            ready = ble_investigator_runtime_fence_begin_operation(
-                &s_runtime.fence, generation);
-        }
+        ready = ble_investigator_runtime_reserve_operation(
+            &s_runtime.core, &s_runtime.fence, generation,
+            required_state, now_ms);
         terminal = s_runtime.core.result_pending;
     }
     portEXIT_CRITICAL(&s_runtime_lock);
@@ -1667,6 +1830,24 @@ static int runtime_read_cb(uint16_t conn_handle,
     return 0;
 }
 
+static void runtime_start_service_discovery(uint32_t generation,
+                                            uint16_t conn_handle)
+{
+    if (!runtime_emit_progress(generation, BLE_INV_DISCOVERING)) {
+        runtime_cleanup();
+        return;
+    }
+    if (!runtime_begin_gatt_procedure(
+            generation, conn_handle, BLE_INV_DISCOVERING)) {
+        return;
+    }
+    int discovery_rc = ble_gattc_disc_all_svcs(
+        conn_handle, runtime_service_cb,
+        runtime_generation_arg(generation));
+    runtime_finish_gatt_procedure(
+        generation, discovery_rc, "service_discovery_failed");
+}
+
 static int runtime_gap_event(struct ble_gap_event *event, void *arg)
 {
     uint32_t generation = runtime_generation_from_arg(arg);
@@ -1699,7 +1880,8 @@ static int runtime_gap_event(struct ble_gap_event *event, void *arg)
         bool has_description =
             ble_gap_conn_find(event->connect.conn_handle, &description) == 0;
         bool accepted = false;
-        bool continue_discovery = false;
+        bool launch_discovery = false;
+        bool deferred_discovery = false;
         bool terminal = false;
         portENTER_CRITICAL(&s_runtime_lock);
         accepted = ble_investigator_runtime_fence_note_connect_result(
@@ -1718,32 +1900,30 @@ static int runtime_gap_event(struct ble_gap_event *event, void *arg)
                         description.sec_state.encrypted;
                 }
             }
-            continue_discovery = !s_runtime.fence.cleanup_pending &&
-                                 s_runtime.core.busy &&
-                                 s_runtime.core.state == BLE_INV_DISCOVERING;
+            bool discovery_ready = !s_runtime.fence.cleanup_pending &&
+                                   s_runtime.core.busy &&
+                                   s_runtime.core.state == BLE_INV_DISCOVERING;
+            if (discovery_ready &&
+                s_runtime.fence.operation_in_progress) {
+                deferred_discovery =
+                    ble_investigator_runtime_fence_defer_discovery(
+                        &s_runtime.fence, generation,
+                        event->connect.conn_handle);
+            } else {
+                launch_discovery = discovery_ready;
+            }
             terminal = s_runtime.fence.cleanup_pending ||
                        s_runtime.core.result_pending;
         }
         portEXIT_CRITICAL(&s_runtime_lock);
         if (!accepted) return 0;
-        if (terminal || !continue_discovery) {
+        if (terminal || (!launch_discovery && !deferred_discovery)) {
             runtime_cleanup();
             return 0;
         }
-        if (!runtime_emit_progress(generation, BLE_INV_DISCOVERING)) {
-            runtime_cleanup();
-            return 0;
-        }
-        if (!runtime_begin_gatt_procedure(
-                generation, event->connect.conn_handle,
-                BLE_INV_DISCOVERING)) {
-            return 0;
-        }
-        int discovery_rc = ble_gattc_disc_all_svcs(
-            event->connect.conn_handle, runtime_service_cb,
-            runtime_generation_arg(generation));
-        runtime_finish_gatt_procedure(
-            generation, discovery_rc, "service_discovery_failed");
+        if (deferred_discovery) return 0;
+        runtime_start_service_discovery(
+            generation, event->connect.conn_handle);
         return 0;
     }
 
@@ -1807,7 +1987,7 @@ bool ble_investigator_runtime_start(
         portEXIT_CRITICAL(&s_runtime_lock);
         return false;
     }
-    s_runtime.scan_paused = false;
+    s_runtime.peer_addr_valid = false;
     s_runtime.cleanup_retry_after_ms = 0;
     s_runtime.service_count = 0;
     s_runtime.service_index = 0;
@@ -1837,14 +2017,33 @@ bool ble_investigator_runtime_start(
         target_mac, now_ms, &peer_addr_type);
 
     bool pause_started = false;
+    int64_t pause_reservation_ms = esp_timer_get_time() / 1000;
     portENTER_CRITICAL(&s_runtime_lock);
-    if (runtime_is_current_locked(generation) && s_runtime.core.busy &&
-        !s_runtime.fence.cleanup_pending) {
-        pause_started = ble_investigator_runtime_fence_begin_operation(
-            &s_runtime.fence, generation);
+    if (runtime_is_current_locked(generation)) {
+        pause_started = ble_investigator_runtime_reserve_operation(
+            &s_runtime.core, &s_runtime.fence, generation,
+            BLE_INV_CONNECTING, pause_reservation_ms);
     }
     portEXIT_CRITICAL(&s_runtime_lock);
     if (!pause_started) {
+        runtime_cleanup();
+        return true;
+    }
+
+    bool pause_call_allowed = false;
+    int64_t pause_call_ms = esp_timer_get_time() / 1000;
+    portENTER_CRITICAL(&s_runtime_lock);
+    if (runtime_is_current_locked(generation) &&
+        s_runtime.fence.operation_in_progress) {
+        pause_call_allowed = ble_investigator_prepare_procedure(
+            &s_runtime.core, BLE_INV_CONNECTING, pause_call_ms);
+        if (!pause_call_allowed) {
+            (void)ble_investigator_runtime_fence_finish_operation(
+                &s_runtime.fence, generation);
+        }
+    }
+    portEXIT_CRITICAL(&s_runtime_lock);
+    if (!pause_call_allowed) {
         runtime_cleanup();
         return true;
     }
@@ -1853,7 +2052,6 @@ bool ble_investigator_runtime_start(
     bool pause_failed = false;
     portENTER_CRITICAL(&s_runtime_lock);
     if (runtime_is_current_locked(generation)) {
-        if (scan_paused) s_runtime.scan_paused = true;
         (void)ble_investigator_runtime_fence_finish_operation(
             &s_runtime.fence, generation);
         pause_failed = !scan_paused && !s_runtime.fence.cleanup_pending &&
@@ -1892,6 +2090,8 @@ bool ble_investigator_runtime_start(
             &s_runtime.fence, generation)) {
         if (ble_investigator_runtime_fence_mark_connecting(
                 &s_runtime.fence, generation)) {
+            s_runtime.peer_addr = peer_addr;
+            s_runtime.peer_addr_valid = true;
             deadline_ms = s_runtime.core.deadline_ms;
             connect_started = true;
         } else {
@@ -1927,6 +2127,9 @@ bool ble_investigator_runtime_start(
                          runtime_generation_arg(generation));
     bool connect_failed = false;
     bool cleanup = false;
+    bool launch_deferred_discovery = false;
+    uint16_t deferred_conn_handle = BLE_INV_CONN_HANDLE_NONE;
+    int64_t connect_complete_ms = esp_timer_get_time() / 1000;
     portENTER_CRITICAL(&s_runtime_lock);
     if (runtime_is_current_locked(generation)) {
         if (rc != 0) {
@@ -1936,6 +2139,17 @@ bool ble_investigator_runtime_start(
         }
         (void)ble_investigator_runtime_fence_finish_operation(
             &s_runtime.fence, generation);
+        bool launch_allowed = false;
+        if (s_runtime.fence.deferred_discovery_pending &&
+            !s_runtime.fence.cleanup_pending && s_runtime.core.busy) {
+            launch_allowed = ble_investigator_prepare_procedure(
+                &s_runtime.core, BLE_INV_DISCOVERING,
+                connect_complete_ms);
+        }
+        launch_deferred_discovery =
+            ble_investigator_runtime_fence_take_deferred_discovery(
+                &s_runtime.fence, generation, launch_allowed,
+                &deferred_conn_handle);
         connect_failed = rc != 0 && !s_runtime.fence.cleanup_pending &&
                          s_runtime.core.busy;
         cleanup = s_runtime.fence.cleanup_pending ||
@@ -1944,10 +2158,26 @@ bool ble_investigator_runtime_start(
     portEXIT_CRITICAL(&s_runtime_lock);
     if (connect_failed) {
         runtime_fail(generation, rc, "connect_start_failed");
+    } else if (launch_deferred_discovery) {
+        runtime_start_service_discovery(
+            generation, deferred_conn_handle);
     } else if (cleanup) {
         runtime_cleanup();
     }
     return true;
+}
+
+ble_investigator_request_decision_t
+ble_investigator_runtime_decide_request(const char *request_id)
+{
+    ble_investigator_request_decision_t decision;
+    portENTER_CRITICAL(&s_runtime_lock);
+    decision = ble_investigator_decide_request(
+        s_runtime.fence.active,
+        s_runtime.fence.active ? s_runtime.core.request.request_id : NULL,
+        request_id);
+    portEXIT_CRITICAL(&s_runtime_lock);
+    return decision;
 }
 
 void ble_investigator_runtime_tick(int64_t now_ms)
