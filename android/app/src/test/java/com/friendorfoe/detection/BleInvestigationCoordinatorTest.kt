@@ -98,6 +98,89 @@ class BleInvestigationCoordinatorTest {
     }
 
     @Test
+    fun `cleanup failure does not replace success or retain the guard`() = runTest {
+        val fake = FakeInspector().apply {
+            cancelFailure = IllegalStateException("cleanup failed")
+        }
+        val coordinator = BleInvestigationCoordinator(fake)
+
+        val first = coordinator.investigatePhone(request("r1"))
+
+        assertEquals(BleInvestigationState.COMPLETE, first.state)
+        fake.cancelFailure = null
+        val second = coordinator.investigatePhone(request("r2"))
+        assertEquals(BleInvestigationState.COMPLETE, second.state)
+        assertEquals(listOf("r1", "r2"), fake.requests.map { it.requestId })
+    }
+
+    @Test
+    fun `cleanup failure does not replace timeout or retain the guard`() = runTest {
+        val fake = FakeInspector().apply {
+            block = CompletableDeferred()
+            cancelFailure = IllegalStateException("cleanup failed")
+        }
+        val coordinator = BleInvestigationCoordinator(fake)
+
+        val timedOut = coordinator.investigatePhone(request("r1").copy(timeoutMs = 1))
+
+        assertEquals(BleInvestigationState.FAILED, timedOut.state)
+        assertEquals("timeout", timedOut.error)
+        fake.block = null
+        fake.cancelFailure = null
+        assertEquals(
+            BleInvestigationState.COMPLETE,
+            coordinator.investigatePhone(request("r2")).state,
+        )
+    }
+
+    @Test
+    fun `cleanup failure cannot escape cancel or replace cancellation`() = runTest {
+        val fake = FakeInspector().apply {
+            block = CompletableDeferred()
+            cancelFailure = IllegalStateException("cleanup failed")
+        }
+        val coordinator = BleInvestigationCoordinator(fake)
+        val running = async { coordinator.investigatePhone(request("r1")) }
+        runCurrent()
+
+        coordinator.cancel()
+
+        assertEquals(BleInvestigationState.CANCELLED, running.await().state)
+        assertEquals(BleInvestigationState.CANCELLED, coordinator.state.value?.state)
+        fake.block = null
+        fake.cancelFailure = null
+        assertEquals(
+            BleInvestigationState.COMPLETE,
+            coordinator.investigatePhone(request("r2")).state,
+        )
+    }
+
+    @Test
+    fun `same request id cannot retain evidence from a prior generation`() = runTest {
+        val fake = FakeInspector().apply {
+            result = completedResult().copy(
+                services = listOf("prior-service"),
+                reads = mapOf("prior-read" to "01"),
+            )
+        }
+        val coordinator = BleInvestigationCoordinator(fake)
+        assertEquals(
+            BleInvestigationState.COMPLETE,
+            coordinator.investigatePhone(request("reused")).state,
+        )
+
+        fake.beforeProgressBlock = CompletableDeferred()
+        val running = async { coordinator.investigatePhone(request("reused")) }
+        runCurrent()
+        coordinator.cancel()
+        val cancelled = running.await()
+
+        assertEquals(BleInvestigationState.CANCELLED, cancelled.state)
+        assertTrue(cancelled.services.isEmpty())
+        assertTrue(cancelled.reads.isEmpty())
+    }
+
+    @Test
     fun `request timeout is clamped to supported bounds`() {
         assertEquals(1L, bleInvestigationTimeoutMs(Long.MIN_VALUE))
         assertEquals(1L, bleInvestigationTimeoutMs(0))
@@ -189,6 +272,78 @@ class BleInvestigationCoordinatorTest {
             ),
         )
     }
+
+    @Test
+    fun `session cleanup guards unregister disconnect and close independently`() {
+        val calls = mutableListOf<String>()
+
+        runBleSessionCleanup(
+            unregisterReceiver = {
+                calls += "unregister"
+                throw SecurityException("permission revoked")
+            },
+            disconnectGatt = {
+                calls += "disconnect"
+                throw IllegalStateException("disconnect failed")
+            },
+            closeGatt = { calls += "close" },
+        )
+
+        assertEquals(listOf("unregister", "disconnect", "close"), calls)
+    }
+
+    @Test
+    fun `bond receiver converts permission revocation to a terminal decision`() {
+        assertEquals(
+            BleBondReceiverDecision.PERMISSION_REVOKED,
+            bleBondReceiverDecision(
+                targetAddress = "AA:BB:CC:DD:EE:FF",
+                initialBondState = 10,
+            ) {
+                throw SecurityException("permission revoked")
+            },
+        )
+    }
+
+    @Test
+    fun `bond receiver accepts only a matching target transition`() {
+        assertEquals(
+            BleBondReceiverDecision.BOND_CHANGED,
+            bleBondReceiverDecision(
+                targetAddress = "AA:BB:CC:DD:EE:FF",
+                initialBondState = 10,
+            ) {
+                BleBondEvent(address = "aa:bb:cc:dd:ee:ff", state = 12)
+            },
+        )
+        assertEquals(
+            BleBondReceiverDecision.IGNORE,
+            bleBondReceiverDecision(
+                targetAddress = "AA:BB:CC:DD:EE:FF",
+                initialBondState = 10,
+            ) {
+                BleBondEvent(address = "11:22:33:44:55:66", state = 12)
+            },
+        )
+    }
+
+    @Test
+    fun `characteristic traversal stops at the bound while iterating`() {
+        val transformed = mutableListOf<Int>()
+
+        val traversal = boundedBleTraversal(
+            groups = listOf((0 until 40).toList()),
+            limit = 32,
+            itemsForGroup = { it },
+        ) { _, item ->
+            transformed += item
+            item
+        }
+
+        assertEquals((0 until 32).toList(), traversal.items)
+        assertEquals((0 until 32).toList(), transformed)
+        assertTrue(traversal.truncated)
+    }
 }
 
 private fun completedResult(requestId: String = "r1") = BleInvestigationResult(
@@ -225,7 +380,9 @@ private class FakeInspector : BleInvestigator {
     val requests = mutableListOf<BleInvestigationRequest>()
     var result: BleInvestigationResult = completedResult()
     var block: CompletableDeferred<Unit>? = null
+    var beforeProgressBlock: CompletableDeferred<Unit>? = null
     var firstCancelBlock: CompletableDeferred<Unit>? = null
+    var cancelFailure: Exception? = null
     var cancelCount = 0
     private var progressCallback: (suspend (BleInvestigationResult) -> Unit)? = null
 
@@ -235,6 +392,7 @@ private class FakeInspector : BleInvestigator {
     ): BleInvestigationResult {
         requests += request
         progressCallback = progress
+        beforeProgressBlock?.await()
         progress(result.copy(requestId = request.requestId, state = BleInvestigationState.CONNECTING))
         block?.await()
         return result.copy(requestId = request.requestId)
@@ -248,5 +406,6 @@ private class FakeInspector : BleInvestigator {
         cancelCount++
         if (cancelCount == 1) firstCancelBlock?.await()
         block?.cancel()
+        cancelFailure?.let { throw it }
     }
 }

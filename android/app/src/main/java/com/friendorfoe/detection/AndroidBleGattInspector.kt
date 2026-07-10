@@ -38,6 +38,8 @@ class AndroidBleGattInspector @Inject constructor(
         progress: suspend (BleInvestigationResult) -> Unit,
     ): BleInvestigationResult {
         validateRequest(request)?.let { return it }
+        val targetAddress = request.target.mac
+            ?: return failedResult(request, "Target address is invalid", "invalid_target")
 
         val adapter = bluetoothManager.adapter
             ?: return failedResult(request, "Bluetooth is unavailable", "bluetooth_unavailable")
@@ -46,7 +48,7 @@ class AndroidBleGattInspector @Inject constructor(
         }
 
         val device = try {
-            adapter.getRemoteDevice(request.target.mac)
+            adapter.getRemoteDevice(targetAddress)
         } catch (_: IllegalArgumentException) {
             return failedResult(request, "Target address is invalid", "invalid_target")
         } catch (_: SecurityException) {
@@ -73,6 +75,7 @@ class AndroidBleGattInspector @Inject constructor(
             context = context,
             request = request,
             device = device,
+            targetAddress = targetAddress,
             initialBondState = initialBondState,
         )
         val claimed = synchronized(activeLock) {
@@ -100,9 +103,12 @@ class AndroidBleGattInspector @Inject constructor(
         } catch (_: Exception) {
             failedResult(request, "GATT inspection failed", "gatt_error")
         } finally {
-            session.closeOnce()
-            synchronized(activeLock) {
-                if (activeSession === session) activeSession = null
+            try {
+                session.closeOnce()
+            } finally {
+                synchronized(activeLock) {
+                    if (activeSession === session) activeSession = null
+                }
             }
         }
     }
@@ -143,6 +149,7 @@ class AndroidBleGattInspector @Inject constructor(
         private val context: Context,
         private val request: BleInvestigationRequest,
         private val device: BluetoothDevice,
+        private val targetAddress: String,
         private val initialBondState: Int,
     ) {
         private val callbackLock = Any()
@@ -150,6 +157,7 @@ class AndroidBleGattInspector @Inject constructor(
         private val cancelled = AtomicBoolean(false)
         private val closed = AtomicBoolean(false)
         private val bondTransitioned = AtomicBoolean(false)
+        private val permissionRevoked = AtomicBoolean(false)
         private val services = mutableListOf<String>()
         private val characteristics = mutableListOf<BleGattCharacteristicInfo>()
         private val reads = linkedMapOf<String, String>()
@@ -194,27 +202,32 @@ class AndroidBleGattInspector @Inject constructor(
         private val bondReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
-                val changedDevice = intent.bluetoothDeviceExtra() ?: return
-                if (!changedDevice.address.equals(device.address, ignoreCase = true)) return
-                val newState = intent.getIntExtra(
-                    BluetoothDevice.EXTRA_BOND_STATE,
-                    BluetoothDevice.ERROR,
-                )
-                val changed = synchronized(lifecycleLock) {
-                    if (
-                        closed.get() ||
-                        terminalized ||
-                        newState == BluetoothDevice.ERROR ||
-                        newState == initialBondState
-                    ) {
-                        false
-                    } else {
-                        bondTransitioned.set(true)
-                        true
+                when (
+                    bleBondReceiverDecision(targetAddress, initialBondState) {
+                        val changedDevice = intent.bluetoothDeviceExtra()
+                            ?: return@bleBondReceiverDecision null
+                        BleBondEvent(
+                            address = changedDevice.address,
+                            state = intent.getIntExtra(
+                                BluetoothDevice.EXTRA_BOND_STATE,
+                                BluetoothDevice.ERROR,
+                            ),
+                        )
                     }
-                }
-                if (changed) {
-                    deliver(GattEvent.BondStateChanged)
+                ) {
+                    BleBondReceiverDecision.IGNORE -> Unit
+                    BleBondReceiverDecision.PERMISSION_REVOKED -> reportPermissionRevoked()
+                    BleBondReceiverDecision.BOND_CHANGED -> {
+                        val changed = synchronized(lifecycleLock) {
+                            if (closed.get() || terminalized) {
+                                false
+                            } else {
+                                bondTransitioned.set(true)
+                                true
+                            }
+                        }
+                        if (changed) deliver(GattEvent.BondStateChanged)
+                    }
                 }
             }
         }
@@ -224,11 +237,18 @@ class AndroidBleGattInspector @Inject constructor(
             progress: suspend (BleInvestigationResult) -> Unit,
         ): BleInvestigationResult {
             progress(result(BleInvestigationState.CONNECTING, "Connecting to BLE target"))
-            if (!registerBondReceiver()) return cancelledResult()
+            if (!registerBondReceiver()) {
+                return if (permissionRevoked.get()) permissionFailure() else cancelledResult()
+            }
 
             val connection = expect(CallbackKind.CONNECTION)
             val connectedGatt = synchronized(lifecycleLock) {
-                if (cancelled.get() || closed.get() || bondTransitioned.get()) {
+                if (
+                    cancelled.get() ||
+                    closed.get() ||
+                    permissionRevoked.get() ||
+                    bondTransitioned.get()
+                ) {
                     null
                 } else {
                     device.connectGatt(
@@ -240,6 +260,7 @@ class AndroidBleGattInspector @Inject constructor(
                 }
             } ?: return when {
                 cancelled.get() || closed.get() -> cancelledResult()
+                permissionRevoked.get() -> permissionFailure()
                 bondTransitioned.get() -> unexpectedBondFailure()
                 else -> failed("GATT connection could not start", "connect_failed")
             }
@@ -254,17 +275,19 @@ class AndroidBleGattInspector @Inject constructor(
                         return failed("GATT connection failed", "connect_failed")
                     }
                 }
+                GattEvent.PermissionRevoked -> return permissionFailure()
                 GattEvent.BondStateChanged -> return unexpectedBondFailure()
                 GattEvent.Cancelled -> return cancelledResult()
                 else -> return failed("Unexpected connection callback", "gatt_callback_error")
             }
-            if (hasUnexpectedBondTransition()) return unexpectedBondFailure()
+            sessionInterruptionFailure()?.let { return it }
             connected = true
 
             progress(result(BleInvestigationState.DISCOVERING, "Discovering GATT services"))
             val discovery = expect(CallbackKind.SERVICES)
             when (startGattOperation { it.discoverServices() }) {
                 OperationStart.CANCELLED -> return cancelledResult()
+                OperationStart.PERMISSION_REVOKED -> return permissionFailure()
                 OperationStart.BOND_CHANGED -> return unexpectedBondFailure()
                 OperationStart.FAILED ->
                     return failed("Service discovery could not start", "discovery_start_failed")
@@ -281,11 +304,12 @@ class AndroidBleGattInspector @Inject constructor(
                     event.authenticationResult()?.let { return it }
                     return failed("Target disconnected during discovery", "disconnected")
                 }
+                GattEvent.PermissionRevoked -> return permissionFailure()
                 GattEvent.BondStateChanged -> return unexpectedBondFailure()
                 GattEvent.Cancelled -> return cancelledResult()
                 else -> return failed("Unexpected discovery callback", "gatt_callback_error")
             }
-            if (hasUnexpectedBondTransition()) return unexpectedBondFailure()
+            sessionInterruptionFailure()?.let { return it }
 
             val records = snapshotGatt(connectedGatt)
             val candidates = mutableListOf<CharacteristicRecord>()
@@ -311,10 +335,11 @@ class AndroidBleGattInspector @Inject constructor(
 
             progress(result(BleInvestigationState.READING, "Reading allowlisted GATT characteristics"))
             for (record in prioritizedCandidates.take(MAX_READS)) {
-                if (hasUnexpectedBondTransition()) return unexpectedBondFailure()
+                sessionInterruptionFailure()?.let { return it }
                 val read = expect(CallbackKind.READ, record.characteristic)
                 when (startGattOperation { it.readCharacteristic(record.characteristic) }) {
                     OperationStart.CANCELLED -> return cancelledResult()
+                    OperationStart.PERMISSION_REVOKED -> return permissionFailure()
                     OperationStart.BOND_CHANGED -> return unexpectedBondFailure()
                     OperationStart.FAILED ->
                         return failed("Characteristic read could not start", "read_start_failed")
@@ -335,6 +360,7 @@ class AndroidBleGattInspector @Inject constructor(
                         event.authenticationResult()?.let { return it }
                         return failed("Target disconnected during read", "disconnected")
                     }
+                    GattEvent.PermissionRevoked -> return permissionFailure()
                     GattEvent.BondStateChanged -> return unexpectedBondFailure()
                     GattEvent.Cancelled -> return cancelledResult()
                     else -> return failed("Unexpected read callback", "gatt_callback_error")
@@ -381,30 +407,29 @@ class AndroidBleGattInspector @Inject constructor(
             }
             if (!shouldClose) return
             deliver(GattEvent.Cancelled)
-            if (unregisterReceiver) {
-                try {
-                    context.unregisterReceiver(bondReceiver)
-                } catch (_: IllegalArgumentException) {
-                    // Receiver was already removed by the platform.
-                }
+            val unregisterAction: (() -> Unit)? = if (unregisterReceiver) {
+                { context.unregisterReceiver(bondReceiver) }
+            } else {
+                null
             }
-            if (currentGatt != null) {
-                try {
-                    currentGatt?.disconnect()
-                } catch (_: Exception) {
-                    // Closing still must happen when disconnect reports a platform error.
-                } finally {
-                    try {
-                        currentGatt?.close()
-                    } catch (_: Exception) {
-                        // The atomic guard prevents a second close attempt.
-                    }
-                }
+            val disconnectAction: (() -> Unit)? = currentGatt?.let { activeGatt ->
+                { activeGatt.disconnect() }
             }
+            val closeAction: (() -> Unit)? = currentGatt?.let { activeGatt ->
+                { activeGatt.close() }
+            }
+            runBleSessionCleanup(unregisterAction, disconnectAction, closeAction)
         }
 
         private fun registerBondReceiver(): Boolean = synchronized(lifecycleLock) {
-            if (cancelled.get() || closed.get() || terminalized) return@synchronized false
+            if (
+                cancelled.get() ||
+                closed.get() ||
+                permissionRevoked.get() ||
+                terminalized
+            ) {
+                return@synchronized false
+            }
             val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 context.registerReceiver(bondReceiver, filter, Context.RECEIVER_EXPORTED)
@@ -416,18 +441,32 @@ class AndroidBleGattInspector @Inject constructor(
             true
         }
 
+        private fun reportPermissionRevoked() {
+            val changed = synchronized(lifecycleLock) {
+                if (closed.get() || terminalized) {
+                    false
+                } else {
+                    permissionRevoked.compareAndSet(false, true)
+                }
+            }
+            if (changed) deliver(GattEvent.PermissionRevoked)
+        }
+
         @SuppressLint("MissingPermission")
-        private fun hasUnexpectedBondTransition(): Boolean {
-            if (bondTransitioned.get()) return true
+        private fun sessionInterruptionFailure(): BleInvestigationResult? {
+            if (permissionRevoked.get()) return permissionFailure()
+            if (bondTransitioned.get()) return unexpectedBondFailure()
             val changed = try {
                 device.bondState != initialBondState
             } catch (_: SecurityException) {
-                true
+                reportPermissionRevoked()
+                return permissionFailure()
             }
             if (changed) {
                 synchronized(lifecycleLock) { bondTransitioned.set(true) }
+                return unexpectedBondFailure()
             }
-            return changed
+            return null
         }
 
         @SuppressLint("MissingPermission")
@@ -435,28 +474,34 @@ class AndroidBleGattInspector @Inject constructor(
             synchronized(lifecycleLock) {
                 when {
                     cancelled.get() || closed.get() -> OperationStart.CANCELLED
+                    permissionRevoked.get() -> OperationStart.PERMISSION_REVOKED
                     bondTransitioned.get() -> OperationStart.BOND_CHANGED
                     terminalized -> OperationStart.CANCELLED
                     gatt == null -> OperationStart.FAILED
-                    operation(gatt!!) -> OperationStart.STARTED
-                    else -> OperationStart.FAILED
+                    else -> try {
+                        if (operation(gatt!!)) OperationStart.STARTED else OperationStart.FAILED
+                    } catch (_: SecurityException) {
+                        permissionRevoked.set(true)
+                        OperationStart.PERMISSION_REVOKED
+                    }
                 }
             }
 
         private fun snapshotGatt(gatt: BluetoothGatt): List<CharacteristicRecord> {
             val discoveredServices = gatt.services.toList()
             if (discoveredServices.size > MAX_SERVICES) truncated = true
-            val totalCharacteristics = discoveredServices.sumOf { it.characteristics.size }
-            if (totalCharacteristics > MAX_CHARACTERISTICS) truncated = true
 
             val visibleServices = discoveredServices.take(MAX_SERVICES)
             services += visibleServices.map { normalizedUuid(it.uuid.toString()) }
-            val records = visibleServices
-                .flatMap { service ->
-                    val serviceUuid = normalizedUuid(service.uuid.toString())
-                    service.characteristics.map { CharacteristicRecord(serviceUuid, it) }
-                }
-                .take(MAX_CHARACTERISTICS)
+            val traversal = boundedBleTraversal(
+                groups = visibleServices,
+                limit = MAX_CHARACTERISTICS,
+                itemsForGroup = { it.characteristics },
+            ) { service, characteristic ->
+                CharacteristicRecord(normalizedUuid(service.uuid.toString()), characteristic)
+            }
+            if (traversal.truncated) truncated = true
+            val records = traversal.items
             characteristics += records.map { record ->
                 BleGattCharacteristicInfo(
                     serviceUuid = record.serviceUuid,
@@ -487,6 +532,7 @@ class AndroidBleGattInspector @Inject constructor(
             synchronized(callbackLock) {
                 when {
                     cancelled.get() || closed.get() -> deferred.complete(GattEvent.Cancelled)
+                    permissionRevoked.get() -> deferred.complete(GattEvent.PermissionRevoked)
                     bondTransitioned.get() -> deferred.complete(GattEvent.BondStateChanged)
                     else -> {
                         check(pendingCallback == null) { "A GATT callback is already pending" }
@@ -531,19 +577,28 @@ class AndroidBleGattInspector @Inject constructor(
         @SuppressLint("MissingPermission")
         private fun completed(summary: String): BleInvestigationResult {
             val decision = synchronized(lifecycleLock) {
-                val currentBondChanged = try {
-                    device.bondState != initialBondState
-                } catch (_: SecurityException) {
-                    true
+                var permissionWasRevoked = permissionRevoked.get()
+                val currentBondChanged = if (permissionWasRevoked) {
+                    false
+                } else {
+                    try {
+                        device.bondState != initialBondState
+                    } catch (_: SecurityException) {
+                        permissionRevoked.set(true)
+                        permissionWasRevoked = true
+                        false
+                    }
                 }
                 bleTerminalDecision(
                     cancelled = cancelled.get(),
                     closed = closed.get(),
                     bondTransitioned = bondTransitioned.get(),
                     currentBondChanged = currentBondChanged,
+                    permissionRevoked = permissionWasRevoked,
                 ).also {
                     when (it) {
                         BleTerminalDecision.COMPLETE -> terminalized = true
+                        BleTerminalDecision.PERMISSION_REVOKED -> Unit
                         BleTerminalDecision.BOND_CHANGED -> bondTransitioned.set(true)
                         BleTerminalDecision.CANCELLED -> Unit
                     }
@@ -551,6 +606,7 @@ class AndroidBleGattInspector @Inject constructor(
             }
             return when (decision) {
                 BleTerminalDecision.COMPLETE -> result(BleInvestigationState.COMPLETE, summary)
+                BleTerminalDecision.PERMISSION_REVOKED -> permissionFailure()
                 BleTerminalDecision.BOND_CHANGED -> unexpectedBondFailure()
                 BleTerminalDecision.CANCELLED -> cancelledResult()
             }
@@ -561,6 +617,12 @@ class AndroidBleGattInspector @Inject constructor(
 
         private fun unexpectedBondFailure(): BleInvestigationResult =
             failed("Unexpected bond-state transition; inspection stopped", "bond_state_changed")
+
+        private fun permissionFailure(): BleInvestigationResult =
+            failed(
+                "Bluetooth connect permission was revoked",
+                "bluetooth_connect_permission_required",
+            )
 
         private fun cancelledResult(): BleInvestigationResult =
             result(BleInvestigationState.CANCELLED, "BLE investigation cancelled")
@@ -599,6 +661,7 @@ class AndroidBleGattInspector @Inject constructor(
         ) {
             fun matches(event: GattEvent): Boolean = when (event) {
                 GattEvent.BondStateChanged,
+                GattEvent.PermissionRevoked,
                 GattEvent.Cancelled,
                 -> true
                 is GattEvent.Connection ->
@@ -612,7 +675,13 @@ class AndroidBleGattInspector @Inject constructor(
         }
 
         private enum class CallbackKind { CONNECTION, SERVICES, READ }
-        private enum class OperationStart { STARTED, CANCELLED, BOND_CHANGED, FAILED }
+        private enum class OperationStart {
+            STARTED,
+            CANCELLED,
+            PERMISSION_REVOKED,
+            BOND_CHANGED,
+            FAILED,
+        }
 
         private sealed interface GattEvent {
             data class Connection(val status: Int, val newState: Int) : GattEvent
@@ -624,6 +693,7 @@ class AndroidBleGattInspector @Inject constructor(
             ) : GattEvent
 
             data object BondStateChanged : GattEvent
+            data object PermissionRevoked : GattEvent
             data object Cancelled : GattEvent
         }
     }
@@ -642,7 +712,81 @@ class AndroidBleGattInspector @Inject constructor(
 internal const val BLE_INVESTIGATION_TARGET_MAX_AGE_MS = 30_000L
 
 internal enum class BleReadDecision { READ, AUTHENTICATION_REQUIRED, SKIP }
-internal enum class BleTerminalDecision { COMPLETE, CANCELLED, BOND_CHANGED }
+internal enum class BleTerminalDecision { COMPLETE, CANCELLED, PERMISSION_REVOKED, BOND_CHANGED }
+internal enum class BleBondReceiverDecision { IGNORE, PERMISSION_REVOKED, BOND_CHANGED }
+
+internal data class BleBondEvent(
+    val address: String,
+    val state: Int,
+)
+
+internal data class BoundedBleTraversal<T>(
+    val items: List<T>,
+    val truncated: Boolean,
+)
+
+internal fun runBleSessionCleanup(
+    unregisterReceiver: (() -> Unit)?,
+    disconnectGatt: (() -> Unit)?,
+    closeGatt: (() -> Unit)?,
+) {
+    try {
+        unregisterReceiver?.invoke()
+    } catch (_: RuntimeException) {
+        // Cleanup is best-effort; later GATT cleanup must still run.
+    }
+    try {
+        disconnectGatt?.invoke()
+    } catch (_: RuntimeException) {
+        // Closing must still run when disconnect fails.
+    }
+    try {
+        closeGatt?.invoke()
+    } catch (_: RuntimeException) {
+        // The session's once gate prevents a second close attempt.
+    }
+}
+
+internal fun bleBondReceiverDecision(
+    targetAddress: String,
+    initialBondState: Int,
+    event: () -> BleBondEvent?,
+): BleBondReceiverDecision = try {
+    val received = event()
+    if (received == null) {
+        BleBondReceiverDecision.IGNORE
+    } else {
+        when {
+            !received.address.equals(targetAddress, ignoreCase = true) ->
+                BleBondReceiverDecision.IGNORE
+            received.state == BluetoothDevice.ERROR || received.state == initialBondState ->
+                BleBondReceiverDecision.IGNORE
+            else -> BleBondReceiverDecision.BOND_CHANGED
+        }
+    }
+} catch (_: SecurityException) {
+    BleBondReceiverDecision.PERMISSION_REVOKED
+} catch (_: RuntimeException) {
+    BleBondReceiverDecision.IGNORE
+}
+
+internal fun <Group, Item, Result> boundedBleTraversal(
+    groups: Iterable<Group>,
+    limit: Int,
+    itemsForGroup: (Group) -> Iterable<Item>,
+    transform: (Group, Item) -> Result,
+): BoundedBleTraversal<Result> {
+    require(limit >= 0) { "limit must be non-negative" }
+    val items = ArrayList<Result>(limit)
+    for (group in groups) {
+        val iterator = itemsForGroup(group).iterator()
+        while (iterator.hasNext()) {
+            if (items.size == limit) return BoundedBleTraversal(items, truncated = true)
+            items += transform(group, iterator.next())
+        }
+    }
+    return BoundedBleTraversal(items, truncated = false)
+}
 
 internal fun isBleInvestigationTargetFresh(
     observedAtElapsedMs: Long,
@@ -672,7 +816,9 @@ internal fun bleTerminalDecision(
     closed: Boolean,
     bondTransitioned: Boolean,
     currentBondChanged: Boolean,
+    permissionRevoked: Boolean = false,
 ): BleTerminalDecision = when {
+    permissionRevoked -> BleTerminalDecision.PERMISSION_REVOKED
     bondTransitioned || currentBondChanged -> BleTerminalDecision.BOND_CHANGED
     cancelled || closed -> BleTerminalDecision.CANCELLED
     else -> BleTerminalDecision.COMPLETE

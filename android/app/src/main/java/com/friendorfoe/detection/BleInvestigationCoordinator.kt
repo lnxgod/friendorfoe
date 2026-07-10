@@ -40,6 +40,8 @@ class BleInvestigationCoordinator @Inject constructor(
     @Volatile
     private var activeToken: Any? = null
 
+    private var stateToken: Any? = null
+
     @Volatile
     private var activeOperation: Job? = null
 
@@ -106,7 +108,7 @@ class BleInvestigationCoordinator @Inject constructor(
                     state = BleInvestigationState.FAILED,
                     summary = "BLE investigation timed out",
                     error = "timeout",
-                    retainEvidence = true,
+                    evidenceToken = requestToken,
                 ),
             )
         } catch (cancelled: CancellationException) {
@@ -115,7 +117,7 @@ class BleInvestigationCoordinator @Inject constructor(
                 state = BleInvestigationState.CANCELLED,
                 summary = "BLE investigation cancelled",
                 error = null,
-                retainEvidence = true,
+                evidenceToken = requestToken,
             )
             val published = publishTerminal(requestToken, request, result)
             if (cancelRequested.get()) published else throw cancelled
@@ -128,7 +130,7 @@ class BleInvestigationCoordinator @Inject constructor(
                     state = BleInvestigationState.FAILED,
                     summary = "BLE investigation failed",
                     error = "inspection_failed",
-                    retainEvidence = true,
+                    evidenceToken = requestToken,
                 ),
             )
         } finally {
@@ -152,6 +154,7 @@ class BleInvestigationCoordinator @Inject constructor(
     suspend fun cancel() {
         val operation = synchronized(lifecycleLock) {
             val request = activeRequest ?: return
+            val requestToken = activeToken ?: return
             if (!acceptingCancel || !cancelRequested.compareAndSet(false, true)) return
             acceptingCancel = false
             mutableState.value = terminalResult(
@@ -159,8 +162,9 @@ class BleInvestigationCoordinator @Inject constructor(
                 state = BleInvestigationState.CANCELLED,
                 summary = "BLE investigation cancelled",
                 error = null,
-                retainEvidence = true,
+                evidenceToken = requestToken,
             )
+            stateToken = requestToken
             activeOperation
         }
 
@@ -182,6 +186,7 @@ class BleInvestigationCoordinator @Inject constructor(
             !cancelRequested.get() &&
             progress.requestId == request.requestId
         ) {
+            stateToken = requestToken
             mutableState.value = progress
         }
     }
@@ -198,19 +203,24 @@ class BleInvestigationCoordinator @Inject constructor(
                 state = BleInvestigationState.CANCELLED,
                 summary = "BLE investigation cancelled",
                 error = null,
-                retainEvidence = true,
+                evidenceToken = requestToken,
             )
         } else {
             proposed
         }
         acceptingCancel = false
+        stateToken = requestToken
         mutableState.value = result
         result
     }
 
     private suspend fun cleanupInspectorOnce() {
         if (cleanupStarted.compareAndSet(false, true)) {
-            phoneInspector.cancel()
+            try {
+                phoneInspector.cancel()
+            } catch (_: Exception) {
+                // Cleanup is best-effort and cannot replace the terminal result.
+            }
         }
     }
 
@@ -219,12 +229,14 @@ class BleInvestigationCoordinator @Inject constructor(
         state: BleInvestigationState,
         summary: String,
         error: String?,
-        retainEvidence: Boolean = false,
-    ): BleInvestigationResult {
+        evidenceToken: Any? = null,
+    ): BleInvestigationResult = synchronized(lifecycleLock) {
         val current = mutableState.value?.takeIf {
-            retainEvidence && it.requestId == request.requestId
+            evidenceToken != null &&
+                stateToken === evidenceToken &&
+                it.requestId == request.requestId
         }
-        return current?.copy(
+        current?.copy(
             state = state,
             summary = summary,
             error = error,
