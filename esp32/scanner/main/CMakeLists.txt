@@ -22,6 +22,7 @@ set(SRCS
     "../../shared/detection_policy.c"
     "../../shared/privacy_rf_signatures.c"
     "../../shared/badge_display_policy.c"
+    "../../shared/ble_investigation_protocol.c"
     "../../shared/time_sync_policy.c"
     "../../shared/psram_alloc.c"
 )

@@ -259,6 +259,10 @@ void test_firmware_update_protocol_carries_crc_and_target_metadata(void);
 void test_ota_protocol_carries_session_id_for_exact_ack_matching(void);
 void test_badge_uart_ota_uses_fast_bounded_chunks(void);
 void test_badge_relay_timeout_policy_is_bounded(void);
+void test_ble_investigation_result_defaults_to_idle(void);
+void test_ble_investigation_protocol_emits_bounded_begin_service_char_read_end(void);
+void test_ble_investigation_protocol_caps_service_and_characteristic_counts(void);
+void test_ble_investigation_protocol_rejects_mismatched_request_id(void);
 
 void test_clean_boot_keeps_counter_carried_no_action(void);
 void test_brownout_does_not_count_as_crash(void);
@@ -547,6 +551,10 @@ int main(void)
     RUN_TEST(test_ota_protocol_carries_session_id_for_exact_ack_matching);
     RUN_TEST(test_badge_uart_ota_uses_fast_bounded_chunks);
     RUN_TEST(test_badge_relay_timeout_policy_is_bounded);
+    RUN_TEST(test_ble_investigation_result_defaults_to_idle);
+    RUN_TEST(test_ble_investigation_protocol_emits_bounded_begin_service_char_read_end);
+    RUN_TEST(test_ble_investigation_protocol_caps_service_and_characteristic_counts);
+    RUN_TEST(test_ble_investigation_protocol_rejects_mismatched_request_id);
 
     RUN_TEST(test_clean_boot_keeps_counter_carried_no_action);
     RUN_TEST(test_brownout_does_not_count_as_crash);
