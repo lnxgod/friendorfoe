@@ -67,6 +67,7 @@ friendorfoe.db-*
 # Claude Code / MCP tooling
 .claude/
 .playwright-mcp/
+.worktrees/
 
 # ESP32 debug and test tools (may contain credentials)
 esp32/wifi-test/
