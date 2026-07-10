@@ -2298,13 +2298,18 @@ static esp_err_t badge_control_post_handler(httpd_req_t *req)
         const cJSON *request_id = cJSON_GetObjectItemCaseSensitive(root,
                                                                    "request_id");
         const cJSON *seq = cJSON_GetObjectItemCaseSensitive(root, "seq");
+        int chunk_seq = -1;
+        char chunk_json[UART_JSON_MAX_SIZE];
         bool ok = cJSON_IsString(request_id) && cJSON_IsNumber(seq) &&
-            badge_ble_investigation_select_chunk(request_id->valuestring,
-                                                 seq->valueint);
-        httpd_resp_sendstr(
-            req,
-            ok ? "{\"ok\":true,\"message\":\"BLE investigation chunk selected\"}"
-               : "{\"ok\":false,\"error\":\"invalid investigation chunk cursor\"}");
+            badge_ble_investigation_index_from_number(seq->valuedouble,
+                                                       &chunk_seq) &&
+            badge_ble_investigation_chunk_json(request_id->valuestring,
+                                               chunk_seq,
+                                               chunk_json,
+                                               sizeof(chunk_json)) > 0;
+        httpd_resp_sendstr(req, ok
+            ? chunk_json
+            : "{\"ok\":false,\"error\":\"invalid investigation chunk cursor\"}");
 #else
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"badge-only command\"}");
 #endif

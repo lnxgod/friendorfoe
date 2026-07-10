@@ -1,9 +1,20 @@
 #include "unity.h"
 
+#include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "badge_ble_investigation_state.h"
+
+void test_badge_investigation_operations_have_bounded_stack_contract(void)
+{
+    TEST_ASSERT_GREATER_THAN_UINT32(
+        BADGE_BLE_INVESTIGATION_OPERATION_STACK_MAX,
+        sizeof(badge_ble_investigation_state_t));
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32(
+        2048, BADGE_BLE_INVESTIGATION_OPERATION_STACK_MAX);
+}
 
 static void copy_text(char *out, size_t out_len, const char *text)
 {
@@ -177,11 +188,8 @@ void test_badge_investigation_ble_chunk_cursor_is_bounded(void)
 
     TEST_ASSERT_EQUAL_UINT8(3, state.chunk_count);
     for (int seq = 0; seq < state.chunk_count; ++seq) {
-        TEST_ASSERT_TRUE(badge_ble_investigation_state_select_chunk(
-            &state, "req-1", seq));
-        TEST_ASSERT_TRUE(badge_ble_investigation_state_get_selected_chunk(
-            &state, &selected));
-        TEST_ASSERT_EQUAL(seq, state.selected_chunk);
+        TEST_ASSERT_TRUE(badge_ble_investigation_state_get_chunk(
+            &state, "req-1", seq, &selected));
     }
     TEST_ASSERT_EQUAL(BLE_INV_CHUNK_END, selected.kind);
     TEST_ASSERT_LESS_OR_EQUAL_UINT8(
@@ -244,17 +252,14 @@ void test_badge_investigation_cursor_rejects_mismatch_and_out_of_range(void)
     start_request(&state, &request);
     accept_begin(&state, &request);
 
-    TEST_ASSERT_TRUE(badge_ble_investigation_state_select_chunk(
-        &state, "req-1", 0));
-    TEST_ASSERT_FALSE(badge_ble_investigation_state_select_chunk(
-        &state, "wrong", 0));
-    TEST_ASSERT_FALSE(badge_ble_investigation_state_select_chunk(
-        &state, "req-1", -1));
-    TEST_ASSERT_FALSE(badge_ble_investigation_state_select_chunk(
-        &state, "req-1", state.chunk_count));
-    TEST_ASSERT_EQUAL_INT(0, state.selected_chunk);
-    TEST_ASSERT_TRUE(badge_ble_investigation_state_get_selected_chunk(
-        &state, &selected));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_get_chunk(
+        &state, "req-1", 0, &selected));
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_get_chunk(
+        &state, "wrong", 0, &selected));
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_get_chunk(
+        &state, "req-1", -1, &selected));
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_get_chunk(
+        &state, "req-1", state.chunk_count, &selected));
     TEST_ASSERT_EQUAL(BLE_INV_CHUNK_BEGIN, selected.kind);
 }
 
@@ -322,4 +327,246 @@ void test_badge_investigation_same_request_restart_does_not_corrupt_active_state
         &state, &request, true, &scanner_slot));
 
     TEST_ASSERT_EQUAL_MEMORY(&expected, &state, sizeof(state));
+}
+
+void test_badge_investigation_request_validator_matches_scanner_grammar(void)
+{
+    badge_ble_investigation_state_t state;
+    ble_investigation_request_t request;
+    ble_investigation_request_t normalized;
+    int scanner_slot = 9;
+    badge_ble_investigation_state_init(&state);
+
+    make_request(&request, "req-grammar", BLE_INV_MODE_GATT,
+                 "aa:bb:cc:dd:ee:ff");
+    TEST_ASSERT_TRUE(badge_ble_investigation_request_validate(
+        &request, &normalized));
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", normalized.target_mac);
+
+    const char *invalid_ids[] = {"", "bad id", "bad\tid", "bad\nid"};
+    for (size_t i = 0; i < sizeof(invalid_ids) / sizeof(invalid_ids[0]); ++i) {
+        make_request(&request, invalid_ids[i], BLE_INV_MODE_GATT,
+                     "AA:BB:CC:DD:EE:FF");
+        TEST_ASSERT_FALSE(badge_ble_investigation_state_start(
+            &state, &request, true, &scanner_slot));
+        TEST_ASSERT_FALSE(state.active);
+        TEST_ASSERT_EQUAL(BLE_INV_IDLE, state.result.state);
+        TEST_ASSERT_EQUAL_STRING("", state.result.request_id);
+    }
+
+    make_request(&request, "bad-mode", (ble_investigation_mode_t)99,
+                 "AA:BB:CC:DD:EE:FF");
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_start(
+        &state, &request, true, &scanner_slot));
+    make_request(&request, "bad-mac", BLE_INV_MODE_GATT,
+                 "AA-BB-CC-DD-EE-FF");
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_start(
+        &state, &request, true, &scanner_slot));
+    make_request(&request, "missing-mac", BLE_INV_MODE_GATT, "");
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_start(
+        &state, &request, true, &scanner_slot));
+    make_request(&request, "passive-target", BLE_INV_MODE_PASSIVE_CAPTURE,
+                 "AA:BB:CC:DD:EE:FF");
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_start(
+        &state, &request, true, &scanner_slot));
+    TEST_ASSERT_FALSE(state.active);
+    TEST_ASSERT_EQUAL(BLE_INV_IDLE, state.result.state);
+}
+
+void test_badge_investigation_stateless_chunks_and_independent_selections(void)
+{
+    badge_ble_investigation_state_t state;
+    ble_investigation_request_t request;
+    ble_investigation_chunk_t first;
+    ble_investigation_chunk_t second;
+    badge_ble_investigation_selection_t phone_a;
+    badge_ble_investigation_selection_t phone_b;
+    start_request(&state, &request);
+    accept_begin(&state, &request);
+    ble_investigation_chunk_t progress = {0};
+    progress.kind = BLE_INV_CHUNK_PROGRESS;
+    progress.state = BLE_INV_CONNECTING;
+    copy_text(progress.request_id, sizeof(progress.request_id), "req-1");
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_accept(&state, &progress));
+
+    badge_ble_investigation_selection_init(&phone_a);
+    badge_ble_investigation_selection_init(&phone_b);
+    TEST_ASSERT_TRUE(badge_ble_investigation_selection_set(
+        &phone_a, &state, "req-1", 0));
+    TEST_ASSERT_TRUE(badge_ble_investigation_selection_set(
+        &phone_b, &state, "req-1", 1));
+    TEST_ASSERT_TRUE(badge_ble_investigation_selection_get(
+        &phone_a, &state, &first));
+    TEST_ASSERT_TRUE(badge_ble_investigation_selection_get(
+        &phone_b, &state, &second));
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_BEGIN, first.kind);
+    TEST_ASSERT_NOT_EQUAL(first.kind, second.kind);
+
+    badge_ble_investigation_selection_clear(&phone_a);
+    TEST_ASSERT_FALSE(badge_ble_investigation_selection_get(
+        &phone_a, &state, &first));
+    TEST_ASSERT_TRUE(badge_ble_investigation_selection_get(
+        &phone_b, &state, &second));
+}
+
+void test_badge_investigation_start_fence_is_generation_safe(void)
+{
+    badge_ble_investigation_start_fence_t fence;
+    badge_ble_investigation_start_fence_init(&fence);
+    uint32_t revision = 0;
+    uint32_t generation = badge_ble_investigation_start_fence_reserve(
+        &fence, revision);
+    TEST_ASSERT_NOT_EQUAL(0, generation);
+    TEST_ASSERT_TRUE(badge_ble_investigation_start_fence_should_rollback(
+        &fence, generation, revision, false));
+
+    generation = badge_ble_investigation_start_fence_reserve(&fence, revision);
+    TEST_ASSERT_NOT_EQUAL(0, generation);
+    TEST_ASSERT_FALSE(badge_ble_investigation_start_fence_should_rollback(
+        &fence, generation, revision + 1, false));
+    TEST_ASSERT_FALSE(badge_ble_investigation_start_fence_should_rollback(
+        &fence, generation + 1, revision, false));
+    TEST_ASSERT_FALSE(badge_ble_investigation_start_fence_should_rollback(
+        &fence, generation, revision, true));
+}
+
+void test_badge_investigation_usb_output_is_one_bounded_frame(void)
+{
+    char frame[BADGE_BLE_INVESTIGATION_USB_FRAME_MAX];
+    const char *json =
+        "{\"type\":\"ble_inv_service\",\"request_id\":\"req-1\","
+        "\"index\":0,\"uuid\":\"FFE0\"}";
+    size_t len = badge_ble_investigation_usb_frame(json, frame,
+                                                   sizeof(frame));
+    TEST_ASSERT_GREATER_THAN_UINT32(0, len);
+    TEST_ASSERT_EQUAL_STRING_LEN("FOF_INV:", frame, 8);
+    TEST_ASSERT_EQUAL_CHAR('\n', frame[len - 1]);
+    TEST_ASSERT_EQUAL_PTR(&frame[len - 1], strchr(frame, '\n'));
+    TEST_ASSERT_NULL(strchr(frame, '\r'));
+    TEST_ASSERT_EQUAL_UINT32(0, badge_ble_investigation_usb_frame(
+        "{\"bad\":\"line\nfeed\"}", frame, sizeof(frame)));
+}
+
+void test_badge_investigation_dedupes_progress_and_reserves_end_capacity(void)
+{
+    badge_ble_investigation_state_t state;
+    ble_investigation_request_t request;
+    ble_investigation_chunk_t chunk = {0};
+    ble_investigation_chunk_t selected;
+    start_request(&state, &request);
+    accept_begin(&state, &request);
+
+    chunk.kind = BLE_INV_CHUNK_PROGRESS;
+    chunk.state = BLE_INV_CONNECTING;
+    copy_text(chunk.request_id, sizeof(chunk.request_id), "req-1");
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_accept(&state, &chunk));
+    uint8_t count_after_first = state.chunk_count;
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_accept(&state, &chunk));
+    TEST_ASSERT_EQUAL_UINT8(count_after_first, state.chunk_count);
+
+    state.chunk_count = BADGE_BLE_INVESTIGATION_MAX_CHUNKS - 1;
+    memset(&chunk, 0, sizeof(chunk));
+    chunk.kind = BLE_INV_CHUNK_SERVICE;
+    chunk.index = 0;
+    copy_text(chunk.request_id, sizeof(chunk.request_id), "req-1");
+    copy_text(chunk.uuid, sizeof(chunk.uuid), "1800");
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_accept(&state, &chunk));
+    TEST_ASSERT_TRUE(state.result.truncated);
+    TEST_ASSERT_EQUAL_UINT8(BADGE_BLE_INVESTIGATION_MAX_CHUNKS - 1,
+                            state.chunk_count);
+
+    memset(&chunk, 0, sizeof(chunk));
+    chunk.kind = BLE_INV_CHUNK_END;
+    chunk.state = BLE_INV_COMPLETE;
+    copy_text(chunk.request_id, sizeof(chunk.request_id), "req-1");
+    copy_text(chunk.summary, sizeof(chunk.summary), "done");
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_accept(&state, &chunk));
+    TEST_ASSERT_FALSE(state.active);
+    TEST_ASSERT_EQUAL_UINT8(BADGE_BLE_INVESTIGATION_MAX_CHUNKS,
+                            state.chunk_count);
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_get_chunk(
+        &state, "req-1", BADGE_BLE_INVESTIGATION_MAX_CHUNKS - 1,
+        &selected));
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_END, selected.kind);
+    TEST_ASSERT_TRUE(selected.truncated);
+}
+
+void test_badge_investigation_strict_chunk_field_validators(void)
+{
+    int index = -1;
+    TEST_ASSERT_TRUE(badge_ble_investigation_index_from_number(0.0, &index));
+    TEST_ASSERT_EQUAL_INT(0, index);
+    TEST_ASSERT_TRUE(badge_ble_investigation_index_from_number(42.0, &index));
+    TEST_ASSERT_FALSE(badge_ble_investigation_index_from_number(-1.0, &index));
+    TEST_ASSERT_FALSE(badge_ble_investigation_index_from_number(1.5, &index));
+    TEST_ASSERT_FALSE(badge_ble_investigation_index_from_number(NAN, &index));
+    TEST_ASSERT_FALSE(badge_ble_investigation_index_from_number(INFINITY, &index));
+    TEST_ASSERT_FALSE(badge_ble_investigation_index_from_number(
+        (double)INT_MAX + 1.0, &index));
+
+    TEST_ASSERT_TRUE(badge_ble_investigation_uuid_is_canonical("FFE0"));
+    TEST_ASSERT_TRUE(badge_ble_investigation_uuid_is_canonical("12345678"));
+    TEST_ASSERT_TRUE(badge_ble_investigation_uuid_is_canonical(
+        "12345678-1234-ABCD-9876-1234567890AB"));
+    TEST_ASSERT_FALSE(badge_ble_investigation_uuid_is_canonical("ffe0"));
+    TEST_ASSERT_FALSE(badge_ble_investigation_uuid_is_canonical("FFE"));
+    TEST_ASSERT_FALSE(badge_ble_investigation_uuid_is_canonical(
+        "12345678-1234-ABCD-9876-1234567890AZ"));
+
+    TEST_ASSERT_TRUE(badge_ble_investigation_value_hex_is_valid(""));
+    TEST_ASSERT_TRUE(badge_ble_investigation_value_hex_is_valid("00aF"));
+    TEST_ASSERT_FALSE(badge_ble_investigation_value_hex_is_valid("0"));
+    TEST_ASSERT_FALSE(badge_ble_investigation_value_hex_is_valid("00XZ"));
+}
+
+void test_badge_investigation_worst_case_status_and_end_fit_uart_bound(void)
+{
+    badge_ble_investigation_state_t state;
+    ble_investigation_request_t request;
+    ble_investigation_chunk_t end = {0};
+    ble_investigation_chunk_t selected;
+    char status[UART_JSON_MAX_SIZE];
+    char larger_status[UART_JSON_MAX_SIZE + 32];
+    char chunk_json[UART_JSON_MAX_SIZE];
+
+    memset(&request, 0, sizeof(request));
+    for (size_t i = 0; i < sizeof(request.request_id) - 1; ++i) {
+        request.request_id[i] = (i % 2 == 0) ? '"' : '\\';
+    }
+    request.mode = BLE_INV_MODE_GATT;
+    copy_text(request.target_mac, sizeof(request.target_mac),
+              "AA:BB:CC:DD:EE:FF");
+    request.timeout_ms = BLE_INV_DEFAULT_TIMEOUT_MS;
+    badge_ble_investigation_state_init(&state);
+    int slot = -1;
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_start(
+        &state, &request, true, &slot));
+    accept_begin(&state, &request);
+
+    end.kind = BLE_INV_CHUNK_END;
+    end.state = BLE_INV_FAILED;
+    copy_text(end.request_id, sizeof(end.request_id), request.request_id);
+    for (size_t i = 0; i < sizeof(end.summary) - 1; ++i) {
+        end.summary[i] = (i % 2 == 0) ? '"' : '\\';
+    }
+    for (size_t i = 0; i < sizeof(end.error) - 1; ++i) {
+        end.error[i] = (i % 2 == 0) ? '\\' : '"';
+    }
+    end.authentication_required = true;
+    end.truncated = true;
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_accept(&state, &end));
+
+    TEST_ASSERT_GREATER_THAN_UINT32(0,
+        badge_ble_investigation_state_status_json(&state, status,
+                                                  sizeof(status)));
+    TEST_ASSERT_GREATER_THAN_UINT32(0,
+        badge_ble_investigation_state_status_json(&state, larger_status,
+                                                  sizeof(larger_status)));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_get_chunk(
+        &state, request.request_id, state.chunk_count - 1, &selected));
+    TEST_ASSERT_GREATER_THAN_UINT32(0,
+        ble_investigation_chunk_to_json(&selected, chunk_json,
+                                        sizeof(chunk_json)));
+    TEST_ASSERT_NOT_NULL(strstr(status, "\"state\":\"failed\""));
+    TEST_ASSERT_NOT_NULL(strstr(chunk_json, "\"type\":\"ble_inv_end\""));
 }

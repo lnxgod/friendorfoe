@@ -59,6 +59,9 @@ bool serial_config_listen(int timeout_ms);
  */
 void serial_config_start_control_task(void);
 
+/** Emit one already-bounded FOF_INV frame without interleaving USB control. */
+bool serial_config_emit_investigation_frame(const char *frame);
+
 /**
  * Emit a machine-readable badge detection line over USB serial.
  *

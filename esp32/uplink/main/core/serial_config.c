@@ -20,6 +20,7 @@
 #include "oled_display.h"
 #include "version.h"
 #include "detection_policy.h"
+#include "uart_protocol.h"
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
 #include "badge_display_policy_runtime.h"
@@ -35,7 +36,9 @@
 #include <fcntl.h>
 #include <sys/select.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "freertos/portmacro.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
@@ -74,12 +77,53 @@ static const char *TAG = "serial_cfg";
 static bool s_control_task_started = false;
 static bool s_serial_fw_rx_active = false;
 static int64_t s_serial_fw_last_rx_ms = 0;
+static SemaphoreHandle_t s_usb_output_lock = NULL;
+static portMUX_TYPE s_usb_output_init_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static void handle_control_line(const char *line);
 static void print_json_escaped_string(const char *value);
 static void print_scanner_status_json(const char *name, uint8_t scanner_id,
                                       bool connected, bool peer_connected,
                                       const scanner_info_t *info, bool first);
+
+static bool serial_output_lock(void)
+{
+    if (!s_usb_output_lock) {
+        SemaphoreHandle_t created = xSemaphoreCreateMutex();
+        if (!created) return false;
+        portENTER_CRITICAL(&s_usb_output_init_lock);
+        if (!s_usb_output_lock) {
+            s_usb_output_lock = created;
+            created = NULL;
+        }
+        portEXIT_CRITICAL(&s_usb_output_init_lock);
+        if (created) vSemaphoreDelete(created);
+    }
+    return xSemaphoreTake(s_usb_output_lock, portMAX_DELAY) == pdTRUE;
+}
+
+static void serial_output_unlock(void)
+{
+    if (s_usb_output_lock) xSemaphoreGive(s_usb_output_lock);
+}
+
+bool serial_config_emit_investigation_frame(const char *frame)
+{
+    if (!frame || strncmp(frame, "FOF_INV:", 8) != 0) return false;
+    size_t len = strlen(frame);
+    if (len == 0 || len >= (UART_JSON_MAX_SIZE + 10) ||
+        frame[len - 1] != '\n' || strchr(frame, '\r') != NULL) {
+        return false;
+    }
+    const char *newline = strchr(frame, '\n');
+    if (!newline || newline != &frame[len - 1] || !serial_output_lock()) {
+        return false;
+    }
+    size_t written = fwrite(frame, 1, len, stdout);
+    fflush(stdout);
+    serial_output_unlock();
+    return written == len;
+}
 
 /* Allowed NVS keys — only accept known config keys */
 static const char *ALLOWED_KEYS[] = {
@@ -1299,12 +1343,22 @@ static void handle_ctl_command(const char *json)
 #ifdef FOF_BADGE_VARIANT
         const cJSON *request_id = cJSON_GetObjectItemCaseSensitive(root, "request_id");
         const cJSON *seq = cJSON_GetObjectItemCaseSensitive(root, "seq");
+        int chunk_seq = -1;
+        char chunk_json[UART_JSON_MAX_SIZE];
+        char frame[BADGE_BLE_INVESTIGATION_USB_FRAME_MAX];
         if (!cJSON_IsString(request_id) || !cJSON_IsNumber(seq) ||
-            !badge_ble_investigation_select_chunk(request_id->valuestring,
-                                                  seq->valueint)) {
+            !badge_ble_investigation_index_from_number(seq->valuedouble,
+                                                        &chunk_seq) ||
+            badge_ble_investigation_chunk_json(request_id->valuestring,
+                                               chunk_seq,
+                                               chunk_json,
+                                               sizeof(chunk_json)) == 0 ||
+            badge_ble_investigation_usb_frame(chunk_json, frame,
+                                              sizeof(frame)) == 0) {
             send_control_error("invalid investigation chunk cursor");
         } else {
-            send_control_ok("BLE investigation chunk selected", false);
+            printf("%s", frame);
+            fflush(stdout);
         }
 #else
         send_control_error("BLE investigation is badge-only");
@@ -1630,6 +1684,9 @@ static void handle_control_line(const char *line)
 #ifdef FOF_BADGE_VARIANT
     badge_runtime_note_usb_control_alive();
 #endif
+    if (!serial_output_lock()) {
+        return;
+    }
 
     if (strcmp(line, CMD_PING) == 0) {
         char msg[48];
@@ -1650,6 +1707,7 @@ static void handle_control_line(const char *line)
     } else if (strcmp(line, CMD_SAVE) == 0) {
         send_response(RESP_SAVED);
     }
+    serial_output_unlock();
 }
 
 static int read_control_char(void)
@@ -1824,6 +1882,7 @@ void serial_config_emit_badge_detection(const char *detection_id,
                                         float threat_score,
                                         int rssi)
 {
+    if (!serial_output_lock()) return;
     printf("FOF_DET:{\"id\":");
     print_json_escaped_string(detection_id);
     printf(",\"manufacturer\":");
@@ -1838,4 +1897,5 @@ void serial_config_emit_badge_detection(const char *detection_id,
            "\"threat_score\":%.1f,\"rssi\":%d}\n",
            (unsigned)source, confidence, threat_score, rssi);
     fflush(stdout);
+    serial_output_unlock();
 }

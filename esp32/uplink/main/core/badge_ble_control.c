@@ -100,6 +100,14 @@ size_t badge_ble_control_status_json(char *out, size_t out_len)
 
 static uint8_t s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static uint16_t s_inv_selection_conn = BLE_HS_CONN_HANDLE_NONE;
+static badge_ble_investigation_selection_t s_inv_selection;
+static char s_inv_read_json[UART_JSON_MAX_SIZE];
+static char s_status_ble_json[224];
+static char s_status_theme_json[BADGE_THEME_JSON_MAX];
+static char s_status_investigation_json[BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX];
+static char s_status_json[BADGE_THEME_JSON_MAX + 224 +
+                          BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX + 224];
 
 static int badge_ble_gap_event(struct ble_gap_event *event, void *arg);
 static void badge_ble_advertise(void);
@@ -125,38 +133,35 @@ static int badge_ble_status_access(uint16_t conn_handle,
     (void)attr_handle;
     (void)arg;
     bool authorized = badge_ble_connection_authorized(conn_handle);
-    char ble_json[224];
-    char theme_json[BADGE_THEME_JSON_MAX];
-    char investigation_json[BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX];
-    badge_ble_control_status_json(ble_json, sizeof(ble_json));
-    badge_theme_runtime_json(theme_json, sizeof(theme_json));
-    badge_ble_investigation_status_json(investigation_json,
-                                        sizeof(investigation_json));
-    char json[BADGE_THEME_JSON_MAX + sizeof(ble_json) +
-              sizeof(investigation_json) + 224];
+    badge_ble_control_status_json(s_status_ble_json,
+                                  sizeof(s_status_ble_json));
+    badge_theme_runtime_json(s_status_theme_json,
+                             sizeof(s_status_theme_json));
+    badge_ble_investigation_status_json(s_status_investigation_json,
+                                        sizeof(s_status_investigation_json));
     if (authorized) {
-        snprintf(json, sizeof(json),
+        snprintf(s_status_json, sizeof(s_status_json),
                  "{\"version\":\"%s\",\"mode\":\"ble\","
                  "\"mode_label\":\"BLE Tether\",\"theme_hash\":%lu,"
                  "\"theme\":%s,\"ble_control\":%s,\"ble_investigation\":%s}",
                  FOF_VERSION,
                  (unsigned long)badge_theme_runtime_hash(),
-                 theme_json[0] ? theme_json : "{\"version\":1}",
-                 ble_json[0] ? ble_json : "{\"enabled\":true}",
-                 investigation_json[0]
-                     ? investigation_json
+                 s_status_theme_json[0] ? s_status_theme_json : "{\"version\":1}",
+                 s_status_ble_json[0] ? s_status_ble_json : "{\"enabled\":true}",
+                 s_status_investigation_json[0]
+                     ? s_status_investigation_json
                      : "{\"request_id\":\"\",\"state\":\"idle\"}");
     } else {
-        snprintf(json, sizeof(json),
+        snprintf(s_status_json, sizeof(s_status_json),
                  "{\"version\":\"%s\",\"mode\":\"ble\","
                  "\"mode_label\":\"BLE Tether\",\"theme_hash\":%lu,"
                  "\"theme\":%s,\"ble_control\":%s}",
                  FOF_VERSION,
                  (unsigned long)badge_theme_runtime_hash(),
-                 theme_json[0] ? theme_json : "{\"version\":1}",
-                 ble_json[0] ? ble_json : "{\"enabled\":true}");
+                 s_status_theme_json[0] ? s_status_theme_json : "{\"version\":1}",
+                 s_status_ble_json[0] ? s_status_ble_json : "{\"enabled\":true}");
     }
-    int rc = os_mbuf_append(ctxt->om, json, strlen(json));
+    int rc = os_mbuf_append(ctxt->om, s_status_json, strlen(s_status_json));
     if (rc == 0) {
         s_tx_count++;
     }
@@ -184,14 +189,20 @@ static int badge_ble_investigation_access(
         badge_ble_set_error("pair phone first");
         return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
     }
-    char json[BADGE_BLE_INVESTIGATION_CHUNK_JSON_MAX];
-    size_t len = badge_ble_investigation_selected_chunk_json(json,
-                                                             sizeof(json));
+    if (!s_inv_selection.valid || s_inv_selection_conn != conn_handle) {
+        badge_ble_set_error("select investigation chunk first");
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+    size_t len = badge_ble_investigation_chunk_json(
+        s_inv_selection.request_id,
+        s_inv_selection.seq,
+        s_inv_read_json,
+        sizeof(s_inv_read_json));
     if (len == 0) {
         badge_ble_set_error("select investigation chunk first");
         return BLE_ATT_ERR_UNLIKELY;
     }
-    int rc = os_mbuf_append(ctxt->om, json, len);
+    int rc = os_mbuf_append(ctxt->om, s_inv_read_json, len);
     if (rc == 0) {
         s_tx_count++;
         badge_ble_set_error("");
@@ -301,9 +312,21 @@ static int badge_ble_control_access(uint16_t conn_handle,
         const cJSON *request_id = cJSON_GetObjectItemCaseSensitive(root,
                                                                    "request_id");
         const cJSON *seq = cJSON_GetObjectItemCaseSensitive(root, "seq");
+        int chunk_seq = -1;
         ok = cJSON_IsString(request_id) && cJSON_IsNumber(seq) &&
-             badge_ble_investigation_select_chunk(request_id->valuestring,
-                                                  seq->valueint);
+             badge_ble_investigation_index_from_number(seq->valuedouble,
+                                                        &chunk_seq) &&
+             badge_ble_investigation_chunk_available(request_id->valuestring,
+                                                      chunk_seq);
+        if (ok) {
+            badge_ble_investigation_selection_init(&s_inv_selection);
+            snprintf(s_inv_selection.request_id,
+                     sizeof(s_inv_selection.request_id),
+                     "%s", request_id->valuestring);
+            s_inv_selection.seq = chunk_seq;
+            s_inv_selection.valid = true;
+            s_inv_selection_conn = conn_handle;
+        }
         badge_ble_set_error(ok ? "" : "invalid investigation chunk cursor");
         reply = ok ? "BLE investigation chunk selected" : s_last_error;
     } else {
@@ -369,6 +392,8 @@ void badge_ble_control_init(void)
     if (s_started) {
         return;
     }
+    badge_ble_investigation_selection_init(&s_inv_selection);
+    s_inv_selection_conn = BLE_HS_CONN_HANDLE_NONE;
     s_enabled = true;
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) {
@@ -454,6 +479,8 @@ static int badge_ble_gap_event(struct ble_gap_event *event, void *arg)
     (void)arg;
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
+            badge_ble_investigation_selection_clear(&s_inv_selection);
+            s_inv_selection_conn = BLE_HS_CONN_HANDLE_NONE;
             if (event->connect.status == 0) {
                 s_connected = true;
                 s_conn_handle = event->connect.conn_handle;
@@ -470,6 +497,8 @@ static int badge_ble_gap_event(struct ble_gap_event *event, void *arg)
             }
             return 0;
         case BLE_GAP_EVENT_DISCONNECT:
+            badge_ble_investigation_selection_clear(&s_inv_selection);
+            s_inv_selection_conn = BLE_HS_CONN_HANDLE_NONE;
             s_connected = false;
             s_encrypted = false;
             s_conn_handle = BLE_HS_CONN_HANDLE_NONE;

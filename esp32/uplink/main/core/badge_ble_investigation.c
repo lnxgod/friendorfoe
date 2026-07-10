@@ -9,15 +9,23 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/portmacro.h"
+#include "serial_config.h"
 #include "uart_protocol.h"
 #include "uart_rx.h"
 
 static const char *TAG = "badge_ble_inv";
 
 static badge_ble_investigation_state_t s_state;
+static badge_ble_investigation_start_fence_t s_start_fence;
+static uint32_t s_revision = 0;
 static SemaphoreHandle_t s_lock = NULL;
 static bool s_initialized = false;
 static portMUX_TYPE s_init_lock = portMUX_INITIALIZER_UNLOCKED;
+
+/* Scanner chunk ingress is single-owner UART slot 0; keep its large encoding
+ * scratch out of the 8 KB UART task stack. */
+static char s_chunk_json[UART_JSON_MAX_SIZE];
+static char s_usb_frame[BADGE_BLE_INVESTIGATION_USB_FRAME_MAX];
 
 static void set_error(char *err, size_t err_len, const char *message)
 {
@@ -38,9 +46,11 @@ static bool lock_state(void)
         portEXIT_CRITICAL(&s_init_lock);
         if (created) vSemaphoreDelete(created);
     }
-    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) return false;
     if (!s_initialized) {
         badge_ble_investigation_state_init(&s_state);
+        badge_ble_investigation_start_fence_init(&s_start_fence);
+        s_revision = 0;
         s_initialized = true;
     }
     return true;
@@ -121,6 +131,13 @@ static bool parse_properties(const cJSON *root, uint16_t *out)
     return true;
 }
 
+static bool parse_index(const cJSON *root, int *out)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, "index");
+    return cJSON_IsNumber(item) &&
+           badge_ble_investigation_index_from_number(item->valuedouble, out);
+}
+
 static bool parse_chunk(const cJSON *root, ble_investigation_chunk_t *chunk)
 {
     if (!cJSON_IsObject(root) || !chunk) return false;
@@ -147,32 +164,33 @@ static bool parse_chunk(const cJSON *root, ble_investigation_chunk_t *chunk)
                ble_investigation_state_from_name(state, &chunk->state) &&
                chunk->state >= BLE_INV_QUEUED && chunk->state <= BLE_INV_READING;
     }
-    const cJSON *index = cJSON_GetObjectItemCaseSensitive(root, "index");
     if (strcmp(type, MSG_TYPE_BLE_INV_SERVICE) == 0) {
         chunk->kind = BLE_INV_CHUNK_SERVICE;
-        if (!cJSON_IsNumber(index)) return false;
-        chunk->index = index->valueint;
-        return copy_json_string(root, "uuid", chunk->uuid,
-                                sizeof(chunk->uuid), true);
+        return parse_index(root, &chunk->index) &&
+               copy_json_string(root, "uuid", chunk->uuid,
+                                sizeof(chunk->uuid), true) &&
+               badge_ble_investigation_uuid_is_canonical(chunk->uuid);
     }
     if (strcmp(type, MSG_TYPE_BLE_INV_CHAR) == 0) {
         chunk->kind = BLE_INV_CHUNK_CHARACTERISTIC;
-        if (!cJSON_IsNumber(index)) return false;
-        chunk->index = index->valueint;
-        return copy_json_string(root, "service_uuid", chunk->service_uuid,
+        return parse_index(root, &chunk->index) &&
+               copy_json_string(root, "service_uuid", chunk->service_uuid,
                                 sizeof(chunk->service_uuid), true) &&
                copy_json_string(root, "uuid", chunk->uuid,
                                 sizeof(chunk->uuid), true) &&
+               badge_ble_investigation_uuid_is_canonical(chunk->service_uuid) &&
+               badge_ble_investigation_uuid_is_canonical(chunk->uuid) &&
                parse_properties(root, &chunk->properties);
     }
     if (strcmp(type, MSG_TYPE_BLE_INV_READ) == 0) {
         chunk->kind = BLE_INV_CHUNK_READ;
-        if (!cJSON_IsNumber(index)) return false;
-        chunk->index = index->valueint;
-        return copy_json_string(root, "uuid", chunk->uuid,
+        return parse_index(root, &chunk->index) &&
+               copy_json_string(root, "uuid", chunk->uuid,
                                 sizeof(chunk->uuid), true) &&
                copy_json_string(root, "value_hex", chunk->value_hex,
-                                sizeof(chunk->value_hex), false);
+                                sizeof(chunk->value_hex), false) &&
+               badge_ble_investigation_uuid_is_canonical(chunk->uuid) &&
+               badge_ble_investigation_value_hex_is_valid(chunk->value_hex);
     }
     if (strcmp(type, MSG_TYPE_BLE_INV_END) == 0) {
         char state[24];
@@ -201,8 +219,9 @@ bool badge_ble_investigation_start(const char *request_id,
 {
     set_error(err, err_len, "");
     ble_investigation_request_t request = {0};
+    ble_investigation_request_t normalized;
     if (!request_id || !mode || !transport ||
-        strlen(request_id) == 0 || strlen(request_id) >= sizeof(request.request_id) ||
+        strlen(request_id) >= sizeof(request.request_id) ||
         !ble_investigation_mode_from_name(mode, &request.mode)) {
         set_error(err, err_len, "invalid_request");
         return false;
@@ -215,37 +234,63 @@ bool badge_ble_investigation_start(const char *request_id,
     memcpy(request.request_id, request_id, strlen(request_id) + 1);
     memcpy(request.target_mac, target, strlen(target) + 1);
     request.timeout_ms = BLE_INV_DEFAULT_TIMEOUT_MS;
+    if (!badge_ble_investigation_request_validate(&request, &normalized)) {
+        set_error(err, err_len, "invalid_request");
+        return false;
+    }
 
     char payload[UART_JSON_MAX_SIZE];
-    if (ble_investigation_request_to_json(&request, payload,
+    if (ble_investigation_request_to_json(&normalized, payload,
                                           sizeof(payload)) == 0) {
         set_error(err, err_len, "invalid_request");
+        return false;
+    }
+    if (!uart_rx_ble_investigation_ingress_available()) {
+        set_error(err, err_len, "scanner_unavailable");
         return false;
     }
     if (!lock_state()) {
         set_error(err, err_len, "busy");
         return false;
     }
-
-    badge_ble_investigation_state_t next = s_state;
+    if (s_start_fence.pending) {
+        set_error(err, err_len, "busy");
+        unlock_state();
+        return false;
+    }
     int scanner_slot = -1;
-    bool available = uart_rx_ble_investigation_ingress_available();
-    bool prepared = badge_ble_investigation_state_start(
-        &next, &request, available, &scanner_slot);
-    if (!prepared) {
-        set_error(err, err_len, available ? "busy" : "scanner_unavailable");
+    if (!badge_ble_investigation_state_start(
+            &s_state, &normalized, true, &scanner_slot)) {
+        set_error(err, err_len, "busy");
         unlock_state();
         return false;
     }
-    if (scanner_slot != BADGE_BLE_INVESTIGATION_SCANNER_SLOT ||
-        !uart_rx_send_command_to_scanner_checked(scanner_slot, payload)) {
-        set_error(err, err_len, "scanner_unavailable");
-        unlock_state();
-        return false;
-    }
-    s_state = next;
-    ESP_LOGI(TAG, "BLE investigation %s started via %s", request_id, transport);
+    s_revision++;
+    uint32_t generation = badge_ble_investigation_start_fence_reserve(
+        &s_start_fence, s_revision);
     unlock_state();
+
+    bool sent = generation != 0 &&
+        scanner_slot == BADGE_BLE_INVESTIGATION_SCANNER_SLOT &&
+        uart_rx_send_command_to_scanner_checked(scanner_slot, payload);
+
+    if (!lock_state()) {
+        set_error(err, err_len, sent ? "busy" : "scanner_unavailable");
+        return false;
+    }
+    bool rollback = badge_ble_investigation_start_fence_should_rollback(
+        &s_start_fence, generation, s_revision, sent);
+    if (rollback) {
+        badge_ble_investigation_state_init(&s_state);
+        s_revision++;
+    }
+    unlock_state();
+
+    if (!sent) {
+        set_error(err, err_len, "scanner_unavailable");
+        return false;
+    }
+    ESP_LOGI(TAG, "BLE investigation %s started via %s", request_id, transport);
     return true;
 }
 
@@ -262,17 +307,26 @@ bool badge_ble_investigation_start_local(const char *request_id,
 bool badge_ble_investigation_accept_scanner_json(const cJSON *root)
 {
     ble_investigation_chunk_t chunk;
+    ble_investigation_chunk_t emitted_chunk;
     if (!parse_chunk(root, &chunk) || !lock_state()) return false;
-
+    uint8_t before_count = s_state.chunk_count;
     bool accepted = badge_ble_investigation_state_accept(&s_state, &chunk);
-    if (accepted) {
-        char json[UART_JSON_MAX_SIZE];
-        if (ble_investigation_chunk_to_json(&chunk, json, sizeof(json)) > 0) {
-            printf("FOF_INV:%s\n", json);
-            fflush(stdout);
-        }
-    }
+    bool stored = accepted && (s_state.chunk_count != before_count ||
+                               chunk.kind == BLE_INV_CHUNK_END);
+    bool have_emitted_chunk = stored && s_state.chunk_count > 0 &&
+        badge_ble_investigation_state_get_chunk(
+            &s_state, chunk.request_id, s_state.chunk_count - 1,
+            &emitted_chunk);
+    if (accepted) s_revision++;
     unlock_state();
+
+    if (have_emitted_chunk &&
+        ble_investigation_chunk_to_json(&emitted_chunk, s_chunk_json,
+                                        sizeof(s_chunk_json)) > 0 &&
+        badge_ble_investigation_usb_frame(s_chunk_json, s_usb_frame,
+                                          sizeof(s_usb_frame)) > 0) {
+        serial_config_emit_investigation_frame(s_usb_frame);
+    }
     return accepted;
 }
 
@@ -291,32 +345,34 @@ size_t badge_ble_investigation_status_json(char *out, size_t out_len)
 {
     if (!out || out_len == 0) return 0;
     out[0] = '\0';
+    badge_ble_investigation_status_t status;
     if (!lock_state()) return 0;
-    size_t len = badge_ble_investigation_state_status_json(
-        &s_state, out, out_len);
+    badge_ble_investigation_state_status(&s_state, &status);
     unlock_state();
-    return len;
+    return badge_ble_investigation_status_to_json(&status, out, out_len);
 }
 
-bool badge_ble_investigation_select_chunk(const char *request_id, int seq)
+bool badge_ble_investigation_chunk_available(const char *request_id, int seq)
 {
+    ble_investigation_chunk_t chunk;
     if (!lock_state()) return false;
-    bool selected = badge_ble_investigation_state_select_chunk(
-        &s_state, request_id, seq);
+    bool available = badge_ble_investigation_state_get_chunk(
+        &s_state, request_id, seq, &chunk);
     unlock_state();
-    return selected;
+    return available;
 }
 
-size_t badge_ble_investigation_selected_chunk_json(char *out, size_t out_len)
+size_t badge_ble_investigation_chunk_json(const char *request_id,
+                                          int seq,
+                                          char *out,
+                                          size_t out_len)
 {
     if (!out || out_len == 0) return 0;
     out[0] = '\0';
-    if (!lock_state()) return 0;
     ble_investigation_chunk_t chunk;
-    size_t len = badge_ble_investigation_state_get_selected_chunk(
-        &s_state, &chunk)
-        ? ble_investigation_chunk_to_json(&chunk, out, out_len)
-        : 0;
+    if (!lock_state()) return 0;
+    bool found = badge_ble_investigation_state_get_chunk(
+        &s_state, request_id, seq, &chunk);
     unlock_state();
-    return len;
+    return found ? ble_investigation_chunk_to_json(&chunk, out, out_len) : 0;
 }
