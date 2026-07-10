@@ -214,6 +214,100 @@ void test_ble_investigation_protocol_caps_service_and_characteristic_counts(void
     TEST_ASSERT_EQUAL(BLE_INV_COMPLETE, result.state);
 }
 
+void test_ble_investigation_protocol_rejects_duplicate_first_post_cap_indexes(void)
+{
+    ble_investigation_result_t result;
+    ble_investigation_chunk_t chunk = {0};
+    chunk.kind = BLE_INV_CHUNK_BEGIN;
+    chunk.mode = BLE_INV_MODE_GATT;
+    copy_text(chunk.request_id, sizeof(chunk.request_id), "req-1");
+
+    ble_investigation_result_init(&result);
+    TEST_ASSERT_TRUE(ble_investigation_result_accept(&result, &chunk));
+    chunk.kind = BLE_INV_CHUNK_SERVICE;
+    for (int index = 0; index < BLE_INV_MAX_SERVICES; ++index) {
+        chunk.index = index;
+        TEST_ASSERT_TRUE(ble_investigation_result_accept(&result, &chunk));
+    }
+    chunk.index = BLE_INV_MAX_SERVICES - 1;
+    assert_result_rejected_without_change(&result, &chunk);
+    TEST_ASSERT_FALSE(result.truncated);
+    TEST_ASSERT_EQUAL_UINT8(BLE_INV_MAX_SERVICES, result.service_count);
+
+    ble_investigation_result_init(&result);
+    chunk.kind = BLE_INV_CHUNK_BEGIN;
+    TEST_ASSERT_TRUE(ble_investigation_result_accept(&result, &chunk));
+    chunk.kind = BLE_INV_CHUNK_CHARACTERISTIC;
+    for (int index = 0; index < BLE_INV_MAX_CHARS; ++index) {
+        chunk.index = index;
+        TEST_ASSERT_TRUE(ble_investigation_result_accept(&result, &chunk));
+    }
+    chunk.index = BLE_INV_MAX_CHARS - 1;
+    assert_result_rejected_without_change(&result, &chunk);
+    TEST_ASSERT_FALSE(result.truncated);
+    TEST_ASSERT_EQUAL_UINT8(BLE_INV_MAX_CHARS, result.characteristic_count);
+
+    ble_investigation_result_init(&result);
+    chunk.kind = BLE_INV_CHUNK_BEGIN;
+    TEST_ASSERT_TRUE(ble_investigation_result_accept(&result, &chunk));
+    chunk.kind = BLE_INV_CHUNK_READ;
+    for (int index = 0; index < BLE_INV_MAX_READS; ++index) {
+        chunk.index = index;
+        TEST_ASSERT_TRUE(ble_investigation_result_accept(&result, &chunk));
+    }
+    chunk.index = BLE_INV_MAX_READS - 1;
+    assert_result_rejected_without_change(&result, &chunk);
+    TEST_ASSERT_FALSE(result.truncated);
+    TEST_ASSERT_EQUAL_UINT8(BLE_INV_MAX_READS, result.read_count);
+}
+
+void test_ble_investigation_protocol_rejects_int_max_first_post_cap_indexes(void)
+{
+    ble_investigation_result_t result;
+    ble_investigation_chunk_t chunk = {0};
+    chunk.kind = BLE_INV_CHUNK_BEGIN;
+    chunk.mode = BLE_INV_MODE_GATT;
+    copy_text(chunk.request_id, sizeof(chunk.request_id), "req-1");
+
+    ble_investigation_result_init(&result);
+    TEST_ASSERT_TRUE(ble_investigation_result_accept(&result, &chunk));
+    chunk.kind = BLE_INV_CHUNK_SERVICE;
+    for (int index = 0; index < BLE_INV_MAX_SERVICES; ++index) {
+        chunk.index = index;
+        TEST_ASSERT_TRUE(ble_investigation_result_accept(&result, &chunk));
+    }
+    chunk.index = INT_MAX;
+    assert_result_rejected_without_change(&result, &chunk);
+    TEST_ASSERT_FALSE(result.truncated);
+    TEST_ASSERT_EQUAL_UINT8(BLE_INV_MAX_SERVICES, result.service_count);
+
+    ble_investigation_result_init(&result);
+    chunk.kind = BLE_INV_CHUNK_BEGIN;
+    TEST_ASSERT_TRUE(ble_investigation_result_accept(&result, &chunk));
+    chunk.kind = BLE_INV_CHUNK_CHARACTERISTIC;
+    for (int index = 0; index < BLE_INV_MAX_CHARS; ++index) {
+        chunk.index = index;
+        TEST_ASSERT_TRUE(ble_investigation_result_accept(&result, &chunk));
+    }
+    chunk.index = INT_MAX;
+    assert_result_rejected_without_change(&result, &chunk);
+    TEST_ASSERT_FALSE(result.truncated);
+    TEST_ASSERT_EQUAL_UINT8(BLE_INV_MAX_CHARS, result.characteristic_count);
+
+    ble_investigation_result_init(&result);
+    chunk.kind = BLE_INV_CHUNK_BEGIN;
+    TEST_ASSERT_TRUE(ble_investigation_result_accept(&result, &chunk));
+    chunk.kind = BLE_INV_CHUNK_READ;
+    for (int index = 0; index < BLE_INV_MAX_READS; ++index) {
+        chunk.index = index;
+        TEST_ASSERT_TRUE(ble_investigation_result_accept(&result, &chunk));
+    }
+    chunk.index = INT_MAX;
+    assert_result_rejected_without_change(&result, &chunk);
+    TEST_ASSERT_FALSE(result.truncated);
+    TEST_ASSERT_EQUAL_UINT8(BLE_INV_MAX_READS, result.read_count);
+}
+
 void test_ble_investigation_protocol_rejects_mismatched_request_id(void)
 {
     ble_investigation_result_t result;

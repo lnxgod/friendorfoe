@@ -262,6 +262,8 @@ void test_badge_relay_timeout_policy_is_bounded(void);
 void test_ble_investigation_result_defaults_to_idle(void);
 void test_ble_investigation_protocol_emits_bounded_begin_service_char_read_end(void);
 void test_ble_investigation_protocol_caps_service_and_characteristic_counts(void);
+void test_ble_investigation_protocol_rejects_duplicate_first_post_cap_indexes(void);
+void test_ble_investigation_protocol_rejects_int_max_first_post_cap_indexes(void);
 void test_ble_investigation_protocol_rejects_mismatched_request_id(void);
 void test_ble_investigation_result_is_one_shot_and_terminal(void);
 void test_ble_investigation_request_json_uses_target_and_default_timeout(void);
@@ -558,6 +560,8 @@ int main(void)
     RUN_TEST(test_ble_investigation_result_defaults_to_idle);
     RUN_TEST(test_ble_investigation_protocol_emits_bounded_begin_service_char_read_end);
     RUN_TEST(test_ble_investigation_protocol_caps_service_and_characteristic_counts);
+    RUN_TEST(test_ble_investigation_protocol_rejects_duplicate_first_post_cap_indexes);
+    RUN_TEST(test_ble_investigation_protocol_rejects_int_max_first_post_cap_indexes);
     RUN_TEST(test_ble_investigation_protocol_rejects_mismatched_request_id);
     RUN_TEST(test_ble_investigation_result_is_one_shot_and_terminal);
     RUN_TEST(test_ble_investigation_request_json_uses_target_and_default_timeout);

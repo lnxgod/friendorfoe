@@ -277,9 +277,10 @@ bool ble_investigation_result_accept(ble_investigation_result_t *result,
         return true;
 
     case BLE_INV_CHUNK_SERVICE:
-        if (chunk->index < 0) return false;
+        if (chunk->index < 0 || chunk->index != result->service_count) {
+            return false;
+        }
         if (result->service_count < BLE_INV_MAX_SERVICES) {
-            if (chunk->index != result->service_count) return false;
             if (!copy_bounded(result->services[result->service_count], BLE_INV_UUID_LEN,
                               chunk->uuid, sizeof(chunk->uuid))) {
                 result->truncated = true;
@@ -292,9 +293,10 @@ bool ble_investigation_result_accept(ble_investigation_result_t *result,
         return true;
 
     case BLE_INV_CHUNK_CHARACTERISTIC:
-        if (chunk->index < 0) return false;
+        if (chunk->index < 0 || chunk->index != result->characteristic_count) {
+            return false;
+        }
         if (result->characteristic_count < BLE_INV_MAX_CHARS) {
-            if (chunk->index != result->characteristic_count) return false;
             ble_investigation_characteristic_t *characteristic =
                 &result->characteristics[result->characteristic_count];
             bool service_ok = copy_bounded(
@@ -312,9 +314,10 @@ bool ble_investigation_result_accept(ble_investigation_result_t *result,
         return true;
 
     case BLE_INV_CHUNK_READ:
-        if (chunk->index < 0) return false;
+        if (chunk->index < 0 || chunk->index != result->read_count) {
+            return false;
+        }
         if (result->read_count < BLE_INV_MAX_READS) {
-            if (chunk->index != result->read_count) return false;
             ble_investigation_read_t *read = &result->reads[result->read_count];
             bool uuid_ok = copy_bounded(read->uuid, sizeof(read->uuid),
                                         chunk->uuid, sizeof(chunk->uuid));
