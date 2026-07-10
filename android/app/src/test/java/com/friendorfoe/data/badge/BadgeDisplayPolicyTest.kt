@@ -15,7 +15,17 @@ class BadgeDisplayPolicyTest {
         assertEquals("both", policy.classes.getValue("drone").lane)
         assertEquals("both", policy.classes.getValue("meta").lane)
         assertEquals("close", policy.classes.getValue("hid").minProximity)
-        assertEquals(13, policy.classes.size)
+        assertEquals(14, policy.classes.size)
+
+        val bleAttackInfo = BadgeDisplayPolicyClasses.single { it.key == "ble_attack" }
+        assertEquals("ble_attack", bleAttackInfo.key)
+        assertEquals("BLE Attack", bleAttackInfo.label)
+
+        val bleAttack = policy.classes.getValue(bleAttackInfo.key)
+        assertTrue(bleAttack.enabled)
+        assertEquals("both", bleAttack.lane)
+        assertEquals("present", bleAttack.minProximity)
+        assertEquals(92, bleAttack.priority)
     }
 
     @Test
