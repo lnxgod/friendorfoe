@@ -56,6 +56,9 @@ bool uart_rx_is_scanner_connected(void);
 /** True if the BLE scanner (UART1) is connected. */
 bool uart_rx_is_ble_scanner_connected(void);
 
+/** True when slot 0 can accept and return an investigation command. */
+bool uart_rx_ble_investigation_ingress_available(void);
+
 /** True if the WiFi scanner (UART2) is connected. */
 bool uart_rx_is_wifi_scanner_connected(void);
 

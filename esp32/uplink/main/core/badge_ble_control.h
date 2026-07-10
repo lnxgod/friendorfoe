@@ -9,6 +9,10 @@
 extern "C" {
 #endif
 
+#define BADGE_BLE_STATUS_UUID 0xFF01
+#define BADGE_BLE_CONTROL_UUID 0xFF02
+#define BADGE_BLE_INVESTIGATION_UUID 0xFF03
+
 void badge_ble_control_init(void);
 bool badge_ble_control_open_pairing_window(void);
 bool badge_ble_control_pairing_active(void);

@@ -25,6 +25,7 @@
 #include "badge_display_policy_runtime.h"
 #include "badge_theme_runtime.h"
 #include "badge_ble_control.h"
+#include "badge_ble_investigation.h"
 #endif
 
 #include <string.h>
@@ -665,6 +666,12 @@ static void send_badge_status_response(void)
     char ble_status[192];
     badge_ble_control_status_json(ble_status, sizeof(ble_status));
     printf(",\"ble_control\":%s", ble_status[0] ? ble_status : "{\"enabled\":false}");
+    char investigation_status[BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX];
+    badge_ble_investigation_status_json(investigation_status,
+                                        sizeof(investigation_status));
+    printf(",\"ble_investigation\":%s",
+           investigation_status[0] ? investigation_status
+                                   : "{\"request_id\":\"\",\"state\":\"idle\"}");
     print_badge_button_state_field();
 #endif
     printf(",\"entities\":[");
@@ -1265,6 +1272,42 @@ static void handle_ctl_command(const char *json)
         handle_safe_mode_command(root);
 #else
         send_control_error("safe mode is badge-only");
+#endif
+    } else if (strcmp(cmd, "ble_investigate") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        const cJSON *request_id = cJSON_GetObjectItemCaseSensitive(root, "request_id");
+        const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
+        const cJSON *target = cJSON_GetObjectItemCaseSensitive(root, "target");
+        char err[64] = {0};
+        if (!cJSON_IsString(request_id) || !cJSON_IsString(mode) ||
+            (target && !cJSON_IsNull(target) && !cJSON_IsString(target)) ||
+            !badge_ble_investigation_start(
+                request_id->valuestring,
+                mode->valuestring,
+                cJSON_IsString(target) ? target->valuestring : "",
+                "usb",
+                err,
+                sizeof(err))) {
+            send_control_error(err[0] ? err : "invalid investigation request");
+        } else {
+            send_control_ok("BLE investigation started", false);
+        }
+#else
+        send_control_error("BLE investigation is badge-only");
+#endif
+    } else if (strcmp(cmd, "ble_investigation_chunk") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        const cJSON *request_id = cJSON_GetObjectItemCaseSensitive(root, "request_id");
+        const cJSON *seq = cJSON_GetObjectItemCaseSensitive(root, "seq");
+        if (!cJSON_IsString(request_id) || !cJSON_IsNumber(seq) ||
+            !badge_ble_investigation_select_chunk(request_id->valuestring,
+                                                  seq->valueint)) {
+            send_control_error("invalid investigation chunk cursor");
+        } else {
+            send_control_ok("BLE investigation chunk selected", false);
+        }
+#else
+        send_control_error("BLE investigation is badge-only");
 #endif
     } else if (strcmp(cmd, "badge_display_policy") == 0) {
 #ifdef FOF_BADGE_VARIANT

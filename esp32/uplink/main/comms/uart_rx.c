@@ -15,6 +15,7 @@
 #include "fw_store.h"
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
+#include "badge_ble_investigation.h"
 #endif
 
 #include <string.h>
@@ -1398,6 +1399,24 @@ static void process_line(const char *line, size_t len, int scanner_id)
         return;
     }
 
+    if (strncmp(msg_type, "ble_inv_", 8) == 0) {
+#ifdef FOF_BADGE_VARIANT
+        if (scanner_id == BADGE_BLE_INVESTIGATION_SCANNER_SLOT) {
+            note_scanner_activity(scanner_id, now_ms);
+            if (!badge_ble_investigation_accept_scanner_json(root)) {
+                ESP_LOGW(TAG, "Scanner[0] rejected BLE investigation chunk: %s",
+                         msg_type);
+            }
+        } else {
+            ESP_LOGW(TAG, "Scanner[%d] BLE investigation route rejected", scanner_id);
+        }
+#else
+        ESP_LOGW(TAG, "BLE investigation chunk ignored outside badge build");
+#endif
+        cJSON_Delete(root);
+        return;
+    }
+
     if (!msg_type_is_scanner_originated(msg_type)) {
         ESP_LOGW(TAG, "Scanner[%d] echoed/non-scanner msg type='%s' ignored",
                  scanner_id, msg_type);
@@ -2098,6 +2117,11 @@ bool uart_rx_is_scanner_connected(void)
 bool uart_rx_is_ble_scanner_connected(void)
 {
     return _check_connected(&s_last_rx_time_ble);
+}
+
+bool uart_rx_ble_investigation_ingress_available(void)
+{
+    return uart_rx_is_ble_scanner_connected() && !s_rx_paused_ble;
 }
 
 bool uart_rx_is_wifi_scanner_connected(void)

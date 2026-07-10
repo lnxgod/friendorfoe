@@ -47,6 +47,7 @@
 #include "badge_display_policy_runtime.h"
 #include "badge_theme_runtime.h"
 #include "badge_ble_control.h"
+#include "badge_ble_investigation.h"
 #endif
 
 static const char *TAG = "http_status";
@@ -887,7 +888,21 @@ static esp_err_t status_json_handler(httpd_req_t *req)
                                uart_rx_get_wifi_scanner_info(),
                                false);
 #endif
+#ifdef FOF_BADGE_VARIANT
+    httpd_resp_send_chunk(req, "],\"ble_investigation\":", HTTPD_RESP_USE_STRLEN);
+    char investigation_status[BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX];
+    badge_ble_investigation_status_json(investigation_status,
+                                        sizeof(investigation_status));
+    httpd_resp_send_chunk(
+        req,
+        investigation_status[0]
+            ? investigation_status
+            : "{\"request_id\":\"\",\"state\":\"idle\"}",
+        HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
+#else
     httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
+#endif
 
     /* Finish */
     httpd_resp_send_chunk(req, NULL, 0);
@@ -1887,6 +1902,16 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
     httpd_resp_send_chunk(req,
                           ble_status[0] ? ble_status : "{\"enabled\":false}",
                           HTTPD_RESP_USE_STRLEN);
+    char investigation_status[BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX];
+    badge_ble_investigation_status_json(investigation_status,
+                                        sizeof(investigation_status));
+    httpd_resp_send_chunk(req, ",\"ble_investigation\":", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(
+        req,
+        investigation_status[0]
+            ? investigation_status
+            : "{\"request_id\":\"\",\"state\":\"idle\"}",
+        HTTPD_RESP_USE_STRLEN);
 #endif
 
     int64_t last_upload_ms = http_upload_get_last_success_ms();
@@ -2239,6 +2264,50 @@ static esp_err_t badge_control_post_handler(httpd_req_t *req)
         nvs_config_set_string("badge_display_debug",
                               (cJSON_IsBool(enabled) && cJSON_IsTrue(enabled)) ? "1" : "0");
         httpd_resp_sendstr(req, "{\"ok\":true}");
+    } else if (strcmp(cmd, "ble_investigate") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        const cJSON *request_id = cJSON_GetObjectItemCaseSensitive(root,
+                                                                   "request_id");
+        const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
+        const cJSON *target = cJSON_GetObjectItemCaseSensitive(root, "target");
+        char err[64] = {0};
+        bool ok = cJSON_IsString(request_id) && cJSON_IsString(mode) &&
+            (!target || cJSON_IsNull(target) || cJSON_IsString(target)) &&
+            badge_ble_investigation_start(
+                request_id->valuestring,
+                mode->valuestring,
+                cJSON_IsString(target) ? target->valuestring : "",
+                "http",
+                err,
+                sizeof(err));
+        char response[160];
+        if (ok) {
+            snprintf(response, sizeof(response),
+                     "{\"ok\":true,\"message\":\"BLE investigation started\"}");
+        } else {
+            snprintf(response, sizeof(response),
+                     "{\"ok\":false,\"error\":\"%s\"}",
+                     err[0] ? err : "invalid investigation request");
+        }
+        httpd_resp_sendstr(req, response);
+#else
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"badge-only command\"}");
+#endif
+    } else if (strcmp(cmd, "ble_investigation_chunk") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        const cJSON *request_id = cJSON_GetObjectItemCaseSensitive(root,
+                                                                   "request_id");
+        const cJSON *seq = cJSON_GetObjectItemCaseSensitive(root, "seq");
+        bool ok = cJSON_IsString(request_id) && cJSON_IsNumber(seq) &&
+            badge_ble_investigation_select_chunk(request_id->valuestring,
+                                                 seq->valueint);
+        httpd_resp_sendstr(
+            req,
+            ok ? "{\"ok\":true,\"message\":\"BLE investigation chunk selected\"}"
+               : "{\"ok\":false,\"error\":\"invalid investigation chunk cursor\"}");
+#else
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"badge-only command\"}");
+#endif
     } else if (strcmp(cmd, "badge_display_policy") == 0) {
 #ifdef FOF_BADGE_VARIANT
         const cJSON *policy_item = cJSON_GetObjectItemCaseSensitive(root, "policy");
