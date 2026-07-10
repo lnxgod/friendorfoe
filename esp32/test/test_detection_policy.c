@@ -672,6 +672,28 @@ void test_ble_fingerprint_unikey_company_id_is_not_pebblebee_tracker(void)
     TEST_ASSERT_FALSE(fp.is_tracker);
 }
 
+void test_ble_fingerprint_serial_uuids_are_not_static_skimmers(void)
+{
+    const uint8_t serial_uuids[][4] = {
+        {3, 0x16, 0xE0, 0xFF},
+        {3, 0x16, 0xF0, 0xFF},
+    };
+
+    TEST_ASSERT_EQUAL_INT(25, BLE_DEV_CARD_SKIMMER);
+    TEST_ASSERT_EQUAL_INT(38, BLE_DEV_DRONE_OTHER);
+    TEST_ASSERT_EQUAL_INT(39, BLE_DEV_PAIRING_SPAM);
+    TEST_ASSERT_EQUAL_INT(40, BLE_DEV_SERIAL_SKIMMER);
+
+    for (size_t i = 0; i < sizeof(serial_uuids) / sizeof(serial_uuids[0]); i++) {
+        ble_fingerprint_t fp;
+        ble_fingerprint_compute(serial_uuids[i], sizeof(serial_uuids[i]),
+                                1, 0, &fp);
+
+        TEST_ASSERT_EQUAL(BLE_DEV_UNKNOWN, fp.device_type);
+        TEST_ASSERT_NOT_EQUAL(BLE_DEV_SERIAL_SKIMMER, fp.device_type);
+    }
+}
+
 void test_hidden_camera_ble_is_priority_not_low_value(void)
 {
     TEST_ASSERT_TRUE(fof_policy_is_priority_ble_fingerprint("Hidden Camera (suspect)"));

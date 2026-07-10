@@ -191,6 +191,8 @@ static const char *s_type_names[] = {
     [BLE_DEV_MEDICAL]         = "Medical",
     [BLE_DEV_GAMING]          = "Gaming",
     [BLE_DEV_DRONE_OTHER]     = "Drone",
+    [BLE_DEV_PAIRING_SPAM]    = "BLE Spam",
+    [BLE_DEV_SERIAL_SKIMMER]  = "Possible Skimmer",
 };
 
 const char *ble_device_type_name(ble_device_type_t type)

@@ -26,6 +26,7 @@ static const badge_display_policy_default_t DEFAULTS[BADGE_DISPLAY_POLICY_CLASS_
     [BADGE_DISPLAY_CLASS_EVENT_BADGE]   = {"event_badge", "Event Badges", true, BADGE_DISPLAY_LANE_LOWER, BADGE_DISPLAY_PROX_NEAR, 35},
     [BADGE_DISPLAY_CLASS_AURACAST]      = {"auracast", "Auracast", true, BADGE_DISPLAY_LANE_LOWER, BADGE_DISPLAY_PROX_NEAR, 20},
     [BADGE_DISPLAY_CLASS_SCANNER_STATUS]= {"scanner_status", "Scanner Status", true, BADGE_DISPLAY_LANE_LOWER, BADGE_DISPLAY_PROX_PRESENT, 10},
+    [BADGE_DISPLAY_CLASS_BLE_ATTACK]    = {"ble_attack", "BLE Attacks", true, BADGE_DISPLAY_LANE_BOTH, BADGE_DISPLAY_PROX_PRESENT, 92},
 };
 
 static char lower_char(char ch)
@@ -412,6 +413,12 @@ badge_display_policy_class_t badge_display_policy_class_for_detection(
     const char *model = det->model;
     const char *ssid = det->ssid[0] ? det->ssid : det->drone_id;
 
+    if (det->ble_threat_kind == BLE_THREAT_KIND_PAIRING_SPAM) {
+        return BADGE_DISPLAY_CLASS_BLE_ATTACK;
+    }
+    if (det->ble_threat_kind == BLE_THREAT_KIND_SERIAL_SKIMMER) {
+        return BADGE_DISPLAY_CLASS_SKIMMER;
+    }
     if (det->source == DETECTION_SRC_BLE_RID ||
         det->source == DETECTION_SRC_WIFI_DJI_IE ||
         det->source == DETECTION_SRC_WIFI_BEACON ||
@@ -493,6 +500,7 @@ bool badge_display_policy_is_safety_floor(badge_display_policy_class_t cls,
     switch (cls) {
         case BADGE_DISPLAY_CLASS_DRONE:
         case BADGE_DISPLAY_CLASS_WIFI_ATTACK:
+        case BADGE_DISPLAY_CLASS_BLE_ATTACK:
         case BADGE_DISPLAY_CLASS_SKIMMER:
         case BADGE_DISPLAY_CLASS_FLOCK:
             return true;

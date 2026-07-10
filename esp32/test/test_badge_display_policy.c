@@ -105,3 +105,36 @@ void test_badge_display_policy_close_tracker_breaks_through_disabled_filter(void
                                                            &safety, NULL));
     TEST_ASSERT_TRUE(safety);
 }
+
+void test_badge_ble_attack_display_policy_defaults_to_both_lanes(void)
+{
+    badge_display_policy_t policy;
+    badge_display_policy_class_t cls = BADGE_DISPLAY_CLASS_SCANNER_STATUS;
+    drone_detection_t det = policy_det(DETECTION_SRC_BLE_FINGERPRINT,
+                                       "BLE:A1B2C3D4:BLE Spam",
+                                       "behavioral:pairing_spam",
+                                       0.82f,
+                                       -72);
+    det.ble_threat_kind = BLE_THREAT_KIND_PAIRING_SPAM;
+    det.ble_prompt_family_mask = 0x03;
+    det.ble_unique_macs = 7;
+    det.ble_observation_count = 11;
+
+    badge_display_policy_defaults(&policy);
+
+    TEST_ASSERT_EQUAL_INT(12, BADGE_DISPLAY_CLASS_SCANNER_STATUS);
+    TEST_ASSERT_EQUAL_INT(13, BADGE_DISPLAY_CLASS_BLE_ATTACK);
+    TEST_ASSERT_EQUAL_INT(14, BADGE_DISPLAY_POLICY_CLASS_COUNT);
+    TEST_ASSERT_EQUAL_STRING(
+        "ble_attack",
+        badge_display_policy_class_key(BADGE_DISPLAY_CLASS_BLE_ATTACK));
+    TEST_ASSERT_TRUE(policy.classes[BADGE_DISPLAY_CLASS_BLE_ATTACK].enabled);
+    TEST_ASSERT_EQUAL(BADGE_DISPLAY_LANE_BOTH,
+                      policy.classes[BADGE_DISPLAY_CLASS_BLE_ATTACK].lane);
+    TEST_ASSERT_EQUAL(BADGE_DISPLAY_PROX_PRESENT,
+                      policy.classes[BADGE_DISPLAY_CLASS_BLE_ATTACK].min_proximity);
+    TEST_ASSERT_EQUAL_UINT8(92,
+                            policy.classes[BADGE_DISPLAY_CLASS_BLE_ATTACK].priority);
+    TEST_ASSERT_TRUE(badge_display_policy_allows_detection(&policy, &det, NULL, &cls));
+    TEST_ASSERT_EQUAL(BADGE_DISPLAY_CLASS_BLE_ATTACK, cls);
+}

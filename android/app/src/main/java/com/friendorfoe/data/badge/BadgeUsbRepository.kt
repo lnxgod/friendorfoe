@@ -286,7 +286,8 @@ val BadgeDisplayPolicyClasses = listOf(
     BadgeDisplayPolicyClassInfo("beacon", "Venue Beacon"),
     BadgeDisplayPolicyClassInfo("event_badge", "Event Badge"),
     BadgeDisplayPolicyClassInfo("auracast", "Auracast"),
-    BadgeDisplayPolicyClassInfo("scanner_status", "Scanner Status")
+    BadgeDisplayPolicyClassInfo("scanner_status", "Scanner Status"),
+    BadgeDisplayPolicyClassInfo("ble_attack", "BLE Attack")
 )
 
 fun defaultBadgeDisplayPolicyClasses(): Map<String, BadgeDisplayClassPolicy> = mapOf(
@@ -302,7 +303,8 @@ fun defaultBadgeDisplayPolicyClasses(): Map<String, BadgeDisplayClassPolicy> = m
     "beacon" to BadgeDisplayClassPolicy(true, "lower", "near", 30),
     "event_badge" to BadgeDisplayClassPolicy(true, "lower", "near", 35),
     "auracast" to BadgeDisplayClassPolicy(true, "lower", "near", 20),
-    "scanner_status" to BadgeDisplayClassPolicy(true, "lower", "present", 10)
+    "scanner_status" to BadgeDisplayClassPolicy(true, "lower", "present", 10),
+    "ble_attack" to BadgeDisplayClassPolicy(true, "both", "present", 92)
 )
 
 fun defaultBadgeDisplayPolicy(): BadgeDisplayPolicy =

@@ -888,6 +888,20 @@ void uart_tx_send_detection(const drone_detection_t *detection)
     }
     cjson_add_string_if(root, JSON_KEY_BLE_NAME, detection->ble_name);
     cjson_add_string_if(root, JSON_KEY_CLASS_REASON, detection->class_reason);
+    if (detection->ble_threat_kind != BLE_THREAT_KIND_NONE) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_THREAT_KIND,
+                                detection->ble_threat_kind);
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_PROMPT_FAMILIES,
+                                detection->ble_prompt_family_mask);
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_UNIQUE_MACS,
+                                detection->ble_unique_macs);
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_OBSERVATIONS,
+                                detection->ble_observation_count);
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_SERIAL_UUID,
+                                detection->ble_serial_service_uuid);
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_THREAT_EVIDENCE,
+                                detection->ble_threat_evidence_mask);
+    }
 
     /* Apple Continuity deep fields */
     if (detection->ble_apple_auth[0] || detection->ble_apple_auth[1] || detection->ble_apple_auth[2]) {

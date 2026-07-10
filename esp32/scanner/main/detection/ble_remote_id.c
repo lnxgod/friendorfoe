@@ -15,6 +15,7 @@
 
 #include "ble_remote_id.h"
 #include "ble_fingerprint.h"
+#include "ble_threat_detector.h"
 #include "ble_ja3.h"
 #include "open_drone_id_parser.h"
 #include "constants.h"
@@ -66,6 +67,13 @@ static const char *TAG = "ble_rid";
 /** ODID message size per ASTM F3411 */
 #define ODID_MESSAGE_SIZE           25
 #define ODID_PRIORITY_REEMIT_MS     500
+
+#define BLE_THREAT_APPLE_COMPANY_ID      0x004C
+#define BLE_THREAT_MICROSOFT_COMPANY_ID  0x0006
+#define BLE_THREAT_FAST_PAIR_UUID         0xFE2C
+#define BLE_THREAT_APPLE_AIRPODS_TYPE     0x07
+#define BLE_THREAT_APPLE_NEARBY_ACT_TYPE  0x0F
+#define BLE_THREAT_APPLE_NEARBY_INFO_TYPE 0x10
 
 /* ESP-IDF's FreeRTOS port uses byte-sized StackType_t on Xtensa. Badge
  * privacy classification runs inside the NimBLE host callback, and 4 KB
@@ -443,6 +451,8 @@ static bool badge_ble_should_emit_detection(const ble_fingerprint_t *fp,
         case BLE_DEV_META_GLASSES:
         case BLE_DEV_META_DEVICE:
         case BLE_DEV_CARD_SKIMMER:
+        case BLE_DEV_PAIRING_SPAM:
+        case BLE_DEV_SERIAL_SKIMMER:
         case BLE_DEV_HIDDEN_CAMERA:
         case BLE_DEV_FLIPPER_ZERO:
             return true;
@@ -770,6 +780,78 @@ static void trace_ble_service_data(uint16_t uuid16, int data_len, int rssi)
 
 static void ble_remote_id_start_scan_internal(void);
 
+static bool apply_behavioral_ble_threat(const uint8_t mac[6],
+                                        int8_t rssi,
+                                        uint8_t addr_type,
+                                        uint8_t props,
+                                        int64_t observed_ms,
+                                        ble_fingerprint_t *fp,
+                                        ble_threat_signal_t *signal_out)
+{
+    if (!mac || !fp || !signal_out) {
+        return false;
+    }
+
+    memset(signal_out, 0, sizeof(*signal_out));
+    ble_threat_observation_t observation = {0};
+    memcpy(observation.mac, mac, sizeof(observation.mac));
+    observation.observed_ms = observed_ms;
+    observation.rssi = rssi;
+    observation.connectable = (props & BLE_HCI_ADV_CONN_MASK) != 0;
+    observation.addr_type = addr_type;
+    observation.structural_hash = fp->hash;
+    observation.local_name = fp->local_name[0] ? fp->local_name : NULL;
+    observation.company_id = fp->company_id;
+    observation.trusted_identity = addr_type == 0 &&
+                                   fp->company_id != 0 &&
+                                   fp->local_name[0] != '\0';
+    observation.service_uuid_count = fp->svc_uuid_count > 4
+        ? 4
+        : fp->svc_uuid_count;
+    for (uint8_t i = 0; i < observation.service_uuid_count; i++) {
+        observation.service_uuids[i] = fp->service_uuids[i];
+    }
+
+    if (fp->company_id == BLE_THREAT_APPLE_COMPANY_ID &&
+        (fp->apple_type == BLE_THREAT_APPLE_AIRPODS_TYPE ||
+         fp->apple_type == BLE_THREAT_APPLE_NEARBY_ACT_TYPE ||
+         fp->apple_type == BLE_THREAT_APPLE_NEARBY_INFO_TYPE)) {
+        observation.prompt_family = BLE_PROMPT_APPLE;
+    } else if (fp->company_id == BLE_THREAT_MICROSOFT_COMPANY_ID) {
+        observation.prompt_family = BLE_PROMPT_SWIFT_PAIR;
+    } else {
+        for (uint8_t i = 0; i < observation.service_uuid_count; i++) {
+            if (observation.service_uuids[i] == BLE_THREAT_FAST_PAIR_UUID) {
+                observation.prompt_family = BLE_PROMPT_FAST_PAIR;
+                break;
+            }
+        }
+    }
+
+    if (!ble_threat_detector_observe(&observation, signal_out)) {
+        return false;
+    }
+
+    fp->hash = signal_out->entity_hash;
+    fp->is_tracker = false;
+    switch (signal_out->kind) {
+        case BLE_THREAT_PAIRING_SPAM:
+            fp->device_type = BLE_DEV_PAIRING_SPAM;
+            snprintf(fp->class_reason, sizeof(fp->class_reason),
+                     "behavioral:pairing_spam");
+            break;
+        case BLE_THREAT_SERIAL_SKIMMER:
+            fp->device_type = BLE_DEV_SERIAL_SKIMMER;
+            snprintf(fp->class_reason, sizeof(fp->class_reason),
+                     "behavioral:serial_skimmer");
+            break;
+        default:
+            return false;
+    }
+    fp->type_name = ble_device_type_name(fp->device_type);
+    return true;
+}
+
 /* ── NimBLE GAP event callback ─────────────────────────────────────────────── */
 
 /**
@@ -808,6 +890,21 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         ble_fingerprint_compute(disc->data, disc->length_data,
                                 disc->addr.type,
                                 (uint8_t)(disc->event_type & 0xFF), &fp);
+        ble_threat_signal_t behavioral_signal = {0};
+        uint8_t behavioral_props =
+            (disc->event_type == BLE_HCI_ADV_RPT_EVTYPE_ADV_IND ||
+             disc->event_type == BLE_HCI_ADV_RPT_EVTYPE_DIR_IND)
+                ? BLE_HCI_ADV_CONN_MASK
+                : 0;
+        bool behavioral_ble_threat = apply_behavioral_ble_threat(
+            disc->addr.val,
+            disc->rssi,
+            disc->addr.type,
+            behavioral_props,
+            esp_timer_get_time() / 1000,
+            &fp,
+            &behavioral_signal
+        );
         bool is_calibration_beacon = fof_policy_ble_has_calibration_uuid_le(
             fp.service_uuids_128,
             fp.svc_uuid_128_count
@@ -820,8 +917,10 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 #else
         bool badge_nearby_ble_diag = false;
 #endif
-        bool privacy_candidate = is_meta_device || fp.is_tracker || badge_nearby_ble_diag;
-        bool known_privacy_candidate = is_meta_device || fp.is_tracker;
+        bool privacy_candidate = behavioral_ble_threat || is_meta_device ||
+                                 fp.is_tracker || badge_nearby_ble_diag;
+        bool known_privacy_candidate = behavioral_ble_threat || is_meta_device ||
+                                       fp.is_tracker;
         if (is_meta_device) {
             badge_ble_note_meta(fp.hash, disc->rssi, fp.class_reason,
                                 "strong_fp", false);
@@ -946,7 +1045,9 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 det.last_updated_ms = now_ms;
                 det.first_seen_ms = now_ms;
 
-                if (is_calibration_beacon) {
+                if (behavioral_ble_threat) {
+                    det.confidence = behavioral_signal.confidence;
+                } else if (is_calibration_beacon) {
                     det.confidence = 0.85f;
                 } else if (fp.is_tracker) {
                     det.confidence = 0.65f;
@@ -1028,6 +1129,12 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                     memcpy(det.ble_service_uuids_128[u],
                            fp.service_uuids_128[u], 16);
                 }
+                det.ble_threat_kind = (uint8_t)behavioral_signal.kind;
+                det.ble_prompt_family_mask = behavioral_signal.prompt_family_mask;
+                det.ble_unique_macs = behavioral_signal.unique_macs;
+                det.ble_observation_count = behavioral_signal.observation_count;
+                det.ble_serial_service_uuid = behavioral_signal.serial_service_uuid;
+                det.ble_threat_evidence_mask = behavioral_signal.evidence_mask;
 
                 {
                     static struct { uint8_t mac[6]; int64_t last_us; } ival_cache[64];
@@ -1145,11 +1252,22 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         }
 
         ble_fingerprint_t fp = {0};
+        ble_threat_signal_t behavioral_signal = {0};
+        bool behavioral_ble_threat = false;
         bool fp_ready = false;
         if (ext->data != NULL && ext->length_data > 0) {
             ble_fingerprint_compute(ext->data, ext->length_data,
                                     ext->addr.type,
                                     (uint8_t)(ext->props & 0xFF), &fp);
+            behavioral_ble_threat = apply_behavioral_ble_threat(
+                ext->addr.val,
+                ext->rssi,
+                ext->addr.type,
+                (uint8_t)(ext->props & 0xFF),
+                esp_timer_get_time() / 1000,
+                &fp,
+                &behavioral_signal
+            );
             fp_ready = true;
         }
 
@@ -1169,8 +1287,10 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 #else
             bool badge_nearby_ble_diag = false;
 #endif
-            bool privacy_candidate = is_meta_device || fp.is_tracker || badge_nearby_ble_diag;
-            bool known_privacy_candidate = is_meta_device || fp.is_tracker;
+            bool privacy_candidate = behavioral_ble_threat || is_meta_device ||
+                                     fp.is_tracker || badge_nearby_ble_diag;
+            bool known_privacy_candidate = behavioral_ble_threat || is_meta_device ||
+                                           fp.is_tracker;
             if (is_meta_device) {
                 badge_ble_note_meta(fp.hash, ext->rssi, fp.class_reason,
                                     "strong_fp", false);
@@ -1273,7 +1393,9 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 det.first_seen_ms = now_ms;
 
                 /* Confidence based on device classification */
-                if (is_calibration_beacon) {
+                if (behavioral_ble_threat) {
+                    det.confidence = behavioral_signal.confidence;
+                } else if (is_calibration_beacon) {
                     det.confidence = 0.85f;
                 } else if (fp.is_tracker) {
                     det.confidence = 0.65f;  /* Trackers are high interest */
@@ -1366,6 +1488,12 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                     memcpy(det.ble_service_uuids_128[u],
                            fp.service_uuids_128[u], 16);
                 }
+                det.ble_threat_kind = (uint8_t)behavioral_signal.kind;
+                det.ble_prompt_family_mask = behavioral_signal.prompt_family_mask;
+                det.ble_unique_macs = behavioral_signal.unique_macs;
+                det.ble_observation_count = behavioral_signal.observation_count;
+                det.ble_serial_service_uuid = behavioral_signal.serial_service_uuid;
+                det.ble_threat_evidence_mask = behavioral_signal.evidence_mask;
 
                 /* Advertisement interval tracking (per-MAC timing) */
                 {
@@ -1586,6 +1714,7 @@ void ble_remote_id_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
     memset(s_devices, 0, sizeof(s_devices));
+    ble_threat_detector_init();
 
     /* Initialize NimBLE. Keep this fail-soft: a controller/heap init error
      * should not panic the scanner into UART recovery and take WiFi down too.

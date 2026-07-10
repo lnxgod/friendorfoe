@@ -959,6 +959,21 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
     const char *class_reason = json_get_string(root, JSON_KEY_CLASS_REASON, "");
     strncpy(det->class_reason, class_reason, sizeof(det->class_reason) - 1);
 
+    /* Shared by the BLE and WiFi scanner UART tasks. Missing keys remain the
+     * backward-compatible no-threat value after the struct is zeroed above. */
+    det->ble_threat_kind = (uint8_t)json_get_int(
+        root, JSON_KEY_BLE_THREAT_KIND, BLE_THREAT_KIND_NONE);
+    det->ble_prompt_family_mask = (uint8_t)json_get_int(
+        root, JSON_KEY_BLE_PROMPT_FAMILIES, 0);
+    det->ble_unique_macs = (uint16_t)json_get_int(
+        root, JSON_KEY_BLE_UNIQUE_MACS, 0);
+    det->ble_observation_count = (uint16_t)json_get_int(
+        root, JSON_KEY_BLE_OBSERVATIONS, 0);
+    det->ble_serial_service_uuid = (uint16_t)json_get_int(
+        root, JSON_KEY_BLE_SERIAL_UUID, 0);
+    det->ble_threat_evidence_mask = (uint8_t)json_get_int(
+        root, JSON_KEY_BLE_THREAT_EVIDENCE, 0);
+
     /* Apple Continuity deep fields (previously dropped — fixes entity resolution) */
     const char *auth_str = json_get_string(root, JSON_KEY_BLE_APPLE_AUTH, NULL);
     if (auth_str && strlen(auth_str) == 6) {

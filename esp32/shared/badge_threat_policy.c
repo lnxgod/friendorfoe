@@ -482,6 +482,7 @@ static int category_priority(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_SSID:      return 70;
         case BADGE_THREAT_CATEGORY_FLOCK:     return 60;
         case BADGE_THREAT_CATEGORY_GLASS:     return 50;
+        case BADGE_THREAT_CATEGORY_BLE_SPAM:  return 45;
         case BADGE_THREAT_CATEGORY_SKIM:      return 40;
         case BADGE_THREAT_CATEGORY_CAMERA:    return 38;
         case BADGE_THREAT_CATEGORY_LOCK:      return 36;
@@ -1140,6 +1141,17 @@ static void make_event_key(const drone_detection_t *det,
         return;
     }
 
+    if (cls == BADGE_THREAT_BLE &&
+        category == BADGE_THREAT_CATEGORY_BLE_SPAM && det) {
+        char identity[40] = {0};
+        if (detection_copy_ble_fingerprint_identity(det,
+                                                    identity,
+                                                    sizeof(identity))) {
+            snprintf(out, out_len, "BLE:SPAM:%s", identity);
+            return;
+        }
+    }
+
     if (cls == BADGE_THREAT_WIFI_ANOMALY && det &&
         detection_is_evil_twin(det)) {
         const char *identity = det->ssid[0] ? det->ssid :
@@ -1295,7 +1307,30 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
                               text_mentions_security_device(det->ble_name) ||
                               text_mentions_security_device(det->class_reason);
 
-    if (mfr_evil_twin) {
+    if (det->ble_threat_kind == BLE_THREAT_KIND_PAIRING_SPAM) {
+        event->cls = BADGE_THREAT_BLE;
+        event->category = BADGE_THREAT_CATEGORY_BLE_SPAM;
+        copy_label(event->label, "BLE Spam");
+        snprintf(event->detail, sizeof(event->detail),
+                 "%u MACs / %u ads",
+                 (unsigned)det->ble_unique_macs,
+                 (unsigned)det->ble_observation_count);
+        event->base_score = 72.0f;
+        event->evidence_quality = 8;
+    } else if (det->ble_threat_kind == BLE_THREAT_KIND_SERIAL_SKIMMER) {
+        event->cls = BADGE_THREAT_OTHER;
+        event->category = BADGE_THREAT_CATEGORY_SKIM;
+        copy_label(event->label, "Possible Skimmer");
+        if (det->ble_serial_service_uuid != 0) {
+            snprintf(event->detail, sizeof(event->detail),
+                     "serial UUID 0x%04X",
+                     (unsigned)det->ble_serial_service_uuid);
+        } else {
+            copy_detail(event->detail, "behavioral BLE evidence");
+        }
+        event->base_score = 66.0f;
+        event->evidence_quality = 8;
+    } else if (mfr_evil_twin) {
         event->cls = BADGE_THREAT_WIFI_ANOMALY;
         event->category = BADGE_THREAT_CATEGORY_WIFI;
         copy_label(event->label, "Evil Twin");
@@ -2264,6 +2299,7 @@ const char *badge_threat_category_code(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_WIFI:      return "WIFI";
         case BADGE_THREAT_CATEGORY_TAG_CLOSE: return "TAG";
         case BADGE_THREAT_CATEGORY_PRIVACY:   return "PRV";
+        case BADGE_THREAT_CATEGORY_BLE_SPAM:  return "BSPM";
         default:                              return "FOF";
     }
 }
@@ -2286,6 +2322,7 @@ const char *badge_threat_category_name(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_WIFI:      return "WIFI";
         case BADGE_THREAT_CATEGORY_TAG_CLOSE: return "TAG";
         case BADGE_THREAT_CATEGORY_PRIVACY:   return "PRIV";
+        case BADGE_THREAT_CATEGORY_BLE_SPAM:  return "BLE SPAM";
         default:                              return "WATCH";
     }
 }
@@ -3226,6 +3263,9 @@ static void badge_threat_snapshot_entity_view_title(
             return;
         case BADGE_THREAT_CATEGORY_SKIM:
             snprintf(out, out_len, "SKIMMER");
+            return;
+        case BADGE_THREAT_CATEGORY_BLE_SPAM:
+            snprintf(out, out_len, "BLE SPAM");
             return;
         case BADGE_THREAT_CATEGORY_CAMERA:
             snprintf(out, out_len, "CAMERA NEAR");
