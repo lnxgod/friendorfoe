@@ -130,3 +130,17 @@ void test_badge_investigation_read_evidence_sanitizes_nonprintable_text(void)
     TEST_ASSERT_NOT_NULL(strchr(evidence, '?'));
     TEST_ASSERT_LESS_THAN_UINT32(sizeof(evidence), strlen(evidence));
 }
+
+void test_badge_investigation_security_view_marks_untransported_links_unknown(void)
+{
+    badge_investigation_security_view_t view;
+
+    badge_investigation_security_view(true, &view);
+    TEST_ASSERT_EQUAL_STRING("UNKNOWN", view.connectable);
+    TEST_ASSERT_EQUAL_STRING("UNKNOWN", view.bonded);
+    TEST_ASSERT_EQUAL_STRING("UNKNOWN", view.encrypted);
+    TEST_ASSERT_EQUAL_STRING("REQUIRED", view.authentication);
+
+    badge_investigation_security_view(false, &view);
+    TEST_ASSERT_EQUAL_STRING("NOT REQUIRED", view.authentication);
+}

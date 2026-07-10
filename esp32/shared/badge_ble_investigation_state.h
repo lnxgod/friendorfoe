@@ -16,6 +16,10 @@ extern "C" {
 #define BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX UART_JSON_MAX_SIZE
 #define BADGE_BLE_INVESTIGATION_USB_FRAME_MAX (UART_JSON_MAX_SIZE + 10)
 #define BADGE_BLE_INVESTIGATION_OPERATION_STACK_MAX 2048
+#define BADGE_BLE_INVESTIGATION_PENDING_CHUNKS 4
+/* Scanner deadlines are 12 s max. This bounded grace lets an END generated at
+ * that deadline traverse UART before the uplink authoritatively expires it. */
+#define BADGE_BLE_INVESTIGATION_TRANSPORT_GRACE_MS 1000U
 
 typedef struct {
     ble_investigation_result_t result;
@@ -23,8 +27,21 @@ typedef struct {
     bool begin_received;
     bool end_received;
     uint8_t chunk_count;
+    int64_t deadline_ms;
     ble_investigation_chunk_t chunks[BADGE_BLE_INVESTIGATION_MAX_CHUNKS];
 } badge_ble_investigation_state_t;
+
+typedef struct {
+    char request_id[BLE_INV_REQUEST_ID_LEN];
+    uint8_t first_seq;
+    uint8_t chunk_count;
+} badge_ble_investigation_expiry_t;
+
+typedef struct {
+    ble_investigation_chunk_t chunks[BADGE_BLE_INVESTIGATION_PENDING_CHUNKS];
+    uint8_t head;
+    uint8_t count;
+} badge_ble_investigation_pending_queue_t;
 
 typedef struct {
     bool valid;
@@ -65,9 +82,32 @@ bool badge_ble_investigation_state_start(
     const ble_investigation_request_t *request,
     bool scanner_available,
     int *scanner_slot_out);
+bool badge_ble_investigation_state_start_at(
+    badge_ble_investigation_state_t *state,
+    const ble_investigation_request_t *request,
+    bool scanner_available,
+    int64_t now_ms,
+    int *scanner_slot_out);
 bool badge_ble_investigation_state_accept(
     badge_ble_investigation_state_t *state,
     const ble_investigation_chunk_t *chunk);
+bool badge_ble_investigation_state_expire(
+    badge_ble_investigation_state_t *state,
+    int64_t now_ms,
+    badge_ble_investigation_expiry_t *expiry_out);
+void badge_ble_investigation_pending_queue_init(
+    badge_ble_investigation_pending_queue_t *queue);
+bool badge_ble_investigation_pending_queue_can_accept_expiry(
+    const badge_ble_investigation_pending_queue_t *queue);
+bool badge_ble_investigation_pending_queue_enqueue_expiry(
+    badge_ble_investigation_pending_queue_t *queue,
+    const badge_ble_investigation_state_t *state,
+    const badge_ble_investigation_expiry_t *expiry);
+bool badge_ble_investigation_pending_queue_peek(
+    const badge_ble_investigation_pending_queue_t *queue,
+    ble_investigation_chunk_t *out);
+bool badge_ble_investigation_pending_queue_consume(
+    badge_ble_investigation_pending_queue_t *queue);
 void badge_ble_investigation_state_get(
     const badge_ble_investigation_state_t *state,
     ble_investigation_result_t *out);

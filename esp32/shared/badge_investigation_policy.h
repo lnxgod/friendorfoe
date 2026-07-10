@@ -28,6 +28,13 @@ typedef struct {
     char bssid[18];
 } badge_investigation_selection_t;
 
+typedef struct {
+    const char *connectable;
+    const char *bonded;
+    const char *encrypted;
+    const char *authentication;
+} badge_investigation_security_view_t;
+
 void badge_investigation_selection_copy(
     badge_investigation_selection_t *out,
     bool has_entity,
@@ -49,6 +56,9 @@ bool badge_investigation_format_read_evidence(
     const ble_investigation_read_t *read,
     char *out,
     size_t out_len);
+void badge_investigation_security_view(
+    bool authentication_required,
+    badge_investigation_security_view_t *out);
 
 #ifdef __cplusplus
 }

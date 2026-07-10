@@ -6,6 +6,7 @@
 #include "badge_ble_investigation_state.h"
 #include "ble_investigation_protocol.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/portmacro.h"
@@ -16,16 +17,20 @@
 static const char *TAG = "badge_ble_inv";
 
 static badge_ble_investigation_state_t s_state;
+static badge_ble_investigation_pending_queue_t s_pending_chunks;
 static badge_ble_investigation_start_fence_t s_start_fence;
 static uint32_t s_revision = 0;
 static SemaphoreHandle_t s_lock = NULL;
+static SemaphoreHandle_t s_emit_lock = NULL;
 static bool s_initialized = false;
+static bool s_pending_queue_error = false;
 static portMUX_TYPE s_init_lock = portMUX_INITIALIZER_UNLOCKED;
 
 /* Scanner chunk ingress is single-owner UART slot 0; keep its large encoding
  * scratch out of the 8 KB UART task stack. */
 static char s_chunk_json[UART_JSON_MAX_SIZE];
 static char s_usb_frame[BADGE_BLE_INVESTIGATION_USB_FRAME_MAX];
+static ble_investigation_chunk_t s_pending_emit_chunk;
 
 static void set_error(char *err, size_t err_len, const char *message)
 {
@@ -49,8 +54,10 @@ static bool lock_state(void)
     if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) return false;
     if (!s_initialized) {
         badge_ble_investigation_state_init(&s_state);
+        badge_ble_investigation_pending_queue_init(&s_pending_chunks);
         badge_ble_investigation_start_fence_init(&s_start_fence);
         s_revision = 0;
+        s_pending_queue_error = false;
         s_initialized = true;
     }
     return true;
@@ -61,9 +68,92 @@ static void unlock_state(void)
     if (s_lock) xSemaphoreGive(s_lock);
 }
 
+static bool lock_emit(void)
+{
+    if (!s_emit_lock) {
+        SemaphoreHandle_t created = xSemaphoreCreateMutex();
+        if (!created) return false;
+        portENTER_CRITICAL(&s_init_lock);
+        if (!s_emit_lock) {
+            s_emit_lock = created;
+            created = NULL;
+        }
+        portEXIT_CRITICAL(&s_init_lock);
+        if (created) vSemaphoreDelete(created);
+    }
+    return xSemaphoreTake(s_emit_lock, portMAX_DELAY) == pdTRUE;
+}
+
+static void unlock_emit(void)
+{
+    if (s_emit_lock) xSemaphoreGive(s_emit_lock);
+}
+
+static int64_t investigation_now_ms(void)
+{
+    return esp_timer_get_time() / 1000LL;
+}
+
+/* Caller holds s_lock. Expiry mutates state and queues independent copies, but
+ * deliberately performs no USB output or logging while the state is locked. */
+static bool expire_locked(int64_t now_ms)
+{
+    badge_ble_investigation_expiry_t expiry;
+    if (!badge_ble_investigation_state_expire(&s_state, now_ms, &expiry)) {
+        return false;
+    }
+    if (!badge_ble_investigation_pending_queue_enqueue_expiry(
+            &s_pending_chunks, &s_state, &expiry)) {
+        s_pending_queue_error = true;
+    }
+    s_revision++;
+    return true;
+}
+
+/* Caller holds only s_emit_lock. The JSON/frame scratch is shared by scanner
+ * ingress and timeout polling, so both routes serialize through this helper. */
+static bool emit_chunk_locked(const ble_investigation_chunk_t *chunk)
+{
+    return chunk &&
+        ble_investigation_chunk_to_json(chunk, s_chunk_json,
+                                        sizeof(s_chunk_json)) > 0 &&
+        badge_ble_investigation_usb_frame(s_chunk_json, s_usb_frame,
+                                          sizeof(s_usb_frame)) > 0 &&
+        serial_config_emit_investigation_frame(s_usb_frame);
+}
+
 void badge_ble_investigation_init(void)
 {
     if (lock_state()) unlock_state();
+}
+
+void badge_ble_investigation_poll(void)
+{
+    if (!lock_emit()) return;
+
+    bool queue_error = false;
+    for (uint8_t i = 0; i < BADGE_BLE_INVESTIGATION_PENDING_CHUNKS; ++i) {
+        if (!lock_state()) break;
+        expire_locked(investigation_now_ms());
+        bool have_chunk = badge_ble_investigation_pending_queue_peek(
+            &s_pending_chunks, &s_pending_emit_chunk);
+        queue_error = queue_error || s_pending_queue_error;
+        s_pending_queue_error = false;
+        unlock_state();
+
+        if (!have_chunk || !emit_chunk_locked(&s_pending_emit_chunk)) break;
+
+        if (!lock_state()) break;
+        bool consumed = badge_ble_investigation_pending_queue_consume(
+            &s_pending_chunks);
+        unlock_state();
+        if (!consumed) break;
+    }
+    unlock_emit();
+
+    if (queue_error) {
+        ESP_LOGE(TAG, "BLE investigation timeout frame queue overflow");
+    }
 }
 
 static bool copy_json_string(const cJSON *root,
@@ -245,12 +335,15 @@ bool badge_ble_investigation_start(const char *request_id,
         set_error(err, err_len, "invalid_request");
         return false;
     }
-    if (!uart_rx_ble_investigation_ingress_available()) {
-        set_error(err, err_len, "scanner_unavailable");
-        return false;
-    }
+    bool scanner_available = uart_rx_ble_investigation_ingress_available();
     if (!lock_state()) {
         set_error(err, err_len, "busy");
+        return false;
+    }
+    expire_locked(investigation_now_ms());
+    if (!scanner_available) {
+        set_error(err, err_len, "scanner_unavailable");
+        unlock_state();
         return false;
     }
     if (s_start_fence.pending) {
@@ -258,9 +351,16 @@ bool badge_ble_investigation_start(const char *request_id,
         unlock_state();
         return false;
     }
+    if (!badge_ble_investigation_pending_queue_can_accept_expiry(
+            &s_pending_chunks)) {
+        set_error(err, err_len, "busy");
+        unlock_state();
+        return false;
+    }
     int scanner_slot = -1;
-    if (!badge_ble_investigation_state_start(
-            &s_state, &normalized, true, &scanner_slot)) {
+    if (!badge_ble_investigation_state_start_at(
+            &s_state, &normalized, true, investigation_now_ms(),
+            &scanner_slot)) {
         set_error(err, err_len, "busy");
         unlock_state();
         return false;
@@ -301,14 +401,14 @@ bool badge_ble_investigation_start_local(const char *request_id,
                                          size_t err_len)
 {
     return badge_ble_investigation_start(request_id, mode, target_mac,
-                                         "local_button", err, err_len);
+                                         "badge_button", err, err_len);
 }
 
 bool badge_ble_investigation_accept_scanner_json(const cJSON *root)
 {
     ble_investigation_chunk_t chunk;
-    ble_investigation_chunk_t emitted_chunk;
     if (!parse_chunk(root, &chunk) || !lock_state()) return false;
+    expire_locked(investigation_now_ms());
     uint8_t before_count = s_state.chunk_count;
     bool accepted = badge_ble_investigation_state_accept(&s_state, &chunk);
     bool stored = accepted && (s_state.chunk_count != before_count ||
@@ -316,16 +416,13 @@ bool badge_ble_investigation_accept_scanner_json(const cJSON *root)
     bool have_emitted_chunk = stored && s_state.chunk_count > 0 &&
         badge_ble_investigation_state_get_chunk(
             &s_state, chunk.request_id, s_state.chunk_count - 1,
-            &emitted_chunk);
+            &chunk);
     if (accepted) s_revision++;
     unlock_state();
 
-    if (have_emitted_chunk &&
-        ble_investigation_chunk_to_json(&emitted_chunk, s_chunk_json,
-                                        sizeof(s_chunk_json)) > 0 &&
-        badge_ble_investigation_usb_frame(s_chunk_json, s_usb_frame,
-                                          sizeof(s_usb_frame)) > 0) {
-        serial_config_emit_investigation_frame(s_usb_frame);
+    if (have_emitted_chunk && lock_emit()) {
+        emit_chunk_locked(&chunk);
+        unlock_emit();
     }
     return accepted;
 }
@@ -337,6 +434,7 @@ void badge_ble_investigation_get(ble_investigation_result_t *out)
         ble_investigation_result_init(out);
         return;
     }
+    expire_locked(investigation_now_ms());
     badge_ble_investigation_state_get(&s_state, out);
     unlock_state();
 }
@@ -347,6 +445,7 @@ size_t badge_ble_investigation_status_json(char *out, size_t out_len)
     out[0] = '\0';
     badge_ble_investigation_status_t status;
     if (!lock_state()) return 0;
+    expire_locked(investigation_now_ms());
     badge_ble_investigation_state_status(&s_state, &status);
     unlock_state();
     return badge_ble_investigation_status_to_json(&status, out, out_len);
@@ -356,6 +455,7 @@ bool badge_ble_investigation_chunk_available(const char *request_id, int seq)
 {
     ble_investigation_chunk_t chunk;
     if (!lock_state()) return false;
+    expire_locked(investigation_now_ms());
     bool available = badge_ble_investigation_state_get_chunk(
         &s_state, request_id, seq, &chunk);
     unlock_state();
@@ -371,6 +471,7 @@ size_t badge_ble_investigation_chunk_json(const char *request_id,
     out[0] = '\0';
     ble_investigation_chunk_t chunk;
     if (!lock_state()) return 0;
+    expire_locked(investigation_now_ms());
     bool found = badge_ble_investigation_state_get_chunk(
         &s_state, request_id, seq, &chunk);
     unlock_state();

@@ -201,10 +201,25 @@ void badge_ble_investigation_state_init(
     ble_investigation_result_init(&state->result);
 }
 
-bool badge_ble_investigation_state_start(
+static int64_t investigation_deadline_ms(int64_t now_ms, uint32_t timeout_ms)
+{
+    if (now_ms < 0) now_ms = 0;
+    uint32_t bounded_timeout = timeout_ms == 0
+        ? BLE_INV_DEFAULT_TIMEOUT_MS : timeout_ms;
+    if (bounded_timeout > BLE_INV_DEFAULT_TIMEOUT_MS) {
+        bounded_timeout = BLE_INV_DEFAULT_TIMEOUT_MS;
+    }
+    int64_t duration_ms = (int64_t)bounded_timeout +
+        BADGE_BLE_INVESTIGATION_TRANSPORT_GRACE_MS;
+    return now_ms > INT64_MAX - duration_ms
+        ? INT64_MAX : now_ms + duration_ms;
+}
+
+bool badge_ble_investigation_state_start_at(
     badge_ble_investigation_state_t *state,
     const ble_investigation_request_t *request,
     bool scanner_available,
+    int64_t now_ms,
     int *scanner_slot_out)
 {
     if (scanner_slot_out) *scanner_slot_out = -1;
@@ -221,9 +236,20 @@ bool badge_ble_investigation_state_start(
               checked.target_mac);
     state->result.mode = checked.mode;
     state->result.state = BLE_INV_QUEUED;
+    state->deadline_ms = investigation_deadline_ms(now_ms, checked.timeout_ms);
     state->active = true;
     if (scanner_slot_out) *scanner_slot_out = BADGE_BLE_INVESTIGATION_SCANNER_SLOT;
     return true;
+}
+
+bool badge_ble_investigation_state_start(
+    badge_ble_investigation_state_t *state,
+    const ble_investigation_request_t *request,
+    bool scanner_available,
+    int *scanner_slot_out)
+{
+    return badge_ble_investigation_state_start_at(
+        state, request, scanner_available, 0, scanner_slot_out);
 }
 
 static bool chunk_text_fields_valid(const ble_investigation_chunk_t *chunk)
@@ -334,6 +360,7 @@ static void apply_chunk_to_result(badge_ble_investigation_state_t *state,
         copy_text(state->result.error, sizeof(state->result.error), chunk->error);
         state->end_received = true;
         state->active = false;
+        state->deadline_ms = 0;
         return;
     default:
         return;
@@ -371,6 +398,135 @@ bool badge_ble_investigation_state_accept(
         state->chunks[state->chunk_count].truncated = state->result.truncated;
     }
     state->chunk_count++;
+    return true;
+}
+
+bool badge_ble_investigation_state_expire(
+    badge_ble_investigation_state_t *state,
+    int64_t now_ms,
+    badge_ble_investigation_expiry_t *expiry_out)
+{
+    if (expiry_out) memset(expiry_out, 0, sizeof(*expiry_out));
+    if (!state || !state->active || state->end_received ||
+        state->deadline_ms <= 0 || now_ms < state->deadline_ms) {
+        return false;
+    }
+
+    uint8_t first_seq = state->chunk_count;
+    uint8_t synthesized_count = 0;
+    if (!state->begin_received) {
+        if (state->chunk_count >= BADGE_BLE_INVESTIGATION_MAX_CHUNKS - 1) {
+            state->chunk_count = BADGE_BLE_INVESTIGATION_MAX_CHUNKS - 2;
+            state->result.truncated = true;
+            first_seq = state->chunk_count;
+        }
+        ble_investigation_chunk_t *begin =
+            &state->chunks[state->chunk_count];
+        memset(begin, 0, sizeof(*begin));
+        begin->kind = BLE_INV_CHUNK_BEGIN;
+        begin->mode = state->result.mode;
+        copy_text(begin->request_id, sizeof(begin->request_id),
+                  state->result.request_id);
+        copy_text(begin->target_mac, sizeof(begin->target_mac),
+                  state->result.target_mac);
+        if (!badge_ble_investigation_state_accept(state, begin)) return false;
+        synthesized_count++;
+    }
+
+    uint8_t terminal_seq = state->chunk_count <
+            BADGE_BLE_INVESTIGATION_MAX_CHUNKS
+        ? state->chunk_count
+        : BADGE_BLE_INVESTIGATION_MAX_CHUNKS - 1;
+    if (synthesized_count == 0) first_seq = terminal_seq;
+    ble_investigation_chunk_t *terminal = &state->chunks[terminal_seq];
+    memset(terminal, 0, sizeof(*terminal));
+    terminal->kind = BLE_INV_CHUNK_END;
+    terminal->state = BLE_INV_FAILED;
+    copy_text(terminal->request_id, sizeof(terminal->request_id),
+              state->result.request_id);
+    copy_text(terminal->summary, sizeof(terminal->summary), "timeout");
+    copy_text(terminal->error, sizeof(terminal->error), "timeout");
+    if (!badge_ble_investigation_state_accept(state, terminal)) return false;
+    synthesized_count++;
+
+    if (expiry_out) {
+        copy_text(expiry_out->request_id, sizeof(expiry_out->request_id),
+                  state->result.request_id);
+        expiry_out->first_seq = first_seq;
+        expiry_out->chunk_count = synthesized_count;
+    }
+    return true;
+}
+
+void badge_ble_investigation_pending_queue_init(
+    badge_ble_investigation_pending_queue_t *queue)
+{
+    if (queue) memset(queue, 0, sizeof(*queue));
+}
+
+bool badge_ble_investigation_pending_queue_can_accept_expiry(
+    const badge_ble_investigation_pending_queue_t *queue)
+{
+    return queue && queue->count <=
+        BADGE_BLE_INVESTIGATION_PENDING_CHUNKS - 2;
+}
+
+bool badge_ble_investigation_pending_queue_enqueue_expiry(
+    badge_ble_investigation_pending_queue_t *queue,
+    const badge_ble_investigation_state_t *state,
+    const badge_ble_investigation_expiry_t *expiry)
+{
+    if (!queue || !state || !expiry || expiry->chunk_count == 0 ||
+        expiry->chunk_count > 2 ||
+        queue->count > BADGE_BLE_INVESTIGATION_PENDING_CHUNKS ||
+        expiry->chunk_count >
+            BADGE_BLE_INVESTIGATION_PENDING_CHUNKS - queue->count ||
+        expiry->first_seq >= state->chunk_count ||
+        expiry->chunk_count > state->chunk_count - expiry->first_seq) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < expiry->chunk_count; ++i) {
+        const ble_investigation_chunk_t *chunk =
+            &state->chunks[expiry->first_seq + i];
+        if (!request_id_equal(chunk->request_id, expiry->request_id)) {
+            return false;
+        }
+    }
+
+    for (uint8_t i = 0; i < expiry->chunk_count; ++i) {
+        uint8_t tail = (uint8_t)((queue->head + queue->count + i) %
+            BADGE_BLE_INVESTIGATION_PENDING_CHUNKS);
+        queue->chunks[tail] = state->chunks[expiry->first_seq + i];
+    }
+    queue->count = (uint8_t)(queue->count + expiry->chunk_count);
+    return true;
+}
+
+bool badge_ble_investigation_pending_queue_peek(
+    const badge_ble_investigation_pending_queue_t *queue,
+    ble_investigation_chunk_t *out)
+{
+    if (!queue || !out || queue->count == 0 ||
+        queue->head >= BADGE_BLE_INVESTIGATION_PENDING_CHUNKS) {
+        return false;
+    }
+    *out = queue->chunks[queue->head];
+    return true;
+}
+
+bool badge_ble_investigation_pending_queue_consume(
+    badge_ble_investigation_pending_queue_t *queue)
+{
+    if (!queue || queue->count == 0 ||
+        queue->head >= BADGE_BLE_INVESTIGATION_PENDING_CHUNKS) {
+        return false;
+    }
+    memset(&queue->chunks[queue->head], 0,
+           sizeof(queue->chunks[queue->head]));
+    queue->head = (uint8_t)((queue->head + 1) %
+        BADGE_BLE_INVESTIGATION_PENDING_CHUNKS);
+    queue->count--;
     return true;
 }
 

@@ -54,6 +54,19 @@ static void start_request(badge_ble_investigation_state_t *state,
     TEST_ASSERT_EQUAL_INT(0, scanner_slot);
 }
 
+static void start_request_at(badge_ble_investigation_state_t *state,
+                             ble_investigation_request_t *request,
+                             int64_t now_ms)
+{
+    int scanner_slot = -1;
+    badge_ble_investigation_state_init(state);
+    make_request(request, "expiry-1", BLE_INV_MODE_GATT,
+                 "AA:BB:CC:DD:EE:FF");
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_start_at(
+        state, request, true, now_ms, &scanner_slot));
+    TEST_ASSERT_EQUAL_INT(0, scanner_slot);
+}
+
 static void accept_begin(badge_ble_investigation_state_t *state,
                          const ble_investigation_request_t *request)
 {
@@ -165,6 +178,223 @@ void test_badge_investigation_transport_loss_keeps_local_operation_active(void)
     copy_text(progress.request_id, sizeof(progress.request_id), "req-1");
     TEST_ASSERT_TRUE(badge_ble_investigation_state_accept(&state, &progress));
     TEST_ASSERT_EQUAL(BLE_INV_CONNECTING, state.result.state);
+}
+
+void test_badge_investigation_expiry_before_deadline_is_noop(void)
+{
+    badge_ble_investigation_state_t state;
+    ble_investigation_request_t request;
+    badge_ble_investigation_expiry_t expiry;
+    start_request_at(&state, &request, 1000);
+
+    TEST_ASSERT_EQUAL_INT64(
+        1000 + BLE_INV_DEFAULT_TIMEOUT_MS +
+            BADGE_BLE_INVESTIGATION_TRANSPORT_GRACE_MS,
+        state.deadline_ms);
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_expire(
+        &state, state.deadline_ms - 1, &expiry));
+    TEST_ASSERT_TRUE(state.active);
+    TEST_ASSERT_FALSE(state.end_received);
+    TEST_ASSERT_EQUAL_UINT8(0, state.chunk_count);
+    TEST_ASSERT_EQUAL_UINT8(0, expiry.chunk_count);
+}
+
+void test_badge_investigation_expiry_at_deadline_synthesizes_timeout(void)
+{
+    badge_ble_investigation_state_t state;
+    ble_investigation_request_t request;
+    badge_ble_investigation_expiry_t expiry;
+    ble_investigation_chunk_t terminal;
+    start_request_at(&state, &request, 5000);
+    accept_begin(&state, &request);
+
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_expire(
+        &state, state.deadline_ms, &expiry));
+    TEST_ASSERT_FALSE(state.active);
+    TEST_ASSERT_TRUE(state.end_received);
+    TEST_ASSERT_EQUAL(BLE_INV_FAILED, state.result.state);
+    TEST_ASSERT_EQUAL_STRING("timeout", state.result.summary);
+    TEST_ASSERT_EQUAL_STRING("timeout", state.result.error);
+    TEST_ASSERT_EQUAL_UINT8(1, expiry.chunk_count);
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_get_chunk(
+        &state, request.request_id, expiry.first_seq, &terminal));
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_END, terminal.kind);
+    TEST_ASSERT_EQUAL(BLE_INV_FAILED, terminal.state);
+    TEST_ASSERT_EQUAL_STRING("timeout", terminal.summary);
+    TEST_ASSERT_EQUAL_STRING("timeout", terminal.error);
+}
+
+void test_badge_investigation_expiry_before_begin_stores_valid_begin_then_end(void)
+{
+    badge_ble_investigation_state_t state;
+    ble_investigation_request_t request;
+    badge_ble_investigation_expiry_t expiry;
+    ble_investigation_chunk_t begin;
+    ble_investigation_chunk_t terminal;
+    char json[UART_JSON_MAX_SIZE];
+    start_request_at(&state, &request, 9000);
+
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_expire(
+        &state, state.deadline_ms + 1, &expiry));
+    TEST_ASSERT_EQUAL_UINT8(2, expiry.chunk_count);
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_get_chunk(
+        &state, request.request_id, expiry.first_seq, &begin));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_get_chunk(
+        &state, request.request_id, expiry.first_seq + 1, &terminal));
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_BEGIN, begin.kind);
+    TEST_ASSERT_EQUAL_STRING(request.request_id, begin.request_id);
+    TEST_ASSERT_EQUAL(BLE_INV_MODE_GATT, begin.mode);
+    TEST_ASSERT_EQUAL_STRING(request.target_mac, begin.target_mac);
+    TEST_ASSERT_GREATER_THAN_UINT32(0,
+        ble_investigation_chunk_to_json(&begin, json, sizeof(json)));
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_END, terminal.kind);
+    TEST_ASSERT_EQUAL(BLE_INV_FAILED, terminal.state);
+    TEST_ASSERT_GREATER_THAN_UINT32(0,
+        ble_investigation_chunk_to_json(&terminal, json, sizeof(json)));
+}
+
+void test_badge_investigation_expiry_rejects_late_chunks_and_allows_restart(void)
+{
+    badge_ble_investigation_state_t state;
+    ble_investigation_request_t request;
+    ble_investigation_request_t next_request;
+    badge_ble_investigation_expiry_t expiry;
+    ble_investigation_chunk_t late_progress = {0};
+    int scanner_slot = -1;
+    start_request_at(&state, &request, 12000);
+    accept_begin(&state, &request);
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_expire(
+        &state, state.deadline_ms + 50, &expiry));
+
+    late_progress.kind = BLE_INV_CHUNK_PROGRESS;
+    late_progress.state = BLE_INV_READING;
+    copy_text(late_progress.request_id, sizeof(late_progress.request_id),
+              request.request_id);
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_accept(
+        &state, &late_progress));
+
+    make_request(&next_request, "expiry-2", BLE_INV_MODE_GATT,
+                 "11:22:33:44:55:66");
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_start_at(
+        &state, &next_request, true, state.deadline_ms + 100,
+        &scanner_slot));
+    TEST_ASSERT_TRUE(state.active);
+    TEST_ASSERT_EQUAL_STRING("expiry-2", state.result.request_id);
+}
+
+void test_badge_investigation_dropped_end_reconnect_expires_without_transport_cancel(void)
+{
+    badge_ble_investigation_state_t state;
+    ble_investigation_request_t request;
+    badge_ble_investigation_expiry_t expiry;
+    ble_investigation_chunk_t progress = {0};
+    ble_investigation_chunk_t terminal;
+    start_request_at(&state, &request, 15000);
+    accept_begin(&state, &request);
+    progress.kind = BLE_INV_CHUNK_PROGRESS;
+    progress.state = BLE_INV_READING;
+    copy_text(progress.request_id, sizeof(progress.request_id),
+              request.request_id);
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_accept(&state, &progress));
+
+    badge_ble_investigation_state_transport_lost(&state);
+    TEST_ASSERT_TRUE(state.active);
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_expire(
+        &state, state.deadline_ms - 1, &expiry));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_expire(
+        &state, state.deadline_ms, &expiry));
+    TEST_ASSERT_FALSE(state.active);
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_get_chunk(
+        &state, request.request_id, expiry.first_seq, &terminal));
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_END, terminal.kind);
+    TEST_ASSERT_EQUAL_STRING("timeout", terminal.error);
+}
+
+void test_badge_investigation_pending_timeout_survives_subsequent_start(void)
+{
+    static badge_ble_investigation_state_t state;
+    static badge_ble_investigation_pending_queue_t pending;
+    static char chunk_json[UART_JSON_MAX_SIZE];
+    static char usb_frame[BADGE_BLE_INVESTIGATION_USB_FRAME_MAX];
+    ble_investigation_request_t request;
+    ble_investigation_request_t next_request;
+    badge_ble_investigation_expiry_t expiry;
+    ble_investigation_chunk_t queued;
+    int scanner_slot = -1;
+    badge_ble_investigation_pending_queue_init(&pending);
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_can_accept_expiry(
+        &pending));
+    start_request_at(&state, &request, 20000);
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_expire(
+        &state, state.deadline_ms, &expiry));
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_enqueue_expiry(
+        &pending, &state, &expiry));
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_can_accept_expiry(
+        &pending));
+
+    make_request(&next_request, "after-timeout", BLE_INV_MODE_GATT,
+                 "11:22:33:44:55:66");
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_start_at(
+        &state, &next_request, true, 40000, &scanner_slot));
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_peek(
+        &pending, &queued));
+    TEST_ASSERT_EQUAL_STRING("expiry-1", queued.request_id);
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_BEGIN, queued.kind);
+    TEST_ASSERT_GREATER_THAN_UINT32(0, ble_investigation_chunk_to_json(
+        &queued, chunk_json, sizeof(chunk_json)));
+    TEST_ASSERT_GREATER_THAN_UINT32(0, badge_ble_investigation_usb_frame(
+        chunk_json, usb_frame, sizeof(usb_frame)));
+    TEST_ASSERT_EQUAL_STRING_LEN("FOF_INV:", usb_frame, 8);
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_consume(&pending));
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_peek(
+        &pending, &queued));
+    TEST_ASSERT_EQUAL_STRING("expiry-1", queued.request_id);
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_END, queued.kind);
+    TEST_ASSERT_GREATER_THAN_UINT32(0, ble_investigation_chunk_to_json(
+        &queued, chunk_json, sizeof(chunk_json)));
+    TEST_ASSERT_NOT_NULL(strstr(chunk_json, "\"error\":\"timeout\""));
+    TEST_ASSERT_GREATER_THAN_UINT32(0, badge_ble_investigation_usb_frame(
+        chunk_json, usb_frame, sizeof(usb_frame)));
+    TEST_ASSERT_LESS_THAN_UINT32(BADGE_BLE_INVESTIGATION_USB_FRAME_MAX,
+                                 strlen(usb_frame));
+}
+
+void test_badge_investigation_pending_queue_rejects_full_without_overwrite(void)
+{
+    static badge_ble_investigation_state_t state;
+    static badge_ble_investigation_pending_queue_t pending;
+    ble_investigation_request_t request;
+    badge_ble_investigation_expiry_t expiry;
+    ble_investigation_chunk_t queued;
+    badge_ble_investigation_pending_queue_init(&pending);
+
+    for (int i = 0; i < 2; ++i) {
+        start_request_at(&state, &request, 50000 + i * 20000);
+        TEST_ASSERT_TRUE(badge_ble_investigation_state_expire(
+            &state, state.deadline_ms, &expiry));
+        TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_enqueue_expiry(
+            &pending, &state, &expiry));
+    }
+    TEST_ASSERT_EQUAL_UINT8(BADGE_BLE_INVESTIGATION_PENDING_CHUNKS,
+                            pending.count);
+    TEST_ASSERT_FALSE(badge_ble_investigation_pending_queue_can_accept_expiry(
+        &pending));
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_peek(
+        &pending, &queued));
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_BEGIN, queued.kind);
+
+    start_request_at(&state, &request, 100000);
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_expire(
+        &state, state.deadline_ms, &expiry));
+    TEST_ASSERT_FALSE(badge_ble_investigation_pending_queue_enqueue_expiry(
+        &pending, &state, &expiry));
+    TEST_ASSERT_EQUAL_UINT8(BADGE_BLE_INVESTIGATION_PENDING_CHUNKS,
+                            pending.count);
+    TEST_ASSERT_FALSE(badge_ble_investigation_pending_queue_can_accept_expiry(
+        &pending));
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_peek(
+        &pending, &queued));
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_BEGIN, queued.kind);
 }
 
 void test_badge_investigation_ble_chunk_cursor_is_bounded(void)

@@ -129,3 +129,15 @@ bool badge_investigation_format_read_evidence(
     }
     return used > 0;
 }
+
+void badge_investigation_security_view(
+    bool authentication_required,
+    badge_investigation_security_view_t *out)
+{
+    if (!out) return;
+    out->connectable = "UNKNOWN";
+    out->bonded = "UNKNOWN";
+    out->encrypted = "UNKNOWN";
+    out->authentication = authentication_required
+        ? "REQUIRED" : "NOT REQUIRED";
+}

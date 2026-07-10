@@ -6060,26 +6060,35 @@ static void draw_badge_investigation_overlay(void)
             draw_detail_pair(95, "SERIAL", "none reported");
         }
     } else {
+        badge_investigation_security_view_t security;
+        badge_investigation_security_view(
+            s_investigation_result.authentication_required, &security);
         fb_draw_string_fit(7, 21, "SECURITY / EVIDENCE", LCD_W - 14,
                            COL_WHITE, COL_BLACK);
-        snprintf(value, sizeof(value), "CONN %s  BOND %s",
-                 s_investigation_result.connectable ? "YES" : "NO",
-                 s_investigation_result.bonded ? "YES" : "NO");
-        draw_detail_pair(44, "LINK", value);
-        snprintf(value, sizeof(value), "ENC %s  AUTH %s",
-                 s_investigation_result.encrypted ? "YES" : "NO",
-                 s_investigation_result.authentication_required ? "REQ" : "NO");
-        draw_detail_pair(62, "SEC", value);
-        draw_detail_pair(80, "TRUNC",
-                         s_investigation_result.truncated ? "YES" : "NO");
+        snprintf(value, sizeof(value), "CONNECTABLE %s", security.connectable);
+        fb_draw_tiny_string_fit(7, 40, value, LCD_W - 14,
+                                COL_GRAY, COL_BLACK);
+        snprintf(value, sizeof(value), "BONDED %s", security.bonded);
+        fb_draw_tiny_string_fit(7, 49, value, LCD_W - 14,
+                                COL_GRAY, COL_BLACK);
+        snprintf(value, sizeof(value), "ENCRYPTED %s", security.encrypted);
+        fb_draw_tiny_string_fit(7, 58, value, LCD_W - 14,
+                                COL_GRAY, COL_BLACK);
+        snprintf(value, sizeof(value), "AUTH %s", security.authentication);
+        fb_draw_tiny_string_fit(7, 67, value, LCD_W - 14,
+                                COL_WHITE, COL_BLACK);
+        snprintf(value, sizeof(value), "TRUNC %s",
+                 s_investigation_result.truncated ? "YES" : "NO");
+        fb_draw_tiny_string_fit(7, 76, value, LCD_W - 14,
+                                COL_WHITE, COL_BLACK);
         char read_evidence[BADGE_INVESTIGATION_READ_EVIDENCE_LEN] = {0};
         bool have_read_evidence = s_investigation_result.read_count > 0 &&
             badge_investigation_format_read_evidence(
                 &s_investigation_result.reads[0],
                 read_evidence, sizeof(read_evidence));
-        fb_draw_tiny_string(7, 96, "CAPTURED READ",
+        fb_draw_tiny_string(7, 91, "CAPTURED READ",
                             COL_DARKGRAY, COL_BLACK);
-        fb_draw_tiny_string_fit(7, 105,
+        fb_draw_tiny_string_fit(7, 100,
                                 have_read_evidence ? read_evidence : "NONE",
                                 LCD_W - 14,
                                 have_read_evidence ? COL_CYAN : COL_GRAY,
@@ -6090,9 +6099,9 @@ static void draw_badge_investigation_overlay(void)
                             overlay->start_error[0]
                                 ? sizeof(overlay->start_error)
                                 : sizeof(s_investigation_result.error));
-        fb_draw_tiny_string(7, 121, "ERROR",
+        fb_draw_tiny_string(7, 116, "ERROR",
                             COL_DARKGRAY, COL_BLACK);
-        fb_draw_tiny_string_fit(7, 130,
+        fb_draw_tiny_string_fit(7, 125,
                                 value[0] ? value : "NONE",
                                 LCD_W - 14,
                                 value[0] ? COL_ROSE : COL_GRAY, COL_BLACK);
@@ -6366,6 +6375,7 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     (void)battery_pct;  /* badge has no battery monitor */
     (void)uptime_s;
     if (!s_initialized) return;
+    badge_ble_investigation_poll();
     if (!display_lock(pdMS_TO_TICKS(30))) return;
 
     s_anim_frame++;

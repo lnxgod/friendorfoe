@@ -13,6 +13,7 @@ extern "C" {
 #define BADGE_BLE_INVESTIGATION_CHUNK_JSON_MAX UART_JSON_MAX_SIZE
 
 void badge_ble_investigation_init(void);
+void badge_ble_investigation_poll(void);
 bool badge_ble_investigation_start(const char *request_id,
                                    const char *mode,
                                    const char *target_mac,
