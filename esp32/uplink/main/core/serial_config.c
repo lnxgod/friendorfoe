@@ -429,11 +429,18 @@ static void print_badge_display_state_field(void)
     oled_badge_display_state_t state;
     bool active = oled_badge_get_display_state(&state);
     printf(",\"display_state\":{\"active\":%s,\"detail_mode\":%s,"
-           "\"detail_page\":%d,\"focus_index\":%d,\"focus_total\":%d,"
-           "\"item_index\":%d,\"item_total\":%d,\"lane\":",
+           "\"detail_page\":%d,\"investigation\":{\"active\":%s,"
+           "\"request_id\":",
            active ? "true" : "false",
            state.detail_mode ? "true" : "false",
            state.detail_page,
+           state.investigation_active ? "true" : "false");
+    print_json_escaped_string(state.investigation_request_id);
+    printf(",\"state\":");
+    print_json_escaped_string(state.investigation_state);
+    printf(",\"page\":%d},\"focus_index\":%d,\"focus_total\":%d,"
+           "\"item_index\":%d,\"item_total\":%d,\"lane\":",
+           state.investigation_page,
            state.focus_index,
            state.focus_total,
            state.item_index,
