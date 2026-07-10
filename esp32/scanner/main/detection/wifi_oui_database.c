@@ -19,68 +19,100 @@ typedef struct {
     oui_entry_t entry;
 } oui_table_entry_t;
 
+/*
+ * All entries below verified against the IEEE MA-L/MA-M/MA-S registry
+ * (2026-07). Only exclusive /24 (MA-L) blocks are treated as confident
+ * (high_false_positive = false): MA-M(/28) and MA-S(/36) blocks share their
+ * first 3 bytes across ~15 unrelated companies, so a 3-byte match on them is
+ * unreliable and those vendors (Autel, Yuneec, Hubsan, Quantum-Systems, Silvus)
+ * are detected via SSID/RID instead. Several legacy rows were mislabeled and
+ * generated false positives; they are corrected to the true IEEE owner and
+ * flagged high_false_positive (kept for enrichment, excluded from isDroneOui()).
+ * This table is kept in parity with Android WifiOuiDatabase.kt.
+ */
 static const oui_table_entry_t OUI_TABLE[] = {
-    /* ── DJI Technology ────────────────────────────────────────────────────── */
-    { { 0x60, 0x60, 0x1F }, { "DJI",            "DJI Technology Co.",             false } },
-    { { 0x34, 0xD2, 0x62 }, { "DJI",            "DJI Technology Co.",             false } },
-    { { 0x48, 0x1C, 0xB9 }, { "DJI",            "DJI Innovation Technology",      false } },
-    { { 0x08, 0xD4, 0x6A }, { "DJI",            "DJI Technology (Shenzhen)",      false } },
-    { { 0xD0, 0x32, 0x9A }, { "DJI",            "DJI Technology Co.",             false } },
-    { { 0xC4, 0x2F, 0x90 }, { "DJI",            "DJI Technology Co.",             false } },
+    /* ── DJI Technology (SZ DJI, Ronin, Osmo, Baiwang subsidiaries) ────────── */
+    { { 0x60, 0x60, 0x1F }, { "DJI",            "SZ DJI Technology Co.",          false } },
+    { { 0x34, 0xD2, 0x62 }, { "DJI",            "SZ DJI Technology Co.",          false } },
+    { { 0x48, 0x1C, 0xB9 }, { "DJI",            "SZ DJI Technology Co.",          false } },
+    { { 0x04, 0xA8, 0x5A }, { "DJI",            "SZ DJI Technology Co.",          false } },
+    { { 0x0C, 0x9A, 0xE6 }, { "DJI",            "SZ DJI Technology Co.",          false } },
+    { { 0x4C, 0x43, 0xF6 }, { "DJI",            "SZ DJI Technology Co.",          false } },
+    { { 0x58, 0xB8, 0x58 }, { "DJI",            "SZ DJI Technology Co.",          false } },
+    { { 0x88, 0x29, 0x85 }, { "DJI",            "SZ DJI Technology Co.",          false } },
+    { { 0x8C, 0x58, 0x23 }, { "DJI",            "SZ DJI Technology Co.",          false } },
+    { { 0xE4, 0x7A, 0x2C }, { "DJI",            "SZ DJI Technology Co.",          false } },
+    { { 0xF8, 0x40, 0x68 }, { "DJI",            "SZ DJI Ronin Technology Co.",    false } },
+    { { 0x20, 0x1F, 0x55 }, { "DJI",            "DJI Osmo Technology Co.",        false } },
+    { { 0x9C, 0x5A, 0x8A }, { "DJI",            "DJI Baiwang Technology Co.",     false } },
+    { { 0xEC, 0x72, 0xF7 }, { "DJI",            "DJI Baiwang Technology Co.",     false } },
 
     /* ── Parrot SA ─────────────────────────────────────────────────────────── */
     { { 0xA0, 0x14, 0x3D }, { "Parrot",         "Parrot SA",                      false } },
     { { 0x90, 0x03, 0xB7 }, { "Parrot",         "Parrot SA",                      false } },
     { { 0x00, 0x12, 0x1C }, { "Parrot",         "Parrot SA",                      false } },
     { { 0x00, 0x26, 0x7E }, { "Parrot",         "Parrot SA",                      false } },
+    { { 0x90, 0x3A, 0xE6 }, { "Parrot",         "Parrot SA",                      false } },
 
-    /* ── Autel Robotics ────────────────────────────────────────────────────── */
-    { { 0x2C, 0xDC, 0xAD }, { "Autel",          "Autel Robotics",                false } },
-    { { 0x78, 0x8C, 0xB5 }, { "Autel",          "Autel Intelligent Technology",  false } },
+    /* ── Skydio (58:D5:6E was mislabeled: it is D-Link) ────────────────────── */
+    { { 0x38, 0x1D, 0x14 }, { "Skydio",         "Skydio Inc.",                    false } },
 
-    /* ── Skydio ────────────────────────────────────────────────────────────── */
-    { { 0x58, 0xD5, 0x6E }, { "Skydio",         "Skydio Inc.",                    false } },
+    /* ── Zero Zero Robotics (HoverAir) ─────────────────────────────────────── */
+    { { 0x84, 0x83, 0x19 }, { "HOVERAir",       "Hangzhou Zero Zero Technology",  false } },
 
-    /* ── Yuneec ────────────────────────────────────────────────────────────── */
-    { { 0xEC, 0xD0, 0x9F }, { "Yuneec",         "Yuneec International",           false } },
-    { { 0x64, 0xD4, 0xDA }, { "Yuneec",         "Yuneec International",           false } },
+    /* ── Teal Drones (Red Cat) ─────────────────────────────────────────────── */
+    { { 0xB0, 0x30, 0xC8 }, { "Teal",           "Teal Drones, Inc.",              false } },
 
-    /* ── HOVERAir (Zero Zero Robotics) ─────────────────────────────────────── */
-    { { 0x10, 0xD0, 0x7A }, { "HOVERAir",       "Zero Zero Robotics",             false } },
+    /* ── Freefly Systems ───────────────────────────────────────────────────── */
+    { { 0xEC, 0x71, 0x5E }, { "Freefly",        "Freefly Systems Inc.",           false } },
 
-    /* ── Xiaomi / FIMI ─────────────────────────────────────────────────────── */
-    { { 0x28, 0x6C, 0x07 }, { "Xiaomi",         "Xiaomi Communications",          false } },
-    { { 0x64, 0xCE, 0x01 }, { "Xiaomi",         "Xiaomi Communications",          false } },
-    { { 0x9C, 0x99, 0xA0 }, { "FIMI",           "Xiaomi FIMI",                    false } },
+    /* ── PowerVision ───────────────────────────────────────────────────────── */
+    { { 0x54, 0x7D, 0x40 }, { "PowerVision",    "Powervision Tech Inc.",          false } },
 
-    /* ── Hubsan ────────────────────────────────────────────────────────────── */
-    { { 0xD8, 0x96, 0xE0 }, { "Hubsan",         "Hubsan Technology",              false } },
+    /* ── Military / tactical UAS + MANET datalinks (verified /24) ──────────── */
+    { { 0x14, 0xDD, 0x48 }, { "Shield AI",      "Shield AI Inc.",                 false } },
+    { { 0x00, 0x1A, 0xF9 }, { "AeroVironment",  "AeroVironment Inc.",             false } },
+    { { 0x00, 0x18, 0xA6 }, { "Persistent",     "Persistent Systems LLC (MPU5)",  false } },
+    { { 0x00, 0x0F, 0x92 }, { "Microhard",      "Microhard Systems (Canada)",     false } },
+    { { 0x00, 0x1E, 0x3F }, { "TrellisWare",    "TrellisWare Technologies",       false } },
+    { { 0x98, 0x49, 0x9F }, { "DTC",            "Domo Tactical Communications",   false } },
+    { { 0x00, 0x30, 0x1A }, { "Doodle Labs",    "Doodle Labs (Smartbridges)",     false } },
+    { { 0x00, 0x13, 0x56 }, { "FLIR",           "Teledyne FLIR",                  false } },
 
-    /* ── Holy Stone ────────────────────────────────────────────────────────── */
-    { { 0xCC, 0xDB, 0xA7 }, { "Holy Stone",     "Holy Stone",                     false } },
+    /* ── Privacy infrastructure / ALPR / surveillance cameras ─────────────────
+     * B4:1E:52 is the IEEE registered Flock Safety OUI. C4:2F:90 (Hikvision)
+     * and E8:AB:FA (Reecam) were mislabeled as drones; corrected to their true
+     * camera vendors and flagged (privacy relevance, not drone). */
+    { { 0xB4, 0x1E, 0x52 }, { "Flock Safety",   "Flock Safety ALPR/camera registered OUI", false } },
+    { { 0xC4, 0x2F, 0x90 }, { "Hikvision",      "Hangzhou Hikvision (IP camera)", true  } },
+    { { 0xE8, 0xAB, 0xFA }, { "Reecam",         "Shenzhen Reecam (IP camera)",    true  } },
 
-    /* ── Potensic ──────────────────────────────────────────────────────────── */
-    { { 0xB0, 0xA7, 0x32 }, { "Potensic",       "Potensic",                       false } },
+    /* ── Generic module makers (high false-positive: seen on many budget
+     *    drones AND unrelated IoT). B0:A7:32/CC:DB:A7 were mislabeled as
+     *    Potensic/Holy Stone; both are Espressif. 10:D0:7A was HOVERAir
+     *    (AMPAK), 2C:DC:AD was Autel (WNC), EC:D0:9F was Yuneec (Xiaomi),
+     *    78:8C:B5 was Autel (TP-Link). ───────────────────────────────────── */
+    { { 0x24, 0x0A, 0xC4 }, { "Espressif",      "Espressif Systems",              true  } },
+    { { 0x30, 0xAE, 0xA4 }, { "Espressif",      "Espressif Systems",              true  } },
+    { { 0xA4, 0xCF, 0x12 }, { "Espressif",      "Espressif Systems",              true  } },
+    { { 0xAC, 0x67, 0xB2 }, { "Espressif",      "Espressif Systems",              true  } },
+    { { 0x10, 0x06, 0x1C }, { "Espressif",      "Espressif Systems",              true  } },
+    { { 0xB0, 0xA7, 0x32 }, { "Espressif",      "Espressif Systems",              true  } },
+    { { 0xCC, 0xDB, 0xA7 }, { "Espressif",      "Espressif Systems",              true  } },
+    { { 0x00, 0xE0, 0x4C }, { "Realtek",        "Realtek Semiconductor",          true  } },
+    { { 0x08, 0xEA, 0x40 }, { "Bilian",         "Shenzhen Bilian (LB-LINK)",      true  } },
+    { { 0x10, 0xD0, 0x7A }, { "AMPAK",          "AMPAK Technology (WiFi module)", true  } },
+    { { 0x2C, 0xDC, 0xAD }, { "WNC",            "Wistron NeWeb (ODM module)",     true  } },
+    { { 0x28, 0x6C, 0x07 }, { "Xiaomi",         "Xiaomi Communications",          true  } },
+    { { 0xEC, 0xD0, 0x9F }, { "Xiaomi",         "Xiaomi Communications",          true  } },
+    { { 0x9C, 0x99, 0xA0 }, { "Xiaomi/FIMI",    "Xiaomi Communications (FIMI)",   true  } },
+    { { 0x78, 0x8C, 0xB5 }, { "TP-Link",        "TP-Link Systems",                true  } },
 
-    /* ── Walkera ───────────────────────────────────────────────────────────── */
-    { { 0xC8, 0x14, 0x51 }, { "Walkera",        "Walkera Technology Co.",          false } },
-
-    /* ── Syma ──────────────────────────────────────────────────────────────── */
-    { { 0xE8, 0xAB, 0xFA }, { "Syma",           "Syma",                            false } },
-
-    /* ── Espressif Systems (high false-positive: ESP used in many IoT) ────── */
-    { { 0x24, 0x0A, 0xC4 }, { "Generic/ESP",    "Espressif Systems",              true  } },
-    { { 0x30, 0xAE, 0xA4 }, { "Generic/ESP",    "Espressif Systems",              true  } },
-    { { 0xA4, 0xCF, 0x12 }, { "Generic/ESP",    "Espressif Systems",              true  } },
-    { { 0xAC, 0x67, 0xB2 }, { "Generic/ESP",    "Espressif Systems",              true  } },
-
-    /* ── Realtek (high false-positive: used in many budget Chinese drones) ── */
-    { { 0x00, 0xE0, 0x4C }, { "Generic/Realtek", "Realtek Semiconductor",         true  } },
-
-    /* ── Privacy infrastructure / ALPR ───────────────────────────────────────
-     * B4:1E:52 is the IEEE registered Flock Safety OUI. Keep Flock matching
-     * limited to this registered prefix unless stronger field evidence lands. */
-    { { 0xB4, 0x1E, 0x52 }, { "Flock Safety",    "Flock Safety ALPR/camera registered OUI", false } },
+    /* Removed as mislabels (true owner is an unrelated consumer vendor, no
+     * detection value): 08:D4:6A=LG, 64:D4:DA=Intel, 58:D5:6E=D-Link,
+     * C8:14:51=Huawei, D8:96:E0=Alibaba Cloud; and observed-only prefixes not
+     * in the IEEE registry (D0:32:9A, 64:CE:01). Holy Stone 00:0C:BF NOT added:
+     * that IEEE record is a Taiwanese capacitor maker, not the drone brand. */
 };
 
 #define OUI_TABLE_SIZE  (sizeof(OUI_TABLE) / sizeof(OUI_TABLE[0]))

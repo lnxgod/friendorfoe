@@ -91,10 +91,13 @@ class WifiDroneScanner @Inject constructor(
             DronePattern("X1PRO", "HOVERAir"),
             DronePattern("X1-PRO", "HOVERAir"),
             DronePattern("X1 PRO", "HOVERAir"),
+            DronePattern("HoverX1_", "HOVERAir"),   // Official AP name HoverX1_xxxx (X1/Pro/ProMax/Aqua)
             // HOVER- removed: too generic, redundant with 8 more specific HOVER patterns above
             // Holy Stone
             // HOLY removed: too broad, specific Holy Stone prefixes remain below
             DronePattern("HS-", "Holy Stone"),
+            DronePattern("HolyStoneFPV-", "Holy Stone"),  // HS175D V5 / HS720 manual AP-name variant
+            DronePattern("Hubsan-Zino-", "Hubsan"),       // Official AP name Hubsan-Zino-XXXXXX
             // Other known brands
             DronePattern("SIMREX-", "SIMREX"),
             DronePattern("NEHEME-", "Neheme"),

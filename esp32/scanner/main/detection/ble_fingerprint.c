@@ -46,9 +46,16 @@
 /* ── Other company IDs ──────────────────────────────────────────────────── */
 
 #define SAMSUNG_COMPANY_ID      0x0075
+#define SAMSUNG_SDS_COMPANY_ID  0x02DE  /* Samsung SDS (secondary Samsung CID) */
 #define GOOGLE_COMPANY_ID       0x00E0
 #define MICROSOFT_COMPANY_ID    0x0006
-#define DJI_COMPANY_ID          0x2CA5
+#define DJI_COMPANY_ID          0x2CA5  /* Observed on-air (NOT a BT SIG assignment) */
+#define DJI_SIG_COMPANY_ID      0x08AA  /* SZ DJI Technology — registered BT SIG CID */
+#define ZEROZERO_COMPANY_ID     0x09F3  /* Beijing Zero Zero Infinity (HoverAir) */
+#define MOTOROLA_COMPANY_ID     0x0008  /* Motorola — moto tag tracker */
+#define ANKER_EUFY_COMPANY_ID   0x0CC2  /* Anker Innovations — eufy SmartTrack */
+#define FILO_COMPANY_ID         0x0E45  /* Filo Srl — Tile-class item finder */
+#define CUBE_COMPANY_ID         0x03EE  /* Cube Technologies — item tracker */
 #define TILE_COMPANY_ID         0x067C  /* Tile, Inc. */
 #define CHIPOLO_COMPANY_ID      0x08C3  /* CHIPOLO d.o.o. */
 #define META_COMPANY_ID         0x01AB  /* Meta Platforms, Inc. */
@@ -76,12 +83,13 @@
 #define ARLO_COMPANY_ID         0x0C19  /* Arlo */
 #define AXIS_COMPANY_ID         0x0D5B  /* Axis Communications */
 #define HIKVISION_COMPANY_ID    0x0E25  /* Hikvision */
+#define MOTIVE_COMPANY_ID       0x036E  /* Motive Technologies (fleet dashcams) */
+#define RHOMBUS_COMPANY_ID      0x075D  /* Rhombus Systems (cloud cameras) */
 #define PARROT_COMPANY_ID       0x0289  /* Parrot Drones SAS */
-#define AUTEL_COMPANY_ID        0x0986  /* Autel Robotics */
 /* Gaming */
 #define NINTENDO_COMPANY_ID     0x0578  /* Nintendo Co., Ltd. */
-/* Security */
-#define AXON_COMPANY_ID         0x04D8  /* Axon Enterprise (body cams) */
+/* Security. Real Axon CID is 0x034D (TASER International); 0x04D8 is FUJIFILM. */
+#define AXON_COMPANY_ID         0x034D  /* Axon / TASER International (body cams) */
 /* E-Scooters */
 #define SEGWAY_COMPANY_ID       0x06A1  /* Segway-Ninebot */
 /* Medical */
@@ -407,6 +415,8 @@ static bool company_is_privacy_camera_vendor(uint16_t company_id)
     case ARLO_COMPANY_ID:
     case AXIS_COMPANY_ID:
     case HIKVISION_COMPANY_ID:
+    case MOTIVE_COMPANY_ID:
+    case RHOMBUS_COMPANY_ID:
         return true;
     default:
         return false;
@@ -765,7 +775,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
         }
     } else if (company_id == FLIPPER_COMPANY_ID) {
         fp->device_type = BLE_DEV_FLIPPER_ZERO;
-    } else if (company_id == DJI_COMPANY_ID) {
+    } else if (company_id == DJI_COMPANY_ID || company_id == DJI_SIG_COMPANY_ID) {
         fp->device_type = BLE_DEV_DRONE_CONTROLLER;
         fp->is_tracker = false;
     } else if (company_id == BOSE_COMPANY_ID || company_id == JBL_COMPANY_ID ||
@@ -780,7 +790,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
         fp->device_type = BLE_DEV_CAMERA;
         snprintf(fp->class_reason, sizeof(fp->class_reason),
                  "camera_company_id:0x%04X", company_id);
-    } else if (company_id == PARROT_COMPANY_ID || company_id == AUTEL_COMPANY_ID) {
+    } else if (company_id == PARROT_COMPANY_ID || company_id == ZEROZERO_COMPANY_ID) {
         fp->device_type = BLE_DEV_DRONE_OTHER;
     } else if (company_id == NINTENDO_COMPANY_ID) {
         fp->device_type = BLE_DEV_GAMING;
@@ -792,6 +802,12 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
         fp->device_type = BLE_DEV_MEDICAL;
     } else if (company_id == FITBIT_COMPANY_ID || company_id == GARMIN_COMPANY_ID) {
         fp->device_type = BLE_DEV_FITNESS_TRACKER;
+    } else if (company_id == ANKER_EUFY_COMPANY_ID || company_id == MOTOROLA_COMPANY_ID ||
+               company_id == SAMSUNG_SDS_COMPANY_ID || company_id == FILO_COMPANY_ID ||
+               company_id == CUBE_COMPANY_ID) {
+        /* eufy SmartTrack, Motorola moto tag, Samsung SDS, Filo, Cube trackers */
+        fp->device_type = BLE_DEV_TRACKER_GENERIC;
+        fp->is_tracker = true;
     } else if (company_id == XIAOMI_COMPANY_ID || company_id == HUAWEI_COMPANY_ID) {
         fp->device_type = BLE_DEV_SMARTWATCH;
     } else if (company_id == MICROSOFT_COMPANY_ID) {
@@ -814,16 +830,25 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
         /* Card skimmers: cheap UART-bridge BLE chipsets used in gas-pump and
          * ATM skimmers. Names are factory-default and rarely changed by the
          * skimmer operator. Marauder's "Detect Card Skimmers" matches these. */
-        if (strncmp(local_name, "HC-05", 5) == 0 ||
+        if (strncmp(local_name, "HC-03", 5) == 0 ||
+            strncmp(local_name, "HC-05", 5) == 0 ||
             strncmp(local_name, "HC-06", 5) == 0 ||
             strncmp(local_name, "HC-08", 5) == 0 ||
+            strncmp(local_name, "BT-HC05", 7) == 0 ||
             strncmp(local_name, "BT05",  4) == 0 ||
             strncmp(local_name, "JDY-08", 6) == 0 ||
             strncmp(local_name, "JDY-10", 6) == 0 ||
+            strncmp(local_name, "JDY-31", 6) == 0 ||
             strncmp(local_name, "HM-10", 5) == 0 ||
             strncmp(local_name, "HM-11", 5) == 0 ||
+            strncmp(local_name, "HMSoft", 6) == 0 ||
             strncmp(local_name, "MLT-BT05", 8) == 0 ||
-            strncmp(local_name, "AT-09", 5) == 0) {
+            strncmp(local_name, "AT-09", 5) == 0 ||
+            strncmp(local_name, "CC41-A", 6) == 0 ||
+            strncmp(local_name, "BOLUTEK", 7) == 0 ||
+            strncmp(local_name, "SPP-CA", 6) == 0 ||
+            strncmp(local_name, "RNBT-", 5) == 0 ||
+            strncmp(local_name, "FREE2MOVE", 9) == 0) {
             fp->device_type = BLE_DEV_CARD_SKIMMER;
             fp->is_tracker = true;
             strncpy(fp->class_reason, "default_uart_ble_name", sizeof(fp->class_reason) - 1);

@@ -74,8 +74,11 @@ _RAW_WIFI_SSID_PREFIX_TO_MANUFACTURER: dict[str, str] = {
     "X1PRO": "HOVERAir",
     "X1-PRO": "HOVERAir",
     "X1 PRO": "HOVERAir",
+    "HoverX1_": "HOVERAir",
     "HOLY": "Holy Stone",
     "HS-": "Holy Stone",
+    "HolyStoneFPV-": "Holy Stone",
+    "Hubsan-Zino-": "Hubsan",
     "SIMREX-": "SIMREX",
     "NEHEME-": "Neheme",
     "AOVO-": "AOVO",
@@ -551,6 +554,7 @@ _DRONE_RELATED_MANUFACTURERS = (
     "Contixo",
     "Sky Viper",
     "Drocon",
+    "Teal",
     "Freefly",
     "senseFly",
     "Wingcopter",
@@ -656,96 +660,97 @@ DRONE_BLE_COMPANY_IDS.update(
 )
 
 
+# All prefixes verified against the IEEE MA-L/MA-M/MA-S registry (2026-07) and
+# kept in parity with esp32 wifi_oui_database.c and Android WifiOuiDatabase.kt.
+# Only exclusive /24 (MA-L) blocks are confident. Vendors that only hold shared
+# /28 (MA-M) registrations (Autel, Yuneec, Hubsan) have no reliable 3-byte OUI
+# and are detected via SSID/RID instead — their buckets carry no prefixes.
+# Several legacy prefixes were mislabeled (e.g. 08:D4:6A=LG, 58:D5:6E=D-Link,
+# C4:2F:90=Hikvision, 78:8C:B5=TP-Link, B0:A7:32=Espressif) and were removed.
 DRONE_WIFI_OUIS: dict[str, dict[str, Any]] = {
     "DJI": {
         "official_24bit_prefixes": [
             "60:60:1F",
             "34:D2:62",
             "48:1C:B9",
-            "08:D4:6A",
-            "D0:32:9A",
-            "C4:2F:90",
-        ],
-        "observed_additional_prefixes": [
-            "8C:58:23",
-            "0C:9A:E6",
-            "E4:7A:2C",
-            "88:29:85",
-            "58:B8:58",
             "04:A8:5A",
+            "0C:9A:E6",
             "4C:43:F6",
-            "9C:5A:8A",
-            "EC:72:F7",
+            "58:B8:58",
+            "88:29:85",
+            "8C:58:23",
+            "E4:7A:2C",
+            "F8:40:68",  # SZ DJI Ronin
+            "20:1F:55",  # DJI Osmo
+            "9C:5A:8A",  # DJI Baiwang
+            "EC:72:F7",  # DJI Baiwang
         ],
+        "observed_additional_prefixes": [],
         "high_false_positive": False,
     },
     "Parrot": {
-        "official_24bit_prefixes": ["A0:14:3D", "90:03:B7", "00:12:1C", "00:26:7E"],
-        "observed_additional_prefixes": ["90:3A:E6"],
-        "high_false_positive": False,
-    },
-    "Autel": {
-        "official_24bit_prefixes": ["2C:DC:AD", "78:8C:B5"],
+        "official_24bit_prefixes": ["A0:14:3D", "90:03:B7", "00:12:1C", "00:26:7E", "90:3A:E6"],
         "observed_additional_prefixes": [],
         "high_false_positive": False,
     },
     "Skydio": {
-        "official_24bit_prefixes": ["58:D5:6E"],
-        "observed_additional_prefixes": ["38:1D:14"],
-        "high_false_positive": False,
-    },
-    "Yuneec": {
-        "official_24bit_prefixes": ["EC:D0:9F", "64:D4:DA"],
+        # 58:D5:6E was mislabeled (it is D-Link); 38:1D:14 is the real Skydio /24.
+        "official_24bit_prefixes": ["38:1D:14"],
         "observed_additional_prefixes": [],
         "high_false_positive": False,
     },
     "HOVERAir": {
-        "official_24bit_prefixes": ["10:D0:7A"],
+        # 10:D0:7A was mislabeled (AMPAK module); 84:83:19 is Hangzhou Zero Zero.
+        "official_24bit_prefixes": ["84:83:19"],
         "observed_additional_prefixes": [],
         "high_false_positive": False,
     },
-    "Xiaomi": {
-        "official_24bit_prefixes": ["28:6C:07", "64:CE:01"],
+    "Teal": {
+        "official_24bit_prefixes": ["B0:30:C8"],
         "observed_additional_prefixes": [],
         "high_false_positive": False,
+    },
+    "Freefly": {
+        "official_24bit_prefixes": ["EC:71:5E"],
+        "observed_additional_prefixes": [],
+        "high_false_positive": False,
+    },
+    "PowerVision": {
+        "official_24bit_prefixes": ["54:7D:40"],
+        "observed_additional_prefixes": [],
+        "high_false_positive": False,
+    },
+    # Vendors with only shared /28 registrations — detected via SSID/RID, no OUI.
+    "Autel": {"official_24bit_prefixes": [], "observed_additional_prefixes": [], "high_false_positive": False},
+    "Yuneec": {"official_24bit_prefixes": [], "observed_additional_prefixes": [], "high_false_positive": False},
+    "Hubsan": {"official_24bit_prefixes": [], "observed_additional_prefixes": [], "high_false_positive": False},
+    "Holy Stone": {"official_24bit_prefixes": [], "observed_additional_prefixes": [], "high_false_positive": False},
+    "Potensic": {"official_24bit_prefixes": [], "observed_additional_prefixes": [], "high_false_positive": False},
+    "Walkera": {"official_24bit_prefixes": [], "observed_additional_prefixes": [], "high_false_positive": False},
+    "Syma": {"official_24bit_prefixes": [], "observed_additional_prefixes": [], "high_false_positive": False},
+    # Xiaomi/FIMI share consumer-phone OUIs → high false positive.
+    "Xiaomi": {
+        "official_24bit_prefixes": ["28:6C:07"],
+        "observed_additional_prefixes": [],
+        "high_false_positive": True,
     },
     "FIMI": {
         "official_24bit_prefixes": ["9C:99:A0"],
         "observed_additional_prefixes": [],
-        "high_false_positive": False,
-    },
-    "Hubsan": {
-        "official_24bit_prefixes": ["D8:96:E0"],
-        "observed_additional_prefixes": [],
-        "high_false_positive": False,
-    },
-    "Holy Stone": {
-        "official_24bit_prefixes": ["CC:DB:A7"],
-        "observed_additional_prefixes": [],
-        "high_false_positive": False,
-    },
-    "Potensic": {
-        "official_24bit_prefixes": ["B0:A7:32"],
-        "observed_additional_prefixes": [],
-        "high_false_positive": False,
-    },
-    "Walkera": {
-        "official_24bit_prefixes": ["C8:14:51"],
-        "observed_additional_prefixes": [],
-        "high_false_positive": False,
-    },
-    "Syma": {
-        "official_24bit_prefixes": ["E8:AB:FA"],
-        "observed_additional_prefixes": [],
-        "high_false_positive": False,
+        "high_false_positive": True,
     },
     "Generic/ESP": {
-        "official_24bit_prefixes": ["24:0A:C4", "30:AE:A4", "A4:CF:12", "AC:67:B2"],
-        "observed_additional_prefixes": [],
+        "official_24bit_prefixes": ["24:0A:C4", "30:AE:A4", "A4:CF:12", "AC:67:B2", "10:06:1C"],
+        "observed_additional_prefixes": ["B0:A7:32", "CC:DB:A7"],
         "high_false_positive": True,
     },
     "Generic/Realtek": {
         "official_24bit_prefixes": ["00:E0:4C"],
+        "observed_additional_prefixes": [],
+        "high_false_positive": True,
+    },
+    "Generic/Bilian": {
+        "official_24bit_prefixes": ["08:EA:40"],
         "observed_additional_prefixes": [],
         "high_false_positive": True,
     },

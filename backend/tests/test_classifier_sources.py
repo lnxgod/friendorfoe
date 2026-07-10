@@ -54,6 +54,36 @@ def test_ble_fingerprint_drone_controller_is_possible_drone():
     assert conf == 0.35
 
 
+def test_ble_fingerprint_card_skimmer_is_hostile_tool():
+    # Badge flags gas-pump/ATM skimmers on-device; the backend must surface the
+    # threat, not decay it to unknown_device.
+    cls, conf = classify_detection(
+        source="ble_fingerprint",
+        confidence=0.6,
+        drone_id="BLE:1234ABCD:Card Skimmer (suspect)",
+    )
+    assert cls == "hostile_tool"
+    assert conf == 0.85
+
+
+def test_ble_fingerprint_hidden_camera_is_hostile_tool():
+    cls, _ = classify_detection(
+        source="ble_fingerprint",
+        confidence=0.5,
+        drone_id="BLE:1234ABCD:Hidden Camera (suspect)",
+    )
+    assert cls == "hostile_tool"
+
+
+def test_ble_fingerprint_venue_beacon_is_recognized_not_junk():
+    cls, _ = classify_detection(
+        source="ble_fingerprint",
+        confidence=0.5,
+        drone_id="BLE:1234ABCD:Venue Beacon",
+    )
+    assert cls == "unknown_device"
+
+
 def test_wifi_assoc_is_wifi_device():
     cls, conf = classify_detection(
         source="wifi_assoc",

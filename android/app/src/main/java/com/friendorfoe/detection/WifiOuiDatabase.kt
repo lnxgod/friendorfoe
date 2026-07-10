@@ -16,105 +16,95 @@ object WifiOuiDatabase {
      * OUI prefix (uppercase, colon-separated) to manufacturer name.
      * Entries are organized by manufacturer for readability.
      */
+    // All entries verified against the IEEE MA-L/MA-M/MA-S registry (2026-07).
+    // Only exclusive /24 (MA-L) blocks are confident drone OUIs. MA-M(/28) and
+    // MA-S(/36) blocks share their first 3 bytes across ~15 unrelated companies,
+    // so — because lookup matches only the first 3 bytes — vendors that only hold
+    // /28 registrations (Autel, Yuneec, Hubsan, Quantum-Systems, Silvus) are
+    // detected via SSID/RID instead of OUI. Several legacy rows were mislabeled
+    // and fired false drone alerts; they are corrected to the true IEEE owner and
+    // flagged highFalsePositiveRisk. Kept in parity with esp32 wifi_oui_database.c.
     private val OUI_MAP: Map<String, OuiEntry> = mapOf(
-        // DJI Technology — primary chipsets across all product lines
-        "60:60:1F" to OuiEntry("DJI", "DJI Technology Co."),
-        "34:D2:62" to OuiEntry("DJI", "DJI Technology Co."),
-        "48:1C:B9" to OuiEntry("DJI", "DJI Innovation Technology"),
-        "08:D4:6A" to OuiEntry("DJI", "DJI Technology (Shenzhen)"),
-        "D0:32:9A" to OuiEntry("DJI", "DJI Technology Co."),
-        "C4:2F:90" to OuiEntry("DJI", "DJI Technology Co."),
-        "04:A8:5A" to OuiEntry("DJI", "DJI Technology Co."),          // Older Phantom/Inspire
-        "0C:9A:E6" to OuiEntry("DJI", "DJI Technology Co."),          // Mavic/Mini series
-        "E4:7A:2C" to OuiEntry("DJI", "DJI Technology Co."),          // OcuSync modules
-        "58:B8:58" to OuiEntry("DJI", "DJI Technology Co."),          // FPV/Avata
-        "8C:58:23" to OuiEntry("DJI", "DJI Technology Co."),          // Newer models
-        "88:29:85" to OuiEntry("DJI", "DJI Technology Co."),          // Enterprise/Matrice
-        "4C:43:F6" to OuiEntry("DJI", "DJI Technology Co."),          // Agras/agricultural
+        // DJI Technology (SZ DJI, Ronin, Osmo, Baiwang subsidiaries)
+        "60:60:1F" to OuiEntry("DJI", "SZ DJI Technology Co."),
+        "34:D2:62" to OuiEntry("DJI", "SZ DJI Technology Co."),
+        "48:1C:B9" to OuiEntry("DJI", "SZ DJI Technology Co."),
+        "04:A8:5A" to OuiEntry("DJI", "SZ DJI Technology Co."),
+        "0C:9A:E6" to OuiEntry("DJI", "SZ DJI Technology Co."),
+        "4C:43:F6" to OuiEntry("DJI", "SZ DJI Technology Co."),
+        "58:B8:58" to OuiEntry("DJI", "SZ DJI Technology Co."),
+        "88:29:85" to OuiEntry("DJI", "SZ DJI Technology Co."),
+        "8C:58:23" to OuiEntry("DJI", "SZ DJI Technology Co."),
+        "E4:7A:2C" to OuiEntry("DJI", "SZ DJI Technology Co."),
+        "F8:40:68" to OuiEntry("DJI", "SZ DJI Ronin Technology Co."),
+        "20:1F:55" to OuiEntry("DJI", "DJI Osmo Technology Co."),
+        "9C:5A:8A" to OuiEntry("DJI", "DJI Baiwang Technology Co."),
+        "EC:72:F7" to OuiEntry("DJI", "DJI Baiwang Technology Co."),
 
         // Parrot SA — Anafi, Bebop, Disco
         "A0:14:3D" to OuiEntry("Parrot", "Parrot SA"),
         "90:03:B7" to OuiEntry("Parrot", "Parrot SA"),
         "00:12:1C" to OuiEntry("Parrot", "Parrot SA"),
         "00:26:7E" to OuiEntry("Parrot", "Parrot SA"),
+        "90:3A:E6" to OuiEntry("Parrot", "Parrot SA"),
 
-        // Autel Robotics — EVO, EVO Max, EVO Nano/Lite
-        "2C:DC:AD" to OuiEntry("Autel", "Autel Robotics"),
-        // NOTE: 78:8C:B5 was previously listed as Autel but is actually TP-Link (removed)
-        "EC:5B:CD" to OuiEntry("Autel", "Autel Robotics USA LLC"),    // Registered May 2024
-        "18:D7:93" to OuiEntry("Autel", "Autel Intelligent Technology"), // Registered Jan 2023
-
-        // Skydio — S2, X2, X10
-        "58:D5:6E" to OuiEntry("Skydio", "Skydio Inc."),
-        "38:1D:14" to OuiEntry("Skydio", "Skydio Inc."),              // Registered July 2019
-
-        // Yuneec — Typhoon, H520
-        "EC:D0:9F" to OuiEntry("Yuneec", "Yuneec International"),
-        "64:D4:DA" to OuiEntry("Yuneec", "Yuneec International"),
+        // Skydio — S2, X2, X10 (58:D5:6E was mislabeled: it is D-Link)
+        "38:1D:14" to OuiEntry("Skydio", "Skydio Inc."),
 
         // Zero Zero Robotics — HOVERAir X1
-        "10:D0:7A" to OuiEntry("HOVERAir", "Zero Zero Robotics"),
+        "84:83:19" to OuiEntry("HOVERAir", "Hangzhou Zero Zero Technology"),
 
-        // Xiaomi / FIMI — FIMI X8, Xiaomi Mi Drone
-        "28:6C:07" to OuiEntry("Xiaomi", "Xiaomi Communications"),
-        "64:CE:01" to OuiEntry("Xiaomi", "Xiaomi Communications"),
-        "9C:99:A0" to OuiEntry("FIMI", "Xiaomi FIMI"),
+        // Teal Drones (Red Cat)
+        "B0:30:C8" to OuiEntry("Teal", "Teal Drones, Inc."),
 
-        // Hubsan — Zino series
-        "D8:96:E0" to OuiEntry("Hubsan", "Hubsan Technology"),
-
-        // Holy Stone — HS series
-        "CC:DB:A7" to OuiEntry("Holy Stone", "Holy Stone"),
-
-        // Potensic — Dreamer series
-        "B0:A7:32" to OuiEntry("Potensic", "Potensic"),
-
-        // Walkera — Vitus, Runner series
-        "C8:14:51" to OuiEntry("Walkera", "Walkera Technology Co."),
-
-        // Syma — X-series toy drones
-        "E8:AB:FA" to OuiEntry("Syma", "Syma"),
-
-        // Espressif Systems — ESP32/ESP8266 used in many DIY/budget drones
-        "24:0A:C4" to OuiEntry("Generic/ESP", "Espressif Systems", highFalsePositiveRisk = true),
-        "30:AE:A4" to OuiEntry("Generic/ESP", "Espressif Systems", highFalsePositiveRisk = true),
-        "A4:CF:12" to OuiEntry("Generic/ESP", "Espressif Systems", highFalsePositiveRisk = true),
-        "AC:67:B2" to OuiEntry("Generic/ESP", "Espressif Systems", highFalsePositiveRisk = true),
-        "10:06:1C" to OuiEntry("Generic/ESP", "Espressif Systems", highFalsePositiveRisk = true),
-
-        // Realtek — used in many budget Chinese drones (WiFi FPV cameras)
-        "00:E0:4C" to OuiEntry("Generic/Realtek", "Realtek Semiconductor", highFalsePositiveRisk = true),
-
-        // Shenzhen Bilian (LB-LINK) — very common WiFi module in budget drones
-        "08:EA:40" to OuiEntry("Generic/Bilian", "Shenzhen Bilian Electronic (LB-LINK)", highFalsePositiveRisk = true),
-
-        // Hubsan — additional OUI
-        "98:AA:FC" to OuiEntry("Hubsan", "Hubsan Technology"),
-
-        // Yuneec — additional OUI
-        "00:E0:6D" to OuiEntry("Yuneec", "Yuneec International"),
-
-        // Military/defense drone manufacturers
-        "14:DD:48" to OuiEntry("Shield AI", "Shield AI Inc."),         // Nova 1/2
-        "14:DD:9C" to OuiEntry("Shield AI", "Shield AI Inc."),
-        "00:1A:F9" to OuiEntry("AeroVironment", "AeroVironment Inc."), // Switchblade/Puma/Raven
-
-        // Industrial drone datalink vendors
-        "1C:BA:8C" to OuiEntry("UAV Navigation", "UAV Navigation S.L."),
-        "00:30:1A" to OuiEntry("Doodle Labs", "Doodle Labs"),          // Long-range mesh
-        "00:11:1C" to OuiEntry("Microhard", "Microhard Systems"),      // Military datalinks
-
-        // Thermal camera payloads (found on drone platforms)
-        "00:13:56" to OuiEntry("FLIR", "Teledyne FLIR"),
-
-        // DJI adjacent entity
-        "9C:5A:8A" to OuiEntry("DJI", "DJI Baiwang Technology Co Ltd"),
+        // Freefly Systems
+        "EC:71:5E" to OuiEntry("Freefly", "Freefly Systems Inc."),
 
         // PowerVision (PowerEgg, PowerRay)
         "54:7D:40" to OuiEntry("PowerVision", "Powervision Tech Inc."),
 
-        // Silvus Technologies (military MANET radios on AeroVironment drones)
-        "C4:7C:8D" to OuiEntry("Silvus", "Silvus Technologies"),
+        // Military / tactical UAS + MANET datalinks (verified /24)
+        "14:DD:48" to OuiEntry("Shield AI", "Shield AI Inc."),
+        "00:1A:F9" to OuiEntry("AeroVironment", "AeroVironment Inc."), // Switchblade/Puma/Raven
+        "00:18:A6" to OuiEntry("Persistent", "Persistent Systems LLC (MPU5)"),
+        "00:0F:92" to OuiEntry("Microhard", "Microhard Systems (Canada)"),
+        "00:1E:3F" to OuiEntry("TrellisWare", "TrellisWare Technologies"),
+        "98:49:9F" to OuiEntry("DTC", "Domo Tactical Communications"),
+        "00:30:1A" to OuiEntry("Doodle Labs", "Doodle Labs (Smartbridges)"),
+        "00:13:56" to OuiEntry("FLIR", "Teledyne FLIR"),
+
+        // Privacy infrastructure / ALPR / surveillance cameras
+        "B4:1E:52" to OuiEntry("Flock Safety", "Flock Safety ALPR/camera registered OUI"),
+        "C4:2F:90" to OuiEntry("Hikvision", "Hangzhou Hikvision (IP camera)", highFalsePositiveRisk = true),
+        "E8:AB:FA" to OuiEntry("Reecam", "Shenzhen Reecam (IP camera)", highFalsePositiveRisk = true),
+
+        // Generic module makers (seen on budget drones AND unrelated IoT).
+        // B0:A7:32/CC:DB:A7 were mislabeled Potensic/Holy Stone (both Espressif);
+        // 10:D0:7A was HOVERAir (AMPAK), 2C:DC:AD was Autel (WNC),
+        // EC:D0:9F was Yuneec (Xiaomi), 78:8C:B5 was Autel (TP-Link).
+        "24:0A:C4" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
+        "30:AE:A4" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
+        "A4:CF:12" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
+        "AC:67:B2" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
+        "10:06:1C" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
+        "B0:A7:32" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
+        "CC:DB:A7" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
+        "00:E0:4C" to OuiEntry("Realtek", "Realtek Semiconductor", highFalsePositiveRisk = true),
+        "08:EA:40" to OuiEntry("Bilian", "Shenzhen Bilian (LB-LINK)", highFalsePositiveRisk = true),
+        "10:D0:7A" to OuiEntry("AMPAK", "AMPAK Technology (WiFi module)", highFalsePositiveRisk = true),
+        "2C:DC:AD" to OuiEntry("WNC", "Wistron NeWeb (ODM module)", highFalsePositiveRisk = true),
+        "28:6C:07" to OuiEntry("Xiaomi", "Xiaomi Communications", highFalsePositiveRisk = true),
+        "EC:D0:9F" to OuiEntry("Xiaomi", "Xiaomi Communications", highFalsePositiveRisk = true),
+        "9C:99:A0" to OuiEntry("Xiaomi/FIMI", "Xiaomi Communications (FIMI)", highFalsePositiveRisk = true),
+        "78:8C:B5" to OuiEntry("TP-Link", "TP-Link Systems", highFalsePositiveRisk = true),
+
+        // Removed as mislabels (true owner is an unrelated consumer vendor, no
+        // detection value): 08:D4:6A=LG, 64:D4:DA=Intel, 58:D5:6E=D-Link,
+        // C8:14:51=Huawei, D8:96:E0=Alibaba Cloud, 00:E0:6D=Compuware,
+        // 14:DD:9C=vivo, 1C:BA:8C=Texas Instruments, 00:11:1C=Pleora; observed-only
+        // (not in IEEE): D0:32:9A, 64:CE:01; shared /28 blocks dropped:
+        // EC:5B:CD/18:D7:93 (Autel), 98:AA:FC (Hubsan), C4:7C:8D (Silvus).
+        // Holy Stone 00:0C:BF NOT added: that IEEE record is a capacitor maker.
     )
 
     /**

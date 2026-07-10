@@ -18,8 +18,13 @@ object BleSignatures {
     const val CID_APPLE             = 0x004C
     const val CID_MICROSOFT         = 0x0006
     const val CID_SAMSUNG           = 0x0075
+    const val CID_SAMSUNG_SDS       = 0x02DE  // Secondary Samsung CID (tracker/SDS)
     const val CID_GOOGLE            = 0x00E0
+    /** DJI: 0x2CA5 is observed on-air but is NOT a BT SIG assignment; 0x08AA is
+     *  the registered SZ DJI Technology CID. Match on both. */
     const val CID_DJI               = 0x2CA5
+    const val CID_DJI_SIG           = 0x08AA
+    const val CID_HOVERAIR          = 0x09F3  // Beijing Zero Zero Infinity (HoverAir)
     const val CID_TILE              = 0x067C
     const val CID_CHIPOLO           = 0x08C3
     const val CID_META              = 0x01AB
@@ -42,15 +47,28 @@ object BleSignatures {
     const val CID_TESLA             = 0x04F6
     const val CID_GOPRO             = 0x02DF
     const val CID_PARROT            = 0x0289
-    const val CID_AUTEL             = 0x0986
     const val CID_NINTENDO          = 0x0578
-    const val CID_AXON              = 0x04D8
-    const val CID_AXON_ALT          = 0x034D
+    /** Axon body cameras. Real CID is 0x034D (TASER International); the previously
+     *  listed 0x04D8 is FUJIFILM and was a mislabel. */
+    const val CID_AXON              = 0x034D
     const val CID_SEGWAY            = 0x06A1
     const val CID_DEXCOM            = 0x0267
     const val CID_SNAP              = 0x03C2
     const val CID_VUZIX             = 0x060C
-    const val CID_BRILLIANT_LABS    = 0x09B1
+    const val CID_TCL               = 0x0BC6  // TCL — parent of RayNeo AR glasses
+    const val CID_MICROOLED         = 0x08F2  // ActiveLook smart-glasses displays
+    const val CID_KOPIN             = 0x041F  // Solos AR glasses
+    const val CID_LENOVO            = 0x02C5  // Lenovo ThinkReality glasses
+    const val CID_ANKER_EUFY        = 0x0CC2  // eufy SmartTrack tracker
+    const val CID_FILO              = 0x0E45  // Filo Srl — Tile-class item finder
+    const val CID_CUBE              = 0x03EE  // Cube Technologies item tracker
+    const val CID_MOTOROLA          = 0x0008  // Motorola moto tag tracker
+    const val CID_MOTOROLA_SOLUTIONS = 0x04EC // Motorola Solutions body cams
+    const val CID_MOTIVE            = 0x036E  // Motive fleet dashcams
+    const val CID_RHOMBUS           = 0x075D  // Rhombus cloud cameras
+    // Removed mislabels: CID_AUTEL 0x0986 was "Cello Hill LLC" (no Autel CID
+    // exists); CID_BRILLIANT_LABS 0x09B1 was "BLINQY"; CID_AXON_ALT/0x04D8 was
+    // FUJIFILM. Autel drones are detected via SSID/RID, not a BLE company ID.
 
     // ── 16-bit Service UUIDs ───────────────────────────────────────────────
 

@@ -77,6 +77,14 @@ static const fof_privacy_wifi_signature_t WIFI_SIGNATURES[] = {
     { "TUTK-", FOF_PRIVACY_MATCH_PREFIX, "ThroughTek", "IP Camera", "CAMERA_NEAR", "privacy:camera:tutk", 0.75f, true, false },
     { "WIFI-CAM", FOF_PRIVACY_MATCH_PREFIX, "Generic", "Hidden Camera", "CAMERA_NEAR", "privacy:camera:hidden", 0.75f, true, false },
     { "DEPSTECH_", FOF_PRIVACY_MATCH_PREFIX, "DEPSTECH", "Endoscope Camera", "CAMERA_NEAR", "privacy:camera:endoscope", 0.85f, true, false },
+    { "GW_AP_", FOF_PRIVACY_MATCH_PREFIX, "Yoosee", "Hidden Camera", "CAMERA_NEAR", "privacy:camera:yoosee", 0.80f, true, false },
+    { "GW_IPC", FOF_PRIVACY_MATCH_PREFIX, "Yoosee", "Hidden Camera", "CAMERA_NEAR", "privacy:camera:yoosee", 0.80f, true, false },
+    { "DGK-", FOF_PRIVACY_MATCH_PREFIX, "LookCamPro", "Spy Camera", "CAMERA_NEAR", "privacy:camera:lookcam", 0.85f, true, false },
+    { "Techmaster-", FOF_PRIVACY_MATCH_PREFIX, "Generic", "Spy Camera", "CAMERA_NEAR", "privacy:camera:a9clone", 0.80f, true, false },
+    { "SmartLife-", FOF_PRIVACY_MATCH_PREFIX, "Tuya", "IP Camera", "CAMERA_NEAR", "privacy:camera:tuya", 0.75f, true, false },
+    { "Tuya-", FOF_PRIVACY_MATCH_PREFIX, "Tuya", "IP Camera", "CAMERA_NEAR", "privacy:camera:tuya", 0.75f, true, false },
+    { "IPC_AP_", FOF_PRIVACY_MATCH_PREFIX, "Zosi", "IP Camera", "CAMERA_NEAR", "privacy:camera:zosi", 0.80f, true, false },
+    { "wyze_bind_", FOF_PRIVACY_MATCH_PREFIX, "Wyze", "IP Camera", "CAMERA_NEAR", "privacy:camera:wyze", 0.85f, true, false },
 
     /* Surveillance, doorbell, body, dash, action, and baby cameras */
     { "Tapo_Cam_", FOF_PRIVACY_MATCH_PREFIX, "TP-Link", "IP Camera", "CAMERA_NEAR", "privacy:camera:tapo", 0.88f, true, false },
@@ -132,6 +140,10 @@ static const fof_privacy_wifi_signature_t WIFI_SIGNATURES[] = {
     { "Marauder", FOF_PRIVACY_MATCH_PREFIX, "ESP32Marauder", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:marauder", 0.90f, false, true },
     { "ESP32Marauder", FOF_PRIVACY_MATCH_PREFIX, "ESP32Marauder", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:marauder", 0.90f, false, true },
     { "pwnagotchi", FOF_PRIVACY_MATCH_PREFIX, "Pwnagotchi", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:pwnagotchi", 0.90f, false, true },
+    { "BruceNet", FOF_PRIVACY_MATCH_PREFIX, "Bruce", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:bruce", 0.90f, false, true },
+    { "Wi-PWN", FOF_PRIVACY_MATCH_PREFIX, "Wi-PWN", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:wipwn", 0.90f, false, true },
+    { "GhostNet", FOF_PRIVACY_MATCH_PREFIX, "GhostESP", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:ghostesp", 0.90f, false, true },
+    { "Evil Portal", FOF_PRIVACY_MATCH_PREFIX, "Flipper Evil Portal", "Attack Tool", "WIFI_ATTACK_TOOL", "attack_tool:evil_portal", 0.85f, false, true },
 };
 
 const fof_privacy_wifi_signature_t *fof_privacy_wifi_signatures(size_t *count)

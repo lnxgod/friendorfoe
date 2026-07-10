@@ -69,6 +69,19 @@ TRACKER_TYPES = {
     "google tracker",
     "tracker",
     "tracker (generic)",
+    "pebblebee",
+    "chipolo",
+}
+
+# Covert-threat BLE device types the badge flags on-device (card skimmers on
+# gas-pump/ATM readers, hidden BLE-controlled cameras). Must match the type
+# names emitted by ESP32 ble_fingerprint.c s_type_names[]. Promoted to
+# "hostile_tool" so the badge's on-device threat call survives the round-trip
+# instead of decaying to unknown_device server-side.
+HOSTILE_BLE_TYPES = {
+    "card skimmer (suspect)",
+    "card skimmer",
+    "hidden camera (suspect)",
 }
 
 # BLE device types that are known non-drone devices (phones, computers, etc.)
@@ -100,6 +113,13 @@ KNOWN_DEVICE_TYPES = {
     "meta glasses",
     "meta device",
     "flipper zero",
+    # Recognized-but-benign infra the badge classifies (kept out of the junk
+    # bucket so the UI shows the real type instead of "unknown device")
+    "venue beacon",
+    "event badge",
+    "mobile key lock",
+    "ble hid",
+    "auracast",
     # Fallback
     "unknown",
 }
@@ -253,6 +273,10 @@ def classify_detection(
 
     if device_type_str:
         dt_lower = device_type_str.lower()
+        if dt_lower in HOSTILE_BLE_TYPES:
+            # Badge flagged a card skimmer / covert BLE camera — surface as a
+            # hostile-tool alert rather than swallowing it as unknown_device.
+            return "hostile_tool", max(confidence, 0.85)
         if dt_lower in TRACKER_TYPES:
             return "tracker", confidence
         if dt_lower in BLE_DRONE_TYPES:
@@ -325,7 +349,7 @@ def classify_detection(
         return ("known_ap" if ssid and any(fnmatch(ssid, pattern) for pattern in WHITELIST_SSID_PATTERNS)
                 else "wifi_device"), confidence
 
-    # 3.6. Check drone SSID reference database (191 patterns)
+    # 3.6. Check drone SSID reference database
     if ssid and match_drone_wifi_ssid:
         drone_match = match_drone_wifi_ssid(ssid)
         if drone_match:

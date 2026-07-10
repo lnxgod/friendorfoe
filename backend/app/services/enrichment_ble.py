@@ -151,12 +151,12 @@ _BLE_OUI = {
     # ── Parrot (drones) ──────────────────────────────────────────────────
     "90:3A:E6": "Parrot", "00:12:1C": "Parrot", "90:03:B7": "Parrot",
     "A0:14:3D": "Parrot", "00:26:7E": "Parrot",
-    # ── Skydio (drones) ──────────────────────────────────────────────────
-    "38:1D:14": "Skydio", "58:D5:6E": "Skydio",
-    # ── Autel (drones) ──────────────────────────────────────────────────
-    "2C:DC:AD": "Autel", "78:8C:B5": "Autel",
-    # ── More DJI (from drone reference) ──────────────────────────────────
-    "08:D4:6A": "DJI", "D0:32:9A": "DJI",
+    # ── Skydio (drones); 58:D5:6E removed — that block is D-Link, not Skydio ─
+    "38:1D:14": "Skydio",
+    # ── Autel: no exclusive /24 exists; 2C:DC:AD=WNC and 78:8C:B5=TP-Link were
+    #    mislabels (removed). Autel is detected via SSID/RID instead. ─────────
+    # ── More DJI (verified /24; 08:D4:6A=LG and D0:32:9A=unregistered removed) ─
+    "F8:40:68": "DJI", "20:1F:55": "DJI",
     # ── Hikvision (surveillance cameras — 30 most common of 82 known blocks)
     "C0:56:E3": "Hikvision", "28:57:BE": "Hikvision", "44:19:B6": "Hikvision",
     "54:C4:15": "Hikvision", "4C:BD:8F": "Hikvision", "00:BC:99": "Hikvision",

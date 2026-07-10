@@ -1,7 +1,8 @@
 /**
  * Friend or Foe -- WiFi SSID Pattern Matching
  *
- * 99 known drone SSID prefix patterns ported from Android WifiDroneScanner.kt.
+ * Known drone SSID prefix patterns, kept in parity with Android
+ * WifiDroneScanner.kt and backend drone_signature_reference.py.
  * Each entry maps an SSID prefix to its manufacturer name.
  * Matching is case-insensitive prefix comparison using strncasecmp.
  */
@@ -63,12 +64,17 @@ static const drone_ssid_pattern_t PATTERNS[] = {
     { "X1PRO",      "HOVERAir" },
     { "X1-PRO",     "HOVERAir" },
     { "X1 PRO",     "HOVERAir" },
+    { "HoverX1_",   "HOVERAir" },   /* Official AP name HoverX1_xxxx (X1/Pro/ProMax/Aqua) */
 
     /* ── Holy Stone ────────────────────────────────────────────────────────── */
     /* "HOLY" alone was too broad — caught SSIDs like "HolyCow", "Holyfield",
      * etc. The specific Holy Stone prefixes "HS-", "HolyStoneEIS-", and
      * "HolyStoneFPV_" (further below) cover real devices without the noise. */
-    { "HS-",        "Holy Stone" },
+    { "HS-",           "Holy Stone" },
+    { "HolyStoneFPV-", "Holy Stone" },  /* HS175D V5 / HS720 manual AP-name variant */
+
+    /* ── Hubsan Zino line (official AP name Hubsan-Zino-XXXXXX) ─────────────── */
+    { "Hubsan-Zino-",  "Hubsan" },
 
     /* ── Other known brands ────────────────────────────────────────────────── */
     { "SIMREX-",    "SIMREX" },
