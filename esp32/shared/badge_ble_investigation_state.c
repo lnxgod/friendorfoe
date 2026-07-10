@@ -225,6 +225,7 @@ bool badge_ble_investigation_state_start_at(
     if (scanner_slot_out) *scanner_slot_out = -1;
     ble_investigation_request_t checked;
     if (!state || !scanner_available || state->active ||
+        state->terminal_emit_in_progress || state->terminal_replay_required ||
         !badge_ble_investigation_request_validate(request, &checked)) {
         return false;
     }
@@ -467,7 +468,8 @@ void badge_ble_investigation_pending_queue_init(
 bool badge_ble_investigation_pending_queue_can_accept_expiry(
     const badge_ble_investigation_pending_queue_t *queue)
 {
-    return queue && queue->count <=
+    return queue && queue->head < BADGE_BLE_INVESTIGATION_PENDING_CHUNKS &&
+        queue->count <=
         BADGE_BLE_INVESTIGATION_PENDING_CHUNKS - 2;
 }
 
@@ -478,6 +480,7 @@ bool badge_ble_investigation_pending_queue_enqueue_expiry(
 {
     if (!queue || !state || !expiry || expiry->chunk_count == 0 ||
         expiry->chunk_count > 2 ||
+        queue->head >= BADGE_BLE_INVESTIGATION_PENDING_CHUNKS ||
         queue->count > BADGE_BLE_INVESTIGATION_PENDING_CHUNKS ||
         expiry->chunk_count >
             BADGE_BLE_INVESTIGATION_PENDING_CHUNKS - queue->count ||
@@ -500,6 +503,43 @@ bool badge_ble_investigation_pending_queue_enqueue_expiry(
         queue->chunks[tail] = state->chunks[expiry->first_seq + i];
     }
     queue->count = (uint8_t)(queue->count + expiry->chunk_count);
+    return true;
+}
+
+bool badge_ble_investigation_pending_queue_enqueue_terminal_replay(
+    badge_ble_investigation_pending_queue_t *queue,
+    const badge_ble_investigation_state_t *state)
+{
+    if (!badge_ble_investigation_pending_queue_can_accept_expiry(queue) ||
+        !state || !state->end_received || state->chunk_count == 0 ||
+        !request_id_valid(state->result.request_id) ||
+        !ble_investigation_mode_name(state->result.mode) ||
+        !bounded_text(state->result.target_mac,
+                      sizeof(state->result.target_mac))) {
+        return false;
+    }
+
+    const ble_investigation_chunk_t *terminal =
+        &state->chunks[state->chunk_count - 1];
+    if (terminal->kind != BLE_INV_CHUNK_END ||
+        !request_id_equal(terminal->request_id, state->result.request_id)) {
+        return false;
+    }
+
+    uint8_t begin_index = (uint8_t)((queue->head + queue->count) %
+        BADGE_BLE_INVESTIGATION_PENDING_CHUNKS);
+    uint8_t terminal_index = (uint8_t)((begin_index + 1) %
+        BADGE_BLE_INVESTIGATION_PENDING_CHUNKS);
+    ble_investigation_chunk_t *begin = &queue->chunks[begin_index];
+    memset(begin, 0, sizeof(*begin));
+    begin->kind = BLE_INV_CHUNK_BEGIN;
+    begin->mode = state->result.mode;
+    copy_text(begin->request_id, sizeof(begin->request_id),
+              state->result.request_id);
+    copy_text(begin->target_mac, sizeof(begin->target_mac),
+              state->result.target_mac);
+    queue->chunks[terminal_index] = *terminal;
+    queue->count = (uint8_t)(queue->count + 2);
     return true;
 }
 
@@ -527,6 +567,92 @@ bool badge_ble_investigation_pending_queue_consume(
     queue->head = (uint8_t)((queue->head + 1) %
         BADGE_BLE_INVESTIGATION_PENDING_CHUNKS);
     queue->count--;
+    return true;
+}
+
+bool badge_ble_investigation_state_prepare_live_emit(
+    badge_ble_investigation_state_t *state,
+    const char *request_id,
+    bool terminal)
+{
+    if (!state || !request_id_equal(state->result.request_id, request_id)) {
+        return false;
+    }
+    if (!terminal) return state->active && !state->end_received;
+    if (!state->end_received || state->terminal_emit_in_progress ||
+        state->terminal_replay_required) {
+        return false;
+    }
+    if (state->delivery_degraded) {
+        state->terminal_replay_required = true;
+        return false;
+    }
+    state->terminal_emit_in_progress = true;
+    return true;
+}
+
+bool badge_ble_investigation_state_finish_live_emit(
+    badge_ble_investigation_state_t *state,
+    const char *request_id,
+    bool terminal,
+    bool emitted)
+{
+    if (!state || !request_id_equal(state->result.request_id, request_id)) {
+        return false;
+    }
+    if (!terminal) {
+        if (!emitted) state->delivery_degraded = true;
+        return true;
+    }
+    if (!state->end_received || !state->terminal_emit_in_progress) return false;
+    state->terminal_emit_in_progress = false;
+    if (emitted) {
+        state->delivery_degraded = false;
+        state->terminal_replay_required = false;
+    } else {
+        state->delivery_degraded = true;
+        state->terminal_replay_required = true;
+    }
+    return true;
+}
+
+bool badge_ble_investigation_state_require_terminal_replay(
+    badge_ble_investigation_state_t *state)
+{
+    if (!state || !state->end_received ||
+        !request_id_valid(state->result.request_id)) {
+        return false;
+    }
+    state->terminal_emit_in_progress = false;
+    state->terminal_replay_required = true;
+    return true;
+}
+
+bool badge_ble_investigation_state_delivery_blocks_start(
+    const badge_ble_investigation_state_t *state)
+{
+    return state && (state->terminal_emit_in_progress ||
+                     state->terminal_replay_required);
+}
+
+bool badge_ble_investigation_state_terminal_replay_required(
+    const badge_ble_investigation_state_t *state)
+{
+    return state && !state->terminal_emit_in_progress &&
+        state->terminal_replay_required;
+}
+
+bool badge_ble_investigation_state_terminal_replay_secured(
+    badge_ble_investigation_state_t *state,
+    const char *request_id)
+{
+    if (!state || state->terminal_emit_in_progress ||
+        !state->terminal_replay_required ||
+        !request_id_equal(state->result.request_id, request_id)) {
+        return false;
+    }
+    state->delivery_degraded = false;
+    state->terminal_replay_required = false;
     return true;
 }
 

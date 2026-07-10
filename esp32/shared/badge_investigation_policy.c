@@ -131,6 +131,7 @@ bool badge_investigation_format_read_evidence(
 }
 
 void badge_investigation_security_view(
+    bool evidence_known,
     bool authentication_required,
     badge_investigation_security_view_t *out)
 {
@@ -139,5 +140,12 @@ void badge_investigation_security_view(
     out->bonded = "UNKNOWN";
     out->encrypted = "UNKNOWN";
     out->authentication = authentication_required
-        ? "REQUIRED" : "NOT REQUIRED";
+        ? "REQUIRED" : evidence_known ? "NOT REQUIRED" : "UNKNOWN";
+}
+
+bool badge_investigation_auth_evidence_known(
+    ble_investigation_state_t state,
+    bool authentication_required)
+{
+    return authentication_required || state == BLE_INV_COMPLETE;
 }

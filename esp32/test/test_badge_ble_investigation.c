@@ -75,6 +75,26 @@ static void accept_begin(badge_ble_investigation_state_t *state,
     TEST_ASSERT_TRUE(badge_ble_investigation_state_accept(state, &begin));
 }
 
+static void accept_terminal(badge_ble_investigation_state_t *state,
+                            const ble_investigation_request_t *request,
+                            ble_investigation_state_t terminal_state,
+                            bool authentication_required,
+                            bool truncated,
+                            const char *summary,
+                            const char *error)
+{
+    ble_investigation_chunk_t terminal = {0};
+    terminal.kind = BLE_INV_CHUNK_END;
+    terminal.state = terminal_state;
+    terminal.authentication_required = authentication_required;
+    terminal.truncated = truncated;
+    copy_text(terminal.request_id, sizeof(terminal.request_id),
+              request->request_id);
+    copy_text(terminal.summary, sizeof(terminal.summary), summary);
+    copy_text(terminal.error, sizeof(terminal.error), error);
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_accept(state, &terminal));
+}
+
 void test_badge_investigation_routes_only_to_ble_scanner_slot(void)
 {
     badge_ble_investigation_state_t state;
@@ -395,6 +415,199 @@ void test_badge_investigation_pending_queue_rejects_full_without_overwrite(void)
     TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_peek(
         &pending, &queued));
     TEST_ASSERT_EQUAL(BLE_INV_CHUNK_BEGIN, queued.kind);
+}
+
+void test_badge_investigation_failed_live_terminal_blocks_restart_until_replay_secured(void)
+{
+    static badge_ble_investigation_state_t state;
+    static badge_ble_investigation_pending_queue_t pending;
+    ble_investigation_request_t request;
+    ble_investigation_request_t next_request;
+    int scanner_slot = -1;
+    badge_ble_investigation_pending_queue_init(&pending);
+    start_request(&state, &request);
+    accept_begin(&state, &request);
+    accept_terminal(&state, &request, BLE_INV_COMPLETE, false, false,
+                    "inspection complete", "");
+
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_prepare_live_emit(
+        &state, request.request_id, true));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_delivery_blocks_start(
+        &state));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_finish_live_emit(
+        &state, request.request_id, true, false));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_terminal_replay_required(
+        &state));
+
+    make_request(&next_request, "after-failed-end", BLE_INV_MODE_GATT,
+                 "11:22:33:44:55:66");
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_start_at(
+        &state, &next_request, true, 25000, &scanner_slot));
+    TEST_ASSERT_TRUE(
+        badge_ble_investigation_pending_queue_enqueue_terminal_replay(
+            &pending, &state));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_terminal_replay_secured(
+        &state, request.request_id));
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_delivery_blocks_start(
+        &state));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_start_at(
+        &state, &next_request, true, 25000, &scanner_slot));
+}
+
+void test_badge_investigation_failed_begin_forces_parsable_terminal_replay(void)
+{
+    static badge_ble_investigation_state_t state;
+    static badge_ble_investigation_pending_queue_t pending;
+    static char chunk_json[UART_JSON_MAX_SIZE];
+    static char usb_frame[BADGE_BLE_INVESTIGATION_USB_FRAME_MAX];
+    ble_investigation_request_t request;
+    ble_investigation_chunk_t queued;
+    badge_ble_investigation_pending_queue_init(&pending);
+    start_request(&state, &request);
+    accept_begin(&state, &request);
+
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_prepare_live_emit(
+        &state, request.request_id, false));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_finish_live_emit(
+        &state, request.request_id, false, false));
+    accept_terminal(&state, &request, BLE_INV_FAILED, true, true,
+                    "authentication needed", "insufficient_authentication");
+
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_prepare_live_emit(
+        &state, request.request_id, true));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_terminal_replay_required(
+        &state));
+    TEST_ASSERT_TRUE(
+        badge_ble_investigation_pending_queue_enqueue_terminal_replay(
+            &pending, &state));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_terminal_replay_secured(
+        &state, request.request_id));
+
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_peek(
+        &pending, &queued));
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_BEGIN, queued.kind);
+    TEST_ASSERT_EQUAL_STRING("req-1", queued.request_id);
+    TEST_ASSERT_EQUAL(BLE_INV_MODE_GATT, queued.mode);
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", queued.target_mac);
+    TEST_ASSERT_GREATER_THAN_UINT32(0, ble_investigation_chunk_to_json(
+        &queued, chunk_json, sizeof(chunk_json)));
+    TEST_ASSERT_GREATER_THAN_UINT32(0, badge_ble_investigation_usb_frame(
+        chunk_json, usb_frame, sizeof(usb_frame)));
+    TEST_ASSERT_EQUAL_STRING_LEN("FOF_INV:", usb_frame, 8);
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_consume(&pending));
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_peek(
+        &pending, &queued));
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_END, queued.kind);
+    TEST_ASSERT_EQUAL(BLE_INV_FAILED, queued.state);
+    TEST_ASSERT_TRUE(queued.authentication_required);
+    TEST_ASSERT_TRUE(queued.truncated);
+    TEST_ASSERT_EQUAL_STRING("authentication needed", queued.summary);
+    TEST_ASSERT_EQUAL_STRING("insufficient_authentication", queued.error);
+    TEST_ASSERT_GREATER_THAN_UINT32(0, ble_investigation_chunk_to_json(
+        &queued, chunk_json, sizeof(chunk_json)));
+    TEST_ASSERT_NOT_NULL(strstr(chunk_json,
+                                "\"authentication_required\":true"));
+    TEST_ASSERT_NOT_NULL(strstr(chunk_json, "\"truncated\":true"));
+    TEST_ASSERT_GREATER_THAN_UINT32(0, badge_ble_investigation_usb_frame(
+        chunk_json, usb_frame, sizeof(usb_frame)));
+    TEST_ASSERT_LESS_THAN_UINT32(BADGE_BLE_INVESTIGATION_USB_FRAME_MAX,
+                                 strlen(usb_frame));
+}
+
+void test_badge_investigation_terminal_replay_survives_subsequent_start(void)
+{
+    static badge_ble_investigation_state_t state;
+    static badge_ble_investigation_pending_queue_t pending;
+    ble_investigation_request_t request;
+    ble_investigation_request_t next_request;
+    ble_investigation_chunk_t queued;
+    int scanner_slot = -1;
+    badge_ble_investigation_pending_queue_init(&pending);
+    start_request(&state, &request);
+    accept_begin(&state, &request);
+    accept_terminal(&state, &request, BLE_INV_COMPLETE, false, false,
+                    "done", "");
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_prepare_live_emit(
+        &state, request.request_id, true));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_finish_live_emit(
+        &state, request.request_id, true, false));
+    TEST_ASSERT_TRUE(
+        badge_ble_investigation_pending_queue_enqueue_terminal_replay(
+            &pending, &state));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_terminal_replay_secured(
+        &state, request.request_id));
+
+    make_request(&next_request, "next-after-replay", BLE_INV_MODE_GATT,
+                 "11:22:33:44:55:66");
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_start_at(
+        &state, &next_request, true, 30000, &scanner_slot));
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_peek(
+        &pending, &queued));
+    TEST_ASSERT_EQUAL_STRING("req-1", queued.request_id);
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_BEGIN, queued.kind);
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_consume(&pending));
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_peek(
+        &pending, &queued));
+    TEST_ASSERT_EQUAL_STRING("req-1", queued.request_id);
+    TEST_ASSERT_EQUAL(BLE_INV_CHUNK_END, queued.kind);
+}
+
+void test_badge_investigation_terminal_replay_queue_full_does_not_overwrite(void)
+{
+    static badge_ble_investigation_state_t state;
+    static badge_ble_investigation_pending_queue_t pending;
+    ble_investigation_request_t request;
+    ble_investigation_request_t next_request;
+    ble_investigation_chunk_t before;
+    ble_investigation_chunk_t after;
+    int scanner_slot = -1;
+    badge_ble_investigation_pending_queue_init(&pending);
+    start_request(&state, &request);
+    accept_begin(&state, &request);
+    accept_terminal(&state, &request, BLE_INV_COMPLETE, false, false,
+                    "first", "");
+    TEST_ASSERT_TRUE(
+        badge_ble_investigation_pending_queue_enqueue_terminal_replay(
+            &pending, &state));
+    TEST_ASSERT_TRUE(
+        badge_ble_investigation_pending_queue_enqueue_terminal_replay(
+            &pending, &state));
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_peek(
+        &pending, &before));
+    uint8_t head_before = pending.head;
+
+    make_request(&next_request, "queue-full-next", BLE_INV_MODE_GATT,
+                 "11:22:33:44:55:66");
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_start_at(
+        &state, &next_request, true, 35000, &scanner_slot));
+    accept_begin(&state, &next_request);
+    accept_terminal(&state, &next_request, BLE_INV_FAILED, true, true,
+                    "second", "auth");
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_prepare_live_emit(
+        &state, next_request.request_id, true));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_finish_live_emit(
+        &state, next_request.request_id, true, false));
+    TEST_ASSERT_FALSE(
+        badge_ble_investigation_pending_queue_enqueue_terminal_replay(
+            &pending, &state));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_delivery_blocks_start(
+        &state));
+    TEST_ASSERT_EQUAL_UINT8(BADGE_BLE_INVESTIGATION_PENDING_CHUNKS,
+                            pending.count);
+    TEST_ASSERT_EQUAL_UINT8(head_before, pending.head);
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_peek(
+        &pending, &after));
+    TEST_ASSERT_EQUAL_MEMORY(&before, &after, sizeof(before));
+
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_consume(&pending));
+    TEST_ASSERT_TRUE(badge_ble_investigation_pending_queue_consume(&pending));
+    TEST_ASSERT_TRUE(
+        badge_ble_investigation_pending_queue_enqueue_terminal_replay(
+            &pending, &state));
+    TEST_ASSERT_TRUE(badge_ble_investigation_state_terminal_replay_secured(
+        &state, next_request.request_id));
+    TEST_ASSERT_FALSE(badge_ble_investigation_state_delivery_blocks_start(
+        &state));
 }
 
 void test_badge_investigation_ble_chunk_cursor_is_bounded(void)

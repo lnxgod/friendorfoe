@@ -232,6 +232,7 @@ void test_badge_investigation_active_and_error_states_normalize_overlay_pages(vo
 void test_badge_investigation_successful_read_evidence_is_surfaced_and_bounded(void);
 void test_badge_investigation_read_evidence_sanitizes_nonprintable_text(void);
 void test_badge_investigation_security_view_marks_untransported_links_unknown(void);
+void test_badge_investigation_auth_evidence_known_only_when_complete_or_required(void);
 void test_badge_heat_color_runs_ice_to_fire(void);
 void test_badge_heat_percent_combines_proximity_and_count(void);
 void test_badge_heat_percent_no_live_count_means_no_bar(void);
@@ -292,6 +293,10 @@ void test_badge_investigation_expiry_rejects_late_chunks_and_allows_restart(void
 void test_badge_investigation_dropped_end_reconnect_expires_without_transport_cancel(void);
 void test_badge_investigation_pending_timeout_survives_subsequent_start(void);
 void test_badge_investigation_pending_queue_rejects_full_without_overwrite(void);
+void test_badge_investigation_failed_live_terminal_blocks_restart_until_replay_secured(void);
+void test_badge_investigation_failed_begin_forces_parsable_terminal_replay(void);
+void test_badge_investigation_terminal_replay_survives_subsequent_start(void);
+void test_badge_investigation_terminal_replay_queue_full_does_not_overwrite(void);
 void test_badge_investigation_ble_chunk_cursor_is_bounded(void);
 void test_badge_investigation_rejects_mismatched_and_out_of_order_chunks(void);
 void test_badge_investigation_rejects_duplicate_begin_and_end(void);
@@ -606,6 +611,7 @@ int main(void)
     RUN_TEST(test_badge_investigation_successful_read_evidence_is_surfaced_and_bounded);
     RUN_TEST(test_badge_investigation_read_evidence_sanitizes_nonprintable_text);
     RUN_TEST(test_badge_investigation_security_view_marks_untransported_links_unknown);
+    RUN_TEST(test_badge_investigation_auth_evidence_known_only_when_complete_or_required);
     RUN_TEST(test_badge_heat_color_runs_ice_to_fire);
     RUN_TEST(test_badge_heat_percent_combines_proximity_and_count);
     RUN_TEST(test_badge_heat_percent_no_live_count_means_no_bar);
@@ -666,6 +672,10 @@ int main(void)
     RUN_TEST(test_badge_investigation_dropped_end_reconnect_expires_without_transport_cancel);
     RUN_TEST(test_badge_investigation_pending_timeout_survives_subsequent_start);
     RUN_TEST(test_badge_investigation_pending_queue_rejects_full_without_overwrite);
+    RUN_TEST(test_badge_investigation_failed_live_terminal_blocks_restart_until_replay_secured);
+    RUN_TEST(test_badge_investigation_failed_begin_forces_parsable_terminal_replay);
+    RUN_TEST(test_badge_investigation_terminal_replay_survives_subsequent_start);
+    RUN_TEST(test_badge_investigation_terminal_replay_queue_full_does_not_overwrite);
     RUN_TEST(test_badge_investigation_ble_chunk_cursor_is_bounded);
     RUN_TEST(test_badge_investigation_rejects_mismatched_and_out_of_order_chunks);
     RUN_TEST(test_badge_investigation_rejects_duplicate_begin_and_end);

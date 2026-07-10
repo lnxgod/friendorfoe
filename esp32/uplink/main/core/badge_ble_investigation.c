@@ -94,20 +94,38 @@ static int64_t investigation_now_ms(void)
     return esp_timer_get_time() / 1000LL;
 }
 
+static bool secure_terminal_replay_locked(void);
+
 /* Caller holds s_lock. Expiry mutates state and queues independent copies, but
  * deliberately performs no USB output or logging while the state is locked. */
 static bool expire_locked(int64_t now_ms)
 {
-    badge_ble_investigation_expiry_t expiry;
-    if (!badge_ble_investigation_state_expire(&s_state, now_ms, &expiry)) {
+    if (!badge_ble_investigation_state_expire(&s_state, now_ms, NULL)) {
         return false;
     }
-    if (!badge_ble_investigation_pending_queue_enqueue_expiry(
-            &s_pending_chunks, &s_state, &expiry)) {
-        s_pending_queue_error = true;
-    }
+    badge_ble_investigation_state_require_terminal_replay(&s_state);
+    secure_terminal_replay_locked();
     s_revision++;
     return true;
+}
+
+/* Caller holds s_lock. A full FIFO is retryable: leave the state-side fence
+ * engaged so a new request cannot erase the terminal before poll drains room. */
+static bool secure_terminal_replay_locked(void)
+{
+    if (!badge_ble_investigation_state_terminal_replay_required(&s_state)) {
+        return true;
+    }
+    if (!badge_ble_investigation_pending_queue_enqueue_terminal_replay(
+            &s_pending_chunks, &s_state)) {
+        if (badge_ble_investigation_pending_queue_can_accept_expiry(
+                &s_pending_chunks)) {
+            s_pending_queue_error = true;
+        }
+        return false;
+    }
+    return badge_ble_investigation_state_terminal_replay_secured(
+        &s_state, s_state.result.request_id);
 }
 
 /* Caller holds only s_emit_lock. The JSON/frame scratch is shared by scanner
@@ -134,6 +152,7 @@ void badge_ble_investigation_poll(void)
     bool queue_error = false;
     for (uint8_t i = 0; i < BADGE_BLE_INVESTIGATION_PENDING_CHUNKS; ++i) {
         if (!lock_state()) break;
+        secure_terminal_replay_locked();
         expire_locked(investigation_now_ms());
         bool have_chunk = badge_ble_investigation_pending_queue_peek(
             &s_pending_chunks, &s_pending_emit_chunk);
@@ -152,7 +171,7 @@ void badge_ble_investigation_poll(void)
     unlock_emit();
 
     if (queue_error) {
-        ESP_LOGE(TAG, "BLE investigation timeout frame queue overflow");
+        ESP_LOGE(TAG, "BLE investigation terminal replay queue error");
     }
 }
 
@@ -351,6 +370,11 @@ bool badge_ble_investigation_start(const char *request_id,
         unlock_state();
         return false;
     }
+    if (badge_ble_investigation_state_delivery_blocks_start(&s_state)) {
+        set_error(err, err_len, "busy");
+        unlock_state();
+        return false;
+    }
     if (!badge_ble_investigation_pending_queue_can_accept_expiry(
             &s_pending_chunks)) {
         set_error(err, err_len, "busy");
@@ -417,13 +441,29 @@ bool badge_ble_investigation_accept_scanner_json(const cJSON *root)
         badge_ble_investigation_state_get_chunk(
             &s_state, chunk.request_id, s_state.chunk_count - 1,
             &chunk);
+    bool terminal = have_emitted_chunk && chunk.kind == BLE_INV_CHUNK_END;
+    bool should_emit = have_emitted_chunk &&
+        badge_ble_investigation_state_prepare_live_emit(
+            &s_state, chunk.request_id, terminal);
+    if (terminal && !should_emit) secure_terminal_replay_locked();
     if (accepted) s_revision++;
     unlock_state();
 
-    if (have_emitted_chunk && lock_emit()) {
-        emit_chunk_locked(&chunk);
-        unlock_emit();
+    if (!have_emitted_chunk || !should_emit) return accepted;
+
+    bool emitted = false;
+    bool emit_locked = lock_emit();
+    if (emit_locked) emitted = emit_chunk_locked(&chunk);
+
+    if (lock_state()) {
+        bool finished = badge_ble_investigation_state_finish_live_emit(
+            &s_state, chunk.request_id, terminal, emitted);
+        if (finished && terminal && !emitted) {
+            secure_terminal_replay_locked();
+        }
+        unlock_state();
     }
+    if (emit_locked) unlock_emit();
     return accepted;
 }
 

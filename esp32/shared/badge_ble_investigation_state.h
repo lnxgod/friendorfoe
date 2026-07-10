@@ -26,6 +26,9 @@ typedef struct {
     bool active;
     bool begin_received;
     bool end_received;
+    bool delivery_degraded;
+    bool terminal_emit_in_progress;
+    bool terminal_replay_required;
     uint8_t chunk_count;
     int64_t deadline_ms;
     ble_investigation_chunk_t chunks[BADGE_BLE_INVESTIGATION_MAX_CHUNKS];
@@ -103,11 +106,32 @@ bool badge_ble_investigation_pending_queue_enqueue_expiry(
     badge_ble_investigation_pending_queue_t *queue,
     const badge_ble_investigation_state_t *state,
     const badge_ble_investigation_expiry_t *expiry);
+bool badge_ble_investigation_pending_queue_enqueue_terminal_replay(
+    badge_ble_investigation_pending_queue_t *queue,
+    const badge_ble_investigation_state_t *state);
 bool badge_ble_investigation_pending_queue_peek(
     const badge_ble_investigation_pending_queue_t *queue,
     ble_investigation_chunk_t *out);
 bool badge_ble_investigation_pending_queue_consume(
     badge_ble_investigation_pending_queue_t *queue);
+bool badge_ble_investigation_state_prepare_live_emit(
+    badge_ble_investigation_state_t *state,
+    const char *request_id,
+    bool terminal);
+bool badge_ble_investigation_state_finish_live_emit(
+    badge_ble_investigation_state_t *state,
+    const char *request_id,
+    bool terminal,
+    bool emitted);
+bool badge_ble_investigation_state_require_terminal_replay(
+    badge_ble_investigation_state_t *state);
+bool badge_ble_investigation_state_delivery_blocks_start(
+    const badge_ble_investigation_state_t *state);
+bool badge_ble_investigation_state_terminal_replay_required(
+    const badge_ble_investigation_state_t *state);
+bool badge_ble_investigation_state_terminal_replay_secured(
+    badge_ble_investigation_state_t *state,
+    const char *request_id);
 void badge_ble_investigation_state_get(
     const badge_ble_investigation_state_t *state,
     ble_investigation_result_t *out);

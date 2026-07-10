@@ -135,12 +135,29 @@ void test_badge_investigation_security_view_marks_untransported_links_unknown(vo
 {
     badge_investigation_security_view_t view;
 
-    badge_investigation_security_view(true, &view);
+    badge_investigation_security_view(false, false, &view);
     TEST_ASSERT_EQUAL_STRING("UNKNOWN", view.connectable);
     TEST_ASSERT_EQUAL_STRING("UNKNOWN", view.bonded);
     TEST_ASSERT_EQUAL_STRING("UNKNOWN", view.encrypted);
+    TEST_ASSERT_EQUAL_STRING("UNKNOWN", view.authentication);
+
+    badge_investigation_security_view(false, true, &view);
     TEST_ASSERT_EQUAL_STRING("REQUIRED", view.authentication);
 
-    badge_investigation_security_view(false, &view);
+    badge_investigation_security_view(true, false, &view);
     TEST_ASSERT_EQUAL_STRING("NOT REQUIRED", view.authentication);
+}
+
+void test_badge_investigation_auth_evidence_known_only_when_complete_or_required(void)
+{
+    TEST_ASSERT_FALSE(badge_investigation_auth_evidence_known(
+        BLE_INV_IDLE, false));
+    TEST_ASSERT_FALSE(badge_investigation_auth_evidence_known(
+        BLE_INV_FAILED, false));
+    TEST_ASSERT_FALSE(badge_investigation_auth_evidence_known(
+        BLE_INV_CANCELLED, false));
+    TEST_ASSERT_TRUE(badge_investigation_auth_evidence_known(
+        BLE_INV_COMPLETE, false));
+    TEST_ASSERT_TRUE(badge_investigation_auth_evidence_known(
+        BLE_INV_FAILED, true));
 }

@@ -57,8 +57,12 @@ bool badge_investigation_format_read_evidence(
     char *out,
     size_t out_len);
 void badge_investigation_security_view(
+    bool evidence_known,
     bool authentication_required,
     badge_investigation_security_view_t *out);
+bool badge_investigation_auth_evidence_known(
+    ble_investigation_state_t state,
+    bool authentication_required);
 
 #ifdef __cplusplus
 }
