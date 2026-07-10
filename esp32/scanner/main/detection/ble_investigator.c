@@ -156,6 +156,12 @@ bool ble_investigator_passive_start_is_ready(
     return request->mode == BLE_INV_MODE_PASSIVE_CAPTURE && scanner_scanning;
 }
 
+bool ble_investigator_host_start_is_allowed(bool investigation_gatt_active,
+                                            bool resume_pending)
+{
+    return !investigation_gatt_active || resume_pending;
+}
+
 bool ble_investigator_scan_start_is_allowed(bool investigation_active,
                                             bool investigation_resume)
 {

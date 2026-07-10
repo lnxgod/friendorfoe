@@ -132,6 +132,8 @@ bool ble_investigator_build_rejection_chunks(
 bool ble_investigator_passive_start_is_ready(
     const ble_investigation_request_t *request,
     bool scanner_scanning);
+bool ble_investigator_host_start_is_allowed(bool investigation_gatt_active,
+                                            bool resume_pending);
 bool ble_investigator_scan_start_is_allowed(bool investigation_active,
                                             bool investigation_resume);
 bool ble_investigator_fingerprint_is_swift_pair(

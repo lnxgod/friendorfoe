@@ -897,11 +897,25 @@ void test_ble_investigator_passive_result_owns_restart_until_confirmed(void)
         &fence, generation));
 }
 
-void test_ble_investigator_pending_restore_may_restart_scanner(void)
+void test_ble_investigator_active_gatt_blocks_host_lifecycle(void)
+{
+    TEST_ASSERT_FALSE(ble_investigator_host_start_is_allowed(true, false));
+}
+
+void test_ble_investigator_pending_restore_allows_host_lifecycle(void)
+{
+    TEST_ASSERT_TRUE(ble_investigator_host_start_is_allowed(true, true));
+}
+
+void test_ble_investigator_host_lifecycle_runs_without_gatt(void)
+{
+    TEST_ASSERT_TRUE(ble_investigator_host_start_is_allowed(false, false));
+}
+
+void test_ble_investigator_pending_restore_reserves_scan_for_cleanup(void)
 {
     TEST_ASSERT_FALSE(ble_investigator_scan_start_is_allowed(true, false));
     TEST_ASSERT_TRUE(ble_investigator_scan_start_is_allowed(true, true));
-    TEST_ASSERT_TRUE(ble_investigator_scan_start_is_allowed(false, true));
     TEST_ASSERT_TRUE(ble_investigator_scan_start_is_allowed(false, false));
 }
 

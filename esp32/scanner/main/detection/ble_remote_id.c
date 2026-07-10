@@ -314,6 +314,18 @@ static bool investigation_gatt_is_active(void)
     return active;
 }
 
+static bool investigation_host_start_is_allowed(void)
+{
+    bool gatt_active;
+    bool resume_pending;
+    portENTER_CRITICAL(&s_investigation_lock);
+    gatt_active = s_investigation_gatt_active;
+    resume_pending = s_investigation_resume_pending;
+    portEXIT_CRITICAL(&s_investigation_lock);
+    return ble_investigator_host_start_is_allowed(
+        gatt_active, resume_pending);
+}
+
 static void note_peer_addr_type(const uint8_t mac[6],
                                 uint8_t addr_type,
                                 int64_t now_ms)
@@ -1822,7 +1834,7 @@ void ble_remote_id_set_glasses_queue(QueueHandle_t queue)
 
 void ble_remote_id_start(void)
 {
-    if (investigation_gatt_is_active()) {
+    if (!investigation_host_start_is_allowed()) {
         ESP_LOGD(TAG, "BLE start suppressed during GATT investigation");
         return;
     }
