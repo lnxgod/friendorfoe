@@ -120,6 +120,28 @@ class BleThreatAnalyzerTest {
     }
 
     @Test
+    fun `persistent sparse FFE0 candidate with exactly two supporting signals alerts`() {
+        val analyzer = BleThreatAnalyzer()
+
+        analyzer.observe(serial(0, name = null, connectable = false))
+        analyzer.observe(serial(2_500, name = null, connectable = false))
+        val signal = analyzer.observe(serial(5_100, name = null, connectable = false))
+            .filterIsInstance<BleThreatSignal.SerialSkimmer>()
+            .single()
+
+        assertEquals(
+            setOf(
+                BleSerialEvidence.SERIAL_UUID,
+                BleSerialEvidence.SPARSE_PROFILE,
+                BleSerialEvidence.PERSISTENT,
+                BleSerialEvidence.CLOSE,
+                BleSerialEvidence.UNTRUSTED,
+            ),
+            signal.evidence,
+        )
+    }
+
+    @Test
     fun `FFE0 alone never alerts`() {
         val analyzer = BleThreatAnalyzer()
         val signals = listOf(0L, 2_500L, 5_100L)

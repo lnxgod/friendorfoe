@@ -224,9 +224,11 @@ class BleThreatAnalyzer(
         val track = existingTrack ?: createSerialTrack(observation, serialServiceUuid)
         if (existingTrack != null) updateSerialTrack(track, observation)
         if (track.alerted) return null
+        if (track.isTrusted || track.hasPkocIdentity) return null
 
         val evidence = serialEvidence(track)
         if (!REQUIRED_SERIAL_EVIDENCE.all(evidence::contains)) return null
+        if (evidence.count { it in SUPPORTING_SERIAL_EVIDENCE } < MIN_SUPPORTING_SERIAL_EVIDENCE) return null
 
         track.alerted = true
         return BleThreatSignal.SerialSkimmer(
@@ -303,6 +305,17 @@ class BleThreatAnalyzer(
         const val CLOSE_RSSI_DBM = -70
         val SERIAL_SERVICE_UUIDS = setOf(0xFFE0, 0xFFF0)
         val GENERIC_SERIAL_NAMES = setOf("BT", "BLE", "UART", "SERIAL", "HC-05", "HC-06")
-        val REQUIRED_SERIAL_EVIDENCE = BleSerialEvidence.entries.toSet()
+        val REQUIRED_SERIAL_EVIDENCE = setOf(
+            BleSerialEvidence.SERIAL_UUID,
+            BleSerialEvidence.SPARSE_PROFILE,
+            BleSerialEvidence.PERSISTENT,
+        )
+        val SUPPORTING_SERIAL_EVIDENCE = setOf(
+            BleSerialEvidence.GENERIC_NAME,
+            BleSerialEvidence.CLOSE,
+            BleSerialEvidence.CONNECTABLE,
+            BleSerialEvidence.UNTRUSTED,
+        )
+        const val MIN_SUPPORTING_SERIAL_EVIDENCE = 2
     }
 }
