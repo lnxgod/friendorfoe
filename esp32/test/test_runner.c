@@ -269,6 +269,14 @@ void test_ble_investigation_result_is_one_shot_and_terminal(void);
 void test_ble_investigation_request_json_uses_target_and_default_timeout(void);
 void test_ble_investigation_chunk_encoder_validates_state_ranges(void);
 void test_ble_investigation_chunk_encoder_rejects_unknown_property_bits(void);
+void test_ble_investigator_rejects_second_request_as_busy(void);
+void test_ble_investigator_gatt_success_reaches_complete(void);
+void test_ble_investigator_auth_error_sets_auth_required(void);
+void test_ble_investigator_timeout_reaches_failed(void);
+void test_ble_investigator_cancel_reaches_cancelled(void);
+void test_ble_investigator_every_terminal_path_requests_scan_resume(void);
+void test_ble_investigator_passive_capture_summarizes_prompt_families(void);
+void test_ble_investigator_parses_display_mac_to_nimble_byte_order(void);
 
 void test_clean_boot_keeps_counter_carried_no_action(void);
 void test_brownout_does_not_count_as_crash(void);
@@ -567,6 +575,14 @@ int main(void)
     RUN_TEST(test_ble_investigation_request_json_uses_target_and_default_timeout);
     RUN_TEST(test_ble_investigation_chunk_encoder_validates_state_ranges);
     RUN_TEST(test_ble_investigation_chunk_encoder_rejects_unknown_property_bits);
+    RUN_TEST(test_ble_investigator_rejects_second_request_as_busy);
+    RUN_TEST(test_ble_investigator_gatt_success_reaches_complete);
+    RUN_TEST(test_ble_investigator_auth_error_sets_auth_required);
+    RUN_TEST(test_ble_investigator_timeout_reaches_failed);
+    RUN_TEST(test_ble_investigator_cancel_reaches_cancelled);
+    RUN_TEST(test_ble_investigator_every_terminal_path_requests_scan_resume);
+    RUN_TEST(test_ble_investigator_passive_capture_summarizes_prompt_families);
+    RUN_TEST(test_ble_investigator_parses_display_mac_to_nimble_byte_order);
 
     RUN_TEST(test_clean_boot_keeps_counter_carried_no_action);
     RUN_TEST(test_brownout_does_not_count_as_crash);

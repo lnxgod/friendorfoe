@@ -8,6 +8,7 @@ set(SRCS
     "detection/french_dri_parser.c"
     "detection/open_drone_id_parser.c"
     "detection/ble_remote_id.c"
+    "detection/ble_investigator.c"
     "detection/ble_fingerprint.c"
     "detection/ble_threat_detector.c"
     "detection/ble_ja3.c"

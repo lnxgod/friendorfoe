@@ -29,6 +29,8 @@
 #include "led_status.h"
 #include "oled_display.h"
 #include "ble_remote_id.h"
+#include "ble_investigator.h"
+#include "ble_investigation_protocol.h"
 #include "time_sync_policy.h"
 #include "comms/uart_ota.h"
 
@@ -676,6 +678,126 @@ static void handle_display_policy_command(cJSON *root)
 
 /* ── UART command listener (lock-on from uplink) ──────────────────────── */
 
+static bool scanner_request_id_is_valid(const char *request_id)
+{
+    if (!request_id) return false;
+    size_t len = strlen(request_id);
+    if (len == 0 || len >= BLE_INV_REQUEST_ID_LEN) return false;
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char ch = (unsigned char)request_id[i];
+        if (ch < 0x21 || ch > 0x7E) return false;
+    }
+    return true;
+}
+
+static void send_ble_investigation_rejection(const char *request_id,
+                                             const char *error)
+{
+    if (!scanner_request_id_is_valid(request_id) || !error) return;
+    ble_investigation_chunk_t chunk = {
+        .kind = BLE_INV_CHUNK_END,
+        .state = BLE_INV_FAILED,
+    };
+    snprintf(chunk.request_id, sizeof(chunk.request_id), "%s", request_id);
+    snprintf(chunk.summary, sizeof(chunk.summary),
+             "BLE investigation rejected: %s", error);
+    snprintf(chunk.error, sizeof(chunk.error), "%s", error);
+    char json[UART_JSON_MAX_SIZE];
+    if (ble_investigation_chunk_to_json(&chunk, json, sizeof(json)) > 0) {
+        uart_tx_send_raw_json(json);
+    }
+}
+
+static void handle_ble_investigate_command(cJSON *root)
+{
+    const cJSON *request_id_j = cJSON_GetObjectItem(root, "request_id");
+    const cJSON *mode_j = cJSON_GetObjectItem(root, "mode");
+    const cJSON *target_j = cJSON_GetObjectItem(root, "target");
+    const cJSON *timeout_j = cJSON_GetObjectItem(root, "timeout_ms");
+    const char *request_id = cJSON_IsString(request_id_j)
+        ? request_id_j->valuestring
+        : NULL;
+    if (!scanner_request_id_is_valid(request_id)) {
+        ESP_LOGW(TAG, "Rejected BLE investigation with invalid request_id");
+        return;
+    }
+
+    ble_investigation_mode_t mode;
+    if (!cJSON_IsString(mode_j) ||
+        !ble_investigation_mode_from_name(mode_j->valuestring, &mode)) {
+        send_ble_investigation_rejection(request_id, "invalid_mode");
+        return;
+    }
+
+    uint32_t timeout_ms = BLE_INV_DEFAULT_TIMEOUT_MS;
+    if (timeout_j) {
+        double timeout_value = timeout_j->valuedouble;
+        if (!cJSON_IsNumber(timeout_j) || timeout_value < 1 ||
+            timeout_value > BLE_INV_DEFAULT_TIMEOUT_MS ||
+            timeout_value != (double)(uint32_t)timeout_value) {
+            send_ble_investigation_rejection(request_id, "invalid_timeout");
+            return;
+        }
+        timeout_ms = (uint32_t)timeout_value;
+    }
+
+    ble_investigation_request_t request = {
+        .mode = mode,
+        .timeout_ms = timeout_ms,
+    };
+    snprintf(request.request_id, sizeof(request.request_id), "%s", request_id);
+    if (mode == BLE_INV_MODE_GATT) {
+        uint8_t parsed_mac[6];
+        if (!cJSON_IsString(target_j) ||
+            !ble_investigator_parse_target_mac(target_j->valuestring, parsed_mac)) {
+            send_ble_investigation_rejection(request_id, "invalid_target");
+            return;
+        }
+        snprintf(request.target_mac, sizeof(request.target_mac), "%s",
+                 target_j->valuestring);
+    } else if (target_j && !cJSON_IsNull(target_j)) {
+        send_ble_investigation_rejection(request_id, "passive_target_not_allowed");
+        return;
+    }
+
+    if (scanner_calibration_mode_is_active()) {
+        send_ble_investigation_rejection(request_id, "calibration_active");
+        return;
+    }
+    bool ota_active = uart_ota_is_active();
+#ifdef FOF_BADGE_VARIANT
+    ota_active = ota_active || scanner_firmware_quiet_window_active();
+#endif
+    if (ota_active) {
+        send_ble_investigation_rejection(request_id, "ota_active");
+        return;
+    }
+    if (ble_investigator_runtime_is_busy()) {
+        send_ble_investigation_rejection(request_id, "busy");
+        return;
+    }
+    if (!ble_investigator_runtime_start(
+            &request, esp_timer_get_time() / 1000)) {
+        send_ble_investigation_rejection(request_id, "start_failed");
+    }
+}
+
+static void handle_ble_investigation_cancel(cJSON *root)
+{
+    const cJSON *request_id_j = cJSON_GetObjectItem(root, "request_id");
+    const char *request_id = cJSON_IsString(request_id_j)
+        ? request_id_j->valuestring
+        : NULL;
+    if (!scanner_request_id_is_valid(request_id)) {
+        ESP_LOGW(TAG, "Rejected BLE investigation cancel with invalid request_id");
+        return;
+    }
+    if (!ble_investigator_runtime_cancel(
+            request_id, esp_timer_get_time() / 1000)) {
+        send_ble_investigation_rejection(request_id, "not_active");
+    }
+}
+
 static void send_cal_mode_ack(bool ok_flag)
 {
     char ack[192];
@@ -856,6 +978,7 @@ static void uart_cmd_listener_task(void *arg)
         int64_t loop_now_ms = esp_timer_get_time() / 1000;
         s_uart_cmd_last_loop_ms = loop_now_ms;
         maybe_expire_time_sync(loop_now_ms);
+        ble_investigator_runtime_tick(loop_now_ms);
         int len = uart_read_bytes(UART_NUM_1, buf, sizeof(buf), pdMS_TO_TICKS(50));
 
         /* Resend scanner_info every 10s — always, even when TX is stopped.
@@ -991,6 +1114,12 @@ static void uart_cmd_listener_task(void *arg)
                                                (int64_t)(esp_random() % FW_CHECK_JITTER_MAX_MS);
                             send_fw_check(s_board_name, s_caps, "manual");
 
+                        } else if (type && strcmp(type, MSG_TYPE_BLE_INVESTIGATE) == 0) {
+                            handle_ble_investigate_command(root);
+
+                        } else if (type && strcmp(type, "ble_investigate_cancel") == 0) {
+                            handle_ble_investigation_cancel(root);
+
                         } else if (type && strcmp(type, "lockon") == 0) {
                             if (scanner_calibration_mode_is_active()) {
                                 ESP_LOGW(TAG, "Rejecting WiFi lock-on while calibration mode is active");
@@ -1053,7 +1182,8 @@ static void uart_cmd_listener_task(void *arg)
                             cJSON *session_j = cJSON_GetObjectItem(root, JSON_KEY_SESSION_ID);
                             cJSON *uuid_j = cJSON_GetObjectItem(root, JSON_KEY_CALIBRATION_UUID);
                             bool ok = false;
-                            if (session_j && session_j->valuestring &&
+                            if (!ble_investigator_runtime_is_busy() &&
+                                session_j && session_j->valuestring &&
                                 uuid_j && uuid_j->valuestring) {
                                 ok = scanner_calibration_mode_start(
                                     session_j->valuestring,
@@ -1125,6 +1255,15 @@ static void uart_cmd_listener_task(void *arg)
                             }
 
                         } else if (type && strcmp(type, MSG_TYPE_OTA_BEGIN) == 0) {
+                            if (ble_investigator_runtime_is_busy()) {
+                                uart_tx_send_raw_json(
+                                    "{\"type\":\"ota_error\",\"reason\":\"ble_investigation_active\"}");
+                                ESP_LOGW(TAG, "Rejected OTA begin during BLE investigation");
+                                cJSON_Delete(root);
+                                line_pos = 0;
+                                line_started_tick = 0;
+                                continue;
+                            }
                             /* UART OTA: receive firmware from uplink */
                             uart_tx_set_firmware_update_state(
                                 true,
