@@ -691,21 +691,13 @@ static bool scanner_request_id_is_valid(const char *request_id)
 }
 
 static void send_ble_investigation_rejection(const char *request_id,
+                                             ble_investigation_mode_t mode,
+                                             const char *target_mac,
                                              const char *error)
 {
     if (!scanner_request_id_is_valid(request_id) || !error) return;
-    ble_investigation_chunk_t chunk = {
-        .kind = BLE_INV_CHUNK_END,
-        .state = BLE_INV_FAILED,
-    };
-    snprintf(chunk.request_id, sizeof(chunk.request_id), "%s", request_id);
-    snprintf(chunk.summary, sizeof(chunk.summary),
-             "BLE investigation rejected: %s", error);
-    snprintf(chunk.error, sizeof(chunk.error), "%s", error);
-    char json[UART_JSON_MAX_SIZE];
-    if (ble_investigation_chunk_to_json(&chunk, json, sizeof(json)) > 0) {
-        uart_tx_send_raw_json(json);
-    }
+    ble_investigator_runtime_emit_rejection(
+        request_id, mode, target_mac, error);
 }
 
 static void handle_ble_investigate_command(cJSON *root)
@@ -725,7 +717,8 @@ static void handle_ble_investigate_command(cJSON *root)
     ble_investigation_mode_t mode;
     if (!cJSON_IsString(mode_j) ||
         !ble_investigation_mode_from_name(mode_j->valuestring, &mode)) {
-        send_ble_investigation_rejection(request_id, "invalid_mode");
+        send_ble_investigation_rejection(
+            request_id, (ble_investigation_mode_t)-1, NULL, "invalid_mode");
         return;
     }
 
@@ -735,7 +728,10 @@ static void handle_ble_investigate_command(cJSON *root)
         if (!cJSON_IsNumber(timeout_j) || timeout_value < 1 ||
             timeout_value > BLE_INV_DEFAULT_TIMEOUT_MS ||
             timeout_value != (double)(uint32_t)timeout_value) {
-            send_ble_investigation_rejection(request_id, "invalid_timeout");
+            send_ble_investigation_rejection(
+                request_id, mode,
+                cJSON_IsString(target_j) ? target_j->valuestring : NULL,
+                "invalid_timeout");
             return;
         }
         timeout_ms = (uint32_t)timeout_value;
@@ -750,18 +746,24 @@ static void handle_ble_investigate_command(cJSON *root)
         uint8_t parsed_mac[6];
         if (!cJSON_IsString(target_j) ||
             !ble_investigator_parse_target_mac(target_j->valuestring, parsed_mac)) {
-            send_ble_investigation_rejection(request_id, "invalid_target");
+            send_ble_investigation_rejection(
+                request_id, mode,
+                cJSON_IsString(target_j) ? target_j->valuestring : NULL,
+                "invalid_target");
             return;
         }
         snprintf(request.target_mac, sizeof(request.target_mac), "%s",
                  target_j->valuestring);
     } else if (target_j && !cJSON_IsNull(target_j)) {
-        send_ble_investigation_rejection(request_id, "passive_target_not_allowed");
+        send_ble_investigation_rejection(
+            request_id, mode, NULL, "passive_target_not_allowed");
         return;
     }
 
     if (scanner_calibration_mode_is_active()) {
-        send_ble_investigation_rejection(request_id, "calibration_active");
+        send_ble_investigation_rejection(
+            request_id, request.mode, request.target_mac,
+            "calibration_active");
         return;
     }
     bool ota_active = uart_ota_is_active();
@@ -769,16 +771,29 @@ static void handle_ble_investigate_command(cJSON *root)
     ota_active = ota_active || scanner_firmware_quiet_window_active();
 #endif
     if (ota_active) {
-        send_ble_investigation_rejection(request_id, "ota_active");
+        send_ble_investigation_rejection(
+            request_id, request.mode, request.target_mac, "ota_active");
         return;
     }
     if (ble_investigator_runtime_is_busy()) {
-        send_ble_investigation_rejection(request_id, "busy");
+        send_ble_investigation_rejection(
+            request_id, request.mode, request.target_mac, "busy");
+        return;
+    }
+    if (request.mode == BLE_INV_MODE_PASSIVE_CAPTURE &&
+        !ble_remote_id_is_scanning()) {
+        send_ble_investigation_rejection(
+            request_id, request.mode, NULL, "scanner_unavailable");
         return;
     }
     if (!ble_investigator_runtime_start(
             &request, esp_timer_get_time() / 1000)) {
-        send_ble_investigation_rejection(request_id, "start_failed");
+        const char *error = request.mode == BLE_INV_MODE_PASSIVE_CAPTURE &&
+                            !ble_remote_id_is_scanning()
+            ? "scanner_unavailable"
+            : "start_failed";
+        send_ble_investigation_rejection(
+            request_id, request.mode, request.target_mac, error);
     }
 }
 
@@ -794,7 +809,8 @@ static void handle_ble_investigation_cancel(cJSON *root)
     }
     if (!ble_investigator_runtime_cancel(
             request_id, esp_timer_get_time() / 1000)) {
-        send_ble_investigation_rejection(request_id, "not_active");
+        send_ble_investigation_rejection(
+            request_id, BLE_INV_MODE_PASSIVE_CAPTURE, NULL, "not_active");
     }
 }
 

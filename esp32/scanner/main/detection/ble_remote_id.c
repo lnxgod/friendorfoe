@@ -70,7 +70,6 @@ static const char *TAG = "ble_rid";
 #define ODID_PRIORITY_REEMIT_MS     500
 
 #define BLE_THREAT_APPLE_COMPANY_ID      0x004C
-#define BLE_THREAT_MICROSOFT_COMPANY_ID  0x0006
 #define BLE_THREAT_FAST_PAIR_UUID         0xFE2C
 #define BLE_THREAT_APPLE_AIRPODS_TYPE     0x07
 #define BLE_THREAT_APPLE_NEARBY_ACT_TYPE  0x0F
@@ -830,7 +829,7 @@ static void trace_ble_service_data(uint16_t uuid16, int data_len, int rssi)
 
 /* ── Forward declarations ──────────────────────────────────────────────────── */
 
-static void ble_remote_id_start_scan_internal(void);
+static bool ble_remote_id_start_scan_internal(bool investigation_resume);
 
 static bool apply_behavioral_ble_threat(const uint8_t mac[6],
                                         int8_t rssi,
@@ -869,7 +868,7 @@ static bool apply_behavioral_ble_threat(const uint8_t mac[6],
          fp->apple_type == BLE_THREAT_APPLE_NEARBY_ACT_TYPE ||
          fp->apple_type == BLE_THREAT_APPLE_NEARBY_INFO_TYPE)) {
         observation.prompt_family = BLE_PROMPT_APPLE;
-    } else if (fp->company_id == BLE_THREAT_MICROSOFT_COMPANY_ID) {
+    } else if (ble_investigator_fingerprint_is_swift_pair(fp)) {
         observation.prompt_family = BLE_PROMPT_SWIFT_PAIR;
     } else {
         for (uint8_t i = 0; i < observation.service_uuid_count; i++) {
@@ -1637,7 +1636,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISC_COMPLETE:
         ESP_LOGI(TAG, "BLE scan complete, restarting...");
         if (s_scanning) {
-            ble_remote_id_start_scan_internal();
+            (void)ble_remote_id_start_scan_internal(false);
         }
         break;
 
@@ -1650,11 +1649,11 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
 /* ── Internal: start BLE scanning ──────────────────────────────────────────── */
 
-static void ble_remote_id_start_scan_internal(void)
+static bool ble_remote_id_start_scan_internal(bool investigation_resume)
 {
-    if (investigation_gatt_is_active()) {
+    if (investigation_gatt_is_active() && !investigation_resume) {
         ESP_LOGD(TAG, "BLE scan restart suppressed during GATT investigation");
-        return;
+        return false;
     }
     /*
      * Use ble_gap_ext_disc for BLE 5 extended discovery on ESP32-S3.
@@ -1692,14 +1691,19 @@ static void ble_remote_id_start_scan_internal(void)
     if (rc != 0) {
         ESP_LOGE(TAG, "ble_gap_ext_disc() failed: %d; non-extended discovery is unsupported", rc);
         s_scanning = false;
+        return false;
     } else {
         s_scanning = true;
         portENTER_CRITICAL(&s_investigation_lock);
+        if (investigation_resume) {
+            s_investigation_gatt_active = false;
+        }
         s_investigation_resume_pending = false;
         portEXIT_CRITICAL(&s_investigation_lock);
         s_ble_scan_start_ok++;
         ESP_LOGI(TAG, "BLE scanning started (ext_disc %s, 1M+coded PHY, 100%% duty)",
                  BLE_SCAN_PASSIVE_MODE ? "passive" : "active");
+        return true;
     }
 }
 
@@ -1740,7 +1744,7 @@ static void ble_on_sync(void)
     s_host_synced = true;
 
     ESP_LOGI(TAG, "NimBLE host synced, starting ODID scan");
-    ble_remote_id_start_scan_internal();
+    (void)ble_remote_id_start_scan_internal(false);
 }
 
 static void ble_on_reset(int reason)
@@ -1841,7 +1845,7 @@ void ble_remote_id_start(void)
     if (s_host_task_active) {
         if (!s_scanning && s_host_synced) {
             ESP_LOGW(TAG, "BLE host active but scan stopped; restarting scan");
-            ble_remote_id_start_scan_internal();
+            (void)ble_remote_id_start_scan_internal(false);
             return;
         } else if (!s_scanning && !s_host_synced) {
             int64_t now_ms = esp_timer_get_time() / 1000;
@@ -1952,19 +1956,33 @@ bool ble_remote_id_pause_for_investigation(void)
     return true;
 }
 
-void ble_remote_id_resume_after_investigation(void)
+bool ble_remote_id_resume_after_investigation(void)
 {
     portENTER_CRITICAL(&s_investigation_lock);
     bool was_active = s_investigation_gatt_active;
-    s_investigation_gatt_active = false;
     if (was_active) s_investigation_resume_pending = true;
     bool should_resume = s_investigation_resume_pending;
+    if (was_active && s_scanning) {
+        s_investigation_gatt_active = false;
+        s_investigation_resume_pending = false;
+        portEXIT_CRITICAL(&s_investigation_lock);
+        return true;
+    }
     portEXIT_CRITICAL(&s_investigation_lock);
 
     if (should_resume && s_host_task_active && s_host_synced && !s_scanning) {
-        ble_remote_id_start_scan_internal();
+        bool resumed = ble_remote_id_start_scan_internal(true);
+        if (was_active) {
+            ESP_LOGI(TAG,
+                     "BLE scan resume %s after GATT investigation",
+                     resumed ? "completed" : "pending");
+        }
+        return resumed;
     }
-    if (was_active) ESP_LOGI(TAG, "BLE scan resume requested after GATT investigation");
+    if (was_active) {
+        ESP_LOGI(TAG, "BLE scan resume pending after GATT investigation");
+    }
+    return !should_resume && s_scanning;
 }
 
 void ble_remote_id_note_investigation_advertisement(const uint8_t mac[6],
@@ -1978,12 +1996,18 @@ void ble_remote_id_note_investigation_advertisement(const uint8_t mac[6],
 }
 
 bool ble_remote_id_lookup_peer_addr_type(const uint8_t mac[6],
+                                         int64_t now_ms,
                                          uint8_t *addr_type_out)
 {
     if (!mac || !addr_type_out) return false;
     bool found = false;
     portENTER_CRITICAL(&s_investigation_lock);
     for (int i = 0; i < BLE_INVESTIGATION_PEER_CACHE_SIZE; ++i) {
+        if (s_investigation_peers[i].in_use &&
+            !ble_investigator_peer_cache_is_fresh(
+                s_investigation_peers[i].last_seen_ms, now_ms)) {
+            s_investigation_peers[i].in_use = false;
+        }
         if (s_investigation_peers[i].in_use &&
             memcmp(s_investigation_peers[i].mac, mac, 6) == 0) {
             *addr_type_out = s_investigation_peers[i].addr_type;
@@ -2033,7 +2057,7 @@ void ble_remote_id_meta_reacquire_tick(bool allow_restart)
     s_scanning = false;
     s_ble_meta_last_reacquire_ms = tick_now_ms;
     s_ble_meta_reacquire_count++;
-    ble_remote_id_start_scan_internal();
+    (void)ble_remote_id_start_scan_internal(false);
 }
 
 void ble_remote_id_get_stats(ble_remote_id_stats_t *out)
