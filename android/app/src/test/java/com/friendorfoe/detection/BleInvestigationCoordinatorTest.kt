@@ -53,6 +53,42 @@ class BleInvestigationCoordinatorTest {
     }
 
     @Test
+    fun `losing teardown caller cannot complete or release guard before cleanup finishes`() = runTest {
+        val cleanupEntered = CompletableDeferred<Unit>()
+        val cleanupRelease = CompletableDeferred<Unit>()
+        val fake = FakeInspector().apply {
+            block = CompletableDeferred()
+            firstCancelEntered = cleanupEntered
+            firstCancelBlock = cleanupRelease
+        }
+        val coordinator = BleInvestigationCoordinator(fake)
+        val running = async { coordinator.investigatePhone(request("r1")) }
+        runCurrent()
+        val winningClose = async { coordinator.cancel() }
+        cleanupEntered.await()
+
+        running.cancel()
+        runCurrent()
+        fake.block = null
+
+        try {
+            assertFalse(running.isCompleted)
+            val contender = coordinator.investigatePhone(request("r2"))
+            assertEquals(BleInvestigationState.FAILED, contender.state)
+            assertEquals("busy", contender.error)
+        } finally {
+            cleanupRelease.complete(Unit)
+        }
+
+        winningClose.await()
+        running.join()
+        assertEquals(
+            BleInvestigationState.COMPLETE,
+            coordinator.investigatePhone(request("r3")).state,
+        )
+    }
+
+    @Test
     fun `authentication required remains structured evidence`() = runTest {
         val fake = FakeInspector().apply {
             result = completedResult().copy(authenticationRequired = true)
@@ -243,6 +279,53 @@ class BleInvestigationCoordinatorTest {
     }
 
     @Test
+    fun `disconnect between waits is latched for the next operation`() {
+        val disconnect = BleUnexpectedDisconnectLatch()
+
+        disconnect.recordUnexpectedDisconnect(closing = false)
+
+        assertTrue(disconnect.isLatched())
+        assertEquals(
+            BleGattOperationStart.DISCONNECTED,
+            bleGattOperationStartDecision(
+                cancelled = false,
+                closed = false,
+                permissionRevoked = false,
+                bondTransitioned = false,
+                unexpectedDisconnect = disconnect.isLatched(),
+                terminalized = false,
+                hasGatt = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `disconnect between waits prevents successful finalization`() {
+        val disconnect = BleUnexpectedDisconnectLatch()
+        disconnect.recordUnexpectedDisconnect(closing = false)
+
+        assertEquals(
+            BleTerminalDecision.DISCONNECTED,
+            bleTerminalDecision(
+                cancelled = false,
+                closed = false,
+                bondTransitioned = false,
+                currentBondChanged = false,
+                unexpectedDisconnect = disconnect.isLatched(),
+            ),
+        )
+    }
+
+    @Test
+    fun `intentional cleanup disconnect is not latched`() {
+        val disconnect = BleUnexpectedDisconnectLatch()
+
+        disconnect.recordUnexpectedDisconnect(closing = true)
+
+        assertFalse(disconnect.isLatched())
+    }
+
+    @Test
     fun `read selection is allowlisted and requires read property`() {
         assertEquals(
             BleReadDecision.READ,
@@ -381,6 +464,7 @@ private class FakeInspector : BleInvestigator {
     var result: BleInvestigationResult = completedResult()
     var block: CompletableDeferred<Unit>? = null
     var beforeProgressBlock: CompletableDeferred<Unit>? = null
+    var firstCancelEntered: CompletableDeferred<Unit>? = null
     var firstCancelBlock: CompletableDeferred<Unit>? = null
     var cancelFailure: Exception? = null
     var cancelCount = 0
@@ -404,7 +488,10 @@ private class FakeInspector : BleInvestigator {
 
     override suspend fun cancel() {
         cancelCount++
-        if (cancelCount == 1) firstCancelBlock?.await()
+        if (cancelCount == 1) {
+            firstCancelEntered?.complete(Unit)
+            firstCancelBlock?.await()
+        }
         block?.cancel()
         cancelFailure?.let { throw it }
     }

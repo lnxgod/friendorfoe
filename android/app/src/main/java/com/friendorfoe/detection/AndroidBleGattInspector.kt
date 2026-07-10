@@ -156,8 +156,11 @@ class AndroidBleGattInspector @Inject constructor(
         private val lifecycleLock = Any()
         private val cancelled = AtomicBoolean(false)
         private val closed = AtomicBoolean(false)
+        private val closeBarrier = BleCleanupBarrier()
         private val bondTransitioned = AtomicBoolean(false)
         private val permissionRevoked = AtomicBoolean(false)
+        private val unexpectedDisconnect = BleUnexpectedDisconnectLatch()
+        private val terminalized = AtomicBoolean(false)
         private val services = mutableListOf<String>()
         private val characteristics = mutableListOf<BleGattCharacteristicInfo>()
         private val reads = linkedMapOf<String, String>()
@@ -168,7 +171,6 @@ class AndroidBleGattInspector @Inject constructor(
         private var connected = false
         private var authenticationRequired = false
         private var truncated = false
-        private var terminalized = false
 
         private val callback = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -219,7 +221,7 @@ class AndroidBleGattInspector @Inject constructor(
                     BleBondReceiverDecision.PERMISSION_REVOKED -> reportPermissionRevoked()
                     BleBondReceiverDecision.BOND_CHANGED -> {
                         val changed = synchronized(lifecycleLock) {
-                            if (closed.get() || terminalized) {
+                            if (closed.get() || terminalized.get()) {
                                 false
                             } else {
                                 bondTransitioned.set(true)
@@ -247,7 +249,8 @@ class AndroidBleGattInspector @Inject constructor(
                     cancelled.get() ||
                     closed.get() ||
                     permissionRevoked.get() ||
-                    bondTransitioned.get()
+                    bondTransitioned.get() ||
+                    unexpectedDisconnect.isLatched()
                 ) {
                     null
                 } else {
@@ -262,6 +265,7 @@ class AndroidBleGattInspector @Inject constructor(
                 cancelled.get() || closed.get() -> cancelledResult()
                 permissionRevoked.get() -> permissionFailure()
                 bondTransitioned.get() -> unexpectedBondFailure()
+                unexpectedDisconnect.isLatched() -> unexpectedDisconnectFailure()
                 else -> failed("GATT connection could not start", "connect_failed")
             }
 
@@ -286,12 +290,13 @@ class AndroidBleGattInspector @Inject constructor(
             progress(result(BleInvestigationState.DISCOVERING, "Discovering GATT services"))
             val discovery = expect(CallbackKind.SERVICES)
             when (startGattOperation { it.discoverServices() }) {
-                OperationStart.CANCELLED -> return cancelledResult()
-                OperationStart.PERMISSION_REVOKED -> return permissionFailure()
-                OperationStart.BOND_CHANGED -> return unexpectedBondFailure()
-                OperationStart.FAILED ->
+                BleGattOperationStart.CANCELLED -> return cancelledResult()
+                BleGattOperationStart.PERMISSION_REVOKED -> return permissionFailure()
+                BleGattOperationStart.BOND_CHANGED -> return unexpectedBondFailure()
+                BleGattOperationStart.DISCONNECTED -> return unexpectedDisconnectFailure()
+                BleGattOperationStart.FAILED ->
                     return failed("Service discovery could not start", "discovery_start_failed")
-                OperationStart.STARTED -> Unit
+                BleGattOperationStart.STARTED -> Unit
             }
             when (val event = discovery.await()) {
                 is GattEvent.ServicesDiscovered -> {
@@ -338,12 +343,13 @@ class AndroidBleGattInspector @Inject constructor(
                 sessionInterruptionFailure()?.let { return it }
                 val read = expect(CallbackKind.READ, record.characteristic)
                 when (startGattOperation { it.readCharacteristic(record.characteristic) }) {
-                    OperationStart.CANCELLED -> return cancelledResult()
-                    OperationStart.PERMISSION_REVOKED -> return permissionFailure()
-                    OperationStart.BOND_CHANGED -> return unexpectedBondFailure()
-                    OperationStart.FAILED ->
+                    BleGattOperationStart.CANCELLED -> return cancelledResult()
+                    BleGattOperationStart.PERMISSION_REVOKED -> return permissionFailure()
+                    BleGattOperationStart.BOND_CHANGED -> return unexpectedBondFailure()
+                    BleGattOperationStart.DISCONNECTED -> return unexpectedDisconnectFailure()
+                    BleGattOperationStart.FAILED ->
                         return failed("Characteristic read could not start", "read_start_failed")
-                    OperationStart.STARTED -> Unit
+                    BleGattOperationStart.STARTED -> Unit
                 }
                 when (val event = read.await()) {
                     is GattEvent.CharacteristicRead -> {
@@ -376,49 +382,44 @@ class AndroidBleGattInspector @Inject constructor(
             )
         }
 
-        fun cancel() {
-            val shouldCancel = synchronized(lifecycleLock) {
-                if (cancelled.get() || terminalized) {
+        suspend fun cancel() {
+            val shouldSignalCancel = synchronized(lifecycleLock) {
+                if (cancelled.get() || terminalized.get()) {
                     false
                 } else {
                     cancelled.set(true)
                     true
                 }
             }
-            if (!shouldCancel) return
-            deliver(GattEvent.Cancelled)
+            if (shouldSignalCancel) deliver(GattEvent.Cancelled)
             closeOnce()
         }
 
         @SuppressLint("MissingPermission")
-        fun closeOnce() {
-            var unregisterReceiver = false
-            var currentGatt: BluetoothGatt? = null
-            val shouldClose = synchronized(lifecycleLock) {
-                if (!closed.compareAndSet(false, true)) {
-                    false
-                } else {
-                    unregisterReceiver = receiverRegistered
+        suspend fun closeOnce() {
+            closeBarrier.run {
+                val (unregisterReceiver, currentGatt) = synchronized(lifecycleLock) {
+                    closed.set(true)
+                    val unregister = receiverRegistered
                     receiverRegistered = false
-                    currentGatt = gatt
+                    val activeGatt = gatt
                     gatt = null
-                    true
+                    unregister to activeGatt
                 }
+                deliver(GattEvent.Cancelled)
+                val unregisterAction: (() -> Unit)? = if (unregisterReceiver) {
+                    { context.unregisterReceiver(bondReceiver) }
+                } else {
+                    null
+                }
+                val disconnectAction: (() -> Unit)? = currentGatt?.let { activeGatt ->
+                    { activeGatt.disconnect() }
+                }
+                val closeAction: (() -> Unit)? = currentGatt?.let { activeGatt ->
+                    { activeGatt.close() }
+                }
+                runBleSessionCleanup(unregisterAction, disconnectAction, closeAction)
             }
-            if (!shouldClose) return
-            deliver(GattEvent.Cancelled)
-            val unregisterAction: (() -> Unit)? = if (unregisterReceiver) {
-                { context.unregisterReceiver(bondReceiver) }
-            } else {
-                null
-            }
-            val disconnectAction: (() -> Unit)? = currentGatt?.let { activeGatt ->
-                { activeGatt.disconnect() }
-            }
-            val closeAction: (() -> Unit)? = currentGatt?.let { activeGatt ->
-                { activeGatt.close() }
-            }
-            runBleSessionCleanup(unregisterAction, disconnectAction, closeAction)
         }
 
         private fun registerBondReceiver(): Boolean = synchronized(lifecycleLock) {
@@ -426,7 +427,7 @@ class AndroidBleGattInspector @Inject constructor(
                 cancelled.get() ||
                 closed.get() ||
                 permissionRevoked.get() ||
-                terminalized
+                terminalized.get()
             ) {
                 return@synchronized false
             }
@@ -443,7 +444,7 @@ class AndroidBleGattInspector @Inject constructor(
 
         private fun reportPermissionRevoked() {
             val changed = synchronized(lifecycleLock) {
-                if (closed.get() || terminalized) {
+                if (closed.get() || terminalized.get()) {
                     false
                 } else {
                     permissionRevoked.compareAndSet(false, true)
@@ -456,6 +457,7 @@ class AndroidBleGattInspector @Inject constructor(
         private fun sessionInterruptionFailure(): BleInvestigationResult? {
             if (permissionRevoked.get()) return permissionFailure()
             if (bondTransitioned.get()) return unexpectedBondFailure()
+            if (unexpectedDisconnect.isLatched()) return unexpectedDisconnectFailure()
             val changed = try {
                 device.bondState != initialBondState
             } catch (_: SecurityException) {
@@ -470,20 +472,36 @@ class AndroidBleGattInspector @Inject constructor(
         }
 
         @SuppressLint("MissingPermission")
-        private fun startGattOperation(operation: (BluetoothGatt) -> Boolean): OperationStart =
+        private fun startGattOperation(
+            operation: (BluetoothGatt) -> Boolean,
+        ): BleGattOperationStart =
             synchronized(lifecycleLock) {
-                when {
-                    cancelled.get() || closed.get() -> OperationStart.CANCELLED
-                    permissionRevoked.get() -> OperationStart.PERMISSION_REVOKED
-                    bondTransitioned.get() -> OperationStart.BOND_CHANGED
-                    terminalized -> OperationStart.CANCELLED
-                    gatt == null -> OperationStart.FAILED
-                    else -> try {
-                        if (operation(gatt!!)) OperationStart.STARTED else OperationStart.FAILED
+                val currentGatt = gatt
+                val decision = synchronized(callbackLock) {
+                    bleGattOperationStartDecision(
+                        cancelled = cancelled.get(),
+                        closed = closed.get(),
+                        permissionRevoked = permissionRevoked.get(),
+                        bondTransitioned = bondTransitioned.get(),
+                        unexpectedDisconnect = unexpectedDisconnect.isLatched(),
+                        terminalized = terminalized.get(),
+                        hasGatt = currentGatt != null,
+                    )
+                }
+                when (decision) {
+                    BleGattOperationStart.STARTED -> try {
+                        if (operation(currentGatt!!)) {
+                            BleGattOperationStart.STARTED
+                        } else if (unexpectedDisconnect.isLatched()) {
+                            BleGattOperationStart.DISCONNECTED
+                        } else {
+                            BleGattOperationStart.FAILED
+                        }
                     } catch (_: SecurityException) {
                         permissionRevoked.set(true)
-                        OperationStart.PERMISSION_REVOKED
+                        BleGattOperationStart.PERMISSION_REVOKED
                     }
+                    else -> decision
                 }
             }
 
@@ -534,6 +552,8 @@ class AndroidBleGattInspector @Inject constructor(
                     cancelled.get() || closed.get() -> deferred.complete(GattEvent.Cancelled)
                     permissionRevoked.get() -> deferred.complete(GattEvent.PermissionRevoked)
                     bondTransitioned.get() -> deferred.complete(GattEvent.BondStateChanged)
+                    unexpectedDisconnect.isLatched() ->
+                        deferred.complete(unexpectedDisconnectEvent())
                     else -> {
                         check(pendingCallback == null) { "A GATT callback is already pending" }
                         pendingCallback = PendingCallback(kind, characteristic, deferred)
@@ -545,6 +565,11 @@ class AndroidBleGattInspector @Inject constructor(
 
         private fun deliver(event: GattEvent) {
             val deferred = synchronized(callbackLock) {
+                if (event is GattEvent.Connection && event.isUnexpectedTerminalDisconnect()) {
+                    unexpectedDisconnect.recordUnexpectedDisconnect(
+                        closing = closed.get() || cancelled.get() || terminalized.get(),
+                    )
+                }
                 val pending = pendingCallback ?: return@synchronized null
                 if (!pending.matches(event)) return@synchronized null
                 pendingCallback = null
@@ -552,6 +577,15 @@ class AndroidBleGattInspector @Inject constructor(
             }
             deferred?.complete(event)
         }
+
+        private fun GattEvent.Connection.isUnexpectedTerminalDisconnect(): Boolean =
+            newState == BluetoothProfile.STATE_DISCONNECTED && !isAuthenticationStatus(status)
+
+        private fun unexpectedDisconnectEvent(): GattEvent.Connection =
+            GattEvent.Connection(
+                status = BluetoothGatt.GATT_SUCCESS,
+                newState = BluetoothProfile.STATE_DISCONNECTED,
+            )
 
         private fun GattEvent.Connection.authenticationResult(): BleInvestigationResult? {
             if (!isAuthenticationStatus(status)) return null
@@ -589,18 +623,22 @@ class AndroidBleGattInspector @Inject constructor(
                         false
                     }
                 }
-                bleTerminalDecision(
-                    cancelled = cancelled.get(),
-                    closed = closed.get(),
-                    bondTransitioned = bondTransitioned.get(),
-                    currentBondChanged = currentBondChanged,
-                    permissionRevoked = permissionWasRevoked,
-                ).also {
-                    when (it) {
-                        BleTerminalDecision.COMPLETE -> terminalized = true
-                        BleTerminalDecision.PERMISSION_REVOKED -> Unit
-                        BleTerminalDecision.BOND_CHANGED -> bondTransitioned.set(true)
-                        BleTerminalDecision.CANCELLED -> Unit
+                synchronized(callbackLock) {
+                    bleTerminalDecision(
+                        cancelled = cancelled.get(),
+                        closed = closed.get(),
+                        bondTransitioned = bondTransitioned.get(),
+                        currentBondChanged = currentBondChanged,
+                        permissionRevoked = permissionWasRevoked,
+                        unexpectedDisconnect = unexpectedDisconnect.isLatched(),
+                    ).also {
+                        when (it) {
+                            BleTerminalDecision.COMPLETE -> terminalized.set(true)
+                            BleTerminalDecision.PERMISSION_REVOKED -> Unit
+                            BleTerminalDecision.BOND_CHANGED -> bondTransitioned.set(true)
+                            BleTerminalDecision.DISCONNECTED -> Unit
+                            BleTerminalDecision.CANCELLED -> Unit
+                        }
                     }
                 }
             }
@@ -608,6 +646,7 @@ class AndroidBleGattInspector @Inject constructor(
                 BleTerminalDecision.COMPLETE -> result(BleInvestigationState.COMPLETE, summary)
                 BleTerminalDecision.PERMISSION_REVOKED -> permissionFailure()
                 BleTerminalDecision.BOND_CHANGED -> unexpectedBondFailure()
+                BleTerminalDecision.DISCONNECTED -> unexpectedDisconnectFailure()
                 BleTerminalDecision.CANCELLED -> cancelledResult()
             }
         }
@@ -617,6 +656,9 @@ class AndroidBleGattInspector @Inject constructor(
 
         private fun unexpectedBondFailure(): BleInvestigationResult =
             failed("Unexpected bond-state transition; inspection stopped", "bond_state_changed")
+
+        private fun unexpectedDisconnectFailure(): BleInvestigationResult =
+            failed("Target disconnected during inspection", "disconnected")
 
         private fun permissionFailure(): BleInvestigationResult =
             failed(
@@ -675,14 +717,6 @@ class AndroidBleGattInspector @Inject constructor(
         }
 
         private enum class CallbackKind { CONNECTION, SERVICES, READ }
-        private enum class OperationStart {
-            STARTED,
-            CANCELLED,
-            PERMISSION_REVOKED,
-            BOND_CHANGED,
-            FAILED,
-        }
-
         private sealed interface GattEvent {
             data class Connection(val status: Int, val newState: Int) : GattEvent
             data class ServicesDiscovered(val status: Int) : GattEvent
@@ -712,8 +746,32 @@ class AndroidBleGattInspector @Inject constructor(
 internal const val BLE_INVESTIGATION_TARGET_MAX_AGE_MS = 30_000L
 
 internal enum class BleReadDecision { READ, AUTHENTICATION_REQUIRED, SKIP }
-internal enum class BleTerminalDecision { COMPLETE, CANCELLED, PERMISSION_REVOKED, BOND_CHANGED }
+internal enum class BleTerminalDecision {
+    COMPLETE,
+    CANCELLED,
+    PERMISSION_REVOKED,
+    BOND_CHANGED,
+    DISCONNECTED,
+}
+internal enum class BleGattOperationStart {
+    STARTED,
+    CANCELLED,
+    PERMISSION_REVOKED,
+    BOND_CHANGED,
+    DISCONNECTED,
+    FAILED,
+}
 internal enum class BleBondReceiverDecision { IGNORE, PERMISSION_REVOKED, BOND_CHANGED }
+
+internal class BleUnexpectedDisconnectLatch {
+    private val latched = AtomicBoolean(false)
+
+    fun recordUnexpectedDisconnect(closing: Boolean) {
+        if (!closing) latched.compareAndSet(false, true)
+    }
+
+    fun isLatched(): Boolean = latched.get()
+}
 
 internal data class BleBondEvent(
     val address: String,
@@ -811,16 +869,35 @@ internal fun bleReadDecision(
     return if (readable) BleReadDecision.READ else BleReadDecision.SKIP
 }
 
+internal fun bleGattOperationStartDecision(
+    cancelled: Boolean,
+    closed: Boolean,
+    permissionRevoked: Boolean,
+    bondTransitioned: Boolean,
+    unexpectedDisconnect: Boolean,
+    terminalized: Boolean,
+    hasGatt: Boolean,
+): BleGattOperationStart = when {
+    cancelled || closed || terminalized -> BleGattOperationStart.CANCELLED
+    permissionRevoked -> BleGattOperationStart.PERMISSION_REVOKED
+    bondTransitioned -> BleGattOperationStart.BOND_CHANGED
+    unexpectedDisconnect -> BleGattOperationStart.DISCONNECTED
+    !hasGatt -> BleGattOperationStart.FAILED
+    else -> BleGattOperationStart.STARTED
+}
+
 internal fun bleTerminalDecision(
     cancelled: Boolean,
     closed: Boolean,
     bondTransitioned: Boolean,
     currentBondChanged: Boolean,
     permissionRevoked: Boolean = false,
+    unexpectedDisconnect: Boolean = false,
 ): BleTerminalDecision = when {
     permissionRevoked -> BleTerminalDecision.PERMISSION_REVOKED
     bondTransitioned || currentBondChanged -> BleTerminalDecision.BOND_CHANGED
     cancelled || closed -> BleTerminalDecision.CANCELLED
+    unexpectedDisconnect -> BleTerminalDecision.DISCONNECTED
     else -> BleTerminalDecision.COMPLETE
 }
 

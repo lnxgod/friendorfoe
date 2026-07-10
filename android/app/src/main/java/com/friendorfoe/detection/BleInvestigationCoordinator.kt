@@ -4,8 +4,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -13,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 interface BleInvestigator {
@@ -31,8 +34,9 @@ class BleInvestigationCoordinator @Inject constructor(
     private val lifecycleLock = Any()
     private val requestGuard = Mutex()
     private val cancelRequested = AtomicBoolean(false)
-    private val cleanupStarted = AtomicBoolean(false)
     private val mutableState = MutableStateFlow<BleInvestigationResult?>(null)
+
+    private var cleanupBarrier = BleCleanupBarrier()
 
     @Volatile
     private var activeRequest: BleInvestigationRequest? = null
@@ -68,12 +72,13 @@ class BleInvestigationCoordinator @Inject constructor(
         }
 
         val requestToken = Any()
+        val requestCleanupBarrier = BleCleanupBarrier()
         synchronized(lifecycleLock) {
             activeRequest = request
             activeToken = requestToken
             activeOperation = null
             cancelRequested.set(false)
-            cleanupStarted.set(false)
+            cleanupBarrier = requestCleanupBarrier
             acceptingCancel = true
         }
         return try {
@@ -135,7 +140,7 @@ class BleInvestigationCoordinator @Inject constructor(
             )
         } finally {
             try {
-                cleanupInspectorOnce()
+                cleanupInspectorOnce(requestCleanupBarrier)
             } finally {
                 synchronized(lifecycleLock) {
                     if (activeToken === requestToken) {
@@ -152,7 +157,7 @@ class BleInvestigationCoordinator @Inject constructor(
     }
 
     suspend fun cancel() {
-        val operation = synchronized(lifecycleLock) {
+        val cleanup = synchronized(lifecycleLock) {
             val request = activeRequest ?: return
             val requestToken = activeToken ?: return
             if (!acceptingCancel || !cancelRequested.compareAndSet(false, true)) return
@@ -165,13 +170,13 @@ class BleInvestigationCoordinator @Inject constructor(
                 evidenceToken = requestToken,
             )
             stateToken = requestToken
-            activeOperation
+            activeOperation to cleanupBarrier
         }
 
         try {
-            cleanupInspectorOnce()
+            cleanupInspectorOnce(cleanup.second)
         } finally {
-            operation?.cancel(CancellationException("BLE investigation cancelled"))
+            cleanup.first?.cancel(CancellationException("BLE investigation cancelled"))
         }
     }
 
@@ -214,8 +219,8 @@ class BleInvestigationCoordinator @Inject constructor(
         result
     }
 
-    private suspend fun cleanupInspectorOnce() {
-        if (cleanupStarted.compareAndSet(false, true)) {
+    private suspend fun cleanupInspectorOnce(barrier: BleCleanupBarrier) {
+        barrier.run {
             try {
                 phoneInspector.cancel()
             } catch (_: Exception) {
@@ -261,6 +266,27 @@ class BleInvestigationCoordinator @Inject constructor(
 }
 
 internal const val BLE_INVESTIGATION_MAX_TIMEOUT_MS = 12_000L
+
+internal class BleCleanupBarrier {
+    private val started = AtomicBoolean(false)
+    private val completed = CompletableDeferred<Unit>()
+
+    suspend fun run(cleanup: suspend () -> Unit) {
+        withContext(NonCancellable) {
+            if (started.compareAndSet(false, true)) {
+                try {
+                    cleanup()
+                    completed.complete(Unit)
+                } catch (failure: Throwable) {
+                    completed.completeExceptionally(failure)
+                    throw failure
+                }
+            } else {
+                completed.await()
+            }
+        }
+    }
+}
 
 internal fun bleInvestigationTimeoutMs(requestedTimeoutMs: Long): Long =
     requestedTimeoutMs.coerceIn(1L, BLE_INVESTIGATION_MAX_TIMEOUT_MS)
