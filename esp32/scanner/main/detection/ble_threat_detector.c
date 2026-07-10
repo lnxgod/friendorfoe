@@ -60,7 +60,7 @@ typedef struct {
     uint32_t observation_count;
     uint64_t insertion_order;
     int8_t strongest_rssi;
-    uint8_t max_service_count;
+    uint8_t max_unique_service_count;
     bool has_generic_name;
     bool trusted;
     bool has_pkoc_identity;
@@ -79,6 +79,8 @@ static bool s_has_prompt_signal;
 static int64_t s_last_prompt_signal_ms;
 static serial_track_t s_serial_tracks[MAX_SERIAL_TRACKS];
 static uint64_t s_serial_insertion_order;
+static bool s_has_last_observed_ms;
+static int64_t s_last_observed_ms;
 
 static bool same_mac(const uint8_t left[6], const uint8_t right[6])
 {
@@ -427,6 +429,27 @@ static bool serial_service_uuid(const ble_threat_observation_t *observation,
     return false;
 }
 
+static uint8_t unique_service_uuid_count(const ble_threat_observation_t *observation)
+{
+    const size_t count = observation->service_uuid_count < 4U ?
+                         observation->service_uuid_count : 4U;
+    uint8_t unique_count = 0;
+
+    for (size_t index = 0; index < count; ++index) {
+        bool seen = false;
+        for (size_t prior = 0; prior < index; ++prior) {
+            if (observation->service_uuids[index] == observation->service_uuids[prior]) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            ++unique_count;
+        }
+    }
+    return unique_count;
+}
+
 static bool trimmed_name_equals(const char *name, const char *expected)
 {
     if (name == NULL) {
@@ -540,7 +563,7 @@ static serial_track_t *create_serial_track(const ble_threat_observation_t *obser
         ++s_serial_insertion_order;
     }
     track->strongest_rssi = observation->rssi;
-    track->max_service_count = observation->service_uuid_count;
+    track->max_unique_service_count = unique_service_uuid_count(observation);
     track->has_generic_name = generic_serial_name(observation->local_name);
     track->trusted = observation->trusted_identity;
     track->has_pkoc_identity = pkoc_identity(observation->local_name);
@@ -558,8 +581,9 @@ static void update_serial_track(serial_track_t *track,
     if (observation->rssi > track->strongest_rssi) {
         track->strongest_rssi = observation->rssi;
     }
-    if (observation->service_uuid_count > track->max_service_count) {
-        track->max_service_count = observation->service_uuid_count;
+    const uint8_t unique_service_count = unique_service_uuid_count(observation);
+    if (unique_service_count > track->max_unique_service_count) {
+        track->max_unique_service_count = unique_service_count;
     }
     track->has_generic_name = track->has_generic_name ||
                               generic_serial_name(observation->local_name);
@@ -582,7 +606,7 @@ static unsigned evidence_count(uint8_t evidence)
 static uint8_t serial_evidence(const serial_track_t *track)
 {
     uint8_t evidence = BLE_THREAT_EVIDENCE_SERIAL_UUID;
-    if (track->max_service_count == 1U) {
+    if (track->max_unique_service_count == 1U) {
         evidence |= BLE_THREAT_EVIDENCE_SPARSE;
     }
     if (track->has_generic_name) {
@@ -607,7 +631,8 @@ static uint8_t serial_evidence(const serial_track_t *track)
 }
 
 static bool observe_serial(const ble_threat_observation_t *observation,
-                           ble_threat_signal_t *signal_out)
+                           ble_threat_signal_t *signal_out,
+                           bool consume_signal)
 {
     prune_serial_tracks(observation->observed_ms);
     uint16_t service_uuid = 0;
@@ -638,7 +663,7 @@ static bool observe_serial(const ble_threat_observation_t *observation,
         return false;
     }
 
-    track->alerted = true;
+    track->alerted = consume_signal;
     signal_out->kind = BLE_THREAT_SERIAL_SKIMMER;
     signal_out->entity_hash = serial_entity_hash(track->mac);
     signal_out->observation_count = track->observation_count > UINT16_MAX ?
@@ -658,14 +683,25 @@ void ble_threat_detector_init(void)
 bool ble_threat_detector_observe(const ble_threat_observation_t *observation,
                                  ble_threat_signal_t *signal_out)
 {
-    if (observation == NULL || signal_out == NULL) {
+    if (signal_out == NULL) {
         return false;
     }
     memset(signal_out, 0, sizeof(*signal_out));
+    if (observation == NULL) {
+        return false;
+    }
+
+    if (s_has_last_observed_ms && observation->observed_ms < s_last_observed_ms) {
+        ble_threat_detector_reset();
+    }
+    s_has_last_observed_ms = true;
+    s_last_observed_ms = observation->observed_ms;
 
     const bool prompt_signal = observe_prompt(observation, signal_out);
     ble_threat_signal_t serial_signal = {0};
-    const bool has_serial_signal = observe_serial(observation, &serial_signal);
+    const bool has_serial_signal = observe_serial(observation,
+                                                  &serial_signal,
+                                                  !prompt_signal);
     if (prompt_signal) {
         return true;
     }
@@ -681,4 +717,6 @@ void ble_threat_detector_reset(void)
     clear_prompt_state();
     memset(s_serial_tracks, 0, sizeof(s_serial_tracks));
     s_serial_insertion_order = 0;
+    s_has_last_observed_ms = false;
+    s_last_observed_ms = 0;
 }
