@@ -148,16 +148,18 @@ void test_badge_investigation_security_view_marks_untransported_links_unknown(vo
     TEST_ASSERT_EQUAL_STRING("NOT REQUIRED", view.authentication);
 }
 
-void test_badge_investigation_auth_evidence_known_only_when_complete_or_required(void)
+void test_badge_investigation_auth_evidence_known_only_for_completed_gatt_or_required(void)
 {
     TEST_ASSERT_FALSE(badge_investigation_auth_evidence_known(
-        BLE_INV_IDLE, false));
+        BLE_INV_MODE_GATT, BLE_INV_IDLE, false));
     TEST_ASSERT_FALSE(badge_investigation_auth_evidence_known(
-        BLE_INV_FAILED, false));
+        BLE_INV_MODE_GATT, BLE_INV_FAILED, false));
     TEST_ASSERT_FALSE(badge_investigation_auth_evidence_known(
-        BLE_INV_CANCELLED, false));
+        BLE_INV_MODE_GATT, BLE_INV_CANCELLED, false));
     TEST_ASSERT_TRUE(badge_investigation_auth_evidence_known(
-        BLE_INV_COMPLETE, false));
+        BLE_INV_MODE_GATT, BLE_INV_COMPLETE, false));
+    TEST_ASSERT_FALSE(badge_investigation_auth_evidence_known(
+        BLE_INV_MODE_PASSIVE_CAPTURE, BLE_INV_COMPLETE, false));
     TEST_ASSERT_TRUE(badge_investigation_auth_evidence_known(
-        BLE_INV_FAILED, true));
+        BLE_INV_MODE_GATT, BLE_INV_FAILED, true));
 }

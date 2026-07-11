@@ -144,8 +144,10 @@ void badge_investigation_security_view(
 }
 
 bool badge_investigation_auth_evidence_known(
+    ble_investigation_mode_t mode,
     ble_investigation_state_t state,
     bool authentication_required)
 {
-    return authentication_required || state == BLE_INV_COMPLETE;
+    return authentication_required ||
+        (mode == BLE_INV_MODE_GATT && state == BLE_INV_COMPLETE);
 }

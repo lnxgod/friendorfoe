@@ -232,7 +232,7 @@ void test_badge_investigation_active_and_error_states_normalize_overlay_pages(vo
 void test_badge_investigation_successful_read_evidence_is_surfaced_and_bounded(void);
 void test_badge_investigation_read_evidence_sanitizes_nonprintable_text(void);
 void test_badge_investigation_security_view_marks_untransported_links_unknown(void);
-void test_badge_investigation_auth_evidence_known_only_when_complete_or_required(void);
+void test_badge_investigation_auth_evidence_known_only_for_completed_gatt_or_required(void);
 void test_badge_heat_color_runs_ice_to_fire(void);
 void test_badge_heat_percent_combines_proximity_and_count(void);
 void test_badge_heat_percent_no_live_count_means_no_bar(void);
@@ -611,7 +611,7 @@ int main(void)
     RUN_TEST(test_badge_investigation_successful_read_evidence_is_surfaced_and_bounded);
     RUN_TEST(test_badge_investigation_read_evidence_sanitizes_nonprintable_text);
     RUN_TEST(test_badge_investigation_security_view_marks_untransported_links_unknown);
-    RUN_TEST(test_badge_investigation_auth_evidence_known_only_when_complete_or_required);
+    RUN_TEST(test_badge_investigation_auth_evidence_known_only_for_completed_gatt_or_required);
     RUN_TEST(test_badge_heat_color_runs_ice_to_fire);
     RUN_TEST(test_badge_heat_percent_combines_proximity_and_count);
     RUN_TEST(test_badge_heat_percent_no_live_count_means_no_bar);

@@ -6062,6 +6062,7 @@ static void draw_badge_investigation_overlay(void)
     } else {
         badge_investigation_security_view_t security;
         bool auth_evidence_known = badge_investigation_auth_evidence_known(
+            s_investigation_result.mode,
             s_investigation_result.state,
             s_investigation_result.authentication_required);
         badge_investigation_security_view(

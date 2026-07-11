@@ -61,6 +61,7 @@ void badge_investigation_security_view(
     bool authentication_required,
     badge_investigation_security_view_t *out);
 bool badge_investigation_auth_evidence_known(
+    ble_investigation_mode_t mode,
     ble_investigation_state_t state,
     bool authentication_required);
 
