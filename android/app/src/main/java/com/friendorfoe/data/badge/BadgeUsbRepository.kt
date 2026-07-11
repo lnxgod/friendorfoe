@@ -937,7 +937,7 @@ internal fun finishBadgeHttpInvestigationFromStatus(
     return parser.accept("FOF_INV:$terminal").result
 }
 
-internal fun decodeBadgeUsbLine(bytes: ByteArray, length: Int): String? {
+internal fun decodeBadgeUtf8(bytes: ByteArray, length: Int): String? {
     if (length !in 0..bytes.size) return null
     return runCatching {
         Charsets.UTF_8.newDecoder()
@@ -1544,27 +1544,28 @@ class BadgeUsbRepository @Inject constructor(
             activeHttpBaseUrl() != null -> BadgeInvestigationTransport.HTTP
             else -> null
         }
-        if (request.route != com.friendorfoe.detection.BleInvestigationRoute.BADGE) {
-            _investigation.value = badgeInvestigationResult(
-                request = request,
-                transport = "badge",
-                state = BleInvestigationState.FAILED,
-                summary = "Badge route required",
-                error = "invalid_route",
-            )
-            return false
-        }
-        if (request.requestId.length !in 1..32 || request.requestId.any { it.code !in 0x21..0x7E }) {
-            _investigation.value = badgeInvestigationResult(
-                request, "badge", BleInvestigationState.FAILED,
-                "Invalid investigation request", "invalid_request_id",
-            )
-            return false
-        }
-
         val operation = synchronized(investigationLock) {
             if (activeInvestigation != null) {
                 Log.w(TAG, "Rejecting BLE investigation while another request is active")
+                return false
+            }
+            if (request.route != com.friendorfoe.detection.BleInvestigationRoute.BADGE) {
+                _investigation.value = badgeInvestigationResult(
+                    request = request,
+                    transport = "badge",
+                    state = BleInvestigationState.FAILED,
+                    summary = "Badge route required",
+                    error = "invalid_route",
+                )
+                return false
+            }
+            if (request.requestId.length !in 1..32 ||
+                request.requestId.any { it.code !in 0x21..0x7E }
+            ) {
+                _investigation.value = badgeInvestigationResult(
+                    request, "badge", BleInvestigationState.FAILED,
+                    "Invalid investigation request", "invalid_request_id",
+                )
                 return false
             }
             if (request.requestId in usedInvestigationRequestIds) {
@@ -1591,15 +1592,12 @@ class BadgeUsbRepository @Inject constructor(
             ).also { activeInvestigation = it }
         }
 
-        publishInvestigation(
-            operation,
-            badgeInvestigationResult(
-                request = request,
-                transport = operation.transport.resultName,
-                state = BleInvestigationState.QUEUED,
-                summary = "Badge investigation queued",
-                error = null,
-            ),
+        val queuedResult = badgeInvestigationResult(
+            request = request,
+            transport = operation.transport.resultName,
+            state = BleInvestigationState.QUEUED,
+            summary = "Badge investigation queued",
+            error = null,
         )
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
@@ -1649,6 +1647,7 @@ class BadgeUsbRepository @Inject constructor(
                 )
             ) {
                 operation.job = job
+                _investigation.value = queuedResult
                 true
             } else {
                 false
@@ -1660,17 +1659,19 @@ class BadgeUsbRepository @Inject constructor(
 
     fun cancelBleInvestigation(requestId: String) {
         val operation = synchronized(investigationLock) {
-            activeInvestigation?.takeIf { it.request.requestId == requestId }?.also {
-                activeInvestigation = null
-            }
-        } ?: return
-        _investigation.value = badgeInvestigationResult(
-            request = operation.request,
-            transport = operation.transport.resultName,
-            state = BleInvestigationState.CANCELLED,
-            summary = "Badge result retrieval cancelled; scanner operation may still be running",
-            error = "retrieval_cancelled",
-        )
+            val current = activeInvestigation
+                ?.takeIf { it.request.requestId == requestId }
+                ?: return
+            _investigation.value = badgeInvestigationResult(
+                request = current.request,
+                transport = current.transport.resultName,
+                state = BleInvestigationState.CANCELLED,
+                summary = "Badge result retrieval cancelled; scanner operation may still be running",
+                error = "retrieval_cancelled",
+            )
+            activeInvestigation = null
+            current
+        }
         operation.job?.cancel()
     }
 
@@ -1914,7 +1915,12 @@ class BadgeUsbRepository @Inject constructor(
                 delay(BADGE_CHUNK_RETRY_MS)
                 continue
             }
-            val json = read.value.toString(Charsets.UTF_8)
+            val json = decodeBadgeUtf8(read.value, read.value.size)
+                ?: return badgeInvestigationResult(
+                    operation.request, operation.transport.resultName,
+                    BleInvestigationState.FAILED,
+                    "Badge BLE chunk was not valid UTF-8", "invalid_utf8",
+                )
             if (json.toByteArray(Charsets.UTF_8).size > BADGE_INVESTIGATION_JSON_MAX_BYTES ||
                 '\n' in json || '\r' in json
             ) {
@@ -2046,11 +2052,10 @@ class BadgeUsbRepository @Inject constructor(
         operation: ActiveBadgeInvestigation,
         result: BleInvestigationResult,
     ) {
-        val currentGeneration = synchronized(investigationLock) {
-            activeInvestigation?.generation
-        }
-        if (currentGeneration == operation.generation) {
-            _investigation.value = result
+        synchronized(investigationLock) {
+            if (activeInvestigation?.generation == operation.generation) {
+                _investigation.value = result
+            }
         }
     }
 
@@ -2157,7 +2162,8 @@ class BadgeUsbRepository @Inject constructor(
         val source = source()
         source.request((maxBytes + 1).toLong())
         if (source.buffer.size > maxBytes) return null
-        return source.readUtf8()
+        val bytes = source.readByteArray()
+        return decodeBadgeUtf8(bytes, bytes.size)
     }
 
     private fun parseJsonObject(json: String): JsonObject? = runCatching {
@@ -2499,7 +2505,7 @@ class BadgeUsbRepository @Inject constructor(
                             val byte = buffer[i]
                             if (byte == '\n'.code.toByte() || byte == '\r'.code.toByte()) {
                                 if (!droppingLine && lineLength > 0) {
-                                    decodeBadgeUsbLine(lineBuffer, lineLength)?.let(::handleLine)
+                                    decodeBadgeUtf8(lineBuffer, lineLength)?.let(::handleLine)
                                         ?: Log.w(TAG, "Dropping malformed UTF-8 badge line")
                                 }
                                 lineLength = 0
@@ -3229,7 +3235,7 @@ class BadgeUsbRepository @Inject constructor(
     private fun disconnectedGattResult() = BadgeGattOperationResult(GATT_OPERATION_DISCONNECTED)
 
     private fun handleBleStatusBytes(bytes: ByteArray) {
-        val json = bytes.toString(Charsets.UTF_8).trim()
+        val json = decodeBadgeUtf8(bytes, bytes.size)?.trim() ?: return
         if (json.isBlank()) return
         val status = parseBadgeControlStatus(json)
         setState { current ->

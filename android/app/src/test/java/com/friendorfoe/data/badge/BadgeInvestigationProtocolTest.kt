@@ -280,8 +280,8 @@ class BadgeInvestigationProtocolTest {
             """FOF_INV:{"type":"ble_inv_end","request_id":"r1","state":"complete","summary":"café"}"""
         val bytes = line.toByteArray(Charsets.UTF_8)
 
-        assertEquals(line, decodeBadgeUsbLine(bytes, bytes.size))
-        assertNull(decodeBadgeUsbLine(byteArrayOf(0xC3.toByte(), 0x28), 2))
+        assertEquals(line, decodeBadgeUtf8(bytes, bytes.size))
+        assertNull(decodeBadgeUtf8(byteArrayOf(0xC3.toByte(), 0x28), 2))
     }
 
     @Test
