@@ -1054,9 +1054,15 @@ private fun BadgeEntityDetailDialog(
             }
         },
         confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.End,
+            ) {
                 if (onInvestigate != null) {
-                    TextButton(onClick = onInvestigate) {
+                    TextButton(
+                        onClick = onInvestigate,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
                         Icon(
                             imageVector = Icons.Default.Search,
                             contentDescription = null,
@@ -1363,9 +1369,15 @@ private fun DeviceDetailDialog(
             }
         },
         confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.End,
+            ) {
                 if (onInvestigate != null) {
-                    TextButton(onClick = onInvestigate) {
+                    TextButton(
+                        onClick = onInvestigate,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
                         Icon(
                             imageVector = Icons.Default.Search,
                             contentDescription = null,
@@ -1375,9 +1387,11 @@ private fun DeviceDetailDialog(
                         Text("Investigate")
                     }
                 }
-                TextButton(onClick = onIgnore) { Text("Ignore") }
-                TextButton(onClick = onTrack) { Text("Track") }
-                TextButton(onClick = onDismiss) { Text("Close") }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = onIgnore) { Text("Ignore") }
+                    TextButton(onClick = onTrack) { Text("Track") }
+                    TextButton(onClick = onDismiss) { Text("Close") }
+                }
             }
         }
     )

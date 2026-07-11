@@ -3,10 +3,12 @@ package com.friendorfoe.presentation.privacy
 import com.friendorfoe.data.badge.BadgeBleControlStatus
 import com.friendorfoe.data.badge.BadgeControlStatus
 import com.friendorfoe.data.badge.BadgeScannerStatus
+import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
 import com.friendorfoe.detection.BleInvestigationMode
 import com.friendorfoe.detection.BleInvestigationRoute
+import com.friendorfoe.detection.BleInvestigationState
 import com.friendorfoe.detection.BleInvestigationTarget
 import com.friendorfoe.detection.PrivacyDetectionOrigin
 import org.junit.Assert.assertEquals
@@ -14,6 +16,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
 
 class BleInvestigationRoutingTest {
     private val now = 20_000L
@@ -275,6 +278,49 @@ class BleInvestigationRoutingTest {
                 state(BadgeBleControlStatus(connected = true, bonded = true, encrypted = true)),
             ).bleAvailable,
         )
+    }
+
+    @Test
+    fun `badge entity age produces a stale phone fallback target`() {
+        val nowElapsedMs = 100_000L
+        val entity = BadgeThreatEntity(
+            label = "Possible serial skimmer",
+            threatClass = "ble",
+            category = "SKIM",
+            code = "SKIM",
+            bssid = "AA:BB:CC:DD:EE:FF",
+            score = 80,
+            ageSeconds = 45,
+            lastSeenSeconds = 31,
+            rssi = -52,
+            events = 3,
+        )
+
+        val target = entity.toPrivacyDetection(
+            now = Instant.EPOCH,
+            nowElapsedMs = nowElapsedMs,
+        )!!.investigationTarget!!
+        val decision = selectInvestigationRoute(
+            origin = PrivacyDetectionOrigin.BADGE,
+            target = target,
+            badgeAvailable = false,
+            requestedRoute = BleInvestigationRoute.AUTO,
+            phoneAvailable = true,
+            nowElapsedMs = nowElapsedMs,
+        )
+
+        assertEquals(nowElapsedMs - 31_000L, target.observedAtElapsedMs)
+        assertNull(decision.route)
+        assertEquals("stale_target", decision.error)
+    }
+
+    @Test
+    fun `active investigation rejects a rapid replacement until terminal`() {
+        assertTrue(shouldRejectConcurrentInvestigationStart(hasActive = true, BleInvestigationState.QUEUED))
+        assertTrue(shouldRejectConcurrentInvestigationStart(hasActive = true, BleInvestigationState.READING))
+        assertFalse(shouldRejectConcurrentInvestigationStart(hasActive = true, BleInvestigationState.COMPLETE))
+        assertFalse(shouldRejectConcurrentInvestigationStart(hasActive = true, BleInvestigationState.FAILED))
+        assertFalse(shouldRejectConcurrentInvestigationStart(hasActive = false, null))
     }
 
     private fun gattTarget(origin: PrivacyDetectionOrigin) = BleInvestigationTarget(

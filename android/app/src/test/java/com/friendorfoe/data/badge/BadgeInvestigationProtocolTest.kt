@@ -157,13 +157,72 @@ class BadgeInvestigationProtocolTest {
 
     @Test
     fun `wire bounds match firmware JSON and FOF INV frame contract`() {
-        assertEquals(1023, BADGE_INVESTIGATION_JSON_MAX_CHARS)
-        assertEquals(1031, BADGE_INVESTIGATION_LINE_MAX_CHARS)
+        assertEquals(1023, BADGE_INVESTIGATION_JSON_MAX_BYTES)
+        assertEquals(1031, BADGE_INVESTIGATION_LINE_MAX_BYTES)
 
         val base = begin("r1")
-        val exactBoundary = base + " ".repeat(BADGE_INVESTIGATION_LINE_MAX_CHARS - base.length)
+        val exactBoundary = base + " ".repeat(BADGE_INVESTIGATION_LINE_MAX_BYTES - base.length)
         assertAccepted(BadgeInvestigationStreamParser("r1"), exactBoundary)
         assertRejected(BadgeInvestigationStreamParser("r1"), "$exactBoundary ")
+    }
+
+    @Test
+    fun `wire bounds count UTF8 bytes and reject embedded record delimiters`() {
+        val baseJson = begin("r1").removePrefix("FOF_INV:").dropLast(1)
+        val multibyte = "FOF_INV:$baseJson,\"padding\":\"${"é".repeat(480)}\"}"
+
+        assertTrue(multibyte.length <= BADGE_INVESTIGATION_LINE_MAX_BYTES)
+        assertTrue(multibyte.toByteArray(Charsets.UTF_8).size > BADGE_INVESTIGATION_LINE_MAX_BYTES)
+        assertRejected(BadgeInvestigationStreamParser("r1"), multibyte)
+        assertRejected(BadgeInvestigationStreamParser("r1"), begin("r1") + "\n")
+        assertRejected(BadgeInvestigationStreamParser("r1"), begin("r1") + "\r")
+    }
+
+    @Test
+    fun `badge total timeout never exceeds twelve seconds`() {
+        assertEquals(1L, badgeInvestigationTotalTimeoutMs(0))
+        assertEquals(7_500L, badgeInvestigationTotalTimeoutMs(7_500))
+        assertEquals(12_000L, badgeInvestigationTotalTimeoutMs(12_000))
+        assertEquals(12_000L, badgeInvestigationTotalTimeoutMs(99_000))
+    }
+
+    @Test
+    fun `HTTP status waits for matching active request and retrieves only terminal state`() {
+        val queued = evaluateBadgeHttpInvestigationStatus(status("r1", "queued"), "r1")
+        val running = evaluateBadgeHttpInvestigationStatus(status("r1", "discovering"), "r1")
+        val stale = evaluateBadgeHttpInvestigationStatus(status("old", "complete"), "r1")
+        val complete = evaluateBadgeHttpInvestigationStatus(status("r1", "complete"), "r1")
+        val failed = evaluateBadgeHttpInvestigationStatus(
+            status("r1", "failed", summary = "Scanner timed out", error = "timeout"),
+            "r1",
+        )
+
+        assertEquals(BadgeHttpInvestigationAction.WAIT, queued.action)
+        assertEquals(BleInvestigationState.QUEUED, queued.state)
+        assertEquals(BadgeHttpInvestigationAction.WAIT, running.action)
+        assertEquals(BleInvestigationState.DISCOVERING, running.state)
+        assertEquals(BadgeHttpInvestigationAction.WAIT, stale.action)
+        assertNull(stale.state)
+        assertEquals(BadgeHttpInvestigationAction.RETRIEVE, complete.action)
+        assertEquals(BleInvestigationState.COMPLETE, complete.state)
+        assertEquals(BadgeHttpInvestigationAction.RETRIEVE, failed.action)
+        assertEquals(BleInvestigationState.FAILED, failed.state)
+        assertEquals("timeout", failed.error)
+    }
+
+    @Test
+    fun `HTTP status rejects malformed compact state`() {
+        listOf(
+            "{}",
+            "{\"ble_investigation\":null}",
+            "{\"ble_investigation\":{\"request_id\":4,\"state\":\"queued\"}}",
+            "{\"ble_investigation\":{\"request_id\":\"r1\",\"state\":\"unknown\"}}",
+            "{\"ble_investigation\":{\"request_id\":\"r1\",\"state\":\"failed\",\"error\":4}}",
+        ).forEach { json ->
+            val decision = evaluateBadgeHttpInvestigationStatus(json, "r1")
+            assertEquals(BadgeHttpInvestigationAction.FAIL, decision.action)
+            assertEquals("malformed_status", decision.error)
+        }
     }
 
     @Test
@@ -303,6 +362,14 @@ class BadgeInvestigationProtocolTest {
     }
 
     private fun inv(json: String) = "FOF_INV:$json"
+
+    private fun status(
+        requestId: String,
+        state: String,
+        summary: String = "",
+        error: String = "",
+    ): String =
+        """{"mode":"backend","ble_investigation":{"request_id":"$requestId","state":"$state","mode":"gatt","summary":"$summary","error":"$error","service_count":0,"characteristic_count":0,"authentication_required":false,"truncated":false}}"""
 
     private fun canonicalUuid(index: Int): String =
         "00000000-0000-1000-8000-${index.toString(16).uppercase().padStart(12, '0')}"

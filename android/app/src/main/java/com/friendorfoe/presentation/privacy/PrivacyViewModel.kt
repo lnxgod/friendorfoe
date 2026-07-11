@@ -163,6 +163,11 @@ private val INVESTIGATION_TERMINAL_STATES = setOf(
     BleInvestigationState.CANCELLED,
 )
 
+internal fun shouldRejectConcurrentInvestigationStart(
+    hasActive: Boolean,
+    currentState: BleInvestigationState?,
+): Boolean = hasActive && currentState !in INVESTIGATION_TERMINAL_STATES
+
 private fun boundedInvestigationRequestId(generation: Long, elapsedMs: Long): String =
     "inv-${generation.coerceAtLeast(0).toString(36)}-${elapsedMs.coerceAtLeast(0).toString(36)}"
         .take(32)
@@ -427,6 +432,11 @@ class PrivacyViewModel @Inject constructor(
         target: BleInvestigationTarget,
         requestedRoute: BleInvestigationRoute,
     ) {
+        if (shouldRejectConcurrentInvestigationStart(
+                hasActive = activeInvestigation != null,
+                currentState = _investigationResult.value?.state,
+            )
+        ) return
         val decision = investigationRouteDecision(origin, target, requestedRoute)
         investigationGeneration++
         investigationObserverJob?.cancel()
@@ -779,12 +789,24 @@ class PrivacyViewModel @Inject constructor(
     }
 }
 
-internal fun BadgeUsbState.toPrivacyDetections(now: Instant = Instant.now()): List<GlassesDetection> {
+internal fun BadgeUsbState.toPrivacyDetections(
+    now: Instant = Instant.now(),
+    nowElapsedMs: Long = elapsedRealtimeMs(),
+): List<GlassesDetection> {
     val status = controlStatus ?: return emptyList()
-    return status.entities.mapNotNull { it.toPrivacyDetection(now) }
+    return status.entities.mapNotNull { it.toPrivacyDetection(now, nowElapsedMs) }
 }
 
-internal fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetection? {
+internal fun badgeObservedAtElapsedMs(nowElapsedMs: Long, lastSeenSeconds: Int): Long {
+    val boundedNow = nowElapsedMs.coerceAtLeast(0L)
+    val ageMs = lastSeenSeconds.coerceAtLeast(0).toLong() * 1_000L
+    return (boundedNow - ageMs).coerceAtLeast(0L)
+}
+
+internal fun BadgeThreatEntity.toPrivacyDetection(
+    now: Instant,
+    nowElapsedMs: Long = elapsedRealtimeMs(),
+): GlassesDetection? {
     if (stale) return null
     val category = categoryForBadgeEntity()
     val title = badgeDeviceType()
@@ -826,19 +848,20 @@ internal fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetectio
     val isPairingSpam = listOf(code, this@toPrivacyDetection.category, label, detail).any { value ->
         value.trim().replace('-', '_').replace(' ', '_').uppercase() in setOf("PAIRING_SPAM", "BLE_SPAM")
     }
+    val observedAtElapsedMs = badgeObservedAtElapsedMs(nowElapsedMs, lastSeenSeconds)
     val investigationTarget = when {
         isPairingSpam -> BleInvestigationTarget(
             mode = BleInvestigationMode.PASSIVE_CAPTURE,
             mac = null,
             entityKey = key,
-            observedAtElapsedMs = elapsedRealtimeMs(),
+            observedAtElapsedMs = observedAtElapsedMs,
             origin = PrivacyDetectionOrigin.BADGE,
         )
         threatClass.equals("ble", ignoreCase = true) && bssid.isNotBlank() -> BleInvestigationTarget(
             mode = BleInvestigationMode.GATT,
             mac = bssid,
             entityKey = key,
-            observedAtElapsedMs = elapsedRealtimeMs(),
+            observedAtElapsedMs = observedAtElapsedMs,
             origin = PrivacyDetectionOrigin.BADGE,
         )
         else -> null
