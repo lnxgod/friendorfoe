@@ -4,6 +4,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,17 +13,28 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -52,6 +65,12 @@ import com.friendorfoe.data.badge.BadgeUsbStatus
 import com.friendorfoe.data.badge.defaultBadgeDisplayPolicy
 import com.friendorfoe.data.badge.defaultBadgeTheme
 import com.friendorfoe.detection.GlassesDetection
+import com.friendorfoe.detection.BleInvestigationMode
+import com.friendorfoe.detection.BleInvestigationResult
+import com.friendorfoe.detection.BleInvestigationRoute
+import com.friendorfoe.detection.BleInvestigationState
+import com.friendorfoe.detection.BleInvestigationTarget
+import com.friendorfoe.detection.PrivacyDetectionOrigin
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.presentation.alerts.SkyAlertCandidate
 import com.friendorfoe.presentation.badge.BadgeAppearanceSection
@@ -61,6 +80,15 @@ import com.friendorfoe.presentation.components.FofEmptyState
 import com.friendorfoe.presentation.components.FofSection
 import com.friendorfoe.presentation.components.FofStatusStrip
 import com.friendorfoe.presentation.components.FofTone
+import java.time.Instant
+
+private data class InvestigationDialogSource(
+    val title: String,
+    val origin: PrivacyDetectionOrigin,
+    val target: BleInvestigationTarget,
+    val detection: GlassesDetection? = null,
+    val badgeEntity: BadgeThreatEntity? = null,
+)
 
 /** Section group definition for threat-level grouping */
 private data class SectionGroup(
@@ -88,6 +116,7 @@ fun PrivacyScreen(
     val threatCount by viewModel.threatCount.collectAsStateWithLifecycle()
     val badgeUsbState by viewModel.badgeUsbState.collectAsStateWithLifecycle()
     val backendOnlyMode by viewModel.backendOnlyMode.collectAsStateWithLifecycle()
+    val investigationResult by viewModel.investigationResult.collectAsStateWithLifecycle()
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -128,6 +157,8 @@ fun PrivacyScreen(
 
     var selectedDetail by remember { mutableStateOf<GlassesDetection?>(null) }
     var selectedBadgeEntity by remember { mutableStateOf<BadgeThreatEntity?>(null) }
+    var investigationDialogSource by remember { mutableStateOf<InvestigationDialogSource?>(null) }
+    var selectedInvestigationRoute by remember { mutableStateOf(BleInvestigationRoute.AUTO) }
     var trackingTarget by remember { mutableStateOf<GlassesDetection?>(null) }
     val ultrasonicAlerts by viewModel.ultrasonicAlerts.collectAsStateWithLifecycle()
     val wifiAnomalies by viewModel.wifiAnomalies.collectAsStateWithLifecycle()
@@ -307,8 +338,9 @@ fun PrivacyScreen(
 
     // Detail dialog
     if (selectedDetail != null) {
+        val detection = selectedDetail!!
         DeviceDetailDialog(
-            detection = selectedDetail!!,
+            detection = detection,
             onIgnore = {
                 viewModel.ignoreDevice(selectedDetail!!.mac)
                 selectedDetail = null
@@ -317,14 +349,66 @@ fun PrivacyScreen(
                 trackingTarget = selectedDetail
                 selectedDetail = null
             },
+            onInvestigate = detection.investigationTarget?.let { target ->
+                {
+                    viewModel.clearInvestigation()
+                    selectedInvestigationRoute = BleInvestigationRoute.AUTO
+                    investigationDialogSource = InvestigationDialogSource(
+                        title = detection.deviceName ?: detection.deviceType,
+                        origin = detection.origin,
+                        target = target,
+                        detection = detection,
+                    )
+                    selectedDetail = null
+                }
+            },
             onDismiss = { selectedDetail = null }
         )
     }
 
     if (selectedBadgeEntity != null) {
+        val entity = selectedBadgeEntity!!
+        val badgeDetection = entity.toPrivacyDetection(Instant.now())
         BadgeEntityDetailDialog(
-            entity = selectedBadgeEntity!!,
+            entity = entity,
+            onInvestigate = badgeDetection?.investigationTarget?.let { target ->
+                {
+                    viewModel.clearInvestigation()
+                    selectedInvestigationRoute = BleInvestigationRoute.AUTO
+                    investigationDialogSource = InvestigationDialogSource(
+                        title = entity.label.ifBlank { "Badge Signal" },
+                        origin = badgeDetection.origin,
+                        target = target,
+                        badgeEntity = entity,
+                    )
+                    selectedBadgeEntity = null
+                }
+            },
             onDismiss = { selectedBadgeEntity = null }
+        )
+    }
+
+    investigationDialogSource?.let { source ->
+        val routeDecisions = BleInvestigationRoute.entries.associateWith { route ->
+            viewModel.investigationRouteDecision(source.origin, source.target, route)
+        }
+        BleInvestigationDialog(
+            source = source,
+            selectedRoute = selectedInvestigationRoute,
+            routeDecisions = routeDecisions,
+            result = investigationResult,
+            onRouteSelected = { selectedInvestigationRoute = it },
+            onStart = {
+                source.detection?.let { viewModel.investigate(it, selectedInvestigationRoute) }
+                source.badgeEntity?.let {
+                    viewModel.investigateBadgeEntity(it, selectedInvestigationRoute)
+                }
+            },
+            onCancel = viewModel::cancelInvestigation,
+            onDismiss = {
+                viewModel.clearInvestigation()
+                investigationDialogSource = null
+            },
         )
     }
 
@@ -935,6 +1019,7 @@ private fun BadgeEntityRow(entity: BadgeThreatEntity, onClick: () -> Unit) {
 @Composable
 private fun BadgeEntityDetailDialog(
     entity: BadgeThreatEntity,
+    onInvestigate: (() -> Unit)?,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -969,7 +1054,20 @@ private fun BadgeEntityDetailDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (onInvestigate != null) {
+                    TextButton(onClick = onInvestigate) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Investigate")
+                    }
+                }
+                TextButton(onClick = onDismiss) { Text("Close") }
+            }
         }
     )
 }
@@ -1229,6 +1327,7 @@ private fun DeviceDetailDialog(
     detection: GlassesDetection,
     onIgnore: () -> Unit,
     onTrack: () -> Unit,
+    onInvestigate: (() -> Unit)?,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -1265,12 +1364,280 @@ private fun DeviceDetailDialog(
         },
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (onInvestigate != null) {
+                    TextButton(onClick = onInvestigate) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Investigate")
+                    }
+                }
                 TextButton(onClick = onIgnore) { Text("Ignore") }
                 TextButton(onClick = onTrack) { Text("Track") }
                 TextButton(onClick = onDismiss) { Text("Close") }
             }
         }
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BleInvestigationDialog(
+    source: InvestigationDialogSource,
+    selectedRoute: BleInvestigationRoute,
+    routeDecisions: Map<BleInvestigationRoute, BleInvestigationRouteDecision>,
+    result: BleInvestigationResult?,
+    onRouteSelected: (BleInvestigationRoute) -> Unit,
+    onStart: () -> Unit,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val running = result?.state in setOf(
+        BleInvestigationState.QUEUED,
+        BleInvestigationState.SCANNING,
+        BleInvestigationState.CONNECTING,
+        BleInvestigationState.DISCOVERING,
+        BleInvestigationState.READING,
+    )
+    val terminal = result?.state in setOf(
+        BleInvestigationState.COMPLETE,
+        BleInvestigationState.FAILED,
+        BleInvestigationState.CANCELLED,
+    )
+    val selectedAvailable = routeDecisions[selectedRoute]?.route != null
+
+    AlertDialog(
+        onDismissRequest = { if (!running) onDismiss() },
+        title = {
+            Column {
+                Text(
+                    text = "BLE Investigation",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = source.title,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (result == null) {
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                        BleInvestigationRoute.entries.forEachIndexed { index, route ->
+                            val available = routeDecisions[route]?.route != null
+                            val name = when (route) {
+                                BleInvestigationRoute.AUTO -> "Auto"
+                                BleInvestigationRoute.PHONE -> "Phone"
+                                BleInvestigationRoute.BADGE -> "Badge"
+                            }
+                            SegmentedButton(
+                                selected = selectedRoute == route,
+                                onClick = { onRouteSelected(route) },
+                                enabled = available,
+                                shape = SegmentedButtonDefaults.itemShape(
+                                    index = index,
+                                    count = BleInvestigationRoute.entries.size,
+                                ),
+                                label = {
+                                    Text(
+                                        text = if (available) name else "$name\nUnavailable",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 2,
+                                        softWrap = true,
+                                    )
+                                },
+                            )
+                        }
+                    }
+                    InvestigationDetailRow(
+                        "Mode",
+                        if (source.target.mode == BleInvestigationMode.GATT) "GATT inspection"
+                        else "Passive capture",
+                    )
+                    source.target.mac?.let { InvestigationDetailRow("Target", it) }
+                }
+
+                if (result != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = investigationStateLabel(result.state),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = result.transport.replace('-', ' '),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (running) {
+                            IconButton(onClick = onCancel) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Cancel investigation retrieval",
+                                )
+                            }
+                        }
+                    }
+
+                    if (result.mode == BleInvestigationMode.PASSIVE_CAPTURE) {
+                        InvestigationSectionHeading("Passive Evidence")
+                    } else {
+                        InvestigationSectionHeading("Summary")
+                    }
+                    Text(
+                        text = result.summary.ifBlank { investigationStateLabel(result.state) },
+                        style = MaterialTheme.typography.bodySmall,
+                        softWrap = true,
+                    )
+
+                    result.error?.let {
+                        InvestigationDetailRow("Error", it, MaterialTheme.colorScheme.error)
+                    }
+                    result.connectable?.let {
+                        InvestigationDetailRow("Connectable", if (it) "Yes" else "No")
+                    }
+                    if (result.bonded || result.encrypted || result.authenticationRequired) {
+                        InvestigationSectionHeading("Security")
+                        InvestigationDetailRow("Bonded", if (result.bonded) "Yes" else "No")
+                        InvestigationDetailRow("Encrypted", if (result.encrypted) "Yes" else "No")
+                        if (result.authenticationRequired) {
+                            InvestigationDetailRow(
+                                "Access",
+                                "Authentication required",
+                                MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                    if (result.services.isNotEmpty()) {
+                        InvestigationSectionHeading("Services")
+                        result.services.forEach { uuid ->
+                            InvestigationDetailRow(bleUuidLabel(uuid), uuid)
+                        }
+                    }
+                    if (result.characteristics.isNotEmpty()) {
+                        InvestigationSectionHeading("Characteristics")
+                        result.characteristics.forEach { characteristic ->
+                            val properties = characteristic.properties.sorted().joinToString(", ")
+                            InvestigationDetailRow(
+                                bleUuidLabel(characteristic.uuid),
+                                "${characteristic.uuid}${if (properties.isBlank()) "" else " | $properties"}",
+                            )
+                        }
+                    }
+                    if (result.reads.isNotEmpty()) {
+                        InvestigationSectionHeading("Read Values")
+                        result.reads.forEach { (uuid, value) ->
+                            InvestigationDetailRow(bleUuidLabel(uuid), formatBleReadValue(value))
+                        }
+                    }
+                    if (result.truncated) {
+                        InvestigationDetailRow(
+                            "Result",
+                            "Additional evidence was truncated",
+                            MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            when {
+                result == null -> Button(
+                    onClick = onStart,
+                    enabled = selectedAvailable,
+                ) { Text("Start") }
+                terminal -> TextButton(onClick = onDismiss) { Text("Close") }
+            }
+        },
+        dismissButton = {
+            if (!running && result == null) {
+                TextButton(onClick = onDismiss) { Text("Close") }
+            }
+        },
+    )
+}
+
+@Composable
+private fun InvestigationSectionHeading(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.SemiBold,
+    )
+}
+
+@Composable
+private fun InvestigationDetailRow(
+    label: String,
+    value: String,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface,
+) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(82.dp),
+            maxLines = 2,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            color = valueColor,
+            modifier = Modifier.weight(1f),
+            softWrap = true,
+        )
+    }
+}
+
+private fun investigationStateLabel(state: BleInvestigationState): String = when (state) {
+    BleInvestigationState.IDLE -> "Ready"
+    BleInvestigationState.QUEUED -> "Queued"
+    BleInvestigationState.SCANNING -> "Scanning"
+    BleInvestigationState.CONNECTING -> "Connecting"
+    BleInvestigationState.DISCOVERING -> "Discovering services"
+    BleInvestigationState.READING -> "Reading characteristics"
+    BleInvestigationState.COMPLETE -> "Complete"
+    BleInvestigationState.FAILED -> "Failed"
+    BleInvestigationState.CANCELLED -> "Retrieval cancelled"
+}
+
+private fun bleUuidLabel(uuid: String): String = when (uuid.uppercase()) {
+    "1800", "00001800-0000-1000-8000-00805F9B34FB" -> "Generic Access"
+    "180A", "0000180A-0000-1000-8000-00805F9B34FB" -> "Device Info"
+    "2A00", "00002A00", "00002A00-0000-1000-8000-00805F9B34FB" -> "Device Name"
+    "2A24", "00002A24", "00002A24-0000-1000-8000-00805F9B34FB" -> "Model"
+    "2A25", "00002A25", "00002A25-0000-1000-8000-00805F9B34FB" -> "Serial"
+    "2A26", "00002A26", "00002A26-0000-1000-8000-00805F9B34FB" -> "Firmware"
+    "2A29", "00002A29", "00002A29-0000-1000-8000-00805F9B34FB" -> "Manufacturer"
+    else -> "UUID"
+}
+
+private fun formatBleReadValue(valueHex: String): String {
+    if (valueHex.length % 2 != 0 || valueHex.any { it !in "0123456789ABCDEFabcdef" }) return valueHex
+    val bytes = valueHex.chunked(2).mapNotNull { it.toIntOrNull(16)?.toByte() }
+    val text = bytes.toByteArray().toString(Charsets.UTF_8).trimEnd('\u0000')
+    val readable = text.isNotEmpty() && text.all { it == '\n' || it == '\r' || it == '\t' || !it.isISOControl() }
+    return if (readable) "$text | $valueHex" else valueHex
 }
 
 @Composable
@@ -1289,7 +1656,9 @@ private fun DetailRow(label: String, value: String) {
         Text(
             text = value,
             style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.Medium
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f),
+            softWrap = true,
         )
     }
 }

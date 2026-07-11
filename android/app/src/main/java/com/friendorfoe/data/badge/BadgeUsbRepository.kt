@@ -31,19 +31,29 @@ import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.friendorfoe.BuildConfig
+import com.friendorfoe.detection.BleInvestigationChunk
+import com.friendorfoe.detection.BleInvestigationChunkAssembler
+import com.friendorfoe.detection.BleInvestigationMode
+import com.friendorfoe.detection.BleInvestigationResult
+import com.friendorfoe.detection.BleInvestigationState
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,6 +62,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.ResponseBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import java.util.UUID
@@ -781,6 +792,369 @@ private fun JsonObject.badgeOptBoolean(key: String, fallback: Boolean = false): 
         .getOrDefault(fallback)
 }
 
+internal const val BADGE_INVESTIGATION_JSON_MAX_CHARS = 1023
+internal const val BADGE_INVESTIGATION_LINE_MAX_CHARS = 8 + BADGE_INVESTIGATION_JSON_MAX_CHARS
+
+internal data class BadgeInvestigationParseResult(
+    val accepted: Boolean,
+    val chunk: BleInvestigationChunk? = null,
+    val result: BleInvestigationResult? = null,
+)
+
+internal class BadgeInvestigationStreamParser(
+    expectedRequestId: String? = null,
+) {
+    private var expectedRequestId = expectedRequestId?.takeIf(::validRequestId)
+    private var activeRequestId: String? = null
+    private var assembler: BleInvestigationChunkAssembler? = null
+    private var terminal = false
+    private var progressState = BleInvestigationState.IDLE
+    private var nextServiceIndex = 0
+    private var nextCharacteristicIndex = 0
+    private var nextReadIndex = 0
+
+    fun accept(line: String): BadgeInvestigationParseResult {
+        if (line.length > BADGE_INVESTIGATION_LINE_MAX_CHARS || !line.startsWith(PREFIX)) {
+            return REJECTED
+        }
+        val payload = line.removePrefix(PREFIX)
+        if (payload.isBlank()) return REJECTED
+        val root = runCatching { JsonParser.parseString(payload) }.getOrNull()
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?: return REJECTED
+        val chunk = parseChunk(root) ?: return REJECTED
+        if (terminal) return REJECTED
+
+        val configuredRequestId = expectedRequestId
+        if (configuredRequestId != null && chunk.requestId != configuredRequestId) {
+            return REJECTED
+        }
+
+        if (chunk is BleInvestigationChunk.Begin) {
+            if (activeRequestId != null) return REJECTED
+            expectedRequestId = configuredRequestId ?: chunk.requestId
+            activeRequestId = chunk.requestId
+            assembler = BleInvestigationChunkAssembler(chunk.requestId)
+            progressState = BleInvestigationState.QUEUED
+            nextServiceIndex = 0
+            nextCharacteristicIndex = 0
+            nextReadIndex = 0
+        } else if (activeRequestId != chunk.requestId || assembler == null) {
+            return REJECTED
+        }
+
+        if (!isNextChunkValid(chunk)) return REJECTED
+        val result = assembler?.accept(chunk)
+        if (chunk is BleInvestigationChunk.End && result == null) return REJECTED
+        advance(chunk)
+        if (result != null) terminal = true
+        return BadgeInvestigationParseResult(accepted = true, chunk = chunk, result = result)
+    }
+
+    fun disconnect(requestId: String): BleInvestigationResult? {
+        if (terminal || activeRequestId != requestId || assembler == null) return null
+        val result = assembler?.accept(
+            BleInvestigationChunk.End(
+                requestId = requestId,
+                state = "failed",
+                summary = "Badge transport disconnected",
+                error = "transport_disconnected",
+            ),
+        )
+        if (result != null) terminal = true
+        return result
+    }
+
+    fun reconnect(requestId: String) {
+        if (expectedRequestId != null && expectedRequestId != requestId) return
+        expectedRequestId = requestId.takeIf(::validRequestId) ?: return
+        activeRequestId = null
+        assembler = null
+        terminal = false
+        progressState = BleInvestigationState.IDLE
+        nextServiceIndex = 0
+        nextCharacteristicIndex = 0
+        nextReadIndex = 0
+    }
+
+    private fun isNextChunkValid(chunk: BleInvestigationChunk): Boolean = when (chunk) {
+        is BleInvestigationChunk.Begin -> true
+        is BleInvestigationChunk.Progress ->
+            chunk.state in PROGRESS_STATES && chunk.state.ordinal >= progressState.ordinal
+        is BleInvestigationChunk.Service -> chunk.index == nextServiceIndex
+        is BleInvestigationChunk.Characteristic -> chunk.index == nextCharacteristicIndex
+        is BleInvestigationChunk.Read -> chunk.index == nextReadIndex
+        is BleInvestigationChunk.End -> true
+    }
+
+    private fun advance(chunk: BleInvestigationChunk) {
+        when (chunk) {
+            is BleInvestigationChunk.Begin -> Unit
+            is BleInvestigationChunk.Progress -> progressState = chunk.state
+            is BleInvestigationChunk.Service -> nextServiceIndex++
+            is BleInvestigationChunk.Characteristic -> nextCharacteristicIndex++
+            is BleInvestigationChunk.Read -> nextReadIndex++
+            is BleInvestigationChunk.End -> Unit
+        }
+    }
+
+    private fun parseChunk(root: JsonObject): BleInvestigationChunk? {
+        val type = root.strictString("type", MAX_TYPE_CHARS) ?: return null
+        val requestId = root.strictString("request_id", MAX_REQUEST_ID_CHARS)
+            ?.takeIf(::validRequestId)
+            ?: return null
+        return when (type) {
+            "ble_inv_begin" -> {
+                val mode = when (root.strictString("mode", MAX_MODE_CHARS)) {
+                    "gatt" -> BleInvestigationMode.GATT
+                    "passive_capture" -> BleInvestigationMode.PASSIVE_CAPTURE
+                    else -> return null
+                }
+                val target = root.strictNullableString("target_mac", MAX_MAC_CHARS)
+                    ?: if (root.has("target_mac") && !root.get("target_mac").isJsonNull) return null else null
+                if (target != null && !MAC_REGEX.matches(target)) return null
+                if (mode == BleInvestigationMode.GATT && target == null) return null
+                if (mode == BleInvestigationMode.PASSIVE_CAPTURE && target != null) return null
+                BleInvestigationChunk.Begin(requestId, mode, target)
+            }
+            "ble_inv_progress" -> {
+                val state = root.strictString("state", MAX_STATE_CHARS)
+                    ?.let { value ->
+                        PROGRESS_STATES.firstOrNull { it.name.equals(value, ignoreCase = true) }
+                    }
+                    ?: return null
+                BleInvestigationChunk.Progress(requestId, state)
+            }
+            "ble_inv_service" -> BleInvestigationChunk.Service(
+                requestId = requestId,
+                index = root.strictIndex() ?: return null,
+                uuid = root.strictUuid("uuid") ?: return null,
+            )
+            "ble_inv_char" -> {
+                val propertiesElement = root.get("properties")
+                    ?.takeIf { it.isJsonArray }
+                    ?.asJsonArray
+                    ?: return null
+                if (propertiesElement.size() > MAX_PROPERTIES) return null
+                val properties = linkedSetOf<String>()
+                propertiesElement.forEach { item ->
+                    if (!item.isJsonPrimitive || !item.asJsonPrimitive.isString) return null
+                    val property = item.asString
+                    if (property !in KNOWN_PROPERTIES || !properties.add(property)) return null
+                }
+                BleInvestigationChunk.Characteristic(
+                    requestId = requestId,
+                    index = root.strictIndex() ?: return null,
+                    serviceUuid = root.strictUuid("service_uuid") ?: return null,
+                    uuid = root.strictUuid("uuid") ?: return null,
+                    properties = properties,
+                )
+            }
+            "ble_inv_read" -> {
+                val valueHex = root.strictString(
+                    "value_hex",
+                    MAX_VALUE_HEX_CHARS,
+                    allowEmpty = true,
+                )
+                    ?.takeIf { it.length % 2 == 0 && VALUE_HEX_REGEX.matches(it) }
+                    ?: return null
+                BleInvestigationChunk.Read(
+                    requestId = requestId,
+                    index = root.strictIndex() ?: return null,
+                    uuid = root.strictUuid("uuid") ?: return null,
+                    valueHex = valueHex,
+                )
+            }
+            "ble_inv_end" -> {
+                val state = root.strictString("state", MAX_STATE_CHARS)
+                    ?.takeIf { it in TERMINAL_STATE_NAMES }
+                    ?: return null
+                val summary = root.strictString(
+                    "summary",
+                    MAX_SUMMARY_CHARS,
+                    allowEmpty = true,
+                ) ?: return null
+                val error = root.strictNullableString("error", MAX_ERROR_CHARS)
+                    ?: if (root.has("error") && !root.get("error").isJsonNull) return null else null
+                val authenticationRequired = root.strictBoolean(
+                    "authentication_required",
+                    fallback = false,
+                ) ?: return null
+                val truncated = root.strictBoolean("truncated", fallback = false) ?: return null
+                BleInvestigationChunk.End(
+                    requestId = requestId,
+                    state = state,
+                    summary = summary,
+                    error = error,
+                    authenticationRequired = authenticationRequired,
+                    truncated = truncated,
+                )
+            }
+            else -> null
+        }
+    }
+
+    private fun JsonObject.strictString(
+        key: String,
+        maxChars: Int,
+        allowEmpty: Boolean = false,
+    ): String? {
+        val item = get(key) ?: return null
+        if (!item.isJsonPrimitive || !item.asJsonPrimitive.isString) return null
+        return item.asString.takeIf { (allowEmpty || it.isNotEmpty()) && it.length <= maxChars }
+    }
+
+    private fun JsonObject.strictNullableString(key: String, maxChars: Int): String? {
+        val item = get(key) ?: return null
+        if (item.isJsonNull) return null
+        if (!item.isJsonPrimitive || !item.asJsonPrimitive.isString) return null
+        return item.asString.takeIf { it.length <= maxChars }
+    }
+
+    private fun JsonObject.strictBoolean(key: String, fallback: Boolean): Boolean? {
+        val item = get(key) ?: return fallback
+        if (!item.isJsonPrimitive || !item.asJsonPrimitive.isBoolean) return null
+        return item.asBoolean
+    }
+
+    private fun JsonObject.strictIndex(): Int? {
+        val item = get("index") ?: return null
+        if (!item.isJsonPrimitive || !item.asJsonPrimitive.isNumber) return null
+        val number = runCatching { item.asDouble }.getOrNull() ?: return null
+        if (!number.isFinite() || number % 1.0 != 0.0 || number !in 0.0..MAX_CHUNK_INDEX.toDouble()) {
+            return null
+        }
+        return number.toInt()
+    }
+
+    private fun JsonObject.strictUuid(key: String): String? =
+        strictString(key, MAX_UUID_CHARS)?.takeIf(UUID_REGEX::matches)
+
+    private fun validRequestId(value: String): Boolean =
+        value.length in 1..MAX_REQUEST_ID_CHARS && value.all { it.code in 0x21..0x7E }
+
+    private companion object {
+        const val PREFIX = "FOF_INV:"
+        const val MAX_REQUEST_ID_CHARS = 32
+        const val MAX_TYPE_CHARS = 24
+        const val MAX_MODE_CHARS = 24
+        const val MAX_STATE_CHARS = 16
+        const val MAX_MAC_CHARS = 17
+        const val MAX_UUID_CHARS = 36
+        const val MAX_SUMMARY_CHARS = 127
+        const val MAX_ERROR_CHARS = 63
+        const val MAX_VALUE_HEX_CHARS = 128
+        const val MAX_CHUNK_INDEX = 63
+        const val MAX_PROPERTIES = 8
+
+        val REJECTED = BadgeInvestigationParseResult(accepted = false)
+        val MAC_REGEX = Regex("^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$")
+        val UUID_REGEX = Regex(
+            "^(?:[0-9A-F]{4}|[0-9A-F]{8}|[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})$",
+        )
+        val VALUE_HEX_REGEX = Regex("^[0-9A-F]*$")
+        val KNOWN_PROPERTIES = setOf(
+            "broadcast",
+            "read",
+            "write_without_response",
+            "write",
+            "notify",
+            "indicate",
+            "authenticated_signed_writes",
+            "extended_properties",
+        )
+        val PROGRESS_STATES = setOf(
+            BleInvestigationState.QUEUED,
+            BleInvestigationState.SCANNING,
+            BleInvestigationState.CONNECTING,
+            BleInvestigationState.DISCOVERING,
+            BleInvestigationState.READING,
+        )
+        val TERMINAL_STATE_NAMES = setOf("complete", "failed", "cancelled")
+    }
+}
+
+private enum class BadgeInvestigationTransport(val resultName: String) {
+    USB("badge-usb"),
+    HTTP("badge-http"),
+    BLE("badge-ble"),
+}
+
+internal data class BadgeControlAck(
+    val accepted: Boolean,
+    val error: String? = null,
+)
+
+internal class BadgeUsbInvestigationAckGate(
+    private val requestId: String,
+) {
+    private var completed = false
+
+    @Suppress("UNUSED_PARAMETER")
+    fun accept(
+        line: String,
+        parsed: BadgeInvestigationParseResult?,
+        ownsControlReply: Boolean,
+    ): BadgeControlAck? {
+        if (completed) return null
+        val begin = parsed?.chunk as? BleInvestigationChunk.Begin
+        if (parsed?.accepted == true && begin?.requestId == requestId) {
+            completed = true
+            return BadgeControlAck(accepted = true)
+        }
+        return null
+    }
+}
+
+internal fun badgeGattCallbackMatches(
+    expectedGatt: Any?,
+    actualGatt: Any?,
+    expectedKind: String,
+    actualKind: String,
+    expectedUuid: UUID,
+    actualUuid: UUID,
+    expectedGeneration: Long?,
+    activeGeneration: Long?,
+): Boolean = expectedGatt === actualGatt &&
+    expectedKind == actualKind &&
+    expectedUuid == actualUuid &&
+    (expectedGeneration == null || expectedGeneration == activeGeneration)
+
+internal fun badgeGattDisconnectMatches(activeGatt: Any?, callbackGatt: Any?): Boolean =
+    activeGatt === callbackGatt
+
+internal fun shouldStartBadgeInvestigationJob(
+    activeGeneration: Long?,
+    operationGeneration: Long,
+): Boolean = activeGeneration == operationGeneration
+
+private data class ActiveBadgeInvestigation(
+    val generation: Long,
+    val request: com.friendorfoe.detection.BleInvestigationRequest,
+    val transport: BadgeInvestigationTransport,
+    val parser: BadgeInvestigationStreamParser,
+    val ackGate: BadgeUsbInvestigationAckGate = BadgeUsbInvestigationAckGate(request.requestId),
+    val controlAck: CompletableDeferred<BadgeControlAck> = CompletableDeferred(),
+    val terminal: CompletableDeferred<BleInvestigationResult> = CompletableDeferred(),
+    var job: Job? = null,
+)
+
+private enum class BadgeGattOperationKind { READ_CHARACTERISTIC, WRITE_CHARACTERISTIC, WRITE_DESCRIPTOR }
+
+private data class BadgeGattOperationResult(
+    val status: Int,
+    val value: ByteArray = byteArrayOf(),
+)
+
+private data class PendingBadgeGattOperation(
+    val gatt: BluetoothGatt,
+    val kind: BadgeGattOperationKind,
+    val uuid: UUID,
+    val generation: Long?,
+    val completion: CompletableDeferred<BadgeGattOperationResult> = CompletableDeferred(),
+)
+
 @Singleton
 class BadgeUsbRepository @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -803,18 +1177,31 @@ class BadgeUsbRepository @Inject constructor(
         private const val MAX_RECENT_DETECTIONS = 20
         private const val MAX_LINE_CHARS = 8192
         private const val FW_CHUNK_BYTES = 1024
+        private const val BADGE_INVESTIGATION_GRACE_MS = 1000L
+        private const val BADGE_INVESTIGATION_DELIVERY_MS = 500L
+        private const val BADGE_CONTROL_ACK_TIMEOUT_MS = 1500L
+        private const val BADGE_CHUNK_RETRY_MS = 100L
+        private const val BADGE_MAX_INVESTIGATION_CHUNKS = 64
+        private const val MAX_USED_INVESTIGATION_IDS = 32
+        private const val GATT_OPERATION_TIMEOUT = 0x100
+        private const val GATT_OPERATION_DISCONNECTED = 0x101
         private val BADGE_BLE_SERVICE_UUID: UUID =
             UUID.fromString("0000f0f0-0000-1000-8000-00805f9b34fb")
         private val BADGE_BLE_STATUS_UUID: UUID =
             UUID.fromString("0000ff01-0000-1000-8000-00805f9b34fb")
         private val BADGE_BLE_CONTROL_UUID: UUID =
             UUID.fromString("0000ff02-0000-1000-8000-00805f9b34fb")
+        private val BADGE_BLE_INVESTIGATION_UUID: UUID =
+            UUID.fromString("0000ff03-0000-1000-8000-00805f9b34fb")
         private val CLIENT_CONFIG_UUID: UUID =
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val connectionMutex = Mutex()
+    private val usbWriteMutex = Mutex()
+    private val bleGattOperationMutex = Mutex()
+    private val investigationLock = Any()
     private val badgeHttpClient = okHttpClient.newBuilder()
         .connectTimeout(1200, TimeUnit.MILLISECONDS)
         .readTimeout(1200, TimeUnit.MILLISECONDS)
@@ -824,6 +1211,8 @@ class BadgeUsbRepository @Inject constructor(
 
     private val _state = MutableStateFlow(BadgeUsbState())
     val state: StateFlow<BadgeUsbState> = _state.asStateFlow()
+    private val _investigation = MutableStateFlow<BleInvestigationResult?>(null)
+    val investigation: StateFlow<BleInvestigationResult?> = _investigation.asStateFlow()
 
     private var receiverRegistered = false
     private var readJob: Job? = null
@@ -840,7 +1229,12 @@ class BadgeUsbRepository @Inject constructor(
     @Volatile private var activeGatt: BluetoothGatt? = null
     @Volatile private var activeBleControlChar: BluetoothGattCharacteristic? = null
     @Volatile private var activeBleStatusChar: BluetoothGattCharacteristic? = null
+    @Volatile private var activeBleInvestigationChar: BluetoothGattCharacteristic? = null
+    @Volatile private var pendingBleGattOperation: PendingBadgeGattOperation? = null
     @Volatile private var bleScanning = false
+    private var investigationGeneration = 0L
+    private var activeInvestigation: ActiveBadgeInvestigation? = null
+    private val usedInvestigationRequestIds = LinkedHashSet<String>()
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -985,6 +1379,555 @@ class BadgeUsbRepository @Inject constructor(
         }
     }
 
+    fun investigateBle(request: com.friendorfoe.detection.BleInvestigationRequest) {
+        val transport = when {
+            hasUsbCommandPath() -> BadgeInvestigationTransport.USB
+            hasBleInvestigationPath() -> BadgeInvestigationTransport.BLE
+            activeHttpBaseUrl() != null -> BadgeInvestigationTransport.HTTP
+            else -> null
+        }
+        if (request.route != com.friendorfoe.detection.BleInvestigationRoute.BADGE) {
+            _investigation.value = badgeInvestigationResult(
+                request = request,
+                transport = "badge",
+                state = BleInvestigationState.FAILED,
+                summary = "Badge route required",
+                error = "invalid_route",
+            )
+            return
+        }
+        if (request.requestId.length !in 1..32 || request.requestId.any { it.code !in 0x21..0x7E }) {
+            _investigation.value = badgeInvestigationResult(
+                request, "badge", BleInvestigationState.FAILED,
+                "Invalid investigation request", "invalid_request_id",
+            )
+            return
+        }
+
+        val operation = synchronized(investigationLock) {
+            if (activeInvestigation != null) {
+                Log.w(TAG, "Ignoring BLE investigation while another request is active")
+                return
+            }
+            if (request.requestId in usedInvestigationRequestIds) {
+                _investigation.value = badgeInvestigationResult(
+                    request, "badge", BleInvestigationState.FAILED,
+                    "Investigation request ID was already used", "request_id_reused",
+                )
+                return
+            }
+            if (transport == null) {
+                _investigation.value = badgeInvestigationResult(
+                    request, "badge", BleInvestigationState.FAILED,
+                    "Badge investigation transport unavailable", "badge_unavailable",
+                )
+                return
+            }
+            rememberInvestigationRequestId(request.requestId)
+            investigationGeneration++
+            ActiveBadgeInvestigation(
+                generation = investigationGeneration,
+                request = request,
+                transport = transport,
+                parser = BadgeInvestigationStreamParser(request.requestId),
+            ).also { activeInvestigation = it }
+        }
+
+        publishInvestigation(
+            operation,
+            badgeInvestigationResult(
+                request = request,
+                transport = operation.transport.resultName,
+                state = BleInvestigationState.QUEUED,
+                summary = "Badge investigation queued",
+                error = null,
+            ),
+        )
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val timeoutMs = request.timeoutMs.coerceIn(1L, 12_000L) +
+                    BADGE_INVESTIGATION_GRACE_MS + BADGE_INVESTIGATION_DELIVERY_MS
+                val result = withTimeout(timeoutMs) {
+                    when (operation.transport) {
+                        BadgeInvestigationTransport.USB -> investigateOverUsb(operation)
+                        BadgeInvestigationTransport.HTTP -> investigateOverHttp(operation)
+                        BadgeInvestigationTransport.BLE -> investigateOverBle(operation)
+                    }
+                }
+                publishInvestigation(operation, result)
+            } catch (_: TimeoutCancellationException) {
+                publishInvestigation(
+                    operation,
+                    badgeInvestigationResult(
+                        request, operation.transport.resultName, BleInvestigationState.FAILED,
+                        "Badge investigation retrieval timed out", "timeout",
+                    ),
+                )
+            } catch (_: CancellationException) {
+                // Explicit cancellation publishes before stopping retrieval.
+            } catch (error: Exception) {
+                Log.w(TAG, "Badge BLE investigation failed", error)
+                publishInvestigation(
+                    operation,
+                    badgeInvestigationResult(
+                        request, operation.transport.resultName, BleInvestigationState.FAILED,
+                        "Badge investigation failed", "transport_error",
+                    ),
+                )
+            } finally {
+                synchronized(investigationLock) {
+                    if (activeInvestigation?.generation == operation.generation) {
+                        activeInvestigation = null
+                    }
+                }
+                if (operation.transport == BadgeInvestigationTransport.BLE && hasBleCommandPath()) {
+                    runCatching { readBleStatus() }
+                }
+            }
+        }
+        val shouldStart = synchronized(investigationLock) {
+            if (shouldStartBadgeInvestigationJob(
+                    activeGeneration = activeInvestigation?.generation,
+                    operationGeneration = operation.generation,
+                )
+            ) {
+                operation.job = job
+                true
+            } else {
+                false
+            }
+        }
+        if (shouldStart) job.start() else job.cancel()
+    }
+
+    fun cancelBleInvestigation(requestId: String) {
+        val operation = synchronized(investigationLock) {
+            activeInvestigation?.takeIf { it.request.requestId == requestId }?.also {
+                activeInvestigation = null
+            }
+        } ?: return
+        _investigation.value = badgeInvestigationResult(
+            request = operation.request,
+            transport = operation.transport.resultName,
+            state = BleInvestigationState.CANCELLED,
+            summary = "Badge result retrieval cancelled; scanner operation may still be running",
+            error = "retrieval_cancelled",
+        )
+        operation.job?.cancel()
+    }
+
+    private suspend fun investigateOverUsb(
+        operation: ActiveBadgeInvestigation,
+    ): BleInvestigationResult {
+        if (!writeLine("FOF_CTL:${investigationCommand(operation.request)}")) {
+            return badgeInvestigationResult(
+                operation.request, operation.transport.resultName,
+                BleInvestigationState.FAILED, "Badge USB command failed", "usb_write_failed",
+            )
+        }
+        val ack = try {
+            withTimeout(BADGE_CONTROL_ACK_TIMEOUT_MS) { operation.controlAck.await() }
+        } catch (_: TimeoutCancellationException) {
+            return badgeInvestigationResult(
+                operation.request, operation.transport.resultName,
+                BleInvestigationState.FAILED,
+                "Badge did not acknowledge the investigation", "control_ack_timeout",
+            )
+        }
+        if (!ack.accepted) {
+            return badgeInvestigationResult(
+                operation.request, operation.transport.resultName,
+                BleInvestigationState.FAILED, "Badge rejected the investigation",
+                ack.error ?: "badge_rejected",
+            )
+        }
+        return operation.terminal.await()
+    }
+
+    private suspend fun investigateOverHttp(
+        operation: ActiveBadgeInvestigation,
+    ): BleInvestigationResult {
+        val baseUrl = activeHttpBaseUrl() ?: return badgeInvestigationResult(
+            operation.request, operation.transport.resultName,
+            BleInvestigationState.FAILED, "Badge HTTP transport disconnected", "transport_disconnected",
+        )
+        val startBody = postBadgeInvestigationControl(
+            baseUrl,
+            investigationCommand(operation.request),
+        ) ?: return badgeInvestigationResult(
+            operation.request, operation.transport.resultName,
+            BleInvestigationState.FAILED, "Badge HTTP start failed", "http_error",
+        )
+        val start = parseJsonObject(startBody) ?: return badgeInvestigationResult(
+            operation.request, operation.transport.resultName,
+            BleInvestigationState.FAILED, "Badge HTTP response was malformed", "malformed_response",
+        )
+        val startOk = start.strictHttpBoolean("ok")
+        if (startOk != true) {
+            return badgeInvestigationResult(
+                operation.request,
+                operation.transport.resultName,
+                BleInvestigationState.FAILED,
+                "Badge rejected the investigation",
+                start.strictHttpString("error") ?: "badge_rejected",
+            )
+        }
+
+        var seq = 0
+        while (seq < BADGE_MAX_INVESTIGATION_CHUNKS) {
+            val selection = JsonObject().apply {
+                addProperty("cmd", "ble_investigation_chunk")
+                addProperty("request_id", operation.request.requestId)
+                addProperty("seq", seq)
+            }
+            val body = postBadgeInvestigationControl(baseUrl, selection)
+                ?: return badgeInvestigationResult(
+                    operation.request, operation.transport.resultName,
+                    BleInvestigationState.FAILED, "Badge HTTP retrieval failed", "http_error",
+                )
+            val root = parseJsonObject(body)
+                ?: return badgeInvestigationResult(
+                    operation.request, operation.transport.resultName,
+                    BleInvestigationState.FAILED,
+                    "Badge returned a malformed investigation chunk", "malformed_chunk",
+                )
+            if (root.strictHttpBoolean("ok") == false) {
+                val error = root.strictHttpString("error") ?: "badge_rejected"
+                if (error == "invalid investigation chunk cursor") {
+                    delay(BADGE_CHUNK_RETRY_MS)
+                    continue
+                }
+                return badgeInvestigationResult(
+                    operation.request, operation.transport.resultName,
+                    BleInvestigationState.FAILED, "Badge chunk retrieval failed", error,
+                )
+            }
+            val accepted = acceptInvestigationLine(operation, "FOF_INV:$body")
+            if (!accepted.accepted) {
+                return badgeInvestigationResult(
+                    operation.request, operation.transport.resultName,
+                    BleInvestigationState.FAILED,
+                    "Badge returned an invalid investigation chunk", "invalid_chunk",
+                )
+            }
+            accepted.result?.let { return it.copy(transport = operation.transport.resultName) }
+            seq++
+        }
+        return badgeInvestigationResult(
+            operation.request, operation.transport.resultName,
+            BleInvestigationState.FAILED,
+            "Badge investigation ended without a terminal chunk", "missing_terminal",
+        )
+    }
+
+    private suspend fun investigateOverBle(
+        operation: ActiveBadgeInvestigation,
+    ): BleInvestigationResult {
+        if (!hasBleInvestigationPath()) return badgeInvestigationResult(
+            operation.request, operation.transport.resultName,
+            BleInvestigationState.FAILED,
+            "Bonded encrypted badge BLE is unavailable", "ble_not_authorized",
+        )
+        val gatt = activeGatt ?: return badgeInvestigationResult(
+            operation.request, operation.transport.resultName,
+            BleInvestigationState.FAILED, "Badge BLE disconnected", "transport_disconnected",
+        )
+        val control = activeBleControlChar ?: return badgeInvestigationResult(
+            operation.request, operation.transport.resultName,
+            BleInvestigationState.FAILED, "Badge BLE control is unavailable", "ble_unavailable",
+        )
+        val chunks = activeBleInvestigationChar ?: return badgeInvestigationResult(
+            operation.request, operation.transport.resultName,
+            BleInvestigationState.FAILED,
+            "Badge BLE investigation data is unavailable", "ble_unavailable",
+        )
+
+        val start = writeBleCharacteristic(
+            gatt,
+            control,
+            investigationCommand(operation.request).toString().toByteArray(Charsets.UTF_8),
+            operation.generation,
+        )
+        if (isGattAuthenticationError(start.status)) {
+            return badgeAuthenticationFailure(operation)
+        }
+        if (start.status != BluetoothGatt.GATT_SUCCESS) {
+            return badgeInvestigationResult(
+                operation.request, operation.transport.resultName,
+                BleInvestigationState.FAILED, "Badge BLE command failed", "gatt_write_failed",
+            )
+        }
+
+        var seq = 0
+        while (seq < BADGE_MAX_INVESTIGATION_CHUNKS) {
+            if (!hasBleInvestigationPath() || activeGatt !== gatt) {
+                return badgeInvestigationResult(
+                    operation.request, operation.transport.resultName,
+                    BleInvestigationState.FAILED,
+                    "Badge BLE authorization was lost", "ble_not_authorized",
+                )
+            }
+            val selection = JsonObject().apply {
+                addProperty("cmd", "ble_investigation_chunk")
+                addProperty("request_id", operation.request.requestId)
+                addProperty("seq", seq)
+            }
+            val selected = writeBleCharacteristic(
+                gatt,
+                control,
+                selection.toString().toByteArray(Charsets.UTF_8),
+                operation.generation,
+            )
+            if (isGattAuthenticationError(selected.status)) return badgeAuthenticationFailure(operation)
+            if (selected.status != BluetoothGatt.GATT_SUCCESS) {
+                return badgeInvestigationResult(
+                    operation.request, operation.transport.resultName,
+                    BleInvestigationState.FAILED,
+                    "Badge BLE chunk selection failed", "gatt_write_failed",
+                )
+            }
+            delay(25)
+            val read = readBleCharacteristic(gatt, chunks, operation.generation)
+            if (isGattAuthenticationError(read.status)) return badgeAuthenticationFailure(operation)
+            if (read.status != BluetoothGatt.GATT_SUCCESS) {
+                delay(BADGE_CHUNK_RETRY_MS)
+                continue
+            }
+            val json = read.value.toString(Charsets.UTF_8)
+            if (json.length > BADGE_INVESTIGATION_JSON_MAX_CHARS) {
+                return badgeInvestigationResult(
+                    operation.request, operation.transport.resultName,
+                    BleInvestigationState.FAILED,
+                    "Badge BLE chunk was oversized", "oversized_chunk",
+                )
+            }
+            val accepted = acceptInvestigationLine(operation, "FOF_INV:$json")
+            if (!accepted.accepted) {
+                delay(BADGE_CHUNK_RETRY_MS)
+                continue
+            }
+            accepted.result?.let { return it.copy(transport = operation.transport.resultName) }
+            seq++
+        }
+        return badgeInvestigationResult(
+            operation.request, operation.transport.resultName,
+            BleInvestigationState.FAILED,
+            "Badge BLE investigation ended without a terminal chunk", "missing_terminal",
+        )
+    }
+
+    private fun badgeAuthenticationFailure(
+        operation: ActiveBadgeInvestigation,
+    ): BleInvestigationResult = badgeInvestigationResult(
+        operation.request,
+        operation.transport.resultName,
+        BleInvestigationState.FAILED,
+        "Badge BLE authentication is required",
+        "authentication_required",
+    ).copy(authenticationRequired = true)
+
+    private fun isGattAuthenticationError(status: Int): Boolean =
+        status == BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION || status == 15
+
+    private fun investigationCommand(
+        request: com.friendorfoe.detection.BleInvestigationRequest,
+    ): JsonObject = JsonObject().apply {
+        addProperty("cmd", "ble_investigate")
+        addProperty("request_id", request.requestId)
+        addProperty(
+            "mode",
+            if (request.target.mode == BleInvestigationMode.GATT) "gatt" else "passive_capture",
+        )
+        if (request.target.mac == null) add("target", com.google.gson.JsonNull.INSTANCE)
+        else addProperty("target", request.target.mac)
+        addProperty("timeout_ms", request.timeoutMs.coerceIn(1L, 12_000L))
+    }
+
+    private fun acceptInvestigationLine(
+        operation: ActiveBadgeInvestigation,
+        line: String,
+    ): BadgeInvestigationParseResult {
+        val parsed = synchronized(investigationLock) {
+            if (activeInvestigation?.generation != operation.generation) {
+                return BadgeInvestigationParseResult(accepted = false)
+            }
+            operation.parser.accept(line)
+        }
+        operation.ackGate.accept(
+            line = line,
+            parsed = parsed,
+            ownsControlReply = !operation.controlAck.isCompleted,
+        )?.let(operation.controlAck::complete)
+        if (!parsed.accepted) return parsed
+        publishAcceptedChunk(operation, parsed)
+        return parsed
+    }
+
+    private fun publishAcceptedChunk(
+        operation: ActiveBadgeInvestigation,
+        parsed: BadgeInvestigationParseResult,
+    ) {
+        val terminalResult = parsed.result?.copy(transport = operation.transport.resultName)
+        if (terminalResult != null) {
+            publishInvestigation(operation, terminalResult)
+            operation.terminal.complete(terminalResult)
+            return
+        }
+        val current = _investigation.value?.takeIf {
+            it.requestId == operation.request.requestId &&
+                it.state !in setOf(
+                    BleInvestigationState.COMPLETE,
+                    BleInvestigationState.FAILED,
+                    BleInvestigationState.CANCELLED,
+                )
+        } ?: badgeInvestigationResult(
+            operation.request, operation.transport.resultName,
+            BleInvestigationState.QUEUED, "Badge investigation queued", null,
+        )
+        val updated = when (val chunk = parsed.chunk) {
+            is BleInvestigationChunk.Begin -> current.copy(
+                state = BleInvestigationState.QUEUED,
+                summary = "Badge investigation queued",
+            )
+            is BleInvestigationChunk.Progress -> current.copy(
+                state = chunk.state,
+                summary = badgeProgressSummary(chunk.state),
+            )
+            is BleInvestigationChunk.Service -> current.copy(
+                state = BleInvestigationState.READING,
+                services = current.services + chunk.uuid,
+                summary = "Reading badge investigation result",
+            )
+            is BleInvestigationChunk.Characteristic -> current.copy(
+                state = BleInvestigationState.READING,
+                characteristics = current.characteristics +
+                    com.friendorfoe.detection.BleGattCharacteristicInfo(
+                        serviceUuid = chunk.serviceUuid,
+                        uuid = chunk.uuid,
+                        properties = chunk.properties,
+                    ),
+                summary = "Reading badge investigation result",
+            )
+            is BleInvestigationChunk.Read -> current.copy(
+                state = BleInvestigationState.READING,
+                reads = current.reads + (chunk.uuid to chunk.valueHex),
+                summary = "Reading badge investigation result",
+            )
+            is BleInvestigationChunk.End,
+            null -> current
+        }
+        publishInvestigation(operation, updated)
+    }
+
+    private fun publishInvestigation(
+        operation: ActiveBadgeInvestigation,
+        result: BleInvestigationResult,
+    ) {
+        val currentGeneration = synchronized(investigationLock) {
+            activeInvestigation?.generation
+        }
+        if (currentGeneration == operation.generation) {
+            _investigation.value = result
+        }
+    }
+
+    private fun terminateInvestigationTransport(
+        transport: BadgeInvestigationTransport,
+    ) {
+        val operation = synchronized(investigationLock) {
+            activeInvestigation?.takeIf { it.transport == transport }
+        } ?: return
+        val result = synchronized(investigationLock) {
+            if (activeInvestigation?.generation != operation.generation) null
+            else operation.parser.disconnect(operation.request.requestId)
+        }?.copy(transport = operation.transport.resultName)
+            ?: badgeInvestigationResult(
+                operation.request, operation.transport.resultName,
+                BleInvestigationState.FAILED,
+                "Badge transport disconnected", "transport_disconnected",
+            )
+        publishInvestigation(operation, result)
+        operation.terminal.complete(result)
+    }
+
+    private fun rememberInvestigationRequestId(requestId: String) {
+        usedInvestigationRequestIds += requestId
+        while (usedInvestigationRequestIds.size > MAX_USED_INVESTIGATION_IDS) {
+            usedInvestigationRequestIds.remove(usedInvestigationRequestIds.first())
+        }
+    }
+
+    private fun badgeInvestigationResult(
+        request: com.friendorfoe.detection.BleInvestigationRequest,
+        transport: String,
+        state: BleInvestigationState,
+        summary: String,
+        error: String?,
+    ): BleInvestigationResult = BleInvestigationResult(
+        requestId = request.requestId,
+        transport = transport,
+        mode = request.target.mode,
+        targetMac = request.target.mac,
+        state = state,
+        connectable = null,
+        services = emptyList(),
+        characteristics = emptyList(),
+        reads = emptyMap(),
+        bonded = false,
+        encrypted = false,
+        authenticationRequired = false,
+        summary = summary,
+        error = error,
+        truncated = false,
+    )
+
+    private fun badgeProgressSummary(state: BleInvestigationState): String = when (state) {
+        BleInvestigationState.QUEUED -> "Badge investigation queued"
+        BleInvestigationState.SCANNING -> "Badge scanner is finding the target"
+        BleInvestigationState.CONNECTING -> "Badge scanner is connecting"
+        BleInvestigationState.DISCOVERING -> "Badge scanner is discovering services"
+        BleInvestigationState.READING -> "Badge scanner is reading characteristics"
+        else -> "Badge investigation active"
+    }
+
+    private suspend fun postBadgeInvestigationControl(
+        baseUrl: String,
+        payload: JsonObject,
+    ): String? = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl/api/badge/control")
+            .post(payload.toString().toRequestBody(jsonMediaType))
+            .build()
+        runCatching {
+            badgeHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                response.body?.readBounded(BADGE_INVESTIGATION_JSON_MAX_CHARS)
+            }
+        }.getOrNull()
+    }
+
+    private fun ResponseBody.readBounded(maxChars: Int): String? {
+        val source = source()
+        source.request((maxChars + 1).toLong())
+        if (source.buffer.size > maxChars) return null
+        return source.readUtf8()
+    }
+
+    private fun parseJsonObject(json: String): JsonObject? = runCatching {
+        JsonParser.parseString(json).takeIf { it.isJsonObject }?.asJsonObject
+    }.getOrNull()
+
+    private fun JsonObject.strictHttpBoolean(key: String): Boolean? {
+        val item = get(key) ?: return null
+        return item.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
+    }
+
+    private fun JsonObject.strictHttpString(key: String): String? {
+        val item = get(key) ?: return null
+        return item.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+            ?.take(63)
+    }
+
     fun setMode(mode: String) {
         sendControl(JsonObject().apply {
             addProperty("cmd", "set_mode")
@@ -1047,6 +1990,10 @@ class BadgeUsbRepository @Inject constructor(
         forceRelay: Boolean = false
     ) {
         scope.launch {
+            if (hasUsbCommandPath() && usbInvestigationOwnsControlReply()) {
+                setState { it.copy(message = "BLE investigation command is awaiting badge reply") }
+                return@launch
+            }
             val crc = CRC32().apply { update(firmware) }.value
             setState {
                 it.copy(
@@ -1087,6 +2034,10 @@ class BadgeUsbRepository @Inject constructor(
     private fun sendControl(payload: JsonObject) {
         scope.launch {
             if (hasUsbCommandPath()) {
+                if (usbInvestigationOwnsControlReply()) {
+                    setState { it.copy(message = "BLE investigation command is awaiting badge reply") }
+                    return@launch
+                }
                 writeLine("FOF_CTL:$payload")
             } else if (hasBleCommandPath()) {
                 writeBleControl(payload)
@@ -1326,11 +2277,13 @@ class BadgeUsbRepository @Inject constructor(
         }
     }
 
-    private suspend fun writeLine(line: String) = withContext(Dispatchers.IO) {
-        val connection = activeConnection ?: return@withContext
-        val out = activeOutEndpoint ?: return@withContext
-        val bytes = (line + "\n").toByteArray(Charsets.UTF_8)
-        connection.bulkTransfer(out, bytes, bytes.size, WRITE_TIMEOUT_MS)
+    private suspend fun writeLine(line: String): Boolean = usbWriteMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val connection = activeConnection ?: return@withContext false
+            val out = activeOutEndpoint ?: return@withContext false
+            val bytes = (line + "\n").toByteArray(Charsets.UTF_8)
+            connection.bulkTransfer(out, bytes, bytes.size, WRITE_TIMEOUT_MS) == bytes.size
+        }
     }
 
     private suspend fun writeBytes(bytes: ByteArray) = withContext(Dispatchers.IO) {
@@ -1369,6 +2322,15 @@ class BadgeUsbRepository @Inject constructor(
         return state.value.status == BadgeUsbStatus.BLE_CONNECTED &&
             activeGatt != null &&
             activeBleControlChar != null
+    }
+
+    private fun hasBleInvestigationPath(): Boolean {
+        val ble = state.value.controlStatus?.bleControl ?: return false
+        return hasBleCommandPath() &&
+            activeBleInvestigationChar != null &&
+            ble.connected &&
+            ble.bonded &&
+            ble.encrypted
     }
 
     private fun activeHttpBaseUrl(): String? {
@@ -1698,19 +2660,28 @@ class BadgeUsbRepository @Inject constructor(
     private val badgeGattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (!badgeGattDisconnectMatches(activeGatt, gatt)) {
+                runCatching { gatt.close() }
+                return
+            }
             if (status != BluetoothGatt.GATT_SUCCESS || newState == BluetoothProfile.STATE_DISCONNECTED) {
                 closeBle("Badge BLE disconnected")
                 return
             }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                activeGatt = gatt
-                runCatching { gatt.requestMtu(512) }
-                runCatching { gatt.discoverServices() }
+                val mtuStarted = runCatching { gatt.requestMtu(512) }.getOrDefault(false)
+                if (!mtuStarted) runCatching { gatt.discoverServices() }
             }
         }
 
         @SuppressLint("MissingPermission")
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (gatt === activeGatt) runCatching { gatt.discoverServices() }
+        }
+
+        @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (gatt !== activeGatt) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 closeBle("Badge BLE service discovery failed")
                 return
@@ -1718,6 +2689,7 @@ class BadgeUsbRepository @Inject constructor(
             val service: BluetoothGattService? = gatt.getService(BADGE_BLE_SERVICE_UUID)
             activeBleStatusChar = service?.getCharacteristic(BADGE_BLE_STATUS_UUID)
             activeBleControlChar = service?.getCharacteristic(BADGE_BLE_CONTROL_UUID)
+            activeBleInvestigationChar = service?.getCharacteristic(BADGE_BLE_INVESTIGATION_UUID)
             if (activeBleStatusChar == null || activeBleControlChar == null) {
                 closeBle("Badge BLE service missing")
                 return
@@ -1731,20 +2703,26 @@ class BadgeUsbRepository @Inject constructor(
                     transportLabel = "BLE"
                 )
             }
-            enableBleStatusNotifications(gatt, activeBleStatusChar)
-            readBleStatus()
+            scope.launch {
+                enableBleStatusNotifications(gatt, activeBleStatusChar)
+                readBleStatus()
+            }
         }
 
+        @Suppress("OVERRIDE_DEPRECATION")
         override fun onCharacteristicRead(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
-            if (status == BluetoothGatt.GATT_SUCCESS &&
-                characteristic.uuid == BADGE_BLE_STATUS_UUID
-            ) {
-                @Suppress("DEPRECATION")
-                handleBleStatusBytes(characteristic.value ?: byteArrayOf())
+            @Suppress("DEPRECATION")
+            val value = characteristic.value ?: byteArrayOf()
+            completeBleGattOperation(
+                gatt, BadgeGattOperationKind.READ_CHARACTERISTIC,
+                characteristic.uuid, status, value,
+            )
+            if (status == BluetoothGatt.GATT_SUCCESS && characteristic.uuid == BADGE_BLE_STATUS_UUID) {
+                handleBleStatusBytes(value)
             }
         }
 
@@ -1754,13 +2732,38 @@ class BadgeUsbRepository @Inject constructor(
             value: ByteArray,
             status: Int
         ) {
-            if (status == BluetoothGatt.GATT_SUCCESS &&
-                characteristic.uuid == BADGE_BLE_STATUS_UUID
-            ) {
+            completeBleGattOperation(
+                gatt, BadgeGattOperationKind.READ_CHARACTERISTIC,
+                characteristic.uuid, status, value,
+            )
+            if (status == BluetoothGatt.GATT_SUCCESS && characteristic.uuid == BADGE_BLE_STATUS_UUID) {
                 handleBleStatusBytes(value)
             }
         }
 
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int,
+        ) {
+            completeBleGattOperation(
+                gatt, BadgeGattOperationKind.WRITE_CHARACTERISTIC,
+                characteristic.uuid, status,
+            )
+        }
+
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int,
+        ) {
+            completeBleGattOperation(
+                gatt, BadgeGattOperationKind.WRITE_DESCRIPTOR,
+                descriptor.uuid, status,
+            )
+        }
+
+        @Suppress("OVERRIDE_DEPRECATION")
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic
@@ -1783,36 +2786,37 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     @SuppressLint("MissingPermission")
-    private fun enableBleStatusNotifications(
+    private suspend fun enableBleStatusNotifications(
         gatt: BluetoothGatt,
         characteristic: BluetoothGattCharacteristic?
     ) {
         if (characteristic == null || !hasBlePermissions()) return
-        runCatching { gatt.setCharacteristicNotification(characteristic, true) }
+        if (!runCatching { gatt.setCharacteristicNotification(characteristic, true) }
+                .getOrDefault(false)
+        ) return
         val descriptor = characteristic.getDescriptor(CLIENT_CONFIG_UUID) ?: return
-        @Suppress("DEPRECATION")
-        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeDescriptor(
-                descriptor,
-                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            gatt.writeDescriptor(descriptor)
-        }
+        writeBleDescriptor(
+            gatt,
+            descriptor,
+            BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
+            generation = null,
+        )
     }
 
     @SuppressLint("MissingPermission")
-    private fun readBleStatus() {
+    private suspend fun readBleStatus() {
+        val investigationRunning = synchronized(investigationLock) {
+            activeInvestigation?.transport == BadgeInvestigationTransport.BLE
+        }
+        if (investigationRunning) return
         val gatt = activeGatt ?: return
         val characteristic = activeBleStatusChar ?: return
         if (!hasBlePermissions()) return
-        runCatching { gatt.readCharacteristic(characteristic) }
+        readBleCharacteristic(gatt, characteristic, generation = null)
     }
 
     @SuppressLint("MissingPermission")
-    private fun writeBleControl(payload: JsonObject) {
+    private suspend fun writeBleControl(payload: JsonObject) {
         val gatt = activeGatt
         val characteristic = activeBleControlChar
         if (gatt == null || characteristic == null || !hasBlePermissions()) {
@@ -1820,29 +2824,155 @@ class BadgeUsbRepository @Inject constructor(
             return
         }
         val bytes = payload.toString().toByteArray(Charsets.UTF_8)
-        val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeCharacteristic(
-                characteristic,
-                bytes,
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            ) == BluetoothGatt.GATT_SUCCESS
-        } else {
-            @Suppress("DEPRECATION")
-            characteristic.value = bytes
-            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            @Suppress("DEPRECATION")
-            gatt.writeCharacteristic(characteristic)
-        }
+        val result = writeBleCharacteristic(gatt, characteristic, bytes, generation = null)
+        val ok = result.status == BluetoothGatt.GATT_SUCCESS
         setState {
             it.copy(message = if (ok) "Badge BLE command sent" else "Badge BLE command failed")
         }
         if (ok) {
-            scope.launch {
-                delay(350)
-                readBleStatus()
-            }
+            delay(350)
+            readBleStatus()
         }
     }
+
+    private suspend fun readBleCharacteristic(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        generation: Long?,
+    ): BadgeGattOperationResult = bleGattOperationMutex.withLock {
+        if (!isBleGattOperationCurrent(gatt, generation)) return@withLock disconnectedGattResult()
+        val pending = PendingBadgeGattOperation(
+            gatt = gatt,
+            kind = BadgeGattOperationKind.READ_CHARACTERISTIC,
+            uuid = characteristic.uuid,
+            generation = generation,
+        )
+        pendingBleGattOperation = pending
+        val started = runCatching { gatt.readCharacteristic(characteristic) }.getOrDefault(false)
+        if (!started) {
+            pendingBleGattOperation = null
+            return@withLock BadgeGattOperationResult(BluetoothGatt.GATT_FAILURE)
+        }
+        awaitBleGattOperation(pending)
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun writeBleCharacteristic(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+        generation: Long?,
+    ): BadgeGattOperationResult = bleGattOperationMutex.withLock {
+        if (!isBleGattOperationCurrent(gatt, generation)) return@withLock disconnectedGattResult()
+        val pending = PendingBadgeGattOperation(
+            gatt = gatt,
+            kind = BadgeGattOperationKind.WRITE_CHARACTERISTIC,
+            uuid = characteristic.uuid,
+            generation = generation,
+        )
+        pendingBleGattOperation = pending
+        val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeCharacteristic(
+                characteristic,
+                value,
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            ) == BluetoothGatt.GATT_SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            characteristic.value = value
+            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            @Suppress("DEPRECATION")
+            gatt.writeCharacteristic(characteristic)
+        }
+        if (!started) {
+            pendingBleGattOperation = null
+            return@withLock BadgeGattOperationResult(BluetoothGatt.GATT_FAILURE)
+        }
+        awaitBleGattOperation(pending)
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun writeBleDescriptor(
+        gatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor,
+        value: ByteArray,
+        generation: Long?,
+    ): BadgeGattOperationResult = bleGattOperationMutex.withLock {
+        if (!isBleGattOperationCurrent(gatt, generation)) return@withLock disconnectedGattResult()
+        val pending = PendingBadgeGattOperation(
+            gatt = gatt,
+            kind = BadgeGattOperationKind.WRITE_DESCRIPTOR,
+            uuid = descriptor.uuid,
+            generation = generation,
+        )
+        pendingBleGattOperation = pending
+        val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeDescriptor(descriptor, value) == BluetoothGatt.GATT_SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            descriptor.value = value
+            @Suppress("DEPRECATION")
+            gatt.writeDescriptor(descriptor)
+        }
+        if (!started) {
+            pendingBleGattOperation = null
+            return@withLock BadgeGattOperationResult(BluetoothGatt.GATT_FAILURE)
+        }
+        awaitBleGattOperation(pending)
+    }
+
+    private suspend fun awaitBleGattOperation(
+        pending: PendingBadgeGattOperation,
+    ): BadgeGattOperationResult = try {
+        withTimeout(2500L) { pending.completion.await() }
+    } catch (_: TimeoutCancellationException) {
+        if (badgeGattDisconnectMatches(activeGatt, pending.gatt)) {
+            closeBle("Badge BLE operation timed out")
+        }
+        BadgeGattOperationResult(GATT_OPERATION_TIMEOUT)
+    } catch (cancelled: CancellationException) {
+        if (badgeGattDisconnectMatches(activeGatt, pending.gatt)) {
+            closeBle("Badge BLE retrieval cancelled")
+        }
+        throw cancelled
+    } finally {
+        if (pendingBleGattOperation === pending) pendingBleGattOperation = null
+    }
+
+    private fun completeBleGattOperation(
+        gatt: BluetoothGatt,
+        kind: BadgeGattOperationKind,
+        uuid: UUID,
+        status: Int,
+        value: ByteArray = byteArrayOf(),
+    ) {
+        val pending = pendingBleGattOperation ?: return
+        val activeGeneration = synchronized(investigationLock) {
+            activeInvestigation?.generation
+        }
+        if (!badgeGattCallbackMatches(
+                expectedGatt = pending.gatt,
+                actualGatt = gatt,
+                expectedKind = pending.kind.name,
+                actualKind = kind.name,
+                expectedUuid = pending.uuid,
+                actualUuid = uuid,
+                expectedGeneration = pending.generation,
+                activeGeneration = activeGeneration,
+            )
+        ) return
+        pending.completion.complete(BadgeGattOperationResult(status, value.copyOf()))
+    }
+
+    private fun isBleGattOperationCurrent(gatt: BluetoothGatt, generation: Long?): Boolean {
+        if (activeGatt !== gatt || !hasBlePermissions()) return false
+        return generation == null || synchronized(investigationLock) {
+            activeInvestigation?.generation == generation &&
+                activeInvestigation?.transport == BadgeInvestigationTransport.BLE
+        }
+    }
+
+    private fun disconnectedGattResult() = BadgeGattOperationResult(GATT_OPERATION_DISCONNECTED)
 
     private fun handleBleStatusBytes(bytes: ByteArray) {
         val json = bytes.toString(Charsets.UTF_8).trim()
@@ -1862,10 +2992,14 @@ class BadgeUsbRepository @Inject constructor(
 
     @SuppressLint("MissingPermission")
     private fun closeBle(reason: String) {
+        terminateInvestigationTransport(BadgeInvestigationTransport.BLE)
         val gatt = activeGatt
         activeGatt = null
         activeBleControlChar = null
         activeBleStatusChar = null
+        activeBleInvestigationChar = null
+        pendingBleGattOperation?.completion?.complete(disconnectedGattResult())
+        pendingBleGattOperation = null
         runCatching {
             if (hasBlePermissions()) {
                 gatt?.disconnect()
@@ -1889,6 +3023,11 @@ class BadgeUsbRepository @Inject constructor(
     private fun handleLine(line: String) {
         val trimmed = line.trim()
         if (trimmed.isEmpty()) return
+        val investigationHandled = if (line.startsWith("FOF_INV:")) {
+            handleUsbInvestigationLine(line)
+        } else {
+            handleUsbInvestigationLine(trimmed)
+        }
 
         val detection = if (trimmed.startsWith("FOF_DET:")) {
             parseDetection(trimmed.removePrefix("FOF_DET:"))
@@ -1929,11 +3068,34 @@ class BadgeUsbRepository @Inject constructor(
                     }
                     trimmed.startsWith("FOF_CTL_OK:") -> "Badge command accepted"
                     trimmed.startsWith("FOF_CTL_ERROR:") -> "Badge command failed"
+                    investigationHandled -> "Badge investigation updated"
                     detection != null -> "Receiving badge events"
                     else -> current.message
                 }
             )
         }
+    }
+
+    private fun handleUsbInvestigationLine(line: String): Boolean {
+        val operation = synchronized(investigationLock) {
+            activeInvestigation?.takeIf { it.transport == BadgeInvestigationTransport.USB }
+        } ?: return false
+        if (line.startsWith("FOF_INV:")) {
+            return acceptInvestigationLine(operation, line).accepted
+        }
+        val ack = operation.ackGate.accept(
+            line = line,
+            parsed = null,
+            ownsControlReply = !operation.controlAck.isCompleted,
+        ) ?: return false
+        operation.controlAck.complete(ack)
+        return true
+    }
+
+    private fun usbInvestigationOwnsControlReply(): Boolean = synchronized(investigationLock) {
+        activeInvestigation?.let {
+            it.transport == BadgeInvestigationTransport.USB && !it.controlAck.isCompleted
+        } == true
     }
 
     private fun parseDetection(json: String): BadgeUsbDetection? {
@@ -2019,6 +3181,7 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     private fun disconnectLocked() {
+        terminateInvestigationTransport(BadgeInvestigationTransport.USB)
         readJob?.cancel()
         readJob = null
         usbStatusPollJob?.cancel()
