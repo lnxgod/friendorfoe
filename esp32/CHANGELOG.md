@@ -5,6 +5,11 @@ All notable changes to the ESP32 hardware edition of Friend or Foe.
 ## [Unreleased]
 
 ### Changed
+- **Behavioral BLE investigation firmware bump to `0.64.67-ble-investigation`.**
+  Production S3 targets gain pairing-spam and combined-evidence serial-skimmer
+  detection. The FoF Badge track moves to
+  `0.64.67-badge-ble-investigation` with read-only scanner investigation,
+  USB-C/bonded-BLE result transport, and button-2 investigation pages.
 - **Privacy beacon firmware bump to `0.64.65-privacy-beacons`.**
   `uplink-s3`, `scanner-s3-combo`, and `scanner-s3-combo-seed` now advertise
   the venue-beacon privacy release, while the FoF Badge XIAO track moves to

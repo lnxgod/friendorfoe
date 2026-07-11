@@ -1,6 +1,7 @@
 # BLE Threat Investigation Verification
 
-Verification snapshot: 2026-07-10 at implementation commit `bcecea1` on
+Verification snapshot: 2026-07-10 for implementation commit `bcecea1` and
+release candidate `0.64.67-ble-investigation` on
 `codex/ble-threat-investigation`.
 
 ## Result
@@ -21,8 +22,12 @@ operation, and this branch makes no backend code changes.
 | Android focused protocol/routing | `cd android && ./gradlew testDebugUnitTest --tests com.friendorfoe.data.badge.BadgeInvestigationProtocolTest --tests com.friendorfoe.presentation.privacy.BleInvestigationRoutingTest` | PASS, 33 tests |
 | Android full JVM suite | `cd android && ./gradlew testDebugUnitTest --rerun-tasks` | PASS, 40 suites / 308 tests / 0 skipped / 0 failures / 0 errors |
 | Android debug APK | `cd android && ./gradlew assembleDebug --rerun-tasks` | PASS |
+| Android APK metadata | `/Users/billh/Library/Android/sdk/cmdline-tools/latest/bin/apkanalyzer manifest version-name app/build/outputs/apk/debug/app-debug.apk`; same command with `version-code` | PASS, `0.64.67-ble-investigation` / `109` |
+| Backend full suite | `cd backend && /Users/billh/gai/friendorfoe/backend/.venv/bin/pytest tests -q` | PASS, 272 tests |
 | ESP32 native suite | `cd esp32 && /Users/billh/gai/friendorfoe/esp32/.venv312/bin/pio test -e test` | PASS, 369 tests |
+| Production scanner firmware | `cd esp32/scanner && /Users/billh/gai/friendorfoe/esp32/.venv312/bin/pio run -e scanner-s3-combo -e scanner-s3-combo-seed` | PASS, 2 targets |
 | Badge scanner firmware | `cd esp32/scanner && /Users/billh/gai/friendorfoe/esp32/.venv312/bin/pio run -e scanner-s3-combo-fof_badge` | PASS, RAM 47.9%, flash 56.1% |
+| Production uplink firmware | `cd esp32/uplink && /Users/billh/gai/friendorfoe/esp32/.venv312/bin/pio run -e uplink-s3` | PASS, RAM 20.1%, flash 56.3% |
 | Badge uplink firmware | `cd esp32/uplink && /Users/billh/gai/friendorfoe/esp32/.venv312/bin/pio run -e uplink-s3-fof_badge` | PASS, RAM 44.0%, flash 69.5% |
 | Branch whitespace | `git diff --check eec77a6..HEAD` | PASS, no output |
 | Target read-only scan | `rg -n "createBond|ble_gattc_write|setCharacteristicNotification|requestMtu|writeCharacteristic|writeDescriptor" android/app/src/main/java/com/friendorfoe/detection esp32/scanner/main/detection esp32/uplink/main/core` | PASS, no matches |
@@ -83,9 +88,9 @@ eligible for the badge display lanes.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| `android/app/build/outputs/apk/debug/app-debug.apk` | `49a93c6d9efce39d896f444653489a4f7b67dda9c712a5462d7cccfaea26f1cf` |
-| `esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/firmware.bin` | `6a97d9ff702c8e2fdec978a2139b3800ef0e253e6e07a7d60133573e03b755e6` |
-| `esp32/uplink/.pio/build/uplink-s3-fof_badge/firmware.bin` | `6893e09be529de80394c7795a278b8d81d53eb2b813edf005f6581acf063c53f` |
+| `android/app/build/outputs/apk/debug/app-debug.apk` | `90c88da58dbb5d1937dbae132188450156c252136a6823f4bfb2f2e1537f6867` |
+| `esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/firmware.bin` | `41286239cdf9a73aac2b3a9344aba3ce995bd37277449e122578822bc06e8944` |
+| `esp32/uplink/.pio/build/uplink-s3-fof_badge/firmware.bin` | `bbe7f66d6eaa1dee103fdfc6111e3ef9b6ebdd38d07f6b2fa2e97b6b133cc61c` |
 
 These local artifacts are build evidence only. Release artifacts are produced
 and signed by the tag workflows.

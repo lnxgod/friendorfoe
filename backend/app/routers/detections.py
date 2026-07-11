@@ -620,9 +620,9 @@ def _uplink_time_sync_health(info: dict | None) -> str:
     return "unknown"
 
 
-_EXPECTED_BACKEND_VERSION = "0.64.65-privacy-beacons"
-_EXPECTED_FIRMWARE_VERSION = "0.64.65-privacy-beacons"
-_EXPECTED_BADGE_FIRMWARE_VERSION = "0.64.65-badge-privacy-beacons"
+_EXPECTED_BACKEND_VERSION = "0.64.67-ble-investigation"
+_EXPECTED_FIRMWARE_VERSION = "0.64.67-ble-investigation"
+_EXPECTED_BADGE_FIRMWARE_VERSION = "0.64.67-badge-ble-investigation"
 
 
 def _expected_firmware_versions_label() -> str:
