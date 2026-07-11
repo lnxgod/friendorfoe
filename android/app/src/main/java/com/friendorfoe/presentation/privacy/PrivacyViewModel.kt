@@ -515,20 +515,47 @@ class PrivacyViewModel @Inject constructor(
     private fun observeBadgeInvestigation(
         generation: Long,
         request: BleInvestigationRequest,
-    ) = viewModelScope.launch {
-        badgeUsbRepository.investigation
-            .filterNotNull()
-            .takeWhile { result ->
-                if (result.requestId == request.requestId) {
-                    publishInvestigationGeneration(generation, request.requestId, result)
-                    result.state !in INVESTIGATION_TERMINAL_STATES
-                } else {
-                    true
+    ): kotlinx.coroutines.Job? {
+        if (!badgeUsbRepository.investigateBle(request)) {
+            val repositoryRejection = badgeUsbRepository.investigation.value
+                ?.takeIf { it.requestId == request.requestId }
+            publishInvestigationGeneration(
+                generation,
+                request.requestId,
+                repositoryRejection ?: BleInvestigationResult(
+                    requestId = request.requestId,
+                    transport = "badge",
+                    mode = request.target.mode,
+                    targetMac = request.target.mac,
+                    state = BleInvestigationState.FAILED,
+                    connectable = null,
+                    services = emptyList(),
+                    characteristics = emptyList(),
+                    reads = emptyMap(),
+                    bonded = false,
+                    encrypted = false,
+                    authenticationRequired = false,
+                    summary = "Another badge investigation is already running",
+                    error = "busy",
+                    truncated = false,
+                ),
+            )
+            activeInvestigation = null
+            return null
+        }
+        return viewModelScope.launch {
+            badgeUsbRepository.investigation
+                .filterNotNull()
+                .takeWhile { result ->
+                    if (result.requestId == request.requestId) {
+                        publishInvestigationGeneration(generation, request.requestId, result)
+                        result.state !in INVESTIGATION_TERMINAL_STATES
+                    } else {
+                        true
+                    }
                 }
-            }
-            .collect { }
-    }.also {
-        badgeUsbRepository.investigateBle(request)
+                .collect { }
+        }
     }
 
     private fun publishInvestigationGeneration(
@@ -797,10 +824,10 @@ internal fun BadgeUsbState.toPrivacyDetections(
     return status.entities.mapNotNull { it.toPrivacyDetection(now, nowElapsedMs) }
 }
 
-internal fun badgeObservedAtElapsedMs(nowElapsedMs: Long, lastSeenSeconds: Int): Long {
-    val boundedNow = nowElapsedMs.coerceAtLeast(0L)
+internal fun badgeObservedAtElapsedMs(snapshotAtElapsedMs: Long, lastSeenSeconds: Int): Long {
+    val boundedSnapshot = snapshotAtElapsedMs.coerceAtLeast(0L)
     val ageMs = lastSeenSeconds.coerceAtLeast(0).toLong() * 1_000L
-    return (boundedNow - ageMs).coerceAtLeast(0L)
+    return (boundedSnapshot - ageMs).coerceAtLeast(0L)
 }
 
 internal fun BadgeThreatEntity.toPrivacyDetection(
@@ -848,7 +875,11 @@ internal fun BadgeThreatEntity.toPrivacyDetection(
     val isPairingSpam = listOf(code, this@toPrivacyDetection.category, label, detail).any { value ->
         value.trim().replace('-', '_').replace(' ', '_').uppercase() in setOf("PAIRING_SPAM", "BLE_SPAM")
     }
-    val observedAtElapsedMs = badgeObservedAtElapsedMs(nowElapsedMs, lastSeenSeconds)
+    val entitySnapshotAtElapsedMs = snapshotAtElapsedMs.takeIf { it >= 0L } ?: nowElapsedMs
+    val observedAtElapsedMs = badgeObservedAtElapsedMs(
+        entitySnapshotAtElapsedMs,
+        lastSeenSeconds,
+    )
     val investigationTarget = when {
         isPairingSpam -> BleInvestigationTarget(
             mode = BleInvestigationMode.PASSIVE_CAPTURE,

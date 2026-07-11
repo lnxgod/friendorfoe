@@ -208,6 +208,13 @@ class BadgeInvestigationProtocolTest {
         assertEquals(BadgeHttpInvestigationAction.RETRIEVE, failed.action)
         assertEquals(BleInvestigationState.FAILED, failed.state)
         assertEquals("timeout", failed.error)
+
+        val staleMalformed = evaluateBadgeHttpInvestigationStatus(
+            """{"ble_investigation":{"request_id":"old","state":4,"summary":false}}""",
+            "r1",
+        )
+        assertEquals(BadgeHttpInvestigationAction.WAIT, staleMalformed.action)
+        assertNull(staleMalformed.state)
     }
 
     @Test
@@ -223,6 +230,58 @@ class BadgeInvestigationProtocolTest {
             assertEquals(BadgeHttpInvestigationAction.FAIL, decision.action)
             assertEquals("malformed_status", decision.error)
         }
+    }
+
+    @Test
+    fun `HTTP missing terminal preserves partial evidence and compact flags`() {
+        val failedParser = BadgeInvestigationStreamParser("r1")
+        assertAccepted(failedParser, begin("r1"))
+        assertAccepted(
+            failedParser,
+            inv("""{"type":"ble_inv_service","request_id":"r1","index":0,"uuid":"FFE0"}"""),
+        )
+        val failedStatus = evaluateBadgeHttpInvestigationStatus(
+            status(
+                "r1",
+                "failed",
+                summary = "Protected characteristic",
+                error = "authentication_required",
+                authenticationRequired = true,
+                truncated = true,
+            ),
+            "r1",
+        )
+
+        val failed = finishBadgeHttpInvestigationFromStatus(failedParser, "r1", failedStatus)
+
+        assertEquals(BleInvestigationState.FAILED, failed!!.state)
+        assertEquals(listOf("FFE0"), failed.services)
+        assertTrue(failed.authenticationRequired)
+        assertTrue(failed.truncated)
+        assertEquals("authentication_required", failed.error)
+
+        val completeParser = BadgeInvestigationStreamParser("r2")
+        assertAccepted(completeParser, begin("r2"))
+        assertAccepted(
+            completeParser,
+            inv("""{"type":"ble_inv_read","request_id":"r2","index":0,"uuid":"2A00","value_hex":"4142"}"""),
+        )
+        val completeStatus = evaluateBadgeHttpInvestigationStatus(status("r2", "complete"), "r2")
+        val missingEnd = finishBadgeHttpInvestigationFromStatus(completeParser, "r2", completeStatus)
+
+        assertEquals(BleInvestigationState.FAILED, missingEnd!!.state)
+        assertEquals("4142", missingEnd.reads.getValue("2A00"))
+        assertEquals("missing_terminal", missingEnd.error)
+    }
+
+    @Test
+    fun `USB line decoding preserves split UTF8 and rejects malformed bytes`() {
+        val line =
+            """FOF_INV:{"type":"ble_inv_end","request_id":"r1","state":"complete","summary":"café"}"""
+        val bytes = line.toByteArray(Charsets.UTF_8)
+
+        assertEquals(line, decodeBadgeUsbLine(bytes, bytes.size))
+        assertNull(decodeBadgeUsbLine(byteArrayOf(0xC3.toByte(), 0x28), 2))
     }
 
     @Test
@@ -368,8 +427,10 @@ class BadgeInvestigationProtocolTest {
         state: String,
         summary: String = "",
         error: String = "",
+        authenticationRequired: Boolean = false,
+        truncated: Boolean = false,
     ): String =
-        """{"mode":"backend","ble_investigation":{"request_id":"$requestId","state":"$state","mode":"gatt","summary":"$summary","error":"$error","service_count":0,"characteristic_count":0,"authentication_required":false,"truncated":false}}"""
+        """{"mode":"backend","ble_investigation":{"request_id":"$requestId","state":"$state","mode":"gatt","summary":"$summary","error":"$error","service_count":0,"characteristic_count":0,"authentication_required":$authenticationRequired,"truncated":$truncated}}"""
 
     private fun canonicalUuid(index: Int): String =
         "00000000-0000-1000-8000-${index.toString(16).uppercase().padStart(12, '0')}"

@@ -36,6 +36,7 @@ import com.friendorfoe.detection.BleInvestigationChunkAssembler
 import com.friendorfoe.detection.BleInvestigationMode
 import com.friendorfoe.detection.BleInvestigationResult
 import com.friendorfoe.detection.BleInvestigationState
+import com.friendorfoe.detection.elapsedRealtimeMs
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -52,6 +53,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
@@ -60,14 +62,21 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
+import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.zip.CRC32
+import kotlin.coroutines.resume
 
 enum class BadgeUsbStatus {
     DISCONNECTED,
@@ -164,6 +173,7 @@ data class BadgeThreatEntity(
     val displayRank: Int = 0,
     val ageSeconds: Int,
     val lastSeenSeconds: Int = 0,
+    val snapshotAtElapsedMs: Long = -1L,
     val rssi: Int,
     val bestRssi: Int = 0,
     val events: Int,
@@ -446,7 +456,10 @@ data class BadgeUsbState(
     val firmwareProgress: BadgeFirmwareProgress? = null
 )
 
-internal fun parseBadgeControlStatus(json: String): BadgeControlStatus? {
+internal fun parseBadgeControlStatus(
+    json: String,
+    snapshotAtElapsedMs: Long = elapsedRealtimeMs(),
+): BadgeControlStatus? {
     return runCatching {
         val obj = JsonParser.parseString(json).asJsonObject
         val countsObj = runCatching { obj.getAsJsonObject("counts") }.getOrNull()
@@ -489,6 +502,7 @@ internal fun parseBadgeControlStatus(json: String): BadgeControlStatus? {
                     displayRank = e.badgeOptInt("display_rank"),
                     ageSeconds = e.badgeOptInt("age_s"),
                     lastSeenSeconds = e.badgeOptInt("last_seen_s"),
+                    snapshotAtElapsedMs = snapshotAtElapsedMs,
                     rssi = e.badgeOptInt("rssi"),
                     bestRssi = e.badgeOptInt("best_rssi"),
                     events = e.badgeOptInt("events"),
@@ -806,6 +820,8 @@ internal data class BadgeHttpInvestigationDecision(
     val state: BleInvestigationState? = null,
     val summary: String = "",
     val error: String? = null,
+    val authenticationRequired: Boolean = false,
+    val truncated: Boolean = false,
 )
 
 internal fun evaluateBadgeHttpInvestigationStatus(
@@ -831,8 +847,13 @@ internal fun evaluateBadgeHttpInvestigationStatus(
         return element.asString.takeIf { it.toByteArray(Charsets.UTF_8).size <= maxBytes }
     }
 
-    val requestId = stringField("request_id", 32, required = true) ?: return malformed()
-    if (requestId.isNotEmpty() && requestId.any { it.code !in 0x21..0x7E }) return malformed()
+    val requestElement = status.get("request_id") ?: return malformed()
+    if (!requestElement.isJsonPrimitive || !requestElement.asJsonPrimitive.isString) return malformed()
+    val requestId = requestElement.asString
+    if (requestId != expectedRequestId) {
+        return BadgeHttpInvestigationDecision(BadgeHttpInvestigationAction.WAIT)
+    }
+    if (requestId.length !in 1..32 || requestId.any { it.code !in 0x21..0x7E }) return malformed()
     val stateName = stringField("state", 16, required = true) ?: return malformed()
     val state = when (stateName) {
         "idle" -> BleInvestigationState.IDLE
@@ -854,11 +875,14 @@ internal fun evaluateBadgeHttpInvestigationStatus(
         errorElement.asString.toByteArray(Charsets.UTF_8).size > 63 -> return malformed()
         else -> errorElement.asString.ifBlank { null }
     }
-
-    if (requestId.isEmpty() && state != BleInvestigationState.IDLE) return malformed()
-    if (requestId != expectedRequestId) {
-        return BadgeHttpInvestigationDecision(BadgeHttpInvestigationAction.WAIT)
+    fun booleanField(key: String): Boolean? {
+        val element = status.get(key) ?: return false
+        if (!element.isJsonPrimitive || !element.asJsonPrimitive.isBoolean) return null
+        return element.asBoolean
     }
+    val authenticationRequired = booleanField("authentication_required") ?: return malformed()
+    val truncated = booleanField("truncated") ?: return malformed()
+
     val action = if (state in setOf(
             BleInvestigationState.COMPLETE,
             BleInvestigationState.FAILED,
@@ -874,7 +898,54 @@ internal fun evaluateBadgeHttpInvestigationStatus(
         state = state,
         summary = summary,
         error = error,
+        authenticationRequired = authenticationRequired,
+        truncated = truncated,
     )
+}
+
+internal fun finishBadgeHttpInvestigationFromStatus(
+    parser: BadgeInvestigationStreamParser,
+    requestId: String,
+    status: BadgeHttpInvestigationDecision,
+): BleInvestigationResult? {
+    if (status.action != BadgeHttpInvestigationAction.RETRIEVE) return null
+    val terminalState = when (status.state) {
+        BleInvestigationState.FAILED -> BleInvestigationState.FAILED
+        BleInvestigationState.CANCELLED -> BleInvestigationState.CANCELLED
+        BleInvestigationState.COMPLETE -> BleInvestigationState.FAILED
+        else -> return null
+    }
+    val summary = when (status.state) {
+        BleInvestigationState.COMPLETE -> "Badge investigation ended without a terminal chunk"
+        BleInvestigationState.CANCELLED -> status.summary.ifBlank { "Badge investigation was cancelled" }
+        else -> status.summary.ifBlank { "Badge investigation failed" }
+    }
+    val error = when (status.state) {
+        BleInvestigationState.COMPLETE -> "missing_terminal"
+        BleInvestigationState.CANCELLED -> status.error ?: "cancelled"
+        else -> status.error ?: "badge_failed"
+    }
+    val terminal = JsonObject().apply {
+        addProperty("type", "ble_inv_end")
+        addProperty("request_id", requestId)
+        addProperty("state", terminalState.name.lowercase())
+        addProperty("summary", summary)
+        addProperty("error", error)
+        addProperty("authentication_required", status.authenticationRequired)
+        addProperty("truncated", status.truncated)
+    }
+    return parser.accept("FOF_INV:$terminal").result
+}
+
+internal fun decodeBadgeUsbLine(bytes: ByteArray, length: Int): String? {
+    if (length !in 0..bytes.size) return null
+    return runCatching {
+        Charsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(bytes, 0, length))
+            .toString()
+    }.getOrNull()
 }
 
 internal data class BadgeInvestigationParseResult(
@@ -1466,7 +1537,7 @@ class BadgeUsbRepository @Inject constructor(
         }
     }
 
-    fun investigateBle(request: com.friendorfoe.detection.BleInvestigationRequest) {
+    fun investigateBle(request: com.friendorfoe.detection.BleInvestigationRequest): Boolean {
         val transport = when {
             hasUsbCommandPath() -> BadgeInvestigationTransport.USB
             hasBleInvestigationPath() -> BadgeInvestigationTransport.BLE
@@ -1481,38 +1552,34 @@ class BadgeUsbRepository @Inject constructor(
                 summary = "Badge route required",
                 error = "invalid_route",
             )
-            return
+            return false
         }
         if (request.requestId.length !in 1..32 || request.requestId.any { it.code !in 0x21..0x7E }) {
             _investigation.value = badgeInvestigationResult(
                 request, "badge", BleInvestigationState.FAILED,
                 "Invalid investigation request", "invalid_request_id",
             )
-            return
+            return false
         }
 
         val operation = synchronized(investigationLock) {
             if (activeInvestigation != null) {
                 Log.w(TAG, "Rejecting BLE investigation while another request is active")
-                _investigation.value = badgeInvestigationResult(
-                    request, "badge", BleInvestigationState.FAILED,
-                    "Another badge investigation is already running", "busy",
-                )
-                return
+                return false
             }
             if (request.requestId in usedInvestigationRequestIds) {
                 _investigation.value = badgeInvestigationResult(
                     request, "badge", BleInvestigationState.FAILED,
                     "Investigation request ID was already used", "request_id_reused",
                 )
-                return
+                return false
             }
             if (transport == null) {
                 _investigation.value = badgeInvestigationResult(
                     request, "badge", BleInvestigationState.FAILED,
                     "Badge investigation transport unavailable", "badge_unavailable",
                 )
-                return
+                return false
             }
             rememberInvestigationRequestId(request.requestId)
             investigationGeneration++
@@ -1588,6 +1655,7 @@ class BadgeUsbRepository @Inject constructor(
             }
         }
         if (shouldStart) job.start() else job.cancel()
+        return shouldStart
     }
 
     fun cancelBleInvestigation(requestId: String) {
@@ -1746,34 +1814,30 @@ class BadgeUsbRepository @Inject constructor(
         operation: ActiveBadgeInvestigation,
         terminalStatus: BadgeHttpInvestigationDecision,
     ): BleInvestigationResult {
-        if (terminalStatus.state in setOf(
-                BleInvestigationState.FAILED,
-                BleInvestigationState.CANCELLED,
-            )
-        ) {
-            val state = terminalStatus.state ?: BleInvestigationState.FAILED
-            return badgeInvestigationResult(
-                operation.request,
-                operation.transport.resultName,
-                state,
-                terminalStatus.summary.ifBlank {
-                    if (state == BleInvestigationState.CANCELLED) {
-                        "Badge investigation was cancelled"
-                    } else {
-                        "Badge investigation failed"
-                    }
-                },
-                terminalStatus.error ?: if (state == BleInvestigationState.CANCELLED) {
-                    "cancelled"
-                } else {
-                    "badge_failed"
-                },
-            )
-        }
+        finishBadgeHttpInvestigationFromStatus(
+            operation.parser,
+            operation.request.requestId,
+            terminalStatus,
+        )?.let { return it.copy(transport = operation.transport.resultName) }
+
+        val state = terminalStatus.state.takeIf {
+            it == BleInvestigationState.FAILED || it == BleInvestigationState.CANCELLED
+        } ?: BleInvestigationState.FAILED
+        val missingTerminal = terminalStatus.state == BleInvestigationState.COMPLETE
+        val defaultError = if (state == BleInvestigationState.CANCELLED) "cancelled" else "badge_failed"
         return badgeInvestigationResult(
-            operation.request, operation.transport.resultName,
-            BleInvestigationState.FAILED,
-            "Badge investigation ended without a terminal chunk", "missing_terminal",
+            operation.request,
+            operation.transport.resultName,
+            state,
+            if (missingTerminal) {
+                "Badge investigation ended without a terminal chunk"
+            } else {
+                terminalStatus.summary.ifBlank { "Badge investigation failed" }
+            },
+            if (missingTerminal) "missing_terminal" else terminalStatus.error ?: defaultError,
+        ).copy(
+            authenticationRequired = terminalStatus.authenticationRequired,
+            truncated = terminalStatus.truncated,
         )
     }
 
@@ -2049,35 +2113,45 @@ class BadgeUsbRepository @Inject constructor(
         else -> "Badge investigation active"
     }
 
-    private suspend fun getBadgeInvestigationStatus(baseUrl: String): String? =
-        withContext(Dispatchers.IO) {
-            val request = Request.Builder()
-                .url("$baseUrl/api/badge/status")
-                .get()
-                .build()
-            runCatching {
-                badgeHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) return@use null
-                    response.body?.readBoundedBytes(MAX_BADGE_STATUS_BODY_BYTES)
-                }
-            }.getOrNull()
-        }
+    private suspend fun getBadgeInvestigationStatus(baseUrl: String): String? {
+        val request = Request.Builder()
+            .url("$baseUrl/api/badge/status")
+            .get()
+            .build()
+        return executeBadgeHttp(request, MAX_BADGE_STATUS_BODY_BYTES)
+    }
 
     private suspend fun postBadgeInvestigationControl(
         baseUrl: String,
         payload: JsonObject,
-    ): String? = withContext(Dispatchers.IO) {
+    ): String? {
         val request = Request.Builder()
             .url("$baseUrl/api/badge/control")
             .post(payload.toString().toRequestBody(jsonMediaType))
             .build()
-        runCatching {
-            badgeHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use null
-                response.body?.readBoundedBytes(BADGE_INVESTIGATION_JSON_MAX_BYTES)
-            }
-        }.getOrNull()
+        return executeBadgeHttp(request, BADGE_INVESTIGATION_JSON_MAX_BYTES)
     }
+
+    private suspend fun executeBadgeHttp(request: Request, maxBytes: Int): String? =
+        suspendCancellableCoroutine { continuation ->
+            val call = badgeHttpClient.newCall(request)
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (continuation.isActive) continuation.resume(null)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val body = runCatching {
+                        response.use {
+                            if (!it.isSuccessful) null
+                            else it.body?.readBoundedBytes(maxBytes)
+                        }
+                    }.getOrNull()
+                    if (continuation.isActive) continuation.resume(body)
+                }
+            })
+        }
 
     private fun ResponseBody.readBoundedBytes(maxBytes: Int): String? {
         val source = source()
@@ -2409,7 +2483,9 @@ class BadgeUsbRepository @Inject constructor(
         readJob?.cancel()
         readJob = scope.launch {
             val buffer = ByteArray(256)
-            val lineBuffer = StringBuilder()
+            val lineBuffer = ByteArray(MAX_LINE_CHARS)
+            var lineLength = 0
+            var droppingLine = false
             try {
                 while (isActive) {
                     val read = connection.bulkTransfer(
@@ -2420,17 +2496,22 @@ class BadgeUsbRepository @Inject constructor(
                     )
                     if (read > 0) {
                         for (i in 0 until read) {
-                            val ch = buffer[i].toInt().toChar()
-                            if (ch == '\n' || ch == '\r') {
-                                if (lineBuffer.isNotEmpty()) {
-                                    handleLine(lineBuffer.toString())
-                                    lineBuffer.clear()
+                            val byte = buffer[i]
+                            if (byte == '\n'.code.toByte() || byte == '\r'.code.toByte()) {
+                                if (!droppingLine && lineLength > 0) {
+                                    decodeBadgeUsbLine(lineBuffer, lineLength)?.let(::handleLine)
+                                        ?: Log.w(TAG, "Dropping malformed UTF-8 badge line")
                                 }
-                            } else if (lineBuffer.length < MAX_LINE_CHARS) {
-                                lineBuffer.append(ch)
-                            } else {
-                                Log.w(TAG, "Dropping overlong badge line")
-                                lineBuffer.clear()
+                                lineLength = 0
+                                droppingLine = false
+                            } else if (!droppingLine) {
+                                if (lineLength < lineBuffer.size) {
+                                    lineBuffer[lineLength++] = byte
+                                } else {
+                                    Log.w(TAG, "Dropping overlong badge line")
+                                    lineLength = 0
+                                    droppingLine = true
+                                }
                             }
                         }
                     } else {

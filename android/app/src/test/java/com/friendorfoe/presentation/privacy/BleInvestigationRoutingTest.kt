@@ -282,6 +282,7 @@ class BleInvestigationRoutingTest {
 
     @Test
     fun `badge entity age produces a stale phone fallback target`() {
+        val snapshotAtElapsedMs = 70_000L
         val nowElapsedMs = 100_000L
         val entity = BadgeThreatEntity(
             label = "Possible serial skimmer",
@@ -291,7 +292,8 @@ class BleInvestigationRoutingTest {
             bssid = "AA:BB:CC:DD:EE:FF",
             score = 80,
             ageSeconds = 45,
-            lastSeenSeconds = 31,
+            lastSeenSeconds = 1,
+            snapshotAtElapsedMs = snapshotAtElapsedMs,
             rssi = -52,
             events = 3,
         )
@@ -309,7 +311,7 @@ class BleInvestigationRoutingTest {
             nowElapsedMs = nowElapsedMs,
         )
 
-        assertEquals(nowElapsedMs - 31_000L, target.observedAtElapsedMs)
+        assertEquals(snapshotAtElapsedMs - 1_000L, target.observedAtElapsedMs)
         assertNull(decision.route)
         assertEquals("stale_target", decision.error)
     }
