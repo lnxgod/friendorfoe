@@ -17,7 +17,7 @@ Release target: `v0.64.68-live-follow`
 
 | Surface | Command | Result |
 | --- | --- | --- |
-| Android | `cd android && ./gradlew testDebugUnitTest assembleDebug --rerun-tasks` | `BUILD SUCCESSFUL`; 369 tests, 0 failures, 0 errors, 0 skipped |
+| Android | `cd android && ./gradlew testDebugUnitTest assembleDebug --rerun-tasks` | `BUILD SUCCESSFUL`; 371 tests, 0 failures, 0 errors, 0 skipped |
 | Backend | `cd backend && .venv/bin/pytest tests -q` | 291 passed |
 | ESP native | `cd esp32 && .venv312/bin/pio test -e test` | 374 passed |
 | Scanner firmware | `pio run -e scanner-s3-combo -e scanner-s3-combo-seed -e scanner-s3-combo-fof_badge` | 3 targets succeeded |
@@ -38,8 +38,8 @@ Android debug APK:
 - Path: `android/app/build/outputs/apk/debug/app-debug.apk`
 - Package: `com.friendorfoe`
 - Version: code `110`, name `0.64.68-live-follow`
-- Size: 110,659,087 bytes
-- SHA-256: `4cc8ea14d129406cf54d4b5c66907217cbca039877ac462312558c1282d4e2ff`
+- Size: 110,663,183 bytes
+- SHA-256: `e1fa9a4ca950cfa35ba937ebe4d069fd25a174be88c26fb6eaf8d260be691bca`
 - Signature: APK Signature Scheme v2, local Android debug certificate
 
 Firmware images:
