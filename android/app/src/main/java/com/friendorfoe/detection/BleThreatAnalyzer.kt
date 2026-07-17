@@ -251,7 +251,10 @@ class BleThreatAnalyzer(
         pruneSerialTracks(observation.observedAtMs)
         val serialServiceUuid = observation.serviceUuids16.firstOrNull { it in SERIAL_SERVICE_UUIDS } ?: return null
         val existingTrack = serialTracks[observation.mac]
-        if (existingTrack != null && observation.observedAtMs - existingTrack.lastSeenAtMs <= DEDUPE_MS) return null
+        if (existingTrack != null && observation.observedAtMs - existingTrack.lastSeenAtMs <= DEDUPE_MS) {
+            mergeDeduplicatedSerialEvidence(existingTrack, observation)
+            return null
+        }
         val track = existingTrack ?: createSerialTrack(observation, serialServiceUuid)
         if (existingTrack != null) updateSerialTrack(track, observation)
         if (track.alerted) return null
@@ -291,6 +294,15 @@ class BleThreatAnalyzer(
             hasPkocIdentity = observation.localName.isPkocIdentity(),
             seenConnectable = observation.connectable,
         ).also { serialTracks[observation.mac] = it }
+    }
+
+    private fun mergeDeduplicatedSerialEvidence(
+        track: SerialTrack,
+        observation: BleThreatObservation,
+    ) {
+        track.strongestRssi = maxOf(track.strongestRssi, observation.rssi)
+        track.isTrusted = track.isTrusted || observation.trustedIdentity
+        track.hasPkocIdentity = track.hasPkocIdentity || observation.localName.isPkocIdentity()
     }
 
     private fun updateSerialTrack(track: SerialTrack, observation: BleThreatObservation) {

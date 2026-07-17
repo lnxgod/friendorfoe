@@ -169,6 +169,53 @@ class BleThreatAnalyzerTest {
     }
 
     @Test
+    fun `deduplicated peak RSSI does not inflate persistence or emit early`() {
+        val analyzer = BleThreatAnalyzer()
+
+        analyzer.observe(serial(0, rssi = -90))
+        assertTrue(analyzer.observe(serial(100, rssi = -61)).isEmpty())
+        assertTrue(analyzer.observe(serial(5_000, rssi = -90)).isEmpty())
+
+        val signal = analyzer.observe(serial(5_300, rssi = -90))
+            .filterIsInstance<BleThreatSignal.SerialSkimmer>()
+            .single()
+        assertEquals(-61, signal.strongestRssi)
+        assertTrue(BleSerialEvidence.CLOSE in signal.evidence)
+    }
+
+    @Test
+    fun `deduplicated packet does not move serial persistence timestamp`() {
+        val analyzer = BleThreatAnalyzer()
+
+        analyzer.observe(serial(0, rssi = -90))
+        analyzer.observe(serial(100, rssi = -61))
+        analyzer.observe(serial(300, rssi = -90))
+
+        val signal = analyzer.observe(serial(5_000, rssi = -90))
+            .filterIsInstance<BleThreatSignal.SerialSkimmer>()
+            .single()
+        assertEquals(-61, signal.strongestRssi)
+    }
+
+    @Test
+    fun `deduplicated trusted and PKOC identities remain sticky`() {
+        val trustedAnalyzer = BleThreatAnalyzer()
+        trustedAnalyzer.observe(serial(0))
+        trustedAnalyzer.observe(serial(100, trusted = true))
+        val trustedSignals = listOf(5_000L, 5_300L)
+            .flatMap { trustedAnalyzer.observe(serial(it)) }
+        assertTrue(trustedSignals.filterIsInstance<BleThreatSignal.SerialSkimmer>().isEmpty())
+
+        val pkocAnalyzer = BleThreatAnalyzer()
+        pkocAnalyzer.observe(serial(0, services = setOf(0xFFF0)))
+        pkocAnalyzer.observe(serial(100, services = setOf(0xFFF0), name = "PKOC"))
+        val pkocSignals = listOf(5_000L, 5_300L).flatMap {
+            pkocAnalyzer.observe(serial(it, services = setOf(0xFFF0)))
+        }
+        assertTrue(pkocSignals.filterIsInstance<BleThreatSignal.SerialSkimmer>().isEmpty())
+    }
+
+    @Test
     fun `simultaneous prompt and serial remain independently observable`() {
         val analyzer = BleThreatAnalyzer()
         val burst = promptBurst()
