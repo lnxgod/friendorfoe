@@ -25,11 +25,16 @@ class BleTracker @Inject constructor() {
     companion object {
         private const val TAG = "BleTracker"
 
-        /** Minimum time a device must be seen to be considered "following" */
-        private const val FOLLOW_MIN_DURATION_MS = 120_000L // 2 minutes
-
-        /** Minimum user movement (meters) before checking for followers */
-        private const val FOLLOW_MIN_MOVEMENT_M = 50.0
+        private const val FOLLOW_MIN_DURATION_MS = 300_000L
+        private const val FOLLOW_MIN_SIGHTINGS = 6
+        private const val FOLLOW_CLUSTER_DISTANCE_M = 75.0
+        private const val FOLLOW_MIN_MOVEMENT_M = 150.0
+        private const val CAMERA_HIGH_THREAT_DURATION_MS = 600_000L
+        private const val LINGER_MIN_DURATION_MS = 600_000L
+        private const val LINGER_MIN_SIGHTINGS = 10
+        private const val LINGER_MAX_MOVEMENT_M = 25.0
+        private const val MAX_LOCATION_ACCURACY_M = 50f
+        private const val STRONG_RSSI_DBM = -70
 
         /** Maximum sightings to keep per device */
         private const val MAX_SIGHTINGS = 100
@@ -39,6 +44,19 @@ class BleTracker @Inject constructor() {
 
         /** RSSI samples needed for a direction estimate */
         private const val MIN_DIRECTION_SAMPLES = 8
+
+        private val FOLLOWER_CATEGORIES = setOf(
+            PrivacyCategory.FINDMY,
+            PrivacyCategory.BLE_TRACKER,
+            PrivacyCategory.GPS_TRACKER,
+            PrivacyCategory.OBD_TRACKER,
+            PrivacyCategory.SMART_GLASSES,
+            PrivacyCategory.ACTION_CAMERA,
+            PrivacyCategory.DASH_CAMERA,
+            PrivacyCategory.VEHICLE_CAMERA,
+            PrivacyCategory.BODY_CAMERA,
+        )
+        private val REQUIRED_TEMPORAL_BANDS = setOf(0, 1, 2)
     }
 
     /** A single BLE sighting with location context */
@@ -47,7 +65,10 @@ class BleTracker @Inject constructor() {
         val userLat: Double,
         val userLon: Double,
         val compassBearing: Float, // user's phone compass heading at time of sighting
-        val timestamp: Instant
+        val timestamp: Instant,
+        val category: PrivacyCategory,
+        val isBonded: Boolean,
+        val locationAccuracyMeters: Float,
     )
 
     /** Tracked BLE device with sighting history */
@@ -57,6 +78,9 @@ class BleTracker @Inject constructor() {
         val deviceType: String?,
         val manufacturer: String?,
         val hasCamera: Boolean,
+        @Volatile var category: PrivacyCategory,
+        @Volatile var isBonded: Boolean,
+        @Volatile var locationAccuracyMeters: Float,
         val sightings: MutableList<Sighting> = mutableListOf(),
         var firstSeen: Instant = Instant.now(),
         @Volatile var lastSeen: Instant = Instant.now(),
@@ -77,11 +101,26 @@ class BleTracker @Inject constructor() {
         val samples: List<Pair<Float, Int>> // bearing to RSSI pairs
     )
 
+    data class FollowerEvidence(
+        val durationMs: Long,
+        val qualifyingSightings: Int,
+        val clusterCount: Int,
+        val movementMeters: Double,
+        val temporalBands: Set<Int>,
+        val strongestRssi: Int,
+    )
+
     /** Alert for a device that appears to be following the user */
     data class StalkerAlert(
         val device: TrackedDevice,
         val reason: String, // "following", "lingering", "reappeared"
-        val threatLevel: Int // 1=low, 2=medium, 3=high
+        val threatLevel: Int, // 1=low, 2=medium, 3=high
+        val evidence: FollowerEvidence,
+    )
+
+    private data class EvidenceAnalysis(
+        val evidence: FollowerEvidence,
+        val locationSpanMeters: Double,
     )
 
     private data class UserPoint(
@@ -113,7 +152,10 @@ class BleTracker @Inject constructor() {
         hasCamera: Boolean,
         userLat: Double,
         userLon: Double,
-        compassBearing: Float
+        compassBearing: Float,
+        category: PrivacyCategory = PrivacyCategory.INFORMATIONAL,
+        isBonded: Boolean = false,
+        locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
     ) = recordSightingAt(
         mac = mac,
         rssi = rssi,
@@ -124,7 +166,10 @@ class BleTracker @Inject constructor() {
         userLat = userLat,
         userLon = userLon,
         compassBearing = compassBearing,
-        timestamp = Instant.now()
+        timestamp = Instant.now(),
+        category = category,
+        isBonded = isBonded,
+        locationAccuracyMeters = locationAccuracyMeters,
     )
 
     internal fun recordSightingAt(
@@ -137,7 +182,10 @@ class BleTracker @Inject constructor() {
         userLat: Double,
         userLon: Double,
         compassBearing: Float,
-        timestamp: Instant
+        timestamp: Instant,
+        category: PrivacyCategory = PrivacyCategory.INFORMATIONAL,
+        isBonded: Boolean = false,
+        locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
     ) {
         recordUserLocation(userLat, userLon, timestamp)
 
@@ -148,11 +196,17 @@ class BleTracker @Inject constructor() {
                 deviceType = deviceType,
                 manufacturer = manufacturer,
                 hasCamera = hasCamera,
+                category = category,
+                isBonded = isBonded,
+                locationAccuracyMeters = locationAccuracyMeters,
                 firstSeen = timestamp
             )
         }
 
         device.lastSeen = timestamp
+        device.category = category
+        device.isBonded = device.isBonded || isBonded
+        device.locationAccuracyMeters = locationAccuracyMeters
         if (rssi > device.peakRssi) device.peakRssi = rssi
 
         // Update name/type if we got better info
@@ -160,7 +214,16 @@ class BleTracker @Inject constructor() {
             trackedDevices[mac] = device.copy(deviceName = deviceName)
         }
 
-        val sighting = Sighting(rssi, userLat, userLon, compassBearing, timestamp)
+        val sighting = Sighting(
+            rssi = rssi,
+            userLat = userLat,
+            userLon = userLon,
+            compassBearing = compassBearing,
+            timestamp = timestamp,
+            category = category,
+            isBonded = isBonded,
+            locationAccuracyMeters = locationAccuracyMeters,
+        )
         synchronized(device.sightings) {
             device.sightings.add(sighting)
             if (device.sightings.size > MAX_SIGHTINGS) {
@@ -215,42 +278,54 @@ class BleTracker @Inject constructor() {
     internal fun checkForFollowersAt(now: Instant): List<StalkerAlert> {
         val alerts = mutableListOf<StalkerAlert>()
 
-        // Calculate how far the user has moved
-        val userMovement = calculateUserMovement()
+        trackedDevices.values.forEach { device ->
+            device.isFollowing = false
+            device.isStalker = false
+        }
 
         // Prune old devices
         val staleThreshold = now.minusMillis(DEVICE_HISTORY_TTL_MS)
         trackedDevices.entries.removeIf { it.value.lastSeen.isBefore(staleThreshold) }
 
         for ((_, device) in trackedDevices) {
-            val duration = device.durationMs
+            if (device.isBonded || device.category !in FOLLOWER_CATEGORIES) continue
 
-            if (duration < FOLLOW_MIN_DURATION_MS) continue
-            if (device.sightings.size < 3) continue
+            val analysis = analyzeEvidence(device)
+            val evidence = analysis.evidence
+            val isFollowing = evidence.durationMs >= FOLLOW_MIN_DURATION_MS &&
+                evidence.qualifyingSightings >= FOLLOW_MIN_SIGHTINGS &&
+                evidence.clusterCount >= 3 &&
+                evidence.movementMeters >= FOLLOW_MIN_MOVEMENT_M &&
+                evidence.temporalBands.containsAll(REQUIRED_TEMPORAL_BANDS)
 
-            // Check if device has been seen at multiple user locations
-            val uniqueLocations = synchronized(device.sightings) {
-                device.sightings.map { "${it.userLat.format(4)},${it.userLon.format(4)}" }.toSet()
-            }
-
-            if (userMovement > FOLLOW_MIN_MOVEMENT_M && uniqueLocations.size > 1) {
-                // Device seen at multiple locations while user moved — following
+            if (isFollowing) {
                 device.isFollowing = true
                 device.isStalker = true
                 val threatLevel = when {
-                    device.hasCamera && duration > 300_000 -> 3 // camera device following 5+ min
-                    duration > 300_000 -> 2 // any device following 5+ min
-                    else -> 1
+                    device.hasCamera &&
+                        evidence.durationMs >= CAMERA_HIGH_THREAT_DURATION_MS &&
+                        evidence.strongestRssi >= STRONG_RSSI_DBM -> 3
+                    else -> 2
                 }
-                alerts.add(StalkerAlert(device, "following", threatLevel))
+                alerts.add(StalkerAlert(device, "following", threatLevel, evidence))
                 safeLogWarning(
                     "STALKER ALERT: ${device.deviceType ?: device.mac} following for " +
-                        "${duration / 1000}s across ${uniqueLocations.size} locations"
+                        "${evidence.durationMs / 1000}s across ${evidence.clusterCount} clusters"
                 )
-            } else if (userMovement < 20.0 && duration > FOLLOW_MIN_DURATION_MS) {
-                // User stationary, device lingering nearby
-                val threatLevel = if (device.hasCamera) 2 else 1
-                alerts.add(StalkerAlert(device, "lingering", threatLevel))
+            } else if (
+                evidence.durationMs >= LINGER_MIN_DURATION_MS &&
+                evidence.qualifyingSightings >= LINGER_MIN_SIGHTINGS &&
+                analysis.locationSpanMeters <= LINGER_MAX_MOVEMENT_M &&
+                evidence.strongestRssi >= STRONG_RSSI_DBM
+            ) {
+                alerts.add(
+                    StalkerAlert(
+                        device = device,
+                        reason = "lingering",
+                        threatLevel = 1,
+                        evidence = evidence.copy(movementMeters = analysis.locationSpanMeters),
+                    )
+                )
             }
         }
 
@@ -264,7 +339,7 @@ class BleTracker @Inject constructor() {
     fun startDirectionScan(mac: String) {
         directionScanTarget = mac
         synchronized(directionSamples) { directionSamples.clear() }
-        Log.i(TAG, "Direction scan started for $mac — rotate 360° slowly")
+        safeLogInfo(TAG, "Direction scan started for $mac — rotate 360° slowly")
     }
 
     /**
@@ -279,7 +354,7 @@ class BleTracker @Inject constructor() {
         val snapshot = synchronized(directionSamples) { directionSamples.toList() }
 
         if (snapshot.size < MIN_DIRECTION_SAMPLES) {
-            Log.w(TAG, "Direction scan: only ${snapshot.size} samples, need $MIN_DIRECTION_SAMPLES")
+            safeLogWarning("Direction scan: only ${snapshot.size} samples, need $MIN_DIRECTION_SAMPLES")
             return null
         }
 
@@ -311,7 +386,12 @@ class BleTracker @Inject constructor() {
             else -> 0.3f
         }
 
-        Log.i(TAG, "Direction scan complete: bearing=${"%.0f".format(normalizedBearing)}° confidence=${"%.0f".format(confidence * 100)}% peak=${peakRssi}dBm (${snapshot.size} samples)")
+        safeLogInfo(
+            TAG,
+            "Direction scan complete: bearing=${"%.0f".format(normalizedBearing)}° " +
+                "confidence=${"%.0f".format(confidence * 100)}% " +
+                "peak=${peakRssi}dBm (${snapshot.size} samples)"
+        )
 
         return DirectionResult(
             mac = mac,
@@ -337,13 +417,87 @@ class BleTracker @Inject constructor() {
     /** Get direction scan sample count */
     fun getDirectionSampleCount(): Int = directionSamples.size
 
-    private fun calculateUserMovement(): Double {
-        synchronized(userLocations) {
-            if (userLocations.size < 2) return 0.0
-            val first = userLocations.first()
-            val last = userLocations.last()
-            return distanceMeters(first.latitude, first.longitude, last.latitude, last.longitude)
+    /** Clear all BLE follower and direction evidence for a new detection session. */
+    fun clear() {
+        trackedDevices.values.forEach { device ->
+            device.isFollowing = false
+            device.isStalker = false
         }
+        trackedDevices.clear()
+        synchronized(userLocations) { userLocations.clear() }
+        directionScanTarget = null
+        synchronized(directionSamples) { directionSamples.clear() }
+    }
+
+    private fun analyzeEvidence(device: TrackedDevice): EvidenceAnalysis {
+        val qualifying = synchronized(device.sightings) {
+            device.sightings
+                .filter { it.isQualifying() }
+                .sortedBy { it.timestamp }
+        }
+        if (qualifying.isEmpty()) {
+            return EvidenceAnalysis(
+                evidence = FollowerEvidence(
+                    durationMs = 0,
+                    qualifyingSightings = 0,
+                    clusterCount = 0,
+                    movementMeters = 0.0,
+                    temporalBands = emptySet(),
+                    strongestRssi = Int.MIN_VALUE,
+                ),
+                locationSpanMeters = 0.0,
+            )
+        }
+
+        val firstTimestamp = qualifying.first().timestamp
+        val durationMs = Duration.between(firstTimestamp, qualifying.last().timestamp)
+            .toMillis()
+            .coerceAtLeast(0)
+        val anchors = mutableListOf(qualifying.first())
+        qualifying.drop(1).forEach { sighting ->
+            val currentAnchor = anchors.last()
+            if (distanceMeters(currentAnchor, sighting) >= FOLLOW_CLUSTER_DISTANCE_M) {
+                anchors.add(sighting)
+            }
+        }
+        val anchorMovement = anchors.zipWithNext().sumOf { (from, to) -> distanceMeters(from, to) }
+        val temporalBands = qualifying.mapTo(mutableSetOf()) { sighting ->
+            temporalBand(firstTimestamp, sighting.timestamp, durationMs)
+        }
+
+        return EvidenceAnalysis(
+            evidence = FollowerEvidence(
+                durationMs = durationMs,
+                qualifyingSightings = qualifying.size,
+                clusterCount = anchors.size,
+                movementMeters = anchorMovement,
+                temporalBands = temporalBands,
+                strongestRssi = qualifying.maxOf { it.rssi },
+            ),
+            locationSpanMeters = maxLocationSpanMeters(qualifying),
+        )
+    }
+
+    private fun Sighting.isQualifying(): Boolean =
+        !isBonded &&
+            category in FOLLOWER_CATEGORIES &&
+            locationAccuracyMeters in 0f..MAX_LOCATION_ACCURACY_M &&
+            isValidLocation(userLat, userLon)
+
+    private fun temporalBand(first: Instant, timestamp: Instant, durationMs: Long): Int {
+        if (durationMs <= 0) return 0
+        val elapsedMs = Duration.between(first, timestamp).toMillis().coerceIn(0, durationMs)
+        return ((elapsedMs * 3) / durationMs).toInt().coerceIn(0, 2)
+    }
+
+    private fun maxLocationSpanMeters(sightings: List<Sighting>): Double {
+        var maxDistance = 0.0
+        sightings.forEachIndexed { index, first ->
+            for (second in sightings.drop(index + 1)) {
+                maxDistance = maxOf(maxDistance, distanceMeters(first, second))
+            }
+        }
+        return maxDistance
     }
 
     private fun isValidLocation(latitude: Double, longitude: Double): Boolean {
@@ -363,7 +517,16 @@ class BleTracker @Inject constructor() {
         return earthRadiusM * c
     }
 
-    private fun Double.format(digits: Int) = "%.${digits}f".format(this)
+    private fun distanceMeters(first: Sighting, second: Sighting): Double =
+        distanceMeters(first.userLat, first.userLon, second.userLat, second.userLon)
+
+    private fun safeLogInfo(tag: String, message: String) {
+        try {
+            Log.i(tag, message)
+        } catch (_: RuntimeException) {
+            // Android Log is not available in plain JVM unit tests.
+        }
+    }
 
     private fun safeLogWarning(message: String) {
         try {
@@ -372,4 +535,5 @@ class BleTracker @Inject constructor() {
             // Android Log is not available in plain JVM unit tests.
         }
     }
+
 }
