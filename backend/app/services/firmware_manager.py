@@ -243,6 +243,11 @@ class FirmwareManager:
                 return data
             except OSError as e:
                 logger.warning("Failed reading cached firmware %s: %s", cached, e)
+                asset.cached_path = None
+                asset.cached_at = 0
+        else:
+            asset.cached_path = None
+            asset.cached_at = 0
 
         # Download from GitHub
         try:
@@ -291,7 +296,7 @@ class FirmwareManager:
             asset = self.assets.get(fw_name)
             is_custom = fw_name in self._custom_firmware
             local_bin: Path | None = fw_info.get("local_bin")
-            local_present = bool(local_bin and local_bin.exists())
+            local_present = bool(local_bin and local_bin.is_file())
 
             # Figure out which source we'd actually serve + its version
             version = None
@@ -311,6 +316,12 @@ class FirmwareManager:
                     size = len(image)
                     available = True
 
+            cached = False
+            if source == "local":
+                cached = available and local_present
+            elif source == "github" and available and asset and asset.cached_path:
+                cached = Path(asset.cached_path).is_file()
+
             result.append({
                 "name": fw_name,
                 "description": fw_info["description"],
@@ -319,6 +330,6 @@ class FirmwareManager:
                 "size": size,
                 "available": available,
                 "source": source,
-                "cached": (asset.cached_path is not None) if asset else local_present,
+                "cached": cached,
             })
         return result

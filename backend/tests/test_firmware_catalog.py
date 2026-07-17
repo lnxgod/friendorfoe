@@ -201,11 +201,61 @@ async def test_local_binary_version_wins_over_repo_source_header(
         return None
 
     monkeypatch.setattr(manager, "refresh_from_github", no_refresh)
+    manager.assets[name] = FirmwareAsset(
+        name,
+        FIRMWARE_TYPES[name]["description"],
+        RELEASE_TAG,
+        len(_esp_firmware_image(PRODUCTION_VERSION)),
+        f"https://example.test/{name}.bin",
+    )
 
     assert await manager.get_firmware_version(name) == embedded_version
     catalog = {row["name"]: row for row in await manager.get_catalog()}
     assert catalog[name]["version"] == embedded_version
     assert catalog[name]["source"] == "local"
+    assert catalog[name]["cached"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cache_state", ["missing", "unreadable"])
+async def test_unusable_github_cache_clears_stale_cached_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    cache_state: str,
+):
+    name = "uplink-s3"
+    image = _esp_firmware_image(PRODUCTION_VERSION)
+    manager = _github_manager(monkeypatch, tmp_path, {name: image}, cached=False)
+    asset = manager.assets[name]
+    cache_path = firmware_manager.CACHE_DIR / f"{RELEASE_TAG}_{name}.bin"
+    if cache_state == "unreadable":
+        cache_path.mkdir()
+    asset.cached_path = str(cache_path)
+    asset.cached_at = time.time()
+
+    class FailingAsyncClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url: str):
+            class Response:
+                status_code = 503
+
+            return Response()
+
+    monkeypatch.setattr(firmware_manager.httpx, "AsyncClient", FailingAsyncClient)
+
+    catalog = {row["name"]: row for row in await manager.get_catalog()}
+
+    assert asset.cached_path is None
+    assert asset.cached_at == 0
+    assert catalog[name]["cached"] is False
 
 
 @pytest.mark.asyncio
