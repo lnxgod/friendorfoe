@@ -13,8 +13,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 109
-        versionName = "0.64.67-ble-investigation"
+        versionCode = 110
+        versionName = "0.64.68-live-follow"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -1,6 +1,6 @@
 {
   "name": "Friend or Foe Badge Uplink (XIAO ESP32-S3)",
-  "version": "0.64.67-badge-ble-investigation",
+  "version": "0.64.68-badge-live-follow",
   "builds": [
     {
       "chipFamily": "ESP32-S3",

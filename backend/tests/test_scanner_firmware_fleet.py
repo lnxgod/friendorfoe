@@ -9,6 +9,15 @@ from app.main import app
 from app.routers import detections, nodes
 
 
+def test_release_catalog_versions_match_live_follow():
+    production_version = "0.64.68-live-follow"
+
+    assert app.version == production_version
+    assert detections._EXPECTED_BACKEND_VERSION == production_version
+    assert detections._EXPECTED_FIRMWARE_VERSION == production_version
+    assert detections._EXPECTED_BADGE_FIRMWARE_VERSION == "0.64.68-badge-live-follow"
+
+
 def _completed(cmd, stdout: bytes):
     return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=b"")
 
@@ -242,7 +251,7 @@ async def test_stage_fleet_uses_scanner_board_for_mixed_variants(
 
     async def fake_version(name: str) -> str:
         assert name in {"scanner-s3-combo-seed", "scanner-s3-combo"}
-        return "0.64.67-ble-investigation"
+        return "0.64.68-live-follow"
 
     uploads: list[str] = []
 
