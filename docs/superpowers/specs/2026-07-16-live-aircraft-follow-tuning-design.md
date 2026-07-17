@@ -195,4 +195,3 @@ second telemetry protocol.
 6. Push the reviewed branch, merge to `main`, push a fresh `v*` tag, wait for
    Android and firmware release workflows, verify assets, then locally inspect
    APK version, digest, and signature.
-
