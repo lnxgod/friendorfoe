@@ -43,12 +43,15 @@ import javax.inject.Inject
 private const val MAP_FRAME_INTERVAL_MS = 250L
 
 internal fun mapFrameClock(
+    epochNowMs: () -> Long = System::currentTimeMillis,
     monotonicNowMs: () -> Long = SystemClock::elapsedRealtime,
     waitForNextFrame: suspend (Long) -> Unit = { delay(it) },
 ): Flow<Long> = flow {
+    var nextFrameAtMs = monotonicNowMs()
     while (currentCoroutineContext().isActive) {
-        emit(monotonicNowMs())
-        waitForNextFrame(MAP_FRAME_INTERVAL_MS)
+        emit(epochNowMs())
+        nextFrameAtMs += MAP_FRAME_INTERVAL_MS
+        waitForNextFrame((nextFrameAtMs - monotonicNowMs()).coerceAtLeast(0L))
     }
 }
 

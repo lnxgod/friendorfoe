@@ -1,13 +1,16 @@
 package com.friendorfoe.presentation.map
 
+import com.friendorfoe.data.remote.LocatedDroneDto
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.Position
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -28,15 +31,26 @@ class MapOverlayPresentationTest {
     }
 
     @Test
-    fun `map frame clock advances by monotonic 250 millisecond frames`() = runTest {
-        var nowMs = 1_000L
+    fun `map frame clock emits epoch timestamps while pacing on monotonic time`() = runTest {
+        var epochNowMs = 1_700_000_000_000L
+        var monotonicNowMs = 1_000L
+        val delays = mutableListOf<Long>()
 
         val frames = mapFrameClock(
-            monotonicNowMs = { nowMs },
-            waitForNextFrame = { delayMs -> nowMs += delayMs },
+            epochNowMs = { epochNowMs },
+            monotonicNowMs = { monotonicNowMs },
+            waitForNextFrame = { delayMs ->
+                delays += delayMs
+                monotonicNowMs += delayMs
+                epochNowMs += delayMs
+            },
         ).take(3).toList()
 
-        assertEquals(listOf(1_000L, 1_250L, 1_500L), frames)
+        assertEquals(
+            listOf(1_700_000_000_000L, 1_700_000_000_250L, 1_700_000_000_500L),
+            frames,
+        )
+        assertEquals(listOf(250L, 250L), delays)
     }
 
     @Test
@@ -147,10 +161,61 @@ class MapOverlayPresentationTest {
     }
 
     @Test
-    fun `map pan suppresses centering for ten seconds`() {
-        assertTrue(isMapPanActive(lastPannedAtMs = 1_000L, nowMs = 10_999L))
-        assertFalse(isMapPanActive(lastPannedAtMs = 1_000L, nowMs = 11_000L))
-        assertFalse(isMapPanActive(lastPannedAtMs = 0L, nowMs = 5_000L))
+    fun `map pan timer expires after ten seconds and restarts on touch`() = runTest {
+        val gestures = MutableSharedFlow<Unit>()
+        val states = mutableListOf<Boolean>()
+        val collection = backgroundScope.launch {
+            mapPanActivity(gestures).toList(states)
+        }
+        runCurrent()
+        assertEquals(false, states.last())
+
+        gestures.emit(Unit)
+        runCurrent()
+        assertEquals(true, states.last())
+
+        advanceTimeBy(9_999L)
+        runCurrent()
+        assertEquals(true, states.last())
+
+        gestures.emit(Unit)
+        runCurrent()
+        advanceTimeBy(9_999L)
+        runCurrent()
+        assertEquals(true, states.last())
+
+        advanceTimeBy(1L)
+        runCurrent()
+        assertEquals(false, states.last())
+        collection.cancel()
+    }
+
+    @Test
+    fun `sensor shapes draw before their retained markers`() {
+        val rangeDrone = LocatedDroneDto(
+            droneId = "range",
+            lat = 37.0,
+            lon = -122.0,
+            positionSource = "range_only",
+            rangeM = 100.0,
+        )
+        val accurateDrone = LocatedDroneDto(
+            droneId = "accurate",
+            lat = 37.1,
+            lon = -122.1,
+            positionSource = "trilateration",
+            accuracyM = 25.0,
+        )
+
+        assertEquals(
+            listOf(
+                SensorOverlayKey("range", SensorOverlayKind.RANGE),
+                SensorOverlayKey("accurate", SensorOverlayKind.ACCURACY),
+                SensorOverlayKey("range", SensorOverlayKind.MARKER),
+                SensorOverlayKey("accurate", SensorOverlayKind.MARKER),
+            ),
+            sensorOverlayDrawOrder(listOf(rangeDrone, accurateDrone)),
+        )
     }
 
     private fun aircraft(id: String) = Aircraft(

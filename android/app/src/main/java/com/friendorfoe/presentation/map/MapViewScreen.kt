@@ -1,6 +1,5 @@
 package com.friendorfoe.presentation.map
 
-import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,10 +22,9 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -39,21 +37,37 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.friendorfoe.presentation.filter.FilterBar
 import com.friendorfoe.presentation.detail.AircraftDetailContent
 import com.friendorfoe.presentation.detail.DetailState
 import com.friendorfoe.presentation.detail.DetailViewModel
 import com.friendorfoe.presentation.detail.DroneDetailContent
+import com.friendorfoe.presentation.filter.FilterBar
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.transformLatest
 import org.osmdroid.config.Configuration
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.events.MapEventsReceiver
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.MapEventsOverlay
 
 private const val MAP_PAN_TIMEOUT_MS = 10_000L
 
-internal fun isMapPanActive(lastPannedAtMs: Long, nowMs: Long): Boolean =
-    lastPannedAtMs > 0L && nowMs - lastPannedAtMs in 0 until MAP_PAN_TIMEOUT_MS
+@OptIn(ExperimentalCoroutinesApi::class)
+internal fun mapPanActivity(
+    gestures: Flow<Unit>,
+    timeoutMs: Long = MAP_PAN_TIMEOUT_MS,
+): Flow<Boolean> = gestures
+    .transformLatest {
+        emit(true)
+        delay(timeoutMs)
+        emit(false)
+    }
+    .onStart { emit(false) }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -112,9 +126,15 @@ fun MapViewScreen(
         selectedObjectId?.let { detailViewModel.loadDetail(it) }
     }
 
-    // Track user interaction to disable auto-centering while panning
-    var userPannedAt by remember { mutableStateOf(0L) }
-    val isUserPanning = isMapPanActive(userPannedAt, SystemClock.elapsedRealtime())
+    val panGestures = remember {
+        MutableSharedFlow<Unit>(
+            extraBufferCapacity = 1,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
+    }
+    val isUserPanning by remember(panGestures) {
+        mapPanActivity(panGestures)
+    }.collectAsState(initial = false)
 
     val isDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
 
@@ -128,7 +148,7 @@ fun MapViewScreen(
             setOnTouchListener { _, event ->
                 if (event.action == android.view.MotionEvent.ACTION_MOVE ||
                     event.action == android.view.MotionEvent.ACTION_DOWN) {
-                    userPannedAt = SystemClock.elapsedRealtime()
+                    panGestures.tryEmit(Unit)
                 }
                 false  // Don't consume — let the map handle it
             }

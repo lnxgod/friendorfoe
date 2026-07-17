@@ -106,6 +106,35 @@ internal fun distanceRingKey(
     remoteLongitude = remoteCenter?.longitude,
 )
 
+internal enum class SensorOverlayKind {
+    RANGE,
+    ACCURACY,
+    MARKER,
+}
+
+internal data class SensorOverlayKey(
+    val objectId: String,
+    val kind: SensorOverlayKind,
+)
+
+internal fun sensorOverlayDrawOrder(drones: List<LocatedDroneDto>): List<SensorOverlayKey> = buildList {
+    drones.forEach { drone ->
+        if (drone.positionSource == "range_only" && drone.rangeM != null) {
+            add(SensorOverlayKey(drone.droneId, SensorOverlayKind.RANGE))
+        }
+    }
+    drones.forEach { drone ->
+        if (drone.positionSource == "trilateration" &&
+            drone.accuracyM != null && drone.accuracyM > 10
+        ) {
+            add(SensorOverlayKey(drone.droneId, SensorOverlayKind.ACCURACY))
+        }
+    }
+    drones.forEach { drone ->
+        add(SensorOverlayKey(drone.droneId, SensorOverlayKind.MARKER))
+    }
+}
+
 internal class MapOverlayController(
     private val context: Context,
     private val map: MapView,
@@ -298,32 +327,6 @@ internal class MapOverlayController(
     }
 
     private fun updateSensorDroneOverlays(drones: List<LocatedDroneDto>) {
-        sensorDroneMarkers.render(
-            desired = drones,
-            keyOf = LocatedDroneDto::droneId,
-            create = {
-                SensorDroneOverlay(
-                    Marker(map).apply {
-                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-                        map.overlays.add(this)
-                    }
-                )
-            },
-            update = { overlay, drone ->
-                overlay.marker.setPosition(GeoPoint(drone.lat, drone.lon))
-                overlay.marker.setRotation(drone.headingDeg ?: 0f)
-                overlay.marker.setAlpha(1f)
-                overlay.marker.title = sensorDroneTitle(drone)
-                overlay.marker.snippet = sensorDroneSnippet(drone)
-                val nextColor = sensorDroneColor(drone)
-                if (overlay.color != nextColor) {
-                    overlay.marker.icon = createSensorDroneDrawable(context, nextColor)
-                    overlay.color = nextColor
-                }
-            },
-            remove = { it.marker.remove(map) },
-        )
-
         val rangeShapes = drones.mapNotNull { drone ->
             val radius = drone.rangeM
             if (drone.positionSource != "range_only" || radius == null) return@mapNotNull null
@@ -366,6 +369,54 @@ internal class MapOverlayController(
             },
             remove = map.overlays::remove,
         )
+
+        sensorDroneMarkers.render(
+            desired = drones,
+            keyOf = LocatedDroneDto::droneId,
+            create = {
+                SensorDroneOverlay(
+                    Marker(map).apply {
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                        map.overlays.add(this)
+                    }
+                )
+            },
+            update = { overlay, drone ->
+                overlay.marker.setPosition(GeoPoint(drone.lat, drone.lon))
+                overlay.marker.setRotation(drone.headingDeg ?: 0f)
+                overlay.marker.setAlpha(1f)
+                overlay.marker.title = sensorDroneTitle(drone)
+                overlay.marker.snippet = sensorDroneSnippet(drone)
+                val nextColor = sensorDroneColor(drone)
+                if (overlay.color != nextColor) {
+                    overlay.marker.icon = createSensorDroneDrawable(context, nextColor)
+                    overlay.color = nextColor
+                }
+            },
+            remove = { it.marker.remove(map) },
+        )
+
+        enforceSensorOverlayDrawOrder(drones)
+    }
+
+    private fun enforceSensorOverlayDrawOrder(drones: List<LocatedDroneDto>) {
+        val orderedOverlays = sensorOverlayDrawOrder(drones).mapNotNull { key ->
+            when (key.kind) {
+                SensorOverlayKind.RANGE -> sensorRangeShapes[key.objectId]
+                SensorOverlayKind.ACCURACY -> sensorAccuracyShapes[key.objectId]
+                SensorOverlayKind.MARKER -> sensorDroneMarkers[key.objectId]?.marker
+            }
+        }
+        if (orderedOverlays.isEmpty()) return
+
+        val managedOverlays = orderedOverlays.toSet()
+        val currentOrder = map.overlays.filter(managedOverlays::contains)
+        if (currentOrder == orderedOverlays) return
+
+        val insertionIndex = map.overlays.indexOfFirst(managedOverlays::contains)
+            .takeIf { it >= 0 } ?: map.overlays.size
+        map.overlays.removeAll(managedOverlays)
+        map.overlays.addAll(insertionIndex.coerceAtMost(map.overlays.size), orderedOverlays)
     }
 
     private fun updateDistanceRings(userPosition: Position, remoteCenter: Position?) {
