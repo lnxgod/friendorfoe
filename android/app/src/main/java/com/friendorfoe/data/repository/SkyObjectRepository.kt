@@ -12,6 +12,7 @@ import com.friendorfoe.detection.BleTracker
 import com.friendorfoe.detection.DataSourceStatus
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.GlassesDetector
+import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.detection.RemoteIdScanner
 import com.friendorfoe.detection.WifiDroneScanner
 import com.friendorfoe.detection.WifiNanRemoteIdScanner
@@ -37,6 +38,27 @@ import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
+
+private val FOLLOWER_CANDIDATE_CATEGORIES = setOf(
+    PrivacyCategory.FINDMY,
+    PrivacyCategory.BLE_TRACKER,
+    PrivacyCategory.GPS_TRACKER,
+    PrivacyCategory.OBD_TRACKER,
+    PrivacyCategory.SMART_GLASSES,
+    PrivacyCategory.ACTION_CAMERA,
+    PrivacyCategory.DASH_CAMERA,
+    PrivacyCategory.VEHICLE_CAMERA,
+    PrivacyCategory.BODY_CAMERA,
+)
+
+internal fun GlassesDetection.isFollowerCandidate(ignoredKeys: Set<String>): Boolean {
+    if (isBonded || category !in FOLLOWER_CANDIDATE_CATEGORIES) return false
+
+    val macAliases = (seenMacs + mac).flatMap { seenMac ->
+        listOf(seenMac, "mac:$seenMac")
+    }
+    return (macAliases + fingerprintKey).none { it in ignoredKeys }
+}
 
 /**
  * Unified repository that merges all detection sources into a single stream
@@ -88,6 +110,7 @@ class SkyObjectRepository @Inject constructor(
     // Track user position for history persistence
     @Volatile private var userLatitude: Double = 0.0
     @Volatile private var userLongitude: Double = 0.0
+    @Volatile private var userLocationAccuracyMeters: Float = Float.POSITIVE_INFINITY
 
     // Track which objects have already been persisted to avoid duplicate writes
     private val persistedObjectIds: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
@@ -152,8 +175,9 @@ class SkyObjectRepository @Inject constructor(
         if (!isRunning.get()) return
         val latitude = userLatitude
         val longitude = userLongitude
+        val locationAccuracyMeters = userLocationAccuracyMeters
         stop()
-        ensureStarted(latitude, longitude)
+        ensureStarted(latitude, longitude, locationAccuracyMeters)
     }
 
     /** Get the position trail for a given object ID. */
@@ -175,15 +199,21 @@ class SkyObjectRepository @Inject constructor(
      *
      * @param latitude User's current latitude for ADS-B polling
      * @param longitude User's current longitude for ADS-B polling
+     * @param locationAccuracyMeters Accuracy of the current location, or infinity when unknown
      */
-    fun ensureStarted(latitude: Double, longitude: Double) {
+    fun ensureStarted(
+        latitude: Double,
+        longitude: Double,
+        locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
+    ) {
         if (!isRunning.compareAndSet(false, true)) {
-            updatePosition(latitude, longitude)
+            updatePosition(latitude, longitude, locationAccuracyMeters)
             return
         }
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         userLatitude = latitude
         userLongitude = longitude
+        userLocationAccuracyMeters = locationAccuracyMeters
         bleTracker.recordUserLocation(latitude, longitude)
         Log.i(TAG, "Starting all detection sources at ($latitude, $longitude)")
 
@@ -226,6 +256,7 @@ class SkyObjectRepository @Inject constructor(
         wifiDroneScanner.stopScanning()
         glassesDetector.stopScanning()
         fusionEngine.reset()
+        bleTracker.clear()
 
         adsbObjects.clear()
         remoteIdObjects.clear()
@@ -248,10 +279,16 @@ class SkyObjectRepository @Inject constructor(
      *
      * @param latitude New latitude
      * @param longitude New longitude
+     * @param locationAccuracyMeters Accuracy of the current location, or infinity when unknown
      */
-    fun updatePosition(latitude: Double, longitude: Double) {
+    fun updatePosition(
+        latitude: Double,
+        longitude: Double,
+        locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
+    ) {
         userLatitude = latitude
         userLongitude = longitude
+        userLocationAccuracyMeters = locationAccuracyMeters
         bleTracker.recordUserLocation(latitude, longitude)
         adsbPoller.updatePosition(latitude, longitude)
     }
@@ -410,17 +447,24 @@ class SkyObjectRepository @Inject constructor(
             updateGlassesList()
 
             // Feed to BLE tracker for stalker detection
-            if (detectionPrefs.stalkerDetectionEnabled) {
+            if (
+                isRunning.get() &&
+                detectionPrefs.stalkerDetectionEnabled &&
+                merged.isFollowerCandidate(detectionPrefs.getIgnoredMacs())
+            ) {
                 bleTracker.recordSighting(
-                    mac = detection.mac,
-                    rssi = detection.rssi,
-                    deviceName = detection.deviceName,
-                    deviceType = detection.deviceType,
-                    manufacturer = detection.manufacturer,
-                    hasCamera = detection.hasCamera,
+                    mac = merged.mac,
+                    rssi = merged.rssi,
+                    deviceName = merged.deviceName,
+                    deviceType = merged.deviceType,
+                    manufacturer = merged.manufacturer,
+                    hasCamera = merged.hasCamera,
                     userLat = userLatitude,
                     userLon = userLongitude,
-                    compassBearing = sensorFusionEngine.orientation.value.azimuthDegrees
+                    compassBearing = sensorFusionEngine.orientation.value.azimuthDegrees,
+                    category = merged.category,
+                    isBonded = merged.isBonded,
+                    locationAccuracyMeters = userLocationAccuracyMeters,
                 )
             }
         }

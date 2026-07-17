@@ -1302,7 +1302,11 @@ class ArViewModel @Inject constructor(
             _gpsStatus.value = GpsStatus.LOCKED
 
             // Ensure scanners are running (idempotent — safe if already started by Map)
-            skyObjectRepository.ensureStarted(location.latitude, location.longitude)
+            skyObjectRepository.ensureStarted(
+                location.latitude,
+                location.longitude,
+                if (location.hasAccuracy()) location.accuracy else Float.POSITIVE_INFINITY,
+            )
 
             Log.d(TAG, "Location updated: (${location.latitude}, ${location.longitude}), alt=${location.altitude}m")
         }

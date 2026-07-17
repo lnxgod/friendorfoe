@@ -2,6 +2,7 @@ package com.friendorfoe.presentation.privacy
 
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.PrivacyCategory
+import com.friendorfoe.presentation.components.FofTone
 import java.time.Instant
 
 data class PrivacyAlertCandidate(
@@ -11,6 +12,11 @@ data class PrivacyAlertCandidate(
     val threatLevel: Int,
     val macs: Set<String> = emptySet(),
     val isBonded: Boolean = false
+)
+
+data class StalkerAlertPresentation(
+    val title: String,
+    val tone: FofTone,
 )
 
 class PrivacyAlertPolicy(
@@ -92,13 +98,35 @@ class PrivacyAlertPolicy(
             label: String,
             reason: String,
             threatLevel: Int
-        ) = PrivacyAlertCandidate(
-            key = "stalker:$reason:$mac",
-            title = "BLE follower alert",
-            body = "$label appears to be $reason",
-            threatLevel = threatLevel,
-            macs = setOf(mac)
-        )
+        ): PrivacyAlertCandidate {
+            val presentation = stalkerPresentation(reason, threatLevel)
+            val effectiveThreatLevel = if (reason == "following" && threatLevel in 2..3) {
+                threatLevel
+            } else {
+                1
+            }
+            return PrivacyAlertCandidate(
+                key = "stalker:$reason:$mac",
+                title = presentation.title,
+                body = "$label appears to be $reason",
+                threatLevel = effectiveThreatLevel,
+                macs = setOf(mac)
+            )
+        }
+
+        fun stalkerPresentation(reason: String, threatLevel: Int): StalkerAlertPresentation {
+            return if (reason == "following" && threatLevel in 2..3) {
+                StalkerAlertPresentation(
+                    title = "Follower alert",
+                    tone = FofTone.Danger,
+                )
+            } else {
+                StalkerAlertPresentation(
+                    title = "Nearby device",
+                    tone = FofTone.Neutral,
+                )
+            }
+        }
 
         fun timestampKey(prefix: String, timestamp: Instant): String =
             "$prefix:${timestamp.toEpochMilli()}"

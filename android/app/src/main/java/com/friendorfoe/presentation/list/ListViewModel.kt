@@ -189,11 +189,24 @@ class ListViewModel @Inject constructor(
                 altitudeMeters = location.altitude
             )
 
+            val accuracyMeters = if (location.hasAccuracy()) {
+                location.accuracy
+            } else {
+                Float.POSITIVE_INFINITY
+            }
             if (!scanningStarted) {
-                skyObjectRepository.ensureStarted(location.latitude, location.longitude)
+                skyObjectRepository.ensureStarted(
+                    location.latitude,
+                    location.longitude,
+                    accuracyMeters,
+                )
                 scanningStarted = true
             } else {
-                skyObjectRepository.updatePosition(location.latitude, location.longitude)
+                skyObjectRepository.updatePosition(
+                    location.latitude,
+                    location.longitude,
+                    accuracyMeters,
+                )
             }
         }
 

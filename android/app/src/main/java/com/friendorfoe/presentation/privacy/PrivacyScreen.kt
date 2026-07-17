@@ -197,11 +197,15 @@ fun PrivacyScreen(
 
         if (stalkerAlerts.isNotEmpty()) {
             val alert = stalkerAlerts.maxByOrNull { it.threatLevel } ?: stalkerAlerts.first()
+            val presentation = PrivacyAlertPolicy.stalkerPresentation(
+                reason = alert.reason,
+                threatLevel = alert.threatLevel,
+            )
             FofStatusStrip(
                 label = "BLE",
-                title = "Follower alert",
+                title = presentation.title,
                 detail = "${alert.device.deviceName ?: alert.device.deviceType ?: alert.device.mac} appears ${alert.reason}",
-                tone = FofTone.Danger
+                tone = presentation.tone
             )
         }
 
