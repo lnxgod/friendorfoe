@@ -127,6 +127,21 @@ class GlassesDetector @Inject constructor(
 ) {
     companion object {
         private const val TAG = "GlassesDetector"
+        private const val MIN_STATIC_DETECTION_CONFIDENCE = 0.60f
+        private val SERIAL_IDENTITY_REASONS = setOf(
+            "UUID16:0XFFE0",
+            "UUID16:0XFFF0",
+            "SVC_DATA:0XFFE0",
+            "SVC_DATA:0XFFF0",
+        )
+        private val GENERIC_SERIAL_PRODUCT_NAMES = setOf(
+            "BT",
+            "BLE",
+            "UART",
+            "SERIAL",
+            "HC-05",
+            "HC-06",
+        )
 
         /**
          * Derive a stable identity key for a BLE detection.
@@ -169,6 +184,45 @@ class GlassesDetector @Inject constructor(
             return "fp:$m|$t|$ja3Part|$uuidPart|$namePart"
         }
 
+        internal fun isTrustedSerialProductIdentity(
+            isBonded: Boolean,
+            confidence: Float,
+            manufacturer: String,
+            deviceType: String,
+            matchReason: String,
+        ): Boolean {
+            if (isBonded) return true
+            if (confidence < MIN_STATIC_DETECTION_CONFIDENCE) return false
+
+            val normalizedManufacturer = manufacturer.trim()
+            val normalizedType = deviceType.trim()
+            val normalizedReason = matchReason.trim().uppercase()
+            if (normalizedManufacturer.isBlank() || normalizedType.isBlank() || normalizedReason.isBlank()) {
+                return false
+            }
+            if (normalizedManufacturer.equals("unknown", ignoreCase = true) ||
+                normalizedType.contains("unknown", ignoreCase = true) ||
+                normalizedReason == "ADDRESS_TYPE:PUBLIC"
+            ) {
+                return false
+            }
+            if (normalizedReason in SERIAL_IDENTITY_REASONS ||
+                normalizedType.contains("serial", ignoreCase = true) ||
+                normalizedType.contains("uart", ignoreCase = true) ||
+                normalizedType.contains("skimmer", ignoreCase = true)
+            ) {
+                return false
+            }
+
+            val nameIdentity = normalizedReason.substringAfter("NAME:", missingDelimiterValue = "")
+            return nameIdentity !in GENERIC_SERIAL_PRODUCT_NAMES
+        }
+
+        internal fun behavioralDetectionIsIgnored(
+            detection: GlassesDetection,
+            ignoredKeys: Set<String>,
+        ): Boolean = detection.mac in ignoredKeys || detection.fingerprintKey in ignoredKeys
+
         internal fun behavioralDetection(
             signal: BleThreatSignal,
             now: Instant,
@@ -210,7 +264,7 @@ class GlassesDetector @Inject constructor(
                 deviceType = "Possible Serial Skimmer",
                 manufacturer = "BLE Behavioral Analysis",
                 hasCamera = false,
-                rssi = -100,
+                rssi = signal.strongestRssi,
                 confidence = signal.confidence,
                 matchReason = "ble_behavioral:serial_skimmer",
                 firstSeen = now,
@@ -1520,10 +1574,13 @@ class GlassesDetector @Inject constructor(
         // service UUIDs, advertising flags, appearance, local name.
         val adv = BlePacketParser.parseAdvertisement(result)
 
-        val trustedIdentity = bestConf >= 0.60f &&
-            bestMfr.isNotBlank() &&
-            bestType.isNotBlank() &&
-            bestReason !in setOf("uuid16:0xFFE0", "uuid16:0xFFF0", "svc_data:0xFFE0", "svc_data:0xFFF0")
+        val trustedIdentity = isTrustedSerialProductIdentity(
+            isBonded = mac in myBondedAddresses,
+            confidence = bestConf,
+            manufacturer = bestMfr,
+            deviceType = bestType,
+            matchReason = bestReason,
+        )
         val observedAtElapsedMs = elapsedRealtimeMs()
         val behavioralSignal = bleThreatAnalyzer.observe(
             BleThreatObservation(
@@ -1543,7 +1600,9 @@ class GlassesDetector @Inject constructor(
             behavioralDetection(it, now = Instant.now(), observedAtElapsedMs = observedAtElapsedMs)
         }
 
-        if (bestConf < 0.60f) return behavioralDetection?.let(::storeBehavioralDetection)
+        if (bestConf < MIN_STATIC_DETECTION_CONFIDENCE) {
+            return behavioralDetection?.let(::storeBehavioralDetection)
+        }
 
         val category = categorize(bestType)
         val staticSignatureProtectedFromSerialHeuristic = behavioralSignal is BleThreatSignal.SerialSkimmer &&
@@ -1656,7 +1715,9 @@ class GlassesDetector @Inject constructor(
         return detection
     }
 
-    private fun storeBehavioralDetection(detection: GlassesDetection): GlassesDetection {
+    private fun storeBehavioralDetection(detection: GlassesDetection): GlassesDetection? {
+        if (behavioralDetectionIsIgnored(detection, detectionPrefs.getIgnoredMacs())) return null
+
         val existing = detectedDevices[detection.fingerprintKey]
         val stored = detection.copy(
             firstSeen = existing?.firstSeen ?: detection.firstSeen,

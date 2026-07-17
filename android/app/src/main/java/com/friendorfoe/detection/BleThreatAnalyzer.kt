@@ -48,6 +48,7 @@ sealed interface BleThreatSignal {
         override val entityKey: String,
         val targetMac: String,
         val serialServiceUuid: Int,
+        val strongestRssi: Int,
         val confidence: Float,
         val evidence: Set<BleSerialEvidence>,
     ) : BleThreatSignal
@@ -113,10 +114,12 @@ class BleThreatAnalyzer(
     private var lastPromptSignalAtMs: Long? = null
 
     fun observe(observation: BleThreatObservation): List<BleThreatSignal> {
-        val signals = mutableListOf<BleThreatSignal>()
-        observePrompt(observation)?.let(signals::add)
-        observeSerial(observation)?.let(signals::add)
-        return signals
+        val promptSignal = observePrompt(observation)
+        val serialSignal = observeSerial(
+            observation = observation,
+            consumeSignal = promptSignal == null,
+        )
+        return listOfNotNull(promptSignal, serialSignal)
     }
 
     fun reset() {
@@ -241,7 +244,10 @@ class BleThreatAnalyzer(
     private fun promptDedupeKey(observation: BleThreatObservation, family: BlePromptFamily): String =
         "${observation.mac}|${observation.structuralHash}|$family"
 
-    private fun observeSerial(observation: BleThreatObservation): BleThreatSignal.SerialSkimmer? {
+    private fun observeSerial(
+        observation: BleThreatObservation,
+        consumeSignal: Boolean,
+    ): BleThreatSignal.SerialSkimmer? {
         pruneSerialTracks(observation.observedAtMs)
         val serialServiceUuid = observation.serviceUuids16.firstOrNull { it in SERIAL_SERVICE_UUIDS } ?: return null
         val existingTrack = serialTracks[observation.mac]
@@ -254,12 +260,14 @@ class BleThreatAnalyzer(
         val evidence = serialEvidence(track)
         if (!REQUIRED_SERIAL_EVIDENCE.all(evidence::contains)) return null
         if (evidence.count { it in SUPPORTING_SERIAL_EVIDENCE } < MIN_SUPPORTING_SERIAL_EVIDENCE) return null
+        if (!consumeSignal) return null
 
         track.alerted = true
         return BleThreatSignal.SerialSkimmer(
             entityKey = "ble:serial-skimmer:${track.targetMac}",
             targetMac = track.targetMac,
             serialServiceUuid = track.serialServiceUuid,
+            strongestRssi = track.strongestRssi,
             confidence = evidence.size.toFloat() / BleSerialEvidence.entries.size,
             evidence = evidence,
         )

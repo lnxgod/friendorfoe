@@ -156,6 +156,41 @@ class BleThreatAnalyzerTest {
     }
 
     @Test
+    fun `serial signal carries strongest observed RSSI`() {
+        val analyzer = BleThreatAnalyzer()
+
+        analyzer.observe(serial(0, rssi = -61))
+        analyzer.observe(serial(2_500, rssi = -70))
+        val signal = analyzer.observe(serial(5_100, rssi = -66))
+            .filterIsInstance<BleThreatSignal.SerialSkimmer>()
+            .single()
+
+        assertEquals(-61, signal.strongestRssi)
+    }
+
+    @Test
+    fun `simultaneous prompt and serial remain independently observable`() {
+        val analyzer = BleThreatAnalyzer()
+        val burst = promptBurst()
+        val collisionMac = burst.last().mac
+        analyzer.observe(serial(0).copy(mac = collisionMac))
+        analyzer.observe(serial(2_500).copy(mac = collisionMac))
+        burst.dropLast(1).forEach(analyzer::observe)
+
+        val collisionSignals = analyzer.observe(
+            burst.last().copy(
+                serviceUuids16 = setOf(0xFFE0),
+                localName = "BT",
+                connectable = true,
+            )
+        )
+
+        assertTrue(collisionSignals.single() is BleThreatSignal.PairingSpam)
+        val nextSerialPacket = serial(7_200).copy(mac = collisionMac)
+        assertTrue(analyzer.observe(nextSerialPacket).single() is BleThreatSignal.SerialSkimmer)
+    }
+
+    @Test
     fun `persistent sparse FFE0 candidate with exactly two supporting signals alerts`() {
         val analyzer = BleThreatAnalyzer()
 
