@@ -33,6 +33,30 @@ internal fun mapTrackAlpha(confidence: Float): Float {
     }
 }
 
+internal data class OsmdroidMarkerOrientation(
+    val rotationDegrees: Float,
+    val flat: Boolean = true,
+)
+
+/** Converts clockwise compass headings to osmdroid's counter-clockwise bearing. */
+internal fun osmdroidMarkerOrientation(headingDegrees: Float?): OsmdroidMarkerOrientation {
+    if (headingDegrees == null || !headingDegrees.isFinite()) {
+        return OsmdroidMarkerOrientation(rotationDegrees = 0f)
+    }
+
+    val normalized = ((headingDegrees % 360f) + 360f) % 360f
+    var rotation = -normalized
+    if (rotation < -180f) rotation += 360f
+    if (rotation == 0f) rotation = 0f
+    return OsmdroidMarkerOrientation(rotationDegrees = rotation)
+}
+
+private fun Marker.setMapHeading(headingDegrees: Float?) {
+    val orientation = osmdroidMarkerOrientation(headingDegrees)
+    setFlat(orientation.flat)
+    setRotation(orientation.rotationDegrees)
+}
+
 internal data class AircraftMarkerPresentation(
     val key: String,
     val latitude: Double,
@@ -240,7 +264,7 @@ internal class MapOverlayController(
             },
             update = { overlay, state ->
                 overlay.marker.setPosition(GeoPoint(state.latitude, state.longitude))
-                overlay.marker.setRotation(state.rotationDegrees)
+                overlay.marker.setMapHeading(state.rotationDegrees)
                 overlay.marker.setAlpha(state.alpha)
                 overlay.marker.title = state.title
                 overlay.marker.snippet = state.snippet
@@ -286,7 +310,7 @@ internal class MapOverlayController(
             },
             update = { overlay, obj ->
                 overlay.marker.setPosition(obj.position.toGeoPoint())
-                overlay.marker.setRotation(obj.position.heading ?: 0f)
+                overlay.marker.setMapHeading(obj.position.heading)
                 overlay.marker.setAlpha(1f)
                 overlay.marker.title = markerTitle(obj)
                 overlay.marker.snippet = "Remote: ${markerSnippet(obj)}"
@@ -383,7 +407,7 @@ internal class MapOverlayController(
             },
             update = { overlay, drone ->
                 overlay.marker.setPosition(GeoPoint(drone.lat, drone.lon))
-                overlay.marker.setRotation(drone.headingDeg ?: 0f)
+                overlay.marker.setMapHeading(drone.headingDeg)
                 overlay.marker.setAlpha(1f)
                 overlay.marker.title = sensorDroneTitle(drone)
                 overlay.marker.snippet = sensorDroneSnippet(drone)
@@ -482,7 +506,7 @@ internal class MapOverlayController(
         }.also { userMarker = it }
 
         marker.setPosition(center)
-        marker.setRotation(if (following) headingDegrees else 0f)
+        marker.setMapHeading(if (following) headingDegrees else null)
         marker.setAlpha(1f)
         marker.title = "You"
         marker.snippet = null
