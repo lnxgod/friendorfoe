@@ -3,6 +3,7 @@ package com.friendorfoe.detection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
@@ -111,6 +112,57 @@ class BleTrackerTest {
     }
 
     @Test
+    fun `wall clock rollback does not move last seen backward`() {
+        val tracker = BleTracker()
+        val start = Instant.parse("2026-07-16T12:00:00Z")
+
+        record(tracker, start.plusSeconds(300), latitudeAtMeters(0.0))
+        record(tracker, start.plusSeconds(180), latitudeAtMeters(80.0))
+
+        assertEquals(start.plusSeconds(300), tracker.getDevice(DEFAULT_MAC)?.lastSeen)
+    }
+
+    @Test
+    fun `rollback timestamps cannot create a false third cluster`() {
+        val tracker = BleTracker()
+        val start = Instant.parse("2026-07-16T12:00:00Z")
+        val observations = listOf(
+            0L to 0.0,
+            60L to 0.0,
+            240L to 80.0,
+            300L to 80.0,
+            120L to 160.0,
+            180L to 160.0,
+        )
+
+        observations.forEach { (seconds, meters) ->
+            record(tracker, start.plusSeconds(seconds), latitudeAtMeters(meters))
+        }
+
+        assertTrue(tracker.checkForFollowersAt(start.plusSeconds(301)).isEmpty())
+    }
+
+    @Test
+    fun `future timestamps cannot create follower movement`() {
+        val tracker = BleTracker()
+        val start = Instant.parse("2026-07-16T12:00:00Z")
+        val observations = listOf(
+            0L to 0.0,
+            60L to 0.0,
+            300L to 80.0,
+            300L to 80.0,
+            900L to 160.0,
+            900L to 160.0,
+        )
+
+        observations.forEach { (seconds, meters) ->
+            record(tracker, start.plusSeconds(seconds), latitudeAtMeters(meters))
+        }
+
+        assertTrue(tracker.checkForFollowersAt(start.plusSeconds(301)).isEmpty())
+    }
+
+    @Test
     fun `unrelated global user movement cannot create follower evidence`() {
         val tracker = BleTracker()
         val start = Instant.parse("2026-07-16T12:00:00Z")
@@ -173,6 +225,47 @@ class BleTrackerTest {
     }
 
     @Test
+    fun `exact gps cluster and movement boundaries are inclusive`() {
+        val tracker = BleTracker()
+        val start = Instant.parse("2026-07-16T12:00:00Z")
+        val meters = listOf(0.0, 0.0, 75.0, 75.0, 150.0, 150.0)
+
+        meters.forEachIndexed { index, offsetMeters ->
+            record(
+                tracker = tracker,
+                timestamp = start.plusSeconds(index * 60L),
+                latitude = latitudeAtMeters(offsetMeters),
+                accuracy = 50f,
+            )
+        }
+
+        val alert = tracker.checkForFollowersAt(start.plusSeconds(301)).single()
+        assertEquals("following", alert.reason)
+        assertEquals(3, alert.evidence.clusterCount)
+        assertEquals(150.0, alert.evidence.movementMeters, DISTANCE_TOLERANCE_M)
+    }
+
+    @Test
+    fun `exact twenty five meter lingering span is inclusive`() {
+        val tracker = BleTracker()
+        val start = Instant.parse("2026-07-16T12:00:00Z")
+
+        repeat(10) { index ->
+            record(
+                tracker = tracker,
+                timestamp = start.plusSeconds(index * 600L / 9L),
+                latitude = latitudeAtMeters(if (index % 2 == 0) 0.0 else 25.0),
+                accuracy = 50f,
+                rssi = -70,
+            )
+        }
+
+        val alert = tracker.checkForFollowersAt(start.plusSeconds(601)).single()
+        assertEquals("lingering", alert.reason)
+        assertEquals(25.0, alert.evidence.movementMeters, DISTANCE_TOLERANCE_M)
+    }
+
+    @Test
     fun `lingering rejects weak sparse or moving evidence`() {
         val start = Instant.parse("2026-07-16T12:00:00Z")
         val weak = BleTracker()
@@ -208,6 +301,45 @@ class BleTrackerTest {
         assertTrue(tracker.checkForFollowersAt(start.plusSeconds(303)).isEmpty())
         assertFalse(firstAlert.device.isFollowing)
         assertFalse(firstAlert.device.isStalker)
+    }
+
+    @Test
+    fun `name enrichment preserves device identity through reset and clear`() {
+        val tracker = BleTracker()
+        val start = Instant.parse("2026-07-16T12:00:00Z")
+
+        record(
+            tracker = tracker,
+            timestamp = start,
+            latitude = FOLLOWING_LATITUDES.first(),
+            deviceName = null,
+        )
+        val device = requireNotNull(tracker.getDevice(DEFAULT_MAC))
+        FOLLOWING_LATITUDES.drop(1).forEachIndexed { offset, latitude ->
+            val index = offset + 1
+            record(
+                tracker = tracker,
+                timestamp = start.plusSeconds(index * 60L),
+                latitude = latitude,
+            )
+        }
+        val alert = tracker.checkForFollowersAt(start.plusSeconds(301)).single()
+        assertSame(device, alert.device)
+        assertEquals("Test Tag", device.deviceName)
+
+        record(
+            tracker = tracker,
+            timestamp = start.plusSeconds(302),
+            latitude = FOLLOWING_LATITUDES.last(),
+            bonded = true,
+        )
+        assertTrue(tracker.checkForFollowersAt(start.plusSeconds(303)).isEmpty())
+        assertFalse(device.isFollowing)
+        assertFalse(device.isStalker)
+
+        tracker.clear()
+        assertFalse(device.isFollowing)
+        assertFalse(device.isStalker)
     }
 
     @Test
@@ -260,6 +392,34 @@ class BleTrackerTest {
         assertTrue(result.estimatedBearing > 340f || result.estimatedBearing < 20f)
     }
 
+    @Test
+    fun `multi device alerts have deterministic severity and mac order`() {
+        val tracker = BleTracker()
+        val start = Instant.parse("2026-07-16T12:00:00Z")
+        recordFollowerPath(tracker, start, mac = "AA:BB:CC:00:00:02")
+        recordFollowerPath(tracker, start, mac = "AA:BB:CC:00:00:01")
+        recordFollowerPath(
+            tracker = tracker,
+            start = start,
+            mac = "AA:BB:CC:00:00:03",
+            durationSeconds = 600L,
+            hasCamera = true,
+            strongestRssi = -70,
+        )
+
+        val alerts = tracker.checkForFollowersAt(start.plusSeconds(601))
+
+        assertEquals(listOf(3, 2, 2), alerts.map { it.threatLevel })
+        assertEquals(
+            listOf(
+                "AA:BB:CC:00:00:03",
+                "AA:BB:CC:00:00:01",
+                "AA:BB:CC:00:00:02",
+            ),
+            alerts.map { it.device.mac },
+        )
+    }
+
     private fun recordFollowerPath(
         tracker: BleTracker,
         start: Instant,
@@ -268,6 +428,7 @@ class BleTrackerTest {
         category: PrivacyCategory = PrivacyCategory.BLE_TRACKER,
         hasCamera: Boolean = false,
         strongestRssi: Int = -60,
+        mac: String = DEFAULT_MAC,
     ) {
         FOLLOWING_LATITUDES.forEachIndexed { index, latitude ->
             record(
@@ -278,6 +439,7 @@ class BleTrackerTest {
                 category = category,
                 hasCamera = hasCamera,
                 rssi = if (index == 2) strongestRssi else strongestRssi - 5,
+                mac = mac,
             )
         }
     }
@@ -293,10 +455,12 @@ class BleTrackerTest {
         category: PrivacyCategory = PrivacyCategory.BLE_TRACKER,
         hasCamera: Boolean = false,
         compassBearing: Float = 0f,
+        mac: String = DEFAULT_MAC,
+        deviceName: String? = "Test Tag",
     ) = tracker.recordSightingAt(
-        mac = DEFAULT_MAC,
+        mac = mac,
         rssi = rssi,
-        deviceName = "Test Tag",
+        deviceName = deviceName,
         deviceType = "BLE Tracker",
         manufacturer = "Generic",
         hasCamera = hasCamera,
@@ -309,8 +473,14 @@ class BleTrackerTest {
         timestamp = timestamp,
     )
 
+    private fun latitudeAtMeters(meters: Double): Double =
+        BASE_LATITUDE + Math.toDegrees(meters / EARTH_RADIUS_M)
+
     companion object {
         private const val DEFAULT_MAC = "AA:BB:CC:00:00:01"
+        private const val BASE_LATITUDE = 37.0
+        private const val EARTH_RADIUS_M = 6_371_000.0
+        private const val DISTANCE_TOLERANCE_M = 0.01
         private val FOLLOWING_LATITUDES = listOf(
             37.0000,
             37.0000,

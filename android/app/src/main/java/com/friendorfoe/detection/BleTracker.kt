@@ -35,6 +35,7 @@ class BleTracker @Inject constructor() {
         private const val LINGER_MAX_MOVEMENT_M = 25.0
         private const val MAX_LOCATION_ACCURACY_M = 50f
         private const val STRONG_RSSI_DBM = -70
+        private const val DISTANCE_EPSILON_M = 0.01
 
         /** Maximum sightings to keep per device */
         private const val MAX_SIGHTINGS = 100
@@ -74,7 +75,7 @@ class BleTracker @Inject constructor() {
     /** Tracked BLE device with sighting history */
     data class TrackedDevice(
         val mac: String,
-        val deviceName: String?,
+        @Volatile var deviceName: String?,
         val deviceType: String?,
         val manufacturer: String?,
         val hasCamera: Boolean,
@@ -121,6 +122,7 @@ class BleTracker @Inject constructor() {
     private data class EvidenceAnalysis(
         val evidence: FollowerEvidence,
         val locationSpanMeters: Double,
+        val latestCategory: PrivacyCategory?,
     )
 
     private data class UserPoint(
@@ -189,31 +191,6 @@ class BleTracker @Inject constructor() {
     ) {
         recordUserLocation(userLat, userLon, timestamp)
 
-        val device = trackedDevices.computeIfAbsent(mac) {
-            TrackedDevice(
-                mac = mac,
-                deviceName = deviceName,
-                deviceType = deviceType,
-                manufacturer = manufacturer,
-                hasCamera = hasCamera,
-                category = category,
-                isBonded = isBonded,
-                locationAccuracyMeters = locationAccuracyMeters,
-                firstSeen = timestamp
-            )
-        }
-
-        device.lastSeen = timestamp
-        device.category = category
-        device.isBonded = device.isBonded || isBonded
-        device.locationAccuracyMeters = locationAccuracyMeters
-        if (rssi > device.peakRssi) device.peakRssi = rssi
-
-        // Update name/type if we got better info
-        if (deviceName != null && device.deviceName == null) {
-            trackedDevices[mac] = device.copy(deviceName = deviceName)
-        }
-
         val sighting = Sighting(
             rssi = rssi,
             userLat = userLat,
@@ -224,11 +201,35 @@ class BleTracker @Inject constructor() {
             isBonded = isBonded,
             locationAccuracyMeters = locationAccuracyMeters,
         )
-        synchronized(device.sightings) {
-            device.sightings.add(sighting)
-            if (device.sightings.size > MAX_SIGHTINGS) {
-                device.sightings.removeAt(0)
+
+        trackedDevices.compute(mac) { _, existing ->
+            val device = existing ?: TrackedDevice(
+                mac = mac,
+                deviceName = deviceName,
+                deviceType = deviceType,
+                manufacturer = manufacturer,
+                hasCamera = hasCamera,
+                category = category,
+                isBonded = isBonded,
+                locationAccuracyMeters = locationAccuracyMeters,
+                firstSeen = timestamp,
+                lastSeen = timestamp,
+            )
+            synchronized(device) {
+                if (timestamp.isAfter(device.lastSeen)) device.lastSeen = timestamp
+                device.category = category
+                device.isBonded = device.isBonded || isBonded
+                device.locationAccuracyMeters = locationAccuracyMeters
+                if (rssi > device.peakRssi) device.peakRssi = rssi
+                if (device.deviceName == null && deviceName != null) {
+                    device.deviceName = deviceName
+                }
+                device.sightings.add(sighting)
+                if (device.sightings.size > MAX_SIGHTINGS) {
+                    device.sightings.removeAt(0)
+                }
             }
+            device
         }
 
         // If we're doing a direction scan on this device, record sample
@@ -278,58 +279,80 @@ class BleTracker @Inject constructor() {
     internal fun checkForFollowersAt(now: Instant): List<StalkerAlert> {
         val alerts = mutableListOf<StalkerAlert>()
 
-        trackedDevices.values.forEach { device ->
-            device.isFollowing = false
-            device.isStalker = false
+        trackedDevices.values.toList().forEach { device ->
+            synchronized(device) {
+                device.isFollowing = false
+                device.isStalker = false
+            }
         }
 
         // Prune old devices
         val staleThreshold = now.minusMillis(DEVICE_HISTORY_TTL_MS)
-        trackedDevices.entries.removeIf { it.value.lastSeen.isBefore(staleThreshold) }
-
-        for ((_, device) in trackedDevices) {
-            if (device.isBonded || device.category !in FOLLOWER_CATEGORIES) continue
-
-            val analysis = analyzeEvidence(device)
-            val evidence = analysis.evidence
-            val isFollowing = evidence.durationMs >= FOLLOW_MIN_DURATION_MS &&
-                evidence.qualifyingSightings >= FOLLOW_MIN_SIGHTINGS &&
-                evidence.clusterCount >= 3 &&
-                evidence.movementMeters >= FOLLOW_MIN_MOVEMENT_M &&
-                evidence.temporalBands.containsAll(REQUIRED_TEMPORAL_BANDS)
-
-            if (isFollowing) {
-                device.isFollowing = true
-                device.isStalker = true
-                val threatLevel = when {
-                    device.hasCamera &&
-                        evidence.durationMs >= CAMERA_HIGH_THREAT_DURATION_MS &&
-                        evidence.strongestRssi >= STRONG_RSSI_DBM -> 3
-                    else -> 2
+        trackedDevices.keys.toList().forEach { mac ->
+            trackedDevices.computeIfPresent(mac) { _, device ->
+                synchronized(device) {
+                    if (device.lastSeen.isBefore(staleThreshold)) null else device
                 }
-                alerts.add(StalkerAlert(device, "following", threatLevel, evidence))
-                safeLogWarning(
-                    "STALKER ALERT: ${device.deviceType ?: device.mac} following for " +
-                        "${evidence.durationMs / 1000}s across ${evidence.clusterCount} clusters"
-                )
-            } else if (
-                evidence.durationMs >= LINGER_MIN_DURATION_MS &&
-                evidence.qualifyingSightings >= LINGER_MIN_SIGHTINGS &&
-                analysis.locationSpanMeters <= LINGER_MAX_MOVEMENT_M &&
-                evidence.strongestRssi >= STRONG_RSSI_DBM
-            ) {
-                alerts.add(
-                    StalkerAlert(
-                        device = device,
-                        reason = "lingering",
-                        threatLevel = 1,
-                        evidence = evidence.copy(movementMeters = analysis.locationSpanMeters),
-                    )
-                )
             }
         }
 
-        return alerts
+        for (device in trackedDevices.values.toList()) {
+            val alert = synchronized(device) {
+                val analysis = analyzeEvidence(device.sightings, now)
+                val evidence = analysis.evidence
+                if (device.isBonded || analysis.latestCategory !in FOLLOWER_CATEGORIES) {
+                    null
+                } else {
+                    val isFollowing = evidence.durationMs >= FOLLOW_MIN_DURATION_MS &&
+                        evidence.qualifyingSightings >= FOLLOW_MIN_SIGHTINGS &&
+                        evidence.clusterCount >= 3 &&
+                        evidence.movementMeters + DISTANCE_EPSILON_M >= FOLLOW_MIN_MOVEMENT_M &&
+                        evidence.temporalBands.containsAll(REQUIRED_TEMPORAL_BANDS)
+
+                    if (isFollowing) {
+                        device.isFollowing = true
+                        device.isStalker = true
+                        val threatLevel = when {
+                            device.hasCamera &&
+                                evidence.durationMs >= CAMERA_HIGH_THREAT_DURATION_MS &&
+                                evidence.strongestRssi >= STRONG_RSSI_DBM -> 3
+                            else -> 2
+                        }
+                        StalkerAlert(device, "following", threatLevel, evidence)
+                    } else if (
+                        evidence.durationMs >= LINGER_MIN_DURATION_MS &&
+                        evidence.qualifyingSightings >= LINGER_MIN_SIGHTINGS &&
+                        analysis.locationSpanMeters <= LINGER_MAX_MOVEMENT_M + DISTANCE_EPSILON_M &&
+                        evidence.strongestRssi >= STRONG_RSSI_DBM
+                    ) {
+                        StalkerAlert(
+                            device = device,
+                            reason = "lingering",
+                            threatLevel = 1,
+                            evidence = evidence.copy(movementMeters = analysis.locationSpanMeters),
+                        )
+                    } else {
+                        null
+                    }
+                }
+            }
+            if (alert != null) {
+                alerts.add(alert)
+                if (alert.reason == "following") {
+                    safeLogWarning(
+                        "STALKER ALERT: ${device.deviceType ?: device.mac} following for " +
+                            "${alert.evidence.durationMs / 1000}s across " +
+                            "${alert.evidence.clusterCount} clusters"
+                    )
+                }
+            }
+        }
+
+        return alerts.sortedWith(
+            compareByDescending<StalkerAlert> { it.threatLevel }
+                .thenBy { it.reason }
+                .thenBy { it.device.mac }
+        )
     }
 
     /**
@@ -419,9 +442,11 @@ class BleTracker @Inject constructor() {
 
     /** Clear all BLE follower and direction evidence for a new detection session. */
     fun clear() {
-        trackedDevices.values.forEach { device ->
-            device.isFollowing = false
-            device.isStalker = false
+        trackedDevices.values.toList().forEach { device ->
+            synchronized(device) {
+                device.isFollowing = false
+                device.isStalker = false
+            }
         }
         trackedDevices.clear()
         synchronized(userLocations) { userLocations.clear() }
@@ -429,12 +454,9 @@ class BleTracker @Inject constructor() {
         synchronized(directionSamples) { directionSamples.clear() }
     }
 
-    private fun analyzeEvidence(device: TrackedDevice): EvidenceAnalysis {
-        val qualifying = synchronized(device.sightings) {
-            device.sightings
-                .filter { it.isQualifying() }
-                .sortedBy { it.timestamp }
-        }
+    private fun analyzeEvidence(sightings: List<Sighting>, now: Instant): EvidenceAnalysis {
+        val observations = monotonicObservationsAt(sightings, now)
+        val qualifying = observations.filter { it.isQualifying() }
         if (qualifying.isEmpty()) {
             return EvidenceAnalysis(
                 evidence = FollowerEvidence(
@@ -446,6 +468,7 @@ class BleTracker @Inject constructor() {
                     strongestRssi = Int.MIN_VALUE,
                 ),
                 locationSpanMeters = 0.0,
+                latestCategory = observations.lastOrNull()?.category,
             )
         }
 
@@ -456,7 +479,10 @@ class BleTracker @Inject constructor() {
         val anchors = mutableListOf(qualifying.first())
         qualifying.drop(1).forEach { sighting ->
             val currentAnchor = anchors.last()
-            if (distanceMeters(currentAnchor, sighting) >= FOLLOW_CLUSTER_DISTANCE_M) {
+            if (
+                distanceMeters(currentAnchor, sighting) + DISTANCE_EPSILON_M >=
+                FOLLOW_CLUSTER_DISTANCE_M
+            ) {
                 anchors.add(sighting)
             }
         }
@@ -475,7 +501,26 @@ class BleTracker @Inject constructor() {
                 strongestRssi = qualifying.maxOf { it.rssi },
             ),
             locationSpanMeters = maxLocationSpanMeters(qualifying),
+            latestCategory = observations.last().category,
         )
+    }
+
+    private fun monotonicObservationsAt(
+        sightings: List<Sighting>,
+        now: Instant,
+    ): List<Sighting> {
+        val observations = mutableListOf<Sighting>()
+        var timestampHighWater: Instant? = null
+        sightings.forEach { sighting ->
+            if (sighting.timestamp.isAfter(now)) return@forEach
+            val previousTimestamp = timestampHighWater
+            if (previousTimestamp != null && sighting.timestamp.isBefore(previousTimestamp)) {
+                return@forEach
+            }
+            timestampHighWater = sighting.timestamp
+            observations.add(sighting)
+        }
+        return observations
     }
 
     private fun Sighting.isQualifying(): Boolean =
