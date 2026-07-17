@@ -13,10 +13,10 @@ make it part of a larger RF sensor deployment.
 
 ## Current Versions
 
-- Android app: `0.64.67-ble-investigation`
-- Backend: `0.64.67-ble-investigation`
-- FoF Badge firmware: `0.64.67-badge-ble-investigation`
-- Production S3 firmware: `0.64.67-ble-investigation`
+- Android app: `0.64.68-live-follow`
+- Backend: `0.64.68-live-follow`
+- FoF Badge firmware: `0.64.68-badge-live-follow`
+- Production S3 firmware: `0.64.68-live-follow`
 
 Keep those tracks separate. The badge firmware uses `FOF_BADGE_VARIANT`,
 badge-specific pinning, a Waveshare ST7735 display, USB-C control, local AP
@@ -37,15 +37,18 @@ uplink assigns the active role and scanner profile at runtime.
 
 ## What This Release Tests
 
-`0.64.67-badge-ble-investigation` is the current behavioral BLE investigation
-release, carrying the privacy beacon and BLE/theme control work forward while
-keeping the badge track separate from the production node firmware:
+`0.64.68-badge-live-follow` is the current badge release, paired with the
+`0.64.68-live-follow` Android, backend, and production track. It carries the
+privacy beacon and BLE/theme control work forward while keeping badge firmware
+separate from production node firmware:
 
-- Android and badge firmware detect rotating Apple Continuity, Fast Pair, and
-  Swift Pair prompt floods using the same bounded behavioral thresholds.
-- Persistent `0xFFE0`/`0xFFF0` serial-service candidates require combined
-  evidence; the service UUID alone, trusted identities, PKOC, and normal
-  multi-service IoT profiles remain suppressed.
+- Smooth live-map updates and follow tuning keep selected targets stable as new
+  observations arrive.
+- Android pairing-spam and serial-service evidence now match ESP behavior;
+  trusted ESP identities, PKOC, and normal multi-service IoT profiles remain
+  suppressed.
+- Persistent `0xFFE0`/`0xFFF0` serial-service candidates still require combined
+  evidence rather than a service UUID alone.
 - Android can investigate a fresh selected BLE device directly through the
   phone or through badge USB-C, bonded badge BLE, or the badge HTTP bridge.
 - Holding badge button 2 on a selected BLE alert starts a bounded read-only
@@ -160,7 +163,7 @@ Expected healthy status facts:
 
 - Top-level `recovery_mode` is `normal`.
 - Both scanners are connected and report `scanner-s3-combo-fof_badge`.
-- Uplink and scanners report `0.64.67-badge-ble-investigation` after the matching badge
+- Uplink and scanners report `0.64.68-badge-live-follow` after the matching badge
   images are flashed.
 - `display_policy_hash` is non-zero.
 - Scanner `display_policy_ack_hash` catches up to the uplink policy hash.

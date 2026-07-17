@@ -19,9 +19,11 @@ same backend ingest path. Walk around with it during the day; mount it later as
 part of a multi-node sensor platform.
 
 > Current tracks: Android/backend/production S3 firmware are on
-> `0.64.67-ble-investigation`; badge firmware is on
-> `0.64.67-badge-ble-investigation`. The badge and production sensor fleet intentionally
-> move on separate firmware tracks.
+> `0.64.68-live-follow`; badge firmware is on
+> `0.64.68-badge-live-follow`. This release smooths live map/follow updates,
+> aligns Android BLE pairing-spam and serial evidence with ESP trusted-identity
+> handling, and preserves read-only Badge Button 2 investigation. The badge and
+> production sensor fleet intentionally move on separate firmware tracks.
 
 ## What The Badge Does
 
