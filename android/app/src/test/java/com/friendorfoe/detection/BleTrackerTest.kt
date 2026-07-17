@@ -143,7 +143,7 @@ class BleTrackerTest {
     }
 
     @Test
-    fun `future timestamps cannot create follower movement`() {
+    fun `future timestamps rejected early cannot mature into follower movement`() {
         val tracker = BleTracker()
         val start = Instant.parse("2026-07-16T12:00:00Z")
         val observations = listOf(
@@ -160,6 +160,7 @@ class BleTrackerTest {
         }
 
         assertTrue(tracker.checkForFollowersAt(start.plusSeconds(301)).isEmpty())
+        assertTrue(tracker.checkForFollowersAt(start.plusSeconds(901)).isEmpty())
     }
 
     @Test
@@ -230,14 +231,7 @@ class BleTrackerTest {
         val start = Instant.parse("2026-07-16T12:00:00Z")
         val meters = listOf(0.0, 0.0, 75.0, 75.0, 150.0, 150.0)
 
-        meters.forEachIndexed { index, offsetMeters ->
-            record(
-                tracker = tracker,
-                timestamp = start.plusSeconds(index * 60L),
-                latitude = latitudeAtMeters(offsetMeters),
-                accuracy = 50f,
-            )
-        }
+        recordMeterPath(tracker, start, meters, accuracy = 50f)
 
         val alert = tracker.checkForFollowersAt(start.plusSeconds(301)).single()
         assertEquals("following", alert.reason)
@@ -246,23 +240,72 @@ class BleTrackerTest {
     }
 
     @Test
+    fun `follower distances one centimeter below boundaries do not alert`() {
+        val tracker = BleTracker()
+        val start = Instant.parse("2026-07-16T12:00:00Z")
+
+        recordMeterPath(
+            tracker = tracker,
+            start = start,
+            meters = listOf(0.0, 0.0, 75.0, 75.0, 149.99, 149.99),
+        )
+
+        assertTrue(tracker.checkForFollowersAt(start.plusSeconds(301)).isEmpty())
+    }
+
+    @Test
+    fun `follower distances one centimeter above boundaries alert`() {
+        val tracker = BleTracker()
+        val start = Instant.parse("2026-07-16T12:00:00Z")
+
+        recordMeterPath(
+            tracker = tracker,
+            start = start,
+            meters = listOf(0.0, 0.0, 75.01, 75.01, 150.02, 150.02),
+        )
+
+        val alert = tracker.checkForFollowersAt(start.plusSeconds(301)).single()
+        assertEquals(3, alert.evidence.clusterCount)
+        assertTrue(alert.evidence.movementMeters > 150.0)
+    }
+
+    @Test
+    fun `gps accuracy boundary distinguishes one centimeter sides`() {
+        val start = Instant.parse("2026-07-16T12:00:00Z")
+        val below = BleTracker()
+        val above = BleTracker()
+        val meters = listOf(0.0, 0.0, 80.0, 80.0, 160.0, 160.0)
+
+        recordMeterPath(below, start, meters, accuracy = 49.99f)
+        recordMeterPath(above, start, meters, accuracy = 50.01f)
+
+        assertEquals("following", below.checkForFollowersAt(start.plusSeconds(301)).single().reason)
+        assertTrue(above.checkForFollowersAt(start.plusSeconds(301)).isEmpty())
+    }
+
+    @Test
     fun `exact twenty five meter lingering span is inclusive`() {
         val tracker = BleTracker()
         val start = Instant.parse("2026-07-16T12:00:00Z")
 
-        repeat(10) { index ->
-            record(
-                tracker = tracker,
-                timestamp = start.plusSeconds(index * 600L / 9L),
-                latitude = latitudeAtMeters(if (index % 2 == 0) 0.0 else 25.0),
-                accuracy = 50f,
-                rssi = -70,
-            )
-        }
+        recordLingeringSpan(tracker, start, spanMeters = 25.0)
 
         val alert = tracker.checkForFollowersAt(start.plusSeconds(601)).single()
         assertEquals("lingering", alert.reason)
         assertEquals(25.0, alert.evidence.movementMeters, DISTANCE_TOLERANCE_M)
+    }
+
+    @Test
+    fun `lingering span distinguishes one centimeter sides`() {
+        val start = Instant.parse("2026-07-16T12:00:00Z")
+        val below = BleTracker()
+        val above = BleTracker()
+
+        recordLingeringSpan(below, start, spanMeters = 24.99)
+        recordLingeringSpan(above, start, spanMeters = 25.01)
+
+        assertEquals("lingering", below.checkForFollowersAt(start.plusSeconds(601)).single().reason)
+        assertTrue(above.checkForFollowersAt(start.plusSeconds(601)).isEmpty())
     }
 
     @Test
@@ -444,6 +487,38 @@ class BleTrackerTest {
         }
     }
 
+    private fun recordMeterPath(
+        tracker: BleTracker,
+        start: Instant,
+        meters: List<Double>,
+        accuracy: Float = 5f,
+    ) {
+        meters.forEachIndexed { index, offsetMeters ->
+            record(
+                tracker = tracker,
+                timestamp = start.plusSeconds(index * 60L),
+                latitude = latitudeAtMeters(offsetMeters),
+                accuracy = accuracy,
+            )
+        }
+    }
+
+    private fun recordLingeringSpan(
+        tracker: BleTracker,
+        start: Instant,
+        spanMeters: Double,
+    ) {
+        repeat(10) { index ->
+            record(
+                tracker = tracker,
+                timestamp = start.plusSeconds(index * 600L / 9L),
+                latitude = latitudeAtMeters(if (index % 2 == 0) 0.0 else spanMeters),
+                accuracy = 50f,
+                rssi = -70,
+            )
+        }
+    }
+
     private fun record(
         tracker: BleTracker,
         timestamp: Instant,
@@ -480,7 +555,7 @@ class BleTrackerTest {
         private const val DEFAULT_MAC = "AA:BB:CC:00:00:01"
         private const val BASE_LATITUDE = 37.0
         private const val EARTH_RADIUS_M = 6_371_000.0
-        private const val DISTANCE_TOLERANCE_M = 0.01
+        private const val DISTANCE_TOLERANCE_M = 0.001
         private val FOLLOWING_LATITUDES = listOf(
             37.0000,
             37.0000,

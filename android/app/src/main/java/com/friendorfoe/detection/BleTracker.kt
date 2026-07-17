@@ -35,7 +35,8 @@ class BleTracker @Inject constructor() {
         private const val LINGER_MAX_MOVEMENT_M = 25.0
         private const val MAX_LOCATION_ACCURACY_M = 50f
         private const val STRONG_RSSI_DBM = -70
-        private const val DISTANCE_EPSILON_M = 0.01
+        // Covers floating-point roundoff from Haversine conversion, not sensor distance.
+        private const val DISTANCE_ROUNDOFF_M = 0.000001
 
         /** Maximum sightings to keep per device */
         private const val MAX_SIGHTINGS = 100
@@ -298,7 +299,8 @@ class BleTracker @Inject constructor() {
 
         for (device in trackedDevices.values.toList()) {
             val alert = synchronized(device) {
-                val analysis = analyzeEvidence(device.sightings, now)
+                device.sightings.removeAll { it.timestamp.isAfter(now) }
+                val analysis = analyzeEvidence(device.sightings)
                 val evidence = analysis.evidence
                 if (device.isBonded || analysis.latestCategory !in FOLLOWER_CATEGORIES) {
                     null
@@ -306,7 +308,7 @@ class BleTracker @Inject constructor() {
                     val isFollowing = evidence.durationMs >= FOLLOW_MIN_DURATION_MS &&
                         evidence.qualifyingSightings >= FOLLOW_MIN_SIGHTINGS &&
                         evidence.clusterCount >= 3 &&
-                        evidence.movementMeters + DISTANCE_EPSILON_M >= FOLLOW_MIN_MOVEMENT_M &&
+                        meetsMinimumDistance(evidence.movementMeters, FOLLOW_MIN_MOVEMENT_M) &&
                         evidence.temporalBands.containsAll(REQUIRED_TEMPORAL_BANDS)
 
                     if (isFollowing) {
@@ -322,7 +324,7 @@ class BleTracker @Inject constructor() {
                     } else if (
                         evidence.durationMs >= LINGER_MIN_DURATION_MS &&
                         evidence.qualifyingSightings >= LINGER_MIN_SIGHTINGS &&
-                        analysis.locationSpanMeters <= LINGER_MAX_MOVEMENT_M + DISTANCE_EPSILON_M &&
+                        meetsMaximumDistance(analysis.locationSpanMeters, LINGER_MAX_MOVEMENT_M) &&
                         evidence.strongestRssi >= STRONG_RSSI_DBM
                     ) {
                         StalkerAlert(
@@ -454,8 +456,8 @@ class BleTracker @Inject constructor() {
         synchronized(directionSamples) { directionSamples.clear() }
     }
 
-    private fun analyzeEvidence(sightings: List<Sighting>, now: Instant): EvidenceAnalysis {
-        val observations = monotonicObservationsAt(sightings, now)
+    private fun analyzeEvidence(sightings: List<Sighting>): EvidenceAnalysis {
+        val observations = monotonicObservations(sightings)
         val qualifying = observations.filter { it.isQualifying() }
         if (qualifying.isEmpty()) {
             return EvidenceAnalysis(
@@ -479,10 +481,7 @@ class BleTracker @Inject constructor() {
         val anchors = mutableListOf(qualifying.first())
         qualifying.drop(1).forEach { sighting ->
             val currentAnchor = anchors.last()
-            if (
-                distanceMeters(currentAnchor, sighting) + DISTANCE_EPSILON_M >=
-                FOLLOW_CLUSTER_DISTANCE_M
-            ) {
+            if (meetsMinimumDistance(distanceMeters(currentAnchor, sighting), FOLLOW_CLUSTER_DISTANCE_M)) {
                 anchors.add(sighting)
             }
         }
@@ -505,14 +504,10 @@ class BleTracker @Inject constructor() {
         )
     }
 
-    private fun monotonicObservationsAt(
-        sightings: List<Sighting>,
-        now: Instant,
-    ): List<Sighting> {
+    private fun monotonicObservations(sightings: List<Sighting>): List<Sighting> {
         val observations = mutableListOf<Sighting>()
         var timestampHighWater: Instant? = null
         sightings.forEach { sighting ->
-            if (sighting.timestamp.isAfter(now)) return@forEach
             val previousTimestamp = timestampHighWater
             if (previousTimestamp != null && sighting.timestamp.isBefore(previousTimestamp)) {
                 return@forEach
@@ -522,6 +517,14 @@ class BleTracker @Inject constructor() {
         }
         return observations
     }
+
+    private fun meetsMinimumDistance(distanceMeters: Double, thresholdMeters: Double): Boolean =
+        distanceMeters >= thresholdMeters ||
+            thresholdMeters - distanceMeters <= DISTANCE_ROUNDOFF_M
+
+    private fun meetsMaximumDistance(distanceMeters: Double, thresholdMeters: Double): Boolean =
+        distanceMeters <= thresholdMeters ||
+            distanceMeters - thresholdMeters <= DISTANCE_ROUNDOFF_M
 
     private fun Sighting.isQualifying(): Boolean =
         !isBonded &&
