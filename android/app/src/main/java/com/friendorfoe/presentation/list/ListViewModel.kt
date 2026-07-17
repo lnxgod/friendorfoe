@@ -11,6 +11,7 @@ import com.friendorfoe.data.badge.BadgeUsbRepository
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.repository.SkyObjectRepository
+import com.friendorfoe.data.repository.validatedLocationAccuracyMeters
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
@@ -189,11 +190,7 @@ class ListViewModel @Inject constructor(
                 altitudeMeters = location.altitude
             )
 
-            val accuracyMeters = if (location.hasAccuracy()) {
-                location.accuracy
-            } else {
-                Float.POSITIVE_INFINITY
-            }
+            val accuracyMeters = location.validatedLocationAccuracyMeters()
             if (!scanningStarted) {
                 skyObjectRepository.ensureStarted(
                     location.latitude,

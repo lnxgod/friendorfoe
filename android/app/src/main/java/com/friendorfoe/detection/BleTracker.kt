@@ -442,6 +442,33 @@ class BleTracker @Inject constructor() {
     /** Get direction scan sample count */
     fun getDirectionSampleCount(): Int = directionSamples.size
 
+    /** Remove one ignored identity without discarding evidence for unrelated devices. */
+    fun removeEvidenceForIdentities(identityKeys: Set<String>): Int {
+        val canonicalKeys = canonicalPrivacyIdentities(identityKeys)
+        if (canonicalKeys.isEmpty()) return 0
+
+        var removedCount = 0
+        trackedDevices.keys.toList().forEach { mac ->
+            val canonicalMac = canonicalPrivacyIdentity(mac)
+            if (canonicalMac != null && canonicalMac in canonicalKeys) {
+                trackedDevices.remove(mac)?.let { device ->
+                    synchronized(device) {
+                        device.isFollowing = false
+                        device.isStalker = false
+                    }
+                    removedCount += 1
+                }
+            }
+        }
+
+        val directionTarget = directionScanTarget
+        if (directionTarget != null && canonicalPrivacyIdentity(directionTarget) in canonicalKeys) {
+            directionScanTarget = null
+            synchronized(directionSamples) { directionSamples.clear() }
+        }
+        return removedCount
+    }
+
     /** Clear all BLE follower and direction evidence for a new detection session. */
     fun clear() {
         trackedDevices.values.toList().forEach { device ->

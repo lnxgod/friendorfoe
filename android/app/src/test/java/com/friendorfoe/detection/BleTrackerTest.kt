@@ -3,6 +3,7 @@ package com.friendorfoe.detection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -398,6 +399,25 @@ class BleTrackerTest {
         assertTrue(tracker.checkForFollowersAt(start.plusSeconds(302)).isEmpty())
         assertFalse(device.isFollowing)
         assertFalse(device.isStalker)
+    }
+
+    @Test
+    fun `remove evidence evicts only matching canonical device identities`() {
+        val tracker = BleTracker()
+        val start = Instant.parse("2026-07-16T12:00:00Z")
+        val retainedMac = "AA:BB:CC:00:00:02"
+        record(tracker, start, FOLLOWING_LATITUDES.first(), mac = DEFAULT_MAC)
+        record(tracker, start, FOLLOWING_LATITUDES.first(), mac = retainedMac)
+        tracker.startDirectionScan(DEFAULT_MAC)
+
+        assertEquals(
+            1,
+            tracker.removeEvidenceForIdentities(setOf("MAC:aa:bb:cc:00:00:01")),
+        )
+
+        assertNull(tracker.getDevice(DEFAULT_MAC))
+        assertNotNull(tracker.getDevice(retainedMac))
+        assertFalse(tracker.isDirectionScanActive())
     }
 
     @Test

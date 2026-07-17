@@ -13,6 +13,7 @@ import com.friendorfoe.data.remote.SensorDto
 import com.friendorfoe.data.remote.SensorMapApiService
 import com.friendorfoe.data.repository.AircraftRepository
 import com.friendorfoe.data.repository.SkyObjectRepository
+import com.friendorfoe.data.repository.validatedLocationAccuracyMeters
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
@@ -295,11 +296,7 @@ class MapViewModel @Inject constructor(
             )
 
             // Ensure scanning is running even if AR was never visited
-            val accuracyMeters = if (location.hasAccuracy()) {
-                location.accuracy
-            } else {
-                Float.POSITIVE_INFINITY
-            }
+            val accuracyMeters = location.validatedLocationAccuracyMeters()
             if (!scanningStarted) {
                 skyObjectRepository.ensureStarted(
                     location.latitude,

@@ -45,7 +45,13 @@ class PrivacyAlertPolicyTest {
         assertFalse(
             PrivacyAlertPolicy().shouldNotify(
                 ignored,
-                ignoredMacs = setOf("AA:BB:CC:00:00:01")
+                ignoredMacs = setOf("MAC:aa:bb:cc:00:00:01")
+            )
+        )
+        assertFalse(
+            PrivacyAlertPolicy().shouldNotify(
+                ignored,
+                ignoredMacs = setOf("FP:TEST")
             )
         )
     }

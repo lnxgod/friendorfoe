@@ -221,7 +221,10 @@ class GlassesDetector @Inject constructor(
         internal fun behavioralDetectionIsIgnored(
             detection: GlassesDetection,
             ignoredKeys: Set<String>,
-        ): Boolean = detection.mac in ignoredKeys || detection.fingerprintKey in ignoredKeys
+        ): Boolean = privacyIdentityIsIgnored(
+            detection.canonicalPrivacyIdentityAliases(),
+            ignoredKeys,
+        )
 
         internal fun behavioralDetection(
             signal: BleThreatSignal,
@@ -1410,8 +1413,21 @@ class GlassesDetector @Inject constructor(
         }
     }
 
-    /** Ignore a MAC address — won't be reported again */
-    fun ignoreDevice(mac: String) = detectionPrefs.ignoreMac(mac)
+    /** Ignore every stable and rotating identity alias for a detection. */
+    fun ignoreDevice(detection: GlassesDetection) {
+        ignoreIdentities(detection.canonicalPrivacyIdentityAliases())
+    }
+
+    fun ignoreIdentities(identityKeys: Set<String>) {
+        val canonicalKeys = canonicalPrivacyIdentities(identityKeys)
+        detectionPrefs.ignoreIdentities(canonicalKeys)
+        detectedDevices.entries.removeAll { (_, detection) ->
+            privacyIdentityIsIgnored(detection.canonicalPrivacyIdentityAliases(), canonicalKeys)
+        }
+    }
+
+    /** Compatibility path for callers that only know the current MAC. */
+    fun ignoreDevice(mac: String) = ignoreIdentities(setOf(mac))
 
     /** Un-ignore a MAC address */
     fun unignoreDevice(mac: String) = detectionPrefs.unignoreMac(mac)
@@ -1420,7 +1436,7 @@ class GlassesDetector @Inject constructor(
         val mac = result.device.address
 
         // Skip ignored devices
-        if (mac in detectionPrefs.getIgnoredMacs()) return null
+        if (privacyIdentityIsIgnored(setOf(mac), detectionPrefs.getIgnoredIdentities())) return null
 
         val rssi = result.rssi
         val record = result.scanRecord ?: return null
@@ -1709,6 +1725,15 @@ class GlassesDetector @Inject constructor(
             fingerprintKey = fingerprintKey,
             seenMacs = mergedMacs
         )
+        if (
+            privacyIdentityIsIgnored(
+                detection.canonicalPrivacyIdentityAliases(),
+                detectionPrefs.getIgnoredIdentities(),
+            )
+        ) {
+            detectedDevices.remove(fingerprintKey)
+            return null
+        }
         detectedDevices[fingerprintKey] = detection
 
         Log.i(TAG, "Detected $bestType ($bestMfr) RSSI=$rssi conf=$bestConf [$bestReason] cam=$bestCamera details=$parsedDetails")
@@ -1716,7 +1741,7 @@ class GlassesDetector @Inject constructor(
     }
 
     private fun storeBehavioralDetection(detection: GlassesDetection): GlassesDetection? {
-        if (behavioralDetectionIsIgnored(detection, detectionPrefs.getIgnoredMacs())) return null
+        if (behavioralDetectionIsIgnored(detection, detectionPrefs.getIgnoredIdentities())) return null
 
         val existing = detectedDevices[detection.fingerprintKey]
         val stored = detection.copy(

@@ -2,6 +2,10 @@ package com.friendorfoe.presentation.privacy
 
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.PrivacyCategory
+import com.friendorfoe.detection.canonicalPrivacyIdentities
+import com.friendorfoe.detection.canonicalPrivacyIdentity
+import com.friendorfoe.detection.canonicalPrivacyIdentityAliases
+import com.friendorfoe.detection.privacyIdentityIsIgnored
 import com.friendorfoe.presentation.components.FofTone
 import java.time.Instant
 
@@ -31,7 +35,7 @@ class PrivacyAlertPolicy(
     ): Boolean {
         if (candidate.threatLevel < 2) return false
         if (candidate.isBonded) return false
-        if (candidate.macs.any { it in ignoredMacs }) return false
+        if (privacyIdentityIsIgnored(candidate.macs, ignoredMacs)) return false
         val last = lastNotifiedAt[candidate.key]
         if (last != null && nowMs - last < cooldownMs) return false
         lastNotifiedAt[candidate.key] = nowMs
@@ -50,14 +54,16 @@ class PrivacyAlertPolicy(
                 ?: detection.deviceType
             return PrivacyAlertCandidate(
                 key = listOf(
-                    detection.fingerprintKey.ifBlank { "mac:${detection.mac}" },
+                    canonicalPrivacyIdentity(detection.fingerprintKey)
+                        ?: canonicalPrivacyIdentity(detection.mac)
+                        ?: detection.mac,
                     detection.category.name,
                     detection.matchReason
                 ).joinToString(":"),
                 title = "${detection.category.label} detected",
                 body = "$label nearby (${detection.rssi} dBm)",
                 threatLevel = detection.category.threatLevel,
-                macs = detection.seenMacs + detection.mac,
+                macs = detection.canonicalPrivacyIdentityAliases(),
                 isBonded = detection.isBonded
             )
         }
@@ -69,7 +75,7 @@ class PrivacyAlertPolicy(
             threatLevel: Int,
             bssids: List<String>
         ) = PrivacyAlertCandidate(
-            key = "wifi:$type:${bssids.sorted().joinToString(",")}:$ssid",
+            key = "wifi:$type:${canonicalPrivacyIdentities(bssids).sorted().joinToString(",")}:$ssid",
             title = when (type) {
                 "pwnagotchi" -> "Pwnagotchi detected"
                 "evil_twin" -> "Evil twin WiFi detected"
@@ -78,7 +84,7 @@ class PrivacyAlertPolicy(
             },
             body = details,
             threatLevel = threatLevel,
-            macs = bssids.toSet()
+            macs = canonicalPrivacyIdentities(bssids)
         )
 
         fun ultrasonic(
@@ -100,17 +106,18 @@ class PrivacyAlertPolicy(
             threatLevel: Int
         ): PrivacyAlertCandidate {
             val presentation = stalkerPresentation(reason, threatLevel)
+            val canonicalMac = canonicalPrivacyIdentity(mac) ?: mac
             val effectiveThreatLevel = if (reason == "following" && threatLevel in 2..3) {
                 threatLevel
             } else {
                 1
             }
             return PrivacyAlertCandidate(
-                key = "stalker:$reason:$mac",
+                key = "stalker:$reason:$canonicalMac",
                 title = presentation.title,
                 body = "$label appears to be $reason",
                 threatLevel = effectiveThreatLevel,
-                macs = setOf(mac)
+                macs = setOf(canonicalMac)
             )
         }
 

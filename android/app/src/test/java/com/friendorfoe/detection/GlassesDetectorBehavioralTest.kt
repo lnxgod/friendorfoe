@@ -130,7 +130,7 @@ class GlassesDetectorBehavioralTest {
         assertTrue(
             GlassesDetector.behavioralDetectionIsIgnored(
                 serialDetection,
-                setOf("C0:98:E5:00:00:01"),
+                setOf("MAC:c0:98:e5:00:00:01"),
             )
         )
 
@@ -139,7 +139,7 @@ class GlassesDetectorBehavioralTest {
         assertTrue(
             GlassesDetector.behavioralDetectionIsIgnored(
                 pairingDetection,
-                setOf("ble:pairing-spam"),
+                setOf("BLE:PAIRING-SPAM"),
             )
         )
         assertFalse(

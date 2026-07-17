@@ -17,6 +17,10 @@ import com.friendorfoe.detection.RemoteIdScanner
 import com.friendorfoe.detection.WifiDroneScanner
 import com.friendorfoe.detection.WifiNanRemoteIdScanner
 import com.friendorfoe.detection.WifiPrivacyScanner
+import com.friendorfoe.detection.canonicalPrivacyIdentities
+import com.friendorfoe.detection.canonicalPrivacyIdentity
+import com.friendorfoe.detection.canonicalPrivacyIdentityAliases
+import com.friendorfoe.detection.privacyIdentityIsIgnored
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
@@ -35,7 +39,6 @@ import kotlinx.coroutines.launch
 import java.time.Duration
 import java.time.Instant
 import java.util.Collections
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -53,11 +56,7 @@ private val FOLLOWER_CANDIDATE_CATEGORIES = setOf(
 
 internal fun GlassesDetection.isFollowerCandidate(ignoredKeys: Set<String>): Boolean {
     if (isBonded || category !in FOLLOWER_CANDIDATE_CATEGORIES) return false
-
-    val macAliases = (seenMacs + mac).flatMap { seenMac ->
-        listOf(seenMac, "mac:$seenMac")
-    }
-    return (macAliases + fingerprintKey).none { it in ignoredKeys }
+    return !privacyIdentityIsIgnored(canonicalPrivacyIdentityAliases(), ignoredKeys)
 }
 
 /**
@@ -105,12 +104,15 @@ class SkyObjectRepository @Inject constructor(
     private var collectionJob: Job? = null
     private var glassesJob: Job? = null
     private var glassesUpdateJob: Job? = null
-    private val isRunning = AtomicBoolean(false)
+    private val sessionGate = DetectionSessionGate()
 
     // Track user position for history persistence
-    @Volatile private var userLatitude: Double = 0.0
-    @Volatile private var userLongitude: Double = 0.0
-    @Volatile private var userLocationAccuracyMeters: Float = Float.POSITIVE_INFINITY
+    @Volatile
+    private var userLocationFix = UserLocationFix(
+        latitude = 0.0,
+        longitude = 0.0,
+        accuracyMeters = Float.POSITIVE_INFINITY,
+    )
 
     // Track which objects have already been persisted to avoid duplicate writes
     private val persistedObjectIds: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
@@ -159,9 +161,35 @@ class SkyObjectRepository @Inject constructor(
      *  For MAC-rotating devices we clear every row that has ever surfaced this
      *  MAC across its RPA rotations. */
     fun ignorePrivacyDevice(mac: String) {
-        glassesDetector.ignoreDevice(mac)
-        glassesMap.entries.removeAll { (_, d) -> d.mac == mac || mac in d.seenMacs }
-        updateGlassesList(force = true)
+        sessionGate.withGate {
+            val requestedIdentity = canonicalPrivacyIdentities(setOf(mac))
+            val detection = glassesMap.values.firstOrNull { candidate ->
+                privacyIdentityIsIgnored(
+                    candidate.canonicalPrivacyIdentityAliases(),
+                    requestedIdentity,
+                )
+            }
+            val identityAliases = detection?.canonicalPrivacyIdentityAliases()
+                ?: requestedIdentity
+
+            if (detection != null) {
+                glassesDetector.ignoreDevice(detection)
+            } else {
+                glassesDetector.ignoreIdentities(identityAliases)
+            }
+            bleTracker.removeEvidenceForIdentities(identityAliases)
+            glassesMap.entries.removeAll { (_, candidate) ->
+                privacyIdentityIsIgnored(
+                    candidate.canonicalPrivacyIdentityAliases(),
+                    identityAliases,
+                )
+            }
+            _stalkerAlerts.value = _stalkerAlerts.value.filterNot { alert ->
+                val alertIdentity = canonicalPrivacyIdentity(alert.device.mac)
+                alertIdentity != null && alertIdentity in identityAliases
+            }
+            updateGlassesList(force = true)
+        }
     }
 
     /** Toggle privacy detection on/off. */
@@ -172,12 +200,10 @@ class SkyObjectRepository @Inject constructor(
 
     /** Restart running collectors so About toggles take effect immediately. */
     fun restartDetectionSources() {
-        if (!isRunning.get()) return
-        val latitude = userLatitude
-        val longitude = userLongitude
-        val locationAccuracyMeters = userLocationAccuracyMeters
-        stop()
-        ensureStarted(latitude, longitude, locationAccuracyMeters)
+        sessionGate.restartSession(
+            onEnded = ::stopDetectionSources,
+            onStarted = ::startDetectionSources,
+        )
     }
 
     /** Get the position trail for a given object ID. */
@@ -206,21 +232,48 @@ class SkyObjectRepository @Inject constructor(
         longitude: Double,
         locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
     ) {
-        if (!isRunning.compareAndSet(false, true)) {
-            updatePosition(latitude, longitude, locationAccuracyMeters)
+        val validatedAccuracy = validatedLocationAccuracyMeters(
+            hasAccuracy = true,
+            accuracyMeters = locationAccuracyMeters,
+        )
+        val requestedFix = userLocationFixForStart(
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = validatedAccuracy,
+        )
+        if (requestedFix == null) {
+            ensureScannerStarted()
             return
         }
+
+        sessionGate.ensureSession(
+            onStarted = { generation ->
+                applyUserLocationFix(requestedFix, updatePoller = false)
+                startDetectionSources(generation)
+            },
+            onActive = {
+                applyUserLocationFix(requestedFix, updatePoller = true)
+            },
+        )
+    }
+
+    /** Start scanner sources without asserting or replacing a user position. */
+    fun ensureScannerStarted() {
+        sessionGate.ensureSession(
+            onStarted = ::startDetectionSources,
+            onActive = {},
+        )
+    }
+
+    private fun startDetectionSources(generation: Long) {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        userLatitude = latitude
-        userLongitude = longitude
-        userLocationAccuracyMeters = locationAccuracyMeters
-        bleTracker.recordUserLocation(latitude, longitude)
-        Log.i(TAG, "Starting all detection sources at ($latitude, $longitude)")
+        val location = userLocationFix
+        Log.i(TAG, "Starting detection session $generation at (${location.latitude}, ${location.longitude})")
 
         // ADS-B is API/backend-backed. Backend-only disables local phone sensors,
         // not network aircraft feeds.
         if (detectionPrefs.adsbEnabled) {
-            adsbPoller.start(latitude, longitude)
+            adsbPoller.start(location.latitude, location.longitude)
         }
 
         // Collect from all sources (respecting per-source toggles)
@@ -232,10 +285,12 @@ class SkyObjectRepository @Inject constructor(
                 if (detectionPrefs.bleRidEnabled) launch { collectWifiNan() }
                 if (detectionPrefs.wifiEnabled) launch { collectWifi() }
                 if (detectionPrefs.privacyEnabled) {
-                    glassesJob = launch { collectGlasses() }
-                    launch { collectWifiPrivacy() }
+                    glassesJob = launch { collectGlasses(generation) }
+                    launch { collectWifiPrivacy(generation) }
                 }
-                if (detectionPrefs.stalkerDetectionEnabled) launch { collectStalkerAlerts() }
+                if (detectionPrefs.stalkerDetectionEnabled) {
+                    launch { collectStalkerAlerts(generation) }
+                }
                 if (detectionPrefs.ultrasonicEnabled) launch { collectUltrasonic() }
             }
         }
@@ -243,7 +298,10 @@ class SkyObjectRepository @Inject constructor(
 
     /** Stop all detection sources. */
     fun stop() {
-        isRunning.set(false)
+        sessionGate.endSession(::stopDetectionSources)
+    }
+
+    private fun stopDetectionSources() {
         collectionJob?.cancel()
         collectionJob = null
         glassesJob?.cancel()
@@ -286,11 +344,29 @@ class SkyObjectRepository @Inject constructor(
         longitude: Double,
         locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
     ) {
-        userLatitude = latitude
-        userLongitude = longitude
-        userLocationAccuracyMeters = locationAccuracyMeters
-        bleTracker.recordUserLocation(latitude, longitude)
-        adsbPoller.updatePosition(latitude, longitude)
+        val fix = UserLocationFix(
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = validatedLocationAccuracyMeters(
+                hasAccuracy = true,
+                accuracyMeters = locationAccuracyMeters,
+            ),
+        )
+        sessionGate.withGate {
+            userLocationFix = mergeUserLocationFix(userLocationFix, fix)
+            if (sessionGate.isActive()) {
+                bleTracker.recordUserLocation(latitude, longitude)
+                adsbPoller.updatePosition(latitude, longitude)
+            }
+        }
+    }
+
+    private fun applyUserLocationFix(fix: UserLocationFix, updatePoller: Boolean) {
+        userLocationFix = mergeUserLocationFix(userLocationFix, fix)
+        bleTracker.recordUserLocation(fix.latitude, fix.longitude)
+        if (updatePoller) {
+            adsbPoller.updatePosition(fix.latitude, fix.longitude)
+        }
     }
 
     /**
@@ -367,10 +443,20 @@ class SkyObjectRepository @Inject constructor(
     }
 
     /** Collect privacy devices from every visible WiFi result, not only drone SSIDs. */
-    private suspend fun collectWifiPrivacy() {
+    private suspend fun collectWifiPrivacy(generation: Long) {
         wifiPrivacyScanner.startScanning().collect { detection ->
-            glassesMap[detection.fingerprintKey] = detection
-            updateGlassesList()
+            sessionGate.runIfActive(generation) {
+                if (
+                    privacyIdentityIsIgnored(
+                        detection.canonicalPrivacyIdentityAliases(),
+                        detectionPrefs.getIgnoredIdentities(),
+                    )
+                ) {
+                    return@runIfActive
+                }
+                glassesMap[detection.fingerprintKey] = detection
+                updateGlassesList(generation = generation)
+            }
         }
     }
 
@@ -413,59 +499,75 @@ class SkyObjectRepository @Inject constructor(
             .toList()
     }
 
-    private fun updateGlassesList(force: Boolean = false) {
+    private fun updateGlassesList(
+        generation: Long? = null,
+        force: Boolean = false,
+    ) {
         if (force) {
             glassesUpdateJob?.cancel()
             commitGlassesUpdate()
             return
         }
+        val activeGeneration = generation ?: return
         // Debounce: schedule an update if one isn't already pending.
         // This ensures updates within the window are batched, never dropped.
         if (glassesUpdateJob?.isActive == true) return
         glassesUpdateJob = scope.launch {
             kotlinx.coroutines.delay(1000)
-            commitGlassesUpdate()
+            sessionGate.runIfActive(activeGeneration) {
+                commitGlassesUpdate()
+            }
         }
     }
 
-    private suspend fun collectGlasses() {
+    private suspend fun collectGlasses(generation: Long) {
         glassesDetector.startScanning().collect { detection ->
-            // Merge into the fingerprint-keyed map. For MAC-rotating high-risk
-            // classes (Meta, Ray-Ban, Oakley, Quest) this collapses many RPAs
-            // per physical device into one durable row. For stable-MAC devices
-            // the fingerprintKey is "mac:<addr>" so nothing collapses.
-            val existing = glassesMap[detection.fingerprintKey]
-            val merged = if (existing == null) {
-                detection
-            } else {
-                detection.copy(
-                    firstSeen = existing.firstSeen,
-                    seenMacs = existing.seenMacs + detection.seenMacs
-                )
-            }
-            glassesMap[detection.fingerprintKey] = merged
-            updateGlassesList()
+            sessionGate.runIfActive(generation) {
+                if (
+                    privacyIdentityIsIgnored(
+                        detection.canonicalPrivacyIdentityAliases(),
+                        detectionPrefs.getIgnoredIdentities(),
+                    )
+                ) {
+                    return@runIfActive
+                }
+                // Merge into the fingerprint-keyed map. For MAC-rotating high-risk
+                // classes (Meta, Ray-Ban, Oakley, Quest) this collapses many RPAs
+                // per physical device into one durable row. For stable-MAC devices
+                // the fingerprintKey is "mac:<addr>" so nothing collapses.
+                val existing = glassesMap[detection.fingerprintKey]
+                val merged = if (existing == null) {
+                    detection
+                } else {
+                    detection.copy(
+                        firstSeen = existing.firstSeen,
+                        seenMacs = existing.seenMacs + detection.seenMacs
+                    )
+                }
+                glassesMap[detection.fingerprintKey] = merged
+                updateGlassesList(generation = generation)
 
-            // Feed to BLE tracker for stalker detection
-            if (
-                isRunning.get() &&
-                detectionPrefs.stalkerDetectionEnabled &&
-                merged.isFollowerCandidate(detectionPrefs.getIgnoredMacs())
-            ) {
-                bleTracker.recordSighting(
-                    mac = merged.mac,
-                    rssi = merged.rssi,
-                    deviceName = merged.deviceName,
-                    deviceType = merged.deviceType,
-                    manufacturer = merged.manufacturer,
-                    hasCamera = merged.hasCamera,
-                    userLat = userLatitude,
-                    userLon = userLongitude,
-                    compassBearing = sensorFusionEngine.orientation.value.azimuthDegrees,
-                    category = merged.category,
-                    isBonded = merged.isBonded,
-                    locationAccuracyMeters = userLocationAccuracyMeters,
-                )
+                // Feed to BLE tracker for stalker detection
+                if (
+                    detectionPrefs.stalkerDetectionEnabled &&
+                    merged.isFollowerCandidate(detectionPrefs.getIgnoredIdentities())
+                ) {
+                    val location = userLocationFix
+                    bleTracker.recordSighting(
+                        mac = merged.mac,
+                        rssi = merged.rssi,
+                        deviceName = merged.deviceName,
+                        deviceType = merged.deviceType,
+                        manufacturer = merged.manufacturer,
+                        hasCamera = merged.hasCamera,
+                        userLat = location.latitude,
+                        userLon = location.longitude,
+                        compassBearing = sensorFusionEngine.orientation.value.azimuthDegrees,
+                        category = merged.category,
+                        isBonded = merged.isBonded,
+                        locationAccuracyMeters = location.accuracyMeters,
+                    )
+                }
             }
         }
     }
@@ -484,10 +586,12 @@ class SkyObjectRepository @Inject constructor(
     }
 
     /** Periodically check for BLE devices following the user */
-    private suspend fun collectStalkerAlerts() {
+    private suspend fun collectStalkerAlerts(generation: Long) {
         while (true) {
             kotlinx.coroutines.delay(30_000L) // Check every 30 seconds
-            _stalkerAlerts.value = bleTracker.checkForFollowers()
+            sessionGate.runIfActive(generation) {
+                _stalkerAlerts.value = bleTracker.checkForFollowers()
+            }
         }
     }
 
@@ -642,14 +746,15 @@ class SkyObjectRepository @Inject constructor(
         fusionEngine.pruneStale(now)
 
         // Enrich objects missing distanceMeters using user position
-        val enriched = if (userLatitude != 0.0 || userLongitude != 0.0) {
+        val location = userLocationFix
+        val enriched = if (location.latitude != 0.0 || location.longitude != 0.0) {
             fused.map { obj ->
                 if (obj.distanceMeters == null &&
                     (obj.position.latitude != 0.0 || obj.position.longitude != 0.0)
                 ) {
                     val results = FloatArray(1)
                     Location.distanceBetween(
-                        userLatitude, userLongitude,
+                        location.latitude, location.longitude,
                         obj.position.latitude, obj.position.longitude,
                         results
                     )
@@ -679,11 +784,12 @@ class SkyObjectRepository @Inject constructor(
     private fun persistNewDetections(objects: List<SkyObject>) {
         val newObjects = objects.filter { it.id !in persistedObjectIds }
         if (newObjects.isEmpty()) return
+        val location = userLocationFix
 
         scope.launch(Dispatchers.IO) {
             for (obj in newObjects) {
                 try {
-                    val entity = obj.toHistoryEntity(userLatitude, userLongitude)
+                    val entity = obj.toHistoryEntity(location.latitude, location.longitude)
                     historyDao.insert(entity)
                     persistedObjectIds.add(obj.id)
                 } catch (e: Exception) {

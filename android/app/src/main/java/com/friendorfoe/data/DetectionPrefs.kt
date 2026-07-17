@@ -32,6 +32,7 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_MILITARY_ALERTS = "alert_military_enabled"
         private const val KEY_POLICE_ALERTS = "alert_police_enabled"
         private const val KEY_IGNORED_MACS = "privacy_ignored_macs"
+        private const val KEY_IGNORED_IDENTITIES = "privacy_ignored_identities_v2"
         private const val KEY_SENSOR_BACKEND = "sensor_backend_enabled"
         private const val KEY_BACKEND_URL = "sensor_backend_url"
         private const val KEY_BACKEND_ONLY = "sensor_backend_only_mode"
@@ -39,6 +40,21 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_OPERATOR_LABEL = "fof_calibration_operator"
         private const val DEFAULT_BACKEND_URL = "http://fof-server.local:8000/"
     }
+
+    private val ignoredIdentityStore = IgnoredIdentityStore(
+        readStructured = {
+            prefs.getStringSet(KEY_IGNORED_IDENTITIES, null)?.toSet()
+        },
+        readLegacyCsv = {
+            prefs.getString(KEY_IGNORED_MACS, null)
+        },
+        persistStructured = { identities ->
+            prefs.edit()
+                .putStringSet(KEY_IGNORED_IDENTITIES, identities.toSet())
+                .remove(KEY_IGNORED_MACS)
+                .apply()
+        },
+    )
 
     var adsbEnabled: Boolean
         get() = prefs.getBoolean(KEY_ADSB, true)
@@ -116,28 +132,25 @@ class DetectionPrefs @Inject constructor(
         get() = prefs.getString(KEY_OPERATOR_LABEL, "") ?: ""
         set(value) = prefs.edit().putString(KEY_OPERATOR_LABEL, value).apply()
 
-    /** MACs the user has dismissed / marked as not a threat. Cached in memory for hot-path BLE checks. */
-    @Volatile private var cachedIgnoredMacs: Set<String>? = null
+    /** Canonical privacy identities dismissed by the user. */
+    fun getIgnoredIdentities(): Set<String> = ignoredIdentityStore.get()
 
-    fun getIgnoredMacs(): Set<String> {
-        cachedIgnoredMacs?.let { return it }
-        val csv = prefs.getString(KEY_IGNORED_MACS, "") ?: ""
-        val set = if (csv.isBlank()) emptySet() else csv.split(",").toSet()
-        cachedIgnoredMacs = set
-        return set
+    /** Retained for callers that predate stable fingerprints. */
+    fun getIgnoredMacs(): Set<String> = getIgnoredIdentities()
+
+    fun ignoreIdentities(identities: Iterable<String>) {
+        ignoredIdentityStore.add(identities)
     }
 
     fun ignoreMac(mac: String) {
-        val current = getIgnoredMacs().toMutableSet()
-        current.add(mac)
-        prefs.edit().putString(KEY_IGNORED_MACS, current.joinToString(",")).apply()
-        cachedIgnoredMacs = current
+        ignoreIdentities(setOf(mac))
+    }
+
+    fun unignoreIdentities(identities: Iterable<String>) {
+        ignoredIdentityStore.remove(identities)
     }
 
     fun unignoreMac(mac: String) {
-        val current = getIgnoredMacs().toMutableSet()
-        current.remove(mac)
-        prefs.edit().putString(KEY_IGNORED_MACS, current.joinToString(",")).apply()
-        cachedIgnoredMacs = current
+        unignoreIdentities(setOf(mac))
     }
 }

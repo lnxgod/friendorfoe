@@ -47,10 +47,10 @@ class FollowerCandidatePolicyTest {
     fun ignored_mac_fingerprint_and_rotated_mac_aliases_are_excluded() {
         val detection = detection(category = PrivacyCategory.SMART_GLASSES)
         val ignoredAliases = listOf(
-            detection.mac,
-            "mac:${detection.mac}",
-            detection.fingerprintKey,
-            "AA:BB:CC:DD:EE:00",
+            "mac:aa:bb:cc:dd:ee:ff",
+            "MAC:AA:BB:CC:DD:EE:FF",
+            "FP:TEST-DEVICE",
+            "aa:bb:cc:dd:ee:00",
         )
 
         ignoredAliases.forEach { ignoredAlias ->
