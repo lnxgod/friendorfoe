@@ -866,9 +866,8 @@ static bool apply_behavioral_ble_threat(const uint8_t mac[6],
     observation.structural_hash = fp->hash;
     observation.local_name = fp->local_name[0] ? fp->local_name : NULL;
     observation.company_id = fp->company_id;
-    observation.trusted_identity = addr_type == 0 &&
-                                   fp->company_id != 0 &&
-                                   fp->local_name[0] != '\0';
+    observation.trusted_identity =
+        ble_fingerprint_has_trusted_product_identity(fp);
     observation.service_uuid_count = fp->svc_uuid_count > 4
         ? 4
         : fp->svc_uuid_count;

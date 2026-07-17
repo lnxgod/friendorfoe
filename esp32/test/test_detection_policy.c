@@ -694,6 +694,54 @@ void test_ble_fingerprint_serial_uuids_are_not_static_skimmers(void)
     }
 }
 
+void test_ble_fingerprint_known_product_is_trusted_serial_identity(void)
+{
+    ble_fingerprint_t fp = {.device_type = BLE_DEV_META_GLASSES};
+    strcpy(fp.class_reason, "name:Ray-Ban Meta");
+
+    TEST_ASSERT_TRUE(ble_fingerprint_has_trusted_product_identity(&fp));
+}
+
+void test_ble_fingerprint_unknown_and_serial_candidates_are_not_trusted(void)
+{
+    ble_fingerprint_t unknown = {.device_type = BLE_DEV_UNKNOWN};
+    ble_fingerprint_t card = {.device_type = BLE_DEV_CARD_SKIMMER};
+    ble_fingerprint_t pairing = {.device_type = BLE_DEV_PAIRING_SPAM};
+    ble_fingerprint_t serial = {.device_type = BLE_DEV_SERIAL_SKIMMER};
+    ble_fingerprint_t invalid = {.device_type = BLE_DEV_COUNT};
+    strcpy(unknown.class_reason, "name:unknown");
+    strcpy(card.class_reason, "name:BT05");
+    strcpy(pairing.class_reason, "behavioral:pairing_spam");
+    strcpy(serial.class_reason, "behavioral:serial_skimmer");
+    strcpy(invalid.class_reason, "name:invalid");
+
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(NULL));
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&unknown));
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&card));
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&pairing));
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&serial));
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&invalid));
+}
+
+void test_ble_fingerprint_empty_and_serial_only_reasons_are_not_trusted(void)
+{
+    const char *serial_only_reasons[] = {
+        "uuid16:0xFFE0",
+        "uuid16:0xFFF0",
+        "svc_data:0xFFE0",
+        "svc_data:0xFFF0",
+    };
+    ble_fingerprint_t fp = {.device_type = BLE_DEV_META_GLASSES};
+
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&fp));
+    for (size_t i = 0;
+         i < sizeof(serial_only_reasons) / sizeof(serial_only_reasons[0]);
+         ++i) {
+        strcpy(fp.class_reason, serial_only_reasons[i]);
+        TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&fp));
+    }
+}
+
 void test_hidden_camera_ble_is_priority_not_low_value(void)
 {
     TEST_ASSERT_TRUE(fof_policy_is_priority_ble_fingerprint("Hidden Camera (suspect)"));

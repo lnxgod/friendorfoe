@@ -301,10 +301,12 @@ void test_ble_threat_simultaneous_prompt_and_serial_alerts_are_both_observable(v
     serial.structural_hash = 0x1234;
     TEST_ASSERT_TRUE(ble_threat_detector_observe(&serial, &signal));
     TEST_ASSERT_EQUAL(BLE_THREAT_PAIRING_SPAM, signal.kind);
+    TEST_ASSERT_EQUAL_HEX16(0, signal.serial_service_uuid);
 
     serial.observed_ms = 10200;
     TEST_ASSERT_TRUE(ble_threat_detector_observe(&serial, &signal));
     TEST_ASSERT_EQUAL(BLE_THREAT_SERIAL_SKIMMER, signal.kind);
+    TEST_ASSERT_EQUAL_HEX16(0xFFE0, signal.serial_service_uuid);
 }
 
 void test_ble_threat_observed_ms_rollback_resets_prompt_state(void)

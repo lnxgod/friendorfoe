@@ -112,6 +112,11 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                              ble_fingerprint_t *fp);
 
 /**
+ * Return whether a fingerprint contains coherent recognized product evidence.
+ */
+bool ble_fingerprint_has_trusted_product_identity(const ble_fingerprint_t *fp);
+
+/**
  * Get a human-readable name for a device type.
  */
 const char *ble_device_type_name(ble_device_type_t type);
