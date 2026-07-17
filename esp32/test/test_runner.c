@@ -78,6 +78,8 @@ void test_ble_fingerprint_serial_uuids_are_not_static_skimmers(void);
 void test_ble_fingerprint_known_product_is_trusted_serial_identity(void);
 void test_ble_fingerprint_unknown_and_serial_candidates_are_not_trusted(void);
 void test_ble_fingerprint_empty_and_serial_only_reasons_are_not_trusted(void);
+void test_ble_remote_id_public_serial_unknown_handoff_is_untrusted(void);
+void test_ble_remote_id_recognized_product_handoff_is_trusted(void);
 void test_ble_threat_swift_pair_rotating_flood_alerts_once(void);
 void test_ble_threat_scan_duplicate_is_deduped(void);
 void test_ble_threat_varied_crowd_does_not_alert(void);
@@ -460,6 +462,8 @@ int main(void)
     RUN_TEST(test_ble_fingerprint_known_product_is_trusted_serial_identity);
     RUN_TEST(test_ble_fingerprint_unknown_and_serial_candidates_are_not_trusted);
     RUN_TEST(test_ble_fingerprint_empty_and_serial_only_reasons_are_not_trusted);
+    RUN_TEST(test_ble_remote_id_public_serial_unknown_handoff_is_untrusted);
+    RUN_TEST(test_ble_remote_id_recognized_product_handoff_is_trusted);
     RUN_TEST(test_ble_threat_swift_pair_rotating_flood_alerts_once);
     RUN_TEST(test_ble_threat_scan_duplicate_is_deduped);
     RUN_TEST(test_ble_threat_varied_crowd_does_not_alert);

@@ -13,6 +13,13 @@
  *   - 27+ bytes: app_code(1) + counter(1) + ODID message(25)
  */
 
+#if defined(BLE_REMOTE_ID_HANDOFF_TEST)
+#include "ble_fingerprint.h"
+#include "ble_threat_detector.h"
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+#else
 #include "ble_remote_id.h"
 #include "ble_fingerprint.h"
 #include "ble_investigator.h"
@@ -54,6 +61,37 @@
 
 #include <string.h>
 #include <stdio.h>
+#endif
+
+static void ble_remote_id_prepare_behavioral_observation(
+    const uint8_t mac[6],
+    int8_t rssi,
+    uint8_t addr_type,
+    bool connectable,
+    int64_t observed_ms,
+    const ble_fingerprint_t *fp,
+    ble_threat_observation_t *observation)
+{
+    memset(observation, 0, sizeof(*observation));
+    memcpy(observation->mac, mac, sizeof(observation->mac));
+    observation->observed_ms = observed_ms;
+    observation->rssi = rssi;
+    observation->connectable = connectable;
+    observation->addr_type = addr_type;
+    observation->structural_hash = fp->hash;
+    observation->local_name = fp->local_name[0] ? fp->local_name : NULL;
+    observation->company_id = fp->company_id;
+    observation->trusted_identity =
+        ble_fingerprint_has_trusted_product_identity(fp);
+    observation->service_uuid_count = fp->svc_uuid_count > 4
+        ? 4
+        : fp->svc_uuid_count;
+    for (uint8_t i = 0; i < observation->service_uuid_count; i++) {
+        observation->service_uuids[i] = fp->service_uuids[i];
+    }
+}
+
+#if !defined(BLE_REMOTE_ID_HANDOFF_TEST)
 
 /* ── Constants ─────────────────────────────────────────────────────────────── */
 
@@ -857,23 +895,15 @@ static bool apply_behavioral_ble_threat(const uint8_t mac[6],
     }
 
     memset(signal_out, 0, sizeof(*signal_out));
-    ble_threat_observation_t observation = {0};
-    memcpy(observation.mac, mac, sizeof(observation.mac));
-    observation.observed_ms = observed_ms;
-    observation.rssi = rssi;
-    observation.connectable = (props & BLE_HCI_ADV_CONN_MASK) != 0;
-    observation.addr_type = addr_type;
-    observation.structural_hash = fp->hash;
-    observation.local_name = fp->local_name[0] ? fp->local_name : NULL;
-    observation.company_id = fp->company_id;
-    observation.trusted_identity =
-        ble_fingerprint_has_trusted_product_identity(fp);
-    observation.service_uuid_count = fp->svc_uuid_count > 4
-        ? 4
-        : fp->svc_uuid_count;
-    for (uint8_t i = 0; i < observation.service_uuid_count; i++) {
-        observation.service_uuids[i] = fp->service_uuids[i];
-    }
+    ble_threat_observation_t observation;
+    ble_remote_id_prepare_behavioral_observation(
+        mac,
+        rssi,
+        addr_type,
+        (props & BLE_HCI_ADV_CONN_MASK) != 0,
+        observed_ms,
+        fp,
+        &observation);
 
     if (fp->company_id == BLE_THREAT_APPLE_COMPANY_ID &&
         (fp->apple_type == BLE_THREAT_APPLE_AIRPODS_TYPE ||
@@ -2198,3 +2228,5 @@ uint32_t ble_remote_id_privacy_seen_count(void)
 {
     return s_privacy_seen;
 }
+
+#endif

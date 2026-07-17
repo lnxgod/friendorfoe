@@ -8,6 +8,10 @@
 
 #include <string.h>
 
+#define BLE_REMOTE_ID_HANDOFF_TEST
+#include "../scanner/main/detection/ble_remote_id.c"
+#undef BLE_REMOTE_ID_HANDOFF_TEST
+
 void test_probe_broadcasts_still_drop(void)
 {
     TEST_ASSERT_TRUE(fof_policy_probe_should_ignore_broadcast(""));
@@ -740,6 +744,42 @@ void test_ble_fingerprint_empty_and_serial_only_reasons_are_not_trusted(void)
         strcpy(fp.class_reason, serial_only_reasons[i]);
         TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&fp));
     }
+}
+
+void test_ble_remote_id_public_serial_unknown_handoff_is_untrusted(void)
+{
+    const uint8_t mac[6] = {0xC0, 0x98, 0xE5, 0x00, 0x00, 0x01};
+    ble_fingerprint_t fp = {
+        .device_type = BLE_DEV_UNKNOWN,
+        .company_id = 0x1234,
+    };
+    ble_threat_observation_t observation;
+    strcpy(fp.local_name, "BT");
+    strcpy(fp.class_reason, "uuid16:0xFFE0");
+
+    ble_remote_id_prepare_behavioral_observation(
+        mac, -62, 0, true, 5100, &fp, &observation);
+
+    TEST_ASSERT_EQUAL_UINT8(0, observation.addr_type);
+    TEST_ASSERT_FALSE(observation.trusted_identity);
+}
+
+void test_ble_remote_id_recognized_product_handoff_is_trusted(void)
+{
+    const uint8_t mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
+    ble_fingerprint_t fp = {
+        .device_type = BLE_DEV_META_GLASSES,
+        .company_id = 0x01AB,
+    };
+    ble_threat_observation_t observation;
+    strcpy(fp.local_name, "Ray-Ban Meta");
+    strcpy(fp.class_reason, "name:meta_glasses");
+
+    ble_remote_id_prepare_behavioral_observation(
+        mac, -48, 1, true, 5100, &fp, &observation);
+
+    TEST_ASSERT_EQUAL_UINT8(1, observation.addr_type);
+    TEST_ASSERT_TRUE(observation.trusted_identity);
 }
 
 void test_hidden_camera_ble_is_priority_not_low_value(void)
