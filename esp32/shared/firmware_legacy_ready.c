@@ -13,7 +13,7 @@ static bool hardware_id_hex_digit_is_valid(char ch)
            (ch >= 'A' && ch <= 'F');
 }
 
-static bool fof_firmware_hardware_id_is_canonical(const char *hardware_id)
+bool fof_firmware_hardware_id_is_canonical(const char *hardware_id)
 {
     if (!hardware_id || strlen(hardware_id) != 17U) {
         return false;

@@ -1282,17 +1282,16 @@ def test_legacy_ack_is_exact_session_bound_without_a_null_manifest_shortcut():
         store.index("static bool relay_line_matches_manifest_ack") :
         store.index("static bool relay_line_matches_complete_progress")
     ]
-    assert "if (!info) return false;" in strict
+    assert "if (!info || !relay_parse_receipt" in strict
+    assert "fof_firmware_strict_receipt_matches" in strict
+    assert ".session_id = session_id" in strict
 
     legacy = store[
         store.index("static bool relay_line_matches_legacy_receipt") :
         store.index("static bool relay_line_matches_manifest_ack")
     ]
-    assert "json_string_matches(root, JSON_KEY_TYPE, expected_type)" in legacy
-    assert (
-        "json_string_matches(root, JSON_KEY_OTA_SESSION_ID, session_id)"
-        in legacy
-    )
+    assert "fof_firmware_legacy_ack_matches" in legacy
+    assert "fof_firmware_legacy_done_matches" in legacy
     assert "strstr" not in legacy
 
     wait = store[
@@ -1317,14 +1316,9 @@ def test_legacy_final_progress_and_done_are_exact_session_size_receipts():
         store.index("static bool relay_line_matches_complete_progress") :
         store.index("static int relay_wait_for(")
     ]
-    for exact_field in (
-        "MSG_TYPE_OTA_PROGRESS",
-        "JSON_KEY_OTA_SESSION_ID",
-        'json_u32_matches(root, "received", info->size)',
-        'json_u32_matches(root, "total", info->size)',
-        'json_u32_matches(root, "percent", 100)',
-    ):
-        assert exact_field in progress
+    assert "relay_parse_receipt" in progress
+    assert "fof_firmware_legacy_progress_matches" in progress
+    assert "&parsed.view, session_id, info->size" in progress
 
     staged = store[
         store.index("static int relay_wait_for_staged_or_nack") :
@@ -1462,3 +1456,37 @@ def test_recovery_resolution_requires_manual_fresh_same_mac_complete_health():
         coordinator.index("static bool auto_coordinator_slot_gate_open(")
     ]
     assert "fof_auto_wifi_gate_open" in gate
+
+
+def test_manual_http_relay_rejects_legacy_query_before_starting_relay():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    handler = store[
+        store.index("static esp_err_t fw_relay_handler") :
+        store.index("bool fw_store_relay_staged_to_scanner(")
+    ]
+
+    assert "bool legacy_requested" in handler
+    rejection = handler.index("if (legacy_requested)")
+    assert "HTTPD_400_BAD_REQUEST" in handler[rejection:]
+    assert "legacy relay is automatic-only" in handler[rejection:]
+    relay_call = handler.index("fw_relay_stored_to_scanner", rejection)
+    assert rejection < relay_call
+    assert "legacy_mode" not in handler[relay_call : relay_call + 180]
+
+
+def test_low_level_legacy_relay_requires_shared_automatic_bound_policy():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    relay = store[
+        store.index("static bool fw_relay_stored_to_scanner") :
+        store.index("static esp_err_t fw_relay_handler")
+    ]
+
+    authorization = relay.index("fof_firmware_legacy_relay_authorized")
+    assert "fof_legacy_relay_authorization_view_t" in relay[:authorization]
+    assert '"legacy_not_authorized"' in relay[authorization:]
+    assert authorization < relay.index("ota_begin")
+
+    cmake = _source("esp32", "uplink", "main", "CMakeLists.txt")
+    platformio = _source("esp32", "platformio.ini")
+    assert "firmware_relay_policy.c" in cmake
+    assert "firmware_relay_policy.c" in platformio

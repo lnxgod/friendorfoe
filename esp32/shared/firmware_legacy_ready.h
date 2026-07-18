@@ -45,6 +45,8 @@ typedef struct {
     uint32_t crc32;
 } fof_legacy_manifest_view_t;
 
+bool fof_firmware_hardware_id_is_canonical(const char *hardware_id);
+
 bool fof_firmware_legacy_ready_authorized(
     const fof_legacy_ready_view_t *ready,
     const fof_legacy_identity_view_t *identity,

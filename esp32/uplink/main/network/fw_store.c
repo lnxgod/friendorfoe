@@ -18,6 +18,7 @@
 #include "version.h"
 #include "firmware_version_order.h"
 #include "firmware_legacy_ready.h"
+#include "firmware_relay_policy.h"
 #include "firmware_auto_policy.h"
 #include "firmware_coordinator_migration.h"
 #include "detection_policy.h"
@@ -1277,9 +1278,20 @@ static bool relay_line_session_matches(const char *line,
     return matched;
 }
 
-static bool json_u32_matches(const cJSON *root,
-                             const char *key,
-                             uint32_t expected)
+typedef struct {
+    cJSON *root;
+    fof_firmware_receipt_view_t view;
+} relay_parsed_receipt_t;
+
+static const char *relay_json_string(const cJSON *root, const char *key)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
+    return cJSON_IsString(item) ? item->valuestring : NULL;
+}
+
+static bool relay_json_u32(const cJSON *root,
+                           const char *key,
+                           uint32_t *value_out)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
     if (!cJSON_IsNumber(item) || item->valuedouble < 0.0 ||
@@ -1287,35 +1299,63 @@ static bool json_u32_matches(const cJSON *root,
         return false;
     }
     uint32_t value = (uint32_t)item->valuedouble;
-    return (double)value == item->valuedouble && value == expected;
-}
-
-static bool json_string_matches(const cJSON *root,
-                                const char *key,
-                                const char *expected)
-{
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
-    return cJSON_IsString(item) && expected &&
-           strcmp(item->valuestring, expected) == 0;
-}
-
-static bool json_sha256_matches(const cJSON *root, const char *expected)
-{
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(
-        root, JSON_KEY_FW_SHA256);
-    if (!cJSON_IsString(item) || !expected ||
-        strlen(item->valuestring) != FOF_FIRMWARE_SHA256_HEX_LENGTH ||
-        strlen(expected) != FOF_FIRMWARE_SHA256_HEX_LENGTH) {
+    if ((double)value != item->valuedouble) {
         return false;
     }
-    for (size_t i = 0; i < FOF_FIRMWARE_SHA256_HEX_LENGTH; ++i) {
-        char got = item->valuestring[i];
-        char want = expected[i];
-        if (got >= 'A' && got <= 'F') got = (char)(got - 'A' + 'a');
-        if (want >= 'A' && want <= 'F') want = (char)(want - 'A' + 'a');
-        if (got != want) return false;
+    if (value_out) {
+        *value_out = value;
     }
     return true;
+}
+
+static bool relay_parse_receipt(const char *line,
+                                relay_parsed_receipt_t *parsed)
+{
+    if (!line || !parsed) {
+        return false;
+    }
+    memset(parsed, 0, sizeof(*parsed));
+    parsed->root = cJSON_Parse(line);
+    if (!parsed->root) {
+        return false;
+    }
+
+    fof_firmware_receipt_view_t *view = &parsed->view;
+    view->type = relay_json_string(parsed->root, JSON_KEY_TYPE);
+    view->session_id = relay_json_string(
+        parsed->root, JSON_KEY_OTA_SESSION_ID);
+    view->target_version = relay_json_string(
+        parsed->root, JSON_KEY_FW_TARGET_VERSION);
+    view->firmware_name = relay_json_string(
+        parsed->root, JSON_KEY_FW_NAME);
+    view->project = relay_json_string(parsed->root, JSON_KEY_FW_PROJECT);
+    view->hardware = relay_json_string(parsed->root, JSON_KEY_FW_HARDWARE);
+    view->sha256 = relay_json_string(parsed->root, JSON_KEY_FW_SHA256);
+    view->has_generation = relay_json_u32(
+        parsed->root, JSON_KEY_FW_GENERATION, &view->generation);
+    view->has_size = relay_json_u32(
+        parsed->root, JSON_KEY_FW_SIZE, &view->size);
+    view->has_crc32 = relay_json_u32(
+        parsed->root, JSON_KEY_FW_CRC32, &view->crc32);
+    const cJSON *allow_same = cJSON_GetObjectItemCaseSensitive(
+        parsed->root, JSON_KEY_FW_ALLOW_SAME);
+    view->has_allow_same_version = cJSON_IsBool(allow_same);
+    view->allow_same_version = cJSON_IsTrue(allow_same);
+    view->has_received = relay_json_u32(
+        parsed->root, "received", &view->received);
+    view->has_total = relay_json_u32(
+        parsed->root, "total", &view->total);
+    view->has_percent = relay_json_u32(
+        parsed->root, "percent", &view->percent);
+    return true;
+}
+
+static void relay_parsed_receipt_free(relay_parsed_receipt_t *parsed)
+{
+    if (parsed && parsed->root) {
+        cJSON_Delete(parsed->root);
+        parsed->root = NULL;
+    }
 }
 
 static bool relay_line_matches_legacy_receipt(
@@ -1325,46 +1365,62 @@ static bool relay_line_matches_legacy_receipt(
     bool require_received,
     uint32_t expected_received)
 {
-    if (!line || !expected_type || !session_id || !session_id[0]) {
+    relay_parsed_receipt_t parsed = {0};
+    if (!expected_type || !relay_parse_receipt(line, &parsed)) {
         return false;
     }
-    cJSON *root = cJSON_Parse(line);
-    if (!root) return false;
-    bool matched =
-        json_string_matches(root, JSON_KEY_TYPE, expected_type) &&
-        json_string_matches(root, JSON_KEY_OTA_SESSION_ID, session_id) &&
-        (!require_received ||
-         json_u32_matches(root, "received", expected_received));
-    cJSON_Delete(root);
+    bool matched = false;
+    if (!require_received && strcmp(expected_type, MSG_TYPE_OTA_ACK) == 0) {
+        matched = fof_firmware_legacy_ack_matches(
+            &parsed.view, session_id);
+    } else if (require_received &&
+               strcmp(expected_type, MSG_TYPE_OTA_DONE) == 0) {
+        matched = fof_firmware_legacy_done_matches(
+            &parsed.view, session_id, expected_received);
+    }
+    relay_parsed_receipt_free(&parsed);
     return matched;
 }
 
 static bool relay_line_matches_manifest_ack(const char *line,
                                             const fw_store_info_t *info,
+                                            const char *session_id,
                                             bool allow_same_version,
                                             const char *expected_type,
                                             uint32_t expected_received)
 {
-    if (!info) return false;
-    if (!line) return false;
-    cJSON *root = cJSON_Parse(line);
-    if (!root) return false;
-    const cJSON *allow_same = cJSON_GetObjectItemCaseSensitive(
-        root, JSON_KEY_FW_ALLOW_SAME);
-    bool matched =
-        json_string_matches(root, JSON_KEY_TYPE, expected_type) &&
-        json_string_matches(root, JSON_KEY_FW_TARGET_VERSION, info->version) &&
-        json_string_matches(root, JSON_KEY_FW_NAME, info->name) &&
-        json_string_matches(root, JSON_KEY_FW_PROJECT, info->project) &&
-        json_string_matches(root, JSON_KEY_FW_HARDWARE, info->hardware) &&
-        json_sha256_matches(root, info->sha256) &&
-        json_u32_matches(root, JSON_KEY_FW_GENERATION, info->generation) &&
-        json_u32_matches(root, JSON_KEY_FW_SIZE, info->size) &&
-        json_u32_matches(root, JSON_KEY_FW_CRC32, info->checksum) &&
-        json_u32_matches(root, "received", expected_received) &&
-        cJSON_IsBool(allow_same) &&
-        cJSON_IsTrue(allow_same) == allow_same_version;
-    cJSON_Delete(root);
+    relay_parsed_receipt_t parsed = {0};
+    if (!info || !relay_parse_receipt(line, &parsed)) {
+        return false;
+    }
+    fof_firmware_strict_receipt_expectation_t expected = {
+        .type = expected_type,
+        .session_id = session_id,
+        .target_version = info->version,
+        .firmware_name = info->name,
+        .project = info->project,
+        .hardware = info->hardware,
+        .sha256 = info->sha256,
+        .generation = info->generation,
+        .size = info->size,
+        .crc32 = info->checksum,
+        .allow_same_version = allow_same_version,
+        .received = expected_received,
+    };
+    bool matched = fof_firmware_strict_receipt_matches(
+        &parsed.view, &expected);
+    relay_parsed_receipt_free(&parsed);
+    return matched;
+}
+
+static bool relay_line_matches_stop_ack(const char *line)
+{
+    relay_parsed_receipt_t parsed = {0};
+    if (!relay_parse_receipt(line, &parsed)) {
+        return false;
+    }
+    bool matched = fof_firmware_stop_ack_matches(&parsed.view);
+    relay_parsed_receipt_free(&parsed);
     return matched;
 }
 
@@ -1373,16 +1429,13 @@ static bool relay_line_matches_complete_progress(
     const char *session_id,
     const fw_store_info_t *info)
 {
-    if (!line || !session_id || !session_id[0] || !info) return false;
-    cJSON *root = cJSON_Parse(line);
-    if (!root) return false;
-    bool matched =
-        json_string_matches(root, JSON_KEY_TYPE, MSG_TYPE_OTA_PROGRESS) &&
-        json_string_matches(root, JSON_KEY_OTA_SESSION_ID, session_id) &&
-        json_u32_matches(root, "received", info->size) &&
-        json_u32_matches(root, "total", info->size) &&
-        json_u32_matches(root, "percent", 100);
-    cJSON_Delete(root);
+    relay_parsed_receipt_t parsed = {0};
+    if (!info || !relay_parse_receipt(line, &parsed)) {
+        return false;
+    }
+    bool matched = fof_firmware_legacy_progress_matches(
+        &parsed.view, session_id, info->size);
+    relay_parsed_receipt_free(&parsed);
     return matched;
 }
 
@@ -1503,14 +1556,15 @@ static int relay_wait_for_with_resend(int scanner_id,
             bool receipt_matches = false;
             if (expected_manifest != NULL) {
                 receipt_matches = relay_line_matches_manifest_ack(
-                    line, expected_manifest, expected_allow_same_version,
-                    needle, expected_received);
+                    line, expected_manifest, session_id,
+                    expected_allow_same_version, needle,
+                    expected_received);
             } else if (session_id && session_id[0]) {
                 receipt_matches = relay_line_matches_legacy_receipt(
                     line, needle, session_id, false, 0);
             } else {
                 /* stop_ack has no session or manifest contract. */
-                receipt_matches = true;
+                receipt_matches = relay_line_matches_stop_ack(line);
             }
             if (!receipt_matches) {
                 ESP_LOGW(TAG,
@@ -1760,7 +1814,7 @@ static int relay_wait_for_staged_or_nack(
         if (strstr(line, "ota_staged")) {
             if (!relay_line_session_matches(line, session_id) ||
                 !relay_line_matches_manifest_ack(
-                    line, info, allow_same_version,
+                    line, info, session_id, allow_same_version,
                     MSG_TYPE_OTA_STAGED, info->size)) {
                 ESP_LOGW(TAG,
                          "Ignored stale or manifest-mismatched ota_staged");
@@ -2384,6 +2438,43 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
         ? pre_update_identity.identity_generation : 0;
     bool automatic_bound_relay = expected_generation != 0 &&
         expected_hardware_id && expected_hardware_id[0];
+    if (legacy_mode) {
+        fof_legacy_relay_authorization_view_t authorization = {
+            .automatic_bound = automatic_bound_relay,
+            .bound_hardware_id = expected_hardware_id,
+            .identity = {
+                .received = have_pre_update_identity &&
+                    pre_update_identity.complete,
+                .version = pre_update_identity.version,
+                .board = pre_update_identity.board,
+                .firmware_name = pre_update_identity.firmware_name,
+                .project = pre_update_identity.app_project,
+                .hardware = pre_update_identity.hardware_type,
+                .hardware_id = pre_update_identity.hardware_id,
+            },
+            .manifest = {
+                .target = info.name,
+                .version = info.version,
+                .project = info.project,
+                .hardware = info.hardware,
+                .sha256 = info.sha256,
+                .size = info.size,
+                .crc32 = info.checksum,
+            },
+        };
+        if (!fof_firmware_legacy_relay_authorized(&authorization)) {
+            snprintf(result->stage, sizeof(result->stage), "identity");
+            snprintf(result->error, sizeof(result->error),
+                     "legacy_not_authorized");
+            ESP_LOGE(TAG,
+                     "Legacy relay refused: scanner[%d] is not the exact "
+                     "automatic-bound .68 badge identity",
+                     scanner_id);
+            operation_end();
+            remember_relay_result(scanner_id, result);
+            return false;
+        }
+    }
     if (automatic_bound_relay &&
         (!have_pre_update_identity || !pre_update_identity.complete ||
          strcmp(pre_update_identity.hardware_id,
@@ -2793,7 +2884,8 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
                     exact_done =
                         relay_line_session_matches(line, relay_session_id) &&
                         relay_line_matches_manifest_ack(
-                            line, &info, allow_same_version,
+                            line, &info, relay_session_id,
+                            allow_same_version,
                             MSG_TYPE_OTA_DONE, info.size);
                 }
                 if (!exact_done) {
@@ -2960,10 +3052,16 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
     httpd_query_key_value(query, "force", force_param, sizeof(force_param));
     httpd_query_key_value(query, "allow_same_version",
                           allow_same_param, sizeof(allow_same_param));
-    bool legacy_mode =
+    bool legacy_requested =
         strcmp(mode, "legacy") == 0 ||
         strcmp(legacy_param, "1") == 0 ||
         strcmp(legacy_param, "true") == 0;
+    if (legacy_requested) {
+        httpd_resp_send_err(
+            req, HTTPD_400_BAD_REQUEST,
+            "legacy relay is automatic-only");
+        return ESP_OK;
+    }
     bool force_probe_skip =
         strcmp(force_param, "1") == 0 ||
         strcmp(force_param, "true") == 0;
@@ -2973,7 +3071,7 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
     int scanner_id = (strcmp(uart_target, "wifi") == 0) ? 1 : 0;
 
     fw_relay_result_t result = {0};
-    fw_relay_stored_to_scanner(scanner_id, 0, NULL, false, legacy_mode,
+    fw_relay_stored_to_scanner(scanner_id, 0, NULL, false, false,
                                force_probe_skip,
                                allow_same_version, &result);
 
