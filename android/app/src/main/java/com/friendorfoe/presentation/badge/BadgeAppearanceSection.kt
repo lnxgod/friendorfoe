@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -29,6 +30,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,6 +41,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,6 +60,60 @@ import com.friendorfoe.data.badge.Rgb888
 import com.friendorfoe.data.badge.defaultBadgeTheme
 import com.friendorfoe.data.badge.normalizedV1
 import com.friendorfoe.data.badge.recognizeBadgeThemePreset
+
+internal const val BadgeThemeStudioExpandedMaxHeightDp = 480
+
+internal enum class BadgeThemeStudioExpandedRegion {
+    ScrollableContent,
+    StickyActions,
+}
+
+internal val BadgeThemeStudioExpandedRegions = listOf(
+    BadgeThemeStudioExpandedRegion.ScrollableContent,
+    BadgeThemeStudioExpandedRegion.StickyActions,
+)
+
+internal sealed interface BadgeThemeProfileResolution {
+    data class Found(val profile: BadgeThemeProfile) : BadgeThemeProfileResolution
+    data object Missing : BadgeThemeProfileResolution
+}
+
+internal fun resolveBadgeThemeProfile(
+    profiles: List<BadgeThemeProfile>,
+    profileId: String,
+): BadgeThemeProfileResolution = profiles
+    .firstOrNull { it.id == profileId }
+    ?.let(BadgeThemeProfileResolution::Found)
+    ?: BadgeThemeProfileResolution.Missing
+
+internal const val BadgeThemeProfileMissingMessage = "Profile no longer exists."
+
+internal enum class BadgeThemeProfileMutation(val failureVerb: String) {
+    Rename("renamed"),
+    Replace("replaced"),
+    Delete("deleted"),
+}
+
+internal fun badgeThemeProfileMutationFailureMessage(
+    mutation: BadgeThemeProfileMutation,
+): String = "Profile could not be ${mutation.failureVerb}. " +
+    "It may have changed or no longer exists."
+
+internal data class BadgeThemeSelectedOptionSemantics(
+    val selected: Boolean,
+    val stateDescription: String,
+)
+
+internal fun badgeThemeSelectedOptionSemantics(
+    value: String,
+    selectedValue: String,
+): BadgeThemeSelectedOptionSemantics {
+    val isSelected = value == selectedValue
+    return BadgeThemeSelectedOptionSemantics(
+        selected = isSelected,
+        stateDescription = if (isSelected) "Selected" else "Not selected",
+    )
+}
 
 internal sealed interface BadgeThemeStudioAction {
     data class SelectDraft(val theme: BadgeTheme) : BadgeThemeStudioAction
@@ -102,7 +160,7 @@ internal fun reduceBadgeThemeStudio(
 
 private sealed interface ProfileNameDialogMode {
     data object Create : ProfileNameDialogMode
-    data class Rename(val profile: BadgeThemeProfile) : ProfileNameDialogMode
+    data class Rename(val profileId: String) : ProfileNameDialogMode
 }
 
 @Composable
@@ -122,9 +180,48 @@ fun BadgeAppearanceSection(
 ) {
     var colorEditorAccent by remember { mutableStateOf<BadgeThemeAccentInfo?>(null) }
     var profileNameDialog by remember { mutableStateOf<ProfileNameDialogMode?>(null) }
-    var pendingReplace by remember { mutableStateOf<BadgeThemeProfile?>(null) }
-    var pendingDelete by remember { mutableStateOf<BadgeThemeProfile?>(null) }
+    var pendingReplaceProfileId by remember { mutableStateOf<String?>(null) }
+    var pendingDeleteProfileId by remember { mutableStateOf<String?>(null) }
     var profileMessage by remember { mutableStateOf<String?>(null) }
+
+    val renameProfileId = (profileNameDialog as? ProfileNameDialogMode.Rename)?.profileId
+    val renameProfileResolution = renameProfileId?.let { profileId ->
+        resolveBadgeThemeProfile(profiles, profileId)
+    }
+    val replaceProfileResolution = pendingReplaceProfileId?.let { profileId ->
+        resolveBadgeThemeProfile(profiles, profileId)
+    }
+    val deleteProfileResolution = pendingDeleteProfileId?.let { profileId ->
+        resolveBadgeThemeProfile(profiles, profileId)
+    }
+
+    LaunchedEffect(renameProfileId, renameProfileResolution) {
+        if (
+            renameProfileId != null &&
+            renameProfileResolution == BadgeThemeProfileResolution.Missing
+        ) {
+            profileNameDialog = null
+            profileMessage = BadgeThemeProfileMissingMessage
+        }
+    }
+    LaunchedEffect(pendingReplaceProfileId, replaceProfileResolution) {
+        if (
+            pendingReplaceProfileId != null &&
+            replaceProfileResolution == BadgeThemeProfileResolution.Missing
+        ) {
+            pendingReplaceProfileId = null
+            profileMessage = BadgeThemeProfileMissingMessage
+        }
+    }
+    LaunchedEffect(pendingDeleteProfileId, deleteProfileResolution) {
+        if (
+            pendingDeleteProfileId != null &&
+            deleteProfileResolution == BadgeThemeProfileResolution.Missing
+        ) {
+            pendingDeleteProfileId = null
+            profileMessage = BadgeThemeProfileMissingMessage
+        }
+    }
 
     fun dispatch(action: BadgeThemeStudioAction) {
         val transition = reduceBadgeThemeStudio(theme, action)
@@ -182,13 +279,22 @@ fun BadgeAppearanceSection(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(360.dp)
-                .verticalScroll(rememberScrollState())
-                .testTag("badge_theme_studio_scroll")
+                .heightIn(max = BadgeThemeStudioExpandedMaxHeightDp.dp)
+                .testTag("badge_theme_studio_expanded")
                 .semantics {
-                    contentDescription = "Scrollable badge palette studio content"
+                    contentDescription = "Bounded badge palette studio with sticky actions"
                 },
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .testTag("badge_theme_studio_scroll")
+                    .semantics {
+                        contentDescription = "Scrollable badge palette studio content"
+                    },
+            ) {
             Spacer(modifier = Modifier.height(12.dp))
             BadgeThemePreview(theme = theme)
 
@@ -327,9 +433,11 @@ fun BadgeAppearanceSection(
                             profileMessage = "Loaded ${profile.name} into the draft. Press Apply to update the badge."
                             dispatch(BadgeThemeStudioAction.SelectDraft(profile.theme))
                         },
-                        onReplace = { pendingReplace = profile },
-                        onRename = { profileNameDialog = ProfileNameDialogMode.Rename(profile) },
-                        onDelete = { pendingDelete = profile },
+                        onReplace = { pendingReplaceProfileId = profile.id },
+                        onRename = {
+                            profileNameDialog = ProfileNameDialogMode.Rename(profile.id)
+                        },
+                        onDelete = { pendingDeleteProfileId = profile.id },
                     )
                 }
             }
@@ -348,7 +456,12 @@ fun BadgeAppearanceSection(
 
         Spacer(modifier = Modifier.height(12.dp))
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("badge_theme_studio_actions")
+                .semantics {
+                    contentDescription = "Sticky badge palette studio actions"
+                },
             shape = RoundedCornerShape(8.dp),
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
@@ -396,6 +509,7 @@ fun BadgeAppearanceSection(
                 )
             }
         }
+        }
     }
 
     colorEditorAccent?.let { accent ->
@@ -411,65 +525,68 @@ fun BadgeAppearanceSection(
     }
 
     profileNameDialog?.let { mode ->
-        BadgeThemeProfileNameDialog(
-            mode = mode,
-            profiles = profiles,
-            onDismiss = { profileNameDialog = null },
-            onCreate = { name ->
-                val saved = onCreateProfile(name, theme.normalizedV1())
-                profileMessage = if (saved) {
-                    "Saved ${name.trim()}. The badge was not changed."
-                } else {
-                    "Profile was not saved. Check the name and try again."
-                }
-                saved
-            },
-            onRename = { id, name ->
-                val renamed = onRenameProfile(id, name)
-                profileMessage = if (renamed) {
-                    "Renamed profile to ${name.trim()}."
-                } else {
-                    "Profile was not renamed. Check the name and try again."
-                }
-                renamed
-            },
-        )
+        val renamedProfile = (renameProfileResolution as? BadgeThemeProfileResolution.Found)?.profile
+        if (mode == ProfileNameDialogMode.Create || renamedProfile != null) {
+            BadgeThemeProfileNameDialog(
+                renamedProfile = renamedProfile,
+                profiles = profiles,
+                onDismiss = { profileNameDialog = null },
+                onCreate = { name ->
+                    val saved = onCreateProfile(name, theme.normalizedV1())
+                    profileMessage = if (saved) {
+                        "Saved ${name.trim()}. The badge was not changed."
+                    } else {
+                        "Profile was not saved. Check the name and try again."
+                    }
+                    saved
+                },
+                onRename = { id, name ->
+                    val renamed = onRenameProfile(id, name)
+                    profileMessage = if (renamed) {
+                        "Renamed profile to ${name.trim()}."
+                    } else {
+                        badgeThemeProfileMutationFailureMessage(BadgeThemeProfileMutation.Rename)
+                    }
+                    renamed
+                },
+            )
+        }
     }
 
-    pendingReplace?.let { profile ->
+    (replaceProfileResolution as? BadgeThemeProfileResolution.Found)?.profile?.let { profile ->
         BadgeThemeProfileConfirmationDialog(
             title = "Replace ${profile.name}?",
             body = "This replaces the saved profile with the current draft. The badge stays unchanged.",
             confirmLabel = "Replace",
             testTag = "badge_theme_profile_replace_confirm",
-            onDismiss = { pendingReplace = null },
+            onDismiss = { pendingReplaceProfileId = null },
             onConfirm = {
                 val replaced = onReplaceProfile(profile.id, theme.normalizedV1())
                 profileMessage = if (replaced) {
                     "Replaced ${profile.name}. The badge was not changed."
                 } else {
-                    "${profile.name} already matches this draft."
+                    badgeThemeProfileMutationFailureMessage(BadgeThemeProfileMutation.Replace)
                 }
-                pendingReplace = null
+                pendingReplaceProfileId = null
             },
         )
     }
 
-    pendingDelete?.let { profile ->
+    (deleteProfileResolution as? BadgeThemeProfileResolution.Found)?.profile?.let { profile ->
         BadgeThemeProfileConfirmationDialog(
             title = "Delete ${profile.name}?",
             body = "This removes the saved Android profile. It does not reset or write to the badge.",
             confirmLabel = "Delete",
             testTag = "badge_theme_profile_delete_confirm",
-            onDismiss = { pendingDelete = null },
+            onDismiss = { pendingDeleteProfileId = null },
             onConfirm = {
                 val deleted = onDeleteProfile(profile.id)
                 profileMessage = if (deleted) {
                     "Deleted ${profile.name}. The current draft was not changed."
                 } else {
-                    "${profile.name} was not deleted."
+                    badgeThemeProfileMutationFailureMessage(BadgeThemeProfileMutation.Delete)
                 }
-                pendingDelete = null
+                pendingDeleteProfileId = null
             },
         )
     }
@@ -591,11 +708,16 @@ private fun SegmentedTextRow(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         values.forEach { value ->
+            val optionSemantics = badgeThemeSelectedOptionSemantics(value, selected)
             OutlinedButton(
                 onClick = { onSelect(value) },
                 modifier = Modifier
                     .weight(1f)
-                    .testTag("${testTagPrefix}_$value"),
+                    .testTag("${testTagPrefix}_$value")
+                    .semantics {
+                        this.selected = optionSemantics.selected
+                        stateDescription = optionSemantics.stateDescription
+                    },
                 border = BorderStroke(
                     width = if (selected == value) 2.dp else 1.dp,
                     color = if (selected == value) {
@@ -741,15 +863,14 @@ private fun BadgeThemeProfileRow(
 
 @Composable
 private fun BadgeThemeProfileNameDialog(
-    mode: ProfileNameDialogMode,
+    renamedProfile: BadgeThemeProfile?,
     profiles: List<BadgeThemeProfile>,
     onDismiss: () -> Unit,
     onCreate: (String) -> Boolean,
     onRename: (String, String) -> Boolean,
 ) {
-    val renamedProfile = (mode as? ProfileNameDialogMode.Rename)?.profile
-    var name by remember(mode) { mutableStateOf(renamedProfile?.name.orEmpty()) }
-    var saveError by remember(mode) { mutableStateOf<String?>(null) }
+    var name by remember(renamedProfile) { mutableStateOf(renamedProfile?.name.orEmpty()) }
+    var saveError by remember(renamedProfile) { mutableStateOf<String?>(null) }
     val normalizedName = name.trim()
     val duplicate = profiles.any { profile ->
         profile.id != renamedProfile?.id && profile.name.equals(normalizedName, ignoreCase = true)
@@ -794,7 +915,15 @@ private fun BadgeThemeProfileNameDialog(
                     } else {
                         onRename(renamedProfile.id, normalizedName)
                     }
-                    if (saved) onDismiss() else saveError = "The profile could not be saved"
+                    if (saved) {
+                        onDismiss()
+                    } else {
+                        saveError = if (renamedProfile == null) {
+                            "The profile could not be saved"
+                        } else {
+                            badgeThemeProfileMutationFailureMessage(BadgeThemeProfileMutation.Rename)
+                        }
+                    }
                 },
                 enabled = valid,
                 modifier = Modifier.testTag("badge_theme_profile_name_save"),
