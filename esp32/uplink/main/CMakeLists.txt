@@ -16,3 +16,4 @@ idf_component_register(
 
 target_sources(${COMPONENT_LIB} PRIVATE "../../shared/time_sync_policy.c")
 target_sources(${COMPONENT_LIB} PRIVATE "../../shared/badge_display_contract.c")
+target_sources(${COMPONENT_LIB} PRIVATE "../../shared/firmware_legacy_ready.c")
