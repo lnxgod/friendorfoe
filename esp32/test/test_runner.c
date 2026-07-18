@@ -232,6 +232,8 @@ void test_badge_easter_remote_id_rejects_missing_or_nearby_location(void);
 void test_badge_easter_remote_id_requires_exact_geodetic_altitude(void);
 void test_badge_easter_ssid_is_exact_case_sensitive_bytes(void);
 void test_badge_easter_machine_is_one_shot_until_init(void);
+void test_badge_easter_machine_rejects_none_without_consuming_latch(void);
+void test_badge_easter_machine_rejects_out_of_range_without_consuming_latch(void);
 void test_badge_hold_on_ble_entity_starts_gatt_investigation(void);
 void test_badge_hold_on_pairing_spam_starts_passive_capture(void);
 void test_badge_hold_on_non_ble_entity_opens_deepest_detail(void);
@@ -622,6 +624,8 @@ int main(void)
     RUN_TEST(test_badge_easter_remote_id_requires_exact_geodetic_altitude);
     RUN_TEST(test_badge_easter_ssid_is_exact_case_sensitive_bytes);
     RUN_TEST(test_badge_easter_machine_is_one_shot_until_init);
+    RUN_TEST(test_badge_easter_machine_rejects_none_without_consuming_latch);
+    RUN_TEST(test_badge_easter_machine_rejects_out_of_range_without_consuming_latch);
     RUN_TEST(test_badge_hold_on_ble_entity_starts_gatt_investigation);
     RUN_TEST(test_badge_hold_on_pairing_spam_starts_passive_capture);
     RUN_TEST(test_badge_hold_on_non_ble_entity_opens_deepest_detail);

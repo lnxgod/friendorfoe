@@ -35,7 +35,10 @@ void badge_easter_egg_machine_init(badge_easter_egg_machine_t *machine)
 bool badge_easter_egg_machine_trigger(badge_easter_egg_machine_t *machine,
                                       badge_easter_egg_source_t source)
 {
-    if (!machine || machine->triggered_once) {
+    if (!machine || machine->triggered_once ||
+        (source != BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID &&
+         source != BADGE_EASTER_EGG_SOURCE_WIFI_SSID &&
+         source != BADGE_EASTER_EGG_SOURCE_BUTTON)) {
         return false;
     }
 

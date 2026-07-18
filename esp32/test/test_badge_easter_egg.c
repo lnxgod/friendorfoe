@@ -130,3 +130,35 @@ void test_badge_easter_machine_is_one_shot_until_init(void)
     TEST_ASSERT_TRUE(machine.visible);
     TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_WIFI_SSID, machine.source);
 }
+
+void test_badge_easter_machine_rejects_none_without_consuming_latch(void)
+{
+    badge_easter_egg_machine_t machine;
+
+    badge_easter_egg_machine_init(&machine);
+    TEST_ASSERT_FALSE(badge_easter_egg_machine_trigger(
+        &machine, BADGE_EASTER_EGG_SOURCE_NONE));
+    TEST_ASSERT_FALSE(machine.triggered_once);
+    TEST_ASSERT_FALSE(machine.visible);
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE, machine.source);
+
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger(
+        &machine, BADGE_EASTER_EGG_SOURCE_BUTTON));
+}
+
+void test_badge_easter_machine_rejects_out_of_range_without_consuming_latch(void)
+{
+    badge_easter_egg_machine_t machine;
+    const badge_easter_egg_source_t invalid_source =
+        (badge_easter_egg_source_t)(BADGE_EASTER_EGG_SOURCE_BUTTON + 1);
+
+    badge_easter_egg_machine_init(&machine);
+    TEST_ASSERT_FALSE(badge_easter_egg_machine_trigger(&machine,
+                                                       invalid_source));
+    TEST_ASSERT_FALSE(machine.triggered_once);
+    TEST_ASSERT_FALSE(machine.visible);
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE, machine.source);
+
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger(
+        &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID));
+}
