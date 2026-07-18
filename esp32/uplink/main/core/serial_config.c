@@ -222,6 +222,14 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
         print_json_escaped_string(info->version);
         printf(",\"board\":");
         print_json_escaped_string(info->board);
+        printf(",\"firmware_name\":");
+        print_json_escaped_string(info->firmware_name);
+        printf(",\"app_project\":");
+        print_json_escaped_string(info->app_project);
+        printf(",\"hardware_type\":");
+        print_json_escaped_string(info->hardware_type);
+        printf(",\"hardware_id\":");
+        print_json_escaped_string(info->hardware_id);
         printf(",\"cmd_rx\":%lu,\"cmd_last_age_s\":%lld,"
                "\"cmd_parse_err\":%lu,\"cmd_overflow\":%lu,"
                "\"ble_scanning\":%s,\"ble_host_active\":%s,"
@@ -588,8 +596,15 @@ static void send_badge_status_response(void)
     uart_rx_get_badge_threat_snapshot(&snapshot);
 
     badge_mode_t mode = badge_mode_get();
+    /* Stable machine fields: "firmware_name", "app_project", "hardware_type". */
     printf("FOF_STATUS:{\"version\":");
     print_json_escaped_string(FOF_VERSION);
+    printf(",\"firmware_name\":");
+    print_json_escaped_string(FOF_FIRMWARE_TARGET);
+    printf(",\"app_project\":");
+    print_json_escaped_string(FOF_APP_PROJECT);
+    printf(",\"hardware_type\":");
+    print_json_escaped_string(FOF_HARDWARE_TYPE);
     printf(",\"uptime_s\":%lld", (long long)(esp_timer_get_time() / 1000000LL));
     printf(",\"mode\":");
     print_json_escaped_string(badge_mode_to_string(mode));

@@ -249,32 +249,21 @@ static esp_err_t download_to_partition(const char *backend_base, const char *nam
 /* Try to update the uplink itself. Returns ESP_OK if a reboot is imminent. */
 static esp_err_t try_self_update_uplink(const char *backend_base)
 {
-#if defined(FOF_BADGE_VARIANT)
-    (void)backend_base;
-    /* The badge has its own LCD wiring and version track. The production
-     * backend catalog entry is currently "uplink-s3", so letting the badge
-     * self-OTA against that name replaces it with the non-LCD production
-     * image and leaves the ST7735 white. Keep scanner-cache refresh enabled
-     * by returning ESP_OK, but never self-replace the badge from this path. */
-    ESP_LOGI(TAG, "FoF Badge: uplink self-OTA skipped; preserving badge display firmware");
-    s_remote_uplink_ver[0] = '\0';
-    return ESP_OK;
-#else
     char remote_ver[40] = {0};
     int  remote_size = 0;
-    esp_err_t err = fetch_metadata(backend_base, "uplink-s3",
+    esp_err_t err = fetch_metadata(backend_base, FOF_FIRMWARE_TARGET,
                                    remote_ver, sizeof(remote_ver), &remote_size);
     if (err != ESP_OK) return err;
     strncpy(s_remote_uplink_ver, remote_ver, sizeof(s_remote_uplink_ver) - 1);
     s_remote_uplink_ver[sizeof(s_remote_uplink_ver) - 1] = '\0';
 
     if (!fw_auto_check_version_differs(FOF_VERSION, remote_ver)) {
-        ESP_LOGI(TAG, "uplink-s3: local=%s remote=%s — up to date",
-                 FOF_VERSION, remote_ver);
+        ESP_LOGI(TAG, "%s: local=%s remote=%s — up to date",
+                 FOF_FIRMWARE_TARGET, FOF_VERSION, remote_ver);
         return ESP_OK;
     }
-    ESP_LOGW(TAG, "uplink-s3: local=%s remote=%s — self-OTA starting (%d bytes)",
-             FOF_VERSION, remote_ver, remote_size);
+    ESP_LOGW(TAG, "%s: local=%s remote=%s — self-OTA starting (%d bytes)",
+             FOF_FIRMWARE_TARGET, FOF_VERSION, remote_ver, remote_size);
     s_status = "updating";
 
     const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
@@ -283,7 +272,8 @@ static esp_err_t try_self_update_uplink(const char *backend_base)
     esp_ota_handle_t handle = 0;
     int received = 0;
     uint32_t crc = 0;
-    err = download_to_partition(backend_base, "uplink-s3", next, &handle, &received, &crc);
+    err = download_to_partition(backend_base, FOF_FIRMWARE_TARGET,
+                                next, &handle, &received, &crc);
     if (err != ESP_OK) {
         s_status = "error:download";
         return err;
@@ -302,15 +292,14 @@ static esp_err_t try_self_update_uplink(const char *backend_base)
         return err;
     }
 
-    ESP_LOGW(TAG, "uplink-s3 OTA complete (%d bytes, crc=%lu) — restarting",
-             received, (unsigned long)crc);
+    ESP_LOGW(TAG, "%s OTA complete (%d bytes, crc=%lu) — restarting",
+             FOF_FIRMWARE_TARGET, received, (unsigned long)crc);
 #ifdef FOF_BADGE_VARIANT
     badge_runtime_arm_expected_reboot("auto_ota");
 #endif
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
     return ESP_OK;  /* unreachable */
-#endif
 }
 
 /**

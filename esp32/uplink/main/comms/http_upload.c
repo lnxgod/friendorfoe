@@ -667,8 +667,12 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     /* Header */
     BUF_APPEND("{\"device_id\":\"%s\",\"device_lat\":%.6f,\"device_lon\":%.6f,\"device_alt\":%.1f,\"timestamp\":%lld",
                device_id, gps_pos.latitude, gps_pos.longitude, gps_pos.altitude_m, (long long)(ts_ms / 1000));
+    /* Stable machine fields: "firmware_name", "app_project", "hardware_type". */
     BUF_APPEND(",\"firmware_version\":\"%s\"", FOF_VERSION);
-    BUF_APPEND(",\"board_type\":\"uplink-s3\"");
+    BUF_APPEND(",\"firmware_name\":\"%s\",\"app_project\":\"%s\","
+               "\"hardware_type\":\"%s\",\"board_type\":\"%s\"",
+               FOF_FIRMWARE_TARGET, FOF_APP_PROJECT,
+               FOF_HARDWARE_TYPE, FOF_FIRMWARE_TARGET);
     if (wifi_ssid[0]) BUF_APPEND(",\"wifi_ssid\":\"%s\",\"wifi_rssi\":%d", wifi_ssid, wifi_sta_get_rssi());
     BUF_APPEND(",\"scan_mode\":\"%s\",\"calibration_uuid\":\"%s\"",
                uart_rx_get_node_scan_mode(),

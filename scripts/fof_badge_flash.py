@@ -30,6 +30,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ESP32_DIR = REPO_ROOT / "esp32"
 SCANNER_DIR = ESP32_DIR / "scanner"
 UPLINK_DIR = ESP32_DIR / "uplink"
+ESP32_SCRIPTS_DIR = ESP32_DIR / "scripts"
+if str(ESP32_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(ESP32_SCRIPTS_DIR))
+
+from firmware_version import parse_firmware_identity
+
 DEFAULT_BACKEND = os.environ.get("FOF_BACKEND", "http://localhost:8000")
 SCANNER_RELAY_TIMEOUT_MIN_S = 240
 SCANNER_RELAY_TIMEOUT_MAX_S = 900
@@ -40,10 +46,13 @@ PLATFORMS: dict[str, dict[str, Any]] = {
         "hardware": "FoF Badge trio on Seeed XIAO ESP32-S3",
         "uplink_env": "uplink-s3-fof_badge",
         "uplink_name": "uplink-s3-fof_badge",
+        "uplink_project": "fof_badge_uplink",
         "uplink_bin": UPLINK_DIR / ".pio/build/uplink-s3-fof_badge/firmware.bin",
         "scanner_env": "scanner-s3-combo-fof_badge",
         "scanner_name": "scanner-s3-combo-fof_badge",
+        "scanner_project": "fof_badge_scanner",
         "scanner_bin": SCANNER_DIR / ".pio/build/scanner-s3-combo-fof_badge/firmware.bin",
+        "hardware_type": "seeed_xiao_esp32s3",
         "slots": ("ble", "wifi"),
     },
 }
@@ -139,6 +148,36 @@ def versions_match(got: str | None, wanted: str | None) -> bool:
     return False
 
 
+def validate_firmware_artifact(path: Path, *, target: str, project: str,
+                               hardware: str, version: str) -> None:
+    """Reject stale or cross-target images before any flash path can run."""
+    try:
+        image = path.read_bytes()
+    except OSError as exc:
+        raise FlashError(f"cannot read firmware artifact {path}: {exc}") from exc
+
+    identity = parse_firmware_identity(image)
+    if identity is None:
+        raise FlashError(f"invalid firmware project/version descriptor: {path}")
+    if identity.project != project:
+        raise FlashError(
+            f"firmware project mismatch for {target}: "
+            f"embedded {identity.project}, expected {project}"
+        )
+    if identity.version != version:
+        raise FlashError(
+            f"firmware version mismatch for {target}: "
+            f"embedded {identity.version}, expected {version}"
+        )
+    if target.encode("ascii") not in image:
+        raise FlashError(f"firmware target marker missing for {target}: {path}")
+    if hardware.encode("ascii") not in image:
+        raise FlashError(
+            f"firmware hardware marker missing for {target}: "
+            f"expected {hardware} in {path}"
+        )
+
+
 def run(cmd: list[str], cwd: Path, dry_run: bool) -> None:
     log("$ " + " ".join(cmd))
     if dry_run:
@@ -181,6 +220,23 @@ def require_artifacts(platform: dict[str, Any], need_uplink: bool,
     if missing:
         rendered = "\n".join(f"  {p}" for p in missing)
         raise FlashError(f"missing firmware artifact(s):\n{rendered}")
+    version = repo_version()
+    if need_uplink:
+        validate_firmware_artifact(
+            platform["uplink_bin"],
+            target=platform["uplink_name"],
+            project=platform["uplink_project"],
+            hardware=platform["hardware_type"],
+            version=version,
+        )
+    if slots:
+        validate_firmware_artifact(
+            platform["scanner_bin"],
+            target=platform["scanner_name"],
+            project=platform["scanner_project"],
+            hardware=platform["hardware_type"],
+            version=version,
+        )
 
 
 def scanner_firmware_size(platform: dict[str, Any]) -> int:

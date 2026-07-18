@@ -71,7 +71,6 @@
 #error "Supported FoF uplink firmware is ESP32-S3 only."
 #endif
 
-#define FIRMWARE_NAME "uplink-s3"
 #ifdef FOF_BADGE_VARIANT
 #define BADGE_DISPLAY_UPDATE_MS 250
 #endif
@@ -472,7 +471,8 @@ static void display_task(void *arg)
 static void print_banner(void)
 {
     ESP_LOGI(TAG, "=============================================");
-    ESP_LOGI(TAG, "  Friend or Foe — %s v%s (ESP32-S3)", FIRMWARE_NAME, FOF_VERSION);
+    ESP_LOGI(TAG, "  Friend or Foe — %s v%s (ESP32-S3)",
+             FOF_FIRMWARE_TARGET, FOF_VERSION);
     ESP_LOGI(TAG, "  Drone Detection Backend Relay");
     ESP_LOGI(TAG, "=============================================");
 
@@ -508,7 +508,7 @@ static void print_banner(void)
 void app_main(void)
 {
     /* ── 0. Machine-readable firmware identification ──────────────────── */
-    FOF_PRINT_IDENT(TAG, FIRMWARE_NAME);
+    FOF_PRINT_IDENT(TAG, FOF_FIRMWARE_TARGET);
 
     /* ── 0b. OTA rollback state detection ─────────────────────────────── */
     /* Must run before any subsystem that might crash/panic — a rollback

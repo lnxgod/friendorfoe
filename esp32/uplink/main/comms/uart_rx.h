@@ -86,6 +86,10 @@ bool uart_rx_set_scanner_tx_pin_for_badge_probe(int scanner_id, int tx_pin);
 typedef struct {
     char version[32];
     char board[40];     /* firmware catalog name, e.g. "scanner-s3-combo-fof_badge" */
+    char firmware_name[40]; /* compile-selected release target */
+    char app_project[32];   /* ESP-IDF application descriptor project */
+    char hardware_type[24]; /* physical board contract */
+    char hardware_id[18];   /* immutable base MAC, xx:xx:xx:xx:xx:xx */
     char chip[12];      /* "esp32s3" */
     char caps[32];      /* "ble,wifi" */
     bool received;

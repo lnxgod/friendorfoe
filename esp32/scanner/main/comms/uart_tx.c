@@ -28,6 +28,7 @@
 
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
@@ -1008,6 +1009,7 @@ static const char *s_scanner_ver   = NULL;
 static const char *s_scanner_board = NULL;
 static const char *s_scanner_chip  = NULL;
 static const char *s_scanner_caps  = NULL;
+static char s_scanner_hardware_id[18] = "unknown";
 
 static int64_t scanner_time_last_valid_age_s(void)
 {
@@ -1253,6 +1255,10 @@ void uart_tx_send_status(int ble_count, int wifi_count,
         cJSON_AddStringToObject(root, "board", s_scanner_board);
         cJSON_AddStringToObject(root, "chip", s_scanner_chip);
         cJSON_AddStringToObject(root, "caps", s_scanner_caps);
+        cJSON_AddStringToObject(root, "firmware_name", FOF_FIRMWARE_TARGET);
+        cJSON_AddStringToObject(root, "app_project", FOF_APP_PROJECT);
+        cJSON_AddStringToObject(root, "hardware_type", FOF_HARDWARE_TYPE);
+        cJSON_AddStringToObject(root, "hardware_id", s_scanner_hardware_id);
     }
     {
         extern volatile int64_t g_epoch_offset_ms;
@@ -1320,6 +1326,15 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
     s_scanner_board = board;
     s_scanner_chip  = chip;
     s_scanner_caps  = caps;
+    uint8_t base_mac[6] = {0};
+    if (esp_efuse_mac_get_default(base_mac) == ESP_OK) {
+        snprintf(s_scanner_hardware_id, sizeof(s_scanner_hardware_id),
+                 "%02x:%02x:%02x:%02x:%02x:%02x",
+                 base_mac[0], base_mac[1], base_mac[2],
+                 base_mac[3], base_mac[4], base_mac[5]);
+    } else {
+        snprintf(s_scanner_hardware_id, sizeof(s_scanner_hardware_id), "unknown");
+    }
 
     /* Also send as standalone message. Includes time-sync diagnostic fields
      * (toff, tcnt) so the uplink can surface them via /api/status — that's
@@ -1369,7 +1384,10 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
                       ble_stats.ble_dbg_priv_reason);
     int n = snprintf(buf, buf_size,
              "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
-             "\"chip\":\"%s\",\"caps\":\"%s\",\"toff\":%lld,\"tcnt\":%lu,"
+             "\"chip\":\"%s\",\"caps\":\"%s\","
+             "\"firmware_name\":\"%s\",\"app_project\":\"%s\","
+             "\"hardware_type\":\"%s\",\"hardware_id\":\"%s\","
+             "\"toff\":%lld,\"tcnt\":%lu,"
              "\"time_valid_count\":%lu,\"time_last_valid_age_s\":%lld,\"time_sync_state\":\"%s\","
              "\"cmd_rx\":%lu,\"cmd_parse_err\":%lu,\"cmd_overflow\":%lu,"
              "\"cmd_stale\":%lu,\"cmd_last_age_s\":%lld,"
@@ -1418,6 +1436,8 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
              "\"radio_restart_count\":%lu}",
              ver ? ver : "?", board ? board : "?",
              chip ? chip : "?", caps ? caps : "?",
+             FOF_FIRMWARE_TARGET, FOF_APP_PROJECT,
+             FOF_HARDWARE_TYPE, s_scanner_hardware_id,
              (long long)g_epoch_offset_ms,
              (unsigned long)g_time_msg_count,
              (unsigned long)g_time_valid_count,
@@ -1509,7 +1529,10 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
                  n, (unsigned)buf_size);
         snprintf(buf, buf_size,
                  "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
-                 "\"chip\":\"%s\",\"caps\":\"%s\",\"cmd_rx\":%lu,"
+                 "\"chip\":\"%s\",\"caps\":\"%s\","
+                 "\"firmware_name\":\"%s\",\"app_project\":\"%s\","
+                 "\"hardware_type\":\"%s\",\"hardware_id\":\"%s\","
+                 "\"cmd_rx\":%lu,"
                  "\"scan_profile\":\"%s\",\"ble_scanning\":%s,"
                  "\"ble_host_active\":%s,\"ble_host_synced\":%s,"
                  "\"wifi_paused\":%s,\"ble_adv_seen\":%lu,"
@@ -1523,6 +1546,8 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
                  "\"recovery_mode\":\"%s\"}",
                  ver ? ver : "?", board ? board : "?",
                  chip ? chip : "?", caps ? caps : "?",
+                 FOF_FIRMWARE_TARGET, FOF_APP_PROJECT,
+                 FOF_HARDWARE_TYPE, s_scanner_hardware_id,
                  (unsigned long)g_cmd_msg_count,
                  scanner_scan_profile_label(),
                  ble_stats.ble_scanning ? "true" : "false",

@@ -70,7 +70,6 @@ static const char *TAG = "fof_scanner";
 #error "Supported FoF scanner firmware is ESP32-S3 combo/seed only."
 #endif
 
-#define FIRMWARE_NAME "scanner"
 #define DETECTION_QUEUE_LEN 50
 #define DISPLAY_UPDATE_MS   250
 
@@ -139,13 +138,7 @@ static void maybe_expire_time_sync(int64_t now_ms)
 
 static const char *scanner_board_name(void)
 {
-#if defined(FOF_BADGE_SCANNER_PINS)
-    return "scanner-s3-combo-fof_badge";
-#elif defined(SEED_SCANNER_PINS)
-    return "scanner-s3-combo-seed";
-#else
-    return "scanner-s3-combo";
-#endif
+    return FOF_FIRMWARE_TARGET;
 }
 
 static const char *scanner_chip_name(void)
@@ -1455,7 +1448,7 @@ static bool start_uart_command_tasks(void)
 void app_main(void)
 {
     /* ── 0. Machine-readable firmware identification ──────────────────── */
-    FOF_PRINT_IDENT(TAG, FIRMWARE_NAME);
+    FOF_PRINT_IDENT(TAG, FOF_FIRMWARE_TARGET);
 
     /* Log PSRAM state at boot so it's obvious in serial whether the board
      * actually initialized external memory (N16R8 scanners → 8 MiB). */
@@ -1657,7 +1650,8 @@ void app_main(void)
 
     /* ── 13. Startup banner ───────────────────────────────────────────── */
     ESP_LOGI(TAG, "============================================");
-    ESP_LOGI(TAG, "  Friend or Foe — %s v%s", FIRMWARE_NAME, FOF_VERSION);
+    ESP_LOGI(TAG, "  Friend or Foe — %s v%s",
+             FOF_FIRMWARE_TARGET, FOF_VERSION);
     ESP_LOGI(TAG, "  ESP32-S3 dual-core @ 240 MHz");
     ESP_LOGI(TAG, "  WiFi + BLE 5");
     ESP_LOGI(TAG, "  UART1 -> Uplink @ %d baud", UART_BAUD_RATE);

@@ -7,8 +7,8 @@ import argparse
 from pathlib import Path
 
 from firmware_version import (
-    expected_version_for_env,
-    parse_app_desc_version,
+    expected_identity_for_env,
+    parse_firmware_identity,
     verify_firmware_images,
 )
 
@@ -45,9 +45,12 @@ def main() -> int:
         return 1
 
     for target, image_path in images.items():
-        embedded = parse_app_desc_version(image_path.read_bytes())
-        expected = expected_version_for_env(header, target)
-        print(f"OK: {target}: embedded={embedded} expected={expected}")
+        embedded = parse_firmware_identity(image_path.read_bytes())
+        expected = expected_identity_for_env(header, target)
+        print(
+            f"OK: target={target} project={embedded.project} "
+            f"hardware={expected.hardware} version={embedded.version}"
+        )
     return 0
 
 
