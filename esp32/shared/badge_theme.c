@@ -8,6 +8,11 @@ typedef struct {
     uint16_t color;
 } badge_theme_accent_default_t;
 
+typedef struct {
+    const char *palette;
+    uint16_t colors[BADGE_THEME_CHROME_ROLE_COUNT];
+} badge_theme_chrome_palette_t;
+
 static const badge_theme_accent_default_t ACCENTS[BADGE_THEME_ACCENT_COUNT] = {
     [BADGE_THEME_ACCENT_DRONE]       = {"drone", 0xFEA0},
     [BADGE_THEME_ACCENT_META]        = {"meta", 0xF833},
@@ -15,6 +20,57 @@ static const badge_theme_accent_default_t ACCENTS[BADGE_THEME_ACCENT_COUNT] = {
     [BADGE_THEME_ACCENT_FLOCK]       = {"flock", 0xA81F},
     [BADGE_THEME_ACCENT_WIFI_ATTACK] = {"wifi_attack", 0x07FF},
     [BADGE_THEME_ACCENT_CLEAR]       = {"clear", 0x2F65},
+};
+
+static const badge_theme_chrome_palette_t CHROME_PALETTES[] = {
+    {
+        .palette = "field",
+        .colors = {
+            [BADGE_THEME_CHROME_CANVAS]         = 0x0000,
+            [BADGE_THEME_CHROME_PANEL]          = 0x1082,
+            [BADGE_THEME_CHROME_PANEL_ALT]      = 0x2104,
+            [BADGE_THEME_CHROME_TEXT_PRIMARY]   = 0xFFFF,
+            [BADGE_THEME_CHROME_TEXT_SECONDARY] = 0x8410,
+            [BADGE_THEME_CHROME_SELECTION]      = 0x57EA,
+            [BADGE_THEME_CHROME_SCANNER_DOWN]   = 0xFEA0,
+        },
+    },
+    {
+        .palette = "night",
+        .colors = {
+            [BADGE_THEME_CHROME_CANVAS]         = 0x0800,
+            [BADGE_THEME_CHROME_PANEL]          = 0x1800,
+            [BADGE_THEME_CHROME_PANEL_ALT]      = 0x3000,
+            [BADGE_THEME_CHROME_TEXT_PRIMARY]   = 0xFFE7,
+            [BADGE_THEME_CHROME_TEXT_SECONDARY] = 0xAC4D,
+            [BADGE_THEME_CHROME_SELECTION]      = 0xFD20,
+            [BADGE_THEME_CHROME_SCANNER_DOWN]   = 0xFEA0,
+        },
+    },
+    {
+        .palette = "neon",
+        .colors = {
+            [BADGE_THEME_CHROME_CANVAS]         = 0x080C,
+            [BADGE_THEME_CHROME_PANEL]          = 0x2015,
+            [BADGE_THEME_CHROME_PANEL_ALT]      = 0x4018,
+            [BADGE_THEME_CHROME_TEXT_PRIMARY]   = 0xF7FF,
+            [BADGE_THEME_CHROME_TEXT_SECONDARY] = 0x87FF,
+            [BADGE_THEME_CHROME_SELECTION]      = 0xF81F,
+            [BADGE_THEME_CHROME_SCANNER_DOWN]   = 0xFB38,
+        },
+    },
+    {
+        .palette = "mono",
+        .colors = {
+            [BADGE_THEME_CHROME_CANVAS]         = 0x0000,
+            [BADGE_THEME_CHROME_PANEL]          = 0x0821,
+            [BADGE_THEME_CHROME_PANEL_ALT]      = 0x1082,
+            [BADGE_THEME_CHROME_TEXT_PRIMARY]   = 0xEFFF,
+            [BADGE_THEME_CHROME_TEXT_SECONDARY] = 0x7BEF,
+            [BADGE_THEME_CHROME_SELECTION]      = 0x07FF,
+            [BADGE_THEME_CHROME_SCANNER_DOWN]   = 0xFFFF,
+        },
+    },
 };
 
 static char lower_char(char ch)
@@ -334,4 +390,53 @@ uint16_t badge_theme_apply_brightness(const badge_theme_t *theme, uint16_t rgb56
     g = (g * brightness) / 100;
     b = (b * brightness) / 100;
     return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+uint16_t badge_theme_chrome_color(const badge_theme_t *theme,
+                                  badge_theme_chrome_role_t role)
+{
+    badge_theme_t fallback;
+    if (!theme) {
+        badge_theme_defaults(&fallback);
+        theme = &fallback;
+    }
+    if ((int)role < 0 || role >= BADGE_THEME_CHROME_ROLE_COUNT) {
+        role = BADGE_THEME_CHROME_TEXT_PRIMARY;
+    }
+
+    const badge_theme_chrome_palette_t *palette = &CHROME_PALETTES[0];
+    for (size_t i = 0; i < sizeof(CHROME_PALETTES) / sizeof(CHROME_PALETTES[0]); i++) {
+        if (eq_nocase(theme->palette, CHROME_PALETTES[i].palette)) {
+            palette = &CHROME_PALETTES[i];
+            break;
+        }
+    }
+    return badge_theme_apply_brightness(theme, palette->colors[role]);
+}
+
+static uint16_t rgb565_luminance(uint16_t color)
+{
+    uint32_t red = ((color >> 11) & 0x1f) * 255U / 31U;
+    uint32_t green = ((color >> 5) & 0x3f) * 255U / 63U;
+    uint32_t blue = (color & 0x1f) * 255U / 31U;
+    return (uint16_t)((red * 54U + green * 183U + blue * 19U) / 256U);
+}
+
+uint16_t badge_theme_contrast_floor(uint16_t foreground, uint16_t background)
+{
+    enum {
+        BADGE_THEME_MIN_SAFE_LUMINANCE = 72,
+        BADGE_THEME_MIN_SAFE_CONTRAST = 64,
+    };
+    uint16_t fg_luminance = rgb565_luminance(foreground);
+    uint16_t bg_luminance = rgb565_luminance(background);
+    uint16_t contrast = fg_luminance > bg_luminance
+        ? (uint16_t)(fg_luminance - bg_luminance)
+        : (uint16_t)(bg_luminance - fg_luminance);
+
+    if (fg_luminance >= BADGE_THEME_MIN_SAFE_LUMINANCE &&
+        contrast >= BADGE_THEME_MIN_SAFE_CONTRAST) {
+        return foreground;
+    }
+    return bg_luminance < 128U ? 0xFFFF : 0x0000;
 }

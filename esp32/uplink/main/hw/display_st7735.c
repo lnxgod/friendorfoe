@@ -30,6 +30,7 @@
 #include "badge_threat_policy.h"
 #include "badge_runtime.h"
 #include "badge_display_policy_runtime.h"
+#include "badge_display_contract.h"
 #include "badge_theme_runtime.h"
 #include "badge_button_gesture.h"
 #include "badge_easter_egg_runtime.h"
@@ -196,7 +197,7 @@ typedef struct {
     badge_threat_snapshot_entity_t entity;
 } badge_focus_entry_t;
 
-#define BADGE_FOCUS_ENTRY_MAX 4
+#define BADGE_FOCUS_ENTRY_MAX BADGE_DISPLAY_FOCUS_CAPACITY
 
 typedef struct {
     badge_focus_entry_t entries[BADGE_FOCUS_ENTRY_MAX];
@@ -1273,11 +1274,19 @@ static uint16_t rgb565_mix_color(uint16_t a, uint16_t b, uint8_t t)
 static uint16_t badge_theme_panel_color(uint16_t fallback)
 {
     const badge_theme_t *theme = badge_theme_runtime_get();
-    uint16_t bg = badge_theme_background_color(theme);
-    if (bg == COL_BLACK) {
-        return badge_theme_apply_brightness(theme, fallback);
-    }
-    return rgb565_mix_color(bg, fallback, 80);
+    uint16_t panel = badge_theme_chrome_color(theme, BADGE_THEME_CHROME_PANEL);
+    return panel ? panel : badge_theme_apply_brightness(theme, fallback);
+}
+
+static uint16_t badge_theme_chrome(badge_theme_chrome_role_t role)
+{
+    return badge_theme_chrome_color(badge_theme_runtime_get(), role);
+}
+
+static uint16_t badge_theme_safe_chrome(badge_theme_chrome_role_t role,
+                                        uint16_t background)
+{
+    return badge_theme_contrast_floor(badge_theme_chrome(role), background);
 }
 
 static uint16_t badge_theme_accent(badge_theme_accent_t accent,
@@ -2297,24 +2306,30 @@ static void draw_threat_background(const badge_threat_snapshot_t *snapshot)
     uint16_t bg = rgb565_mix_color(rgb565_scale_color(deep, 120),
                                    rgb565_scale_color(base, 70),
                                    mix);
+    uint16_t canvas = badge_theme_chrome(BADGE_THEME_CHROME_CANVAS);
     uint16_t theme_bg = badge_theme_background_color(badge_theme_runtime_get());
     if (theme_bg != COL_BLACK) {
-        bg = rgb565_mix_color(theme_bg, bg, 118);
+        canvas = rgb565_mix_color(canvas, theme_bg, 128);
+    }
+    if (canvas != COL_BLACK) {
+        bg = rgb565_mix_color(canvas, bg, 118);
     }
     fb_fill_rect(0, 0, LCD_W, LCD_H, bg);
 
-    uint16_t band = rgb565_mix_color(bg, rgb565_scale_color(base, 110), 52);
+    uint16_t panel = badge_theme_chrome(BADGE_THEME_CHROME_PANEL);
+    uint16_t panel_alt = badge_theme_chrome(BADGE_THEME_CHROME_PANEL_ALT);
+    uint16_t band = rgb565_mix_color(bg, panel_alt, 64);
     for (int y = 0; y < LCD_H; y += 8) {
         fb_fill_rect(0, y, LCD_W, 1, band);
     }
-    uint16_t mark = rgb565_mix_color(bg, rgb565_scale_color(COL_GOLD_DARK, 72), 26);
+    uint16_t mark = rgb565_mix_color(bg, panel, 48);
     draw_triforce_flat_scaled(LCD_W / 2, 82, 118, 104, -4, mark);
     if (prox == BADGE_THREAT_PROX_CLOSE) {
         uint16_t hot = rgb565_mix_color(base, COL_WHITE, 52);
         fb_fill_rect(0, 14, LCD_W, 2, hot);
         fb_fill_rect(0, LCD_H - 3, LCD_W, 3, hot);
     }
-    fb_fill_rect(0, 0, LCD_W, 15, rgb565_mix_color(bg, COL_BLACK, 92));
+    fb_fill_rect(0, 0, LCD_W, 15, rgb565_mix_color(bg, panel, 92));
 }
 
 static const char *proximity_label(badge_threat_proximity_t prox)
@@ -3087,11 +3102,24 @@ static void draw_diag_row(int y, int h, const badge_display_diag_t *diag)
         return;
     }
     uint16_t color = diag_color(diag);
+    badge_theme_chrome_role_t panel_role =
+        y == badge_display_contract_lane_y(2)
+            ? BADGE_THEME_CHROME_PANEL
+            : BADGE_THEME_CHROME_PANEL_ALT;
+    uint16_t panel = badge_theme_chrome(panel_role);
     uint16_t bg = diag->severe
-        ? rgb565_mix_color(COL_PANEL_2, COL_DIMRED, 72)
-        : rgb565_scale_color(COL_PANEL_2, 96);
+        ? rgb565_mix_color(panel,
+                           badge_theme_chrome(BADGE_THEME_CHROME_SCANNER_DOWN),
+                           42)
+        : panel;
+    uint16_t primary = badge_theme_safe_chrome(
+        BADGE_THEME_CHROME_TEXT_PRIMARY, bg);
+    uint16_t secondary = badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY);
+    uint16_t rail_color = diag->severe
+        ? badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg)
+        : badge_theme_contrast_floor(color, bg);
     fb_fill_rect(0, y, LCD_W, h, bg);
-    fb_fill_rect(0, y, 5, h, color);
+    fb_fill_rect(0, y, 5, h, rail_color);
     bool show_stat = diag->stat[0] != '\0' &&
                      strcmp(diag->stat, "BLE") != 0 &&
                      strcmp(diag->stat, "WiFi") != 0 &&
@@ -3103,14 +3131,15 @@ static void draw_diag_row(int y, int h, const badge_display_diag_t *diag)
     int label_max = LCD_W - label_x - (sw > 0 ? sw + 9 : 5);
     if (label_max < 40) label_max = 40;
     fb_draw_string_fast_marquee(label_x, y + 4, diag->label, label_max,
-                                diag->severe ? COL_WHITE : COL_GRAY, bg);
+                                diag->severe ? primary : secondary, bg);
     if (show_stat) {
-        fb_draw_tiny_string(LCD_W - sw - 4, y + 6, diag->stat, color, bg);
+        fb_draw_tiny_string(LCD_W - sw - 4, y + 6, diag->stat,
+                            rail_color, bg);
     }
     if (diag->detail[0]) {
         fb_draw_string_fast_marquee(label_x, y + 19, diag->detail,
                                     LCD_W - label_x - 5,
-                                    diag->severe ? COL_GOLD : COL_DARKGRAY,
+                                    diag->severe ? rail_color : secondary,
                                     bg);
     }
 }
@@ -3536,9 +3565,13 @@ static void draw_scanner_health_line(int y, bool ble_scanner_ok,
                     !ble_old && !wifi_old && strcmp(ble_state, "quiet") != 0 &&
                     strcmp(ble_state, "off") != 0 &&
                     strcmp(ble_state, "notag") != 0;
+    uint16_t bg = badge_theme_chrome(BADGE_THEME_CHROME_CANVAS);
+    uint16_t fg = proof_ok
+        ? badge_theme_contrast_floor(
+            badge_theme_accent(BADGE_THEME_ACCENT_CLEAR, COL_SOFT_GREEN), bg)
+        : badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg);
     fb_draw_tiny_string_fit(4, y, line, LCD_W - 27,
-                            proof_ok ? COL_SOFT_GREEN : COL_GOLD,
-                            COL_BLACK);
+                            fg, bg);
 }
 
 static void add_diag_row(badge_display_diag_t *rows, int max_rows, int *count,
@@ -3743,9 +3776,16 @@ static void draw_scanner_bottom_strip(int y, bool ble_scanner_ok,
     const char *wifi_state = wifi_proof_label(wifi_scanner_ok, wifi_uart.raw_seen, wifi_role_ok,
                                               wifi_cmd_fresh, wifi_old);
     bool ok = strcmp(ble_state, "ok") == 0 && strcmp(wifi_state, "ok") == 0;
-    uint16_t bg = ok ? rgb565_scale_color(COL_PANEL, 82)
-                     : rgb565_mix_color(COL_PANEL_2, COL_DIMRED, 62);
-    uint16_t fg = ok ? COL_SOFT_GREEN : COL_GOLD;
+    uint16_t panel = badge_theme_chrome(BADGE_THEME_CHROME_PANEL_ALT);
+    uint16_t bg = ok
+        ? panel
+        : rgb565_mix_color(panel,
+                           badge_theme_chrome(BADGE_THEME_CHROME_SCANNER_DOWN),
+                           44);
+    uint16_t fg = ok
+        ? badge_theme_contrast_floor(
+            badge_theme_accent(BADGE_THEME_ACCENT_CLEAR, COL_SOFT_GREEN), bg)
+        : badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg);
 
     fb_fill_rect(0, y, LCD_W, LCD_H - y, bg);
     fb_fill_rect(0, y, LCD_W, 1, rgb565_scale_color(fg, 110));
@@ -3768,8 +3808,11 @@ static void draw_scanner_bottom_strip(int y, bool ble_scanner_ok,
     const char *usb_label = safe_usb ? "SAFE" : (usb_alive ? "USBC" : "USB?");
     char right_label[48];
     snprintf(right_label, sizeof(right_label), "%s %s", uptime_label, usb_label);
-    uint16_t usb_color = safe_usb ? COL_GOLD :
-                         (usb_alive ? COL_LINK_BRIGHT : COL_DARKGRAY);
+    uint16_t usb_color = safe_usb
+        ? badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg)
+        : (usb_alive
+            ? badge_theme_safe_chrome(BADGE_THEME_CHROME_SELECTION, bg)
+            : badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY));
     int usb_w = tiny_pixel_width(right_label);
     int left_w = LCD_W - usb_w - 14;
     if (left_w < 40) left_w = 40;
@@ -4656,21 +4699,36 @@ static void draw_top_concern_tile(int y, badge_ui_domain_t domain,
     uint16_t color = item ? ui_category_base_color(item->category)
                           : ui_domain_base_color(domain);
     if (item && item->stale) {
-        color = COL_GRAY;
+        color = badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY);
     }
+    badge_theme_chrome_role_t panel_role =
+        y == badge_display_contract_lane_y(0)
+            ? BADGE_THEME_CHROME_PANEL
+            : BADGE_THEME_CHROME_PANEL_ALT;
+    uint16_t panel = badge_theme_chrome(panel_role);
     uint16_t bg = item
-        ? rgb565_mix_color(rgb565_scale_color(color, 54), COL_BLACK, 100)
-        : rgb565_scale_color(COL_PANEL, scanner_ok ? 82 : 60);
+        ? rgb565_mix_color(panel, rgb565_scale_color(color, 54), 96)
+        : panel;
     if (!scanner_ok && !item) {
-        bg = rgb565_mix_color(COL_PANEL_2, COL_DIMRED, 58);
+        bg = rgb565_mix_color(panel,
+                              badge_theme_chrome(BADGE_THEME_CHROME_SCANNER_DOWN),
+                              38);
     }
+    uint16_t primary = badge_theme_safe_chrome(
+        BADGE_THEME_CHROME_TEXT_PRIMARY, bg);
+    uint16_t secondary = badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY);
+    uint16_t scanner_down = badge_theme_safe_chrome(
+        BADGE_THEME_CHROME_SCANNER_DOWN, bg);
+    uint16_t rail_color = (!scanner_ok && !item)
+        ? scanner_down
+        : badge_theme_contrast_floor(color, bg);
     int bar_percent = item ? (int)badge_top_item_heat_percent(snapshot, item) : 0;
     uint16_t bar_color = item ? badge_top_item_heat_color_for_snapshot(snapshot, item)
                               : color;
 
     fb_fill_rect(0, y, LCD_W, h, bg);
-    draw_panel_triforce_mark(y, h, bg, color);
-    fb_fill_rect(0, y, 5, h, color);
+    draw_panel_triforce_mark(y, h, bg, rail_color);
+    fb_fill_rect(0, y, 5, h, rail_color);
 
     if (item) {
         char title[24];
@@ -4707,15 +4765,18 @@ static void draw_top_concern_tile(int y, badge_ui_domain_t domain,
         int title_scale = str_pixel_width(title, 2) <= title_max ? 2 : 1;
         fb_draw_string_fit_scaled(7, y + (title_scale == 2 ? 4 : 8),
                                   title, title_max,
-                                  COL_WHITE, bg, title_scale);
+                                  primary, bg, title_scale);
         if (count_w > 0) {
             int count_x = LCD_W - count_w - 5;
-            uint16_t count_bg = rgb565_mix_color(bg, COL_BLACK, 138);
+            uint16_t count_bg = rgb565_mix_color(
+                bg, badge_theme_chrome(BADGE_THEME_CHROME_CANVAS), 138);
+            uint16_t count_color = badge_theme_contrast_floor(bar_color, count_bg);
             fb_fill_rect(count_x - 2, y + 1, count_w + 5, 23, count_bg);
             fb_draw_string(count_x + 1, y + 3, count_text,
-                           rgb565_scale_color(COL_BLACK, 150), count_bg, 3);
+                           badge_theme_chrome(BADGE_THEME_CHROME_CANVAS),
+                           count_bg, 3);
             fb_draw_string(count_x, y + 2, count_text,
-                           bar_color, count_bg, 3);
+                           count_color, count_bg, 3);
         }
 
         char detail[56];
@@ -4740,8 +4801,9 @@ static void draw_top_concern_tile(int y, badge_ui_domain_t domain,
         int tw = tiny_pixel_width(tag);
         int detail_max = LCD_W - 14;
         uint16_t detail_color = item->stale
-            ? COL_DARKGRAY
-            : rgb565_mix_color(COL_WHITE, bar_color, 84);
+            ? secondary
+            : badge_theme_contrast_floor(
+                rgb565_mix_color(primary, bar_color, 84), bg);
         size_t large_chars = (size_t)(detail_max / 6);
         if (badge_threat_top_detail_uses_large_text(detail, large_chars)) {
             fb_draw_string_fit(8, y + 23, detail, detail_max,
@@ -4755,29 +4817,36 @@ static void draw_top_concern_tile(int y, badge_ui_domain_t domain,
             fb_draw_tiny_string_fit(8, y + 24, detail, tiny_detail_max,
                                     detail_color, bg);
             fb_draw_tiny_string(LCD_W - tw - 4, y + 24, tag,
-                                rgb565_mix_color(color, bg, 90), bg);
+                                rgb565_mix_color(rail_color, bg, 90), bg);
         }
     } else {
-        fb_draw_tiny_string(8, y + 5, lane, color, bg);
+        fb_draw_tiny_string(8, y + 5, lane, rail_color, bg);
 
         char meta[14];
         snprintf(meta, sizeof(meta), "%s", scanner_ok ? "OK" : "CHECK");
         int mw = str_pixel_width(meta, 1);
 
         fb_draw_string_fit(30, y + 4, clear_label, LCD_W - 35 - mw,
-                           COL_GRAY, bg);
+                           primary, bg);
         fb_draw_string(LCD_W - mw - 4, y + 4, meta,
-                       scanner_ok ? COL_SOFT_GREEN : COL_GOLD, bg, 1);
+                       scanner_ok
+                           ? badge_theme_accent(BADGE_THEME_ACCENT_CLEAR,
+                                                COL_SOFT_GREEN)
+                           : scanner_down,
+                       bg, 1);
 
         char detail[48];
         snprintf(detail, sizeof(detail), "%s", clear_detail ? clear_detail : "");
-        fb_draw_string_fit(30, y + 17, detail, LCD_W - 35, COL_DARKGRAY, bg);
+        fb_draw_string_fit(30, y + 17, detail, LCD_W - 35, secondary, bg);
     }
 
     int bar_w = item ? (bar_percent * (LCD_W - 40) / 100) : 0;
     if (bar_w < 0) bar_w = 0;
     if (bar_w > LCD_W - 40) bar_w = LCD_W - 40;
-    fb_fill_rect(30, y + 32, LCD_W - 40, 2, rgb565_scale_color(COL_DARKGRAY, 120));
+    fb_fill_rect(30, y + 32, LCD_W - 40, 2,
+                 rgb565_mix_color(bg,
+                                  badge_theme_chrome(BADGE_THEME_CHROME_PANEL_ALT),
+                                  112));
     if (bar_w > 0) {
         fb_fill_rect(30, y + 32, bar_w, 2, bar_color);
     }
@@ -4861,14 +4930,26 @@ static void draw_billboard_row(int y, int h,
                                const badge_threat_snapshot_t *snapshot,
                                const badge_threat_snapshot_entity_t *item)
 {
-    uint16_t color = item->stale ? COL_GRAY : ui_category_base_color(item->category);
-    uint16_t bg = item->stale ? rgb565_scale_color(COL_PANEL_2, 86) : COL_PANEL_2;
+    uint16_t secondary = badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY);
+    uint16_t color = item->stale ? secondary : ui_category_base_color(item->category);
+    badge_theme_chrome_role_t panel_role =
+        y == badge_display_contract_lane_y(2)
+            ? BADGE_THEME_CHROME_PANEL
+            : BADGE_THEME_CHROME_PANEL_ALT;
+    uint16_t panel = badge_theme_chrome(panel_role);
+    uint16_t bg = item->stale
+        ? rgb565_mix_color(panel,
+                           badge_theme_chrome(BADGE_THEME_CHROME_CANVAS), 72)
+        : panel;
+    uint16_t primary = badge_theme_safe_chrome(
+        BADGE_THEME_CHROME_TEXT_PRIMARY, bg);
+    uint16_t rail_color = badge_theme_contrast_floor(color, bg);
     fb_fill_rect(0, y, LCD_W, h, bg);
-    draw_panel_triforce_mark(y, h, bg, color);
-    fb_fill_rect(0, y, 5, h, color);
+    draw_panel_triforce_mark(y, h, bg, rail_color);
+    fb_fill_rect(0, y, 5, h, rail_color);
 
     const char *code = ui_item_code(item);
-    fb_draw_tiny_string(8, y + 5, code, color, bg);
+    fb_draw_tiny_string(8, y + 5, code, rail_color, bg);
     int label_x = 8 + tiny_pixel_width(code) + 6;
 
     char age[10];
@@ -4891,9 +4972,9 @@ static void draw_billboard_row(int y, int h,
     }
     fb_draw_string_fast_marquee(label_x, y + 3, title,
                                 LCD_W - label_x - aw - 8,
-                                item->stale ? COL_GRAY : COL_WHITE, bg);
+                                item->stale ? secondary : primary, bg);
     fb_draw_tiny_string(LCD_W - aw - 4, y + 6, age,
-                        item->stale ? COL_DARKGRAY : color, bg);
+                        item->stale ? secondary : rail_color, bg);
 
     char detail[80];
     char clean[32];
@@ -4919,15 +5000,17 @@ static void draw_billboard_row(int y, int h,
         }
     }
     fb_draw_string_fast_marquee(8, y + 19, detail, LCD_W - 12,
-                                item->stale ? COL_DARKGRAY
-                                            : rgb565_mix_color(COL_WHITE, color, 85),
+                                item->stale ? secondary
+                                            : badge_theme_contrast_floor(
+                                                rgb565_mix_color(primary, color, 85),
+                                                bg),
                                 bg);
 
     uint8_t heat = badge_item_heat_percent(snapshot, item);
     uint16_t heat_color = badge_item_heat_color(item, heat);
     int heat_w = (int)heat * (LCD_W - 16) / 100;
     fb_fill_rect(8, y + h - 3, LCD_W - 16, 2,
-                 rgb565_scale_color(COL_DARKGRAY, 110));
+                 rgb565_mix_color(bg, secondary, 72));
     if (heat_w > 0) {
         fb_fill_rect(8, y + h - 3, heat_w, 2, heat_color);
     }
@@ -4937,16 +5020,29 @@ static void draw_idle_billboard(int y, int h,
                                 const char *label, const char *detail,
                                 bool ok)
 {
-    uint16_t color = ok ? COL_SOFT_GREEN : COL_GOLD;
-    uint16_t bg = ok ? rgb565_scale_color(COL_PANEL, 78)
-                     : rgb565_mix_color(COL_PANEL_2, COL_DIMRED, 48);
+    badge_theme_chrome_role_t panel_role =
+        y == badge_display_contract_lane_y(2)
+            ? BADGE_THEME_CHROME_PANEL
+            : BADGE_THEME_CHROME_PANEL_ALT;
+    uint16_t panel = badge_theme_chrome(panel_role);
+    uint16_t bg = ok
+        ? panel
+        : rgb565_mix_color(panel,
+                           badge_theme_chrome(BADGE_THEME_CHROME_SCANNER_DOWN),
+                           38);
+    uint16_t color = ok
+        ? badge_theme_accent(BADGE_THEME_ACCENT_CLEAR, COL_SOFT_GREEN)
+        : badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg);
+    uint16_t primary = badge_theme_safe_chrome(
+        BADGE_THEME_CHROME_TEXT_PRIMARY, bg);
+    uint16_t secondary = badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY);
     fb_fill_rect(0, y, LCD_W, h, bg);
     draw_panel_triforce_mark(y, h, bg, color);
     fb_fill_rect(0, y, 5, h, color);
     fb_draw_string_fit(10, y + 4, label, LCD_W - 16,
-                       ok ? COL_GRAY : COL_WHITE, bg);
+                       ok ? primary : color, bg);
     fb_draw_string_fit(10, y + 18, detail, LCD_W - 16,
-                       ok ? COL_DARKGRAY : COL_GOLD, bg);
+                       ok ? secondary : color, bg);
 }
 
 static bool badge_board_text_visible(const badge_threat_snapshot_t *snapshot,
@@ -5565,12 +5661,18 @@ static void draw_focus_outline(void)
     if (!entry || !entry->active || entry->h <= 0) {
         return;
     }
-    uint16_t color = entry->severe ? COL_GOLD : COL_LINK_BRIGHT;
+    badge_theme_chrome_role_t panel_role = (s_focus_model.focus_index & 1)
+        ? BADGE_THEME_CHROME_PANEL_ALT
+        : BADGE_THEME_CHROME_PANEL;
+    uint16_t bg = badge_theme_chrome(panel_role);
+    uint16_t color = entry->severe
+        ? badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg)
+        : badge_theme_safe_chrome(BADGE_THEME_CHROME_SELECTION, bg);
     fb_fill_rect(1, entry->y + 1, LCD_W - 2, 1, color);
     fb_fill_rect(1, entry->y + entry->h - 2, LCD_W - 2, 1, color);
     fb_fill_rect(1, entry->y + 1, 1, entry->h - 2, color);
     fb_fill_rect(LCD_W - 2, entry->y + 1, 1, entry->h - 2, color);
-    fb_draw_tiny_string(LCD_W - 18, entry->y + 3, "SEL", color, COL_BLACK);
+    fb_draw_tiny_string(LCD_W - 18, entry->y + 3, "SEL", color, bg);
 }
 
 static void draw_billboard_candidate_lane(
@@ -5596,12 +5698,13 @@ static void draw_badge_billboards(const badge_threat_snapshot_t *snapshot,
                                   badge_display_viewed_t *viewed,
                                   bool backend_ok, bool wifi_network_ok)
 {
-    const int y0 = 78;
-    const int bottom_y = 148;
-    const int row_h = 34;
-    const int row_gap = 1;
+    const int y0 = badge_display_contract_lane_y(2);
+    const int wifi_y = badge_display_contract_lane_y(3);
+    const int bottom_y = badge_display_contract_health_strip_y();
+    const int row_h = badge_display_contract_lane_height(2);
 
-    fb_fill_rect(0, y0, LCD_W, bottom_y - y0, COL_BLACK);
+    fb_fill_rect(0, y0, LCD_W, bottom_y - y0,
+                 badge_theme_chrome(BADGE_THEME_CHROME_CANVAS));
     static badge_billboard_candidate_t ble_candidates[8];
     static badge_billboard_candidate_t wifi_candidates[8];
     memset(ble_candidates, 0, sizeof(ble_candidates));
@@ -5643,7 +5746,8 @@ static void draw_badge_billboards(const badge_threat_snapshot_t *snapshot,
     badge_focus_add_candidate(snapshot, wifi_candidate, "LOWER WIFI",
                               wifi_scanner_ok ? "WIFI CLEAR" : "WIFI OFFLINE",
                               wifi_scanner_ok ? "No SSID or attack" : "Check WiFi scanner",
-                              y0 + row_h + row_gap, row_h, wifi_pos, wifi_total);
+                              wifi_y, badge_display_contract_lane_height(3),
+                              wifi_pos, wifi_total);
 
     if (ble_candidate) {
         draw_billboard_candidate_lane(y0, row_h, snapshot, ble_candidate);
@@ -5654,10 +5758,11 @@ static void draw_badge_billboards(const badge_threat_snapshot_t *snapshot,
                             ble_scanner_ok);
     }
     if (wifi_candidate) {
-        draw_billboard_candidate_lane(y0 + row_h + row_gap, row_h,
+        draw_billboard_candidate_lane(wifi_y,
+                                      badge_display_contract_lane_height(3),
                                       snapshot, wifi_candidate);
     } else {
-        draw_idle_billboard(y0 + row_h + row_gap, row_h,
+        draw_idle_billboard(wifi_y, badge_display_contract_lane_height(3),
                             wifi_scanner_ok ? "WIFI CLEAR" : "WIFI OFFLINE",
                             wifi_scanner_ok ? "No SSID or attack" :
                             backend_ok ? "Backend connected" :
@@ -5669,14 +5774,20 @@ static void draw_badge_billboards(const badge_threat_snapshot_t *snapshot,
     if (ble_total > 1) {
         char page[24];
         snprintf(page, sizeof(page), "%d/%d", ble_pos + 1, ble_total);
+        uint16_t page_bg = badge_theme_chrome(BADGE_THEME_CHROME_PANEL);
         fb_draw_tiny_string(LCD_W - tiny_pixel_width(page) - 4,
-                            y0 + row_h - 8, page, COL_DARKGRAY, COL_PANEL_2);
+                            y0 + row_h - 8, page,
+                            badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY),
+                            page_bg);
     }
     if (wifi_total > 1) {
         char page[24];
         snprintf(page, sizeof(page), "%d/%d", wifi_pos + 1, wifi_total);
+        uint16_t page_bg = badge_theme_chrome(BADGE_THEME_CHROME_PANEL_ALT);
         fb_draw_tiny_string(LCD_W - tiny_pixel_width(page) - 4,
-                            bottom_y - 8, page, COL_DARKGRAY, COL_PANEL_2);
+                            bottom_y - 8, page,
+                            badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY),
+                            page_bg);
     }
     badge_focus_model_finish();
 }
@@ -5686,7 +5797,7 @@ static void draw_evidence_queue(const badge_threat_snapshot_t *snapshot,
                                 bool backend_ok, bool wifi_network_ok)
 {
     const int list_y = 15;
-    const int bottom_y = 148;
+    const int bottom_y = badge_display_contract_health_strip_y();
     const int row_h = 32;
     const int row_gap = 1;
     const int visible_rows = 4;
@@ -5805,7 +5916,8 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
     badge_focus_model_reset();
     badge_threat_display_lane_t other_lane = badge_top_item_lane(top_items[0]);
     for (int slot = 0; slot < 2; slot++) {
-        const int y = slot == 0 ? 0 : 39;
+        const int y = badge_display_contract_lane_y(slot);
+        const int h = badge_display_contract_lane_height(slot);
         const badge_threat_snapshot_entity_t *item = top_items[slot];
         badge_threat_display_lane_t lane = item
             ? badge_top_item_lane(item)
@@ -5828,10 +5940,10 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
             : (ble_scanner_ok ? "No tags/glasses" : "Check BLE scanner");
 
         if (item) {
-            badge_focus_add_entity(snapshot, item, focus_label, y, 37,
+            badge_focus_add_entity(snapshot, item, focus_label, y, h,
                                    top_pos[slot], top_total[slot]);
         } else {
-            badge_focus_add_idle(focus_label, clear_label, clear_detail, y, 37);
+            badge_focus_add_idle(focus_label, clear_label, clear_detail, y, h);
         }
         draw_top_concern_tile(
             y,
@@ -5853,7 +5965,8 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
                           &viewed,
                           backend_ok, wifi_network_ok);
     draw_focus_outline();
-    draw_scanner_bottom_strip(148, ble_scanner_ok, wifi_scanner_ok);
+    draw_scanner_bottom_strip(badge_display_contract_health_strip_y(),
+                              ble_scanner_ok, wifi_scanner_ok);
 }
 
 static void draw_detail_pair(int y, const char *label, const char *value)
