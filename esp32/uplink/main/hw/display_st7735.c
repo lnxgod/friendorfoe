@@ -32,9 +32,11 @@
 #include "badge_display_policy_runtime.h"
 #include "badge_theme_runtime.h"
 #include "badge_button_gesture.h"
+#include "badge_easter_egg_runtime.h"
 #include "badge_ble_control.h"
 #include "badge_ble_investigation.h"
 #include "badge_investigation_policy.h"
+#include "wall_of_sheep_logo.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -278,6 +280,7 @@ typedef struct {
     bool stable_pressed;
     bool long_sent;
     bool boot_ignored;
+    bool consume_release;
     TickType_t changed_tick;
     TickType_t pressed_tick;
 } badge_button_state_t;
@@ -729,14 +732,30 @@ static void badge_button_poll_one(badge_button_state_t *button, TickType_t now)
         button->long_sent = false;
         button->boot_ignored = false;
         badge_button_diag_note_stable(button, true);
+        if (badge_easter_egg_runtime_dismiss()) {
+            button->consume_release = true;
+            badge_button_gesture_cancel(&s_b2_gesture);
+            badge_button_diag_set_b2_gesture("");
+            badge_button_display_lock();
+            s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
+            s_detail_mode = false;
+            s_detail_page = 0;
+            display_unlock();
+        }
         return;
     }
 
     bool boot_ignored = button->boot_ignored;
-    TickType_t held_ticks = now - button->pressed_tick;
-    bool long_press = held_ticks >= long_ticks;
     button->boot_ignored = false;
     badge_button_diag_note_stable(button, false);
+    if (button->consume_release) {
+        button->consume_release = false;
+        button->long_sent = false;
+        return;
+    }
+
+    TickType_t held_ticks = now - button->pressed_tick;
+    bool long_press = held_ticks >= long_ticks;
     if (boot_ignored) {
         button->long_sent = false;
     } else if (long_press) {
@@ -760,8 +779,9 @@ static void badge_button_poll_one(badge_button_state_t *button, TickType_t now)
             } else {
                 badge_button_dispatch_b2_gesture(event);
             }
-        } else if (BADGE_BUTTON1_ENABLE_ACTIONS) {
-            badge_button_short_press(button->id);
+        } else {
+            (void)badge_easter_egg_runtime_trigger(
+                BADGE_EASTER_EGG_SOURCE_BUTTON);
         }
     }
 }
@@ -870,7 +890,7 @@ static void badge_buttons_start(void)
         ESP_LOGE(TAG, "Badge button task start failed");
         return;
     }
-    ESP_LOGI(TAG, "Badge buttons active: GPIO%d=diag-only active-%s GPIO%d=next/detail/QR active-low",
+    ESP_LOGI(TAG, "Badge buttons active: GPIO%d=Easter-trigger active-%s GPIO%d=next/detail/QR active-low",
              BADGE_BUTTON_TRIFORCE_PIN,
              BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH ? "high" : "low",
              BADGE_BUTTON_QR_PIN);
@@ -1302,6 +1322,74 @@ static void fb_draw_string_centered(int cx, int y, const char *s,
 {
     int w = str_pixel_width(s, scale);
     fb_draw_string(cx - w / 2, y, s, fg, bg, scale);
+}
+
+static void draw_wall_of_sheep_logo(int x0, int y0)
+{
+    for (uint32_t y = 0; y < WALL_OF_SHEEP_LOGO_HEIGHT; ++y) {
+        for (uint32_t x = 0; x < WALL_OF_SHEEP_LOGO_WIDTH; ++x) {
+            uint8_t index = wall_of_sheep_logo_pixels[
+                y * WALL_OF_SHEEP_LOGO_WIDTH + x];
+            if (index == WALL_OF_SHEEP_LOGO_TRANSPARENT_INDEX ||
+                index >= WALL_OF_SHEEP_LOGO_PALETTE_SIZE) {
+                continue;
+            }
+            fb_set_pixel(x0 + (int)x, y0 + (int)y,
+                         wall_of_sheep_logo_palette[index]);
+        }
+    }
+}
+
+static void draw_badge_easter_egg_screen(void)
+{
+    const uint16_t uv_deep = 0x1809;
+    const uint16_t uv_band = 0x4016;
+    const uint16_t uv_bright = 0xA81F;
+    const int logo_x = (LCD_W - (int)WALL_OF_SHEEP_LOGO_WIDTH) / 2;
+    const int logo_y = 10;
+
+    fb_clear(COL_BLACK);
+
+    /* Blacklight bands and hard instrument ticks frame the focal mark. */
+    for (int y = 8; y < LCD_H - 8; y += 12) {
+        fb_fill_rect(4, y, LCD_W - 8, 1,
+                     (y % 24) == 8 ? uv_deep : COL_DEEP_VIOLET);
+    }
+    fb_fill_rect(2, 2, LCD_W - 4, 2, uv_bright);
+    fb_fill_rect(2, LCD_H - 4, LCD_W - 4, 2, uv_bright);
+    fb_fill_rect(2, 2, 2, LCD_H - 4, uv_bright);
+    fb_fill_rect(LCD_W - 4, 2, 2, LCD_H - 4, uv_bright);
+    fb_fill_rect(6, 6, LCD_W - 12, 2, uv_band);
+    fb_fill_rect(6, 84, LCD_W - 12, 3, uv_band);
+    fb_fill_rect(6, 122, LCD_W - 12, 2, uv_band);
+    for (int x = 10; x < LCD_W - 9; x += 9) {
+        int tick_h = (x % 18) == 10 ? 4 : 2;
+        fb_fill_rect(x, 4, 1, tick_h, COL_VIOLET);
+        fb_fill_rect(x, LCD_H - 4 - tick_h, 1, tick_h, COL_VIOLET);
+    }
+
+    fb_fill_rect(logo_x - 3, logo_y - 2,
+                 (int)WALL_OF_SHEEP_LOGO_WIDTH + 6,
+                 (int)WALL_OF_SHEEP_LOGO_HEIGHT + 4, uv_deep);
+    fb_fill_rect(logo_x - 1, logo_y,
+                 (int)WALL_OF_SHEEP_LOGO_WIDTH + 2,
+                 (int)WALL_OF_SHEEP_LOGO_HEIGHT, COL_BLACK);
+    draw_wall_of_sheep_logo(logo_x, logo_y);
+
+    fb_fill_rect(7, 89, LCD_W - 14, 12, COL_BLACK);
+    fb_draw_string_centered(LCD_W / 2, 91, "Welcome to Hell",
+                            COL_WHITE, COL_BLACK, 1);
+    fb_fill_rect(16, 105, LCD_W - 32, 12, COL_BLACK);
+    fb_draw_string_centered(LCD_W / 2, 108, "Just Kidding",
+                            0xD59F, COL_BLACK, 1);
+    fb_fill_rect(11, 130, LCD_W - 22, 12, COL_BLACK);
+    fb_draw_string_centered(LCD_W / 2, 133, "Defcon 34 FoF",
+                            COL_WHITE, COL_BLACK, 1);
+
+    fb_fill_rect(9, 146, LCD_W - 18, 1, uv_band);
+    for (int x = 13; x < LCD_W - 12; x += 12) {
+        fb_fill_rect(x, 150, 5, 2, uv_bright);
+    }
 }
 
 /* ── Pin-blink diagnostic ──────────────────────────────────────────────── */
@@ -6384,6 +6472,13 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     if (!display_lock(pdMS_TO_TICKS(30))) return;
 
     s_anim_frame++;
+    badge_easter_egg_machine_t easter;
+    if (badge_easter_egg_runtime_snapshot(&easter) && easter.visible) {
+        draw_badge_easter_egg_screen();
+        st_flush();
+        display_unlock();
+        return;
+    }
     badge_investigation_refresh_locked();
     if (s_investigation_overlay.visible) {
         draw_badge_investigation_overlay();

@@ -8,8 +8,8 @@ if(CONFIG_BT_ENABLED)
 endif()
 
 idf_component_register(
-    SRC_DIRS "." "comms" "hw" "network" "core" "../../shared"
-    INCLUDE_DIRS "." "comms" "hw" "network" "core" "../../shared"
+    SRC_DIRS "." "comms" "hw" "hw/assets" "network" "core" "../../shared"
+    INCLUDE_DIRS "." "comms" "hw" "hw/assets" "network" "core" "../../shared"
     REQUIRES ${FOF_UPLINK_REQUIRES}
 )
 

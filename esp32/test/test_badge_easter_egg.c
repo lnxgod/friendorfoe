@@ -201,3 +201,24 @@ void test_badge_easter_uart_frames_use_fixed_allowlisted_sources(void)
     TEST_ASSERT_NULL(badge_easter_egg_uart_frame(
         BADGE_EASTER_EGG_SOURCE_BUTTON));
 }
+
+void test_badge_easter_source_from_wire_accepts_only_scanner_sources(void)
+{
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID,
+                      badge_easter_egg_source_from_wire("ble_remote_id"));
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_WIFI_SSID,
+                      badge_easter_egg_source_from_wire("wifi_ssid"));
+
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,
+                      badge_easter_egg_source_from_wire(NULL));
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,
+                      badge_easter_egg_source_from_wire(""));
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,
+                      badge_easter_egg_source_from_wire("button"));
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,
+                      badge_easter_egg_source_from_wire("unknown"));
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,
+                      badge_easter_egg_source_from_wire("BLE_REMOTE_ID"));
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,
+                      badge_easter_egg_source_from_wire("Wifi_ssid"));
+}

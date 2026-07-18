@@ -34,6 +34,7 @@
 #include "badge_mode.h"
 #include "badge_runtime.h"
 #ifdef FOF_BADGE_VARIANT
+#include "badge_easter_egg_runtime.h"
 #include "badge_display_policy_runtime.h"
 #include "badge_theme_runtime.h"
 #include "badge_ble_control.h"
@@ -548,6 +549,7 @@ void app_main(void)
     nvs_config_init();
 
 #ifdef FOF_BADGE_VARIANT
+    badge_easter_egg_runtime_init();
     badge_runtime_init(s_ota_pending_verify);
     badge_display_policy_runtime_init();
     badge_theme_runtime_init();

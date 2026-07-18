@@ -16,6 +16,7 @@
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
 #include "badge_ble_investigation.h"
+#include "badge_easter_egg_runtime.h"
 #endif
 
 #include <string.h>
@@ -624,6 +625,7 @@ static bool msg_type_is_scanner_originated(const char *msg_type)
     }
     return strcmp(msg_type, MSG_TYPE_DETECTION) == 0 ||
            strcmp(msg_type, MSG_TYPE_STATUS) == 0 ||
+           strcmp(msg_type, MSG_TYPE_BADGE_EASTER_EGG) == 0 ||
            strcmp(msg_type, "scanner_info") == 0 ||
            strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0 ||
            strcmp(msg_type, "scan_profile_ack") == 0 ||
@@ -1429,6 +1431,18 @@ static void process_line(const char *line, size_t len, int scanner_id)
     /* A stopped scanner still emits identity / status, so use scanner-originated
      * traffic as a chance to release backpressure once the queue has drained. */
     maybe_resume_scanner(scanner_id);
+
+    if (strcmp(msg_type, MSG_TYPE_BADGE_EASTER_EGG) == 0) {
+#ifdef FOF_BADGE_VARIANT
+        badge_easter_egg_source_t source = badge_easter_egg_source_from_wire(
+            json_get_string(root, JSON_KEY_BADGE_EASTER_EGG_SOURCE, NULL));
+        if (source != BADGE_EASTER_EGG_SOURCE_NONE) {
+            (void)badge_easter_egg_runtime_trigger(source);
+        }
+#endif
+        cJSON_Delete(root);
+        return;
+    }
 
     if (strcmp(msg_type, MSG_TYPE_DETECTION) == 0) {
         drone_detection_t det;
