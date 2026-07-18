@@ -16,8 +16,10 @@
 #if defined(BLE_REMOTE_ID_HANDOFF_TEST)
 #include "ble_fingerprint.h"
 #include "ble_threat_detector.h"
+#include "open_drone_id_parser.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <string.h>
 #else
 #include "ble_remote_id.h"
@@ -37,6 +39,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 
 #include "calibration_mode.h"
 
@@ -92,6 +95,40 @@ static void ble_remote_id_prepare_behavioral_observation(
     for (uint8_t i = 0; i < observation->service_uuid_count; i++) {
         observation->service_uuids[i] = fp->service_uuids[i];
     }
+}
+
+/* Remote ID components normally arrive seconds apart. A 30-second assembly
+ * window tolerates substantial packet loss while preventing later frames or
+ * a radio session that reuses the same BLE address from inheriting stale ID.
+ */
+#define BLE_REMOTE_ID_ACCUMULATOR_COHERENCE_MS 30000LL
+
+static bool ble_remote_id_reset_accumulator_if_stale(
+    odid_state_t *state,
+    int64_t last_seen_ms,
+    int64_t observed_ms)
+{
+    if (!state) {
+        return false;
+    }
+
+    bool clock_rolled_back = observed_ms < last_seen_ms ||
+        observed_ms < state->first_seen_ms;
+    bool assembly_timed_out = !clock_rolled_back &&
+        (observed_ms - state->first_seen_ms) >=
+            BLE_REMOTE_ID_ACCUMULATOR_COHERENCE_MS;
+    bool idle_timed_out = !clock_rolled_back &&
+        (observed_ms - last_seen_ms) >=
+            BLE_REMOTE_ID_ACCUMULATOR_COHERENCE_MS;
+    if (!clock_rolled_back && !assembly_timed_out && !idle_timed_out) {
+        return false;
+    }
+
+    char device_address[sizeof(state->device_address)];
+    memcpy(device_address, state->device_address, sizeof(device_address));
+    device_address[sizeof(device_address) - 1] = '\0';
+    odid_state_init(state, device_address, observed_ms);
+    return true;
 }
 
 #if !defined(BLE_REMOTE_ID_HANDOFF_TEST)
@@ -316,12 +353,13 @@ static int collect_uuid16s_from_adv(const uint8_t *data, int length,
 }
 #endif
 static ble_device_slot_t s_devices[MAX_BLE_DEVICES];
-static bool             s_scanning = false;
-static bool             s_host_task_active = false;
-static bool             s_host_task_requested = false;
-static bool             s_host_synced = false;
+static atomic_bool      s_scanning = false;
+static atomic_bool      s_host_task_active = false;
+static atomic_bool      s_host_task_requested = false;
+static atomic_bool      s_host_synced = false;
+static atomic_uint      s_start_inflight = 0;
 static bool             s_initialized = false;
-static TaskHandle_t     s_host_task_handle = NULL;
+static _Atomic(TaskHandle_t) s_host_task_handle = NULL;
 static StaticTask_t     s_host_task_tcb;
 static StackType_t      s_host_task_stack[BLE_HOST_TASK_STACK_BYTES];
 static uint8_t          s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
@@ -671,7 +709,8 @@ static void badge_emit_glasses_detection(const glasses_detection_t *gdet,
  * Find or allocate a slot for a BLE device by MAC address.
  * If no existing slot matches, the oldest (LRU) slot is recycled.
  */
-static ble_device_slot_t *find_or_alloc_device(const uint8_t mac[6])
+static ble_device_slot_t *find_or_alloc_device(const uint8_t mac[6],
+                                               int64_t observed_ms)
 {
     int oldest_idx = 0;
     int64_t oldest_time = INT64_MAX;
@@ -680,6 +719,12 @@ static ble_device_slot_t *find_or_alloc_device(const uint8_t mac[6])
     for (int i = 0; i < MAX_BLE_DEVICES; i++) {
         if (s_devices[i].in_use) {
             if (memcmp(s_devices[i].mac, mac, 6) == 0) {
+                if (ble_remote_id_reset_accumulator_if_stale(
+                        &s_devices[i].odid,
+                        s_devices[i].last_seen_ms,
+                        observed_ms)) {
+                    s_devices[i].last_emit_ms = 0;
+                }
                 return &s_devices[i];
             }
             if (s_devices[i].last_seen_ms < oldest_time) {
@@ -698,7 +743,7 @@ static ble_device_slot_t *find_or_alloc_device(const uint8_t mac[6])
     memset(slot, 0, sizeof(*slot));
     memcpy(slot->mac, mac, 6);
     slot->in_use = true;
-    slot->last_seen_ms = now_ms();
+    slot->last_seen_ms = observed_ms;
 
     /* Initialize the ODID accumulator with the device MAC as address */
     char mac_str[18];
@@ -822,8 +867,9 @@ static void process_odid_service_data(const uint8_t mac[6],
     }
 
     /* Find or create device slot */
-    ble_device_slot_t *slot = find_or_alloc_device(mac);
-    slot->last_seen_ms = now_ms();
+    int64_t observed_ms = now_ms();
+    ble_device_slot_t *slot = find_or_alloc_device(mac, observed_ms);
+    slot->last_seen_ms = observed_ms;
 
     /* Parse the ODID message into the accumulated state (depth=0 for top-level) */
     odid_parse_message(odid_msg, (size_t)odid_len, &slot->odid, 0);
@@ -843,7 +889,7 @@ static void process_odid_service_data(const uint8_t mac[6],
             BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID);
     }
 #endif
-    int64_t ts = now_ms();
+    int64_t ts = observed_ms;
     if (skip_len > 0) {
         ESP_LOGD(TAG, "BLE RID service payload len=%d skip=%d odid_len=%d",
                  data_len, skip_len, odid_len);
@@ -972,6 +1018,11 @@ static bool apply_behavioral_ble_threat(const uint8_t mac[6],
  */
 static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 {
+    (void)arg;
+    if (scanner_quiet_mode_is_active() &&
+        event->type != BLE_GAP_EVENT_DISC_COMPLETE) {
+        return 0;
+    }
     switch (event->type) {
     case BLE_GAP_EVENT_DISC: {
         /* Some NimBLE targets surface BLE 4.x advertisements through the
@@ -1712,6 +1763,11 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
 static bool ble_remote_id_start_scan_internal(bool investigation_resume)
 {
+    if (scanner_quiet_mode_is_active()) {
+        s_scanning = false;
+        ESP_LOGD(TAG, "BLE scan start suppressed during scanner quiet mode");
+        return false;
+    }
     if (!ble_investigator_scan_start_is_allowed(
             investigation_gatt_is_active(), investigation_resume)) {
         ESP_LOGD(TAG, "BLE scan restart suppressed during GATT investigation");
@@ -1756,6 +1812,12 @@ static bool ble_remote_id_start_scan_internal(bool investigation_resume)
         return false;
     } else {
         s_scanning = true;
+        if (scanner_quiet_mode_is_active()) {
+            (void)ble_gap_disc_cancel();
+            s_scanning = false;
+            ESP_LOGW(TAG, "BLE scan start rolled back across quiet edge");
+            return false;
+        }
         portENTER_CRITICAL(&s_investigation_lock);
         if (investigation_resume) {
             s_investigation_gatt_active = false;
@@ -1838,11 +1900,15 @@ static void ble_host_task(void *arg)
 static bool ble_wait_host_stopped(int timeout_ms)
 {
     int waited_ms = 0;
-    while (s_host_task_active && waited_ms < timeout_ms) {
+    while ((s_host_task_active || s_host_task_handle != NULL) &&
+           waited_ms < timeout_ms) {
+        /* Retrying also covers a host task that was created but had not yet
+         * entered nimble_port_run() when the first stop request landed. */
+        (void)nimble_port_stop();
         vTaskDelay(pdMS_TO_TICKS(25));
         waited_ms += 25;
     }
-    return !s_host_task_active;
+    return !s_host_task_active && s_host_task_handle == NULL;
 }
 
 /* ── Public API ────────────────────────────────────────────────────────────── */
@@ -1880,8 +1946,12 @@ void ble_remote_id_set_glasses_queue(QueueHandle_t queue)
 }
 #endif
 
-void ble_remote_id_start(void)
+static void ble_remote_id_start_impl(void)
 {
+    if (scanner_quiet_mode_is_active()) {
+        ESP_LOGD(TAG, "BLE host start suppressed during scanner quiet mode");
+        return;
+    }
     if (!investigation_host_start_is_allowed()) {
         ESP_LOGD(TAG, "BLE start suppressed during GATT investigation");
         return;
@@ -1965,13 +2035,25 @@ void ble_remote_id_start(void)
              BLE_SCAN_TASK_CORE, BLE_HOST_TASK_PRIORITY);
 }
 
+void ble_remote_id_start(void)
+{
+    atomic_fetch_add_explicit(&s_start_inflight, 1, memory_order_acq_rel);
+    ble_remote_id_start_impl();
+    if (scanner_quiet_mode_is_active()) {
+        /* An already-entered start can race the quiet edge. Roll it back;
+         * is_quiesced also observes s_start_inflight so no ACK can pass in
+         * the window before this cleanup completes. */
+        ble_remote_id_stop();
+    }
+    atomic_fetch_sub_explicit(&s_start_inflight, 1, memory_order_acq_rel);
+}
+
 void ble_remote_id_stop(void)
 {
-    if (!s_host_task_active && !s_host_task_requested && !s_scanning) {
+    if (ble_remote_id_is_quiesced()) {
         return;
     }
     s_host_task_requested = false;
-    s_scanning = false;
     portENTER_CRITICAL(&s_investigation_lock);
     s_investigation_gatt_active = false;
     s_investigation_resume_pending = false;
@@ -1980,18 +2062,56 @@ void ble_remote_id_stop(void)
     int rc = ble_gap_disc_cancel();
     if (rc != 0 && rc != BLE_HS_EALREADY) {
         ESP_LOGW(TAG, "ble_gap_disc_cancel() failed: %d", rc);
+    } else {
+        /* This is an observed controller cancellation, not merely the logical
+         * stop request. Host-task state remains part of the quiescence gate. */
+        s_scanning = false;
     }
 
-    nimble_port_stop();
-    if (!ble_wait_host_stopped(600)) {
-        ESP_LOGW(TAG, "BLE host stop still pending after 600ms");
+    (void)nimble_port_stop();
+    if (!ble_wait_host_stopped(1200)) {
+        ESP_LOGW(TAG, "BLE host stop still pending after 1200ms");
     }
-    ESP_LOGI(TAG, "BLE Remote ID scanner stopped");
+    ESP_LOGI(TAG, "BLE Remote ID stop requested (quiesced=%d)",
+             ble_remote_id_is_quiesced() ? 1 : 0);
 }
 
 bool ble_remote_id_is_scanning(void)
 {
     return s_scanning;
+}
+
+bool ble_remote_id_is_quiesced(void)
+{
+    bool quiesced =
+        !atomic_load_explicit(&s_scanning, memory_order_acquire) &&
+        !atomic_load_explicit(&s_host_task_active, memory_order_acquire) &&
+        !atomic_load_explicit(&s_host_task_requested, memory_order_acquire) &&
+        !atomic_load_explicit(&s_host_synced, memory_order_acquire) &&
+        atomic_load_explicit(&s_start_inflight, memory_order_acquire) == 0 &&
+        atomic_load_explicit(&s_host_task_handle, memory_order_acquire) == NULL;
+    atomic_thread_fence(memory_order_acquire);
+    return quiesced &&
+           !atomic_load_explicit(&s_scanning, memory_order_relaxed) &&
+           !atomic_load_explicit(&s_host_task_active, memory_order_relaxed) &&
+           !atomic_load_explicit(&s_host_task_requested, memory_order_relaxed) &&
+           atomic_load_explicit(&s_start_inflight, memory_order_relaxed) == 0;
+}
+
+bool ble_remote_id_is_active(void)
+{
+    bool active =
+        atomic_load_explicit(&s_scanning, memory_order_acquire) &&
+        atomic_load_explicit(&s_host_task_active, memory_order_acquire) &&
+        atomic_load_explicit(&s_host_synced, memory_order_acquire) &&
+        atomic_load_explicit(&s_start_inflight, memory_order_acquire) == 0 &&
+        atomic_load_explicit(&s_host_task_handle, memory_order_acquire) != NULL;
+    atomic_thread_fence(memory_order_acquire);
+    return active &&
+           atomic_load_explicit(&s_scanning, memory_order_relaxed) &&
+           atomic_load_explicit(&s_host_task_active, memory_order_relaxed) &&
+           atomic_load_explicit(&s_host_synced, memory_order_relaxed) &&
+           atomic_load_explicit(&s_start_inflight, memory_order_relaxed) == 0;
 }
 
 bool ble_remote_id_pause_for_investigation(void)
@@ -2021,6 +2141,14 @@ bool ble_remote_id_pause_for_investigation(void)
 
 bool ble_remote_id_resume_after_investigation(void)
 {
+    if (scanner_quiet_mode_is_active()) {
+        portENTER_CRITICAL(&s_investigation_lock);
+        s_investigation_gatt_active = false;
+        s_investigation_resume_pending = false;
+        portEXIT_CRITICAL(&s_investigation_lock);
+        ESP_LOGD(TAG, "BLE scan resume suppressed during scanner quiet mode");
+        return true;
+    }
     portENTER_CRITICAL(&s_investigation_lock);
     bool gatt_active = s_investigation_gatt_active;
     if (s_scanning) {

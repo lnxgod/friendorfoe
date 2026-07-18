@@ -32,6 +32,7 @@
 #include "ble_investigator.h"
 #include "ble_investigation_protocol.h"
 #include "time_sync_policy.h"
+#include "firmware_version_order.h"
 #include "comms/uart_ota.h"
 
 #if CONFIG_FOF_GLASSES_DETECTION
@@ -117,6 +118,7 @@ volatile int64_t g_last_cmd_local_ms = 0;
 static volatile int64_t s_uart_cmd_last_loop_ms = 0;
 static volatile bool s_radios_ready = false;
 static char s_fw_ready_target[32] = {0};
+static uart_ota_manifest_t s_fw_ready_manifest = {0};
 
 #define FW_CHECK_DAILY_INTERVAL_MS     (24LL * 60LL * 60LL * 1000LL)
 #define FW_CHECK_JITTER_MAX_MS         (60LL * 60LL * 1000LL)
@@ -165,6 +167,16 @@ static bool scanner_radio_health_ok(void)
 {
     if (!s_radios_ready) {
         return false;
+    }
+    if (scanner_quiet_mode_is_active()) {
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        int64_t last_loop_ms = s_uart_cmd_last_loop_ms;
+        return wifi_scanner_is_quiesced() &&
+               ble_remote_id_is_quiesced() &&
+               g_cmd_msg_count > 0 &&
+               last_loop_ms > 0 &&
+               now_ms >= last_loop_ms &&
+               (now_ms - last_loop_ms) <= 30000;
     }
     ble_remote_id_stats_t ble_stats = {0};
     ble_remote_id_get_stats(&ble_stats);
@@ -669,6 +681,145 @@ static void handle_display_policy_command(cJSON *root)
 }
 #endif
 
+static bool json_uint32_exact(const cJSON *item, uint32_t *out)
+{
+    if (!cJSON_IsNumber(item) || !out ||
+        item->valuedouble < 0.0 || item->valuedouble > (double)UINT32_MAX) {
+        return false;
+    }
+    uint32_t value = (uint32_t)item->valuedouble;
+    if ((double)value != item->valuedouble) {
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
+static bool json_copy_bounded_string(const cJSON *item,
+                                     char *out,
+                                     size_t out_size)
+{
+    if (!cJSON_IsString(item) || !out || out_size == 0) {
+        return false;
+    }
+    size_t len = strlen(item->valuestring);
+    if (len == 0 || len >= out_size) {
+        return false;
+    }
+    memcpy(out, item->valuestring, len + 1);
+    return true;
+}
+
+static void handle_scanner_quiet_command(cJSON *root)
+{
+    const cJSON *enabled_j = cJSON_GetObjectItem(root, "enabled");
+    const cJSON *generation_j = cJSON_GetObjectItem(root, JSON_KEY_GENERATION);
+    uint32_t generation = 0;
+    const char *error = NULL;
+    bool requested_enabled = scanner_quiet_mode_is_active();
+    bool ok = false;
+
+    if (!cJSON_IsBool(enabled_j)) {
+        error = "invalid_enabled";
+    } else if (!json_uint32_exact(generation_j, &generation)) {
+        error = "invalid_generation";
+    } else {
+        requested_enabled = cJSON_IsTrue(enabled_j);
+        bool update_active = uart_ota_is_active();
+#ifdef FOF_BADGE_VARIANT
+        update_active = update_active || scanner_firmware_quiet_window_active();
+#endif
+        if (!requested_enabled && update_active) {
+            error = "firmware_update_active";
+        } else {
+            bool transition_ok =
+                scanner_quiet_mode_set(requested_enabled, generation);
+            if (requested_enabled) {
+                ble_investigator_runtime_quiesce(
+                    esp_timer_get_time() / 1000);
+            }
+            ok = transition_ok && s_radios_ready;
+            if (!ok) {
+                const char *transition_error = scanner_quiet_mode_last_error();
+                error = !s_radios_ready
+                    ? "radios_not_ready"
+                    : (transition_error && transition_error[0]
+                        ? transition_error
+                        : "quiet_transition_failed");
+            }
+        }
+    }
+
+    ble_remote_id_stats_t ble_stats = {0};
+    ble_remote_id_get_stats(&ble_stats);
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    int64_t last_loop_ms = s_uart_cmd_last_loop_ms;
+    bool uart_commands = g_cmd_msg_count > 0 &&
+                         last_loop_ms > 0 &&
+                         now_ms >= last_loop_ms &&
+                         (now_ms - last_loop_ms) <= 30000;
+    bool radios_ready = s_radios_ready &&
+                        scanner_quiet_mode_radios_ready();
+    bool tx_restored = scanner_quiet_mode_tx_restored();
+    bool actual_enabled = scanner_quiet_mode_is_active();
+    bool ble_quiesced = ble_remote_id_is_quiesced();
+    bool wifi_quiesced = wifi_scanner_is_quiesced();
+    bool ble_active = ble_remote_id_is_active();
+    bool wifi_active = wifi_scanner_is_active();
+    bool tx_enabled = uart_tx_is_enabled();
+    if (ok) {
+        ok = actual_enabled == requested_enabled && radios_ready &&
+             (requested_enabled
+                ? (!tx_enabled && ble_quiesced && wifi_quiesced)
+                : tx_restored);
+        if (!ok && !error) {
+            error = "transition_pending";
+        }
+    }
+
+    cJSON *ack = cJSON_CreateObject();
+    if (!ack) {
+        ESP_LOGE(TAG, "Failed to allocate scanner quiet ACK");
+        return;
+    }
+    cJSON_AddStringToObject(ack, "type", MSG_TYPE_SCANNER_QUIET_ACK);
+    cJSON_AddBoolToObject(ack, "ok", ok);
+    cJSON_AddBoolToObject(ack, "enabled", actual_enabled);
+    cJSON_AddNumberToObject(ack, "generation", generation);
+    cJSON_AddBoolToObject(ack, "ble_scanning", ble_stats.ble_scanning);
+    cJSON_AddBoolToObject(ack, "wifi_paused", wifi_scanner_is_paused());
+    cJSON_AddBoolToObject(ack, "ble_quiesced", ble_quiesced);
+    cJSON_AddBoolToObject(ack, "wifi_quiesced", wifi_quiesced);
+    cJSON_AddBoolToObject(ack, "ble_active", ble_active);
+    cJSON_AddBoolToObject(ack, "wifi_active", wifi_active);
+    cJSON_AddBoolToObject(ack, "radios_ready", radios_ready);
+    cJSON_AddBoolToObject(ack, "tx_restored", tx_restored);
+    cJSON_AddBoolToObject(ack, "tx_enabled", tx_enabled);
+    cJSON_AddBoolToObject(ack, "uart_commands", uart_commands);
+    if (error) {
+        cJSON_AddStringToObject(ack, "error", error);
+    }
+    char *ack_json = cJSON_PrintUnformatted(ack);
+    cJSON_Delete(ack);
+    if (ack_json) {
+        uart_tx_send_raw_json(ack_json);
+        cJSON_free(ack_json);
+    }
+    ESP_LOGW(TAG,
+             "Scanner quiet request=%d actual=%d generation=%lu ok=%d "
+             "ble_scanning=%d wifi_paused=%d tx_enabled=%d "
+             "uart_commands=%d error=%s",
+             requested_enabled ? 1 : 0,
+             actual_enabled ? 1 : 0,
+             (unsigned long)generation,
+             ok ? 1 : 0,
+             ble_stats.ble_scanning ? 1 : 0,
+             wifi_scanner_is_paused() ? 1 : 0,
+             tx_enabled ? 1 : 0,
+             uart_commands ? 1 : 0,
+             error ? error : "none");
+}
+
 /* ── UART command listener (lock-on from uplink) ──────────────────────── */
 
 static void send_ble_investigation_rejection(const char *request_id,
@@ -751,6 +902,12 @@ static void handle_ble_investigate_command(cJSON *root)
         send_ble_investigation_rejection(
             request_id, request.mode, request.target_mac,
             "calibration_active");
+        return;
+    }
+    if (scanner_quiet_mode_is_active()) {
+        send_ble_investigation_rejection(
+            request_id, request.mode, request.target_mac,
+            "scanner_quiet");
         return;
     }
     bool ota_active = uart_ota_is_active();
@@ -854,46 +1011,117 @@ static void clear_fw_ready_latch(const char *reason)
                  s_fw_ready_target);
         s_fw_ready_target[0] = '\0';
     }
+    memset(&s_fw_ready_manifest, 0, sizeof(s_fw_ready_manifest));
 }
 
 static void handle_fw_offer(cJSON *root, const char *board)
 {
-    const cJSON *update_j = cJSON_GetObjectItem(root, JSON_KEY_FW_UPDATE);
-    bool update = (update_j && cJSON_IsTrue(update_j)) ||
-                  (update_j && cJSON_IsNumber(update_j) && update_j->valueint != 0);
-    const cJSON *target_j = cJSON_GetObjectItem(root, JSON_KEY_FW_TARGET_VERSION);
-    const cJSON *name_j = cJSON_GetObjectItem(root, JSON_KEY_FW_NAME);
-    const cJSON *size_j = cJSON_GetObjectItem(root, JSON_KEY_FW_SIZE);
-    const cJSON *crc_j = cJSON_GetObjectItem(root, JSON_KEY_FW_CRC32);
-    const char *target = (target_j && target_j->valuestring) ? target_j->valuestring : "";
-    const char *fw_name = (name_j && name_j->valuestring) ? name_j->valuestring : "";
-    uint32_t size = size_j ? (uint32_t)size_j->valuedouble : 0;
-    uint32_t crc = crc_j ? (uint32_t)crc_j->valuedouble : 0;
+    const cJSON *update_j = cJSON_GetObjectItemCaseSensitive(
+        root, JSON_KEY_FW_UPDATE);
+    if (!cJSON_IsBool(update_j)) {
+        uart_tx_set_firmware_update_state(false, "", "error");
+        uart_tx_set_firmware_error("malformed_fw_offer");
+        clear_fw_ready_latch("malformed_fw_offer");
+        ESP_LOGW(TAG, "Rejected firmware offer: update must be a JSON boolean");
+        return;
+    }
 
-    if (!update) {
+    if (cJSON_IsFalse(update_j)) {
         uart_tx_set_firmware_update_state(false, "", "current");
-        s_fw_ready_target[0] = '\0';
+        clear_fw_ready_latch("current");
         ESP_LOGI(TAG, "Firmware check: scanner is current");
         return;
     }
 
-    if (fw_name[0] && board && board[0] && strcmp(fw_name, board) != 0) {
+    const cJSON *target_j = cJSON_GetObjectItemCaseSensitive(
+        root, JSON_KEY_FW_TARGET_VERSION);
+    const cJSON *name_j = cJSON_GetObjectItemCaseSensitive(
+        root, JSON_KEY_FW_NAME);
+    const cJSON *project_j = cJSON_GetObjectItemCaseSensitive(
+        root, "app_project");
+    const cJSON *hardware_j = cJSON_GetObjectItemCaseSensitive(
+        root, "hardware_type");
+    const cJSON *sha_j = cJSON_GetObjectItemCaseSensitive(root, "sha256");
+    const cJSON *generation_j = cJSON_GetObjectItemCaseSensitive(
+        root, "generation");
+    const cJSON *size_j = cJSON_GetObjectItemCaseSensitive(
+        root, JSON_KEY_FW_SIZE);
+    const cJSON *crc_j = cJSON_GetObjectItemCaseSensitive(
+        root, JSON_KEY_FW_CRC32);
+    uart_ota_manifest_t offered = {0};
+    bool manifest_fields_exact =
+        json_copy_bounded_string(name_j, offered.target,
+                                 sizeof(offered.target)) &&
+        json_copy_bounded_string(project_j, offered.project,
+                                 sizeof(offered.project)) &&
+        json_copy_bounded_string(hardware_j, offered.hardware,
+                                 sizeof(offered.hardware)) &&
+        json_copy_bounded_string(target_j, offered.version,
+                                 sizeof(offered.version)) &&
+        json_copy_bounded_string(sha_j, offered.sha256,
+                                 sizeof(offered.sha256)) &&
+        json_uint32_exact(generation_j, &offered.generation) &&
+        json_uint32_exact(size_j, &offered.size) &&
+        json_uint32_exact(crc_j, &offered.crc32);
+    offered.allow_same_version = false;
+    if (!manifest_fields_exact) {
         uart_tx_set_firmware_update_state(false, "", "error");
-        uart_tx_set_firmware_error("board_mismatch");
-        ESP_LOGW(TAG, "Rejected firmware offer: board mismatch offer=%s scanner=%s",
-                 fw_name, board);
+        uart_tx_set_firmware_error("malformed_fw_offer");
+        clear_fw_ready_latch("malformed_fw_offer");
+        ESP_LOGW(TAG, "Rejected firmware offer: malformed immutable manifest");
         return;
     }
-    if (!target[0] || strcmp(target, FOF_VERSION) == 0) {
-        uart_tx_set_firmware_update_state(false, "", "current");
-        ESP_LOGI(TAG, "Rejected firmware offer: target is current or missing");
+
+    const char *target = offered.version;
+    const char *fw_name = offered.target;
+    const char *project = offered.project;
+    const char *hardware = offered.hardware;
+    const char *sha256 = offered.sha256;
+    uint32_t generation = offered.generation;
+    uint32_t size = offered.size;
+    uint32_t crc = offered.crc32;
+
+    if (!board || !board[0] || strcmp(fw_name, board) != 0 ||
+        strcmp(fw_name, FOF_FIRMWARE_TARGET) != 0 ||
+        strcmp(project, FOF_APP_PROJECT) != 0 ||
+        strcmp(hardware, FOF_HARDWARE_TYPE) != 0) {
+        uart_tx_set_firmware_update_state(false, "", "error");
+        uart_tx_set_firmware_error("identity_mismatch");
+        clear_fw_ready_latch("identity_mismatch");
+        ESP_LOGW(TAG,
+                 "Rejected firmware offer identity: target=%s/%s project=%s/%s "
+                 "hardware=%s/%s",
+                 fw_name, FOF_FIRMWARE_TARGET,
+                 project, FOF_APP_PROJECT,
+                 hardware, FOF_HARDWARE_TYPE);
         return;
     }
-    if (size == 0 || crc == 0) {
+    fof_firmware_version_relation_t relation =
+        fof_firmware_version_compare(target, FOF_VERSION);
+    if (relation != FOF_VERSION_NEWER) {
+        uart_tx_set_firmware_update_state(false, "", "error");
+        uart_tx_set_firmware_error(
+            relation == FOF_VERSION_EQUAL ? "same_version_refused" :
+            relation == FOF_VERSION_OLDER ? "downgrade_refused" :
+            relation == FOF_VERSION_UNORDERED ? "unordered_version_refused" :
+            "invalid_version_refused");
+        clear_fw_ready_latch("version_refused");
+        ESP_LOGW(TAG,
+                 "Rejected firmware offer: current=%s target=%s relation=%d",
+                 FOF_VERSION, target[0] ? target : "?", (int)relation);
+        return;
+    }
+    if (size == 0 || crc == 0 || generation == 0 ||
+        !fof_firmware_sha256_hex_is_valid(sha256)) {
         uart_tx_set_firmware_update_state(true, target, "error");
-        uart_tx_set_firmware_error(size == 0 ? "missing_size" : "missing_crc");
-        ESP_LOGW(TAG, "Rejected firmware offer: missing integrity metadata size=%lu crc=%08lX",
-                 (unsigned long)size, (unsigned long)crc);
+        uart_tx_set_firmware_error("missing_integrity_manifest");
+        clear_fw_ready_latch("integrity_manifest_missing");
+        ESP_LOGW(TAG,
+                 "Rejected firmware offer integrity: size=%lu crc=%08lX "
+                 "generation=%lu sha_valid=%d",
+                 (unsigned long)size, (unsigned long)crc,
+                 (unsigned long)generation,
+                 fof_firmware_sha256_hex_is_valid(sha256) ? 1 : 0);
         return;
     }
     if (uart_tx_firmware_backoff_active()) {
@@ -904,14 +1132,20 @@ static void handle_fw_offer(cJSON *root, const char *board)
     }
 
     uart_tx_set_firmware_update_state(true, target, "offered");
-    ESP_LOGW(TAG, "Firmware update offered: current=%s target=%s size=%lu crc=%08lX",
+    ESP_LOGW(TAG,
+             "Firmware update offered: current=%s target=%s size=%lu crc=%08lX "
+             "sha256=%s generation=%lu",
              FOF_VERSION,
              target[0] ? target : "?",
              (unsigned long)size,
-             (unsigned long)crc);
+             (unsigned long)crc,
+             sha256,
+             (unsigned long)generation);
 
     const char *current_state = uart_tx_firmware_update_state();
     if (target[0] && strcmp(s_fw_ready_target, target) == 0 &&
+        strcmp(s_fw_ready_manifest.sha256, sha256) == 0 &&
+        s_fw_ready_manifest.generation == generation &&
         current_state &&
         (strcmp(current_state, "ready") == 0 ||
          strcmp(current_state, "updating") == 0)) {
@@ -930,15 +1164,25 @@ static void handle_fw_offer(cJSON *root, const char *board)
         strncpy(s_fw_ready_target, target, sizeof(s_fw_ready_target) - 1);
         s_fw_ready_target[sizeof(s_fw_ready_target) - 1] = '\0';
     }
+    s_fw_ready_manifest = offered;
 
-    char ready[224];
+    char ready[512];
     snprintf(ready, sizeof(ready),
              "{\"type\":\"%s\",\"board\":\"%s\",\"ver\":\"%s\","
-             "\"target_ver\":\"%s\",\"size\":%lu,\"crc\":%lu}",
+             "\"target_ver\":\"%s\",\"fw_name\":\"%s\","
+             "\"app_project\":\"%s\",\"hardware_type\":\"%s\","
+             "\"sha256\":\"%s\",\"generation\":%lu,"
+             "\"size\":%lu,\"crc\":%lu,"
+             "\"allow_same_version\":false}",
              MSG_TYPE_FW_READY,
              board ? board : "?",
              FOF_VERSION,
              target[0] ? target : "?",
+             fw_name,
+             project,
+             hardware,
+             sha256,
+             (unsigned long)generation,
              (unsigned long)size,
              (unsigned long)crc);
     uart_tx_send_raw_json(ready);
@@ -1031,6 +1275,7 @@ static void uart_cmd_listener_task(void *arg)
             }
             if (!uart_tx_is_enabled() &&
                 !scanner_firmware_quiet_window_active() &&
+                !scanner_quiet_mode_is_active() &&
                 (xTaskGetTickCount() - boot_tick) >= pdMS_TO_TICKS(30000)) {
                 uart_tx_set_enabled(true);
                 apply_scan_profile_if_radios_ready("badge_auto_start");
@@ -1051,8 +1296,11 @@ static void uart_cmd_listener_task(void *arg)
             continue;
         }
 
-        /* During OTA: route raw bytes to OTA receiver */
-        if (uart_ota_is_active()) {
+        /* Only the chunk phase is binary. Once the scanner emits ota_staged,
+         * keep the OTA session active but return to newline JSON parsing so a
+         * separately framed session/manifest-bound ota_end can authorize the
+         * flash commit. */
+        if (uart_ota_is_receiving_binary()) {
             uart_ota_process_data(buf, len);
             continue;
         }
@@ -1070,7 +1318,9 @@ static void uart_cmd_listener_task(void *arg)
                     /* Parse JSON command */
                     ESP_LOGD(TAG, "UART CMD LINE (%d chars): '%.*s'",
                              line_pos, line_pos > 48 ? 48 : line_pos, line);
-                    cJSON *root = cJSON_Parse(line);
+                    const char *parse_end = NULL;
+                    cJSON *root = cJSON_ParseWithOpts(
+                        line, &parse_end, true);
                     if (root) {
                         g_cmd_msg_count++;
                         g_last_cmd_local_ms = esp_timer_get_time() / 1000;
@@ -1080,24 +1330,29 @@ static void uart_cmd_listener_task(void *arg)
                         ESP_LOGD(TAG, "UART CMD TYPE: '%s'", type ? type : "(null)");
 
                         if (type && (strcmp(type, "ready") == 0 || strcmp(type, "start") == 0)) {
-                            /* Uplink tells scanner to start transmitting */
-                            extern void uart_tx_set_enabled(bool enabled);
-                            uart_tx_set_enabled(true);
-                            if (uart_tx_firmware_update_needed()) {
-                                clear_fw_ready_latch("uplink_start");
-                                uart_tx_set_firmware_update_state(
-                                    true,
-                                    uart_tx_firmware_target_version(),
-                                    "deferred"
-                                );
-                            }
+                            if (scanner_quiet_mode_is_active()) {
+                                ESP_LOGW(TAG,
+                                         "Ignoring uplink START while scanner quiet mode is active");
+                            } else {
+                                /* Uplink tells scanner to start transmitting */
+                                extern void uart_tx_set_enabled(bool enabled);
+                                uart_tx_set_enabled(true);
+                                if (uart_tx_firmware_update_needed()) {
+                                    clear_fw_ready_latch("uplink_start");
+                                    uart_tx_set_firmware_update_state(
+                                        true,
+                                        uart_tx_firmware_target_version(),
+                                        "deferred"
+                                    );
+                                }
 #ifdef FOF_BADGE_VARIANT
-                            apply_scan_profile_if_radios_ready("uplink_start");
-                            if (s_radios_ready) {
-                                send_scanner_debug_status();
-                            }
+                                apply_scan_profile_if_radios_ready("uplink_start");
+                                if (s_radios_ready) {
+                                    send_scanner_debug_status();
+                                }
 #endif
-                            ESP_LOGI(TAG, "Uplink sent START — TX enabled");
+                                ESP_LOGI(TAG, "Uplink sent START — TX enabled");
+                            }
 
                         } else if (type && strcmp(type, "stop") == 0) {
                             /* Uplink tells scanner to stop transmitting.
@@ -1109,6 +1364,9 @@ static void uart_cmd_listener_task(void *arg)
                             uart_tx_set_enabled(false);
                             uart_tx_send_raw_json("{\"type\":\"stop_ack\"}");
                             ESP_LOGI(TAG, "Uplink sent STOP — TX disabled, ack sent");
+
+                        } else if (type && strcmp(type, MSG_TYPE_SCANNER_QUIET) == 0) {
+                            handle_scanner_quiet_command(root);
 
                         } else if (type && strcmp(type, MSG_TYPE_FW_OFFER) == 0) {
                             handle_fw_offer(root, s_board_name);
@@ -1128,8 +1386,10 @@ static void uart_cmd_listener_task(void *arg)
                             handle_ble_investigation_cancel(root);
 
                         } else if (type && strcmp(type, "lockon") == 0) {
-                            if (scanner_calibration_mode_is_active()) {
-                                ESP_LOGW(TAG, "Rejecting WiFi lock-on while calibration mode is active");
+                            if (scanner_calibration_mode_is_active() ||
+                                scanner_quiet_mode_is_active()) {
+                                ESP_LOGW(TAG,
+                                         "Rejecting WiFi lock-on while scan override is active");
                                 cJSON_Delete(root);
                                 line_pos = 0;
                                 continue;
@@ -1146,8 +1406,10 @@ static void uart_cmd_listener_task(void *arg)
                             wifi_scanner_lockon((uint8_t)channel, bssid_str, duration);
 
                         } else if (type && strcmp(type, "lockon_cancel") == 0) {
-                            if (scanner_calibration_mode_is_active()) {
-                                ESP_LOGW(TAG, "Ignoring WiFi lock-on cancel while calibration mode is active");
+                            if (scanner_calibration_mode_is_active() ||
+                                scanner_quiet_mode_is_active()) {
+                                ESP_LOGW(TAG,
+                                         "Ignoring WiFi lock-on cancel while scan override is active");
                                 cJSON_Delete(root);
                                 line_pos = 0;
                                 continue;
@@ -1156,8 +1418,10 @@ static void uart_cmd_listener_task(void *arg)
                             wifi_scanner_lockon_cancel();
 
                         } else if (type && strcmp(type, "ble_lockon") == 0) {
-                            if (scanner_calibration_mode_is_active()) {
-                                ESP_LOGW(TAG, "Rejecting BLE focus while calibration mode is active");
+                            if (scanner_calibration_mode_is_active() ||
+                                scanner_quiet_mode_is_active()) {
+                                ESP_LOGW(TAG,
+                                         "Rejecting BLE focus while scan override is active");
                                 cJSON_Delete(root);
                                 line_pos = 0;
                                 continue;
@@ -1176,8 +1440,10 @@ static void uart_cmd_listener_task(void *arg)
                                 }
                             }
                         } else if (type && strcmp(type, "ble_lockon_cancel") == 0) {
-                            if (scanner_calibration_mode_is_active()) {
-                                ESP_LOGW(TAG, "Ignoring BLE focus cancel while calibration mode is active");
+                            if (scanner_calibration_mode_is_active() ||
+                                scanner_quiet_mode_is_active()) {
+                                ESP_LOGW(TAG,
+                                         "Ignoring BLE focus cancel while scan override is active");
                                 cJSON_Delete(root);
                                 line_pos = 0;
                                 continue;
@@ -1271,30 +1537,103 @@ static void uart_cmd_listener_task(void *arg)
                                 line_started_tick = 0;
                                 continue;
                             }
-                            /* UART OTA: receive firmware from uplink */
-                            uart_tx_set_firmware_update_state(
-                                true,
-                                uart_tx_firmware_target_version(),
-                                "updating"
-                            );
+                            /* UART OTA: receive a manifest-bound image from uplink. */
                             cJSON *sz = cJSON_GetObjectItem(root, "size");
                             cJSON *crc_j = cJSON_GetObjectItem(root, "crc");
                             cJSON *session_j = cJSON_GetObjectItem(root, JSON_KEY_OTA_SESSION_ID);
-                            uint32_t total = sz ? (uint32_t)sz->valueint : 0;
-                            uint32_t expected_crc = crc_j ? (uint32_t)crc_j->valuedouble : 0;
-                            bool has_crc = (crc_j != NULL);
+                            cJSON *target_j = cJSON_GetObjectItem(root, JSON_KEY_FW_TARGET_VERSION);
+                            cJSON *name_j = cJSON_GetObjectItem(root, JSON_KEY_FW_NAME);
+                            cJSON *project_j = cJSON_GetObjectItem(root, "app_project");
+                            cJSON *hardware_j = cJSON_GetObjectItem(root, "hardware_type");
+                            cJSON *sha_j = cJSON_GetObjectItem(root, "sha256");
+                            cJSON *generation_j = cJSON_GetObjectItem(root, "generation");
+                            cJSON *allow_same_j = cJSON_GetObjectItem(root, "allow_same_version");
+                            uint32_t total = 0;
+                            uint32_t expected_crc = 0;
                             const char *session_id =
-                                (session_j && session_j->valuestring)
+                                cJSON_IsString(session_j)
                                     ? session_j->valuestring
                                     : "";
+                            uart_ota_manifest_t begin_manifest = {0};
+                            bool begin_fields_valid =
+                                json_uint32_exact(sz, &total) &&
+                                json_uint32_exact(crc_j, &expected_crc) &&
+                                json_copy_bounded_string(
+                                    name_j, begin_manifest.target,
+                                    sizeof(begin_manifest.target)) &&
+                                json_copy_bounded_string(
+                                    project_j, begin_manifest.project,
+                                    sizeof(begin_manifest.project)) &&
+                                json_copy_bounded_string(
+                                    hardware_j, begin_manifest.hardware,
+                                    sizeof(begin_manifest.hardware)) &&
+                                json_copy_bounded_string(
+                                    target_j, begin_manifest.version,
+                                    sizeof(begin_manifest.version)) &&
+                                json_copy_bounded_string(
+                                    sha_j, begin_manifest.sha256,
+                                    sizeof(begin_manifest.sha256)) &&
+                                json_uint32_exact(
+                                    generation_j, &begin_manifest.generation) &&
+                                cJSON_IsBool(allow_same_j) &&
+                                session_id[0] &&
+                                strlen(session_id) < 24;
+                            begin_manifest.size = total;
+                            begin_manifest.crc32 = expected_crc;
+                            begin_manifest.allow_same_version =
+                                cJSON_IsTrue(allow_same_j);
+                            bool has_crc = begin_fields_valid && expected_crc != 0;
+
+                            bool offered_manifest_matches =
+                                begin_fields_valid &&
+                                (begin_manifest.allow_same_version ||
+                                (s_fw_ready_target[0] &&
+                                 strcmp(begin_manifest.target,
+                                        s_fw_ready_manifest.target) == 0 &&
+                                 strcmp(begin_manifest.project,
+                                        s_fw_ready_manifest.project) == 0 &&
+                                 strcmp(begin_manifest.hardware,
+                                        s_fw_ready_manifest.hardware) == 0 &&
+                                 strcmp(begin_manifest.version,
+                                        s_fw_ready_manifest.version) == 0 &&
+                                 strcmp(begin_manifest.sha256,
+                                        s_fw_ready_manifest.sha256) == 0 &&
+                                 begin_manifest.generation ==
+                                     s_fw_ready_manifest.generation &&
+                                 begin_manifest.size == s_fw_ready_manifest.size &&
+                                 begin_manifest.crc32 == s_fw_ready_manifest.crc32));
+                            if (!offered_manifest_matches) {
+                                uart_tx_send_raw_json(
+                                    "{\"type\":\"ota_error\","
+                                    "\"reason\":\"offer_manifest_mismatch\"}");
+                                clear_fw_ready_latch("offer_manifest_mismatch");
+                                uart_tx_set_firmware_update_state(
+                                    true, begin_manifest.version, "error");
+                                uart_tx_set_firmware_error("offer_manifest_mismatch");
+                                cJSON_Delete(root);
+                                line_pos = 0;
+                                line_started_tick = 0;
+                                continue;
+                            }
+                            uart_tx_set_firmware_update_state(
+                                true, begin_manifest.version, "updating");
                             if (total > 0) {
-                                ESP_LOGW(TAG, "UART OTA begin: %lu bytes, session=%s crc=%s%08lX",
+                                ESP_LOGW(TAG,
+                                         "UART OTA begin: %lu bytes, session=%s "
+                                         "crc=%s%08lX target=%s version=%s "
+                                         "sha256=%s gen=%lu same=%d",
                                          (unsigned long)total,
                                          session_id[0] ? session_id : "none",
                                          has_crc ? "" : "none/",
-                                         (unsigned long)expected_crc);
+                                         (unsigned long)expected_crc,
+                                         begin_manifest.target,
+                                         begin_manifest.version,
+                                         begin_manifest.sha256,
+                                         (unsigned long)begin_manifest.generation,
+                                         begin_manifest.allow_same_version ? 1 : 0);
                                 if (!uart_ota_begin(total, expected_crc, has_crc,
-                                                    UART_NUM_1, session_id)) {
+                                                    UART_NUM_1, session_id,
+                                                    &begin_manifest)) {
                                     clear_fw_ready_latch("ota_begin_failed");
                                     uart_tx_set_firmware_update_state(
                                         true,
@@ -1312,27 +1651,104 @@ static void uart_cmd_listener_task(void *arg)
                                 );
                                 uart_tx_set_firmware_error("bad_size");
                             }
-                        } else if (type && strcmp(type, MSG_TYPE_OTA_END) == 0) {
-                            ESP_LOGI(TAG, "UART OTA finalize");
-                            if (!uart_ota_finalize()) {
-                                clear_fw_ready_latch("finalize_failed");
+                        } else if (type &&
+                                   (strcmp(type, MSG_TYPE_OTA_END) == 0 ||
+                                    strcmp(type, MSG_TYPE_OTA_ABORT) == 0)) {
+                            cJSON *session_j = cJSON_GetObjectItem(
+                                root, JSON_KEY_OTA_SESSION_ID);
+                            const char *request_session =
+                                cJSON_IsString(session_j)
+                                    ? session_j->valuestring
+                                    : "";
+                            const char *active_session = uart_ota_session_id();
+                            bool session_matches =
+                                uart_ota_is_active() && request_session[0] &&
+                                active_session[0] &&
+                                strcmp(request_session, active_session) == 0;
+                            bool manifest_matches = true;
+                            if (strcmp(type, MSG_TYPE_OTA_END) == 0) {
+                                cJSON *size_j = cJSON_GetObjectItem(root, JSON_KEY_FW_SIZE);
+                                cJSON *crc_j = cJSON_GetObjectItem(root, JSON_KEY_FW_CRC32);
+                                cJSON *target_j = cJSON_GetObjectItem(
+                                    root, JSON_KEY_FW_TARGET_VERSION);
+                                cJSON *name_j = cJSON_GetObjectItem(root, JSON_KEY_FW_NAME);
+                                cJSON *project_j = cJSON_GetObjectItem(root, JSON_KEY_FW_PROJECT);
+                                cJSON *hardware_j = cJSON_GetObjectItem(root, JSON_KEY_FW_HARDWARE);
+                                cJSON *sha_j = cJSON_GetObjectItem(root, JSON_KEY_FW_SHA256);
+                                cJSON *generation_j = cJSON_GetObjectItem(
+                                    root, JSON_KEY_FW_GENERATION);
+                                cJSON *allow_same_j = cJSON_GetObjectItem(
+                                    root, JSON_KEY_FW_ALLOW_SAME);
+                                uart_ota_manifest_t end_manifest = {0};
+                                bool manifest_fields_valid =
+                                    json_copy_bounded_string(
+                                        name_j, end_manifest.target,
+                                        sizeof(end_manifest.target)) &&
+                                    json_copy_bounded_string(
+                                        project_j, end_manifest.project,
+                                        sizeof(end_manifest.project)) &&
+                                    json_copy_bounded_string(
+                                        hardware_j, end_manifest.hardware,
+                                        sizeof(end_manifest.hardware)) &&
+                                    json_copy_bounded_string(
+                                        target_j, end_manifest.version,
+                                        sizeof(end_manifest.version)) &&
+                                    json_copy_bounded_string(
+                                        sha_j, end_manifest.sha256,
+                                        sizeof(end_manifest.sha256)) &&
+                                    json_uint32_exact(
+                                        generation_j, &end_manifest.generation) &&
+                                    json_uint32_exact(size_j, &end_manifest.size) &&
+                                    json_uint32_exact(crc_j, &end_manifest.crc32) &&
+                                    cJSON_IsBool(allow_same_j);
+                                end_manifest.allow_same_version =
+                                    cJSON_IsTrue(allow_same_j);
+                                manifest_matches = manifest_fields_valid &&
+                                    uart_ota_manifest_matches_active(&end_manifest);
+                            }
+                            if (!session_matches) {
+                                ESP_LOGW(TAG,
+                                         "Ignoring stale %s for session=%s "
+                                         "(active=%s state=%s)",
+                                         type,
+                                         request_session[0] ? request_session : "missing",
+                                         active_session[0] ? active_session : "none",
+                                         uart_ota_state_label());
+                                uart_tx_send_raw_json(
+                                    "{\"type\":\"ota_error\","
+                                    "\"reason\":\"session_mismatch\"}");
+                            } else if (!manifest_matches) {
+                                ESP_LOGW(TAG,
+                                         "Ignoring ota_end with mutated manifest "
+                                         "for session=%s",
+                                         active_session);
+                                uart_tx_send_raw_json(
+                                    "{\"type\":\"ota_error\","
+                                    "\"reason\":\"manifest_mismatch\"}");
+                            } else if (strcmp(type, MSG_TYPE_OTA_END) == 0) {
+                                ESP_LOGI(TAG, "UART OTA finalize session=%s",
+                                         active_session);
+                                if (!uart_ota_finalize()) {
+                                    clear_fw_ready_latch("finalize_failed");
+                                    uart_tx_set_firmware_update_state(
+                                        true,
+                                        uart_tx_firmware_target_version(),
+                                        "error"
+                                    );
+                                    uart_tx_set_firmware_error("finalize_failed");
+                                }
+                            } else {
+                                ESP_LOGW(TAG, "UART OTA abort session=%s",
+                                         active_session);
+                                uart_ota_abort();
+                                clear_fw_ready_latch("ota_abort");
                                 uart_tx_set_firmware_update_state(
                                     true,
                                     uart_tx_firmware_target_version(),
                                     "error"
                                 );
-                                uart_tx_set_firmware_error("finalize_failed");
+                                uart_tx_set_firmware_error("aborted");
                             }
-                        } else if (type && strcmp(type, MSG_TYPE_OTA_ABORT) == 0) {
-                            ESP_LOGW(TAG, "UART OTA abort");
-                            uart_ota_abort();
-                            clear_fw_ready_latch("ota_abort");
-                            uart_tx_set_firmware_update_state(
-                                true,
-                                uart_tx_firmware_target_version(),
-                                "error"
-                            );
-                            uart_tx_set_firmware_error("aborted");
                         } else if (type && strcmp(type, "safe_mode") == 0) {
                             cJSON *enabled = cJSON_GetObjectItem(root, "enabled");
                             bool on = enabled
@@ -1536,6 +1952,7 @@ void app_main(void)
     }
 
     /* ── 8. Start command listener early, before radio/display heap use ─ */
+    scanner_calibration_mode_init();
     if (!start_uart_command_tasks()) {
         ESP_LOGE(TAG, "UART command path is required for remote firmware recovery; rebooting");
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -1609,22 +2026,37 @@ void app_main(void)
 
 #ifdef FOF_BADGE_VARIANT
     /* ── 10. Badge: let NimBLE sync before WiFi promiscuous scanning ─── */
-    ble_remote_id_start();
-    ESP_LOGI(TAG, "BLE scanner started");
-    vTaskDelay(pdMS_TO_TICKS(1500));
-    wifi_scanner_resume();
+    if (!scanner_quiet_mode_is_active()) {
+        ble_remote_id_start();
+        ESP_LOGI(TAG, "BLE scanner started");
+        vTaskDelay(pdMS_TO_TICKS(1500));
+    } else {
+        ESP_LOGW(TAG, "Badge boot: BLE start skipped for scanner quiet mode");
+    }
+    if (!scanner_quiet_mode_is_active()) {
+        wifi_scanner_resume();
+    } else {
+        wifi_scanner_pause();
+    }
     wifi_scanner_start();
     ESP_LOGI(TAG, "WiFi scanner started on core %d, priority %d",
              WIFI_SCAN_TASK_CORE, WIFI_SCAN_TASK_PRIORITY);
 #else
     /* ── 10. Start WiFi scanner task on Core 0 (radio core) ──────────── */
+    if (scanner_quiet_mode_is_active()) {
+        wifi_scanner_pause();
+    }
     wifi_scanner_start();
     ESP_LOGI(TAG, "WiFi scanner started on core %d, priority %d",
              WIFI_SCAN_TASK_CORE, WIFI_SCAN_TASK_PRIORITY);
 
     /* ── 10b. Start BLE scanner ──────────────────────────────────────── */
-    ble_remote_id_start();
-    ESP_LOGI(TAG, "BLE scanner started");
+    if (!scanner_quiet_mode_is_active()) {
+        ble_remote_id_start();
+        ESP_LOGI(TAG, "BLE scanner started");
+    } else {
+        ESP_LOGW(TAG, "BLE start skipped for scanner quiet mode");
+    }
 #endif
     s_radios_ready = true;
     scanner_scan_profile_apply();

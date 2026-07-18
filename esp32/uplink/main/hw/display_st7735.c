@@ -33,6 +33,8 @@
 #include "badge_display_contract.h"
 #include "badge_theme_runtime.h"
 #include "badge_button_gesture.h"
+#include "badge_power_chord.h"
+#include "badge_power_runtime.h"
 #include "badge_easter_egg_runtime.h"
 #include "badge_ble_control.h"
 #include "badge_ble_investigation.h"
@@ -44,6 +46,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdatomic.h>
 
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
@@ -73,6 +76,7 @@ static const char *TAG = "st7735";
 #define BADGE_BUTTON_DEBOUNCE_MS  60
 #define BADGE_BUTTON_LONG_MS      850
 #define BADGE_BUTTON_DOUBLE_TAP_MS 320
+#define BADGE_POWER_CHORD_HOLD_MS 9000
 #define BADGE_DETAIL_TIMEOUT_MS   30000
 #define BADGE_BUTTON_STACK_WORDS  4096
 #define BADGE_BUTTON1_ENABLE_ACTIONS 0
@@ -122,9 +126,11 @@ static const char *TAG = "st7735";
 
 /* ST7735 commands */
 #define ST_CMD_SWRESET      0x01
+#define ST_CMD_SLPIN        0x10
 #define ST_CMD_SLPOUT       0x11
 #define ST_CMD_NORON        0x13
 #define ST_CMD_INVOFF       0x20
+#define ST_CMD_DISPOFF      0x28
 #define ST_CMD_DISPON       0x29
 #define ST_CMD_CASET        0x2A
 #define ST_CMD_RASET        0x2B
@@ -154,6 +160,7 @@ static spi_device_handle_t s_spi = NULL;
 static uint16_t           *s_fb = NULL;       /* big endian RGB565 */
 static uint8_t            *s_tx_chunk = NULL; /* internal DMA-safe SPI staging */
 static bool                s_initialized = false;
+static _Atomic bool        s_panel_awake = false;
 static SemaphoreHandle_t   s_display_mutex = NULL;
 static int                 s_spi_error_count = 0;
 static uint32_t s_anim_frame = 0;
@@ -747,6 +754,9 @@ static void badge_button_poll_one(badge_button_state_t *button,
             s_detail_page = 0;
             display_unlock();
         }
+        if (badge_power_runtime_is_quiet()) {
+            return;
+        }
         return;
     }
 
@@ -756,6 +766,13 @@ static void badge_button_poll_one(badge_button_state_t *button,
     if (button->consume_release) {
         button->consume_release = false;
         button->long_sent = false;
+        return;
+    }
+
+    if (badge_power_runtime_is_quiet()) {
+        button->long_sent = false;
+        badge_button_gesture_cancel(&s_b2_gesture);
+        badge_button_diag_set_b2_gesture("");
         return;
     }
 
@@ -789,12 +806,6 @@ static void badge_button_poll_one(badge_button_state_t *button,
                 BADGE_EASTER_EGG_SOURCE_BUTTON);
         }
     }
-}
-
-static void badge_button_poll_hold(badge_button_state_t *button, TickType_t now)
-{
-    (void)button;
-    (void)now;
 }
 
 static void badge_button_task(void *arg)
@@ -837,6 +848,12 @@ static void badge_button_task(void *arg)
             .pressed_tick = now,
         },
     };
+    badge_power_chord_t power_chord;
+    badge_power_chord_init(&power_chord,
+                           BADGE_POWER_CHORD_HOLD_MS,
+                           triforce_pressed_at_boot,
+                           qr_pressed_at_boot,
+                           (uint32_t)badge_now_ms());
     s_button_diag.b1_raw_pressed = triforce_pressed_at_boot;
     s_button_diag.b1_stable_pressed = triforce_pressed_at_boot;
     s_button_diag.b1_boot_ignored = triforce_pressed_at_boot;
@@ -857,14 +874,29 @@ static void badge_button_task(void *arg)
         for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
             badge_button_poll_one(&buttons[i], now,
                                   &easter_visible_in_batch);
-            badge_button_poll_hold(&buttons[i], now);
             if (buttons[i].diag_index == 1 &&
+                !badge_power_runtime_is_quiet() &&
                 !buttons[i].stable_pressed &&
                 !buttons[i].last_raw_pressed) {
                 badge_button_dispatch_b2_gesture(
                     badge_button_gesture_poll(&s_b2_gesture,
                                               (uint32_t)badge_now_ms()));
             }
+        }
+        bool chord_allowed =
+            !buttons[0].consume_release && !buttons[1].consume_release &&
+            !buttons[0].boot_ignored && !buttons[1].boot_ignored;
+        if (badge_power_chord_update(
+                &power_chord,
+                buttons[0].stable_pressed,
+                buttons[1].stable_pressed,
+                chord_allowed,
+                (uint32_t)badge_now_ms()) == BADGE_POWER_CHORD_TOGGLE) {
+            buttons[0].consume_release = true;
+            buttons[1].consume_release = true;
+            badge_button_gesture_cancel(&s_b2_gesture);
+            badge_button_diag_set_b2_gesture("");
+            badge_power_runtime_toggle("button_chord");
         }
         badge_button_diag_set_b2_pending();
         vTaskDelay(pdMS_TO_TICKS(BADGE_BUTTON_POLL_MS));
@@ -6570,6 +6602,7 @@ void oled_init(void)
     st7735_panel_init();
 
     s_initialized = true;
+    atomic_store(&s_panel_awake, true);
     ESP_LOGI(TAG, "ST7735 initialized (128x160, SPI3 @ %d MHz, CS GPIO%d)",
              ST7735_SPI_HZ / 1000000, ST7735_PIN_CS);
 
@@ -6581,6 +6614,50 @@ void oled_init(void)
     splash_show();
 }
 
+bool oled_is_powered(void)
+{
+    return s_initialized && atomic_load(&s_panel_awake);
+}
+
+void oled_set_power(bool on)
+{
+    if (!s_initialized || on == oled_is_powered()) {
+        return;
+    }
+    if (!display_lock(pdMS_TO_TICKS(300))) {
+        ESP_LOGW(TAG, "Panel power transition lock timed out");
+        return;
+    }
+    if (on == oled_is_powered()) {
+        display_unlock();
+        return;
+    }
+
+    if (on) {
+        st_write_cmd(ST_CMD_SLPOUT);
+        vTaskDelay(pdMS_TO_TICKS(120));
+        st_write_cmd(ST_CMD_DISPON);
+#if ST7735_PIN_BL >= 0
+        gpio_set_level(ST7735_PIN_BL, 1);
+#endif
+        atomic_store(&s_panel_awake, true);
+        ESP_LOGI(TAG, "Badge panel awake; next display tick restores live UI");
+    } else {
+        fb_clear(COL_BLACK);
+        st_flush();
+        st_write_cmd(ST_CMD_DISPOFF);
+        vTaskDelay(pdMS_TO_TICKS(5));
+        st_write_cmd(ST_CMD_SLPIN);
+#if ST7735_PIN_BL >= 0
+        gpio_set_level(ST7735_PIN_BL, 0);
+#else
+        ESP_LOGW(TAG, "Panel sleeping; backlight remains tied high by badge hardware");
+#endif
+        atomic_store(&s_panel_awake, false);
+    }
+    display_unlock();
+}
+
 void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
                  bool backend_ok, int upload_count, bool wifi_network_ok,
                  float battery_pct, uint32_t uptime_s, const char *device_id)
@@ -6589,9 +6666,13 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     (void)upload_count;
     (void)battery_pct;  /* badge has no battery monitor */
     (void)uptime_s;
-    if (!s_initialized) return;
+    if (!s_initialized || !oled_is_powered()) return;
     badge_ble_investigation_poll();
     if (!display_lock(pdMS_TO_TICKS(30))) return;
+    if (!oled_is_powered()) {
+        display_unlock();
+        return;
+    }
 
     s_anim_frame++;
     badge_easter_egg_machine_t easter;
@@ -6672,16 +6753,24 @@ void oled_show_detection(const char *detection_id, const char *manufacturer,
 
 void oled_show_boot_status(const char *stage, const char *mode, const char *line)
 {
-    if (!s_initialized) return;
+    if (!s_initialized || !oled_is_powered()) return;
     if (!display_lock(pdMS_TO_TICKS(300))) return;
+    if (!oled_is_powered()) {
+        display_unlock();
+        return;
+    }
     draw_boot_screen(stage, mode, line);
     display_unlock();
 }
 
 void oled_clear(void)
 {
-    if (!s_initialized) return;
+    if (!s_initialized || !oled_is_powered()) return;
     if (!display_lock(pdMS_TO_TICKS(300))) return;
+    if (!oled_is_powered()) {
+        display_unlock();
+        return;
+    }
     fb_clear(COL_BLACK);
     st_flush();
     display_unlock();

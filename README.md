@@ -9,8 +9,8 @@ deployable sensor platform.
 Friend or Foe started as an Android aircraft and drone identification app. The
 current center of gravity is the FoF Badge: a three-board ESP32-S3 handheld
 that listens passively for nearby RF evidence, shows the most useful signals on
-a small display, and can hand a live feed to Android over USB-C, BLE, local AP,
-or a debug bridge.
+a small display, and can hand a live feed to Android over USB-C. Local AP and
+debug status remain diagnostic surfaces, not Android control transports.
 
 For the Packet Village talk, the badge is the story: a conference-wearable
 privacy and drone awareness device that can also be converted into a fixed
@@ -20,10 +20,11 @@ part of a multi-node sensor platform.
 
 > Current tracks: Android/backend/production S3 firmware are on
 > `0.64.68-live-follow`; badge firmware is on
-> `0.64.68-badge-live-follow`. This release smooths live map/follow updates,
-> aligns Android BLE pairing-spam and serial evidence with ESP trusted-identity
-> handling, and preserves read-only Badge Button 2 investigation. The badge and
-> production sensor fleet intentionally move on separate firmware tracks.
+> `0.64.69-badge-defcon34`. This badge release adds the themed four-lane
+> instrument UI, custom USB palettes, DEF CON 34 Easter egg, quiet/off mode,
+> and automatic integrity-checked scanner updates from the USB-connected
+> uplink. The badge and production sensor fleet intentionally move on separate
+> firmware tracks.
 
 ## What The Badge Does
 
@@ -31,13 +32,13 @@ part of a multi-node sensor platform.
   account, SIM card, or paid API.
 - Separates top-level alerts from lower-priority BLE and Wi-Fi lanes so the
   display stays readable in a noisy venue.
-- Connects to Android for a richer live view, display filters, theme controls,
-  diagnostics, and firmware workflows.
+- Connects to Android over USB-C for a richer live view, display filters,
+  theme and custom-palette controls, and diagnostics.
 - Can be re-used as a sensor node by giving it stable power, a backend URL, and
   a fixed position.
-- Keeps local recovery practical: USB-C status, safe scanner relay flashing,
-  local AP control, and scanner crash/status reporting are built into the badge
-  flow.
+- Keeps local recovery practical: USB-C status and staging, automatic scanner
+  UART relay flashing, and scanner crash/status reporting are built into the
+  badge flow.
 
 ## Badge Hardware
 
@@ -84,9 +85,9 @@ from the app:
 - Appearance: palette, background, brightness, and per-class threat accents.
 - Display policy: enable or hide alert classes, choose BLE/Wi-Fi/both lanes,
   proximity rules, row-density presets, and display priorities.
-- Firmware: upload and relay scanner firmware through the badge instead of
-  reaching for a separate flashing script. Uplink firmware remains on the safe
-  USB/script path.
+- Firmware status: inspect the staged manifest and automatic scanner-update
+  queue. Actual firmware mutation stays on the laptop USB script: UART flashes
+  the uplink, then the uplink relays the scanner image automatically.
 - Diagnostics: scanner role, firmware version, crash count, heap/stack, PSRAM,
   display policy hashes, scanner acknowledgement hashes, and recovery mode.
 
@@ -183,8 +184,8 @@ Useful recovery variants:
 ```sh
 python3 scripts/fof_badge_flash.py --transport usb --only uplink --port /dev/cu.usbmodemXXXX
 python3 scripts/fof_badge_flash.py --transport usb --only scanners --port /dev/cu.usbmodemXXXX
-python3 scripts/fof_badge_flash.py --manual-scanner ble --port /dev/cu.usbmodemYYYY
-python3 scripts/fof_badge_flash.py --manual-scanner wifi --port /dev/cu.usbmodemZZZZ
+python3 scripts/fof_badge_flash.py --manual-scanner ble --port /dev/cu.usbmodemYYYY --verify-port /dev/cu.usbmodemXXXX
+python3 scripts/fof_badge_flash.py --manual-scanner wifi --port /dev/cu.usbmodemZZZZ --verify-port /dev/cu.usbmodemXXXX
 ```
 
 ## Runtime Checks

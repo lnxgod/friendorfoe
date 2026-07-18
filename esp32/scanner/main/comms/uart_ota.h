@@ -10,10 +10,23 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "driver/uart.h"
+#include "firmware_image_contract.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef struct {
+    char target[32];
+    char project[33];
+    char hardware[33];
+    char version[32];
+    char sha256[FOF_FIRMWARE_SHA256_HEX_SIZE];
+    uint32_t generation;
+    uint32_t size;
+    uint32_t crc32;
+    bool allow_same_version;
+} uart_ota_manifest_t;
 
 /**
  * Start a UART OTA session.
@@ -27,7 +40,8 @@ extern "C" {
  */
 bool uart_ota_begin(uint32_t total_size, uint32_t expected_crc,
                     bool has_crc, uart_port_t uart_num,
-                    const char *session_id);
+                    const char *session_id,
+                    const uart_ota_manifest_t *manifest);
 
 /**
  * Process incoming UART data during an active OTA session.
@@ -38,6 +52,13 @@ bool uart_ota_begin(uint32_t total_size, uint32_t expected_crc,
  * @return true if OTA is still in progress, false if done or error
  */
 bool uart_ota_process_data(const uint8_t *data, int len);
+
+/**
+ * True only while the receiver expects binary chunk frames. Once the full
+ * image has been verified, this becomes false while uart_ota_is_active()
+ * remains true so the command listener can parse the manifest-bound ota_end.
+ */
+bool uart_ota_is_receiving_binary(void);
 
 /**
  * Finalize OTA: validate, set boot partition, reboot.
@@ -53,11 +74,17 @@ void uart_ota_abort(void);
 /** Check if a UART OTA session is active. */
 bool uart_ota_is_active(void);
 
+/** Lock-free read-only guard for non-owner tasks; never runs watchdog cleanup. */
+bool uart_ota_is_active_snapshot(void);
+
 /** Human-readable OTA state for status/debug telemetry. */
 const char *uart_ota_state_label(void);
 
 /** Active OTA relay session id, or an empty string when idle/no id. */
 const char *uart_ota_session_id(void);
+
+/** True only when every immutable manifest field matches the active session. */
+bool uart_ota_manifest_matches_active(const uart_ota_manifest_t *manifest);
 
 /** Current staged byte count for status/debug telemetry. */
 uint32_t uart_ota_received(void);

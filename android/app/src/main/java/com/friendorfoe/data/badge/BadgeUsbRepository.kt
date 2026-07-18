@@ -69,13 +69,11 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.net.URLEncoder
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.util.UUID
 import java.util.concurrent.TimeUnit
-import java.util.zip.CRC32
 import kotlin.coroutines.resume
 
 enum class BadgeUsbStatus {
@@ -1334,8 +1332,6 @@ class BadgeUsbRepository @Inject constructor(
         private const val BLE_SCAN_WINDOW_MS = 4500L
         private const val USB_STATUS_POLL_INTERVAL_MS = 2000L
         private const val MAX_RECENT_DETECTIONS = 20
-        private const val MAX_LINE_CHARS = 8192
-        private const val FW_CHUNK_BYTES = 1024
         private const val BADGE_CONTROL_ACK_TIMEOUT_MS = 1500L
         private const val BADGE_CHUNK_RETRY_MS = 100L
         private const val BADGE_MAX_INVESTIGATION_CHUNKS = 64
@@ -1426,9 +1422,13 @@ class BadgeUsbRepository @Inject constructor(
     fun start() {
         registerReceiverIfNeeded()
         refresh()
-        startBlePoller()
-        startApPoller()
-        startDebugBridgePoller()
+        if (BadgeControlTransportPolicy.allowsBleTether()) {
+            startBlePoller()
+        }
+        if (BadgeControlTransportPolicy.allowsReadOnlyHttpStatus()) {
+            startApPoller()
+            startDebugBridgePoller()
+        }
     }
 
     fun stop() {
@@ -1449,14 +1449,11 @@ class BadgeUsbRepository @Inject constructor(
     fun refresh() {
         val candidates = findBadgeCandidates()
         if (candidates.isEmpty()) {
-            if (hasBleCommandPath()) {
-                return
-            }
             setState {
                 it.copy(
                     status = BadgeUsbStatus.DISCONNECTED,
                     deviceName = null,
-                    message = "Connect USB-C or join the FoF badge AP",
+                    message = "Connect a FoF badge over USB-C",
                     transportLabel = ""
                 )
             }
@@ -1529,8 +1526,6 @@ class BadgeUsbRepository @Inject constructor(
         scope.launch {
             if (hasUsbCommandPath()) {
                 writeLine("FOF_STATUS")
-            } else if (hasBleCommandPath()) {
-                readBleStatus()
             } else {
                 fetchNetworkStatus(showErrors = true)
             }
@@ -1538,11 +1533,15 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     fun investigateBle(request: com.friendorfoe.detection.BleInvestigationRequest): Boolean {
-        val transport = when {
-            hasUsbCommandPath() -> BadgeInvestigationTransport.USB
-            hasBleInvestigationPath() -> BadgeInvestigationTransport.BLE
-            activeHttpBaseUrl() != null -> BadgeInvestigationTransport.HTTP
-            else -> null
+        val transport = when (
+            BadgeControlTransportPolicy.select(
+                hasUsb = hasUsbCommandPath(),
+                hasBle = hasBleInvestigationPath(),
+                hasHttp = activeHttpBaseUrl() != null,
+            )
+        ) {
+            BadgeControlTransport.USB -> BadgeInvestigationTransport.USB
+            null -> null
         }
         val operation = synchronized(investigationLock) {
             if (activeInvestigation != null) {
@@ -2235,6 +2234,7 @@ class BadgeUsbRepository @Inject constructor(
         sendControl(badgeDisplayNavCommandJson(action))
     }
 
+    @Suppress("UNUSED_PARAMETER")
     fun flashScannerFirmware(
         uart: String,
         name: String,
@@ -2242,60 +2242,39 @@ class BadgeUsbRepository @Inject constructor(
         firmware: ByteArray,
         forceRelay: Boolean = false
     ) {
-        scope.launch {
-            if (hasUsbCommandPath() && usbInvestigationOwnsControlReply()) {
-                setState { it.copy(message = "BLE investigation command is awaiting badge reply") }
-                return@launch
-            }
-            val crc = CRC32().apply { update(firmware) }.value
-            setState {
-                it.copy(
-                    message = "Uploading scanner firmware to badge",
-                    firmwareProgress = BadgeFirmwareProgress(
-                        kind = "upload",
-                        stage = "begin",
-                        total = firmware.size.toLong()
-                    )
-                )
-            }
-            val httpBase = activeHttpBaseUrl()
-            if (!hasUsbCommandPath() && httpBase != null) {
-                uploadScannerFirmwareOverHttp(httpBase, uart, name, version, firmware, forceRelay)
-                return@launch
-            }
-            if (!hasUsbCommandPath()) {
-                setState { it.copy(message = "USB, Badge AP, or Debug Bridge required for scanner flashing") }
-                return@launch
-            }
-            writeLine("FOF_CTL:${JsonObject().apply {
-                addProperty("cmd", "fw_upload_begin")
-                addProperty("name", name)
-                addProperty("version", version)
-                addProperty("size", firmware.size)
-                addProperty("crc32", crc)
-            }}")
-            writeBytes(firmware)
-            delay(500)
-            writeLine("FOF_CTL:${JsonObject().apply {
-                addProperty("cmd", "fw_relay")
-                addProperty("uart", uart)
-                addProperty("force", forceRelay)
-            }}")
+        val guidance = BadgeControlTransportPolicy.scannerFirmwareStagingGuidance()
+        setState {
+            it.copy(
+                message = guidance,
+                firmwareProgress = BadgeFirmwareProgress(
+                    kind = "upload",
+                    stage = "disabled",
+                    total = firmware.size.toLong(),
+                    error = guidance,
+                ),
+            )
         }
     }
 
     private fun sendControl(payload: JsonObject) {
         scope.launch {
-            if (hasUsbCommandPath()) {
-                if (usbInvestigationOwnsControlReply()) {
-                    setState { it.copy(message = "BLE investigation command is awaiting badge reply") }
-                    return@launch
+            when (
+                BadgeControlTransportPolicy.select(
+                    hasUsb = hasUsbCommandPath(),
+                    hasBle = hasBleCommandPath(),
+                    hasHttp = activeHttpBaseUrl() != null,
+                )
+            ) {
+                BadgeControlTransport.USB -> {
+                    if (usbInvestigationOwnsControlReply()) {
+                        setState { it.copy(message = "BLE investigation command is awaiting badge reply") }
+                        return@launch
+                    }
+                    writeLine("FOF_CTL:$payload")
                 }
-                writeLine("FOF_CTL:$payload")
-            } else if (hasBleCommandPath()) {
-                writeBleControl(payload)
-            } else {
-                postNetworkControl(payload)
+                null -> setState {
+                    it.copy(message = BadgeControlTransportPolicy.controlConnectionGuidance())
+                }
             }
         }
     }
@@ -2398,7 +2377,7 @@ class BadgeUsbRepository @Inject constructor(
             it.copy(
                 status = BadgeUsbStatus.ERROR,
                 deviceName = null,
-                message = "Multiple Espressif USB devices found: $names. Connect only the badge for USB-C, or use Badge AP fallback.",
+                message = "Multiple Espressif USB devices found: $names. Connect only the badge over USB-C.",
                 transportLabel = "USB-C"
             )
         }
@@ -2489,9 +2468,15 @@ class BadgeUsbRepository @Inject constructor(
         readJob?.cancel()
         readJob = scope.launch {
             val buffer = ByteArray(256)
-            val lineBuffer = ByteArray(MAX_LINE_CHARS)
-            var lineLength = 0
-            var droppingLine = false
+            val lineFramer = BadgeUsbLineFramer(
+                onLine = { bytes, length ->
+                    decodeBadgeUtf8(bytes, length)?.let(::handleLine)
+                        ?: Log.w(TAG, "Dropping malformed UTF-8 badge line")
+                },
+                onOverlongLine = {
+                    Log.w(TAG, "Dropping overlong badge line")
+                },
+            )
             try {
                 while (isActive) {
                     val read = connection.bulkTransfer(
@@ -2501,25 +2486,7 @@ class BadgeUsbRepository @Inject constructor(
                         READ_TIMEOUT_MS
                     )
                     if (read > 0) {
-                        for (i in 0 until read) {
-                            val byte = buffer[i]
-                            if (byte == '\n'.code.toByte() || byte == '\r'.code.toByte()) {
-                                if (!droppingLine && lineLength > 0) {
-                                    decodeBadgeUtf8(lineBuffer, lineLength)?.let(::handleLine)
-                                        ?: Log.w(TAG, "Dropping malformed UTF-8 badge line")
-                                }
-                                lineLength = 0
-                                droppingLine = false
-                            } else if (!droppingLine) {
-                                if (lineLength < lineBuffer.size) {
-                                    lineBuffer[lineLength++] = byte
-                                } else {
-                                    Log.w(TAG, "Dropping overlong badge line")
-                                    lineLength = 0
-                                    droppingLine = true
-                                }
-                            }
-                        }
+                        lineFramer.accept(buffer, read)
                     } else {
                         delay(25)
                     }
@@ -2546,32 +2513,6 @@ class BadgeUsbRepository @Inject constructor(
         }
     }
 
-    private suspend fun writeBytes(bytes: ByteArray) = withContext(Dispatchers.IO) {
-        val connection = activeConnection ?: return@withContext
-        val out = activeOutEndpoint ?: return@withContext
-        var offset = 0
-        while (offset < bytes.size) {
-            val len = minOf(FW_CHUNK_BYTES, bytes.size - offset)
-            val written = connection.bulkTransfer(out, bytes, offset, len, WRITE_TIMEOUT_MS)
-            if (written <= 0) {
-                setState { it.copy(message = "Firmware upload stalled at $offset/${bytes.size}") }
-                return@withContext
-            }
-            offset += written
-            setState {
-                it.copy(
-                    firmwareProgress = BadgeFirmwareProgress(
-                        kind = "upload",
-                        stage = "bytes",
-                        percent = ((offset.toLong() * 100L) / bytes.size.coerceAtLeast(1)).toInt(),
-                        bytes = offset.toLong(),
-                        total = bytes.size.toLong()
-                    )
-                )
-            }
-        }
-    }
-
     private fun hasUsbCommandPath(): Boolean {
         return state.value.status == BadgeUsbStatus.CONNECTED &&
             activeConnection != null &&
@@ -2579,6 +2520,7 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     private fun hasBleCommandPath(): Boolean {
+        if (!BadgeControlTransportPolicy.allowsBleTether()) return false
         return state.value.status == BadgeUsbStatus.BLE_CONNECTED &&
             activeGatt != null &&
             activeBleControlChar != null
@@ -2602,14 +2544,6 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     private suspend fun fetchNetworkStatus(showErrors: Boolean): Boolean {
-        if (hasBlePermissions() && !hasBleCommandPath()) {
-            startBleScanIfPossible()
-            delay(600)
-        }
-        if (hasBleCommandPath()) {
-            readBleStatus()
-            return true
-        }
         if (fetchApStatus(showErrors = false)) {
             return true
         }
@@ -2618,7 +2552,7 @@ class BadgeUsbRepository @Inject constructor(
         }
         if (showErrors) {
             setState { current ->
-                current.copy(message = "Badge BLE/AP/Debug Bridge not reachable")
+                current.copy(message = "Badge AP/Debug Bridge status not reachable; connect via USB-C")
             }
         }
         return false
@@ -2739,73 +2673,6 @@ class BadgeUsbRepository @Inject constructor(
         }
     }
 
-    private suspend fun uploadScannerFirmwareOverHttp(
-        baseUrl: String,
-        uart: String,
-        name: String,
-        version: String,
-        firmware: ByteArray,
-        forceRelay: Boolean
-    ) = withContext(Dispatchers.IO) {
-        val encName = URLEncoder.encode(name, Charsets.UTF_8.name())
-        val encVersion = URLEncoder.encode(version, Charsets.UTF_8.name())
-        val uploadRequest = Request.Builder()
-            .url("$baseUrl/api/fw/upload?name=$encName&version=$encVersion")
-            .post(firmware.toRequestBody("application/octet-stream".toMediaType()))
-            .build()
-        val uploaded = runCatching {
-            badgeHttpClient.newCall(uploadRequest).execute().use { response ->
-                if (!response.isSuccessful) return@use false
-                parseFirmwareProgress("upload", response.body?.string().orEmpty())?.also { progress ->
-                    setState { it.copy(firmwareProgress = progress) }
-                }
-                true
-            }
-        }.getOrDefault(false)
-        if (!uploaded) {
-            setState { it.copy(message = "HTTP firmware upload failed") }
-            return@withContext
-        }
-
-        val relayPayload = JsonObject().apply {
-            addProperty("uart", uart)
-            addProperty("force", forceRelay)
-        }
-        val relayRequest = Request.Builder()
-            .url("$baseUrl/api/fw/relay")
-            .post(relayPayload.toString().toRequestBody(jsonMediaType))
-            .build()
-        val relayed = runCatching {
-            badgeHttpClient.newCall(relayRequest).execute().use { response ->
-                if (!response.isSuccessful) return@use false
-                parseFirmwareProgress("relay", response.body?.string().orEmpty())?.also { progress ->
-                    setState { it.copy(firmwareProgress = progress) }
-                }
-                true
-            }
-        }.getOrDefault(false)
-        setState {
-            it.copy(message = if (relayed) "Scanner firmware relay requested" else "Scanner firmware relay failed")
-        }
-        fetchHttpStatus(
-            baseUrl = baseUrl,
-            connectedStatus = if (baseUrl == DEBUG_BRIDGE_BASE_URL) {
-                BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED
-            } else {
-                BadgeUsbStatus.AP_CONNECTED
-            },
-            deviceName = if (baseUrl == DEBUG_BRIDGE_BASE_URL) "FoF Debug Bridge" else "FoF Badge AP",
-            transportLabel = if (baseUrl == DEBUG_BRIDGE_BASE_URL) "Debug Bridge" else "Badge AP",
-            connectedMessage = if (baseUrl == DEBUG_BRIDGE_BASE_URL) {
-                "Debug Bridge connected"
-            } else {
-                "Badge AP connected"
-            },
-            errorMessage = "Badge HTTP status refresh failed",
-            showErrors = false
-        )
-    }
-
     private fun hasBlePermissions(): Boolean {
         val adapter = bluetoothAdapter ?: return false
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -2825,12 +2692,13 @@ class BadgeUsbRepository @Inject constructor(
 
     @SuppressLint("MissingPermission")
     private fun startBleScanIfPossible() {
+        if (!BadgeControlTransportPolicy.allowsBleTether()) return
         if (!hasBlePermissions() || bleScanning || activeGatt != null) {
             if (!hasBlePermissions() && state.value.status == BadgeUsbStatus.DISCONNECTED) {
                 setState {
                     it.copy(
-                        message = "Grant Bluetooth permissions or use USB-C/AP",
-                        transportLabel = "BLE"
+                        message = "Connect a FoF badge over USB-C",
+                        transportLabel = "USB-C"
                     )
                 }
             }
@@ -2898,6 +2766,7 @@ class BadgeUsbRepository @Inject constructor(
 
     @SuppressLint("MissingPermission")
     private fun connectBle(device: BluetoothDevice) {
+        if (!BadgeControlTransportPolicy.allowsBleTether()) return
         if (!hasBlePermissions()) return
         closeBle("Switching badge BLE device")
         setState {

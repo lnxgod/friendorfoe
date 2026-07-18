@@ -1,6 +1,5 @@
 package com.friendorfoe.presentation.privacy
 
-import com.friendorfoe.data.badge.BadgeBleControlStatus
 import com.friendorfoe.data.badge.BadgeControlStatus
 import com.friendorfoe.data.badge.BadgeScannerStatus
 import com.friendorfoe.data.badge.BadgeThreatEntity
@@ -67,7 +66,7 @@ class BleInvestigationRoutingTest {
     }
 
     @Test
-    fun `BADGE AUTO with bonded encrypted badge BLE selects badge`() {
+    fun `BADGE AUTO ignores legacy bonded badge BLE and falls back to phone`() {
         val availability = BadgeInvestigationAvailability(
             scannerSlotZeroConnected = true,
             usbAvailable = false,
@@ -75,9 +74,9 @@ class BleInvestigationRoutingTest {
             httpAvailable = false,
         )
 
-        assertTrue(availability.badgeAvailable)
+        assertFalse(availability.badgeAvailable)
         assertEquals(
-            BleInvestigationRoute.BADGE,
+            BleInvestigationRoute.PHONE,
             selectInvestigationRoute(
                 origin = PrivacyDetectionOrigin.BADGE,
                 target = gattTarget(PrivacyDetectionOrigin.BADGE),
@@ -226,7 +225,7 @@ class BleInvestigationRoutingTest {
     }
 
     @Test
-    fun `badge availability requires scanner slot zero and a usable transport`() {
+    fun `badge availability requires scanner slot zero and USB`() {
         assertFalse(
             BadgeInvestigationAvailability(
                 scannerSlotZeroConnected = false,
@@ -243,7 +242,7 @@ class BleInvestigationRoutingTest {
                 httpAvailable = false,
             ).badgeAvailable,
         )
-        assertTrue(
+        assertFalse(
             BadgeInvestigationAvailability(
                 scannerSlotZeroConnected = true,
                 usbAvailable = false,
@@ -254,29 +253,27 @@ class BleInvestigationRoutingTest {
     }
 
     @Test
-    fun `production badge BLE availability requires connected bonded and encrypted state`() {
-        fun state(ble: BadgeBleControlStatus) = BadgeUsbState(
-            status = BadgeUsbStatus.BLE_CONNECTED,
+    fun `read only HTTP and legacy BLE states never enable badge investigation`() {
+        fun state(status: BadgeUsbStatus) = BadgeUsbState(
+            status = status,
             controlStatus = BadgeControlStatus(
                 scanners = listOf(BadgeScannerStatus(slot = 0, connected = true)),
-                bleControl = ble,
             ),
         )
 
-        assertFalse(
-            deriveBadgeInvestigationAvailability(
-                state(BadgeBleControlStatus(connected = true, bonded = false, encrypted = true)),
-            ).bleAvailable,
-        )
-        assertFalse(
-            deriveBadgeInvestigationAvailability(
-                state(BadgeBleControlStatus(connected = true, bonded = true, encrypted = false)),
-            ).bleAvailable,
-        )
+        for (status in listOf(
+            BadgeUsbStatus.BLE_CONNECTED,
+            BadgeUsbStatus.AP_CONNECTED,
+            BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
+        )) {
+            val availability = deriveBadgeInvestigationAvailability(state(status))
+            assertFalse(status.name, availability.badgeAvailable)
+            assertFalse(status.name, availability.bleAvailable)
+            assertFalse(status.name, availability.httpAvailable)
+        }
+
         assertTrue(
-            deriveBadgeInvestigationAvailability(
-                state(BadgeBleControlStatus(connected = true, bonded = true, encrypted = true)),
-            ).bleAvailable,
+            deriveBadgeInvestigationAvailability(state(BadgeUsbStatus.CONNECTED)).badgeAvailable,
         )
     }
 

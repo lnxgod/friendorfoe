@@ -96,6 +96,10 @@ typedef struct {
 } ble_remote_id_stats_t;
 
 bool ble_remote_id_is_scanning(void);
+/** True only when scan and NimBLE host task lifecycle are fully stopped. */
+bool ble_remote_id_is_quiesced(void);
+/** True when the NimBLE host is synced and extended discovery is running. */
+bool ble_remote_id_is_active(void);
 void ble_remote_id_get_stats(ble_remote_id_stats_t *out);
 void ble_remote_id_reset_profile_counters(void);
 void ble_remote_id_meta_reacquire_tick(bool allow_restart);

@@ -120,7 +120,7 @@ internal sealed interface BadgeThemeStudioAction {
     data class SetAccent(val key: String, val color: Rgb888) : BadgeThemeStudioAction
     data object ResetDraft : BadgeThemeStudioAction
     data object Apply : BadgeThemeStudioAction
-    data object Refresh : BadgeThemeStudioAction
+    data class Refresh(val appliedTheme: BadgeTheme) : BadgeThemeStudioAction
 }
 
 internal enum class BadgeThemeStudioCommand {
@@ -152,8 +152,8 @@ internal fun reduceBadgeThemeStudio(
         draft = draft.normalizedV1(),
         command = BadgeThemeStudioCommand.Apply,
     )
-    BadgeThemeStudioAction.Refresh -> BadgeThemeStudioTransition(
-        draft = draft,
+    is BadgeThemeStudioAction.Refresh -> BadgeThemeStudioTransition(
+        draft = action.appliedTheme.normalizedV1(),
         command = BadgeThemeStudioCommand.Refresh,
     )
 }
@@ -168,6 +168,7 @@ fun BadgeAppearanceSection(
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     theme: BadgeTheme,
+    appliedTheme: BadgeTheme,
     themeHash: Long,
     profiles: List<BadgeThemeProfile>,
     onThemeChange: (BadgeTheme) -> Unit,
@@ -495,7 +496,9 @@ fun BadgeAppearanceSection(
                         Text("Reset")
                     }
                     OutlinedButton(
-                        onClick = { dispatch(BadgeThemeStudioAction.Refresh) },
+                        onClick = {
+                            dispatch(BadgeThemeStudioAction.Refresh(appliedTheme))
+                        },
                         modifier = Modifier.testTag("badge_theme_refresh"),
                     ) {
                         Text("Refresh")

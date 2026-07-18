@@ -1,6 +1,7 @@
 set(FOF_UPLINK_REQUIRES
     esp_wifi esp_http_client esp_http_server driver nvs_flash esp_timer lwip
     esp_adc cjson esp_netif esp_event app_update esp_partition esp_psram
+    mbedtls
 )
 
 if(CONFIG_BT_ENABLED)

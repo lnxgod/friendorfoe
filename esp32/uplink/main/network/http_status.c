@@ -2420,15 +2420,18 @@ static esp_err_t badge_control_post_handler(httpd_req_t *req)
     } else if (strcmp(cmd, "badge_theme_reset") == 0) {
 #ifdef FOF_BADGE_VARIANT
         bool persist = badge_control_bool(root, "persist", false);
-        badge_theme_runtime_reset(persist);
-        char resp[160];
-        snprintf(resp, sizeof(resp),
-                 "{\"ok\":true,\"message\":\"badge theme reset\","
-                 "\"theme_hash\":%lu,\"persisted\":%s,"
-                 "\"reboot_required\":false}",
-                 (unsigned long)badge_theme_runtime_hash(),
-                 persist ? "true" : "false");
-        httpd_resp_sendstr(req, resp);
+        if (!badge_theme_runtime_reset(persist)) {
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"theme reset failed\"}");
+        } else {
+            char resp[160];
+            snprintf(resp, sizeof(resp),
+                     "{\"ok\":true,\"message\":\"badge theme reset\","
+                     "\"theme_hash\":%lu,\"persisted\":%s,"
+                     "\"reboot_required\":false}",
+                     (unsigned long)badge_theme_runtime_hash(),
+                     persist ? "true" : "false");
+            httpd_resp_sendstr(req, resp);
+        }
 #else
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"badge-only command\"}");
 #endif
@@ -2710,9 +2713,13 @@ void http_status_init(void)
     r = httpd_register_uri_handler(server, &uri_setup_html);   if (r != ESP_OK) ESP_LOGE(TAG, "Failed /setup: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_scan_json);    if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/scan: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_connect_post); if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/connect: %s", esp_err_to_name(r));
-    r = httpd_register_uri_handler(server, &uri_ota_post);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_ota_info);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota/info: %s", esp_err_to_name(r));
+#ifndef FOF_BADGE_VARIANT
+    r = httpd_register_uri_handler(server, &uri_ota_post);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_ota_relay);    if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota/relay: %s", esp_err_to_name(r));
+#else
+    ESP_LOGI(TAG, "Badge HTTP firmware mutation routes disabled; use USB/UART");
+#endif
     r = httpd_register_uri_handler(server, &uri_badge_html);   if (r != ESP_OK) ESP_LOGE(TAG, "Failed /badge: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_badge_status_json); if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/badge/status: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_badge_control_post); if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/badge/control: %s", esp_err_to_name(r));

@@ -23,6 +23,7 @@
 #include "uart_protocol.h"
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
+#include "badge_power_runtime.h"
 #include "badge_display_policy_runtime.h"
 #include "badge_theme_runtime.h"
 #include "badge_ble_control.h"
@@ -83,8 +84,10 @@ static portMUX_TYPE s_usb_output_init_lock = portMUX_INITIALIZER_UNLOCKED;
 static void handle_control_line(const char *line);
 static void print_json_escaped_string(const char *value);
 static void print_scanner_status_json(const char *name, uint8_t scanner_id,
-                                      bool connected, bool peer_connected,
-                                      const scanner_info_t *info, bool first);
+                                      bool connected, bool peer_ready,
+                                      const scanner_info_t *info,
+                                      const scanner_uart_diag_t *uart_diag,
+                                      bool first);
 
 static bool serial_output_lock(void)
 {
@@ -173,16 +176,12 @@ static void reboot_app(void)
 }
 
 static void print_scanner_status_json(const char *name, uint8_t scanner_id,
-                                      bool connected, bool peer_control_healthy,
-                                      const scanner_info_t *info, bool first)
+                                      bool connected, bool peer_ready,
+                                      const scanner_info_t *info,
+                                      const scanner_uart_diag_t *uart_diag,
+                                      bool first)
 {
     bool calibration = info && strcmp(info->scan_mode, "calibration") == 0;
-    bool peer_ready = peer_control_healthy;
-#ifdef FOF_BADGE_VARIANT
-    peer_ready = scanner_id == 0
-        ? uart_rx_is_wifi_scanner_connected()
-        : uart_rx_is_ble_scanner_connected();
-#endif
     const char *expected = calibration
         ? fof_policy_scan_profile_for_slot(scanner_id, true)
         : (peer_ready ? fof_policy_scan_profile_for_slot(scanner_id, false)
@@ -207,16 +206,14 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
     print_json_escaped_string(actual);
     printf(",\"role_acked\":%s,\"health\":", role_acked ? "true" : "false");
     print_json_escaped_string(health);
-    scanner_uart_diag_t uart_diag = {0};
-    uart_rx_get_scanner_uart_diag(scanner_id, &uart_diag);
     printf(",\"uart_raw_seen\":%s,\"uart_raw_age_s\":%lld,"
            "\"uart_raw_bytes\":%lu,\"uart_line_overflow\":%lu,"
            "\"uart_json_err\":%lu",
-           uart_diag.raw_seen ? "true" : "false",
-           (long long)uart_diag.raw_age_s,
-           (unsigned long)uart_diag.raw_bytes,
-           (unsigned long)uart_diag.line_overflow_count,
-           (unsigned long)uart_diag.json_parse_error_count);
+           uart_diag && uart_diag->raw_seen ? "true" : "false",
+           (long long)(uart_diag ? uart_diag->raw_age_s : -1),
+           (unsigned long)(uart_diag ? uart_diag->raw_bytes : 0),
+           (unsigned long)(uart_diag ? uart_diag->line_overflow_count : 0),
+           (unsigned long)(uart_diag ? uart_diag->json_parse_error_count : 0));
     if (info) {
         printf(",\"ver\":");
         print_json_escaped_string(info->version);
@@ -414,71 +411,79 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
 }
 
 #ifdef FOF_BADGE_VARIANT
-static void print_display_policy_status_fields(void)
+static void print_display_policy_status_fields(
+    const char *policy_json,
+    uint32_t policy_hash,
+    const uint32_t filtered_counts[BADGE_DISPLAY_POLICY_CLASS_COUNT])
 {
-    char policy_json[BADGE_DISPLAY_POLICY_JSON_MAX] = {0};
-    badge_display_policy_runtime_json(policy_json, sizeof(policy_json));
     printf(",\"display_policy_hash\":%lu,\"display_policy\":%s,"
            "\"filtered_counts\":{",
-           (unsigned long)badge_display_policy_runtime_hash(),
-           policy_json[0] ? policy_json : "{\"version\":1,\"classes\":{}}");
+           (unsigned long)policy_hash,
+           policy_json && policy_json[0]
+               ? policy_json
+               : "{\"version\":1,\"classes\":{}}");
     for (int i = 0; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; i++) {
         badge_display_policy_class_t cls = (badge_display_policy_class_t)i;
         printf("%s", i == 0 ? "" : ",");
         print_json_escaped_string(badge_display_policy_class_key(cls));
-        printf(":%lu", (unsigned long)
-               badge_display_policy_runtime_filtered_count(cls));
+        printf(":%lu", (unsigned long)(filtered_counts
+            ? filtered_counts[i]
+            : 0));
     }
     printf("}");
 }
 
-static void print_badge_display_state_field(void)
+static void print_badge_display_state_field(
+    const oled_badge_display_state_t *captured_state,
+    bool active)
 {
-    oled_badge_display_state_t state;
-    bool active = oled_badge_get_display_state(&state);
+    const oled_badge_display_state_t empty_state = {0};
+    const oled_badge_display_state_t *state = captured_state
+        ? captured_state
+        : &empty_state;
     printf(",\"display_state\":{\"active\":%s,\"detail_mode\":%s,"
            "\"detail_page\":%d,\"investigation\":{\"active\":%s,"
            "\"request_id\":",
            active ? "true" : "false",
-           state.detail_mode ? "true" : "false",
-           state.detail_page,
-           state.investigation_active ? "true" : "false");
-    print_json_escaped_string(state.investigation_request_id);
+           state->detail_mode ? "true" : "false",
+           state->detail_page,
+           state->investigation_active ? "true" : "false");
+    print_json_escaped_string(state->investigation_request_id);
     printf(",\"state\":");
-    print_json_escaped_string(state.investigation_state);
+    print_json_escaped_string(state->investigation_state);
     printf(",\"page\":%d},\"focus_index\":%d,\"focus_total\":%d,"
            "\"item_index\":%d,\"item_total\":%d,\"lane\":",
-           state.investigation_page,
-           state.focus_index,
-           state.focus_total,
-           state.item_index,
-           state.item_total);
-    print_json_escaped_string(state.lane);
+           state->investigation_page,
+           state->focus_index,
+           state->focus_total,
+           state->item_index,
+           state->item_total);
+    print_json_escaped_string(state->lane);
     printf(",\"title\":");
-    print_json_escaped_string(state.title);
+    print_json_escaped_string(state->title);
     printf(",\"detail\":");
-    print_json_escaped_string(state.detail);
+    print_json_escaped_string(state->detail);
     printf(",\"evidence\":");
-    print_json_escaped_string(state.evidence);
+    print_json_escaped_string(state->evidence);
     printf(",\"entity_key\":");
-    print_json_escaped_string(state.entity_key);
+    print_json_escaped_string(state->entity_key);
     printf(",\"display_id\":");
-    print_json_escaped_string(state.display_id);
+    print_json_escaped_string(state->display_id);
     printf(",\"class\":");
-    print_json_escaped_string(state.threat_class);
+    print_json_escaped_string(state->threat_class);
     printf(",\"category\":");
-    print_json_escaped_string(state.category);
+    print_json_escaped_string(state->category);
     printf(",\"code\":");
-    print_json_escaped_string(state.code);
+    print_json_escaped_string(state->code);
     printf(",\"source\":");
-    print_json_escaped_string(state.source);
-    if (state.ssid[0] != '\0') {
+    print_json_escaped_string(state->source);
+    if (state->ssid[0] != '\0') {
         printf(",\"ssid\":");
-        print_json_escaped_string(state.ssid);
+        print_json_escaped_string(state->ssid);
     }
-    if (state.bssid[0] != '\0') {
+    if (state->bssid[0] != '\0') {
         printf(",\"bssid\":");
-        print_json_escaped_string(state.bssid);
+        print_json_escaped_string(state->bssid);
     }
     printf(",\"auth_m\":%d,\"freq_mhz\":%d,"
            "\"score\":%d,\"confidence_pct\":%d,"
@@ -486,46 +491,49 @@ static void print_badge_display_state_field(void)
            "\"age_s\":%d,\"last_seen_s\":%d,\"rssi\":%d,\"best_rssi\":%d,"
            "\"events\":%lu,\"seen_count\":%lu,\"group_count\":%lu,"
            "\"proximity_level\":%d,\"stale\":%s",
-           state.wifi_auth_mode,
-           state.freq_mhz,
-           state.score,
-           state.confidence_pct,
-           state.evidence_quality,
-           state.display_rank,
-           state.age_s,
-           state.last_seen_s,
-           state.rssi,
-           state.best_rssi,
-           (unsigned long)state.events,
-           (unsigned long)state.seen_count,
-           (unsigned long)state.group_count,
-           state.proximity_level,
-           state.stale ? "true" : "false");
-    if (state.has_location) {
+           state->wifi_auth_mode,
+           state->freq_mhz,
+           state->score,
+           state->confidence_pct,
+           state->evidence_quality,
+           state->display_rank,
+           state->age_s,
+           state->last_seen_s,
+           state->rssi,
+           state->best_rssi,
+           (unsigned long)state->events,
+           (unsigned long)state->seen_count,
+           (unsigned long)state->group_count,
+           state->proximity_level,
+           state->stale ? "true" : "false");
+    if (state->has_location) {
         printf(",\"lat\":%.7f,\"lon\":%.7f,\"altitude_m\":%.1f",
-               state.latitude, state.longitude, state.altitude_m);
+               state->latitude, state->longitude, state->altitude_m);
     }
-    if (state.has_operator_location) {
+    if (state->has_operator_location) {
         printf(",\"operator_lat\":%.7f,\"operator_lon\":%.7f",
-               state.operator_lat, state.operator_lon);
+               state->operator_lat, state->operator_lon);
     }
-    if (state.operator_id[0] != '\0') {
+    if (state->operator_id[0] != '\0') {
         printf(",\"operator_id\":");
-        print_json_escaped_string(state.operator_id);
+        print_json_escaped_string(state->operator_id);
     }
     printf("}");
 }
 
-static void print_badge_button_state_field(void)
+static void print_badge_button_state_field(
+    const oled_badge_button_state_t *captured_buttons,
+    int64_t now_ms)
 {
-    oled_badge_button_state_t buttons = {0};
-    (void)oled_badge_get_button_state(&buttons);
-    int64_t now_ms = esp_timer_get_time() / 1000;
-    int64_t b1_age = buttons.b1_last_event_ms > 0 && now_ms >= buttons.b1_last_event_ms
-        ? (now_ms - buttons.b1_last_event_ms) / 1000
+    const oled_badge_button_state_t empty_buttons = {0};
+    const oled_badge_button_state_t *buttons = captured_buttons
+        ? captured_buttons
+        : &empty_buttons;
+    int64_t b1_age = buttons->b1_last_event_ms > 0 && now_ms >= buttons->b1_last_event_ms
+        ? (now_ms - buttons->b1_last_event_ms) / 1000
         : -1;
-    int64_t b2_age = buttons.b2_last_event_ms > 0 && now_ms >= buttons.b2_last_event_ms
-        ? (now_ms - buttons.b2_last_event_ms) / 1000
+    int64_t b2_age = buttons->b2_last_event_ms > 0 && now_ms >= buttons->b2_last_event_ms
+        ? (now_ms - buttons->b2_last_event_ms) / 1000
         : -1;
     printf(",\"buttons\":{\"b1_pin\":8,\"b1_active_high\":%s,"
            "\"b1_raw_level\":%d,\"b1_raw_pressed\":%s,"
@@ -540,29 +548,29 @@ static void print_badge_button_state_field(void)
            "\"b2_double_taps\":%lu,\"b2_long_presses\":%lu,"
            "\"b2_releases\":%lu,\"b2_last_event_age_s\":%lld,"
            "\"b2_pending_single\":%s,\"b2_last_gesture\":",
-           buttons.b1_active_high ? "true" : "false",
-           buttons.b1_raw_level,
-           buttons.b1_raw_pressed ? "true" : "false",
-           buttons.b1_stable_pressed ? "true" : "false",
-           buttons.b1_boot_ignored ? "true" : "false",
-           (unsigned long)buttons.b1_raw_edges,
-           (unsigned long)buttons.b1_short_presses,
-           (unsigned long)buttons.b1_long_presses,
-           (unsigned long)buttons.b1_releases,
+           buttons->b1_active_high ? "true" : "false",
+           buttons->b1_raw_level,
+           buttons->b1_raw_pressed ? "true" : "false",
+           buttons->b1_stable_pressed ? "true" : "false",
+           buttons->b1_boot_ignored ? "true" : "false",
+           (unsigned long)buttons->b1_raw_edges,
+           (unsigned long)buttons->b1_short_presses,
+           (unsigned long)buttons->b1_long_presses,
+           (unsigned long)buttons->b1_releases,
            (long long)b1_age,
-           buttons.b2_active_high ? "true" : "false",
-           buttons.b2_raw_level,
-           buttons.b2_raw_pressed ? "true" : "false",
-           buttons.b2_stable_pressed ? "true" : "false",
-           buttons.b2_boot_ignored ? "true" : "false",
-           (unsigned long)buttons.b2_raw_edges,
-           (unsigned long)buttons.b2_short_presses,
-           (unsigned long)buttons.b2_double_taps,
-           (unsigned long)buttons.b2_long_presses,
-           (unsigned long)buttons.b2_releases,
+           buttons->b2_active_high ? "true" : "false",
+           buttons->b2_raw_level,
+           buttons->b2_raw_pressed ? "true" : "false",
+           buttons->b2_stable_pressed ? "true" : "false",
+           buttons->b2_boot_ignored ? "true" : "false",
+           (unsigned long)buttons->b2_raw_edges,
+           (unsigned long)buttons->b2_short_presses,
+           (unsigned long)buttons->b2_double_taps,
+           (unsigned long)buttons->b2_long_presses,
+           (unsigned long)buttons->b2_releases,
            (long long)b2_age,
-           buttons.b2_pending_single ? "true" : "false");
-    print_json_escaped_string(buttons.b2_last_gesture);
+           buttons->b2_pending_single ? "true" : "false");
+    print_json_escaped_string(buttons->b2_last_gesture);
     printf("}");
 }
 
@@ -596,6 +604,109 @@ static void send_badge_status_response(void)
     uart_rx_get_badge_threat_snapshot(&snapshot);
 
     badge_mode_t mode = badge_mode_get();
+    const int64_t status_now_ms = esp_timer_get_time() / 1000;
+    const int64_t uptime_s = status_now_ms / 1000;
+    const bool wifi_sta_connected = wifi_sta_is_connected();
+    const bool wifi_sta_standalone = wifi_sta_is_standalone();
+    char ap_ssid[40] = {0};
+    snprintf(ap_ssid, sizeof(ap_ssid), "%s", wifi_ap_get_ssid());
+
+    const int64_t last_upload_ms = http_upload_get_last_success_ms();
+    const int64_t upload_age_s = last_upload_ms > 0
+        ? (status_now_ms >= last_upload_ms
+            ? (status_now_ms - last_upload_ms) / 1000
+            : 0)
+        : -1;
+    const bool http_task_alive = http_upload_task_alive();
+    const int uploads_ok = http_upload_get_success_count();
+    const int uploads_fail = http_upload_get_fail_count();
+
+    const bool ble_connected = uart_rx_is_ble_scanner_connected();
+    const bool wifi_connected = uart_rx_is_wifi_scanner_connected();
+    const scanner_info_t *ble_info = uart_rx_get_ble_scanner_info();
+    const scanner_info_t *wifi_info = uart_rx_get_wifi_scanner_info();
+    scanner_uart_diag_t ble_uart_diag = {0};
+    scanner_uart_diag_t wifi_uart_diag = {0};
+    uart_rx_get_scanner_uart_diag(0, &ble_uart_diag);
+#if CONFIG_DUAL_SCANNER
+    uart_rx_get_scanner_uart_diag(1, &wifi_uart_diag);
+#endif
+    fw_store_info_t firmware_store = {0};
+    const bool firmware_stored = fw_store_get_info(&firmware_store) &&
+        firmware_store.stored;
+    fw_auto_update_status_t auto_update = {0};
+    fw_store_get_auto_update_status(&auto_update);
+
+#ifdef FOF_BADGE_VARIANT
+    const badge_runtime_network_mode_t network_mode =
+        badge_runtime_get_network_mode();
+    const int network_ttl_s = badge_runtime_get_network_ttl_s();
+    const bool runtime_safe_mode = badge_runtime_is_safe_mode();
+    char runtime_safe_reason[48] = {0};
+    snprintf(runtime_safe_reason, sizeof(runtime_safe_reason), "%s",
+             badge_runtime_safe_reason());
+    const uint32_t runtime_crash_count = badge_runtime_crash_count();
+    const bool runtime_pending_verify = badge_runtime_pending_verify();
+    const bool runtime_display_alive = badge_runtime_display_alive();
+    const bool runtime_usb_control_alive = badge_runtime_usb_control_alive();
+    const bool runtime_scanner_uart_alive = badge_runtime_scanner_uart_alive();
+    const uint32_t runtime_reset_reason = badge_runtime_last_reset_reason();
+    const char *runtime_reset_reason_name =
+        badge_runtime_last_reset_reason_name();
+    const bool runtime_reset_expected = badge_runtime_last_reset_expected();
+    const int64_t runtime_usb_control_age_s =
+        badge_runtime_usb_control_age_s();
+    const char *runtime_recovery_mode = badge_runtime_recovery_mode();
+    const uint32_t stack_main_free = badge_runtime_main_stack_free();
+    const uint32_t stack_display_free = badge_runtime_display_stack_free();
+    const uint32_t stack_usb_free = badge_runtime_usb_stack_free();
+    const uint32_t stack_uart_ble_free = badge_runtime_uart_ble_stack_free();
+    const uint32_t stack_uart_wifi_free = badge_runtime_uart_wifi_stack_free();
+    const uint32_t heap_internal_free =
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const uint32_t heap_internal_min_free =
+        heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    const uint32_t heap_internal_largest =
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const uint32_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    const uint32_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    const uint32_t psram_largest =
+        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+
+    char policy_json[BADGE_DISPLAY_POLICY_JSON_MAX] = {0};
+    badge_display_policy_runtime_json(policy_json, sizeof(policy_json));
+    const uint32_t policy_hash = badge_display_policy_runtime_hash();
+    uint32_t filtered_counts[BADGE_DISPLAY_POLICY_CLASS_COUNT] = {0};
+    for (int i = 0; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; i++) {
+        filtered_counts[i] = badge_display_policy_runtime_filtered_count(
+            (badge_display_policy_class_t)i);
+    }
+    char theme_json[BADGE_THEME_JSON_MAX] = {0};
+    badge_theme_runtime_json(theme_json, sizeof(theme_json));
+    const uint32_t theme_hash = badge_theme_runtime_hash();
+    oled_badge_display_state_t display_state = {0};
+    const bool display_state_active =
+        oled_badge_get_display_state(&display_state);
+    char ble_status[192] = {0};
+    badge_ble_control_status_json(ble_status, sizeof(ble_status));
+    char investigation_status[BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX] = {0};
+    badge_ble_investigation_status_json(investigation_status,
+                                        sizeof(investigation_status));
+    oled_badge_button_state_t button_state = {0};
+    (void)oled_badge_get_button_state(&button_state);
+    badge_power_state_t power_state = {0};
+    badge_power_runtime_snapshot(&power_state);
+    const bool scanner_power_converged =
+        badge_power_state_converged(&power_state);
+    const bool panel_power_converged =
+        oled_is_powered() == !power_state.quiet;
+    const bool power_converged =
+        scanner_power_converged && panel_power_converged;
+#endif
+
+    /* IDF task logs share stdout. Hold its recursive FILE lock for the entire
+     * machine frame, after every mutex-taking state capture above. */
+    flockfile(stdout);
     /* Stable machine fields: "firmware_name", "app_project", "hardware_type". */
     printf("FOF_STATUS:{\"version\":");
     print_json_escaped_string(FOF_VERSION);
@@ -605,91 +716,162 @@ static void send_badge_status_response(void)
     print_json_escaped_string(FOF_APP_PROJECT);
     printf(",\"hardware_type\":");
     print_json_escaped_string(FOF_HARDWARE_TYPE);
-    printf(",\"uptime_s\":%lld", (long long)(esp_timer_get_time() / 1000000LL));
+    printf(",\"uptime_s\":%lld", (long long)uptime_s);
     printf(",\"mode\":");
     print_json_escaped_string(badge_mode_to_string(mode));
     printf(",\"mode_label\":");
     print_json_escaped_string(badge_mode_display_name(mode));
     bool ap_enabled =
 #ifdef FOF_BADGE_VARIANT
-        badge_runtime_get_network_mode() != BADGE_RUNTIME_NETWORK_OFF;
+        network_mode != BADGE_RUNTIME_NETWORK_OFF;
 #else
         badge_mode_ap_enabled(mode);
 #endif
     printf(",\"wifi_sta\":%s,\"ap_enabled\":%s,\"ap_ssid\":",
-           wifi_sta_is_connected() ? "true" : "false",
+           wifi_sta_connected ? "true" : "false",
            ap_enabled ? "true" : "false");
-    print_json_escaped_string(wifi_ap_get_ssid());
+    print_json_escaped_string(ap_ssid);
     printf(",\"ap_url\":\"http://192.168.4.1\"");
+    printf(",\"firmware_store\":{\"stored\":%s",
+           firmware_stored ? "true" : "false");
+    if (firmware_stored) {
+        printf(",\"target\":");
+        print_json_escaped_string(firmware_store.name);
+        printf(",\"app_project\":");
+        print_json_escaped_string(firmware_store.project);
+        printf(",\"hardware_type\":");
+        print_json_escaped_string(firmware_store.hardware);
+        printf(",\"version\":");
+        print_json_escaped_string(firmware_store.version);
+        printf(",\"sha256\":");
+        print_json_escaped_string(firmware_store.sha256);
+        printf(",\"size\":%lu,\"crc32\":%lu,\"generation\":%lu",
+               (unsigned long)firmware_store.size,
+               (unsigned long)firmware_store.checksum,
+               (unsigned long)firmware_store.generation);
+    }
+    printf(",\"auto_update\":{\"worker_running\":%s,"
+           "\"generation\":%lu,\"target_slot_mask\":%u,"
+           "\"pending_mask\":%u,\"readiness_probes\":[%u,%u],"
+           "\"scanners\":[",
+           auto_update.worker_running ? "true" : "false",
+           (unsigned long)auto_update.generation,
+           (unsigned)auto_update.target_slot_mask,
+           (unsigned)auto_update.pending_mask,
+           (unsigned)auto_update.readiness_probe_attempts[0],
+           (unsigned)auto_update.readiness_probe_attempts[1]);
+    for (int scanner_id = 0; scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT;
+         ++scanner_id) {
+        printf("%s{\"slot\":%d,\"attempts\":%u,\"state\":",
+               scanner_id == 0 ? "" : ",",
+               scanner_id,
+               (unsigned)auto_update.attempts[scanner_id]);
+        print_json_escaped_string(auto_update.state[scanner_id]);
+        printf("}");
+    }
+    printf("]}}");
 #ifdef FOF_BADGE_VARIANT
     printf(",\"safe_mode\":%s,\"safe_reason\":",
-           badge_runtime_is_safe_mode() ? "true" : "false");
-    print_json_escaped_string(badge_runtime_safe_reason());
+           runtime_safe_mode ? "true" : "false");
+    print_json_escaped_string(runtime_safe_reason);
     printf(",\"crash_count\":%lu,\"pending_verify\":%s,"
            "\"network_mode\":",
-           (unsigned long)badge_runtime_crash_count(),
-           badge_runtime_pending_verify() ? "true" : "false");
+           (unsigned long)runtime_crash_count,
+           runtime_pending_verify ? "true" : "false");
     print_json_escaped_string(
-        badge_runtime_network_mode_name(badge_runtime_get_network_mode()));
+        badge_runtime_network_mode_name(network_mode));
     printf(",\"network_ttl_s\":%d,\"display_alive\":%s,"
            "\"usb_control_alive\":%s,\"scanner_uart_alive\":%s,"
            "\"reset_reason\":",
-           badge_runtime_get_network_ttl_s(),
-           badge_runtime_display_alive() ? "true" : "false",
-           badge_runtime_usb_control_alive() ? "true" : "false",
-           badge_runtime_scanner_uart_alive() ? "true" : "false");
-    print_json_escaped_string(badge_runtime_last_reset_reason_name());
+           network_ttl_s,
+           runtime_display_alive ? "true" : "false",
+           runtime_usb_control_alive ? "true" : "false",
+           runtime_scanner_uart_alive ? "true" : "false");
+    print_json_escaped_string(runtime_reset_reason_name);
     printf(",\"reset_reason_code\":%lu,\"reset_expected\":%s,"
            "\"usb_control_age_s\":%lld,\"recovery_mode\":",
-           (unsigned long)badge_runtime_last_reset_reason(),
-           badge_runtime_last_reset_expected() ? "true" : "false",
-           (long long)badge_runtime_usb_control_age_s());
-    print_json_escaped_string(badge_runtime_recovery_mode());
+           (unsigned long)runtime_reset_reason,
+           runtime_reset_expected ? "true" : "false",
+           (long long)runtime_usb_control_age_s);
+    print_json_escaped_string(runtime_recovery_mode);
+    printf(",\"power_mode\":");
+    print_json_escaped_string(power_state.quiet ? "quiet" : "active");
+    printf(",\"power_generation\":%lu,\"power_converged\":%s,"
+           "\"scanner_power_converged\":%s,"
+           "\"panel_power_converged\":%s,"
+           "\"panel_powered\":%s,\"power_scanners\":[",
+           (unsigned long)power_state.generation,
+           power_converged ? "true" : "false",
+           scanner_power_converged ? "true" : "false",
+           panel_power_converged ? "true" : "false",
+           oled_is_powered() ? "true" : "false");
+    for (int i = 0; i < BADGE_POWER_SCANNER_COUNT; i++) {
+        const badge_power_scanner_state_t *scanner = &power_state.scanners[i];
+        printf("%s{\"slot\":%d,\"connected\":%s,\"acked\":%s,"
+               "\"transition_ok\":%s,\"generation\":%lu,\"quiet\":%s,"
+               "\"tx_enabled\":%s,\"ble_scanning\":%s,"
+               "\"wifi_paused\":%s,\"ble_quiesced\":%s,"
+               "\"wifi_quiesced\":%s,\"ble_active\":%s,"
+               "\"wifi_active\":%s,\"radios_ready\":%s,"
+               "\"tx_restored\":%s,\"uart_commands\":%s}",
+               i == 0 ? "" : ",", i,
+               scanner->connected ? "true" : "false",
+               scanner->acked ? "true" : "false",
+               scanner->transition_ok ? "true" : "false",
+               (unsigned long)scanner->ack_generation,
+               scanner->quiet ? "true" : "false",
+               scanner->tx_enabled ? "true" : "false",
+               scanner->ble_scanning ? "true" : "false",
+               scanner->wifi_paused ? "true" : "false",
+               scanner->ble_quiesced ? "true" : "false",
+               scanner->wifi_quiesced ? "true" : "false",
+               scanner->ble_active ? "true" : "false",
+               scanner->wifi_active ? "true" : "false",
+               scanner->radios_ready ? "true" : "false",
+               scanner->tx_restored ? "true" : "false",
+               scanner->uart_commands ? "true" : "false");
+    }
+    printf("]");
     printf(",\"stack_main_free\":%lu,\"stack_display_free\":%lu,"
            "\"stack_usb_free\":%lu,\"stack_uart_ble_free\":%lu,"
            "\"stack_uart_wifi_free\":%lu,"
            "\"heap_internal_free\":%lu,\"heap_internal_min_free\":%lu,"
            "\"heap_internal_largest\":%lu,\"psram_total\":%lu,"
            "\"psram_free\":%lu,\"psram_largest\":%lu",
-           (unsigned long)badge_runtime_main_stack_free(),
-           (unsigned long)badge_runtime_display_stack_free(),
-           (unsigned long)badge_runtime_usb_stack_free(),
-           (unsigned long)badge_runtime_uart_ble_stack_free(),
-           (unsigned long)badge_runtime_uart_wifi_stack_free(),
-           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-           (unsigned long)heap_caps_get_total_size(MALLOC_CAP_SPIRAM),
-           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-           (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+           (unsigned long)stack_main_free,
+           (unsigned long)stack_display_free,
+           (unsigned long)stack_usb_free,
+           (unsigned long)stack_uart_ble_free,
+           (unsigned long)stack_uart_wifi_free,
+           (unsigned long)heap_internal_free,
+           (unsigned long)heap_internal_min_free,
+           (unsigned long)heap_internal_largest,
+           (unsigned long)psram_total,
+           (unsigned long)psram_free,
+           (unsigned long)psram_largest);
 #endif
     printf(",\"threat_score\":%.1f,\"color_rgb565\":%u",
            snapshot.threat_score, (unsigned)snapshot.color_rgb565);
-    int64_t last_upload_ms = http_upload_get_last_success_ms();
-    int64_t upload_age_s = -1;
-    if (last_upload_ms > 0) {
-        int64_t now_ms = esp_timer_get_time() / 1000;
-        upload_age_s = now_ms >= last_upload_ms ? (now_ms - last_upload_ms) / 1000 : 0;
-    }
     printf(",\"reporting\":{\"network_mode\":");
 #ifdef FOF_BADGE_VARIANT
     print_json_escaped_string(
-        badge_runtime_network_mode_name(badge_runtime_get_network_mode()));
+        badge_runtime_network_mode_name(network_mode));
     printf(",\"backend_enabled\":%s,\"network_ttl_s\":%d",
-           badge_runtime_get_network_mode() == BADGE_RUNTIME_NETWORK_BACKEND ? "true" : "false",
-           badge_runtime_get_network_ttl_s());
+           network_mode == BADGE_RUNTIME_NETWORK_BACKEND ? "true" : "false",
+           network_ttl_s);
 #else
     print_json_escaped_string(badge_mode_to_string(mode));
     printf(",\"backend_enabled\":%s,\"network_ttl_s\":0",
            badge_mode_backend_enabled(mode) ? "true" : "false");
 #endif
-    printf(",\"wifi_sta\":%s,\"standalone\":%s,"
+    printf(",\"http_task_alive\":%s,\"wifi_sta\":%s,\"standalone\":%s,"
            "\"uploads_ok\":%d,\"uploads_fail\":%d,"
            "\"last_upload_age_s\":%lld}",
-           wifi_sta_is_connected() ? "true" : "false",
-           wifi_sta_is_standalone() ? "true" : "false",
-           http_upload_get_success_count(),
-           http_upload_get_fail_count(),
+           http_task_alive ? "true" : "false",
+           wifi_sta_connected ? "true" : "false",
+           wifi_sta_standalone ? "true" : "false",
+           uploads_ok,
+           uploads_fail,
            (long long)upload_age_s);
     printf(",\"dominant_class\":");
     print_json_escaped_string(badge_threat_class_name(snapshot.dominant_class));
@@ -722,23 +904,17 @@ static void send_badge_status_response(void)
            (unsigned long)snapshot.active_counts[BADGE_THREAT_BLE],
            (unsigned long)snapshot.active_counts[BADGE_THREAT_OTHER]);
 #ifdef FOF_BADGE_VARIANT
-    print_display_policy_status_fields();
-    char theme_json[BADGE_THEME_JSON_MAX] = {0};
-    badge_theme_runtime_json(theme_json, sizeof(theme_json));
+    print_display_policy_status_fields(policy_json, policy_hash,
+                                       filtered_counts);
     printf(",\"theme_hash\":%lu,\"theme\":",
-           (unsigned long)badge_theme_runtime_hash());
+           (unsigned long)theme_hash);
     printf("%s", theme_json[0] ? theme_json : "{\"version\":1}");
-    print_badge_display_state_field();
-    char ble_status[192];
-    badge_ble_control_status_json(ble_status, sizeof(ble_status));
+    print_badge_display_state_field(&display_state, display_state_active);
     printf(",\"ble_control\":%s", ble_status[0] ? ble_status : "{\"enabled\":false}");
-    char investigation_status[BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX];
-    badge_ble_investigation_status_json(investigation_status,
-                                        sizeof(investigation_status));
     printf(",\"ble_investigation\":%s",
            investigation_status[0] ? investigation_status
                                    : "{\"request_id\":\"\",\"state\":\"idle\"}");
-    print_badge_button_state_field();
+    print_badge_button_state_field(&button_state, status_now_ms);
 #endif
     printf(",\"entities\":[");
     for (int i = 0; i < snapshot.entity_count; i++) {
@@ -809,24 +985,15 @@ static void send_badge_status_response(void)
         printf("}");
     }
     printf("],\"scanners\":[");
-    bool ble_connected = uart_rx_is_ble_scanner_connected();
-    bool wifi_connected = uart_rx_is_wifi_scanner_connected();
-    const scanner_info_t *ble_info = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi_info = uart_rx_get_wifi_scanner_info();
-    bool ble_control_healthy = ble_connected && ble_info && ble_info->received &&
-        ble_info->cmd_rx_count > 0 && ble_info->cmd_last_age_s >= 0 &&
-        ble_info->cmd_last_age_s <= 45;
-    bool wifi_control_healthy = wifi_connected && wifi_info && wifi_info->received &&
-        wifi_info->cmd_rx_count > 0 && wifi_info->cmd_last_age_s >= 0 &&
-        wifi_info->cmd_last_age_s <= 45;
-    print_scanner_status_json("ble", 0, ble_connected, wifi_control_healthy,
-                              ble_info, true);
+    print_scanner_status_json("ble", 0, ble_connected, wifi_connected,
+                              ble_info, &ble_uart_diag, true);
 #if CONFIG_DUAL_SCANNER
-    print_scanner_status_json("wifi", 1, wifi_connected, ble_control_healthy,
-                              wifi_info, false);
+    print_scanner_status_json("wifi", 1, wifi_connected, ble_connected,
+                              wifi_info, &wifi_uart_diag, false);
 #endif
     printf("]}\n");
     fflush(stdout);
+    funlockfile(stdout);
 }
 
 static void send_control_ok(const char *message, bool reboot_required)
@@ -892,30 +1059,63 @@ static bool ctl_add_bool_if_present(cJSON *out,
     return true;
 }
 
+static bool serial_json_uint32_exact(const cJSON *item, uint32_t *out)
+{
+    if (!out || !cJSON_IsNumber(item) || item->valuedouble < 0.0 ||
+        item->valuedouble > (double)UINT32_MAX) {
+        return false;
+    }
+    uint32_t value = (uint32_t)item->valuedouble;
+    if ((double)value != item->valuedouble) {
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
 static void handle_fw_upload_begin(cJSON *root)
 {
 #ifdef FOF_BADGE_VARIANT
     const cJSON *name_item = cJSON_GetObjectItemCaseSensitive(root, "name");
+    const cJSON *target_item = cJSON_GetObjectItemCaseSensitive(root, "target");
+    const cJSON *project_item = cJSON_GetObjectItemCaseSensitive(root, "project");
+    const cJSON *hardware_item = cJSON_GetObjectItemCaseSensitive(root, "hardware_type");
     const cJSON *version_item = cJSON_GetObjectItemCaseSensitive(root, "version");
     const cJSON *size_item = cJSON_GetObjectItemCaseSensitive(root, "size");
     const cJSON *crc_item = cJSON_GetObjectItemCaseSensitive(root, "crc32");
-    const char *name = (cJSON_IsString(name_item) && name_item->valuestring[0])
-        ? name_item->valuestring
-        : "scanner-s3-combo-fof_badge";
-    const char *version = (cJSON_IsString(version_item) && version_item->valuestring[0])
-        ? version_item->valuestring
-        : FOF_VERSION;
-    if (!cJSON_IsNumber(size_item) || !cJSON_IsNumber(crc_item)) {
-        printf("FOF_FW_UPLOAD:{\"ok\":false,\"error\":\"missing_size_or_crc\"}\n");
+    const cJSON *sha_item = cJSON_GetObjectItemCaseSensitive(root, "sha256");
+    const cJSON *slot_mask_item = cJSON_GetObjectItemCaseSensitive(
+        root, "slot_mask");
+    const char *name = cJSON_IsString(name_item) ? name_item->valuestring : "";
+    const char *target = cJSON_IsString(target_item) ? target_item->valuestring : "";
+    const char *project = cJSON_IsString(project_item) ? project_item->valuestring : "";
+    const char *hardware = cJSON_IsString(hardware_item) ? hardware_item->valuestring : "";
+    const char *version = cJSON_IsString(version_item) ? version_item->valuestring : "";
+    const char *sha256 = cJSON_IsString(sha_item) ? sha_item->valuestring : "";
+    uint32_t size = 0;
+    uint32_t crc32 = 0;
+    uint32_t slot_mask = 0;
+    if (!serial_json_uint32_exact(size_item, &size) ||
+        !serial_json_uint32_exact(crc_item, &crc32) ||
+        !serial_json_uint32_exact(slot_mask_item, &slot_mask) ||
+        slot_mask == 0 || slot_mask > 0x3 ||
+        strcmp(name, "scanner-s3-combo-fof_badge") != 0 ||
+        strcmp(target, "scanner-s3-combo-fof_badge") != 0 ||
+        strcmp(project, "fof_badge_scanner") != 0 ||
+        strcmp(hardware, "seeed_xiao_esp32s3") != 0 ||
+        !version[0] || !fof_firmware_sha256_hex_is_valid(sha256)) {
+        printf("FOF_FW_UPLOAD:{\"ok\":false,\"error\":\"invalid_manifest\"}\n");
         fflush(stdout);
         return;
     }
-    char resp[256];
+    char resp[640];
     bool ok = fw_store_serial_upload_begin(
         name,
         version,
-        (uint32_t)size_item->valuedouble,
-        (uint32_t)crc_item->valuedouble,
+        size,
+        crc32,
+        sha256,
+        (uint8_t)slot_mask,
         resp,
         sizeof(resp)
     );
@@ -1223,7 +1423,10 @@ static void handle_badge_theme_reset_command(cJSON *root)
     bool persist = ctl_bool_value(
         cJSON_GetObjectItemCaseSensitive(root, "persist"),
         false);
-    badge_theme_runtime_reset(persist);
+    if (!badge_theme_runtime_reset(persist)) {
+        send_control_error("badge theme reset failed");
+        return;
+    }
     printf("FOF_CTL_OK:{\"message\":\"badge theme reset\","
            "\"theme_hash\":%lu,\"persisted\":%s,"
            "\"reboot_required\":false}\n",
@@ -1246,6 +1449,33 @@ static void handle_ctl_command(const char *json)
 
     if (strcmp(cmd, "status") == 0) {
         send_badge_status_response();
+    } else if (strcmp(cmd, "power_mode") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        const cJSON *mode_item = cJSON_GetObjectItemCaseSensitive(root, "mode");
+        if (!cJSON_IsString(mode_item)) {
+            send_control_error("power mode must be active or quiet");
+        } else {
+            bool quiet = strcmp(mode_item->valuestring, "quiet") == 0 ||
+                         strcmp(mode_item->valuestring, "off") == 0;
+            bool active = strcmp(mode_item->valuestring, "active") == 0 ||
+                          strcmp(mode_item->valuestring, "on") == 0;
+            if (!quiet && !active) {
+                send_control_error("power mode must be active or quiet");
+            } else {
+                (void)badge_power_runtime_request(quiet, "usb");
+                badge_power_state_t state = {0};
+                badge_power_runtime_snapshot(&state);
+                printf("FOF_CTL_OK:{\"message\":\"power mode updated\","
+                       "\"power_mode\":\"%s\",\"power_generation\":%lu,"
+                       "\"reboot_required\":false}\n",
+                       state.quiet ? "quiet" : "active",
+                       (unsigned long)state.generation);
+                fflush(stdout);
+            }
+        }
+#else
+        send_control_error("power mode is badge-only");
+#endif
     } else if (strcmp(cmd, "set_mode") == 0) {
         const cJSON *mode_item = cJSON_GetObjectItemCaseSensitive(root, "mode");
 #ifdef FOF_BADGE_VARIANT
@@ -1429,39 +1659,9 @@ static void handle_ctl_command(const char *json)
                strcmp(cmd, "scanner_recovery") == 0) {
         handle_scanner_safe_mode_control(root);
     } else if (strcmp(cmd, "fw_stage_metadata") == 0) {
-#ifdef FOF_BADGE_VARIANT
-        const esp_partition_t *partition = fw_store_get_target_partition();
-        const cJSON *name_item = cJSON_GetObjectItemCaseSensitive(root, "name");
-        const cJSON *version_item = cJSON_GetObjectItemCaseSensitive(root, "version");
-        const cJSON *size_item = cJSON_GetObjectItemCaseSensitive(root, "size");
-        const cJSON *crc_item = cJSON_GetObjectItemCaseSensitive(root, "crc32");
-        if (!partition) {
-            send_control_error("no scanner firmware partition");
-        } else if (!cJSON_IsNumber(size_item) || size_item->valuedouble <= 0 ||
-                   size_item->valuedouble > (double)partition->size) {
-            send_control_error("invalid staged firmware size");
-        } else if (!cJSON_IsNumber(crc_item)) {
-            send_control_error("missing staged firmware crc32");
-        } else {
-            const char *name = (cJSON_IsString(name_item) && name_item->valuestring[0])
-                ? name_item->valuestring
-                : "scanner-s3-combo-fof_badge";
-            const char *version = (cJSON_IsString(version_item) && version_item->valuestring[0])
-                ? version_item->valuestring
-                : FOF_VERSION;
-            uint32_t size = (uint32_t)size_item->valuedouble;
-            uint32_t crc32 = (uint32_t)crc_item->valuedouble;
-            fw_store_persist_metadata(name, version, partition, size, crc32);
-            printf("FOF_FW_STAGE:{\"ok\":true,\"partition\":\"%s\","
-                   "\"size\":%lu,\"crc32\":%lu,\"name\":\"%s\","
-                   "\"version\":\"%s\"}\n",
-                   partition->label, (unsigned long)size,
-                   (unsigned long)crc32, name, version);
-            fflush(stdout);
-        }
-#else
-        send_control_error("fw_stage_metadata is badge-only");
-#endif
+        /* Metadata is derived from and cryptographically bound to uploaded
+         * bytes. Never allow a control command to manufacture a valid image. */
+        send_control_error("fw_stage_metadata disabled; upload verified bytes");
     } else if (strcmp(cmd, "fw_upload_begin") == 0) {
         handle_fw_upload_begin(root);
     } else if (strcmp(cmd, "fw_relay") == 0) {
@@ -1784,7 +1984,7 @@ static void serial_control_task(void *arg)
         if (s_serial_fw_rx_active) {
             uint32_t remaining = fw_store_serial_upload_remaining();
             if (remaining == 0) {
-                char resp[256];
+                char resp[640];
                 fw_store_serial_upload_end(resp, sizeof(resp));
                 printf("FOF_FW_UPLOAD:%s\n", resp);
                 fflush(stdout);
@@ -1845,15 +2045,11 @@ static void serial_control_task(void *arg)
     }
 }
 
-void serial_config_start_control_task(void)
+bool serial_config_start_control_task(void)
 {
     if (s_control_task_started) {
-        return;
+        return true;
     }
-    s_control_task_started = true;
-#ifdef FOF_BADGE_VARIANT
-    badge_runtime_note_usb_control_alive();
-#endif
     BaseType_t ok = xTaskCreate(serial_control_task,
                                 "serial_ctrl",
                                 CONTROL_STACK_BYTES,
@@ -1861,9 +2057,11 @@ void serial_config_start_control_task(void)
                                 tskIDLE_PRIORITY + 1,
                                 NULL);
     if (ok != pdPASS) {
-        s_control_task_started = false;
         ESP_LOGE(TAG, "Failed to start USB serial control listener");
+        return false;
     }
+    s_control_task_started = true;
+    return true;
 }
 
 static void print_json_escaped_string(const char *value)

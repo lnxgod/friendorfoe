@@ -1,8 +1,11 @@
 #include "unity.h"
 
 #include "ble_fingerprint.h"
+#include "badge_easter_egg.h"
+#include "constants.h"
 #include "detection_policy.h"
 #include "detection_types.h"
+#include "open_drone_id_parser.h"
 #include "privacy_rf_signatures.h"
 #include "wifi_oui_database.h"
 
@@ -11,6 +14,94 @@
 #define BLE_REMOTE_ID_HANDOFF_TEST
 #include "../scanner/main/detection/ble_remote_id.c"
 #undef BLE_REMOTE_ID_HANDOFF_TEST
+
+static void make_ble_rid_basic_id(uint8_t message[ODID_MSG_SIZE],
+                                  const char *basic_id)
+{
+    memset(message, 0, ODID_MSG_SIZE);
+    message[0] = (uint8_t)(ODID_MSG_TYPE_BASIC_ID << 4);
+    message[1] = (uint8_t)((1 << 4) | 2);
+    size_t length = strlen(basic_id);
+    if (length > 20) {
+        length = 20;
+    }
+    memcpy(&message[2], basic_id, length);
+}
+
+static void write_ble_rid_int32_le(uint8_t *message,
+                                   size_t offset,
+                                   int32_t value)
+{
+    message[offset] = (uint8_t)(value & 0xff);
+    message[offset + 1] = (uint8_t)((value >> 8) & 0xff);
+    message[offset + 2] = (uint8_t)((value >> 16) & 0xff);
+    message[offset + 3] = (uint8_t)((value >> 24) & 0xff);
+}
+
+static void make_ble_rid_hell_location(uint8_t message[ODID_MSG_SIZE])
+{
+    memset(message, 0, ODID_MSG_SIZE);
+    message[0] = (uint8_t)(ODID_MSG_TYPE_LOCATION << 4);
+    write_ble_rid_int32_le(message, 5, 424347200);
+    write_ble_rid_int32_le(message, 9, -839850000);
+    message[15] = 0x04;
+    message[16] = 0x0d; /* 3332 half-metres on wire => 666m. */
+    message[17] = 0xff;
+    message[18] = 0xff;
+}
+
+static bool ble_rid_state_matches_hell(const odid_state_t *state)
+{
+    badge_easter_egg_remote_id_t remote_id = {
+        .has_basic_id = state->has_basic_id,
+        .basic_id = state->drone_id,
+        .has_location = state->has_location,
+        .latitude_e7 = state->latitude_e7,
+        .longitude_e7 = state->longitude_e7,
+        .has_geodetic_altitude = state->has_geodetic_altitude,
+        .geodetic_altitude_half_m = state->geodetic_altitude_half_m,
+    };
+    return badge_easter_egg_remote_id_matches(&remote_id);
+}
+
+void test_ble_remote_id_accumulator_keeps_normal_multiframe_within_window(void)
+{
+    odid_state_t state;
+    odid_state_init(&state, "AA:BB:CC:DD:EE:FF", 1000);
+
+    uint8_t basic_id[ODID_MSG_SIZE];
+    make_ble_rid_basic_id(basic_id, "fof-michagain");
+    odid_parse_message(basic_id, sizeof(basic_id), &state, 0);
+
+    TEST_ASSERT_FALSE(ble_remote_id_reset_accumulator_if_stale(
+        &state, 1000, 30999));
+
+    uint8_t location[ODID_MSG_SIZE];
+    make_ble_rid_hell_location(location);
+    odid_parse_message(location, sizeof(location), &state, 0);
+    TEST_ASSERT_TRUE(ble_rid_state_matches_hell(&state));
+}
+
+void test_ble_remote_id_accumulator_resets_same_mac_before_stale_location(void)
+{
+    odid_state_t state;
+    odid_state_init(&state, "AA:BB:CC:DD:EE:FF", 1000);
+
+    uint8_t basic_id[ODID_MSG_SIZE];
+    make_ble_rid_basic_id(basic_id, "fof-michagain");
+    odid_parse_message(basic_id, sizeof(basic_id), &state, 0);
+
+    /* Other ODID components may keep the address active, but they must not
+     * extend the lifetime of a Basic ID captured at the start of the window. */
+    TEST_ASSERT_TRUE(ble_remote_id_reset_accumulator_if_stale(
+        &state, 30900, 31000));
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", state.device_address);
+
+    uint8_t location[ODID_MSG_SIZE];
+    make_ble_rid_hell_location(location);
+    odid_parse_message(location, sizeof(location), &state, 0);
+    TEST_ASSERT_FALSE(ble_rid_state_matches_hell(&state));
+}
 
 void test_probe_broadcasts_still_drop(void)
 {

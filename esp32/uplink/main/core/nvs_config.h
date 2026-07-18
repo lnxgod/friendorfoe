@@ -65,6 +65,23 @@ bool nvs_config_set_u32(const char *key, uint32_t value);
 /** Read a uint32 value from NVS. Returns false if key not found. */
 bool nvs_config_get_u32(const char *key, uint32_t *value);
 
+/**
+ * Largest opaque record accepted by the configuration namespace.  Keeping
+ * this bounded prevents corrupted NVS length metadata from driving a large
+ * allocation or an unbounded caller read during boot recovery.
+ */
+#define NVS_CONFIG_MAX_BLOB_SIZE 256u
+
+/** Atomically commit one bounded opaque record under a single NVS key. */
+bool nvs_config_set_blob(const char *key, const void *data, size_t size);
+
+/**
+ * Read one bounded opaque record.  The stored record must fit completely in
+ * the caller's buffer; partial blob reads are never accepted.
+ */
+bool nvs_config_get_blob(const char *key, void *data, size_t capacity,
+                         size_t *out_size);
+
 #ifdef __cplusplus
 }
 #endif

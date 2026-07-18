@@ -374,8 +374,11 @@ static esp_err_t try_refresh_scanner_cache(const char *backend_base)
      * fw_upload_handler likewise calls esp_ota_abort here. */
     esp_ota_abort(handle);
 
-    fw_store_persist_metadata(board, remote_ver, p,
-                              (uint32_t)received, crc);
+    if (!fw_store_persist_metadata(board, remote_ver, p,
+                                   (uint32_t)received, crc)) {
+        ESP_LOGE(TAG, "Downloaded scanner image failed embedded identity/SHA validation");
+        return ESP_ERR_INVALID_RESPONSE;
+    }
     ESP_LOGW(TAG, "fw_store refreshed: %s v%s (%d bytes, crc=%lu) on '%s'",
              board, remote_ver, received, (unsigned long)crc, p->label);
     return ESP_OK;

@@ -76,6 +76,9 @@ extern "C" {
 #define MSG_TYPE_CAL_MODE_START     "cal_mode_start"
 #define MSG_TYPE_CAL_MODE_STOP      "cal_mode_stop"
 #define MSG_TYPE_CAL_MODE_ACK       "cal_mode_ack"
+#define MSG_TYPE_SCANNER_QUIET      "scanner_quiet"
+#define MSG_TYPE_SCANNER_QUIET_ACK  "scanner_quiet_ack"
+#define JSON_KEY_GENERATION         "generation"
 #define JSON_KEY_SCAN_MODE          "scan_mode"
 #define JSON_KEY_SCAN_PROFILE       "scan_profile"
 #define JSON_KEY_SLOT_ROLE          "slot_role"
@@ -103,6 +106,7 @@ extern "C" {
 #define MSG_TYPE_OTA_ACK            "ota_ack"
 #define MSG_TYPE_OTA_NACK           "ota_nack"      /* bad CRC — retransmit the named seq */
 #define MSG_TYPE_OTA_PROGRESS       "ota_progress"
+#define MSG_TYPE_OTA_STAGED         "ota_staged"    /* full image verified; waiting for ota_end */
 #define MSG_TYPE_OTA_DONE           "ota_done"
 #define MSG_TYPE_OTA_ERROR          "ota_error"
 
@@ -118,6 +122,11 @@ extern "C" {
 #define JSON_KEY_FW_VERSION         "fw_ver"
 #define JSON_KEY_FW_TARGET_VERSION  "target_ver"
 #define JSON_KEY_FW_NAME            "fw_name"
+#define JSON_KEY_FW_PROJECT         "app_project"
+#define JSON_KEY_FW_HARDWARE        "hardware_type"
+#define JSON_KEY_FW_SHA256          "sha256"
+#define JSON_KEY_FW_GENERATION      JSON_KEY_GENERATION
+#define JSON_KEY_FW_ALLOW_SAME      "allow_same_version"
 #define JSON_KEY_FW_UPDATE          "update"
 #define JSON_KEY_FW_STATE           "fw_state"
 #define JSON_KEY_FW_REASON          "reason"
@@ -138,6 +147,8 @@ extern "C" {
 #define OTA_CHUNK_MAGIC             0xF0
 #define OTA_CHUNK_HEADER_SIZE       5
 #define OTA_CHUNK_CRC_SIZE          4       /* CRC32 trailer */
+#define OTA_ABORT_SENTINEL_BYTE     0xFF    /* only recognized between frames */
+#define OTA_ABORT_SENTINEL_COUNT    8
 #define OTA_CHUNK_DEFAULT_MAX_DATA  512     /* production relay compatibility */
 #define OTA_CHUNK_BADGE_MAX_DATA    1024    /* badge recovery: fewer UART frames */
 #if defined(FOF_BADGE_VARIANT)

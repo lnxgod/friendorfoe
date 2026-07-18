@@ -57,7 +57,8 @@ bool serial_config_listen(int timeout_ms);
  * recovery tools can catch a freshly power-cycled badge before display/scanner
  * work starts.
  */
-void serial_config_start_control_task(void);
+/** Returns true when the persistent USB control listener was created. */
+bool serial_config_start_control_task(void);
 
 /** Emit one already-bounded FOF_INV frame without interleaving USB control. */
 bool serial_config_emit_investigation_frame(const char *frame);

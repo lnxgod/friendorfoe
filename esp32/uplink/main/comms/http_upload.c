@@ -53,6 +53,8 @@ static uint32_t        s_node_dedup_collapsed = 0;
 static uint32_t        s_cal_seen = 0;
 static uint32_t        s_cal_sent = 0;
 static int64_t         s_last_scan_profile_ms = 0;
+static bool            s_task_started = false;
+static volatile bool   s_task_alive = false;
 
 /* Persistent HTTP client handle (avoids socket exhaustion from rapid open/close) */
 /* esp_http_client removed — using raw sockets for zero heap allocation */
@@ -1405,6 +1407,7 @@ static void http_upload_task(void *arg)
     TickType_t last_send   = 0;  /* tick count of last successful send */
     int64_t scan_ts_ms     = 0;  /* timestamp of first detection in batch */
 
+    s_task_alive = true;
     ESP_LOGI(TAG, "HTTP upload task started");
     bool was_connected = false;
     TickType_t last_success_tick = xTaskGetTickCount();
@@ -1781,17 +1784,28 @@ void http_upload_init(QueueHandle_t detection_queue)
              CONFIG_MAX_OFFLINE_BATCHES);
 }
 
-void http_upload_start(void)
+bool http_upload_start(void)
 {
-    static bool s_task_started = false;
     if (s_task_started) {
-        return;
+        return true;
     }
-    xTaskCreate(http_upload_task, "http_upload", CONFIG_HTTP_UPLOAD_STACK,
-                NULL, CONFIG_HTTP_UPLOAD_PRIORITY, NULL);
+    BaseType_t ok = xTaskCreate(
+        http_upload_task, "http_upload", CONFIG_HTTP_UPLOAD_STACK,
+        NULL, CONFIG_HTTP_UPLOAD_PRIORITY, NULL);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create HTTP upload task (stack=%d)",
+                 CONFIG_HTTP_UPLOAD_STACK);
+        return false;
+    }
     s_task_started = true;
     ESP_LOGI(TAG, "HTTP upload task created (priority=%d, stack=%d)",
              CONFIG_HTTP_UPLOAD_PRIORITY, CONFIG_HTTP_UPLOAD_STACK);
+    return true;
+}
+
+bool http_upload_task_alive(void)
+{
+    return s_task_alive;
 }
 
 int http_upload_get_success_count(void)

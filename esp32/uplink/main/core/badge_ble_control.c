@@ -287,10 +287,9 @@ static int badge_ble_control_access(uint16_t conn_handle,
         reply = ok ? "badge theme updated" : s_last_error;
     } else if (strcmp(cmd, "badge_theme_reset") == 0) {
         bool persist = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "persist"));
-        badge_theme_runtime_reset(persist);
-        ok = true;
-        badge_ble_set_error("");
-        reply = "badge theme reset";
+        ok = badge_theme_runtime_reset(persist);
+        badge_ble_set_error(ok ? "" : "badge theme reset failed");
+        reply = ok ? "badge theme reset" : s_last_error;
     } else if (strcmp(cmd, "ble_investigate") == 0) {
         const cJSON *request_id = cJSON_GetObjectItemCaseSensitive(root,
                                                                    "request_id");

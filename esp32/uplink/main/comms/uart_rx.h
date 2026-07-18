@@ -25,7 +25,17 @@ void uart_rx_init(QueueHandle_t detection_queue);
 /**
  * Start the UART RX FreeRTOS task(s).
  */
-void uart_rx_start(void);
+/** Returns true only when every configured scanner RX worker was created. */
+bool uart_rx_start(void);
+
+/**
+ * Hold exclusive scanner-UART TX ownership for a firmware operation. The
+ * lease is recursive so its owning task can emit OTA control JSON through the
+ * normal checked command functions while binary relay traffic is active.
+ */
+bool uart_rx_scanner_tx_lease_init(void);
+bool uart_rx_scanner_tx_lease_acquire(TickType_t wait_ticks);
+void uart_rx_scanner_tx_lease_release(void);
 
 /** Total detections received since boot. */
 int uart_rx_get_detection_count(void);
@@ -93,6 +103,7 @@ typedef struct {
     char chip[12];      /* "esp32s3" */
     char caps[32];      /* "ble,wifi" */
     bool received;
+    uint32_t identity_generation; /* increments for each scanner_info frame */
 
     /* Attack / anomaly counters (latest delta from scanner status) */
     uint16_t deauth_count;
@@ -117,6 +128,17 @@ typedef struct {
     bool     ble_host_active;
     bool     ble_host_synced;
     bool     wifi_paused;
+    bool     quiet_transition_ok;
+    bool     quiet_mode;
+    bool     quiet_tx_enabled;
+    bool     quiet_uart_commands;
+    bool     quiet_ble_quiesced;
+    bool     quiet_wifi_quiesced;
+    bool     quiet_ble_active;
+    bool     quiet_wifi_active;
+    bool     quiet_radios_ready;
+    bool     quiet_tx_restored;
+    uint32_t quiet_generation;
     uint32_t wifi_total_frames;
     uint32_t wifi_beacon_frames;
     uint32_t wifi_full_scan_count;

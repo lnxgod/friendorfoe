@@ -1,7 +1,5 @@
 package com.friendorfoe.presentation.privacy
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -45,7 +43,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -56,6 +53,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.badge.BadgeControlStatus
+import com.friendorfoe.data.badge.BadgeControlTransportPolicy
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.badge.BadgeDisplayState
 import com.friendorfoe.data.badge.BadgeTheme
@@ -64,6 +62,7 @@ import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
 import com.friendorfoe.data.badge.defaultBadgeDisplayPolicy
+import com.friendorfoe.data.badge.defaultBadgeTheme
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.BleInvestigationMode
 import com.friendorfoe.detection.BleInvestigationResult
@@ -74,7 +73,11 @@ import com.friendorfoe.detection.PrivacyDetectionOrigin
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.presentation.alerts.SkyAlertCandidate
 import com.friendorfoe.presentation.badge.BadgeAppearanceSection
+import com.friendorfoe.presentation.badge.BadgeControlDraftReset
 import com.friendorfoe.presentation.badge.BadgeDisplayFiltersSection
+import com.friendorfoe.presentation.badge.badgeFilterEditorRefreshReset
+import com.friendorfoe.presentation.badge.badgeStatusRefreshReset
+import com.friendorfoe.presentation.badge.badgeThemeEditorRefreshReset
 import com.friendorfoe.presentation.components.FofActionRow
 import com.friendorfoe.presentation.components.FofEmptyState
 import com.friendorfoe.presentation.components.FofSection
@@ -118,6 +121,42 @@ fun PrivacyScreen(
     val badgeThemeProfiles by viewModel.badgeThemeProfiles.collectAsStateWithLifecycle()
     val backendOnlyMode by viewModel.backendOnlyMode.collectAsStateWithLifecycle()
     val investigationResult by viewModel.investigationResult.collectAsStateWithLifecycle()
+    val appliedBadgeStatus = badgeUsbState.controlStatus
+    var badgeDraftPolicy by remember {
+        mutableStateOf(appliedBadgeStatus?.displayPolicy ?: defaultBadgeDisplayPolicy())
+    }
+    var badgeDraftTheme by remember {
+        mutableStateOf(appliedBadgeStatus?.theme ?: defaultBadgeTheme())
+    }
+
+    LaunchedEffect(appliedBadgeStatus?.displayPolicyHash) {
+        appliedBadgeStatus?.displayPolicy?.let { badgeDraftPolicy = it }
+    }
+    LaunchedEffect(appliedBadgeStatus?.themeHash) {
+        appliedBadgeStatus?.theme?.let { badgeDraftTheme = it }
+    }
+    fun applyBadgeDraftReset(reset: BadgeControlDraftReset) {
+        reset.theme?.let { badgeDraftTheme = it }
+        reset.displayPolicy?.let { badgeDraftPolicy = it }
+    }
+    fun refreshBadgeThemeEditor() {
+        appliedBadgeStatus?.let {
+            applyBadgeDraftReset(badgeThemeEditorRefreshReset(it.theme))
+        }
+        viewModel.refreshBadgeStatus()
+    }
+    fun refreshBadgeFilterEditor() {
+        appliedBadgeStatus?.let {
+            applyBadgeDraftReset(badgeFilterEditorRefreshReset(it.displayPolicy))
+        }
+        viewModel.refreshBadgeStatus()
+    }
+    fun refreshAllBadgeDraftsAndStatus() {
+        appliedBadgeStatus?.let {
+            applyBadgeDraftReset(badgeStatusRefreshReset(it.theme, it.displayPolicy))
+        }
+        viewModel.refreshBadgeStatus()
+    }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -213,11 +252,8 @@ fun PrivacyScreen(
         BadgeUsbStatusRow(
             state = badgeUsbState,
             onAction = {
-                if (badgeUsbState.status == BadgeUsbStatus.CONNECTED ||
-                    badgeUsbState.status == BadgeUsbStatus.AP_CONNECTED ||
-                    badgeUsbState.status == BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED ||
-                    badgeUsbState.status == BadgeUsbStatus.BLE_CONNECTED) {
-                    viewModel.refreshBadgeStatus()
+                if (BadgeControlTransportPolicy.allowsStatusRefresh(badgeUsbState.status)) {
+                    refreshAllBadgeDraftsAndStatus()
                 } else {
                     viewModel.connectBadgeUsb()
                 }
@@ -226,15 +262,20 @@ fun PrivacyScreen(
 
         BadgeDetailPanel(
             state = badgeUsbState,
+            draftPolicy = badgeDraftPolicy,
+            onDraftPolicyChange = { badgeDraftPolicy = it },
+            draftTheme = badgeDraftTheme,
+            onDraftThemeChange = { badgeDraftTheme = it },
             onNext = viewModel::badgeNextFocus,
             onDetail = viewModel::badgeToggleDetail,
             onBack = viewModel::badgeBackFromDetail,
-            onRefresh = viewModel::refreshBadgeStatus,
+            onRefreshStatus = ::refreshAllBadgeDraftsAndStatus,
+            onRefreshTheme = ::refreshBadgeThemeEditor,
+            onRefreshDisplayPolicy = ::refreshBadgeFilterEditor,
             onSetMode = viewModel::setBadgeMode,
             onReboot = viewModel::rebootBadge,
             onBootloader = viewModel::badgeBootloader,
             onRelayScannerFirmware = viewModel::relayBadgeScannerFirmware,
-            onFlashScannerFirmware = viewModel::flashBadgeScannerFirmware,
             onApplyDisplayPolicy = viewModel::applyBadgeDisplayPolicy,
             onResetDisplayPolicy = viewModel::resetBadgeDisplayPolicy,
             badgeThemeProfiles = badgeThemeProfiles,
@@ -516,10 +557,7 @@ private fun BadgeUsbStatusRow(
     state: BadgeUsbState,
     onAction: () -> Unit
 ) {
-    val connected = state.status == BadgeUsbStatus.CONNECTED ||
-        state.status == BadgeUsbStatus.AP_CONNECTED ||
-        state.status == BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED ||
-        state.status == BadgeUsbStatus.BLE_CONNECTED
+    val statusReadable = BadgeControlTransportPolicy.allowsStatusRefresh(state.status)
     val counts = state.controlStatus?.counts
     val summary = if (counts != null) {
         "DRN ${counts.drone}  META ${counts.meta}  TAG ${counts.tracker}  WIFI ${counts.wifiAnomaly}"
@@ -563,7 +601,7 @@ private fun BadgeUsbStatusRow(
         title = headline,
         detail = if (scannerSummary.isNotBlank()) "$summary  |  $scannerSummary" else summary,
         tone = tone,
-        actionLabel = if (connected) "Refresh" else "Connect",
+        actionLabel = if (statusReadable) "Refresh" else "Connect",
         onAction = onAction
     )
 }
@@ -571,15 +609,20 @@ private fun BadgeUsbStatusRow(
 @Composable
 private fun BadgeDetailPanel(
     state: BadgeUsbState,
+    draftPolicy: BadgeDisplayPolicy,
+    onDraftPolicyChange: (BadgeDisplayPolicy) -> Unit,
+    draftTheme: BadgeTheme,
+    onDraftThemeChange: (BadgeTheme) -> Unit,
     onNext: () -> Unit,
     onDetail: () -> Unit,
     onBack: () -> Unit,
-    onRefresh: () -> Unit,
+    onRefreshStatus: () -> Unit,
+    onRefreshTheme: () -> Unit,
+    onRefreshDisplayPolicy: () -> Unit,
     onSetMode: (String) -> Unit,
     onReboot: () -> Unit,
     onBootloader: () -> Unit,
     onRelayScannerFirmware: (String) -> Unit,
-    onFlashScannerFirmware: (String, String, ByteArray) -> Unit,
     onApplyDisplayPolicy: (BadgeDisplayPolicy) -> Unit,
     onResetDisplayPolicy: () -> Unit,
     badgeThemeProfiles: List<BadgeThemeProfile>,
@@ -591,23 +634,13 @@ private fun BadgeDetailPanel(
     onEntityDetails: (BadgeThreatEntity) -> Unit
 ) {
     val status = state.controlStatus ?: return
-    val connected = state.status == BadgeUsbStatus.CONNECTED ||
-        state.status == BadgeUsbStatus.AP_CONNECTED ||
-        state.status == BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED ||
-        state.status == BadgeUsbStatus.BLE_CONNECTED
+    val statusReadable = BadgeControlTransportPolicy.allowsStatusRefresh(state.status)
+    val commandsAvailable = BadgeControlTransportPolicy.allowsCommandSurface(state.status)
     val display = status.displayState
     val accent = badgeHealthColor(status)
     var filtersExpanded by remember { mutableStateOf(false) }
     var appearanceExpanded by remember { mutableStateOf(false) }
     var operationsExpanded by remember { mutableStateOf(false) }
-    var draftPolicy by remember { mutableStateOf(status.displayPolicy) }
-    var draftTheme by remember { mutableStateOf(status.theme) }
-    LaunchedEffect(status.displayPolicyHash) {
-        draftPolicy = status.displayPolicy
-    }
-    LaunchedEffect(status.themeHash) {
-        draftTheme = status.theme
-    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -624,7 +657,7 @@ private fun BadgeDetailPanel(
                 )
                 Text(
                     text = buildString {
-                        append(if (connected) "live " else "cached ")
+                        append(if (statusReadable) "live " else "cached ")
                         append(status.modeLabel.ifBlank { status.mode })
                         append("  |  DRN ${status.counts.drone}")
                         append(" META ${status.counts.meta}")
@@ -637,21 +670,25 @@ private fun BadgeDetailPanel(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            TextButton(onClick = onRefresh) { Text("Refresh") }
+            if (statusReadable) {
+                TextButton(onClick = onRefreshStatus) { Text("Refresh") }
+            }
         }
 
         BadgeFocusedDisplayRow(display = display)
 
-        Row(
-            modifier = Modifier.padding(top = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TextButton(onClick = onNext) { Text("Next") }
-            TextButton(onClick = onDetail) {
-                Text(if (display?.detailMode == true) "Page" else "Detail")
+        if (commandsAvailable) {
+            Row(
+                modifier = Modifier.padding(top = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onNext) { Text("Next") }
+                TextButton(onClick = onDetail) {
+                    Text(if (display?.detailMode == true) "Page" else "Detail")
+                }
+                TextButton(onClick = onBack) { Text("Back") }
             }
-            TextButton(onClick = onBack) { Text("Back") }
         }
 
         val warning = status.badgeWarningText()
@@ -728,7 +765,7 @@ private fun BadgeDetailPanel(
             )
         }
 
-        if (connected) {
+        if (commandsAvailable) {
             Spacer(modifier = Modifier.height(8.dp))
             BadgeOperationsSection(
                 expanded = operationsExpanded,
@@ -737,23 +774,23 @@ private fun BadgeDetailPanel(
                 onSetMode = onSetMode,
                 onReboot = onReboot,
                 onBootloader = onBootloader,
-                onRelayScannerFirmware = onRelayScannerFirmware,
-                onFlashScannerFirmware = onFlashScannerFirmware
+                onRelayScannerFirmware = onRelayScannerFirmware
             )
             Spacer(modifier = Modifier.height(8.dp))
             BadgeAppearanceSection(
                 expanded = appearanceExpanded,
                 onExpandedChange = { appearanceExpanded = it },
                 theme = draftTheme,
+                appliedTheme = status.theme,
                 themeHash = status.themeHash,
                 profiles = badgeThemeProfiles,
-                onThemeChange = { draftTheme = it },
+                onThemeChange = onDraftThemeChange,
                 onCreateProfile = onCreateThemeProfile,
                 onRenameProfile = onRenameThemeProfile,
                 onReplaceProfile = onReplaceThemeProfile,
                 onDeleteProfile = onDeleteThemeProfile,
                 onApply = onApplyTheme,
-                onRefresh = onRefresh
+                onRefresh = onRefreshTheme
             )
             Spacer(modifier = Modifier.height(8.dp))
             BadgeDisplayFiltersSection(
@@ -762,13 +799,13 @@ private fun BadgeDetailPanel(
                 policy = draftPolicy,
                 displayPolicyHash = status.displayPolicyHash,
                 filteredCounts = status.filteredCounts,
-                onPolicyChange = { draftPolicy = it },
+                onPolicyChange = onDraftPolicyChange,
                 onApply = { onApplyDisplayPolicy(draftPolicy) },
                 onReset = {
-                    draftPolicy = defaultBadgeDisplayPolicy()
+                    onDraftPolicyChange(defaultBadgeDisplayPolicy())
                     onResetDisplayPolicy()
                 },
-                onRefresh = onRefresh
+                onRefresh = onRefreshDisplayPolicy
             )
         }
 
@@ -786,29 +823,8 @@ private fun BadgeOperationsSection(
     onSetMode: (String) -> Unit,
     onReboot: () -> Unit,
     onBootloader: () -> Unit,
-    onRelayScannerFirmware: (String) -> Unit,
-    onFlashScannerFirmware: (String, String, ByteArray) -> Unit
+    onRelayScannerFirmware: (String) -> Unit
 ) {
-    val context = LocalContext.current
-    var pendingFirmwareUart by remember { mutableStateOf("ble") }
-    val firmwarePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            val bytes = runCatching {
-                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            }.getOrNull()
-            if (bytes != null && bytes.isNotEmpty()) {
-                val name = uri.lastPathSegment
-                    ?.substringAfterLast('/')
-                    ?.substringAfterLast(':')
-                    ?.ifBlank { null }
-                    ?: "scanner-s3-combo-fof_badge.bin"
-                onFlashScannerFirmware(pendingFirmwareUart, name, bytes)
-            }
-        }
-    }
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -870,29 +886,15 @@ private fun BadgeOperationsSection(
 
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "Scanner Firmware",
+            text = BadgeControlTransportPolicy.scannerFirmwareRecoveryHeading(),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Button(
-                onClick = {
-                    pendingFirmwareUart = "ble"
-                    firmwarePicker.launch(arrayOf("application/octet-stream", "*/*"))
-                },
-                modifier = Modifier.weight(1f)
-            ) { Text("BLE Slot", maxLines = 1) }
-            Button(
-                onClick = {
-                    pendingFirmwareUart = "wifi"
-                    firmwarePicker.launch(arrayOf("application/octet-stream", "*/*"))
-                },
-                modifier = Modifier.weight(1f)
-            ) { Text("WiFi Slot", maxLines = 1) }
-        }
+        Text(
+            text = BadgeControlTransportPolicy.scannerFirmwareStagingGuidance(),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Row(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier
@@ -902,11 +904,21 @@ private fun BadgeOperationsSection(
             OutlinedButton(
                 onClick = { onRelayScannerFirmware("ble") },
                 modifier = Modifier.weight(1f)
-            ) { Text("Relay BLE", maxLines = 1) }
+            ) {
+                Text(
+                    BadgeControlTransportPolicy.scannerFirmwareRecoveryActionLabel("ble"),
+                    maxLines = 1,
+                )
+            }
             OutlinedButton(
                 onClick = { onRelayScannerFirmware("wifi") },
                 modifier = Modifier.weight(1f)
-            ) { Text("Relay WiFi", maxLines = 1) }
+            ) {
+                Text(
+                    BadgeControlTransportPolicy.scannerFirmwareRecoveryActionLabel("wifi"),
+                    maxLines = 1,
+                )
+            }
         }
 
         state.firmwareProgress?.let { progress ->

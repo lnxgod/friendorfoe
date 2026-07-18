@@ -154,15 +154,6 @@ class ListViewModel @Inject constructor(
         badgeUsbRepository.relayScannerFirmware(uart)
     }
 
-    fun flashBadgeScannerFirmware(uart: String, name: String, firmware: ByteArray) {
-        badgeUsbRepository.flashScannerFirmware(
-            uart = uart,
-            name = name,
-            version = "android-upload",
-            firmware = firmware
-        )
-    }
-
     fun applyBadgeDisplayPolicy(policy: BadgeDisplayPolicy) {
         badgeUsbRepository.applyDisplayPolicy(policy)
     }

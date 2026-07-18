@@ -90,21 +90,74 @@ internal val BadgeThemePreviewLanes = listOf(
     ),
 )
 
+internal data class BadgeThemePreviewColorSet(
+    val background: Int,
+    val panel: Int,
+    val chrome: Int,
+    val primaryText: Int,
+    val secondaryText: Int,
+    val accents: Map<String, Int>,
+)
+
+private data class BadgeThemePreviewChromeBase(
+    val panel: Int,
+    val primaryText: Int,
+    val secondaryText: Int,
+    val selection: Int,
+)
+
+internal fun scaleBadgeThemeRgb565(rgb565: Int, brightness: Int): Int {
+    val packed = rgb565.coerceIn(0, 0xFFFF)
+    if (brightness >= 100) return packed
+    val scale = brightness.coerceAtLeast(25)
+    val red = (((packed shr 11) and 0x1F) * scale) / 100
+    val green = (((packed shr 5) and 0x3F) * scale) / 100
+    val blue = ((packed and 0x1F) * scale) / 100
+    return (red shl 11) or (green shl 5) or blue
+}
+
+internal fun badgeThemePreviewColorSet(theme: BadgeTheme): BadgeThemePreviewColorSet {
+    val normalized = theme.normalizedV1()
+    val base = previewChromeBase(normalized.palette)
+    fun scale(rgb565: Int): Int = scaleBadgeThemeRgb565(rgb565, normalized.brightness)
+
+    return BadgeThemePreviewColorSet(
+        // Mirrors badge_theme_background_color() in esp32/shared/badge_theme.c.
+        background = scale(
+            when (normalized.background) {
+                "dim" -> 0x1082
+                "scanline" -> 0x0108
+                else -> 0x0000
+            },
+        ),
+        panel = scale(base.panel),
+        chrome = scale(base.selection),
+        primaryText = scale(base.primaryText),
+        secondaryText = scale(base.secondaryText),
+        accents = BadgeThemeAccentClasses.associate { accent ->
+            accent.key to scale(normalized.accents[accent.key] ?: accent.defaultRgb565)
+        },
+    )
+}
+
 @Composable
 fun BadgeThemePreview(
     theme: BadgeTheme,
     modifier: Modifier = Modifier,
 ) {
     val normalized = theme.normalizedV1()
-    val chrome = previewChrome(normalized.palette)
-    val background = previewBackground(normalized.palette, normalized.background)
-    val panel = previewPanel(normalized.palette)
+    val previewColors = badgeThemePreviewColorSet(normalized)
+    val chrome = rgb565Color(previewColors.chrome)
+    val background = rgb565Color(previewColors.background)
+    val panel = rgb565Color(previewColors.panel)
+    val primaryText = rgb565Color(previewColors.primaryText)
+    val secondaryText = rgb565Color(previewColors.secondaryText)
     val scanlineModifier = if (normalized.background == "scanline") {
         Modifier.drawBehind {
             var y = 0f
             while (y < size.height) {
                 drawLine(
-                    color = Color.White.copy(alpha = 0.035f),
+                    color = primaryText.copy(alpha = 0.035f),
                     start = androidx.compose.ui.geometry.Offset(0f, y),
                     end = androidx.compose.ui.geometry.Offset(size.width, y),
                     strokeWidth = 1f,
@@ -164,23 +217,18 @@ fun BadgeThemePreview(
                 }
 
                 BadgeThemePreviewLanes.forEach { lane ->
-                    val fallback = BadgeThemeAccentClasses
-                        .first { it.key == lane.accentKey }
-                        .defaultRgb565
                     BadgeThemePreviewLaneRow(
                         lane = lane,
-                        accent = rgb565Color(normalized.accents[lane.accentKey] ?: fallback),
+                        accent = rgb565Color(previewColors.accents.getValue(lane.accentKey)),
                         panel = panel,
-                        chrome = chrome,
+                        primaryText = primaryText,
+                        secondaryText = secondaryText,
                         modifier = Modifier.weight(1f),
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
-                val healthFallback = BadgeThemeAccentClasses
-                    .first { it.key == "clear" }
-                    .defaultRgb565
-                val health = rgb565Color(normalized.accents["clear"] ?: healthFallback)
+                val health = rgb565Color(previewColors.accents.getValue("clear"))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -224,7 +272,8 @@ private fun BadgeThemePreviewLaneRow(
     lane: BadgeThemePreviewLane,
     accent: Color,
     panel: Color,
-    chrome: Color,
+    primaryText: Color,
+    secondaryText: Color,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -258,7 +307,7 @@ private fun BadgeThemePreviewLaneRow(
             )
             Text(
                 text = lane.title,
-                color = Color.White.copy(alpha = 0.94f),
+                color = primaryText.copy(alpha = 0.94f),
                 fontSize = 9.sp,
                 fontWeight = FontWeight.Black,
                 maxLines = 1,
@@ -266,7 +315,7 @@ private fun BadgeThemePreviewLaneRow(
             )
             Text(
                 text = lane.detail,
-                color = chrome.copy(alpha = 0.72f),
+                color = secondaryText.copy(alpha = 0.72f),
                 fontSize = 6.sp,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
@@ -295,26 +344,30 @@ internal fun rgb565Color(rgb565: Int): Color {
     return Color(rgb.red, rgb.green, rgb.blue)
 }
 
-private fun previewChrome(palette: String): Color = when (palette) {
-    "night" -> Color(0xFF9CAAC1)
-    "neon" -> Color(0xFFC681FF)
-    "mono" -> Color(0xFFD8F6F7)
-    else -> Color(0xFF6DFF9A)
-}
-
-private fun previewBackground(palette: String, background: String): Color {
-    val base = when (palette) {
-        "night" -> Color(0xFF070A10)
-        "neon" -> Color(0xFF100518)
-        "mono" -> Color(0xFF060B0C)
-        else -> Color(0xFF04110B)
-    }
-    return if (background == "dim") base.copy(alpha = 0.86f) else base
-}
-
-private fun previewPanel(palette: String): Color = when (palette) {
-    "night" -> Color(0xFF121722)
-    "neon" -> Color(0xFF1C0B29)
-    "mono" -> Color(0xFF101819)
-    else -> Color(0xFF0A1C14)
+// Mirrors the firmware CHROME_PALETTES roles used by this preview.
+private fun previewChromeBase(palette: String): BadgeThemePreviewChromeBase = when (palette) {
+    "night" -> BadgeThemePreviewChromeBase(
+        panel = 0x1800,
+        primaryText = 0xFFE7,
+        secondaryText = 0xAC4D,
+        selection = 0xFD20,
+    )
+    "neon" -> BadgeThemePreviewChromeBase(
+        panel = 0x2015,
+        primaryText = 0xF7FF,
+        secondaryText = 0x87FF,
+        selection = 0xF81F,
+    )
+    "mono" -> BadgeThemePreviewChromeBase(
+        panel = 0x0821,
+        primaryText = 0xEFFF,
+        secondaryText = 0x7BEF,
+        selection = 0x07FF,
+    )
+    else -> BadgeThemePreviewChromeBase(
+        panel = 0x1082,
+        primaryText = 0xFFFF,
+        secondaryText = 0x8410,
+        selection = 0x57EA,
+    )
 }

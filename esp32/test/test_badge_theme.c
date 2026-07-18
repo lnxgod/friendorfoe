@@ -5,6 +5,24 @@
 #include <stdio.h>
 #include <string.h>
 
+static const char VALID_CUSTOM_THEME_JSON[] =
+    "{\"version\":1,\"palette\":\"night\",\"background\":\"scanline\","
+    "\"brightness\":75,\"accents\":{\"drone\":65184,\"meta\":63488,"
+    "\"tracker\":63519,\"flock\":2016,\"wifi_attack\":2047,\"clear\":12133}}";
+
+static void assert_theme_rejected_atomically(const char *json)
+{
+    badge_theme_t before;
+    badge_theme_t after;
+    char err[64] = {0};
+
+    memset(&before, 0xa5, sizeof(before));
+    after = before;
+    TEST_ASSERT_FALSE(badge_theme_parse_json(json, &after, err, sizeof(err)));
+    TEST_ASSERT_EQUAL_MEMORY(&before, &after, sizeof(before));
+    TEST_ASSERT_NOT_EQUAL('\0', err[0]);
+}
+
 void test_badge_theme_json_round_trips_defaults(void)
 {
     badge_theme_t theme;
@@ -26,16 +44,128 @@ void test_badge_theme_parses_safe_custom_accents(void)
 {
     badge_theme_t theme;
     char err[64];
-    const char *json =
-        "{\"version\":1,\"palette\":\"night\",\"background\":\"scanline\","
-        "\"brightness\":75,\"accents\":{\"meta\":63488,\"flock\":2016}}";
 
-    TEST_ASSERT_TRUE(badge_theme_parse_json(json, &theme, err, sizeof(err)));
+    TEST_ASSERT_TRUE(badge_theme_parse_json(VALID_CUSTOM_THEME_JSON, &theme,
+                                            err, sizeof(err)));
     TEST_ASSERT_EQUAL_STRING("night", theme.palette);
     TEST_ASSERT_EQUAL_STRING("scanline", theme.background);
     TEST_ASSERT_EQUAL_UINT8(75, theme.brightness);
+    TEST_ASSERT_EQUAL_UINT16(65184, theme.accents[BADGE_THEME_ACCENT_DRONE]);
     TEST_ASSERT_EQUAL_UINT16(63488, theme.accents[BADGE_THEME_ACCENT_META]);
+    TEST_ASSERT_EQUAL_UINT16(63519, theme.accents[BADGE_THEME_ACCENT_TRACKER]);
     TEST_ASSERT_EQUAL_UINT16(2016, theme.accents[BADGE_THEME_ACCENT_FLOCK]);
+    TEST_ASSERT_EQUAL_UINT16(2047, theme.accents[BADGE_THEME_ACCENT_WIFI_ATTACK]);
+    TEST_ASSERT_EQUAL_UINT16(12133, theme.accents[BADGE_THEME_ACCENT_CLEAR]);
+}
+
+void test_badge_theme_requires_complete_schema_without_mutating_output(void)
+{
+    assert_theme_rejected_atomically(
+        "{\"palette\":\"field\",\"background\":\"dark\",\"brightness\":100,"
+        "\"accents\":{\"drone\":65184,\"meta\":63539,\"tracker\":63519,"
+        "\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"background\":\"dark\",\"brightness\":100,"
+        "\"accents\":{\"drone\":65184,\"meta\":63539,\"tracker\":63519,"
+        "\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"brightness\":100,"
+        "\"accents\":{\"drone\":65184,\"meta\":63539,\"tracker\":63519,"
+        "\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"accents\":{\"drone\":65184,\"meta\":63539,\"tracker\":63519,"
+        "\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":100}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":100,\"accents\":{\"drone\":65184,\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047}}");
+}
+
+void test_badge_theme_rejects_wrong_types_and_nonobjects_atomically(void)
+{
+    assert_theme_rejected_atomically("[]");
+    assert_theme_rejected_atomically("null");
+    assert_theme_rejected_atomically(
+        "{\"version\":\"1\",\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":100,\"accents\":{\"drone\":65184,\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":7,\"background\":\"dark\","
+        "\"brightness\":100,\"accents\":{\"drone\":65184,\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":false,"
+        "\"brightness\":100,\"accents\":{\"drone\":65184,\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":\"100\",\"accents\":{\"drone\":65184,\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":100,\"accents\":[]}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":100,\"accents\":{\"drone\":\"65184\",\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
+}
+
+void test_badge_theme_rejects_duplicates_unknowns_and_trailing_data_atomically(void)
+{
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"version\":1,\"palette\":\"field\","
+        "\"background\":\"dark\",\"brightness\":100,\"accents\":{"
+        "\"drone\":65184,\"meta\":63539,\"tracker\":63519,\"flock\":43039,"
+        "\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":100,\"accents\":{\"drone\":65184,\"drone\":65184,"
+        "\"meta\":63539,\"tracker\":63519,\"flock\":43039,"
+        "\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":100,\"unknown\":0,\"accents\":{\"drone\":65184,"
+        "\"meta\":63539,\"tracker\":63519,\"flock\":43039,"
+        "\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":100,\"accents\":{\"drone\":65184,\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047,"
+        "\"clear\":12133,\"unknown\":0}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":100,\"accents\":{\"drone\":65184,\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047,"
+        "\"clear\":12133}}{}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":100,\"accents\":{\"drone\":65184,\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047,"
+        "\"clear\":12133}} true");
+}
+
+void test_badge_theme_rejects_noninteger_or_malformed_numbers_atomically(void)
+{
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":100.0,\"accents\":{\"drone\":65184,\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":1e2,\"accents\":{\"drone\":65184,\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":0100,\"accents\":{\"drone\":65184,\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
+    assert_theme_rejected_atomically(
+        "{\"version\":1,\"palette\":\"field\",\"background\":\"dark\","
+        "\"brightness\":100,\"accents\":{\"drone\":42949672960,\"meta\":63539,"
+        "\"tracker\":63519,\"flock\":43039,\"wifi_attack\":2047,\"clear\":12133}}");
 }
 
 void test_badge_theme_rejects_unsafe_values(void)

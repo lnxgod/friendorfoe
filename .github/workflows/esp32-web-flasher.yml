@@ -163,7 +163,7 @@ jobs:
     # Deploy Pages for branch/workflow runs, but not release events or tag
     # pushes. Release tags only need firmware assets attached to the GitHub
     # release, and the github-pages environment blocks them.
-    if: ${{ always() && github.event_name != 'release' && !startsWith(github.ref, 'refs/tags/') }}
+    if: ${{ needs.build.result == 'success' && github.event_name != 'release' && !startsWith(github.ref, 'refs/tags/') }}
     permissions:
       pages: write
       id-token: write
@@ -192,42 +192,12 @@ jobs:
         with:
           name: esp32-firmware
           path: _site/firmware/
-        continue-on-error: true
 
       - name: Verify site contents
         run: |
           echo "=== Pages site ==="
           find _site -type f -exec ls -lh {} \;
-
-          if [ -f _site/firmware/scanner/firmware.bin ]; then
-            echo "Scanner S3 firmware: OK"
-          else
-            echo "Scanner S3 firmware: MISSING (build may have failed)"
-          fi
-
-          if [ -f _site/firmware/scanner-seed/firmware.bin ]; then
-            echo "Scanner S3 seed firmware: OK"
-          else
-            echo "Scanner S3 seed firmware: MISSING (build may have failed)"
-          fi
-
-          if [ -f _site/firmware/uplink-s3/firmware.bin ]; then
-            echo "Uplink S3 firmware: OK"
-          else
-            echo "Uplink S3 firmware: MISSING (build may have failed)"
-          fi
-
-          if [ -f _site/firmware/badge-scanner/firmware.bin ]; then
-            echo "Badge scanner firmware: OK"
-          else
-            echo "Badge scanner firmware: MISSING (build may have failed)"
-          fi
-
-          if [ -f _site/firmware/badge-uplink/firmware.bin ]; then
-            echo "Badge uplink firmware: OK"
-          else
-            echo "Badge uplink firmware: MISSING (build may have failed)"
-          fi
+          python esp32/scripts/verify_firmware_versions.py --repo-root . --site-root _site
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

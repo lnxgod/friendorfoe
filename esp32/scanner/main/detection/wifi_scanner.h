@@ -113,6 +113,15 @@ void wifi_scanner_resume(void);
 /** True when WiFi promiscuous scanning is intentionally paused. */
 bool wifi_scanner_is_paused(void);
 
+/**
+ * True only after a pause request has physically converged: no blocking
+ * active-scan work remains and promiscuous receive is confirmed disabled.
+ */
+bool wifi_scanner_is_quiesced(void);
+
+/** True when the initialized WiFi radio is resumed with promiscuous RX on. */
+bool wifi_scanner_is_active(void);
+
 typedef struct {
     uint32_t total_frames;
     uint32_t beacon_frames;

@@ -60,7 +60,7 @@ internal data class BadgeInvestigationAvailability(
     val httpAvailable: Boolean,
 ) {
     val badgeAvailable: Boolean
-        get() = scannerSlotZeroConnected && (usbAvailable || bleAvailable || httpAvailable)
+        get() = scannerSlotZeroConnected && usbAvailable
 }
 
 internal data class BleInvestigationRouteDecision(
@@ -74,16 +74,11 @@ internal fun deriveBadgeInvestigationAvailability(
     val scannerSlotZeroConnected = badgeState.controlStatus?.scanners
         ?.any { it.slot == 0 && it.connected }
         ?: false
-    val ble = badgeState.controlStatus?.bleControl
     return BadgeInvestigationAvailability(
         scannerSlotZeroConnected = scannerSlotZeroConnected,
         usbAvailable = badgeState.status == com.friendorfoe.data.badge.BadgeUsbStatus.CONNECTED,
-        bleAvailable = badgeState.status == com.friendorfoe.data.badge.BadgeUsbStatus.BLE_CONNECTED &&
-            ble?.connected == true && ble.bonded && ble.encrypted,
-        httpAvailable = badgeState.status in setOf(
-            com.friendorfoe.data.badge.BadgeUsbStatus.AP_CONNECTED,
-            com.friendorfoe.data.badge.BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
-        ),
+        bleAvailable = false,
+        httpAvailable = false,
     )
 }
 
@@ -599,15 +594,6 @@ class PrivacyViewModel @Inject constructor(
 
     fun relayBadgeScannerFirmware(uart: String) {
         badgeUsbRepository.relayScannerFirmware(uart)
-    }
-
-    fun flashBadgeScannerFirmware(uart: String, name: String, firmware: ByteArray) {
-        badgeUsbRepository.flashScannerFirmware(
-            uart = uart,
-            name = name,
-            version = "android-upload",
-            firmware = firmware
-        )
     }
 
     fun enablePhonePrivacyScanning() {

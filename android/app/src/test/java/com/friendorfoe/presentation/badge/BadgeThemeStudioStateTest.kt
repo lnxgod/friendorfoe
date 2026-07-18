@@ -7,6 +7,7 @@ import com.friendorfoe.data.badge.badgeThemePresetById
 import com.friendorfoe.data.badge.defaultBadgeTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class BadgeThemeStudioStateTest {
@@ -92,6 +93,36 @@ class BadgeThemeStudioStateTest {
     }
 
     @Test
+    fun `preview brightness matches firmware RGB565 channel scaling for every color role`() {
+        val full = badgeThemePreviewColorSet(
+            defaultBadgeTheme().copy(background = "dim", brightness = 100),
+        )
+        val quarter = badgeThemePreviewColorSet(
+            defaultBadgeTheme().copy(background = "dim", brightness = 25),
+        )
+
+        assertEquals(0xFFFF, full.primaryText)
+        assertEquals(0x39E7, quarter.primaryText)
+        assertEquals(0xFEA0, full.accents.getValue("drone"))
+        assertEquals(0x39A0, quarter.accents.getValue("drone"))
+        listOf(
+            full.background to quarter.background,
+            full.panel to quarter.panel,
+            full.chrome to quarter.chrome,
+            full.primaryText to quarter.primaryText,
+            full.secondaryText to quarter.secondaryText,
+        ).forEach { (at100, at25) ->
+            assertEquals(scaleBadgeThemeRgb565(at100, 25), at25)
+            assertNotEquals(at100, at25)
+        }
+        full.accents.forEach { (key, at100) ->
+            assertEquals(scaleBadgeThemeRgb565(at100, 25), quarter.accents.getValue(key))
+        }
+        assertEquals(0x39E7, scaleBadgeThemeRgb565(0xFFFF, 0))
+        assertEquals(0xFFFF, scaleBadgeThemeRgb565(0xFFFF, 101))
+    }
+
+    @Test
     fun `preset selection replaces the complete local draft without a command`() {
         val selected = badgeThemePresetById("blacklight")!!.theme
 
@@ -134,6 +165,20 @@ class BadgeThemeStudioStateTest {
     }
 
     @Test
+    fun `refresh discards an unsaved draft from cached badge status even when hash is unchanged`() {
+        val cachedBadgeTheme = defaultBadgeTheme()
+        val unsavedDraft = badgeThemePresetById("blacklight")!!.theme.copy(brightness = 25)
+
+        val transition = reduceBadgeThemeStudio(
+            draft = unsavedDraft,
+            action = BadgeThemeStudioAction.Refresh(cachedBadgeTheme),
+        )
+
+        assertEquals(cachedBadgeTheme, transition.draft)
+        assertEquals(BadgeThemeStudioCommand.Refresh, transition.command)
+    }
+
+    @Test
     fun `only apply transition requests badge transport`() {
         val draft = badgeThemePresetById("obsidian_gold")!!.theme
         val localActions = listOf(
@@ -150,7 +195,10 @@ class BadgeThemeStudioStateTest {
         }
         assertEquals(
             BadgeThemeStudioCommand.Refresh,
-            reduceBadgeThemeStudio(draft, BadgeThemeStudioAction.Refresh).command,
+            reduceBadgeThemeStudio(
+                draft,
+                BadgeThemeStudioAction.Refresh(defaultBadgeTheme()),
+            ).command,
         )
         assertEquals(
             BadgeThemeStudioCommand.Apply,

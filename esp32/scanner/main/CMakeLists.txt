@@ -26,13 +26,15 @@ set(SRCS
     "../../shared/ble_investigation_protocol.c"
     "../../shared/time_sync_policy.c"
     "../../shared/psram_alloc.c"
+    "../../shared/firmware_version_order.c"
+    "../../shared/firmware_image_contract.c"
 )
 
 if("$ENV{PIOENV}" MATCHES "fof_badge")
     list(APPEND SRCS "../../shared/badge_easter_egg.c")
 endif()
 
-set(REQUIRES esp_wifi driver nvs_flash esp_timer cjson esp_event esp_netif app_update esp_partition esp_psram bt)
+set(REQUIRES esp_wifi driver nvs_flash esp_timer cjson esp_event esp_netif app_update esp_partition esp_psram bt mbedtls)
 
 idf_component_register(
     SRCS ${SRCS}
