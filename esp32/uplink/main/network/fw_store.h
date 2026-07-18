@@ -142,8 +142,9 @@ bool fw_store_restore_auto_update_coordinator(void);
 /** Handle scanner-originated firmware negotiation messages. */
 void fw_store_handle_scanner_check(int scanner_id,
                                    const char *scanner_board,
-                                   const char *scanner_version);
-void fw_store_handle_scanner_ready(int scanner_id,
+                                   const char *scanner_version,
+                                   const char *check_reason);
+bool fw_store_handle_scanner_ready(int scanner_id,
                                    const char *scanner_board,
                                    const char *scanner_version,
                                    const char *target_version,
@@ -154,6 +155,12 @@ void fw_store_handle_scanner_ready(int scanner_id,
                                    uint32_t target_generation,
                                    uint32_t target_size,
                                    uint32_t target_crc32);
+bool fw_store_handle_legacy_scanner_ready(int scanner_id,
+                                          const char *scanner_board,
+                                          const char *scanner_version,
+                                          const char *target_version,
+                                          uint32_t target_size,
+                                          uint32_t target_crc32);
 
 #ifdef __cplusplus
 }

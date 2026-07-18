@@ -776,6 +776,56 @@ static const char *json_get_string(const cJSON *obj, const char *key,
     return def;
 }
 
+static bool json_get_nonempty_string_exact(const cJSON *obj, const char *key,
+                                           const char **out)
+{
+    const cJSON *item = obj && key
+        ? cJSON_GetObjectItemCaseSensitive(obj, key)
+        : NULL;
+    if (!out || !cJSON_IsString(item) || !item->valuestring ||
+        !item->valuestring[0]) {
+        return false;
+    }
+    *out = item->valuestring;
+    return true;
+}
+
+static bool strict_receipt_fields_absent(const cJSON *root)
+{
+    static const char *const strict_keys[] = {
+        JSON_KEY_FW_NAME,
+        "app_project",
+        "hardware_type",
+        "sha256",
+        "generation",
+        "allow_same_version",
+    };
+    if (!root) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(strict_keys) / sizeof(strict_keys[0]); ++i) {
+        if (cJSON_GetObjectItemCaseSensitive(root, strict_keys[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool fw_ready_common_fields_valid(const cJSON *root,
+                                         const char **board,
+                                         const char **current_version,
+                                         const char **target_version,
+                                         uint32_t *target_size,
+                                         uint32_t *target_crc32)
+{
+    return json_get_nonempty_string_exact(root, "board", board) &&
+        json_get_nonempty_string_exact(root, "ver", current_version) &&
+        json_get_nonempty_string_exact(root, JSON_KEY_FW_TARGET_VERSION,
+                                       target_version) &&
+        json_get_uint32_exact(root, JSON_KEY_FW_SIZE, target_size) &&
+        json_get_uint32_exact(root, JSON_KEY_FW_CRC32, target_crc32);
+}
+
 static void json_copy_string(const cJSON *obj, const char *key,
                              char *out, size_t out_len)
 {
@@ -1939,6 +1989,7 @@ static void process_line(const char *line, size_t len, int scanner_id)
     } else if (strcmp(msg_type, MSG_TYPE_FW_CHECK) == 0) {
         const char *board = json_get_string(root, "board", "");
         const char *ver = json_get_string(root, "ver", "");
+        const char *reason = json_get_string(root, "reason", "");
         scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
         info->fw_check_count = (uint32_t)json_get_double(root, "fw_check_count", (double)info->fw_check_count);
         const char *fw_state = json_get_string(root, JSON_KEY_FW_STATE, info->fw_update_state);
@@ -1960,39 +2011,68 @@ static void process_line(const char *line, size_t len, int scanner_id)
                  scanner_id,
                  board[0] ? board : "?",
                  ver[0] ? ver : "?");
-        fw_store_handle_scanner_check(scanner_id, board, ver);
+        fw_store_handle_scanner_check(scanner_id, board, ver, reason);
     } else if (strcmp(msg_type, MSG_TYPE_FW_READY) == 0) {
-        const char *board = json_get_string(root, "board", "");
-        const char *ver = json_get_string(root, "ver", "");
-        const char *target = json_get_string(root, JSON_KEY_FW_TARGET_VERSION, "");
-        const char *target_name = json_get_string(root, JSON_KEY_FW_NAME, "");
-        const char *target_project = json_get_string(root, "app_project", "");
-        const char *target_hardware = json_get_string(root, "hardware_type", "");
-        const char *target_sha256 = json_get_string(root, "sha256", "");
-        uint32_t target_generation = 0;
+        const char *board = "";
+        const char *ver = "";
+        const char *target = "";
         uint32_t target_size = 0;
         uint32_t target_crc32 = 0;
-        const cJSON *allow_same_j = cJSON_GetObjectItemCaseSensitive(
-            root, "allow_same_version");
-        bool ready_manifest_valid = board[0] && ver[0] && target[0] &&
-            target_name[0] && target_project[0] && target_hardware[0] &&
-            target_sha256[0] &&
-            json_get_uint32_exact(root, "generation", &target_generation) &&
-            json_get_uint32_exact(root, JSON_KEY_FW_SIZE, &target_size) &&
-            json_get_uint32_exact(root, JSON_KEY_FW_CRC32, &target_crc32) &&
-            cJSON_IsFalse(allow_same_j);
-        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
-        if (!ready_manifest_valid) {
+        bool legacy_receipt = strict_receipt_fields_absent(root);
+        bool ready_frame_valid = fw_ready_common_fields_valid(
+            root, &board, &ver, &target, &target_size, &target_crc32);
+        bool accepted = false;
+
+        if (legacy_receipt) {
+            if (ready_frame_valid) {
+                accepted = fw_store_handle_legacy_scanner_ready(
+                    scanner_id, board, ver, target, target_size,
+                    target_crc32);
+            }
+        } else {
+            const char *target_name = "";
+            const char *target_project = "";
+            const char *target_hardware = "";
+            const char *target_sha256 = "";
+            uint32_t target_generation = 0;
+            const cJSON *allow_same_j = cJSON_GetObjectItemCaseSensitive(
+                root, "allow_same_version");
+            ready_frame_valid = ready_frame_valid &&
+                json_get_nonempty_string_exact(root, JSON_KEY_FW_NAME,
+                                               &target_name) &&
+                json_get_nonempty_string_exact(root, "app_project",
+                                               &target_project) &&
+                json_get_nonempty_string_exact(root, "hardware_type",
+                                               &target_hardware) &&
+                json_get_nonempty_string_exact(root, "sha256",
+                                               &target_sha256) &&
+                json_get_uint32_exact(root, "generation",
+                                      &target_generation) &&
+                cJSON_IsFalse(allow_same_j);
+            if (ready_frame_valid) {
+                accepted = fw_store_handle_scanner_ready(
+                    scanner_id, board, ver, target, target_name,
+                    target_project, target_hardware, target_sha256,
+                    target_generation, target_size, target_crc32);
+            }
+        }
+
+        scanner_info_t *info = (scanner_id == 0)
+            ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        if (!accepted) {
             info->need_firmware = false;
             strncpy(info->fw_update_state, "ready_rejected",
                     sizeof(info->fw_update_state) - 1);
             info->fw_update_state[sizeof(info->fw_update_state) - 1] = '\0';
-            strncpy(info->last_fw_error, "malformed_fw_ready",
+            strncpy(info->last_fw_error,
+                    ready_frame_valid ? "fw_ready_refused"
+                                      : "malformed_fw_ready",
                     sizeof(info->last_fw_error) - 1);
             info->last_fw_error[sizeof(info->last_fw_error) - 1] = '\0';
             ESP_LOGW(TAG,
-                     "Scanner[%d] malformed fw_ready rejected; resuming scanner",
-                     scanner_id);
+                     "Scanner[%d] %s fw_ready rejected (%s); resuming scanner",
+                     scanner_id, legacy_receipt ? "legacy" : "strict",
+                     info->last_fw_error);
             uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
             cJSON_Delete(root);
             return;
@@ -2002,15 +2082,14 @@ static void process_line(const char *line, size_t len, int scanner_id)
         info->fw_update_state[sizeof(info->fw_update_state) - 1] = '\0';
         strncpy(info->fw_target_version, target, sizeof(info->fw_target_version) - 1);
         info->fw_target_version[sizeof(info->fw_target_version) - 1] = '\0';
-        ESP_LOGW(TAG, "Scanner[%d] firmware ready: board=%s current=%s target=%s",
+        ESP_LOGW(TAG,
+                 "Scanner[%d] %s firmware ready durably accepted: "
+                 "board=%s current=%s target=%s",
                  scanner_id,
+                 legacy_receipt ? "legacy" : "strict",
                  board[0] ? board : "?",
                  ver[0] ? ver : "?",
                  target[0] ? target : "?");
-        fw_store_handle_scanner_ready(
-            scanner_id, board, ver, target, target_name, target_project,
-            target_hardware, target_sha256, target_generation,
-            target_size, target_crc32);
     } else if (strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0) {
         scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
         const char *scan_mode = json_get_string(root, JSON_KEY_SCAN_MODE, "normal");
