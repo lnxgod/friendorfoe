@@ -59,11 +59,11 @@ import com.friendorfoe.data.badge.BadgeControlStatus
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.badge.BadgeDisplayState
 import com.friendorfoe.data.badge.BadgeTheme
+import com.friendorfoe.data.badge.BadgeThemeProfile
 import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
 import com.friendorfoe.data.badge.defaultBadgeDisplayPolicy
-import com.friendorfoe.data.badge.defaultBadgeTheme
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.BleInvestigationMode
 import com.friendorfoe.detection.BleInvestigationResult
@@ -115,6 +115,7 @@ fun PrivacyScreen(
     val totalCount by viewModel.totalCount.collectAsStateWithLifecycle()
     val threatCount by viewModel.threatCount.collectAsStateWithLifecycle()
     val badgeUsbState by viewModel.badgeUsbState.collectAsStateWithLifecycle()
+    val badgeThemeProfiles by viewModel.badgeThemeProfiles.collectAsStateWithLifecycle()
     val backendOnlyMode by viewModel.backendOnlyMode.collectAsStateWithLifecycle()
     val investigationResult by viewModel.investigationResult.collectAsStateWithLifecycle()
 
@@ -236,8 +237,12 @@ fun PrivacyScreen(
             onFlashScannerFirmware = viewModel::flashBadgeScannerFirmware,
             onApplyDisplayPolicy = viewModel::applyBadgeDisplayPolicy,
             onResetDisplayPolicy = viewModel::resetBadgeDisplayPolicy,
+            badgeThemeProfiles = badgeThemeProfiles,
+            onCreateThemeProfile = viewModel::createBadgeThemeProfile,
+            onRenameThemeProfile = viewModel::renameBadgeThemeProfile,
+            onReplaceThemeProfile = viewModel::replaceBadgeThemeProfile,
+            onDeleteThemeProfile = viewModel::deleteBadgeThemeProfile,
             onApplyTheme = viewModel::applyBadgeTheme,
-            onResetTheme = viewModel::resetBadgeTheme,
             onEntityDetails = { selectedBadgeEntity = it }
         )
 
@@ -577,8 +582,12 @@ private fun BadgeDetailPanel(
     onFlashScannerFirmware: (String, String, ByteArray) -> Unit,
     onApplyDisplayPolicy: (BadgeDisplayPolicy) -> Unit,
     onResetDisplayPolicy: () -> Unit,
+    badgeThemeProfiles: List<BadgeThemeProfile>,
+    onCreateThemeProfile: (String, BadgeTheme) -> Boolean,
+    onRenameThemeProfile: (String, String) -> Boolean,
+    onReplaceThemeProfile: (String, BadgeTheme) -> Boolean,
+    onDeleteThemeProfile: (String) -> Boolean,
     onApplyTheme: (BadgeTheme) -> Unit,
-    onResetTheme: () -> Unit,
     onEntityDetails: (BadgeThreatEntity) -> Unit
 ) {
     val status = state.controlStatus ?: return
@@ -737,12 +746,13 @@ private fun BadgeDetailPanel(
                 onExpandedChange = { appearanceExpanded = it },
                 theme = draftTheme,
                 themeHash = status.themeHash,
+                profiles = badgeThemeProfiles,
                 onThemeChange = { draftTheme = it },
-                onApply = { onApplyTheme(draftTheme) },
-                onReset = {
-                    draftTheme = defaultBadgeTheme()
-                    onResetTheme()
-                },
+                onCreateProfile = onCreateThemeProfile,
+                onRenameProfile = onRenameThemeProfile,
+                onReplaceProfile = onReplaceThemeProfile,
+                onDeleteProfile = onDeleteThemeProfile,
+                onApply = onApplyTheme,
                 onRefresh = onRefresh
             )
             Spacer(modifier = Modifier.height(8.dp))

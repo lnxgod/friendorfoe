@@ -9,6 +9,104 @@ import org.junit.Test
 class BadgeControlStatusParserTest {
 
     @Test
+    fun `parses complete six accent readback for every wire palette`() {
+        val fixtures = listOf(
+            ThemeReadbackFixture(
+                palette = "field",
+                background = "dark",
+                brightness = 100,
+                accents = listOf(0xFEA0, 0xF833, 0xF81F, 0xA81F, 0x07FF, 0x2F65),
+            ),
+            ThemeReadbackFixture(
+                palette = "night",
+                background = "dim",
+                brightness = 90,
+                accents = listOf(0xFD83, 0xF9AB, 0xFA44, 0xC349, 0x3EFE, 0x7FEE),
+            ),
+            ThemeReadbackFixture(
+                palette = "neon",
+                background = "scanline",
+                brightness = 75,
+                accents = listOf(0xCFE5, 0xFA75, 0x99DA, 0xA357, 0x373F, 0xBFE9),
+            ),
+            ThemeReadbackFixture(
+                palette = "mono",
+                background = "scanline",
+                brightness = 50,
+                accents = listOf(0xD7EA, 0x57B5, 0x26AF, 0x554F, 0x37FB, 0xAFEC),
+            ),
+        )
+
+        fixtures.forEach { fixture ->
+            val status = parseBadgeControlStatus(fixture.statusJson())
+
+            assertNotNull("Expected ${fixture.palette} theme status", status)
+            val theme = status!!.theme
+            assertEquals(1, theme.version)
+            assertEquals(fixture.palette, theme.palette)
+            assertEquals(fixture.background, theme.background)
+            assertEquals(fixture.brightness, theme.brightness)
+            assertEquals(
+                BadgeThemeAccentClasses.map { it.key },
+                theme.accents.keys.toList(),
+            )
+            assertEquals(
+                fixture.accents,
+                BadgeThemeAccentClasses.map { theme.accents.getValue(it.key) },
+            )
+        }
+    }
+
+    @Test
+    fun `partial legacy theme readback keeps version one defaults`() {
+        val status = parseBadgeControlStatus(
+            """
+            {
+              "theme":{
+                "palette":"mono",
+                "accents":{"tracker":4660}
+              }
+            }
+            """.trimIndent(),
+        )
+
+        assertNotNull(status)
+        val theme = status!!.theme
+        assertEquals(1, theme.version)
+        assertEquals("mono", theme.palette)
+        assertEquals("dark", theme.background)
+        assertEquals(100, theme.brightness)
+        assertEquals(
+            listOf(0xFEA0, 0xF833, 0x1234, 0xA81F, 0x07FF, 0x2F65),
+            BadgeThemeAccentClasses.map { theme.accents.getValue(it.key) },
+        )
+    }
+
+    @Test
+    fun `complete arbitrary custom theme readback is not recognized as a preset`() {
+        val customAccents = listOf(0x0841, 0x18C3, 0x2945, 0x39C7, 0x4A49, 0x5ACB)
+        val status = parseBadgeControlStatus(
+            ThemeReadbackFixture(
+                palette = "night",
+                background = "dim",
+                brightness = 65,
+                accents = customAccents,
+            ).statusJson(),
+        )
+
+        assertNotNull(status)
+        val theme = status!!.theme
+        assertEquals("night", theme.palette)
+        assertEquals("dim", theme.background)
+        assertEquals(65, theme.brightness)
+        assertEquals(
+            customAccents,
+            BadgeThemeAccentClasses.map { theme.accents.getValue(it.key) },
+        )
+        assertEquals(null, recognizeBadgeThemePreset(theme))
+    }
+
+    @Test
     fun parsesExtendedBadgeStatusPayload() {
         val status = parseBadgeControlStatus(
             """
@@ -306,5 +404,33 @@ class BadgeControlStatusParserTest {
         assertFalse(dronePolicy.enabled)
         assertEquals("off", dronePolicy.lane)
         assertEquals(4, status.filteredCounts.getValue("drone"))
+    }
+
+    private data class ThemeReadbackFixture(
+        val palette: String,
+        val background: String,
+        val brightness: Int,
+        val accents: List<Int>,
+    ) {
+        init {
+            require(accents.size == BadgeThemeAccentClasses.size)
+        }
+
+        fun statusJson(): String {
+            val encodedAccents = BadgeThemeAccentClasses.mapIndexed { index, accent ->
+                "\"${accent.key}\":${accents[index]}"
+            }.joinToString(",")
+            return """
+                {
+                  "theme":{
+                    "version":1,
+                    "palette":"$palette",
+                    "background":"$background",
+                    "brightness":$brightness,
+                    "accents":{$encodedAccents}
+                  }
+                }
+            """.trimIndent()
+        }
     }
 }

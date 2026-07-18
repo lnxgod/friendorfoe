@@ -54,6 +54,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.badge.BadgeUsbDetection
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.badge.BadgeTheme
+import com.friendorfoe.data.badge.BadgeThemeProfile
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
 import com.friendorfoe.data.badge.defaultBadgeDisplayPolicy
@@ -89,6 +90,7 @@ fun ListViewScreen(
     val activeVisualFocusIds by viewModel.activeVisualFocusIds.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val badgeUsbState by viewModel.badgeUsbState.collectAsStateWithLifecycle()
+    val badgeThemeProfiles by viewModel.badgeThemeProfiles.collectAsStateWithLifecycle()
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -131,8 +133,12 @@ fun ListViewScreen(
             onFlashScannerFirmware = viewModel::flashBadgeScannerFirmware,
             onApplyDisplayPolicy = viewModel::applyBadgeDisplayPolicy,
             onResetDisplayPolicy = viewModel::resetBadgeDisplayPolicy,
+            badgeThemeProfiles = badgeThemeProfiles,
+            onCreateThemeProfile = viewModel::createBadgeThemeProfile,
+            onRenameThemeProfile = viewModel::renameBadgeThemeProfile,
+            onReplaceThemeProfile = viewModel::replaceBadgeThemeProfile,
+            onDeleteThemeProfile = viewModel::deleteBadgeThemeProfile,
             onApplyTheme = viewModel::applyBadgeTheme,
-            onResetTheme = viewModel::resetBadgeTheme,
             onRefreshDisplayPolicy = viewModel::refreshBadgeStatus
         )
 
@@ -173,8 +179,12 @@ private fun BadgeUsbPanel(
     onFlashScannerFirmware: (String, String, ByteArray) -> Unit,
     onApplyDisplayPolicy: (BadgeDisplayPolicy) -> Unit,
     onResetDisplayPolicy: () -> Unit,
+    badgeThemeProfiles: List<BadgeThemeProfile>,
+    onCreateThemeProfile: (String, BadgeTheme) -> Boolean,
+    onRenameThemeProfile: (String, String) -> Boolean,
+    onReplaceThemeProfile: (String, BadgeTheme) -> Boolean,
+    onDeleteThemeProfile: (String) -> Boolean,
     onApplyTheme: (BadgeTheme) -> Unit,
-    onResetTheme: () -> Unit,
     onRefreshDisplayPolicy: () -> Unit
 ) {
     val context = LocalContext.current
@@ -401,12 +411,13 @@ private fun BadgeUsbPanel(
                         onExpandedChange = { appearanceExpanded = it },
                         theme = draftTheme,
                         themeHash = badgeStatus.themeHash,
+                        profiles = badgeThemeProfiles,
                         onThemeChange = { draftTheme = it },
-                        onApply = { onApplyTheme(draftTheme) },
-                        onReset = {
-                            draftTheme = defaultBadgeTheme()
-                            onResetTheme()
-                        },
+                        onCreateProfile = onCreateThemeProfile,
+                        onRenameProfile = onRenameThemeProfile,
+                        onReplaceProfile = onReplaceThemeProfile,
+                        onDeleteProfile = onDeleteThemeProfile,
+                        onApply = onApplyTheme,
                         onRefresh = onRefreshDisplayPolicy
                     )
                     Spacer(modifier = Modifier.height(8.dp))
