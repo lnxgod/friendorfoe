@@ -7,9 +7,10 @@ import android.location.LocationManager
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.friendorfoe.data.badge.BadgeUsbRepository
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.badge.BadgeTheme
+import com.friendorfoe.data.badge.BadgeThemeProfileStore
+import com.friendorfoe.data.badge.BadgeUsbRepository
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.data.repository.validatedLocationAccuracyMeters
 import com.friendorfoe.domain.model.FilterState
@@ -43,6 +44,7 @@ import javax.inject.Inject
 class ListViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
     private val badgeUsbRepository: BadgeUsbRepository,
+    private val badgeThemeProfileStore: BadgeThemeProfileStore,
     private val visualFocusRepository: VisualFocusRepository,
     private val locationManager: LocationManager
 ) : ViewModel() {
@@ -102,6 +104,9 @@ class ListViewModel @Inject constructor(
 
     /** Direct USB-C feed from the badge firmware. */
     val badgeUsbState = badgeUsbRepository.state
+
+    /** Saved themes shared with the Privacy badge controls. */
+    val badgeThemeProfiles = badgeThemeProfileStore.profiles
 
     /** Ignore a privacy device (persists across restarts). */
     fun ignoreDevice(mac: String) {
@@ -173,6 +178,18 @@ class ListViewModel @Inject constructor(
     fun resetBadgeTheme() {
         badgeUsbRepository.resetBadgeTheme()
     }
+
+    fun createBadgeThemeProfile(name: String, theme: BadgeTheme): Boolean =
+        badgeThemeProfileStore.create(name, theme)
+
+    fun renameBadgeThemeProfile(id: String, name: String): Boolean =
+        badgeThemeProfileStore.rename(id, name)
+
+    fun replaceBadgeThemeProfile(id: String, theme: BadgeTheme): Boolean =
+        badgeThemeProfileStore.replace(id, theme)
+
+    fun deleteBadgeThemeProfile(id: String): Boolean =
+        badgeThemeProfileStore.delete(id)
 
     private val _userPosition = MutableStateFlow(
         Position(latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0)

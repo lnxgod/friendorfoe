@@ -9,6 +9,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.badge.BadgeTheme
+import com.friendorfoe.data.badge.BadgeThemeProfileStore
 import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbRepository
 import com.friendorfoe.data.badge.BadgeUsbState
@@ -190,6 +191,7 @@ class PrivacyViewModel @Inject constructor(
     private val wifiAnomalyDetector: WifiAnomalyDetector,
     private val sensorMapApiService: SensorMapApiService,
     private val badgeUsbRepository: BadgeUsbRepository,
+    private val badgeThemeProfileStore: BadgeThemeProfileStore,
     private val bleInvestigationCoordinator: BleInvestigationCoordinator,
     private val privacyAlertNotifier: PrivacyAlertNotifier,
 ) : ViewModel() {
@@ -272,6 +274,7 @@ class PrivacyViewModel @Inject constructor(
     val wifiAnomalies: StateFlow<List<WifiAnomalyDetector.WifiAnomaly>> = _wifiAnomalies.asStateFlow()
     private val _backendPrivacyDetections = MutableStateFlow<List<GlassesDetection>>(emptyList())
     val badgeUsbState = badgeUsbRepository.state
+    val badgeThemeProfiles = badgeThemeProfileStore.profiles
 
     val privacyDetections: StateFlow<List<GlassesDetection>> = combine(
         skyObjectRepository.glassesDetections,
@@ -650,6 +653,18 @@ class PrivacyViewModel @Inject constructor(
     fun resetBadgeTheme() {
         badgeUsbRepository.resetBadgeTheme()
     }
+
+    fun createBadgeThemeProfile(name: String, theme: BadgeTheme): Boolean =
+        badgeThemeProfileStore.create(name, theme)
+
+    fun renameBadgeThemeProfile(id: String, name: String): Boolean =
+        badgeThemeProfileStore.rename(id, name)
+
+    fun replaceBadgeThemeProfile(id: String, theme: BadgeTheme): Boolean =
+        badgeThemeProfileStore.replace(id, theme)
+
+    fun deleteBadgeThemeProfile(id: String): Boolean =
+        badgeThemeProfileStore.delete(id)
 
     fun startDirectionScan(mac: String) {
         bleTracker.startDirectionScan(mac)
