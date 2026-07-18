@@ -85,11 +85,11 @@ fof_auto_probe_decision_t fof_auto_recovery_probe_decide(
     uint8_t probes_used,
     uint8_t max_probes)
 {
-    if (max_probes == 0 || probes_used >= max_probes) {
-        return FOF_AUTO_PROBE_EXHAUSTED;
-    }
     if (not_before_ms <= 0 || now_ms < not_before_ms) {
         return FOF_AUTO_PROBE_WAIT;
+    }
+    if (max_probes == 0 || probes_used >= max_probes) {
+        return FOF_AUTO_PROBE_EXHAUSTED;
     }
     return FOF_AUTO_PROBE_SEND;
 }

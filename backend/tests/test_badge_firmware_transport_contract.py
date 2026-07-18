@@ -1273,3 +1273,192 @@ def test_worker_retries_result_lock_instead_of_abandoning_reserved_relay():
     assert result_phase.index("while (!auto_coordinator_lock())") < result_phase.index(
         "s_auto_coordinator.generation == relay_generation"
     )
+
+
+def test_legacy_ack_is_exact_session_bound_without_a_null_manifest_shortcut():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+
+    strict = store[
+        store.index("static bool relay_line_matches_manifest_ack") :
+        store.index("static bool relay_line_matches_complete_progress")
+    ]
+    assert "if (!info) return false;" in strict
+
+    legacy = store[
+        store.index("static bool relay_line_matches_legacy_receipt") :
+        store.index("static bool relay_line_matches_manifest_ack")
+    ]
+    assert "json_string_matches(root, JSON_KEY_TYPE, expected_type)" in legacy
+    assert (
+        "json_string_matches(root, JSON_KEY_OTA_SESSION_ID, session_id)"
+        in legacy
+    )
+    assert "strstr" not in legacy
+
+    wait = store[
+        store.index("static int relay_wait_for_with_resend") :
+        store.index("static int relay_extract_seq")
+    ]
+    assert "relay_line_matches_legacy_receipt" in wait
+    assert "relay_line_matches_manifest_ack" in wait
+    assert "expected_manifest != NULL" in wait
+
+    begin = store[
+        store.index('snprintf(stage, sizeof(stage), "begin")') :
+        store.index('snprintf(stage, sizeof(stage), "chunks")')
+    ]
+    assert "legacy_mode ? NULL : &info" in begin
+
+
+def test_legacy_final_progress_and_done_are_exact_session_size_receipts():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+
+    progress = store[
+        store.index("static bool relay_line_matches_complete_progress") :
+        store.index("static int relay_wait_for(")
+    ]
+    for exact_field in (
+        "MSG_TYPE_OTA_PROGRESS",
+        "JSON_KEY_OTA_SESSION_ID",
+        'json_u32_matches(root, "received", info->size)',
+        'json_u32_matches(root, "total", info->size)',
+        'json_u32_matches(root, "percent", 100)',
+    ):
+        assert exact_field in progress
+
+    staged = store[
+        store.index("static int relay_wait_for_staged_or_nack") :
+        store.index("/* ── Firmware offer + relay core")
+    ]
+    assert "bool legacy_mode" in staged
+    exact_progress = staged.index("relay_line_matches_complete_progress")
+    legacy_success = staged.index("if (legacy_mode)", exact_progress)
+    staged_match = staged.index("relay_line_matches_manifest_ack", legacy_success)
+    assert exact_progress < legacy_success < staged_match
+
+    relay = store[
+        store.index("static bool fw_relay_stored_to_scanner") :
+        store.index("static esp_err_t fw_relay_handler")
+    ]
+    final_wait = relay[relay.index("relay_wait_for_staged_or_nack") :]
+    assert "legacy_mode" in final_wait[: final_wait.index("15000")]
+
+    done = relay[relay.index("bool saw_exact_done") : relay.index("relay_done:")]
+    assert "if (legacy_mode)" in done
+    assert "relay_line_matches_legacy_receipt" in done
+    assert "MSG_TYPE_OTA_DONE" in done
+    assert "info.size" in done
+    strict_done = done[done.index("else") :]
+    assert "relay_line_matches_manifest_ack" in strict_done
+
+
+def test_interrupted_relay_restore_saves_recovery_before_abort_and_cooldown():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    coordinator = store[store.index("FW_AUTO_COORDINATOR_MAGIC") :]
+
+    assert "FW_AUTO_RECOVERY_COOLDOWN_MS 35000" in coordinator
+    assert "FW_AUTO_RECOVERY_PROBE_DELAY_MS 20000" in coordinator
+    assert "s_auto_recovery_not_before_ms" in coordinator
+    assert "s_auto_recovery_next_probe_ms" in coordinator
+
+    restore = coordinator[
+        coordinator.index("bool fw_store_restore_auto_update_coordinator") :
+        coordinator.index("void fw_store_handle_scanner_check")
+    ]
+    interrupted = restore[
+        restore.index("FW_AUTO_SLOT_RELAYING") :
+        restore.index("} else if", restore.index("FW_AUTO_SLOT_RELAYING"))
+    ]
+    assert "FW_AUTO_SLOT_RECOVERING" in interrupted
+    assert "readiness_probe_attempts[scanner_id] = 0" in interrupted
+    assert "relay_attempts[scanner_id]" not in interrupted
+    assert "bound_hardware_id[scanner_id]" in interrupted
+
+    saved = restore.index("if (!saved)")
+    recovery_start = restore.index("auto_begin_recovery_after_restore", saved)
+    worker = restore.index("auto_coordinator_start_worker", recovery_start)
+    assert saved < recovery_start < worker
+
+    begin = coordinator[
+        coordinator.index("static void auto_begin_recovery_after_restore") :
+        coordinator.index("static bool auto_coordinator_start_worker")
+    ]
+    abort = begin.index(r'{\"type\":\"ota_abort\"}')
+    sentinel = begin.index("relay_send_wire_abort_sentinel", abort)
+    cooldown = begin.index("FW_AUTO_RECOVERY_COOLDOWN_MS")
+    assert abort < sentinel
+    assert "s_auto_recovery_not_before_ms" in begin
+    assert cooldown >= 0
+
+
+def test_recovery_worker_uses_three_saved_probes_twenty_seconds_apart():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    task = store[
+        store.index("static void fw_auto_relay_task") :
+        store.index(
+            "static bool auto_coordinator_start_worker",
+            store.index("static void fw_auto_relay_task"),
+        )
+    ]
+
+    recovery = task[
+        task.index("FOF_AUTO_SLOT_RECOVERING") :
+        task.index("for (int slot = 0", task.index("FOF_AUTO_SLOT_RECOVERING") + 1)
+    ]
+    assert "fof_auto_recovery_probe_decide" in recovery
+    assert "FW_AUTO_READY_MAX_PROBES" in recovery
+    assert "readiness_probe_attempts[slot]++" in recovery
+    save = recovery.index("auto_coordinator_save_locked()")
+    reserved = recovery.index("recovery_probe_scanner_id = slot", save)
+    assert save < reserved
+    assert "auto_coordinator_fail_closed_after_save_failure_locked" in recovery
+
+    send = task[task.index("if (recovery_probe_scanner_id >= 0)") :]
+    assert r'{\"type\":\"fw_check_now\"}' in send
+    assert "FW_AUTO_RECOVERY_PROBE_DELAY_MS" in send
+
+
+def test_recovery_resolution_requires_manual_fresh_same_mac_complete_health():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    coordinator = store[store.index("FW_AUTO_COORDINATOR_MAGIC") :]
+    helper = coordinator[
+        coordinator.index("static auto_recovery_check_result_t") :
+        coordinator.index("bool fw_store_restore_auto_update_coordinator")
+    ]
+
+    for proof in (
+        '.manual_probe = strcmp(check_reason, "manual") == 0',
+        ".identity_fresh =",
+        ".same_hardware_id =",
+        ".target_contract_matches =",
+        ".rollback_clear =",
+        ".recovery_normal =",
+        ".command_healthy =",
+        ".profile_healthy =",
+        ".radio_healthy =",
+        ".version_relation =",
+        ".source_version = scanner_version",
+    ):
+        assert proof in helper
+    assert "fof_auto_recovery_decide" in helper
+    assert "s_auto_recovery_not_before_ms" in helper
+    assert "s_auto_recovery_not_before_ms[scanner_id] > 0" in helper
+    assert "FW_AUTO_SLOT_CONVERGED" in helper
+    assert "FW_AUTO_SLOT_OFFERED" in helper
+    assert "FOF_AUTO_RECOVERY_REFUSED" in helper
+    assert "auto_coordinator_fail_closed_after_save_failure_locked" in helper
+
+    handler = coordinator[
+        coordinator.index("void fw_store_handle_scanner_check") :
+        coordinator.index("bool fw_store_handle_scanner_ready")
+    ]
+    recovery_check = handler.index("auto_coordinator_handle_recovery_check")
+    equal = handler.index("if (relation == FOF_VERSION_EQUAL)")
+    current = handler.index("auto_coordinator_record_current_identity", equal)
+    assert recovery_check < equal < current
+
+    gate = coordinator[
+        coordinator.index("static bool auto_coordinator_slot_gate_open_locked") :
+        coordinator.index("static bool auto_coordinator_slot_gate_open(")
+    ]
+    assert "fof_auto_wifi_gate_open" in gate

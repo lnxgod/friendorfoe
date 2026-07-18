@@ -128,11 +128,20 @@ void test_auto_recovery_probe_waits_without_consuming_budget(void)
         FOF_AUTO_PROBE_WAIT,
         fof_auto_recovery_probe_decide(34999, 35000, 0, 3));
     TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_WAIT,
+        fof_auto_recovery_probe_decide(34999, 35000, 3, 3));
+    TEST_ASSERT_EQUAL_INT(
         FOF_AUTO_PROBE_SEND,
         fof_auto_recovery_probe_decide(35000, 35000, 0, 3));
     TEST_ASSERT_EQUAL_INT(
         FOF_AUTO_PROBE_SEND,
         fof_auto_recovery_probe_decide(55000, 35000, 2, 3));
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_WAIT,
+        fof_auto_recovery_probe_decide(54999, 55000, 1, 3));
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_SEND,
+        fof_auto_recovery_probe_decide(55000, 55000, 1, 3));
     TEST_ASSERT_EQUAL_INT(
         FOF_AUTO_PROBE_EXHAUSTED,
         fof_auto_recovery_probe_decide(55000, 35000, 3, 3));
@@ -158,6 +167,10 @@ void test_auto_recovery_converges_only_from_full_same_mac_health_proof(void)
                           fof_auto_recovery_decide(&recovery));
     recovery = recovery_fixture();
     recovery.same_hardware_id = false;
+    TEST_ASSERT_EQUAL_INT(FOF_AUTO_RECOVERY_HOLD,
+                          fof_auto_recovery_decide(&recovery));
+    recovery = recovery_fixture();
+    recovery.target_contract_matches = false;
     TEST_ASSERT_EQUAL_INT(FOF_AUTO_RECOVERY_HOLD,
                           fof_auto_recovery_decide(&recovery));
     recovery = recovery_fixture();

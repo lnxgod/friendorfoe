@@ -1318,13 +1318,34 @@ static bool json_sha256_matches(const cJSON *root, const char *expected)
     return true;
 }
 
+static bool relay_line_matches_legacy_receipt(
+    const char *line,
+    const char *expected_type,
+    const char *session_id,
+    bool require_received,
+    uint32_t expected_received)
+{
+    if (!line || !expected_type || !session_id || !session_id[0]) {
+        return false;
+    }
+    cJSON *root = cJSON_Parse(line);
+    if (!root) return false;
+    bool matched =
+        json_string_matches(root, JSON_KEY_TYPE, expected_type) &&
+        json_string_matches(root, JSON_KEY_OTA_SESSION_ID, session_id) &&
+        (!require_received ||
+         json_u32_matches(root, "received", expected_received));
+    cJSON_Delete(root);
+    return matched;
+}
+
 static bool relay_line_matches_manifest_ack(const char *line,
                                             const fw_store_info_t *info,
                                             bool allow_same_version,
                                             const char *expected_type,
                                             uint32_t expected_received)
 {
-    if (!info) return true;
+    if (!info) return false;
     if (!line) return false;
     cJSON *root = cJSON_Parse(line);
     if (!root) return false;
@@ -1479,9 +1500,19 @@ static int relay_wait_for_with_resend(int scanner_id,
                          needle, line);
                 continue;
             }
-            if (!relay_line_matches_manifest_ack(
+            bool receipt_matches = false;
+            if (expected_manifest != NULL) {
+                receipt_matches = relay_line_matches_manifest_ack(
                     line, expected_manifest, expected_allow_same_version,
-                    needle, expected_received)) {
+                    needle, expected_received);
+            } else if (session_id && session_id[0]) {
+                receipt_matches = relay_line_matches_legacy_receipt(
+                    line, needle, session_id, false, 0);
+            } else {
+                /* stop_ack has no session or manifest contract. */
+                receipt_matches = true;
+            }
+            if (!receipt_matches) {
                 ESP_LOGW(TAG,
                          "relay_wait_for_with_resend(%s) ignored manifest-mismatched ack",
                          needle);
@@ -1673,6 +1704,7 @@ static int relay_wait_for_staged_or_nack(
     uart_port_t uart_num,
     const char *session_id,
     const fw_store_info_t *info,
+    bool legacy_mode,
     bool allow_same_version,
     int timeout_ms,
     int *nack_seq_out,
@@ -1718,6 +1750,11 @@ static int relay_wait_for_staged_or_nack(
             nack_settle_deadline_ms = 0;
             ESP_LOGW(TAG,
                      "Final frame accepted; waiting for exact ota_staged receipt");
+            if (legacy_mode) {
+                /* The exact .68 bridge auto-finalizes from the last binary
+                 * chunk and has no ota_staged manifest receipt. */
+                return 0;
+            }
             continue;
         }
         if (strstr(line, "ota_staged")) {
@@ -2535,7 +2572,7 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
             cmd,
             "ota_ack",
             session_id,
-            &info,
+            legacy_mode ? NULL : &info,
             allow_same_version,
             0,
             15000,
@@ -2623,6 +2660,7 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
                     uart_num,
                     relay_session_id,
                     &info,
+                    legacy_mode,
                     allow_same_version,
                     15000,
                     &nack_seq,
@@ -2746,10 +2784,19 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
             int n = relay_read_line(uart_num, line, sizeof(line), remaining_ms);
             if (n < 0) break;
             if (strstr(line, "ota_done")) {
-                if (!relay_line_session_matches(line, relay_session_id) ||
-                    !relay_line_matches_manifest_ack(
-                        line, &info, allow_same_version,
-                        MSG_TYPE_OTA_DONE, info.size)) {
+                bool exact_done = false;
+                if (legacy_mode) {
+                    exact_done = relay_line_matches_legacy_receipt(
+                        line, MSG_TYPE_OTA_DONE, relay_session_id, true,
+                        info.size);
+                } else {
+                    exact_done =
+                        relay_line_session_matches(line, relay_session_id) &&
+                        relay_line_matches_manifest_ack(
+                            line, &info, allow_same_version,
+                            MSG_TYPE_OTA_DONE, info.size);
+                }
+                if (!exact_done) {
                     ESP_LOGW(TAG, "Ignored stale or manifest-mismatched ota_done");
                     continue;
                 }
@@ -3025,6 +3072,8 @@ bool fw_store_relay_staged_to_scanner_ex(int scanner_id,
 #define FW_AUTO_IDENTITY_MAX_AGE_MS 60000
 #define FW_AUTO_SECOND_IDENTITY_WAIT_MS 12000
 #define FW_AUTO_IDENTITY_POLL_MS 100
+#define FW_AUTO_RECOVERY_COOLDOWN_MS 35000
+#define FW_AUTO_RECOVERY_PROBE_DELAY_MS 20000
 
 typedef enum {
     FW_AUTO_SLOT_EXCLUDED = 0,
@@ -3104,6 +3153,10 @@ static fw_auto_offer_binding_t s_auto_offer_bindings[
 static fw_auto_offer_binding_t s_auto_ready_bindings[
     FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
 static bool s_auto_legacy_ready[FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
+static int64_t s_auto_recovery_not_before_ms[
+    FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
+static int64_t s_auto_recovery_next_probe_ms[
+    FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
 
 bool fw_store_init_auto_update_coordinator(void)
 {
@@ -3159,6 +3212,8 @@ static void auto_set_identity_floors_locked(
         memset(&s_auto_ready_bindings[scanner_id], 0,
                sizeof(s_auto_ready_bindings[scanner_id]));
         s_auto_legacy_ready[scanner_id] = false;
+        s_auto_recovery_not_before_ms[scanner_id] = 0;
+        s_auto_recovery_next_probe_ms[scanner_id] = 0;
     }
 }
 
@@ -3618,6 +3673,52 @@ static void auto_reset_ready_queue_after_revalidation_failure(
     }
 }
 
+static void auto_begin_recovery_after_restore(uint8_t recovery_mask)
+{
+    for (int scanner_id = 0; scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT;
+         ++scanner_id) {
+        uint8_t bit = (uint8_t)(1u << scanner_id);
+        if (!(recovery_mask & bit)) {
+            continue;
+        }
+
+        bool active = false;
+        if (auto_coordinator_lock()) {
+            active = s_auto_coordinator_loaded &&
+                s_auto_coordinator.slot_state[scanner_id] ==
+                    FW_AUTO_SLOT_RECOVERING;
+            auto_coordinator_unlock();
+        }
+        if (!active) {
+            continue;
+        }
+
+        uart_rx_send_command_to_scanner(
+            scanner_id, "{\"type\":\"ota_abort\"}");
+        vTaskDelay(pdMS_TO_TICKS(50));
+        uart_port_t uart_num = scanner_id == 1
+            ? CONFIG_WIFI_SCANNER_UART : CONFIG_BLE_SCANNER_UART;
+        relay_send_wire_abort_sentinel(uart_num);
+
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        if (auto_coordinator_lock()) {
+            if (s_auto_coordinator_loaded &&
+                s_auto_coordinator.slot_state[scanner_id] ==
+                    FW_AUTO_SLOT_RECOVERING) {
+                s_auto_recovery_not_before_ms[scanner_id] =
+                    now_ms + FW_AUTO_RECOVERY_COOLDOWN_MS;
+                s_auto_recovery_next_probe_ms[scanner_id] =
+                    s_auto_recovery_not_before_ms[scanner_id];
+            }
+            auto_coordinator_unlock();
+        }
+        ESP_LOGW(TAG,
+                 "Scanner[%d] interrupted relay aborted; recovery probes "
+                 "held for %d ms",
+                 scanner_id, FW_AUTO_RECOVERY_COOLDOWN_MS);
+    }
+}
+
 static bool auto_wait_for_ready_second_identity(
     int scanner_id,
     const fw_store_info_t *info,
@@ -3692,6 +3793,10 @@ static void fw_auto_relay_task(void *arg)
     while (true) {
         int scanner_id = -1;
         int probe_scanner_id = -1;
+        int recovery_probe_scanner_id = -1;
+        bool recovery_waiting = false;
+        bool recovery_terminal = false;
+        uint32_t recovery_wait_ms = 250;
         uint32_t relay_generation = 0;
         uint8_t attempt_number = 0;
         bool legacy_mode = false;
@@ -3717,7 +3822,71 @@ static void fw_auto_relay_task(void *arg)
             break;
         }
 
+        int64_t recovery_now_ms = esp_timer_get_time() / 1000;
         for (int slot = 0; slot < FW_AUTO_UPDATE_SCANNER_COUNT; ++slot) {
+            uint8_t bit = (uint8_t)(1u << slot);
+            if (!(s_auto_coordinator.target_slot_mask & bit) ||
+                s_auto_coordinator.slot_state[slot] !=
+                    FOF_AUTO_SLOT_RECOVERING ||
+                !auto_coordinator_slot_gate_open_locked(slot)) {
+                continue;
+            }
+            int64_t eligible_ms = s_auto_recovery_not_before_ms[slot];
+            if (s_auto_recovery_next_probe_ms[slot] > eligible_ms) {
+                eligible_ms = s_auto_recovery_next_probe_ms[slot];
+            }
+            fof_auto_probe_decision_t decision =
+                fof_auto_recovery_probe_decide(
+                    recovery_now_ms, eligible_ms,
+                    s_auto_coordinator.readiness_probe_attempts[slot],
+                    FW_AUTO_READY_MAX_PROBES);
+            if (decision == FOF_AUTO_PROBE_WAIT) {
+                recovery_waiting = true;
+                int64_t remaining_ms = eligible_ms - recovery_now_ms;
+                if (remaining_ms > 0 && remaining_ms < 1000) {
+                    recovery_wait_ms = (uint32_t)remaining_ms;
+                } else if (remaining_ms >= 1000) {
+                    recovery_wait_ms = 1000;
+                }
+                break;
+            }
+
+            fw_auto_coordinator_blob_t recovery_before = s_auto_coordinator;
+            if (decision == FOF_AUTO_PROBE_EXHAUSTED) {
+                s_auto_coordinator.slot_state[slot] = FW_AUTO_SLOT_FAILED;
+                s_auto_coordinator.pending_mask &= (uint8_t)~bit;
+                s_auto_coordinator.bound_hardware_id[slot][0] = '\0';
+                if (!auto_coordinator_save_locked()) {
+                    (void)recovery_before;
+                    auto_coordinator_fail_closed_after_save_failure_locked(
+                        "recovery_probe_exhausted");
+                } else {
+                    auto_clear_ready_bindings_locked(slot);
+                    s_auto_recovery_not_before_ms[slot] = 0;
+                    s_auto_recovery_next_probe_ms[slot] = 0;
+                }
+                recovery_terminal = true;
+                break;
+            }
+
+            s_auto_coordinator.readiness_probe_attempts[slot]++;
+            if (!auto_coordinator_save_locked()) {
+                (void)recovery_before;
+                auto_coordinator_fail_closed_after_save_failure_locked(
+                    "recovery_probe_reserved");
+            } else {
+                s_auto_recovery_next_probe_ms[slot] =
+                    recovery_now_ms + FW_AUTO_RECOVERY_PROBE_DELAY_MS;
+                recovery_probe_scanner_id = slot;
+            }
+            break;
+        }
+
+        for (int slot = 0;
+             !recovery_waiting && !recovery_terminal &&
+             recovery_probe_scanner_id < 0 &&
+             slot < FW_AUTO_UPDATE_SCANNER_COUNT;
+             ++slot) {
             uint8_t bit = (uint8_t)(1u << slot);
             if (!(s_auto_coordinator.pending_mask & bit) ||
                 !auto_coordinator_slot_gate_open_locked(slot)) {
@@ -3755,51 +3924,74 @@ static void fw_auto_relay_task(void *arg)
         }
 
         if (scanner_id < 0 && s_auto_relay_worker_running) {
-            for (int slot = 0; slot < FW_AUTO_UPDATE_SCANNER_COUNT; ++slot) {
-                uint8_t bit = (uint8_t)(1u << slot);
-                uint8_t state = s_auto_coordinator.slot_state[slot];
-                if (!(s_auto_coordinator.target_slot_mask & bit) ||
-                    !auto_coordinator_slot_gate_open_locked(slot) ||
-                    (state != FW_AUTO_SLOT_AWAITING_CHECK &&
-                     state != FW_AUTO_SLOT_OFFERED)) {
-                    continue;
-                }
-                if (s_auto_coordinator.readiness_probe_attempts[slot] >=
-                    FW_AUTO_READY_MAX_PROBES) {
-                    fw_auto_coordinator_blob_t exhausted_before =
-                        s_auto_coordinator;
-                    s_auto_coordinator.slot_state[slot] = FW_AUTO_SLOT_FAILED;
-                    s_auto_coordinator.pending_mask &= (uint8_t)~bit;
+            if (!recovery_waiting && !recovery_terminal &&
+                recovery_probe_scanner_id < 0) {
+                for (int slot = 0;
+                     slot < FW_AUTO_UPDATE_SCANNER_COUNT; ++slot) {
+                    uint8_t bit = (uint8_t)(1u << slot);
+                    uint8_t state = s_auto_coordinator.slot_state[slot];
+                    if (!(s_auto_coordinator.target_slot_mask & bit) ||
+                        !auto_coordinator_slot_gate_open_locked(slot) ||
+                        (state != FW_AUTO_SLOT_AWAITING_CHECK &&
+                         state != FW_AUTO_SLOT_OFFERED)) {
+                        continue;
+                    }
+                    if (s_auto_coordinator.readiness_probe_attempts[slot] >=
+                        FW_AUTO_READY_MAX_PROBES) {
+                        fw_auto_coordinator_blob_t exhausted_before =
+                            s_auto_coordinator;
+                        s_auto_coordinator.slot_state[slot] =
+                            FW_AUTO_SLOT_FAILED;
+                        s_auto_coordinator.pending_mask &= (uint8_t)~bit;
+                        if (!auto_coordinator_save_locked()) {
+                            (void)exhausted_before;
+                            auto_coordinator_fail_closed_after_save_failure_locked(
+                                "readiness_probe_exhausted");
+                            s_auto_relay_worker_running = false;
+                        } else {
+                            probe_scanner_id = -2;
+                        }
+                        break;
+                    }
+                    fw_auto_coordinator_blob_t before = s_auto_coordinator;
+                    s_auto_coordinator.readiness_probe_attempts[slot]++;
                     if (!auto_coordinator_save_locked()) {
-                        (void)exhausted_before;
+                        (void)before;
                         auto_coordinator_fail_closed_after_save_failure_locked(
-                            "readiness_probe_exhausted");
+                            "readiness_probe_reserved");
                         s_auto_relay_worker_running = false;
                     } else {
-                        probe_scanner_id = -2;
+                        probe_scanner_id = slot;
                     }
                     break;
                 }
-                fw_auto_coordinator_blob_t before = s_auto_coordinator;
-                s_auto_coordinator.readiness_probe_attempts[slot]++;
-                if (!auto_coordinator_save_locked()) {
-                    (void)before;
-                    auto_coordinator_fail_closed_after_save_failure_locked(
-                        "readiness_probe_reserved");
-                    s_auto_relay_worker_running = false;
-                } else {
-                    probe_scanner_id = slot;
-                }
-                break;
             }
         }
 
         if (scanner_id < 0 && probe_scanner_id == -1 &&
+            recovery_probe_scanner_id == -1 && !recovery_waiting &&
+            !recovery_terminal &&
             s_auto_relay_worker_running) {
             s_auto_relay_worker_running = false;
         }
         bool worker_continues = s_auto_relay_worker_running;
         auto_coordinator_unlock();
+
+        if (recovery_probe_scanner_id >= 0) {
+            uart_rx_send_command_to_scanner(
+                recovery_probe_scanner_id,
+                "{\"type\":\"fw_check_now\"}");
+            vTaskDelay(pdMS_TO_TICKS(FW_AUTO_RECOVERY_PROBE_DELAY_MS));
+            continue;
+        }
+        if (recovery_terminal) {
+            (void)auto_coordinator_reprompt_requested();
+            continue;
+        }
+        if (recovery_waiting) {
+            vTaskDelay(pdMS_TO_TICKS(recovery_wait_ms));
+            continue;
+        }
 
         if (scanner_id >= 0) {
             fw_store_info_t relay_info = {0};
@@ -4423,6 +4615,183 @@ static bool auto_coordinator_record_legacy_offer(
     return true;
 }
 
+typedef enum {
+    AUTO_RECOVERY_CHECK_NOT_ACTIVE = 0,
+    AUTO_RECOVERY_CHECK_HOLD,
+    AUTO_RECOVERY_CHECK_CONVERGED,
+    AUTO_RECOVERY_CHECK_REOFFER,
+    AUTO_RECOVERY_CHECK_REFUSED,
+    AUTO_RECOVERY_CHECK_PERSIST_FAILED,
+} auto_recovery_check_result_t;
+
+static auto_recovery_check_result_t
+auto_coordinator_handle_recovery_check(
+    int scanner_id,
+    const fw_store_info_t *info,
+    const scanner_identity_snapshot_t *identity,
+    bool have_identity,
+    const char *scanner_board,
+    const char *scanner_version,
+    const char *check_reason)
+{
+    if (scanner_id < 0 || scanner_id >= FW_AUTO_UPDATE_SCANNER_COUNT ||
+        !info || !identity || !scanner_board || !scanner_version ||
+        !check_reason) {
+        return AUTO_RECOVERY_CHECK_NOT_ACTIVE;
+    }
+
+    const scanner_info_t *live = scanner_id == 0
+        ? uart_rx_get_ble_scanner_info()
+        : uart_rx_get_wifi_scanner_info();
+    scanner_info_t scanner = {0};
+    if (live) {
+        scanner = *live;
+    }
+    bool peer_connected = scanner_id == 0
+        ? uart_rx_is_wifi_scanner_connected()
+        : uart_rx_is_ble_scanner_connected();
+#ifdef FOF_BADGE_VARIANT
+    badge_power_state_t power_state = {0};
+    badge_power_runtime_snapshot(&power_state);
+    bool quiet_expected = power_state.quiet;
+    const char *expected_profile = peer_connected
+        ? fof_policy_scan_profile_for_slot((uint8_t)scanner_id, false)
+        : "hybrid_failover";
+#else
+    bool quiet_expected = false;
+    const char *expected_profile = "hybrid_failover";
+#endif
+
+    bool target_contract_matches = have_identity && scanner.received &&
+        scanner.identity_generation >= identity->identity_generation &&
+        auto_identity_matches_manifest(
+            identity, info, scanner_board, scanner_version) &&
+        strcmp(scanner.hardware_id, identity->hardware_id) == 0 &&
+        strcmp(scanner.version, identity->version) == 0 &&
+        strcmp(scanner.board, info->name) == 0 &&
+        strcmp(scanner.firmware_name, info->name) == 0 &&
+        strcmp(scanner.app_project, info->project) == 0 &&
+        strcmp(scanner.hardware_type, info->hardware) == 0;
+    bool command_healthy = scanner.cmd_rx_count > 0 &&
+        scanner.cmd_last_age_s >= 0 && scanner.cmd_last_age_s <= 45;
+    bool profile_healthy = expected_profile &&
+        strcmp(scanner.scan_profile, expected_profile) == 0;
+    bool radio_healthy = false;
+#ifdef FOF_BADGE_VARIANT
+    if (quiet_expected) {
+        radio_healthy = scanner.quiet_mode &&
+            scanner.quiet_uart_commands && !scanner.quiet_tx_enabled &&
+            scanner.wifi_paused && !scanner.ble_scanning;
+    } else if (!scanner.quiet_mode && scanner.quiet_tx_enabled) {
+        if (strcmp(expected_profile, "ble_primary") == 0) {
+            radio_healthy = scanner.ble_scanning &&
+                scanner.ble_host_active && scanner.ble_host_synced &&
+                scanner.wifi_paused;
+        } else if (strcmp(expected_profile, "wifi_primary") == 0) {
+            radio_healthy = !scanner.ble_scanning && !scanner.wifi_paused;
+        } else {
+            radio_healthy = scanner.ble_scanning &&
+                scanner.ble_host_active && scanner.ble_host_synced &&
+                !scanner.wifi_paused;
+        }
+    }
+#else
+    (void)quiet_expected;
+    (void)peer_connected;
+    radio_healthy = scanner.ble_scanning && scanner.ble_host_active &&
+        scanner.ble_host_synced && !scanner.wifi_paused;
+#endif
+
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    fof_auto_identity_view_t identity_view = auto_identity_view(identity);
+    if (!auto_coordinator_lock()) {
+        return AUTO_RECOVERY_CHECK_HOLD;
+    }
+    uint8_t bit = (uint8_t)(1u << scanner_id);
+    if (!s_auto_coordinator_loaded ||
+        s_auto_coordinator.generation != info->generation ||
+        s_auto_coordinator.manifest_crc32 != info->manifest_crc32 ||
+        !(s_auto_coordinator.target_slot_mask & bit) ||
+        s_auto_coordinator.slot_state[scanner_id] !=
+            FW_AUTO_SLOT_RECOVERING) {
+        auto_coordinator_unlock();
+        return AUTO_RECOVERY_CHECK_NOT_ACTIVE;
+    }
+
+    fof_auto_recovery_view_t recovery = {
+        .manual_probe = strcmp(check_reason, "manual") == 0 &&
+            s_auto_recovery_not_before_ms[scanner_id] > 0 &&
+            now_ms >= s_auto_recovery_not_before_ms[scanner_id],
+        .identity_fresh = fof_auto_identity_is_fresh(
+            &identity_view, s_auto_identity_generation_floor[scanner_id],
+            now_ms, FW_AUTO_IDENTITY_MAX_AGE_MS),
+        .same_hardware_id = have_identity &&
+            strcmp(identity->hardware_id,
+                   s_auto_coordinator.bound_hardware_id[scanner_id]) == 0 &&
+            strcmp(scanner.hardware_id,
+                   s_auto_coordinator.bound_hardware_id[scanner_id]) == 0,
+        .target_contract_matches = target_contract_matches,
+        .rollback_clear = !scanner.rollback_pending,
+        .recovery_normal = strcmp(scanner.recovery_mode, "normal") == 0,
+        .command_healthy = command_healthy,
+        .profile_healthy = profile_healthy,
+        .radio_healthy = radio_healthy,
+        .version_relation = staged_firmware_version_relation(
+            info, scanner_board, scanner_version),
+        .source_version = scanner_version,
+    };
+    fof_auto_recovery_decision_t decision =
+        fof_auto_recovery_decide(&recovery);
+    if (decision == FOF_AUTO_RECOVERY_HOLD) {
+        auto_coordinator_unlock();
+        return AUTO_RECOVERY_CHECK_HOLD;
+    }
+
+    fw_auto_slot_state_t new_state = FW_AUTO_SLOT_REFUSED;
+    auto_recovery_check_result_t result = AUTO_RECOVERY_CHECK_REFUSED;
+    if (decision == FOF_AUTO_RECOVERY_CONVERGED) {
+        new_state = FW_AUTO_SLOT_CONVERGED;
+        result = AUTO_RECOVERY_CHECK_CONVERGED;
+    } else if (decision == FOF_AUTO_RECOVERY_REOFFER &&
+               s_auto_coordinator.relay_attempts[scanner_id] <
+                   FW_AUTO_RELAY_MAX_ATTEMPTS) {
+        new_state = FW_AUTO_SLOT_OFFERED;
+        result = AUTO_RECOVERY_CHECK_REOFFER;
+    } else if (decision == FOF_AUTO_RECOVERY_REOFFER) {
+        new_state = FW_AUTO_SLOT_FAILED;
+    } else if (decision != FOF_AUTO_RECOVERY_REFUSED) {
+        auto_coordinator_unlock();
+        return AUTO_RECOVERY_CHECK_HOLD;
+    }
+
+    s_auto_coordinator.slot_state[scanner_id] = new_state;
+    s_auto_coordinator.pending_mask &= (uint8_t)~bit;
+    s_auto_coordinator.bound_hardware_id[scanner_id][0] = '\0';
+    if (!auto_coordinator_save_locked()) {
+        auto_coordinator_fail_closed_after_save_failure_locked(
+            "recovery_result");
+        auto_coordinator_unlock();
+        return AUTO_RECOVERY_CHECK_PERSIST_FAILED;
+    }
+
+    auto_clear_ready_bindings_locked(scanner_id);
+    s_auto_recovery_not_before_ms[scanner_id] = 0;
+    s_auto_recovery_next_probe_ms[scanner_id] = 0;
+    if (result == AUTO_RECOVERY_CHECK_REOFFER) {
+        fw_auto_offer_binding_t *binding =
+            &s_auto_offer_bindings[scanner_id];
+        binding->generation = info->generation;
+        binding->manifest_crc32 = info->manifest_crc32;
+        binding->slot = (uint8_t)scanner_id;
+        binding->identity_generation = identity->identity_generation;
+        snprintf(binding->hardware_id, sizeof(binding->hardware_id), "%s",
+                 identity->hardware_id);
+        binding->captured_ms = now_ms;
+    }
+    auto_coordinator_unlock();
+    return result;
+}
+
 bool fw_store_restore_auto_update_coordinator(void)
 {
     fw_store_info_t info = {0};
@@ -4540,6 +4909,7 @@ bool fw_store_restore_auto_update_coordinator(void)
     }
     auto_set_identity_floors_locked(identity_floors);
     bool changed = false;
+    uint8_t recovery_mask = 0;
     for (int scanner_id = 0;
          !migrated_from_v2 && scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT;
          ++scanner_id) {
@@ -4555,14 +4925,18 @@ bool fw_store_restore_auto_update_coordinator(void)
             s_auto_coordinator.slot_state[scanner_id] =
                 FW_AUTO_SLOT_RECOVERING;
             s_auto_coordinator.pending_mask &= (uint8_t)~bit;
+            s_auto_coordinator.readiness_probe_attempts[scanner_id] = 0;
+            recovery_mask |= bit;
             ESP_LOGW(TAG,
                      "Scanner[%d] interrupted relay restored as recovering "
                      "for bound MAC %s",
                      scanner_id,
                      s_auto_coordinator.bound_hardware_id[scanner_id]);
             changed = true;
-        } else if (s_auto_coordinator.slot_state[scanner_id] !=
-                       FW_AUTO_SLOT_RECOVERING &&
+        } else if (s_auto_coordinator.slot_state[scanner_id] ==
+                       FW_AUTO_SLOT_RECOVERING) {
+            recovery_mask |= bit;
+        } else if (
                    !auto_coordinator_slot_is_terminal(
                        s_auto_coordinator.slot_state[scanner_id])) {
             /* READY/OFFERED are volatile scanner-side facts. A reboot may
@@ -4581,6 +4955,7 @@ bool fw_store_restore_auto_update_coordinator(void)
     if (!saved) {
         return false;
     }
+    auto_begin_recovery_after_restore(recovery_mask);
 
     ESP_LOGW(TAG,
              "Restored scanner-update coordinator generation=%lu mask=0x%02x",
@@ -4631,6 +5006,32 @@ void fw_store_handle_scanner_check(int scanner_id,
     fof_firmware_version_relation_t relation =
         staged_firmware_version_relation(&info, scanner_board,
                                          scanner_version);
+    auto_recovery_check_result_t recovery_result =
+        auto_coordinator_handle_recovery_check(
+            scanner_id, &info, &identity, have_identity,
+            scanner_board, scanner_version, check_reason);
+    if (recovery_result != AUTO_RECOVERY_CHECK_NOT_ACTIVE) {
+        if (recovery_result == AUTO_RECOVERY_CHECK_REOFFER) {
+            send_fw_offer(scanner_id, true, &info,
+                          "staged_update_available");
+        } else if (recovery_result == AUTO_RECOVERY_CHECK_CONVERGED) {
+            send_fw_offer(scanner_id, false, &info, "recovered_converged");
+            (void)auto_coordinator_reprompt_requested();
+            (void)auto_coordinator_start_worker();
+        } else if (recovery_result == AUTO_RECOVERY_CHECK_REFUSED) {
+            send_fw_offer(scanner_id, false, &info, "recovery_refused");
+            (void)auto_coordinator_reprompt_requested();
+            (void)auto_coordinator_start_worker();
+        } else if (recovery_result ==
+                   AUTO_RECOVERY_CHECK_PERSIST_FAILED) {
+            send_fw_offer(scanner_id, false, &info,
+                          "coordinator_unavailable");
+        } else {
+            send_fw_offer(scanner_id, false, &info,
+                          "recovery_proof_required");
+        }
+        return;
+    }
     if (relation == FOF_VERSION_NEWER) {
         if (scanner_version &&
             strcmp(scanner_version,
