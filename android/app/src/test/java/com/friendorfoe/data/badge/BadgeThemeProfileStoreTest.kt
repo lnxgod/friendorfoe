@@ -4,6 +4,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 class BadgeThemeProfileStoreTest {
 
@@ -242,6 +247,102 @@ class BadgeThemeProfileStoreTest {
 
         assertEquals(listOf("one", "three"), library.profiles.map { it.id })
         assertEquals(listOf("First", "Third"), library.profiles.map { it.name })
+    }
+
+    @Test
+    fun `persisted Unicode case duplicates use the mutation equality rule`() {
+        val raw = profileDocument(
+            validProfile("one", "İ"),
+            validProfile("two", "i", palette = "night"),
+            validProfile("three", "Other", palette = "mono"),
+        )
+
+        val library = readOnlyLibrary(raw)
+
+        assertEquals(listOf("one", "three"), library.profiles.map { it.id })
+        assertEquals(listOf("İ", "Other"), library.profiles.map { it.name })
+    }
+
+    @Test
+    fun `create and rename reject the same Unicode case duplicates as decode`() {
+        val library = inMemoryLibrary("one", "two", "three")
+
+        assertTrue(library.create("İ", defaultBadgeTheme()))
+        assertFalse(library.create("i", preset("blacklight")))
+        assertTrue(library.create("Other", preset("inferno")))
+        assertFalse(library.rename("two", "i"))
+
+        assertEquals(listOf("İ", "Other"), library.profiles.map { it.name })
+    }
+
+    @Test
+    fun `concurrent mutations serialize persistence and converge every snapshot`() {
+        val persistedRaw = AtomicReference<String?>(null)
+        val persistCalls = AtomicInteger(0)
+        val nextId = AtomicInteger(0)
+        val firstPersistEntered = CountDownLatch(1)
+        val secondCallStarted = CountDownLatch(1)
+        val secondPersistEntered = CountDownLatch(1)
+        val releaseFirstPersist = CountDownLatch(1)
+        val library = BadgeThemeProfileLibrary(
+            readEncoded = persistedRaw::get,
+            persistEncoded = { encoded ->
+                when (persistCalls.incrementAndGet()) {
+                    1 -> {
+                        firstPersistEntered.countDown()
+                        check(releaseFirstPersist.await(5, TimeUnit.SECONDS)) {
+                            "timed out waiting to release first persistence"
+                        }
+                    }
+                    2 -> secondPersistEntered.countDown()
+                }
+                persistedRaw.set(encoded)
+            },
+            idFactory = { "id-${nextId.incrementAndGet()}" },
+        )
+        val store = BadgeThemeProfileStore(library)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val first = executor.submit<Boolean> {
+                store.create("First", preset("field"))
+            }
+            assertTrue(
+                "first mutation did not reach persistence",
+                firstPersistEntered.await(5, TimeUnit.SECONDS),
+            )
+            val second = executor.submit<Boolean> {
+                secondCallStarted.countDown()
+                store.create("Second", preset("blacklight"))
+            }
+            assertTrue(
+                "second mutation did not start",
+                secondCallStarted.await(5, TimeUnit.SECONDS),
+            )
+
+            try {
+                assertFalse(
+                    "second mutation entered persistence before the first completed",
+                    secondPersistEntered.await(500, TimeUnit.MILLISECONDS),
+                )
+            } finally {
+                releaseFirstPersist.countDown()
+            }
+
+            assertTrue(first.get(5, TimeUnit.SECONDS))
+            assertTrue(second.get(5, TimeUnit.SECONDS))
+        } finally {
+            releaseFirstPersist.countDown()
+            executor.shutdownNow()
+            assertTrue("executor did not terminate", executor.awaitTermination(5, TimeUnit.SECONDS))
+        }
+
+        val persistedProfiles = BadgeThemeProfileLibrary(persistedRaw::get, {}).profiles
+        val expectedNames = listOf("First", "Second")
+        assertEquals(2, persistCalls.get())
+        assertEquals(expectedNames, library.profiles.map { it.name })
+        assertEquals(library.profiles, store.profiles.value)
+        assertEquals(library.profiles, persistedProfiles)
     }
 
     @Test

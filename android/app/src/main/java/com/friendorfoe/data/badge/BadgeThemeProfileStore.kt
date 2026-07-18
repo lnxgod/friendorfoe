@@ -8,7 +8,6 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -29,7 +28,7 @@ internal class BadgeThemeProfileLibrary(
 
     fun create(name: String, theme: BadgeTheme): Boolean {
         val normalizedName = normalizeProfileName(name) ?: return false
-        if (profiles.any { it.name.equals(normalizedName, ignoreCase = true) }) return false
+        if (profiles.any { profileNamesEqual(it.name, normalizedName) }) return false
         val id = idFactory()
         if (id.isBlank() || profiles.any { it.id == id }) return false
         return persist(
@@ -47,7 +46,7 @@ internal class BadgeThemeProfileLibrary(
         val normalizedName = normalizeProfileName(name) ?: return false
         if (profiles[index].name == normalizedName) return false
         if (profiles.anyIndexed { otherIndex, profile ->
-                otherIndex != index && profile.name.equals(normalizedName, ignoreCase = true)
+                otherIndex != index && profileNamesEqual(profile.name, normalizedName)
             }
         ) return false
         return persist(
@@ -83,16 +82,13 @@ internal class BadgeThemeProfileLibrary(
 }
 
 @Singleton
-class BadgeThemeProfileStore @Inject constructor(
-    @ApplicationContext context: Context,
+class BadgeThemeProfileStore internal constructor(
+    private val library: BadgeThemeProfileLibrary,
 ) {
-    private val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
-    private val library = BadgeThemeProfileLibrary(
-        readEncoded = { preferences.getString(PROFILES_KEY, null) },
-        persistEncoded = { encoded ->
-            preferences.edit().putString(PROFILES_KEY, encoded).apply()
-        },
-    )
+    @Inject
+    constructor(@ApplicationContext context: Context) : this(profileLibrary(context))
+
+    private val mutationLock = Any()
     private val mutableProfiles = MutableStateFlow(library.profiles)
 
     val profiles: StateFlow<List<BadgeThemeProfile>> = mutableProfiles.asStateFlow()
@@ -109,15 +105,26 @@ class BadgeThemeProfileStore @Inject constructor(
     fun delete(id: String): Boolean =
         updateProfiles { library.delete(id) }
 
-    private inline fun updateProfiles(operation: () -> Boolean): Boolean {
-        val changed = operation()
-        if (changed) mutableProfiles.value = library.profiles
-        return changed
-    }
+    private inline fun updateProfiles(operation: () -> Boolean): Boolean =
+        synchronized(mutationLock) {
+            val changed = operation()
+            if (changed) mutableProfiles.value = library.profiles
+            changed
+        }
 
     private companion object {
         const val PREFERENCES_FILE = "fof_badge_theme_profiles"
         const val PROFILES_KEY = "profiles_v1"
+
+        fun profileLibrary(context: Context): BadgeThemeProfileLibrary {
+            val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
+            return BadgeThemeProfileLibrary(
+                readEncoded = { preferences.getString(PROFILES_KEY, null) },
+                persistEncoded = { encoded ->
+                    preferences.edit().putString(PROFILES_KEY, encoded).apply()
+                },
+            )
+        }
     }
 }
 
@@ -137,16 +144,17 @@ private object BadgeThemeProfileCodec {
             ?: return emptyList()
 
         val ids = mutableSetOf<String>()
-        val names = mutableSetOf<String>()
+        val names = mutableListOf<String>()
         return buildList {
             encodedProfiles.forEach { element ->
                 val profile = decodeProfile(
                     element.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach,
                 ) ?: return@forEach
-                val foldedName = profile.name.lowercase(Locale.ROOT)
-                if (profile.id in ids || foldedName in names) return@forEach
+                if (profile.id in ids || names.any { profileNamesEqual(it, profile.name) }) {
+                    return@forEach
+                }
                 ids += profile.id
-                names += foldedName
+                names += profile.name
                 add(profile)
             }
         }
@@ -232,6 +240,9 @@ private object BadgeThemeProfileCodec {
 
 private fun normalizeProfileName(name: String): String? =
     name.trim().takeIf { it.length in 1..32 }
+
+private fun profileNamesEqual(first: String, second: String): Boolean =
+    first.equals(second, ignoreCase = true)
 
 private inline fun <T> Iterable<T>.anyIndexed(predicate: (Int, T) -> Boolean): Boolean {
     forEachIndexed { index, item ->
