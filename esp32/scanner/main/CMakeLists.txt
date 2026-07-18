@@ -28,6 +28,10 @@ set(SRCS
     "../../shared/psram_alloc.c"
 )
 
+if("$ENV{PIOENV}" MATCHES "fof_badge")
+    list(APPEND SRCS "../../shared/badge_easter_egg.c")
+endif()
+
 set(REQUIRES esp_wifi driver nvs_flash esp_timer cjson esp_event esp_netif app_update esp_partition esp_psram bt)
 
 idf_component_register(

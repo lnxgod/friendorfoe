@@ -9,6 +9,7 @@
  */
 
 #include <stdint.h>
+#include "badge_easter_egg.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -65,6 +66,7 @@ extern "C" {
 
 #define MSG_TYPE_DETECTION          "detection"
 #define MSG_TYPE_STATUS             "status"
+#define MSG_TYPE_BADGE_EASTER_EGG   "badge_easter_egg"
 #define MSG_TYPE_CONFIG             "config"
 #define MSG_TYPE_ACK                "ack"
 #define MSG_TYPE_LOCKON             "lockon"
@@ -157,6 +159,7 @@ extern "C" {
 /* ── JSON key names (short to save bandwidth at 921600 baud) ─────────────── */
 
 #define JSON_KEY_TYPE               "type"
+#define JSON_KEY_BADGE_EASTER_EGG_SOURCE "source"
 #define JSON_KEY_DRONE_ID           "drone_id"
 #define JSON_KEY_SOURCE             "src"
 #define JSON_KEY_CONFIDENCE         "conf"
@@ -223,6 +226,48 @@ extern "C" {
  * non-zero-only emit; cold-renamed here (legacy uplinks drop the byte
  * until reflashed). */
 #define JSON_KEY_BLE_APPLE_FLAGS    "ble_apple_flags"
+
+/* Badge Easter egg events are coalesced as two fixed bits in scanner callback
+ * context, then drained as fixed allocation-free frames by the UART task. */
+#define BADGE_EASTER_EGG_UART_PENDING_BLE_REMOTE_ID 0x01U
+#define BADGE_EASTER_EGG_UART_PENDING_WIFI_SSID     0x02U
+#define BADGE_EASTER_EGG_UART_PENDING_ALL           0x03U
+
+#define BADGE_EASTER_EGG_UART_SOURCE_BLE_REMOTE_ID  "ble_remote_id"
+#define BADGE_EASTER_EGG_UART_SOURCE_WIFI_SSID      "wifi_ssid"
+
+#define BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID \
+    "{\"type\":\"" MSG_TYPE_BADGE_EASTER_EGG \
+    "\",\"source\":\"" BADGE_EASTER_EGG_UART_SOURCE_BLE_REMOTE_ID "\"}"
+#define BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID \
+    "{\"type\":\"" MSG_TYPE_BADGE_EASTER_EGG \
+    "\",\"source\":\"" BADGE_EASTER_EGG_UART_SOURCE_WIFI_SSID "\"}"
+
+static inline uint32_t badge_easter_egg_uart_pending_bit(
+    badge_easter_egg_source_t source)
+{
+    switch (source) {
+    case BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID:
+        return BADGE_EASTER_EGG_UART_PENDING_BLE_REMOTE_ID;
+    case BADGE_EASTER_EGG_SOURCE_WIFI_SSID:
+        return BADGE_EASTER_EGG_UART_PENDING_WIFI_SSID;
+    default:
+        return 0;
+    }
+}
+
+static inline const char *badge_easter_egg_uart_frame(
+    badge_easter_egg_source_t source)
+{
+    switch (source) {
+    case BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID:
+        return BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID;
+    case BADGE_EASTER_EGG_SOURCE_WIFI_SSID:
+        return BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID;
+    default:
+        return (const char *)0;
+    }
+}
 
 /* ── Framing ─────────────────────────────────────────────────────────────── */
 

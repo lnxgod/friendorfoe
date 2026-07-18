@@ -1,6 +1,7 @@
 #include "unity.h"
 
 #include "badge_easter_egg.h"
+#include "uart_protocol.h"
 
 static badge_easter_egg_remote_id_t exact_remote_id(void)
 {
@@ -161,4 +162,42 @@ void test_badge_easter_machine_rejects_out_of_range_without_consuming_latch(void
 
     TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger(
         &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID));
+}
+
+void test_badge_easter_uart_pending_sources_coalesce(void)
+{
+    uint32_t pending = 0;
+
+    pending |= badge_easter_egg_uart_pending_bit(
+        BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID);
+    pending |= badge_easter_egg_uart_pending_bit(
+        BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID);
+    TEST_ASSERT_EQUAL_HEX32(BADGE_EASTER_EGG_UART_PENDING_BLE_REMOTE_ID,
+                            pending);
+
+    pending |= badge_easter_egg_uart_pending_bit(
+        BADGE_EASTER_EGG_SOURCE_WIFI_SSID);
+    pending |= badge_easter_egg_uart_pending_bit(
+        BADGE_EASTER_EGG_SOURCE_WIFI_SSID);
+    TEST_ASSERT_EQUAL_HEX32(BADGE_EASTER_EGG_UART_PENDING_ALL, pending);
+
+    TEST_ASSERT_EQUAL_HEX32(0, badge_easter_egg_uart_pending_bit(
+        BADGE_EASTER_EGG_SOURCE_NONE));
+    TEST_ASSERT_EQUAL_HEX32(0, badge_easter_egg_uart_pending_bit(
+        BADGE_EASTER_EGG_SOURCE_BUTTON));
+}
+
+void test_badge_easter_uart_frames_use_fixed_allowlisted_sources(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"type\":\"badge_easter_egg\",\"source\":\"ble_remote_id\"}",
+        badge_easter_egg_uart_frame(
+            BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID));
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"type\":\"badge_easter_egg\",\"source\":\"wifi_ssid\"}",
+        badge_easter_egg_uart_frame(BADGE_EASTER_EGG_SOURCE_WIFI_SSID));
+    TEST_ASSERT_NULL(badge_easter_egg_uart_frame(
+        BADGE_EASTER_EGG_SOURCE_NONE));
+    TEST_ASSERT_NULL(badge_easter_egg_uart_frame(
+        BADGE_EASTER_EGG_SOURCE_BUTTON));
 }

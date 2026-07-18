@@ -27,6 +27,10 @@
 #include "calibration_mode.h"
 #include "rssi_distance.h"
 #include "core/task_priorities.h"
+#ifdef FOF_BADGE_VARIANT
+#include "badge_easter_egg.h"
+#include "comms/uart_tx.h"
+#endif
 
 #include <stdlib.h>
 #include "esp_wifi.h"
@@ -99,6 +103,15 @@ static bool          s_next_is_5ghz = false; /* interleave toggle */
 static void add_channel_heat(uint16_t ch, uint8_t points);
 static void decay_channel_heat(void);
 static void update_hot_channel(uint16_t ch);
+
+#ifdef FOF_BADGE_VARIANT
+static void note_badge_easter_egg_ssid(const uint8_t *ssid, size_t len)
+{
+    if (badge_easter_egg_ssid_matches(ssid, len)) {
+        uart_tx_note_badge_easter_egg(BADGE_EASTER_EGG_SOURCE_WIFI_SSID);
+    }
+}
+#endif
 
 /* ── Lock-on mode ─────────────────────────────────────────────────────────── */
 
@@ -449,29 +462,9 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
         return;
     }
 
-    /* Extract source addr (frame[10..15]) and BSSID (frame[16..21]).
-     * Pwnagotchi's beacon forwarding uses a hardcoded sender MAC of
-     * DE:AD:BE:EF:DE:AD (Marauder-confirmed signature). When seen, emit a
-     * high-confidence hostile-scanner detection so the backend can alert
-     * on a pwnagotchi nearby — regardless of what SSID it's pretending
-     * to broadcast. */
+    /* Extract source addr (frame[10..15]) and BSSID (frame[16..21]). */
     const uint8_t *src  = &frame[10];
     const uint8_t *bssid = &frame[16];
-    static const uint8_t PWNAGOTCHI_MAC[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD};
-    if (memcmp(src, PWNAGOTCHI_MAC, 6) == 0 ||
-        memcmp(bssid, PWNAGOTCHI_MAC, 6) == 0) {
-        drone_detection_t det;
-        init_detection(&det, bssid, rssi, "pwnagotchi");
-        det.source = DETECTION_SRC_WIFI_OUI;
-        det.confidence = 0.95f;
-        strncpy(det.manufacturer, "Pwnagotchi", sizeof(det.manufacturer) - 1);
-        strncpy(det.drone_id, "pwnagotchi", sizeof(det.drone_id) - 1);
-        ESP_LOGW(TAG, "Pwnagotchi beacon seen RSSI=%d", rssi);
-        if (s_detection_queue) {
-            xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
-        }
-        return;  /* no further classification needed */
-    }
 
     /* ── Parse tagged parameters ──────────────────────────────────────────── */
     char ssid[33] = { 0 };
@@ -489,9 +482,34 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
         if (tag_id == IE_TAG_SSID && tag_len > 0 && tag_len <= 32) {
             memcpy(ssid, &frame[tag_data_offset], tag_len);
             ssid[tag_len] = '\0';
+#ifdef FOF_BADGE_VARIANT
+            note_badge_easter_egg_ssid(&frame[tag_data_offset],
+                                        (size_t)tag_len);
+#endif
         }
 
         offset = tag_data_offset + tag_len;
+    }
+
+    /* Pwnagotchi's beacon forwarding uses a hardcoded sender MAC of
+     * DE:AD:BE:EF:DE:AD. Exact SSID observation above intentionally happens
+     * first so badge triggers are not hidden behind this classification. */
+    static const uint8_t PWNAGOTCHI_MAC[6] = {
+        0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD
+    };
+    if (memcmp(src, PWNAGOTCHI_MAC, 6) == 0 ||
+        memcmp(bssid, PWNAGOTCHI_MAC, 6) == 0) {
+        drone_detection_t det;
+        init_detection(&det, bssid, rssi, "pwnagotchi");
+        det.source = DETECTION_SRC_WIFI_OUI;
+        det.confidence = 0.95f;
+        strncpy(det.manufacturer, "Pwnagotchi", sizeof(det.manufacturer) - 1);
+        strncpy(det.drone_id, "pwnagotchi", sizeof(det.drone_id) - 1);
+        ESP_LOGW(TAG, "Pwnagotchi beacon seen RSSI=%d", rssi);
+        if (s_detection_queue) {
+            xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
+        }
+        return;
     }
 
     /* ── Beacon spam detection ────────────────────────────────────────────── */
@@ -1065,6 +1083,10 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
                 if (tag_len > 0 && tag_len <= 32) {
                     memcpy(ssid, &frame[tag_data_offset], tag_len);
                     ssid[tag_len] = '\0';
+#ifdef FOF_BADGE_VARIANT
+                    note_badge_easter_egg_ssid(&frame[tag_data_offset],
+                                                (size_t)tag_len);
+#endif
                     /* Accumulate probed SSIDs list */
                     if (probed_pos > 0 && probed_pos < (int)sizeof(probed_ssids) - 2) {
                         probed_ssids[probed_pos++] = ',';
@@ -1625,6 +1647,11 @@ static void process_scan_results(void)
         int8_t rssi = ap_list[i].rssi;
         uint8_t *bssid = ap_list[i].bssid;
         uint16_t ch = ap_list[i].primary;
+#ifdef FOF_BADGE_VARIANT
+        note_badge_easter_egg_ssid(
+            ap_list[i].ssid,
+            strnlen(ssid, sizeof(ap_list[i].ssid)));
+#endif
         const fof_privacy_wifi_signature_t *privacy =
             ssid[0] != '\0' ? fof_privacy_match_wifi_ssid(ssid) : NULL;
 

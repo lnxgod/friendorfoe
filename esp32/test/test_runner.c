@@ -17,6 +17,8 @@ void test_parse_wrong_oui(void);
 
 void test_parse_basic_id(void);
 void test_parse_location(void);
+void test_odid_retains_exact_units_for_badge_easter_match(void);
+void test_odid_basic_id_change_clears_only_prior_identity_location(void);
 void test_parse_system(void);
 void test_parse_operator_id(void);
 void test_parse_self_id(void);
@@ -234,6 +236,8 @@ void test_badge_easter_ssid_is_exact_case_sensitive_bytes(void);
 void test_badge_easter_machine_is_one_shot_until_init(void);
 void test_badge_easter_machine_rejects_none_without_consuming_latch(void);
 void test_badge_easter_machine_rejects_out_of_range_without_consuming_latch(void);
+void test_badge_easter_uart_pending_sources_coalesce(void);
+void test_badge_easter_uart_frames_use_fixed_allowlisted_sources(void);
 void test_badge_hold_on_ble_entity_starts_gatt_investigation(void);
 void test_badge_hold_on_pairing_spam_starts_passive_capture(void);
 void test_badge_hold_on_non_ble_entity_opens_deepest_detail(void);
@@ -409,6 +413,8 @@ int main(void)
 
     RUN_TEST(test_parse_basic_id);
     RUN_TEST(test_parse_location);
+    RUN_TEST(test_odid_retains_exact_units_for_badge_easter_match);
+    RUN_TEST(test_odid_basic_id_change_clears_only_prior_identity_location);
     RUN_TEST(test_parse_system);
     RUN_TEST(test_parse_operator_id);
     RUN_TEST(test_parse_self_id);
@@ -626,6 +632,8 @@ int main(void)
     RUN_TEST(test_badge_easter_machine_is_one_shot_until_init);
     RUN_TEST(test_badge_easter_machine_rejects_none_without_consuming_latch);
     RUN_TEST(test_badge_easter_machine_rejects_out_of_range_without_consuming_latch);
+    RUN_TEST(test_badge_easter_uart_pending_sources_coalesce);
+    RUN_TEST(test_badge_easter_uart_frames_use_fixed_allowlisted_sources);
     RUN_TEST(test_badge_hold_on_ble_entity_starts_gatt_investigation);
     RUN_TEST(test_badge_hold_on_pairing_spam_starts_passive_capture);
     RUN_TEST(test_badge_hold_on_non_ble_entity_opens_deepest_detail);

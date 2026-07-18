@@ -38,6 +38,9 @@
 #include <math.h>
 #include <stdlib.h>
 #include "esp_timer.h"
+#ifdef FOF_BADGE_VARIANT
+#include <stdatomic.h>
+#endif
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
 
@@ -142,6 +145,18 @@ static uint32_t s_display_policy_hash = 0;
 static uint32_t s_display_policy_ack_hash = 0;
 static uint32_t s_display_policy_filtered[BADGE_DISPLAY_POLICY_CLASS_COUNT];
 static portMUX_TYPE s_display_policy_lock = portMUX_INITIALIZER_UNLOCKED;
+static _Atomic uint32_t s_badge_easter_pending = 0;
+#endif
+
+#ifdef FOF_BADGE_VARIANT
+void uart_tx_note_badge_easter_egg(badge_easter_egg_source_t source)
+{
+    uint32_t pending_bit = badge_easter_egg_uart_pending_bit(source);
+    if (pending_bit != 0) {
+        atomic_fetch_or_explicit(&s_badge_easter_pending, pending_bit,
+                                 memory_order_relaxed);
+    }
+}
 #endif
 
 bool uart_tx_is_enabled(void) { return s_tx_enabled; }
@@ -1597,6 +1612,19 @@ static void uart_tx_task(void *arg)
             led_set_pattern(LED_UPLINK_OK);
             ESP_LOGI(TAG, "TX resumed by uplink start command");
         }
+
+#ifdef FOF_BADGE_VARIANT
+        uint32_t easter_pending = atomic_exchange_explicit(
+            &s_badge_easter_pending, 0, memory_order_relaxed);
+        if ((easter_pending & BADGE_EASTER_EGG_UART_PENDING_BLE_REMOTE_ID) != 0) {
+            uart_tx_send_raw_json(badge_easter_egg_uart_frame(
+                BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID));
+        }
+        if ((easter_pending & BADGE_EASTER_EGG_UART_PENDING_WIFI_SSID) != 0) {
+            uart_tx_send_raw_json(badge_easter_egg_uart_frame(
+                BADGE_EASTER_EGG_SOURCE_WIFI_SSID));
+        }
+#endif
 
         /* Block on detection queue with a short timeout so we can do
          * periodic maintenance even when no detections are flowing. */

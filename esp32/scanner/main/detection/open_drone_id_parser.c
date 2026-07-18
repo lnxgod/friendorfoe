@@ -56,6 +56,26 @@ static size_t trim_ascii(const uint8_t *src, size_t src_len, char *dst, size_t d
 
 /* ── Message parsers ────────────────────────────────────────────────────── */
 
+static void clear_location_state(odid_state_t *state)
+{
+    state->has_location = false;
+    state->latitude_e7 = 0;
+    state->longitude_e7 = 0;
+    state->latitude = 0.0;
+    state->longitude = 0.0;
+    state->altitude_m = 0.0;
+    state->heading_deg = NAN;
+    state->speed_mps = 0.0f;
+    state->vertical_speed_mps = NAN;
+    state->geodetic_alt_m = NAN;
+    state->has_geodetic_altitude = false;
+    state->geodetic_altitude_half_m = 0;
+    state->height_agl_m = NAN;
+    state->h_accuracy_code = 0;
+    state->v_accuracy_code = 0;
+    state->location_timestamp = 0;
+}
+
 /**
  * Parse Basic ID message (Type 0).
  *
@@ -77,8 +97,12 @@ static void parse_basic_id(const uint8_t *data, size_t len, odid_state_t *state)
     size_t serial_len = trim_ascii(&data[2], 20, serial, sizeof(serial));
 
     if (serial_len > 0) {
+        if (state->has_basic_id && strcmp(state->drone_id, serial) != 0) {
+            clear_location_state(state);
+        }
         strncpy(state->drone_id, serial, sizeof(state->drone_id) - 1);
         state->drone_id[sizeof(state->drone_id) - 1] = '\0';
+        state->has_basic_id = true;
     }
     state->ua_type = ua_type;
     state->id_type = id_type;
@@ -134,6 +158,8 @@ static void parse_location(const uint8_t *data, size_t len, odid_state_t *state)
     if (longitude < -180.0 || longitude > 180.0) return;
 
     state->has_location = true;
+    state->latitude_e7 = lat_raw;
+    state->longitude_e7 = lon_raw;
     state->latitude = latitude;
     state->longitude = longitude;
     state->altitude_m = altitude_m;
@@ -151,8 +177,14 @@ static void parse_location(const uint8_t *data, size_t len, odid_state_t *state)
     /* Geodetic altitude (bytes 15-16): uint16, 0.5m - 1000m, 0xFFFF = unknown */
     if (len >= 17) {
         uint16_t geo_alt_raw = read_uint16_le(data, 15, len);
+        state->has_geodetic_altitude = false;
+        state->geodetic_altitude_half_m = 0;
+        state->geodetic_alt_m = NAN;
         if (geo_alt_raw != 0xFFFF) {
-            state->geodetic_alt_m = (double)geo_alt_raw * ODID_ALT_SCALE + ODID_ALT_OFFSET;
+            state->has_geodetic_altitude = true;
+            state->geodetic_altitude_half_m = (int32_t)geo_alt_raw - 2000;
+            state->geodetic_alt_m =
+                (double)state->geodetic_altitude_half_m * ODID_ALT_SCALE;
         }
     }
 

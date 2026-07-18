@@ -31,6 +31,9 @@
 #include "detection_policy.h"
 #include "core/task_priorities.h"
 #include "comms/uart_tx.h"
+#ifdef FOF_BADGE_VARIANT
+#include "badge_easter_egg.h"
+#endif
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -824,6 +827,22 @@ static void process_odid_service_data(const uint8_t mac[6],
 
     /* Parse the ODID message into the accumulated state (depth=0 for top-level) */
     odid_parse_message(odid_msg, (size_t)odid_len, &slot->odid, 0);
+#ifdef FOF_BADGE_VARIANT
+    badge_easter_egg_remote_id_t easter_remote_id = {
+        .has_basic_id = slot->odid.has_basic_id,
+        .basic_id = slot->odid.drone_id,
+        .has_location = slot->odid.has_location,
+        .latitude_e7 = slot->odid.latitude_e7,
+        .longitude_e7 = slot->odid.longitude_e7,
+        .has_geodetic_altitude = slot->odid.has_geodetic_altitude,
+        .geodetic_altitude_half_m =
+            slot->odid.geodetic_altitude_half_m,
+    };
+    if (badge_easter_egg_remote_id_matches(&easter_remote_id)) {
+        uart_tx_note_badge_easter_egg(
+            BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID);
+    }
+#endif
     int64_t ts = now_ms();
     if (skip_len > 0) {
         ESP_LOGD(TAG, "BLE RID service payload len=%d skip=%d odid_len=%d",
