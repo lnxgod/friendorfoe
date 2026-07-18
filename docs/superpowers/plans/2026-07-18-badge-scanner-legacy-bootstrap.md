@@ -11,8 +11,18 @@
 ## Global Constraints
 
 - Automatically accept legacy readiness only from exact source version `0.64.68-badge-live-follow`.
+- Require the identity-capable `.68` dialect observed on the physical scanners;
+  the tagged `.68` binary lacks the extended identity contract and must remain
+  ineligible.
 - Never treat a partial or malformed strict receipt as legacy.
 - Require exact cached target, project, hardware, immutable MAC, board, and version before queueing.
+- Require a complete identity frame newer than the current coordinator
+  generation's per-slot identity floor, and bind the accepted check/offer/ready
+  sequence to the same volatile identity generation and MAC.
+- Publish/read the legacy identity through a mutex-protected small snapshot;
+  do not make authorization from the unsynchronized large scanner-info pointer.
+- Persist the bound MAC before reserving a relay and restore interrupted relays
+  to durable `recovering`, never generic `awaiting_check`.
 - Require exact committed generation, requested slot, BLE-first gate, and durable `offered` state.
 - Preserve strict newer-only ordering, no downgrade, no equal rewrite, staged raw SHA-256 revalidation, bounded retries, and fail-closed NVS behavior.
 - Legacy receipt compatibility ends after this one bootstrap; `.69` scanners use strict receipts.
@@ -107,7 +117,64 @@ Run the Step 2 command. Expected: all native cases pass.
 
 ---
 
-### Task 2: Parser and Durable Coordinator Bridge
+### Task 2: Identity Snapshot and Behavioral Coordinator Policy
+
+**Files:**
+- Create: `esp32/shared/firmware_auto_policy.h`
+- Create: `esp32/shared/firmware_auto_policy.c`
+- Create: `esp32/test/test_firmware_auto_policy.c`
+- Modify: `esp32/platformio.ini`
+- Modify: `esp32/test/test_runner.c`
+- Modify: `esp32/uplink/main/CMakeLists.txt`
+- Modify: `esp32/uplink/main/comms/uart_rx.h`
+- Modify: `esp32/uplink/main/comms/uart_rx.c`
+- Modify: `backend/tests/test_badge_firmware_transport_contract.py`
+
+**Interfaces:**
+- Produces pure decisions for identity freshness, exact offered-only queueing,
+  BLE success-only gating, recovery cooldown/probe eligibility, and interrupted
+  relay convergence/re-offer.
+- Produces `scanner_identity_snapshot_t` and
+  `uart_rx_get_scanner_identity_snapshot(int, scanner_identity_snapshot_t *)`.
+
+- [ ] **Step 1: Write failing behavioral native tests and source contracts**
+
+Cover one-negative-at-a-time cases for an incomplete tagged `.68` identity,
+identity generation at/below the generation floor, expired receive time,
+changed offer generation/manifest/slot/identity generation/MAC, non-`OFFERED`
+queue state, BLE failed/refused/newer not opening Wi-Fi, cooldown not consuming a
+probe, recovery equality without fresh same-MAC healthy identity, and recovery
+re-offer from any source except exact identity-capable `.68`.
+
+Add source contracts requiring a small mutex-protected snapshot populated from
+the *current* `scanner_info` frame, with `complete=false` when any extended
+identity field is absent or malformed. Do not authorize from the existing raw
+pointer getter.
+
+- [ ] **Step 2: Run RED gates**
+
+```bash
+cd esp32
+/Users/billh/gai/friendorfoe/esp32/.venv312/bin/pio test -e test
+/Users/billh/gai/friendorfoe/backend/.venv/bin/pytest \
+  ../backend/tests/test_badge_firmware_transport_contract.py -q
+```
+
+- [ ] **Step 3: Implement the pure policy and identity snapshot**
+
+Keep the policy module free of ESP-IDF dependencies. Use a static FreeRTOS
+mutex only around publication/copy of the small identity snapshot, not around
+the large scanner status structure. A snapshot carries exact identity strings,
+`complete`, monotonically increasing generation, and monotonic receive time.
+Missing fields clear the new snapshot rather than retaining prior values.
+
+- [ ] **Step 4: Run GREEN gates and both uplink builds**
+
+Run Step 2 plus both `uplink-s3-fof_badge` and `uplink-s3` PlatformIO builds.
+
+---
+
+### Task 3: Parser and Durable Coordinator Bridge
 
 **Files:**
 - Modify: `esp32/uplink/main/comms/uart_rx.c`
@@ -116,154 +183,111 @@ Run the Step 2 command. Expected: all native cases pass.
 - Modify: `backend/tests/test_badge_firmware_transport_contract.py`
 
 **Interfaces:**
-- Consumes: Task 1 authorization helper and the current `scanner_info_t` cache.
-- Produces: `bool fw_store_handle_legacy_scanner_ready(int, const char *, const char *, const char *, uint32_t, uint32_t)`.
+- Consumes Tasks 1-2 pure policies and synchronized identity snapshots.
+- Produces `fw_store_handle_legacy_scanner_ready(...)` and a schema-upgraded
+  coordinator with persisted per-slot bound MAC plus `RECOVERING`.
 
-- [ ] **Step 1: Write failing integration contracts**
+- [ ] **Step 1: Write failing parser/coordinator contracts**
 
-Add source-contract assertions that the UART handler:
+Require `strict_receipt_fields_absent`, the legacy handler, exact numeric/common
+field parsing, manual-probe reason, exact `OFFERED`, fresh offer binding, durable
+MAC before queue/relay, schema validation, and save-before-worker ordering.
+Require partial strict frames to remain `malformed_fw_ready` and transfer zero
+bytes.
 
-```python
-assert "strict_receipt_fields_absent" in ready_handler
-assert "fw_store_handle_legacy_scanner_ready" in ready_handler
-assert "malformed_fw_ready" in ready_handler
-```
-
-Add coordinator assertions that legacy queueing requires
-`FW_AUTO_SLOT_OFFERED`, exact generation, requested mask, BLE-first gate, and a
-successful durable save before worker start.
-
-- [ ] **Step 2: Run focused contracts and observe RED**
+- [ ] **Step 2: Run focused RED**
 
 ```bash
 /Users/billh/gai/friendorfoe/backend/.venv/bin/pytest \
   backend/tests/test_badge_firmware_transport_contract.py -q
 ```
 
-Expected: the legacy handler and offered-state gate are absent.
+- [ ] **Step 3: Parse and bind the exact legacy check/ready sequence**
 
-- [ ] **Step 3: Parse legacy only when strict extensions are absent**
+When a generation begins or is restored, record per-slot identity floors. Only
+an exact manual `.68` check following a newer complete identity may become
+`OFFERED`; capture a short-lived volatile binding containing generation,
+manifest CRC, slot, identity generation, MAC, and timestamp. A legacy ready is
+eligible only when every strict-only key is absent, all common values parse
+exactly, Task 1 authorizes it, and the same binding is still live. Any strict
+key means the existing strict parser owns the frame; malformed strict never
+falls back.
 
-```c
-bool strict_receipt_fields_absent =
-    cJSON_GetObjectItemCaseSensitive(root, JSON_KEY_FW_NAME) == NULL &&
-    cJSON_GetObjectItemCaseSensitive(root, JSON_KEY_FW_PROJECT) == NULL &&
-    cJSON_GetObjectItemCaseSensitive(root, JSON_KEY_FW_HARDWARE) == NULL &&
-    cJSON_GetObjectItemCaseSensitive(root, JSON_KEY_FW_SHA256) == NULL &&
-    cJSON_GetObjectItemCaseSensitive(root, JSON_KEY_FW_GENERATION) == NULL &&
-    cJSON_GetObjectItemCaseSensitive(root, JSON_KEY_FW_ALLOW_SAME) == NULL;
-```
+- [ ] **Step 4: Persist ownership before worker start**
 
-Use exact bounded-string and uint32 parsing for the common legacy fields. A
-strict frame with any missing or malformed extension remains
-`malformed_fw_ready`; it never falls through.
+Increment the coordinator schema and persist the bound MAC before setting
+`READY_QUEUED`/pending and before starting the worker. Enqueue requires exact
+`OFFERED`, requested slot, generation, manifest CRC, BLE gate, and retry budget
+under one mutex; an NVS failure restores the prior blob and starts no worker.
+The Wi-Fi gate opens only from BLE `CONVERGED` or `CURRENT`. Before automatic
+legacy `ota_begin`, wait up to 12 seconds for another complete identity
+generation from the stopped scanner and require the same MAC/version/contract.
 
-- [ ] **Step 4: Bind authorization to exact durable offered state**
+- [ ] **Step 5: Run focused tests and both uplink builds**
 
-Construct Task 1 views from the committed `fw_store_info_t` and the slot's
-cached `scanner_info_t`. After pure authorization succeeds, use an internal
-`enqueue_auto_relay_locked(..., require_offered=true)` path. Recheck generation,
-mask, gate, state, and retry budget under one coordinator mutex; persist
-`READY_QUEUED` and pending bit before starting the worker. On any failure send
-`start`, leave no pending bit, and log a bounded `legacy_ready_refused` reason.
-
-- [ ] **Step 5: Run focused contracts and both uplink builds**
-
-```bash
-/Users/billh/gai/friendorfoe/backend/.venv/bin/pytest \
-  backend/tests/test_badge_firmware_transport_contract.py -q
-cd esp32/uplink
-/Users/billh/gai/friendorfoe/esp32/.venv312/bin/pio run -e uplink-s3-fof_badge
-/Users/billh/gai/friendorfoe/esp32/.venv312/bin/pio run -e uplink-s3
-```
-
-Expected: focused contracts pass and both builds link without IRAM growth.
+Run the focused backend contract, full native suite, and both uplink builds.
 
 ---
 
-### Task 3: Session-Bound Legacy Relay Receipts
+### Task 4: Session-Bound Legacy Relay and Interrupted Recovery
 
 **Files:**
 - Modify: `esp32/uplink/main/network/fw_store.c`
 - Modify: `backend/tests/test_badge_firmware_transport_contract.py`
+- Modify: `esp32/test/test_firmware_auto_policy.c`
 
 **Interfaces:**
-- Consumes: exact `.68` source-version proof during the pre-transfer command-health probe.
-- Produces: legacy-mode ACK/progress/done validation while leaving strict mode unchanged.
+- Consumes exact live `.68` plus the durable bound MAC.
+- Produces exact legacy ACK/progress/done receipt handling and durable
+  interrupted-relay recovery without weakening strict mode.
 
-- [ ] **Step 1: Write failing relay contracts**
+- [ ] **Step 1: Write failing receipt/recovery tests**
 
-Require source contracts proving:
+Require behavioral policy and source-contract negatives for type
+`ota_ack_extra`, wrong session, incomplete/wrong-size progress, wrong-size done,
+non-`.68` legacy source, recovery before cooldown, bare equal check, changed MAC,
+rollback/recovery/profile/radio failure, NVS failure, and BLE failure opening
+Wi-Fi. Strict branches must still use full manifest ACK/staged/done matchers.
 
-```python
-assert "FOF_LEGACY_READY_BOOTSTRAP_VERSION" in relay
-assert "relay_line_matches_complete_progress" in legacy_final_chunk
-assert "relay_line_matches_legacy_done" in legacy_finalize
-assert "relay_line_session_matches" in legacy_finalize
-```
+- [ ] **Step 2: Run focused RED**
 
-Negative contracts require wrong session, incomplete progress, wrong received
-size, or non-`.68` source to remain rejected. Strict branches must still call
-`relay_line_matches_manifest_ack` for `ota_ack`, `ota_staged`, and `ota_done`.
+Run the Task 3 focused backend test and native suite.
 
-- [ ] **Step 2: Run the focused contract and observe RED**
+- [ ] **Step 3: Validate exact session-bound legacy receipts**
 
-Run the Task 2 pytest command. Expected: legacy relay validation is absent.
+Activate automatic legacy mode only from the exact live source and durable
+bound MAC. Use a dedicated JSON matcher requiring exact `type == ota_ack` plus
+the fresh session; never pass a null manifest to the strict matcher. Legacy
+final-chunk success requires exact session-bound 100-percent progress with
+`received == total == staged size`. Legacy done requires exact type, session,
+and received size. Strict `.69` continues requiring every manifest field.
 
-- [ ] **Step 3: Activate legacy mode only from the exact live source**
+- [ ] **Step 4: Recover interrupted relays without inventing success**
 
-After the command-health probe returns the scanner version, require exact
-`0.64.68-badge-live-follow` before setting automatic legacy mode. An explicit
-legacy flag with any other source version fails with `legacy_source_refused`.
+Restore durable `RELAYING` as durable `RECOVERING`, retaining the bound MAC and
+consumed attempt. Send `ota_abort`, then hold a 35-second not-before cooldown
+without consuming readiness probes; afterward use at most three probes 20
+seconds apart. A manual response at target version becomes `CONVERGED` only with
+a newer complete same-MAC identity and exact rollback-clear, recovery-normal,
+command/profile/radio health. If the same proven scanner remains exact `.68`,
+return to offer/ready for another bounded attempt. A bare equal fw_check can
+never resolve restored `RELAYING` as `CURRENT`.
 
-- [ ] **Step 4: Validate session-bound legacy receipts**
+- [ ] **Step 5: Run transport/native/build gates**
 
-For legacy `ota_ack`, pass `expected_manifest=NULL` but retain the exact fresh
-session check. Extend `relay_wait_for_staged_or_nack` with `legacy_mode`; after
-an exact session-bound 100-percent progress frame it returns success only in
-legacy mode, while strict mode continues waiting for `ota_staged`. Add:
-
-```c
-static bool relay_line_matches_legacy_done(
-    const char *line, const char *session_id, uint32_t expected_received)
-{
-    if (!relay_line_session_matches(line, session_id)) return false;
-    cJSON *root = cJSON_Parse(line);
-    if (!root) return false;
-    bool matched =
-        json_string_matches(root, JSON_KEY_TYPE, MSG_TYPE_OTA_DONE) &&
-        json_u32_matches(root, "received", expected_received);
-    cJSON_Delete(root);
-    return matched;
-}
-```
-
-Use that helper only in legacy finalize. Then require the unchanged same-MAC,
-exact `.69` identity, rollback-clear, command, and role-specific radio health
-proof before returning success.
-
-- [ ] **Step 5: Run all transport contracts and build gates**
-
-```bash
-/Users/billh/gai/friendorfoe/backend/.venv/bin/pytest \
-  backend/tests/test_badge_firmware_transport_contract.py -q
-cd esp32/uplink
-/Users/billh/gai/friendorfoe/esp32/.venv312/bin/pio run -e uplink-s3-fof_badge
-/Users/billh/gai/friendorfoe/esp32/.venv312/bin/pio run -e uplink-s3
-```
-
-Expected: all pass; strict mode has no legacy receipt acceptance.
+Run the focused contract, full native suite, and both uplink builds. Verify
+strict mode contains no legacy receipt acceptance.
 
 ---
 
-### Task 4: Physical Bootstrap and Release Gate
+### Task 5: Physical Bootstrap and Release Gate
 
 **Files:**
 - Modify: `docs/badge/README.md`
 - Test: `scripts/test_fof_badge_flash.py`
 
 **Interfaces:**
-- Consumes: Tasks 1-3 firmware and the connected badge trio.
+- Consumes: Tasks 1-4 firmware and the connected badge trio.
 - Produces: captured hardware convergence evidence and operator documentation.
 
 - [ ] **Step 1: Run final software gates**
