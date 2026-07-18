@@ -353,8 +353,9 @@ they are not reopened or reimplemented.
 The next project hardens the existing bootstrap-once update chain:
 
 ```text
-verified network firmware -> badge uplink -> staged image -> UART relay
-                          -> attached BLE and Wi-Fi scanner radios
+laptop USB/UART -> flash badge uplink -> stage verified scanner image
+                -> badge uplink serial queue -> attached BLE scanner
+                                             -> attached Wi-Fi scanner
 ```
 
 The repository already downloads and caches scanner firmware, accepts scanner
@@ -365,6 +366,14 @@ a cache refresh, serialize the two relay jobs, compare ordered versions instead
 of mere inequality, read the embedded version from network-uploaded custom images
 instead of labeling them `custom`, enforce the advertised SHA-256, and prove
 convergence after reboot and rollback.
+
+The default laptop flow performs one direct upload connection to the badge
+uplink. It does not invoke a separate relay command for each healthy scanner.
+After staging succeeds, the uplink prompts both attached scanners, compares the
+embedded numeric `major.minor.patch` version, and serially flashes only scanners
+whose version is strictly older. Equal, newer, unknown, cross-target, or invalid
+versions are never automatically flashed. Explicit same-version/direct-scanner
+flashing remains recovery-only.
 
 The initial interpretation is that each badge uplink automatically updates its
 own two attached scanner radios after comparing their reported target and embedded
