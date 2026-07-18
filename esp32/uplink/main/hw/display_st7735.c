@@ -701,7 +701,9 @@ static void badge_button_short_press(badge_button_id_t id)
     }
 }
 
-static void badge_button_poll_one(badge_button_state_t *button, TickType_t now)
+static void badge_button_poll_one(badge_button_state_t *button,
+                                  TickType_t now,
+                                  bool *easter_visible_in_batch)
 {
     int raw_level = gpio_get_level(button->pin);
     bool raw_pressed = badge_button_level_is_pressed(raw_level,
@@ -732,7 +734,9 @@ static void badge_button_poll_one(badge_button_state_t *button, TickType_t now)
         button->long_sent = false;
         button->boot_ignored = false;
         badge_button_diag_note_stable(button, true);
-        if (badge_easter_egg_runtime_dismiss()) {
+        bool dismissed_easter = badge_easter_egg_runtime_dismiss();
+        if (badge_easter_egg_consume_press_in_batch(
+                easter_visible_in_batch, dismissed_easter)) {
             button->consume_release = true;
             badge_button_gesture_cancel(&s_b2_gesture);
             badge_button_diag_set_b2_gesture("");
@@ -845,8 +849,13 @@ static void badge_button_task(void *arg)
 
     while (true) {
         now = xTaskGetTickCount();
+        badge_easter_egg_machine_t easter_snapshot = {0};
+        bool easter_visible_in_batch =
+            badge_easter_egg_runtime_snapshot(&easter_snapshot) &&
+            easter_snapshot.visible;
         for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
-            badge_button_poll_one(&buttons[i], now);
+            badge_button_poll_one(&buttons[i], now,
+                                  &easter_visible_in_batch);
             badge_button_poll_hold(&buttons[i], now);
             if (buttons[i].diag_index == 1 &&
                 !buttons[i].stable_pressed &&

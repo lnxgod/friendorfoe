@@ -21,19 +21,16 @@ bool badge_easter_egg_ssid_matches(const uint8_t *ssid, size_t len)
     return ssid && len == 10 && memcmp(ssid, "fof-goblue", 10) == 0;
 }
 
-badge_easter_egg_source_t badge_easter_egg_source_from_wire(
-    const char *source)
+bool badge_easter_egg_consume_press_in_batch(bool *easter_visible_in_batch,
+                                             bool dismiss_succeeded)
 {
-    if (!source) {
-        return BADGE_EASTER_EGG_SOURCE_NONE;
+    if (!easter_visible_in_batch) {
+        return dismiss_succeeded;
     }
-    if (strcmp(source, "ble_remote_id") == 0) {
-        return BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID;
-    }
-    if (strcmp(source, "wifi_ssid") == 0) {
-        return BADGE_EASTER_EGG_SOURCE_WIFI_SSID;
-    }
-    return BADGE_EASTER_EGG_SOURCE_NONE;
+
+    *easter_visible_in_batch =
+        *easter_visible_in_batch || dismiss_succeeded;
+    return *easter_visible_in_batch;
 }
 
 void badge_easter_egg_machine_init(badge_easter_egg_machine_t *machine)

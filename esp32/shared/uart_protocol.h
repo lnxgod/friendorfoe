@@ -8,7 +8,9 @@
  * JSON objects.
  */
 
+#include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include "badge_easter_egg.h"
 
 #ifdef __cplusplus
@@ -242,6 +244,38 @@ extern "C" {
 #define BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID \
     "{\"type\":\"" MSG_TYPE_BADGE_EASTER_EGG \
     "\",\"source\":\"" BADGE_EASTER_EGG_UART_SOURCE_WIFI_SSID "\"}"
+
+#define BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID_LEN \
+    (sizeof(BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID) - 1U)
+#define BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID_LEN \
+    (sizeof(BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID) - 1U)
+
+static inline badge_easter_egg_source_t
+badge_easter_egg_source_from_uart_frame(const char *frame, size_t len)
+{
+    if (!frame) {
+        return BADGE_EASTER_EGG_SOURCE_NONE;
+    }
+    if (len == BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID_LEN &&
+        memcmp(frame, BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID, len) == 0) {
+        return BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID;
+    }
+    if (len == BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID_LEN &&
+        memcmp(frame, BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID, len) == 0) {
+        return BADGE_EASTER_EGG_SOURCE_WIFI_SSID;
+    }
+    return BADGE_EASTER_EGG_SOURCE_NONE;
+}
+
+/* A decoded prefix match is a claim, never proof. In particular, cJSON stores
+ * a decoded \u0000 as NUL, so an escaped-NUL near-match deliberately enters the
+ * strict raw-frame rejection path instead of generic message handling. */
+static inline bool badge_easter_egg_uart_type_claims_event(
+    const char *decoded_type)
+{
+    return decoded_type &&
+           strcmp(decoded_type, MSG_TYPE_BADGE_EASTER_EGG) == 0;
+}
 
 static inline uint32_t badge_easter_egg_uart_pending_bit(
     badge_easter_egg_source_t source)

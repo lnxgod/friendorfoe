@@ -34,8 +34,8 @@ typedef struct {
 bool badge_easter_egg_remote_id_matches(
     const badge_easter_egg_remote_id_t *remote_id);
 bool badge_easter_egg_ssid_matches(const uint8_t *ssid, size_t len);
-badge_easter_egg_source_t badge_easter_egg_source_from_wire(
-    const char *source);
+bool badge_easter_egg_consume_press_in_batch(bool *easter_visible_in_batch,
+                                             bool dismiss_succeeded);
 void badge_easter_egg_machine_init(badge_easter_egg_machine_t *machine);
 bool badge_easter_egg_machine_trigger(badge_easter_egg_machine_t *machine,
                                       badge_easter_egg_source_t source);

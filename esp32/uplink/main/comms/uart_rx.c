@@ -625,7 +625,6 @@ static bool msg_type_is_scanner_originated(const char *msg_type)
     }
     return strcmp(msg_type, MSG_TYPE_DETECTION) == 0 ||
            strcmp(msg_type, MSG_TYPE_STATUS) == 0 ||
-           strcmp(msg_type, MSG_TYPE_BADGE_EASTER_EGG) == 0 ||
            strcmp(msg_type, "scanner_info") == 0 ||
            strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0 ||
            strcmp(msg_type, "scan_profile_ack") == 0 ||
@@ -1384,6 +1383,15 @@ static void handle_status(const cJSON *root, int scanner_id)
 
 static void process_line(const char *line, size_t len, int scanner_id)
 {
+    badge_easter_egg_source_t easter_source =
+        badge_easter_egg_source_from_uart_frame(line, len);
+    if (easter_source != BADGE_EASTER_EGG_SOURCE_NONE) {
+#ifdef FOF_BADGE_VARIANT
+        (void)badge_easter_egg_runtime_trigger(easter_source);
+#endif
+        return;
+    }
+
     int_fast64_t now_ms = (int_fast64_t)(esp_timer_get_time() / 1000);
 
     cJSON *root = cJSON_ParseWithLength(line, len);
@@ -1397,6 +1405,16 @@ static void process_line(const char *line, size_t len, int scanner_id)
     const char *msg_type = json_get_string(root, JSON_KEY_TYPE, NULL);
     if (!msg_type) {
         ESP_LOGW(TAG, "Scanner[%d] message missing 'type' field", scanner_id);
+        cJSON_Delete(root);
+        return;
+    }
+
+    /* Scanner firmware emits only the two byte-exact frames accepted above.
+     * Reject every decoded near-match before it can affect liveness or
+     * backpressure. This also catches cJSON strings truncated by \u0000. */
+    if (badge_easter_egg_uart_type_claims_event(msg_type)) {
+        ESP_LOGW(TAG, "Scanner[%d] noncanonical badge Easter frame ignored",
+                 scanner_id);
         cJSON_Delete(root);
         return;
     }
@@ -1431,18 +1449,6 @@ static void process_line(const char *line, size_t len, int scanner_id)
     /* A stopped scanner still emits identity / status, so use scanner-originated
      * traffic as a chance to release backpressure once the queue has drained. */
     maybe_resume_scanner(scanner_id);
-
-    if (strcmp(msg_type, MSG_TYPE_BADGE_EASTER_EGG) == 0) {
-#ifdef FOF_BADGE_VARIANT
-        badge_easter_egg_source_t source = badge_easter_egg_source_from_wire(
-            json_get_string(root, JSON_KEY_BADGE_EASTER_EGG_SOURCE, NULL));
-        if (source != BADGE_EASTER_EGG_SOURCE_NONE) {
-            (void)badge_easter_egg_runtime_trigger(source);
-        }
-#endif
-        cJSON_Delete(root);
-        return;
-    }
 
     if (strcmp(msg_type, MSG_TYPE_DETECTION) == 0) {
         drone_detection_t det;

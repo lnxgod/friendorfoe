@@ -202,23 +202,115 @@ void test_badge_easter_uart_frames_use_fixed_allowlisted_sources(void)
         BADGE_EASTER_EGG_SOURCE_BUTTON));
 }
 
-void test_badge_easter_source_from_wire_accepts_only_scanner_sources(void)
+void test_badge_easter_uart_parser_accepts_only_exact_fixed_frames(void)
 {
-    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID,
-                      badge_easter_egg_source_from_wire("ble_remote_id"));
-    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_WIFI_SSID,
-                      badge_easter_egg_source_from_wire("wifi_ssid"));
+    TEST_ASSERT_EQUAL(
+        BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID,
+        badge_easter_egg_source_from_uart_frame(
+            BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID,
+            BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID_LEN));
+    TEST_ASSERT_EQUAL(
+        BADGE_EASTER_EGG_SOURCE_WIFI_SSID,
+        badge_easter_egg_source_from_uart_frame(
+            BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID,
+            BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID_LEN));
 
     TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,
-                      badge_easter_egg_source_from_wire(NULL));
-    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,
-                      badge_easter_egg_source_from_wire(""));
-    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,
-                      badge_easter_egg_source_from_wire("button"));
-    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,
-                      badge_easter_egg_source_from_wire("unknown"));
-    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,
-                      badge_easter_egg_source_from_wire("BLE_REMOTE_ID"));
-    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,
-                      badge_easter_egg_source_from_wire("Wifi_ssid"));
+                      badge_easter_egg_source_from_uart_frame(NULL, 0));
+    TEST_ASSERT_EQUAL(
+        BADGE_EASTER_EGG_SOURCE_NONE,
+        badge_easter_egg_source_from_uart_frame(
+            BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID,
+            BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID_LEN - 1));
+    TEST_ASSERT_EQUAL(
+        BADGE_EASTER_EGG_SOURCE_NONE,
+        badge_easter_egg_source_from_uart_frame(
+            BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID "\n",
+            BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID_LEN + 1));
+}
+
+void test_badge_easter_uart_parser_rejects_noncanonical_and_escaped_nul(void)
+{
+    static const char escaped_nul_type[] =
+        "{\"type\":\"badge_easter_egg\\u0000junk\","
+        "\"source\":\"ble_remote_id\"}";
+    static const char escaped_nul_source[] =
+        "{\"type\":\"badge_easter_egg\","
+        "\"source\":\"ble_remote_id\\u0000junk\"}";
+    static const char escaped_nul_wifi_source[] =
+        "{\"type\":\"badge_easter_egg\","
+        "\"source\":\"wifi_ssid\\u0000junk\"}";
+    static const char actual_nul_type[] =
+        "{\"type\":\"badge_easter_egg\0junk\","
+        "\"source\":\"ble_remote_id\"}";
+    static const char extra_field[] =
+        "{\"type\":\"badge_easter_egg\","
+        "\"source\":\"ble_remote_id\",\"extra\":true}";
+    static const char reordered[] =
+        "{\"source\":\"ble_remote_id\","
+        "\"type\":\"badge_easter_egg\"}";
+    static const char duplicate_field[] =
+        "{\"type\":\"badge_easter_egg\","
+        "\"source\":\"ble_remote_id\",\"source\":\"wifi_ssid\"}";
+    static const char whitespace[] =
+        "{ \"type\": \"badge_easter_egg\", "
+        "\"source\": \"ble_remote_id\" }";
+    static const char leading_whitespace[] =
+        " " BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID;
+    static const char changed_type_case[] =
+        "{\"type\":\"Badge_easter_egg\","
+        "\"source\":\"ble_remote_id\"}";
+    static const char changed_source_case[] =
+        "{\"type\":\"badge_easter_egg\","
+        "\"source\":\"BLE_REMOTE_ID\"}";
+    static const char trailing_bytes[] =
+        BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID "junk";
+
+#define ASSERT_REJECTED_FRAME(frame)                                        \
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE,                         \
+                      badge_easter_egg_source_from_uart_frame(              \
+                          (frame), sizeof(frame) - 1))
+
+    ASSERT_REJECTED_FRAME(escaped_nul_type);
+    ASSERT_REJECTED_FRAME(escaped_nul_source);
+    ASSERT_REJECTED_FRAME(escaped_nul_wifi_source);
+    ASSERT_REJECTED_FRAME(actual_nul_type);
+    ASSERT_REJECTED_FRAME(extra_field);
+    ASSERT_REJECTED_FRAME(reordered);
+    ASSERT_REJECTED_FRAME(duplicate_field);
+    ASSERT_REJECTED_FRAME(whitespace);
+    ASSERT_REJECTED_FRAME(leading_whitespace);
+    ASSERT_REJECTED_FRAME(changed_type_case);
+    ASSERT_REJECTED_FRAME(changed_source_case);
+    ASSERT_REJECTED_FRAME(trailing_bytes);
+
+    TEST_ASSERT_TRUE(badge_easter_egg_uart_type_claims_event(
+        MSG_TYPE_BADGE_EASTER_EGG));
+    TEST_ASSERT_TRUE(badge_easter_egg_uart_type_claims_event(
+        "badge_easter_egg\0junk"));
+    TEST_ASSERT_FALSE(badge_easter_egg_uart_type_claims_event(
+        "Badge_easter_egg"));
+
+#undef ASSERT_REJECTED_FRAME
+}
+
+void test_badge_easter_button_batch_consumes_every_visible_press(void)
+{
+    bool easter_visible_in_batch = true;
+
+    TEST_ASSERT_TRUE(badge_easter_egg_consume_press_in_batch(
+        &easter_visible_in_batch, true));
+    TEST_ASSERT_TRUE(badge_easter_egg_consume_press_in_batch(
+        &easter_visible_in_batch, false));
+
+    easter_visible_in_batch = false;
+    TEST_ASSERT_FALSE(badge_easter_egg_consume_press_in_batch(
+        &easter_visible_in_batch, false));
+    TEST_ASSERT_FALSE(easter_visible_in_batch);
+
+    TEST_ASSERT_TRUE(badge_easter_egg_consume_press_in_batch(
+        &easter_visible_in_batch, true));
+    TEST_ASSERT_TRUE(easter_visible_in_batch);
+    TEST_ASSERT_TRUE(badge_easter_egg_consume_press_in_batch(
+        &easter_visible_in_batch, false));
 }
