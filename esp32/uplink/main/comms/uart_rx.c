@@ -878,8 +878,11 @@ static uint32_t publish_scanner_identity_snapshot(int scanner_id,
     snapshot.received_ms = received_ms;
     snapshot.complete = complete;
 
-    if (xSemaphoreTake(s_scanner_identity_mutex,
-                       pdMS_TO_TICKS(100)) != pdTRUE) {
+    /* Publication is the freshness authority. Waiting for the tiny snapshot
+     * copy is safer than timing out and leaving an older complete identity
+     * eligible after a current incomplete frame. Readers never hold this
+     * mutex across another lock or any I/O. */
+    if (xSemaphoreTake(s_scanner_identity_mutex, portMAX_DELAY) != pdTRUE) {
         return 0;
     }
     uint32_t previous =

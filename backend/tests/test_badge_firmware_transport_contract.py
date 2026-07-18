@@ -104,6 +104,11 @@ def test_legacy_identity_snapshot_is_current_complete_and_mutex_protected():
     assert "snapshot.complete" in uplink_rx
     assert "snapshot.identity_generation" in uplink_rx
     assert "snapshot.received_ms" in uplink_rx
+    publisher = uplink_rx[
+        uplink_rx.index("static uint32_t publish_scanner_identity_snapshot") :
+        uplink_rx.index("static int64_t scanner_status_ssid_age_s")
+    ]
+    assert "portMAX_DELAY" in publisher
     getter = uplink_rx[
         uplink_rx.index("bool uart_rx_get_scanner_identity_snapshot") :
         uplink_rx.index("ota_response_t uart_rx_get_last_ota_response")
