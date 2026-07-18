@@ -47,6 +47,15 @@ bool fof_firmware_legacy_ready_authorized(
         strings_equal(ready->current_version,
                       FOF_LEGACY_READY_BOOTSTRAP_VERSION) &&
         strings_equal(identity->version, ready->current_version) &&
+        strings_equal(ready->board, FOF_LEGACY_READY_BADGE_TARGET) &&
+        strings_equal(identity->board, FOF_LEGACY_READY_BADGE_TARGET) &&
+        strings_equal(identity->firmware_name,
+                      FOF_LEGACY_READY_BADGE_TARGET) &&
+        strings_equal(manifest->target, FOF_LEGACY_READY_BADGE_TARGET) &&
+        strings_equal(identity->project, FOF_LEGACY_READY_BADGE_PROJECT) &&
+        strings_equal(manifest->project, FOF_LEGACY_READY_BADGE_PROJECT) &&
+        strings_equal(identity->hardware, FOF_LEGACY_READY_BADGE_HARDWARE) &&
+        strings_equal(manifest->hardware, FOF_LEGACY_READY_BADGE_HARDWARE) &&
         strings_equal(ready->board, manifest->target) &&
         strings_equal(identity->board, manifest->target) &&
         strings_equal(identity->firmware_name, manifest->target) &&

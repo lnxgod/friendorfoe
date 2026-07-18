@@ -9,6 +9,12 @@ extern "C" {
 
 #define FOF_LEGACY_READY_BOOTSTRAP_VERSION \
     "0.64.68-badge-live-follow"
+#define FOF_LEGACY_READY_BADGE_TARGET \
+    "scanner-s3-combo-fof_badge"
+#define FOF_LEGACY_READY_BADGE_PROJECT \
+    "fof_badge_scanner"
+#define FOF_LEGACY_READY_BADGE_HARDWARE \
+    "seeed_xiao_esp32s3"
 
 typedef struct {
     bool strict_fields_absent;

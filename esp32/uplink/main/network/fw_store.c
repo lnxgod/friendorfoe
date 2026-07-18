@@ -19,6 +19,7 @@
 #include "firmware_version_order.h"
 #include "firmware_legacy_ready.h"
 #include "firmware_auto_policy.h"
+#include "firmware_coordinator_migration.h"
 #include "detection_policy.h"
 #ifdef FOF_BADGE_VARIANT
 #include "badge_power_runtime.h"
@@ -174,6 +175,11 @@ static bool auto_coordinator_start_worker(void);
 static void
 auto_coordinator_release_excluded_slots(void);
 static bool auto_hardware_id_is_canonical(const char *hardware_id);
+static bool auto_identity_matches_manifest(
+    const scanner_identity_snapshot_t *identity,
+    const fw_store_info_t *info,
+    const char *scanner_board,
+    const char *scanner_version);
 
 static void fw_stage_buf_ensure(void)
 {
@@ -2339,6 +2345,32 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
         scanner_id, &pre_update_identity);
     uint32_t pre_update_identity_generation = have_pre_update_identity
         ? pre_update_identity.identity_generation : 0;
+    bool automatic_bound_relay = expected_generation != 0 &&
+        expected_hardware_id && expected_hardware_id[0];
+    if (automatic_bound_relay &&
+        (!have_pre_update_identity || !pre_update_identity.complete ||
+         strcmp(pre_update_identity.hardware_id,
+                expected_hardware_id) != 0 ||
+         (legacy_mode &&
+          strcmp(pre_update_identity.version,
+                 FOF_LEGACY_READY_BOOTSTRAP_VERSION) != 0) ||
+         !auto_identity_matches_manifest(
+             &pre_update_identity, &info, pre_update_identity.board,
+             pre_update_identity.version) ||
+         !staged_firmware_is_newer_for_scanner(
+             &info, pre_update_identity.board,
+             pre_update_identity.version))) {
+        snprintf(result->stage, sizeof(result->stage), "identity");
+        snprintf(result->error, sizeof(result->error),
+                 "bound_identity_changed");
+        ESP_LOGE(TAG,
+                 "Relay refused: scanner[%d] live identity no longer matches "
+                 "bound MAC %s and staged contract",
+                 scanner_id, expected_hardware_id);
+        operation_end();
+        remember_relay_result(scanner_id, result);
+        return false;
+    }
     char pre_update_hardware_id[18] = {0};
     if (expected_hardware_id && expected_hardware_id[0]) {
         snprintf(pre_update_hardware_id, sizeof(pre_update_hardware_id),
@@ -2991,8 +3023,8 @@ bool fw_store_relay_staged_to_scanner_ex(int scanner_id,
 #define FW_AUTO_COORDINATOR_SAVE_RETRIES 3
 #define FW_AUTO_OFFER_BINDING_TTL_MS 60000
 #define FW_AUTO_IDENTITY_MAX_AGE_MS 60000
-#define FW_AUTO_LEGACY_SECOND_IDENTITY_WAIT_MS 12000
-#define FW_AUTO_LEGACY_IDENTITY_POLL_MS 100
+#define FW_AUTO_SECOND_IDENTITY_WAIT_MS 12000
+#define FW_AUTO_IDENTITY_POLL_MS 100
 
 typedef enum {
     FW_AUTO_SLOT_EXCLUDED = 0,
@@ -3008,23 +3040,41 @@ typedef enum {
     FW_AUTO_SLOT_RECOVERING = 10,
 } fw_auto_slot_state_t;
 
-typedef struct {
-    uint32_t magic;
-    uint16_t schema;
-    uint16_t record_size;
-    uint32_t generation;
-    uint32_t manifest_crc32;
-    uint8_t target_slot_mask;
-    uint8_t pending_mask;
-    uint8_t fail_closed;
-    uint8_t reserved0;
-    uint8_t relay_attempts[FW_AUTO_UPDATE_SCANNER_COUNT];
-    uint8_t readiness_probe_attempts[FW_AUTO_UPDATE_SCANNER_COUNT];
-    uint8_t slot_state[FW_AUTO_UPDATE_SCANNER_COUNT];
-    uint8_t reserved[2];
-    char bound_hardware_id[FW_AUTO_UPDATE_SCANNER_COUNT][18];
-    uint32_t crc32;
-} fw_auto_coordinator_blob_t;
+_Static_assert((int)FW_AUTO_SLOT_EXCLUDED ==
+                   (int)FOF_FW_COORD_SLOT_EXCLUDED,
+               "coordinator excluded state drifted");
+_Static_assert((int)FW_AUTO_SLOT_AWAITING_CHECK ==
+                   (int)FOF_FW_COORD_SLOT_AWAITING_CHECK,
+               "coordinator awaiting state drifted");
+_Static_assert((int)FW_AUTO_SLOT_OFFERED ==
+                   (int)FOF_FW_COORD_SLOT_OFFERED,
+               "coordinator offered state drifted");
+_Static_assert((int)FW_AUTO_SLOT_READY_QUEUED ==
+                   (int)FOF_FW_COORD_SLOT_READY_QUEUED,
+               "coordinator ready state drifted");
+_Static_assert((int)FW_AUTO_SLOT_RELAYING ==
+                   (int)FOF_FW_COORD_SLOT_RELAYING,
+               "coordinator relaying state drifted");
+_Static_assert((int)FW_AUTO_SLOT_CONVERGED ==
+                   (int)FOF_FW_COORD_SLOT_CONVERGED,
+               "coordinator converged state drifted");
+_Static_assert((int)FW_AUTO_SLOT_CURRENT ==
+                   (int)FOF_FW_COORD_SLOT_CURRENT,
+               "coordinator current state drifted");
+_Static_assert((int)FW_AUTO_SLOT_REFUSED ==
+                   (int)FOF_FW_COORD_SLOT_REFUSED,
+               "coordinator refused state drifted");
+_Static_assert((int)FW_AUTO_SLOT_FAILED ==
+                   (int)FOF_FW_COORD_SLOT_FAILED,
+               "coordinator failed state drifted");
+_Static_assert((int)FW_AUTO_SLOT_NEWER_SKIPPED ==
+                   (int)FOF_FW_COORD_SLOT_NEWER_SKIPPED,
+               "coordinator newer state drifted");
+_Static_assert((int)FW_AUTO_SLOT_RECOVERING ==
+                   (int)FOF_FW_COORD_SLOT_RECOVERING,
+               "coordinator recovering state drifted");
+
+typedef fof_fw_coord_v3_t fw_auto_coordinator_blob_t;
 
 _Static_assert(sizeof(fw_auto_coordinator_blob_t) <=
                    NVS_CONFIG_MAX_BLOB_SIZE,
@@ -3050,6 +3100,8 @@ static bool s_auto_relay_worker_running = false;
 static uint32_t s_auto_identity_generation_floor[
     FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
 static fw_auto_offer_binding_t s_auto_offer_bindings[
+    FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
+static fw_auto_offer_binding_t s_auto_ready_bindings[
     FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
 static bool s_auto_legacy_ready[FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
 
@@ -3104,6 +3156,8 @@ static void auto_set_identity_floors_locked(
             ? floors[scanner_id] : 0;
         memset(&s_auto_offer_bindings[scanner_id], 0,
                sizeof(s_auto_offer_bindings[scanner_id]));
+        memset(&s_auto_ready_bindings[scanner_id], 0,
+               sizeof(s_auto_ready_bindings[scanner_id]));
         s_auto_legacy_ready[scanner_id] = false;
     }
 }
@@ -3313,6 +3367,11 @@ static bool auto_coordinator_save_locked(void)
     s_auto_coordinator.schema = FW_AUTO_COORDINATOR_SCHEMA;
     s_auto_coordinator.record_size = sizeof(s_auto_coordinator);
     s_auto_coordinator.crc32 = auto_coordinator_crc(&s_auto_coordinator);
+    if (!auto_coordinator_blob_valid(&s_auto_coordinator)) {
+        ESP_LOGE(TAG,
+                 "Refusing to persist invalid schema 3 coordinator state");
+        return false;
+    }
     return nvs_config_set_blob(NVS_FW_COORDINATOR, &s_auto_coordinator,
                                sizeof(s_auto_coordinator));
 }
@@ -3510,10 +3569,20 @@ static bool auto_offer_binding_same(
         strcmp(left->hardware_id, right->hardware_id) == 0;
 }
 
-static void auto_reset_legacy_queue_after_revalidation_failure(
+static void auto_clear_ready_bindings_locked(int scanner_id)
+{
+    memset(&s_auto_offer_bindings[scanner_id], 0,
+           sizeof(s_auto_offer_bindings[scanner_id]));
+    memset(&s_auto_ready_bindings[scanner_id], 0,
+           sizeof(s_auto_ready_bindings[scanner_id]));
+    s_auto_legacy_ready[scanner_id] = false;
+}
+
+static void auto_reset_ready_queue_after_revalidation_failure(
     int scanner_id,
     uint32_t generation,
-    const fw_auto_offer_binding_t *expected_binding)
+    const fw_auto_offer_binding_t *expected_binding,
+    bool expected_legacy_mode)
 {
     bool resume_scanner = false;
     if (!auto_coordinator_lock()) {
@@ -3525,8 +3594,8 @@ static void auto_reset_legacy_queue_after_revalidation_failure(
         s_auto_coordinator.slot_state[scanner_id] ==
             FW_AUTO_SLOT_READY_QUEUED &&
         (s_auto_coordinator.pending_mask & bit) &&
-        s_auto_legacy_ready[scanner_id] &&
-        auto_offer_binding_same(&s_auto_offer_bindings[scanner_id],
+        s_auto_legacy_ready[scanner_id] == expected_legacy_mode &&
+        auto_offer_binding_same(&s_auto_ready_bindings[scanner_id],
                                 expected_binding)) {
         fw_auto_coordinator_blob_t before = s_auto_coordinator;
         s_auto_coordinator.pending_mask &= (uint8_t)~bit;
@@ -3536,11 +3605,9 @@ static void auto_reset_legacy_queue_after_revalidation_failure(
         if (!auto_coordinator_save_locked()) {
             (void)before;
             auto_coordinator_fail_closed_after_save_failure_locked(
-                "legacy_second_identity");
+                "ready_second_identity");
         } else {
-            memset(&s_auto_offer_bindings[scanner_id], 0,
-                   sizeof(s_auto_offer_bindings[scanner_id]));
-            s_auto_legacy_ready[scanner_id] = false;
+            auto_clear_ready_bindings_locked(scanner_id);
             resume_scanner = true;
         }
     }
@@ -3551,10 +3618,11 @@ static void auto_reset_legacy_queue_after_revalidation_failure(
     }
 }
 
-static bool auto_wait_for_legacy_second_identity(
+static bool auto_wait_for_ready_second_identity(
     int scanner_id,
     const fw_store_info_t *info,
     const fw_auto_offer_binding_t *binding,
+    bool legacy_mode,
     scanner_identity_snapshot_t *out)
 {
     if (!info || !binding || !out ||
@@ -3566,7 +3634,7 @@ static bool auto_wait_for_legacy_second_identity(
     }
 
     int64_t deadline_ms = (esp_timer_get_time() / 1000) +
-        FW_AUTO_LEGACY_SECOND_IDENTITY_WAIT_MS;
+        FW_AUTO_SECOND_IDENTITY_WAIT_MS;
     do {
         scanner_identity_snapshot_t identity = {0};
         int64_t now_ms = esp_timer_get_time() / 1000;
@@ -3577,8 +3645,11 @@ static bool auto_wait_for_legacy_second_identity(
                     &identity_view, binding->identity_generation,
                     now_ms, FW_AUTO_IDENTITY_MAX_AGE_MS) &&
                 strcmp(identity.hardware_id, binding->hardware_id) == 0 &&
-                strcmp(identity.version,
-                       FOF_LEGACY_READY_BOOTSTRAP_VERSION) == 0 &&
+                (!legacy_mode ||
+                 strcmp(identity.version,
+                        FOF_LEGACY_READY_BOOTSTRAP_VERSION) == 0) &&
+                staged_firmware_is_newer_for_scanner(
+                    info, identity.board, identity.version) &&
                 auto_identity_matches_manifest(
                     &identity, info, identity.board, identity.version)) {
                 *out = identity;
@@ -3588,9 +3659,27 @@ static bool auto_wait_for_legacy_second_identity(
         if (now_ms >= deadline_ms) {
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(FW_AUTO_LEGACY_IDENTITY_POLL_MS));
+        vTaskDelay(pdMS_TO_TICKS(FW_AUTO_IDENTITY_POLL_MS));
     } while (true);
     return false;
+}
+
+static void auto_advance_ready_binding_locked(
+    int scanner_id,
+    uint32_t generation,
+    uint32_t manifest_crc32,
+    const scanner_identity_snapshot_t *identity)
+{
+    fw_auto_offer_binding_t *binding =
+        &s_auto_ready_bindings[scanner_id];
+    memset(binding, 0, sizeof(*binding));
+    binding->generation = generation;
+    binding->manifest_crc32 = manifest_crc32;
+    binding->slot = (uint8_t)scanner_id;
+    binding->identity_generation = identity->identity_generation;
+    snprintf(binding->hardware_id, sizeof(binding->hardware_id), "%s",
+             identity->hardware_id);
+    binding->captured_ms = esp_timer_get_time() / 1000;
 }
 
 static void fw_auto_relay_task(void *arg)
@@ -3606,7 +3695,7 @@ static void fw_auto_relay_task(void *arg)
         uint32_t relay_generation = 0;
         uint8_t attempt_number = 0;
         bool legacy_mode = false;
-        fw_auto_offer_binding_t legacy_binding = {0};
+        fw_auto_offer_binding_t ready_binding = {0};
         char relay_bound_hardware_id[18] = {0};
 
         /* A store/upload owner has not attempted a scanner relay.  Wait for
@@ -3640,6 +3729,7 @@ static void fw_auto_relay_task(void *arg)
                     s_auto_coordinator;
                 s_auto_coordinator.pending_mask &= (uint8_t)~bit;
                 s_auto_coordinator.slot_state[slot] = FW_AUTO_SLOT_FAILED;
+                s_auto_coordinator.bound_hardware_id[slot][0] = '\0';
                 if (!auto_coordinator_save_locked()) {
                     (void)exhausted_before;
                     auto_coordinator_fail_closed_after_save_failure_locked(
@@ -3647,40 +3737,20 @@ static void fw_auto_relay_task(void *arg)
                     s_auto_relay_worker_running = false;
                     break;
                 }
+                auto_clear_ready_bindings_locked(slot);
                 continue;
             }
 
-            if (s_auto_legacy_ready[slot]) {
-                /* A legacy scanner must publish one more complete identity
-                 * while stopped. Select it without consuming an attempt;
-                 * the wait and snapshot copy happen after this mutex drops. */
-                scanner_id = slot;
-                relay_generation = s_auto_coordinator.generation;
-                legacy_mode = true;
-                legacy_binding = s_auto_offer_bindings[slot];
-                snprintf(relay_bound_hardware_id,
-                         sizeof(relay_bound_hardware_id), "%s",
-                         s_auto_coordinator.bound_hardware_id[slot]);
-                break;
-            }
-
-            fw_auto_coordinator_blob_t before = s_auto_coordinator;
+            /* Every automatic relay must prove a newer complete identity
+             * while stopped. Select without consuming an attempt; the wait
+             * and snapshot copies happen after this mutex drops. */
             scanner_id = slot;
             relay_generation = s_auto_coordinator.generation;
+            legacy_mode = s_auto_legacy_ready[slot];
+            ready_binding = s_auto_ready_bindings[slot];
             snprintf(relay_bound_hardware_id,
                      sizeof(relay_bound_hardware_id), "%s",
-                     s_auto_coordinator.bound_hardware_id[scanner_id]);
-            s_auto_coordinator.pending_mask &= (uint8_t)~bit;
-            s_auto_coordinator.relay_attempts[scanner_id]++;
-            attempt_number = s_auto_coordinator.relay_attempts[scanner_id];
-            s_auto_coordinator.slot_state[scanner_id] = FW_AUTO_SLOT_RELAYING;
-            if (!auto_coordinator_save_locked()) {
-                (void)before;
-                auto_coordinator_fail_closed_after_save_failure_locked(
-                    "relay_attempt_reserved");
-                scanner_id = -1;
-                s_auto_relay_worker_running = false;
-            }
+                     s_auto_coordinator.bound_hardware_id[slot]);
             break;
         }
 
@@ -3732,100 +3802,124 @@ static void fw_auto_relay_task(void *arg)
         auto_coordinator_unlock();
 
         if (scanner_id >= 0) {
-            if (legacy_mode) {
-                fw_store_info_t relay_info = {0};
-                scanner_identity_snapshot_t second_identity = {0};
-                bool identity_confirmed =
-                    fw_store_get_info(&relay_info) &&
-                    auto_wait_for_legacy_second_identity(
-                        scanner_id, &relay_info, &legacy_binding,
-                        &second_identity);
-                if (!identity_confirmed) {
-                    ESP_LOGW(TAG,
-                             "Legacy relay[%d] refused before attempt: "
-                             "second same-MAC identity not proved",
-                             scanner_id);
-                    auto_reset_legacy_queue_after_revalidation_failure(
-                        scanner_id, relay_generation, &legacy_binding);
-                    continue;
-                }
+            fw_store_info_t relay_info = {0};
+            scanner_identity_snapshot_t second_identity = {0};
+            bool identity_confirmed =
+                fw_store_get_info(&relay_info) &&
+                auto_wait_for_ready_second_identity(
+                    scanner_id, &relay_info, &ready_binding,
+                    legacy_mode, &second_identity);
+            if (!identity_confirmed) {
+                ESP_LOGW(TAG,
+                         "Auto relay[%d] refused before attempt: newer "
+                         "same-MAC identity not proved (legacy=%d)",
+                         scanner_id, legacy_mode ? 1 : 0);
+                auto_reset_ready_queue_after_revalidation_failure(
+                    scanner_id, relay_generation, &ready_binding,
+                    legacy_mode);
+                continue;
+            }
 
-                /* Do not let a store operation that started during the
-                 * identity wait force a durable attempt reservation. */
-                if (operation_is_active()) {
-                    vTaskDelay(pdMS_TO_TICKS(500));
-                    continue;
-                }
+            /* Do not let a store operation that started during the identity
+             * wait force a durable attempt reservation. */
+            if (operation_is_active()) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+                continue;
+            }
 
-                while (!auto_coordinator_lock()) {
-                    vTaskDelay(pdMS_TO_TICKS(250));
-                }
-                uint8_t bit = (uint8_t)(1u << scanner_id);
-                int64_t now_ms = esp_timer_get_time() / 1000;
-                fof_auto_identity_view_t second_view =
-                    auto_identity_view(&second_identity);
-                fof_auto_offer_binding_t current_offer_view =
-                    auto_offer_binding_view(
-                        &s_auto_offer_bindings[scanner_id]);
-                bool reservation_valid = s_auto_coordinator_loaded &&
-                    s_auto_coordinator.generation == relay_generation &&
-                    s_auto_coordinator.manifest_crc32 ==
-                        legacy_binding.manifest_crc32 &&
-                    s_auto_coordinator.slot_state[scanner_id] ==
-                        FW_AUTO_SLOT_READY_QUEUED &&
-                    (s_auto_coordinator.pending_mask & bit) &&
-                    auto_coordinator_slot_gate_open_locked(scanner_id) &&
-                    s_auto_coordinator.relay_attempts[scanner_id] <
-                        FW_AUTO_RELAY_MAX_ATTEMPTS &&
-                    s_auto_legacy_ready[scanner_id] &&
-                    auto_offer_binding_same(
-                        &s_auto_offer_bindings[scanner_id],
-                        &legacy_binding) &&
-                    fof_auto_offer_binding_matches(
-                        &current_offer_view,
-                        legacy_binding.generation,
-                        legacy_binding.manifest_crc32,
-                        legacy_binding.slot,
-                        legacy_binding.identity_generation,
-                        legacy_binding.hardware_id,
-                        now_ms, FW_AUTO_OFFER_BINDING_TTL_MS) &&
-                    fof_auto_identity_is_fresh(
-                        &second_view,
-                        legacy_binding.identity_generation,
-                        now_ms, FW_AUTO_IDENTITY_MAX_AGE_MS) &&
-                    strcmp(second_identity.hardware_id,
-                           s_auto_coordinator.bound_hardware_id[scanner_id]) ==
-                        0 &&
-                    strcmp(second_identity.hardware_id,
-                           legacy_binding.hardware_id) == 0 &&
-                    auto_identity_matches_manifest(
-                        &second_identity, &relay_info,
-                        second_identity.board, second_identity.version);
-                if (!reservation_valid) {
-                    auto_coordinator_unlock();
-                    auto_reset_legacy_queue_after_revalidation_failure(
-                        scanner_id, relay_generation, &legacy_binding);
-                    continue;
-                }
+            /* Snapshot the latest published identity before taking the
+             * coordinator mutex, then revalidate both under coordinator
+             * ownership without inverting the two mutexes. */
+            scanner_identity_snapshot_t current_identity = {0};
+            if (!uart_rx_get_scanner_identity_snapshot(
+                    scanner_id, &current_identity)) {
+                auto_reset_ready_queue_after_revalidation_failure(
+                    scanner_id, relay_generation, &ready_binding,
+                    legacy_mode);
+                continue;
+            }
 
-                fw_auto_coordinator_blob_t before = s_auto_coordinator;
-                s_auto_coordinator.pending_mask &= (uint8_t)~bit;
-                s_auto_coordinator.relay_attempts[scanner_id]++;
-                attempt_number =
-                    s_auto_coordinator.relay_attempts[scanner_id];
-                s_auto_coordinator.slot_state[scanner_id] =
-                    FW_AUTO_SLOT_RELAYING;
-                if (!auto_coordinator_save_locked()) {
-                    (void)before;
-                    auto_coordinator_fail_closed_after_save_failure_locked(
-                        "legacy_relay_attempt_reserved");
-                    scanner_id = -1;
-                    s_auto_relay_worker_running = false;
-                }
+            while (!auto_coordinator_lock()) {
+                vTaskDelay(pdMS_TO_TICKS(250));
+            }
+            uint8_t bit = (uint8_t)(1u << scanner_id);
+            int64_t now_ms = esp_timer_get_time() / 1000;
+            fof_auto_identity_view_t current_identity_view =
+                auto_identity_view(&current_identity);
+            fof_auto_offer_binding_t current_ready_view =
+                auto_offer_binding_view(
+                    &s_auto_ready_bindings[scanner_id]);
+            bool reservation_valid = s_auto_coordinator_loaded &&
+                relay_info.generation == ready_binding.generation &&
+                relay_info.manifest_crc32 == ready_binding.manifest_crc32 &&
+                s_auto_coordinator.generation == relay_generation &&
+                s_auto_coordinator.manifest_crc32 ==
+                    ready_binding.manifest_crc32 &&
+                s_auto_coordinator.slot_state[scanner_id] ==
+                    FW_AUTO_SLOT_READY_QUEUED &&
+                (s_auto_coordinator.pending_mask & bit) &&
+                auto_coordinator_slot_gate_open_locked(scanner_id) &&
+                s_auto_coordinator.relay_attempts[scanner_id] <
+                    FW_AUTO_RELAY_MAX_ATTEMPTS &&
+                s_auto_legacy_ready[scanner_id] == legacy_mode &&
+                auto_offer_binding_same(
+                    &s_auto_ready_bindings[scanner_id],
+                    &ready_binding) &&
+                fof_auto_offer_binding_matches(
+                    &current_ready_view,
+                    ready_binding.generation,
+                    ready_binding.manifest_crc32,
+                    ready_binding.slot,
+                    ready_binding.identity_generation,
+                    ready_binding.hardware_id,
+                    now_ms, FW_AUTO_OFFER_BINDING_TTL_MS) &&
+                fof_auto_identity_is_fresh(
+                    &current_identity_view,
+                    ready_binding.identity_generation,
+                    now_ms, FW_AUTO_IDENTITY_MAX_AGE_MS) &&
+                current_identity.identity_generation >=
+                    second_identity.identity_generation &&
+                strcmp(current_identity.hardware_id,
+                       s_auto_coordinator.bound_hardware_id[scanner_id]) ==
+                    0 &&
+                strcmp(current_identity.hardware_id,
+                       relay_bound_hardware_id) == 0 &&
+                strcmp(current_identity.hardware_id,
+                       ready_binding.hardware_id) == 0 &&
+                (!legacy_mode ||
+                 strcmp(current_identity.version,
+                        FOF_LEGACY_READY_BOOTSTRAP_VERSION) == 0) &&
+                staged_firmware_is_newer_for_scanner(
+                    &relay_info, current_identity.board,
+                    current_identity.version) &&
+                auto_identity_matches_manifest(
+                    &current_identity, &relay_info,
+                    current_identity.board, current_identity.version);
+            if (!reservation_valid) {
                 auto_coordinator_unlock();
-                if (scanner_id < 0) {
-                    continue;
-                }
+                auto_reset_ready_queue_after_revalidation_failure(
+                    scanner_id, relay_generation, &ready_binding,
+                    legacy_mode);
+                continue;
+            }
+
+            fw_auto_coordinator_blob_t before = s_auto_coordinator;
+            s_auto_coordinator.pending_mask &= (uint8_t)~bit;
+            s_auto_coordinator.relay_attempts[scanner_id]++;
+            attempt_number =
+                s_auto_coordinator.relay_attempts[scanner_id];
+            s_auto_coordinator.slot_state[scanner_id] =
+                FW_AUTO_SLOT_RELAYING;
+            if (!auto_coordinator_save_locked()) {
+                (void)before;
+                auto_coordinator_fail_closed_after_save_failure_locked(
+                    "relay_attempt_reserved");
+                scanner_id = -1;
+                s_auto_relay_worker_running = false;
+            }
+            auto_coordinator_unlock();
+            if (scanner_id < 0) {
+                continue;
             }
 
             fw_relay_result_t result = {0};
@@ -3842,6 +3936,8 @@ static void fw_auto_relay_task(void *arg)
 
             bool terminal = false;
             bool retry = false;
+            bool identity_reset = false;
+            bool resume_scanner = false;
             while (!auto_coordinator_lock()) {
                 /* This task still owns the durable RELAYING reservation. Do
                  * not discard its only transfer/health result on transient
@@ -3865,6 +3961,19 @@ static void fw_auto_relay_task(void *arg)
                     s_auto_coordinator.pending_mask |=
                         (uint8_t)(1u << scanner_id);
                     retry = true;
+                } else if (strcmp(result.error, "bound_identity_changed") ==
+                           0) {
+                    /* No OTA bytes were sent. Return the reserved budget and
+                     * force a fresh check/identity sequence. */
+                    if (s_auto_coordinator.relay_attempts[scanner_id] > 0) {
+                        s_auto_coordinator.relay_attempts[scanner_id]--;
+                    }
+                    s_auto_coordinator.slot_state[scanner_id] =
+                        FW_AUTO_SLOT_AWAITING_CHECK;
+                    s_auto_coordinator.pending_mask &=
+                        (uint8_t)~(1u << scanner_id);
+                    s_auto_coordinator.bound_hardware_id[scanner_id][0] = '\0';
+                    identity_reset = true;
                 } else if (result.ok) {
                     s_auto_coordinator.slot_state[scanner_id] =
                         FW_AUTO_SLOT_CONVERGED;
@@ -3884,16 +3993,32 @@ static void fw_auto_relay_task(void *arg)
                             : FW_AUTO_SLOT_REFUSED;
                     terminal = true;
                 }
+                if (terminal) {
+                    s_auto_coordinator.bound_hardware_id[scanner_id][0] = '\0';
+                }
                 if (!auto_coordinator_save_locked()) {
                     (void)before;
                     auto_coordinator_fail_closed_after_save_failure_locked(
                         "relay_result");
                     retry = false;
+                    identity_reset = false;
+                } else if (identity_reset) {
+                    auto_clear_ready_bindings_locked(scanner_id);
+                    resume_scanner = true;
+                } else if (retry) {
+                    auto_advance_ready_binding_locked(
+                        scanner_id, relay_generation,
+                        ready_binding.manifest_crc32, &current_identity);
+                } else if (terminal) {
+                    auto_clear_ready_bindings_locked(scanner_id);
                 }
             }
             worker_continues = s_auto_relay_worker_running;
             auto_coordinator_unlock();
-            if (terminal && !result.ok) {
+            if (resume_scanner) {
+                uart_rx_send_command_to_scanner(scanner_id,
+                                                "{\"type\":\"start\"}");
+            } else if (terminal && !result.ok) {
                 uart_rx_send_command_to_scanner(scanner_id,
                                                 "{\"type\":\"start\"}");
             }
@@ -4091,6 +4216,17 @@ static bool enqueue_auto_relay(
     if (!ok) {
         s_auto_coordinator = before;
     } else {
+        memset(&s_auto_ready_bindings[scanner_id], 0,
+               sizeof(s_auto_ready_bindings[scanner_id]));
+        fw_auto_offer_binding_t *binding =
+            &s_auto_ready_bindings[scanner_id];
+        binding->generation = generation;
+        binding->manifest_crc32 = manifest_crc32;
+        binding->slot = (uint8_t)scanner_id;
+        binding->identity_generation = identity->identity_generation;
+        snprintf(binding->hardware_id, sizeof(binding->hardware_id), "%s",
+                 identity->hardware_id);
+        binding->captured_ms = now_ms;
         s_auto_legacy_ready[scanner_id] = legacy_mode;
         if (!legacy_mode) {
             memset(&s_auto_offer_bindings[scanner_id], 0,
@@ -4299,24 +4435,21 @@ bool fw_store_restore_auto_update_coordinator(void)
      * identity snapshots before ever taking the coordinator mutex. */
     auto_capture_identity_floors(identity_floors);
 
+    uint8_t serialized_blob[NVS_CONFIG_MAX_BLOB_SIZE] = {0};
     fw_auto_coordinator_blob_t blob = {0};
     size_t blob_size = 0;
     uint32_t manifest_crc32 = info.manifest_crc32;
-    bool valid = nvs_config_get_blob(
-        NVS_FW_COORDINATOR, &blob, sizeof(blob), &blob_size) &&
-        blob_size == sizeof(blob) && auto_coordinator_blob_valid(&blob) &&
-        blob.generation == info.generation &&
-        blob.manifest_crc32 == manifest_crc32 &&
-        (blob.fail_closed ||
-         blob.target_slot_mask == info.target_slot_mask);
-    if (!valid) {
+    nvs_config_blob_read_status_t read_status = nvs_config_read_blob(
+        NVS_FW_COORDINATOR, serialized_blob, sizeof(serialized_blob),
+        &blob_size);
+    if (read_status == NVS_CONFIG_BLOB_MISSING) {
         /* The committed manifest CRC includes its exact requested slot mask.
          * That makes the manifest a safe recovery journal for the tiny power-
          * loss window between manifest commit and coordinator commit. Rebuild
          * only an awaiting-check queue; every scanner still has to prove its
          * version and immutable identity before any relay is authorized. */
         ESP_LOGW(TAG,
-                 "Coordinator missing/corrupt or generation mismatch; "
+                 "Coordinator missing; "
                  "rebuilding generation %lu mask=0x%02x from committed manifest",
                  (unsigned long)info.generation,
                  (unsigned)info.target_slot_mask);
@@ -4353,6 +4486,40 @@ bool fw_store_restore_auto_update_coordinator(void)
         (void)auto_coordinator_reprompt_requested();
         return auto_coordinator_start_worker();
     }
+    if (read_status != NVS_CONFIG_BLOB_PRESENT) {
+        ESP_LOGE(TAG,
+                 "Coordinator record read failed; refusing manifest-journal "
+                 "rebuild for generation %lu",
+                 (unsigned long)info.generation);
+        return false;
+    }
+
+    bool migrated_from_v2 = false;
+    bool valid = false;
+    if (blob_size == sizeof(fof_fw_coord_v2_t)) {
+        fof_fw_coord_v3_t migrated_blob = {0};
+        valid = fof_fw_coordinator_migrate_v2(
+            serialized_blob, blob_size, info.generation, manifest_crc32,
+            info.target_slot_mask, &migrated_blob);
+        if (valid) {
+            blob = migrated_blob;
+            migrated_from_v2 = true;
+        }
+    } else if (blob_size == sizeof(blob)) {
+        memcpy(&blob, serialized_blob, sizeof(blob));
+        valid = auto_coordinator_blob_valid(&blob) &&
+            blob.generation == info.generation &&
+            blob.manifest_crc32 == manifest_crc32 &&
+            (blob.fail_closed ||
+             blob.target_slot_mask == info.target_slot_mask);
+    }
+    if (!valid) {
+        ESP_LOGE(TAG,
+                 "Present coordinator record is corrupt, unknown, or does "
+                 "not match staged generation %lu; refusing fresh budgets",
+                 (unsigned long)info.generation);
+        return false;
+    }
 
     if (!auto_coordinator_lock()) {
         return false;
@@ -4360,9 +4527,21 @@ bool fw_store_restore_auto_update_coordinator(void)
     s_auto_coordinator = blob;
     s_auto_coordinator_loaded = true;
     s_auto_relay_worker_running = false;
+    if (migrated_from_v2) {
+        if (!auto_coordinator_save_locked()) {
+            s_auto_coordinator_loaded = false;
+            memset(&s_auto_coordinator, 0, sizeof(s_auto_coordinator));
+            auto_coordinator_unlock();
+            ESP_LOGE(TAG,
+                     "Schema 2 coordinator migration could not be committed; "
+                     "aborting restore without scanner side effects");
+            return false;
+        }
+    }
     auto_set_identity_floors_locked(identity_floors);
     bool changed = false;
-    for (int scanner_id = 0; scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT;
+    for (int scanner_id = 0;
+         !migrated_from_v2 && scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT;
          ++scanner_id) {
         uint8_t bit = (uint8_t)(1u << scanner_id);
         if (!(blob.target_slot_mask & bit)) {

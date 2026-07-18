@@ -254,6 +254,7 @@ def test_auto_update_coordinator_is_one_bounded_crc_protected_nvs_blob():
     nvs_header = _source("esp32", "uplink", "main", "core", "nvs_config.h")
     nvs_source = _source("esp32", "uplink", "main", "core", "nvs_config.c")
     store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    migration = _source("esp32", "shared", "firmware_coordinator_migration.h")
 
     assert "NVS_CONFIG_MAX_BLOB_SIZE" in nvs_header
     assert "nvs_config_get_blob" in nvs_header
@@ -265,9 +266,10 @@ def test_auto_update_coordinator_is_one_bounded_crc_protected_nvs_blob():
     assert 'NVS_FW_COORDINATOR "fw_coord"' in store
     assert "FW_AUTO_COORDINATOR_MAGIC" in store
     assert "FW_AUTO_COORDINATOR_SCHEMA" in store
-    coordinator = store[
-        store.index("typedef struct {", store.index("FW_AUTO_COORDINATOR_SCHEMA")) :
-        store.index("} fw_auto_coordinator_blob_t;")
+    coordinator = migration[
+        migration.index("typedef struct {", migration.index(
+            "} fof_fw_coord_v2_t;")) :
+        migration.index("} fof_fw_coord_v3_t;")
     ]
     for field in (
         "magic",
@@ -493,19 +495,111 @@ def test_committed_manifest_carries_scope_so_boot_can_rebuild_missing_coordinato
         store.index("bool fw_store_restore_auto_update_coordinator") :
         store.index("void fw_store_handle_scanner_check")
     ]
-    invalid = restore[restore.index("if (!valid)") :]
-    assert "auto_coordinator_begin_generation(" in invalid
-    assert "info.generation" in invalid
-    assert "info.target_slot_mask" in invalid
-    assert "auto_coordinator_reprompt_requested()" in invalid
+    missing = restore[
+        restore.index("if (read_status == NVS_CONFIG_BLOB_MISSING)") :
+        restore.index("if (read_status != NVS_CONFIG_BLOB_PRESENT)")
+    ]
+    assert "auto_coordinator_begin_generation(" in missing
+    assert "info.generation" in missing
+    assert "info.target_slot_mask" in missing
+    assert "auto_coordinator_reprompt_requested()" in missing
+
+
+def test_nvs_blob_read_status_never_collapses_present_errors_into_missing():
+    header = _source("esp32", "uplink", "main", "core", "nvs_config.h")
+    source = _source("esp32", "uplink", "main", "core", "nvs_config.c")
+
+    for name in (
+        "NVS_CONFIG_BLOB_READ_ERROR",
+        "NVS_CONFIG_BLOB_MISSING",
+        "NVS_CONFIG_BLOB_PRESENT",
+        "nvs_config_read_blob",
+    ):
+        assert name in header
+
+    read = source[
+        source.index("nvs_config_blob_read_status_t nvs_config_read_blob") :
+        source.index("bool nvs_config_get_blob", source.index(
+            "nvs_config_blob_read_status_t nvs_config_read_blob"))
+    ]
+    missing = read[
+        read.index("ESP_ERR_NVS_NOT_FOUND") :
+        read.index("required == 0")
+    ]
+    assert "NVS_CONFIG_BLOB_MISSING" in missing
+    invalid_size = read[
+        read.index("required == 0") :
+        read.index("size_t read_size")
+    ]
+    assert "NVS_CONFIG_BLOB_READ_ERROR" in invalid_size
+    read_failure = read[read.index("nvs_get_blob(s_nvs_handle, key, data") :]
+    assert "NVS_CONFIG_BLOB_READ_ERROR" in read_failure
+    assert "NVS_CONFIG_BLOB_MISSING" not in invalid_size + read_failure
+
+
+def test_present_invalid_coordinator_aborts_restore_without_fresh_generation():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    restore = store[
+        store.index("bool fw_store_restore_auto_update_coordinator") :
+        store.index("void fw_store_handle_scanner_check")
+    ]
+    rejection = restore[
+        restore.index("if (read_status != NVS_CONFIG_BLOB_PRESENT)") :
+        restore.index("if (blob_size == sizeof(fof_fw_coord_v2_t))")
+    ]
+    assert "return false" in rejection
+    assert "auto_coordinator_begin_generation" not in rejection
+
+    invalid = restore[
+        restore.index("if (!valid)") :
+        restore.index("if (!auto_coordinator_lock())")
+    ]
+    assert "return false" in invalid
+    assert "auto_coordinator_begin_generation" not in invalid
+    assert "auto_coordinator_initialize_fail_closed" not in invalid
+
+
+def test_schema2_migration_is_saved_as_schema3_before_restore_side_effects():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    restore = store[
+        store.index("bool fw_store_restore_auto_update_coordinator") :
+        store.index("void fw_store_handle_scanner_check")
+    ]
+
+    assert "fof_fw_coord_v2_t" in restore
+    assert "fof_fw_coordinator_migrate_v2" in restore
+    assert "migrated_from_v2" in restore
+    migrated = restore[
+        restore.index("if (blob_size == sizeof(fof_fw_coord_v2_t))") :
+        restore.index("if (!valid)")
+    ]
+    assert "fof_fw_coordinator_migrate_v2" in migrated
+
+    load = restore[restore.index("s_auto_coordinator = blob") :]
+    migration_save = load.index("if (migrated_from_v2)")
+    side_effects = [
+        load.index("auto_coordinator_release_excluded_slots()"),
+        load.index("auto_coordinator_reprompt_requested()"),
+        load.index("auto_coordinator_start_worker()"),
+    ]
+    assert all(migration_save < side_effect for side_effect in side_effects)
+    save_failure = load[
+        migration_save : load.index("auto_set_identity_floors_locked")
+    ]
+    assert "auto_coordinator_save_locked()" in save_failure
+    assert "return false" in save_failure
+    assert "uart_rx_send_command" not in save_failure
+    assert "auto_coordinator_start_worker" not in save_failure
 
 
 def test_coordinator_is_bound_to_exact_manifest_fingerprint_and_fail_closed_flag():
     store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    migration = _source("esp32", "shared", "firmware_coordinator_migration.h")
     coordinator = store[store.index("FW_AUTO_COORDINATOR_MAGIC") :]
-    blob = coordinator[
-        coordinator.index("typedef struct {") :
-        coordinator.index("} fw_auto_coordinator_blob_t;")
+    blob = migration[
+        migration.index("typedef struct {", migration.index(
+            "} fof_fw_coord_v2_t;")) :
+        migration.index("} fof_fw_coord_v3_t;")
     ]
     assert "manifest_crc32" in blob
     assert "fail_closed" in blob
@@ -556,9 +650,12 @@ def test_ambiguous_manifest_or_coordinator_commit_poison_staged_image():
         store.index("bool fw_store_restore_auto_update_coordinator") :
         store.index("void fw_store_handle_scanner_check")
     ]
-    invalid = restore[restore.index("if (!valid)") :]
-    assert "validate_staged_image" in invalid
-    assert invalid.index("validate_staged_image") < invalid.index(
+    missing = restore[
+        restore.index("if (read_status == NVS_CONFIG_BLOB_MISSING)") :
+        restore.index("if (read_status != NVS_CONFIG_BLOB_PRESENT)")
+    ]
+    assert "validate_staged_image" in missing
+    assert missing.index("validate_staged_image") < missing.index(
         "auto_coordinator_begin_generation("
     )
 
@@ -800,10 +897,12 @@ def test_legacy_offer_is_manual_identity_fresh_and_binding_bound():
 
 def test_schema3_persists_bound_mac_and_exact_recovering_state():
     store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    migration = _source("esp32", "shared", "firmware_coordinator_migration.h")
     coordinator = store[store.index("FW_AUTO_COORDINATOR_MAGIC") :]
-    blob = coordinator[
-        coordinator.index("typedef struct {") :
-        coordinator.index("} fw_auto_coordinator_blob_t;")
+    blob = migration[
+        migration.index("typedef struct {", migration.index(
+            "} fof_fw_coord_v2_t;")) :
+        migration.index("} fof_fw_coord_v3_t;")
     ]
     validation = coordinator[
         coordinator.index("static bool auto_coordinator_blob_valid") :
@@ -819,25 +918,36 @@ def test_schema3_persists_bound_mac_and_exact_recovering_state():
     assert "FW_AUTO_SLOT_RECOVERING" in validation
 
 
-def test_legacy_second_identity_wait_precedes_attempt_and_uart_relay():
+def test_every_strict_and_legacy_ready_waits_for_second_identity_before_attempt():
     store = _source("esp32", "uplink", "main", "network", "fw_store.c")
     coordinator = store[store.index("FW_AUTO_COORDINATOR_MAGIC") :]
 
-    assert "FW_AUTO_LEGACY_SECOND_IDENTITY_WAIT_MS 12000" in coordinator
+    assert "FW_AUTO_SECOND_IDENTITY_WAIT_MS 12000" in coordinator
     assert "FW_AUTO_OFFER_BINDING_TTL_MS 60000" in coordinator
+    assert "s_auto_ready_bindings" in coordinator
     wait = coordinator[
-        coordinator.index("static bool auto_wait_for_legacy_second_identity") :
+        coordinator.index("static bool auto_wait_for_ready_second_identity") :
         coordinator.index("static void fw_auto_relay_task")
     ]
     assert "uart_rx_get_scanner_identity_snapshot" in wait
     assert "auto_coordinator_lock" not in wait
     assert "vTaskDelay" in wait
+    assert "legacy_mode" in wait
+    assert "FOF_LEGACY_READY_BOOTSTRAP_VERSION" in wait
+    assert "staged_firmware_is_newer_for_scanner" in wait
 
     task = coordinator[
         coordinator.index("static void fw_auto_relay_task") :
         coordinator.index("static bool auto_coordinator_start_worker")
     ]
-    second_identity = task.index("auto_wait_for_legacy_second_identity")
+    selection = task[
+        task.index("for (int slot = 0") :
+        task.index("if (scanner_id < 0 && s_auto_relay_worker_running)")
+    ]
+    assert "relay_attempts[scanner_id]++" not in selection
+    assert "FW_AUTO_SLOT_RELAYING" not in selection
+
+    second_identity = task.index("auto_wait_for_ready_second_identity")
     reserve = task.index("relay_attempts[scanner_id]++", second_identity)
     relaying = task.index("FW_AUTO_SLOT_RELAYING", reserve)
     relay = task.index("fw_relay_stored_to_scanner", relaying)
@@ -846,7 +956,127 @@ def test_legacy_second_identity_wait_precedes_attempt_and_uart_relay():
         task.index("if (!reservation_valid)") :
         task.index("fw_auto_coordinator_blob_t before", second_identity)
     ]
-    assert "auto_reset_legacy_queue_after_revalidation_failure" in invalid
+    assert "auto_reset_ready_queue_after_revalidation_failure" in invalid
+    revalidation = task[second_identity:reserve]
+    assert "s_auto_ready_bindings[scanner_id]" in revalidation
+    assert "s_auto_legacy_ready[scanner_id] == legacy_mode" in revalidation
+    assert "bound_hardware_id[scanner_id]" in revalidation
+    assert "staged_firmware_is_newer_for_scanner" in revalidation
+
+
+def test_ready_enqueue_binds_identity_for_both_strict_and_legacy_paths():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    enqueue = store[
+        store.index("static bool enqueue_auto_relay") :
+        store.index("static bool auto_coordinator_record_scanner_check")
+    ]
+    save = enqueue.index("auto_coordinator_save_locked()")
+    ready_binding = enqueue.index("s_auto_ready_bindings[scanner_id]", save)
+    unlock = enqueue.index("auto_coordinator_unlock()", ready_binding)
+    assert save < ready_binding < unlock
+    assert "binding->identity_generation = identity->identity_generation" in enqueue
+
+    handlers = store[store.index("bool fw_store_handle_scanner_ready") :]
+    strict = handlers[
+        handlers.index("bool fw_store_handle_scanner_ready") :
+        handlers.index("bool fw_store_handle_legacy_scanner_ready")
+    ]
+    legacy = handlers[handlers.index("bool fw_store_handle_legacy_scanner_ready") :]
+    assert "enqueue_auto_relay" in strict
+    assert "enqueue_auto_relay" in legacy
+
+
+def test_retry_requeue_advances_ready_identity_only_after_durable_save():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    task_start = store.index("static void fw_auto_relay_task")
+    task = store[
+        task_start : store.index("static bool auto_coordinator_start_worker",
+                                 task_start)
+    ]
+    result = task[
+        task.index('strcmp(result.error, "operation_active") == 0') :
+        task.index("worker_continues =", task.index(
+            'strcmp(result.error, "operation_active") == 0'))
+    ]
+    save = result.index("auto_coordinator_save_locked()")
+    advance = result.index("auto_advance_ready_binding_locked", save)
+    assert save < advance
+    assert "if (retry)" in result[save:advance]
+    assert "&current_identity" in result[advance:]
+
+    helper = store[
+        store.index("static void auto_advance_ready_binding_locked") :
+        store.index("static void fw_auto_relay_task")
+    ]
+    assert "s_auto_ready_bindings[scanner_id]" in helper
+    assert "identity->identity_generation" in helper
+    assert "identity->hardware_id" in helper
+    assert "generation" in helper
+    assert "manifest_crc32" in helper
+
+
+def test_terminal_results_clear_bound_mac_before_save_while_retry_keeps_it():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    task_start = store.index("static void fw_auto_relay_task")
+    task = store[
+        task_start : store.index("static bool auto_coordinator_start_worker",
+                                 task_start)
+    ]
+    result = task[
+        task.index('strcmp(result.error, "operation_active") == 0') :
+        task.index("worker_continues =", task.index(
+            'strcmp(result.error, "operation_active") == 0'))
+    ]
+    save = result.index("auto_coordinator_save_locked()")
+    terminal_branch = result.index("if (terminal)")
+    terminal_clear = result.index(
+        "bound_hardware_id[scanner_id][0] = '\\0'", terminal_branch
+    )
+    assert terminal_branch < terminal_clear < save
+
+    retryable = result[
+        result.index("auto_relay_error_is_retryable") :
+        result.index("} else {", result.index("auto_relay_error_is_retryable"))
+    ]
+    assert "bound_hardware_id" not in retryable
+
+
+def test_attempt_exhaustion_clears_bound_mac_and_volatile_ready_binding():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    task_start = store.index("static void fw_auto_relay_task")
+    task = store[
+        task_start : store.index("static bool auto_coordinator_start_worker",
+                                 task_start)
+    ]
+    exhausted = task[
+        task.index("relay_attempts[slot] >=") :
+        task.index("continue;", task.index("relay_attempts[slot] >="))
+    ]
+    clear = exhausted.index("bound_hardware_id[slot][0] = '\\0'")
+    save = exhausted.index("auto_coordinator_save_locked()")
+    volatile_clear = exhausted.index("auto_clear_ready_bindings_locked", save)
+    assert clear < save < volatile_clear
+
+
+def test_final_live_identity_change_rolls_back_attempt_without_ota_retry():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    task_start = store.index("static void fw_auto_relay_task")
+    task = store[
+        task_start : store.index("static bool auto_coordinator_start_worker",
+                                 task_start)
+    ]
+    result = task[
+        task.index('strcmp(result.error, "operation_active") == 0') :
+        task.index("worker_continues =", task.index(
+            'strcmp(result.error, "operation_active") == 0'))
+    ]
+    changed_start = result.index('"bound_identity_changed"')
+    changed = result[changed_start : result.index("} else if", changed_start)]
+    assert "relay_attempts[scanner_id]--" in changed
+    assert "FW_AUTO_SLOT_AWAITING_CHECK" in changed
+    assert "pending_mask &=" in changed
+    assert "bound_hardware_id[scanner_id][0] = '\\0'" in changed
+    assert "retry = true" not in changed
 
 
 def test_current_requires_post_floor_complete_exact_identity():
@@ -892,12 +1122,80 @@ def test_automatic_relay_uses_persisted_bound_mac_as_preupdate_authority():
     relay_call = task[task.index("fw_relay_stored_to_scanner") :]
     assert "relay_bound_hardware_id" in relay_call
 
+    identity = relay[
+        relay.index("scanner_identity_snapshot_t pre_update_identity") :
+        relay.index("const char *scanner_board")
+    ]
+    assert "expected_hardware_id" in identity
+    assert "pre_update_identity.complete" in identity
+    assert "strcmp(pre_update_identity.hardware_id," in identity
+    assert "bound_identity_changed" in identity
+    assert relay.index("bound_identity_changed") < relay.index("ota_begin")
+
+
+def test_final_automatic_legacy_guard_requires_exact_bootstrap_source_version():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    relay = store[
+        store.index("static bool fw_relay_stored_to_scanner") :
+        store.index("static esp_err_t fw_relay_handler")
+    ]
+    identity = relay[
+        relay.index("bool automatic_bound_relay") :
+        relay.index("char pre_update_hardware_id")
+    ]
+
+    assert "legacy_mode" in identity
+    assert "FOF_LEGACY_READY_BOOTSTRAP_VERSION" in identity
+    assert "pre_update_identity.version" in identity
+    assert relay.index("FOF_LEGACY_READY_BOOTSTRAP_VERSION") < relay.index(
+        "ota_begin"
+    )
+
 
 def test_coordinator_blob_is_compile_time_bounded_for_nvs():
     store = _source("esp32", "uplink", "main", "network", "fw_store.c")
     coordinator = store[store.index("FW_AUTO_COORDINATOR_MAGIC") :]
     assert "_Static_assert(sizeof(fw_auto_coordinator_blob_t) <=" in coordinator
     assert "NVS_CONFIG_MAX_BLOB_SIZE" in coordinator
+
+
+def test_coordinator_persisted_states_are_compile_time_mapped_to_migration_schema():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    normalized = " ".join(store.split())
+    for state in (
+        "EXCLUDED",
+        "AWAITING_CHECK",
+        "OFFERED",
+        "READY_QUEUED",
+        "RELAYING",
+        "CONVERGED",
+        "CURRENT",
+        "REFUSED",
+        "FAILED",
+        "NEWER_SKIPPED",
+        "RECOVERING",
+    ):
+        assert (
+            f"_Static_assert((int)FW_AUTO_SLOT_{state} == "
+            f"(int)FOF_FW_COORD_SLOT_{state}" in normalized
+        )
+
+    cmake = _source("esp32", "uplink", "main", "CMakeLists.txt")
+    assert 'target_sources(${COMPONENT_LIB} PRIVATE "../../shared/firmware_coordinator_migration.c")' in cmake
+
+
+def test_coordinator_save_refuses_invalid_schema3_before_nvs_write():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    save = store[
+        store.index("static bool auto_coordinator_save_locked") :
+        store.index("static void auto_coordinator_set_fail_closed_locked")
+    ]
+    stamp = save.index("s_auto_coordinator.crc32 =")
+    validate = save.index("auto_coordinator_blob_valid", stamp)
+    write = save.index("nvs_config_set_blob", validate)
+    assert stamp < validate < write
+    assert "return false" in save[validate:write]
+    assert "invalid schema 3" in save[validate:write]
 
 
 def test_terminal_gate_does_not_open_when_terminal_state_persistence_fails():

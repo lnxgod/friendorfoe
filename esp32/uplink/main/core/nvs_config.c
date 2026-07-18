@@ -144,31 +144,32 @@ bool nvs_config_set_blob(const char *key, const void *data, size_t size)
     return true;
 }
 
-bool nvs_config_get_blob(const char *key, void *data, size_t capacity,
-                         size_t *out_size)
+nvs_config_blob_read_status_t nvs_config_read_blob(
+    const char *key, void *data, size_t capacity, size_t *out_size)
 {
     if (out_size) {
         *out_size = 0;
     }
     if (!s_initialized || !key || !data || capacity == 0 ||
         capacity > NVS_CONFIG_MAX_BLOB_SIZE) {
-        return false;
+        return NVS_CONFIG_BLOB_READ_ERROR;
     }
 
     size_t required = 0;
     esp_err_t err = nvs_get_blob(s_nvs_handle, key, NULL, &required);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        return NVS_CONFIG_BLOB_MISSING;
+    }
     if (err != ESP_OK) {
-        if (err != ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(TAG, "NVS blob length '%s' failed: %s",
-                     key, esp_err_to_name(err));
-        }
-        return false;
+        ESP_LOGW(TAG, "NVS blob length '%s' failed: %s",
+                 key, esp_err_to_name(err));
+        return NVS_CONFIG_BLOB_READ_ERROR;
     }
     if (required == 0 || required > capacity ||
         required > NVS_CONFIG_MAX_BLOB_SIZE) {
         ESP_LOGW(TAG, "NVS blob '%s' has invalid size %u (capacity=%u)",
                  key, (unsigned)required, (unsigned)capacity);
-        return false;
+        return NVS_CONFIG_BLOB_READ_ERROR;
     }
 
     size_t read_size = required;
@@ -177,12 +178,19 @@ bool nvs_config_get_blob(const char *key, void *data, size_t capacity,
         ESP_LOGW(TAG, "NVS blob read '%s' failed: %s size=%u/%u",
                  key, esp_err_to_name(err), (unsigned)read_size,
                  (unsigned)required);
-        return false;
+        return NVS_CONFIG_BLOB_READ_ERROR;
     }
     if (out_size) {
         *out_size = read_size;
     }
-    return true;
+    return NVS_CONFIG_BLOB_PRESENT;
+}
+
+bool nvs_config_get_blob(const char *key, void *data, size_t capacity,
+                         size_t *out_size)
+{
+    return nvs_config_read_blob(key, data, capacity, out_size) ==
+        NVS_CONFIG_BLOB_PRESENT;
 }
 
 /* ── Convenience getters with defaults ─────────────────────────────────── */

@@ -75,6 +75,19 @@ bool nvs_config_get_u32(const char *key, uint32_t *value);
 /** Atomically commit one bounded opaque record under a single NVS key. */
 bool nvs_config_set_blob(const char *key, const void *data, size_t size);
 
+typedef enum {
+    NVS_CONFIG_BLOB_READ_ERROR = -1,
+    NVS_CONFIG_BLOB_MISSING = 0,
+    NVS_CONFIG_BLOB_PRESENT = 1,
+} nvs_config_blob_read_status_t;
+
+/**
+ * Read one bounded opaque record while distinguishing a genuinely absent key
+ * from a present record that cannot be read safely.
+ */
+nvs_config_blob_read_status_t nvs_config_read_blob(
+    const char *key, void *data, size_t capacity, size_t *out_size);
+
 /**
  * Read one bounded opaque record.  The stored record must fit completely in
  * the caller's buffer; partial blob reads are never accepted.

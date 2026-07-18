@@ -4,9 +4,9 @@
 
 #include <stddef.h>
 
-#define BADGE_SCANNER_TARGET "scanner-s3-combo-fof_badge"
-#define BADGE_SCANNER_PROJECT "fof_badge_scanner"
-#define BADGE_SCANNER_HARDWARE "seeed_xiao_esp32s3"
+#define BADGE_SCANNER_TARGET FOF_LEGACY_READY_BADGE_TARGET
+#define BADGE_SCANNER_PROJECT FOF_LEGACY_READY_BADGE_PROJECT
+#define BADGE_SCANNER_HARDWARE FOF_LEGACY_READY_BADGE_HARDWARE
 #define BADGE_SCANNER_TARGET_VERSION "0.64.69-badge-defcon34"
 #define BADGE_SCANNER_SIZE 1192736U
 #define BADGE_SCANNER_CRC32 0x89ABCDEFU
@@ -139,6 +139,22 @@ void test_legacy_ready_rejects_project_identity_mismatch(void)
     fof_legacy_manifest_view_t manifest = legacy_manifest_fixture();
 
     identity.project = "fof_scanner";
+
+    TEST_ASSERT_FALSE(legacy_ready_authorized(&ready, &identity, &manifest));
+}
+
+void test_legacy_ready_rejects_coherent_production_scanner_contract(void)
+{
+    fof_legacy_ready_view_t ready = legacy_ready_fixture();
+    fof_legacy_identity_view_t identity = legacy_identity_fixture();
+    fof_legacy_manifest_view_t manifest = legacy_manifest_fixture();
+
+    ready.board = "scanner-s3-combo";
+    identity.board = "scanner-s3-combo";
+    identity.firmware_name = "scanner-s3-combo";
+    identity.project = "fof_scanner";
+    manifest.target = "scanner-s3-combo";
+    manifest.project = "fof_scanner";
 
     TEST_ASSERT_FALSE(legacy_ready_authorized(&ready, &identity, &manifest));
 }
