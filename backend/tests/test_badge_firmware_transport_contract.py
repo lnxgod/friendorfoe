@@ -79,6 +79,40 @@ def test_fw_ready_is_an_exact_auto_update_manifest_receipt():
     assert "cJSON_IsFalse(allow_same_j)" in ready_branch
 
 
+def test_legacy_identity_snapshot_is_current_complete_and_mutex_protected():
+    header = _source("esp32", "uplink", "main", "comms", "uart_rx.h")
+    uplink_rx = _source("esp32", "uplink", "main", "comms", "uart_rx.c")
+
+    assert "scanner_identity_snapshot_t" in header
+    assert "uart_rx_get_scanner_identity_snapshot" in header
+    for field in (
+        "firmware_name",
+        "app_project",
+        "hardware_type",
+        "hardware_id",
+        "identity_generation",
+        "received_ms",
+        "complete",
+    ):
+        assert field in header
+
+    assert "StaticSemaphore_t s_scanner_identity_mutex_storage" in uplink_rx
+    assert "xSemaphoreCreateMutexStatic" in uplink_rx
+    assert "publish_scanner_identity_snapshot" in uplink_rx
+    assert "scanner_identity_frame_string" in uplink_rx
+    assert "scanner_identity_hardware_id_is_canonical" in uplink_rx
+    assert "snapshot.complete" in uplink_rx
+    assert "snapshot.identity_generation" in uplink_rx
+    assert "snapshot.received_ms" in uplink_rx
+    getter = uplink_rx[
+        uplink_rx.index("bool uart_rx_get_scanner_identity_snapshot") :
+        uplink_rx.index("ota_response_t uart_rx_get_last_ota_response")
+    ]
+    assert "xSemaphoreTake" in getter
+    assert "xSemaphoreGive" in getter
+    assert "*out =" in getter
+
+
 def test_scanner_rejects_lossy_or_trailing_garbage_firmware_offers():
     scanner_main = _source("esp32", "scanner", "main", "main.c")
 

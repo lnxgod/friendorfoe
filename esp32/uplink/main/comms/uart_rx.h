@@ -92,6 +92,26 @@ void uart_rx_send_command_to_scanner(int scanner_id, const char *json_cmd);
 bool uart_rx_send_command_to_scanner_checked(int scanner_id, const char *json_cmd);
 bool uart_rx_set_scanner_tx_pin_for_badge_probe(int scanner_id, int tx_pin);
 
+/**
+ * Small synchronized identity contract published from one complete
+ * scanner_info frame. Missing/malformed extended fields publish an incomplete
+ * snapshot and clear those fields instead of retaining prior identity data.
+ */
+typedef struct {
+    char version[32];
+    char board[40];
+    char firmware_name[40];
+    char app_project[32];
+    char hardware_type[24];
+    char hardware_id[18];
+    uint32_t identity_generation;
+    int64_t received_ms;
+    bool complete;
+} scanner_identity_snapshot_t;
+
+bool uart_rx_get_scanner_identity_snapshot(
+    int scanner_id, scanner_identity_snapshot_t *out);
+
 /** Scanner identity info (received via UART scanner_info message). */
 typedef struct {
     char version[32];

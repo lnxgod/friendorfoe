@@ -59,6 +59,9 @@ static SemaphoreHandle_t s_uart_tx_lock = NULL;
 /* Scanner identity (populated from scanner_info UART messages) */
 static scanner_info_t s_ble_scanner_info = {0};
 static scanner_info_t s_wifi_scanner_info = {0};
+static scanner_identity_snapshot_t s_scanner_identity_snapshots[2] = {0};
+static StaticSemaphore_t s_scanner_identity_mutex_storage;
+static SemaphoreHandle_t s_scanner_identity_mutex = NULL;
 
 /* OTA response tracking (set by UART RX, read by relay handler) */
 static volatile ota_response_t s_last_ota_response = {0};
@@ -785,6 +788,106 @@ static void json_copy_string(const cJSON *obj, const char *key,
     }
     strncpy(out, value, out_len - 1);
     out[out_len - 1] = '\0';
+}
+
+static bool scanner_identity_frame_string(const cJSON *root,
+                                          const char *key,
+                                          const char **out,
+                                          size_t out_capacity)
+{
+    if (!out || out_capacity < 2U) {
+        return false;
+    }
+    *out = "";
+    const cJSON *item = root && key
+        ? cJSON_GetObjectItemCaseSensitive(root, key)
+        : NULL;
+    if (!cJSON_IsString(item) || !item->valuestring || !item->valuestring[0] ||
+        strlen(item->valuestring) >= out_capacity) {
+        return false;
+    }
+    *out = item->valuestring;
+    return true;
+}
+
+static bool scanner_identity_hardware_id_is_canonical(const char *hardware_id)
+{
+    if (!hardware_id || strlen(hardware_id) != 17U) {
+        return false;
+    }
+    for (size_t i = 0; i < 17U; ++i) {
+        if ((i + 1U) % 3U == 0U) {
+            if (hardware_id[i] != ':') {
+                return false;
+            }
+            continue;
+        }
+        char ch = hardware_id[i];
+        if (!((ch >= '0' && ch <= '9') ||
+              (ch >= 'a' && ch <= 'f') ||
+              (ch >= 'A' && ch <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static uint32_t publish_scanner_identity_snapshot(int scanner_id,
+                                                  const cJSON *root,
+                                                  int64_t received_ms)
+{
+    if (scanner_id < 0 || scanner_id > 1 || !root ||
+        !s_scanner_identity_mutex) {
+        return 0;
+    }
+
+    scanner_identity_snapshot_t snapshot = {0};
+    const char *version = "";
+    const char *board = "";
+    const char *firmware_name = "";
+    const char *app_project = "";
+    const char *hardware_type = "";
+    const char *hardware_id = "";
+    bool complete =
+        scanner_identity_frame_string(root, "ver", &version,
+                                      sizeof(snapshot.version)) &&
+        scanner_identity_frame_string(root, "board", &board,
+                                      sizeof(snapshot.board)) &&
+        scanner_identity_frame_string(root, "firmware_name",
+                                      &firmware_name,
+                                      sizeof(snapshot.firmware_name)) &&
+        scanner_identity_frame_string(root, "app_project", &app_project,
+                                      sizeof(snapshot.app_project)) &&
+        scanner_identity_frame_string(root, "hardware_type",
+                                      &hardware_type,
+                                      sizeof(snapshot.hardware_type)) &&
+        scanner_identity_frame_string(root, "hardware_id", &hardware_id,
+                                      sizeof(snapshot.hardware_id)) &&
+        scanner_identity_hardware_id_is_canonical(hardware_id);
+
+    snprintf(snapshot.version, sizeof(snapshot.version), "%s", version);
+    snprintf(snapshot.board, sizeof(snapshot.board), "%s", board);
+    snprintf(snapshot.firmware_name, sizeof(snapshot.firmware_name), "%s",
+             firmware_name);
+    snprintf(snapshot.app_project, sizeof(snapshot.app_project), "%s",
+             app_project);
+    snprintf(snapshot.hardware_type, sizeof(snapshot.hardware_type), "%s",
+             hardware_type);
+    snprintf(snapshot.hardware_id, sizeof(snapshot.hardware_id), "%s",
+             hardware_id);
+    snapshot.received_ms = received_ms;
+    snapshot.complete = complete;
+
+    if (xSemaphoreTake(s_scanner_identity_mutex,
+                       pdMS_TO_TICKS(100)) != pdTRUE) {
+        return 0;
+    }
+    uint32_t previous =
+        s_scanner_identity_snapshots[scanner_id].identity_generation;
+    snapshot.identity_generation = previous == UINT32_MAX ? 1U : previous + 1U;
+    s_scanner_identity_snapshots[scanner_id] = snapshot;
+    xSemaphoreGive(s_scanner_identity_mutex);
+    return snapshot.identity_generation;
 }
 
 static int64_t scanner_status_ssid_age_s(int64_t now_ms, int64_t seen_ms)
@@ -1568,6 +1671,9 @@ static void process_line(const char *line, size_t len, int scanner_id)
         const char *hardware_id = json_get_string(root, "hardware_id", "");
         const char *chip = json_get_string(root, "chip", "?");
         const char *caps = json_get_string(root, "caps", "?");
+        uint32_t published_identity_generation =
+            publish_scanner_identity_snapshot(
+                scanner_id, root, esp_timer_get_time() / 1000);
         strncpy(info->version, ver, sizeof(info->version) - 1);
         strncpy(info->board, board, sizeof(info->board) - 1);
         strncpy(info->firmware_name, firmware_name, sizeof(info->firmware_name) - 1);
@@ -1793,7 +1899,11 @@ static void process_line(const char *line, size_t len, int scanner_id)
         }
         info->quiet_generation = (uint32_t)json_get_double(
             root, "quiet_generation", (double)info->quiet_generation);
-        info->identity_generation++;
+        if (published_identity_generation != 0) {
+            info->identity_generation = published_identity_generation;
+        } else {
+            info->identity_generation++;
+        }
         info->received = true;
 #ifdef FOF_BADGE_VARIANT
         badge_ingest_scanner_status_evidence(scanner_id, info);
@@ -2219,6 +2329,13 @@ void uart_rx_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
     (void)uart_rx_scanner_tx_lease_init();
+    if (!s_scanner_identity_mutex) {
+        s_scanner_identity_mutex = xSemaphoreCreateMutexStatic(
+            &s_scanner_identity_mutex_storage);
+        if (!s_scanner_identity_mutex) {
+            ESP_LOGE(TAG, "Failed to create scanner identity snapshot mutex");
+        }
+    }
 #ifdef FOF_BADGE_VARIANT
     if (badge_threat_lock_state(pdMS_TO_TICKS(100))) {
         badge_threat_ensure_ready();
@@ -2512,6 +2629,20 @@ const scanner_info_t *uart_rx_get_ble_scanner_info(void)
 const scanner_info_t *uart_rx_get_wifi_scanner_info(void)
 {
     return s_wifi_scanner_info.received ? &s_wifi_scanner_info : NULL;
+}
+
+bool uart_rx_get_scanner_identity_snapshot(
+    int scanner_id, scanner_identity_snapshot_t *out)
+{
+    if (scanner_id < 0 || scanner_id > 1 || !out ||
+        !s_scanner_identity_mutex ||
+        xSemaphoreTake(s_scanner_identity_mutex,
+                       pdMS_TO_TICKS(100)) != pdTRUE) {
+        return false;
+    }
+    *out = s_scanner_identity_snapshots[scanner_id];
+    xSemaphoreGive(s_scanner_identity_mutex);
+    return out->identity_generation != 0;
 }
 
 ota_response_t uart_rx_get_last_ota_response(void)
