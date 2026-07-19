@@ -2,7 +2,7 @@ package com.friendorfoe.data.repository
 
 import android.util.Log
 import com.friendorfoe.data.local.HistoryDao
-import com.friendorfoe.data.local.HistoryEntity
+import com.friendorfoe.data.local.toHistoryEntity
 import com.friendorfoe.data.local.TrackingDao
 import com.friendorfoe.data.local.TrackingEntity
 import com.friendorfoe.data.DetectionPrefs
@@ -796,47 +796,6 @@ class SkyObjectRepository @Inject constructor(
                     Log.w(TAG, "Failed to persist detection ${obj.id}: ${e.message}")
                 }
             }
-        }
-    }
-
-    /** Convert a SkyObject to a HistoryEntity for Room persistence. */
-    private fun SkyObject.toHistoryEntity(userLat: Double, userLon: Double): HistoryEntity {
-        return when (this) {
-            is Aircraft -> HistoryEntity(
-                objectId = icaoHex,
-                objectType = "aircraft",
-                detectionSource = source.name.lowercase(),
-                category = category.name.lowercase(),
-                displayName = callsign ?: icaoHex,
-                description = displaySummary(),
-                latitude = position.latitude,
-                longitude = position.longitude,
-                altitudeMeters = position.altitudeMeters,
-                userLatitude = userLat,
-                userLongitude = userLon,
-                distanceMeters = distanceMeters,
-                confidence = confidence,
-                firstSeen = firstSeen.toEpochMilli(),
-                lastSeen = lastUpdated.toEpochMilli(),
-                photoUrl = photoUrl
-            )
-            is Drone -> HistoryEntity(
-                objectId = id,
-                objectType = "drone",
-                detectionSource = source.name.lowercase(),
-                category = category.name.lowercase(),
-                displayName = manufacturer ?: "Unknown drone",
-                description = displaySummary(),
-                latitude = position.latitude,
-                longitude = position.longitude,
-                altitudeMeters = position.altitudeMeters,
-                userLatitude = userLat,
-                userLongitude = userLon,
-                distanceMeters = distanceMeters,
-                confidence = confidence,
-                firstSeen = firstSeen.toEpochMilli(),
-                lastSeen = lastUpdated.toEpochMilli()
-            )
         }
     }
 

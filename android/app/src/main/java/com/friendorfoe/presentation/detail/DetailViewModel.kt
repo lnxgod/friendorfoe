@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.local.HistoryDao
+import com.friendorfoe.data.local.toDrone
 import com.friendorfoe.data.remote.AircraftDetailDto
 import com.friendorfoe.data.repository.AircraftRepository
 import com.friendorfoe.data.repository.SkyObjectRepository
@@ -149,19 +150,7 @@ class DetailViewModel @Inject constructor(
                     )
                     _detailState.value = DetailState.AircraftLoaded(aircraft = aircraft, detail = null)
                 } else {
-                    val drone = Drone(
-                        id = historyEntity.objectId,
-                        position = pos,
-                        source = source,
-                        category = category,
-                        confidence = historyEntity.confidence,
-                        firstSeen = Instant.ofEpochMilli(historyEntity.firstSeen),
-                        lastUpdated = now,
-                        distanceMeters = historyEntity.distanceMeters,
-                        droneId = historyEntity.objectId,
-                        manufacturer = historyEntity.displayName
-                    )
-                    _detailState.value = DetailState.DroneLoaded(drone = drone)
+                    _detailState.value = DetailState.DroneLoaded(drone = historyEntity.toDrone())
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load from history: ${e.message}", e)
