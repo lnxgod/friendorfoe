@@ -5407,18 +5407,22 @@ static esp_err_t fw_trigger_handler(httpd_req_t *req)
 
 /* ── Registration ────────────────────────────────────────────────────────── */
 
+#ifndef FOF_BADGE_VARIANT
 static const httpd_uri_t uri_fw_upload = {
     .uri = "/api/fw/upload", .method = HTTP_POST, .handler = fw_upload_handler,
 };
 static const httpd_uri_t uri_fw_relay = {
     .uri = "/api/fw/relay", .method = HTTP_POST, .handler = fw_relay_handler,
 };
+#endif
 static const httpd_uri_t uri_fw_info = {
     .uri = "/api/fw/info", .method = HTTP_GET, .handler = fw_info_handler,
 };
+#ifndef FOF_BADGE_VARIANT
 static const httpd_uri_t uri_fw_trigger = {
     .uri = "/api/fw/trigger", .method = HTTP_POST, .handler = fw_trigger_handler,
 };
+#endif
 
 void fw_store_register(httpd_handle_t server)
 {

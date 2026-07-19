@@ -1677,11 +1677,13 @@ static const httpd_uri_t uri_connect_post = {
     .handler  = connect_post_handler,
 };
 
+#ifndef FOF_BADGE_VARIANT
 static const httpd_uri_t uri_ota_post = {
     .uri      = "/api/ota",
     .method   = HTTP_POST,
     .handler  = ota_post_handler,
 };
+#endif
 
 static const httpd_uri_t uri_ota_info = {
     .uri      = "/api/ota/info",
@@ -1689,11 +1691,13 @@ static const httpd_uri_t uri_ota_info = {
     .handler  = ota_info_handler,
 };
 
+#ifndef FOF_BADGE_VARIANT
 static const httpd_uri_t uri_ota_relay = {
     .uri      = "/api/ota/relay",
     .method   = HTTP_POST,
     .handler  = ota_relay_handler,
 };
+#endif
 
 /* ── Badge Control API ───────────────────────────────────────────────── */
 
