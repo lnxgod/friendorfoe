@@ -7,7 +7,7 @@ ANDROID_GRADLE = REPO_ROOT / "android" / "app" / "build.gradle.kts"
 ANDROID_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "android-build.yml"
 ESP32_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
 
-VERSION_NAME = "0.64.69-defcon34-badge-ui"
+VERSION_NAME = "0.64.70-android-defcon34-badge-ui"
 SIGNER_SHA256 = (
     "3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95"
 )
@@ -23,11 +23,11 @@ ACTION_PINS = {
     "softprops/action-gh-release": ("3d0d9888cb7fd7b750713d6e236d1fcb99157228", "v3", 1),
 }
 PRERELEASE_EXPRESSION = (
-    "${{ contains(github.ref_name, '-android-') || contains(github.ref_name, 'beta') "
-    "|| contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}"
+    "${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') "
+    "|| contains(github.ref_name, 'rc') }}"
 )
 MAKE_LATEST_EXPRESSION = (
-    "${{ contains(github.ref_name, '-android-') && 'false' || 'legacy' }}"
+    "${{ contains(github.ref_name, '-android-') && 'true' || 'legacy' }}"
 )
 ESP32_BUILD_GUARD = (
     "if: ${{ !((github.event_name == 'release' && "
@@ -49,7 +49,7 @@ def _job(workflow: str, name: str, next_name: str | None = None) -> str:
 
 def test_android_release_identity_is_exact():
     gradle = ANDROID_GRADLE.read_text()
-    assert "versionCode = 111" in gradle
+    assert "versionCode = 112" in gradle
     assert f'versionName = "{VERSION_NAME}"' in gradle
 
 
@@ -99,7 +99,7 @@ def test_release_signing_is_test_gated_verified_and_secret_scoped():
     assert "aapt" in signing
     assert SIGNER_SHA256 in signing
     assert "name='com.friendorfoe'" in signing
-    assert "versionCode='111'" in signing
+    assert "versionCode='112'" in signing
     assert f"versionName='{VERSION_NAME}'" in signing
     assert "sha256sum" in signing
     assert "rm -f android/app/release.keystore" in signing

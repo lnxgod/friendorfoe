@@ -111,7 +111,7 @@ jobs:
           "$APKSIGNER" verify --verbose --print-certs "$APK" | tee /tmp/apksigner-output.txt
           grep -F "certificate SHA-256 digest: 3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95" /tmp/apksigner-output.txt
           "$AAPT" dump badging "$APK" | tee /tmp/aapt-output.txt
-          grep -F "package: name='com.friendorfoe' versionCode='111' versionName='0.64.69-defcon34-badge-ui'" /tmp/aapt-output.txt
+          grep -F "package: name='com.friendorfoe' versionCode='112' versionName='0.64.70-android-defcon34-badge-ui'" /tmp/aapt-output.txt
           cp "$APK" "$ASSET"
           sha256sum "$ASSET" > "$ASSET.sha256"
 
@@ -147,8 +147,8 @@ jobs:
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-android-') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
-          make_latest: ${{ contains(github.ref_name, '-android-') && 'false' || 'legacy' }}
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
+          make_latest: ${{ contains(github.ref_name, '-android-') && 'true' || 'legacy' }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
