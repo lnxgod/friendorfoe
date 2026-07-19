@@ -154,7 +154,6 @@ class FirmwareManager:
         if not force and (now - self.last_check) < CACHE_TTL_S and self.assets:
             return
 
-        self.last_check = now
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 r = await client.get(GITHUB_API)
@@ -167,8 +166,29 @@ class FirmwareManager:
                     logger.warning("No GitHub releases found")
                     return
 
-                # Use the first release (most recent, includes prereleases)
-                data = releases[0]
+                # GitHub returns releases newest first. APK-only releases must
+                # not replace the firmware catalog with an empty one.
+                data = next(
+                    (
+                        release
+                        for release in releases
+                        if not release.get("draft", False)
+                        and any(
+                            a["name"].lower().endswith(".bin")
+                            and any(
+                                fw_info["asset_pattern"] in a["name"].lower()
+                                for fw_info in FIRMWARE_TYPES.values()
+                            )
+                            for a in release.get("assets", [])
+                        )
+                    ),
+                    None,
+                )
+                if data is None:
+                    logger.warning("No GitHub release with supported firmware found")
+                    return
+
+                self.last_check = now
                 tag = data.get("tag_name", "")
                 if tag == self.release_tag and self.assets:
                     return  # No change
