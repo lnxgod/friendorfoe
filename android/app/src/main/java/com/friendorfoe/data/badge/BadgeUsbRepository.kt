@@ -61,6 +61,7 @@ import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Call
 import okhttp3.Callback
@@ -3183,59 +3184,14 @@ class BadgeUsbRepository @Inject constructor(
                 parseFirmwareProgress("relay", trimmed.removePrefix("FOF_FW_RELAY:"))
             else -> null
         }
-        val activity = when {
-            detection != null -> BadgeUsbActivity(
-                kind = BadgeUsbActivityKind.DETECTION,
-                key = detection.stableKey,
-                title = detection.badgeLabel.ifBlank {
-                    detection.manufacturer.ifBlank { "Badge detection" }
-                },
-                detail = listOf(detection.badgeClass, detection.id)
-                    .filter { it.isNotBlank() }
-                    .joinToString(" · "),
-                receivedAtElapsedMs = detection.receivedAtElapsedMs,
-            )
-            firmwareProgress != null -> BadgeUsbActivity(
-                kind = BadgeUsbActivityKind.FIRMWARE,
-                key = "firmware:${firmwareProgress.kind}:${firmwareProgress.stage}",
-                title = "Firmware ${firmwareProgress.kind} ${firmwareProgress.stage}",
-                detail = firmwareProgress.error.ifBlank { "${firmwareProgress.percent}%" },
-                receivedAtElapsedMs = receivedAtElapsedMs,
-            )
-            status != null -> BadgeUsbActivity(
-                kind = BadgeUsbActivityKind.STATUS,
-                key = "status:${status.mode}:${status.version}",
-                title = "Badge status updated",
-                detail = listOf(status.modeLabel, status.version)
-                    .filter { it.isNotBlank() }
-                    .joinToString(" · "),
-                receivedAtElapsedMs = receivedAtElapsedMs,
-            )
-            investigationHandled -> BadgeUsbActivity(
-                kind = BadgeUsbActivityKind.STATUS,
-                key = "investigation:${trimmed.take(160)}",
-                title = "Badge investigation updated",
-                detail = trimmed.removePrefix("FOF_INV:").take(160),
-                receivedAtElapsedMs = receivedAtElapsedMs,
-            )
-            trimmed.startsWith("FOF_CTL_OK:") || trimmed.startsWith("FOF_CTL_ERROR:") ->
-                BadgeUsbActivity(
-                    kind = if (trimmed.startsWith("FOF_CTL_ERROR:")) {
-                        BadgeUsbActivityKind.ERROR
-                    } else {
-                        BadgeUsbActivityKind.COMMAND
-                    },
-                    key = "control:${trimmed.take(160)}",
-                    title = if (trimmed.startsWith("FOF_CTL_ERROR:")) {
-                        "Badge command failed"
-                    } else {
-                        "Badge command accepted"
-                    },
-                    detail = trimmed.substringAfter(':').take(160),
-                    receivedAtElapsedMs = receivedAtElapsedMs,
-                )
-            else -> null
-        }
+        val activity = badgeUsbActivityForLine(
+            line = trimmed,
+            receivedAtElapsedMs = receivedAtElapsedMs,
+            detection = detection,
+            status = status,
+            firmwareProgress = firmwareProgress,
+            investigationHandled = investigationHandled,
+        )
 
         setState { current ->
             val nextDetections = detection?.let {
@@ -3392,7 +3348,7 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     private fun setState(update: (BadgeUsbState) -> BadgeUsbState) {
-        _state.value = update(_state.value)
+        _state.update(update)
     }
 
     private fun UsbDevice.displayName(): String {
