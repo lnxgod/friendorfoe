@@ -38,12 +38,14 @@ import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.friendorfoe.detection.WifiScanCoordinator
 import com.friendorfoe.presentation.navigation.FriendOrFoeNavGraph
 import com.friendorfoe.presentation.navigation.Screen
 import com.friendorfoe.presentation.alerts.SkyAlertMonitorViewModel
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.hilt.navigation.compose.hiltViewModel
+import javax.inject.Inject
 
 /**
  * Main entry point for the Friend or Foe app.
@@ -53,20 +55,31 @@ import androidx.hilt.navigation.compose.hiltViewModel
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    @Inject
+    lateinit var wifiScanCoordinator: WifiScanCoordinator
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
             FriendOrFoeTheme {
-                FriendOrFoeApp()
+                FriendOrFoeApp(
+                    onPlatformStateChanged = wifiScanCoordinator::notifyPlatformStateChanged,
+                )
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        wifiScanCoordinator.notifyPlatformStateChanged()
     }
 }
 
 @Composable
-fun FriendOrFoeApp() {
+fun FriendOrFoeApp(
+    onPlatformStateChanged: () -> Unit = {},
+) {
     val context = LocalContext.current
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -76,7 +89,7 @@ fun FriendOrFoeApp() {
     // Request Location + BT + WiFi permissions at app startup (not Camera — that stays AR-only)
     val startupPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* grant results handled by individual screens */ }
+    ) { onPlatformStateChanged() }
 
     LaunchedEffect(Unit) {
         val missing = buildList {
