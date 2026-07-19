@@ -7,9 +7,6 @@ import android.location.LocationManager
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.friendorfoe.data.badge.BadgeDisplayPolicy
-import com.friendorfoe.data.badge.BadgeTheme
-import com.friendorfoe.data.badge.BadgeThemeProfileStore
 import com.friendorfoe.data.badge.BadgeUsbRepository
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.data.repository.validatedLocationAccuracyMeters
@@ -44,7 +41,6 @@ import javax.inject.Inject
 class ListViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
     private val badgeUsbRepository: BadgeUsbRepository,
-    private val badgeThemeProfileStore: BadgeThemeProfileStore,
     private val visualFocusRepository: VisualFocusRepository,
     private val locationManager: LocationManager
 ) : ViewModel() {
@@ -105,9 +101,6 @@ class ListViewModel @Inject constructor(
     /** Direct USB-C feed from the badge firmware. */
     val badgeUsbState = badgeUsbRepository.state
 
-    /** Saved themes shared with the Privacy badge controls. */
-    val badgeThemeProfiles = badgeThemeProfileStore.profiles
-
     /** Ignore a privacy device (persists across restarts). */
     fun ignoreDevice(mac: String) {
         skyObjectRepository.ignorePrivacyDevice(mac)
@@ -117,62 +110,6 @@ class ListViewModel @Inject constructor(
     fun startDirectionScan(mac: String) {
         bleTracker.startDirectionScan(mac)
     }
-
-    fun connectBadgeUsb() {
-        badgeUsbRepository.requestConnection()
-    }
-
-    fun pingBadgeUsb() {
-        badgeUsbRepository.sendPing()
-    }
-
-    fun refreshBadgeStatus() {
-        badgeUsbRepository.requestStatus()
-    }
-
-    fun setBadgeMode(mode: String) {
-        badgeUsbRepository.setMode(mode)
-    }
-
-    fun rebootBadge() {
-        badgeUsbRepository.rebootBadge()
-    }
-
-    fun badgeBootloader() {
-        badgeUsbRepository.enterBootloader()
-    }
-
-    fun relayBadgeScannerFirmware(uart: String) {
-        badgeUsbRepository.relayScannerFirmware(uart)
-    }
-
-    fun applyBadgeDisplayPolicy(policy: BadgeDisplayPolicy) {
-        badgeUsbRepository.applyDisplayPolicy(policy)
-    }
-
-    fun resetBadgeDisplayPolicy() {
-        badgeUsbRepository.resetDisplayPolicy()
-    }
-
-    fun applyBadgeTheme(theme: BadgeTheme) {
-        badgeUsbRepository.applyBadgeTheme(theme)
-    }
-
-    fun resetBadgeTheme() {
-        badgeUsbRepository.resetBadgeTheme()
-    }
-
-    fun createBadgeThemeProfile(name: String, theme: BadgeTheme): Boolean =
-        badgeThemeProfileStore.create(name, theme)
-
-    fun renameBadgeThemeProfile(id: String, name: String): Boolean =
-        badgeThemeProfileStore.rename(id, name)
-
-    fun replaceBadgeThemeProfile(id: String, theme: BadgeTheme): Boolean =
-        badgeThemeProfileStore.replace(id, theme)
-
-    fun deleteBadgeThemeProfile(id: String): Boolean =
-        badgeThemeProfileStore.delete(id)
 
     private val _userPosition = MutableStateFlow(
         Position(latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0)

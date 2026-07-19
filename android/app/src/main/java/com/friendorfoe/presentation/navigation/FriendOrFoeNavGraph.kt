@@ -78,6 +78,9 @@ fun FriendOrFoeNavGraph(
                 onObjectTapped = { objectId ->
                     navController.navigate(Screen.Detail.createRoute(objectId))
                 },
+                onBadgeDetectionTapped = { stableKey ->
+                    navController.navigate(Screen.BadgeFocus.createRoute(stableKey))
+                },
                 onNavigateToReferenceGuide = {
                     navController.navigate(Screen.ReferenceGuide.route) { launchSingleTop = true }
                 },
