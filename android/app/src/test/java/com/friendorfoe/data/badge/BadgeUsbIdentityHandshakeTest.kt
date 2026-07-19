@@ -127,11 +127,15 @@ class BadgeUsbIdentityHandshakeTest {
 
     @Test
     fun `same USB name from a new lifecycle is reopened instead of reusing stale session`() {
+        val token = BadgeUsbAttachmentToken(
+            generation = 11L,
+            identity = BadgeUsbDeviceIdentity(101, "/dev/bus/usb/001/011"),
+        )
         assertFalse(
             badgeUsbConnectionCanBeReused(
                 status = BadgeUsbStatus.CONNECTED,
-                existingDeviceName = "Espressif USB JTAG",
-                requestedDeviceName = "Espressif USB JTAG",
+                activeAttachmentToken = token,
+                requestedAttachmentToken = token,
                 activeLifecycleSession = 7L,
                 requestedLifecycleSession = 8L,
                 connectionOpen = true,
@@ -140,13 +144,123 @@ class BadgeUsbIdentityHandshakeTest {
         assertTrue(
             badgeUsbConnectionCanBeReused(
                 status = BadgeUsbStatus.CONNECTING,
-                existingDeviceName = "Espressif USB JTAG",
-                requestedDeviceName = "Espressif USB JTAG",
+                activeAttachmentToken = token,
+                requestedAttachmentToken = token,
                 activeLifecycleSession = 8L,
                 requestedLifecycleSession = 8L,
                 connectionOpen = true,
             ),
         )
+    }
+
+    @Test
+    fun `same human name B connects before queued A cleanup and remains active`() {
+        val gate = BadgeUsbAttachmentGate()
+        val sameHumanNameA = "Espressif USB JTAG"
+        val sameHumanNameB = "Espressif USB JTAG"
+        val identityA = BadgeUsbDeviceIdentity(101, "/dev/bus/usb/001/011")
+        val identityB = BadgeUsbDeviceIdentity(202, "/dev/bus/usb/002/022")
+        val connectionA = Any()
+        val connectionB = Any()
+        assertEquals(sameHumanNameA, sameHumanNameB)
+
+        val tokenA = gate.select(identityA)
+        assertTrue(gate.activate(tokenA))
+        val invalidatedA = gate.invalidateMatching(identityA)
+        assertEquals(tokenA, invalidatedA?.token)
+
+        val tokenB = gate.select(identityB)
+        gate.clearActive(tokenA)
+        assertTrue(gate.activate(tokenB))
+
+        assertFalse(
+            badgeUsbCleanupOwnsActive(
+                expectedAttachmentToken = tokenA,
+                expectedConnection = connectionA,
+                activeAttachmentToken = tokenB,
+                activeConnection = connectionB,
+            ),
+        )
+        gate.clearActive(tokenA)
+        assertTrue(gate.isCurrentAndActive(tokenB))
+    }
+
+    @Test
+    fun `matching A cleanup may finish before B is selected and connected`() {
+        val gate = BadgeUsbAttachmentGate()
+        val identityA = BadgeUsbDeviceIdentity(101, "/dev/bus/usb/001/011")
+        val identityB = BadgeUsbDeviceIdentity(202, "/dev/bus/usb/002/022")
+        val tokenA = gate.select(identityA)
+        assertTrue(gate.activate(tokenA))
+
+        val invalidatedA = gate.invalidateMatching(identityA)
+        assertEquals(tokenA, invalidatedA?.token)
+        gate.clearActive(tokenA)
+
+        val tokenB = gate.select(identityB)
+        assertTrue(gate.activate(tokenB))
+        assertTrue(tokenB.generation > tokenA.generation)
+        assertTrue(gate.isCurrentAndActive(tokenB))
+    }
+
+    @Test
+    fun `stale A cleanup after B verification is an exact owner no-op`() {
+        val gate = BadgeUsbAttachmentGate()
+        val tokenA = gate.select(BadgeUsbDeviceIdentity(101, "/dev/a"))
+        assertTrue(gate.activate(tokenA))
+        val tokenB = gate.select(BadgeUsbDeviceIdentity(202, "/dev/b"))
+        gate.clearActive(tokenA)
+        assertTrue(gate.activate(tokenB))
+        val connectionA = Any()
+        val connectionB = Any()
+
+        assertFalse(
+            badgeUsbCleanupOwnsActive(tokenA, connectionA, tokenB, connectionB),
+        )
+        gate.clearActive(tokenA)
+        assertTrue(gate.isCurrentAndActive(tokenB))
+    }
+
+    @Test
+    fun `stale A permission result is ignored after B supersedes selection`() {
+        val gate = BadgeUsbAttachmentGate()
+        val identityA = BadgeUsbDeviceIdentity(101, "/dev/a")
+        val identityB = BadgeUsbDeviceIdentity(202, "/dev/b")
+        val tokenA = gate.select(identityA)
+        val tokenB = gate.select(identityB)
+
+        assertFalse(gate.acceptsPermission(tokenA, identityA))
+        assertTrue(gate.acceptsPermission(tokenB, identityB))
+        assertFalse(gate.acceptsPermission(tokenB, identityA))
+    }
+
+    @Test
+    fun `unrelated C detach does not invalidate active A`() {
+        val gate = BadgeUsbAttachmentGate()
+        val identityA = BadgeUsbDeviceIdentity(101, "/dev/a")
+        val identityC = BadgeUsbDeviceIdentity(303, "/dev/c")
+        val tokenA = gate.select(identityA)
+        assertTrue(gate.activate(tokenA))
+
+        assertNull(gate.invalidateMatching(identityC))
+        assertTrue(gate.isCurrentAndActive(tokenA))
+    }
+
+    @Test
+    fun `A detach while B permission is selected queues only A cleanup and preserves B`() {
+        val gate = BadgeUsbAttachmentGate()
+        val identityA = BadgeUsbDeviceIdentity(101, "/dev/a")
+        val identityB = BadgeUsbDeviceIdentity(202, "/dev/b")
+        val tokenA = gate.select(identityA)
+        assertTrue(gate.activate(tokenA))
+        val tokenB = gate.select(identityB)
+
+        val invalidatedA = gate.invalidateMatching(identityA)
+
+        assertEquals(tokenA, invalidatedA?.token)
+        assertTrue(invalidatedA?.wasActive == true)
+        assertTrue(gate.isCurrent(tokenB))
+        assertFalse(gate.isCurrentAndActive(tokenB))
     }
 
     @Test
@@ -241,16 +355,18 @@ class BadgeUsbIdentityHandshakeTest {
             BadgeUsbHandshakeTimerAction.RETRY,
             badgeUsbHandshakeTimerAction(
                 ownsSession = true,
-                nowElapsedMs = 14_999L,
+                nowElapsedMs = 14_499L,
                 deadlineElapsedMs = 15_000L,
+                retryWriteBudgetMs = 500L,
             ),
         )
         assertEquals(
             BadgeUsbHandshakeTimerAction.FAIL,
             badgeUsbHandshakeTimerAction(
                 ownsSession = true,
-                nowElapsedMs = 15_000L,
+                nowElapsedMs = 14_500L,
                 deadlineElapsedMs = 15_000L,
+                retryWriteBudgetMs = 500L,
             ),
         )
         assertEquals(
@@ -259,6 +375,38 @@ class BadgeUsbIdentityHandshakeTest {
                 ownsSession = false,
                 nowElapsedMs = 10_000L,
                 deadlineElapsedMs = 15_000L,
+                retryWriteBudgetMs = 500L,
+            ),
+        )
+    }
+
+    @Test
+    fun `handshake retry delay is clamped before the bounded write budget`() {
+        assertEquals(
+            500L,
+            badgeUsbHandshakeDelayMs(
+                nowElapsedMs = 14_000L,
+                deadlineElapsedMs = 15_000L,
+                retryIntervalMs = 1_000L,
+                retryWriteBudgetMs = 500L,
+            ),
+        )
+        assertEquals(
+            1L,
+            badgeUsbHandshakeDelayMs(
+                nowElapsedMs = 14_499L,
+                deadlineElapsedMs = 15_000L,
+                retryIntervalMs = 1_000L,
+                retryWriteBudgetMs = 500L,
+            ),
+        )
+        assertEquals(
+            0L,
+            badgeUsbHandshakeDelayMs(
+                nowElapsedMs = 14_500L,
+                deadlineElapsedMs = 15_000L,
+                retryIntervalMs = 1_000L,
+                retryWriteBudgetMs = 500L,
             ),
         )
     }

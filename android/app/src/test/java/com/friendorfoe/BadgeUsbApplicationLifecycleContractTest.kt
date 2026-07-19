@@ -53,12 +53,44 @@ class BadgeUsbApplicationLifecycleContractTest {
         assertFalse(repository.contains("connect via USB-C"))
         assertTrue(repository.contains("Intent(ACTION_USB_PERMISSION)"))
         assertTrue(repository.contains("putExtra(EXTRA_USB_PERMISSION_SESSION, lifecycleSession)"))
+        assertTrue(repository.contains("EXTRA_USB_PERMISSION_ATTACHMENT_GENERATION"))
+        assertTrue(repository.contains("attachmentToken.generation"))
+        assertTrue(repository.contains("EXTRA_USB_PERMISSION_DEVICE_ID"))
+        assertTrue(repository.contains("attachmentToken.identity.deviceId"))
+        assertTrue(repository.contains("EXTRA_USB_PERMISSION_DEVICE_PATH"))
+        assertTrue(repository.contains("attachmentToken.identity.devicePath"))
         assertTrue(repository.contains("intent.getLongExtra("))
         assertTrue(repository.contains("EXTRA_USB_PERMISSION_SESSION,"))
+        assertTrue(repository.contains("attachmentGate.acceptsPermission"))
+        assertTrue(repository.contains("expectedAttachmentToken"))
+        assertTrue(repository.contains("expectedConnection"))
+        assertTrue(repository.contains("devicePath = deviceName"))
+        assertTrue(repository.contains("terminateUsbInvestigationLocked(disconnectedOwner)"))
+        assertTrue(repository.contains("expectedOwner = owner"))
+        assertTrue(repository.contains("handleUsbInvestigationLine(line, frameOwner)"))
         assertTrue(repository.contains("catch (cancelled: CancellationException)"))
         assertTrue(repository.contains("throw cancelled"))
-        assertTrue(repository.contains("startReader(connection, port.inEndpoint, device.displayName(), lifecycleSession)"))
+        assertTrue(repository.contains("attachmentToken = attachmentToken"))
         assertTrue(repository.contains("connectionMutex.withBadgeUsbReaderOwner"))
+
+        val disconnectLocked = repository
+            .substringAfter("private fun disconnectLocked()")
+            .substringBefore("private fun setState")
+        val revokeOwnerAt = disconnectLocked.indexOf("verifiedUsbOwnerKey = null")
+        val terminateAt = disconnectLocked.indexOf(
+            "terminateUsbInvestigationLocked(disconnectedOwner)",
+        )
+        assertTrue(revokeOwnerAt >= 0)
+        assertTrue(terminateAt >= 0)
+        assertTrue("USB owner must be revoked before investigation termination", revokeOwnerAt < terminateAt)
+        assertTrue(repository.contains(
+            "BadgeUsbHandshakeTimerAction.STOP -> {\n" +
+                "                            if (usbHandshakeJob === ownJob) usbHandshakeJob = null",
+        ))
+        assertTrue(
+            "Only the owning STOP path may clear the shared handshake job reference",
+            Regex("usbHandshakeJob = null").findAll(repository).count() == 1,
+        )
     }
 
     private fun source(relativePath: String): String {
