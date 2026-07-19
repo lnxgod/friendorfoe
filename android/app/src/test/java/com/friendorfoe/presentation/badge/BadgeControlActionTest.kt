@@ -41,4 +41,43 @@ class BadgeControlActionTest {
             ).confirmed,
         )
     }
+
+    @Test
+    fun `lost command transport cancels pending action and reconnect cannot confirm it`() {
+        val armed = reduceBadgeDangerCommand(
+            pending = null,
+            event = BadgeDangerEvent.Request(BadgeDangerAction.REBOOT),
+            commandsEnabled = true,
+        )
+        assertEquals(BadgeDangerAction.REBOOT, armed.pending)
+
+        val transportLost = reduceBadgeDangerCommand(
+            pending = armed.pending,
+            event = BadgeDangerEvent.Confirm,
+            commandsEnabled = false,
+        )
+        assertNull(transportLost.pending)
+        assertNull(transportLost.confirmed)
+
+        val staleConfirmAfterReconnect = reduceBadgeDangerCommand(
+            pending = transportLost.pending,
+            event = BadgeDangerEvent.Confirm,
+            commandsEnabled = true,
+        )
+        assertNull(staleConfirmAfterReconnect.confirmed)
+
+        val freshlyArmed = reduceBadgeDangerCommand(
+            pending = staleConfirmAfterReconnect.pending,
+            event = BadgeDangerEvent.Request(BadgeDangerAction.REBOOT),
+            commandsEnabled = true,
+        )
+        assertEquals(
+            BadgeDangerAction.REBOOT,
+            reduceBadgeDangerCommand(
+                pending = freshlyArmed.pending,
+                event = BadgeDangerEvent.Confirm,
+                commandsEnabled = true,
+            ).confirmed,
+        )
+    }
 }

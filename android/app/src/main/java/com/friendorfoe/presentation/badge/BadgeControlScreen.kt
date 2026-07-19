@@ -18,6 +18,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +41,18 @@ import com.friendorfoe.data.badge.defaultBadgeTheme
 
 internal const val MAX_BADGE_LIVE_FEED_ITEMS = 32
 
+internal fun boundedBadgeActivityFeed(
+    activity: List<BadgeUsbActivity>,
+    initialFocusKey: String?,
+): List<BadgeUsbActivity> {
+    val focused = initialFocusKey?.let { key -> activity.firstOrNull { it.key == key } }
+        ?: return activity.take(MAX_BADGE_LIVE_FEED_ITEMS)
+    return listOf(focused) + activity.asSequence()
+        .filterNot { it.key == focused.key }
+        .take(MAX_BADGE_LIVE_FEED_ITEMS - 1)
+        .toList()
+}
+
 @Composable
 fun BadgeControlScreen(
     initialFocusKey: String? = null,
@@ -58,6 +71,22 @@ fun BadgeControlScreen(
     var pendingDanger by remember { mutableStateOf<BadgeDangerAction?>(null) }
     val commandsEnabled = BadgeControlTransportPolicy.allowsCommandSurface(state.status)
     val refreshEnabled = BadgeControlTransportPolicy.allowsStatusRefresh(state.status)
+
+    fun dispatchDanger(event: BadgeDangerEvent) {
+        val transition = reduceBadgeDangerCommand(
+            pending = pendingDanger,
+            event = event,
+            commandsEnabled = commandsEnabled,
+        )
+        pendingDanger = transition.pending
+        transition.confirmed?.let(viewModel::execute)
+    }
+
+    LaunchedEffect(commandsEnabled) {
+        if (!commandsEnabled) {
+            dispatchDanger(BadgeDangerEvent.Cancel)
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -142,7 +171,7 @@ fun BadgeControlScreen(
                 commandsEnabled = commandsEnabled,
                 onSetMode = viewModel::setMode,
                 onResetTheme = viewModel::resetTheme,
-                onDanger = { pendingDanger = it },
+                onDanger = { action -> dispatchDanger(BadgeDangerEvent.Request(action)) },
             )
         }
         item { Spacer(modifier = Modifier.height(6.dp)) }
@@ -151,11 +180,9 @@ fun BadgeControlScreen(
     pendingDanger?.let { action ->
         BadgeDangerConfirmationDialog(
             action = action,
-            onConfirm = {
-                pendingDanger = null
-                viewModel.execute(action)
-            },
-            onDismiss = { pendingDanger = null },
+            commandsEnabled = commandsEnabled,
+            onConfirm = { dispatchDanger(BadgeDangerEvent.Confirm) },
+            onDismiss = { dispatchDanger(BadgeDangerEvent.Cancel) },
         )
     }
 }
@@ -200,15 +227,12 @@ private fun BadgeLiveFeedSection(
     state: BadgeUsbState,
     initialFocusKey: String?,
 ) {
-    val bounded = state.activity.take(MAX_BADGE_LIVE_FEED_ITEMS)
-    val focused = initialFocusKey?.let { key -> bounded.firstOrNull { it.key == key } }
-    val entries = if (focused == null) bounded else listOf(focused) + bounded.filterNot {
-        it.key == focused.key
-    }
+    val entries = boundedBadgeActivityFeed(state.activity, initialFocusKey)
+    val focusedKey = initialFocusKey?.takeIf { key -> entries.firstOrNull()?.key == key }
 
     BadgeSection(
         title = "Live badge feed",
-        subtitle = "Latest ${entries.size} USB events${if (focused != null) "  •  focused" else ""}",
+        subtitle = "Latest ${entries.size} USB events${if (focusedKey != null) "  •  focused" else ""}",
         modifier = Modifier.testTag("badge_live_feed"),
     ) {
         if (entries.isEmpty()) {
@@ -218,7 +242,7 @@ private fun BadgeLiveFeedSection(
                 style = MaterialTheme.typography.bodySmall,
             )
         } else {
-            entries.forEach { entry -> BadgeFeedRow(entry, entry.key == focused?.key) }
+            entries.forEach { entry -> BadgeFeedRow(entry, entry.key == focusedKey) }
         }
     }
 }
@@ -381,6 +405,7 @@ private fun BadgeOperationsSection(
 @Composable
 private fun BadgeDangerConfirmationDialog(
     action: BadgeDangerAction,
+    commandsEnabled: Boolean,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -394,7 +419,9 @@ private fun BadgeDangerConfirmationDialog(
         onDismissRequest = onDismiss,
         title = { Text(prompt) },
         text = { Text("This sends a command over the active USB control transport.") },
-        confirmButton = { Button(onClick = onConfirm) { Text("Confirm") } },
+        confirmButton = {
+            Button(onClick = onConfirm, enabled = commandsEnabled) { Text("Confirm") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

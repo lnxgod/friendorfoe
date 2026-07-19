@@ -1,5 +1,7 @@
 package com.friendorfoe.presentation.badge
 
+import com.friendorfoe.data.badge.BadgeUsbActivity
+import com.friendorfoe.data.badge.BadgeUsbActivityKind
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -65,6 +67,33 @@ class BadgeNavigationContractTest {
     }
 
     @Test
+    fun `focused live event is found across all 64 entries before feed is bounded`() {
+        val activity = (1..64).map { position ->
+            BadgeUsbActivity(
+                kind = BadgeUsbActivityKind.STATUS,
+                key = "event-$position",
+                title = "Event $position",
+                detail = "Position $position",
+                receivedAtElapsedMs = position.toLong(),
+            )
+        }
+
+        (33..64).forEach { position ->
+            val bounded = boundedBadgeActivityFeed(
+                activity = activity,
+                initialFocusKey = "event-$position",
+            )
+
+            assertEquals(MAX_BADGE_LIVE_FEED_ITEMS, bounded.size)
+            assertEquals("event-$position", bounded.first().key)
+            assertEquals(
+                activity.filterNot { it.key == "event-$position" }.take(31),
+                bounded.drop(1),
+            )
+        }
+    }
+
+    @Test
     fun `every remote command family has explicit disabled state and danger confirmation`() {
         val screen = source("com/friendorfoe/presentation/badge/BadgeControlScreen.kt")
         val appearance = source("com/friendorfoe/presentation/badge/BadgeAppearanceSection.kt")
@@ -76,6 +105,10 @@ class BadgeNavigationContractTest {
         assertTrue(appearance.contains("enabled = commandsEnabled"))
         assertTrue(filters.contains("remoteActionsEnabled: Boolean = true"))
         assertTrue(filters.contains("enabled = remoteActionsEnabled"))
+        assertTrue(screen.contains("LaunchedEffect(commandsEnabled)"))
+        assertTrue(screen.contains("reduceBadgeDangerCommand("))
+        assertTrue(screen.contains("commandsEnabled = commandsEnabled"))
+        assertTrue(screen.contains("enabled = commandsEnabled"))
         BadgeDangerAction.entries.forEach { action ->
             assertTrue(screen.contains("BadgeDangerAction.${action.name}"))
         }
@@ -85,6 +118,17 @@ class BadgeNavigationContractTest {
             "Recover scanner slot 0 now?",
             "Recover scanner slot 1 now?",
         ).forEach { prompt -> assertTrue("missing $prompt", screen.contains(prompt)) }
+    }
+
+    @Test
+    fun `display filter remote actions use compact two row layout`() {
+        val filters = source("com/friendorfoe/presentation/badge/BadgeDisplayFiltersSection.kt")
+
+        assertTrue(filters.contains("testTag(\"badge_filter_remote_actions\")"))
+        assertTrue(filters.contains("testTag(\"badge_filter_apply_reset_row\")"))
+        assertTrue(filters.contains("testTag(\"badge_filter_refresh_row\")"))
+        assertTrue(filters.contains("Modifier.weight(1f)"))
+        assertTrue(filters.contains("Modifier.fillMaxWidth()"))
     }
 
     private fun source(relativePath: String): String {

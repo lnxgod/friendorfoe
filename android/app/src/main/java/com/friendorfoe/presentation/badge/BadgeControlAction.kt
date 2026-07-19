@@ -26,3 +26,13 @@ internal fun reduceBadgeDangerConfirmation(
     BadgeDangerEvent.Cancel -> BadgeDangerTransition()
     BadgeDangerEvent.Confirm -> BadgeDangerTransition(confirmed = pending)
 }
+
+internal fun reduceBadgeDangerCommand(
+    pending: BadgeDangerAction?,
+    event: BadgeDangerEvent,
+    commandsEnabled: Boolean,
+): BadgeDangerTransition = if (commandsEnabled) {
+    reduceBadgeDangerConfirmation(pending, event)
+} else {
+    reduceBadgeDangerConfirmation(pending, BadgeDangerEvent.Cancel)
+}
