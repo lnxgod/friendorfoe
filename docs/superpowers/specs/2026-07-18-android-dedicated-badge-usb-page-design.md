@@ -59,7 +59,9 @@ The page contains these sections in order:
    It has Refresh but no Connect button.
 2. **Live from Badge** — a bounded newest-first feed of parsed badge detections,
    command acknowledgements/errors, firmware-relay progress, and the last
-   meaningful USB activity. Raw boot log spam is not retained.
+   meaningful USB activity. Raw boot log spam is not retained. Badge entity
+   details and the existing badge-routed BLE investigation action live here
+   rather than remaining in Privacy.
 3. **LCD remote** — Next, Detail/Page, and Back using the existing display-nav
    commands, plus the currently focused LCD item.
 4. **Appearance** — existing preset themes, custom palettes, brightness,
