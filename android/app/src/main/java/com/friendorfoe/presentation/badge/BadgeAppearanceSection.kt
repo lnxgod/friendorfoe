@@ -178,6 +178,8 @@ fun BadgeAppearanceSection(
     onDeleteProfile: (String) -> Boolean,
     onApply: (BadgeTheme) -> Unit,
     onRefresh: () -> Unit,
+    commandsEnabled: Boolean = true,
+    refreshEnabled: Boolean = true,
 ) {
     var colorEditorAccent by remember { mutableStateOf<BadgeThemeAccentInfo?>(null) }
     var profileNameDialog by remember { mutableStateOf<ProfileNameDialogMode?>(null) }
@@ -482,6 +484,7 @@ fun BadgeAppearanceSection(
                 ) {
                     Button(
                         onClick = { dispatch(BadgeThemeStudioAction.Apply) },
+                        enabled = commandsEnabled,
                         modifier = Modifier.testTag("badge_theme_apply"),
                     ) {
                         Text("Apply")
@@ -499,6 +502,7 @@ fun BadgeAppearanceSection(
                         onClick = {
                             dispatch(BadgeThemeStudioAction.Refresh(appliedTheme))
                         },
+                        enabled = refreshEnabled,
                         modifier = Modifier.testTag("badge_theme_refresh"),
                     ) {
                         Text("Refresh")

@@ -1,5 +1,7 @@
 package com.friendorfoe.presentation.navigation
 
+import android.net.Uri
+
 /**
  * Navigation destinations for the app.
  *
@@ -47,6 +49,14 @@ sealed class Screen(val route: String) {
 
     /** Privacy scanner screen */
     data object Privacy : Screen("privacy")
+
+    /** Dedicated USB badge status and control workspace */
+    data object Badge : Screen("badge")
+
+    /** Dedicated badge workspace with one live-feed event brought into focus */
+    data object BadgeFocus : Screen("badge/{focusKey}") {
+        fun createRoute(focusKey: String) = "badge/${Uri.encode(focusKey)}"
+    }
 
     /** Close-range magnetometer sweep for hidden electronics */
     data object EmfSweep : Screen("emf_sweep")

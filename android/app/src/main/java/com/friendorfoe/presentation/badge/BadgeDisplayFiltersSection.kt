@@ -47,7 +47,9 @@ fun BadgeDisplayFiltersSection(
     onPolicyChange: (BadgeDisplayPolicy) -> Unit,
     onApply: () -> Unit,
     onReset: () -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    remoteActionsEnabled: Boolean = true,
+    refreshEnabled: Boolean = true,
 ) {
     Column(
         modifier = Modifier
@@ -129,13 +131,13 @@ fun BadgeDisplayFiltersSection(
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(onClick = onApply) {
+            Button(onClick = onApply, enabled = remoteActionsEnabled) {
                 Text("Apply")
             }
-            OutlinedButton(onClick = onReset) {
+            OutlinedButton(onClick = onReset, enabled = remoteActionsEnabled) {
                 Text("Reset Defaults")
             }
-            OutlinedButton(onClick = onRefresh) {
+            OutlinedButton(onClick = onRefresh, enabled = refreshEnabled) {
                 Text("Refresh")
             }
         }

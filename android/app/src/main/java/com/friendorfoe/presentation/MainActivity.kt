@@ -18,9 +18,9 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -42,6 +42,8 @@ import com.friendorfoe.detection.WifiScanCoordinator
 import com.friendorfoe.presentation.navigation.FriendOrFoeNavGraph
 import com.friendorfoe.presentation.navigation.Screen
 import com.friendorfoe.presentation.alerts.SkyAlertMonitorViewModel
+import com.friendorfoe.presentation.badge.BadgeMarkGold
+import com.friendorfoe.presentation.badge.BadgeMarkIcon
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -157,21 +159,25 @@ fun FriendOrFoeApp(
                         BottomNavItem("Map",      Screen.MapView.route,   Icons.Default.Map),
                         BottomNavItem("List",     Screen.ListView.route,  Icons.AutoMirrored.Filled.List),
                         BottomNavItem("Privacy",  Screen.Privacy.route,   Icons.Default.Shield),
-                        BottomNavItem("Cal",      Screen.Calibrate.route, Icons.Default.Tune),
+                        BottomNavItem("Badge",    Screen.Badge.route,     BadgeMarkIcon),
                         BottomNavItem("History",  Screen.History.route,   Icons.Default.History),
                         BottomNavItem("Info",     Screen.About.route,     Icons.Default.Info),
                     )
 
                     bottomNavItems.forEach { item ->
+                        val isSelected = if (item.route == Screen.Badge.route) {
+                            currentDestination?.route == Screen.Badge.route ||
+                                currentDestination?.route == Screen.BadgeFocus.route
+                        } else {
+                            currentDestination?.hierarchy?.any { it.route == item.route } == true
+                        }
                         NavigationBarItem(
                             // 7 items would clip fixed labels on narrow
                             // phones — show the label only on the active
                             // item. Icon + contentDescription keep the
                             // destination clear for everything else.
                             alwaysShowLabel = false,
-                            selected = currentDestination?.hierarchy?.any {
-                                it.route == item.route
-                            } == true,
+                            selected = isSelected,
                             onClick = {
                                 navController.navigate(item.route) {
                                     popUpTo(navController.graph.findStartDestination().id) {
@@ -184,7 +190,12 @@ fun FriendOrFoeApp(
                             icon = {
                                 Icon(
                                     imageVector = item.icon,
-                                    contentDescription = item.label
+                                    contentDescription = item.label,
+                                    tint = if (item.route == Screen.Badge.route && isSelected) {
+                                        BadgeMarkGold
+                                    } else {
+                                        LocalContentColor.current
+                                    },
                                 )
                             },
                             label = { Text(item.label) }
