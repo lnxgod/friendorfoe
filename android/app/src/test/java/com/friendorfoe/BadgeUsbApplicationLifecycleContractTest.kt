@@ -28,9 +28,13 @@ class BadgeUsbApplicationLifecycleContractTest {
         assertFalse(listScreen.contains("onConnect = viewModel::connectBadgeUsb"))
         assertFalse(listScreen.contains("Button(onClick = onConnect)"))
 
+        val badgeScreen = source("presentation/badge/BadgeControlScreen.kt")
+        assertTrue(badgeScreen.contains("state.status == BadgeUsbStatus.PERMISSION_NEEDED"))
+        assertTrue(badgeScreen.contains("Grant USB access"))
+
         val privacyScreen = source("presentation/privacy/PrivacyScreen.kt")
-        assertTrue(privacyScreen.contains("BadgeUsbStatus.PERMISSION_NEEDED -> \"Grant USB access\""))
-        assertTrue(privacyScreen.contains("BadgeUsbStatus.DISCONNECTED -> null"))
+        assertFalse(privacyScreen.contains("BadgeUsbStatus.PERMISSION_NEEDED"))
+        assertFalse(privacyScreen.contains("Grant USB access"))
 
         for (viewModel in listOf(
             "presentation/list/ListViewModel.kt",

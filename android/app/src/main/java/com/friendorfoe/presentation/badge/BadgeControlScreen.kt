@@ -1,6 +1,7 @@
 package com.friendorfoe.presentation.badge
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -33,11 +34,15 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.badge.BadgeControlTransportPolicy
 import com.friendorfoe.data.badge.BadgeDisplayState
+import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbActivity
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
 import com.friendorfoe.data.badge.defaultBadgeDisplayPolicy
 import com.friendorfoe.data.badge.defaultBadgeTheme
+import com.friendorfoe.detection.BleInvestigationMode
+import com.friendorfoe.detection.BleInvestigationResult
+import com.friendorfoe.detection.BleInvestigationState
 
 internal const val MAX_BADGE_LIVE_FEED_ITEMS = 32
 
@@ -60,6 +65,7 @@ fun BadgeControlScreen(
 ) {
     val state by viewModel.badgeState.collectAsStateWithLifecycle()
     val profiles by viewModel.themeProfiles.collectAsStateWithLifecycle()
+    val investigation by viewModel.investigation.collectAsStateWithLifecycle()
     var draftTheme by remember(state.controlStatus?.themeHash) {
         mutableStateOf(state.controlStatus?.theme ?: defaultBadgeTheme())
     }
@@ -69,6 +75,7 @@ fun BadgeControlScreen(
     var appearanceExpanded by remember { mutableStateOf(false) }
     var filtersExpanded by remember { mutableStateOf(false) }
     var pendingDanger by remember { mutableStateOf<BadgeDangerAction?>(null) }
+    var selectedEntity by remember { mutableStateOf<BadgeThreatEntity?>(null) }
     val commandsEnabled = BadgeControlTransportPolicy.allowsCommandSurface(state.status)
     val refreshEnabled = BadgeControlTransportPolicy.allowsStatusRefresh(state.status)
 
@@ -102,7 +109,15 @@ fun BadgeControlScreen(
                 onRefresh = viewModel::refresh,
             )
         }
-        item { BadgeLiveFeedSection(state, initialFocusKey) }
+        item {
+            BadgeLiveFeedSection(
+                state = state,
+                initialFocusKey = initialFocusKey,
+                investigation = investigation,
+                onCancelInvestigation = viewModel::cancelInvestigation,
+                onEntityDetails = { selectedEntity = it },
+            )
+        }
         item {
             BadgeLcdRemoteSection(
                 display = state.controlStatus?.displayState,
@@ -185,6 +200,18 @@ fun BadgeControlScreen(
             onDismiss = { dispatchDanger(BadgeDangerEvent.Cancel) },
         )
     }
+
+    selectedEntity?.let { entity ->
+        BadgeEntityDetailDialog(
+            entity = entity,
+            canInvestigate = state.badgeInvestigationAvailable() && viewModel.canInvestigate(entity),
+            onInvestigate = {
+                viewModel.investigate(entity)
+                selectedEntity = null
+            },
+            onDismiss = { selectedEntity = null },
+        )
+    }
 }
 
 @Composable
@@ -226,6 +253,9 @@ private fun BadgeStatusSection(
 private fun BadgeLiveFeedSection(
     state: BadgeUsbState,
     initialFocusKey: String?,
+    investigation: BleInvestigationResult?,
+    onCancelInvestigation: () -> Unit,
+    onEntityDetails: (BadgeThreatEntity) -> Unit,
 ) {
     val entries = boundedBadgeActivityFeed(state.activity, initialFocusKey)
     val focusedKey = initialFocusKey?.takeIf { key -> entries.firstOrNull()?.key == key }
@@ -243,6 +273,15 @@ private fun BadgeLiveFeedSection(
             )
         } else {
             entries.forEach { entry -> BadgeFeedRow(entry, entry.key == focusedKey) }
+        }
+        state.controlStatus?.entities.orEmpty().take(8).forEach { entity ->
+            BadgeEntityRow(entity = entity, onClick = { onEntityDetails(entity) })
+        }
+        investigation?.let { result ->
+            BadgeInvestigationResultCard(
+                result = result,
+                onCancel = onCancelInvestigation,
+            )
         }
     }
 }
@@ -276,6 +315,195 @@ private fun BadgeFeedRow(entry: BadgeUsbActivity, focused: Boolean) {
             )
         }
     }
+}
+
+@Composable
+private fun BadgeEntityRow(entity: BadgeThreatEntity, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 7.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = entity.label.ifBlank { entity.threatClass.ifBlank { "Badge signal" } },
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = listOfNotNull(
+                    entity.detail.takeIf { it.isNotBlank() },
+                    entity.threatClass.takeIf { it.isNotBlank() },
+                    entity.source.takeIf { it.isNotBlank() },
+                ).joinToString("  •  "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            text = "${entity.rssi} dBm",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun BadgeEntityDetailDialog(
+    entity: BadgeThreatEntity,
+    canInvestigate: Boolean,
+    onInvestigate: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(entity.label.ifBlank { "Badge signal" }) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                BadgeInvestigationDetail("Class", entity.threatClass.ifBlank { "unknown" })
+                entity.detail.takeIf { it.isNotBlank() }?.let {
+                    BadgeInvestigationDetail("Detail", it)
+                }
+                entity.evidence.takeIf { it.isNotBlank() }?.let {
+                    BadgeInvestigationDetail("Evidence", it)
+                }
+                entity.bssid.takeIf { it.isNotBlank() }?.let {
+                    BadgeInvestigationDetail("BSSID", it)
+                }
+                entity.displayId.takeIf { it.isNotBlank() }?.let {
+                    BadgeInvestigationDetail("Display ID", it)
+                }
+                BadgeInvestigationDetail("RSSI", "${entity.rssi} dBm")
+                BadgeInvestigationDetail("Age", "${entity.lastSeenSeconds.coerceAtLeast(0)}s")
+            }
+        },
+        confirmButton = {
+            if (canInvestigate) {
+                Button(onClick = onInvestigate) { Text("Investigate") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+@Composable
+private fun BadgeInvestigationResultCard(
+    result: BleInvestigationResult,
+    onCancel: () -> Unit,
+) {
+    val running = result.state in BADGE_INVESTIGATION_ACTIVE_STATES
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp)
+            .background(BadgeMarkGold.copy(alpha = 0.10f), MaterialTheme.shapes.small)
+            .padding(9.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "BLE investigation · ${badgeInvestigationStateLabel(result.state)}",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = result.transport.replace('-', ' '),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (running) {
+                TextButton(onClick = onCancel) { Text("Cancel") }
+            }
+        }
+        Text(
+            text = result.summary.ifBlank { badgeInvestigationStateLabel(result.state) },
+            style = MaterialTheme.typography.bodySmall,
+        )
+        result.error?.let { error ->
+            BadgeInvestigationDetail("Error", error, MaterialTheme.colorScheme.error)
+        }
+        result.targetMac?.let { BadgeInvestigationDetail("Target", it) }
+        if (result.mode == BleInvestigationMode.PASSIVE_CAPTURE) {
+            BadgeInvestigationDetail("Mode", "Passive capture")
+        }
+        result.connectable?.let {
+            BadgeInvestigationDetail("Connectable", if (it) "Yes" else "No")
+        }
+        if (result.bonded || result.encrypted || result.authenticationRequired) {
+            BadgeInvestigationDetail("Bonded", if (result.bonded) "Yes" else "No")
+            BadgeInvestigationDetail("Encrypted", if (result.encrypted) "Yes" else "No")
+            if (result.authenticationRequired) {
+                BadgeInvestigationDetail(
+                    "Access",
+                    "Authentication required",
+                    MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+        if (result.services.isNotEmpty()) {
+            BadgeInvestigationDetail("Services", result.services.joinToString())
+        }
+        if (result.characteristics.isNotEmpty()) {
+            BadgeInvestigationDetail(
+                "Characteristics",
+                result.characteristics.joinToString { it.uuid },
+            )
+        }
+        if (result.reads.isNotEmpty()) {
+            BadgeInvestigationDetail(
+                "Reads",
+                result.reads.entries.joinToString { "${it.key}: ${it.value}" },
+            )
+        }
+        if (result.truncated) {
+            BadgeInvestigationDetail(
+                "Result",
+                "Additional evidence was truncated",
+                MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+@Composable
+private fun BadgeInvestigationDetail(
+    label: String,
+    value: String,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface,
+) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(0.32f),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            color = valueColor,
+            modifier = Modifier.weight(0.68f),
+        )
+    }
+}
+
+private fun badgeInvestigationStateLabel(state: BleInvestigationState): String = when (state) {
+    BleInvestigationState.IDLE -> "Ready"
+    BleInvestigationState.QUEUED -> "Queued"
+    BleInvestigationState.SCANNING -> "Scanning"
+    BleInvestigationState.CONNECTING -> "Connecting"
+    BleInvestigationState.DISCOVERING -> "Discovering services"
+    BleInvestigationState.READING -> "Reading characteristics"
+    BleInvestigationState.COMPLETE -> "Complete"
+    BleInvestigationState.FAILED -> "Failed"
+    BleInvestigationState.CANCELLED -> "Retrieval cancelled"
 }
 
 @Composable
