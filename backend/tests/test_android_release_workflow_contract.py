@@ -27,7 +27,9 @@ PRERELEASE_EXPRESSION = (
     "|| contains(github.ref_name, 'rc') }}"
 )
 MAKE_LATEST_EXPRESSION = (
-    "${{ contains(github.ref_name, '-android-') && 'true' || 'legacy' }}"
+    "${{ contains(github.ref_name, '-android-') && !contains(github.ref_name, 'beta') "
+    "&& !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'rc') "
+    "&& 'true' || 'legacy' }}"
 )
 ESP32_BUILD_GUARD = (
     "if: ${{ !((github.event_name == 'release' && "
@@ -130,6 +132,7 @@ def test_release_publisher_has_write_access_without_signing_secrets():
     assert "contains(github.ref_name, '-android-')" in publish
     assert f"prerelease: {PRERELEASE_EXPRESSION}" in publish
     assert f"make_latest: {MAKE_LATEST_EXPRESSION}" in publish
+    assert "make_latest: ${{ contains(github.ref_name, '-android-') && 'true'" not in publish
     assert "fail_on_unmatched_files: true" in publish
     assert ".apk.sha256" in publish
     for secret in (

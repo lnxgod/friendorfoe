@@ -148,7 +148,7 @@ jobs:
         with:
           draft: false
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
-          make_latest: ${{ contains(github.ref_name, '-android-') && 'true' || 'legacy' }}
+          make_latest: ${{ contains(github.ref_name, '-android-') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'rc') && 'true' || 'legacy' }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
