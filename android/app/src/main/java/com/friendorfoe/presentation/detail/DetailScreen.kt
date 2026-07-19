@@ -579,7 +579,13 @@ internal fun DroneDetailContent(
                     DetailRow("SSID", it)
                 }
                 drone.bssid?.let { bssid ->
-                    DetailRow("BSSID", bssid)
+                    DetailRow(OBSERVED_BSSID_LABEL, bssid)
+                    Text(
+                        text = OBSERVED_BSSID_EXPLANATION,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
                     WifiOuiDatabase.lookup(bssid)?.let { ouiEntry ->
                         DetailRow("Hardware", ouiEntry.fullName)
                     }
