@@ -62,3 +62,12 @@ def test_badge_excluded_http_route_descriptors_are_not_compiled():
                 "#endif"
             )
             assert source.index("#endif", declaration) > declaration
+
+
+def test_pull_request_firmware_checks_do_not_deploy_github_pages():
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
+    ).read_text()
+    deploy_job = workflow[workflow.index("  deploy:") :]
+
+    assert "github.event_name != 'pull_request'" in deploy_job
