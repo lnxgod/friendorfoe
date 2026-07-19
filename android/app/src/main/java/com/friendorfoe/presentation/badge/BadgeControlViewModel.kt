@@ -3,6 +3,7 @@ package com.friendorfoe.presentation.badge
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
+import com.friendorfoe.data.badge.BadgeDisplayNavAction
 import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.badge.BadgeThemeProfileStore
 import com.friendorfoe.data.badge.BadgeThreatEntity
@@ -35,7 +36,7 @@ class BadgeControlViewModel @Inject constructor(
 
     fun grantUsbAccess() = repository.requestConnection()
     fun refresh() = repository.requestStatus()
-    fun displayNav(action: String) = repository.displayNav(action)
+    fun displayNav(action: BadgeDisplayNavAction) = repository.displayNav(action)
     fun setMode(mode: String) = repository.setMode(mode)
     fun applyTheme(theme: BadgeTheme) = repository.applyBadgeTheme(theme)
     fun resetTheme() = repository.resetBadgeTheme()

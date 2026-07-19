@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.badge.BadgeControlTransportPolicy
+import com.friendorfoe.data.badge.BadgeDisplayNavAction
 import com.friendorfoe.data.badge.BadgeDisplayState
 import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbActivity
@@ -221,20 +222,63 @@ private fun BadgeStatusSection(
     onGrantUsbAccess: () -> Unit,
     onRefresh: () -> Unit,
 ) {
+    val identityLines = badgeStatusIdentityLines(state)
     BadgeSection(
         title = "Badge USB",
         subtitle = state.transportLabel.ifBlank { state.status.name.replace('_', ' ') },
         modifier = Modifier.testTag("badge_status"),
     ) {
-        Text(
-            text = state.deviceName ?: state.message,
-            style = MaterialTheme.typography.bodyMedium,
-        )
+        identityLines.forEachIndexed { index, line ->
+            Text(
+                text = line,
+                style = if (index == 0 && state.deviceName != null) {
+                    MaterialTheme.typography.bodyMedium
+                } else {
+                    MaterialTheme.typography.bodySmall
+                },
+                color = if (line == state.message && state.status == BadgeUsbStatus.ERROR) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+            )
+        }
+        if (badgeStatusIsStale(state)) {
+            Text(
+                text = "Cached badge status  •  controls disabled",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         Text(
             text = "${state.eventCount} events  •  ${state.controlStatus?.version ?: "Status unavailable"}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        state.controlStatus?.let { status ->
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 9.dp),
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+            ) {
+                Column(
+                    modifier = Modifier.padding(9.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Text(
+                        text = "System health",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    badgeStatusHealthRows(status).forEach { (label, value) ->
+                        BadgeStatusMetricRow(label, value)
+                    }
+                }
+            }
+        }
         Row(
             modifier = Modifier.padding(top = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -246,6 +290,23 @@ private fun BadgeStatusSection(
                 Text("Refresh status")
             }
         }
+    }
+}
+
+@Composable
+private fun BadgeStatusMetricRow(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(0.23f),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(0.77f),
+        )
     }
 }
 
@@ -510,7 +571,7 @@ private fun badgeInvestigationStateLabel(state: BleInvestigationState): String =
 private fun BadgeLcdRemoteSection(
     display: BadgeDisplayState?,
     commandsEnabled: Boolean,
-    onNavigate: (String) -> Unit,
+    onNavigate: (BadgeDisplayNavAction) -> Unit,
 ) {
     BadgeSection(
         title = "LCD remote",
@@ -521,8 +582,14 @@ private fun BadgeLcdRemoteSection(
             Text(it, style = MaterialTheme.typography.bodySmall)
         }
         listOf(
-            listOf("Prev" to "prev", "Up" to "up", "Next" to "next"),
-            listOf("Back" to "back", "Select" to "select", "Down" to "down"),
+            listOf(
+                "Next" to BadgeDisplayNavAction.NEXT,
+                "Detail" to BadgeDisplayNavAction.DETAIL,
+            ),
+            listOf(
+                "Page" to BadgeDisplayNavAction.PAGE,
+                "Back" to BadgeDisplayNavAction.BACK,
+            ),
         ).forEach { row ->
             Row(
                 modifier = Modifier

@@ -90,13 +90,23 @@ class BadgeDisplayPolicyTest {
     }
 
     @Test
-    fun displayNavCommandBuildsExpectedBadgeControlPayload() {
-        val json = JsonParser.parseString(
-            badgeDisplayNavCommandJson("next").toString()
-        ).asJsonObject
+    fun displayNavCommandsMatchFrozenBadgeFirmwareContract() {
+        val expected = listOf(
+            BadgeDisplayNavAction.NEXT to "next",
+            BadgeDisplayNavAction.DETAIL to "detail",
+            BadgeDisplayNavAction.PAGE to "page",
+            BadgeDisplayNavAction.BACK to "back",
+        )
 
-        assertEquals("display_nav", json.get("cmd").asString)
-        assertEquals("next", json.get("action").asString)
+        assertEquals(expected.map { it.first }, BadgeDisplayNavAction.entries)
+        expected.forEach { (action, wireValue) ->
+            val json = JsonParser.parseString(
+                badgeDisplayNavCommandJson(action).toString()
+            ).asJsonObject
+
+            assertEquals("display_nav", json.get("cmd").asString)
+            assertEquals(wireValue, json.get("action").asString)
+        }
     }
 
     @Test

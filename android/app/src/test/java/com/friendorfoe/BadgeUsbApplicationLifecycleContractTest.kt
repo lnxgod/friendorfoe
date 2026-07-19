@@ -56,6 +56,8 @@ class BadgeUsbApplicationLifecycleContractTest {
         assertFalse(repository.contains("Connect only the badge over USB-C"))
         assertFalse(repository.contains("connect via USB-C"))
         assertTrue(repository.contains("Intent(ACTION_USB_PERMISSION)"))
+        assertTrue(repository.contains("PendingIntent.FLAG_MUTABLE"))
+        assertFalse(repository.contains("PendingIntent.FLAG_IMMUTABLE"))
         assertTrue(repository.contains("putExtra(EXTRA_USB_PERMISSION_SESSION, lifecycleSession)"))
         assertTrue(repository.contains("EXTRA_USB_PERMISSION_ATTACHMENT_GENERATION"))
         assertTrue(repository.contains("attachmentToken.generation"))
@@ -76,6 +78,27 @@ class BadgeUsbApplicationLifecycleContractTest {
         assertTrue(repository.contains("throw cancelled"))
         assertTrue(repository.contains("attachmentToken = attachmentToken"))
         assertTrue(repository.contains("connectionMutex.withBadgeUsbReaderOwner"))
+        assertTrue(repository.contains("private fun rejectUsbIdentityLocked("))
+        assertTrue(repository.contains("rejectUsbIdentityLocked("))
+        val identityRejector = repository
+            .substringAfter("private fun rejectUsbIdentityLocked(")
+            .substringBefore("private fun startReader(")
+        assertFalse(
+            "Identity rejection must stay synchronous inside the reader's connection mutex",
+            identityRejector.contains("scope.launch"),
+        )
+
+        val detachBlock = repository
+            .substringAfter("UsbManager.ACTION_USB_DEVICE_DETACHED -> {")
+            .take(2_000)
+        assertTrue(
+            "Every Espressif detach must rescan so an ambiguous pair can recover automatically",
+            detachBlock.contains("requestConnection()"),
+        )
+        assertFalse(
+            "A detach with no selected attachment token must not return before rescanning",
+            detachBlock.substringBefore("requestConnection()").contains("?: return"),
+        )
 
         val disconnectLocked = repository
             .substringAfter("private fun disconnectLocked()")

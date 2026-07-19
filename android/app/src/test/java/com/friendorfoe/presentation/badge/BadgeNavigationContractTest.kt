@@ -121,6 +121,21 @@ class BadgeNavigationContractTest {
     }
 
     @Test
+    fun `lcd remote exposes only frozen firmware navigation actions`() {
+        val source = source("com/friendorfoe/presentation/badge/BadgeControlScreen.kt")
+
+        listOf(
+            "BadgeDisplayNavAction.NEXT",
+            "BadgeDisplayNavAction.DETAIL",
+            "BadgeDisplayNavAction.PAGE",
+            "BadgeDisplayNavAction.BACK",
+        ).forEach { action -> assertTrue("missing $action", source.contains(action)) }
+        listOf("\"prev\"", "\"up\"", "\"down\"").forEach { unsupported ->
+            assertFalse("unsupported LCD action $unsupported", source.contains(unsupported))
+        }
+    }
+
+    @Test
     fun `display filter remote actions use compact two row layout`() {
         val filters = source("com/friendorfoe/presentation/badge/BadgeDisplayFiltersSection.kt")
 

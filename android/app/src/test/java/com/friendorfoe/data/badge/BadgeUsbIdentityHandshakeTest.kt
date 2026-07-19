@@ -314,6 +314,58 @@ class BadgeUsbIdentityHandshakeTest {
     }
 
     @Test
+    fun `HTTP status cannot hide USB permission or actionable USB errors`() {
+        listOf(
+            BadgeUsbState(
+                status = BadgeUsbStatus.PERMISSION_NEEDED,
+                deviceName = "USB device",
+                transportLabel = "USB-C",
+                message = "USB access required",
+            ),
+            BadgeUsbState(
+                status = BadgeUsbStatus.ERROR,
+                deviceName = null,
+                transportLabel = "USB-C",
+                message = "Multiple Espressif USB devices found",
+            ),
+        ).forEach { usbPriorityState ->
+            val reduced = reduceBadgeHttpStatus(
+                current = usbPriorityState,
+                response = badgeStatus(version = "debug-bridge"),
+                connectedStatus = BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
+                deviceName = "FoF Debug Bridge",
+                transportLabel = "Debug Bridge",
+                connectedMessage = "Debug Bridge connected",
+                usbConnectionOpen = false,
+            )
+
+            assertEquals(usbPriorityState, reduced)
+            assertNull(reduced.controlStatus)
+        }
+    }
+
+    @Test
+    fun `HTTP status may populate a genuinely disconnected state`() {
+        val disconnected = BadgeUsbState(
+            status = BadgeUsbStatus.DISCONNECTED,
+            message = "Attach a FoF badge over USB-C",
+        )
+
+        val reduced = reduceBadgeHttpStatus(
+            current = disconnected,
+            response = badgeStatus(version = "debug-bridge"),
+            connectedStatus = BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
+            deviceName = "FoF Debug Bridge",
+            transportLabel = "Debug Bridge",
+            connectedMessage = "Debug Bridge connected",
+            usbConnectionOpen = false,
+        )
+
+        assertEquals(BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED, reduced.status)
+        assertEquals("debug-bridge", reduced.controlStatus?.version)
+    }
+
+    @Test
     fun `normal USB disconnect clears transport and badge status`() {
         val connected = BadgeUsbState(
             status = BadgeUsbStatus.CONNECTED,
@@ -330,7 +382,7 @@ class BadgeUsbIdentityHandshakeTest {
     }
 
     @Test
-    fun `reader failure clears transport status and reports error`() {
+    fun `reader failure retains USB error ownership and reports error`() {
         val connected = BadgeUsbState(
             status = BadgeUsbStatus.CONNECTED,
             transportLabel = "USB-C",
@@ -344,9 +396,46 @@ class BadgeUsbIdentityHandshakeTest {
         )
 
         assertEquals(BadgeUsbStatus.ERROR, failed.status)
-        assertEquals("", failed.transportLabel)
+        assertEquals("USB-C", failed.transportLabel)
         assertNull(failed.controlStatus)
         assertTrue(failed.message.contains("read exploded"))
+
+        val lateHttp = reduceBadgeHttpStatus(
+            current = failed,
+            response = badgeStatus(version = "debug-bridge"),
+            connectedStatus = BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
+            deviceName = "FoF Debug Bridge",
+            transportLabel = "Debug Bridge",
+            connectedMessage = "Debug Bridge connected",
+            usbConnectionOpen = false,
+        )
+        assertEquals(failed, lateHttp)
+    }
+
+    @Test
+    fun `every USB status frame is subject to identity validation`() {
+        assertNull(
+            badgeUsbStatusFrameIdentityError(
+                isStatusFrame = false,
+                status = BadgeControlStatus(),
+            )
+        )
+        assertNull(
+            badgeUsbStatusFrameIdentityError(
+                isStatusFrame = true,
+                status = badgeStatus(version = "verified"),
+            )
+        )
+        assertTrue(
+            badgeUsbStatusFrameIdentityError(
+                isStatusFrame = true,
+                status = badgeStatus(version = "drifted").copy(appProject = "scanner"),
+            )?.contains("Unexpected USB app project") == true
+        )
+        assertEquals(
+            "Malformed badge status",
+            badgeUsbStatusFrameIdentityError(isStatusFrame = true, status = null),
+        )
     }
 
     @Test

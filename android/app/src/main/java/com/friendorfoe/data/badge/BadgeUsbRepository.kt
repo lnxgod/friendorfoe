@@ -341,9 +341,16 @@ fun badgeDisplayPolicyCommandJson(
     add("policy", policy.toJsonObject())
 }
 
-fun badgeDisplayNavCommandJson(action: String): JsonObject = JsonObject().apply {
+enum class BadgeDisplayNavAction(val wireValue: String) {
+    NEXT("next"),
+    DETAIL("detail"),
+    PAGE("page"),
+    BACK("back"),
+}
+
+fun badgeDisplayNavCommandJson(action: BadgeDisplayNavAction): JsonObject = JsonObject().apply {
     addProperty("cmd", "display_nav")
-    addProperty("action", action)
+    addProperty("action", action.wireValue)
 }
 
 data class BadgeTheme(
@@ -683,6 +690,11 @@ internal fun badgeUsbIdentityError(status: BadgeControlStatus?): String? {
     return null
 }
 
+internal fun badgeUsbStatusFrameIdentityError(
+    isStatusFrame: Boolean,
+    status: BadgeControlStatus?,
+): String? = if (isStatusFrame) badgeUsbIdentityError(status) else null
+
 internal fun badgeUsbHandshakeStatus(status: BadgeControlStatus?): BadgeUsbStatus =
     if (badgeUsbIdentityError(status) == null) BadgeUsbStatus.CONNECTED else BadgeUsbStatus.ERROR
 
@@ -741,6 +753,11 @@ internal fun badgeUsbReaderOwnsExactSession(
     lifecycleActive = lifecycleActive,
     activeConnectionMatches = expectedConnection === activeConnection,
 ) && expectedLifecycleSession == activeLifecycleSession
+
+internal fun badgeUsbFrameMayMutateState(
+    hasVerifiedOwner: Boolean,
+    acceptedIdentityHandshake: Boolean,
+): Boolean = hasVerifiedOwner || acceptedIdentityHandshake
 
 internal data class BadgeUsbDeviceIdentity(
     val deviceId: Int,
@@ -904,12 +921,7 @@ internal fun reduceBadgeHttpStatus(
     connectedMessage: String,
     usbConnectionOpen: Boolean,
 ): BadgeUsbState {
-    if (badgeUsbSessionOwnsTransport(
-            status = current.status,
-            transportLabel = current.transportLabel,
-            connectionOpen = usbConnectionOpen,
-        )
-    ) {
+    if (badgeUsbStateReservesUsb(current, usbConnectionOpen)) {
         return current
     }
     return current.copy(
@@ -920,6 +932,22 @@ internal fun reduceBadgeHttpStatus(
         controlStatus = response,
     )
 }
+
+internal fun badgeUsbStateReservesUsb(
+    current: BadgeUsbState,
+    usbConnectionOpen: Boolean,
+): Boolean = badgeUsbSessionOwnsTransport(
+    status = current.status,
+    transportLabel = current.transportLabel,
+    connectionOpen = usbConnectionOpen,
+) || (
+    current.transportLabel == "USB-C" && current.status in setOf(
+        BadgeUsbStatus.PERMISSION_NEEDED,
+        BadgeUsbStatus.CONNECTING,
+        BadgeUsbStatus.CONNECTED,
+        BadgeUsbStatus.ERROR,
+    )
+)
 
 internal fun reduceBadgeUsbDisconnected(
     current: BadgeUsbState,
@@ -936,11 +964,21 @@ internal fun reduceBadgeUsbReaderFailure(
     current: BadgeUsbState,
     deviceName: String,
     detail: String,
+): BadgeUsbState = reduceBadgeUsbTerminalError(
+    current = current,
+    deviceName = deviceName,
+    message = "Badge USB read failed: $detail",
+)
+
+internal fun reduceBadgeUsbTerminalError(
+    current: BadgeUsbState,
+    deviceName: String,
+    message: String,
 ): BadgeUsbState = current.copy(
     status = BadgeUsbStatus.ERROR,
     deviceName = deviceName,
-    message = "Badge USB read failed: $detail",
-    transportLabel = "",
+    message = message,
+    transportLabel = "USB-C",
     controlStatus = null,
 )
 
@@ -1800,27 +1838,16 @@ class BadgeUsbRepository @Inject constructor(
                     if (detached != null && detached.vendorId == ESPRESSIF_VENDOR_ID) {
                         val invalidation = attachmentGate.invalidateMatching(
                             detached.attachmentIdentity(),
-                        ) ?: return
+                        )
                         val expectedConnection = activeConnection
-                        if (invalidation.wasActive && expectedConnection != null) {
+                        if (invalidation?.wasActive == true && expectedConnection != null) {
                             disconnect(
                                 reason = "Badge disconnected",
                                 expectedAttachmentToken = invalidation.token,
                                 expectedConnection = expectedConnection,
                             )
-                        } else {
-                            scope.launch {
-                                connectionMutex.withLock {
-                                    if (attachmentGate.currentToken() == null &&
-                                        activeAttachmentToken != invalidation.token
-                                    ) {
-                                        setState { current ->
-                                            reduceBadgeUsbDisconnected(current, "Badge disconnected")
-                                        }
-                                    }
-                                }
-                            }
                         }
+                        requestConnection()
                     }
                 }
             }
@@ -1926,8 +1953,11 @@ class BadgeUsbRepository @Inject constructor(
 
         if (!lifecycleGate.isActive(lifecycleSession)) return
 
+        // UsbManager supplies EXTRA_DEVICE and EXTRA_PERMISSION_GRANTED through a fill-in
+        // intent. Android 12+ therefore requires this narrowly scoped, explicit callback
+        // PendingIntent to remain mutable.
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
         val permissionIntent = PendingIntent.getBroadcast(
             context,
             usbPermissionRequestCode(lifecycleSession, attachmentToken),
@@ -2720,7 +2750,7 @@ class BadgeUsbRepository @Inject constructor(
         })
     }
 
-    fun displayNav(action: String) {
+    fun displayNav(action: BadgeDisplayNavAction) {
         sendControl(badgeDisplayNavCommandJson(action))
     }
 
@@ -2773,7 +2803,7 @@ class BadgeUsbRepository @Inject constructor(
         if (apPollJob?.isActive == true) return
         apPollJob = scope.launch {
             while (isActive) {
-                if (!hasUsbSession() && !hasBleCommandPath()) {
+                if (canPollAlternateTransport() && !hasBleCommandPath()) {
                     fetchApStatus(showErrors = false)
                 }
                 delay(AP_POLL_INTERVAL_MS)
@@ -2785,7 +2815,7 @@ class BadgeUsbRepository @Inject constructor(
         if (blePollJob?.isActive == true) return
         blePollJob = scope.launch {
             while (isActive) {
-                if (!hasUsbSession() && !hasBleCommandPath() &&
+                if (canPollAlternateTransport() && !hasBleCommandPath() &&
                     state.value.status != BadgeUsbStatus.AP_CONNECTED
                 ) {
                     startBleScanIfPossible()
@@ -2801,7 +2831,7 @@ class BadgeUsbRepository @Inject constructor(
         if (!BuildConfig.DEBUG || debugBridgePollJob?.isActive == true) return
         debugBridgePollJob = scope.launch {
             while (isActive) {
-                if (!hasUsbSession() && !hasBleCommandPath() &&
+                if (canPollAlternateTransport() && !hasBleCommandPath() &&
                     state.value.status != BadgeUsbStatus.AP_CONNECTED
                 ) {
                     fetchDebugBridgeStatus(showErrors = false)
@@ -3070,12 +3100,12 @@ class BadgeUsbRepository @Inject constructor(
                         BadgeUsbHandshakeTimerAction.FAIL -> {
                             disconnectLocked()
                             setState {
-                                it.copy(
-                                    status = badgeUsbHandshakeTimeoutStatus(it.status),
+                                reduceBadgeUsbTerminalError(
+                                    current = it.copy(
+                                        status = badgeUsbHandshakeTimeoutStatus(it.status),
+                                    ),
                                     deviceName = deviceName,
                                     message = "Badge USB product identity check timed out",
-                                    transportLabel = "",
-                                    controlStatus = null,
                                 )
                             }
                             true
@@ -3089,14 +3119,19 @@ class BadgeUsbRepository @Inject constructor(
         handshakeJob.start()
     }
 
+    // Called synchronously from handleLine while withBadgeUsbReaderOwner holds
+    // connectionMutex. Keeping rejection in that critical section makes an invalid
+    // status fail closed before any later line from the same USB read can be accepted.
     private fun rejectUsbIdentityLocked(
         connection: android.hardware.usb.UsbDeviceConnection,
         lifecycleSession: Long,
         attachmentToken: BadgeUsbAttachmentToken,
+        expectedVerifiedOwner: BadgeUsbOwnerKey?,
         deviceName: String,
         reason: String,
     ) {
-        if (!badgeUsbHandshakeOwnsSession(
+        val ownsHandshake = expectedVerifiedOwner == null &&
+            badgeUsbHandshakeOwnsSession(
                 lifecycleActive = lifecycleGate.isActive(lifecycleSession),
                 status = state.value.status,
                 transportLabel = state.value.transportLabel,
@@ -3104,19 +3139,25 @@ class BadgeUsbRepository @Inject constructor(
                 activeLifecycleSession = activeUsbLifecycleSession,
                 expectedConnection = connection,
                 activeConnection = activeConnection,
-            ) || activeAttachmentToken != attachmentToken ||
+            )
+        val ownsVerifiedSession = expectedVerifiedOwner != null &&
+            state.value.status == BadgeUsbStatus.CONNECTED &&
+            state.value.transportLabel == "USB-C" &&
+            badgeUsbOwnerKeysMatch(expectedVerifiedOwner, verifiedUsbOwnerKey) &&
+            expectedVerifiedOwner.connectionIdentity === connection &&
+            expectedVerifiedOwner.attachmentToken == attachmentToken
+        if ((!ownsHandshake && !ownsVerifiedSession) ||
+            activeAttachmentToken != attachmentToken ||
             !attachmentGate.isCurrentAndActive(attachmentToken)
         ) {
             return
         }
         disconnectLocked()
         setState {
-            it.copy(
-                status = BadgeUsbStatus.ERROR,
+            reduceBadgeUsbTerminalError(
+                current = it,
                 deviceName = deviceName,
                 message = reason,
-                transportLabel = "",
-                controlStatus = null,
             )
         }
     }
@@ -3282,6 +3323,11 @@ class BadgeUsbRepository @Inject constructor(
         connectionOpen = activeConnection != null && activeOutEndpoint != null,
     )
 
+    private fun canPollAlternateTransport(): Boolean = !badgeUsbStateReservesUsb(
+        current = state.value,
+        usbConnectionOpen = activeConnection != null && activeOutEndpoint != null,
+    )
+
     private fun hasBleCommandPath(): Boolean {
         if (!BadgeControlTransportPolicy.allowsBleTether()) return false
         return state.value.status == BadgeUsbStatus.BLE_CONNECTED &&
@@ -3386,10 +3432,10 @@ class BadgeUsbRepository @Inject constructor(
             if (showErrors) {
                 connectionMutex.withLock {
                     setState { current ->
-                        if (badgeUsbSessionOwnsTransport(
-                                status = current.status,
-                                transportLabel = current.transportLabel,
-                                connectionOpen = activeConnection != null && activeOutEndpoint != null,
+                        if (badgeUsbStateReservesUsb(
+                                current = current,
+                                usbConnectionOpen = activeConnection != null &&
+                                    activeOutEndpoint != null,
                             )
                         ) {
                             current
@@ -3989,15 +4035,15 @@ class BadgeUsbRepository @Inject constructor(
         } else {
             null
         }
-        if (handshakeStatus == BadgeUsbStatus.ERROR) {
-            val identityError = badgeUsbIdentityError(status)
+        badgeUsbStatusFrameIdentityError(isStatusFrame, status)?.let { identityError ->
             rejectUsbIdentityLocked(
                 connection = connection,
                 lifecycleSession = lifecycleSession,
                 attachmentToken = attachmentToken,
+                expectedVerifiedOwner = frameOwner,
                 deviceName = deviceName,
                 reason = "USB device does not report FoF badge uplink identity: " +
-                    (identityError ?: "unknown identity error"),
+                    identityError,
             )
             return
         }
@@ -4010,6 +4056,13 @@ class BadgeUsbRepository @Inject constructor(
                 connectionIdentity = connection,
                 endpointIdentity = outEndpoint,
             )
+        }
+        if (!badgeUsbFrameMayMutateState(
+                hasVerifiedOwner = frameOwner != null,
+                acceptedIdentityHandshake = usbHandshakeAccepted,
+            )
+        ) {
+            return
         }
         val firmwareProgress = when {
             trimmed.startsWith("FOF_FW_UPLOAD:") ->
