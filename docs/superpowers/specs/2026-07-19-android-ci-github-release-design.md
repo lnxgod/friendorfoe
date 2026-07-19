@@ -1,7 +1,7 @@
 # Android CI GitHub Release Design
 
 **Date:** 2026-07-19
-**Status:** Approved for implementation
+**Status:** Approved direction; awaiting written-spec review
 **Release commit base:** `204ea0dcf624232ddfbfb9272fa090a6e94bee24`
 
 ## Objective
@@ -14,7 +14,7 @@ Use the repository's existing tag-driven release path with a fresh Android-only 
 
 `v0.64.69-android-defcon34-badge-ui`
 
-The tag begins with `v`, so `.github/workflows/android-build.yml` runs its signed release job. It also contains `android`, so the existing exclusion in `.github/workflows/esp32-web-flasher.yml` skips the firmware build for both the tag-push event and the subsequent published-release event.
+The tag begins with `v`, so `.github/workflows/android-build.yml` runs its signed release path. It also contains the reserved marker `-android-`, so `.github/workflows/esp32-web-flasher.yml` skips the firmware build for both tag-push and published-release events. The firmware guard is tightened from a broad `android` substring check to the exact `-android-` release marker so unrelated tag names cannot accidentally suppress a firmware release.
 
 The Android release is a published GitHub prerelease, not an Actions-only artifact and not the repository's Latest release. Its APK and checksum are attached directly to the release.
 
@@ -51,42 +51,52 @@ The higher version code permits an update over the currently published version c
 3. Create the immutable annotated tag `v0.64.69-android-defcon34-badge-ui` at the verified commit.
 4. Push that tag explicitly to `origin`.
 5. The Android Build workflow runs `testDebugUnitTest` and `assembleDebug` in its build gate.
-6. The release job runs only after that gate succeeds.
-7. The release job fails before decoding a keystore if any signing secret is empty.
-8. The release job builds `assembleRelease` with the repository's production signing secrets.
-9. CI verifies the resulting APK signature, package name, version code, and version name.
-10. CI renames the APK, generates its SHA-256 sidecar, and publishes both files in a GitHub prerelease.
-11. CI marks Android-only tags as prereleases and never marks them Latest.
-12. The ESP32 workflow sees `android` in the tag and skips its firmware build; its dependent Pages deployment is consequently skipped.
+6. A `sign-release` job runs only after that gate succeeds and has `contents: read` permission.
+7. `sign-release` fails before decoding a keystore if any signing secret is empty.
+8. `sign-release` builds `assembleRelease` with the repository's production signing secrets.
+9. CI verifies the resulting APK signature, pinned signer certificate, package name, version code, and version name.
+10. `sign-release` renames the APK, generates its SHA-256 sidecar, deletes the decoded keystore, and uploads only the APK and checksum as a short-lived workflow artifact.
+11. A separate `publish-release` job downloads that artifact. It has `contents: write` permission but receives no signing secrets or keystore.
+12. `publish-release` attaches the APK and checksum to a GitHub prerelease with `make_latest: false` using the repository-scoped `GITHUB_TOKEN`.
+13. The ESP32 workflow sees the exact `-android-` marker and skips its firmware build; its dependent Pages deployment is consequently skipped.
 
 ## Signing and Validation
 
-The release job uses the existing secrets:
+The `sign-release` job uses the existing secrets:
 
 - `KEYSTORE_BASE64`
 - `KEYSTORE_PASSWORD`
 - `KEY_ALIAS`
 - `KEY_PASSWORD`
 
-The workflow must fail closed if any value is absent. It must not print secret values.
+The workflow must fail closed if any value is absent. It must not print secret values, and the `publish-release` job must not expose or reference them.
 
 After `assembleRelease`, CI locates Android SDK `apksigner` and `aapt` from the runner's installed build tools. It verifies:
 
 - APK Signature Scheme verification succeeds.
+- The signing-certificate SHA-256 digest exactly matches `3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95`, independently read with `apksigner` from the published `friendorfoe-v0.64.68-live-follow.apk`. The workflow pins this non-secret value and must not merely accept whatever certificate came from the supplied keystore.
 - Package name is exactly `com.friendorfoe`.
 - Version code is exactly `111`.
 - Version name is exactly `0.64.69-defcon34-badge-ui`.
 
-The release contains the APK and a `sha256sum` sidecar generated from that exact file.
+The release contains the APK and a `sha256sum` sidecar generated from that exact file. The decoded keystore is removed before the signed artifact is uploaded between jobs.
+
+## Workflow Permissions and Event Behavior
+
+- `build` and `sign-release` use `contents: read`.
+- Only `publish-release` uses `contents: write`.
+- `publish-release` receives no signing secrets and uses only GitHub's repository-scoped `GITHUB_TOKEN`; no personal access token is introduced.
+- The publisher uses `softprops/action-gh-release@v3`, explicitly sets `prerelease: true`, and explicitly sets `make_latest: false` for the reserved Android-only tag.
+- A release created with `GITHUB_TOKEN` does not recursively launch another workflow run. The ESP32 published-release guard remains mandatory because a maintainer or external automation could later publish a release with a personal access token or through the GitHub UI.
 
 ## Firmware Isolation
 
 No file below `esp32/` is modified for this release.
 
-The existing ESP32 workflow exclusion remains the enforcement point:
+The ESP32 workflow exclusion remains the enforcement point, with its marker made exact:
 
-- Tag-push events whose `github.ref_name` contains `android` skip the firmware build.
-- Published-release events whose `github.event.release.tag_name` contains `android` skip the firmware build.
+- Tag-push events whose `github.ref_name` contains `-android-` skip the firmware build.
+- Published-release events whose `github.event.release.tag_name` contains `-android-` skip the firmware build.
 - The Pages deployment requires a successful firmware build, so it also skips.
 - No physical flashing mechanism is part of GitHub Actions.
 
@@ -94,9 +104,10 @@ A contract test locks both the Android publisher and the ESP32 exclusion so a fu
 
 ## Failure Handling
 
-- If Android tests or the debug build fail, the release job does not start.
-- If signing secrets are missing, the release job stops before creating a keystore or release.
+- If Android tests or the debug build fail, `sign-release` and `publish-release` do not start.
+- If signing secrets are missing, `sign-release` stops before creating a keystore or release.
 - If the release APK fails signature or identity verification, no release is published.
+- If the decoded certificate differs from the pinned production signer, no signed artifact leaves `sign-release` and no release is published.
 - If release publication fails, the pushed tag remains immutable; the failed tag is not moved or reused. A corrected build receives a new version and tag.
 - The GitHub Release is not considered shipped until the published asset is downloaded and independently verified.
 
@@ -110,25 +121,27 @@ The contract test will assert:
 
 - Gradle contains the exact version code and name.
 - Android CI runs unit tests before release publication.
-- The release job is gated on the build job and has `contents: write` only where required.
+- The signing job is gated on the build job and has only `contents: read`.
+- The publishing job is gated on the signing job, has `contents: write`, and has no signing-secret references.
 - Signing secrets are checked before keystore decoding.
-- The release APK is checked with `apksigner` and `aapt`.
+- The release APK is checked with `apksigner` and `aapt`, including the exact pinned production signer digest.
 - Both the APK and checksum are attached.
-- Tags containing `android` publish as prerelease and not Latest.
-- The ESP32 workflow skips Android tag-push and release-published events.
+- Tags containing the exact `-android-` marker publish as prerelease and not Latest.
+- The ESP32 workflow skips exact-marker Android tag-push and release-published events while preserving normal firmware handling for other tags.
 
 ### Local verification
 
 - Run the focused workflow contract test.
 - Run the complete Android JVM suite.
 - Build the debug APK locally.
+- Re-verify the reference APK asset digest (`4d71294cf00d782ac22378f6e7c960bd9caf39f8c0af5004a091ddd0d28797a7`) before relying on its pinned signer certificate.
 - Run `git diff --check` for the exact implementation scope.
-- Recompute the frozen ESP32 diff and status fingerprints to prove no firmware edits entered the Android release patch.
+- Recompute the frozen ESP32 diff and status fingerprints to prove no firmware source edits entered the Android release patch. The one permitted firmware-workflow edit is `.github/workflows/esp32-web-flasher.yml`, which only narrows the Android-only tag guard and never builds or flashes firmware.
 
 ### Published-release verification
 
 - Confirm the final Android workflow run succeeds.
-- Confirm the ESP32 workflow is skipped for the Android tag and release.
+- Confirm the ESP32 workflow is skipped for the Android tag. Also inspect its event policy to confirm an independently published Android release would be skipped.
 - Confirm the GitHub Release is published as a prerelease and not Latest.
 - Confirm exactly the APK and checksum are present as Android release assets.
 - Download the APK from GitHub Releases.
@@ -142,13 +155,14 @@ Included:
 
 - Android version identity.
 - Android GitHub Actions test, signing, verification, checksum, and release policy.
+- Narrowing the ESP32 GitHub Actions Android-only marker from `android` to `-android-`.
 - A workflow contract regression test.
 - Creation and explicit push of the fresh Android-only release tag.
 - Verification of the published APK.
 
 Excluded:
 
-- Any ESP32 source, binary, manifest, or firmware version change.
+- Any file below `esp32/`, including source, binary, manifest, or firmware version changes.
 - Any badge flashing.
 - Merging draft PR #3.
 - Publishing a full production firmware release.
