@@ -34,7 +34,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,14 +42,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.badge.BadgeControlStatus
 import com.friendorfoe.data.badge.BadgeControlTransportPolicy
@@ -156,21 +152,6 @@ fun PrivacyScreen(
             applyBadgeDraftReset(badgeStatusRefreshReset(it.theme, it.displayPolicy))
         }
         viewModel.refreshBadgeStatus()
-    }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_RESUME -> viewModel.startBadgeUsb()
-                Lifecycle.Event.ON_PAUSE -> viewModel.stopBadgeUsb()
-                else -> {}
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
     }
 
     // Track expanded categories (high-threat auto-expanded)
@@ -596,13 +577,18 @@ private fun BadgeUsbStatusRow(
         BadgeUsbStatus.ERROR -> FofTone.Danger
         BadgeUsbStatus.DISCONNECTED -> FofTone.Neutral
     }
+    val actionLabel = when (state.status) {
+        BadgeUsbStatus.PERMISSION_NEEDED -> "Grant USB access"
+        BadgeUsbStatus.DISCONNECTED -> null
+        else -> if (statusReadable) "Refresh" else null
+    }
     FofStatusStrip(
         label = transportLabel.uppercase().take(8),
         title = headline,
         detail = if (scannerSummary.isNotBlank()) "$summary  |  $scannerSummary" else summary,
         tone = tone,
-        actionLabel = if (statusReadable) "Refresh" else "Connect",
-        onAction = onAction
+        actionLabel = actionLabel,
+        onAction = if (actionLabel != null) onAction else null
     )
 }
 

@@ -1371,6 +1371,7 @@ class BadgeUsbRepository @Inject constructor(
     private val _investigation = MutableStateFlow<BleInvestigationResult?>(null)
     val investigation: StateFlow<BleInvestigationResult?> = _investigation.asStateFlow()
 
+    private val lifecycleGate = BadgeUsbLifecycleGate()
     private var receiverRegistered = false
     private var readJob: Job? = null
     private var apPollJob: Job? = null
@@ -1423,8 +1424,9 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     fun start() {
+        if (!lifecycleGate.begin()) return
         registerReceiverIfNeeded()
-        refresh()
+        requestConnection()
         if (BadgeControlTransportPolicy.allowsBleTether()) {
             startBlePoller()
         }
@@ -1435,6 +1437,7 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     fun stop() {
+        if (!lifecycleGate.end()) return
         disconnect("Badge USB stopped")
         apPollJob?.cancel()
         apPollJob = null
@@ -1473,7 +1476,7 @@ class BadgeUsbRepository @Inject constructor(
                 it.copy(
                     status = BadgeUsbStatus.PERMISSION_NEEDED,
                     deviceName = device.displayName(),
-                    message = "FoF badge found. Tap Connect to grant USB access.",
+                    message = "FoF badge found. USB access required.",
                     transportLabel = "USB-C"
                 )
             }

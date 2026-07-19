@@ -21,7 +21,6 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -100,11 +99,9 @@ fun ListViewScreen(
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     viewModel.startLocationUpdates()
-                    viewModel.startBadgeUsb()
                 }
                 Lifecycle.Event.ON_PAUSE -> {
                     viewModel.stopLocationUpdates()
-                    viewModel.stopBadgeUsb()
                 }
                 else -> {}
             }
@@ -126,7 +123,6 @@ fun ListViewScreen(
 
         BadgeUsbPanel(
             state = badgeUsbState,
-            onConnect = viewModel::connectBadgeUsb,
             onPing = viewModel::pingBadgeUsb,
             onRefreshStatus = viewModel::refreshBadgeStatus,
             onSetMode = viewModel::setBadgeMode,
@@ -172,7 +168,6 @@ fun ListViewScreen(
 @Composable
 private fun BadgeUsbPanel(
     state: BadgeUsbState,
-    onConnect: () -> Unit,
     onPing: () -> Unit,
     onRefreshStatus: () -> Unit,
     onSetMode: (String) -> Unit,
@@ -289,10 +284,6 @@ private fun BadgeUsbPanel(
                                 Text("Ping")
                             }
                         }
-                    }
-                } else {
-                    Button(onClick = onConnect) {
-                        Text("Connect")
                     }
                 }
             }

@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.friendorfoe.data.badge.BadgeUsbRepository
 import com.friendorfoe.data.repository.SkyObjectRepository
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -13,6 +14,7 @@ import javax.inject.Inject
 class FriendOrFoeApplication : Application() {
 
     @Inject lateinit var skyObjectRepository: SkyObjectRepository
+    @Inject lateinit var badgeUsbRepository: BadgeUsbRepository
 
     override fun onCreate() {
         super.onCreate()
@@ -21,11 +23,13 @@ class FriendOrFoeApplication : Application() {
             override fun onStart(owner: LifecycleOwner) {
                 Log.i("FriendOrFoeApp", "App foregrounded — restarting detection sources")
                 skyObjectRepository.ensureStarted(0.0, 0.0)
+                badgeUsbRepository.start()
             }
 
             override fun onStop(owner: LifecycleOwner) {
                 Log.i("FriendOrFoeApp", "App backgrounded — stopping scanning to save battery")
                 skyObjectRepository.stop()
+                badgeUsbRepository.stop()
             }
         })
     }
