@@ -31,6 +31,22 @@ class BadgeUsbApplicationLifecycleContractTest {
         val privacyScreen = source("presentation/privacy/PrivacyScreen.kt")
         assertTrue(privacyScreen.contains("BadgeUsbStatus.PERMISSION_NEEDED -> \"Grant USB access\""))
         assertTrue(privacyScreen.contains("BadgeUsbStatus.DISCONNECTED -> null"))
+
+        for (viewModel in listOf(
+            "presentation/list/ListViewModel.kt",
+            "presentation/privacy/PrivacyViewModel.kt",
+        )) {
+            val contents = source(viewModel)
+            assertFalse(viewModel, contents.contains("fun startBadgeUsb()"))
+            assertFalse(viewModel, contents.contains("fun stopBadgeUsb()"))
+            assertFalse(viewModel, contents.contains("badgeUsbRepository.start()"))
+            assertFalse(viewModel, contents.contains("badgeUsbRepository.stop()"))
+        }
+
+        val repository = source("data/badge/BadgeUsbRepository.kt")
+        assertTrue(repository.contains("UsbManager.ACTION_USB_DEVICE_ATTACHED -> requestConnection()"))
+        assertTrue(repository.contains("\"Attach a FoF badge over USB-C\""))
+        assertFalse(repository.contains("\"Connect a FoF badge over USB-C\""))
     }
 
     private fun source(relativePath: String): String {

@@ -347,15 +347,6 @@ class PrivacyViewModel @Inject constructor(
         badgeUsbRepository.requestStatus()
     }
 
-    fun startBadgeUsb() {
-        syncBackendMode()
-        badgeUsbRepository.start()
-    }
-
-    fun stopBadgeUsb() {
-        badgeUsbRepository.stop()
-    }
-
     fun connectBadgeUsb() {
         badgeUsbRepository.requestConnection()
     }

@@ -447,7 +447,7 @@ data class BadgeControlStatus(
 data class BadgeUsbState(
     val status: BadgeUsbStatus = BadgeUsbStatus.DISCONNECTED,
     val deviceName: String? = null,
-    val message: String = "Connect a FoF badge over USB-C",
+    val message: String = "Attach a FoF badge over USB-C",
     val transportLabel: String = "",
     val lastLine: String? = null,
     val eventCount: Int = 0,
@@ -1412,7 +1412,7 @@ class BadgeUsbRepository @Inject constructor(
                         }
                     }
                 }
-                UsbManager.ACTION_USB_DEVICE_ATTACHED -> refresh()
+                UsbManager.ACTION_USB_DEVICE_ATTACHED -> requestConnection()
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val detached = intent.usbDeviceExtra()
                     if (detached != null && detached.vendorId == ESPRESSIF_VENDOR_ID) {
@@ -1459,7 +1459,7 @@ class BadgeUsbRepository @Inject constructor(
                 it.copy(
                     status = BadgeUsbStatus.DISCONNECTED,
                     deviceName = null,
-                    message = "Connect a FoF badge over USB-C",
+                    message = "Attach a FoF badge over USB-C",
                     transportLabel = ""
                 )
             }
@@ -2703,7 +2703,7 @@ class BadgeUsbRepository @Inject constructor(
             if (!hasBlePermissions() && state.value.status == BadgeUsbStatus.DISCONNECTED) {
                 setState {
                     it.copy(
-                        message = "Connect a FoF badge over USB-C",
+                        message = "Attach a FoF badge over USB-C",
                         transportLabel = "USB-C"
                     )
                 }

@@ -24,7 +24,7 @@ class BadgeControlTransportPolicyTest {
         assertFalse(BadgeControlTransportPolicy.allowsBleTether())
         assertTrue(BadgeControlTransportPolicy.allowsReadOnlyHttpStatus())
         assertEquals(
-            "Connect a FoF badge over USB-C to send controls",
+            "Attach a FoF badge over USB-C to send controls",
             BadgeControlTransportPolicy.controlConnectionGuidance(),
         )
     }

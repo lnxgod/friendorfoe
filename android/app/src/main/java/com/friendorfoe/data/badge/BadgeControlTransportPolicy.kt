@@ -31,7 +31,7 @@ internal object BadgeControlTransportPolicy {
     fun allowsAndroidFirmwareUpload(): Boolean = false
 
     fun controlConnectionGuidance(): String =
-        "Connect a FoF badge over USB-C to send controls"
+        "Attach a FoF badge over USB-C to send controls"
 
     fun scannerFirmwareStagingGuidance(): String =
         "Stage the shared scanner firmware from a laptop over USB. " +

@@ -118,14 +118,6 @@ class ListViewModel @Inject constructor(
         bleTracker.startDirectionScan(mac)
     }
 
-    fun startBadgeUsb() {
-        badgeUsbRepository.start()
-    }
-
-    fun stopBadgeUsb() {
-        badgeUsbRepository.stop()
-    }
-
     fun connectBadgeUsb() {
         badgeUsbRepository.requestConnection()
     }
@@ -269,7 +261,6 @@ class ListViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         stopLocationUpdates()
-        stopBadgeUsb()
     }
 }
 
