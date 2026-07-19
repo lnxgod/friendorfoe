@@ -51,6 +51,13 @@ class BadgeUsbApplicationLifecycleContractTest {
         assertTrue(repository.contains("attach the badge over USB-C"))
         assertFalse(repository.contains("Connect only the badge over USB-C"))
         assertFalse(repository.contains("connect via USB-C"))
+        assertTrue(repository.contains("Intent(ACTION_USB_PERMISSION)"))
+        assertTrue(repository.contains("putExtra(EXTRA_USB_PERMISSION_SESSION, lifecycleSession)"))
+        assertTrue(repository.contains("intent.getLongExtra("))
+        assertTrue(repository.contains("EXTRA_USB_PERMISSION_SESSION,"))
+        assertTrue(repository.contains("catch (cancelled: CancellationException)"))
+        assertTrue(repository.contains("throw cancelled"))
+        assertTrue(repository.contains("startReader(connection, port.inEndpoint, device.displayName(), lifecycleSession)"))
     }
 
     private fun source(relativePath: String): String {

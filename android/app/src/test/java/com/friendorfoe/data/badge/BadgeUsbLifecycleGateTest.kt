@@ -42,4 +42,11 @@ class BadgeUsbLifecycleGateTest {
         assertFalse(gate.canClean(staleCleanupSession))
         assertTrue(gate.isActive(currentSession))
     }
+
+    @Test
+    fun `reader errors require the active session and exact connection`() {
+        assertTrue(badgeUsbReaderOwnsSession(lifecycleActive = true, activeConnectionMatches = true))
+        assertFalse(badgeUsbReaderOwnsSession(lifecycleActive = false, activeConnectionMatches = true))
+        assertFalse(badgeUsbReaderOwnsSession(lifecycleActive = true, activeConnectionMatches = false))
+    }
 }

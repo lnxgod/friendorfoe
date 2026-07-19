@@ -653,6 +653,11 @@ internal fun parseBadgeControlStatus(
     }.getOrNull()
 }
 
+internal fun badgeUsbReaderOwnsSession(
+    lifecycleActive: Boolean,
+    activeConnectionMatches: Boolean,
+): Boolean = lifecycleActive && activeConnectionMatches
+
 private fun parseBadgeDisplayPolicy(obj: JsonObject?): BadgeDisplayPolicy {
     if (obj == null) return defaultBadgeDisplayPolicy()
     val classesObj = runCatching { obj.getAsJsonObject("classes") }.getOrNull()
@@ -1324,6 +1329,8 @@ class BadgeUsbRepository @Inject constructor(
     companion object {
         private const val TAG = "BadgeUsbRepository"
         private const val ACTION_USB_PERMISSION = "com.friendorfoe.action.USB_BADGE_PERMISSION"
+        private const val EXTRA_USB_PERMISSION_SESSION = "usb_permission_session"
+        private const val NO_LIFECYCLE_SESSION = -1L
         private const val ESPRESSIF_VENDOR_ID = 0x303A
         private const val BADGE_AP_BASE_URL = "http://192.168.4.1"
         private const val DEBUG_BRIDGE_BASE_URL = "http://10.0.2.2:8765"
@@ -1399,8 +1406,12 @@ class BadgeUsbRepository @Inject constructor(
             when (intent.action) {
                 ACTION_USB_PERMISSION -> {
                     val device = intent.usbDeviceExtra() ?: return
+                    val lifecycleSession = intent.getLongExtra(
+                        EXTRA_USB_PERMISSION_SESSION,
+                        NO_LIFECYCLE_SESSION,
+                    )
+                    if (!lifecycleGate.isActive(lifecycleSession)) return
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                        val lifecycleSession = lifecycleGate.activeSession() ?: return
                         scope.launch { connectToDevice(device, lifecycleSession) }
                     } else {
                         setState {
@@ -1524,8 +1535,10 @@ class BadgeUsbRepository @Inject constructor(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
         val permissionIntent = PendingIntent.getBroadcast(
             context,
-            0,
-            Intent(ACTION_USB_PERMISSION).setPackage(context.packageName),
+            lifecycleSession.hashCode(),
+            Intent(ACTION_USB_PERMISSION)
+                .setPackage(context.packageName)
+                .putExtra(EXTRA_USB_PERMISSION_SESSION, lifecycleSession),
             flags
         )
         usbManager.requestPermission(device, permissionIntent)
@@ -2485,7 +2498,7 @@ class BadgeUsbRepository @Inject constructor(
             }
             writeLine("FOF_PING")
             writeLine("FOF_STATUS")
-            startReader(connection, port.inEndpoint, device.displayName())
+            startReader(connection, port.inEndpoint, device.displayName(), lifecycleSession)
             startUsbStatusPoller()
         }
     }
@@ -2493,7 +2506,8 @@ class BadgeUsbRepository @Inject constructor(
     private fun startReader(
         connection: android.hardware.usb.UsbDeviceConnection,
         inEndpoint: UsbEndpoint,
-        deviceName: String
+        deviceName: String,
+        lifecycleSession: Long,
     ) {
         readJob?.cancel()
         readJob = scope.launch {
@@ -2521,8 +2535,17 @@ class BadgeUsbRepository @Inject constructor(
                         delay(25)
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 Log.w(TAG, "Badge USB reader stopped", e)
+                if (!badgeUsbReaderOwnsSession(
+                        lifecycleActive = lifecycleGate.isActive(lifecycleSession),
+                        activeConnectionMatches = activeConnection === connection,
+                    )
+                ) {
+                    return@launch
+                }
                 setState {
                     it.copy(
                         status = BadgeUsbStatus.ERROR,
