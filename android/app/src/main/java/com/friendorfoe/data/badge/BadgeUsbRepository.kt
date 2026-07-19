@@ -96,7 +96,8 @@ data class BadgeUsbDetection(
     val source: Int,
     val confidence: Float,
     val threatScore: Float = 0f,
-    val rssi: Int
+    val rssi: Int,
+    val receivedAtElapsedMs: Long = elapsedRealtimeMs(),
 )
 
 data class BadgeDisplayState(
@@ -450,6 +451,7 @@ data class BadgeUsbState(
     val lastLine: String? = null,
     val eventCount: Int = 0,
     val detections: List<BadgeUsbDetection> = emptyList(),
+    val activity: List<BadgeUsbActivity> = emptyList(),
     val controlStatus: BadgeControlStatus? = null,
     val firmwareProgress: BadgeFirmwareProgress? = null
 )
@@ -3152,6 +3154,7 @@ class BadgeUsbRepository @Inject constructor(
     private fun handleLine(line: String) {
         val trimmed = line.trim()
         if (trimmed.isEmpty()) return
+        val receivedAtElapsedMs = elapsedRealtimeMs()
         val investigationHandled = if (line.startsWith("FOF_INV:")) {
             handleUsbInvestigationLine(line)
         } else {
@@ -3159,12 +3162,15 @@ class BadgeUsbRepository @Inject constructor(
         }
 
         val detection = if (trimmed.startsWith("FOF_DET:")) {
-            parseDetection(trimmed.removePrefix("FOF_DET:"))
+            parseDetection(trimmed.removePrefix("FOF_DET:"), receivedAtElapsedMs)
         } else {
             null
         }
         val status = if (trimmed.startsWith("FOF_STATUS:")) {
-            parseBadgeControlStatus(trimmed.removePrefix("FOF_STATUS:"))
+            parseBadgeControlStatus(
+                trimmed.removePrefix("FOF_STATUS:"),
+                snapshotAtElapsedMs = receivedAtElapsedMs,
+            )
         } else {
             null
         }
@@ -3177,6 +3183,59 @@ class BadgeUsbRepository @Inject constructor(
                 parseFirmwareProgress("relay", trimmed.removePrefix("FOF_FW_RELAY:"))
             else -> null
         }
+        val activity = when {
+            detection != null -> BadgeUsbActivity(
+                kind = BadgeUsbActivityKind.DETECTION,
+                key = detection.stableKey,
+                title = detection.badgeLabel.ifBlank {
+                    detection.manufacturer.ifBlank { "Badge detection" }
+                },
+                detail = listOf(detection.badgeClass, detection.id)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" · "),
+                receivedAtElapsedMs = detection.receivedAtElapsedMs,
+            )
+            firmwareProgress != null -> BadgeUsbActivity(
+                kind = BadgeUsbActivityKind.FIRMWARE,
+                key = "firmware:${firmwareProgress.kind}:${firmwareProgress.stage}",
+                title = "Firmware ${firmwareProgress.kind} ${firmwareProgress.stage}",
+                detail = firmwareProgress.error.ifBlank { "${firmwareProgress.percent}%" },
+                receivedAtElapsedMs = receivedAtElapsedMs,
+            )
+            status != null -> BadgeUsbActivity(
+                kind = BadgeUsbActivityKind.STATUS,
+                key = "status:${status.mode}:${status.version}",
+                title = "Badge status updated",
+                detail = listOf(status.modeLabel, status.version)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" · "),
+                receivedAtElapsedMs = receivedAtElapsedMs,
+            )
+            investigationHandled -> BadgeUsbActivity(
+                kind = BadgeUsbActivityKind.STATUS,
+                key = "investigation:${trimmed.take(160)}",
+                title = "Badge investigation updated",
+                detail = trimmed.removePrefix("FOF_INV:").take(160),
+                receivedAtElapsedMs = receivedAtElapsedMs,
+            )
+            trimmed.startsWith("FOF_CTL_OK:") || trimmed.startsWith("FOF_CTL_ERROR:") ->
+                BadgeUsbActivity(
+                    kind = if (trimmed.startsWith("FOF_CTL_ERROR:")) {
+                        BadgeUsbActivityKind.ERROR
+                    } else {
+                        BadgeUsbActivityKind.COMMAND
+                    },
+                    key = "control:${trimmed.take(160)}",
+                    title = if (trimmed.startsWith("FOF_CTL_ERROR:")) {
+                        "Badge command failed"
+                    } else {
+                        "Badge command accepted"
+                    },
+                    detail = trimmed.substringAfter(':').take(160),
+                    receivedAtElapsedMs = receivedAtElapsedMs,
+                )
+            else -> null
+        }
 
         setState { current ->
             val nextDetections = detection?.let {
@@ -3187,6 +3246,8 @@ class BadgeUsbRepository @Inject constructor(
                 lastLine = trimmed.take(160),
                 eventCount = if (detection != null) current.eventCount + 1 else current.eventCount,
                 detections = nextDetections,
+                activity = activity?.let { pushBadgeUsbActivity(current.activity, it) }
+                    ?: current.activity,
                 controlStatus = status ?: current.controlStatus,
                 firmwareProgress = firmwareProgress ?: current.firmwareProgress,
                 message = when {
@@ -3227,7 +3288,10 @@ class BadgeUsbRepository @Inject constructor(
         } == true
     }
 
-    private fun parseDetection(json: String): BadgeUsbDetection? {
+    private fun parseDetection(
+        json: String,
+        receivedAtElapsedMs: Long,
+    ): BadgeUsbDetection? {
         return runCatching {
             val obj = JsonParser.parseString(json).asJsonObject
             BadgeUsbDetection(
@@ -3239,7 +3303,8 @@ class BadgeUsbRepository @Inject constructor(
                 source = obj.get("source")?.asInt ?: -1,
                 confidence = obj.get("confidence")?.asFloat ?: 0f,
                 threatScore = obj.optFloat("threat_score"),
-                rssi = obj.get("rssi")?.asInt ?: 0
+                rssi = obj.get("rssi")?.asInt ?: 0,
+                receivedAtElapsedMs = receivedAtElapsedMs,
             )
         }.getOrNull()
     }
