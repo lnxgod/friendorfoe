@@ -17,8 +17,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 110
-        versionName = "0.64.68-live-follow"
+        versionCode = 111
+        versionName = "0.64.69-defcon34-badge-ui"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

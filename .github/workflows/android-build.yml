@@ -10,6 +10,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -33,8 +35,8 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Build debug APK
-        run: cd android && ./gradlew clean assembleDebug
+      - name: Test and build debug APK
+        run: cd android && ./gradlew clean testDebugUnitTest assembleDebug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -43,12 +45,12 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
 
-  release:
+  sign-release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -72,8 +74,22 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
+      - name: Validate signing secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          test -n "$KEYSTORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
       - name: Decode keystore
-        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
 
       - name: Build release APK
         run: cd android && ./gradlew clean assembleRelease
@@ -83,13 +99,57 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
-      - name: Rename APK
-        run: cp android/app/build/outputs/apk/release/app-release.apk friendorfoe-${{ github.ref_name }}.apk
+      - name: Verify and package release APK
+        run: |
+          BUILD_TOOLS_DIR="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
+          AAPT="$BUILD_TOOLS_DIR/aapt"
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          ASSET="friendorfoe-${GITHUB_REF_NAME}.apk"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee /tmp/apksigner-output.txt
+          grep -F "Signer #1 certificate SHA-256 digest: 3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95" /tmp/apksigner-output.txt
+          "$AAPT" dump badging "$APK" | tee /tmp/aapt-output.txt
+          grep -F "package: name='com.friendorfoe' versionCode='111' versionName='0.64.69-defcon34-badge-ui'" /tmp/aapt-output.txt
+          cp "$APK" "$ASSET"
+          sha256sum "$ASSET" > "$ASSET.sha256"
+
+      - name: Remove temporary keystore
+        if: always()
+        run: rm -f android/app/release.keystore
+
+      - name: Upload signed release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: friendorfoe-signed-release
+          path: |
+            friendorfoe-${{ github.ref_name }}.apk
+            friendorfoe-${{ github.ref_name }}.apk.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: sign-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download signed release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: friendorfoe-signed-release
+          path: release-assets
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: false
-          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
+          prerelease: ${{ contains(github.ref_name, '-android-') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
+          make_latest: ${{ contains(github.ref_name, '-android-') && 'false' || 'legacy' }}
           generate_release_notes: true
-          files: friendorfoe-${{ github.ref_name }}.apk
+          files: |
+            release-assets/friendorfoe-${{ github.ref_name }}.apk
+            release-assets/friendorfoe-${{ github.ref_name }}.apk.sha256
