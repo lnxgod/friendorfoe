@@ -11,6 +11,9 @@ VERSION_NAME = "0.64.69-defcon34-badge-ui"
 SIGNER_SHA256 = (
     "3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95"
 )
+APKSIGNER_V2_CERT_OUTPUT = (
+    "V2 Signer: certificate SHA-256 digest: " + SIGNER_SHA256
+)
 ACTION_PINS = {
     "actions/checkout": ("34e114876b0b11c390a56381ad16ebd13914f8d5", "v4", 2),
     "actions/setup-java": ("c1e323688fd81a25caa38c78aa6df2d33d3e20d9", "v4", 2),
@@ -102,6 +105,18 @@ def test_release_signing_is_test_gated_verified_and_secret_scoped():
     assert "rm -f android/app/release.keystore" in signing
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in signing
     assert ".apk.sha256" in signing
+
+
+def test_signer_assertion_accepts_current_apksigner_v2_output():
+    workflow = ANDROID_WORKFLOW.read_text()
+    signing = _job(workflow, "sign-release", "publish-release")
+    assertion = re.search(
+        r'grep -F "([^"]+)" /tmp/apksigner-output\.txt', signing
+    )
+
+    assert assertion is not None
+    assert assertion.group(1).endswith(SIGNER_SHA256)
+    assert assertion.group(1) in APKSIGNER_V2_CERT_OUTPUT
 
 
 def test_release_publisher_has_write_access_without_signing_secrets():
