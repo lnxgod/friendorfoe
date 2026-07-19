@@ -1,6 +1,7 @@
 #include "unity.h"
 
 #include "badge_easter_egg.h"
+#include "badge_easter_egg_animation.h"
 #include "uart_protocol.h"
 
 static badge_easter_egg_remote_id_t exact_remote_id(void)
@@ -108,27 +109,39 @@ void test_badge_easter_machine_is_one_shot_until_init(void)
     badge_easter_egg_machine_init(&machine);
     TEST_ASSERT_FALSE(machine.triggered_once);
     TEST_ASSERT_FALSE(machine.visible);
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_PHASE_ARMED, machine.phase);
     TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_NONE, machine.source);
 
     TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger(
         &machine, BADGE_EASTER_EGG_SOURCE_BUTTON));
     TEST_ASSERT_TRUE(machine.triggered_once);
     TEST_ASSERT_TRUE(machine.visible);
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_PHASE_THANKS, machine.phase);
     TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_BUTTON, machine.source);
 
-    TEST_ASSERT_TRUE(badge_easter_egg_machine_dismiss(&machine));
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_advance(&machine));
+    TEST_ASSERT_TRUE(machine.triggered_once);
+    TEST_ASSERT_TRUE(machine.visible);
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_PHASE_BOUNCE, machine.phase);
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_BUTTON, machine.source);
+
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_advance(&machine));
     TEST_ASSERT_TRUE(machine.triggered_once);
     TEST_ASSERT_FALSE(machine.visible);
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_PHASE_CONSUMED, machine.phase);
     TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_BUTTON, machine.source);
+    TEST_ASSERT_FALSE(badge_easter_egg_machine_advance(&machine));
     TEST_ASSERT_FALSE(badge_easter_egg_machine_trigger(
         &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID));
     TEST_ASSERT_FALSE(machine.visible);
     TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_BUTTON, machine.source);
 
     badge_easter_egg_machine_init(&machine);
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_PHASE_ARMED, machine.phase);
     TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger(
         &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID));
     TEST_ASSERT_TRUE(machine.visible);
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_PHASE_THANKS, machine.phase);
     TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_WIFI_SSID, machine.source);
 }
 
@@ -294,23 +307,88 @@ void test_badge_easter_uart_parser_rejects_noncanonical_and_escaped_nul(void)
 #undef ASSERT_REJECTED_FRAME
 }
 
-void test_badge_easter_button_batch_consumes_every_visible_press(void)
+void test_badge_easter_button_batch_claims_only_one_transition(void)
 {
-    bool easter_visible_in_batch = true;
+    bool claimed = false;
 
-    TEST_ASSERT_TRUE(badge_easter_egg_consume_press_in_batch(
-        &easter_visible_in_batch, true));
-    TEST_ASSERT_TRUE(badge_easter_egg_consume_press_in_batch(
-        &easter_visible_in_batch, false));
+    TEST_ASSERT_TRUE(badge_easter_egg_claim_press_in_batch(true, &claimed));
+    TEST_ASSERT_TRUE(claimed);
+    TEST_ASSERT_FALSE(badge_easter_egg_claim_press_in_batch(true, &claimed));
+    TEST_ASSERT_TRUE(claimed);
 
-    easter_visible_in_batch = false;
-    TEST_ASSERT_FALSE(badge_easter_egg_consume_press_in_batch(
-        &easter_visible_in_batch, false));
-    TEST_ASSERT_FALSE(easter_visible_in_batch);
+    claimed = false;
+    TEST_ASSERT_FALSE(badge_easter_egg_claim_press_in_batch(false, &claimed));
+    TEST_ASSERT_FALSE(claimed);
+    TEST_ASSERT_FALSE(badge_easter_egg_claim_press_in_batch(true, NULL));
+}
 
-    TEST_ASSERT_TRUE(badge_easter_egg_consume_press_in_batch(
-        &easter_visible_in_batch, true));
-    TEST_ASSERT_TRUE(easter_visible_in_batch);
-    TEST_ASSERT_TRUE(badge_easter_egg_consume_press_in_batch(
-        &easter_visible_in_batch, false));
+void test_badge_easter_animation_initializes_and_moves_without_collision(void)
+{
+    badge_easter_egg_animation_t animation;
+
+    badge_easter_egg_animation_init(&animation);
+    TEST_ASSERT_EQUAL_INT16(8, animation.x);
+    TEST_ASSERT_EQUAL_INT16(12, animation.y);
+    TEST_ASSERT_EQUAL_INT8(3, animation.vx);
+    TEST_ASSERT_EQUAL_INT8(2, animation.vy);
+    TEST_ASSERT_EQUAL_UINT8(0, animation.color_index);
+
+    TEST_ASSERT_FALSE(badge_easter_egg_animation_step(
+        &animation, 160, 160, 64, 64, 6));
+    TEST_ASSERT_EQUAL_INT16(11, animation.x);
+    TEST_ASSERT_EQUAL_INT16(14, animation.y);
+    TEST_ASSERT_EQUAL_INT8(3, animation.vx);
+    TEST_ASSERT_EQUAL_INT8(2, animation.vy);
+    TEST_ASSERT_EQUAL_UINT8(0, animation.color_index);
+}
+
+void test_badge_easter_animation_clamps_edges_and_cycles_color_once(void)
+{
+    badge_easter_egg_animation_t animation = {
+        .x = 95,
+        .y = 95,
+        .vx = 3,
+        .vy = 2,
+        .color_index = 5,
+    };
+
+    TEST_ASSERT_TRUE(badge_easter_egg_animation_step(
+        &animation, 160, 160, 64, 64, 6));
+    TEST_ASSERT_EQUAL_INT16(96, animation.x);
+    TEST_ASSERT_EQUAL_INT16(96, animation.y);
+    TEST_ASSERT_EQUAL_INT8(-3, animation.vx);
+    TEST_ASSERT_EQUAL_INT8(-2, animation.vy);
+    TEST_ASSERT_EQUAL_UINT8(0, animation.color_index);
+
+    animation.x = 1;
+    animation.y = 1;
+    animation.vx = -3;
+    animation.vy = -2;
+    animation.color_index = 0;
+    TEST_ASSERT_TRUE(badge_easter_egg_animation_step(
+        &animation, 160, 160, 64, 64, 6));
+    TEST_ASSERT_EQUAL_INT16(0, animation.x);
+    TEST_ASSERT_EQUAL_INT16(0, animation.y);
+    TEST_ASSERT_EQUAL_INT8(3, animation.vx);
+    TEST_ASSERT_EQUAL_INT8(2, animation.vy);
+    TEST_ASSERT_EQUAL_UINT8(1, animation.color_index);
+}
+
+void test_badge_easter_animation_rejects_invalid_bounds_safely(void)
+{
+    badge_easter_egg_animation_t animation = {
+        .x = 90,
+        .y = 90,
+        .vx = 3,
+        .vy = 2,
+        .color_index = 4,
+    };
+
+    TEST_ASSERT_FALSE(badge_easter_egg_animation_step(
+        &animation, 63, 160, 64, 64, 6));
+    TEST_ASSERT_EQUAL_INT16(0, animation.x);
+    TEST_ASSERT_EQUAL_INT16(0, animation.y);
+    TEST_ASSERT_EQUAL_UINT8(0, animation.color_index);
+    TEST_ASSERT_FALSE(badge_easter_egg_animation_step(
+        NULL, 160, 160, 64, 64, 6));
 }

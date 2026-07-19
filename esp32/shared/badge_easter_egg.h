@@ -15,6 +15,13 @@ typedef enum {
     BADGE_EASTER_EGG_SOURCE_BUTTON,
 } badge_easter_egg_source_t;
 
+typedef enum {
+    BADGE_EASTER_EGG_PHASE_ARMED = 0,
+    BADGE_EASTER_EGG_PHASE_THANKS,
+    BADGE_EASTER_EGG_PHASE_BOUNCE,
+    BADGE_EASTER_EGG_PHASE_CONSUMED,
+} badge_easter_egg_phase_t;
+
 typedef struct {
     bool has_basic_id;
     const char *basic_id;
@@ -28,6 +35,7 @@ typedef struct {
 typedef struct {
     bool triggered_once;
     bool visible;
+    badge_easter_egg_phase_t phase;
     badge_easter_egg_source_t source;
 } badge_easter_egg_machine_t;
 
@@ -36,9 +44,12 @@ bool badge_easter_egg_remote_id_matches(
 bool badge_easter_egg_ssid_matches(const uint8_t *ssid, size_t len);
 bool badge_easter_egg_consume_press_in_batch(bool *easter_visible_in_batch,
                                              bool dismiss_succeeded);
+bool badge_easter_egg_claim_press_in_batch(bool visible_at_batch_start,
+                                           bool *transition_claimed);
 void badge_easter_egg_machine_init(badge_easter_egg_machine_t *machine);
 bool badge_easter_egg_machine_trigger(badge_easter_egg_machine_t *machine,
                                       badge_easter_egg_source_t source);
+bool badge_easter_egg_machine_advance(badge_easter_egg_machine_t *machine);
 bool badge_easter_egg_machine_dismiss(badge_easter_egg_machine_t *machine);
 
 #ifdef __cplusplus

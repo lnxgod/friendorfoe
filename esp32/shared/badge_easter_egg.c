@@ -33,6 +33,18 @@ bool badge_easter_egg_consume_press_in_batch(bool *easter_visible_in_batch,
     return *easter_visible_in_batch;
 }
 
+bool badge_easter_egg_claim_press_in_batch(bool visible_at_batch_start,
+                                           bool *transition_claimed)
+{
+    if (!visible_at_batch_start || !transition_claimed ||
+        *transition_claimed) {
+        return false;
+    }
+
+    *transition_claimed = true;
+    return true;
+}
+
 void badge_easter_egg_machine_init(badge_easter_egg_machine_t *machine)
 {
     if (!machine) {
@@ -41,6 +53,7 @@ void badge_easter_egg_machine_init(badge_easter_egg_machine_t *machine)
 
     machine->triggered_once = false;
     machine->visible = false;
+    machine->phase = BADGE_EASTER_EGG_PHASE_ARMED;
     machine->source = BADGE_EASTER_EGG_SOURCE_NONE;
 }
 
@@ -56,8 +69,27 @@ bool badge_easter_egg_machine_trigger(badge_easter_egg_machine_t *machine,
 
     machine->triggered_once = true;
     machine->visible = true;
+    machine->phase = BADGE_EASTER_EGG_PHASE_THANKS;
     machine->source = source;
     return true;
+}
+
+bool badge_easter_egg_machine_advance(badge_easter_egg_machine_t *machine)
+{
+    if (!machine || !machine->visible) {
+        return false;
+    }
+
+    if (machine->phase == BADGE_EASTER_EGG_PHASE_THANKS) {
+        machine->phase = BADGE_EASTER_EGG_PHASE_BOUNCE;
+        return true;
+    }
+    if (machine->phase == BADGE_EASTER_EGG_PHASE_BOUNCE) {
+        machine->phase = BADGE_EASTER_EGG_PHASE_CONSUMED;
+        machine->visible = false;
+        return true;
+    }
+    return false;
 }
 
 bool badge_easter_egg_machine_dismiss(badge_easter_egg_machine_t *machine)
@@ -67,5 +99,6 @@ bool badge_easter_egg_machine_dismiss(badge_easter_egg_machine_t *machine)
     }
 
     machine->visible = false;
+    machine->phase = BADGE_EASTER_EGG_PHASE_CONSUMED;
     return true;
 }
