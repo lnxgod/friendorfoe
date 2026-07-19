@@ -258,10 +258,10 @@ private suspend fun checkForUpdates(): UpdateState {
             val latestVersion = tagName.removePrefix("v")
             val currentVersion = BuildConfig.VERSION_NAME
 
-            if (latestVersion == currentVersion) {
-                UpdateState.UpToDate(currentVersion)
-            } else {
+            if (AppUpdatePolicy.isRemoteNewer(currentVersion, tagName)) {
                 UpdateState.UpdateAvailable(latestVersion, htmlUrl)
+            } else {
+                UpdateState.UpToDate(currentVersion)
             }
         } catch (_: Exception) {
             UpdateState.Error("Couldn't check — try again later")
