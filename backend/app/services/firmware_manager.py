@@ -166,6 +166,11 @@ class FirmwareManager:
                     logger.warning("No GitHub releases found")
                     return
 
+                # A successful release-list response counts as a completed
+                # refresh even when it contains no supported firmware. Keep
+                # the existing catalog without hammering GitHub until TTL.
+                self.last_check = now
+
                 # GitHub returns releases newest first. APK-only releases must
                 # not replace the firmware catalog with an empty one.
                 data = next(
@@ -188,7 +193,6 @@ class FirmwareManager:
                     logger.warning("No GitHub release with supported firmware found")
                     return
 
-                self.last_check = now
                 tag = data.get("tag_name", "")
                 if tag == self.release_tag and self.assets:
                     return  # No change

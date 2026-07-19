@@ -186,12 +186,14 @@ async def test_refresh_preserves_existing_catalog_when_no_firmware_release_exist
     )
     existing_assets = manager.assets
     existing_tag = manager.release_tag
+    manager.last_check = 0
 
     await manager.refresh_from_github(force=True)
 
     assert manager.release_tag == existing_tag
     assert manager.assets is existing_assets
     assert set(manager.assets) == {"scanner-s3-combo"}
+    assert manager.last_check > 0
 
 
 @pytest.mark.parametrize(
