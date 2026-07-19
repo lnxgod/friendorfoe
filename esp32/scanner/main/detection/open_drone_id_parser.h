@@ -33,12 +33,15 @@ typedef struct {
     int64_t last_updated_ms;
 
     /* Basic ID (Type 0) */
+    bool has_basic_id;
     char drone_id[64];
     uint8_t ua_type;
     uint8_t id_type;
 
     /* Location (Type 1) */
     bool has_location;
+    int32_t latitude_e7;
+    int32_t longitude_e7;
     double latitude;
     double longitude;
     double altitude_m;
@@ -46,6 +49,8 @@ typedef struct {
     float speed_mps;
     float vertical_speed_mps;
     double geodetic_alt_m;
+    bool has_geodetic_altitude;
+    int32_t geodetic_altitude_half_m;
     double height_agl_m;
     uint8_t h_accuracy_code;
     uint8_t v_accuracy_code;

@@ -15,6 +15,7 @@
 
 #include "esp_http_server.h"
 #include "esp_partition.h"
+#include "firmware_image_contract.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -31,15 +32,40 @@ bool fw_store_is_relay_active(void);
 
 typedef struct {
     bool     stored;
+    uint32_t generation;
+    uint8_t  target_slot_mask;
+    uint32_t manifest_crc32;
     uint32_t size;
     uint32_t checksum;
     char     version[32];
     char     name[32];
+    char     project[33];
+    char     hardware[33];
+    char     sha256[FOF_FIRMWARE_SHA256_HEX_SIZE];
     char     partition[16];
 } fw_store_info_t;
 
+#define FW_AUTO_UPDATE_SCANNER_COUNT 2
+#define FW_AUTO_UPDATE_STATE_SIZE 24
+#define FW_AUTO_UPDATE_SLOT_BLE  (1u << 0)
+#define FW_AUTO_UPDATE_SLOT_WIFI (1u << 1)
+#define FW_AUTO_UPDATE_SLOT_ALL  (FW_AUTO_UPDATE_SLOT_BLE | FW_AUTO_UPDATE_SLOT_WIFI)
+
+typedef struct {
+    bool worker_running;
+    uint32_t generation;
+    uint8_t target_slot_mask;
+    uint8_t pending_mask;
+    uint8_t attempts[FW_AUTO_UPDATE_SCANNER_COUNT];
+    uint8_t readiness_probe_attempts[FW_AUTO_UPDATE_SCANNER_COUNT];
+    char state[FW_AUTO_UPDATE_SCANNER_COUNT][FW_AUTO_UPDATE_STATE_SIZE];
+} fw_auto_update_status_t;
+
 /** Read staged scanner firmware metadata from the uplink store. */
 bool fw_store_get_info(fw_store_info_t *out);
+
+/** Atomic snapshot of the serialized automatic scanner-update queue. */
+void fw_store_get_auto_update_status(fw_auto_update_status_t *out);
 
 /**
  * Relay the staged scanner firmware to a scanner UART without HTTP.
@@ -74,7 +100,7 @@ const esp_partition_t *fw_store_get_target_partition(void);
  * in fw_upload_handler about why we never make scanner firmware bootable
  * for the uplink itself).
  */
-void fw_store_persist_metadata(const char *name, const char *version,
+bool fw_store_persist_metadata(const char *name, const char *version,
                                const esp_partition_t *partition,
                                uint32_t size, uint32_t crc32);
 
@@ -87,6 +113,8 @@ bool fw_store_serial_upload_begin(const char *name,
                                   const char *version,
                                   uint32_t size,
                                   uint32_t expected_crc32,
+                                  const char *expected_sha256,
+                                  uint8_t target_slot_mask,
                                   char *out_json,
                                   size_t out_json_len);
 bool fw_store_serial_upload_write(const uint8_t *data,
@@ -98,13 +126,41 @@ void fw_store_serial_upload_abort(const char *reason);
 bool fw_store_serial_upload_active(void);
 uint32_t fw_store_serial_upload_remaining(void);
 
+/**
+ * Create the coordinator mutex exactly once during single-threaded boot.
+ * Must run before USB control or scanner RX tasks can enter fw_store.
+ */
+bool fw_store_init_auto_update_coordinator(void);
+
+/**
+ * Restore the durable automatic-update coordinator after scanner UART RX is
+ * running.  Interrupted relays retain their consumed attempt and resume only
+ * when the committed staged manifest generation still matches.
+ */
+bool fw_store_restore_auto_update_coordinator(void);
+
 /** Handle scanner-originated firmware negotiation messages. */
 void fw_store_handle_scanner_check(int scanner_id,
                                    const char *scanner_board,
-                                   const char *scanner_version);
-void fw_store_handle_scanner_ready(int scanner_id,
+                                   const char *scanner_version,
+                                   const char *check_reason);
+bool fw_store_handle_scanner_ready(int scanner_id,
                                    const char *scanner_board,
-                                   const char *scanner_version);
+                                   const char *scanner_version,
+                                   const char *target_version,
+                                   const char *target_name,
+                                   const char *target_project,
+                                   const char *target_hardware,
+                                   const char *target_sha256,
+                                   uint32_t target_generation,
+                                   uint32_t target_size,
+                                   uint32_t target_crc32);
+bool fw_store_handle_legacy_scanner_ready(int scanner_id,
+                                          const char *scanner_board,
+                                          const char *scanner_version,
+                                          const char *target_version,
+                                          uint32_t target_size,
+                                          uint32_t target_crc32);
 
 #ifdef __cplusplus
 }

@@ -8,7 +8,10 @@
  * JSON objects.
  */
 
+#include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+#include "badge_easter_egg.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -65,6 +68,7 @@ extern "C" {
 
 #define MSG_TYPE_DETECTION          "detection"
 #define MSG_TYPE_STATUS             "status"
+#define MSG_TYPE_BADGE_EASTER_EGG   "badge_easter_egg"
 #define MSG_TYPE_CONFIG             "config"
 #define MSG_TYPE_ACK                "ack"
 #define MSG_TYPE_LOCKON             "lockon"
@@ -72,6 +76,9 @@ extern "C" {
 #define MSG_TYPE_CAL_MODE_START     "cal_mode_start"
 #define MSG_TYPE_CAL_MODE_STOP      "cal_mode_stop"
 #define MSG_TYPE_CAL_MODE_ACK       "cal_mode_ack"
+#define MSG_TYPE_SCANNER_QUIET      "scanner_quiet"
+#define MSG_TYPE_SCANNER_QUIET_ACK  "scanner_quiet_ack"
+#define JSON_KEY_GENERATION         "generation"
 #define JSON_KEY_SCAN_MODE          "scan_mode"
 #define JSON_KEY_SCAN_PROFILE       "scan_profile"
 #define JSON_KEY_SLOT_ROLE          "slot_role"
@@ -99,6 +106,7 @@ extern "C" {
 #define MSG_TYPE_OTA_ACK            "ota_ack"
 #define MSG_TYPE_OTA_NACK           "ota_nack"      /* bad CRC — retransmit the named seq */
 #define MSG_TYPE_OTA_PROGRESS       "ota_progress"
+#define MSG_TYPE_OTA_STAGED         "ota_staged"    /* full image verified; waiting for ota_end */
 #define MSG_TYPE_OTA_DONE           "ota_done"
 #define MSG_TYPE_OTA_ERROR          "ota_error"
 
@@ -114,6 +122,11 @@ extern "C" {
 #define JSON_KEY_FW_VERSION         "fw_ver"
 #define JSON_KEY_FW_TARGET_VERSION  "target_ver"
 #define JSON_KEY_FW_NAME            "fw_name"
+#define JSON_KEY_FW_PROJECT         "app_project"
+#define JSON_KEY_FW_HARDWARE        "hardware_type"
+#define JSON_KEY_FW_SHA256          "sha256"
+#define JSON_KEY_FW_GENERATION      JSON_KEY_GENERATION
+#define JSON_KEY_FW_ALLOW_SAME      "allow_same_version"
 #define JSON_KEY_FW_UPDATE          "update"
 #define JSON_KEY_FW_STATE           "fw_state"
 #define JSON_KEY_FW_REASON          "reason"
@@ -134,6 +147,8 @@ extern "C" {
 #define OTA_CHUNK_MAGIC             0xF0
 #define OTA_CHUNK_HEADER_SIZE       5
 #define OTA_CHUNK_CRC_SIZE          4       /* CRC32 trailer */
+#define OTA_ABORT_SENTINEL_BYTE     0xFF    /* only recognized between frames */
+#define OTA_ABORT_SENTINEL_COUNT    8
 #define OTA_CHUNK_DEFAULT_MAX_DATA  512     /* production relay compatibility */
 #define OTA_CHUNK_BADGE_MAX_DATA    1024    /* badge recovery: fewer UART frames */
 #if defined(FOF_BADGE_VARIANT)
@@ -157,6 +172,7 @@ extern "C" {
 /* ── JSON key names (short to save bandwidth at 921600 baud) ─────────────── */
 
 #define JSON_KEY_TYPE               "type"
+#define JSON_KEY_BADGE_EASTER_EGG_SOURCE "source"
 #define JSON_KEY_DRONE_ID           "drone_id"
 #define JSON_KEY_SOURCE             "src"
 #define JSON_KEY_CONFIDENCE         "conf"
@@ -223,6 +239,80 @@ extern "C" {
  * non-zero-only emit; cold-renamed here (legacy uplinks drop the byte
  * until reflashed). */
 #define JSON_KEY_BLE_APPLE_FLAGS    "ble_apple_flags"
+
+/* Badge Easter egg events are coalesced as two fixed bits in scanner callback
+ * context, then drained as fixed allocation-free frames by the UART task. */
+#define BADGE_EASTER_EGG_UART_PENDING_BLE_REMOTE_ID 0x01U
+#define BADGE_EASTER_EGG_UART_PENDING_WIFI_SSID     0x02U
+#define BADGE_EASTER_EGG_UART_PENDING_ALL           0x03U
+
+#define BADGE_EASTER_EGG_UART_SOURCE_BLE_REMOTE_ID  "ble_remote_id"
+#define BADGE_EASTER_EGG_UART_SOURCE_WIFI_SSID      "wifi_ssid"
+
+#define BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID \
+    "{\"type\":\"" MSG_TYPE_BADGE_EASTER_EGG \
+    "\",\"source\":\"" BADGE_EASTER_EGG_UART_SOURCE_BLE_REMOTE_ID "\"}"
+#define BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID \
+    "{\"type\":\"" MSG_TYPE_BADGE_EASTER_EGG \
+    "\",\"source\":\"" BADGE_EASTER_EGG_UART_SOURCE_WIFI_SSID "\"}"
+
+#define BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID_LEN \
+    (sizeof(BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID) - 1U)
+#define BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID_LEN \
+    (sizeof(BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID) - 1U)
+
+static inline badge_easter_egg_source_t
+badge_easter_egg_source_from_uart_frame(const char *frame, size_t len)
+{
+    if (!frame) {
+        return BADGE_EASTER_EGG_SOURCE_NONE;
+    }
+    if (len == BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID_LEN &&
+        memcmp(frame, BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID, len) == 0) {
+        return BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID;
+    }
+    if (len == BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID_LEN &&
+        memcmp(frame, BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID, len) == 0) {
+        return BADGE_EASTER_EGG_SOURCE_WIFI_SSID;
+    }
+    return BADGE_EASTER_EGG_SOURCE_NONE;
+}
+
+/* A decoded prefix match is a claim, never proof. In particular, cJSON stores
+ * a decoded \u0000 as NUL, so an escaped-NUL near-match deliberately enters the
+ * strict raw-frame rejection path instead of generic message handling. */
+static inline bool badge_easter_egg_uart_type_claims_event(
+    const char *decoded_type)
+{
+    return decoded_type &&
+           strcmp(decoded_type, MSG_TYPE_BADGE_EASTER_EGG) == 0;
+}
+
+static inline uint32_t badge_easter_egg_uart_pending_bit(
+    badge_easter_egg_source_t source)
+{
+    switch (source) {
+    case BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID:
+        return BADGE_EASTER_EGG_UART_PENDING_BLE_REMOTE_ID;
+    case BADGE_EASTER_EGG_SOURCE_WIFI_SSID:
+        return BADGE_EASTER_EGG_UART_PENDING_WIFI_SSID;
+    default:
+        return 0;
+    }
+}
+
+static inline const char *badge_easter_egg_uart_frame(
+    badge_easter_egg_source_t source)
+{
+    switch (source) {
+    case BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID:
+        return BADGE_EASTER_EGG_UART_FRAME_BLE_REMOTE_ID;
+    case BADGE_EASTER_EGG_SOURCE_WIFI_SSID:
+        return BADGE_EASTER_EGG_UART_FRAME_WIFI_SSID;
+    default:
+        return (const char *)0;
+    }
+}
 
 /* ── Framing ─────────────────────────────────────────────────────────────── */
 

@@ -54,6 +54,9 @@ static const char *TAG = "http_status";
 
 static void json_chunk_string(httpd_req_t *req, const char *value);
 
+/* JSON status contracts expose "firmware_name", "app_project", and
+ * "hardware_type" from the compile-selected release identity. */
+
 /* ── Source name lookup ─────────────────────────────────────────────────── */
 
 static const char *source_name(uint8_t src)
@@ -131,6 +134,14 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     if (info) {
+        httpd_resp_send_chunk(req, ",\"firmware_name\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->firmware_name);
+        httpd_resp_send_chunk(req, ",\"app_project\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->app_project);
+        httpd_resp_send_chunk(req, ",\"hardware_type\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->hardware_type);
+        httpd_resp_send_chunk(req, ",\"hardware_id\":", HTTPD_RESP_USE_STRLEN);
+        json_chunk_string(req, info->hardware_id);
         snprintf(buf, SCANNER_STATUS_BUF_LEN,
                  ",\"ver\":\"%s\",\"board\":\"%s\",\"cmd_rx\":%lu,"
                  "\"cmd_last_age_s\":%lld,\"cmd_parse_err\":%lu,"
@@ -750,7 +761,9 @@ static esp_err_t status_json_handler(httpd_req_t *req)
 
     /* Open JSON object */
     snprintf(buf, STATUS_JSON_BUF_LEN,
-        "{\"device_id\":\"%s\",\"uptime_s\":%lld,"
+        "{\"device_id\":\"%s\",\"firmware_name\":\"%s\","
+        "\"app_project\":\"%s\",\"hardware_type\":\"%s\","
+        "\"version\":\"%s\",\"uptime_s\":%lld,"
         "\"gps\":{\"fix\":%s,\"lat\":%.6f,\"lon\":%.6f,\"satellites\":%d},"
         "\"wifi_sta\":%s,\"ap_clients\":%d,"
         "\"standalone\":%s,\"scanner_connected\":%s,"
@@ -768,7 +781,8 @@ static esp_err_t status_json_handler(httpd_req_t *req)
                      "\"perf\":%d,\"status\":%d,\"clen\":%d,\"nread\":%d,"
                      "\"bcasts\":%u,\"broadcast_valid_count\":%u,\"broadcast_invalid_count\":%u},"
         "\"detections\":%d,\"uploads_ok\":%d,\"uploads_fail\":%d,",
-        device_id, (long long)uptime_sec,
+        device_id, FOF_FIRMWARE_TARGET, FOF_APP_PROJECT,
+        FOF_HARDWARE_TYPE, FOF_VERSION, (long long)uptime_sec,
         gps_fix ? "true" : "false", gps.latitude, gps.longitude, gps.satellites,
         wifi_ok ? "true" : "false", ap_clients,
         standalone ? "true" : "false",
@@ -1355,14 +1369,18 @@ static esp_err_t ota_info_handler(httpd_req_t *req)
     esp_ota_get_partition_description(running, &app_desc);
     const char *app_desc_version = app_desc.version[0] ? app_desc.version : "";
 
-    char buf[320];
+    char buf[512];
     snprintf(buf, sizeof(buf),
         "{\"running_partition\":\"%s\",\"next_partition\":\"%s\","
-        "\"app_version\":\"%s\",\"app_desc_version\":\"%s\",\"idf_version\":\"%s\","
+        "\"firmware_name\":\"%s\",\"app_project\":\"%s\","
+        "\"hardware_type\":\"%s\",\"version\":\"%s\","
+        "\"app_version\":\"%s\",\"app_desc_project\":\"%s\","
+        "\"app_desc_version\":\"%s\",\"idf_version\":\"%s\","
         "\"compile_date\":\"%s\",\"compile_time\":\"%s\"}",
         running ? running->label : "?",
         update ? update->label : "?",
-        FOF_VERSION, app_desc_version, app_desc.idf_ver,
+        FOF_FIRMWARE_TARGET, FOF_APP_PROJECT, FOF_HARDWARE_TYPE, FOF_VERSION,
+        FOF_VERSION, app_desc.project_name, app_desc_version, app_desc.idf_ver,
         app_desc.date, app_desc.time);
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
@@ -1659,11 +1677,13 @@ static const httpd_uri_t uri_connect_post = {
     .handler  = connect_post_handler,
 };
 
+#ifndef FOF_BADGE_VARIANT
 static const httpd_uri_t uri_ota_post = {
     .uri      = "/api/ota",
     .method   = HTTP_POST,
     .handler  = ota_post_handler,
 };
+#endif
 
 static const httpd_uri_t uri_ota_info = {
     .uri      = "/api/ota/info",
@@ -1671,11 +1691,13 @@ static const httpd_uri_t uri_ota_info = {
     .handler  = ota_info_handler,
 };
 
+#ifndef FOF_BADGE_VARIANT
 static const httpd_uri_t uri_ota_relay = {
     .uri      = "/api/ota/relay",
     .method   = HTTP_POST,
     .handler  = ota_relay_handler,
 };
+#endif
 
 /* ── Badge Control API ───────────────────────────────────────────────── */
 
@@ -1814,8 +1836,11 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
         false
     );
     snprintf(buf, sizeof(buf),
-             "{\"version\":\"%s\",\"mode\":\"%s\",\"mode_label\":",
-             FOF_VERSION, badge_mode_to_string(mode));
+             "{\"version\":\"%s\",\"firmware_name\":\"%s\","
+             "\"app_project\":\"%s\",\"hardware_type\":\"%s\","
+             "\"mode\":\"%s\",\"mode_label\":",
+             FOF_VERSION, FOF_FIRMWARE_TARGET, FOF_APP_PROJECT,
+             FOF_HARDWARE_TYPE, badge_mode_to_string(mode));
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
     json_chunk_string(req, badge_mode_display_name(mode));
 
@@ -2399,15 +2424,18 @@ static esp_err_t badge_control_post_handler(httpd_req_t *req)
     } else if (strcmp(cmd, "badge_theme_reset") == 0) {
 #ifdef FOF_BADGE_VARIANT
         bool persist = badge_control_bool(root, "persist", false);
-        badge_theme_runtime_reset(persist);
-        char resp[160];
-        snprintf(resp, sizeof(resp),
-                 "{\"ok\":true,\"message\":\"badge theme reset\","
-                 "\"theme_hash\":%lu,\"persisted\":%s,"
-                 "\"reboot_required\":false}",
-                 (unsigned long)badge_theme_runtime_hash(),
-                 persist ? "true" : "false");
-        httpd_resp_sendstr(req, resp);
+        if (!badge_theme_runtime_reset(persist)) {
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"theme reset failed\"}");
+        } else {
+            char resp[160];
+            snprintf(resp, sizeof(resp),
+                     "{\"ok\":true,\"message\":\"badge theme reset\","
+                     "\"theme_hash\":%lu,\"persisted\":%s,"
+                     "\"reboot_required\":false}",
+                     (unsigned long)badge_theme_runtime_hash(),
+                     persist ? "true" : "false");
+            httpd_resp_sendstr(req, resp);
+        }
 #else
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"badge-only command\"}");
 #endif
@@ -2689,9 +2717,13 @@ void http_status_init(void)
     r = httpd_register_uri_handler(server, &uri_setup_html);   if (r != ESP_OK) ESP_LOGE(TAG, "Failed /setup: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_scan_json);    if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/scan: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_connect_post); if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/connect: %s", esp_err_to_name(r));
-    r = httpd_register_uri_handler(server, &uri_ota_post);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_ota_info);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota/info: %s", esp_err_to_name(r));
+#ifndef FOF_BADGE_VARIANT
+    r = httpd_register_uri_handler(server, &uri_ota_post);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_ota_relay);    if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota/relay: %s", esp_err_to_name(r));
+#else
+    ESP_LOGI(TAG, "Badge HTTP firmware mutation routes disabled; use USB/UART");
+#endif
     r = httpd_register_uri_handler(server, &uri_badge_html);   if (r != ESP_OK) ESP_LOGE(TAG, "Failed /badge: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_badge_status_json); if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/badge/status: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_badge_control_post); if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/badge/control: %s", esp_err_to_name(r));

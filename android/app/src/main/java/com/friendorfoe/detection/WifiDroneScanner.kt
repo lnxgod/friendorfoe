@@ -372,11 +372,12 @@ class WifiDroneScanner @Inject constructor(
     private fun processScanResults(scanResults: List<ScanResult>): List<Drone> {
         val now = Instant.now()
         val drones = mutableListOf<Drone>()
-        val seenBssids = mutableSetOf<String>()
+        val seenRadios = mutableSetOf<String>()
 
         for (result in scanResults) {
-            val ssid = result.SSID ?: ""
-            val bssid = result.BSSID ?: continue
+            val ssid = result.SSID.orEmpty()
+            val bssid = WifiTransmitterIdentity.normalize(result.BSSID)
+            val radioKey = WifiTransmitterIdentity.identityKey(ssid, bssid)
             val rssi = result.level
             val estimatedDistance = estimateDistance(rssi)
             val freqMhz = result.frequency
@@ -385,15 +386,15 @@ class WifiDroneScanner @Inject constructor(
             // --- Priority 1: Try DJI DroneID IE parsing ---
             val droneIdData = DjiDroneIdParser.parse(result)
             if (droneIdData != null) {
-                seenBssids.add(bssid)
-                val serial = droneIdData.serialPrefix ?: ssid.ifBlank { bssid }
+                seenRadios.add(radioKey)
+                val serial = droneIdData.serialPrefix ?: ssid.ifBlank { bssid ?: radioKey }
 
                 Log.i(TAG, "DJI DroneID IE: BSSID=$bssid, lat=${droneIdData.latitude}, " +
                         "lon=${droneIdData.longitude}, alt=${droneIdData.altitudeMeters}m, " +
                         "speed=${droneIdData.speedMps}m/s, serial=$serial")
 
                 drones.add(Drone(
-                    id = "wifi_dji_${bssid.replace(":", "").lowercase()}",
+                    id = WifiTransmitterIdentity.detectionId("wifi_dji", ssid, bssid),
                     position = Position(
                         latitude = droneIdData.latitude,
                         longitude = droneIdData.longitude,
@@ -422,13 +423,13 @@ class WifiDroneScanner @Inject constructor(
             }
 
             // --- Priority 1.5: ASTM F3411 WiFi Beacon Remote ID ---
-            val beaconState = wifiBeaconRidStates.getOrPut(bssid) {
-                OpenDroneIdParser.DronePartialState(bssid, now)
+            val beaconState = wifiBeaconRidStates.getOrPut(radioKey) {
+                OpenDroneIdParser.DronePartialState(radioKey, now)
             }
             beaconState.lastUpdated = now
             beaconState.signalStrengthDbm = rssi
             if (WifiBeaconRemoteIdParser.parse(result, beaconState)) {
-                seenBssids.add(bssid)
+                seenRadios.add(radioKey)
                 beaconState.toDroneOrNull(idPrefix = "wfb_", detectionSource = DetectionSource.WIFI_BEACON)?.let { drone ->
                     drones.add(drone.copy(
                         ssid = ssid.ifBlank { null },
@@ -443,13 +444,13 @@ class WifiDroneScanner @Inject constructor(
             }
 
             // --- Priority 1.75: French "Signalement Electronique" DRI ---
-            val frenchState = frenchDriStates.getOrPut(bssid) {
-                OpenDroneIdParser.DronePartialState(bssid, now)
+            val frenchState = frenchDriStates.getOrPut(radioKey) {
+                OpenDroneIdParser.DronePartialState(radioKey, now)
             }
             frenchState.lastUpdated = now
             frenchState.signalStrengthDbm = rssi
             if (FrenchDriParser.parse(result, frenchState)) {
-                seenBssids.add(bssid)
+                seenRadios.add(radioKey)
                 frenchState.toDroneOrNull(idPrefix = "fr_", detectionSource = DetectionSource.WIFI_BEACON)?.let { drone ->
                     drones.add(drone.copy(
                         ssid = ssid.ifBlank { null },
@@ -467,11 +468,11 @@ class WifiDroneScanner @Inject constructor(
             if (ssid.isNotBlank()) {
                 val matchedPattern = matchDronePattern(ssid)
                 if (matchedPattern != null) {
-                    seenBssids.add(bssid)
+                    seenRadios.add(radioKey)
                     Log.d(TAG, "Drone WiFi SSID: $ssid, RSSI=$rssi dBm, ~${estimatedDistance.toInt()}m")
 
                     drones.add(Drone(
-                        id = "wifi_${ssid.lowercase().replace(Regex("[^a-z0-9]"), "_")}",
+                        id = WifiTransmitterIdentity.detectionId("wifi", ssid, bssid),
                         position = Position(0.0, 0.0, 0.0),
                         source = DetectionSource.WIFI,
                         category = ObjectCategory.DRONE,
@@ -493,16 +494,16 @@ class WifiDroneScanner @Inject constructor(
             }
 
             // --- Priority 3: OUI prefix matching (catches hidden/generic SSIDs) ---
-            if (bssid !in seenBssids) {
-                val ouiEntry = WifiOuiDatabase.lookup(bssid)
+            if (radioKey !in seenRadios) {
+                val ouiEntry = bssid?.let { WifiOuiDatabase.lookup(it) }
                 if (ouiEntry != null && !ouiEntry.highFalsePositiveRisk) {
-                    seenBssids.add(bssid)
+                    seenRadios.add(radioKey)
                     val displaySsid = ssid.ifBlank { "(hidden)" }
                     Log.d(TAG, "Drone WiFi OUI: BSSID=$bssid (${ouiEntry.manufacturer}), " +
                             "SSID=$displaySsid, RSSI=$rssi dBm, ~${estimatedDistance.toInt()}m")
 
                     drones.add(Drone(
-                        id = "wifi_oui_${bssid.replace(":", "").lowercase()}",
+                        id = WifiTransmitterIdentity.detectionId("wifi_oui", ssid, bssid),
                         position = Position(0.0, 0.0, 0.0),
                         source = DetectionSource.WIFI,
                         category = ObjectCategory.DRONE,
@@ -522,12 +523,12 @@ class WifiDroneScanner @Inject constructor(
             }
 
             // --- Priority 4: Soft SSID match (cheap drone-like generic WiFi) ---
-            if (ssid.isNotBlank() && bssid !in seenBssids && isSoftDroneMatch(ssid)) {
-                seenBssids.add(bssid)
+            if (ssid.isNotBlank() && radioKey !in seenRadios && isSoftDroneMatch(ssid)) {
+                seenRadios.add(radioKey)
                 Log.d(TAG, "Soft drone match: $ssid, RSSI=$rssi dBm, ~${estimatedDistance.toInt()}m")
 
                 drones.add(Drone(
-                    id = "wifi_soft_${bssid.replace(":", "").lowercase()}",
+                    id = WifiTransmitterIdentity.detectionId("wifi_soft", ssid, bssid),
                     position = Position(0.0, 0.0, 0.0),
                     source = DetectionSource.WIFI,
                     category = ObjectCategory.DRONE,

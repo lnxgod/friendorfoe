@@ -935,6 +935,7 @@ void ble_investigator_note_advertisement(ble_investigator_t *state,
 
 #include "ble_investigation_protocol.h"
 #include "ble_remote_id.h"
+#include "calibration_mode.h"
 #include "comms/uart_tx.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -1159,6 +1160,10 @@ static void runtime_cleanup(void)
     portENTER_CRITICAL(&s_runtime_lock);
     if (s_runtime.fence.active && s_runtime.core.result_pending) {
         generation = s_runtime.fence.generation;
+        if (scanner_quiet_mode_is_active()) {
+            s_runtime.core.resume_scan_required = false;
+            s_runtime.fence.scan_resume_pending = false;
+        }
         (void)ble_investigator_runtime_fence_begin_cleanup(
             &s_runtime.fence, generation,
             s_runtime.core.resume_scan_required);
@@ -1283,6 +1288,16 @@ static void runtime_cleanup(void)
         }
 
         if (action == BLE_INV_CLEANUP_RESUME_SCAN) {
+            if (scanner_quiet_mode_is_active()) {
+                portENTER_CRITICAL(&s_runtime_lock);
+                if (runtime_is_current_locked(generation)) {
+                    s_runtime.core.resume_scan_required = false;
+                    s_runtime.fence.scan_resume_pending = false;
+                    s_runtime.cleanup_retry_after_ms = 0;
+                }
+                portEXIT_CRITICAL(&s_runtime_lock);
+                continue;
+            }
             if (!ble_remote_id_resume_after_investigation()) {
                 portENTER_CRITICAL(&s_runtime_lock);
                 if (runtime_is_current_locked(generation)) {
@@ -2218,6 +2233,25 @@ bool ble_investigator_runtime_cancel(const char *request_id, int64_t now_ms)
     portEXIT_CRITICAL(&s_runtime_lock);
     if (cancelled) runtime_cleanup();
     return cancelled;
+}
+
+void ble_investigator_runtime_quiesce(int64_t now_ms)
+{
+    bool cleanup_required = false;
+    portENTER_CRITICAL(&s_runtime_lock);
+    if (s_runtime.fence.active) {
+        if (!s_runtime.fence.cleanup_pending && s_runtime.core.busy) {
+            ble_investigator_cancel(&s_runtime.core, now_ms);
+        }
+        /* Quiet mode owns the radio state. Investigation cleanup may still
+         * terminate an in-flight connection, but it must never restart scan. */
+        s_runtime.core.resume_scan_required = false;
+        s_runtime.fence.scan_resume_pending = false;
+        cleanup_required = s_runtime.core.result_pending ||
+                           s_runtime.fence.cleanup_pending;
+    }
+    portEXIT_CRITICAL(&s_runtime_lock);
+    if (cleanup_required) runtime_cleanup();
 }
 
 bool ble_investigator_runtime_is_busy(void)

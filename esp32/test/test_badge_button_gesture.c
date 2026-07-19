@@ -45,3 +45,19 @@ void test_badge_button_gesture_long_clears_pending_single(void)
     TEST_ASSERT_EQUAL(BADGE_BUTTON_GESTURE_NONE,
                       badge_button_gesture_poll(&gesture, 1500));
 }
+
+void test_badge_button_gesture_cancel_clears_pending_single(void)
+{
+    badge_button_gesture_t gesture;
+    badge_button_gesture_init(&gesture, 320);
+
+    TEST_ASSERT_EQUAL(BADGE_BUTTON_GESTURE_NONE,
+                      badge_button_gesture_note_tap(&gesture, 1000));
+    TEST_ASSERT_TRUE(badge_button_gesture_pending_single(&gesture));
+
+    badge_button_gesture_cancel(&gesture);
+
+    TEST_ASSERT_FALSE(badge_button_gesture_pending_single(&gesture));
+    TEST_ASSERT_EQUAL(BADGE_BUTTON_GESTURE_NONE,
+                      badge_button_gesture_poll(&gesture, 1500));
+}

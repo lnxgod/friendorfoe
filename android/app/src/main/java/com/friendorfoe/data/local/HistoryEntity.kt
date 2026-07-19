@@ -85,5 +85,25 @@ data class HistoryEntity(
 
     /** Photo URL if available */
     @ColumnInfo(name = "photo_url")
-    val photoUrl: String? = null
+    val photoUrl: String? = null,
+
+    /** Wi-Fi network name observed for this detection. */
+    @ColumnInfo(name = "ssid")
+    val ssid: String? = null,
+
+    /** Validated Wi-Fi transmitter address observed for this detection. */
+    @ColumnInfo(name = "bssid")
+    val bssid: String? = null,
+
+    /** Received Wi-Fi signal strength in dBm. */
+    @ColumnInfo(name = "signal_strength_dbm")
+    val signalStrengthDbm: Int? = null,
+
+    /** Wi-Fi center frequency in MHz. */
+    @ColumnInfo(name = "frequency_mhz")
+    val frequencyMhz: Int? = null,
+
+    /** Wi-Fi channel width in MHz. */
+    @ColumnInfo(name = "channel_width_mhz")
+    val channelWidthMhz: Int? = null,
 )

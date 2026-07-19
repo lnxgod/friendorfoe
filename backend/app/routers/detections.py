@@ -622,7 +622,7 @@ def _uplink_time_sync_health(info: dict | None) -> str:
 
 _EXPECTED_BACKEND_VERSION = "0.64.68-live-follow"
 _EXPECTED_FIRMWARE_VERSION = "0.64.68-live-follow"
-_EXPECTED_BADGE_FIRMWARE_VERSION = "0.64.68-badge-live-follow"
+_EXPECTED_BADGE_FIRMWARE_VERSION = "0.64.69-badge-defcon34"
 
 
 def _expected_firmware_versions_label() -> str:

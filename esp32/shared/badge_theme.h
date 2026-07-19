@@ -22,6 +22,17 @@ typedef enum {
     BADGE_THEME_ACCENT_CLEAR,
 } badge_theme_accent_t;
 
+typedef enum {
+    BADGE_THEME_CHROME_CANVAS = 0,
+    BADGE_THEME_CHROME_PANEL,
+    BADGE_THEME_CHROME_PANEL_ALT,
+    BADGE_THEME_CHROME_TEXT_PRIMARY,
+    BADGE_THEME_CHROME_TEXT_SECONDARY,
+    BADGE_THEME_CHROME_SELECTION,
+    BADGE_THEME_CHROME_SCANNER_DOWN,
+    BADGE_THEME_CHROME_ROLE_COUNT,
+} badge_theme_chrome_role_t;
+
 typedef struct {
     uint8_t version;
     char palette[BADGE_THEME_NAME_MAX];
@@ -41,6 +52,9 @@ uint16_t badge_theme_accent_color(const badge_theme_t *theme,
                                   badge_theme_accent_t accent);
 uint16_t badge_theme_background_color(const badge_theme_t *theme);
 uint16_t badge_theme_apply_brightness(const badge_theme_t *theme, uint16_t rgb565);
+uint16_t badge_theme_chrome_color(const badge_theme_t *theme,
+                                  badge_theme_chrome_role_t role);
+uint16_t badge_theme_contrast_floor(uint16_t foreground, uint16_t background);
 
 #ifdef __cplusplus
 }

@@ -8,6 +8,11 @@ typedef struct {
     uint16_t color;
 } badge_theme_accent_default_t;
 
+typedef struct {
+    const char *palette;
+    uint16_t colors[BADGE_THEME_CHROME_ROLE_COUNT];
+} badge_theme_chrome_palette_t;
+
 static const badge_theme_accent_default_t ACCENTS[BADGE_THEME_ACCENT_COUNT] = {
     [BADGE_THEME_ACCENT_DRONE]       = {"drone", 0xFEA0},
     [BADGE_THEME_ACCENT_META]        = {"meta", 0xF833},
@@ -15,6 +20,57 @@ static const badge_theme_accent_default_t ACCENTS[BADGE_THEME_ACCENT_COUNT] = {
     [BADGE_THEME_ACCENT_FLOCK]       = {"flock", 0xA81F},
     [BADGE_THEME_ACCENT_WIFI_ATTACK] = {"wifi_attack", 0x07FF},
     [BADGE_THEME_ACCENT_CLEAR]       = {"clear", 0x2F65},
+};
+
+static const badge_theme_chrome_palette_t CHROME_PALETTES[] = {
+    {
+        .palette = "field",
+        .colors = {
+            [BADGE_THEME_CHROME_CANVAS]         = 0x0000,
+            [BADGE_THEME_CHROME_PANEL]          = 0x1082,
+            [BADGE_THEME_CHROME_PANEL_ALT]      = 0x2104,
+            [BADGE_THEME_CHROME_TEXT_PRIMARY]   = 0xFFFF,
+            [BADGE_THEME_CHROME_TEXT_SECONDARY] = 0x8410,
+            [BADGE_THEME_CHROME_SELECTION]      = 0x57EA,
+            [BADGE_THEME_CHROME_SCANNER_DOWN]   = 0xFEA0,
+        },
+    },
+    {
+        .palette = "night",
+        .colors = {
+            [BADGE_THEME_CHROME_CANVAS]         = 0x0800,
+            [BADGE_THEME_CHROME_PANEL]          = 0x1800,
+            [BADGE_THEME_CHROME_PANEL_ALT]      = 0x3000,
+            [BADGE_THEME_CHROME_TEXT_PRIMARY]   = 0xFFE7,
+            [BADGE_THEME_CHROME_TEXT_SECONDARY] = 0xAC4D,
+            [BADGE_THEME_CHROME_SELECTION]      = 0xFD20,
+            [BADGE_THEME_CHROME_SCANNER_DOWN]   = 0xFEA0,
+        },
+    },
+    {
+        .palette = "neon",
+        .colors = {
+            [BADGE_THEME_CHROME_CANVAS]         = 0x080C,
+            [BADGE_THEME_CHROME_PANEL]          = 0x2015,
+            [BADGE_THEME_CHROME_PANEL_ALT]      = 0x4018,
+            [BADGE_THEME_CHROME_TEXT_PRIMARY]   = 0xF7FF,
+            [BADGE_THEME_CHROME_TEXT_SECONDARY] = 0x87FF,
+            [BADGE_THEME_CHROME_SELECTION]      = 0xF81F,
+            [BADGE_THEME_CHROME_SCANNER_DOWN]   = 0xFB38,
+        },
+    },
+    {
+        .palette = "mono",
+        .colors = {
+            [BADGE_THEME_CHROME_CANVAS]         = 0x0000,
+            [BADGE_THEME_CHROME_PANEL]          = 0x0821,
+            [BADGE_THEME_CHROME_PANEL_ALT]      = 0x1082,
+            [BADGE_THEME_CHROME_TEXT_PRIMARY]   = 0xEFFF,
+            [BADGE_THEME_CHROME_TEXT_SECONDARY] = 0x7BEF,
+            [BADGE_THEME_CHROME_SELECTION]      = 0x07FF,
+            [BADGE_THEME_CHROME_SCANNER_DOWN]   = 0xFFFF,
+        },
+    },
 };
 
 static char lower_char(char ch)
@@ -97,81 +153,6 @@ uint32_t badge_theme_hash(const badge_theme_t *theme)
     return h;
 }
 
-static const char *find_string_value(const char *obj, const char *field,
-                                     char *out, size_t out_len)
-{
-    char pattern[40];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", field);
-    const char *p = strstr(obj, pattern);
-    if (!p) return NULL;
-    p = strchr(p + strlen(pattern), ':');
-    if (!p) return NULL;
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (*p != '"') return NULL;
-    p++;
-    size_t used = 0;
-    while (*p && *p != '"') {
-        if (used + 1 < out_len) out[used++] = *p;
-        p++;
-    }
-    if (*p != '"') return NULL;
-    if (out_len > 0) out[used] = '\0';
-    return p + 1;
-}
-
-static const char *find_int_value(const char *obj, const char *field, int *out)
-{
-    char pattern[40];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", field);
-    const char *p = strstr(obj, pattern);
-    if (!p) return NULL;
-    p = strchr(p + strlen(pattern), ':');
-    if (!p) return NULL;
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    int sign = 1;
-    if (*p == '-') {
-        sign = -1;
-        p++;
-    }
-    if (*p < '0' || *p > '9') return NULL;
-    int value = 0;
-    while (*p >= '0' && *p <= '9') {
-        value = value * 10 + (*p - '0');
-        p++;
-    }
-    if (out) *out = value * sign;
-    return p;
-}
-
-static const char *object_for_key(const char *json, const char *key,
-                                  const char **end_out)
-{
-    char pattern[48];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    const char *p = strstr(json, pattern);
-    if (!p) return NULL;
-    p = strchr(p + strlen(pattern), ':');
-    if (!p) return NULL;
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (*p != '{') return NULL;
-    int depth = 0;
-    const char *start = p;
-    for (; *p; p++) {
-        if (*p == '{') depth++;
-        if (*p == '}') {
-            depth--;
-            if (depth == 0) {
-                if (end_out) *end_out = p + 1;
-                return start;
-            }
-        }
-    }
-    return NULL;
-}
-
 static bool theme_name_allowed(const char *value, const char *const *allowed,
                                size_t count)
 {
@@ -181,6 +162,145 @@ static bool theme_name_allowed(const char *value, const char *const *allowed,
     return false;
 }
 
+typedef struct {
+    const char *next;
+} badge_theme_json_cursor_t;
+
+static void json_skip_ws(badge_theme_json_cursor_t *cursor)
+{
+    while (*cursor->next == ' ' || *cursor->next == '\t' ||
+           *cursor->next == '\n' || *cursor->next == '\r') {
+        cursor->next++;
+    }
+}
+
+static bool json_consume(badge_theme_json_cursor_t *cursor, char expected)
+{
+    json_skip_ws(cursor);
+    if (*cursor->next != expected) return false;
+    cursor->next++;
+    return true;
+}
+
+static bool json_parse_plain_string(badge_theme_json_cursor_t *cursor,
+                                    char *out, size_t out_len)
+{
+    if (!out || out_len == 0 || !json_consume(cursor, '"')) return false;
+
+    size_t used = 0;
+    while (*cursor->next && *cursor->next != '"') {
+        unsigned char ch = (unsigned char)*cursor->next++;
+        if (ch < 0x20 || ch == '\\' || used + 1 >= out_len) return false;
+        out[used++] = (char)ch;
+    }
+    if (*cursor->next != '"') return false;
+    cursor->next++;
+    out[used] = '\0';
+    return true;
+}
+
+static bool json_parse_uint32(badge_theme_json_cursor_t *cursor, uint32_t *out)
+{
+    json_skip_ws(cursor);
+    const char *p = cursor->next;
+    if (*p < '0' || *p > '9') return false;
+    if (*p == '0' && p[1] >= '0' && p[1] <= '9') return false;
+
+    uint32_t value = 0;
+    do {
+        uint32_t digit = (uint32_t)(*p - '0');
+        if (value > (UINT32_MAX - digit) / 10U) return false;
+        value = value * 10U + digit;
+        p++;
+    } while (*p >= '0' && *p <= '9');
+
+    cursor->next = p;
+    if (out) *out = value;
+    return true;
+}
+
+static int accent_index_from_exact_key(const char *key)
+{
+    for (int i = 0; i < BADGE_THEME_ACCENT_COUNT; i++) {
+        if (strcmp(key, ACCENTS[i].key) == 0) return i;
+    }
+    return -1;
+}
+
+static bool json_finish_member(badge_theme_json_cursor_t *cursor,
+                               bool *object_done)
+{
+    json_skip_ws(cursor);
+    if (*cursor->next == ',') {
+        cursor->next++;
+        *object_done = false;
+        return true;
+    }
+    if (*cursor->next == '}') {
+        cursor->next++;
+        *object_done = true;
+        return true;
+    }
+    return false;
+}
+
+static bool parse_accents_object(badge_theme_json_cursor_t *cursor,
+                                 badge_theme_t *theme,
+                                 char *err, size_t err_len)
+{
+    const uint32_t required = (1U << BADGE_THEME_ACCENT_COUNT) - 1U;
+    uint32_t seen = 0;
+    if (!json_consume(cursor, '{')) {
+        set_err(err, err_len, "invalid accents");
+        return false;
+    }
+    json_skip_ws(cursor);
+    if (*cursor->next == '}') {
+        set_err(err, err_len, "missing accent");
+        return false;
+    }
+
+    bool done = false;
+    while (!done) {
+        char key[BADGE_THEME_NAME_MAX];
+        if (!json_parse_plain_string(cursor, key, sizeof(key))) {
+            set_err(err, err_len, "invalid accent key");
+            return false;
+        }
+        int index = accent_index_from_exact_key(key);
+        if (index < 0) {
+            set_err(err, err_len, "unknown accent");
+            return false;
+        }
+        uint32_t bit = 1U << (unsigned)index;
+        if ((seen & bit) != 0) {
+            set_err(err, err_len, "duplicate accent");
+            return false;
+        }
+        if (!json_consume(cursor, ':')) {
+            set_err(err, err_len, "invalid accent");
+            return false;
+        }
+
+        uint32_t color = 0;
+        if (!json_parse_uint32(cursor, &color) || color > 0xffffU) {
+            set_err(err, err_len, "invalid accent");
+            return false;
+        }
+        theme->accents[index] = (uint16_t)color;
+        seen |= bit;
+        if (!json_finish_member(cursor, &done)) {
+            set_err(err, err_len, "invalid accents");
+            return false;
+        }
+    }
+    if (seen != required) {
+        set_err(err, err_len, "missing accent");
+        return false;
+    }
+    return true;
+}
+
 bool badge_theme_parse_json(const char *json, badge_theme_t *out,
                             char *err, size_t err_len)
 {
@@ -188,68 +308,127 @@ bool badge_theme_parse_json(const char *json, badge_theme_t *out,
         set_err(err, err_len, "missing theme");
         return false;
     }
-    badge_theme_defaults(out);
-
-    int version = BADGE_THEME_VERSION;
-    if (find_int_value(json, "version", &version) && version != BADGE_THEME_VERSION) {
-        set_err(err, err_len, "unsupported version");
+    size_t json_len = 0;
+    while (json_len < BADGE_THEME_JSON_MAX && json[json_len] != '\0') json_len++;
+    if (json_len == BADGE_THEME_JSON_MAX) {
+        set_err(err, err_len, "theme too large");
         return false;
     }
-    out->version = (uint8_t)version;
 
-    char value[BADGE_THEME_NAME_MAX] = {0};
-    if (strstr(json, "\"palette\"")) {
-        static const char *const palettes[] = {"field", "night", "neon", "mono"};
-        if (!find_string_value(json, "palette", value, sizeof(value)) ||
-            !theme_name_allowed(value, palettes, sizeof(palettes) / sizeof(palettes[0]))) {
-            set_err(err, err_len, "invalid palette");
-            return false;
-        }
-        snprintf(out->palette, sizeof(out->palette), "%s", value);
-    }
-    if (strstr(json, "\"background\"")) {
-        static const char *const backgrounds[] = {"dark", "dim", "scanline"};
-        if (!find_string_value(json, "background", value, sizeof(value)) ||
-            !theme_name_allowed(value, backgrounds,
-                                sizeof(backgrounds) / sizeof(backgrounds[0]))) {
-            set_err(err, err_len, "invalid background");
-            return false;
-        }
-        snprintf(out->background, sizeof(out->background), "%s", value);
-    }
+    enum {
+        SEEN_VERSION = 1U << 0,
+        SEEN_PALETTE = 1U << 1,
+        SEEN_BACKGROUND = 1U << 2,
+        SEEN_BRIGHTNESS = 1U << 3,
+        SEEN_ACCENTS = 1U << 4,
+        REQUIRED_FIELDS = SEEN_VERSION | SEEN_PALETTE | SEEN_BACKGROUND |
+                          SEEN_BRIGHTNESS | SEEN_ACCENTS,
+    };
+    static const char *const palettes[] = {"field", "night", "neon", "mono"};
+    static const char *const backgrounds[] = {"dark", "dim", "scanline"};
 
-    int brightness = out->brightness;
-    if (strstr(json, "\"brightness\"")) {
-        if (!find_int_value(json, "brightness", &brightness) ||
-            brightness < 25 || brightness > 100) {
-            set_err(err, err_len, "invalid brightness");
-            return false;
-        }
-        out->brightness = (uint8_t)brightness;
+    badge_theme_t parsed;
+    badge_theme_defaults(&parsed);
+    badge_theme_json_cursor_t cursor = {.next = json};
+    if (!json_consume(&cursor, '{')) {
+        set_err(err, err_len, "theme must be object");
+        return false;
+    }
+    json_skip_ws(&cursor);
+    if (*cursor.next == '}') {
+        set_err(err, err_len, "missing theme fields");
+        return false;
     }
 
-    const char *accents_end = NULL;
-    const char *accents = object_for_key(json, "accents", &accents_end);
-    if (accents) {
-        char chunk[320];
-        size_t len = accents_end && accents_end > accents
-            ? (size_t)(accents_end - accents)
-            : strlen(accents);
-        if (len >= sizeof(chunk)) len = sizeof(chunk) - 1;
-        memcpy(chunk, accents, len);
-        chunk[len] = '\0';
-        for (int i = 0; i < BADGE_THEME_ACCENT_COUNT; i++) {
-            int color = out->accents[i];
-            if (strstr(chunk, ACCENTS[i].key)) {
-                if (!find_int_value(chunk, ACCENTS[i].key, &color) ||
-                    color < 0 || color > 0xffff) {
-                    set_err(err, err_len, "invalid accent");
-                    return false;
-                }
-                out->accents[i] = (uint16_t)color;
+    uint32_t seen = 0;
+    bool done = false;
+    while (!done) {
+        char key[BADGE_THEME_NAME_MAX];
+        if (!json_parse_plain_string(&cursor, key, sizeof(key)) ||
+            !json_consume(&cursor, ':')) {
+            set_err(err, err_len, "invalid theme field");
+            return false;
+        }
+
+        uint32_t field = 0;
+        if (strcmp(key, "version") == 0) {
+            field = SEEN_VERSION;
+        } else if (strcmp(key, "palette") == 0) {
+            field = SEEN_PALETTE;
+        } else if (strcmp(key, "background") == 0) {
+            field = SEEN_BACKGROUND;
+        } else if (strcmp(key, "brightness") == 0) {
+            field = SEEN_BRIGHTNESS;
+        } else if (strcmp(key, "accents") == 0) {
+            field = SEEN_ACCENTS;
+        } else {
+            set_err(err, err_len, "unknown theme field");
+            return false;
+        }
+        if ((seen & field) != 0) {
+            set_err(err, err_len, "duplicate theme field");
+            return false;
+        }
+
+        if (field == SEEN_VERSION) {
+            uint32_t version = 0;
+            if (!json_parse_uint32(&cursor, &version)) {
+                set_err(err, err_len, "invalid version");
+                return false;
             }
+            if (version != BADGE_THEME_VERSION) {
+                set_err(err, err_len, "unsupported version");
+                return false;
+            }
+            parsed.version = (uint8_t)version;
+        } else if (field == SEEN_PALETTE) {
+            char value[BADGE_THEME_NAME_MAX];
+            if (!json_parse_plain_string(&cursor, value, sizeof(value)) ||
+                !theme_name_allowed(value, palettes,
+                                    sizeof(palettes) / sizeof(palettes[0]))) {
+                set_err(err, err_len, "invalid palette");
+                return false;
+            }
+            snprintf(parsed.palette, sizeof(parsed.palette), "%s", value);
+        } else if (field == SEEN_BACKGROUND) {
+            char value[BADGE_THEME_NAME_MAX];
+            if (!json_parse_plain_string(&cursor, value, sizeof(value)) ||
+                !theme_name_allowed(value, backgrounds,
+                                    sizeof(backgrounds) / sizeof(backgrounds[0]))) {
+                set_err(err, err_len, "invalid background");
+                return false;
+            }
+            snprintf(parsed.background, sizeof(parsed.background), "%s", value);
+        } else if (field == SEEN_BRIGHTNESS) {
+            uint32_t brightness = 0;
+            if (!json_parse_uint32(&cursor, &brightness) ||
+                brightness < 25U || brightness > 100U) {
+                set_err(err, err_len, "invalid brightness");
+                return false;
+            }
+            parsed.brightness = (uint8_t)brightness;
+        } else if (!parse_accents_object(&cursor, &parsed, err, err_len)) {
+            return false;
+        }
+        seen |= field;
+
+        if (!json_finish_member(&cursor, &done)) {
+            set_err(err, err_len, "invalid theme object");
+            return false;
         }
     }
+    json_skip_ws(&cursor);
+    if (*cursor.next != '\0') {
+        set_err(err, err_len, "trailing theme data");
+        return false;
+    }
+    if (seen != REQUIRED_FIELDS) {
+        set_err(err, err_len, "missing theme fields");
+        return false;
+    }
+
+    *out = parsed;
+    if (err && err_len > 0) err[0] = '\0';
     return true;
 }
 
@@ -334,4 +513,53 @@ uint16_t badge_theme_apply_brightness(const badge_theme_t *theme, uint16_t rgb56
     g = (g * brightness) / 100;
     b = (b * brightness) / 100;
     return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+uint16_t badge_theme_chrome_color(const badge_theme_t *theme,
+                                  badge_theme_chrome_role_t role)
+{
+    badge_theme_t fallback;
+    if (!theme) {
+        badge_theme_defaults(&fallback);
+        theme = &fallback;
+    }
+    if ((int)role < 0 || role >= BADGE_THEME_CHROME_ROLE_COUNT) {
+        role = BADGE_THEME_CHROME_TEXT_PRIMARY;
+    }
+
+    const badge_theme_chrome_palette_t *palette = &CHROME_PALETTES[0];
+    for (size_t i = 0; i < sizeof(CHROME_PALETTES) / sizeof(CHROME_PALETTES[0]); i++) {
+        if (eq_nocase(theme->palette, CHROME_PALETTES[i].palette)) {
+            palette = &CHROME_PALETTES[i];
+            break;
+        }
+    }
+    return badge_theme_apply_brightness(theme, palette->colors[role]);
+}
+
+static uint16_t rgb565_luminance(uint16_t color)
+{
+    uint32_t red = ((color >> 11) & 0x1f) * 255U / 31U;
+    uint32_t green = ((color >> 5) & 0x3f) * 255U / 63U;
+    uint32_t blue = (color & 0x1f) * 255U / 31U;
+    return (uint16_t)((red * 54U + green * 183U + blue * 19U) / 256U);
+}
+
+uint16_t badge_theme_contrast_floor(uint16_t foreground, uint16_t background)
+{
+    enum {
+        BADGE_THEME_MIN_SAFE_LUMINANCE = 72,
+        BADGE_THEME_MIN_SAFE_CONTRAST = 64,
+    };
+    uint16_t fg_luminance = rgb565_luminance(foreground);
+    uint16_t bg_luminance = rgb565_luminance(background);
+    uint16_t contrast = fg_luminance > bg_luminance
+        ? (uint16_t)(fg_luminance - bg_luminance)
+        : (uint16_t)(bg_luminance - fg_luminance);
+
+    if (fg_luminance >= BADGE_THEME_MIN_SAFE_LUMINANCE &&
+        contrast >= BADGE_THEME_MIN_SAFE_CONTRAST) {
+        return foreground;
+    }
+    return bg_luminance < 128U ? 0xFFFF : 0x0000;
 }

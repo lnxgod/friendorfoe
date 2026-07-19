@@ -8,7 +8,7 @@ from app.services.firmware_manager import FIRMWARE_TYPES, FirmwareAsset, Firmwar
 
 
 PRODUCTION_VERSION = "0.64.68-live-follow"
-BADGE_VERSION = "0.64.68-badge-live-follow"
+BADGE_VERSION = "0.64.69-badge-defcon34"
 RELEASE_TAG = "v0.64.68-live-follow"
 
 
@@ -58,6 +58,32 @@ def _github_manager(
     return manager
 
 
+def _mock_github_releases(
+    monkeypatch: pytest.MonkeyPatch,
+    releases: list[dict],
+) -> None:
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url: str):
+            class Response:
+                status_code = 200
+
+                def json(self):
+                    return releases
+
+            return Response()
+
+    monkeypatch.setattr(firmware_manager.httpx, "AsyncClient", FakeAsyncClient)
+
+
 def test_live_fleet_firmware_targets_are_present():
     assert set(FIRMWARE_TYPES) == {
         "scanner-s3-combo",
@@ -89,6 +115,85 @@ def test_live_fleet_targets_point_at_expected_local_builds():
 def test_release_asset_patterns_match_current_bin_asset_names():
     for target, info in FIRMWARE_TYPES.items():
         assert info["asset_pattern"] == target
+
+
+@pytest.mark.asyncio
+async def test_refresh_skips_newer_apk_only_release_for_firmware_release(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    _mock_github_releases(
+        monkeypatch,
+        [
+            {
+                "tag_name": "v0.64.77-android",
+                "draft": False,
+                "assets": [
+                    {
+                        "name": "FriendOrFoe-v0.64.77.apk",
+                        "size": 1,
+                        "browser_download_url": "https://example.test/app.apk",
+                    }
+                ],
+            },
+            {
+                "tag_name": "v0.64.76-firmware",
+                "draft": False,
+                "assets": [
+                    {
+                        "name": "scanner-s3-combo.bin",
+                        "size": 2,
+                        "browser_download_url": "https://example.test/scanner.bin",
+                    }
+                ],
+            },
+        ],
+    )
+    monkeypatch.setattr(firmware_manager, "CACHE_DIR", tmp_path / "firmware-cache")
+    manager = FirmwareManager()
+
+    await manager.refresh_from_github(force=True)
+
+    assert manager.release_tag == "v0.64.76-firmware"
+    assert manager.assets["scanner-s3-combo"].download_url == "https://example.test/scanner.bin"
+
+
+@pytest.mark.asyncio
+async def test_refresh_preserves_existing_catalog_when_no_firmware_release_exists(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    _mock_github_releases(
+        monkeypatch,
+        [
+            {
+                "tag_name": "v0.64.77-android",
+                "draft": False,
+                "assets": [
+                    {
+                        "name": "FriendOrFoe-v0.64.77.apk",
+                        "size": 1,
+                        "browser_download_url": "https://example.test/app.apk",
+                    }
+                ],
+            }
+        ],
+    )
+    manager = _github_manager(
+        monkeypatch,
+        tmp_path,
+        {"scanner-s3-combo": _esp_firmware_image(PRODUCTION_VERSION)},
+    )
+    existing_assets = manager.assets
+    existing_tag = manager.release_tag
+    manager.last_check = 0
+
+    await manager.refresh_from_github(force=True)
+
+    assert manager.release_tag == existing_tag
+    assert manager.assets is existing_assets
+    assert set(manager.assets) == {"scanner-s3-combo"}
+    assert manager.last_check > 0
 
 
 @pytest.mark.parametrize(

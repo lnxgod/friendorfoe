@@ -2,6 +2,27 @@
 
 All notable changes to the ESP32 hardware edition of Friend or Foe.
 
+## [0.64.69-badge-defcon34] - 2026-07-17
+
+### Added
+- **Themed four-lane badge instrument.** Named palettes and Android USB custom
+  palettes restyle the existing four fixed lanes without changing their data
+  contract.
+- **DEF CON 34 Easter egg.** Exact Hell, Michigan Remote ID at 666 m, exact
+  `fof-goblue`, or the temporary spare button opens the one-shot purple Wall of
+  Sheep screen.
+- **Nine-second quiet/off chord.** The LCD sleeps and both scanners quiesce
+  while USB control and UART firmware recovery remain available.
+- **Automatic dual-scanner UART updates.** USB stages one exact scanner image;
+  the uplink relays it serially to strictly older scanners and proves identity,
+  rollback, command, and role-specific radio convergence after each reboot.
+
+### Security
+- Scanner staging and relay now bind target, project, hardware, version,
+  generation, size, CRC32, SHA-256, and session. Downgrades, ambiguous version
+  suffixes, stale acknowledgements, partial manifests, and HTTP badge firmware
+  mutation routes fail closed.
+
 ## [0.64.68-live-follow] - 2026-07-16
 
 ### Changed

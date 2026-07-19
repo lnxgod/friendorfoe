@@ -21,7 +21,7 @@
  * for ESP-IDF's PROJECT_VER metadata based on the PIOENV env var.
  */
 #define FOF_VERSION_PROD  "0.64.68-live-follow"
-#define FOF_VERSION_BADGE "0.64.68-badge-live-follow"
+#define FOF_VERSION_BADGE "0.64.69-badge-defcon34"
 
 #if defined(FOF_BADGE_VARIANT)
 #define FOF_VERSION FOF_VERSION_BADGE
@@ -30,21 +30,56 @@
 #endif
 
 /*
- * FIRMWARE_NAME is set per build target:
- *   - "scanner"       (S3 combo/seed: WiFi + BLE)
- *   - "uplink"        (S3 uplink relay)
- *   - "rid-simulator" (Remote ID simulator)
- *
- * Each main.c #defines FIRMWARE_NAME before including this header,
- * or derives it from build flags.
+ * Compile-selected release identity. These values are the runtime side of the
+ * same five target -> ESP app project map in scanner/uplink CMakeLists.txt.
+ * Keep the project names under ESP_APP_DESC_PROJECT_NAME_SIZE (32 bytes).
  */
+#if defined(UPLINK_BOARD)
+# if defined(FOF_BADGE_VARIANT)
+#  define FOF_FIRMWARE_TARGET "uplink-s3-fof_badge"
+#  define FOF_APP_PROJECT "fof_badge_uplink"
+#  define FOF_HARDWARE_TYPE "seeed_xiao_esp32s3"
+# else
+#  define FOF_FIRMWARE_TARGET "uplink-s3"
+#  define FOF_APP_PROJECT "fof_uplink"
+#  define FOF_HARDWARE_TYPE "esp32-s3-devkitc-1"
+# endif
+#elif defined(SCANNER_BOARD)
+# if defined(FOF_BADGE_VARIANT)
+#  define FOF_FIRMWARE_TARGET "scanner-s3-combo-fof_badge"
+#  define FOF_APP_PROJECT "fof_badge_scanner"
+#  define FOF_HARDWARE_TYPE "seeed_xiao_esp32s3"
+# elif defined(SEED_SCANNER_PINS)
+#  define FOF_FIRMWARE_TARGET "scanner-s3-combo-seed"
+#  define FOF_APP_PROJECT "fof_scanner_seed"
+#  define FOF_HARDWARE_TYPE "esp32-s3-devkitc-1"
+# else
+#  define FOF_FIRMWARE_TARGET "scanner-s3-combo"
+#  define FOF_APP_PROJECT "fof_scanner"
+#  define FOF_HARDWARE_TYPE "esp32-s3-devkitc-1"
+# endif
+#elif defined(BLE_SCANNER_BOARD)
+# define FOF_FIRMWARE_TARGET "ble-scanner"
+# define FOF_APP_PROJECT "fof_ble_scanner"
+# define FOF_HARDWARE_TYPE "esp32"
+#elif defined(RID_SIMULATOR_BOARD)
+# define FOF_FIRMWARE_TARGET "rid-simulator"
+# define FOF_APP_PROJECT "fof_rid_simulator"
+# define FOF_HARDWARE_TYPE "esp32"
+#else
+/* Host-only native tests compile shared headers without a firmware board. */
+# define FOF_FIRMWARE_TARGET "host-test"
+# define FOF_APP_PROJECT "fof_host_test"
+# define FOF_HARDWARE_TYPE "native"
+#endif
 
 /**
  * Machine-readable identification line.
  * Printed as the very first log line in app_main().
- * Format: FOF_IDENT:<name>:<version>:<chip>
+ * Format: FOF_IDENT:<target>:<project>:<hardware>:<version>:<chip>
  *
  * Auto-flash tools can match on "^FOF_IDENT:" to identify the board.
  */
-#define FOF_PRINT_IDENT(tag, name) \
-    ESP_LOGI(tag, "FOF_IDENT:%s:%s:%s", name, FOF_VERSION, CONFIG_IDF_TARGET)
+#define FOF_PRINT_IDENT(tag, target) \
+    ESP_LOGI(tag, "FOF_IDENT:%s:%s:%s:%s:%s", target, FOF_APP_PROJECT, \
+             FOF_HARDWARE_TYPE, FOF_VERSION, CONFIG_IDF_TARGET)

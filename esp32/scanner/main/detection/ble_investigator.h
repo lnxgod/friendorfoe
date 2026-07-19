@@ -242,6 +242,8 @@ ble_investigator_request_decision_t
 ble_investigator_runtime_decide_request(const char *request_id);
 void ble_investigator_runtime_tick(int64_t now_ms);
 bool ble_investigator_runtime_cancel(const char *request_id, int64_t now_ms);
+/** Cancel any active investigation and suppress its normal scan restart. */
+void ble_investigator_runtime_quiesce(int64_t now_ms);
 bool ble_investigator_runtime_is_busy(void);
 bool ble_investigator_runtime_is_gatt_active(void);
 void ble_investigator_runtime_note_advertisement(

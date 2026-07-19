@@ -1,9 +1,7 @@
 package com.friendorfoe.domain.usecase
 
-import com.friendorfoe.data.local.HistoryEntity
+import com.friendorfoe.data.local.toHistoryEntity
 import com.friendorfoe.data.repository.HistoryRepository
-import com.friendorfoe.domain.model.Aircraft
-import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.SkyObject
 import javax.inject.Inject
 
@@ -27,43 +25,7 @@ class SaveDetectionUseCase @Inject constructor(
         userLatitude: Double,
         userLongitude: Double
     ) {
-        val entity = when (skyObject) {
-            is Aircraft -> HistoryEntity(
-                objectId = skyObject.icaoHex,
-                objectType = "aircraft",
-                detectionSource = skyObject.source.name.lowercase(),
-                category = skyObject.category.name.lowercase(),
-                displayName = skyObject.callsign ?: skyObject.icaoHex,
-                description = skyObject.displaySummary(),
-                latitude = skyObject.position.latitude,
-                longitude = skyObject.position.longitude,
-                altitudeMeters = skyObject.position.altitudeMeters,
-                userLatitude = userLatitude,
-                userLongitude = userLongitude,
-                distanceMeters = skyObject.distanceMeters,
-                confidence = skyObject.confidence,
-                firstSeen = skyObject.firstSeen.toEpochMilli(),
-                lastSeen = skyObject.lastUpdated.toEpochMilli(),
-                photoUrl = skyObject.photoUrl
-            )
-            is Drone -> HistoryEntity(
-                objectId = skyObject.droneId,
-                objectType = "drone",
-                detectionSource = skyObject.source.name.lowercase(),
-                category = skyObject.category.name.lowercase(),
-                displayName = skyObject.manufacturer ?: "Unknown drone",
-                description = skyObject.displaySummary(),
-                latitude = skyObject.position.latitude,
-                longitude = skyObject.position.longitude,
-                altitudeMeters = skyObject.position.altitudeMeters,
-                userLatitude = userLatitude,
-                userLongitude = userLongitude,
-                distanceMeters = skyObject.distanceMeters,
-                confidence = skyObject.confidence,
-                firstSeen = skyObject.firstSeen.toEpochMilli(),
-                lastSeen = skyObject.lastUpdated.toEpochMilli()
-            )
-        }
+        val entity = skyObject.toHistoryEntity(userLatitude, userLongitude)
         historyRepository.saveDetection(entity)
     }
 }

@@ -27,6 +27,10 @@ extern "C" {
  */
 void oled_init(void);
 
+/** Sleep or wake the display controller without changing UI/theme state. */
+void oled_set_power(bool on);
+bool oled_is_powered(void);
+
 /**
  * Redraw the main status screen with uplink + node + detection info.
  *

@@ -34,9 +34,10 @@
 #include "badge_mode.h"
 #include "badge_runtime.h"
 #ifdef FOF_BADGE_VARIANT
+#include "badge_power_runtime.h"
+#include "badge_easter_egg_runtime.h"
 #include "badge_display_policy_runtime.h"
 #include "badge_theme_runtime.h"
-#include "badge_ble_control.h"
 #endif
 #include "detection_types.h"
 #include "detection_policy.h"
@@ -62,7 +63,7 @@
 
 #include "version.h"
 
-#if CONFIG_BT_ENABLED && !defined(FOF_BADGE_VARIANT)
+#if CONFIG_BT_ENABLED
 #error "uplink firmware must keep Bluetooth disabled; uplinks should never advertise or scan BLE"
 #endif
 
@@ -70,12 +71,25 @@
 #error "Supported FoF uplink firmware is ESP32-S3 only."
 #endif
 
-#define FIRMWARE_NAME "uplink-s3"
 #ifdef FOF_BADGE_VARIANT
 #define BADGE_DISPLAY_UPDATE_MS 250
 #endif
 
 static const char *TAG = "main";
+
+static void log_detection_queue_heap(const char *stage)
+{
+    const uint32_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const size_t required = sizeof(StaticQueue_t) +
+        (CONFIG_DETECTION_QUEUE_SIZE * sizeof(drone_detection_t));
+    ESP_LOGW(TAG,
+             "Detection queue heap [%s]: free=%u largest=%u need=%u integrity=%s",
+             stage,
+             (unsigned)heap_caps_get_free_size(caps),
+             (unsigned)heap_caps_get_largest_free_block(caps),
+             (unsigned)required,
+             heap_caps_check_integrity(caps, true) ? "ok" : "BAD");
+}
 
 #ifdef FOF_BADGE_VARIANT
 static bool apply_badge_network_mode(badge_runtime_network_mode_t mode)
@@ -241,7 +255,8 @@ static void log_badge_debug(uint32_t free_heap, int64_t uptime_s)
 
 static void send_badge_scan_profiles(void)
 {
-    if (fw_store_is_relay_active() || http_upload_is_paused() ||
+    if (badge_power_runtime_is_quiet() ||
+        fw_store_is_relay_active() || http_upload_is_paused() ||
         uart_rx_is_node_calibration_mode()) {
         return;
     }
@@ -373,6 +388,19 @@ static void display_task(void *arg)
     while (1) {
         /* Gather current state */
         int detection_count = uart_rx_get_detection_count();
+#ifdef FOF_BADGE_VARIANT
+        badge_power_runtime_poll();
+        if (badge_power_runtime_is_quiet()) {
+            prev_detection_count = detection_count;
+            badge_runtime_note_display_alive();
+            badge_runtime_note_scanner_uart_alive(
+                uart_rx_is_scanner_connected());
+            badge_runtime_note_display_stack_free(
+                (uint32_t)uxTaskGetStackHighWaterMark(NULL));
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+#endif
         bool wifi_ok       = wifi_sta_is_connected();
         float battery_pct  = battery_get_percentage();
         int upload_count   = http_upload_get_success_count();
@@ -471,7 +499,8 @@ static void display_task(void *arg)
 static void print_banner(void)
 {
     ESP_LOGI(TAG, "=============================================");
-    ESP_LOGI(TAG, "  Friend or Foe — %s v%s (ESP32-S3)", FIRMWARE_NAME, FOF_VERSION);
+    ESP_LOGI(TAG, "  Friend or Foe — %s v%s (ESP32-S3)",
+             FOF_FIRMWARE_TARGET, FOF_VERSION);
     ESP_LOGI(TAG, "  Drone Detection Backend Relay");
     ESP_LOGI(TAG, "=============================================");
 
@@ -506,8 +535,10 @@ static void print_banner(void)
 
 void app_main(void)
 {
+    bool required_tasks_started = true;
+
     /* ── 0. Machine-readable firmware identification ──────────────────── */
-    FOF_PRINT_IDENT(TAG, FIRMWARE_NAME);
+    FOF_PRINT_IDENT(TAG, FOF_FIRMWARE_TARGET);
 
     /* ── 0b. OTA rollback state detection ─────────────────────────────── */
     /* Must run before any subsystem that might crash/panic — a rollback
@@ -546,13 +577,33 @@ void app_main(void)
 
     /* ── 2. Initialize NVS configuration ──────────────────────────────── */
     nvs_config_init();
+    if (!fw_store_init_auto_update_coordinator()) {
+        ESP_LOGE(TAG, "Scanner-update coordinator initialization failed");
+        return;
+    }
+    log_detection_queue_heap("after_nvs");
+
+    /* Reserve the live detection queue before BLE, display DMA, USB control,
+     * and the event loop fragment internal RAM. xQueueCreate() requires one
+     * contiguous internal allocation for all 48 drone_detection_t records. */
+    QueueHandle_t detection_queue = xQueueCreate(
+        CONFIG_DETECTION_QUEUE_SIZE, sizeof(drone_detection_t));
+    if (!detection_queue) {
+        ESP_LOGE(TAG, "Failed to create detection queue!");
+        return;
+    }
+    ESP_LOGI(TAG, "Detection queue created (%d slots, %d bytes each)",
+             CONFIG_DETECTION_QUEUE_SIZE, (int)sizeof(drone_detection_t));
+    log_detection_queue_heap("after_queue");
 
 #ifdef FOF_BADGE_VARIANT
+    badge_easter_egg_runtime_init();
     badge_runtime_init(s_ota_pending_verify);
+    badge_power_runtime_init();
     badge_display_policy_runtime_init();
     badge_theme_runtime_init();
-    badge_ble_control_init();
 #endif
+    log_detection_queue_heap("after_badge_runtime");
 
     badge_mode_t badge_mode = badge_mode_get();
     bool badge_backend_enabled = badge_mode_backend_enabled(badge_mode);
@@ -570,6 +621,7 @@ void app_main(void)
     oled_init();
     oled_show_boot_status("Starting", badge_mode_display_name(badge_mode), "");
 #endif
+    log_detection_queue_heap("after_display");
 
     /* ── 2a. Cached scanner firmware status — visible proof that the
      *        uplink retains the latest scanner image across reboots so
@@ -590,8 +642,15 @@ void app_main(void)
     }
 
     /* ── 2b. Serial config window (web flasher sends config here) ──── */
+    if (!uart_rx_scanner_tx_lease_init()) {
+        ESP_LOGE(TAG, "Scanner UART lease unavailable before USB firmware staging");
+        required_tasks_started = false;
+    }
     serial_config_listen(3000);
-    serial_config_start_control_task();
+    if (!serial_config_start_control_task()) {
+        required_tasks_started = false;
+    }
+    log_detection_queue_heap("after_usb_control");
 #ifdef FOF_BADGE_VARIANT
     badge_mode = badge_mode_get();
     badge_backend_enabled = badge_mode_backend_enabled(badge_mode);
@@ -604,16 +663,7 @@ void app_main(void)
 
     /* ── 3. Create default event loop ─────────────────────────────────── */
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    /* ── 4. Create detection queue ────────────────────────────────────── */
-    QueueHandle_t detection_queue = xQueueCreate(
-        CONFIG_DETECTION_QUEUE_SIZE, sizeof(drone_detection_t));
-    if (!detection_queue) {
-        ESP_LOGE(TAG, "Failed to create detection queue!");
-        return;
-    }
-    ESP_LOGI(TAG, "Detection queue created (%d slots, %d bytes each)",
-             CONFIG_DETECTION_QUEUE_SIZE, (int)sizeof(drone_detection_t));
+    log_detection_queue_heap("after_event_loop");
 
     /* ── 5. Initialize WiFi STA/AP according to badge mode ────────────── */
 #ifdef FOF_BADGE_VARIANT
@@ -688,9 +738,14 @@ void app_main(void)
     uart_rx_init(detection_queue);
 #endif
 
-    /* ── 13. Initialize HTTP upload ───────────────────────────────────── */
+    /* ── 13. Initialize outbound detection upload ────────────────────── */
+#ifndef FOF_BADGE_VARIANT
     http_upload_init(detection_queue);
-#ifdef FOF_BADGE_VARIANT
+#else
+    /* Badge detections feed the local threat/display state directly in
+     * uart_rx.c and are never queued for backend upload. Keep the badge on
+     * its actual crunch-mode transports: USB control and UART scanner relay. */
+    ESP_LOGI(TAG, "Badge HTTP detection upload disabled; USB control and UART firmware relay remain active");
     badge_runtime_set_network_apply_callback(apply_badge_network_mode);
     if (badge_runtime_get_network_mode() == BADGE_RUNTIME_NETWORK_BACKEND &&
         wifi_sta_is_connected()) {
@@ -713,7 +768,9 @@ void app_main(void)
         true
 #endif
     ) {
-        const uint8_t abort_seq[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, '\n'};
+        uint8_t abort_seq[OTA_ABORT_SENTINEL_COUNT + 1];
+        memset(abort_seq, OTA_ABORT_SENTINEL_BYTE, OTA_ABORT_SENTINEL_COUNT);
+        abort_seq[OTA_ABORT_SENTINEL_COUNT] = '\n';
         uart_write_bytes(CONFIG_BLE_SCANNER_UART, (const char *)abort_seq, sizeof(abort_seq));
 #if CONFIG_DUAL_SCANNER
         uart_write_bytes(CONFIG_WIFI_SCANNER_UART, (const char *)abort_seq, sizeof(abort_seq));
@@ -728,16 +785,19 @@ void app_main(void)
 
 #ifdef FOF_BADGE_VARIANT
     if (!badge_safe_usb) {
-        uart_rx_start();
-        badge_runtime_note_scanner_uart_alive(true);
-        http_upload_start();
-        ESP_LOGI(TAG, "Badge build: HTTP upload task active; standalone mode controls upload");
+        if (!uart_rx_start()) {
+            required_tasks_started = false;
+        }
     } else {
-        ESP_LOGW(TAG, "Badge safe USB mode: scanner RX and HTTP upload tasks held off");
+        ESP_LOGW(TAG, "Badge safe USB mode: scanner RX tasks held off");
     }
 #else
-    uart_rx_start();
-    http_upload_start();
+    if (!uart_rx_start()) {
+        required_tasks_started = false;
+    }
+    if (!http_upload_start()) {
+        required_tasks_started = false;
+    }
 #endif
 #ifdef FOF_BADGE_VARIANT
     if (!badge_safe_usb) {
@@ -752,9 +812,26 @@ void app_main(void)
     led_start();
 #endif
 
+#ifdef FOF_BADGE_VARIANT
+    if (!badge_power_runtime_start()) {
+        ESP_LOGE(TAG, "Failed to start badge power runtime");
+        required_tasks_started = false;
+    }
+#endif
+
     /* Start display task (inline since it's simple) */
-    xTaskCreate(display_task, "display", CONFIG_DISPLAY_STACK,
-                NULL, CONFIG_DISPLAY_PRIORITY, NULL);
+    BaseType_t display_task_ok = xTaskCreate(
+        display_task, "display", CONFIG_DISPLAY_STACK,
+        NULL, CONFIG_DISPLAY_PRIORITY, NULL);
+    if (display_task_ok != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create display task (stack=%d)",
+                 CONFIG_DISPLAY_STACK);
+        required_tasks_started = false;
+    }
+
+    if (!required_tasks_started) {
+        rollback_and_reboot_or_restart("required worker task creation failed");
+    }
 
     /* ── 15. Start HTTP status server ────────────────────────────────── */
     if (badge_ap_enabled) {
@@ -776,11 +853,17 @@ void app_main(void)
      *         backend on a 30-min cadence: self-OTAs the uplink and
      *         refreshes the cached scanner firmware so a connected
      *         scanner can self-recover via the existing fw_check flow. */
+#ifndef FOF_BADGE_VARIANT
     if (badge_backend_enabled && wifi_sta_is_connected()) {
         fw_auto_check_init();
     } else {
         ESP_LOGI(TAG, "Firmware auto-check disabled until backend WiFi is up");
     }
+#else
+    ESP_LOGI(TAG,
+             "Badge firmware network auto-check disabled; "
+             "updates arrive over USB and relay over scanner UARTs");
+#endif
 
     ESP_LOGI(TAG, "All tasks started. Uplink is operational.");
 
@@ -788,7 +871,7 @@ void app_main(void)
     /* Scanners boot silent (start/stop protocol) and wait for this signal. */
     {
 #ifdef FOF_BADGE_VARIANT
-        if (!badge_safe_usb) {
+        if (!badge_safe_usb && !badge_power_runtime_is_quiet()) {
             uart_rx_send_command("{\"type\":\"ready\"}");
             send_badge_scan_profiles();
             ESP_LOGW(TAG, "Sent ready signal to all scanners — detections enabled");
@@ -803,6 +886,18 @@ void app_main(void)
         uart_rx_send_command("{\"type\":\"ready\"}");
         ESP_LOGW(TAG, "Sent ready signal to all scanners — detections enabled");
 #endif
+    }
+
+    /* A scanner's generic READY command clears its volatile firmware-ready
+     * latch. Restore and re-prompt the durable coordinator only after normal
+     * startup commands have completed, or an interrupted update can be lost. */
+#ifdef FOF_BADGE_VARIANT
+    if (!badge_safe_usb && !fw_store_restore_auto_update_coordinator()) {
+#else
+    if (!fw_store_restore_auto_update_coordinator()) {
+#endif
+        rollback_and_reboot_or_restart(
+            "scanner-update coordinator restore failed");
     }
 
     /* ── 17. Connectivity watchdog ───────────────────────────────────── */
@@ -898,6 +993,7 @@ void app_main(void)
             if (
 #ifdef FOF_BADGE_VARIANT
                 !badge_runtime_is_safe_mode() &&
+                !badge_power_runtime_is_quiet() &&
 #endif
                 !fw_store_is_relay_active() && !http_upload_is_paused()) {
                 uart_rx_send_command("{\"type\":\"ready\"}");

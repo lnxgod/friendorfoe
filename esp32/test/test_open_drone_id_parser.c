@@ -10,6 +10,7 @@
 
 #include "unity.h"
 #include "open_drone_id_parser.h"
+#include "badge_easter_egg.h"
 #include "constants.h"
 #include "detection_types.h"
 
@@ -42,6 +43,29 @@ static void write_uint16_le(uint8_t *buf, size_t offset, uint16_t val)
 {
     buf[offset + 0] = (uint8_t)(val & 0xFF);
     buf[offset + 1] = (uint8_t)((val >> 8) & 0xFF);
+}
+
+static void make_basic_id_msg(uint8_t *buf, const char *basic_id)
+{
+    make_msg(buf, ODID_MSG_TYPE_BASIC_ID);
+    buf[1] = (1 << 4) | 2;
+    if (basic_id) {
+        size_t len = strlen(basic_id);
+        if (len > 20) len = 20;
+        memcpy(&buf[2], basic_id, len);
+    }
+}
+
+static void make_location_msg(uint8_t *buf,
+                              int32_t latitude_e7,
+                              int32_t longitude_e7,
+                              uint16_t geodetic_altitude_wire)
+{
+    make_msg(buf, ODID_MSG_TYPE_LOCATION);
+    write_int32_le(buf, 5, latitude_e7);
+    write_int32_le(buf, 9, longitude_e7);
+    write_uint16_le(buf, 15, geodetic_altitude_wire);
+    write_uint16_le(buf, 17, 0xFFFF);
 }
 
 /* ── Test: Basic ID (Type 0) ───────────────────────────────────────────── */
@@ -125,6 +149,74 @@ void test_parse_location(void)
     TEST_ASSERT_EQUAL_UINT8(9, state.h_accuracy_code);
     TEST_ASSERT_EQUAL_UINT8(10, state.v_accuracy_code);
     TEST_ASSERT_EQUAL_UINT16(1234, state.location_timestamp);
+}
+
+void test_odid_retains_exact_units_for_badge_easter_match(void)
+{
+    odid_state_t state;
+    odid_state_init(&state, "AA:BB:CC:DD:EE:FF", 1000);
+
+    uint8_t basic_id[ODID_MSG_SIZE];
+    make_basic_id_msg(basic_id, "fof-michagain");
+    odid_parse_message(basic_id, sizeof(basic_id), &state, 0);
+
+    uint8_t location[ODID_MSG_SIZE];
+    /* ASTM wire altitude is (meters + 1000) / 0.5: 666.0m => 3332. */
+    make_location_msg(location, 424347200, -839850000, 3332);
+    odid_parse_message(location, sizeof(location), &state, 0);
+
+    TEST_ASSERT_TRUE(state.has_basic_id);
+    TEST_ASSERT_EQUAL_STRING("fof-michagain", state.drone_id);
+    TEST_ASSERT_TRUE(state.has_location);
+    TEST_ASSERT_EQUAL_INT32(424347200, state.latitude_e7);
+    TEST_ASSERT_EQUAL_INT32(-839850000, state.longitude_e7);
+    TEST_ASSERT_TRUE(state.has_geodetic_altitude);
+    TEST_ASSERT_EQUAL_INT32(1332, state.geodetic_altitude_half_m);
+
+    badge_easter_egg_remote_id_t remote_id = {
+        .has_basic_id = state.has_basic_id,
+        .basic_id = state.drone_id,
+        .has_location = state.has_location,
+        .latitude_e7 = state.latitude_e7,
+        .longitude_e7 = state.longitude_e7,
+        .has_geodetic_altitude = state.has_geodetic_altitude,
+        .geodetic_altitude_half_m = state.geodetic_altitude_half_m,
+    };
+    TEST_ASSERT_TRUE(badge_easter_egg_remote_id_matches(&remote_id));
+}
+
+void test_odid_basic_id_change_clears_only_prior_identity_location(void)
+{
+    odid_state_t state;
+    odid_state_init(&state, "AA:BB:CC:DD:EE:FF", 1000);
+
+    uint8_t location[ODID_MSG_SIZE];
+    make_location_msg(location, 424347200, -839850000, 3332);
+    odid_parse_message(location, sizeof(location), &state, 0);
+
+    uint8_t first_id[ODID_MSG_SIZE];
+    make_basic_id_msg(first_id, "first-id");
+    odid_parse_message(first_id, sizeof(first_id), &state, 0);
+
+    /* A first Basic ID belongs to the location already accumulated by slot. */
+    TEST_ASSERT_TRUE(state.has_basic_id);
+    TEST_ASSERT_TRUE(state.has_location);
+    TEST_ASSERT_EQUAL_INT32(424347200, state.latitude_e7);
+    TEST_ASSERT_TRUE(state.has_geodetic_altitude);
+    TEST_ASSERT_EQUAL_INT32(1332, state.geodetic_altitude_half_m);
+
+    uint8_t replacement_id[ODID_MSG_SIZE];
+    make_basic_id_msg(replacement_id, "second-id");
+    odid_parse_message(replacement_id, sizeof(replacement_id), &state, 0);
+
+    /* A different nonempty ID must not inherit the previous aircraft's fix. */
+    TEST_ASSERT_TRUE(state.has_basic_id);
+    TEST_ASSERT_EQUAL_STRING("second-id", state.drone_id);
+    TEST_ASSERT_FALSE(state.has_location);
+    TEST_ASSERT_EQUAL_INT32(0, state.latitude_e7);
+    TEST_ASSERT_EQUAL_INT32(0, state.longitude_e7);
+    TEST_ASSERT_FALSE(state.has_geodetic_altitude);
+    TEST_ASSERT_EQUAL_INT32(0, state.geodetic_altitude_half_m);
 }
 
 /* ── Test: System (Type 4) ─────────────────────────────────────────────── */

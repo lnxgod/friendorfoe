@@ -28,7 +28,11 @@ void http_upload_init(QueueHandle_t detection_queue);
  * Start the HTTP upload FreeRTOS task.
  * Batches detections and POSTs them periodically.
  */
-void http_upload_start(void);
+/** Returns true when the upload worker exists (including an earlier start). */
+bool http_upload_start(void);
+
+/** True after the upload worker has entered its task function. */
+bool http_upload_task_alive(void);
 
 /**
  * Get the count of successfully uploaded batches since boot.

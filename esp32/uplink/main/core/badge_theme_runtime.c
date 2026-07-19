@@ -84,29 +84,34 @@ bool badge_theme_runtime_set(const badge_theme_t *theme, bool persist)
     if (s_theme_lock) {
         xSemaphoreTake(s_theme_lock, portMAX_DELAY);
     }
-    commit_theme_locked(theme);
-    if (s_theme_lock) {
-        xSemaphoreGive(s_theme_lock);
-    }
 
     if (persist) {
         char json[BADGE_THEME_JSON_MAX] = {0};
-        badge_theme_to_json(theme, json, sizeof(json));
-        if (!nvs_config_set_string(BADGE_THEME_NVS_KEY, json)) {
+        if (badge_theme_to_json(theme, json, sizeof(json)) == 0 ||
+            !nvs_config_set_string(BADGE_THEME_NVS_KEY, json)) {
             ESP_LOGW(TAG, "Failed to persist badge theme");
+            if (s_theme_lock) {
+                xSemaphoreGive(s_theme_lock);
+            }
             return false;
         }
     }
+
+    commit_theme_locked(theme);
+    uint32_t committed_hash = s_theme_hash;
+    if (s_theme_lock) {
+        xSemaphoreGive(s_theme_lock);
+    }
     ESP_LOGI(TAG, "Badge theme updated hash=%lu persist=%d",
-             (unsigned long)s_theme_hash, persist ? 1 : 0);
+             (unsigned long)committed_hash, persist ? 1 : 0);
     return true;
 }
 
-void badge_theme_runtime_reset(bool persist)
+bool badge_theme_runtime_reset(bool persist)
 {
     badge_theme_t theme;
     badge_theme_defaults(&theme);
-    (void)badge_theme_runtime_set(&theme, persist);
+    return badge_theme_runtime_set(&theme, persist);
 }
 
 size_t badge_theme_runtime_json(char *out, size_t out_len)

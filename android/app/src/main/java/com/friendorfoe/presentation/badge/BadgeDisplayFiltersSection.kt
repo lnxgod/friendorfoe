@@ -19,6 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -47,7 +48,9 @@ fun BadgeDisplayFiltersSection(
     onPolicyChange: (BadgeDisplayPolicy) -> Unit,
     onApply: () -> Unit,
     onReset: () -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    remoteActionsEnabled: Boolean = true,
+    refreshEnabled: Boolean = true,
 ) {
     Column(
         modifier = Modifier
@@ -128,15 +131,45 @@ fun BadgeDisplayFiltersSection(
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
             )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(onClick = onApply) {
-                Text("Apply")
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("badge_filter_remote_actions"),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("badge_filter_apply_reset_row"),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Button(
+                    onClick = onApply,
+                    enabled = remoteActionsEnabled,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Apply")
+                }
+                OutlinedButton(
+                    onClick = onReset,
+                    enabled = remoteActionsEnabled,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Reset Defaults")
+                }
             }
-            OutlinedButton(onClick = onReset) {
-                Text("Reset Defaults")
-            }
-            OutlinedButton(onClick = onRefresh) {
-                Text("Refresh")
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("badge_filter_refresh_row"),
+            ) {
+                OutlinedButton(
+                    onClick = onRefresh,
+                    enabled = refreshEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Refresh")
+                }
             }
         }
     }

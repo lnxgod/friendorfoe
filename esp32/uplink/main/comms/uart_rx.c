@@ -15,7 +15,9 @@
 #include "fw_store.h"
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
+#include "badge_power_runtime.h"
 #include "badge_ble_investigation.h"
+#include "badge_easter_egg_runtime.h"
 #endif
 
 #include <string.h>
@@ -57,6 +59,9 @@ static SemaphoreHandle_t s_uart_tx_lock = NULL;
 /* Scanner identity (populated from scanner_info UART messages) */
 static scanner_info_t s_ble_scanner_info = {0};
 static scanner_info_t s_wifi_scanner_info = {0};
+static scanner_identity_snapshot_t s_scanner_identity_snapshots[2] = {0};
+static StaticSemaphore_t s_scanner_identity_mutex_storage;
+static SemaphoreHandle_t s_scanner_identity_mutex = NULL;
 
 /* OTA response tracking (set by UART RX, read by relay handler) */
 static volatile ota_response_t s_last_ota_response = {0};
@@ -465,7 +470,8 @@ bool uart_rx_set_scanner_tx_pin_for_badge_probe(int scanner_id, int tx_pin)
     int rx_pin = scanner_id == 1 ? CONFIG_WIFI_SCANNER_RX_PIN : CONFIG_BLE_SCANNER_RX_PIN;
 
     SemaphoreHandle_t lock = s_uart_tx_lock;
-    if (lock && xSemaphoreTake(lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    if (lock &&
+        xSemaphoreTakeRecursive(lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
         ESP_LOGW(TAG, "badge tx-pin probe lock timeout: scanner=%d tx=%d",
                  scanner_id, tx_pin);
         return false;
@@ -476,7 +482,7 @@ bool uart_rx_set_scanner_tx_pin_for_badge_probe(int scanner_id, int tx_pin)
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
     if (lock) {
-        xSemaphoreGive(lock);
+        xSemaphoreGiveRecursive(lock);
     }
 
     if (err != ESP_OK) {
@@ -516,7 +522,8 @@ static bool send_json_line_to_scanner_locked(int scanner_id, const char *json_cm
     line[len++] = '\n';
 
     SemaphoreHandle_t lock = s_uart_tx_lock;
-    if (lock && xSemaphoreTake(lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    if (lock &&
+        xSemaphoreTakeRecursive(lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
         ESP_LOGW(TAG, "scanner command lock timeout: scanner=%d", scanner_id);
         return false;
     }
@@ -528,7 +535,7 @@ static bool send_json_line_to_scanner_locked(int scanner_id, const char *json_cm
     }
 
     if (lock) {
-        xSemaphoreGive(lock);
+        xSemaphoreGiveRecursive(lock);
     }
 
     if (written != (int)len) {
@@ -564,6 +571,11 @@ static bool is_low_value_ble_detection(const drone_detection_t *det)
 
 static void maybe_resume_scanner(int scanner_id)
 {
+#ifdef FOF_BADGE_VARIANT
+    if (badge_power_runtime_is_quiet()) {
+        return;
+    }
+#endif
     _Atomic bool *flag = backpressure_flag_for_scanner(scanner_id);
     if (!atomic_load(flag) || s_detection_queue == NULL) {
         return;
@@ -628,6 +640,9 @@ static bool msg_type_is_scanner_originated(const char *msg_type)
            strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0 ||
            strcmp(msg_type, "scan_profile_ack") == 0 ||
            strcmp(msg_type, "display_control_ack") == 0 ||
+           strcmp(msg_type, "display_policy_ack") == 0 ||
+           strcmp(msg_type, "stop_ack") == 0 ||
+           strcmp(msg_type, MSG_TYPE_SCANNER_QUIET_ACK) == 0 ||
            strcmp(msg_type, "recovery_ack") == 0 ||
            strcmp(msg_type, "scanner_recovery") == 0 ||
            strcmp(msg_type, MSG_TYPE_FW_CHECK) == 0 ||
@@ -726,6 +741,22 @@ static double json_get_double(const cJSON *obj, const char *key, double def)
     return def;
 }
 
+static bool json_get_uint32_exact(const cJSON *obj, const char *key,
+                                  uint32_t *out)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (!out || !cJSON_IsNumber(item) || item->valuedouble < 0.0 ||
+        item->valuedouble > (double)UINT32_MAX) {
+        return false;
+    }
+    uint32_t value = (uint32_t)item->valuedouble;
+    if ((double)value != item->valuedouble) {
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
 static int json_get_int(const cJSON *obj, const char *key, int def)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
@@ -745,6 +776,56 @@ static const char *json_get_string(const cJSON *obj, const char *key,
     return def;
 }
 
+static bool json_get_nonempty_string_exact(const cJSON *obj, const char *key,
+                                           const char **out)
+{
+    const cJSON *item = obj && key
+        ? cJSON_GetObjectItemCaseSensitive(obj, key)
+        : NULL;
+    if (!out || !cJSON_IsString(item) || !item->valuestring ||
+        !item->valuestring[0]) {
+        return false;
+    }
+    *out = item->valuestring;
+    return true;
+}
+
+static bool strict_receipt_fields_absent(const cJSON *root)
+{
+    static const char *const strict_keys[] = {
+        JSON_KEY_FW_NAME,
+        "app_project",
+        "hardware_type",
+        "sha256",
+        "generation",
+        "allow_same_version",
+    };
+    if (!root) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(strict_keys) / sizeof(strict_keys[0]); ++i) {
+        if (cJSON_GetObjectItemCaseSensitive(root, strict_keys[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool fw_ready_common_fields_valid(const cJSON *root,
+                                         const char **board,
+                                         const char **current_version,
+                                         const char **target_version,
+                                         uint32_t *target_size,
+                                         uint32_t *target_crc32)
+{
+    return json_get_nonempty_string_exact(root, "board", board) &&
+        json_get_nonempty_string_exact(root, "ver", current_version) &&
+        json_get_nonempty_string_exact(root, JSON_KEY_FW_TARGET_VERSION,
+                                       target_version) &&
+        json_get_uint32_exact(root, JSON_KEY_FW_SIZE, target_size) &&
+        json_get_uint32_exact(root, JSON_KEY_FW_CRC32, target_crc32);
+}
+
 static void json_copy_string(const cJSON *obj, const char *key,
                              char *out, size_t out_len)
 {
@@ -757,6 +838,109 @@ static void json_copy_string(const cJSON *obj, const char *key,
     }
     strncpy(out, value, out_len - 1);
     out[out_len - 1] = '\0';
+}
+
+static bool scanner_identity_frame_string(const cJSON *root,
+                                          const char *key,
+                                          const char **out,
+                                          size_t out_capacity)
+{
+    if (!out || out_capacity < 2U) {
+        return false;
+    }
+    *out = "";
+    const cJSON *item = root && key
+        ? cJSON_GetObjectItemCaseSensitive(root, key)
+        : NULL;
+    if (!cJSON_IsString(item) || !item->valuestring || !item->valuestring[0] ||
+        strlen(item->valuestring) >= out_capacity) {
+        return false;
+    }
+    *out = item->valuestring;
+    return true;
+}
+
+static bool scanner_identity_hardware_id_is_canonical(const char *hardware_id)
+{
+    if (!hardware_id || strlen(hardware_id) != 17U) {
+        return false;
+    }
+    for (size_t i = 0; i < 17U; ++i) {
+        if ((i + 1U) % 3U == 0U) {
+            if (hardware_id[i] != ':') {
+                return false;
+            }
+            continue;
+        }
+        char ch = hardware_id[i];
+        if (!((ch >= '0' && ch <= '9') ||
+              (ch >= 'a' && ch <= 'f') ||
+              (ch >= 'A' && ch <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static uint32_t publish_scanner_identity_snapshot(int scanner_id,
+                                                  const cJSON *root,
+                                                  int64_t received_ms)
+{
+    if (scanner_id < 0 || scanner_id > 1 || !root ||
+        !s_scanner_identity_mutex) {
+        return 0;
+    }
+
+    scanner_identity_snapshot_t snapshot = {0};
+    const char *version = "";
+    const char *board = "";
+    const char *firmware_name = "";
+    const char *app_project = "";
+    const char *hardware_type = "";
+    const char *hardware_id = "";
+    bool complete =
+        scanner_identity_frame_string(root, "ver", &version,
+                                      sizeof(snapshot.version)) &&
+        scanner_identity_frame_string(root, "board", &board,
+                                      sizeof(snapshot.board)) &&
+        scanner_identity_frame_string(root, "firmware_name",
+                                      &firmware_name,
+                                      sizeof(snapshot.firmware_name)) &&
+        scanner_identity_frame_string(root, "app_project", &app_project,
+                                      sizeof(snapshot.app_project)) &&
+        scanner_identity_frame_string(root, "hardware_type",
+                                      &hardware_type,
+                                      sizeof(snapshot.hardware_type)) &&
+        scanner_identity_frame_string(root, "hardware_id", &hardware_id,
+                                      sizeof(snapshot.hardware_id)) &&
+        scanner_identity_hardware_id_is_canonical(hardware_id);
+
+    snprintf(snapshot.version, sizeof(snapshot.version), "%s", version);
+    snprintf(snapshot.board, sizeof(snapshot.board), "%s", board);
+    snprintf(snapshot.firmware_name, sizeof(snapshot.firmware_name), "%s",
+             firmware_name);
+    snprintf(snapshot.app_project, sizeof(snapshot.app_project), "%s",
+             app_project);
+    snprintf(snapshot.hardware_type, sizeof(snapshot.hardware_type), "%s",
+             hardware_type);
+    snprintf(snapshot.hardware_id, sizeof(snapshot.hardware_id), "%s",
+             hardware_id);
+    snapshot.received_ms = received_ms;
+    snapshot.complete = complete;
+
+    /* Publication is the freshness authority. Waiting for the tiny snapshot
+     * copy is safer than timing out and leaving an older complete identity
+     * eligible after a current incomplete frame. Readers never hold this
+     * mutex across another lock or any I/O. */
+    if (xSemaphoreTake(s_scanner_identity_mutex, portMAX_DELAY) != pdTRUE) {
+        return 0;
+    }
+    uint32_t previous =
+        s_scanner_identity_snapshots[scanner_id].identity_generation;
+    snapshot.identity_generation = previous == UINT32_MAX ? 1U : previous + 1U;
+    s_scanner_identity_snapshots[scanner_id] = snapshot;
+    xSemaphoreGive(s_scanner_identity_mutex);
+    return snapshot.identity_generation;
 }
 
 static int64_t scanner_status_ssid_age_s(int64_t now_ms, int64_t seen_ms)
@@ -1382,9 +1566,24 @@ static void handle_status(const cJSON *root, int scanner_id)
 
 static void process_line(const char *line, size_t len, int scanner_id)
 {
+    badge_easter_egg_source_t easter_source =
+        badge_easter_egg_source_from_uart_frame(line, len);
+    if (easter_source != BADGE_EASTER_EGG_SOURCE_NONE) {
+#ifdef FOF_BADGE_VARIANT
+        (void)badge_easter_egg_runtime_trigger(easter_source);
+#endif
+        return;
+    }
+
     int_fast64_t now_ms = (int_fast64_t)(esp_timer_get_time() / 1000);
 
-    cJSON *root = cJSON_ParseWithLength(line, len);
+    if (memchr(line, '\0', len) != NULL) {
+        note_scanner_json_parse_error(scanner_id);
+        ESP_LOGW(TAG, "Scanner[%d] JSON contains embedded NUL", scanner_id);
+        return;
+    }
+    const char *parse_end = NULL;
+    cJSON *root = cJSON_ParseWithOpts(line, &parse_end, true);
     if (!root) {
         note_scanner_json_parse_error(scanner_id);
         ESP_LOGW(TAG, "Scanner[%d] JSON parse error: %.64s...",
@@ -1395,6 +1594,16 @@ static void process_line(const char *line, size_t len, int scanner_id)
     const char *msg_type = json_get_string(root, JSON_KEY_TYPE, NULL);
     if (!msg_type) {
         ESP_LOGW(TAG, "Scanner[%d] message missing 'type' field", scanner_id);
+        cJSON_Delete(root);
+        return;
+    }
+
+    /* Scanner firmware emits only the two byte-exact frames accepted above.
+     * Reject every decoded near-match before it can affect liveness or
+     * backpressure. This also catches cJSON strings truncated by \u0000. */
+    if (badge_easter_egg_uart_type_claims_event(msg_type)) {
+        ESP_LOGW(TAG, "Scanner[%d] noncanonical badge Easter frame ignored",
+                 scanner_id);
         cJSON_Delete(root);
         return;
     }
@@ -1484,7 +1693,11 @@ static void process_line(const char *line, size_t len, int scanner_id)
                     atomic_store(bp_flag, true);
                 }
             } else if (atomic_load(bp_flag) &&
-                       queue_count <= (CONFIG_DETECTION_QUEUE_SIZE * 4 / 10)) {
+                       queue_count <= (CONFIG_DETECTION_QUEUE_SIZE * 4 / 10)
+#ifdef FOF_BADGE_VARIANT
+                       && !badge_power_runtime_is_quiet()
+#endif
+            ) {
                 send_scanner_flow_cmd(scanner_id, "start");
                 ESP_LOGI(TAG, "Queue drained %d/%d — resuming scanner[%d]",
                          (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE, scanner_id);
@@ -1505,14 +1718,29 @@ static void process_line(const char *line, size_t len, int scanner_id)
         scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
         const char *ver = json_get_string(root, "ver", "?");
         const char *board = json_get_string(root, "board", "?");
+        const char *firmware_name = json_get_string(root, "firmware_name", board);
+        const char *app_project = json_get_string(root, "app_project", "");
+        const char *hardware_type = json_get_string(root, "hardware_type", "");
+        const char *hardware_id = json_get_string(root, "hardware_id", "");
         const char *chip = json_get_string(root, "chip", "?");
         const char *caps = json_get_string(root, "caps", "?");
+        uint32_t published_identity_generation =
+            publish_scanner_identity_snapshot(
+                scanner_id, root, esp_timer_get_time() / 1000);
         strncpy(info->version, ver, sizeof(info->version) - 1);
         strncpy(info->board, board, sizeof(info->board) - 1);
+        strncpy(info->firmware_name, firmware_name, sizeof(info->firmware_name) - 1);
+        strncpy(info->app_project, app_project, sizeof(info->app_project) - 1);
+        strncpy(info->hardware_type, hardware_type, sizeof(info->hardware_type) - 1);
+        strncpy(info->hardware_id, hardware_id, sizeof(info->hardware_id) - 1);
         strncpy(info->chip, chip, sizeof(info->chip) - 1);
         strncpy(info->caps, caps, sizeof(info->caps) - 1);
         info->version[sizeof(info->version) - 1] = '\0';
         info->board[sizeof(info->board) - 1] = '\0';
+        info->firmware_name[sizeof(info->firmware_name) - 1] = '\0';
+        info->app_project[sizeof(info->app_project) - 1] = '\0';
+        info->hardware_type[sizeof(info->hardware_type) - 1] = '\0';
+        info->hardware_id[sizeof(info->hardware_id) - 1] = '\0';
         info->chip[sizeof(info->chip) - 1] = '\0';
         info->caps[sizeof(info->caps) - 1] = '\0';
         info->toff_ms = (int64_t)json_get_double(root, "toff", 0.0);
@@ -1716,9 +1944,23 @@ static void process_line(const char *line, size_t len, int scanner_id)
         info->crash_count = (uint32_t)json_get_double(root, "crash_count", (double)info->crash_count);
         info->radio_restart_count = (uint32_t)json_get_double(root, "radio_restart_count",
                                                               (double)info->radio_restart_count);
+        const cJSON *quiet_mode = cJSON_GetObjectItemCaseSensitive(root, "quiet_mode");
+        if (quiet_mode) {
+            info->quiet_mode = cJSON_IsTrue(quiet_mode) ||
+                               (cJSON_IsNumber(quiet_mode) &&
+                                quiet_mode->valueint != 0);
+        }
+        info->quiet_generation = (uint32_t)json_get_double(
+            root, "quiet_generation", (double)info->quiet_generation);
+        if (published_identity_generation != 0) {
+            info->identity_generation = published_identity_generation;
+        } else {
+            info->identity_generation++;
+        }
         info->received = true;
 #ifdef FOF_BADGE_VARIANT
         badge_ingest_scanner_status_evidence(scanner_id, info);
+        badge_power_runtime_note_scanner_identity(scanner_id);
 #endif
         ESP_LOGI(TAG, "Scanner[%d] identity: %s v%s (%s) chip=%s toff=%lld tcnt=%u valid=%u state=%s mode=%s",
                  scanner_id, board, ver, caps, chip,
@@ -1747,6 +1989,7 @@ static void process_line(const char *line, size_t len, int scanner_id)
     } else if (strcmp(msg_type, MSG_TYPE_FW_CHECK) == 0) {
         const char *board = json_get_string(root, "board", "");
         const char *ver = json_get_string(root, "ver", "");
+        const char *reason = json_get_string(root, "reason", "");
         scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
         info->fw_check_count = (uint32_t)json_get_double(root, "fw_check_count", (double)info->fw_check_count);
         const char *fw_state = json_get_string(root, JSON_KEY_FW_STATE, info->fw_update_state);
@@ -1768,23 +2011,85 @@ static void process_line(const char *line, size_t len, int scanner_id)
                  scanner_id,
                  board[0] ? board : "?",
                  ver[0] ? ver : "?");
-        fw_store_handle_scanner_check(scanner_id, board, ver);
+        fw_store_handle_scanner_check(scanner_id, board, ver, reason);
     } else if (strcmp(msg_type, MSG_TYPE_FW_READY) == 0) {
-        const char *board = json_get_string(root, "board", "");
-        const char *ver = json_get_string(root, "ver", "");
-        const char *target = json_get_string(root, JSON_KEY_FW_TARGET_VERSION, "");
-        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        const char *board = "";
+        const char *ver = "";
+        const char *target = "";
+        uint32_t target_size = 0;
+        uint32_t target_crc32 = 0;
+        bool legacy_receipt = strict_receipt_fields_absent(root);
+        bool ready_frame_valid = fw_ready_common_fields_valid(
+            root, &board, &ver, &target, &target_size, &target_crc32);
+        bool accepted = false;
+
+        if (legacy_receipt) {
+            if (ready_frame_valid) {
+                accepted = fw_store_handle_legacy_scanner_ready(
+                    scanner_id, board, ver, target, target_size,
+                    target_crc32);
+            }
+        } else {
+            const char *target_name = "";
+            const char *target_project = "";
+            const char *target_hardware = "";
+            const char *target_sha256 = "";
+            uint32_t target_generation = 0;
+            const cJSON *allow_same_j = cJSON_GetObjectItemCaseSensitive(
+                root, "allow_same_version");
+            ready_frame_valid = ready_frame_valid &&
+                json_get_nonempty_string_exact(root, JSON_KEY_FW_NAME,
+                                               &target_name) &&
+                json_get_nonempty_string_exact(root, "app_project",
+                                               &target_project) &&
+                json_get_nonempty_string_exact(root, "hardware_type",
+                                               &target_hardware) &&
+                json_get_nonempty_string_exact(root, "sha256",
+                                               &target_sha256) &&
+                json_get_uint32_exact(root, "generation",
+                                      &target_generation) &&
+                cJSON_IsFalse(allow_same_j);
+            if (ready_frame_valid) {
+                accepted = fw_store_handle_scanner_ready(
+                    scanner_id, board, ver, target, target_name,
+                    target_project, target_hardware, target_sha256,
+                    target_generation, target_size, target_crc32);
+            }
+        }
+
+        scanner_info_t *info = (scanner_id == 0)
+            ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        if (!accepted) {
+            info->need_firmware = false;
+            strncpy(info->fw_update_state, "ready_rejected",
+                    sizeof(info->fw_update_state) - 1);
+            info->fw_update_state[sizeof(info->fw_update_state) - 1] = '\0';
+            strncpy(info->last_fw_error,
+                    ready_frame_valid ? "fw_ready_refused"
+                                      : "malformed_fw_ready",
+                    sizeof(info->last_fw_error) - 1);
+            info->last_fw_error[sizeof(info->last_fw_error) - 1] = '\0';
+            ESP_LOGW(TAG,
+                     "Scanner[%d] %s fw_ready rejected (%s); resuming scanner",
+                     scanner_id, legacy_receipt ? "legacy" : "strict",
+                     info->last_fw_error);
+            uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
+            cJSON_Delete(root);
+            return;
+        }
         info->need_firmware = true;
         strncpy(info->fw_update_state, "ready", sizeof(info->fw_update_state) - 1);
         info->fw_update_state[sizeof(info->fw_update_state) - 1] = '\0';
         strncpy(info->fw_target_version, target, sizeof(info->fw_target_version) - 1);
         info->fw_target_version[sizeof(info->fw_target_version) - 1] = '\0';
-        ESP_LOGW(TAG, "Scanner[%d] firmware ready: board=%s current=%s target=%s",
+        ESP_LOGW(TAG,
+                 "Scanner[%d] %s firmware ready durably accepted: "
+                 "board=%s current=%s target=%s",
                  scanner_id,
+                 legacy_receipt ? "legacy" : "strict",
                  board[0] ? board : "?",
                  ver[0] ? ver : "?",
                  target[0] ? target : "?");
-        fw_store_handle_scanner_ready(scanner_id, board, ver);
     } else if (strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0) {
         scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
         const char *scan_mode = json_get_string(root, JSON_KEY_SCAN_MODE, "normal");
@@ -1838,6 +2143,78 @@ static void process_line(const char *line, size_t len, int scanner_id)
         info->received = true;
         ESP_LOGI(TAG, "Scanner[%d] display policy ack hash=%lu",
                  scanner_id, (unsigned long)info->display_policy_ack_hash);
+    } else if (strcmp(msg_type, MSG_TYPE_SCANNER_QUIET_ACK) == 0) {
+        scanner_info_t *info = (scanner_id == 0)
+            ? &s_ble_scanner_info
+            : &s_wifi_scanner_info;
+        const cJSON *ok_j = cJSON_GetObjectItemCaseSensitive(root, "ok");
+        const cJSON *enabled_j = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+        const cJSON *tx_enabled_j = cJSON_GetObjectItemCaseSensitive(
+            root, "tx_enabled");
+        const cJSON *ble_scanning_j = cJSON_GetObjectItemCaseSensitive(
+            root, "ble_scanning");
+        const cJSON *wifi_paused_j = cJSON_GetObjectItemCaseSensitive(
+            root, "wifi_paused");
+        const cJSON *ble_quiesced_j = cJSON_GetObjectItemCaseSensitive(
+            root, "ble_quiesced");
+        const cJSON *wifi_quiesced_j = cJSON_GetObjectItemCaseSensitive(
+            root, "wifi_quiesced");
+        const cJSON *ble_active_j = cJSON_GetObjectItemCaseSensitive(
+            root, "ble_active");
+        const cJSON *wifi_active_j = cJSON_GetObjectItemCaseSensitive(
+            root, "wifi_active");
+        const cJSON *radios_ready_j = cJSON_GetObjectItemCaseSensitive(
+            root, "radios_ready");
+        const cJSON *tx_restored_j = cJSON_GetObjectItemCaseSensitive(
+            root, "tx_restored");
+        const cJSON *uart_commands_j = cJSON_GetObjectItemCaseSensitive(
+            root, "uart_commands");
+        uint32_t generation = 0;
+        bool generation_valid = json_get_uint32_exact(
+            root, JSON_KEY_GENERATION, &generation);
+        bool quiet_ack_fields_valid = cJSON_IsBool(ok_j) &&
+            cJSON_IsBool(enabled_j) && cJSON_IsBool(tx_enabled_j) &&
+            cJSON_IsBool(ble_scanning_j) && cJSON_IsBool(wifi_paused_j) &&
+            cJSON_IsBool(ble_quiesced_j) &&
+            cJSON_IsBool(wifi_quiesced_j) &&
+            cJSON_IsBool(ble_active_j) && cJSON_IsBool(wifi_active_j) &&
+            cJSON_IsBool(radios_ready_j) && cJSON_IsBool(tx_restored_j) &&
+            cJSON_IsBool(uart_commands_j) && generation_valid;
+        bool transition_ok = quiet_ack_fields_valid && cJSON_IsTrue(ok_j);
+        bool enabled = cJSON_IsTrue(enabled_j);
+        bool tx_enabled = cJSON_IsTrue(tx_enabled_j);
+        bool ble_scanning = cJSON_IsTrue(ble_scanning_j);
+        bool wifi_paused = cJSON_IsTrue(wifi_paused_j);
+        bool ble_quiesced = cJSON_IsTrue(ble_quiesced_j);
+        bool wifi_quiesced = cJSON_IsTrue(wifi_quiesced_j);
+        bool ble_active = cJSON_IsTrue(ble_active_j);
+        bool wifi_active = cJSON_IsTrue(wifi_active_j);
+        bool radios_ready = cJSON_IsTrue(radios_ready_j);
+        bool tx_restored = cJSON_IsTrue(tx_restored_j);
+        bool uart_commands = cJSON_IsTrue(uart_commands_j);
+        info->quiet_transition_ok = transition_ok;
+        info->quiet_mode = enabled;
+        info->quiet_tx_enabled = tx_enabled;
+        info->quiet_generation = generation;
+        info->quiet_uart_commands = uart_commands;
+        info->quiet_ble_quiesced = ble_quiesced;
+        info->quiet_wifi_quiesced = wifi_quiesced;
+        info->quiet_ble_active = ble_active;
+        info->quiet_wifi_active = wifi_active;
+        info->quiet_radios_ready = radios_ready;
+        info->quiet_tx_restored = tx_restored;
+        info->ble_scanning = ble_scanning;
+        info->wifi_paused = wifi_paused;
+        info->cmd_rx_count++;
+        info->cmd_last_age_s = 0;
+        info->received = true;
+#ifdef FOF_BADGE_VARIANT
+        badge_power_runtime_note_scanner_ack(
+            scanner_id, transition_ok, enabled, generation,
+            tx_enabled, ble_scanning, wifi_paused,
+            ble_quiesced, wifi_quiesced, ble_active, wifi_active,
+            radios_ready, tx_restored, uart_commands);
+#endif
     } else if (strncmp(msg_type, "ota_", 4) == 0 ||
                strcmp(msg_type, "stop_ack") == 0) {
         /* OTA/control response from scanner — capture for relay diagnostics. */
@@ -2033,10 +2410,12 @@ static void init_uart_port(int uart_num, int rx_pin, int tx_pin, const char *lab
 void uart_rx_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
-    if (!s_uart_tx_lock) {
-        s_uart_tx_lock = xSemaphoreCreateMutex();
-        if (!s_uart_tx_lock) {
-            ESP_LOGE(TAG, "Failed to create scanner UART TX lock");
+    (void)uart_rx_scanner_tx_lease_init();
+    if (!s_scanner_identity_mutex) {
+        s_scanner_identity_mutex = xSemaphoreCreateMutexStatic(
+            &s_scanner_identity_mutex_storage);
+        if (!s_scanner_identity_mutex) {
+            ESP_LOGE(TAG, "Failed to create scanner identity snapshot mutex");
         }
     }
 #ifdef FOF_BADGE_VARIANT
@@ -2061,17 +2440,84 @@ void uart_rx_init(QueueHandle_t detection_queue)
 #endif
 }
 
-void uart_rx_start(void)
+bool uart_rx_scanner_tx_lease_init(void)
 {
-    xTaskCreate(uart_rx_task, "uart_rx_ble", CONFIG_UART_RX_STACK,
-                &s_ble_task_params, CONFIG_UART_RX_PRIORITY, NULL);
+    if (s_uart_tx_lock) {
+        return true;
+    }
+    s_uart_tx_lock = xSemaphoreCreateRecursiveMutex();
+    if (!s_uart_tx_lock) {
+        ESP_LOGE(TAG, "Failed to create recursive scanner UART TX lease");
+        return false;
+    }
+    return true;
+}
+
+bool uart_rx_scanner_tx_lease_acquire(TickType_t wait_ticks)
+{
+    SemaphoreHandle_t lock = s_uart_tx_lock;
+    if (!lock) {
+        ESP_LOGE(TAG, "Scanner UART TX lease unavailable before UART init");
+        return false;
+    }
+    if (xSemaphoreTakeRecursive(lock, wait_ticks) != pdTRUE) {
+        ESP_LOGE(TAG, "Scanner UART TX lease acquisition timed out");
+        return false;
+    }
+    return true;
+}
+
+void uart_rx_scanner_tx_lease_release(void)
+{
+    SemaphoreHandle_t lock = s_uart_tx_lock;
+    if (lock) {
+        xSemaphoreGiveRecursive(lock);
+    }
+}
+
+bool uart_rx_start(void)
+{
+    static bool s_tasks_started = false;
+    if (s_tasks_started) {
+        return true;
+    }
+
+    if (!s_ble_task_params.line_buf || !s_ble_task_params.read_buf) {
+        ESP_LOGE(TAG, "BLE scanner RX buffers are unavailable");
+        return false;
+    }
+#if CONFIG_DUAL_SCANNER
+    if (!s_wifi_task_params.line_buf || !s_wifi_task_params.read_buf) {
+        ESP_LOGE(TAG, "WiFi scanner RX buffers are unavailable");
+        return false;
+    }
+#endif
+
+    TaskHandle_t ble_task = NULL;
+    BaseType_t ble_ok = xTaskCreate(
+        uart_rx_task, "uart_rx_ble", CONFIG_UART_RX_STACK,
+        &s_ble_task_params, CONFIG_UART_RX_PRIORITY, &ble_task);
+    if (ble_ok != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create BLE scanner RX task");
+        return false;
+    }
     ESP_LOGI(TAG, "BLE scanner RX task created");
 
 #if CONFIG_DUAL_SCANNER
-    xTaskCreate(uart_rx_task, "uart_rx_wifi", CONFIG_UART_RX_STACK,
-                &s_wifi_task_params, CONFIG_UART_RX_PRIORITY, NULL);
+    TaskHandle_t wifi_task = NULL;
+    BaseType_t wifi_ok = xTaskCreate(
+        uart_rx_task, "uart_rx_wifi", CONFIG_UART_RX_STACK,
+        &s_wifi_task_params, CONFIG_UART_RX_PRIORITY, &wifi_task);
+    if (wifi_ok != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create WiFi scanner RX task");
+        vTaskDelete(ble_task);
+        return false;
+    }
     ESP_LOGI(TAG, "WiFi scanner RX task created");
 #endif
+
+    s_tasks_started = true;
+    return true;
 }
 
 int uart_rx_get_detection_count(void)
@@ -2265,6 +2711,20 @@ const scanner_info_t *uart_rx_get_ble_scanner_info(void)
 const scanner_info_t *uart_rx_get_wifi_scanner_info(void)
 {
     return s_wifi_scanner_info.received ? &s_wifi_scanner_info : NULL;
+}
+
+bool uart_rx_get_scanner_identity_snapshot(
+    int scanner_id, scanner_identity_snapshot_t *out)
+{
+    if (scanner_id < 0 || scanner_id > 1 || !out ||
+        !s_scanner_identity_mutex ||
+        xSemaphoreTake(s_scanner_identity_mutex,
+                       pdMS_TO_TICKS(100)) != pdTRUE) {
+        return false;
+    }
+    *out = s_scanner_identity_snapshots[scanner_id];
+    xSemaphoreGive(s_scanner_identity_mutex);
+    return out->identity_generation != 0;
 }
 
 ota_response_t uart_rx_get_last_ota_response(void)

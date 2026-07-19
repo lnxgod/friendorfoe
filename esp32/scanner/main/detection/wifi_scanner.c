@@ -27,6 +27,10 @@
 #include "calibration_mode.h"
 #include "rssi_distance.h"
 #include "core/task_priorities.h"
+#ifdef FOF_BADGE_VARIANT
+#include "badge_easter_egg.h"
+#include "comms/uart_tx.h"
+#endif
 
 #include <stdlib.h>
 #include "esp_wifi.h"
@@ -40,6 +44,7 @@
 #include "freertos/queue.h"
 
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -100,6 +105,15 @@ static void add_channel_heat(uint16_t ch, uint8_t points);
 static void decay_channel_heat(void);
 static void update_hot_channel(uint16_t ch);
 
+#ifdef FOF_BADGE_VARIANT
+static void note_badge_easter_egg_ssid(const uint8_t *ssid, size_t len)
+{
+    if (badge_easter_egg_ssid_matches(ssid, len)) {
+        uart_tx_note_badge_easter_egg(BADGE_EASTER_EGG_SOURCE_WIFI_SSID);
+    }
+}
+#endif
+
 /* ── Lock-on mode ─────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -122,7 +136,7 @@ static uint32_t s_full_scan_count = 0;
 static uint32_t s_full_scan_ok = 0;
 static uint32_t s_full_scan_err = 0;
 static int      s_full_scan_last_rc = 0;
-static bool     s_wifi_initialized = false;
+static atomic_bool s_wifi_initialized = false;
 static uint32_t s_last_ap_count = 0;
 static int64_t  s_last_scan_ms = 0;
 static uint32_t s_drone_ssid_emit = 0;
@@ -150,7 +164,11 @@ static uint16_t s_deauth_count  = 0;      /* deauth frames since last status */
 static uint16_t s_disassoc_count = 0;     /* disassoc frames since last status */
 static uint16_t s_auth_count    = 0;      /* auth frames since last status */
 static bool     s_deauth_flood  = false;  /* flood detected in current window */
-static bool     s_wifi_scan_paused = false;
+static atomic_bool s_wifi_scan_paused = false;
+/* Covers both the driver's blocking active-scan call and result processing.
+ * A quiet ACK must not claim convergence while either is still running. */
+static atomic_bool s_active_scan_work = false;
+static atomic_uint s_resume_inflight = 0;
 
 /* Per-source deauth tracker — detect flood from single source */
 #define DEAUTH_SRC_SLOTS    16
@@ -449,29 +467,9 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
         return;
     }
 
-    /* Extract source addr (frame[10..15]) and BSSID (frame[16..21]).
-     * Pwnagotchi's beacon forwarding uses a hardcoded sender MAC of
-     * DE:AD:BE:EF:DE:AD (Marauder-confirmed signature). When seen, emit a
-     * high-confidence hostile-scanner detection so the backend can alert
-     * on a pwnagotchi nearby — regardless of what SSID it's pretending
-     * to broadcast. */
+    /* Extract source addr (frame[10..15]) and BSSID (frame[16..21]). */
     const uint8_t *src  = &frame[10];
     const uint8_t *bssid = &frame[16];
-    static const uint8_t PWNAGOTCHI_MAC[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD};
-    if (memcmp(src, PWNAGOTCHI_MAC, 6) == 0 ||
-        memcmp(bssid, PWNAGOTCHI_MAC, 6) == 0) {
-        drone_detection_t det;
-        init_detection(&det, bssid, rssi, "pwnagotchi");
-        det.source = DETECTION_SRC_WIFI_OUI;
-        det.confidence = 0.95f;
-        strncpy(det.manufacturer, "Pwnagotchi", sizeof(det.manufacturer) - 1);
-        strncpy(det.drone_id, "pwnagotchi", sizeof(det.drone_id) - 1);
-        ESP_LOGW(TAG, "Pwnagotchi beacon seen RSSI=%d", rssi);
-        if (s_detection_queue) {
-            xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
-        }
-        return;  /* no further classification needed */
-    }
 
     /* ── Parse tagged parameters ──────────────────────────────────────────── */
     char ssid[33] = { 0 };
@@ -489,9 +487,34 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
         if (tag_id == IE_TAG_SSID && tag_len > 0 && tag_len <= 32) {
             memcpy(ssid, &frame[tag_data_offset], tag_len);
             ssid[tag_len] = '\0';
+#ifdef FOF_BADGE_VARIANT
+            note_badge_easter_egg_ssid(&frame[tag_data_offset],
+                                        (size_t)tag_len);
+#endif
         }
 
         offset = tag_data_offset + tag_len;
+    }
+
+    /* Pwnagotchi's beacon forwarding uses a hardcoded sender MAC of
+     * DE:AD:BE:EF:DE:AD. Exact SSID observation above intentionally happens
+     * first so badge triggers are not hidden behind this classification. */
+    static const uint8_t PWNAGOTCHI_MAC[6] = {
+        0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD
+    };
+    if (memcmp(src, PWNAGOTCHI_MAC, 6) == 0 ||
+        memcmp(bssid, PWNAGOTCHI_MAC, 6) == 0) {
+        drone_detection_t det;
+        init_detection(&det, bssid, rssi, "pwnagotchi");
+        det.source = DETECTION_SRC_WIFI_OUI;
+        det.confidence = 0.95f;
+        strncpy(det.manufacturer, "Pwnagotchi", sizeof(det.manufacturer) - 1);
+        strncpy(det.drone_id, "pwnagotchi", sizeof(det.drone_id) - 1);
+        ESP_LOGW(TAG, "Pwnagotchi beacon seen RSSI=%d", rssi);
+        if (s_detection_queue) {
+            xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
+        }
+        return;
     }
 
     /* ── Beacon spam detection ────────────────────────────────────────────── */
@@ -1065,6 +1088,10 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
                 if (tag_len > 0 && tag_len <= 32) {
                     memcpy(ssid, &frame[tag_data_offset], tag_len);
                     ssid[tag_len] = '\0';
+#ifdef FOF_BADGE_VARIANT
+                    note_badge_easter_egg_ssid(&frame[tag_data_offset],
+                                                (size_t)tag_len);
+#endif
                     /* Accumulate probed SSIDs list */
                     if (probed_pos > 0 && probed_pos < (int)sizeof(probed_ssids) - 2) {
                         probed_ssids[probed_pos++] = ',';
@@ -1263,6 +1290,9 @@ static bool wifi_assoc_seen_recently(const uint8_t *sta, const uint8_t *bssid, i
 
 static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 {
+    if (s_wifi_scan_paused || scanner_quiet_mode_is_active()) {
+        return;
+    }
     s_total_frames++;
 
     /* Data frames: parse only the 802.11 header for AP↔STA mapping, then
@@ -1604,6 +1634,9 @@ static wifi_scan_config_t make_passive_scan_config(uint8_t channel, uint32_t pas
 
 static void process_scan_results(void)
 {
+    if (s_wifi_scan_paused) {
+        return;
+    }
     uint16_t ap_count = 0;
     esp_wifi_scan_get_ap_num(&ap_count);
     s_last_scan_ms = now_ms();
@@ -1621,10 +1654,18 @@ static void process_scan_results(void)
     int64_t scan_ts = now_ms();
 
     for (int i = 0; i < ap_count; i++) {
+        if (s_wifi_scan_paused) {
+            break;
+        }
         const char *ssid = (const char *)ap_list[i].ssid;
         int8_t rssi = ap_list[i].rssi;
         uint8_t *bssid = ap_list[i].bssid;
         uint16_t ch = ap_list[i].primary;
+#ifdef FOF_BADGE_VARIANT
+        note_badge_easter_egg_ssid(
+            ap_list[i].ssid,
+            strnlen(ssid, sizeof(ap_list[i].ssid)));
+#endif
         const fof_privacy_wifi_signature_t *privacy =
             ssid[0] != '\0' ? fof_privacy_match_wifi_ssid(ssid) : NULL;
 
@@ -1748,34 +1789,61 @@ static void process_scan_results(void)
 
 static void do_full_scan(void)
 {
+    if (s_wifi_scan_paused) {
+        return;
+    }
     wifi_scan_config_t cfg = make_passive_scan_config(0, FULL_SCAN_PASSIVE_MS);
 
     s_full_scan_count++;
+    s_active_scan_work = true;
+    if (s_wifi_scan_paused) {
+        s_active_scan_work = false;
+        return;
+    }
     esp_err_t err = esp_wifi_scan_start(&cfg, true);
     s_full_scan_last_rc = (int)err;
+    if (s_wifi_scan_paused) {
+        s_active_scan_work = false;
+        return;
+    }
     if (err != ESP_OK) {
+        s_active_scan_work = false;
         s_full_scan_err++;
         ESP_LOGW(TAG, "Full scan failed: %s", esp_err_to_name(err));
         return;
     }
     s_full_scan_ok++;
     process_scan_results();
+    s_active_scan_work = false;
 }
 
 /* ── Fast targeted rescan (hot channels only) ──────────────────────────────── */
 
 static void do_fast_rescan(void)
 {
+    if (s_wifi_scan_paused) {
+        return;
+    }
     prune_hot_channels(now_ms());
     if (s_hot_channel_count == 0) return;
 
     for (int i = 0; i < s_hot_channel_count; i++) {
+        if (s_wifi_scan_paused) {
+            break;
+        }
         wifi_scan_config_t cfg = make_passive_scan_config(s_hot_channels[i].channel,
                                                           HOT_SCAN_PASSIVE_MS);
 
+        s_active_scan_work = true;
+        if (s_wifi_scan_paused) {
+            s_active_scan_work = false;
+            break;
+        }
         esp_err_t err = esp_wifi_scan_start(&cfg, true);
-        if (err != ESP_OK) continue;
-        process_scan_results();
+        if (err == ESP_OK && !s_wifi_scan_paused) {
+            process_scan_results();
+        }
+        s_active_scan_work = false;
     }
 }
 
@@ -1836,6 +1904,7 @@ void wifi_scanner_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
     s_wifi_initialized = false;
+    s_active_scan_work = false;
 
     /* Set device phase from MAC address for affine channel hopping diversity.
      * Each sensor gets a different phase so they scan different channels. */
@@ -1867,7 +1936,7 @@ void wifi_scanner_init(QueueHandle_t detection_queue)
     if (err != ESP_OK) goto fail;
     err = esp_wifi_set_promiscuous_rx_cb(wifi_promiscuous_cb);
     if (err != ESP_OK) goto fail;
-    err = esp_wifi_set_promiscuous(true);
+    err = esp_wifi_set_promiscuous(!s_wifi_scan_paused);
     if (err != ESP_OK) goto fail;
 
     /* Start on channel 1 */
@@ -1881,10 +1950,19 @@ void wifi_scanner_init(QueueHandle_t detection_queue)
     if (err != ESP_OK) goto fail;
 
     s_wifi_initialized = true;
-    ESP_LOGI(TAG, "WiFi promiscuous scanner initialized");
+    if (s_wifi_scan_paused) {
+        /* A quiet command can race init while the command task is already
+         * live. Reconcile once initialized so pause either observes true here
+         * or sees s_wifi_initialized and disables promiscuous mode itself. */
+        err = esp_wifi_set_promiscuous(false);
+        if (err != ESP_OK) goto fail;
+    }
+    ESP_LOGI(TAG, "WiFi promiscuous scanner initialized (paused=%d)",
+             s_wifi_scan_paused ? 1 : 0);
     return;
 
 fail:
+    s_wifi_initialized = false;
     s_full_scan_last_rc = (int)err;
     s_full_scan_err++;
     s_wifi_scan_paused = true;
@@ -2041,16 +2119,70 @@ void wifi_scanner_pause(void)
 {
     s_wifi_scan_paused = true;
     if (s_wifi_initialized) {
-        esp_wifi_set_promiscuous(false);
+        /* Stop is intentionally repeated while work is marked active. This
+         * closes the race where pause lands after the scan task's final guard
+         * but immediately before esp_wifi_scan_start(..., true). */
+        (void)esp_wifi_scan_stop();
+        esp_err_t promiscuous_rc = esp_wifi_set_promiscuous(false);
+        int waited_ms = 0;
+        while ((s_active_scan_work ||
+                atomic_load_explicit(&s_resume_inflight,
+                                     memory_order_acquire) != 0) &&
+               waited_ms < 2000) {
+            (void)esp_wifi_scan_stop();
+            (void)esp_wifi_set_promiscuous(false);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            waited_ms += 10;
+        }
+        if (promiscuous_rc != ESP_OK || s_active_scan_work ||
+            atomic_load_explicit(&s_resume_inflight,
+                                 memory_order_acquire) != 0) {
+            ESP_LOGW(TAG,
+                     "WiFi pause not yet converged (promisc_rc=%d active=%d resume=%u waited=%dms)",
+                     (int)promiscuous_rc,
+                     s_active_scan_work ? 1 : 0,
+                     (unsigned)atomic_load_explicit(
+                         &s_resume_inflight, memory_order_relaxed),
+                     waited_ms);
+        }
     }
-    ESP_LOGW(TAG, "WiFi scanning PAUSED (OTA in progress)");
+    ESP_LOGW(TAG, "WiFi scanning PAUSED (quiesced=%d)",
+             wifi_scanner_is_quiesced() ? 1 : 0);
 }
 
 void wifi_scanner_resume(void)
 {
+    atomic_fetch_add_explicit(&s_resume_inflight, 1, memory_order_acq_rel);
+    bool rollback = scanner_quiet_mode_is_active();
+    esp_err_t resume_rc = ESP_OK;
+
+    if (rollback) {
+        goto done;
+    }
     s_wifi_scan_paused = false;
     if (s_wifi_initialized) {
-        esp_wifi_set_promiscuous(true);
+        if (scanner_quiet_mode_is_active()) {
+            rollback = true;
+            goto done;
+        }
+        resume_rc = esp_wifi_set_promiscuous(true);
+        rollback = resume_rc != ESP_OK || scanner_quiet_mode_is_active();
+    }
+
+done:
+    if (rollback) {
+        s_wifi_scan_paused = true;
+        if (s_wifi_initialized) {
+            (void)esp_wifi_set_promiscuous(false);
+        }
+    }
+    atomic_fetch_sub_explicit(&s_resume_inflight, 1, memory_order_acq_rel);
+    if (rollback) {
+        ESP_LOGW(TAG,
+                 "WiFi resume rolled back (quiet=%d rc=%d)",
+                 scanner_quiet_mode_is_active() ? 1 : 0,
+                 (int)resume_rc);
+        return;
     }
     ESP_LOGW(TAG, "WiFi scanning RESUMED");
 }
@@ -2058,6 +2190,39 @@ void wifi_scanner_resume(void)
 bool wifi_scanner_is_paused(void)
 {
     return s_wifi_scan_paused;
+}
+
+bool wifi_scanner_is_quiesced(void)
+{
+    if (!s_wifi_scan_paused || s_active_scan_work ||
+        atomic_load_explicit(&s_resume_inflight, memory_order_acquire) != 0) {
+        return false;
+    }
+    if (!s_wifi_initialized) {
+        return true;
+    }
+
+    bool promiscuous_enabled = true;
+    esp_err_t err = esp_wifi_get_promiscuous(&promiscuous_enabled);
+    return err == ESP_OK && !promiscuous_enabled &&
+           s_wifi_scan_paused && !s_active_scan_work &&
+           atomic_load_explicit(&s_resume_inflight,
+                                memory_order_acquire) == 0;
+}
+
+bool wifi_scanner_is_active(void)
+{
+    if (!s_wifi_initialized || s_wifi_scan_paused ||
+        atomic_load_explicit(&s_resume_inflight, memory_order_acquire) != 0) {
+        return false;
+    }
+
+    bool promiscuous_enabled = false;
+    esp_err_t err = esp_wifi_get_promiscuous(&promiscuous_enabled);
+    return err == ESP_OK && promiscuous_enabled &&
+           s_wifi_initialized && !s_wifi_scan_paused &&
+           atomic_load_explicit(&s_resume_inflight,
+                                memory_order_acquire) == 0;
 }
 
 void wifi_scanner_get_stats(wifi_scanner_stats_t *out)

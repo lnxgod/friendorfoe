@@ -5,8 +5,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 import com.friendorfoe.data.badge.BadgeThreatEntity
-import com.friendorfoe.presentation.privacy.toPrivacyDetection
-import java.time.Instant
+import com.friendorfoe.presentation.badge.badgeInvestigationTarget
 
 class PrivacyCategoryMappingTest {
 
@@ -242,11 +241,11 @@ class PrivacyCategoryMappingTest {
             ageSeconds = 0,
             rssi = -45,
             events = 1,
-        ).toPrivacyDetection(Instant.EPOCH)!!
+        ).badgeInvestigationTarget(nowElapsedMs = 0L)!!
 
         assertEquals(PrivacyDetectionOrigin.BADGE, detection.origin)
-        assertEquals(BleInvestigationMode.GATT, detection.investigationTarget?.mode)
-        assertEquals("C0:98:E5:00:00:01", detection.investigationTarget?.mac)
+        assertEquals(BleInvestigationMode.GATT, detection.mode)
+        assertEquals("C0:98:E5:00:00:01", detection.mac)
     }
 
     @Test
@@ -260,10 +259,10 @@ class PrivacyCategoryMappingTest {
             ageSeconds = 0,
             rssi = -45,
             events = 24,
-        ).toPrivacyDetection(Instant.EPOCH)!!
+        ).badgeInvestigationTarget(nowElapsedMs = 0L)!!
 
         assertEquals(PrivacyDetectionOrigin.BADGE, detection.origin)
-        assertEquals(BleInvestigationMode.PASSIVE_CAPTURE, detection.investigationTarget?.mode)
-        assertNull(detection.investigationTarget?.mac)
+        assertEquals(BleInvestigationMode.PASSIVE_CAPTURE, detection.mode)
+        assertNull(detection.mac)
     }
 }

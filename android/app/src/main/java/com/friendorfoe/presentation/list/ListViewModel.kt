@@ -8,8 +8,6 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.badge.BadgeUsbRepository
-import com.friendorfoe.data.badge.BadgeDisplayPolicy
-import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.data.repository.validatedLocationAccuracyMeters
 import com.friendorfoe.domain.model.FilterState
@@ -113,67 +111,6 @@ class ListViewModel @Inject constructor(
         bleTracker.startDirectionScan(mac)
     }
 
-    fun startBadgeUsb() {
-        badgeUsbRepository.start()
-    }
-
-    fun stopBadgeUsb() {
-        badgeUsbRepository.stop()
-    }
-
-    fun connectBadgeUsb() {
-        badgeUsbRepository.requestConnection()
-    }
-
-    fun pingBadgeUsb() {
-        badgeUsbRepository.sendPing()
-    }
-
-    fun refreshBadgeStatus() {
-        badgeUsbRepository.requestStatus()
-    }
-
-    fun setBadgeMode(mode: String) {
-        badgeUsbRepository.setMode(mode)
-    }
-
-    fun rebootBadge() {
-        badgeUsbRepository.rebootBadge()
-    }
-
-    fun badgeBootloader() {
-        badgeUsbRepository.enterBootloader()
-    }
-
-    fun relayBadgeScannerFirmware(uart: String) {
-        badgeUsbRepository.relayScannerFirmware(uart)
-    }
-
-    fun flashBadgeScannerFirmware(uart: String, name: String, firmware: ByteArray) {
-        badgeUsbRepository.flashScannerFirmware(
-            uart = uart,
-            name = name,
-            version = "android-upload",
-            firmware = firmware
-        )
-    }
-
-    fun applyBadgeDisplayPolicy(policy: BadgeDisplayPolicy) {
-        badgeUsbRepository.applyDisplayPolicy(policy)
-    }
-
-    fun resetBadgeDisplayPolicy() {
-        badgeUsbRepository.resetDisplayPolicy()
-    }
-
-    fun applyBadgeTheme(theme: BadgeTheme) {
-        badgeUsbRepository.applyBadgeTheme(theme)
-    }
-
-    fun resetBadgeTheme() {
-        badgeUsbRepository.resetBadgeTheme()
-    }
-
     private val _userPosition = MutableStateFlow(
         Position(latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0)
     )
@@ -261,7 +198,6 @@ class ListViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         stopLocationUpdates()
-        stopBadgeUsb()
     }
 }
 

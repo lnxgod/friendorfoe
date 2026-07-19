@@ -70,6 +70,7 @@ static i2c_master_bus_handle_t    s_bus_handle    = NULL;
 static i2c_master_dev_handle_t    s_dev_handle    = NULL;
 static uint8_t s_framebuf[OLED_BUF_SIZE];
 static bool    s_initialized = false;
+static bool    s_powered = false;
 
 /* ── 5x7 ASCII font (printable chars 0x20-0x7E) ───────────────────────── */
 
@@ -433,8 +434,23 @@ void oled_init(void)
     oled_flush();
 
     s_initialized = true;
+    s_powered = true;
     ESP_LOGI(TAG, "OLED initialized (SSD1306 128x64, addr=0x%02X, SDA=%d SCL=%d)",
              found_addr, found_sda, found_scl);
+}
+
+bool oled_is_powered(void)
+{
+    return s_initialized && s_powered;
+}
+
+void oled_set_power(bool on)
+{
+    if (!s_initialized || on == s_powered) {
+        return;
+    }
+    oled_send_cmd(on ? SSD1306_CMD_DISPLAY_ON : SSD1306_CMD_DISPLAY_OFF);
+    s_powered = on;
 }
 
 static bool contains_nocase_ascii(const char *haystack, const char *needle)
@@ -488,7 +504,7 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
                  bool backend_ok, int upload_count, bool wifi_network_ok,
                  float battery_pct, uint32_t uptime_s, const char *device_id)
 {
-    if (!s_initialized) {
+    if (!s_initialized || !s_powered) {
         return;
     }
 
@@ -554,7 +570,7 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
 void oled_show_detection(const char *detection_id, const char *manufacturer,
                          uint8_t source, float confidence, int rssi)
 {
-    if (!s_initialized) {
+    if (!s_initialized || !s_powered) {
         return;
     }
 
@@ -598,7 +614,7 @@ bool oled_badge_handle_nav_command(const char *action)
 
 void oled_clear(void)
 {
-    if (!s_initialized) {
+    if (!s_initialized || !s_powered) {
         return;
     }
 

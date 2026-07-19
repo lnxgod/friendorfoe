@@ -16,6 +16,7 @@ import com.friendorfoe.presentation.about.AboutScreen
 import com.friendorfoe.presentation.ar.ArViewModel
 import com.friendorfoe.presentation.ar.ArViewScreen
 import com.friendorfoe.presentation.ar.PermissionHandler
+import com.friendorfoe.presentation.badge.BadgeControlScreen
 import com.friendorfoe.presentation.detail.DetailScreen
 import com.friendorfoe.presentation.history.HistoryScreen
 import com.friendorfoe.presentation.list.ListViewScreen
@@ -77,6 +78,9 @@ fun FriendOrFoeNavGraph(
                 onObjectTapped = { objectId ->
                     navController.navigate(Screen.Detail.createRoute(objectId))
                 },
+                onBadgeDetectionTapped = { stableKey ->
+                    navController.navigate(Screen.BadgeFocus.createRoute(stableKey))
+                },
                 onNavigateToReferenceGuide = {
                     navController.navigate(Screen.ReferenceGuide.route) { launchSingleTop = true }
                 },
@@ -109,6 +113,20 @@ fun FriendOrFoeNavGraph(
                     navController.navigate(Screen.IrCameraScan.route) { launchSingleTop = true }
                 }
             )
+        }
+
+        composable(Screen.Badge.route) {
+            BadgeControlScreen()
+        }
+
+        composable(
+            route = Screen.BadgeFocus.route,
+            arguments = listOf(
+                navArgument("focusKey") { type = NavType.StringType },
+            ),
+        ) { backStackEntry ->
+            val focusKey = backStackEntry.arguments?.getString("focusKey")
+            BadgeControlScreen(initialFocusKey = focusKey)
         }
 
         composable(Screen.EmfSweep.route) {

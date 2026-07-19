@@ -385,6 +385,38 @@ class BadgeInvestigationProtocolTest {
     }
 
     @Test
+    fun `A disconnect before begin rejects matching frames from connecting or verified B`() {
+        val ownerA = BadgeUsbOwnerKey(
+            attachmentToken = BadgeUsbAttachmentToken(
+                generation = 1L,
+                identity = BadgeUsbDeviceIdentity(101, "/dev/a"),
+            ),
+            lifecycleSession = 7L,
+            connectionIdentity = Any(),
+            endpointIdentity = Any(),
+        )
+        val ownerB = BadgeUsbOwnerKey(
+            attachmentToken = BadgeUsbAttachmentToken(
+                generation = 2L,
+                identity = BadgeUsbDeviceIdentity(202, "/dev/b"),
+            ),
+            lifecycleSession = 7L,
+            connectionIdentity = Any(),
+            endpointIdentity = Any(),
+        )
+        val ownership = BadgeUsbInvestigationOwnershipGate(ownerA)
+
+        assertTrue(ownership.disconnect(ownerA))
+        assertEquals("transport_disconnected", ownership.terminalError())
+
+        assertFalse(ownership.acceptsFrame(ownerB, BadgeUsbStatus.CONNECTING))
+        assertFalse(ownership.acceptsFrame(ownerB, BadgeUsbStatus.CONNECTED))
+        assertFalse(ownership.acceptsFrame(ownerA, BadgeUsbStatus.CONNECTED))
+        assertTrue(ownership.isDisconnected())
+        assertEquals(0, ownership.acceptedFrameCount())
+    }
+
+    @Test
     fun `terminal timeout replay BEGIN plus END is accepted after reset`() {
         val parser = BadgeInvestigationStreamParser(expectedRequestId = "timeout-1")
         parser.reconnect("timeout-1")

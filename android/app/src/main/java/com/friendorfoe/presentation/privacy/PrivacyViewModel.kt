@@ -7,11 +7,6 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
-import com.friendorfoe.data.badge.BadgeDisplayPolicy
-import com.friendorfoe.data.badge.BadgeTheme
-import com.friendorfoe.data.badge.BadgeThreatEntity
-import com.friendorfoe.data.badge.BadgeUsbRepository
-import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.remote.LivePrivacyDeviceDto
 import com.friendorfoe.data.remote.SensorMapApiService
 import com.friendorfoe.data.repository.SkyObjectRepository
@@ -44,7 +39,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.SharingStarted
@@ -52,102 +46,17 @@ import kotlinx.coroutines.flow.stateIn
 import java.time.Instant
 import javax.inject.Inject
 
-internal data class BadgeInvestigationAvailability(
-    val scannerSlotZeroConnected: Boolean,
-    val usbAvailable: Boolean,
-    val bleAvailable: Boolean,
-    val httpAvailable: Boolean,
-) {
-    val badgeAvailable: Boolean
-        get() = scannerSlotZeroConnected && (usbAvailable || bleAvailable || httpAvailable)
-}
-
-internal data class BleInvestigationRouteDecision(
-    val route: BleInvestigationRoute?,
-    val error: String? = null,
-)
-
-internal fun deriveBadgeInvestigationAvailability(
-    badgeState: BadgeUsbState,
-): BadgeInvestigationAvailability {
-    val scannerSlotZeroConnected = badgeState.controlStatus?.scanners
-        ?.any { it.slot == 0 && it.connected }
-        ?: false
-    val ble = badgeState.controlStatus?.bleControl
-    return BadgeInvestigationAvailability(
-        scannerSlotZeroConnected = scannerSlotZeroConnected,
-        usbAvailable = badgeState.status == com.friendorfoe.data.badge.BadgeUsbStatus.CONNECTED,
-        bleAvailable = badgeState.status == com.friendorfoe.data.badge.BadgeUsbStatus.BLE_CONNECTED &&
-            ble?.connected == true && ble.bonded && ble.encrypted,
-        httpAvailable = badgeState.status in setOf(
-            com.friendorfoe.data.badge.BadgeUsbStatus.AP_CONNECTED,
-            com.friendorfoe.data.badge.BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
-        ),
-    )
-}
-
-internal fun selectInvestigationRoute(
+internal fun phoneInvestigationError(
     origin: PrivacyDetectionOrigin,
     target: BleInvestigationTarget,
-    badgeAvailable: Boolean,
-    requestedRoute: BleInvestigationRoute,
     phoneAvailable: Boolean,
     nowElapsedMs: Long,
-): BleInvestigationRouteDecision {
-    if (origin != target.origin) return BleInvestigationRouteDecision(null, "origin_mismatch")
-
-    if (requestedRoute == BleInvestigationRoute.PHONE) {
-        if (!phoneAvailable) return BleInvestigationRouteDecision(null, "phone_unavailable")
-        validatePhoneTarget(target, nowElapsedMs)?.let {
-            return BleInvestigationRouteDecision(null, it)
-        }
-        return BleInvestigationRouteDecision(BleInvestigationRoute.PHONE)
-    }
-    if (requestedRoute == BleInvestigationRoute.BADGE) {
-        if (!badgeAvailable) return BleInvestigationRouteDecision(null, "badge_unavailable")
-        validateBadgeTarget(target, nowElapsedMs)?.let {
-            return BleInvestigationRouteDecision(null, it)
-        }
-        return BleInvestigationRouteDecision(BleInvestigationRoute.BADGE)
-    }
-
-    if (target.mode == BleInvestigationMode.PASSIVE_CAPTURE) {
-        return if (badgeAvailable) {
-            BleInvestigationRouteDecision(BleInvestigationRoute.BADGE)
-        } else {
-            BleInvestigationRouteDecision(null, "badge_unavailable")
-        }
-    }
-    validateGattTarget(target, nowElapsedMs)?.let {
-        return BleInvestigationRouteDecision(null, it)
-    }
-
-    val preferred = if (origin == PrivacyDetectionOrigin.BADGE) {
-        listOf(BleInvestigationRoute.BADGE, BleInvestigationRoute.PHONE)
-    } else {
-        listOf(BleInvestigationRoute.PHONE, BleInvestigationRoute.BADGE)
-    }
-    preferred.forEach { route ->
-        if (route == BleInvestigationRoute.PHONE && phoneAvailable) {
-            return BleInvestigationRouteDecision(route)
-        }
-        if (route == BleInvestigationRoute.BADGE && badgeAvailable) {
-            return BleInvestigationRouteDecision(route)
-        }
-    }
-    return BleInvestigationRouteDecision(
-        route = null,
-        error = if (origin == PrivacyDetectionOrigin.BADGE) "badge_unavailable" else "phone_unavailable",
-    )
-}
-
-private fun validatePhoneTarget(target: BleInvestigationTarget, nowElapsedMs: Long): String? {
+): String? {
+    if (origin != target.origin) return "origin_mismatch"
+    if (!phoneAvailable) return "phone_unavailable"
     if (target.mode != BleInvestigationMode.GATT) return "phone_requires_gatt"
     return validateGattTarget(target, nowElapsedMs)
 }
-
-private fun validateBadgeTarget(target: BleInvestigationTarget, nowElapsedMs: Long): String? =
-    if (target.mode == BleInvestigationMode.GATT) validateGattTarget(target, nowElapsedMs) else null
 
 private fun validateGattTarget(target: BleInvestigationTarget, nowElapsedMs: Long): String? {
     val mac = target.mac
@@ -174,8 +83,7 @@ private fun boundedInvestigationRequestId(generation: Long, elapsedMs: Long): St
 
 private fun investigationRouteErrorSummary(error: String?): String = when (error) {
     "phone_unavailable" -> "Phone BLE investigation is unavailable"
-    "badge_unavailable" -> "Badge BLE scanner is unavailable"
-    "phone_requires_gatt" -> "Passive capture requires the badge scanner"
+    "phone_requires_gatt" -> "Phone investigation requires a GATT target"
     "invalid_target" -> "The BLE target address is invalid"
     "stale_target" -> "The BLE target observation is stale"
     "origin_mismatch" -> "The investigation target origin is invalid"
@@ -189,7 +97,6 @@ class PrivacyViewModel @Inject constructor(
     val sensorFusionEngine: SensorFusionEngine,
     private val wifiAnomalyDetector: WifiAnomalyDetector,
     private val sensorMapApiService: SensorMapApiService,
-    private val badgeUsbRepository: BadgeUsbRepository,
     private val bleInvestigationCoordinator: BleInvestigationCoordinator,
     private val privacyAlertNotifier: PrivacyAlertNotifier,
 ) : ViewModel() {
@@ -271,17 +178,14 @@ class PrivacyViewModel @Inject constructor(
     private val _wifiAnomalies = MutableStateFlow<List<WifiAnomalyDetector.WifiAnomaly>>(emptyList())
     val wifiAnomalies: StateFlow<List<WifiAnomalyDetector.WifiAnomaly>> = _wifiAnomalies.asStateFlow()
     private val _backendPrivacyDetections = MutableStateFlow<List<GlassesDetection>>(emptyList())
-    val badgeUsbState = badgeUsbRepository.state
-
     val privacyDetections: StateFlow<List<GlassesDetection>> = combine(
         skyObjectRepository.glassesDetections,
         _backendPrivacyDetections,
-        badgeUsbRepository.state,
         _wifiAnomalies,
-    ) { local, backend, badge, wifiAnomalies ->
+    ) { local, backend, wifiAnomalies ->
         mergePrivacyDetections(
             local,
-            backend + badge.toPrivacyDetections() + wifiAnomalies.map { it.toPrivacyDetection() }
+            backend + wifiAnomalies.map { it.toPrivacyDetection() }
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -346,61 +250,27 @@ class PrivacyViewModel @Inject constructor(
     fun refreshDetections() {
         syncBackendMode()
         skyObjectRepository.refreshPrivacyDetections()
-        badgeUsbRepository.requestStatus()
     }
 
-    fun startBadgeUsb() {
-        syncBackendMode()
-        badgeUsbRepository.start()
-    }
-
-    fun stopBadgeUsb() {
-        badgeUsbRepository.stop()
-    }
-
-    fun connectBadgeUsb() {
-        badgeUsbRepository.requestConnection()
-    }
-
-    fun refreshBadgeStatus() {
-        badgeUsbRepository.requestStatus()
-    }
-
-    fun investigate(detection: GlassesDetection, route: BleInvestigationRoute) {
+    fun investigate(detection: GlassesDetection) {
         val target = detection.investigationTarget ?: return
-        startInvestigation(detection.origin, target, route)
-    }
-
-    fun investigateBadgeEntity(entity: BadgeThreatEntity, route: BleInvestigationRoute) {
-        val detection = entity.toPrivacyDetection(Instant.now()) ?: return
-        val target = detection.investigationTarget ?: return
-        startInvestigation(detection.origin, target, route)
+        startInvestigation(detection.origin, target)
     }
 
     fun cancelInvestigation() {
-        val active = activeInvestigation ?: return
+        if (activeInvestigation == null) return
         val current = _investigationResult.value
         if (current?.state in INVESTIGATION_TERMINAL_STATES) return
-        when (active.request.route) {
-            BleInvestigationRoute.PHONE -> viewModelScope.launch {
-                bleInvestigationCoordinator.cancel()
-            }
-            BleInvestigationRoute.BADGE ->
-                badgeUsbRepository.cancelBleInvestigation(active.request.requestId)
-            BleInvestigationRoute.AUTO -> Unit
+        viewModelScope.launch {
+            bleInvestigationCoordinator.cancel()
         }
     }
 
     fun clearInvestigation() {
         val active = activeInvestigation
         if (_investigationResult.value?.state !in INVESTIGATION_TERMINAL_STATES && active != null) {
-            when (active.request.route) {
-                BleInvestigationRoute.PHONE -> viewModelScope.launch {
-                    bleInvestigationCoordinator.cancel()
-                }
-                BleInvestigationRoute.BADGE ->
-                    badgeUsbRepository.cancelBleInvestigation(active.request.requestId)
-                BleInvestigationRoute.AUTO -> Unit
+            viewModelScope.launch {
+                bleInvestigationCoordinator.cancel()
             }
         }
         investigationGeneration++
@@ -410,40 +280,26 @@ class PrivacyViewModel @Inject constructor(
         _investigationResult.value = null
     }
 
-    internal fun investigationRouteDecision(
-        origin: PrivacyDetectionOrigin,
-        target: BleInvestigationTarget,
-        route: BleInvestigationRoute,
-    ): BleInvestigationRouteDecision = selectInvestigationRoute(
-        origin = origin,
-        target = target,
-        badgeAvailable = badgeInvestigationAvailability().badgeAvailable,
-        requestedRoute = route,
-        phoneAvailable = phoneInvestigationAvailable(),
-        nowElapsedMs = elapsedRealtimeMs(),
-    )
-
-    internal fun badgeInvestigationAvailability(): BadgeInvestigationAvailability {
-        return deriveBadgeInvestigationAvailability(badgeUsbRepository.state.value)
-    }
-
     private fun startInvestigation(
         origin: PrivacyDetectionOrigin,
         target: BleInvestigationTarget,
-        requestedRoute: BleInvestigationRoute,
     ) {
         if (shouldRejectConcurrentInvestigationStart(
                 hasActive = activeInvestigation != null,
                 currentState = _investigationResult.value?.state,
             )
         ) return
-        val decision = investigationRouteDecision(origin, target, requestedRoute)
         investigationGeneration++
         investigationObserverJob?.cancel()
         val generation = investigationGeneration
         val requestId = boundedInvestigationRequestId(generation, elapsedRealtimeMs())
-        val selectedRoute = decision.route
-        if (selectedRoute == null) {
+        val error = phoneInvestigationError(
+            origin = origin,
+            target = target,
+            phoneAvailable = phoneInvestigationAvailable(),
+            nowElapsedMs = elapsedRealtimeMs(),
+        )
+        if (error != null) {
             activeInvestigation = null
             _investigationResult.value = BleInvestigationResult(
                 requestId = requestId,
@@ -458,8 +314,8 @@ class PrivacyViewModel @Inject constructor(
                 bonded = false,
                 encrypted = false,
                 authenticationRequired = false,
-                summary = investigationRouteErrorSummary(decision.error),
-                error = decision.error ?: "route_unavailable",
+                summary = investigationRouteErrorSummary(error),
+                error = error,
                 truncated = false,
             )
             return
@@ -468,12 +324,12 @@ class PrivacyViewModel @Inject constructor(
         val request = BleInvestigationRequest(
             requestId = requestId,
             target = target,
-            route = selectedRoute,
+            route = BleInvestigationRoute.PHONE,
         )
         activeInvestigation = ActiveInvestigation(generation, request)
         _investigationResult.value = BleInvestigationResult(
             requestId = requestId,
-            transport = if (selectedRoute == BleInvestigationRoute.PHONE) "phone" else "badge",
+            transport = "phone",
             mode = target.mode,
             targetMac = target.mac,
             state = BleInvestigationState.QUEUED,
@@ -488,11 +344,7 @@ class PrivacyViewModel @Inject constructor(
             error = null,
             truncated = false,
         )
-        investigationObserverJob = when (selectedRoute) {
-            BleInvestigationRoute.PHONE -> observePhoneInvestigation(generation, request)
-            BleInvestigationRoute.BADGE -> observeBadgeInvestigation(generation, request)
-            BleInvestigationRoute.AUTO -> null
-        }
+        investigationObserverJob = observePhoneInvestigation(generation, request)
     }
 
     private fun observePhoneInvestigation(
@@ -509,52 +361,6 @@ class PrivacyViewModel @Inject constructor(
             publishInvestigationGeneration(generation, request.requestId, result)
         } finally {
             progress.cancel()
-        }
-    }
-
-    private fun observeBadgeInvestigation(
-        generation: Long,
-        request: BleInvestigationRequest,
-    ): kotlinx.coroutines.Job? {
-        if (!badgeUsbRepository.investigateBle(request)) {
-            val repositoryRejection = badgeUsbRepository.investigation.value
-                ?.takeIf { it.requestId == request.requestId }
-            publishInvestigationGeneration(
-                generation,
-                request.requestId,
-                repositoryRejection ?: BleInvestigationResult(
-                    requestId = request.requestId,
-                    transport = "badge",
-                    mode = request.target.mode,
-                    targetMac = request.target.mac,
-                    state = BleInvestigationState.FAILED,
-                    connectable = null,
-                    services = emptyList(),
-                    characteristics = emptyList(),
-                    reads = emptyMap(),
-                    bonded = false,
-                    encrypted = false,
-                    authenticationRequired = false,
-                    summary = "Another badge investigation is already running",
-                    error = "busy",
-                    truncated = false,
-                ),
-            )
-            activeInvestigation = null
-            return null
-        }
-        return viewModelScope.launch {
-            badgeUsbRepository.investigation
-                .filterNotNull()
-                .takeWhile { result ->
-                    if (result.requestId == request.requestId) {
-                        publishInvestigationGeneration(generation, request.requestId, result)
-                        result.state !in INVESTIGATION_TERMINAL_STATES
-                    } else {
-                        true
-                    }
-                }
-                .collect { }
         }
     }
 
@@ -582,57 +388,12 @@ class PrivacyViewModel @Inject constructor(
             PackageManager.PERMISSION_GRANTED
     }
 
-    fun setBadgeMode(mode: String) {
-        badgeUsbRepository.setMode(mode)
-    }
-
-    fun rebootBadge() {
-        badgeUsbRepository.rebootBadge()
-    }
-
-    fun badgeBootloader() {
-        badgeUsbRepository.enterBootloader()
-    }
-
-    fun relayBadgeScannerFirmware(uart: String) {
-        badgeUsbRepository.relayScannerFirmware(uart)
-    }
-
-    fun flashBadgeScannerFirmware(uart: String, name: String, firmware: ByteArray) {
-        badgeUsbRepository.flashScannerFirmware(
-            uart = uart,
-            name = name,
-            version = "android-upload",
-            firmware = firmware
-        )
-    }
-
     fun enablePhonePrivacyScanning() {
         if (skyObjectRepository.prefs.backendOnlyMode) {
             skyObjectRepository.prefs.backendOnlyMode = false
             skyObjectRepository.restartDetectionSources()
         }
         _backendOnlyMode.value = false
-    }
-
-    fun badgeNextFocus() {
-        badgeUsbRepository.displayNav("next")
-    }
-
-    fun badgeToggleDetail() {
-        badgeUsbRepository.displayNav("detail")
-    }
-
-    fun badgeBackFromDetail() {
-        badgeUsbRepository.displayNav("back")
-    }
-
-    fun applyBadgeDisplayPolicy(policy: BadgeDisplayPolicy) {
-        badgeUsbRepository.applyDisplayPolicy(policy)
-    }
-
-    fun resetBadgeDisplayPolicy() {
-        badgeUsbRepository.resetDisplayPolicy()
     }
 
     private fun currentSkyAlertSettings(): SkyAlertSettings =
@@ -642,14 +403,6 @@ class PrivacyViewModel @Inject constructor(
             militaryAlertsEnabled = skyObjectRepository.prefs.militaryAlertsEnabled,
             policeAlertsEnabled = skyObjectRepository.prefs.policeAlertsEnabled
         )
-
-    fun applyBadgeTheme(theme: BadgeTheme) {
-        badgeUsbRepository.applyBadgeTheme(theme)
-    }
-
-    fun resetBadgeTheme() {
-        badgeUsbRepository.resetBadgeTheme()
-    }
 
     fun startDirectionScan(mac: String) {
         bleTracker.startDirectionScan(mac)
@@ -813,156 +566,5 @@ class PrivacyViewModel @Inject constructor(
         val seconds = this.toLong()
         val nanos = ((this - seconds.toDouble()) * 1_000_000_000.0).toLong()
         return Instant.ofEpochSecond(seconds, nanos)
-    }
-}
-
-internal fun BadgeUsbState.toPrivacyDetections(
-    now: Instant = Instant.now(),
-    nowElapsedMs: Long = elapsedRealtimeMs(),
-): List<GlassesDetection> {
-    val status = controlStatus ?: return emptyList()
-    return status.entities.mapNotNull { it.toPrivacyDetection(now, nowElapsedMs) }
-}
-
-internal fun badgeObservedAtElapsedMs(snapshotAtElapsedMs: Long, lastSeenSeconds: Int): Long {
-    val boundedSnapshot = snapshotAtElapsedMs.coerceAtLeast(0L)
-    val ageMs = lastSeenSeconds.coerceAtLeast(0).toLong() * 1_000L
-    return (boundedSnapshot - ageMs).coerceAtLeast(0L)
-}
-
-internal fun BadgeThreatEntity.toPrivacyDetection(
-    now: Instant,
-    nowElapsedMs: Long = elapsedRealtimeMs(),
-): GlassesDetection? {
-    if (stale) return null
-    val category = categoryForBadgeEntity()
-    val title = badgeDeviceType()
-    val stableId = bssid.ifBlank {
-        displayId.ifBlank { operatorId ?: detail.ifBlank { label } }
-    }
-    val displayName = detail.ifBlank { displayId.ifBlank { operatorId.orEmpty() } }
-    val key = "badge:${threatClass.ifBlank { "threat" }}:" +
-        "${code.ifBlank { this@toPrivacyDetection.category }}:${stableId.ifBlank { title }}"
-    val rssiNow = when {
-        rssi != 0 -> rssi
-        bestRssi != 0 -> bestRssi
-        else -> -100
-    }
-    val detailMap = buildMap {
-        put("source", "usb_badge")
-        if (threatClass.isNotBlank()) put("class", threatClass)
-        if (this@toPrivacyDetection.category.isNotBlank()) {
-            put("category", this@toPrivacyDetection.category)
-        }
-        if (code.isNotBlank()) put("code", code)
-        if (displayId.isNotBlank()) put("display_id", displayId)
-        if (ssid.isNotBlank()) put("ssid", ssid)
-        if (bssid.isNotBlank()) put("bssid", bssid)
-        if (authMode >= 0) put("auth_m", authMode.toString())
-        if (freqMhz > 0) put("freq_mhz", freqMhz.toString())
-        if (detail.isNotBlank()) put("detail", detail)
-        if (evidence.isNotBlank()) put("evidence", evidence)
-        if (source.isNotBlank()) put("badge_source", source)
-        if (sourceId != 0) put("badge_source_id", sourceId.toString())
-        if (confidencePct > 0) put("confidence", "$confidencePct%")
-        put("score", score.toString())
-        put("age_s", ageSeconds.toString())
-        put("events", events.toString())
-        if (seenCount > 0) put("seen", seenCount.toString())
-        if (groupCount > 1) put("group", groupCount.toString())
-        operatorId?.let { put("operator_id", it) }
-    }
-    val isPairingSpam = listOf(code, this@toPrivacyDetection.category, label, detail).any { value ->
-        value.trim().replace('-', '_').replace(' ', '_').uppercase() in setOf("PAIRING_SPAM", "BLE_SPAM")
-    }
-    val entitySnapshotAtElapsedMs = snapshotAtElapsedMs.takeIf { it >= 0L } ?: nowElapsedMs
-    val observedAtElapsedMs = badgeObservedAtElapsedMs(
-        entitySnapshotAtElapsedMs,
-        lastSeenSeconds,
-    )
-    val investigationTarget = when {
-        isPairingSpam -> BleInvestigationTarget(
-            mode = BleInvestigationMode.PASSIVE_CAPTURE,
-            mac = null,
-            entityKey = key,
-            observedAtElapsedMs = observedAtElapsedMs,
-            origin = PrivacyDetectionOrigin.BADGE,
-        )
-        threatClass.equals("ble", ignoreCase = true) && bssid.isNotBlank() -> BleInvestigationTarget(
-            mode = BleInvestigationMode.GATT,
-            mac = bssid,
-            entityKey = key,
-            observedAtElapsedMs = observedAtElapsedMs,
-            origin = PrivacyDetectionOrigin.BADGE,
-        )
-        else -> null
-    }
-    return GlassesDetection(
-        mac = key,
-        deviceName = displayName.takeIf { it.isNotBlank() },
-        deviceType = title,
-        manufacturer = "FoF Badge",
-        hasCamera = category in setOf(
-            PrivacyCategory.HIDDEN_CAMERA,
-            PrivacyCategory.SURVEILLANCE_CAMERA,
-            PrivacyCategory.ALPR_CAMERA,
-            PrivacyCategory.BODY_CAMERA,
-            PrivacyCategory.VEHICLE_CAMERA,
-        ),
-        rssi = rssiNow,
-        confidence = (score / 100f).coerceIn(0f, 1f),
-        matchReason = "badge:${threatClass.ifBlank { this.category.ifBlank { "privacy" } }}",
-        firstSeen = now.minusSeconds(ageSeconds.coerceAtLeast(0).toLong()),
-        lastSeen = now.minusSeconds(lastSeenSeconds.coerceAtLeast(0).toLong()),
-        details = detailMap,
-        category = category,
-        fingerprintKey = key,
-        seenMacs = setOf(key),
-        origin = PrivacyDetectionOrigin.BADGE,
-        investigationTarget = investigationTarget,
-    )
-}
-
-private fun BadgeThreatEntity.categoryForBadgeEntity(): PrivacyCategory {
-    val cls = threatClass.lowercase()
-    val cat = category.uppercase()
-    val catCode = code.uppercase()
-    return when {
-        cls == "meta" || cat == "GLASS" || catCode == "GLS" -> PrivacyCategory.SMART_GLASSES
-        cls == "tracker" || cat == "TAG" || catCode == "TAG" -> PrivacyCategory.BLE_TRACKER
-        cls == "wifi_anomaly" || cat == "WIFI" || catCode == "WIFI" -> PrivacyCategory.ATTACK_TOOL
-        cls == "drone" || cat == "DRONE" || cat == "SSID" ||
-            catCode == "DRN" || catCode == "SSID" -> PrivacyCategory.DRONE_CONTROLLER
-        cat == "FLOCK" || catCode == "FLK" -> PrivacyCategory.ALPR_CAMERA
-        cat == "SKIM" || catCode == "SKIM" -> PrivacyCategory.ATTACK_TOOL
-        cat == "CAMERA" || catCode == "CAM" -> PrivacyCategory.SURVEILLANCE_CAMERA
-        cat == "BEACON" || catCode == "BCN" -> PrivacyCategory.VENUE_BEACON
-        cat == "EVENT" || catCode == "EVT" -> PrivacyCategory.EVENT_BADGE
-        cat == "LOCK" || catCode == "LOCK" -> PrivacyCategory.MOBILE_KEY_LOCK
-        cat == "HID" || catCode == "HID" -> PrivacyCategory.BLE_HID
-        cat == "LISTEN" || catCode == "LIS" -> PrivacyCategory.REMOTE_LISTENING
-        cat == "AUDIO" || catCode == "AUD" -> PrivacyCategory.AURACAST
-        else -> PrivacyCategory.INFORMATIONAL
-    }
-}
-
-private fun BadgeThreatEntity.badgeDeviceType(): String {
-    val cat = category.uppercase()
-    val catCode = code.uppercase()
-    return when {
-        threatClass.equals("drone", ignoreCase = true) &&
-            (cat == "SSID" || catCode == "SSID") -> "Drone SSID"
-        threatClass.equals("drone", ignoreCase = true) -> "Remote ID Drone"
-        cat == "FLOCK" || catCode == "FLK" -> "Flock / ALPR Camera"
-        cat == "SKIM" || catCode == "SKIM" -> "Skimmer"
-        cat == "CAMERA" || catCode == "CAM" -> "Camera Near"
-        cat == "BEACON" || catCode == "BCN" -> "Venue Beacon"
-        cat == "EVENT" || catCode == "EVT" -> "Event Badge"
-        cat == "LOCK" || catCode == "LOCK" -> "Mobile Key Lock"
-        cat == "HID" || catCode == "HID" -> "BLE Input Device"
-        cat == "LISTEN" || catCode == "LIS" -> "Possible Listening"
-        cat == "AUDIO" || catCode == "AUD" -> "Auracast / LE Audio"
-        label.isNotBlank() -> label
-        else -> "Badge Privacy Signal"
     }
 }

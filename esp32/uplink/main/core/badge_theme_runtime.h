@@ -16,7 +16,7 @@ void badge_theme_runtime_init(void);
 const badge_theme_t *badge_theme_runtime_get(void);
 uint32_t badge_theme_runtime_hash(void);
 bool badge_theme_runtime_set(const badge_theme_t *theme, bool persist);
-void badge_theme_runtime_reset(bool persist);
+bool badge_theme_runtime_reset(bool persist);
 size_t badge_theme_runtime_json(char *out, size_t out_len);
 
 #ifdef __cplusplus
