@@ -47,6 +47,10 @@ class BadgeUsbApplicationLifecycleContractTest {
         assertTrue(repository.contains("UsbManager.ACTION_USB_DEVICE_ATTACHED -> requestConnection()"))
         assertTrue(repository.contains("\"Attach a FoF badge over USB-C\""))
         assertFalse(repository.contains("\"Connect a FoF badge over USB-C\""))
+        assertTrue(repository.contains("Attach only the badge over USB-C"))
+        assertTrue(repository.contains("attach the badge over USB-C"))
+        assertFalse(repository.contains("Connect only the badge over USB-C"))
+        assertFalse(repository.contains("connect via USB-C"))
     }
 
     private fun source(relativePath: String): String {

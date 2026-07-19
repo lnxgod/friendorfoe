@@ -16,4 +16,30 @@ class BadgeUsbLifecycleGateTest {
         assertFalse(gate.end())
         assertTrue(gate.begin())
     }
+
+    @Test
+    fun `stop invalidates a queued connect from its session`() {
+        val gate = BadgeUsbLifecycleGate()
+
+        assertTrue(gate.begin())
+        val queuedConnectSession = requireNotNull(gate.activeSession())
+
+        assertTrue(gate.end(queuedConnectSession))
+        assertFalse(gate.isActive(queuedConnectSession))
+    }
+
+    @Test
+    fun `stop then start invalidates stale cleanup`() {
+        val gate = BadgeUsbLifecycleGate()
+
+        assertTrue(gate.begin())
+        val staleCleanupSession = requireNotNull(gate.activeSession())
+        assertTrue(gate.end(staleCleanupSession))
+        assertTrue(gate.canClean(staleCleanupSession))
+
+        assertTrue(gate.begin())
+        val currentSession = requireNotNull(gate.activeSession())
+        assertFalse(gate.canClean(staleCleanupSession))
+        assertTrue(gate.isActive(currentSession))
+    }
 }

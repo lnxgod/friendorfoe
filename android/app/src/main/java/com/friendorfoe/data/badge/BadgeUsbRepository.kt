@@ -1400,7 +1400,8 @@ class BadgeUsbRepository @Inject constructor(
                 ACTION_USB_PERMISSION -> {
                     val device = intent.usbDeviceExtra() ?: return
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                        scope.launch { connectToDevice(device) }
+                        val lifecycleSession = lifecycleGate.activeSession() ?: return
+                        scope.launch { connectToDevice(device, lifecycleSession) }
                     } else {
                         setState {
                             it.copy(
@@ -1425,8 +1426,9 @@ class BadgeUsbRepository @Inject constructor(
 
     fun start() {
         if (!lifecycleGate.begin()) return
+        val lifecycleSession = lifecycleGate.activeSession() ?: return
         registerReceiverIfNeeded()
-        requestConnection()
+        requestConnection(lifecycleSession)
         if (BadgeControlTransportPolicy.allowsBleTether()) {
             startBlePoller()
         }
@@ -1437,8 +1439,9 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     fun stop() {
-        if (!lifecycleGate.end()) return
-        disconnect("Badge USB stopped")
+        val lifecycleSession = lifecycleGate.activeSession() ?: return
+        if (!lifecycleGate.end(lifecycleSession)) return
+        disconnect("Badge USB stopped", lifecycleSession)
         apPollJob?.cancel()
         apPollJob = null
         debugBridgePollJob?.cancel()
@@ -1453,6 +1456,12 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     fun refresh() {
+        val lifecycleSession = lifecycleGate.activeSession() ?: return
+        refresh(lifecycleSession)
+    }
+
+    private fun refresh(lifecycleSession: Long) {
+        if (!lifecycleGate.isActive(lifecycleSession)) return
         val candidates = findBadgeCandidates()
         if (candidates.isEmpty()) {
             setState {
@@ -1483,14 +1492,20 @@ class BadgeUsbRepository @Inject constructor(
             return
         }
 
-        scope.launch { connectToDevice(device) }
+        scope.launch { connectToDevice(device, lifecycleSession) }
     }
 
     fun requestConnection() {
+        val lifecycleSession = lifecycleGate.activeSession() ?: return
+        requestConnection(lifecycleSession)
+    }
+
+    private fun requestConnection(lifecycleSession: Long) {
+        if (!lifecycleGate.isActive(lifecycleSession)) return
         registerReceiverIfNeeded()
         val candidates = findBadgeCandidates()
         if (candidates.isEmpty()) {
-            refresh()
+            refresh(lifecycleSession)
             return
         }
         if (candidates.size > 1) {
@@ -1499,9 +1514,11 @@ class BadgeUsbRepository @Inject constructor(
         }
         val device = candidates.first()
         if (usbManager.hasPermission(device)) {
-            scope.launch { connectToDevice(device) }
+            scope.launch { connectToDevice(device, lifecycleSession) }
             return
         }
+
+        if (!lifecycleGate.isActive(lifecycleSession)) return
 
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
@@ -2383,14 +2400,15 @@ class BadgeUsbRepository @Inject constructor(
             it.copy(
                 status = BadgeUsbStatus.ERROR,
                 deviceName = null,
-                message = "Multiple Espressif USB devices found: $names. Connect only the badge over USB-C.",
+                message = "Multiple Espressif USB devices found: $names. Attach only the badge over USB-C.",
                 transportLabel = "USB-C"
             )
         }
     }
 
-    private suspend fun connectToDevice(device: UsbDevice) {
+    private suspend fun connectToDevice(device: UsbDevice, lifecycleSession: Long) {
         connectionMutex.withLock {
+            if (!lifecycleGate.isActive(lifecycleSession)) return
             val existingDevice = state.value.deviceName
             if (state.value.status == BadgeUsbStatus.CONNECTED &&
                 existingDevice == device.displayName()
@@ -2445,6 +2463,12 @@ class BadgeUsbRepository @Inject constructor(
                         transportLabel = "USB-C"
                     )
                 }
+                return
+            }
+
+            if (!lifecycleGate.isActive(lifecycleSession)) {
+                runCatching { connection.releaseInterface(port.usbInterface) }
+                connection.close()
                 return
             }
 
@@ -2558,7 +2582,7 @@ class BadgeUsbRepository @Inject constructor(
         }
         if (showErrors) {
             setState { current ->
-                current.copy(message = "Badge AP/Debug Bridge status not reachable; connect via USB-C")
+                current.copy(message = "Badge AP/Debug Bridge status not reachable; attach the badge over USB-C")
             }
         }
         return false
@@ -3318,9 +3342,12 @@ class BadgeUsbRepository @Inject constructor(
         return null
     }
 
-    private fun disconnect(reason: String) {
+    private fun disconnect(reason: String, lifecycleSession: Long? = null) {
         scope.launch {
             connectionMutex.withLock {
+                if (lifecycleSession != null && !lifecycleGate.canClean(lifecycleSession)) {
+                    return@withLock
+                }
                 disconnectLocked()
                 setState {
                     it.copy(
