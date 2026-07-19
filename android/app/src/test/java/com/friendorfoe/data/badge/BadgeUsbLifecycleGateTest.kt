@@ -1,5 +1,11 @@
 package com.friendorfoe.data.badge
 
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -48,5 +54,38 @@ class BadgeUsbLifecycleGateTest {
         assertTrue(badgeUsbReaderOwnsSession(lifecycleActive = true, activeConnectionMatches = true))
         assertFalse(badgeUsbReaderOwnsSession(lifecycleActive = false, activeConnectionMatches = true))
         assertFalse(badgeUsbReaderOwnsSession(lifecycleActive = true, activeConnectionMatches = false))
+    }
+
+    @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun `stale reader action queued behind USB mutex is skipped`() = runTest {
+        val mutex = Mutex()
+        val ownsReader = AtomicBoolean(true)
+        val actionRan = AtomicBoolean(false)
+
+        mutex.lock()
+        val queuedAction = launch {
+            mutex.withBadgeUsbReaderOwner(ownsReader::get) {
+                actionRan.set(true)
+            }
+        }
+        runCurrent()
+        ownsReader.set(false)
+        mutex.unlock()
+        queuedAction.join()
+
+        assertFalse(actionRan.get())
+    }
+
+    @Test
+    fun `current reader owner executes action under USB mutex`() = runTest {
+        val actionRan = AtomicBoolean(false)
+
+        val executed = Mutex().withBadgeUsbReaderOwner({ true }) {
+            actionRan.set(true)
+        }
+
+        assertTrue(executed)
+        assertTrue(actionRan.get())
     }
 }

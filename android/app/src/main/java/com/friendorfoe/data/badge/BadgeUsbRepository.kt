@@ -658,6 +658,18 @@ internal fun badgeUsbReaderOwnsSession(
     activeConnectionMatches: Boolean,
 ): Boolean = lifecycleActive && activeConnectionMatches
 
+internal suspend fun Mutex.withBadgeUsbReaderOwner(
+    owns: () -> Boolean,
+    action: () -> Unit,
+): Boolean = withLock {
+    if (!owns()) {
+        false
+    } else {
+        action()
+        true
+    }
+}
+
 private fun parseBadgeDisplayPolicy(obj: JsonObject?): BadgeDisplayPolicy {
     if (obj == null) return defaultBadgeDisplayPolicy()
     val classesObj = runCatching { obj.getAsJsonObject("classes") }.getOrNull()
@@ -2530,7 +2542,16 @@ class BadgeUsbRepository @Inject constructor(
                         READ_TIMEOUT_MS
                     )
                     if (read > 0) {
-                        lineFramer.accept(buffer, read)
+                        connectionMutex.withBadgeUsbReaderOwner(
+                            owns = {
+                                badgeUsbReaderOwnsSession(
+                                    lifecycleActive = lifecycleGate.isActive(lifecycleSession),
+                                    activeConnectionMatches = activeConnection === connection,
+                                )
+                            },
+                        ) {
+                            lineFramer.accept(buffer, read)
+                        }
                     } else {
                         delay(25)
                     }
@@ -2539,19 +2560,21 @@ class BadgeUsbRepository @Inject constructor(
                 throw cancelled
             } catch (e: Exception) {
                 Log.w(TAG, "Badge USB reader stopped", e)
-                if (!badgeUsbReaderOwnsSession(
-                        lifecycleActive = lifecycleGate.isActive(lifecycleSession),
-                        activeConnectionMatches = activeConnection === connection,
-                    )
+                connectionMutex.withBadgeUsbReaderOwner(
+                    owns = {
+                        badgeUsbReaderOwnsSession(
+                            lifecycleActive = lifecycleGate.isActive(lifecycleSession),
+                            activeConnectionMatches = activeConnection === connection,
+                        )
+                    },
                 ) {
-                    return@launch
-                }
-                setState {
-                    it.copy(
-                        status = BadgeUsbStatus.ERROR,
-                        deviceName = deviceName,
-                        message = "Badge USB read failed: ${e.message ?: "unknown error"}"
-                    )
+                    setState {
+                        it.copy(
+                            status = BadgeUsbStatus.ERROR,
+                            deviceName = deviceName,
+                            message = "Badge USB read failed: ${e.message ?: "unknown error"}"
+                        )
+                    }
                 }
             }
         }

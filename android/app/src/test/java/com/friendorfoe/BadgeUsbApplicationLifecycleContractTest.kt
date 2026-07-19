@@ -58,6 +58,7 @@ class BadgeUsbApplicationLifecycleContractTest {
         assertTrue(repository.contains("catch (cancelled: CancellationException)"))
         assertTrue(repository.contains("throw cancelled"))
         assertTrue(repository.contains("startReader(connection, port.inEndpoint, device.displayName(), lifecycleSession)"))
+        assertTrue(repository.contains("connectionMutex.withBadgeUsbReaderOwner"))
     }
 
     private fun source(relativePath: String): String {
