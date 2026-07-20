@@ -30,6 +30,16 @@ void fw_store_register(httpd_handle_t server);
  *  Used by the watchdog to skip upload-age reboot during relay. */
 bool fw_store_is_relay_active(void);
 
+/**
+ * Ask connected scanners to run their firmware check immediately.
+ *
+ * Returns a bit mask of commands actually accepted by the scanner UARTs
+ * (bit 0 = BLE, bit 1 = Wi-Fi).  A firmware upload/relay owns the UART lease,
+ * so this returns zero while that operation is active instead of injecting a
+ * command into an OTA byte stream.
+ */
+uint8_t fw_store_request_scanner_checks(uint8_t target_slot_mask);
+
 typedef struct {
     bool     stored;
     uint32_t generation;

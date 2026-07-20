@@ -146,7 +146,7 @@ class ScannerQuietSourceContractTest(unittest.TestCase):
         self.assertIn("scanner_quiet_mode_is_active()", tx_gate.group(1))
 
         badge_start = re.search(
-            r"#ifdef FOF_BADGE_VARIANT\s*/\*.*?Badge: let NimBLE sync.*?#else",
+            r"#ifdef FOF_BADGE_VARIANT\s*/\*.*?Badge: start only.*?#else",
             self.main,
             re.S,
         )
@@ -260,6 +260,27 @@ class ScannerQuietSourceContractTest(unittest.TestCase):
         self.assertIn("atomic_load_explicit(&s_tx_enabled", self.uart_tx)
         self.assertIn("atomic_store_explicit(&s_tx_enabled", self.uart_tx)
 
+    def test_ble_host_is_explicitly_restarted_after_quiet_stop(self) -> None:
+        """NimBLE remains disabled after nimble_port_stop until rescheduled."""
+        self.assertIn("s_host_restart_required", self.ble_remote_id)
+        host_task = re.search(
+            r"static void ble_host_task\(void \*arg\)(.*?)\n}",
+            self.ble_remote_id,
+            re.S,
+        )
+        self.assertIsNotNone(host_task)
+        body = host_task.group(1)
+        self.assertRegex(
+            body,
+            r"(?s)s_host_restart_required.*?ble_hs_sched_start\(\).*?"
+            r"nimble_port_run\(\)",
+        )
+        self.assertRegex(
+            body,
+            r"(?s)nimble_port_run\(\).*?atomic_store_explicit\("
+            r"&s_host_restart_required, true",
+        )
+
     def test_detection_status_and_easter_tx_recheck_after_quiet_convergence(self) -> None:
         gate = re.search(
             r"static bool scanner_data_tx_allowed\(void\)(.*?)\n}",
@@ -308,6 +329,138 @@ class ScannerQuietSourceContractTest(unittest.TestCase):
         self.assertIsNotNone(easter)
         self.assertIn("uart_send_scanner_data_line", easter.group(1))
         self.assertNotIn("uart_tx_send_raw_json", easter.group(1))
+
+    def test_badge_role_is_resolved_before_radio_allocation(self) -> None:
+        role_wait = re.search(
+            r"static fof_policy_radio_boot_order_t "
+            r"badge_wait_for_radio_boot_order\(.*?\)(.*?)\n}",
+            self.main,
+            re.S,
+        )
+        self.assertIsNotNone(role_wait)
+        self.assertIn("scanner_slot_role_command_seen()", role_wait.group(1))
+        self.assertIn("scanner_slot_role_boot_window_close()", role_wait.group(1))
+
+        wait_call = self.main.index(
+            "badge_wait_for_radio_boot_order(&badge_role_assigned_at_boot)"
+        )
+        wifi_init = self.main.index(
+            "scanner_init_wifi_radio(s_detection_queue", wait_call
+        )
+        ble_init = self.main.index(
+            "scanner_init_ble_radio(s_detection_queue", wait_call
+        )
+        self.assertLess(wait_call, wifi_init)
+        self.assertLess(wait_call, ble_init)
+
+        self.assertIn("SCANNER_ROLE_NVS_SCHEMA_KEY", self.calibration_mode)
+        self.assertIn("SCANNER_ROLE_NVS_SCHEMA", self.calibration_mode)
+        self.assertIn("s_slot_role_command_seen", self.calibration_mode)
+
+    def test_late_badge_role_uses_one_transactional_recovery_claim(self) -> None:
+        handler = re.search(
+            r'else if \(type && strcmp\(type, "scan_profile"\) == 0\) \{'
+            r'(.*?)\n\s*\} else if',
+            self.main,
+            re.S,
+        )
+        self.assertIsNotNone(handler)
+        badge_handler = handler.group(1).split("#else", 1)[0]
+        self.assertIn("scanner_slot_role_command_apply", badge_handler)
+        self.assertNotIn("scanner_scan_profile_set", badge_handler)
+        self.assertNotIn('= "hybrid_failover"', badge_handler)
+        self.assertIn("late_role_recovery_required", badge_handler)
+        self.assertIn("scanner_initialize_late_badge_radio", badge_handler)
+
+        role_wait = re.search(
+            r"static fof_policy_radio_boot_order_t "
+            r"badge_wait_for_radio_boot_order\(.*?\)(.*?)\n}",
+            self.main,
+            re.S,
+        )
+        self.assertIsNotNone(role_wait)
+        self.assertIn(
+            "scanner_slot_role_boot_window_close()",
+            role_wait.group(1),
+        )
+
+        transaction = re.search(
+            r"bool scanner_slot_role_command_apply\(.*?\)(.*?)\n}",
+            self.calibration_mode,
+            re.S,
+        )
+        self.assertIsNotNone(transaction)
+        self.assertIn("scanner_transition_lock", transaction.group(1))
+        self.assertIn("strcmp(slot_role, profile)", transaction.group(1))
+        self.assertIn("s_late_role_recovery_claimed", transaction.group(1))
+
+        recovery = re.search(
+            r"static void scanner_initialize_late_badge_radio\(void\)"
+            r"\s*\{(.*?)\n}",
+            self.main,
+            re.S,
+        )
+        self.assertIsNotNone(recovery)
+        self.assertIn("s_badge_boot_radio_phase_complete", recovery.group(1))
+        self.assertIn("scanner_init_ble_radio", recovery.group(1))
+        self.assertIn("scanner_init_wifi_radio", recovery.group(1))
+        self.assertEqual(recovery.group(1).count("scanner_init_ble_radio"), 1)
+        self.assertEqual(recovery.group(1).count("scanner_init_wifi_radio"), 1)
+        self.assertRegex(
+            recovery.group(1),
+            r'(?s)strcmp\(slot_role, "ble_primary"\).*?else if '
+            r'\(strcmp\(slot_role, "wifi_primary"\)',
+        )
+        self.assertIn("ble_remote_id_is_initialized()", recovery.group(1))
+        self.assertIn("wifi_scanner_is_initialized()", recovery.group(1))
+
+    def test_badge_initializes_only_the_assigned_primary_radio(self) -> None:
+        badge_init = self.main[
+            self.main.index("/* ── 9. Initialize radios") :
+            self.main.index("#else", self.main.index("/* ── 9. Initialize radios"))
+        ]
+        profile_lookup = self.main.index("scanner_scan_profile_label()")
+        init_start = self.main.index("/* ── 9. Initialize radios")
+        self.assertLess(profile_lookup, init_start)
+        self.assertEqual(badge_init.count("scanner_init_ble_radio("), 1)
+        self.assertEqual(badge_init.count("scanner_init_wifi_radio("), 1)
+        self.assertNotRegex(
+            badge_init,
+            r"(?s)scanner_init_ble_radio\([^;]+;\s*scanner_init_wifi_radio",
+        )
+        self.assertNotRegex(
+            badge_init,
+            r"(?s)scanner_init_wifi_radio\([^;]+;\s*scanner_init_ble_radio",
+        )
+
+        persisted = self.calibration_mode[
+            self.calibration_mode.index("static void scanner_slot_role_load_once") :
+            self.calibration_mode.index("void scanner_calibration_mode_init")
+        ]
+        self.assertIn("s_scan_profile", persisted)
+        self.assertIn("persisted", persisted)
+
+    def test_uninitialized_wifi_cannot_be_reported_resumed_or_ready(self) -> None:
+        resume = re.search(
+            r"bool wifi_scanner_resume\(void\)(.*?)\n}",
+            self.wifi_scanner,
+            re.S,
+        )
+        self.assertIsNotNone(resume)
+        self.assertRegex(
+            resume.group(1),
+            r"(?s)!s_wifi_initialized.*?s_wifi_scan_paused = true.*?return false",
+        )
+        self.assertIn("s_wifi_init_rc", self.wifi_scanner)
+        self.assertIn("wifi_scanner_is_initialized()", self.uart_tx)
+        self.assertIn("wifi_scanner_is_active()", self.uart_tx)
+        self.assertIn("wifi_stats.init_rc", self.uart_tx)
+
+        self.assertNotRegex(self.main, r"(?m)^\s*s_radios_ready = true;")
+        self.assertIn(
+            "s_radios_ready = scanner_quiet_mode_radios_ready();",
+            self.main,
+        )
 
 
 if __name__ == "__main__":

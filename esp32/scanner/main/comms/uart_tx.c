@@ -29,6 +29,7 @@
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
@@ -110,6 +111,9 @@ static SemaphoreHandle_t s_uart_mutex = NULL;
 static SemaphoreHandle_t s_scanner_info_mutex = NULL;
 static QueueHandle_t s_detection_queue = NULL;
 static char s_scanner_info_json_buf[SCANNER_INFO_JSON_BUF_SIZE];
+/* Random, non-zero for each boot. This is reboot evidence for the uplink OTA
+ * health gate; it is not persisted and is not a security credential. */
+static uint32_t s_scanner_boot_id = 0;
 
 /* ── Detection cache for OLED scoreboard ────────────────────────────────── */
 
@@ -724,20 +728,6 @@ static bool should_shed_low_priority_detection(const drone_detection_t *detectio
     );
 }
 
-/**
- * Transmit a raw null-terminated string over UART, appending the newline
- * delimiter.  The caller is responsible for providing valid JSON.
- */
-void uart_tx_send_raw_json(const char *json_str)
-{
-    if (!json_str) return;
-    size_t len = strlen(json_str);
-    if (s_uart_mutex) xSemaphoreTake(s_uart_mutex, portMAX_DELAY);
-    uart_write_bytes(UART_PORT_NUM, json_str, len);
-    uart_write_bytes(UART_PORT_NUM, "\n", 1);
-    if (s_uart_mutex) xSemaphoreGive(s_uart_mutex);
-}
-
 static bool uart_send_line_internal(const char *json_str,
                                     bool require_scanner_data_tx)
 {
@@ -770,6 +760,16 @@ static bool uart_send_line_internal(const char *json_str,
     uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(250));
     if (s_uart_mutex) xSemaphoreGive(s_uart_mutex);
     return complete;
+}
+
+/**
+ * Transmit raw control JSON over UART with a complete checked write.  This
+ * intentionally bypasses the detection-TX gate so stop/OTA receipts remain
+ * available after normal telemetry is disabled.
+ */
+void uart_tx_send_raw_json(const char *json_str)
+{
+    (void)uart_send_line_internal(json_str, false);
 }
 
 static void uart_send_line(const char *json_str)
@@ -805,6 +805,10 @@ static void maybe_warn_uart_tx_stack_headroom(void)
 
 void uart_tx_init(void)
 {
+    do {
+        s_scanner_boot_id = esp_random();
+    } while (s_scanner_boot_id == 0);
+
     s_uart_mutex = xSemaphoreCreateMutex();
     s_scanner_info_mutex = xSemaphoreCreateMutex();
 #ifdef FOF_BADGE_VARIANT
@@ -1105,6 +1109,7 @@ void uart_tx_send_status(int ble_count, int wifi_count,
     cJSON_AddNumberToObject(root, "wifi_count", wifi_count);
     cJSON_AddNumberToObject(root, "ch",         current_channel);
     cJSON_AddNumberToObject(root, "uptime_s",   uptime_s);
+    cJSON_AddNumberToObject(root, "boot_id",    s_scanner_boot_id);
     cJSON_AddNumberToObject(root, "uart_tx_dropped", s_uart_tx_dropped);
     cJSON_AddNumberToObject(root, "uart_tx_high_water", s_uart_tx_queue_high_water);
     cJSON_AddNumberToObject(root, "tx_queue_depth", s_uart_tx_queue_depth);
@@ -1121,9 +1126,20 @@ void uart_tx_send_status(int ble_count, int wifi_count,
     ble_remote_id_get_stats(&ble_stats);
     wifi_scanner_stats_t wifi_stats = {0};
     wifi_scanner_get_stats(&wifi_stats);
+    cJSON_AddBoolToObject(root, "ble_initialized",
+                          ble_remote_id_is_initialized());
     cJSON_AddBoolToObject(root, "ble_scanning", ble_stats.ble_scanning);
     cJSON_AddBoolToObject(root, "ble_host_active", ble_stats.ble_host_active);
     cJSON_AddBoolToObject(root, "ble_host_synced", ble_stats.ble_host_synced);
+    cJSON_AddBoolToObject(root, "ble_quiesced",
+                          ble_remote_id_is_quiesced());
+    cJSON_AddStringToObject(root, "slot_role", scanner_slot_role_label());
+    cJSON_AddBoolToObject(root, "wifi_initialized",
+                          wifi_scanner_is_initialized());
+    cJSON_AddBoolToObject(root, "wifi_active", wifi_scanner_is_active());
+    cJSON_AddBoolToObject(root, "wifi_quiesced",
+                          wifi_scanner_is_quiesced());
+    cJSON_AddNumberToObject(root, "wifi_init_rc", wifi_stats.init_rc);
     cJSON_AddBoolToObject(root, "wifi_paused", wifi_scanner_is_paused());
     cJSON_AddNumberToObject(root, "wifi_total_frames", wifi_stats.total_frames);
     cJSON_AddNumberToObject(root, "wifi_beacon_frames", wifi_stats.beacon_frames);
@@ -1427,14 +1443,20 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
              "\"chip\":\"%s\",\"caps\":\"%s\","
              "\"firmware_name\":\"%s\",\"app_project\":\"%s\","
              "\"hardware_type\":\"%s\",\"hardware_id\":\"%s\","
+             "\"boot_id\":%lu,"
              "\"toff\":%lld,\"tcnt\":%lu,"
              "\"time_valid_count\":%lu,\"time_last_valid_age_s\":%lld,\"time_sync_state\":\"%s\","
              "\"cmd_rx\":%lu,\"cmd_parse_err\":%lu,\"cmd_overflow\":%lu,"
              "\"cmd_stale\":%lu,\"cmd_last_age_s\":%lld,"
-             "\"scan_mode\":\"%s\",\"scan_profile\":\"%s\",\"calibration_uuid\":\"%s\","
+             "\"scan_mode\":\"%s\",\"scan_profile\":\"%s\",\"slot_role\":\"%s\","
+             "\"calibration_uuid\":\"%s\","
              "\"quiet_mode\":%s,\"quiet_generation\":%lu,\"tx_enabled\":%s,"
-             "\"ble_scanning\":%s,\"ble_host_active\":%s,\"ble_host_synced\":%s,"
-             "\"wifi_paused\":%s,"
+             "\"ble_initialized\":%s,\"ble_scanning\":%s,"
+             "\"ble_host_active\":%s,\"ble_host_synced\":%s,"
+             "\"ble_quiesced\":%s,"
+             "\"wifi_initialized\":%s,\"wifi_active\":%s,"
+             "\"wifi_quiesced\":%s,"
+             "\"wifi_init_rc\":%d,\"wifi_paused\":%s,"
              "\"wifi_full_scan_count\":%lu,\"wifi_full_scan_ok\":%lu,"
              "\"wifi_last_ap_count\":%lu,\"wifi_last_scan_age_s\":%lld,"
              "\"wifi_drone_ssid_emit\":%lu,\"wifi_notable_ssid_emit\":%lu,"
@@ -1479,6 +1501,7 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
              chip ? chip : "?", caps ? caps : "?",
              FOF_FIRMWARE_TARGET, FOF_APP_PROJECT,
              FOF_HARDWARE_TYPE, s_scanner_hardware_id,
+             (unsigned long)s_scanner_boot_id,
              (long long)g_epoch_offset_ms,
              (unsigned long)g_time_msg_count,
              (unsigned long)g_time_valid_count,
@@ -1491,13 +1514,20 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
              (long long)scanner_cmd_last_age_s(),
              scanner_calibration_mode_label(),
              scanner_scan_profile_label(),
+             scanner_slot_role_label(),
              scanner_calibration_mode_uuid(),
              scanner_quiet_mode_is_active() ? "true" : "false",
              (unsigned long)scanner_quiet_mode_generation(),
              uart_tx_is_enabled() ? "true" : "false",
+             ble_remote_id_is_initialized() ? "true" : "false",
              ble_stats.ble_scanning ? "true" : "false",
              ble_stats.ble_host_active ? "true" : "false",
              ble_stats.ble_host_synced ? "true" : "false",
+             ble_remote_id_is_quiesced() ? "true" : "false",
+             wifi_scanner_is_initialized() ? "true" : "false",
+             wifi_scanner_is_active() ? "true" : "false",
+             wifi_scanner_is_quiesced() ? "true" : "false",
+             wifi_stats.init_rc,
              wifi_scanner_is_paused() ? "true" : "false",
              (unsigned long)wifi_stats.full_scan_count,
              (unsigned long)wifi_stats.full_scan_ok,
@@ -1576,11 +1606,17 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
                  "\"chip\":\"%s\",\"caps\":\"%s\","
                  "\"firmware_name\":\"%s\",\"app_project\":\"%s\","
                  "\"hardware_type\":\"%s\",\"hardware_id\":\"%s\","
+                 "\"boot_id\":%lu,"
                  "\"cmd_rx\":%lu,"
-                 "\"scan_profile\":\"%s\",\"quiet_mode\":%s,"
-                 "\"quiet_generation\":%lu,\"tx_enabled\":%s,\"ble_scanning\":%s,"
+                 "\"scan_profile\":\"%s\",\"slot_role\":\"%s\",\"quiet_mode\":%s,"
+                 "\"quiet_generation\":%lu,\"tx_enabled\":%s,"
+                 "\"ble_initialized\":%s,\"ble_scanning\":%s,"
                  "\"ble_host_active\":%s,\"ble_host_synced\":%s,"
-                 "\"wifi_paused\":%s,\"ble_adv_seen\":%lu,"
+                 "\"ble_quiesced\":%s,"
+                 "\"wifi_initialized\":%s,\"wifi_active\":%s,"
+                 "\"wifi_quiesced\":%s,"
+                 "\"wifi_init_rc\":%d,\"wifi_paused\":%s,"
+                 "\"wifi_full_scan_ok\":%lu,\"ble_adv_seen\":%lu,"
                  "\"ble_any_seen\":%lu,\"ble_any_with_payload_seen\":%lu,"
                  "\"ble_any_empty_seen\":%lu,\"ble_any_last_rssi\":%d,"
                  "\"ble_any_best_rssi\":%d,\"ble_any_last_len\":%u,"
@@ -1593,15 +1629,24 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
                  chip ? chip : "?", caps ? caps : "?",
                  FOF_FIRMWARE_TARGET, FOF_APP_PROJECT,
                  FOF_HARDWARE_TYPE, s_scanner_hardware_id,
+                 (unsigned long)s_scanner_boot_id,
                  (unsigned long)g_cmd_msg_count,
                  scanner_scan_profile_label(),
+                 scanner_slot_role_label(),
                  scanner_quiet_mode_is_active() ? "true" : "false",
                  (unsigned long)scanner_quiet_mode_generation(),
                  uart_tx_is_enabled() ? "true" : "false",
+                 ble_remote_id_is_initialized() ? "true" : "false",
                  ble_stats.ble_scanning ? "true" : "false",
                  ble_stats.ble_host_active ? "true" : "false",
                  ble_stats.ble_host_synced ? "true" : "false",
+                 ble_remote_id_is_quiesced() ? "true" : "false",
+                 wifi_scanner_is_initialized() ? "true" : "false",
+                 wifi_scanner_is_active() ? "true" : "false",
+                 wifi_scanner_is_quiesced() ? "true" : "false",
+                 wifi_stats.init_rc,
                  wifi_scanner_is_paused() ? "true" : "false",
+                 (unsigned long)wifi_stats.full_scan_ok,
                  (unsigned long)ble_stats.ble_adv_seen,
                  (unsigned long)ble_stats.ble_any_seen,
                  (unsigned long)ble_stats.ble_any_with_payload_seen,

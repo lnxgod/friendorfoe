@@ -24,6 +24,7 @@
 #include "detection_policy.h"
 #ifdef FOF_BADGE_VARIANT
 #include "badge_power_runtime.h"
+#include "badge_runtime.h"
 #endif
 
 #include "esp_partition.h"
@@ -124,6 +125,11 @@ typedef struct {
 } fw_last_relay_state_t;
 
 static fw_last_relay_state_t s_last_relay[2] = {0};
+/* One firmware operation owns the relay path at a time. Keep its complete
+ * scanner snapshots out of the 7 KB auto-worker stack. Recovery checks can
+ * arrive on either UART task, so they use a separate per-slot cache. */
+static scanner_info_t s_fw_relay_scanner_snapshots[2] = {0};
+static scanner_info_t s_fw_recovery_scanner_snapshots[2] = {0};
 
 /* ── OTA upload staging buffer (P4) ──────────────────────────────────────
  * Lazily allocated on first upload. 64 KB on PSRAM collapses the
@@ -137,6 +143,11 @@ static fw_last_relay_state_t s_last_relay[2] = {0};
  * Keep re-sending the quiet request before relay, but still require proof. */
 #define FW_RELAY_STOP_STORM_MS       8000
 #define FW_RELAY_STOP_STORM_STEP_MS  250
+#define FW_RELAY_CONTROL_LINE_MAX      768
+/* ota_end is a small, immutable idempotent authorization command.  A single
+ * lost line otherwise strands a fully verified image until the scanner's
+ * finalize watchdog expires. */
+#define FW_RELAY_END_RESEND_MS        1000
 #ifdef FOF_BADGE_VARIANT
 #define FW_RELAY_NACK_POLL_MS        OTA_RELAY_BADGE_NACK_DRAIN_MS
 #define FW_RELAY_CHUNK_DATA          OTA_CHUNK_BADGE_MAX_DATA
@@ -199,7 +210,28 @@ static void fw_stage_buf_ensure(void)
     }
 }
 
-bool fw_store_is_relay_active(void) { return operation_is_active(); }
+uint8_t fw_store_request_scanner_checks(uint8_t target_slot_mask)
+{
+    if ((target_slot_mask & (uint8_t)~FW_AUTO_UPDATE_SLOT_ALL) != 0 ||
+        target_slot_mask == 0 || fw_store_is_relay_active() ||
+        http_upload_is_paused()) {
+        /* The UART lease is also used by the binary relay.  Never put a JSON
+         * control line on a scanner UART while that lease is held. */
+        return 0;
+    }
+
+    uint8_t sent_mask = 0;
+    const char *command = "{\"type\":\"fw_check_now\"}";
+    for (int scanner_id = 0;
+         scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT; ++scanner_id) {
+        uint8_t bit = (uint8_t)(1u << scanner_id);
+        if ((target_slot_mask & bit) != 0 &&
+            uart_rx_send_command_to_scanner_checked(scanner_id, command)) {
+            sent_mask |= bit;
+        }
+    }
+    return sent_mask;
+}
 
 /* ── NVS metadata keys ───────────────────────────────────────────────────── */
 
@@ -1204,11 +1236,21 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
  *     continue waiting for a NEW line from the start.
  *   - Return the first complete line that fits. Return -1 on deadline hit.
  */
-static int relay_read_line(uart_port_t uart_num, char *line, size_t size, int timeout_ms)
+typedef struct {
+    size_t pos;
+    bool draining;
+    uint32_t lines_overflowed;
+} relay_line_reader_t;
+
+static int relay_read_line_stateful(uart_port_t uart_num,
+                                    char *line,
+                                    size_t size,
+                                    int timeout_ms,
+                                    relay_line_reader_t *reader)
 {
-    int pos = 0;
-    bool draining = false;
-    int lines_overflowed = 0;
+    if (!line || size < 2 || !reader) {
+        return -1;
+    }
     int64_t start_ms = esp_timer_get_time() / 1000;
     int64_t deadline_ms = start_ms + timeout_ms;
     while ((esp_timer_get_time() / 1000) < deadline_ms) {
@@ -1216,35 +1258,50 @@ static int relay_read_line(uart_port_t uart_num, char *line, size_t size, int ti
         int n = uart_read_bytes(uart_num, &b, 1, pdMS_TO_TICKS(10));
         if (n <= 0) continue;
         if (b == '\n') {
-            if (draining) {
+            if (reader->draining) {
                 /* Reached end of the too-long line; start fresh on the next. */
-                draining = false;
-                pos = 0;
+                reader->draining = false;
+                reader->pos = 0;
                 continue;
             }
-            line[pos] = '\0';
-            if (pos == 0) continue;   /* empty line — keep reading */
-            return pos;
+            line[reader->pos] = '\0';
+            if (reader->pos == 0) continue;   /* empty line — keep reading */
+            int complete_len = (int)reader->pos;
+            reader->pos = 0;
+            return complete_len;
         }
-        if (draining) continue;
+        if (b == '\r') {
+            continue;
+        }
+        if (reader->draining) continue;
         if (b >= 0x20 && b <= 0x7E) {
-            if (pos < (int)size - 1) {
-                line[pos++] = (char)b;
+            if (reader->pos < size - 1) {
+                line[reader->pos++] = (char)b;
             } else {
                 /* Buffer full before '\n' — discard this line, keep waiting. */
-                draining = true;
-                lines_overflowed++;
+                reader->draining = true;
+                reader->lines_overflowed++;
             }
         } else {
-            pos = 0;  /* binary garbage — reset */
+            reader->pos = 0;  /* binary garbage — reset */
         }
     }
-    if (lines_overflowed > 0) {
-        ESP_LOGW(TAG, "relay_read_line: timeout with %d oversized lines dropped",
-                 lines_overflowed);
-    }
-    line[pos] = '\0';
+    line[reader->pos < size ? reader->pos : size - 1] = '\0';
     return -1;
+}
+
+static int relay_read_line(uart_port_t uart_num, char *line, size_t size,
+                           int timeout_ms)
+{
+    relay_line_reader_t reader = {0};
+    int result = relay_read_line_stateful(
+        uart_num, line, size, timeout_ms, &reader);
+    if (result < 0 && reader.lines_overflowed > 0) {
+        ESP_LOGW(TAG,
+                 "relay_read_line: timeout with %lu oversized lines dropped",
+                 (unsigned long)reader.lines_overflowed);
+    }
+    return result;
 }
 
 static void relay_send_wire_abort_sentinel(uart_port_t uart_num)
@@ -1446,7 +1503,7 @@ static bool relay_line_matches_complete_progress(
 static int relay_wait_for(uart_port_t uart_num, const char *needle,
                          int timeout_ms, char *reason_out, size_t reason_size)
 {
-    char line[512];
+    char line[FW_RELAY_CONTROL_LINE_MAX];
     int64_t start_ms = esp_timer_get_time() / 1000;
     int64_t deadline_ms = start_ms + timeout_ms;
     int lines_seen = 0;
@@ -1502,7 +1559,8 @@ static int relay_wait_for_with_resend(int scanner_id,
                                       char *reason_out,
                                       size_t reason_size)
 {
-    char line[512];
+    char line[FW_RELAY_CONTROL_LINE_MAX];
+    relay_line_reader_t reader = {0};
     int64_t start_ms = esp_timer_get_time() / 1000;
     int64_t deadline_ms = start_ms + timeout_ms;
     int64_t next_send_ms = start_ms;
@@ -1514,13 +1572,20 @@ static int relay_wait_for_with_resend(int scanner_id,
     while (true) {
         int64_t now_ms = esp_timer_get_time() / 1000;
         if (now_ms >= deadline_ms) {
-            ESP_LOGW(TAG, "relay_wait_for_with_resend(%s) TIMEOUT after %lldms — %d lines seen",
-                     needle, (long long)(now_ms - start_ms), lines_seen);
+            ESP_LOGW(TAG,
+                     "relay_wait_for_with_resend(%s) TIMEOUT after %lldms — "
+                     "%d lines seen, %lu oversized lines drained",
+                     needle, (long long)(now_ms - start_ms), lines_seen,
+                     (unsigned long)reader.lines_overflowed);
             return -1;
         }
 
         if (now_ms >= next_send_ms) {
-            uart_rx_send_command_to_scanner(scanner_id, cmd);
+            if (!uart_rx_send_command_to_scanner_checked(scanner_id, cmd)) {
+                ESP_LOGW(TAG,
+                         "relay_wait_for_with_resend(%s): command write failed",
+                         needle);
+            }
             next_send_ms = now_ms + resend_ms;
         }
 
@@ -1538,7 +1603,8 @@ static int relay_wait_for_with_resend(int scanner_id,
             continue;
         }
 
-        int n = relay_read_line(uart_num, line, sizeof(line), read_timeout_ms);
+        int n = relay_read_line_stateful(
+            uart_num, line, sizeof(line), read_timeout_ms, &reader);
         if (n < 0) {
             continue;
         }
@@ -1895,6 +1961,7 @@ typedef struct {
     bool received;
     uint32_t cmd_rx;
     uint32_t fw_check;
+    uint32_t scan_profile_ack_generation;
     int64_t cmd_age_s;
     char version[32];
     char board[40];
@@ -1938,15 +2005,16 @@ static void capture_command_health(int scanner_id, fw_command_health_t *out)
     if (!out) return;
     memset(out, 0, sizeof(*out));
     out->cmd_age_s = -1;
-    const scanner_info_t *info = (scanner_id == 0)
-        ? uart_rx_get_ble_scanner_info()
-        : uart_rx_get_wifi_scanner_info();
-    if (!info) {
+    scanner_info_t *snapshot = &s_fw_relay_scanner_snapshots[scanner_id];
+    if (!uart_rx_get_scanner_info_snapshot(scanner_id, snapshot)) {
         return;
     }
+    const scanner_info_t *info = snapshot;
     out->received = info->received;
     out->cmd_rx = info->cmd_rx_count;
     out->fw_check = info->fw_check_count;
+    out->scan_profile_ack_generation =
+        info->scan_profile_ack_generation;
     out->cmd_age_s = info->cmd_last_age_s;
     strncpy(out->version, info->version, sizeof(out->version) - 1);
     strncpy(out->board, info->board, sizeof(out->board) - 1);
@@ -1965,7 +2033,8 @@ static bool command_health_moved(const fw_command_health_t *before,
     if (before && after->fw_check > before->fw_check) {
         return true;
     }
-    return after->cmd_age_s >= 0 && after->cmd_age_s <= 3;
+    return before && after->scan_profile_ack_generation !=
+        before->scan_profile_ack_generation;
 }
 
 static bool probe_scanner_command_ingress(int scanner_id,
@@ -1973,16 +2042,19 @@ static bool probe_scanner_command_ingress(int scanner_id,
                                           fw_command_health_t *after)
 {
     capture_command_health(scanner_id, before);
-    const scanner_info_t *info = (scanner_id == 0)
-        ? uart_rx_get_ble_scanner_info()
-        : uart_rx_get_wifi_scanner_info();
-    const char *profile = (info && info->scan_profile[0])
-        ? info->scan_profile
-        : "hybrid_failover";
-    char probe_cmd[96];
+    bool peer_connected = scanner_id == 0
+        ? uart_rx_is_wifi_scanner_connected()
+        : uart_rx_is_ble_scanner_connected();
+    const char *profile = fof_policy_scan_profile_for_topology(
+        (uint8_t)scanner_id, false, peer_connected,
+        FOF_POLICY_FIXED_SLOT_TOPOLOGY);
+    char probe_cmd[128];
     snprintf(probe_cmd, sizeof(probe_cmd),
-             "{\"type\":\"scan_profile\",\"%s\":\"%s\"}",
-             JSON_KEY_SCAN_PROFILE, profile);
+             "{\"type\":\"scan_profile\",\"%s\":\"%s\","
+             "\"%s\":\"%s\"}",
+             JSON_KEY_SCAN_PROFILE, profile,
+             JSON_KEY_SLOT_ROLE,
+             fof_policy_slot_role_for_slot((uint8_t)scanner_id));
     (void)uart_rx_send_command_to_scanner_checked(scanner_id, probe_cmd);
 
     int64_t deadline_ms = (esp_timer_get_time() / 1000) + 2500;
@@ -1998,53 +2070,80 @@ static bool probe_scanner_command_ingress(int scanner_id,
     return command_health_moved(before, after);
 }
 
+static bool scanner_profile_radio_proved(const scanner_info_t *scanner,
+                                         const char *expected_profile,
+                                         bool require_wifi_scan)
+{
+    if (!scanner || !expected_profile) {
+        return false;
+    }
+    bool ble_proved = scanner->ble_initialized && scanner->ble_scanning &&
+        scanner->ble_host_active && scanner->ble_host_synced;
+    bool wifi_proved = scanner->wifi_initialized && scanner->wifi_active &&
+        scanner->wifi_init_rc == 0 && !scanner->wifi_paused &&
+        (!require_wifi_scan || scanner->wifi_full_scan_ok > 0);
+    if (strcmp(expected_profile, "ble_primary") == 0 ||
+        strcmp(expected_profile, "calibration") == 0) {
+        return ble_proved && scanner->wifi_quiesced;
+    }
+    if (strcmp(expected_profile, "wifi_primary") == 0) {
+        return wifi_proved && scanner->ble_quiesced;
+    }
+    if (strcmp(expected_profile, "hybrid_failover") == 0) {
+        return ble_proved && wifi_proved;
+    }
+    return false;
+}
+
 static bool scanner_post_update_converged(const scanner_info_t *scanner,
+                                          const scanner_identity_snapshot_t *identity,
                                           const fw_store_info_t *staged,
                                           const char *expected_hardware_id,
                                           uint32_t identity_generation_before,
+                                          uint32_t boot_id_before,
                                           bool quiet_expected,
-                                          const char *expected_profile)
+                                          const char *expected_profile,
+                                          const char *expected_role)
 {
-    if (!scanner || !staged || !scanner->received ||
-        scanner->identity_generation <= identity_generation_before ||
+    if (!scanner || !identity || !staged || !scanner->received ||
+        !identity->complete ||
+        identity->identity_generation <= identity_generation_before ||
+        !fof_firmware_post_reboot_boot_id_proved(
+            boot_id_before, identity->boot_id) ||
+        scanner->identity_generation != identity->identity_generation ||
+        scanner->boot_id != identity->boot_id ||
         !expected_hardware_id || !expected_hardware_id[0] ||
-        strcmp(scanner->hardware_id, expected_hardware_id) != 0 ||
-        strcmp(scanner->version, staged->version) != 0 ||
-        strcmp(scanner->firmware_name, staged->name) != 0 ||
-        strcmp(scanner->board, staged->name) != 0 ||
-        strcmp(scanner->app_project, staged->project) != 0 ||
-        strcmp(scanner->hardware_type, staged->hardware) != 0 ||
+        strcmp(identity->hardware_id, expected_hardware_id) != 0 ||
+        strcmp(identity->version, staged->version) != 0 ||
+        strcmp(identity->firmware_name, staged->name) != 0 ||
+        strcmp(identity->board, staged->name) != 0 ||
+        strcmp(identity->app_project, staged->project) != 0 ||
+        strcmp(identity->hardware_type, staged->hardware) != 0 ||
         scanner->rollback_pending ||
         strcmp(scanner->recovery_mode, "normal") != 0 ||
         scanner->cmd_rx_count == 0 ||
         scanner->cmd_last_age_s < 0 || scanner->cmd_last_age_s > 45 ||
         !expected_profile ||
-        strcmp(scanner->scan_profile, expected_profile) != 0) {
+        strcmp(scanner->scan_profile, expected_profile) != 0 ||
+        !expected_role ||
+        strcmp(scanner->slot_role, expected_role) != 0) {
         return false;
     }
 
 #ifdef FOF_BADGE_VARIANT
     if (quiet_expected) {
         return scanner->quiet_mode && scanner->quiet_uart_commands &&
-               !scanner->quiet_tx_enabled && scanner->wifi_paused &&
-               !scanner->ble_scanning;
+               !scanner->quiet_tx_enabled && scanner->quiet_radios_ready &&
+               scanner->quiet_ble_quiesced && scanner->quiet_wifi_quiesced &&
+               scanner->wifi_paused && !scanner->ble_scanning;
     }
     if (scanner->quiet_mode || !scanner->quiet_tx_enabled) {
         return false;
     }
-    if (strcmp(expected_profile, "ble_primary") == 0) {
-        return scanner->ble_scanning && scanner->ble_host_active &&
-               scanner->ble_host_synced && scanner->wifi_paused;
-    }
-    if (strcmp(expected_profile, "wifi_primary") == 0) {
-        return !scanner->ble_scanning && !scanner->wifi_paused;
-    }
 #else
     (void)quiet_expected;
 #endif
-    return scanner->ble_scanning &&
-           scanner->ble_host_active && scanner->ble_host_synced &&
-           !scanner->wifi_paused;
+    return scanner_profile_radio_proved(scanner, expected_profile, true);
 }
 
 static bool wait_for_scanner_post_update_health(
@@ -2052,19 +2151,31 @@ static bool wait_for_scanner_post_update_health(
     const fw_store_info_t *staged,
     const char *expected_hardware_id,
     uint32_t identity_generation_before,
+    uint32_t boot_id_before,
     char *error,
     size_t error_len)
 {
     int64_t deadline_ms = (esp_timer_get_time() / 1000) + 180000;
     int64_t next_probe_ms = 0;
     bool saw_new_identity = false;
+    bool saw_new_boot = false;
     while ((esp_timer_get_time() / 1000) < deadline_ms) {
+#ifdef FOF_BADGE_VARIANT
+        /* The USB control task executes this relay synchronously. A healthy
+         * 180-second post-reboot proof window must not look like a wedged USB
+         * task to the 90-second self-heal watchdog. */
+        badge_runtime_note_usb_control_alive();
+#endif
         int64_t now_ms = esp_timer_get_time() / 1000;
-        const scanner_info_t *live = scanner_id == 0
-            ? uart_rx_get_ble_scanner_info()
-            : uart_rx_get_wifi_scanner_info();
-        scanner_info_t snapshot = {0};
-        if (live) snapshot = *live;
+        scanner_info_t *snapshot = &s_fw_relay_scanner_snapshots[scanner_id];
+        bool have_scanner_snapshot =
+            uart_rx_get_scanner_info_snapshot(scanner_id, snapshot);
+        if (!have_scanner_snapshot) {
+            memset(snapshot, 0, sizeof(*snapshot));
+        }
+        scanner_identity_snapshot_t identity_snapshot = {0};
+        bool have_identity = uart_rx_get_scanner_identity_snapshot(
+            scanner_id, &identity_snapshot);
         bool connected = scanner_id == 0
             ? uart_rx_is_ble_scanner_connected()
             : uart_rx_is_wifi_scanner_connected();
@@ -2076,37 +2187,51 @@ static bool wait_for_scanner_post_update_health(
         badge_power_runtime_snapshot(&power_state);
         bool quiet_expected = power_state.quiet;
         uint32_t power_generation = power_state.generation;
-        const char *expected_profile = peer_connected
-            ? fof_policy_scan_profile_for_slot((uint8_t)scanner_id, false)
-            : "hybrid_failover";
 #else
         bool quiet_expected = false;
         uint32_t power_generation = 0;
-        const char *expected_profile = "hybrid_failover";
 #endif
+        const char *expected_profile = fof_policy_scan_profile_for_topology(
+            (uint8_t)scanner_id, false, peer_connected,
+            FOF_POLICY_FIXED_SLOT_TOPOLOGY);
         saw_new_identity = saw_new_identity ||
-            snapshot.identity_generation > identity_generation_before;
+            (have_identity && identity_snapshot.complete &&
+             identity_snapshot.identity_generation >
+                 identity_generation_before);
+        saw_new_boot = saw_new_boot ||
+            (have_scanner_snapshot &&
+             fof_firmware_post_reboot_boot_id_proved(
+                 boot_id_before, snapshot->boot_id)) ||
+            (have_identity &&
+             fof_firmware_post_reboot_boot_id_proved(
+                 boot_id_before, identity_snapshot.boot_id));
 
-        if (connected && scanner_post_update_converged(
-                &snapshot, staged, expected_hardware_id,
-                identity_generation_before, quiet_expected,
-                expected_profile)) {
+        if (connected && have_scanner_snapshot && have_identity &&
+            scanner_post_update_converged(
+                snapshot, &identity_snapshot, staged, expected_hardware_id,
+                identity_generation_before, boot_id_before, quiet_expected,
+                expected_profile,
+                fof_policy_slot_role_for_slot((uint8_t)scanner_id))) {
             ESP_LOGW(TAG,
                      "Scanner[%d] post-update convergence proved: MAC=%s "
                      "target=%s project=%s hardware=%s version=%s "
-                     "rollback_pending=0 recovery=normal quiet=%d cmd_rx=%lu",
+                     "boot=%08lx identity=%lu>%lu rollback_pending=0 "
+                     "recovery=normal quiet=%d cmd_rx=%lu",
                      scanner_id,
-                     snapshot.hardware_id,
-                     snapshot.firmware_name,
-                     snapshot.app_project,
-                     snapshot.hardware_type,
-                     snapshot.version,
-                     snapshot.quiet_mode ? 1 : 0,
-                     (unsigned long)snapshot.cmd_rx_count);
+                     identity_snapshot.hardware_id,
+                     identity_snapshot.firmware_name,
+                     identity_snapshot.app_project,
+                     identity_snapshot.hardware_type,
+                     identity_snapshot.version,
+                     (unsigned long)identity_snapshot.boot_id,
+                     (unsigned long)identity_snapshot.identity_generation,
+                     (unsigned long)identity_generation_before,
+                     snapshot->quiet_mode ? 1 : 0,
+                     (unsigned long)snapshot->cmd_rx_count);
             return true;
         }
 
-        if (saw_new_identity && now_ms >= next_probe_ms) {
+        if (saw_new_boot && now_ms >= next_probe_ms) {
 #ifdef FOF_BADGE_VARIANT
             char power_cmd[112];
             snprintf(power_cmd, sizeof(power_cmd),
@@ -2117,10 +2242,13 @@ static bool wait_for_scanner_post_update_health(
                      (unsigned long)power_generation);
             uart_rx_send_command_to_scanner(scanner_id, power_cmd);
 #endif
-            char profile_cmd[96];
+            char profile_cmd[128];
             snprintf(profile_cmd, sizeof(profile_cmd),
-                     "{\"type\":\"scan_profile\",\"%s\":\"%s\"}",
-                     JSON_KEY_SCAN_PROFILE, expected_profile);
+                     "{\"type\":\"scan_profile\",\"%s\":\"%s\","
+                     "\"%s\":\"%s\"}",
+                     JSON_KEY_SCAN_PROFILE, expected_profile,
+                     JSON_KEY_SLOT_ROLE,
+                     fof_policy_slot_role_for_slot((uint8_t)scanner_id));
             uart_rx_send_command_to_scanner(scanner_id, profile_cmd);
 #ifdef FOF_BADGE_VARIANT
             if (!quiet_expected)
@@ -2133,11 +2261,25 @@ static bool wait_for_scanner_post_update_health(
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
-    const scanner_info_t *last = scanner_id == 0
-        ? uart_rx_get_ble_scanner_info()
-        : uart_rx_get_wifi_scanner_info();
+    scanner_info_t *last_snapshot = &s_fw_relay_scanner_snapshots[scanner_id];
+    const scanner_info_t *last =
+        uart_rx_get_scanner_info_snapshot(scanner_id, last_snapshot)
+            ? last_snapshot : NULL;
+    ESP_LOGE(TAG,
+             "Scanner[%d] post-update health timeout: boot=%08lx->%08lx "
+             "identity=%lu->%lu saw_boot=%d saw_identity=%d connected=%d",
+             scanner_id,
+             (unsigned long)boot_id_before,
+             (unsigned long)(last ? last->boot_id : 0U),
+             (unsigned long)identity_generation_before,
+             (unsigned long)(last ? last->identity_generation : 0U),
+             saw_new_boot ? 1 : 0,
+             saw_new_identity ? 1 : 0,
+             scanner_id == 0 ? uart_rx_is_ble_scanner_connected() ? 1 : 0
+                             : uart_rx_is_wifi_scanner_connected() ? 1 : 0);
     if (error && error_len) {
         snprintf(error, error_len, "%s",
+                 !saw_new_boot ? "post_reboot_boot_id_timeout" :
                  !saw_new_identity ? "post_reboot_identity_timeout" :
                  (last && last->rollback_pending) ? "rollback_health_timeout" :
                  "post_reboot_health_timeout");
@@ -2436,6 +2578,8 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
         scanner_id, &pre_update_identity);
     uint32_t pre_update_identity_generation = have_pre_update_identity
         ? pre_update_identity.identity_generation : 0;
+    uint32_t pre_update_boot_id = have_pre_update_identity
+        ? pre_update_identity.boot_id : 0;
     bool automatic_bound_relay = expected_generation != 0 &&
         expected_hardware_id && expected_hardware_id[0];
     if (legacy_mode) {
@@ -2573,7 +2717,26 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
 
     http_upload_pause();
     vTaskDelay(pdMS_TO_TICKS(500));
-    uart_rx_pause_scanner(scanner_id);
+    if (!uart_rx_pause_scanner(scanner_id)) {
+        snprintf(result->stage, sizeof(result->stage), "pause");
+        snprintf(result->error, sizeof(result->error),
+                 "uart_rx_pause_timeout");
+        ESP_LOGE(TAG,
+                 "Relay refused: scanner[%d] UART RX ownership handoff timed out",
+                 scanner_id);
+        uart_rx_resume_scanner(scanner_id);
+        http_upload_resume();
+        operation_end();
+        remember_relay_result(scanner_id, result);
+        return false;
+    }
+
+    /* The background RX task may have left a partial/oversized scanner_info
+     * frame in the hardware FIFO when it acknowledged the ownership handoff.
+     * Drain that old telemetry before the first stop command so the relay's
+     * stateful control-line reader starts on a known frame boundary. */
+    uart_flush_input(uart_num);
+    vTaskDelay(pdMS_TO_TICKS(20));
 
     bool relay_ok = true;
     char error_msg[64] = {0};
@@ -2861,19 +3024,47 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
                  info.hardware,
                  (unsigned long)info.generation,
                  allow_same_version ? "true" : "false");
-        uart_rx_send_command_to_scanner(scanner_id, end_cmd);
-
         char line[512];
+        relay_line_reader_t finalize_reader = {0};
         int64_t deadline = (esp_timer_get_time() / 1000) + 60000;
+        int64_t next_end_send_ms = 0;
+        uint32_t end_send_attempts = 0;
         bool saw_exact_done = false;
         bool health_proved_without_done = false;
         int result_code = -1;
         char reason[48] = {0};
         while ((esp_timer_get_time() / 1000) < deadline) {
-            int remaining_ms = (int)(deadline - (esp_timer_get_time() / 1000));
+            int64_t now_ms = esp_timer_get_time() / 1000;
+            if (now_ms >= next_end_send_ms) {
+                bool sent = uart_rx_send_command_to_scanner_checked(
+                    scanner_id, end_cmd);
+                end_send_attempts++;
+                ESP_LOGW(TAG,
+                         "Stage end: ota_end attempt %lu sent=%d session=%s",
+                         (unsigned long)end_send_attempts,
+                         sent ? 1 : 0,
+                         relay_session_id);
+                next_end_send_ms = now_ms + FW_RELAY_END_RESEND_MS;
+            }
+
+            int remaining_ms = (int)(deadline - now_ms);
             if (remaining_ms <= 0) break;
-            int n = relay_read_line(uart_num, line, sizeof(line), remaining_ms);
-            if (n < 0) break;
+            int until_resend_ms = (int)(next_end_send_ms - now_ms);
+            int read_timeout_ms = remaining_ms;
+            if (until_resend_ms > 0 && until_resend_ms < read_timeout_ms) {
+                read_timeout_ms = until_resend_ms;
+            }
+            if (read_timeout_ms > 50) {
+                read_timeout_ms = 50;
+            }
+            if (read_timeout_ms <= 0) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+                continue;
+            }
+            int n = relay_read_line_stateful(
+                uart_num, line, sizeof(line), read_timeout_ms,
+                &finalize_reader);
+            if (n < 0) continue;
             if (strstr(line, "ota_done")) {
                 bool exact_done = false;
                 if (legacy_mode) {
@@ -2942,6 +3133,7 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
             if (!wait_for_scanner_post_update_health(
                     scanner_id, &info, pre_update_hardware_id,
                     pre_update_identity_generation,
+                    pre_update_boot_id,
                     error_msg, sizeof(error_msg))) {
                 if (!error_msg[0]) {
                     snprintf(error_msg, sizeof(error_msg), "finalize_timeout");
@@ -2968,6 +3160,7 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
             if (!wait_for_scanner_post_update_health(
                     scanner_id, &info, pre_update_hardware_id,
                     pre_update_identity_generation,
+                    pre_update_boot_id,
                     error_msg, sizeof(error_msg))) {
                 relay_ok = false;
                 goto relay_done;
@@ -3165,6 +3358,7 @@ bool fw_store_relay_staged_to_scanner_ex(int scanner_id,
 #define FW_AUTO_RELAY_MAX_ATTEMPTS 3
 #define FW_AUTO_READY_MAX_PROBES 3
 #define FW_AUTO_READY_PROBE_DELAY_MS 10000
+#define FW_AUTO_RELAY_TASK_STACK_SIZE 12288
 #define FW_AUTO_COORDINATOR_SAVE_RETRIES 3
 #define FW_AUTO_OFFER_BINDING_TTL_MS 60000
 #define FW_AUTO_IDENTITY_MAX_AGE_MS 60000
@@ -3279,6 +3473,24 @@ static bool auto_coordinator_lock(void)
 static void auto_coordinator_unlock(void)
 {
     xSemaphoreGive(s_auto_coordinator_mutex);
+}
+
+bool fw_store_is_relay_active(void)
+{
+    if (operation_is_active()) {
+        return true;
+    }
+    if (!s_auto_coordinator_mutex) {
+        return false;
+    }
+    if (!auto_coordinator_lock()) {
+        /* Fail busy if the coordinator state cannot be sampled. Routine
+         * commands are safe to defer and must never race an armed update. */
+        return true;
+    }
+    bool worker_running = s_auto_relay_worker_running;
+    auto_coordinator_unlock();
+    return worker_running;
 }
 
 static void auto_capture_identity_floors(
@@ -3729,6 +3941,52 @@ static void auto_clear_ready_bindings_locked(int scanner_id)
     memset(&s_auto_ready_bindings[scanner_id], 0,
            sizeof(s_auto_ready_bindings[scanner_id]));
     s_auto_legacy_ready[scanner_id] = false;
+}
+
+/* A transient relay refusal must not make a staged image permanently
+ * invisible to the scanner's next boot/manual/retry check. Re-arm only the
+ * same generation, only for a scanner that still reports an older version,
+ * and never after the bounded relay budget is exhausted. */
+static bool auto_reopen_terminal_for_newer_check(
+    int scanner_id, uint32_t generation, const char *check_reason)
+{
+    if (scanner_id < 0 || scanner_id >= FW_AUTO_UPDATE_SCANNER_COUNT ||
+        !check_reason ||
+        (strcmp(check_reason, "boot") != 0 &&
+         strcmp(check_reason, "manual") != 0) ||
+        !auto_coordinator_lock()) {
+        return false;
+    }
+
+    uint8_t state = s_auto_coordinator_loaded
+        ? s_auto_coordinator.slot_state[scanner_id] : FW_AUTO_SLOT_EXCLUDED;
+    bool terminal_refusal = state == FW_AUTO_SLOT_REFUSED ||
+        state == FW_AUTO_SLOT_FAILED;
+    if (!terminal_refusal ||
+        s_auto_coordinator.generation != generation ||
+        s_auto_coordinator.relay_attempts[scanner_id] >=
+            FW_AUTO_RELAY_MAX_ATTEMPTS) {
+        auto_coordinator_unlock();
+        return false;
+    }
+
+    fw_auto_coordinator_blob_t before = s_auto_coordinator;
+    uint8_t bit = (uint8_t)(1u << scanner_id);
+    s_auto_coordinator.slot_state[scanner_id] = FW_AUTO_SLOT_AWAITING_CHECK;
+    s_auto_coordinator.pending_mask &= (uint8_t)~bit;
+    s_auto_coordinator.bound_hardware_id[scanner_id][0] = '\0';
+    s_auto_coordinator.readiness_probe_attempts[scanner_id] = 0;
+    if (!auto_coordinator_save_locked()) {
+        s_auto_coordinator = before;
+        auto_coordinator_unlock();
+        return false;
+    }
+    auto_clear_ready_bindings_locked(scanner_id);
+    auto_coordinator_unlock();
+    ESP_LOGW(TAG,
+             "Re-armed refused scanner[%d] generation=%lu after %s check",
+             scanner_id, (unsigned long)generation, check_reason);
+    return true;
 }
 
 static void auto_reset_ready_queue_after_revalidation_failure(
@@ -4213,16 +4471,21 @@ static void fw_auto_relay_task(void *arg)
             }
 
             fw_relay_result_t result = {0};
+            ESP_LOGW(TAG,
+                     "Auto scanner relay[%d] stack free before transfer=%lu",
+                     scanner_id,
+                     (unsigned long)uxTaskGetStackHighWaterMark(NULL));
             fw_relay_stored_to_scanner(scanner_id, relay_generation,
                                         relay_bound_hardware_id, true,
                                         legacy_mode, false, false,
                                         &result);
             ESP_LOGW(TAG,
                      "Auto scanner relay[%d] generation=%lu attempt=%u "
-                     "ok=%d stage=%s error=%s chunks=%d",
+                     "ok=%d stage=%s error=%s chunks=%d stack_free=%lu",
                      scanner_id, (unsigned long)relay_generation,
                      (unsigned)attempt_number, result.ok ? 1 : 0,
-                     result.stage, result.error, result.chunks);
+                     result.stage, result.error, result.chunks,
+                     (unsigned long)uxTaskGetStackHighWaterMark(NULL));
 
             bool terminal = false;
             bool retry = false;
@@ -4369,8 +4632,8 @@ static bool auto_coordinator_start_worker(void)
     s_auto_relay_worker_running = true;
     auto_coordinator_unlock();
 
-    BaseType_t ok = xTaskCreate(fw_auto_relay_task, "fw_auto_relay", 7168,
-                                NULL, 5, NULL);
+    BaseType_t ok = xTaskCreate(fw_auto_relay_task, "fw_auto_relay",
+                                FW_AUTO_RELAY_TASK_STACK_SIZE, NULL, 5, NULL);
     if (ok != pdPASS) {
         if (auto_coordinator_lock()) {
             s_auto_relay_worker_running = false;
@@ -4531,6 +4794,50 @@ static bool enqueue_auto_relay(
      * failure leaves READY_QUEUED recoverable by the next coordinator kick. */
     (void)auto_coordinator_start_worker();
     return true;
+}
+
+/* Old badge scanner releases can immediately repeat an exact fw_check/fw_ready
+ * after arming because their pending-update retry deadline was measured from
+ * boot. Once this coordinator already owns that exact immutable receipt, the
+ * duplicate is an acknowledgement replay—not a refusal. Never mutate the
+ * original binding here: the worker may already hold its snapshot. */
+static bool auto_ready_receipt_is_idempotent(
+    int scanner_id,
+    const fw_store_info_t *info,
+    const scanner_identity_snapshot_t *identity)
+{
+    if (scanner_id < 0 || scanner_id >= FW_AUTO_UPDATE_SCANNER_COUNT ||
+        !info || !identity || !identity->complete ||
+        !auto_hardware_id_is_canonical(identity->hardware_id) ||
+        !auto_coordinator_lock()) {
+        return false;
+    }
+
+    uint8_t bit = (uint8_t)(1u << scanner_id);
+    uint8_t state = s_auto_coordinator_loaded
+        ? s_auto_coordinator.slot_state[scanner_id]
+        : FW_AUTO_SLOT_EXCLUDED;
+    const fw_auto_offer_binding_t *binding =
+        &s_auto_ready_bindings[scanner_id];
+    bool queue_owns_receipt =
+        (state == FW_AUTO_SLOT_READY_QUEUED ||
+         state == FW_AUTO_SLOT_RELAYING) &&
+        (state != FW_AUTO_SLOT_READY_QUEUED ||
+         (s_auto_coordinator.pending_mask & bit)) &&
+        s_auto_coordinator.generation == info->generation &&
+        s_auto_coordinator.manifest_crc32 == info->manifest_crc32 &&
+        (s_auto_coordinator.target_slot_mask & bit) &&
+        !s_auto_legacy_ready[scanner_id] &&
+        strcmp(s_auto_coordinator.bound_hardware_id[scanner_id],
+               identity->hardware_id) == 0 &&
+        binding->generation == info->generation &&
+        binding->manifest_crc32 == info->manifest_crc32 &&
+        binding->slot == (uint8_t)scanner_id &&
+        binding->identity_generation > 0 &&
+        identity->identity_generation >= binding->identity_generation &&
+        strcmp(binding->hardware_id, identity->hardware_id) == 0;
+    auto_coordinator_unlock();
+    return queue_owns_receipt;
 }
 
 static bool auto_coordinator_record_scanner_check(
@@ -4738,12 +5045,11 @@ auto_coordinator_handle_recovery_check(
         return AUTO_RECOVERY_CHECK_NOT_ACTIVE;
     }
 
-    const scanner_info_t *live = scanner_id == 0
-        ? uart_rx_get_ble_scanner_info()
-        : uart_rx_get_wifi_scanner_info();
-    scanner_info_t scanner = {0};
-    if (live) {
-        scanner = *live;
+    scanner_info_t *scanner = &s_fw_recovery_scanner_snapshots[scanner_id];
+    bool have_scanner_snapshot =
+        uart_rx_get_scanner_info_snapshot(scanner_id, scanner);
+    if (!have_scanner_snapshot) {
+        memset(scanner, 0, sizeof(*scanner));
     }
     bool peer_connected = scanner_id == 0
         ? uart_rx_is_wifi_scanner_connected()
@@ -4752,52 +5058,49 @@ auto_coordinator_handle_recovery_check(
     badge_power_state_t power_state = {0};
     badge_power_runtime_snapshot(&power_state);
     bool quiet_expected = power_state.quiet;
-    const char *expected_profile = peer_connected
-        ? fof_policy_scan_profile_for_slot((uint8_t)scanner_id, false)
-        : "hybrid_failover";
 #else
     bool quiet_expected = false;
-    const char *expected_profile = "hybrid_failover";
 #endif
+    const char *expected_profile = fof_policy_scan_profile_for_topology(
+        (uint8_t)scanner_id, false, peer_connected,
+        FOF_POLICY_FIXED_SLOT_TOPOLOGY);
 
-    bool target_contract_matches = have_identity && scanner.received &&
-        scanner.identity_generation >= identity->identity_generation &&
+    bool target_contract_matches = have_scanner_snapshot && have_identity &&
+        scanner->received &&
+        scanner->identity_generation >= identity->identity_generation &&
         auto_identity_matches_manifest(
             identity, info, scanner_board, scanner_version) &&
-        strcmp(scanner.hardware_id, identity->hardware_id) == 0 &&
-        strcmp(scanner.version, identity->version) == 0 &&
-        strcmp(scanner.board, info->name) == 0 &&
-        strcmp(scanner.firmware_name, info->name) == 0 &&
-        strcmp(scanner.app_project, info->project) == 0 &&
-        strcmp(scanner.hardware_type, info->hardware) == 0;
-    bool command_healthy = scanner.cmd_rx_count > 0 &&
-        scanner.cmd_last_age_s >= 0 && scanner.cmd_last_age_s <= 45;
-    bool profile_healthy = expected_profile &&
-        strcmp(scanner.scan_profile, expected_profile) == 0;
+        strcmp(scanner->hardware_id, identity->hardware_id) == 0 &&
+        strcmp(scanner->version, identity->version) == 0 &&
+        strcmp(scanner->board, info->name) == 0 &&
+        strcmp(scanner->firmware_name, info->name) == 0 &&
+        strcmp(scanner->app_project, info->project) == 0 &&
+        strcmp(scanner->hardware_type, info->hardware) == 0;
+    bool command_healthy = have_scanner_snapshot &&
+        scanner->cmd_rx_count > 0 &&
+        scanner->cmd_last_age_s >= 0 && scanner->cmd_last_age_s <= 45;
+    bool profile_healthy = have_scanner_snapshot && expected_profile &&
+        strcmp(scanner->scan_profile, expected_profile) == 0 &&
+        strcmp(scanner->slot_role,
+               fof_policy_slot_role_for_slot((uint8_t)scanner_id)) == 0;
     bool radio_healthy = false;
 #ifdef FOF_BADGE_VARIANT
-    if (quiet_expected) {
-        radio_healthy = scanner.quiet_mode &&
-            scanner.quiet_uart_commands && !scanner.quiet_tx_enabled &&
-            scanner.wifi_paused && !scanner.ble_scanning;
-    } else if (!scanner.quiet_mode && scanner.quiet_tx_enabled) {
-        if (strcmp(expected_profile, "ble_primary") == 0) {
-            radio_healthy = scanner.ble_scanning &&
-                scanner.ble_host_active && scanner.ble_host_synced &&
-                scanner.wifi_paused;
-        } else if (strcmp(expected_profile, "wifi_primary") == 0) {
-            radio_healthy = !scanner.ble_scanning && !scanner.wifi_paused;
-        } else {
-            radio_healthy = scanner.ble_scanning &&
-                scanner.ble_host_active && scanner.ble_host_synced &&
-                !scanner.wifi_paused;
-        }
+    if (have_scanner_snapshot && quiet_expected) {
+        radio_healthy = scanner->quiet_mode &&
+            scanner->quiet_uart_commands && !scanner->quiet_tx_enabled &&
+            scanner->quiet_radios_ready && scanner->quiet_ble_quiesced &&
+            scanner->quiet_wifi_quiesced && scanner->wifi_paused &&
+            !scanner->ble_scanning;
+    } else if (have_scanner_snapshot && !scanner->quiet_mode &&
+               scanner->quiet_tx_enabled) {
+        radio_healthy = scanner_profile_radio_proved(
+            scanner, expected_profile, true);
     }
 #else
     (void)quiet_expected;
     (void)peer_connected;
-    radio_healthy = scanner.ble_scanning && scanner.ble_host_active &&
-        scanner.ble_host_synced && !scanner.wifi_paused;
+    radio_healthy = have_scanner_snapshot && scanner_profile_radio_proved(
+        scanner, expected_profile, true);
 #endif
 
     int64_t now_ms = esp_timer_get_time() / 1000;
@@ -4826,11 +5129,11 @@ auto_coordinator_handle_recovery_check(
         .same_hardware_id = have_identity &&
             strcmp(identity->hardware_id,
                    s_auto_coordinator.bound_hardware_id[scanner_id]) == 0 &&
-            strcmp(scanner.hardware_id,
+            strcmp(scanner->hardware_id,
                    s_auto_coordinator.bound_hardware_id[scanner_id]) == 0,
         .target_contract_matches = target_contract_matches,
-        .rollback_clear = !scanner.rollback_pending,
-        .recovery_normal = strcmp(scanner.recovery_mode, "normal") == 0,
+        .rollback_clear = !scanner->rollback_pending,
+        .recovery_normal = strcmp(scanner->recovery_mode, "normal") == 0,
         .command_healthy = command_healthy,
         .profile_healthy = profile_healthy,
         .radio_healthy = radio_healthy,
@@ -5131,6 +5434,11 @@ void fw_store_handle_scanner_check(int scanner_id,
         return;
     }
     if (relation == FOF_VERSION_NEWER) {
+        /* A previous non-transfer refusal (or a bounded transient failure)
+         * must not suppress every later boot/periodic/manual check.  The
+         * helper preserves the same manifest generation and relay budget. */
+        (void)auto_reopen_terminal_for_newer_check(
+            scanner_id, info.generation, check_reason);
         if (scanner_version &&
             strcmp(scanner_version,
                    FOF_LEGACY_READY_BOOTSTRAP_VERSION) == 0) {
@@ -5237,6 +5545,14 @@ bool fw_store_handle_scanner_ready(int scanner_id,
                  target_sha256 ? target_sha256 : "?",
                  (unsigned long)target_generation);
         return false;
+    }
+    if (auto_ready_receipt_is_idempotent(scanner_id, &info, &identity)) {
+        ESP_LOGW(TAG,
+                 "Scanner[%d] duplicate exact fw_ready accepted idempotently "
+                 "for generation %lu",
+                 scanner_id, (unsigned long)target_generation);
+        (void)auto_coordinator_start_worker();
+        return true;
     }
     if (!enqueue_auto_relay(scanner_id, target_generation,
                             info.manifest_crc32, &identity, false)) {
@@ -5386,20 +5702,26 @@ static esp_err_t fw_trigger_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    const char *cmd = "{\"type\":\"fw_check_now\"}";
-    bool ble_sent = target_ble ? uart_rx_send_command_to_scanner_checked(0, cmd) : false;
-    bool wifi_sent = target_wifi ? uart_rx_send_command_to_scanner_checked(1, cmd) : false;
+    bool busy = fw_store_is_relay_active() || http_upload_is_paused();
+    uint8_t requested_mask = (target_ble ? FW_AUTO_UPDATE_SLOT_BLE : 0) |
+                             (target_wifi ? FW_AUTO_UPDATE_SLOT_WIFI : 0);
+    uint8_t sent_mask = busy ? 0 :
+        fw_store_request_scanner_checks(requested_mask);
+    bool ble_sent = (sent_mask & FW_AUTO_UPDATE_SLOT_BLE) != 0;
+    bool wifi_sent = (sent_mask & FW_AUTO_UPDATE_SLOT_WIFI) != 0;
     bool ok = (!target_ble || ble_sent) && (!target_wifi || wifi_sent);
 
     char resp[192];
     snprintf(resp, sizeof(resp),
              "{\"ok\":%s,\"uart\":\"%s\",\"ble_sent\":%s,\"wifi_sent\":%s,"
-             "\"error\":\"%s\"}",
+             "\"deferred\":%s,\"error\":\"%s\"}",
              ok ? "true" : "false",
              uart_target,
              ble_sent ? "true" : "false",
              wifi_sent ? "true" : "false",
-             ok ? "" : "scanner_command_ingress_unreachable");
+             busy ? "true" : "false",
+             busy ? "firmware_operation_active" :
+                 (ok ? "" : "scanner_command_ingress_unreachable"));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp);
     return ESP_OK;

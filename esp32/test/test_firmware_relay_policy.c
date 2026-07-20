@@ -478,3 +478,16 @@ void test_relay_policy_legacy_authorization_is_automatic_bound_only_table(void)
 
     TEST_ASSERT_FALSE(fof_firmware_legacy_relay_authorized(NULL));
 }
+
+void test_relay_policy_post_reboot_proof_requires_a_new_nonzero_boot_id(void)
+{
+    TEST_ASSERT_TRUE(fof_firmware_post_reboot_boot_id_proved(0U, 1U));
+    TEST_ASSERT_TRUE(fof_firmware_post_reboot_boot_id_proved(
+        0x12345678U, 0x87654321U));
+
+    TEST_ASSERT_FALSE(fof_firmware_post_reboot_boot_id_proved(0U, 0U));
+    TEST_ASSERT_FALSE(fof_firmware_post_reboot_boot_id_proved(
+        0x12345678U, 0U));
+    TEST_ASSERT_FALSE(fof_firmware_post_reboot_boot_id_proved(
+        0x12345678U, 0x12345678U));
+}

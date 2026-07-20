@@ -8,12 +8,123 @@ def _source(*parts: str) -> str:
     return (REPO_ROOT.joinpath(*parts)).read_text()
 
 
+def test_badge_runtime_reports_usb_reset_reason_by_name():
+    runtime = _source("esp32", "uplink", "main", "core", "badge_runtime.c")
+
+    assert 'case ESP_RST_USB:       return "usb";' in runtime
+
+
 def test_scanner_ota_end_and_abort_are_bound_to_the_active_session():
     main = _source("esp32", "scanner", "main", "main.c")
 
     assert "uart_ota_session_id()" in main
     assert 'strcmp(request_session, active_session) == 0' in main
     assert r'\"session_mismatch\"' in main
+
+
+def test_scanners_check_once_after_a_delayed_boot_and_not_periodically():
+    main = _source("esp32", "scanner", "main", "main.c")
+
+    assert "FW_CHECK_BOOT_DELAY_MS" in main
+    assert "8LL * 1000LL" in main
+    assert "boot_fw_check_due_ms" in main
+    assert "boot_fw_check_sent" in main
+    assert 'send_fw_check(s_board_name, s_caps, "boot")' in main
+    assert "FW_CHECK_PERIODIC_INTERVAL_MS" not in main
+    assert "FW_CHECK_JITTER_MAX_MS" not in main
+    assert "FW_UPDATE_RETRY_INTERVAL_MS" not in main
+    assert 'send_fw_check(s_board_name, s_caps, "periodic")' not in main
+    assert 'send_fw_check(s_board_name, s_caps, "pending_update_retry")' not in main
+    assert "FW_CHECK_DAILY_INTERVAL_MS" not in main
+
+
+def test_manual_checks_cannot_interleave_with_relay_and_uplink_has_no_timer():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    header = _source("esp32", "uplink", "main", "network", "fw_store.h")
+    main = _source("esp32", "uplink", "main", "main.c")
+    serial = _source("esp32", "uplink", "main", "core", "serial_config.c")
+
+    assert "fw_store_request_scanner_checks" in header
+    helper = store[store.index("uint8_t fw_store_request_scanner_checks") :]
+    assert "operation_is_active()" in helper
+    assert "http_upload_is_paused()" in helper
+    assert '"type\\":\\"fw_check_now\\"' in helper
+    assert "fw_store_request_scanner_checks" not in main
+    assert "UPLINK_SCANNER_FW_CHECK_INTERVAL_MS" not in main
+    assert "periodic_fw_info" not in main
+    assert 'strcmp(cmd, "fw_check_now")' in serial
+    assert 'strcmp(cmd, "fw_check")' in serial
+    assert "firmware_operation_active" in serial
+
+
+def test_terminal_transient_refusal_can_be_rearmed_by_a_newer_check():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+
+    helper_start = store.index("static bool auto_reopen_terminal_for_newer_check")
+    helper_end = store.index("static void auto_reset_ready_queue_after_revalidation_failure", helper_start)
+    helper = store[helper_start:helper_end]
+    assert "FW_AUTO_SLOT_REFUSED" in helper
+    assert "FW_AUTO_SLOT_FAILED" in helper
+    assert "FW_AUTO_RELAY_MAX_ATTEMPTS" in helper
+    assert "FW_AUTO_SLOT_AWAITING_CHECK" in helper
+    assert 'strcmp(check_reason, "periodic")' not in helper
+    assert 'strcmp(check_reason, "boot")' in helper
+    assert 'strcmp(check_reason, "manual")' in helper
+    assert 'strcmp(check_reason, "pending_update_retry")' not in helper
+    assert "auto_coordinator_save_locked" in helper
+
+    handler = store[
+        store.index("void fw_store_handle_scanner_check") :
+        store.index("bool fw_store_handle_scanner_ready")
+    ]
+    assert "auto_reopen_terminal_for_newer_check" in handler
+    relation_branch = handler[handler.index("if (relation == FOF_VERSION_NEWER)") :]
+    assert relation_branch.index("auto_reopen_terminal_for_newer_check") < relation_branch.index(
+        "auto_coordinator_record_scanner_check"
+    )
+
+
+def test_uplink_treats_the_full_coordinator_worker_window_as_relay_busy():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+
+    start = store.index("bool fw_store_is_relay_active(void)")
+    end = store.index("\n}", start) + 2
+    helper = store[start:end]
+    assert "operation_is_active()" in helper
+    assert "s_auto_relay_worker_running" in helper
+    assert "auto_coordinator_lock()" in helper
+
+
+def test_auto_relay_worker_has_stack_for_manifest_bound_uart_protocol():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+
+    assert "#define FW_AUTO_RELAY_TASK_STACK_SIZE 12288" in store
+    assert 'xTaskCreate(fw_auto_relay_task, "fw_auto_relay",\n'
+    assert "FW_AUTO_RELAY_TASK_STACK_SIZE" in store[
+        store.index('xTaskCreate(fw_auto_relay_task, "fw_auto_relay",') :
+    ]
+    assert "uxTaskGetStackHighWaterMark(NULL)" in store
+
+
+def test_duplicate_exact_fw_ready_is_idempotent_while_queue_owns_it():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+
+    helper_start = store.index("static bool auto_ready_receipt_is_idempotent")
+    helper_end = store.index("\n}", helper_start) + 2
+    helper = store[helper_start:helper_end]
+    assert "FW_AUTO_SLOT_READY_QUEUED" in helper
+    assert "FW_AUTO_SLOT_RELAYING" in helper
+    assert "manifest_crc32" in helper
+    assert "bound_hardware_id" in helper
+    assert "s_auto_ready_bindings" in helper
+    assert "identity_generation" in helper
+
+    handler_start = store.index("bool fw_store_handle_scanner_ready")
+    handler_end = store.index("bool fw_store_handle_legacy_scanner_ready", handler_start)
+    handler = store[handler_start:handler_end]
+    assert handler.index("auto_ready_receipt_is_idempotent") < handler.index(
+        "enqueue_auto_relay"
+    )
 
 
 def test_uplink_ota_end_carries_the_immutable_session_and_manifest():
@@ -23,6 +134,165 @@ def test_uplink_ota_end_carries_the_immutable_session_and_manifest():
     assert r'\"session_id\":\"%s\"' in store
     assert r'\"sha256\":\"%s\"' in store
     assert r'\"generation\":%lu' in store
+
+
+def test_uart_relay_waits_for_rx_task_pause_barrier_before_direct_reads():
+    uart_rx = _source("esp32", "uplink", "main", "comms", "uart_rx.c")
+    uart_header = _source("esp32", "uplink", "main", "comms", "uart_rx.h")
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+
+    # Merely setting a shared pause flag races the background RX task: it can
+    # consume stop_ack before the relay begins its direct UART read.  Require a
+    # task-owned acknowledgement barrier, and fail closed if it is not reached.
+    assert "atomic_bool s_rx_pause_acked_ble" in uart_rx
+    assert "atomic_bool s_rx_pause_acked_wifi" in uart_rx
+    assert "atomic_store_explicit(pause_acked, true" in uart_rx
+    assert "atomic_load_explicit(pause_acked" in uart_rx
+    assert "bool uart_rx_pause_scanner(int scanner_id)" in uart_header
+    relay = store[store.index("static bool fw_relay_stored_to_scanner") :]
+    pause = relay.index("uart_rx_pause_scanner(scanner_id)")
+    direct_read = relay.index("relay_wait_for_with_resend(", pause)
+    assert pause < direct_read
+    assert "uart_rx_pause_timeout" in relay[pause:direct_read]
+
+
+def test_uart_relay_command_probe_is_bound_to_a_fresh_profile_ack():
+    uart_rx = _source("esp32", "uplink", "main", "comms", "uart_rx.c")
+    uart_header = _source("esp32", "uplink", "main", "comms", "uart_rx.h")
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+
+    ack_branch = uart_rx[
+        uart_rx.index('} else if (strcmp(msg_type, "scan_profile_ack") == 0') :
+        uart_rx.index('} else if (strcmp(msg_type, "display_control_ack") == 0')
+    ]
+    health = store[
+        store.index("typedef struct {", store.index("fw_command_health_t") - 400) :
+        store.index("static bool probe_scanner_command_ingress")
+    ]
+
+    assert "uint32_t scan_profile_ack_generation" in uart_header
+    assert "info->scan_profile_ack_generation++" in ack_branch
+    assert "scan_profile_ack_generation" in health
+    assert "after->scan_profile_ack_generation !=" in health
+    # A periodic status frame can report a recent command age even when the
+    # just-sent probe never arrived.  Age alone is not a receipt.
+    assert "return after->cmd_age_s >= 0" not in health
+
+
+def test_badge_sends_unconditional_slot_roles_before_usb_config_window():
+    main = _source("esp32", "uplink", "main", "main.c")
+    helper_start = main.index("static void send_badge_boot_slot_roles")
+    helper_end = main.index("static void send_badge_scan_profiles", helper_start)
+    helper = main[helper_start:helper_end]
+
+    assert "uart_rx_send_command_to_scanner_checked(0" in helper
+    assert "uart_rx_send_command_to_scanner_checked(1" in helper
+    assert "fof_policy_slot_role_for_slot(0)" in helper
+    assert "fof_policy_slot_role_for_slot(1)" in helper
+    assert "uart_rx_is_ble_scanner_connected" not in helper
+    assert "uart_rx_is_wifi_scanner_connected" not in helper
+
+    app = main[main.index("void app_main(void)") :]
+    uart_init = app.index("uart_rx_init(detection_queue)")
+    boot_roles = app.index("send_badge_boot_slot_roles()", uart_init)
+    usb_window = app.index("serial_config_listen(3000)")
+    assert uart_init < boot_roles < usb_window
+
+
+def test_badge_runtime_never_demotes_fixed_scanner_slots_to_hybrid():
+    main = _source("esp32", "uplink", "main", "main.c")
+    helper = main[
+        main.index("static void send_badge_scan_profiles") :
+        main.index("#endif", main.index("static void send_badge_scan_profiles"))
+    ]
+
+    # A scanner can reboot independently while its peer remains healthy.  The
+    # badge has fixed physical BLE/Wi-Fi slots, so treating the first peer seen
+    # as a single-scanner hybrid makes it initialize both radios and can exhaust
+    # internal DMA memory before the second identity frame arrives.
+    assert '"hybrid_failover"' not in helper
+    assert "both_connected" not in helper
+    assert "fof_policy_scan_profile_for_slot(0, false)" in helper
+    assert "fof_policy_scan_profile_for_slot(1, false)" in helper
+
+
+def test_every_badge_profile_publisher_uses_fixed_topology_policy():
+    header = _source("esp32", "shared", "detection_policy.h")
+    policy = _source("esp32", "shared", "detection_policy.c")
+    assert "FOF_POLICY_FIXED_SLOT_TOPOLOGY" in header
+    assert "fof_policy_scan_profile_for_topology" in header
+    assert "fixed_slot_topology || peer_connected" in policy
+
+    for path in (
+        ("esp32", "uplink", "main", "comms", "http_upload.c"),
+        ("esp32", "uplink", "main", "network", "fw_store.c"),
+        ("esp32", "uplink", "main", "network", "http_status.c"),
+        ("esp32", "uplink", "main", "core", "serial_config.c"),
+        ("esp32", "uplink", "main", "hw", "display_st7735.c"),
+    ):
+        source_text = _source(*path)
+        assert "fof_policy_scan_profile_for_topology" in source_text, path
+
+
+def test_relay_resend_reader_preserves_partial_lines_and_flushes_old_backlog():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+
+    # Control receipts may straddle the short polling slices used to schedule
+    # resends.  The decoder state must survive those slices, including while it
+    # drains an oversized scanner_info line left in the UART FIFO.
+    resend = store[
+        store.index("static int relay_wait_for_with_resend") :
+        store.index("static int relay_poll_nack")
+    ]
+    assert "relay_line_reader_t reader = {0}" in resend
+    assert "relay_read_line_stateful(" in resend
+
+    relay = store[store.index("static bool fw_relay_stored_to_scanner") :]
+    pause = relay.index("uart_rx_pause_scanner(scanner_id)")
+    flush = relay.index("uart_flush_input(uart_num)", pause)
+    first_stop = relay.index("relay_wait_for_with_resend(", pause)
+    assert pause < flush < first_stop
+
+
+def test_scanner_raw_control_json_uses_checked_complete_uart_send():
+    tx = _source("esp32", "scanner", "main", "comms", "uart_tx.c")
+    raw = tx[
+        tx.index("void uart_tx_send_raw_json") :
+        tx.index("static void uart_send_line", tx.index("void uart_tx_send_raw_json"))
+    ]
+    assert "uart_send_line_internal(json_str, false)" in raw
+    assert "uart_write_bytes(UART_PORT_NUM, json_str, len)" not in raw
+
+
+def test_display_receives_connectivity_not_radio_health_as_peer_presence():
+    main = _source("esp32", "uplink", "main", "main.c")
+    display = main[main.index("static void display_task") : main.index("void app_main")]
+    call = display[display.index("oled_update(") :]
+
+    assert "detection_count, ble_connected, wifi_connected" in call
+    assert "detection_count, ble_ok, wifi_scan_ok" not in call
+
+
+def test_profile_convergence_requires_the_opposing_radio_to_be_quiesced():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    policy_header = _source("esp32", "shared", "detection_policy.h")
+    uart_header = _source("esp32", "uplink", "main", "comms", "uart_rx.h")
+    scanner_tx = _source("esp32", "scanner", "main", "comms", "uart_tx.c")
+
+    proof = store[
+        store.index("static bool scanner_profile_radio_proved") :
+        store.index("static bool scanner_post_update_converged")
+    ]
+    assert "scanner->ble_quiesced" in proof
+    assert "scanner->wifi_quiesced" in proof
+    assert "ble_proved && scanner->wifi_quiesced" in proof
+    assert "wifi_proved && scanner->ble_quiesced" in proof
+    assert "bool ble_quiesced" in policy_header
+    assert "bool wifi_quiesced" in policy_header
+    assert "bool     ble_quiesced" in uart_header
+    assert "bool     wifi_quiesced" in uart_header
+    assert r'\"ble_quiesced\":%s' in scanner_tx
+    assert r'\"wifi_quiesced\":%s' in scanner_tx
 
 
 def test_scanner_waits_for_exact_staged_receipt_before_manifest_bound_finalize():
@@ -123,6 +393,95 @@ def test_legacy_identity_snapshot_is_current_complete_and_mutex_protected():
     assert "*out =" in getter
 
 
+def test_post_update_reboot_proof_uses_a_new_nonzero_scanner_boot_id():
+    scanner_tx = _source("esp32", "scanner", "main", "comms", "uart_tx.c")
+    uplink_header = _source("esp32", "uplink", "main", "comms", "uart_rx.h")
+    uplink_rx = _source("esp32", "uplink", "main", "comms", "uart_rx.c")
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    serial = _source("esp32", "uplink", "main", "core", "serial_config.c")
+    http = _source("esp32", "uplink", "main", "network", "http_status.c")
+
+    # One random, non-zero value is generated once at scanner boot and carried
+    # by both detailed and compact scanner_info plus ordinary status frames.
+    assert "s_scanner_boot_id" in scanner_tx
+    init = scanner_tx[
+        scanner_tx.index("void uart_tx_init") :
+        scanner_tx.index("void uart_tx_send_detection")
+    ]
+    assert "esp_random()" in init
+    assert "s_scanner_boot_id == 0" in init
+    scanner_info = scanner_tx[
+        scanner_tx.index("void uart_tx_send_scanner_info") :
+        scanner_tx.index("/* \u2500\u2500 UART TX Task")
+    ]
+    assert scanner_info.count(r'\"boot_id\":%lu') >= 2
+    status = scanner_tx[
+        scanner_tx.index("void uart_tx_send_status") :
+        scanner_tx.index("void uart_tx_send_scanner_info")
+    ]
+    assert 'cJSON_AddNumberToObject(root, "boot_id"' in status
+
+    # The full identity snapshot and the live scanner view both clear missing
+    # or malformed boot IDs rather than retaining stale proof.
+    assert uplink_header.count("uint32_t boot_id;") >= 2
+    publisher = uplink_rx[
+        uplink_rx.index("static uint32_t publish_scanner_identity_snapshot") :
+        uplink_rx.index("static int64_t scanner_status_ssid_age_s")
+    ]
+    assert 'json_get_uint32_exact(root, "boot_id"' in publisher
+    assert "snapshot.boot_id" in publisher
+    scanner_info_parser = uplink_rx[
+        uplink_rx.index('} else if (strcmp(msg_type, "scanner_info") == 0') :
+        uplink_rx.index('} else if (strcmp(msg_type, "recovery_ack")')
+    ]
+    assert 'json_get_uint32_exact(root, "boot_id"' in scanner_info_parser
+    assert "info->boot_id = 0" in scanner_info_parser
+    status_parser = uplink_rx[
+        uplink_rx.index("static void handle_status") :
+        uplink_rx.index("static void uart_rx_task")
+    ]
+    assert 'json_get_uint32_exact(root, "boot_id"' in status_parser
+    assert "info->boot_id = 0" in status_parser
+
+    # Relay convergence is authorized by the scanner's boot epoch, not only by
+    # an uplink-local frame counter that can be consumed while RX is paused.
+    assert "pre_update_boot_id" in store
+    convergence = store[
+        store.index("static bool scanner_post_update_converged") :
+        store.index("static bool wait_for_scanner_post_update_health")
+    ]
+    assert "fof_firmware_post_reboot_boot_id_proved" in convergence
+    assert "const scanner_identity_snapshot_t *identity" in convergence
+    assert "identity->complete" in convergence
+    assert "identity->identity_generation <= identity_generation_before" in convergence
+    assert "scanner->boot_id != identity->boot_id" in convergence
+    health = store[
+        store.index("static bool wait_for_scanner_post_update_health") :
+        store.index("static bool badge_candidate_seen")
+    ]
+    assert "saw_new_boot" in health
+    assert "uart_rx_get_scanner_identity_snapshot" in health
+    assert "saw_new_identity" in health
+    assert "badge_runtime_note_usb_control_alive();" in health
+
+    # Hardware diagnostics must expose the evidence used by the health gate.
+    assert r'\"boot_id\":%lu' in serial
+    assert r'\"boot_id\":%lu' in http
+
+
+def test_manifest_finalize_uses_a_persistent_line_reader_across_short_polls():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    finalize = store[
+        store.index('snprintf(stage, sizeof(stage), "end")') :
+        store.index("relay_done:;")
+    ]
+
+    assert "relay_line_reader_t finalize_reader = {0};" in finalize
+    assert "relay_read_line_stateful(" in finalize
+    assert "&finalize_reader" in finalize
+    assert "relay_read_line(" not in finalize
+
+
 def test_scanner_rejects_lossy_or_trailing_garbage_firmware_offers():
     scanner_main = _source("esp32", "scanner", "main", "main.c")
 
@@ -183,7 +542,7 @@ def test_badge_build_has_no_http_firmware_mutation_routes_or_network_autofetch()
     assert "uri_ota_post" in status_registration
     assert "uri_ota_relay" in status_registration
 
-    auto_check_start = main[main.index("Spawn the periodic firmware auto-check") :]
+    auto_check_start = main[main.index("Non-badge network updater") :]
     assert "#ifndef FOF_BADGE_VARIANT" in auto_check_start
     assert "Badge firmware network auto-check disabled" in auto_check_start
 
@@ -235,11 +594,31 @@ def test_auto_update_success_state_means_full_post_reboot_convergence():
 def test_post_reboot_convergence_restores_exact_slot_profile_and_role_radios():
     store = _source("esp32", "uplink", "main", "network", "fw_store.c")
 
-    assert "fof_policy_scan_profile_for_slot" in store
+    assert "fof_policy_scan_profile_for_topology" in store
     assert "scanner->scan_profile" in store
+    assert "scanner->slot_role" in store
     assert 'strcmp(expected_profile, "ble_primary") == 0' in store
     assert 'strcmp(expected_profile, "wifi_primary") == 0' in store
     assert r'\"type\":\"scan_profile\"' in store
+    assert "scanner->wifi_initialized" in store
+    assert "scanner->wifi_active" in store
+    assert "scanner->wifi_init_rc == 0" in store
+    assert "scanner->wifi_full_scan_ok > 0" in store
+    assert "scanner->ble_initialized" in store
+    assert "return !scanner->ble_scanning && !scanner->wifi_paused;" not in store
+    assert "radio_healthy = !scanner.ble_scanning && !scanner.wifi_paused;" not in store
+
+
+def test_every_badge_profile_command_carries_stable_slot_role():
+    for path in (
+        ("esp32", "uplink", "main", "main.c"),
+        ("esp32", "uplink", "main", "comms", "http_upload.c"),
+        ("esp32", "uplink", "main", "network", "fw_store.c"),
+    ):
+        source = _source(*path)
+        command_sites = source.count(r'{\"type\":\"scan_profile\"')
+        assert command_sites > 0, path
+        assert source.count("JSON_KEY_SLOT_ROLE") >= command_sites, path
 
 
 def test_lost_ota_done_can_only_recover_via_full_post_reboot_health_proof():
@@ -1344,6 +1723,30 @@ def test_legacy_final_progress_and_done_are_exact_session_size_receipts():
     assert "info.size" in done
     strict_done = done[done.index("else") :]
     assert "relay_line_matches_manifest_ack" in strict_done
+
+
+def test_manifest_bound_ota_end_is_retried_until_commit_receipt():
+    store = _source("esp32", "uplink", "main", "network", "fw_store.c")
+    relay = store[
+        store.index("static bool fw_relay_stored_to_scanner") :
+        store.index("static esp_err_t fw_relay_handler")
+    ]
+    final = relay[
+        relay.index('snprintf(stage, sizeof(stage), "end")') :
+        relay.index("relay_done:")
+    ]
+
+    # A single lost ota_end leaves a fully staged scanner waiting until its
+    # 30-second finalize watchdog aborts.  Retry the identical immutable
+    # session/manifest command while awaiting the exact ota_done receipt.
+    assert "FW_RELAY_END_RESEND_MS" in store
+    assert "next_end_send_ms" in final
+    assert "uart_rx_send_command_to_scanner_checked(" in final
+    assert "scanner_id, end_cmd" in final
+    assert final.index("next_end_send_ms") < final.index("while (")
+    assert final.index("uart_rx_send_command_to_scanner_checked") > final.index(
+        "while ("
+    )
 
 
 def test_interrupted_relay_restore_saves_recovery_before_abort_and_cooldown():

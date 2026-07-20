@@ -29,6 +29,18 @@ bool badge_easter_egg_runtime_trigger(badge_easter_egg_source_t source)
     return triggered;
 }
 
+bool badge_easter_egg_runtime_advance(void)
+{
+    bool advanced = false;
+
+    portENTER_CRITICAL(&s_lock);
+    if (s_initialized) {
+        advanced = badge_easter_egg_machine_advance(&s_machine);
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return advanced;
+}
+
 bool badge_easter_egg_runtime_dismiss(void)
 {
     bool dismissed = false;

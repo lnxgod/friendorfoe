@@ -15,7 +15,7 @@ make it part of a larger RF sensor deployment.
 
 - Android app: `0.64.68-live-follow`
 - Backend: `0.64.68-live-follow`
-- FoF Badge firmware: `0.64.69-badge-defcon34`
+- FoF Badge firmware: `0.64.76-badge-defcon34`
 - Production S3 firmware: `0.64.68-live-follow`
 
 Keep those tracks separate. The badge firmware uses `FOF_BADGE_VARIANT`,
@@ -37,7 +37,7 @@ uplink assigns the active role and scanner profile at runtime.
 
 ## What This Release Tests
 
-`0.64.69-badge-defcon34` is the current badge release, paired with the
+`0.64.76-badge-defcon34` is the current badge release, paired with the
 `0.64.68-live-follow` Android, backend, and production track. Badge firmware
 remains separate from production node firmware. This release verifies:
 
@@ -144,7 +144,7 @@ Expected healthy status facts:
 
 - Top-level `recovery_mode` is `normal`.
 - Both scanners are connected and report `scanner-s3-combo-fof_badge`.
-- Uplink and scanners report `0.64.69-badge-defcon34` after the matching badge
+- Uplink and scanners report `0.64.76-badge-defcon34` after the matching badge
   images are flashed.
 - `display_policy_hash` is non-zero.
 - Scanner `display_policy_ack_hash` catches up to the uplink policy hash.

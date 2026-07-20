@@ -195,7 +195,7 @@ void test_ble_threat_persistent_sparse_ffe0_alerts(void)
     ble_threat_detector_reset();
 
     ble_threat_observation_t observation =
-        serial_observation(0, 0xFFE0, "BT", -62, true, false);
+        serial_observation(0, 0xFFE0, "BT", -45, true, false);
     TEST_ASSERT_FALSE(ble_threat_detector_observe(&observation, &signal));
     observation.observed_ms = 2500;
     TEST_ASSERT_FALSE(ble_threat_detector_observe(&observation, &signal));
@@ -215,6 +215,29 @@ void test_ble_threat_persistent_sparse_ffe0_alerts(void)
     TEST_ASSERT_FLOAT_WITHIN(0.0001f, 1.0f, signal.confidence);
 }
 
+void test_ble_threat_serial_skimmer_requires_minus_45_or_stronger(void)
+{
+    ble_threat_signal_t signal = {0};
+    const int64_t timestamps[] = {0, 2500, 5100};
+
+    ble_threat_detector_reset();
+    for (size_t index = 0; index < sizeof(timestamps) / sizeof(timestamps[0]); ++index) {
+        const ble_threat_observation_t observation =
+            serial_observation(timestamps[index], 0xFFE0, "BT", -46, true, false);
+        TEST_ASSERT_FALSE(ble_threat_detector_observe(&observation, &signal));
+    }
+
+    ble_threat_detector_reset();
+    for (size_t index = 0; index < sizeof(timestamps) / sizeof(timestamps[0]); ++index) {
+        const ble_threat_observation_t observation =
+            serial_observation(timestamps[index], 0xFFE0, "BT", -45, true, false);
+        const bool emitted = ble_threat_detector_observe(&observation, &signal);
+        TEST_ASSERT_EQUAL(index == 2, emitted);
+    }
+    TEST_ASSERT_EQUAL(BLE_THREAT_SERIAL_SKIMMER, signal.kind);
+    TEST_ASSERT_EQUAL_INT8(-45, signal.strongest_rssi);
+}
+
 void test_ble_threat_duplicate_serial_uuids_count_once_for_sparse_profile(void)
 {
     ble_threat_signal_t signal = {0};
@@ -223,7 +246,7 @@ void test_ble_threat_duplicate_serial_uuids_count_once_for_sparse_profile(void)
     const int64_t timestamps[] = {0, 2500, 5100};
     for (size_t index = 0; index < sizeof(timestamps) / sizeof(timestamps[0]); ++index) {
         ble_threat_observation_t observation =
-            serial_observation(timestamps[index], 0xFFE0, NULL, -62, false, false);
+            serial_observation(timestamps[index], 0xFFE0, NULL, -45, false, false);
         set_serial_services(&observation, 0xFFE0, 0xFFE0);
         const bool emitted = ble_threat_detector_observe(&observation, &signal);
         if (index < 2) {
@@ -245,7 +268,7 @@ void test_ble_threat_exact_two_supporting_signals_alert(void)
     const int64_t timestamps[] = {0, 2500, 5100};
     for (size_t index = 0; index < sizeof(timestamps) / sizeof(timestamps[0]); ++index) {
         const ble_threat_observation_t observation =
-            serial_observation(timestamps[index], 0xFFE0, NULL, -62, false, false);
+            serial_observation(timestamps[index], 0xFFE0, NULL, -45, false, false);
         const bool emitted = ble_threat_detector_observe(&observation, &signal);
         if (index < 2) {
             TEST_ASSERT_FALSE(emitted);
@@ -270,7 +293,7 @@ void test_ble_threat_multi_service_profile_does_not_alert(void)
     const int64_t timestamps[] = {0, 2500, 5100};
     for (size_t index = 0; index < sizeof(timestamps) / sizeof(timestamps[0]); ++index) {
         ble_threat_observation_t observation =
-            serial_observation(timestamps[index], 0xFFE0, "BT", -62, true, false);
+            serial_observation(timestamps[index], 0xFFE0, "BT", -45, true, false);
         set_serial_services(&observation, 0xFFE0, 0xFEAA);
         TEST_ASSERT_FALSE(ble_threat_detector_observe(&observation, &signal));
     }
@@ -282,7 +305,7 @@ void test_ble_threat_simultaneous_prompt_and_serial_alerts_are_both_observable(v
     ble_threat_detector_reset();
 
     ble_threat_observation_t serial =
-        serial_observation(0, 0xFFE0, "BT", -62, true, false);
+        serial_observation(0, 0xFFE0, "BT", -45, true, false);
     TEST_ASSERT_FALSE(ble_threat_detector_observe(&serial, &signal));
     serial.observed_ms = 2500;
     TEST_ASSERT_FALSE(ble_threat_detector_observe(&serial, &signal));
@@ -325,7 +348,7 @@ void test_ble_threat_observed_ms_rollback_resets_serial_state(void)
     ble_threat_detector_reset();
 
     ble_threat_observation_t observation =
-        serial_observation(100000, 0xFFE0, "BT", -62, true, false);
+        serial_observation(100000, 0xFFE0, "BT", -45, true, false);
     TEST_ASSERT_FALSE(ble_threat_detector_observe(&observation, &signal));
     observation.observed_ms = 102500;
     TEST_ASSERT_FALSE(ble_threat_detector_observe(&observation, &signal));
@@ -374,7 +397,7 @@ void test_ble_threat_trusted_product_suppresses_serial_candidate(void)
     const int64_t timestamps[] = {0, 2500, 5100};
     for (size_t index = 0; index < sizeof(timestamps) / sizeof(timestamps[0]); ++index) {
         const ble_threat_observation_t observation =
-            serial_observation(timestamps[index], 0xFFE0, "BT", -62, true, true);
+            serial_observation(timestamps[index], 0xFFE0, "BT", -45, true, true);
         TEST_ASSERT_FALSE(ble_threat_detector_observe(&observation, &signal));
     }
 }
@@ -387,7 +410,7 @@ void test_ble_threat_pkoc_fff0_is_suppressed(void)
     const int64_t timestamps[] = {0, 2500, 5100};
     for (size_t index = 0; index < sizeof(timestamps) / sizeof(timestamps[0]); ++index) {
         const ble_threat_observation_t observation =
-            serial_observation(timestamps[index], 0xFFF0, "PKOC", -62, true, false);
+            serial_observation(timestamps[index], 0xFFF0, "PKOC", -45, true, false);
         TEST_ASSERT_FALSE(ble_threat_detector_observe(&observation, &signal));
     }
 }

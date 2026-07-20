@@ -25,7 +25,7 @@ TARGET_IDENTITIES = {
     "scanner-s3-combo-fof_badge": (
         "fof_badge_scanner",
         "seeed_xiao_esp32s3",
-        "0.64.69-badge-defcon34",
+        "0.64.76-badge-defcon34",
     ),
     "uplink-s3": (
         "fof_uplink",
@@ -35,7 +35,7 @@ TARGET_IDENTITIES = {
     "uplink-s3-fof_badge": (
         "fof_badge_uplink",
         "seeed_xiao_esp32s3",
-        "0.64.69-badge-defcon34",
+        "0.64.76-badge-defcon34",
     ),
 }
 
@@ -134,7 +134,7 @@ def test_shared_header_selects_production_and_badge_tracks():
         "0.64.68-live-follow"
     )
     assert module.expected_version_for_env(header, "uplink-s3-fof_badge") == (
-        "0.64.69-badge-defcon34"
+        "0.64.76-badge-defcon34"
     )
 
 
@@ -167,12 +167,12 @@ def test_current_generated_project_version_keeps_cmake_cache(tmp_path):
     cache = build_dir / "CMakeCache.txt"
     cache.write_text("generated cache")
     (build_dir / "project_description.json").write_text(
-        json.dumps({"project_version": "0.64.69-badge-defcon34"})
+        json.dumps({"project_version": "0.64.76-badge-defcon34"})
     )
 
     changed = module.invalidate_stale_cmake_cache(
         build_dir,
-        "0.64.69-badge-defcon34",
+        "0.64.76-badge-defcon34",
     )
 
     assert changed is False
@@ -202,11 +202,11 @@ def test_badge_uplink_descriptor_has_badge_project_and_version():
     module = _load_module()
 
     info = module.parse_firmware_identity(
-        _esp_image("fof_badge_uplink", "0.64.69-badge-defcon34")
+        _esp_image("fof_badge_uplink", "0.64.76-badge-defcon34")
     )
 
     assert info.project == "fof_badge_uplink"
-    assert info.version == "0.64.69-badge-defcon34"
+    assert info.version == "0.64.76-badge-defcon34"
 
 
 def test_all_five_targets_have_stable_project_hardware_and_version_identity():
@@ -472,7 +472,7 @@ def test_all_five_descriptor_identities_are_verified_and_mismatch_is_reported(tm
     badge = images["scanner-s3-combo-fof_badge"]
     badge.write_bytes(_esp_image(
         "fof_scanner",
-        "0.64.69-badge-defcon34",
+        "0.64.76-badge-defcon34",
         "scanner-s3-combo-fof_badge",
         "seeed_xiao_esp32s3",
     ))
@@ -491,7 +491,7 @@ def test_verifier_rejects_missing_target_or_hardware_identity_markers(tmp_path):
     image = tmp_path / "uplink.bin"
     image.write_bytes(_esp_image(
         "fof_badge_uplink",
-        "0.64.69-badge-defcon34",
+        "0.64.76-badge-defcon34",
         target,
     ))
 

@@ -15,7 +15,7 @@ def test_release_catalog_versions_match_live_follow():
     assert app.version == production_version
     assert detections._EXPECTED_BACKEND_VERSION == production_version
     assert detections._EXPECTED_FIRMWARE_VERSION == production_version
-    assert detections._EXPECTED_BADGE_FIRMWARE_VERSION == "0.64.69-badge-defcon34"
+    assert detections._EXPECTED_BADGE_FIRMWARE_VERSION == "0.64.76-badge-defcon34"
 
 
 def _completed(cmd, stdout: bytes):

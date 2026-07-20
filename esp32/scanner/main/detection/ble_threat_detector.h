@@ -28,6 +28,9 @@ typedef enum {
 #define BLE_THREAT_EVIDENCE_CONNECTABLE  (1U << 5)
 #define BLE_THREAT_EVIDENCE_UNTRUSTED    (1U << 6)
 
+/* Badge skimmer alerts are deliberately limited to immediate proximity. */
+#define BLE_THREAT_SKIMMER_MIN_RSSI_DBM (-45)
+
 typedef struct {
     uint8_t mac[6];
     int64_t observed_ms;

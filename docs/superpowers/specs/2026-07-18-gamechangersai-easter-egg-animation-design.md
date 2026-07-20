@@ -51,7 +51,7 @@ The thank-you screen keeps the existing blacklight-purple visual treatment and
 embedded 72x72 Wall of Sheep asset. The former `Welcome to Hell`,
 `Just Kidding`, and `Defcon 34 FoF` copy is removed. The replacement composition
 centers the Wall of Sheep mark and gives both thank-you lines enough separation
-to remain legible on the 160x160 ST7735 panel.
+to remain legible on the 128x160 ST7735 panel.
 
 ### DVD bounce
 
@@ -69,7 +69,7 @@ not carry a PNG decoder or allocate image memory at runtime. The generated file
 retains source attribution, the verified hash, and its reproducible conversion
 command.
 
-The logo travels inside the full 160x160 display bounds using signed integer
+The logo travels inside the full 128x160 display bounds using signed integer
 position and velocity. A pure animation step clamps both axes, reverses the
 corresponding velocity at each collision, and advances a fixed vivid RGB565
 color cycle once per update containing one or more collisions. Corner hits
@@ -106,7 +106,7 @@ Native tests will prove:
 - invalid, repeated, and post-consumption triggers remain rejected;
 - one button batch creates at most one state transition and consumes its
   matching release;
-- animation steps never place the 64x64 logo outside the 160x160 display;
+- animation steps never place the 64x64 logo outside the 128x160 display;
 - horizontal, vertical, and corner collisions reverse the correct velocities;
 - each collision update advances exactly one color and non-collision updates do
   not change color;

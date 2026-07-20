@@ -20,7 +20,7 @@ part of a multi-node sensor platform.
 
 > Current tracks: Android/backend/production S3 firmware are on
 > `0.64.68-live-follow`; badge firmware is on
-> `0.64.69-badge-defcon34`. This badge release adds the themed four-lane
+> `0.64.76-badge-defcon34`. This badge release adds the themed four-lane
 > instrument UI, custom USB palettes, DEF CON 34 Easter egg, quiet/off mode,
 > and automatic integrity-checked scanner updates from the USB-connected
 > uplink. The badge and production sensor fleet intentionally move on separate

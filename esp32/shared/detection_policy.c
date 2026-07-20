@@ -548,6 +548,21 @@ const char *fof_policy_scan_profile_for_slot(uint8_t scanner_id,
     return scanner_id == 0 ? "ble_primary" : "wifi_primary";
 }
 
+const char *fof_policy_scan_profile_for_topology(
+    uint8_t scanner_id,
+    bool calibration_active,
+    bool peer_connected,
+    bool fixed_slot_topology)
+{
+    if (calibration_active) {
+        return fof_policy_scan_profile_for_slot(scanner_id, true);
+    }
+    if (fixed_slot_topology || peer_connected) {
+        return fof_policy_scan_profile_for_slot(scanner_id, false);
+    }
+    return "hybrid_failover";
+}
+
 const char *fof_policy_slot_role_for_slot(uint8_t scanner_id)
 {
     return scanner_id == 0 ? "ble_primary" : "wifi_primary";
@@ -588,6 +603,67 @@ bool fof_policy_scan_profile_allows_source(const char *scan_profile,
         return source == DETECTION_SRC_BLE_FINGERPRINT;
     }
     return true;
+}
+
+fof_policy_radio_boot_order_t fof_policy_badge_radio_boot_order(
+    const char *scan_profile,
+    bool profile_assigned)
+{
+    if (profile_assigned && scan_profile &&
+        strcmp(scan_profile, "ble_primary") == 0) {
+        return FOF_POLICY_RADIO_BOOT_BLE_FIRST;
+    }
+    return FOF_POLICY_RADIO_BOOT_WIFI_FIRST;
+}
+
+const char *fof_policy_badge_scanner_health(
+    const char *expected_profile,
+    bool connected,
+    bool role_acked,
+    bool command_fresh,
+    bool ble_active,
+    bool wifi_initialized,
+    bool wifi_active,
+    bool ble_quiesced,
+    bool wifi_quiesced)
+{
+    if (!connected) {
+        return "missing";
+    }
+    if (!role_acked) {
+        return "role_wait";
+    }
+    if (!command_fresh) {
+        return "cmd_wait";
+    }
+    bool needs_ble = expected_profile &&
+        (strcmp(expected_profile, "ble_primary") == 0 ||
+         strcmp(expected_profile, "hybrid_failover") == 0 ||
+         strcmp(expected_profile, "calibration") == 0);
+    bool needs_wifi = expected_profile &&
+        (strcmp(expected_profile, "wifi_primary") == 0 ||
+         strcmp(expected_profile, "hybrid_failover") == 0);
+    if (!needs_ble && !needs_wifi) {
+        return "profile_invalid";
+    }
+    if (needs_ble && !ble_active) {
+        return "ble_off";
+    }
+    if (needs_wifi && !wifi_initialized) {
+        return "wifi_init_failed";
+    }
+    if (needs_wifi && !wifi_active) {
+        return "wifi_off";
+    }
+    if ((strcmp(expected_profile, "ble_primary") == 0 ||
+         strcmp(expected_profile, "calibration") == 0) &&
+        !wifi_quiesced) {
+        return "wifi_not_quiet";
+    }
+    if (strcmp(expected_profile, "wifi_primary") == 0 && !ble_quiesced) {
+        return "ble_not_quiet";
+    }
+    return "ok";
 }
 
 void fof_policy_evil_twin_state_init(fof_policy_evil_twin_state_t *state)

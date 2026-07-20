@@ -6,6 +6,12 @@
 
 #include "detection_types.h"
 
+#ifdef FOF_BADGE_VARIANT
+#define FOF_POLICY_FIXED_SLOT_TOPOLOGY true
+#else
+#define FOF_POLICY_FIXED_SLOT_TOPOLOGY false
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -62,9 +68,41 @@ bool fof_policy_detection_dedupe_key(const drone_detection_t *det,
                                      size_t out_len);
 const char *fof_policy_scan_profile_for_slot(uint8_t scanner_id,
                                              bool calibration_active);
+const char *fof_policy_scan_profile_for_topology(
+    uint8_t scanner_id,
+    bool calibration_active,
+    bool peer_connected,
+    bool fixed_slot_topology);
 const char *fof_policy_slot_role_for_slot(uint8_t scanner_id);
 bool fof_policy_scan_profile_allows_source(const char *scan_profile,
                                            uint8_t source);
+
+typedef enum {
+    FOF_POLICY_RADIO_BOOT_WIFI_FIRST = 0,
+    FOF_POLICY_RADIO_BOOT_BLE_FIRST = 1,
+} fof_policy_radio_boot_order_t;
+
+/**
+ * Select badge radio allocation order after the uplink has had a bounded
+ * opportunity to assign this identical scanner binary to a physical slot.
+ * Unassigned, hybrid, and malformed profiles preserve the last known-good
+ * Wi-Fi-first order.
+ */
+fof_policy_radio_boot_order_t fof_policy_badge_radio_boot_order(
+    const char *scan_profile,
+    bool profile_assigned);
+
+/** Shared status label used by both USB and HTTP badge status encoders. */
+const char *fof_policy_badge_scanner_health(
+    const char *expected_profile,
+    bool connected,
+    bool role_acked,
+    bool command_fresh,
+    bool ble_active,
+    bool wifi_initialized,
+    bool wifi_active,
+    bool ble_quiesced,
+    bool wifi_quiesced);
 
 #define FOF_POLICY_EVIL_TWIN_SSID_SLOTS 16
 #define FOF_POLICY_EVIL_TWIN_AP_SLOTS   4

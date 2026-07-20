@@ -31,6 +31,7 @@
 #include "ble_remote_id.h"
 #include "ble_investigator.h"
 #include "ble_investigation_protocol.h"
+#include "detection_policy.h"
 #include "time_sync_policy.h"
 #include "firmware_version_order.h"
 #include "comms/uart_ota.h"
@@ -58,6 +59,7 @@
 #include "freertos/queue.h"
 #include "cJSON.h"
 
+#include <stdatomic.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -117,13 +119,21 @@ volatile uint32_t g_cmd_stale_count = 0;
 volatile int64_t g_last_cmd_local_ms = 0;
 static volatile int64_t s_uart_cmd_last_loop_ms = 0;
 static volatile bool s_radios_ready = false;
+static QueueHandle_t s_detection_queue = NULL;
 static char s_fw_ready_target[32] = {0};
 static uart_ota_manifest_t s_fw_ready_manifest = {0};
 
-#define FW_CHECK_DAILY_INTERVAL_MS     (24LL * 60LL * 60LL * 1000LL)
-#define FW_CHECK_JITTER_MAX_MS         (60LL * 60LL * 1000LL)
+#define FW_CHECK_BOOT_DELAY_MS         (8LL * 1000LL)
 #ifdef FOF_BADGE_VARIANT
-#define FW_UPDATE_RETRY_INTERVAL_MS    (60LL * 1000LL)
+#define BADGE_SLOT_ROLE_WAIT_MS        6000
+static atomic_bool s_badge_boot_radio_phase_complete = false;
+#endif
+
+static void scanner_init_ble_radio(QueueHandle_t detection_queue);
+static void scanner_init_wifi_radio(QueueHandle_t detection_queue,
+                                    bool pause_after_init);
+#ifdef FOF_BADGE_VARIANT
+static void scanner_initialize_late_badge_radio(void);
 #endif
 
 static void maybe_expire_time_sync(int64_t now_ms)
@@ -178,14 +188,7 @@ static bool scanner_radio_health_ok(void)
                now_ms >= last_loop_ms &&
                (now_ms - last_loop_ms) <= 30000;
     }
-    ble_remote_id_stats_t ble_stats = {0};
-    ble_remote_id_get_stats(&ble_stats);
-    wifi_scanner_stats_t wifi_stats = {0};
-    wifi_scanner_get_stats(&wifi_stats);
-    return ble_stats.ble_scanning ||
-           ble_stats.ble_host_synced ||
-           wifi_stats.full_scan_count > 0 ||
-           wifi_stats.total_frames > 0;
+    return scanner_quiet_mode_radios_ready();
 }
 
 static void send_scanner_debug_status(void);
@@ -311,16 +314,11 @@ static void send_scanner_debug_status(void)
 #ifdef FOF_BADGE_VARIANT
 static void apply_scan_profile_if_radios_ready(const char *reason)
 {
-    if (!s_radios_ready) {
-        ESP_LOGI(TAG, "Scan profile apply deferred (%s): radios not ready",
-                 reason ? reason : "unknown");
-        return;
-    }
-
     scanner_scan_profile_apply();
-    ESP_LOGW(TAG, "Scan profile applied (%s): %s",
+    s_radios_ready = scanner_quiet_mode_radios_ready();
+    ESP_LOGW(TAG, "Scan profile applied (%s): %s ready=%d",
              reason ? reason : "unknown",
-             scanner_scan_profile_label());
+             scanner_scan_profile_label(), s_radios_ready ? 1 : 0);
 }
 
 static bool scanner_firmware_quiet_window_active(void)
@@ -995,7 +993,7 @@ static void send_fw_check(const char *board, const char *caps, const char *reaso
              uart_tx_firmware_update_state(),
              (unsigned long)uart_tx_firmware_check_count(),
              uart_tx_firmware_last_error(),
-             reason ? reason : "periodic",
+             reason ? reason : "boot",
              uart_ota_state_label(),
              scanner_rollback_recovery_mode(),
              scanner_rollback_is_pending_verify() ? "true" : "false",
@@ -1216,20 +1214,24 @@ static void uart_cmd_listener_task(void *arg)
 
     TickType_t boot_tick = xTaskGetTickCount();
     TickType_t last_info_send = boot_tick;
-    int64_t next_fw_check_ms =
-        (esp_timer_get_time() / 1000) + FW_CHECK_DAILY_INTERVAL_MS +
-        (int64_t)(esp_random() % FW_CHECK_JITTER_MAX_MS);
-#ifdef FOF_BADGE_VARIANT
-    int64_t next_fw_retry_ms = (esp_timer_get_time() / 1000) +
-                               FW_UPDATE_RETRY_INTERVAL_MS;
-#endif
-    send_fw_check(s_board_name, s_caps, "boot");
-
+    int64_t boot_fw_check_due_ms =
+        (esp_timer_get_time() / 1000) + FW_CHECK_BOOT_DELAY_MS;
+    bool boot_fw_check_sent = false;
     while (1) {
         int64_t loop_now_ms = esp_timer_get_time() / 1000;
         s_uart_cmd_last_loop_ms = loop_now_ms;
         maybe_expire_time_sync(loop_now_ms);
         ble_investigator_runtime_tick(loop_now_ms);
+        /* Let identity, role assignment, and the uplink's durable coordinator
+         * restore settle before asking about firmware. This is intentionally a
+         * one-shot boot check: normal operation has no periodic update poll. */
+        if (!boot_fw_check_sent &&
+            loop_now_ms >= boot_fw_check_due_ms &&
+            !uart_ota_is_active() &&
+            !uart_tx_firmware_backoff_active()) {
+            boot_fw_check_sent = true;
+            send_fw_check(s_board_name, s_caps, "boot");
+        }
         int len = uart_read_bytes(UART_NUM_1, buf, sizeof(buf), pdMS_TO_TICKS(50));
 
         /* Resend scanner_info every 10s — always, even when TX is stopped.
@@ -1242,24 +1244,6 @@ static void uart_cmd_listener_task(void *arg)
             last_info_send = xTaskGetTickCount();
             uart_tx_send_scanner_info(FOF_VERSION, s_board_name, s_chip_name, s_caps);
             int64_t now_ms = esp_timer_get_time() / 1000;
-            if (now_ms >= next_fw_check_ms && !uart_tx_firmware_backoff_active()) {
-                next_fw_check_ms = now_ms + FW_CHECK_DAILY_INTERVAL_MS +
-                                   (int64_t)(esp_random() % FW_CHECK_JITTER_MAX_MS);
-                send_fw_check(s_board_name, s_caps, "daily");
-            }
-#ifdef FOF_BADGE_VARIANT
-            if (uart_tx_firmware_update_needed() &&
-                now_ms >= next_fw_retry_ms &&
-                !uart_ota_is_active() &&
-                !uart_tx_firmware_backoff_active()) {
-                next_fw_retry_ms = now_ms + FW_UPDATE_RETRY_INTERVAL_MS;
-                clear_fw_ready_latch("retry_check");
-                send_fw_check(s_board_name, s_caps, "pending_update_retry");
-                ESP_LOGW(TAG, "BADGE_FW_RETRY target=%s state=%s",
-                         uart_tx_firmware_target_version(),
-                         uart_tx_firmware_update_state());
-            }
-#endif
             /* Send status even when stopped — uplink can see we're alive */
             if (!uart_tx_is_enabled()) {
                 ESP_LOGD(TAG, "Scanner waiting for start command (TX disabled)");
@@ -1374,9 +1358,9 @@ static void uart_cmd_listener_task(void *arg)
                         } else if (type && strcmp(type, MSG_TYPE_FW_CHECK_NOW) == 0) {
                             clear_fw_ready_latch("manual_fw_check");
                             uart_tx_clear_firmware_error();
-                            next_fw_check_ms = (esp_timer_get_time() / 1000) +
-                                               FW_CHECK_DAILY_INTERVAL_MS +
-                                               (int64_t)(esp_random() % FW_CHECK_JITTER_MAX_MS);
+                            /* A manual check satisfies the one-shot boot check
+                             * if it arrives during the startup delay. */
+                            boot_fw_check_sent = true;
                             send_fw_check(s_board_name, s_caps, "manual");
 
                         } else if (type && strcmp(type, MSG_TYPE_BLE_INVESTIGATE) == 0) {
@@ -1478,15 +1462,47 @@ static void uart_cmd_listener_task(void *arg)
                             if (!profile_j) {
                                 profile_j = cJSON_GetObjectItem(root, "profile");
                             }
-                            const char *profile = (profile_j && profile_j->valuestring)
+#ifdef FOF_BADGE_VARIANT
+                            cJSON *slot_role_j = cJSON_GetObjectItem(
+                                root, JSON_KEY_SLOT_ROLE);
+                            const char *slot_role =
+                                (slot_role_j && cJSON_IsString(slot_role_j))
+                                    ? slot_role_j->valuestring
+                                    : NULL;
+                            const char *profile =
+                                (profile_j && cJSON_IsString(profile_j))
                                 ? profile_j->valuestring
-                                : "hybrid_failover";
+                                : NULL;
+                            bool late_role_recovery_required = false;
+                            bool slot_role_ok = scanner_slot_role_command_apply(
+                                slot_role, profile,
+                                &late_role_recovery_required);
+                            char ack[160];
+                            snprintf(ack, sizeof(ack),
+                                     "{\"type\":\"scan_profile_ack\","
+                                     "\"scan_profile\":\"%s\","
+                                     "\"slot_role\":\"%s\","
+                                     "\"slot_role_ok\":%s}",
+                                     scanner_scan_profile_label(),
+                                     scanner_slot_role_label(),
+                                     slot_role_ok ? "true" : "false");
+                            uart_tx_send_raw_json(ack);
+                            if (slot_role_ok && late_role_recovery_required) {
+                                scanner_initialize_late_badge_radio();
+                            }
+#else
+                            const char *profile =
+                                (profile_j && cJSON_IsString(profile_j))
+                                    ? profile_j->valuestring
+                                    : "hybrid_failover";
                             scanner_scan_profile_set(profile);
                             char ack[96];
                             snprintf(ack, sizeof(ack),
-                                     "{\"type\":\"scan_profile_ack\",\"scan_profile\":\"%s\"}",
+                                     "{\"type\":\"scan_profile_ack\","
+                                     "\"scan_profile\":\"%s\"}",
                                      scanner_scan_profile_label());
                             uart_tx_send_raw_json(ack);
+#endif
 
                         } else if (type && strcmp(type, "display_control") == 0) {
                             handle_display_control_command(root);
@@ -1861,6 +1877,112 @@ static bool start_uart_command_tasks(void)
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
+static void scanner_init_ble_radio(QueueHandle_t detection_queue)
+{
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_BLE_INIT);
+    ble_remote_id_init(detection_queue);
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_BLE_READY);
+    ESP_LOGI(TAG, "BLE Remote ID scanner initialised");
+}
+
+static void scanner_init_wifi_radio(QueueHandle_t detection_queue,
+                                    bool pause_after_init)
+{
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_WIFI_INIT);
+    wifi_scanner_init(detection_queue);
+    if (pause_after_init) {
+        wifi_scanner_pause();
+    }
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_WIFI_READY);
+    if (wifi_scanner_is_initialized()) {
+        ESP_LOGI(TAG, "WiFi scanner initialised");
+    } else {
+        ESP_LOGE(TAG, "WiFi scanner failed to initialise");
+    }
+}
+
+#ifdef FOF_BADGE_VARIANT
+static void scanner_initialize_late_badge_radio(void)
+{
+    while (!atomic_load_explicit(&s_badge_boot_radio_phase_complete,
+                                 memory_order_acquire)) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    const char *slot_role = scanner_slot_role_label();
+    if (!s_detection_queue ||
+        ble_remote_id_is_initialized() ||
+        wifi_scanner_is_initialized()) {
+        ESP_LOGE(TAG,
+                 "Late role recovery refused unsafe allocation state: "
+                 "role=%s queue=%d ble_init=%d wifi_init=%d",
+                 slot_role && slot_role[0] ? slot_role : "unassigned",
+                 s_detection_queue ? 1 : 0,
+                 ble_remote_id_is_initialized() ? 1 : 0,
+                 wifi_scanner_is_initialized() ? 1 : 0);
+        return;
+    }
+
+    if (strcmp(slot_role, "ble_primary") == 0) {
+        wifi_scanner_pause();
+        scanner_init_ble_radio(s_detection_queue);
+        if (ble_remote_id_is_initialized() &&
+            !scanner_quiet_mode_is_active()) {
+            ble_remote_id_start();
+        }
+    } else if (strcmp(slot_role, "wifi_primary") == 0) {
+        scanner_init_wifi_radio(s_detection_queue, false);
+        if (wifi_scanner_is_initialized()) {
+            if (scanner_quiet_mode_is_active()) {
+                wifi_scanner_pause();
+            } else {
+                wifi_scanner_resume();
+            }
+            wifi_scanner_start();
+        }
+    } else {
+        ESP_LOGE(TAG, "Late role recovery rejected invalid durable role: %s",
+                 slot_role && slot_role[0] ? slot_role : "unassigned");
+        return;
+    }
+
+    scanner_scan_profile_runtime_ready_set(true);
+    scanner_scan_profile_apply();
+    s_radios_ready = scanner_quiet_mode_radios_ready();
+    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_NORMAL);
+    ESP_LOGW(TAG, "Late role recovery initialized %s only (ready=%d)",
+             slot_role, s_radios_ready ? 1 : 0);
+}
+
+static fof_policy_radio_boot_order_t badge_wait_for_radio_boot_order(
+    bool *role_assigned_at_boot)
+{
+    TickType_t started = xTaskGetTickCount();
+    TickType_t budget = pdMS_TO_TICKS(BADGE_SLOT_ROLE_WAIT_MS);
+    while (!scanner_slot_role_command_seen() &&
+           (xTaskGetTickCount() - started) < budget) {
+        vTaskDelay(pdMS_TO_TICKS(25));
+    }
+
+    bool assigned = scanner_slot_role_boot_window_close();
+    if (role_assigned_at_boot) {
+        *role_assigned_at_boot = assigned;
+    }
+    bool fresh = scanner_slot_role_command_seen();
+    const char *slot_role = scanner_slot_role_label();
+    fof_policy_radio_boot_order_t order =
+        fof_policy_badge_radio_boot_order(slot_role, assigned);
+    ESP_LOGW(TAG,
+             "Badge radio allocation: slot_role=%s assigned=%d fresh=%d order=%s",
+             assigned && slot_role[0] ? slot_role : "unassigned",
+             assigned ? 1 : 0,
+             fresh ? 1 : 0,
+             order == FOF_POLICY_RADIO_BOOT_BLE_FIRST
+                 ? "ble_first" : "wifi_first");
+    return order;
+}
+#endif
+
 void app_main(void)
 {
     /* ── 0. Machine-readable firmware identification ──────────────────── */
@@ -1907,9 +2029,9 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     /* ── 3. Create shared detection queue ─────────────────────────────── */
-    QueueHandle_t detection_queue = xQueueCreate(DETECTION_QUEUE_LEN,
-                                                 sizeof(drone_detection_t));
-    if (detection_queue == NULL) {
+    s_detection_queue = xQueueCreate(DETECTION_QUEUE_LEN,
+                                     sizeof(drone_detection_t));
+    if (s_detection_queue == NULL) {
         ESP_LOGE(TAG, "Failed to create detection queue -- halting");
         return;
     }
@@ -1975,6 +2097,27 @@ void app_main(void)
         return;
     }
 
+#ifdef FOF_BADGE_VARIANT
+    /* The same image runs in either scanner slot. Let the already-running
+     * UART command task receive a stable physical slot_role before either
+     * radio consumes scarce internal SRAM. */
+    bool badge_role_assigned_at_boot = false;
+    fof_policy_radio_boot_order_t badge_radio_boot_order =
+        badge_wait_for_radio_boot_order(&badge_role_assigned_at_boot);
+    const char *badge_slot_role = scanner_slot_role_label();
+    if (badge_role_assigned_at_boot &&
+        (strcmp(badge_slot_role, "ble_primary") == 0 ||
+         strcmp(badge_slot_role, "wifi_primary") == 0)) {
+        /* The durable physical role is authoritative for the badge.  A
+         * transient hybrid command must never make one MCU allocate both
+         * radio stacks during a peer reboot. */
+        scanner_scan_profile_set(badge_slot_role);
+    }
+    const char *badge_boot_profile = scanner_scan_profile_label();
+    bool badge_ble_radio_initialized = false;
+    bool badge_wifi_radio_initialized = false;
+#endif
+
     /* ── 8a. After uptime + health proof, mark this image VALID and clear
      *        the crash counter. Fresh OTA images now require command ingress
      *        plus a working radio path before rollback is cancelled. */
@@ -1983,36 +2126,37 @@ void app_main(void)
                             3072, NULL, tskIDLE_PRIORITY + 1, NULL,
                             tskNO_AFFINITY);
 
-    /* ── 9. Initialize radios ───────────────────────────────────────────
-     * Badge scanners need BLE privacy/Remote ID to survive noisy WiFi work,
-     * so give NimBLE first claim on controller/internal heap. */
+    /* ── 9. Initialize radios ─────────────────────────────────────────── */
 #ifdef FOF_BADGE_VARIANT
-    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_BLE_INIT);
-    ble_remote_id_init(detection_queue);
-    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_BLE_READY);
-    ESP_LOGI(TAG, "BLE Remote ID scanner initialised");
-
-    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_WIFI_INIT);
-    wifi_scanner_init(detection_queue);
-    wifi_scanner_pause();
-    ESP_LOGW(TAG, "Badge boot: WiFi paused until BLE host gets first sync window");
-    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_WIFI_READY);
-    ESP_LOGI(TAG, "WiFi scanner initialised");
+    if (badge_role_assigned_at_boot &&
+        strcmp(badge_boot_profile, "ble_primary") == 0) {
+        scanner_init_ble_radio(s_detection_queue);
+        badge_ble_radio_initialized = ble_remote_id_is_initialized();
+        wifi_scanner_pause();
+    } else if (badge_role_assigned_at_boot &&
+               strcmp(badge_boot_profile, "wifi_primary") == 0) {
+        scanner_init_wifi_radio(s_detection_queue, false);
+        badge_wifi_radio_initialized = wifi_scanner_is_initialized();
+    } else {
+        wifi_scanner_pause();
+        ESP_LOGE(TAG,
+                 "Badge radio allocation held in UART-only recovery: "
+                 "role=%s profile=%s order=%s",
+                 badge_slot_role[0] ? badge_slot_role : "unassigned",
+                 badge_boot_profile[0] ? badge_boot_profile : "unassigned",
+                 badge_radio_boot_order == FOF_POLICY_RADIO_BOOT_BLE_FIRST
+                     ? "ble_first" : "wifi_first");
+    }
 #else
-    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_WIFI_INIT);
-    wifi_scanner_init(detection_queue);
-    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_WIFI_READY);
-    ESP_LOGI(TAG, "WiFi scanner initialised");
-
-    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_BLE_INIT);
-    ble_remote_id_init(detection_queue);
-    scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_BLE_READY);
-    ESP_LOGI(TAG, "BLE Remote ID scanner initialised");
+    scanner_init_wifi_radio(s_detection_queue, false);
+    scanner_init_ble_radio(s_detection_queue);
 #endif
 
 #if CONFIG_FOF_GLASSES_DETECTION
     /* ── 9c. Create glasses detection queue and wire to BLE scanner ───── */
-    s_glasses_queue = xQueueCreate(10, sizeof(glasses_detection_t));
+    if (s_glasses_queue == NULL) {
+        s_glasses_queue = xQueueCreate(10, sizeof(glasses_detection_t));
+    }
     if (s_glasses_queue != NULL) {
         ble_remote_id_set_glasses_queue(s_glasses_queue);
         memset(s_glasses_cache, 0, sizeof(s_glasses_cache));
@@ -2022,25 +2166,26 @@ void app_main(void)
 
     /* Start UART TX task on Core 1 (processing core).
      * The TX task has a 10s startup delay to let the uplink boot first. */
-    uart_tx_start(detection_queue);
+    uart_tx_start(s_detection_queue);
 
 #ifdef FOF_BADGE_VARIANT
-    /* ── 10. Badge: let NimBLE sync before WiFi promiscuous scanning ─── */
-    if (!scanner_quiet_mode_is_active()) {
+    /* ── 10. Badge: start only the radio assigned to this physical slot. */
+    if (badge_ble_radio_initialized && !scanner_quiet_mode_is_active()) {
         ble_remote_id_start();
         ESP_LOGI(TAG, "BLE scanner started");
-        vTaskDelay(pdMS_TO_TICKS(1500));
-    } else {
+    } else if (badge_ble_radio_initialized) {
         ESP_LOGW(TAG, "Badge boot: BLE start skipped for scanner quiet mode");
     }
-    if (!scanner_quiet_mode_is_active()) {
-        wifi_scanner_resume();
-    } else {
-        wifi_scanner_pause();
+    if (badge_wifi_radio_initialized) {
+        if (!scanner_quiet_mode_is_active()) {
+            wifi_scanner_resume();
+        } else {
+            wifi_scanner_pause();
+        }
+        wifi_scanner_start();
+        ESP_LOGI(TAG, "WiFi scanner started on core %d, priority %d",
+                 WIFI_SCAN_TASK_CORE, WIFI_SCAN_TASK_PRIORITY);
     }
-    wifi_scanner_start();
-    ESP_LOGI(TAG, "WiFi scanner started on core %d, priority %d",
-             WIFI_SCAN_TASK_CORE, WIFI_SCAN_TASK_PRIORITY);
 #else
     /* ── 10. Start WiFi scanner task on Core 0 (radio core) ──────────── */
     if (scanner_quiet_mode_is_active()) {
@@ -2058,10 +2203,29 @@ void app_main(void)
         ESP_LOGW(TAG, "BLE start skipped for scanner quiet mode");
     }
 #endif
-    s_radios_ready = true;
+#ifdef FOF_BADGE_VARIANT
+    if (badge_role_assigned_at_boot) {
+        scanner_scan_profile_runtime_ready_set(true);
+        scanner_scan_profile_apply();
+        s_radios_ready = scanner_quiet_mode_radios_ready();
+        scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_NORMAL);
+        ESP_LOGI(TAG,
+                 "Scan profile radios applied after radio startup (ready=%d)",
+                 s_radios_ready ? 1 : 0);
+    } else {
+        s_radios_ready = false;
+        ESP_LOGW(TAG, "Badge remains UART-only pending a valid fixed role");
+    }
+    atomic_store_explicit(&s_badge_boot_radio_phase_complete, true,
+                          memory_order_release);
+#else
+    scanner_scan_profile_runtime_ready_set(true);
     scanner_scan_profile_apply();
+    s_radios_ready = scanner_quiet_mode_radios_ready();
     scanner_rollback_note_boot_stage(SCANNER_BOOT_STAGE_NORMAL);
-    ESP_LOGI(TAG, "Scan profile radios applied after radio startup");
+    ESP_LOGI(TAG, "Scan profile radios applied after radio startup (ready=%d)",
+             s_radios_ready ? 1 : 0);
+#endif
 
     /* ── 11. Start LED task ──────────────────────────────────────────── */
     led_start();

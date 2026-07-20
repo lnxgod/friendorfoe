@@ -80,6 +80,10 @@ static bool s_serial_fw_rx_active = false;
 static int64_t s_serial_fw_last_rx_ms = 0;
 static SemaphoreHandle_t s_usb_output_lock = NULL;
 static portMUX_TYPE s_usb_output_init_lock = portMUX_INITIALIZER_UNLOCKED;
+/* The status response already has a deep formatting frame. Keep its complete
+ * scanner copies out of the 12 KB USB control stack. Calls are serialized by
+ * the USB command path (boot config completes before the runtime task starts). */
+static scanner_info_t s_usb_status_scanner_snapshots[2] = {0};
 
 static void handle_control_line(const char *line);
 static void print_json_escaped_string(const char *value);
@@ -182,24 +186,37 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
                                       bool first)
 {
     bool calibration = info && strcmp(info->scan_mode, "calibration") == 0;
-    const char *expected = calibration
-        ? fof_policy_scan_profile_for_slot(scanner_id, true)
-        : (peer_ready ? fof_policy_scan_profile_for_slot(scanner_id, false)
-                      : "hybrid_failover");
+    const char *expected = fof_policy_scan_profile_for_topology(
+        scanner_id, calibration, peer_ready,
+        FOF_POLICY_FIXED_SLOT_TOPOLOGY);
     const char *actual = (info && info->scan_profile[0]) ? info->scan_profile : "";
-    bool role_acked = connected && actual[0] && strcmp(actual, expected) == 0;
+    const char *expected_role = fof_policy_slot_role_for_slot(scanner_id);
+    const char *actual_role = (info && info->slot_role[0])
+        ? info->slot_role : "";
+    bool role_acked = connected && actual[0] &&
+        strcmp(actual, expected) == 0 && actual_role[0] &&
+        strcmp(actual_role, expected_role) == 0;
     bool cmd_fresh = connected && info && info->cmd_rx_count > 0 &&
                      info->cmd_last_age_s >= 0 && info->cmd_last_age_s <= 45;
-    const char *health = !connected ? "missing" :
-        (!role_acked ? "role_wait" :
-         (!cmd_fresh ? "cmd_wait" :
-          (info && info->ble_scanning == false && scanner_id == 0 ? "ble_off" : "ok")));
+    const char *health = fof_policy_badge_scanner_health(
+        expected,
+        connected,
+        role_acked,
+        cmd_fresh,
+        info && info->ble_initialized && info->ble_scanning &&
+            info->ble_host_active && info->ble_host_synced,
+        info && info->wifi_initialized && info->wifi_init_rc == 0,
+        info && info->wifi_active,
+        info && info->ble_quiesced,
+        info && info->wifi_quiesced);
 
     printf("%s{\"slot\":%u,\"uart\":", first ? "" : ",", (unsigned)scanner_id);
     print_json_escaped_string(name ? name : "?");
     printf(",\"connected\":%s,\"slot_role\":",
            connected ? "true" : "false");
-    print_json_escaped_string(fof_policy_slot_role_for_slot(scanner_id));
+    print_json_escaped_string(actual_role);
+    printf(",\"expected_slot_role\":");
+    print_json_escaped_string(expected_role);
     printf(",\"expected_scan_profile\":");
     print_json_escaped_string(expected);
     printf(",\"scan_profile\":");
@@ -227,10 +244,15 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
         print_json_escaped_string(info->hardware_type);
         printf(",\"hardware_id\":");
         print_json_escaped_string(info->hardware_id);
-        printf(",\"cmd_rx\":%lu,\"cmd_last_age_s\":%lld,"
+        printf(",\"boot_id\":%lu,\"identity_generation\":%lu,"
+               "\"cmd_rx\":%lu,\"cmd_last_age_s\":%lld,"
                "\"cmd_parse_err\":%lu,\"cmd_overflow\":%lu,"
-               "\"ble_scanning\":%s,\"ble_host_active\":%s,"
-               "\"ble_host_synced\":%s,\"wifi_paused\":%s,"
+               "\"ble_initialized\":%s,\"ble_scanning\":%s,"
+               "\"ble_host_active\":%s,\"ble_host_synced\":%s,"
+               "\"ble_quiesced\":%s,"
+               "\"wifi_initialized\":%s,\"wifi_active\":%s,"
+               "\"wifi_quiesced\":%s,"
+               "\"wifi_init_rc\":%d,\"wifi_paused\":%s,"
                "\"wifi_total_frames\":%lu,\"wifi_beacon_frames\":%lu,"
                "\"wifi_full_scan_count\":%lu,\"wifi_full_scan_ok\":%lu,"
                "\"wifi_full_scan_err\":%lu,\"wifi_full_scan_last_rc\":%d,"
@@ -240,13 +262,21 @@ static void print_scanner_status_json(const char *name, uint8_t scanner_id,
                "\"wifi_last_drone_ssid_age_s\":%lld,"
                "\"wifi_last_notable_ssid_age_s\":%lld,"
                "\"wifi_last_drone_ssid\":",
+               (unsigned long)info->boot_id,
+               (unsigned long)info->identity_generation,
                (unsigned long)info->cmd_rx_count,
                (long long)info->cmd_last_age_s,
                (unsigned long)info->cmd_parse_error_count,
                (unsigned long)info->cmd_overflow_count,
+               info->ble_initialized ? "true" : "false",
                info->ble_scanning ? "true" : "false",
                info->ble_host_active ? "true" : "false",
                info->ble_host_synced ? "true" : "false",
+               info->ble_quiesced ? "true" : "false",
+               info->wifi_initialized ? "true" : "false",
+               info->wifi_active ? "true" : "false",
+               info->wifi_quiesced ? "true" : "false",
+               info->wifi_init_rc,
                info->wifi_paused ? "true" : "false",
                (unsigned long)info->wifi_total_frames,
                (unsigned long)info->wifi_beacon_frames,
@@ -577,7 +607,8 @@ static void print_badge_button_state_field(
 static void forward_display_policy_to_scanners(bool *ble_sent,
                                                bool *wifi_sent)
 {
-    char cmd[BADGE_DISPLAY_POLICY_JSON_MAX + 128] = {0};
+    static char cmd[BADGE_DISPLAY_POLICY_JSON_MAX + 128];
+    cmd[0] = '\0';
     badge_display_policy_runtime_command_json(cmd, sizeof(cmd));
     bool ble_ok = false;
     bool wifi_ok = false;
@@ -623,18 +654,26 @@ static void send_badge_status_response(void)
 
     const bool ble_connected = uart_rx_is_ble_scanner_connected();
     const bool wifi_connected = uart_rx_is_wifi_scanner_connected();
-    const scanner_info_t *ble_info = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi_info = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble_info =
+        uart_rx_get_scanner_info_snapshot(
+            0, &s_usb_status_scanner_snapshots[0])
+            ? &s_usb_status_scanner_snapshots[0] : NULL;
+    const scanner_info_t *wifi_info =
+        uart_rx_get_scanner_info_snapshot(
+            1, &s_usb_status_scanner_snapshots[1])
+            ? &s_usb_status_scanner_snapshots[1] : NULL;
     scanner_uart_diag_t ble_uart_diag = {0};
     scanner_uart_diag_t wifi_uart_diag = {0};
     uart_rx_get_scanner_uart_diag(0, &ble_uart_diag);
 #if CONFIG_DUAL_SCANNER
     uart_rx_get_scanner_uart_diag(1, &wifi_uart_diag);
 #endif
-    fw_store_info_t firmware_store = {0};
+    static fw_store_info_t firmware_store;
+    memset(&firmware_store, 0, sizeof(firmware_store));
     const bool firmware_stored = fw_store_get_info(&firmware_store) &&
         firmware_store.stored;
-    fw_auto_update_status_t auto_update = {0};
+    static fw_auto_update_status_t auto_update;
+    memset(&auto_update, 0, sizeof(auto_update));
     fw_store_get_auto_update_status(&auto_update);
 
 #ifdef FOF_BADGE_VARIANT
@@ -673,7 +712,8 @@ static void send_badge_status_response(void)
     const uint32_t psram_largest =
         heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
 
-    char policy_json[BADGE_DISPLAY_POLICY_JSON_MAX] = {0};
+    static char policy_json[BADGE_DISPLAY_POLICY_JSON_MAX];
+    policy_json[0] = '\0';
     badge_display_policy_runtime_json(policy_json, sizeof(policy_json));
     const uint32_t policy_hash = badge_display_policy_runtime_hash();
     uint32_t filtered_counts[BADGE_DISPLAY_POLICY_CLASS_COUNT] = {0};
@@ -681,15 +721,18 @@ static void send_badge_status_response(void)
         filtered_counts[i] = badge_display_policy_runtime_filtered_count(
             (badge_display_policy_class_t)i);
     }
-    char theme_json[BADGE_THEME_JSON_MAX] = {0};
+    static char theme_json[BADGE_THEME_JSON_MAX];
+    theme_json[0] = '\0';
     badge_theme_runtime_json(theme_json, sizeof(theme_json));
     const uint32_t theme_hash = badge_theme_runtime_hash();
     oled_badge_display_state_t display_state = {0};
     const bool display_state_active =
         oled_badge_get_display_state(&display_state);
-    char ble_status[192] = {0};
+    static char ble_status[192];
+    ble_status[0] = '\0';
     badge_ble_control_status_json(ble_status, sizeof(ble_status));
-    char investigation_status[BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX] = {0};
+    static char investigation_status[BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX];
+    investigation_status[0] = '\0';
     badge_ble_investigation_status_json(investigation_status,
                                         sizeof(investigation_status));
     oled_badge_button_state_t button_state = {0};
@@ -1436,6 +1479,46 @@ static void handle_badge_theme_reset_command(cJSON *root)
 }
 #endif
 
+static void handle_fw_check_now_command(cJSON *root)
+{
+    const cJSON *uart_item = cJSON_GetObjectItemCaseSensitive(root, "uart");
+    const char *uart = cJSON_IsString(uart_item)
+        ? uart_item->valuestring : "both";
+    uint8_t target_mask = 0;
+    if (strcmp(uart, "ble") == 0 || strcmp(uart, "0") == 0) {
+        target_mask = FW_AUTO_UPDATE_SLOT_BLE;
+    } else if (strcmp(uart, "wifi") == 0 || strcmp(uart, "1") == 0) {
+        target_mask = FW_AUTO_UPDATE_SLOT_WIFI;
+    } else if (strcmp(uart, "both") == 0 || strcmp(uart, "all") == 0 ||
+               strcmp(uart, "*") == 0) {
+        target_mask = FW_AUTO_UPDATE_SLOT_ALL;
+    } else {
+        send_control_error("uart must be ble, wifi, or both");
+        return;
+    }
+
+    bool deferred = fw_store_is_relay_active() || http_upload_is_paused();
+    uint8_t sent_mask = deferred ? 0 :
+        fw_store_request_scanner_checks(target_mask);
+    bool requested_ble = (target_mask & FW_AUTO_UPDATE_SLOT_BLE) != 0;
+    bool requested_wifi = (target_mask & FW_AUTO_UPDATE_SLOT_WIFI) != 0;
+    bool ble_sent = (sent_mask & FW_AUTO_UPDATE_SLOT_BLE) != 0;
+    bool wifi_sent = (sent_mask & FW_AUTO_UPDATE_SLOT_WIFI) != 0;
+    bool ok = (!requested_ble || ble_sent) &&
+              (!requested_wifi || wifi_sent);
+    printf("FOF_CTL_%s:{\"message\":\"firmware check requested\","
+           "\"uart\":\"%s\",\"ble_sent\":%s,\"wifi_sent\":%s,"
+           "\"deferred\":%s,\"error\":\"%s\"}\n",
+           ok ? "OK" : "ERROR",
+           uart,
+           ble_sent ? "true" : "false",
+           wifi_sent ? "true" : "false",
+           deferred ? "true" : "false",
+           deferred ? "firmware_operation_active" :
+               (ok ? "" : "scanner_command_ingress_unreachable"));
+    fflush(stdout);
+}
+
 static void handle_ctl_command(const char *json)
 {
     cJSON *root = cJSON_Parse(json);
@@ -1658,6 +1741,9 @@ static void handle_ctl_command(const char *json)
     } else if (strcmp(cmd, "scanner_safe_mode") == 0 ||
                strcmp(cmd, "scanner_recovery") == 0) {
         handle_scanner_safe_mode_control(root);
+    } else if (strcmp(cmd, "fw_check_now") == 0 ||
+               strcmp(cmd, "fw_check") == 0) {
+        handle_fw_check_now_command(root);
     } else if (strcmp(cmd, "fw_stage_metadata") == 0) {
         /* Metadata is derived from and cryptographically bound to uploaded
          * bytes. Never allow a control command to manufacture a valid image. */

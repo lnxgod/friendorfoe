@@ -55,6 +55,7 @@ static uint32_t        s_cal_sent = 0;
 static int64_t         s_last_scan_profile_ms = 0;
 static bool            s_task_started = false;
 static volatile bool   s_task_alive = false;
+static scanner_info_t  s_http_upload_scanner_snapshots[2] = {0};
 
 /* Persistent HTTP client handle (avoids socket exhaustion from rapid open/close) */
 /* esp_http_client removed — using raw sockets for zero heap allocation */
@@ -99,26 +100,28 @@ static void maybe_send_scan_profile_commands(int64_t now_ms)
 
     bool ble_connected = uart_rx_is_ble_scanner_connected();
     bool wifi_connected = uart_rx_is_wifi_scanner_connected();
-    char cmd[80];
+    char cmd[128];
 
     if (ble_connected) {
-        const char *profile = wifi_connected
-            ? fof_policy_scan_profile_for_slot(0, false)
-            : "hybrid_failover";
+        const char *profile = fof_policy_scan_profile_for_topology(
+            0, false, wifi_connected, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
         snprintf(cmd, sizeof(cmd),
-                 "{\"type\":\"scan_profile\",\"%s\":\"%s\"}",
-                 JSON_KEY_SCAN_PROFILE, profile);
+                 "{\"type\":\"scan_profile\",\"%s\":\"%s\","
+                 "\"%s\":\"%s\"}",
+                 JSON_KEY_SCAN_PROFILE, profile,
+                 JSON_KEY_SLOT_ROLE, fof_policy_slot_role_for_slot(0));
         uart_rx_send_command_to_scanner(0, cmd);
     }
 
 #if CONFIG_DUAL_SCANNER
     if (wifi_connected) {
-        const char *profile = ble_connected
-            ? fof_policy_scan_profile_for_slot(1, false)
-            : "hybrid_failover";
+        const char *profile = fof_policy_scan_profile_for_topology(
+            1, false, ble_connected, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
         snprintf(cmd, sizeof(cmd),
-                 "{\"type\":\"scan_profile\",\"%s\":\"%s\"}",
-                 JSON_KEY_SCAN_PROFILE, profile);
+                 "{\"type\":\"scan_profile\",\"%s\":\"%s\","
+                 "\"%s\":\"%s\"}",
+                 JSON_KEY_SCAN_PROFILE, profile,
+                 JSON_KEY_SLOT_ROLE, fof_policy_slot_role_for_slot(1));
         uart_rx_send_command_to_scanner(1, cmd);
     }
 #endif
@@ -452,27 +455,39 @@ static int append_scanner_info(char *buf,
 {
     uint8_t scanner_id = (strcmp(uart_name, "wifi") == 0) ? 1 : 0;
     bool scanner_calibration = info && strcmp(info->scan_mode, "calibration") == 0;
-    const char *expected_profile = scanner_calibration
-        ? fof_policy_scan_profile_for_slot(scanner_id, true)
-        : (peer_connected ? fof_policy_scan_profile_for_slot(scanner_id, false)
-                          : "hybrid_failover");
+    const char *expected_profile = fof_policy_scan_profile_for_topology(
+        scanner_id, scanner_calibration, peer_connected,
+        FOF_POLICY_FIXED_SLOT_TOPOLOGY);
     const char *scan_profile = (info && info->scan_profile[0])
         ? info->scan_profile
         : "";
+    const char *expected_role = fof_policy_slot_role_for_slot(scanner_id);
+    const char *actual_role = (info && info->slot_role[0])
+        ? info->slot_role : "";
     bool role_acked = connected && scan_profile[0] &&
-                      strcmp(scan_profile, expected_profile) == 0;
+                      strcmp(scan_profile, expected_profile) == 0 &&
+                      actual_role[0] &&
+                      strcmp(actual_role, expected_role) == 0;
     bool cmd_fresh = connected && info && info->cmd_rx_count > 0 &&
                      info->cmd_last_age_s >= 0 && info->cmd_last_age_s <= 45;
-    const char *health = !connected ? "missing" :
-        (!role_acked ? "role_wait" :
-         (!cmd_fresh ? "cmd_wait" :
-          (scanner_id == 0 && info && !info->ble_scanning ? "ble_off" : "ok")));
+    const char *health = fof_policy_badge_scanner_health(
+        expected_profile,
+        connected,
+        role_acked,
+        cmd_fresh,
+        info && info->ble_initialized && info->ble_scanning &&
+            info->ble_host_active && info->ble_host_synced,
+        info && info->wifi_initialized && info->wifi_init_rc == 0,
+        info && info->wifi_active,
+        info && info->ble_quiesced,
+        info && info->wifi_quiesced);
     scanner_uart_diag_t uart_diag = {0};
     uart_rx_get_scanner_uart_diag(scanner_id, &uart_diag);
     int n = snprintf(&buf[off], max - off,
         "{\"slot\":%u,\"uart\":\"%s\",\"connected\":%s,"
         "\"ver\":\"%s\",\"board\":\"%s\",\"chip\":\"%s\",\"caps\":\"%s\""
-        ",\"scan_profile\":\"%s\",\"expected_scan_profile\":\"%s\",\"slot_role\":\"%s\","
+        ",\"scan_profile\":\"%s\",\"expected_scan_profile\":\"%s\","
+        "\"slot_role\":\"%s\",\"expected_slot_role\":\"%s\","
         "\"role_acked\":%s,\"health\":\"%s\","
         "\"uart_raw_seen\":%s,\"uart_raw_age_s\":%lld,"
         "\"uart_raw_bytes\":%lu,\"uart_line_overflow\":%lu,\"uart_json_err\":%lu",
@@ -485,7 +500,8 @@ static int append_scanner_info(char *buf,
         info ? info->caps : "",
         scan_profile,
         expected_profile,
-        fof_policy_slot_role_for_slot(scanner_id),
+        actual_role,
+        expected_role,
         role_acked ? "true" : "false",
         health,
         uart_diag.raw_seen ? "true" : "false",
@@ -554,8 +570,12 @@ static int append_scanner_info(char *buf,
                  info->calibration_mode_acked ? "true" : "false");
     if(n>0) off+=n;
     n = snprintf(&buf[off], max-off,
-                 ",\"ble_scanning\":%s,\"ble_host_active\":%s,\"ble_host_synced\":%s"
-                 ",\"wifi_paused\":%s,\"wifi_total_frames\":%lu"
+                 ",\"ble_initialized\":%s,\"ble_scanning\":%s"
+                 ",\"ble_host_active\":%s,\"ble_host_synced\":%s"
+                 ",\"ble_quiesced\":%s"
+                 ",\"wifi_initialized\":%s,\"wifi_active\":%s"
+                 ",\"wifi_quiesced\":%s"
+                 ",\"wifi_init_rc\":%d,\"wifi_paused\":%s,\"wifi_total_frames\":%lu"
                  ",\"wifi_beacon_frames\":%lu,\"wifi_full_scan_count\":%lu"
                  ",\"wifi_full_scan_ok\":%lu,\"wifi_full_scan_err\":%lu"
                  ",\"wifi_full_scan_last_rc\":%d,\"wifi_last_ap_count\":%lu"
@@ -583,9 +603,15 @@ static int append_scanner_info(char *buf,
                  ",\"ble_focus_target_adv_count\":%lu"
                  ",\"need_firmware\":%s,\"fw_state\":\"%s\",\"target_ver\":\"%s\""
                  ",\"fw_check_count\":%lu,\"fw_backoff_s\":%lld,\"last_fw_error\":\"%s\"",
+                 info->ble_initialized ? "true" : "false",
                  info->ble_scanning ? "true" : "false",
                  info->ble_host_active ? "true" : "false",
                  info->ble_host_synced ? "true" : "false",
+                 info->ble_quiesced ? "true" : "false",
+                 info->wifi_initialized ? "true" : "false",
+                 info->wifi_active ? "true" : "false",
+                 info->wifi_quiesced ? "true" : "false",
+                 info->wifi_init_rc,
                  info->wifi_paused ? "true" : "false",
                  (unsigned long)info->wifi_total_frames,
                  (unsigned long)info->wifi_beacon_frames,
@@ -757,12 +783,18 @@ static char *build_payload(const drone_detection_t *batch, int count, int64_t sc
     bool has_scanner = false;
     bool ble_connected = uart_rx_is_ble_scanner_connected();
     bool wifi_connected = uart_rx_is_wifi_scanner_connected();
-    const scanner_info_t *ble_info = uart_rx_get_ble_scanner_info();
+    scanner_info_t *ble_snapshot = &s_http_upload_scanner_snapshots[0];
+    const scanner_info_t *ble_info =
+        uart_rx_get_scanner_info_snapshot(0, ble_snapshot)
+            ? ble_snapshot : NULL;
     off = append_scanner_info(s_payload_buf, off, s_payload_buf_size, "ble",
                               ble_connected, wifi_connected, ble_info);
     has_scanner = true;
 #if CONFIG_DUAL_SCANNER
-    const scanner_info_t *wifi_info = uart_rx_get_wifi_scanner_info();
+    scanner_info_t *wifi_snapshot = &s_http_upload_scanner_snapshots[1];
+    const scanner_info_t *wifi_info =
+        uart_rx_get_scanner_info_snapshot(1, wifi_snapshot)
+            ? wifi_snapshot : NULL;
     if (has_scanner) BUF_APPEND(",");
     off = append_scanner_info(s_payload_buf, off, s_payload_buf_size, "wifi",
                               wifi_connected, ble_connected, wifi_info);

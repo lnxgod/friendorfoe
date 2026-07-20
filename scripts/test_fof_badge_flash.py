@@ -59,10 +59,15 @@ def _scanner_status(platform: dict, version: str, *,
             "expected_scan_profile": expected_profile,
             "scan_profile": expected_profile,
             "role_acked": True,
+            "ble_initialized": ble_primary,
             "ble_scanning": ble_primary,
             "ble_host_active": ble_primary,
             "ble_host_synced": ble_primary,
             "wifi_paused": ble_primary,
+            "wifi_initialized": not ble_primary,
+            "wifi_init_rc": 0,
+            "wifi_active": not ble_primary,
+            "full_scan_ok": 0 if ble_primary else 1,
         }],
     }
 
@@ -519,6 +524,257 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
             wait_calls,
             [({"ble": "e0:72:a1:f9:48:58"}, stage_proof)],
         )
+
+    def test_same_version_recovery_waits_for_strict_readiness_before_relay(self) -> None:
+        platform = dict(flash.PLATFORMS["badge-trio-xiao-s3"])
+        target_version = "0.64.69-badge-defcon34"
+        before = _scanner_status(platform, target_version, slot="ble")
+        before["scanners"][0]["role_acked"] = False
+        before["scanners"][0]["health"] = "cmd_wait"
+        args = SimpleNamespace(
+            port="/dev/fake-uplink",
+            platform="badge-trio-xiao-s3",
+            dry_run=False,
+            skip_command_probe=False,
+            recovery_rewrite_same_version=True,
+        )
+        stage_proof = {
+            "generation": 1,
+            "sha256": "a" * 64,
+            "slot_mask": 1,
+        }
+        events: list[tuple] = []
+
+        class FakeBadge:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def wait_ping(self) -> None:
+                return None
+
+            def status(self) -> dict:
+                return {
+                    "version": target_version,
+                    "firmware_name": platform["uplink_name"],
+                    "app_project": platform["uplink_project"],
+                    "hardware_type": platform["hardware_type"],
+                }
+
+            def stage_scanner_firmware(self, _platform, _version, slots) -> dict:
+                events.append(("stage", tuple(slots)))
+                return stage_proof
+
+            def relay_scanner(self, slot, *_args, **_kwargs) -> None:
+                events.append(("relay", slot))
+
+        def fake_wait(_badge, _platform, slots, _version, *,
+                      expected_hardware_ids,
+                      expected_stage_receipt=None,
+                      require_auto_update=True,
+                      require_radio_health=True,
+                      **_kwargs) -> None:
+            events.append((
+                "wait",
+                tuple(slots),
+                require_auto_update,
+                require_radio_health,
+                expected_stage_receipt,
+            ))
+
+        with mock.patch.object(flash, "BadgeSerial", FakeBadge), \
+             mock.patch.object(flash, "wait_for_scanner_status_usb",
+                               return_value=before), \
+             mock.patch.object(flash, "wait_for_scanners_usb",
+                               side_effect=fake_wait):
+            with contextlib.redirect_stdout(io.StringIO()):
+                flash.usb_flow(
+                    args, platform, False, ["ble"], target_version
+                )
+
+        self.assertEqual(events, [
+            ("stage", ("ble",)),
+            ("wait", ("ble",), False, False, None),
+            ("relay", "ble"),
+            ("wait", ("ble",), True, True, stage_proof),
+        ])
+
+    def test_recovery_transport_proof_can_repair_radio_off_but_not_wrong_role(self) -> None:
+        platform = dict(flash.PLATFORMS["badge-trio-xiao-s3"])
+        version = "0.64.69-badge-defcon34"
+        status = _scanner_status(platform, version, slot="ble")
+        scanner = status["scanners"][0]
+        scanner.update({
+            "health": "ble_off",
+            "ble_initialized": True,
+            "ble_scanning": False,
+            "ble_host_active": False,
+            "ble_host_synced": False,
+        })
+
+        # Explicit same-version recovery exists to repair a broken radio.
+        # Identity, UART, OTA-idle, rollback, and role proof remain mandatory;
+        # only the condition the new image is meant to repair is deferred.
+        flash.verify_scanners(
+            status,
+            platform,
+            ["ble"],
+            version,
+            require_radio_health=False,
+        )
+
+        scanner["role_acked"] = False
+        with self.assertRaisesRegex(flash.FlashError, "role convergence"):
+            flash.verify_scanners(
+                status,
+                platform,
+                ["ble"],
+                version,
+                require_radio_health=False,
+            )
+
+    def test_same_version_recovery_fails_closed_before_unhealthy_relay(self) -> None:
+        platform = dict(flash.PLATFORMS["badge-trio-xiao-s3"])
+        target_version = "0.64.69-badge-defcon34"
+        before = _scanner_status(platform, target_version, slot="ble")
+        before["scanners"][0]["role_acked"] = False
+        before["scanners"][0]["health"] = "cmd_wait"
+        args = SimpleNamespace(
+            port="/dev/fake-uplink",
+            platform="badge-trio-xiao-s3",
+            dry_run=False,
+            skip_command_probe=False,
+            recovery_rewrite_same_version=True,
+        )
+
+        class FakeBadge:
+            staged = 0
+            relayed = 0
+
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def wait_ping(self) -> None:
+                return None
+
+            def status(self) -> dict:
+                return {
+                    "version": target_version,
+                    "firmware_name": platform["uplink_name"],
+                    "app_project": platform["uplink_project"],
+                    "hardware_type": platform["hardware_type"],
+                }
+
+            def stage_scanner_firmware(self, *_args) -> dict:
+                FakeBadge.staged += 1
+                return {"generation": 1, "slot_mask": 1}
+
+            def relay_scanner(self, *_args, **_kwargs) -> None:
+                FakeBadge.relayed += 1
+
+        def fail_unhealthy_recovery_wait(
+            _badge, _platform, _slots, _version, *,
+            require_auto_update=True, **_kwargs
+        ) -> None:
+            if not require_auto_update:
+                raise flash.FlashError(
+                    "scanner verification failed: ble scanner health is not normal"
+                )
+
+        with mock.patch.object(flash, "BadgeSerial", FakeBadge), \
+             mock.patch.object(flash, "wait_for_scanner_status_usb",
+                               return_value=before), \
+             mock.patch.object(
+                 flash,
+                 "wait_for_scanners_usb",
+                 side_effect=fail_unhealthy_recovery_wait,
+             ):
+            with self.assertRaisesRegex(flash.FlashError, "health"):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    flash.usb_flow(
+                        args, platform, False, ["ble"], target_version
+                    )
+
+        self.assertEqual(FakeBadge.staged, 1)
+        self.assertEqual(FakeBadge.relayed, 0)
+
+    def test_legacy_68_bootstrap_skips_same_version_recovery_readiness(self) -> None:
+        platform = dict(flash.PLATFORMS["badge-trio-xiao-s3"])
+        target_version = "0.64.69-badge-defcon34"
+        before = _scanner_status(
+            platform, "0.64.68-badge-live-follow", slot="ble"
+        )
+        before["scanners"][0]["role_acked"] = False
+        before["scanners"][0]["health"] = "cmd_wait"
+        args = SimpleNamespace(
+            port="/dev/fake-uplink",
+            platform="badge-trio-xiao-s3",
+            dry_run=False,
+            skip_command_probe=False,
+            recovery_rewrite_same_version=True,
+        )
+
+        class FakeBadge:
+            staged = 0
+            relayed = 0
+
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def wait_ping(self) -> None:
+                return None
+
+            def status(self) -> dict:
+                return {
+                    "version": target_version,
+                    "firmware_name": platform["uplink_name"],
+                    "app_project": platform["uplink_project"],
+                    "hardware_type": platform["hardware_type"],
+                }
+
+            def stage_scanner_firmware(self, *_args) -> dict:
+                FakeBadge.staged += 1
+                return {"generation": 1, "slot_mask": 1}
+
+            def relay_scanner(self, *_args, **_kwargs) -> None:
+                FakeBadge.relayed += 1
+
+        wait_modes: list[bool] = []
+
+        def record_wait(_badge, _platform, _slots, _version, *,
+                        require_auto_update=True, **_kwargs) -> None:
+            wait_modes.append(require_auto_update)
+
+        with mock.patch.object(flash, "BadgeSerial", FakeBadge), \
+             mock.patch.object(flash, "wait_for_scanner_status_usb",
+                               return_value=before), \
+             mock.patch.object(flash, "wait_for_scanners_usb",
+                               side_effect=record_wait):
+            with contextlib.redirect_stdout(io.StringIO()):
+                flash.usb_flow(
+                    args, platform, False, ["ble"], target_version
+                )
+
+        self.assertEqual(FakeBadge.staged, 1)
+        self.assertEqual(FakeBadge.relayed, 0)
+        self.assertEqual(wait_modes, [True])
 
     def test_scanner_only_usb_flow_requires_current_uplink_before_staging(self) -> None:
         platform = dict(flash.PLATFORMS["badge-trio-xiao-s3"])
@@ -1136,6 +1392,102 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
         with self.assertRaisesRegex(flash.FlashError, "radio"):
             flash.verify_scanners(wifi, platform, ["wifi"], version)
 
+    def test_wifi_primary_rejects_logical_health_without_physical_scanner_health(self) -> None:
+        platform = flash.PLATFORMS["badge-trio-xiao-s3"]
+        version = "0.64.69-badge-defcon34"
+        status = _scanner_status(platform, version, slot="wifi")
+        scanner = status["scanners"][0]
+        scanner.update({
+            "health": "ok",
+            "wifi_paused": False,
+            "wifi_initialized": False,
+            "wifi_init_rc": 257,
+            "wifi_active": False,
+            "full_scan_ok": 0,
+        })
+
+        with self.assertRaisesRegex(flash.FlashError, "physical radio"):
+            flash.verify_scanners(status, platform, ["wifi"], version)
+
+    def test_primary_profiles_require_each_physical_radio_signal(self) -> None:
+        platform = flash.PLATFORMS["badge-trio-xiao-s3"]
+        version = "0.64.69-badge-defcon34"
+        failures = {
+            "ble": {
+                "ble_initialized": False,
+                "ble_host_active": False,
+                "ble_host_synced": False,
+                "ble_scanning": False,
+            },
+            "wifi": {
+                "wifi_initialized": False,
+                "wifi_init_rc": 257,
+                "wifi_active": False,
+                "full_scan_ok": 0,
+            },
+        }
+
+        for slot, field_failures in failures.items():
+            for field, failed_value in field_failures.items():
+                with self.subTest(slot=slot, field=field):
+                    status = _scanner_status(platform, version, slot=slot)
+                    status["scanners"][0][field] = failed_value
+                    with self.assertRaisesRegex(
+                        flash.FlashError, "physical radio"
+                    ):
+                        flash.verify_scanners(
+                            status, platform, [slot], version
+                        )
+
+    def test_fixed_slots_reject_hybrid_profile_in_role_contract(self) -> None:
+        platform = flash.PLATFORMS["badge-trio-xiao-s3"]
+        version = "0.64.69-badge-defcon34"
+
+        for slot in ("ble", "wifi"):
+            scenarios = {
+                "slot_role": {"slot_role": "hybrid_failover"},
+                "expected_scan_profile": {
+                    "expected_scan_profile": "hybrid_failover",
+                    "scan_profile": "hybrid_failover",
+                },
+                "scan_profile": {"scan_profile": "hybrid_failover"},
+            }
+            for field, overrides in scenarios.items():
+                with self.subTest(slot=slot, field=field):
+                    status = _scanner_status(platform, version, slot=slot)
+                    scanner = status["scanners"][0]
+                    scanner.update({
+                        "ble_initialized": True,
+                        "ble_scanning": True,
+                        "ble_host_active": True,
+                        "ble_host_synced": True,
+                        "wifi_paused": False,
+                        "wifi_initialized": True,
+                        "wifi_init_rc": 0,
+                        "wifi_active": True,
+                        "full_scan_ok": 1,
+                    })
+                    scanner.update(overrides)
+                    with self.assertRaisesRegex(
+                        flash.FlashError, "role mismatch"
+                    ):
+                        flash.verify_scanners(
+                            status, platform, [slot], version
+                        )
+
+    def test_wifi_full_scan_counter_accepts_only_safe_legacy_alias(self) -> None:
+        platform = flash.PLATFORMS["badge-trio-xiao-s3"]
+        version = "0.64.69-badge-defcon34"
+        status = _scanner_status(platform, version, slot="wifi")
+        scanner = status["scanners"][0]
+        scanner["wifi_full_scan_ok"] = scanner.pop("full_scan_ok")
+
+        flash.verify_scanners(status, platform, ["wifi"], version)
+
+        scanner.pop("wifi_full_scan_ok")
+        with self.assertRaisesRegex(flash.FlashError, "physical radio"):
+            flash.verify_scanners(status, platform, ["wifi"], version)
+
     def test_auto_update_convergence_binds_terminal_state_to_staged_generation(self) -> None:
         status = {
             "firmware_store": {
@@ -1359,6 +1711,26 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
             )
         self.assertTrue(body["ok"])
         self.assertIn("[relay] ble chunks 50%", out.getvalue())
+
+    def test_updater_diagnostic_lines_are_visible_while_waiting_for_status(self) -> None:
+        class FakeSerial:
+            def __init__(self) -> None:
+                self.lines = [
+                    b'I fw_store: Auto scanner relay[0] generation=42 attempt=1 ok=0 stage=begin error=ota_ack_timeout chunks=0\n',
+                    b'FOF_STATUS:{"version":"0.64.76-badge-defcon34"}\n',
+                ]
+
+            def read(self, _n: int) -> bytes:
+                return self.lines.pop(0) if self.lines else b""
+
+        badge = flash.BadgeSerial("/dev/null", dry_run=False)
+        badge.ser = FakeSerial()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            body = badge.read_prefixed_json("FOF_STATUS:", 2)
+        self.assertEqual(body["version"], "0.64.76-badge-defcon34")
+        self.assertIn("[device] Auto scanner relay[0]", out.getvalue())
+        self.assertIn("error=ota_ack_timeout", out.getvalue())
 
 
 if __name__ == "__main__":

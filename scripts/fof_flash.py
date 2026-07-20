@@ -123,8 +123,22 @@ def resolve_node_ip(backend, target):
 
 def current_repo_firmware_version():
     version_h = REPO_ROOT / "esp32/shared/version.h"
-    m = re.search(r'#define\s+FOF_VERSION\s+"([^"]+)"', version_h.read_text())
-    return m.group(1) if m else "unknown"
+    macro = "FOF_VERSION_PROD"
+    try:
+        text = version_h.read_text()
+    except OSError as exc:
+        raise RuntimeError(f"cannot read {macro} from {version_h}: {exc}") from exc
+    match = re.search(
+        rf'^\s*#define\s+{macro}\s+"([^"]+)"\s*(?:/\*.*\*/\s*)?$',
+        text,
+        flags=re.MULTILINE,
+    )
+    version = match.group(1).strip() if match else ""
+    if not version or version.lower() == "unknown" or any(char.isspace() for char in version):
+        raise RuntimeError(
+            f"{macro} must be a non-empty quoted release version in {version_h}"
+        )
+    return version
 
 
 def stage_firmware(node_ip, bin_path, firmware_name, version=None):
@@ -264,7 +278,12 @@ def main():
     print(f"[resolve] {args.node!r} → {device_id} / {ip}")
 
     if not args.skip_stage and args.relay_mode != "direct-legacy":
-        stage_firmware(ip, bin_path, FW_NAMES[args.scanner])
+        stage_firmware(
+            ip,
+            bin_path,
+            FW_NAMES[args.scanner],
+            version=target_version,
+        )
 
     ok = flash_scanner(ip, device_id, args.backend, args.uart,
                        args.relay_mode, bin_path, target_version)

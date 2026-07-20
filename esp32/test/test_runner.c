@@ -3,6 +3,12 @@
 void setUp(void) {}
 void tearDown(void) {}
 
+void test_factory_probe_frame_round_trips(void);
+void test_factory_probe_frame_rejects_crc_and_grammar_corruption(void);
+void test_factory_probe_peer_table_requires_session_and_distinct_peers(void);
+void test_factory_probe_report_is_bounded_and_canonical(void);
+void test_factory_probe_validators_reject_invalid_values(void);
+
 void test_initial_probability(void);
 void test_single_ble_update(void);
 void test_wifi_ssid_low_confidence(void);
@@ -91,6 +97,7 @@ void test_ble_threat_stable_addresses_do_not_alert(void);
 void test_ble_threat_mixed_prompt_families_alert(void);
 void test_ble_threat_cooldown_and_clear(void);
 void test_ble_threat_persistent_sparse_ffe0_alerts(void);
+void test_ble_threat_serial_skimmer_requires_minus_45_or_stronger(void);
 void test_ble_threat_duplicate_serial_uuids_count_once_for_sparse_profile(void);
 void test_ble_threat_exact_two_supporting_signals_alert(void);
 void test_ble_threat_multi_service_profile_does_not_alert(void);
@@ -106,6 +113,9 @@ void test_priority_ble_fingerprint_is_not_shed_under_pressure(void);
 void test_priority_ble_fingerprint_uses_short_reemit_window(void);
 void test_scan_profiles_assign_slot_roles_and_calibration_override(void);
 void test_scan_profile_source_gates_normal_lanes(void);
+void test_badge_radio_boot_order_prioritizes_assigned_primary_and_safe_fallback(void);
+void test_badge_scanner_health_rejects_dead_primary_radio(void);
+void test_badge_scanner_health_requires_opposing_radio_quiescence(void);
 void test_ble_meta_reacquire_triggers_when_stale_and_advancing(void);
 void test_ble_meta_reacquire_blocks_calibration_or_ota(void);
 void test_ble_meta_reacquire_requires_scan_sync_and_adv_delta(void);
@@ -222,6 +232,7 @@ void test_badge_display_policy_disabled_beacon_suppresses_normal_detection(void)
 void test_badge_display_policy_drone_breaks_through_disabled_filter(void);
 void test_badge_display_policy_close_tracker_breaks_through_disabled_filter(void);
 void test_badge_ble_attack_display_policy_defaults_to_both_lanes(void);
+void test_badge_skimmer_display_policy_is_lowest_priority(void);
 void test_badge_snapshot_categories_map_to_display_classes(void);
 void test_badge_theme_json_round_trips_defaults(void);
 void test_badge_theme_parses_safe_custom_accents(void);
@@ -269,6 +280,7 @@ void test_badge_easter_button_batch_claims_only_one_transition(void);
 void test_badge_easter_animation_initializes_and_moves_without_collision(void);
 void test_badge_easter_animation_clamps_edges_and_cycles_color_once(void);
 void test_badge_easter_animation_rejects_invalid_bounds_safely(void);
+void test_badge_easter_renderer_uses_only_approved_presentation_copy(void);
 void test_badge_hold_on_ble_entity_starts_gatt_investigation(void);
 void test_badge_hold_on_pairing_spam_starts_passive_capture(void);
 void test_badge_hold_on_non_ble_entity_opens_deepest_detail(void);
@@ -350,6 +362,7 @@ void test_relay_policy_legacy_progress_requires_every_exact_field_table(void);
 void test_relay_policy_legacy_done_and_stop_ack_are_exact_table(void);
 void test_relay_policy_strict_receipt_requires_full_manifest_table(void);
 void test_relay_policy_legacy_authorization_is_automatic_bound_only_table(void);
+void test_relay_policy_post_reboot_proof_requires_a_new_nonzero_boot_id(void);
 void test_fw_coordinator_schema2_layout_and_crc_are_exact(void);
 void test_fw_coordinator_schema2_migration_preserves_budgets_and_demotes_ready(void);
 void test_fw_coordinator_schema2_migration_maps_relaying_to_failed_and_latches_failed(void);
@@ -473,6 +486,12 @@ int main(void)
 {
     UNITY_BEGIN();
 
+    RUN_TEST(test_factory_probe_frame_round_trips);
+    RUN_TEST(test_factory_probe_frame_rejects_crc_and_grammar_corruption);
+    RUN_TEST(test_factory_probe_peer_table_requires_session_and_distinct_peers);
+    RUN_TEST(test_factory_probe_report_is_bounded_and_canonical);
+    RUN_TEST(test_factory_probe_validators_reject_invalid_values);
+
     RUN_TEST(test_initial_probability);
     RUN_TEST(test_single_ble_update);
     RUN_TEST(test_wifi_ssid_low_confidence);
@@ -561,6 +580,7 @@ int main(void)
     RUN_TEST(test_ble_threat_mixed_prompt_families_alert);
     RUN_TEST(test_ble_threat_cooldown_and_clear);
     RUN_TEST(test_ble_threat_persistent_sparse_ffe0_alerts);
+    RUN_TEST(test_ble_threat_serial_skimmer_requires_minus_45_or_stronger);
     RUN_TEST(test_ble_threat_duplicate_serial_uuids_count_once_for_sparse_profile);
     RUN_TEST(test_ble_threat_exact_two_supporting_signals_alert);
     RUN_TEST(test_ble_threat_multi_service_profile_does_not_alert);
@@ -576,6 +596,9 @@ int main(void)
     RUN_TEST(test_priority_ble_fingerprint_uses_short_reemit_window);
     RUN_TEST(test_scan_profiles_assign_slot_roles_and_calibration_override);
     RUN_TEST(test_scan_profile_source_gates_normal_lanes);
+    RUN_TEST(test_badge_radio_boot_order_prioritizes_assigned_primary_and_safe_fallback);
+    RUN_TEST(test_badge_scanner_health_rejects_dead_primary_radio);
+    RUN_TEST(test_badge_scanner_health_requires_opposing_radio_quiescence);
     RUN_TEST(test_ble_meta_reacquire_triggers_when_stale_and_advancing);
     RUN_TEST(test_ble_meta_reacquire_blocks_calibration_or_ota);
     RUN_TEST(test_ble_meta_reacquire_requires_scan_sync_and_adv_delta);
@@ -692,6 +715,7 @@ int main(void)
     RUN_TEST(test_badge_display_policy_drone_breaks_through_disabled_filter);
     RUN_TEST(test_badge_display_policy_close_tracker_breaks_through_disabled_filter);
     RUN_TEST(test_badge_ble_attack_display_policy_defaults_to_both_lanes);
+    RUN_TEST(test_badge_skimmer_display_policy_is_lowest_priority);
     RUN_TEST(test_badge_snapshot_categories_map_to_display_classes);
     RUN_TEST(test_badge_theme_json_round_trips_defaults);
     RUN_TEST(test_badge_theme_parses_safe_custom_accents);
@@ -739,6 +763,7 @@ int main(void)
     RUN_TEST(test_badge_easter_animation_initializes_and_moves_without_collision);
     RUN_TEST(test_badge_easter_animation_clamps_edges_and_cycles_color_once);
     RUN_TEST(test_badge_easter_animation_rejects_invalid_bounds_safely);
+    RUN_TEST(test_badge_easter_renderer_uses_only_approved_presentation_copy);
     RUN_TEST(test_badge_hold_on_ble_entity_starts_gatt_investigation);
     RUN_TEST(test_badge_hold_on_pairing_spam_starts_passive_capture);
     RUN_TEST(test_badge_hold_on_non_ble_entity_opens_deepest_detail);
@@ -820,6 +845,7 @@ int main(void)
     RUN_TEST(test_relay_policy_legacy_done_and_stop_ack_are_exact_table);
     RUN_TEST(test_relay_policy_strict_receipt_requires_full_manifest_table);
     RUN_TEST(test_relay_policy_legacy_authorization_is_automatic_bound_only_table);
+    RUN_TEST(test_relay_policy_post_reboot_proof_requires_a_new_nonzero_boot_id);
     RUN_TEST(test_fw_coordinator_schema2_layout_and_crc_are_exact);
     RUN_TEST(test_fw_coordinator_schema2_migration_preserves_budgets_and_demotes_ready);
     RUN_TEST(test_fw_coordinator_schema2_migration_maps_relaying_to_failed_and_latches_failed);

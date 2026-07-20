@@ -6,6 +6,7 @@
 #include "uart_tx.h"
 
 #include "esp_log.h"
+#include "nvs.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -19,6 +20,16 @@ static atomic_bool s_active = false;
 static char s_session_id[24] = {0};
 static char s_uuid[48] = {0};
 static char s_scan_profile[24] = "hybrid_failover";
+static atomic_bool s_scan_profile_assignment_seen = false;
+static atomic_bool s_scan_profile_runtime_ready = false;
+static char s_slot_role[24] = {0};
+static atomic_bool s_slot_role_assignment_seen = false;
+static atomic_bool s_slot_role_command_seen = false;
+static atomic_bool s_slot_role_nvs_loaded = false;
+/* Guarded by s_transition_mutex. */
+static bool s_slot_role_boot_window_open = true;
+static bool s_late_role_recovery_pending = false;
+static bool s_late_role_recovery_claimed = false;
 static bool s_ble_radio_enabled = true;
 static atomic_bool s_quiet_mode = false;
 static atomic_bool s_wake_pending = false;
@@ -33,12 +44,67 @@ static atomic_int s_quiet_last_error = SCANNER_QUIET_ERROR_NONE;
 static StaticSemaphore_t s_transition_mutex_storage;
 static SemaphoreHandle_t s_transition_mutex;
 
+#define SCANNER_ROLE_NVS_NAMESPACE "fof_scan"
+#define SCANNER_ROLE_NVS_KEY       "slot_role"
+#define SCANNER_ROLE_NVS_SCHEMA_KEY "role_schema"
+#define SCANNER_ROLE_NVS_SCHEMA     1
+
+static bool slot_role_is_valid(const char *slot_role)
+{
+    return slot_role &&
+        (strcmp(slot_role, "ble_primary") == 0 ||
+         strcmp(slot_role, "wifi_primary") == 0);
+}
+
+static void scanner_slot_role_load_once(void)
+{
+    bool expected = false;
+    if (!atomic_compare_exchange_strong_explicit(
+            &s_slot_role_nvs_loaded, &expected, true,
+            memory_order_acq_rel, memory_order_acquire)) {
+        return;
+    }
+
+    nvs_handle_t handle;
+    if (nvs_open(SCANNER_ROLE_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        return;
+    }
+    char persisted[sizeof(s_slot_role)] = {0};
+    size_t length = sizeof(persisted);
+    uint8_t schema = 0;
+    esp_err_t schema_err = nvs_get_u8(handle, SCANNER_ROLE_NVS_SCHEMA_KEY,
+                                      &schema);
+    esp_err_t err = schema_err == ESP_OK &&
+                    schema == SCANNER_ROLE_NVS_SCHEMA
+        ? nvs_get_str(handle, SCANNER_ROLE_NVS_KEY, persisted, &length)
+        : ESP_ERR_NVS_INVALID_STATE;
+    nvs_close(handle);
+    if (err == ESP_OK && slot_role_is_valid(persisted)) {
+        strncpy(s_slot_role, persisted, sizeof(s_slot_role) - 1);
+        s_slot_role[sizeof(s_slot_role) - 1] = '\0';
+        /* Badge slots are fixed across reboot.  Seed the operating profile
+         * from the durable role before any delayed uplink frame can leave the
+         * scanner in the RAM-heavy hybrid default. */
+        strncpy(s_scan_profile, persisted, sizeof(s_scan_profile) - 1);
+        s_scan_profile[sizeof(s_scan_profile) - 1] = '\0';
+        atomic_store_explicit(&s_slot_role_assignment_seen, true,
+                              memory_order_release);
+        ESP_LOGI(TAG, "Loaded stable slot role: %s", s_slot_role);
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG,
+                 "Ignoring invalid persisted slot role (schema=%u schema_err=%s role_err=%s)",
+                 (unsigned)schema, esp_err_to_name(schema_err),
+                 esp_err_to_name(err));
+    }
+}
+
 void scanner_calibration_mode_init(void)
 {
     if (!s_transition_mutex) {
         s_transition_mutex = xSemaphoreCreateMutexStatic(
             &s_transition_mutex_storage);
     }
+    scanner_slot_role_load_once();
 }
 
 static bool scanner_transition_lock(void)
@@ -53,6 +119,30 @@ static void scanner_transition_unlock(void)
     if (s_transition_mutex) {
         (void)xSemaphoreGive(s_transition_mutex);
     }
+}
+
+static bool scanner_slot_role_persist_locked(const char *slot_role)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(SCANNER_ROLE_NVS_NAMESPACE,
+                             NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, SCANNER_ROLE_NVS_SCHEMA_KEY,
+                         SCANNER_ROLE_NVS_SCHEMA);
+        if (err == ESP_OK) {
+            err = nvs_set_str(handle, SCANNER_ROLE_NVS_KEY, slot_role);
+        }
+        if (err == ESP_OK) {
+            err = nvs_commit(handle);
+        }
+        nvs_close(handle);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to persist stable slot role %s: %s",
+                 slot_role, esp_err_to_name(err));
+        return false;
+    }
+    return true;
 }
 
 static bool profile_is_ble_primary(void)
@@ -127,11 +217,21 @@ static bool normal_profile_radios_ready_locked(void)
 
 void scanner_scan_profile_apply(void)
 {
+    if (!atomic_load_explicit(&s_scan_profile_runtime_ready,
+                              memory_order_acquire)) {
+        ESP_LOGI(TAG, "Scan profile apply deferred: radio runtime not ready");
+        return;
+    }
     if (!scanner_transition_lock()) {
         ESP_LOGE(TAG, "Scan profile apply skipped: transition lock unavailable");
         return;
     }
-    apply_normal_profile_radios_locked();
+    if (atomic_load_explicit(&s_scan_profile_runtime_ready,
+                             memory_order_acquire)) {
+        apply_normal_profile_radios_locked();
+    } else {
+        ESP_LOGI(TAG, "Scan profile set before radio init: %s", s_scan_profile);
+    }
     scanner_transition_unlock();
 }
 
@@ -192,7 +292,12 @@ bool scanner_quiet_mode_set(bool enabled, uint32_t generation)
 
     atomic_store_explicit(&s_quiet_mode, false, memory_order_release);
     atomic_store_explicit(&s_wake_pending, true, memory_order_release);
-    apply_normal_profile_radios_locked();
+    if (atomic_load_explicit(&s_scan_profile_runtime_ready,
+                             memory_order_acquire)) {
+        apply_normal_profile_radios_locked();
+    } else {
+        ESP_LOGI(TAG, "Scan profile set before radio init: %s", s_scan_profile);
+    }
     /* TX remained fenced while radios resumed. Drop any stale quiet-period
      * work immediately before restoring the saved TX state. */
     uart_tx_flush_detection_queue();
@@ -334,6 +439,29 @@ const char *scanner_calibration_mode_label(void)
         ? "calibration" : "normal";
 }
 
+static void scanner_scan_profile_store_locked(const char *profile,
+                                              bool apply_to_runtime)
+{
+    bool changed = strcmp(s_scan_profile, profile) != 0;
+    strncpy(s_scan_profile, profile, sizeof(s_scan_profile) - 1);
+    s_scan_profile[sizeof(s_scan_profile) - 1] = '\0';
+    atomic_store_explicit(&s_scan_profile_assignment_seen, true,
+                          memory_order_release);
+    if (changed) {
+        uart_tx_reset_counts();
+        ble_remote_id_reset_profile_counters();
+        wifi_scanner_reset_attack_counters();
+        wifi_scanner_reset_fc_histogram();
+    }
+    if (apply_to_runtime &&
+        atomic_load_explicit(&s_scan_profile_runtime_ready,
+                             memory_order_acquire)) {
+        apply_normal_profile_radios_locked();
+    } else {
+        ESP_LOGI(TAG, "Scan profile set before radio init: %s", s_scan_profile);
+    }
+}
+
 void scanner_scan_profile_set(const char *profile)
 {
     if (!profile || profile[0] == '\0') {
@@ -347,16 +475,7 @@ void scanner_scan_profile_set(const char *profile)
     if (!scanner_transition_lock()) {
         return;
     }
-    bool changed = strcmp(s_scan_profile, profile) != 0;
-    strncpy(s_scan_profile, profile, sizeof(s_scan_profile) - 1);
-    s_scan_profile[sizeof(s_scan_profile) - 1] = '\0';
-    if (changed) {
-        uart_tx_reset_counts();
-        ble_remote_id_reset_profile_counters();
-        wifi_scanner_reset_attack_counters();
-        wifi_scanner_reset_fc_histogram();
-    }
-    apply_normal_profile_radios_locked();
+    scanner_scan_profile_store_locked(profile, true);
     ESP_LOGI(TAG, "Scan profile set: %s", s_scan_profile);
     scanner_transition_unlock();
 }
@@ -365,6 +484,102 @@ const char *scanner_scan_profile_label(void)
 {
     return atomic_load_explicit(&s_active, memory_order_acquire)
         ? "calibration" : s_scan_profile;
+}
+
+bool scanner_scan_profile_assignment_seen(void)
+{
+    return atomic_load_explicit(&s_scan_profile_assignment_seen,
+                                memory_order_acquire);
+}
+
+void scanner_scan_profile_runtime_ready_set(bool ready)
+{
+    atomic_store_explicit(&s_scan_profile_runtime_ready, ready,
+                          memory_order_release);
+}
+
+bool scanner_slot_role_command_apply(const char *slot_role,
+                                     const char *profile,
+                                     bool *late_recovery_required)
+{
+    if (!late_recovery_required) {
+        return false;
+    }
+    *late_recovery_required = false;
+    if (!slot_role_is_valid(slot_role) || !profile ||
+        strcmp(slot_role, profile) != 0) {
+        ESP_LOGW(TAG, "Rejected non-exact slot role command: role=%s profile=%s",
+                 slot_role ? slot_role : "?", profile ? profile : "?");
+        return false;
+    }
+    if (!scanner_transition_lock()) {
+        return false;
+    }
+    bool assigned = atomic_load_explicit(&s_slot_role_assignment_seen,
+                                         memory_order_acquire);
+    if (assigned && strcmp(s_slot_role, slot_role) != 0) {
+        ESP_LOGE(TAG, "Rejected attempt to change durable slot role %s to %s",
+                 s_slot_role, slot_role);
+        scanner_transition_unlock();
+        return false;
+    }
+    if (!assigned && !scanner_slot_role_persist_locked(slot_role)) {
+        scanner_transition_unlock();
+        return false;
+    }
+
+    strncpy(s_slot_role, slot_role, sizeof(s_slot_role) - 1);
+    s_slot_role[sizeof(s_slot_role) - 1] = '\0';
+    atomic_store_explicit(&s_slot_role_assignment_seen, true,
+                          memory_order_release);
+    atomic_store_explicit(&s_slot_role_command_seen, true,
+                          memory_order_release);
+
+    bool late_recovery = !s_slot_role_boot_window_open &&
+                         s_late_role_recovery_pending &&
+                         !s_late_role_recovery_claimed;
+    if (late_recovery) {
+        s_late_role_recovery_claimed = true;
+        s_late_role_recovery_pending = false;
+        atomic_store_explicit(&s_scan_profile_runtime_ready, false,
+                              memory_order_release);
+    }
+    scanner_scan_profile_store_locked(profile, !late_recovery);
+    *late_recovery_required = late_recovery;
+    scanner_transition_unlock();
+    ESP_LOGI(TAG, "Stable slot role set: %s late_recovery=%d",
+             s_slot_role, late_recovery ? 1 : 0);
+    return true;
+}
+
+bool scanner_slot_role_boot_window_close(void)
+{
+    if (!scanner_transition_lock()) {
+        return false;
+    }
+    bool assigned = atomic_load_explicit(&s_slot_role_assignment_seen,
+                                         memory_order_acquire);
+    s_slot_role_boot_window_open = false;
+    s_late_role_recovery_pending = !assigned;
+    scanner_transition_unlock();
+    return assigned;
+}
+
+const char *scanner_slot_role_label(void)
+{
+    return s_slot_role;
+}
+
+bool scanner_slot_role_assignment_seen(void)
+{
+    return atomic_load_explicit(&s_slot_role_assignment_seen,
+                                memory_order_acquire);
+}
+
+bool scanner_slot_role_command_seen(void)
+{
+    return atomic_load_explicit(&s_slot_role_command_seen,
+                                memory_order_acquire);
 }
 
 bool scanner_calibration_mode_allows_ble_uuid128(const uint8_t uuids[][16],

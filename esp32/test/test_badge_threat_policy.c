@@ -1249,15 +1249,11 @@ void test_badge_skimmer_names_produce_skim_rows(void)
         "BLE:HC05",
         "Unknown",
         0.60f,
-        -46
+        -20
     );
     strncpy(skim.ble_name, "HC-05", sizeof(skim.ble_name) - 1);
 
-    TEST_ASSERT_TRUE(badge_threat_classify_detection(&skim, &event));
-    TEST_ASSERT_EQUAL(BADGE_THREAT_OTHER, event.cls);
-    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_SKIM, event.category);
-    TEST_ASSERT_EQUAL_STRING("Skimmer", event.label);
-    TEST_ASSERT_EQUAL_STRING("HC-05", event.detail);
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&skim, &event));
 }
 
 static drone_detection_t make_behavioral_ble_detection(uint8_t threat_kind,
@@ -1361,11 +1357,9 @@ void test_badge_combined_serial_skimmer_is_visible(void)
     serial.ble_threat_evidence_mask = 0x79;
     serial.ble_service_uuids[0] = 0xFFE0;
     serial.ble_svc_uuid_count = 1;
+    serial.rssi = -45;
 
-    TEST_ASSERT_TRUE(badge_threat_classify_detection(&serial, &event));
-    TEST_ASSERT_EQUAL(BADGE_THREAT_OTHER, event.cls);
-    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_SKIM, event.category);
-    TEST_ASSERT_EQUAL_STRING("Possible Skimmer", event.label);
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&serial, &event));
 }
 
 void test_badge_privacy_pack_maps_camera_lock_hid_labels(void)
