@@ -17,7 +17,7 @@ from app.services.firmware_manager import FIRMWARE_TYPES, FirmwareAsset, Firmwar
 
 
 PRODUCTION_VERSION = "0.64.68-live-follow"
-BADGE_VERSION = "0.64.69-badge-defcon34"
+BADGE_VERSION = "0.64.76-badge-defcon34"
 RELEASE_TAG = "v0.64.68-live-follow"
 
 

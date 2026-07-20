@@ -107,8 +107,8 @@ void wifi_scanner_reset_fc_histogram(void);
 /** Pause WiFi scanning (disable promiscuous mode). Used during OTA. */
 void wifi_scanner_pause(void);
 
-/** Resume WiFi scanning (re-enable promiscuous mode). */
-void wifi_scanner_resume(void);
+/** Resume WiFi scanning (re-enable promiscuous mode); false if unavailable. */
+bool wifi_scanner_resume(void);
 
 /** True when WiFi promiscuous scanning is intentionally paused. */
 bool wifi_scanner_is_paused(void);
@@ -121,8 +121,11 @@ bool wifi_scanner_is_quiesced(void);
 
 /** True when the initialized WiFi radio is resumed with promiscuous RX on. */
 bool wifi_scanner_is_active(void);
+/** True only after esp_wifi_init and scanner configuration completed. */
+bool wifi_scanner_is_initialized(void);
 
 typedef struct {
+    int      init_rc;
     uint32_t total_frames;
     uint32_t beacon_frames;
     uint32_t full_scan_count;

@@ -104,6 +104,7 @@ typedef struct {
     char app_project[32];
     char hardware_type[24];
     char hardware_id[18];
+    uint32_t boot_id;
     uint32_t identity_generation;
     int64_t received_ms;
     bool complete;
@@ -123,6 +124,7 @@ typedef struct {
     char chip[12];      /* "esp32s3" */
     char caps[32];      /* "ble,wifi" */
     bool received;
+    uint32_t boot_id;   /* non-zero random epoch, regenerated each scanner boot */
     uint32_t identity_generation; /* increments for each scanner_info frame */
 
     /* Attack / anomaly counters (latest delta from scanner status) */
@@ -144,9 +146,15 @@ typedef struct {
     uint32_t probe_drop_low_value;
     uint32_t probe_drop_rate_limit;
     uint32_t probe_drop_pressure;
+    bool     ble_initialized;
     bool     ble_scanning;
     bool     ble_host_active;
     bool     ble_host_synced;
+    bool     ble_quiesced;
+    bool     wifi_initialized;
+    bool     wifi_active;
+    bool     wifi_quiesced;
+    int      wifi_init_rc;
     bool     wifi_paused;
     bool     quiet_transition_ok;
     bool     quiet_mode;
@@ -255,6 +263,8 @@ typedef struct {
     uint32_t display_policy_filtered[BADGE_DISPLAY_POLICY_CLASS_COUNT];
     char     scan_mode[16];
     char     scan_profile[24];
+    char     slot_role[24];
+    uint32_t scan_profile_ack_generation;
     char     calibration_uuid[48];
     bool     calibration_mode_acked;
     bool     need_firmware;
@@ -274,11 +284,9 @@ typedef struct {
     uint32_t radio_restart_count;
 } scanner_info_t;
 
-/** Get scanner info for the BLE scanner (UART slot). */
-const scanner_info_t *uart_rx_get_ble_scanner_info(void);
-
-/** Get scanner info for the WiFi scanner (UART slot). */
-const scanner_info_t *uart_rx_get_wifi_scanner_info(void);
+/** Copy one complete scanner status snapshot while holding the publisher mutex.
+ *  scanner_id 0 is the BLE slot and scanner_id 1 is the WiFi slot. */
+bool uart_rx_get_scanner_info_snapshot(int scanner_id, scanner_info_t *out);
 
 /** Last OTA response received from a scanner (for relay diagnostics). */
 typedef struct {
@@ -296,8 +304,9 @@ ota_response_t uart_rx_get_last_ota_response(void);
 void uart_rx_clear_ota_response(void);
 
 /** Pause/resume the UART RX task for a specific scanner during OTA relay.
- *  When paused, the relay handler can read ACKs directly from the UART. */
-void uart_rx_pause_scanner(int scanner_id);
+ *  A true return confirms the background reader has handed UART ownership to
+ *  the relay; callers that read directly must fail closed on false. */
+bool uart_rx_pause_scanner(int scanner_id);
 void uart_rx_resume_scanner(int scanner_id);
 
 void uart_rx_set_node_calibration_mode(bool active,

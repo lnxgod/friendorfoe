@@ -690,6 +690,18 @@ class BadgeSerial:
                         except json.JSONDecodeError:
                             log(f"[relay] malformed progress: {line[:160]}")
                         continue
+                    diagnostic_markers = (
+                        "Auto scanner relay[",
+                        "Relay FAILED @",
+                        "Relay complete:",
+                        "Firmware update offered:",
+                        "firmware ready durably accepted:",
+                    )
+                    for marker in diagnostic_markers:
+                        marker_at = line.find(marker)
+                        if marker_at >= 0:
+                            log(f"[device] {line[marker_at:][:320]}")
+                            break
                     if not line.startswith(prefix):
                         continue
                     payload = line[len(prefix):]
@@ -898,7 +910,8 @@ def uplink_flash_needed(status: dict[str, Any], platform: dict[str, Any],
 def verify_scanners(status: dict[str, Any], platform: dict[str, Any],
                     slots: list[str], version: str, *,
                     expected_hardware_ids: dict[str, str] | None = None,
-                    allowed_newer_slots: set[str] | None = None) -> None:
+                    allowed_newer_slots: set[str] | None = None,
+                    require_radio_health: bool = True) -> None:
     if status.get("recovery_mode") not in (None, "", "normal"):
         raise FlashError(
             f"uplink recovery mode is not normal: {status.get('recovery_mode')}"
@@ -953,7 +966,7 @@ def verify_scanners(status: dict[str, Any], platform: dict[str, Any],
                 f"{slot} scanner recovery mode is not normal: {recovery_mode}"
             )
         health = info.get("health")
-        if health not in (None, "", "ok"):
+        if require_radio_health and health not in (None, "", "ok"):
             raise FlashError(f"{slot} scanner health is not normal: {health}")
         ota_state = info.get("ota_state")
         if ota_state not in (None, "", "idle"):
@@ -961,43 +974,77 @@ def verify_scanners(status: dict[str, Any], platform: dict[str, Any],
                 f"{slot} scanner OTA state is not idle: {ota_state}"
             )
 
-        expected_profile = "ble_primary" if slot == "ble" else "wifi_primary"
+        slot_profile = "ble_primary" if slot == "ble" else "wifi_primary"
         slot_role = info.get("slot_role")
         reported_expected = info.get("expected_scan_profile")
         scan_profile = info.get("scan_profile")
-        if slot_role != expected_profile or reported_expected != expected_profile:
+        if (slot_role != slot_profile or
+                reported_expected != slot_profile or
+                scan_profile != slot_profile):
             raise FlashError(
                 f"{slot} scanner role mismatch: slot_role={slot_role!r}, "
                 f"expected_scan_profile={reported_expected!r}, "
-                f"wanted={expected_profile!r}"
+                f"scan_profile={scan_profile!r}, "
+                f"wanted all role fields={slot_profile!r}"
             )
-        if info.get("role_acked") is not True or scan_profile != expected_profile:
+        if info.get("role_acked") is not True:
             raise FlashError(
                 f"{slot} scanner role convergence missing: "
                 f"role_acked={info.get('role_acked')!r}, "
                 f"scan_profile={scan_profile!r}"
             )
 
-        if slot == "ble":
-            radio_ok = (
-                info.get("ble_scanning") is True and
-                info.get("ble_host_active") is True and
-                info.get("ble_host_synced") is True and
-                info.get("wifi_paused") is True
+        ble_ok = (
+            info.get("ble_initialized") is True and
+            info.get("ble_scanning") is True and
+            info.get("ble_host_active") is True and
+            info.get("ble_host_synced") is True
+        )
+        if "full_scan_ok" in info:
+            full_scan_ok = info.get("full_scan_ok")
+            full_scan_alias_ok = (
+                "wifi_full_scan_ok" not in info or
+                info.get("wifi_full_scan_ok") == full_scan_ok
             )
         else:
+            full_scan_ok = info.get("wifi_full_scan_ok")
+            full_scan_alias_ok = "wifi_full_scan_ok" in info
+        wifi_init_rc = info.get("wifi_init_rc")
+        wifi_ok = (
+            info.get("wifi_initialized") is True and
+            isinstance(wifi_init_rc, int) and
+            not isinstance(wifi_init_rc, bool) and
+            wifi_init_rc == 0 and
+            info.get("wifi_active") is True and
+            isinstance(full_scan_ok, int) and
+            not isinstance(full_scan_ok, bool) and
+            full_scan_ok > 0 and
+            full_scan_alias_ok
+        )
+        if scan_profile == "ble_primary":
+            radio_ok = ble_ok and info.get("wifi_paused") is True
+        elif scan_profile == "wifi_primary":
             radio_ok = (
+                wifi_ok and
                 info.get("ble_scanning") is False and
                 info.get("ble_host_active") is False and
                 info.get("wifi_paused") is False
             )
-        if not radio_ok:
+        else:
+            radio_ok = False
+        if require_radio_health and not radio_ok:
             raise FlashError(
-                f"{slot} scanner radio role is not converged: "
+                f"{slot} scanner physical radio health is not proven for "
+                f"profile {scan_profile!r}: "
+                f"ble_initialized={info.get('ble_initialized')!r}, "
                 f"ble_scanning={info.get('ble_scanning')!r}, "
                 f"ble_host_active={info.get('ble_host_active')!r}, "
                 f"ble_host_synced={info.get('ble_host_synced')!r}, "
-                f"wifi_paused={info.get('wifi_paused')!r}"
+                f"wifi_paused={info.get('wifi_paused')!r}, "
+                f"wifi_initialized={info.get('wifi_initialized')!r}, "
+                f"wifi_init_rc={wifi_init_rc!r}, "
+                f"wifi_active={info.get('wifi_active')!r}, "
+                f"full_scan_ok={full_scan_ok!r}"
             )
 
 
@@ -1366,7 +1413,8 @@ def wait_for_scanners_usb(serial_link: BadgeSerial, platform: dict[str, Any],
                           expected_hardware_ids: dict[str, str] | None = None,
                           expected_stage_receipt: dict[str, Any] | None = None,
                           allowed_newer_slots: set[str] | None = None,
-                          require_auto_update: bool = True) -> None:
+                          require_auto_update: bool = True,
+                          require_radio_health: bool = True) -> None:
     if require_auto_update and expected_stage_receipt is None:
         raise FlashError(
             "automatic scanner verification requires the exact stage receipt"
@@ -1408,6 +1456,7 @@ def wait_for_scanners_usb(serial_link: BadgeSerial, platform: dict[str, Any],
                 version,
                 expected_hardware_ids=expected_hardware_ids,
                 allowed_newer_slots=proven_newer,
+                require_radio_health=require_radio_health,
             )
             if require_auto_update:
                 verify_auto_update_convergence(
@@ -1539,6 +1588,20 @@ def usb_flow(args: argparse.Namespace, platform: dict[str, Any],
                 "uplink convergence"
             )
         for slot in recovery_slots:
+            # Same-version recovery must prove the immutable identity, UART
+            # path, rollback/OTA state, and exact physical-slot role before
+            # relay.  It intentionally does not require the old image's radio
+            # to be healthy: repairing a failed radio is the recovery use case.
+            # The post-reboot verification below restores the full radio gate.
+            wait_for_scanners_usb(
+                badge,
+                platform,
+                [slot],
+                version,
+                expected_hardware_ids=expected_hardware_ids,
+                require_auto_update=False,
+                require_radio_health=False,
+            )
             badge.relay_scanner(
                 slot,
                 getattr(args, "skip_command_probe", False),

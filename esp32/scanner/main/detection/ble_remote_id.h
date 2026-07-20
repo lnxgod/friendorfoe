@@ -96,6 +96,8 @@ typedef struct {
 } ble_remote_id_stats_t;
 
 bool ble_remote_id_is_scanning(void);
+/** True after NimBLE/controller initialization completed successfully. */
+bool ble_remote_id_is_initialized(void);
 /** True only when scan and NimBLE host task lifecycle are fully stopped. */
 bool ble_remote_id_is_quiesced(void);
 /** True when the NimBLE host is synced and extended discovery is running. */

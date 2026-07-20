@@ -34,7 +34,7 @@ def test_badge_button_chord_toggles_volatile_power_runtime_at_9000ms():
         display.index("static void badge_button_task")
     ]
     stable_press = poll_one[poll_one.index("if (button->stable_pressed)") :]
-    assert stable_press.index("badge_easter_egg_runtime_dismiss") < \
+    assert stable_press.index("badge_easter_egg_claim_press_in_batch") < \
         stable_press.index("badge_power_runtime_is_quiet")
 
 
@@ -71,8 +71,8 @@ def test_quiet_reassert_uses_known_identity_after_rx_freshness_expires():
 
     assert "scanner_identity_known" in runtime
     assert "scanner_target_known" in runtime
-    assert "uart_rx_get_ble_scanner_info" in runtime
-    assert "uart_rx_get_wifi_scanner_info" in runtime
+    assert "uart_rx_get_scanner_info_snapshot" in runtime
+    assert "s_power_scanner_snapshots[scanner_id]" in runtime
     relay_finished = runtime[
         runtime.index("static void note_relay_finished") :
         runtime.index("void badge_power_runtime_poll")

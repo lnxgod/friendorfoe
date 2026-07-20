@@ -30,6 +30,9 @@ extern "C" {
 #define BLE_THREAT_KIND_PAIRING_SPAM    1
 #define BLE_THREAT_KIND_SERIAL_SKIMMER  2
 
+/* Demo-safe badge policy: retain wire compatibility, emit no skimmer rows. */
+#define BADGE_SKIMMER_DETECTION_ENABLED 0
+
 /* ── Full drone detection state ──────────────────────────────────────────── */
 
 typedef struct {

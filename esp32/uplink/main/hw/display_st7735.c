@@ -27,6 +27,7 @@
 #include "uart_rx.h"
 #include "version.h"
 #include "detection_types.h"
+#include "detection_policy.h"
 #include "badge_threat_policy.h"
 #include "badge_runtime.h"
 #include "badge_display_policy_runtime.h"
@@ -36,9 +37,11 @@
 #include "badge_power_chord.h"
 #include "badge_power_runtime.h"
 #include "badge_easter_egg_runtime.h"
+#include "badge_easter_egg_animation.h"
 #include "badge_ble_control.h"
 #include "badge_ble_investigation.h"
 #include "badge_investigation_policy.h"
+#include "gamechangersai_logo.h"
 #include "wall_of_sheep_logo.h"
 
 #include <string.h>
@@ -162,9 +165,31 @@ static uint8_t            *s_tx_chunk = NULL; /* internal DMA-safe SPI staging *
 static bool                s_initialized = false;
 static _Atomic bool        s_panel_awake = false;
 static SemaphoreHandle_t   s_display_mutex = NULL;
+/* Refreshed once under s_display_mutex for each dashboard frame. Keeping the
+ * complete copies here avoids placing two 1496-byte scanner_info_t values on
+ * the already deep display-task stack while still preventing torn reads. */
+static scanner_info_t      s_display_scanner_snapshots[2] = {0};
+static bool                s_display_scanner_present[2] = {false, false};
 static int                 s_spi_error_count = 0;
 static uint32_t s_anim_frame = 0;
 static uint32_t s_queue_page_frame = 0;
+
+static void display_refresh_scanner_snapshots(void)
+{
+    for (int scanner_id = 0; scanner_id < 2; scanner_id++) {
+        s_display_scanner_present[scanner_id] =
+            uart_rx_get_scanner_info_snapshot(
+                scanner_id, &s_display_scanner_snapshots[scanner_id]);
+    }
+}
+
+static const scanner_info_t *display_scanner_snapshot(int scanner_id)
+{
+    return scanner_id >= 0 && scanner_id < 2 &&
+           s_display_scanner_present[scanner_id]
+        ? &s_display_scanner_snapshots[scanner_id]
+        : NULL;
+}
 
 typedef enum {
     BADGE_BUTTON_OVERLAY_NONE = 0,
@@ -711,7 +736,8 @@ static void badge_button_short_press(badge_button_id_t id)
 
 static void badge_button_poll_one(badge_button_state_t *button,
                                   TickType_t now,
-                                  bool *easter_visible_in_batch)
+                                  bool easter_visible_at_batch_start,
+                                  bool *easter_transition_claimed)
 {
     int raw_level = gpio_get_level(button->pin);
     bool raw_pressed = badge_button_level_is_pressed(raw_level,
@@ -742,9 +768,12 @@ static void badge_button_poll_one(badge_button_state_t *button,
         button->long_sent = false;
         button->boot_ignored = false;
         badge_button_diag_note_stable(button, true);
-        bool dismissed_easter = badge_easter_egg_runtime_dismiss();
-        if (badge_easter_egg_consume_press_in_batch(
-                easter_visible_in_batch, dismissed_easter)) {
+        if (badge_easter_egg_claim_press_in_batch(
+                easter_visible_at_batch_start,
+                easter_transition_claimed)) {
+            (void)badge_easter_egg_runtime_advance();
+        }
+        if (easter_visible_at_batch_start) {
             button->consume_release = true;
             badge_button_gesture_cancel(&s_b2_gesture);
             badge_button_diag_set_b2_gesture("");
@@ -868,12 +897,14 @@ static void badge_button_task(void *arg)
     while (true) {
         now = xTaskGetTickCount();
         badge_easter_egg_machine_t easter_snapshot = {0};
-        bool easter_visible_in_batch =
+        bool easter_visible_at_batch_start =
             badge_easter_egg_runtime_snapshot(&easter_snapshot) &&
             easter_snapshot.visible;
+        bool easter_transition_claimed = false;
         for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
             badge_button_poll_one(&buttons[i], now,
-                                  &easter_visible_in_batch);
+                                  easter_visible_at_batch_start,
+                                  &easter_transition_claimed);
             if (buttons[i].diag_index == 1 &&
                 !badge_power_runtime_is_quiet() &&
                 !buttons[i].stable_pressed &&
@@ -1390,7 +1421,27 @@ static void draw_wall_of_sheep_logo(int x0, int y0)
     }
 }
 
-static void draw_badge_easter_egg_screen(void)
+static void draw_gamechangersai_logo_tinted(int x0, int y0, uint16_t tint)
+{
+    static const uint8_t brightness[GAMECHANGERSAI_LOGO_PALETTE_SIZE] = {
+        0, 42, 68, 96, 128, 164, 208, 255,
+    };
+
+    for (uint32_t y = 0; y < GAMECHANGERSAI_LOGO_HEIGHT; ++y) {
+        for (uint32_t x = 0; x < GAMECHANGERSAI_LOGO_WIDTH; ++x) {
+            uint8_t level = gamechangersai_logo_levels[
+                y * GAMECHANGERSAI_LOGO_WIDTH + x];
+            if (level == GAMECHANGERSAI_LOGO_TRANSPARENT_INDEX ||
+                level >= GAMECHANGERSAI_LOGO_PALETTE_SIZE) {
+                continue;
+            }
+            fb_set_pixel(x0 + (int)x, y0 + (int)y,
+                         rgb565_scale_color(tint, brightness[level]));
+        }
+    }
+}
+
+static void draw_badge_easter_thanks_screen(void)
 {
     const uint16_t uv_deep = 0x1809;
     const uint16_t uv_band = 0x4016;
@@ -1426,20 +1477,65 @@ static void draw_badge_easter_egg_screen(void)
                  (int)WALL_OF_SHEEP_LOGO_HEIGHT, COL_BLACK);
     draw_wall_of_sheep_logo(logo_x, logo_y);
 
-    fb_fill_rect(7, 89, LCD_W - 14, 12, COL_BLACK);
-    fb_draw_string_centered(LCD_W / 2, 91, "Welcome to Hell",
+    fb_fill_rect(10, 92, LCD_W - 20, 12, COL_BLACK);
+    fb_draw_string_centered(LCD_W / 2, 94, "Thank you from",
                             COL_WHITE, COL_BLACK, 1);
-    fb_fill_rect(16, 105, LCD_W - 32, 12, COL_BLACK);
-    fb_draw_string_centered(LCD_W / 2, 108, "Just Kidding",
+    fb_fill_rect(8, 110, LCD_W - 16, 12, COL_BLACK);
+    fb_draw_string_centered(LCD_W / 2, 112, "GameChangers AI",
                             0xD59F, COL_BLACK, 1);
-    fb_fill_rect(11, 130, LCD_W - 22, 12, COL_BLACK);
-    fb_draw_string_centered(LCD_W / 2, 133, "Defcon 34 FoF",
-                            COL_WHITE, COL_BLACK, 1);
 
-    fb_fill_rect(9, 146, LCD_W - 18, 1, uv_band);
+    fb_fill_rect(9, 138, LCD_W - 18, 1, uv_band);
     for (int x = 13; x < LCD_W - 12; x += 12) {
-        fb_fill_rect(x, 150, 5, 2, uv_bright);
+        fb_fill_rect(x, 145, 5, 2, uv_bright);
     }
+}
+
+static badge_easter_egg_animation_t s_easter_animation;
+static bool s_easter_animation_initialized = false;
+
+static void draw_badge_easter_bounce_screen(void)
+{
+    static const uint16_t colors[] = {
+        COL_CYAN,
+        COL_MAGENTA,
+        COL_LINK_BRIGHT,
+        COL_GOLD,
+        0x349F,
+        COL_WHITE,
+    };
+
+    if (!s_easter_animation_initialized) {
+        badge_easter_egg_animation_init(&s_easter_animation);
+        s_easter_animation_initialized = true;
+    }
+
+    fb_clear(COL_BLACK);
+    uint8_t color_index = s_easter_animation.color_index;
+    if (color_index >= sizeof(colors) / sizeof(colors[0])) {
+        color_index = 0;
+        s_easter_animation.color_index = 0;
+    }
+    draw_gamechangersai_logo_tinted(s_easter_animation.x,
+                                    s_easter_animation.y,
+                                    colors[color_index]);
+    (void)badge_easter_egg_animation_step(
+        &s_easter_animation,
+        LCD_W,
+        LCD_H,
+        GAMECHANGERSAI_LOGO_WIDTH,
+        GAMECHANGERSAI_LOGO_HEIGHT,
+        (uint8_t)(sizeof(colors) / sizeof(colors[0])));
+}
+
+static void draw_badge_easter_egg_screen(badge_easter_egg_phase_t phase)
+{
+    if (phase == BADGE_EASTER_EGG_PHASE_BOUNCE) {
+        draw_badge_easter_bounce_screen();
+        return;
+    }
+
+    s_easter_animation_initialized = false;
+    draw_badge_easter_thanks_screen();
 }
 
 /* ── Pin-blink diagnostic ──────────────────────────────────────────────── */
@@ -3302,8 +3398,8 @@ static uint32_t scanner_status_max_u32(uint32_t a, uint32_t b)
 static const scanner_info_t *scanner_status_freshest_drone_ssid_info(void)
 {
     const scanner_info_t *infos[2] = {
-        uart_rx_get_ble_scanner_info(),
-        uart_rx_get_wifi_scanner_info(),
+        display_scanner_snapshot(0),
+        display_scanner_snapshot(1),
     };
     const scanner_info_t *best = NULL;
     int64_t best_age = -1;
@@ -3323,8 +3419,8 @@ static const scanner_info_t *scanner_status_freshest_drone_ssid_info(void)
 static const scanner_info_t *scanner_status_freshest_notable_ssid_info(void)
 {
     const scanner_info_t *infos[2] = {
-        uart_rx_get_ble_scanner_info(),
-        uart_rx_get_wifi_scanner_info(),
+        display_scanner_snapshot(0),
+        display_scanner_snapshot(1),
     };
     const scanner_info_t *best = NULL;
     int64_t best_age = -1;
@@ -3344,8 +3440,8 @@ static const scanner_info_t *scanner_status_freshest_notable_ssid_info(void)
 static const scanner_info_t *scanner_status_freshest_meta_info(void)
 {
     const scanner_info_t *infos[2] = {
-        uart_rx_get_ble_scanner_info(),
-        uart_rx_get_wifi_scanner_info(),
+        display_scanner_snapshot(0),
+        display_scanner_snapshot(1),
     };
     const scanner_info_t *best = NULL;
     int64_t best_age = -1;
@@ -3364,16 +3460,16 @@ static const scanner_info_t *scanner_status_freshest_meta_info(void)
 
 static uint32_t scanner_status_rid_seen_max(void)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     return scanner_status_max_u32(ble ? ble->rid_emit : 0U,
                                   wifi ? wifi->rid_emit : 0U);
 }
 
 static uint32_t scanner_status_ble_tracker_seen_max(void)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     return scanner_status_max_u32(ble ? ble->ble_tracker_seen : 0U,
                                   wifi ? wifi->ble_tracker_seen : 0U);
 }
@@ -3382,8 +3478,8 @@ static bool scanner_status_wifi_anomaly_summary(uint32_t *deauth_out,
                                                 uint32_t *disassoc_out,
                                                 bool *beacon_out)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     uint32_t deauth = scanner_status_max_u32(ble ? ble->deauth_count : 0U,
                                              wifi ? wifi->deauth_count : 0U);
     uint32_t disassoc = scanner_status_max_u32(ble ? ble->disassoc_count : 0U,
@@ -3399,8 +3495,8 @@ static const scanner_info_t *scanner_status_best_ble_live_info(uint32_t *payload
                                                                uint32_t *empty_out)
 {
     const scanner_info_t *infos[2] = {
-        uart_rx_get_ble_scanner_info(),
-        uart_rx_get_wifi_scanner_info(),
+        display_scanner_snapshot(0),
+        display_scanner_snapshot(1),
     };
     const scanner_info_t *best = NULL;
     uint32_t payload = 0;
@@ -3529,14 +3625,16 @@ static void format_ble_signal_status(const scanner_info_t *info,
 static void draw_scanner_health_line(int y, bool ble_scanner_ok,
                                      bool wifi_scanner_ok)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     scanner_uart_diag_t ble_uart = {0};
     scanner_uart_diag_t wifi_uart = {0};
     uart_rx_get_scanner_uart_diag(0, &ble_uart);
     uart_rx_get_scanner_uart_diag(1, &wifi_uart);
-    const char *ble_expected = wifi_scanner_ok ? "ble_primary" : "hybrid_failover";
-    const char *wifi_expected = ble_scanner_ok ? "wifi_primary" : "hybrid_failover";
+    const char *ble_expected = fof_policy_scan_profile_for_topology(
+        0, false, wifi_scanner_ok, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
+    const char *wifi_expected = fof_policy_scan_profile_for_topology(
+        1, false, ble_scanner_ok, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
     const char *ble_actual = (ble && ble->scan_profile[0]) ? ble->scan_profile : "";
     const char *wifi_actual = (wifi && wifi->scan_profile[0]) ? wifi->scan_profile : "";
     bool ble_role_ok = ble_scanner_ok && strcmp(ble_actual, ble_expected) == 0;
@@ -3632,8 +3730,8 @@ static int build_scanner_diag_rows(badge_display_diag_t *rows, int max_rows,
         return 0;
     }
     int count = 0;
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     scanner_uart_diag_t ble_uart = {0};
     scanner_uart_diag_t wifi_uart = {0};
     uart_rx_get_scanner_uart_diag(0, &ble_uart);
@@ -3646,8 +3744,10 @@ static int build_scanner_diag_rows(badge_display_diag_t *rows, int max_rows,
     bool wifi_cmd_fresh = wifi_scanner_ok && wifi &&
                           (wifi->cmd_rx_count > 0 &&
                            wifi->cmd_last_age_s >= 0 && wifi->cmd_last_age_s <= 30);
-    const char *ble_expected = wifi_scanner_ok ? "ble_primary" : "hybrid_failover";
-    const char *wifi_expected = ble_scanner_ok ? "wifi_primary" : "hybrid_failover";
+    const char *ble_expected = fof_policy_scan_profile_for_topology(
+        0, false, wifi_scanner_ok, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
+    const char *wifi_expected = fof_policy_scan_profile_for_topology(
+        1, false, ble_scanner_ok, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
     const char *ble_actual = (ble && ble->scan_profile[0]) ? ble->scan_profile : "";
     const char *wifi_actual = (wifi && wifi->scan_profile[0]) ? wifi->scan_profile : "";
     bool ble_role_ok = ble_scanner_ok && strcmp(ble_actual, ble_expected) == 0;
@@ -3783,8 +3883,8 @@ static const char *proof_word(const char *state)
 static void draw_scanner_bottom_strip(int y, bool ble_scanner_ok,
                                       bool wifi_scanner_ok)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     scanner_uart_diag_t ble_uart = {0};
     scanner_uart_diag_t wifi_uart = {0};
     uart_rx_get_scanner_uart_diag(0, &ble_uart);
@@ -3797,8 +3897,10 @@ static void draw_scanner_bottom_strip(int y, bool ble_scanner_ok,
     bool wifi_cmd_fresh = wifi_scanner_ok && wifi &&
                           (wifi->cmd_rx_count > 0 &&
                            wifi->cmd_last_age_s >= 0 && wifi->cmd_last_age_s <= 45);
-    const char *ble_expected = wifi_scanner_ok ? "ble_primary" : "hybrid_failover";
-    const char *wifi_expected = ble_scanner_ok ? "wifi_primary" : "hybrid_failover";
+    const char *ble_expected = fof_policy_scan_profile_for_topology(
+        0, false, wifi_scanner_ok, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
+    const char *wifi_expected = fof_policy_scan_profile_for_topology(
+        1, false, ble_scanner_ok, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
     const char *ble_actual = (ble && ble->scan_profile[0]) ? ble->scan_profile : "";
     const char *wifi_actual = (wifi && wifi->scan_profile[0]) ? wifi->scan_profile : "";
     bool ble_role_ok = ble_scanner_ok && strcmp(ble_actual, ble_expected) == 0;
@@ -3927,8 +4029,8 @@ static void draw_empty_watch_state(int y, int h, bool ble_scanner_ok,
 
 static bool scanner_status_has_badge_evidence(void)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     const scanner_info_t *infos[2] = {ble, wifi};
     uint32_t ble_evidence = 0;
     for (int i = 0; i < 2; i++) {
@@ -4603,7 +4705,7 @@ static void format_badge_title_for_snapshot(
             snprintf(out, out_len, "FLOCK CAM");
             return;
         case BADGE_THREAT_CATEGORY_SKIM:
-            snprintf(out, out_len, "SKIMMER");
+            snprintf(out, out_len, "POSSIBLE SKIMMER");
             return;
         case BADGE_THREAT_CATEGORY_CAMERA:
             snprintf(out, out_len, "CAMERA NEAR");
@@ -6677,11 +6779,12 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     s_anim_frame++;
     badge_easter_egg_machine_t easter;
     if (badge_easter_egg_runtime_snapshot(&easter) && easter.visible) {
-        draw_badge_easter_egg_screen();
+        draw_badge_easter_egg_screen(easter.phase);
         st_flush();
         display_unlock();
         return;
     }
+    s_easter_animation_initialized = false;
     badge_investigation_refresh_locked();
     if (s_investigation_overlay.visible) {
         draw_badge_investigation_overlay();
@@ -6718,6 +6821,7 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
         return;
     }
 
+    display_refresh_scanner_snapshots();
     static badge_threat_snapshot_t snapshot;
     uart_rx_get_badge_threat_snapshot(&snapshot);
 

@@ -74,6 +74,7 @@ static char         s_remote_uplink_ver[40] = {0};
 static char         s_remote_scanner_ver[40] = {0};
 static int64_t      s_backoff_s = 0;
 static TaskHandle_t s_task = NULL;
+static scanner_info_t s_auto_check_scanner_snapshots[2] = {0};
 
 const char *fw_auto_check_status(void)
 {
@@ -306,20 +307,28 @@ static esp_err_t try_self_update_uplink(const char *backend_base)
  * Pick the right scanner firmware name based on what's connected.
  * Returns NULL if no scanner identified yet.
  */
-static const char *connected_scanner_board(void)
+static bool connected_scanner_board(char *board, size_t board_len)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    if (ble && ble->received && ble->board[0]) return ble->board;
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
-    if (wifi && wifi->received && wifi->board[0]) return wifi->board;
-    return NULL;
+    if (!board || board_len == 0) return false;
+    for (int scanner_id = 0; scanner_id < 2; scanner_id++) {
+        scanner_info_t *snapshot =
+            &s_auto_check_scanner_snapshots[scanner_id];
+        if (uart_rx_get_scanner_info_snapshot(scanner_id, snapshot) &&
+            snapshot->board[0]) {
+            strncpy(board, snapshot->board, board_len - 1);
+            board[board_len - 1] = '\0';
+            return true;
+        }
+    }
+    board[0] = '\0';
+    return false;
 }
 
 /* Refresh the fw_store cache for the connected scanner variant. */
 static esp_err_t try_refresh_scanner_cache(const char *backend_base)
 {
-    const char *board = connected_scanner_board();
-    if (!board) {
+    char board[32] = {0};
+    if (!connected_scanner_board(board, sizeof(board))) {
         ESP_LOGI(TAG, "scanner board unknown — skipping cache refresh");
         return ESP_OK;
     }

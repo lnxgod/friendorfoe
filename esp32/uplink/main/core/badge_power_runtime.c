@@ -28,6 +28,7 @@ static bool s_relay_was_active;
 static int64_t s_last_send_ms[BADGE_POWER_SCANNER_COUNT];
 static StaticSemaphore_t s_transition_mutex_storage;
 static SemaphoreHandle_t s_transition_mutex;
+static scanner_info_t s_power_scanner_snapshots[BADGE_POWER_SCANNER_COUNT] = {0};
 
 static bool transition_mutex_init(void)
 {
@@ -206,9 +207,9 @@ static bool scanner_connected(int scanner_id)
 
 static bool scanner_identity_known(int scanner_id)
 {
-    return scanner_id == 0
-        ? uart_rx_get_ble_scanner_info() != NULL
-        : uart_rx_get_wifi_scanner_info() != NULL;
+    return scanner_id >= 0 && scanner_id < BADGE_POWER_SCANNER_COUNT &&
+        uart_rx_get_scanner_info_snapshot(
+            scanner_id, &s_power_scanner_snapshots[scanner_id]);
 }
 
 static bool scanner_target_known(int scanner_id)

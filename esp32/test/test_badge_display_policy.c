@@ -140,6 +140,23 @@ void test_badge_ble_attack_display_policy_defaults_to_both_lanes(void)
     TEST_ASSERT_EQUAL(BADGE_DISPLAY_CLASS_BLE_ATTACK, cls);
 }
 
+void test_badge_skimmer_display_policy_is_lowest_priority(void)
+{
+    badge_display_policy_t policy;
+    badge_display_policy_defaults(&policy);
+
+    const badge_display_class_policy_t *skimmer =
+        &policy.classes[BADGE_DISPLAY_CLASS_SKIMMER];
+    TEST_ASSERT_FALSE(skimmer->enabled);
+    TEST_ASSERT_EQUAL(BADGE_DISPLAY_LANE_OFF, skimmer->lane);
+    TEST_ASSERT_EQUAL_UINT8(0, skimmer->priority);
+    TEST_ASSERT_FALSE(badge_display_policy_is_safety_floor(
+        BADGE_DISPLAY_CLASS_SKIMMER,
+        BADGE_DISPLAY_PROX_CLOSE,
+        100
+    ));
+}
+
 void test_badge_snapshot_categories_map_to_display_classes(void)
 {
     static const struct {

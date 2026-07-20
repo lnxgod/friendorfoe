@@ -137,6 +137,7 @@ static uint32_t s_full_scan_ok = 0;
 static uint32_t s_full_scan_err = 0;
 static int      s_full_scan_last_rc = 0;
 static atomic_bool s_wifi_initialized = false;
+static atomic_int s_wifi_init_rc = ESP_ERR_INVALID_STATE;
 static uint32_t s_last_ap_count = 0;
 static int64_t  s_last_scan_ms = 0;
 static uint32_t s_drone_ssid_emit = 0;
@@ -1904,6 +1905,8 @@ void wifi_scanner_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
     s_wifi_initialized = false;
+    atomic_store_explicit(&s_wifi_init_rc, ESP_ERR_INVALID_STATE,
+                          memory_order_release);
     s_active_scan_work = false;
 
     /* Set device phase from MAC address for affine channel hopping diversity.
@@ -1950,6 +1953,7 @@ void wifi_scanner_init(QueueHandle_t detection_queue)
     if (err != ESP_OK) goto fail;
 
     s_wifi_initialized = true;
+    atomic_store_explicit(&s_wifi_init_rc, ESP_OK, memory_order_release);
     if (s_wifi_scan_paused) {
         /* A quiet command can race init while the command task is already
          * live. Reconcile once initialized so pause either observes true here
@@ -1963,6 +1967,7 @@ void wifi_scanner_init(QueueHandle_t detection_queue)
 
 fail:
     s_wifi_initialized = false;
+    atomic_store_explicit(&s_wifi_init_rc, (int)err, memory_order_release);
     s_full_scan_last_rc = (int)err;
     s_full_scan_err++;
     s_wifi_scan_paused = true;
@@ -1977,7 +1982,8 @@ void wifi_scanner_start(void)
 {
     if (!s_wifi_initialized) {
         ESP_LOGW(TAG, "WiFi scan task not started; WiFi init failed rc=%d",
-                 s_full_scan_last_rc);
+                 atomic_load_explicit(&s_wifi_init_rc,
+                                      memory_order_acquire));
         return;
     }
     xTaskCreatePinnedToCore(
@@ -2150,24 +2156,32 @@ void wifi_scanner_pause(void)
              wifi_scanner_is_quiesced() ? 1 : 0);
 }
 
-void wifi_scanner_resume(void)
+bool wifi_scanner_resume(void)
 {
     atomic_fetch_add_explicit(&s_resume_inflight, 1, memory_order_acq_rel);
     bool rollback = scanner_quiet_mode_is_active();
     esp_err_t resume_rc = ESP_OK;
 
+    if (!s_wifi_initialized) {
+        s_wifi_scan_paused = true;
+        resume_rc = (esp_err_t)atomic_load_explicit(
+            &s_wifi_init_rc, memory_order_acquire);
+        if (resume_rc == ESP_OK) {
+            resume_rc = ESP_ERR_INVALID_STATE;
+        }
+        rollback = true;
+        goto done;
+    }
     if (rollback) {
         goto done;
     }
     s_wifi_scan_paused = false;
-    if (s_wifi_initialized) {
-        if (scanner_quiet_mode_is_active()) {
-            rollback = true;
-            goto done;
-        }
-        resume_rc = esp_wifi_set_promiscuous(true);
-        rollback = resume_rc != ESP_OK || scanner_quiet_mode_is_active();
+    if (scanner_quiet_mode_is_active()) {
+        rollback = true;
+        goto done;
     }
+    resume_rc = esp_wifi_set_promiscuous(true);
+    rollback = resume_rc != ESP_OK || scanner_quiet_mode_is_active();
 
 done:
     if (rollback) {
@@ -2182,9 +2196,10 @@ done:
                  "WiFi resume rolled back (quiet=%d rc=%d)",
                  scanner_quiet_mode_is_active() ? 1 : 0,
                  (int)resume_rc);
-        return;
+        return false;
     }
     ESP_LOGW(TAG, "WiFi scanning RESUMED");
+    return true;
 }
 
 bool wifi_scanner_is_paused(void)
@@ -2225,12 +2240,19 @@ bool wifi_scanner_is_active(void)
                                 memory_order_acquire) == 0;
 }
 
+bool wifi_scanner_is_initialized(void)
+{
+    return s_wifi_initialized;
+}
+
 void wifi_scanner_get_stats(wifi_scanner_stats_t *out)
 {
     if (!out) {
         return;
     }
     memset(out, 0, sizeof(*out));
+    out->init_rc = atomic_load_explicit(&s_wifi_init_rc,
+                                        memory_order_acquire);
     out->total_frames = s_total_frames;
     out->beacon_frames = s_beacon_frames;
     out->full_scan_count = s_full_scan_count;

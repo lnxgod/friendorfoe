@@ -143,3 +143,10 @@ bool fof_firmware_legacy_relay_authorized(
         fof_firmware_version_compare(
             manifest->version, identity->version) == FOF_VERSION_NEWER;
 }
+
+bool fof_firmware_post_reboot_boot_id_proved(uint32_t before_boot_id,
+                                             uint32_t after_boot_id)
+{
+    return after_boot_id != 0U &&
+           (before_boot_id == 0U || after_boot_id != before_boot_id);
+}

@@ -46,11 +46,12 @@ ingress proof and should only be used after direct USB recovery is impossible.
 
 ## Scanner Self-Patch Path
 
-Once the uplink has staged scanner firmware, each scanner periodically sends
-`fw_check`. If a newer staged badge scanner image exists, the scanner quiets
-itself, emits `fw_ready`, and the uplink relays the image over UART. Failed
-relay attempts now clear the scanner's ready latch, use a short badge-only
-backoff, and retry from scanner-originated `fw_check` without requiring USB.
+Once the uplink has staged scanner firmware, each scanner sends one `fw_check`
+eight seconds after boot, after identity and role setup have settled. If a newer
+staged badge scanner image exists, the scanner quiets itself, emits `fw_ready`,
+and the uplink relays the image over UART. There is no periodic scanner or
+uplink update timer in the badge build. After a failed relay, retry by rebooting
+the scanner or issuing the busy-safe USB `fw_check_now` command.
 
 Watch these fields in `FOF_STATUS` or `/api/badge/status`:
 

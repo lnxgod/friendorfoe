@@ -923,6 +923,18 @@ void test_scan_profiles_assign_slot_roles_and_calibration_override(void)
     TEST_ASSERT_EQUAL_STRING("wifi_primary", fof_policy_scan_profile_for_slot(1, false));
     TEST_ASSERT_EQUAL_STRING("calibration", fof_policy_scan_profile_for_slot(0, true));
     TEST_ASSERT_EQUAL_STRING("calibration", fof_policy_scan_profile_for_slot(1, true));
+    TEST_ASSERT_EQUAL_STRING(
+        "ble_primary",
+        fof_policy_scan_profile_for_topology(0, false, false, true));
+    TEST_ASSERT_EQUAL_STRING(
+        "wifi_primary",
+        fof_policy_scan_profile_for_topology(1, false, false, true));
+    TEST_ASSERT_EQUAL_STRING(
+        "hybrid_failover",
+        fof_policy_scan_profile_for_topology(0, false, false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "ble_primary",
+        fof_policy_scan_profile_for_topology(0, false, true, false));
 }
 
 void test_scan_profile_source_gates_normal_lanes(void)
@@ -951,6 +963,109 @@ void test_scan_profile_source_gates_normal_lanes(void)
         "calibration", DETECTION_SRC_BLE_FINGERPRINT));
     TEST_ASSERT_FALSE(fof_policy_scan_profile_allows_source(
         "calibration", DETECTION_SRC_WIFI_AP_INVENTORY));
+}
+
+void test_badge_radio_boot_order_prioritizes_assigned_primary_and_safe_fallback(void)
+{
+    TEST_ASSERT_EQUAL(
+        FOF_POLICY_RADIO_BOOT_BLE_FIRST,
+        fof_policy_badge_radio_boot_order("ble_primary", true));
+    TEST_ASSERT_EQUAL(
+        FOF_POLICY_RADIO_BOOT_WIFI_FIRST,
+        fof_policy_badge_radio_boot_order("wifi_primary", true));
+    TEST_ASSERT_EQUAL(
+        FOF_POLICY_RADIO_BOOT_WIFI_FIRST,
+        fof_policy_badge_radio_boot_order("hybrid_failover", true));
+
+    /* Before the uplink assigns a role, preserve the last known-good badge
+     * order. Invalid/missing profiles must fail toward that same fallback. */
+    TEST_ASSERT_EQUAL(
+        FOF_POLICY_RADIO_BOOT_WIFI_FIRST,
+        fof_policy_badge_radio_boot_order("ble_primary", false));
+    TEST_ASSERT_EQUAL(
+        FOF_POLICY_RADIO_BOOT_WIFI_FIRST,
+        fof_policy_badge_radio_boot_order(NULL, true));
+    TEST_ASSERT_EQUAL(
+        FOF_POLICY_RADIO_BOOT_WIFI_FIRST,
+        fof_policy_badge_radio_boot_order("BLE_PRIMARY", true));
+}
+
+void test_badge_scanner_health_rejects_dead_primary_radio(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "missing",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", false, false, false, false, false, false,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "role_wait",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", true, false, true, false, false, false,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "cmd_wait",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", true, true, false, false, false, false,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "ble_off",
+        fof_policy_badge_scanner_health(
+            "ble_primary", true, true, true, false, false, false,
+            false, true));
+    TEST_ASSERT_EQUAL_STRING(
+        "wifi_init_failed",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", true, true, true, false, false, false,
+            true, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "wifi_off",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", true, true, true, false, true, false,
+            true, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "ok",
+        fof_policy_badge_scanner_health(
+            "ble_primary", true, true, true, true, false, false,
+            false, true));
+    TEST_ASSERT_EQUAL_STRING(
+        "ok",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", true, true, true, false, true, true,
+            true, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "wifi_init_failed",
+        fof_policy_badge_scanner_health(
+            "hybrid_failover", true, true, true, true, false, false,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "ble_off",
+        fof_policy_badge_scanner_health(
+            "hybrid_failover", true, true, true, false, true, true,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "ok",
+        fof_policy_badge_scanner_health(
+            "hybrid_failover", true, true, true, true, true, true,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "profile_invalid",
+        fof_policy_badge_scanner_health(
+            "bogus", true, true, true, true, true, true,
+            false, false));
+}
+
+void test_badge_scanner_health_requires_opposing_radio_quiescence(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "wifi_not_quiet",
+        fof_policy_badge_scanner_health(
+            "ble_primary", true, true, true, true, true, true,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "ble_not_quiet",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", true, true, true, true, true, true,
+            false, false));
 }
 
 void test_ble_meta_reacquire_triggers_when_stale_and_advancing(void)

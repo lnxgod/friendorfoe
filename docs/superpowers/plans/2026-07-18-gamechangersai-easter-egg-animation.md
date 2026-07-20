@@ -85,7 +85,7 @@ typedef struct {
 
 Tests must assert trigger enters `THANKS`, first advance enters `BOUNCE`, second advance enters `CONSUMED` with `visible == false`, further advance and trigger calls fail, and `init` returns to `ARMED`. Button-batch tests must prove two presses in one batch claim only one transition while both remain consumed by the overlay.
 
-Animation tests use a 160x160 screen, 64x64 sprite, and six colors. They assert initial `(8, 12, +3, +2, 0)`, no-collision position updates, right/bottom/left/top reversal and clamping, corner reversal of both axes, exactly one color increment per collision update, color wrap from five to zero, and safe fallback `(0, 0)` for invalid dimensions.
+Animation tests use the physical 128x160 screen, a 64x64 sprite, and six colors. They assert initial `(8, 12, +3, +2, 0)`, no-collision position updates, right/bottom/left/top reversal and clamping, corner reversal of both axes, exactly one color increment per collision update, color wrap from five to zero, and safe fallback `(0, 0)` for invalid dimensions.
 
 - [ ] **Step 2: Run the native suite and verify red failures**
 

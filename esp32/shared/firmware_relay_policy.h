@@ -79,6 +79,17 @@ bool fof_firmware_strict_receipt_matches(
 bool fof_firmware_legacy_relay_authorized(
     const fof_legacy_relay_authorization_view_t *authorization);
 
+/**
+ * Prove that a scanner crossed a reboot boundary after a relay.
+ *
+ * A pre-update value of zero is the migration case for firmware that predates
+ * boot IDs.  The updated scanner must still report a non-zero value.  Once a
+ * scanner supports boot IDs, every subsequent relay must observe a different
+ * value.
+ */
+bool fof_firmware_post_reboot_boot_id_proved(uint32_t before_boot_id,
+                                             uint32_t after_boot_id);
+
 #ifdef __cplusplus
 }
 #endif

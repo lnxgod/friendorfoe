@@ -17,7 +17,7 @@ static const badge_display_policy_default_t DEFAULTS[BADGE_DISPLAY_POLICY_CLASS_
     [BADGE_DISPLAY_CLASS_META]          = {"meta", "Meta Glasses", true, BADGE_DISPLAY_LANE_BOTH, BADGE_DISPLAY_PROX_PRESENT, 95},
     [BADGE_DISPLAY_CLASS_TRACKER]       = {"tracker", "Trackers", true, BADGE_DISPLAY_LANE_LOWER, BADGE_DISPLAY_PROX_NEAR, 70},
     [BADGE_DISPLAY_CLASS_WIFI_ATTACK]   = {"wifi_attack", "WiFi Attacks", true, BADGE_DISPLAY_LANE_BOTH, BADGE_DISPLAY_PROX_PRESENT, 90},
-    [BADGE_DISPLAY_CLASS_SKIMMER]       = {"skimmer", "Skimmers", true, BADGE_DISPLAY_LANE_BOTH, BADGE_DISPLAY_PROX_NEAR, 88},
+    [BADGE_DISPLAY_CLASS_SKIMMER]       = {"skimmer", "Skimmers Disabled", false, BADGE_DISPLAY_LANE_OFF, BADGE_DISPLAY_PROX_CLOSE, 0},
     [BADGE_DISPLAY_CLASS_CAMERA]        = {"camera", "Cameras", true, BADGE_DISPLAY_LANE_LOWER, BADGE_DISPLAY_PROX_NEAR, 65},
     [BADGE_DISPLAY_CLASS_FLOCK]         = {"flock", "Flock/ALPR", true, BADGE_DISPLAY_LANE_BOTH, BADGE_DISPLAY_PROX_PRESENT, 85},
     [BADGE_DISPLAY_CLASS_LOCK]          = {"lock", "Locks", true, BADGE_DISPLAY_LANE_LOWER, BADGE_DISPLAY_PROX_NEAR, 55},
@@ -550,9 +550,10 @@ bool badge_display_policy_is_safety_floor(badge_display_policy_class_t cls,
         case BADGE_DISPLAY_CLASS_DRONE:
         case BADGE_DISPLAY_CLASS_WIFI_ATTACK:
         case BADGE_DISPLAY_CLASS_BLE_ATTACK:
-        case BADGE_DISPLAY_CLASS_SKIMMER:
         case BADGE_DISPLAY_CLASS_FLOCK:
             return true;
+        case BADGE_DISPLAY_CLASS_SKIMMER:
+            return BADGE_SKIMMER_DETECTION_ENABLED != 0;
         case BADGE_DISPLAY_CLASS_META:
         case BADGE_DISPLAY_CLASS_TRACKER:
         case BADGE_DISPLAY_CLASS_CAMERA:

@@ -37,6 +37,8 @@ static const char *TAG = "uart_rx";
 
 #define LINE_BUF_SIZE       4096
 #define READ_BUF_SIZE       256
+#define UART_RX_PAUSE_ACK_TIMEOUT_MS 1000
+#define UART_RX_PAUSE_POLL_MS          5
 
 /* Scanner connection tracking */
 #define SCANNER_TIMEOUT_MS  15000
@@ -59,17 +61,50 @@ static SemaphoreHandle_t s_uart_tx_lock = NULL;
 /* Scanner identity (populated from scanner_info UART messages) */
 static scanner_info_t s_ble_scanner_info = {0};
 static scanner_info_t s_wifi_scanner_info = {0};
+static StaticSemaphore_t s_scanner_info_mutex_storage;
+static SemaphoreHandle_t s_scanner_info_mutex = NULL;
 static scanner_identity_snapshot_t s_scanner_identity_snapshots[2] = {0};
 static StaticSemaphore_t s_scanner_identity_mutex_storage;
 static SemaphoreHandle_t s_scanner_identity_mutex = NULL;
+
+static scanner_info_t *scanner_info_for_slot_unlocked(int scanner_id)
+{
+    if (scanner_id == 0) {
+        return &s_ble_scanner_info;
+    }
+    if (scanner_id == 1) {
+        return &s_wifi_scanner_info;
+    }
+    return NULL;
+}
+
+static scanner_info_t *scanner_info_update_begin(int scanner_id)
+{
+    scanner_info_t *published = scanner_info_for_slot_unlocked(scanner_id);
+    if (!published || !s_scanner_info_mutex ||
+        xSemaphoreTake(s_scanner_info_mutex, portMAX_DELAY) != pdTRUE) {
+        return NULL;
+    }
+    return published;
+}
+
+static void scanner_info_update_commit(void)
+{
+    xSemaphoreGive(s_scanner_info_mutex);
+}
 
 /* OTA response tracking (set by UART RX, read by relay handler) */
 static volatile ota_response_t s_last_ota_response = {0};
 static portMUX_TYPE s_ota_response_lock = portMUX_INITIALIZER_UNLOCKED;
 
-/* Pause flags for OTA relay — lets relay handler read UART directly */
-static volatile bool s_rx_paused_ble = false;
-static volatile bool s_rx_paused_wifi = false;
+/* A relay reads ACKs directly from the UART.  The request flag alone is not a
+ * handoff: the background task may still be blocked inside uart_read_bytes()
+ * and consume the first ACK.  Each task therefore publishes an explicit
+ * pause acknowledgement before the relay is allowed to touch the UART. */
+static atomic_bool s_rx_paused_ble = false;
+static atomic_bool s_rx_paused_wifi = false;
+static atomic_bool s_rx_pause_acked_ble = false;
+static atomic_bool s_rx_pause_acked_wifi = false;
 
 /* Per-scanner backpressure flags — BLE noise should not be able to pause the
  * WiFi scanner, and each scanner must be able to resume independently. */
@@ -187,6 +222,9 @@ typedef struct {
 } badge_status_seen_t;
 
 static badge_status_seen_t s_badge_status_seen[2] = {0};
+/* Per-slot evidence copies let status publication release its mutex before
+ * threat ingestion, which can legitimately wait on the separate threat lock. */
+static scanner_info_t s_badge_status_evidence[2] = {0};
 
 static bool badge_status_counter_advanced(uint32_t current, uint32_t previous)
 {
@@ -663,8 +701,13 @@ void uart_rx_set_node_calibration_mode(bool active,
     strncpy(s_node_calibration_uuid, calibration_uuid ? calibration_uuid : "", sizeof(s_node_calibration_uuid) - 1);
     s_node_calibration_uuid[sizeof(s_node_calibration_uuid) - 1] = '\0';
 
-    s_ble_scanner_info.calibration_mode_acked = false;
-    s_wifi_scanner_info.calibration_mode_acked = false;
+    for (int scanner_id = 0; scanner_id < 2; scanner_id++) {
+        scanner_info_t *info = scanner_info_update_begin(scanner_id);
+        if (info) {
+            info->calibration_mode_acked = false;
+            scanner_info_update_commit();
+        }
+    }
 }
 
 bool uart_rx_is_node_calibration_mode(void)
@@ -762,6 +805,18 @@ static int json_get_int(const cJSON *obj, const char *key, int def)
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (cJSON_IsNumber(item)) {
         return item->valueint;
+    }
+    return def;
+}
+
+static bool json_get_bool(const cJSON *obj, const char *key, bool def)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (cJSON_IsBool(item)) {
+        return cJSON_IsTrue(item);
+    }
+    if (cJSON_IsNumber(item)) {
+        return item->valueint != 0;
     }
     return def;
 }
@@ -925,6 +980,10 @@ static uint32_t publish_scanner_identity_snapshot(int scanner_id,
              hardware_type);
     snprintf(snapshot.hardware_id, sizeof(snapshot.hardware_id), "%s",
              hardware_id);
+    uint32_t boot_id = 0;
+    if (json_get_uint32_exact(root, "boot_id", &boot_id) && boot_id != 0U) {
+        snapshot.boot_id = boot_id;
+    }
     snapshot.received_ms = received_ms;
     snapshot.complete = complete;
 
@@ -1228,16 +1287,26 @@ static void handle_status(const cJSON *root, int scanner_id)
     int wifi_count = json_get_int(root, "wifi_count", 0);
     int channel    = json_get_int(root, "ch", 0);
     int uptime     = json_get_int(root, "uptime_s", 0);
+    bool log_initial_identity = false;
+    bool log_deauth_flood = false;
+    bool log_beacon_spam = false;
+    int log_deauth_count = 0;
 
     const char *status_profile = json_get_string(root, JSON_KEY_SCAN_PROFILE, "");
     ESP_LOGI(TAG, "Scanner[%d] status: BLE=%d WiFi=%d ch=%d uptime=%ds profile=%s",
              scanner_id, ble_count, wifi_count, channel, uptime,
              status_profile && status_profile[0] ? status_profile : "?");
 
+    scanner_info_t *info = scanner_info_update_begin(scanner_id);
+    if (!info) {
+        ESP_LOGE(TAG, "Scanner[%d] status snapshot lock failed", scanner_id);
+        return;
+    }
+
     /* Extract scanner identity if present (piggybacks on status message) */
     const char *ver = json_get_string(root, "ver", NULL);
     if (ver) {
-        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        uint32_t parsed_boot_id = 0;
         const char *board = json_get_string(root, "board", "?");
         const char *chip = json_get_string(root, "chip", "?");
         const char *caps = json_get_string(root, "caps", "?");
@@ -1249,16 +1318,19 @@ static void handle_status(const cJSON *root, int scanner_id)
         info->board[sizeof(info->board) - 1] = '\0';
         info->chip[sizeof(info->chip) - 1] = '\0';
         info->caps[sizeof(info->caps) - 1] = '\0';
+        info->boot_id = 0;
+        if (json_get_uint32_exact(root, "boot_id", &parsed_boot_id) &&
+            parsed_boot_id != 0U) {
+            info->boot_id = parsed_boot_id;
+        }
         if (!info->received) {
             info->received = true;
-            ESP_LOGI(TAG, "Scanner[%d] identity from status: %s v%s (%s)",
-                     scanner_id, board, ver, caps);
+            log_initial_identity = true;
         }
     }
 
     /* Attack / anomaly counters */
     {
-        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
         int64_t now_ms = esp_timer_get_time() / 1000;
         info->deauth_count  = (uint16_t)json_get_int(root, "deauth", 0);
         info->disassoc_count = (uint16_t)json_get_int(root, "disassoc", 0);
@@ -1275,22 +1347,20 @@ static void handle_status(const cJSON *root, int scanner_id)
         info->probe_drop_low_value = (uint32_t)json_get_double(root, "probe_drop_low_value", 0);
         info->probe_drop_rate_limit = (uint32_t)json_get_double(root, "probe_drop_rate_limit", 0);
         info->probe_drop_pressure = (uint32_t)json_get_double(root, "probe_drop_pressure", 0);
-        const cJSON *ble_scanning = cJSON_GetObjectItemCaseSensitive(root, "ble_scanning");
-        info->ble_scanning = (ble_scanning && cJSON_IsTrue(ble_scanning)) ||
-                             (ble_scanning && cJSON_IsNumber(ble_scanning) &&
-                              ble_scanning->valueint != 0);
-        const cJSON *ble_host_active = cJSON_GetObjectItemCaseSensitive(root, "ble_host_active");
-        info->ble_host_active = (ble_host_active && cJSON_IsTrue(ble_host_active)) ||
-                                (ble_host_active && cJSON_IsNumber(ble_host_active) &&
-                                 ble_host_active->valueint != 0);
-        const cJSON *ble_host_synced = cJSON_GetObjectItemCaseSensitive(root, "ble_host_synced");
-        info->ble_host_synced = (ble_host_synced && cJSON_IsTrue(ble_host_synced)) ||
-                                (ble_host_synced && cJSON_IsNumber(ble_host_synced) &&
-                                 ble_host_synced->valueint != 0);
-        const cJSON *wifi_paused = cJSON_GetObjectItemCaseSensitive(root, "wifi_paused");
-        info->wifi_paused = (wifi_paused && cJSON_IsTrue(wifi_paused)) ||
-                            (wifi_paused && cJSON_IsNumber(wifi_paused) &&
-                             wifi_paused->valueint != 0);
+        info->ble_initialized = json_get_bool(root, "ble_initialized", false);
+        info->ble_scanning = json_get_bool(root, "ble_scanning", false);
+        info->ble_host_active = json_get_bool(root, "ble_host_active", false);
+        info->ble_host_synced = json_get_bool(root, "ble_host_synced", false);
+        info->ble_quiesced = json_get_bool(root, "ble_quiesced", false);
+        info->wifi_initialized = json_get_bool(root, "wifi_initialized", false);
+        info->wifi_active = json_get_bool(root, "wifi_active", false);
+        info->wifi_quiesced = json_get_bool(root, "wifi_quiesced", false);
+        info->wifi_init_rc = json_get_int(root, "wifi_init_rc",
+                                         info->wifi_init_rc);
+        info->wifi_paused = json_get_bool(root, "wifi_paused", true);
+        const char *slot_role = json_get_string(root, JSON_KEY_SLOT_ROLE, "");
+        strncpy(info->slot_role, slot_role, sizeof(info->slot_role) - 1);
+        info->slot_role[sizeof(info->slot_role) - 1] = '\0';
         info->wifi_total_frames = (uint32_t)json_get_double(root, "wifi_total_frames",
                                                             (double)info->wifi_total_frames);
         info->wifi_beacon_frames = (uint32_t)json_get_double(root, "wifi_beacon_frames",
@@ -1527,32 +1597,47 @@ static void handle_status(const cJSON *root, int scanner_id)
             info->fc_hist[sizeof(info->fc_hist) - 1] = '\0';
         }
 
-        if (info->deauth_flood) {
-            ESP_LOGW(TAG, "Scanner[%d] DEAUTH FLOOD detected! deauth=%d",
-                     scanner_id, info->deauth_count);
-        }
-        if (info->beacon_spam) {
-            ESP_LOGW(TAG, "Scanner[%d] BEACON SPAM detected!", scanner_id);
-        }
-#ifdef FOF_BADGE_VARIANT
-        if (info->deauth_flood || info->deauth_count >= 3) {
-            badge_ingest_wifi_status_event(
-                info->deauth_flood ? "Deauth Flood" : "Deauth",
-                "deauth",
-                info->deauth_flood ? 0.90f : 0.70f,
-                info->deauth_count > 0 ? info->deauth_count : 1
-            );
-        }
-        if (info->disassoc_count >= 3) {
-            badge_ingest_wifi_status_event("Disassoc", "disassoc", 0.65f,
-                                           info->disassoc_count);
-        }
-        if (info->beacon_spam) {
-            badge_ingest_wifi_status_event("Beacon Spam", "beacon spam", 0.75f, 1);
-        }
-        badge_ingest_scanner_status_evidence(scanner_id, info);
-#endif
+        log_deauth_flood = info->deauth_flood;
+        log_deauth_count = info->deauth_count;
+        log_beacon_spam = info->beacon_spam;
     }
+
+#ifdef FOF_BADGE_VARIANT
+    s_badge_status_evidence[scanner_id] = *info;
+#endif
+    scanner_info_update_commit();
+    if (log_initial_identity) {
+        const char *board = json_get_string(root, "board", "?");
+        const char *caps = json_get_string(root, "caps", "?");
+        ESP_LOGI(TAG, "Scanner[%d] identity from status: %s v%s (%s)",
+                 scanner_id, board, ver ? ver : "?", caps);
+    }
+    if (log_deauth_flood) {
+        ESP_LOGW(TAG, "Scanner[%d] DEAUTH FLOOD detected! deauth=%d",
+                 scanner_id, log_deauth_count);
+    }
+    if (log_beacon_spam) {
+        ESP_LOGW(TAG, "Scanner[%d] BEACON SPAM detected!", scanner_id);
+    }
+#ifdef FOF_BADGE_VARIANT
+    const scanner_info_t *evidence = &s_badge_status_evidence[scanner_id];
+    if (evidence->deauth_flood || evidence->deauth_count >= 3) {
+        badge_ingest_wifi_status_event(
+            evidence->deauth_flood ? "Deauth Flood" : "Deauth",
+            "deauth",
+            evidence->deauth_flood ? 0.90f : 0.70f,
+            evidence->deauth_count > 0 ? evidence->deauth_count : 1
+        );
+    }
+    if (evidence->disassoc_count >= 3) {
+        badge_ingest_wifi_status_event("Disassoc", "disassoc", 0.65f,
+                                       evidence->disassoc_count);
+    }
+    if (evidence->beacon_spam) {
+        badge_ingest_wifi_status_event("Beacon Spam", "beacon spam", 0.75f, 1);
+    }
+    badge_ingest_scanner_status_evidence(scanner_id, evidence);
+#endif
 
     /* First status message from scanner: flash "connected!" */
     if (!s_first_status_received) {
@@ -1715,7 +1800,15 @@ static void process_line(const char *line, size_t len, int scanner_id)
         handle_status(root, scanner_id);
     } else if (strcmp(msg_type, "scanner_info") == 0) {
         /* Scanner identity: version, board type, chip, capabilities, time-offset */
-        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        uint32_t published_identity_generation =
+            publish_scanner_identity_snapshot(
+                scanner_id, root, esp_timer_get_time() / 1000);
+        scanner_info_t *info = scanner_info_update_begin(scanner_id);
+        if (!info) {
+            ESP_LOGE(TAG, "Scanner[%d] identity snapshot lock failed", scanner_id);
+            cJSON_Delete(root);
+            return;
+        }
         const char *ver = json_get_string(root, "ver", "?");
         const char *board = json_get_string(root, "board", "?");
         const char *firmware_name = json_get_string(root, "firmware_name", board);
@@ -1724,9 +1817,7 @@ static void process_line(const char *line, size_t len, int scanner_id)
         const char *hardware_id = json_get_string(root, "hardware_id", "");
         const char *chip = json_get_string(root, "chip", "?");
         const char *caps = json_get_string(root, "caps", "?");
-        uint32_t published_identity_generation =
-            publish_scanner_identity_snapshot(
-                scanner_id, root, esp_timer_get_time() / 1000);
+        uint32_t parsed_boot_id = 0;
         strncpy(info->version, ver, sizeof(info->version) - 1);
         strncpy(info->board, board, sizeof(info->board) - 1);
         strncpy(info->firmware_name, firmware_name, sizeof(info->firmware_name) - 1);
@@ -1743,6 +1834,11 @@ static void process_line(const char *line, size_t len, int scanner_id)
         info->hardware_id[sizeof(info->hardware_id) - 1] = '\0';
         info->chip[sizeof(info->chip) - 1] = '\0';
         info->caps[sizeof(info->caps) - 1] = '\0';
+        info->boot_id = 0;
+        if (json_get_uint32_exact(root, "boot_id", &parsed_boot_id) &&
+            parsed_boot_id != 0U) {
+            info->boot_id = parsed_boot_id;
+        }
         info->toff_ms = (int64_t)json_get_double(root, "toff", 0.0);
         info->tcnt    = (uint32_t)json_get_int(root, "tcnt", 0);
         info->time_valid_count = (uint32_t)json_get_double(root, "time_valid_count", 0.0);
@@ -1755,30 +1851,30 @@ static void process_line(const char *line, size_t len, int scanner_id)
         info->cmd_overflow_count = (uint32_t)json_get_double(root, "cmd_overflow", 0.0);
         info->cmd_stale_count = (uint32_t)json_get_double(root, "cmd_stale", 0.0);
         info->cmd_last_age_s = (int64_t)json_get_double(root, "cmd_last_age_s", -1.0);
-        const cJSON *ble_scanning = cJSON_GetObjectItemCaseSensitive(root, "ble_scanning");
-        if (ble_scanning) {
-            info->ble_scanning = cJSON_IsTrue(ble_scanning) ||
-                                 (cJSON_IsNumber(ble_scanning) &&
-                                  ble_scanning->valueint != 0);
-        }
-        const cJSON *ble_host_active = cJSON_GetObjectItemCaseSensitive(root, "ble_host_active");
-        if (ble_host_active) {
-            info->ble_host_active = cJSON_IsTrue(ble_host_active) ||
-                                    (cJSON_IsNumber(ble_host_active) &&
-                                     ble_host_active->valueint != 0);
-        }
-        const cJSON *ble_host_synced = cJSON_GetObjectItemCaseSensitive(root, "ble_host_synced");
-        if (ble_host_synced) {
-            info->ble_host_synced = cJSON_IsTrue(ble_host_synced) ||
-                                    (cJSON_IsNumber(ble_host_synced) &&
-                                     ble_host_synced->valueint != 0);
-        }
-        const cJSON *wifi_paused = cJSON_GetObjectItemCaseSensitive(root, "wifi_paused");
-        if (wifi_paused) {
-            info->wifi_paused = cJSON_IsTrue(wifi_paused) ||
-                                (cJSON_IsNumber(wifi_paused) &&
-                                 wifi_paused->valueint != 0);
-        }
+        info->ble_initialized = json_get_bool(
+            root, "ble_initialized", info->ble_initialized);
+        info->ble_scanning = json_get_bool(
+            root, "ble_scanning", info->ble_scanning);
+        info->ble_host_active = json_get_bool(
+            root, "ble_host_active", info->ble_host_active);
+        info->ble_host_synced = json_get_bool(
+            root, "ble_host_synced", info->ble_host_synced);
+        info->ble_quiesced = json_get_bool(
+            root, "ble_quiesced", info->ble_quiesced);
+        info->wifi_initialized = json_get_bool(
+            root, "wifi_initialized", info->wifi_initialized);
+        info->wifi_active = json_get_bool(
+            root, "wifi_active", info->wifi_active);
+        info->wifi_quiesced = json_get_bool(
+            root, "wifi_quiesced", info->wifi_quiesced);
+        info->wifi_init_rc = json_get_int(
+            root, "wifi_init_rc", info->wifi_init_rc);
+        info->wifi_paused = json_get_bool(
+            root, "wifi_paused", info->wifi_paused);
+        const char *slot_role = json_get_string(
+            root, JSON_KEY_SLOT_ROLE, info->slot_role);
+        strncpy(info->slot_role, slot_role, sizeof(info->slot_role) - 1);
+        info->slot_role[sizeof(info->slot_role) - 1] = '\0';
         info->wifi_full_scan_count = (uint32_t)json_get_double(root, "wifi_full_scan_count",
                                                                (double)info->wifi_full_scan_count);
         info->wifi_full_scan_ok = (uint32_t)json_get_double(root, "wifi_full_scan_ok",
@@ -1959,17 +2055,32 @@ static void process_line(const char *line, size_t len, int scanner_id)
         }
         info->received = true;
 #ifdef FOF_BADGE_VARIANT
-        badge_ingest_scanner_status_evidence(scanner_id, info);
+        s_badge_status_evidence[scanner_id] = *info;
+#endif
+        uint32_t log_boot_id = info->boot_id;
+        int64_t log_toff_ms = info->toff_ms;
+        uint32_t log_tcnt = info->tcnt;
+        uint32_t log_time_valid_count = info->time_valid_count;
+        scanner_info_update_commit();
+        ESP_LOGI(TAG, "Scanner[%d] identity: %s v%s (%s) chip=%s boot=%08lx toff=%lld tcnt=%u valid=%u state=%s mode=%s",
+                 scanner_id, board, ver, caps, chip,
+                 (unsigned long)log_boot_id,
+                 (long long)log_toff_ms, log_tcnt,
+                 log_time_valid_count, time_state,
+                 scan_mode && scan_mode[0] ? scan_mode : "normal");
+#ifdef FOF_BADGE_VARIANT
+        badge_ingest_scanner_status_evidence(
+            scanner_id, &s_badge_status_evidence[scanner_id]);
         badge_power_runtime_note_scanner_identity(scanner_id);
 #endif
-        ESP_LOGI(TAG, "Scanner[%d] identity: %s v%s (%s) chip=%s toff=%lld tcnt=%u valid=%u state=%s mode=%s",
-                 scanner_id, board, ver, caps, chip,
-                 (long long)info->toff_ms, info->tcnt,
-                 info->time_valid_count, info->time_sync_state,
-                 info->scan_mode[0] ? info->scan_mode : "normal");
     } else if (strcmp(msg_type, "recovery_ack") == 0 ||
                strcmp(msg_type, "scanner_recovery") == 0) {
-        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        scanner_info_t *info = scanner_info_update_begin(scanner_id);
+        if (!info) {
+            ESP_LOGE(TAG, "Scanner[%d] recovery snapshot lock failed", scanner_id);
+            cJSON_Delete(root);
+            return;
+        }
         const char *mode = json_get_string(root, "recovery_mode", NULL);
         if (!mode) {
             mode = json_get_string(root, "mode", NULL);
@@ -1980,17 +2091,25 @@ static void process_line(const char *line, size_t len, int scanner_id)
         }
         json_copy_string(root, "safe_reason", info->safe_reason, sizeof(info->safe_reason));
         info->crash_count = (uint32_t)json_get_double(root, "crash_count", (double)info->crash_count);
+        const char *safe_reason = json_get_string(root, "safe_reason", "");
+        uint32_t crash_count = info->crash_count;
+        scanner_info_update_commit();
         ESP_LOGW(TAG, "Scanner[%d] recovery: type=%s mode=%s reason=%s crash=%lu",
                  scanner_id,
                  msg_type,
-                 info->recovery_mode[0] ? info->recovery_mode : "?",
-                 info->safe_reason,
-                 (unsigned long)info->crash_count);
+                 mode && mode[0] ? mode : "?",
+                 safe_reason && safe_reason[0] ? safe_reason : "",
+                 (unsigned long)crash_count);
     } else if (strcmp(msg_type, MSG_TYPE_FW_CHECK) == 0) {
         const char *board = json_get_string(root, "board", "");
         const char *ver = json_get_string(root, "ver", "");
         const char *reason = json_get_string(root, "reason", "");
-        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        scanner_info_t *info = scanner_info_update_begin(scanner_id);
+        if (!info) {
+            ESP_LOGE(TAG, "Scanner[%d] firmware-check snapshot lock failed", scanner_id);
+            cJSON_Delete(root);
+            return;
+        }
         info->fw_check_count = (uint32_t)json_get_double(root, "fw_check_count", (double)info->fw_check_count);
         const char *fw_state = json_get_string(root, JSON_KEY_FW_STATE, info->fw_update_state);
         strncpy(info->fw_update_state, fw_state ? fw_state : "", sizeof(info->fw_update_state) - 1);
@@ -2007,6 +2126,7 @@ static void process_line(const char *line, size_t len, int scanner_id)
                                       rollback_pending->valueint != 0);
         }
         info->crash_count = (uint32_t)json_get_double(root, "crash_count", (double)info->crash_count);
+        scanner_info_update_commit();
         ESP_LOGI(TAG, "Scanner[%d] firmware check: board=%s ver=%s",
                  scanner_id,
                  board[0] ? board : "?",
@@ -2057,22 +2177,27 @@ static void process_line(const char *line, size_t len, int scanner_id)
             }
         }
 
-        scanner_info_t *info = (scanner_id == 0)
-            ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        scanner_info_t *info = scanner_info_update_begin(scanner_id);
+        if (!info) {
+            ESP_LOGE(TAG, "Scanner[%d] firmware-ready snapshot lock failed", scanner_id);
+            cJSON_Delete(root);
+            return;
+        }
         if (!accepted) {
+            const char *reject_error =
+                ready_frame_valid ? "fw_ready_refused" : "malformed_fw_ready";
             info->need_firmware = false;
             strncpy(info->fw_update_state, "ready_rejected",
                     sizeof(info->fw_update_state) - 1);
             info->fw_update_state[sizeof(info->fw_update_state) - 1] = '\0';
-            strncpy(info->last_fw_error,
-                    ready_frame_valid ? "fw_ready_refused"
-                                      : "malformed_fw_ready",
+            strncpy(info->last_fw_error, reject_error,
                     sizeof(info->last_fw_error) - 1);
             info->last_fw_error[sizeof(info->last_fw_error) - 1] = '\0';
+            scanner_info_update_commit();
             ESP_LOGW(TAG,
                      "Scanner[%d] %s fw_ready rejected (%s); resuming scanner",
                      scanner_id, legacy_receipt ? "legacy" : "strict",
-                     info->last_fw_error);
+                     reject_error);
             uart_rx_send_command_to_scanner(scanner_id, "{\"type\":\"start\"}");
             cJSON_Delete(root);
             return;
@@ -2082,6 +2207,7 @@ static void process_line(const char *line, size_t len, int scanner_id)
         info->fw_update_state[sizeof(info->fw_update_state) - 1] = '\0';
         strncpy(info->fw_target_version, target, sizeof(info->fw_target_version) - 1);
         info->fw_target_version[sizeof(info->fw_target_version) - 1] = '\0';
+        scanner_info_update_commit();
         ESP_LOGW(TAG,
                  "Scanner[%d] %s firmware ready durably accepted: "
                  "board=%s current=%s target=%s",
@@ -2091,7 +2217,12 @@ static void process_line(const char *line, size_t len, int scanner_id)
                  ver[0] ? ver : "?",
                  target[0] ? target : "?");
     } else if (strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0) {
-        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        scanner_info_t *info = scanner_info_update_begin(scanner_id);
+        if (!info) {
+            ESP_LOGE(TAG, "Scanner[%d] calibration snapshot lock failed", scanner_id);
+            cJSON_Delete(root);
+            return;
+        }
         const char *scan_mode = json_get_string(root, JSON_KEY_SCAN_MODE, "normal");
         const char *cal_uuid = json_get_string(root, JSON_KEY_CALIBRATION_UUID, "");
         const cJSON *ok_item = cJSON_GetObjectItemCaseSensitive(root, "ok");
@@ -2103,21 +2234,37 @@ static void process_line(const char *line, size_t len, int scanner_id)
         info->calibration_uuid[sizeof(info->calibration_uuid) - 1] = '\0';
         info->calibration_mode_acked = ok;
         info->received = true;
+        scanner_info_update_commit();
         ESP_LOGW(TAG, "Scanner[%d] calibration ack: ok=%d mode=%s uuid=%s",
                  scanner_id,
                  ok ? 1 : 0,
-                 info->scan_mode[0] ? info->scan_mode : "normal",
-                 info->calibration_uuid[0] ? info->calibration_uuid : "-");
+                 scan_mode && scan_mode[0] ? scan_mode : "normal",
+                 cal_uuid && cal_uuid[0] ? cal_uuid : "-");
     } else if (strcmp(msg_type, "scan_profile_ack") == 0) {
-        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        scanner_info_t *info = scanner_info_update_begin(scanner_id);
+        if (!info) {
+            ESP_LOGE(TAG, "Scanner[%d] profile snapshot lock failed", scanner_id);
+            cJSON_Delete(root);
+            return;
+        }
         const char *scan_profile = json_get_string(root, JSON_KEY_SCAN_PROFILE, "");
         strncpy(info->scan_profile, scan_profile, sizeof(info->scan_profile) - 1);
         info->scan_profile[sizeof(info->scan_profile) - 1] = '\0';
+        const char *slot_role = json_get_string(root, JSON_KEY_SLOT_ROLE, "");
+        if (json_get_bool(root, "slot_role_ok", false)) {
+            strncpy(info->slot_role, slot_role, sizeof(info->slot_role) - 1);
+            info->slot_role[sizeof(info->slot_role) - 1] = '\0';
+        } else {
+            info->slot_role[0] = '\0';
+        }
+        info->scan_profile_ack_generation++;
         info->cmd_rx_count++;
         info->cmd_last_age_s = 0;
         info->received = true;
+        scanner_info_update_commit();
         ESP_LOGI(TAG, "Scanner[%d] scan profile ack: %s",
-                 scanner_id, info->scan_profile[0] ? info->scan_profile : "?");
+                 scanner_id,
+                 scan_profile && scan_profile[0] ? scan_profile : "?");
     } else if (strcmp(msg_type, "display_control_ack") == 0) {
         const char *view = json_get_string(root, "view", "?");
         const cJSON *button_j = cJSON_GetObjectItemCaseSensitive(root, "button_enabled");
@@ -2134,19 +2281,29 @@ static void process_line(const char *line, size_t len, int scanner_id)
                  page_lock ? 1 : 0,
                  (page_j && cJSON_IsNumber(page_j)) ? page_j->valueint : -1);
     } else if (strcmp(msg_type, "display_policy_ack") == 0) {
-        scanner_info_t *info = (scanner_id == 0) ? &s_ble_scanner_info : &s_wifi_scanner_info;
+        scanner_info_t *info = scanner_info_update_begin(scanner_id);
+        if (!info) {
+            ESP_LOGE(TAG, "Scanner[%d] display-policy snapshot lock failed", scanner_id);
+            cJSON_Delete(root);
+            return;
+        }
         info->display_policy_ack_hash = (uint32_t)json_get_double(
             root, "hash", (double)info->display_policy_ack_hash
         );
         info->cmd_rx_count++;
         info->cmd_last_age_s = 0;
         info->received = true;
+        uint32_t display_policy_ack_hash = info->display_policy_ack_hash;
+        scanner_info_update_commit();
         ESP_LOGI(TAG, "Scanner[%d] display policy ack hash=%lu",
-                 scanner_id, (unsigned long)info->display_policy_ack_hash);
+                 scanner_id, (unsigned long)display_policy_ack_hash);
     } else if (strcmp(msg_type, MSG_TYPE_SCANNER_QUIET_ACK) == 0) {
-        scanner_info_t *info = (scanner_id == 0)
-            ? &s_ble_scanner_info
-            : &s_wifi_scanner_info;
+        scanner_info_t *info = scanner_info_update_begin(scanner_id);
+        if (!info) {
+            ESP_LOGE(TAG, "Scanner[%d] quiet-mode snapshot lock failed", scanner_id);
+            cJSON_Delete(root);
+            return;
+        }
         const cJSON *ok_j = cJSON_GetObjectItemCaseSensitive(root, "ok");
         const cJSON *enabled_j = cJSON_GetObjectItemCaseSensitive(root, "enabled");
         const cJSON *tx_enabled_j = cJSON_GetObjectItemCaseSensitive(
@@ -2208,6 +2365,7 @@ static void process_line(const char *line, size_t len, int scanner_id)
         info->cmd_rx_count++;
         info->cmd_last_age_s = 0;
         info->received = true;
+        scanner_info_update_commit();
 #ifdef FOF_BADGE_VARIANT
         badge_power_runtime_note_scanner_ack(
             scanner_id, transition_ok, enabled, generation,
@@ -2324,9 +2482,18 @@ static void uart_rx_task(void *arg)
             last_heartbeat_ms = now_ms;
         }
         /* During OTA relay, pause reading so relay handler can read ACKs directly */
-        volatile bool *paused = (scanner_id == 0) ? &s_rx_paused_ble : &s_rx_paused_wifi;
-        if (*paused) {
-            vTaskDelay(pdMS_TO_TICKS(100));
+        atomic_bool *paused = (scanner_id == 0)
+            ? &s_rx_paused_ble
+            : &s_rx_paused_wifi;
+        atomic_bool *pause_acked = (scanner_id == 0)
+            ? &s_rx_pause_acked_ble
+            : &s_rx_pause_acked_wifi;
+        if (atomic_load_explicit(paused, memory_order_acquire)) {
+            atomic_store_explicit(pause_acked, true, memory_order_release);
+            do {
+                vTaskDelay(pdMS_TO_TICKS(UART_RX_PAUSE_POLL_MS));
+            } while (atomic_load_explicit(paused, memory_order_acquire));
+            atomic_store_explicit(pause_acked, false, memory_order_release);
             continue;
         }
 
@@ -2411,6 +2578,13 @@ void uart_rx_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
     (void)uart_rx_scanner_tx_lease_init();
+    if (!s_scanner_info_mutex) {
+        s_scanner_info_mutex = xSemaphoreCreateMutexStatic(
+            &s_scanner_info_mutex_storage);
+        if (!s_scanner_info_mutex) {
+            ESP_LOGE(TAG, "Failed to create scanner status snapshot mutex");
+        }
+    }
     if (!s_scanner_identity_mutex) {
         s_scanner_identity_mutex = xSemaphoreCreateMutexStatic(
             &s_scanner_identity_mutex_storage);
@@ -2703,14 +2877,17 @@ void uart_rx_send_command_to_scanner(int scanner_id, const char *json_cmd)
     (void)uart_rx_send_command_to_scanner_checked(scanner_id, json_cmd);
 }
 
-const scanner_info_t *uart_rx_get_ble_scanner_info(void)
+bool uart_rx_get_scanner_info_snapshot(int scanner_id, scanner_info_t *out)
 {
-    return s_ble_scanner_info.received ? &s_ble_scanner_info : NULL;
-}
-
-const scanner_info_t *uart_rx_get_wifi_scanner_info(void)
-{
-    return s_wifi_scanner_info.received ? &s_wifi_scanner_info : NULL;
+    if ((scanner_id != 0 && scanner_id != 1) || !out ||
+        !s_scanner_info_mutex ||
+        xSemaphoreTake(s_scanner_info_mutex,
+                       pdMS_TO_TICKS(100)) != pdTRUE) {
+        return false;
+    }
+    *out = *scanner_info_for_slot_unlocked(scanner_id);
+    xSemaphoreGive(s_scanner_info_mutex);
+    return out->received;
 }
 
 bool uart_rx_get_scanner_identity_snapshot(
@@ -2743,16 +2920,39 @@ void uart_rx_clear_ota_response(void)
     portEXIT_CRITICAL(&s_ota_response_lock);
 }
 
-void uart_rx_pause_scanner(int scanner_id)
+bool uart_rx_pause_scanner(int scanner_id)
 {
-    if (scanner_id == 0) s_rx_paused_ble = true;
-    else s_rx_paused_wifi = true;
-    ESP_LOGW(TAG, "UART RX paused for scanner %d (OTA relay)", scanner_id);
+    if (scanner_id < 0 || scanner_id > 1) {
+        return false;
+    }
+    atomic_bool *paused = scanner_id == 0
+        ? &s_rx_paused_ble
+        : &s_rx_paused_wifi;
+    atomic_bool *pause_acked = scanner_id == 0
+        ? &s_rx_pause_acked_ble
+        : &s_rx_pause_acked_wifi;
+    atomic_store_explicit(paused, true, memory_order_release);
+
+    int64_t deadline_ms = (esp_timer_get_time() / 1000) +
+        UART_RX_PAUSE_ACK_TIMEOUT_MS;
+    while (!atomic_load_explicit(pause_acked, memory_order_acquire) &&
+           (esp_timer_get_time() / 1000) < deadline_ms) {
+        vTaskDelay(pdMS_TO_TICKS(UART_RX_PAUSE_POLL_MS));
+    }
+    bool acked = atomic_load_explicit(pause_acked, memory_order_acquire);
+    ESP_LOGW(TAG, "UART RX pause for scanner %d (OTA relay): %s",
+             scanner_id, acked ? "acknowledged" : "timeout");
+    return acked;
 }
 
 void uart_rx_resume_scanner(int scanner_id)
 {
-    if (scanner_id == 0) s_rx_paused_ble = false;
-    else s_rx_paused_wifi = false;
+    if (scanner_id < 0 || scanner_id > 1) {
+        return;
+    }
+    atomic_bool *paused = scanner_id == 0
+        ? &s_rx_paused_ble
+        : &s_rx_paused_wifi;
+    atomic_store_explicit(paused, false, memory_order_release);
     ESP_LOGW(TAG, "UART RX resumed for scanner %d", scanner_id);
 }

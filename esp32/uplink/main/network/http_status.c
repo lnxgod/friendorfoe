@@ -14,6 +14,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <sys/socket.h>
 #include "esp_http_server.h"
 #include "esp_timer.h"
@@ -51,6 +52,21 @@
 #endif
 
 static const char *TAG = "http_status";
+/* ESP-IDF dispatches these handlers on one HTTP server task. Persist the two
+ * complete scanner copies outside its 8 KB stack; each helper call refreshes
+ * one slot atomically through uart_rx's snapshot mutex. */
+static scanner_info_t s_http_scanner_snapshots[2] = {0};
+
+static const scanner_info_t *http_scanner_snapshot(int scanner_id)
+{
+    if (scanner_id < 0 || scanner_id > 1) {
+        return NULL;
+    }
+    return uart_rx_get_scanner_info_snapshot(
+               scanner_id, &s_http_scanner_snapshots[scanner_id])
+        ? &s_http_scanner_snapshots[scanner_id]
+        : NULL;
+}
 
 static void json_chunk_string(httpd_req_t *req, const char *value);
 
@@ -75,6 +91,65 @@ static const char *source_name(uint8_t src)
     }
 }
 
+/**
+ * Format one scanner-status response chunk without ever streaming truncated
+ * snprintf output.  The common case stays in the caller's PSRAM scratch
+ * buffer.  If a future telemetry expansion exceeds that bound, allocate the
+ * exact required size (also PSRAM-preferred) and format again before sending.
+ */
+static esp_err_t scanner_status_sendf(httpd_req_t *req,
+                                      char *scratch,
+                                      size_t scratch_len,
+                                      const char *format,
+                                      ...)
+{
+    if (!req || !scratch || scratch_len == 0 || !format) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    va_list args;
+    va_list retry_args;
+    va_start(args, format);
+    va_copy(retry_args, args);
+    int written = vsnprintf(scratch, scratch_len, format, args);
+    va_end(args);
+
+    if (written < 0) {
+        va_end(retry_args);
+        ESP_LOGE(TAG, "Scanner status formatting failed");
+        return ESP_FAIL;
+    }
+
+    char *payload = scratch;
+    size_t payload_len = (size_t)written;
+    char *expanded = NULL;
+    if ((size_t)written >= scratch_len) {
+        size_t required = payload_len + 1;
+        expanded = (char *)psram_alloc(required);
+        if (!expanded) {
+            va_end(retry_args);
+            ESP_LOGE(TAG, "Scanner status expansion failed (%u bytes)",
+                     (unsigned)required);
+            return ESP_ERR_NO_MEM;
+        }
+
+        int retry_written = vsnprintf(expanded, required, format, retry_args);
+        if (retry_written != written) {
+            va_end(retry_args);
+            psram_free(expanded);
+            ESP_LOGE(TAG, "Scanner status reformat failed (%d != %d)",
+                     retry_written, written);
+            return ESP_FAIL;
+        }
+        payload = expanded;
+    }
+    va_end(retry_args);
+
+    esp_err_t err = httpd_resp_send_chunk(req, payload, payload_len);
+    psram_free(expanded);
+    return err;
+}
+
 static void badge_status_chunk_scanner(httpd_req_t *req,
                                        const char *name,
                                        uint8_t scanner_id,
@@ -83,46 +158,58 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                                        const scanner_info_t *info,
                                        bool first)
 {
-    enum { SCANNER_STATUS_BUF_LEN = 2048 };
+    enum { SCANNER_STATUS_BUF_LEN = 4096 };
     char *buf = (char *)psram_alloc(SCANNER_STATUS_BUF_LEN);
     if (!buf) {
         httpd_resp_send_chunk(req, first ? "{}" : ",{}", HTTPD_RESP_USE_STRLEN);
         return;
     }
     const bool calibration = info && strcmp(info->scan_mode, "calibration") == 0;
-    const char *expected = calibration
-        ? fof_policy_scan_profile_for_slot(scanner_id, true)
-        : (peer_connected ? fof_policy_scan_profile_for_slot(scanner_id, false)
-                          : "hybrid_failover");
+    const char *expected = fof_policy_scan_profile_for_topology(
+        scanner_id, calibration, peer_connected,
+        FOF_POLICY_FIXED_SLOT_TOPOLOGY);
     const char *actual = (info && info->scan_profile[0])
         ? info->scan_profile
         : "";
-    const bool role_acked = connected && actual[0] && strcmp(actual, expected) == 0;
+    const char *expected_role = fof_policy_slot_role_for_slot(scanner_id);
+    const char *actual_role = (info && info->slot_role[0])
+        ? info->slot_role : "";
+    const bool role_acked = connected && actual[0] &&
+        strcmp(actual, expected) == 0 && actual_role[0] &&
+        strcmp(actual_role, expected_role) == 0;
     const bool cmd_fresh = connected && info && info->cmd_rx_count > 0 &&
                            info->cmd_last_age_s >= 0 && info->cmd_last_age_s <= 45;
-    const char *health = !connected ? "missing" :
-        (!role_acked ? "role_wait" :
-         (!cmd_fresh ? "cmd_wait" :
-          (info && scanner_id == 0 && !info->ble_scanning ? "ble_off" : "ok")));
+    const char *health = fof_policy_badge_scanner_health(
+        expected,
+        connected,
+        role_acked,
+        cmd_fresh,
+        info && info->ble_initialized && info->ble_scanning &&
+            info->ble_host_active && info->ble_host_synced,
+        info && info->wifi_initialized && info->wifi_init_rc == 0,
+        info && info->wifi_active,
+        info && info->ble_quiesced,
+        info && info->wifi_quiesced);
 
-    snprintf(buf, SCANNER_STATUS_BUF_LEN,
+    (void)scanner_status_sendf(req, buf, SCANNER_STATUS_BUF_LEN,
              "%s{\"slot\":%u,\"uart\":\"%s\",\"connected\":%s,"
-             "\"slot_role\":\"%s\",\"expected_scan_profile\":\"%s\","
+             "\"slot_role\":\"%s\",\"expected_slot_role\":\"%s\","
+             "\"expected_scan_profile\":\"%s\","
              "\"scan_profile\":\"%s\",\"role_acked\":%s,\"health\":\"%s\"",
              first ? "" : ",",
              (unsigned)scanner_id,
              name,
              connected ? "true" : "false",
-             fof_policy_slot_role_for_slot(scanner_id),
+             actual_role,
+             expected_role,
              expected,
              actual,
              role_acked ? "true" : "false",
              health);
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     scanner_uart_diag_t uart_diag = {0};
     uart_rx_get_scanner_uart_diag(scanner_id, &uart_diag);
-    snprintf(buf, SCANNER_STATUS_BUF_LEN,
+    (void)scanner_status_sendf(req, buf, SCANNER_STATUS_BUF_LEN,
              ",\"uart_raw_seen\":%s,\"uart_raw_age_s\":%lld,"
              "\"uart_raw_bytes\":%lu,\"uart_line_overflow\":%lu,"
              "\"uart_json_err\":%lu",
@@ -131,7 +218,6 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
              (unsigned long)uart_diag.raw_bytes,
              (unsigned long)uart_diag.line_overflow_count,
              (unsigned long)uart_diag.json_parse_error_count);
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     if (info) {
         httpd_resp_send_chunk(req, ",\"firmware_name\":", HTTPD_RESP_USE_STRLEN);
@@ -142,12 +228,18 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
         json_chunk_string(req, info->hardware_type);
         httpd_resp_send_chunk(req, ",\"hardware_id\":", HTTPD_RESP_USE_STRLEN);
         json_chunk_string(req, info->hardware_id);
-        snprintf(buf, SCANNER_STATUS_BUF_LEN,
-                 ",\"ver\":\"%s\",\"board\":\"%s\",\"cmd_rx\":%lu,"
+        (void)scanner_status_sendf(req, buf, SCANNER_STATUS_BUF_LEN,
+                 ",\"ver\":\"%s\",\"board\":\"%s\","
+                 "\"boot_id\":%lu,\"identity_generation\":%lu,"
+                 "\"cmd_rx\":%lu,"
                  "\"cmd_last_age_s\":%lld,\"cmd_parse_err\":%lu,"
-                 "\"cmd_overflow\":%lu,\"ble_scanning\":%s,"
+                 "\"cmd_overflow\":%lu,\"ble_initialized\":%s,"
+                 "\"ble_scanning\":%s,"
                  "\"ble_host_active\":%s,\"ble_host_synced\":%s,"
-                 "\"wifi_paused\":%s,"
+                 "\"ble_quiesced\":%s,"
+                 "\"wifi_initialized\":%s,\"wifi_active\":%s,"
+                 "\"wifi_quiesced\":%s,"
+                 "\"wifi_init_rc\":%d,\"wifi_paused\":%s,"
                  "\"ble_adv_seen\":%lu,\"ble_any_seen\":%lu,"
                  "\"ble_any_with_payload_seen\":%lu,"
                  "\"ble_any_empty_seen\":%lu,"
@@ -193,13 +285,21 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  "\"wifi_last_notable_ssid_age_s\":%lld",
                  info->version,
                  info->board,
+                 (unsigned long)info->boot_id,
+                 (unsigned long)info->identity_generation,
                  (unsigned long)info->cmd_rx_count,
                  (long long)info->cmd_last_age_s,
                  (unsigned long)info->cmd_parse_error_count,
                  (unsigned long)info->cmd_overflow_count,
+                 info->ble_initialized ? "true" : "false",
                  info->ble_scanning ? "true" : "false",
                  info->ble_host_active ? "true" : "false",
                  info->ble_host_synced ? "true" : "false",
+                 info->ble_quiesced ? "true" : "false",
+                 info->wifi_initialized ? "true" : "false",
+                 info->wifi_active ? "true" : "false",
+                 info->wifi_quiesced ? "true" : "false",
+                 info->wifi_init_rc,
                  info->wifi_paused ? "true" : "false",
                  (unsigned long)info->ble_adv_seen,
                  (unsigned long)info->ble_any_seen,
@@ -268,7 +368,6 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  (unsigned long)info->wifi_notable_ssid_emit,
                  (long long)info->wifi_last_drone_ssid_age_s,
                  (long long)info->wifi_last_notable_ssid_age_s);
-        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
         httpd_resp_send_chunk(req, ",\"wifi_last_drone_ssid\":", HTTPD_RESP_USE_STRLEN);
         json_chunk_string(req, info->wifi_last_drone_ssid);
         httpd_resp_send_chunk(req, ",\"wifi_last_notable_ssid\":", HTTPD_RESP_USE_STRLEN);
@@ -289,7 +388,7 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
         json_chunk_string(req, info->ble_dbg_priv_name);
         httpd_resp_send_chunk(req, ",\"ble_dbg_priv_reason\":", HTTPD_RESP_USE_STRLEN);
         json_chunk_string(req, info->ble_dbg_priv_reason);
-        snprintf(buf, SCANNER_STATUS_BUF_LEN,
+        (void)scanner_status_sendf(req, buf, SCANNER_STATUS_BUF_LEN,
                  ",\"ble_dbg_near_seen\":%lu,\"ble_dbg_near_rssi\":%d,"
                  "\"ble_dbg_near_cid\":%u,\"ble_dbg_near_svc0\":%u,"
                  "\"ble_dbg_near_svc_count\":%u,"
@@ -310,20 +409,18 @@ static void badge_status_chunk_scanner(httpd_req_t *req,
                  (unsigned)info->ble_dbg_priv_svc0,
                  (unsigned)info->ble_dbg_priv_svc_count,
                  (unsigned)info->ble_dbg_priv_payload_len);
-        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
-        snprintf(buf, SCANNER_STATUS_BUF_LEN,
+        (void)scanner_status_sendf(req, buf, SCANNER_STATUS_BUF_LEN,
                  ",\"display_policy_hash\":%lu,"
                  "\"display_policy_ack_hash\":%lu,\"filtered_counts\":{",
                  (unsigned long)info->display_policy_hash,
                  (unsigned long)info->display_policy_ack_hash);
-        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
         for (int i = 0; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; i++) {
             badge_display_policy_class_t cls = (badge_display_policy_class_t)i;
-            snprintf(buf, SCANNER_STATUS_BUF_LEN, "%s\"%s\":%lu",
+            (void)scanner_status_sendf(req, buf, SCANNER_STATUS_BUF_LEN,
+                     "%s\"%s\":%lu",
                      i == 0 ? "" : ",",
                      badge_display_policy_class_key(cls),
                      (unsigned long)info->display_policy_filtered[i]);
-            httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
         }
         httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
     }
@@ -396,18 +493,20 @@ static const char *aggregate_calibration_scan_mode(void)
 #else
     bool wifi_conn = false;
 #endif
+    const scanner_info_t *ble_info = http_scanner_snapshot(0);
+    const scanner_info_t *wifi_info = http_scanner_snapshot(1);
 
     bool slots_normal =
         scanner_connected_mode_matches(
-            ble_conn, uart_rx_get_ble_scanner_info(), "normal", "", false) &&
+            ble_conn, ble_info, "normal", "", false) &&
         scanner_connected_mode_matches(
-            wifi_conn, uart_rx_get_wifi_scanner_info(), "normal", "", false);
+            wifi_conn, wifi_info, "normal", "", false);
 
     bool slots_calibration =
         scanner_connected_mode_matches(
-            ble_conn, uart_rx_get_ble_scanner_info(), "calibration", uuid, true) &&
+            ble_conn, ble_info, "calibration", uuid, true) &&
         scanner_connected_mode_matches(
-            wifi_conn, uart_rx_get_wifi_scanner_info(), "calibration", uuid, true);
+            wifi_conn, wifi_info, "calibration", uuid, true);
 
     if (!root_cal && slots_normal) {
         return "normal";
@@ -436,9 +535,11 @@ static bool wait_for_node_mode(const char *expected_mode,
 
     int waited_ms = 0;
     while (waited_ms <= timeout_ms) {
+        const scanner_info_t *ble_info = http_scanner_snapshot(0);
+        const scanner_info_t *wifi_info = http_scanner_snapshot(1);
         bool ble_ok = !ble_required ||
                       scanner_mode_matches(
-                          uart_rx_get_ble_scanner_info(),
+                          ble_info,
                           expected_mode,
                           expected_uuid,
                           require_ack
@@ -446,7 +547,7 @@ static bool wait_for_node_mode(const char *expected_mode,
 #if CONFIG_DUAL_SCANNER
         bool wifi_ok = !wifi_required ||
                        scanner_mode_matches(
-                           uart_rx_get_wifi_scanner_info(),
+                           wifi_info,
                            expected_mode,
                            expected_uuid,
                            require_ack
@@ -890,16 +991,18 @@ static esp_err_t status_json_handler(httpd_req_t *req)
     httpd_resp_send_chunk(req, "],\"scanners\":[", HTTPD_RESP_USE_STRLEN);
     bool ble_connected = uart_rx_is_ble_scanner_connected();
     bool wifi_connected = uart_rx_is_wifi_scanner_connected();
+    const scanner_info_t *ble_info = http_scanner_snapshot(0);
+    const scanner_info_t *wifi_info = http_scanner_snapshot(1);
     badge_status_chunk_scanner(req, "ble", 0,
                                ble_connected,
                                wifi_connected,
-                               uart_rx_get_ble_scanner_info(),
+                               ble_info,
                                true);
 #if CONFIG_DUAL_SCANNER
     badge_status_chunk_scanner(req, "wifi", 1,
                                wifi_connected,
                                ble_connected,
-                               uart_rx_get_wifi_scanner_info(),
+                               wifi_info,
                                false);
 #endif
 #ifdef FOF_BADGE_VARIANT
@@ -1813,7 +1916,9 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
 
-    badge_threat_snapshot_t snapshot;
+    /* esp_http_server dispatches handlers on one task. Keep the complete
+     * snapshot and JSON scratch space out of that task's 8 KB stack. */
+    static badge_threat_snapshot_t snapshot;
     uart_rx_get_badge_threat_snapshot(&snapshot);
     badge_mode_t mode = badge_mode_get();
     char debug_value[8] = {0};
@@ -1822,7 +1927,7 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
                                                sizeof(debug_value)) &&
                          strcmp(debug_value, "1") == 0;
 
-    char buf[384];
+    static char buf[384];
     uint32_t active_remote_id = badge_threat_snapshot_count_active(
         &snapshot,
         BADGE_THREAT_DRONE,
@@ -1894,7 +1999,8 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
 #ifdef FOF_BADGE_VARIANT
-    char policy_json[BADGE_DISPLAY_POLICY_JSON_MAX] = {0};
+    static char policy_json[BADGE_DISPLAY_POLICY_JSON_MAX];
+    policy_json[0] = '\0';
     badge_display_policy_runtime_json(policy_json, sizeof(policy_json));
     snprintf(buf, sizeof(buf), ",\"display_policy_hash\":%lu,\"display_policy\":",
              (unsigned long)badge_display_policy_runtime_hash());
@@ -1912,7 +2018,8 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
         httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
     }
     httpd_resp_send_chunk(req, "}", HTTPD_RESP_USE_STRLEN);
-    char theme_json[BADGE_THEME_JSON_MAX] = {0};
+    static char theme_json[BADGE_THEME_JSON_MAX];
+    theme_json[0] = '\0';
     badge_theme_runtime_json(theme_json, sizeof(theme_json));
     snprintf(buf, sizeof(buf), ",\"theme_hash\":%lu,\"theme\":",
              (unsigned long)badge_theme_runtime_hash());
@@ -1921,13 +2028,15 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
                           theme_json[0] ? theme_json : "{\"version\":1}",
                           HTTPD_RESP_USE_STRLEN);
     badge_status_chunk_display_state(req);
-    char ble_status[192];
+    static char ble_status[192];
+    ble_status[0] = '\0';
     badge_ble_control_status_json(ble_status, sizeof(ble_status));
     httpd_resp_send_chunk(req, ",\"ble_control\":", HTTPD_RESP_USE_STRLEN);
     httpd_resp_send_chunk(req,
                           ble_status[0] ? ble_status : "{\"enabled\":false}",
                           HTTPD_RESP_USE_STRLEN);
-    char investigation_status[BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX];
+    static char investigation_status[BADGE_BLE_INVESTIGATION_STATUS_JSON_MAX];
+    investigation_status[0] = '\0';
     badge_ble_investigation_status_json(investigation_status,
                                         sizeof(investigation_status));
     httpd_resp_send_chunk(req, ",\"ble_investigation\":", HTTPD_RESP_USE_STRLEN);
@@ -2087,16 +2196,18 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
     httpd_resp_send_chunk(req, "],\"scanners\":[", HTTPD_RESP_USE_STRLEN);
     bool badge_ble_connected = uart_rx_is_ble_scanner_connected();
     bool badge_wifi_connected = uart_rx_is_wifi_scanner_connected();
+    const scanner_info_t *badge_ble_info = http_scanner_snapshot(0);
+    const scanner_info_t *badge_wifi_info = http_scanner_snapshot(1);
     badge_status_chunk_scanner(req, "ble", 0,
                                badge_ble_connected,
                                badge_wifi_connected,
-                               uart_rx_get_ble_scanner_info(),
+                               badge_ble_info,
                                true);
 #if CONFIG_DUAL_SCANNER
     badge_status_chunk_scanner(req, "wifi", 1,
                                badge_wifi_connected,
                                badge_ble_connected,
-                               uart_rx_get_wifi_scanner_info(),
+                               badge_wifi_info,
                                false);
 #endif
     httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
@@ -2493,7 +2604,11 @@ static esp_err_t badge_html_handler(httpd_req_t *req)
         "<div class=\"r\"><label>Mode </label><select id=\"mode\"><option value=\"local_ap\">Local AP</option><option value=\"backend\">Backend</option><option value=\"usb_only\">USB Only</option></select>"
         "<button onclick=\"setMode()\">Save Mode</button><button onclick=\"ctl('reboot')\">Reboot</button><button onclick=\"ctl('bootloader')\">Bootloader</button></div>"
         "<div class=\"r\"><label><input id=\"dbg\" type=\"checkbox\"> Display debug</label><button onclick=\"setDebug()\">Save Debug</button></div>"
+#ifdef FOF_BADGE_VARIANT
+        "<div class=\"r\"><b>Firmware: USB/UART only</b><div class=\"muted\">Connect the uplink badge to the laptop. Flash the uplink and stage the scanner image over USB; the uplink automatically relays newer scanner firmware over UART.</div></div>"
+#else
         "<div class=\"r\"><input id=\"fw\" type=\"file\"><button onclick=\"ota()\">OTA Update</button><div id=\"otaStatus\" class=\"muted\"></div></div>"
+#endif
         "<div class=\"r\"><a style=\"color:#58a6ff\" href=\"/setup\">Wi-Fi/backend setup</a> · <a style=\"color:#58a6ff\" href=\"/api/status\">debug JSON</a></div>"
         "<script>"
         "async function load(){let r=await fetch('/api/badge/status');let d=await r.json();mode.value=d.mode;dbg.checked=!!d.display_debug;"
@@ -2502,7 +2617,9 @@ static esp_err_t badge_html_handler(httpd_req_t *req)
         "async function ctl(cmd){await fetch('/api/badge/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd})});setTimeout(load,700)}"
         "async function setMode(){await fetch('/api/badge/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:'set_mode',mode:mode.value,persist:true})});load()}"
         "async function setDebug(){await fetch('/api/badge/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:'set_display_debug',enabled:dbg.checked})});load()}"
+#ifndef FOF_BADGE_VARIANT
         "async function ota(){let f=fw.files[0];if(!f){otaStatus.textContent='Choose a firmware .bin';return;}otaStatus.textContent='Uploading...';let r=await fetch('/api/ota',{method:'POST',body:f});otaStatus.textContent=await r.text()}"
+#endif
         "load();setInterval(load,2000)</script></div></body></html>");
     return ESP_OK;
 }
@@ -2530,9 +2647,9 @@ static const httpd_uri_t uri_badge_control_post = {
 static esp_err_t calibration_mode_status_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
+    const scanner_info_t *ble = http_scanner_snapshot(0);
 #if CONFIG_DUAL_SCANNER
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *wifi = http_scanner_snapshot(1);
 #else
     const scanner_info_t *wifi = NULL;
 #endif
@@ -2629,6 +2746,14 @@ static esp_err_t calibration_mode_start_handler(httpd_req_t *req)
     }
 
     cJSON_Delete(root);
+    const scanner_info_t *ble_info = http_scanner_snapshot(0);
+    bool ble_acked = ble_info && ble_info->calibration_mode_acked;
+#if CONFIG_DUAL_SCANNER
+    const scanner_info_t *wifi_info = http_scanner_snapshot(1);
+    bool wifi_acked = wifi_info && wifi_info->calibration_mode_acked;
+#else
+    bool wifi_acked = false;
+#endif
     char resp[320];
     snprintf(
         resp,
@@ -2638,12 +2763,8 @@ static esp_err_t calibration_mode_start_handler(httpd_req_t *req)
         uart_rx_get_node_scan_mode(),
         uart_rx_get_node_calibration_session_id(),
         uart_rx_get_node_calibration_uuid(),
-        (uart_rx_get_ble_scanner_info() && uart_rx_get_ble_scanner_info()->calibration_mode_acked) ? "true" : "false",
-#if CONFIG_DUAL_SCANNER
-        (uart_rx_get_wifi_scanner_info() && uart_rx_get_wifi_scanner_info()->calibration_mode_acked) ? "true" : "false"
-#else
-        "false"
-#endif
+        ble_acked ? "true" : "false",
+        wifi_acked ? "true" : "false"
     );
     httpd_resp_sendstr(req, resp);
     return ESP_OK;

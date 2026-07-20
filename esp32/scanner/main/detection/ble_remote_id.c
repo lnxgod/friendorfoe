@@ -357,6 +357,10 @@ static atomic_bool      s_scanning = false;
 static atomic_bool      s_host_task_active = false;
 static atomic_bool      s_host_task_requested = false;
 static atomic_bool      s_host_synced = false;
+/* nimble_port_stop() disables the host as well as ending nimble_port_run().
+ * The first task launch is auto-started by nimble_port_init(); every later
+ * launch must explicitly enqueue a new host start before servicing events. */
+static atomic_bool      s_host_restart_required = false;
 static atomic_uint      s_start_inflight = 0;
 static bool             s_initialized = false;
 static _Atomic(TaskHandle_t) s_host_task_handle = NULL;
@@ -593,12 +597,13 @@ static bool badge_ble_should_emit_detection(const ble_fingerprint_t *fp,
         case BLE_DEV_DRONE_OTHER:
         case BLE_DEV_META_GLASSES:
         case BLE_DEV_META_DEVICE:
-        case BLE_DEV_CARD_SKIMMER:
         case BLE_DEV_PAIRING_SPAM:
-        case BLE_DEV_SERIAL_SKIMMER:
         case BLE_DEV_HIDDEN_CAMERA:
         case BLE_DEV_FLIPPER_ZERO:
             return true;
+        case BLE_DEV_CARD_SKIMMER:
+        case BLE_DEV_SERIAL_SKIMMER:
+            return BADGE_SKIMMER_DETECTION_ENABLED != 0;
         case BLE_DEV_MOBILE_KEY_LOCK:
         case BLE_DEV_BLE_HID:
             return rssi >= -72;
@@ -1194,9 +1199,13 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 }
             }
 
+            const int8_t emission_rssi =
+                behavioral_signal.kind == BLE_THREAT_SERIAL_SKIMMER
+                    ? behavioral_signal.strongest_rssi
+                    : disc->rssi;
             bool should_emit = badge_ble_should_emit_detection(
                 &fp, is_calibration_beacon, is_focus_target, is_meta_device,
-                disc->rssi
+                emission_rssi
             );
             if (badge_nearby_ble_diag_emit) {
                 should_emit = true;
@@ -1208,7 +1217,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
                 drone_detection_t det = {0};
                 det.source = DETECTION_SRC_BLE_FINGERPRINT;
-                det.rssi = disc->rssi;
+                det.rssi = emission_rssi;
                 det.last_updated_ms = now_ms;
                 det.first_seen_ms = now_ms;
 
@@ -1549,9 +1558,13 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 }
             }
 
+            const int8_t emission_rssi =
+                behavioral_signal.kind == BLE_THREAT_SERIAL_SKIMMER
+                    ? behavioral_signal.strongest_rssi
+                    : ext->rssi;
             bool should_emit = badge_ble_should_emit_detection(
                 &fp, is_calibration_beacon, is_focus_target, is_meta_device,
-                ext->rssi
+                emission_rssi
             );
             if (badge_nearby_ble_diag_emit) {
                 should_emit = true;
@@ -1563,7 +1576,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
                 drone_detection_t det = {0};
                 det.source = DETECTION_SRC_BLE_FINGERPRINT;
-                det.rssi = ext->rssi;
+                det.rssi = emission_rssi;
                 det.last_updated_ms = now_ms;
                 det.first_seen_ms = now_ms;
 
@@ -1886,7 +1899,14 @@ static void ble_host_task(void *arg)
     s_host_task_requested = false;
     s_host_task_active = true;
     ESP_LOGI(TAG, "NimBLE host task started on core %d", xPortGetCoreID());
+    if (atomic_exchange_explicit(&s_host_restart_required, false,
+                                 memory_order_acq_rel)) {
+        ESP_LOGI(TAG, "Rescheduling NimBLE host after prior stop");
+        ble_hs_sched_start();
+    }
     nimble_port_run();          /* Runs forever until nimble_port_stop() */
+    atomic_store_explicit(&s_host_restart_required, true,
+                          memory_order_release);
     s_host_task_active = false;
     s_host_task_requested = false;
     s_host_synced = false;
@@ -2079,6 +2099,11 @@ void ble_remote_id_stop(void)
 bool ble_remote_id_is_scanning(void)
 {
     return s_scanning;
+}
+
+bool ble_remote_id_is_initialized(void)
+{
+    return s_initialized;
 }
 
 bool ble_remote_id_is_quiesced(void)

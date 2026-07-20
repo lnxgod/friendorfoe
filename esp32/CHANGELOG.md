@@ -2,6 +2,99 @@
 
 All notable changes to the ESP32 hardware edition of Friend or Foe.
 
+## [0.64.76-badge-defcon34] - 2026-07-18
+
+### Changed
+- **UART update reconfirmation release.** Version-only increment used to
+  repeat the physical USB-stage and automatic two-scanner UART convergence
+  test without changing badge behavior.
+
+### Verified
+- Uplink and both physical scanner slots converged from `.75` to `.76` using
+  only uplink USB staging and serialized scanner UART relays. Each scanner
+  transferred 1,197,312 bytes in 1,170 chunks with zero NACKs or retries,
+  retained its immutable MAC/role, restored its role-specific radio, and
+  cleared rollback. The relay worker retained 5,084 bytes of stack headroom.
+
+## [0.64.75-badge-defcon34] - 2026-07-18
+
+### Fixed
+- **Older-scanner bootstrap.** Exact duplicate `fw_ready` receipts from older
+  long-running scanner firmware are now idempotent while the same immutable
+  generation/MAC/slot binding already owns the queue, preventing a spurious
+  refusal/start from clearing the scanner's armed manifest.
+
+### Verified
+- A USB-staged 1,197,328-byte scanner image automatically converged both
+  physical scanner slots over UART on their delayed boot checks. BLE and Wi-Fi
+  each transferred 1,170 chunks with zero NACKs or retries, preserved their
+  immutable MAC/role bindings, restored the correct radio, cleared rollback,
+  and reported healthy on `0.64.75-badge-defcon34`.
+- The automatic relay worker retained 5,076 bytes of stack headroom through
+  both serialized updates; the uplink reported zero crashes and 8 MiB PSRAM.
+
+## [0.64.74-badge-defcon34] - 2026-07-18
+
+### Fixed
+- **Automatic relay worker stack.** Increased the short-lived manifest-bound
+  UART relay worker from 7,168 to 12,288 bytes after hardware captured a stack
+  overflow at `ota_begin`; relay logs now include measured stack headroom.
+
+## [0.64.73-badge-defcon34] - 2026-07-18
+
+### Fixed
+- **Ready-manifest lifetime.** Removed the scanner's overdue 60-second
+  pending-update retry, which could clear a newly accepted immutable offer
+  before the automatic relay delivered `ota_begin`.
+- **Coordinator UART isolation.** Routine role/start traffic now defers for
+  the full automatic-update worker lifetime, including readiness and identity
+  proof windows before binary relay begins.
+
+## [0.64.72-badge-defcon34] - 2026-07-18
+
+### Changed
+- **Delayed boot-only update discovery.** Each scanner sends one firmware
+  check eight seconds after boot, once identity and role setup have had time
+  to settle. Normal badge operation no longer runs scanner or uplink
+  ten-minute update timers; USB/manual force-checks remain available.
+- **Safe update recovery.** A pending accepted update may retry after a
+  transient failure without enabling general polling, and every forced check
+  still defers while staging or relay owns the UART link.
+
+## [0.64.71-badge-defcon34] - 2026-07-18
+
+### Fixed
+- **Self-healing scanner update checks.** Badge scanners check the staged
+  uplink manifest at boot and every ten minutes; the uplink supplies an
+  independent ten-minute backstop and a busy-safe force-check command.
+- **Interrupted convergence recovery.** A scanner that remains older after a
+  transient refused/failed relay can re-arm the same immutable generation on
+  its next boot, periodic, or manual check without resetting the three-attempt
+  budget or permitting a downgrade.
+- **UART update isolation.** Manual and periodic firmware checks defer while
+  USB staging or binary UART relay owns the scanner link.
+
+## [0.64.70-badge-defcon34] - 2026-07-18
+
+### Fixed
+- **Automatic scanner-update convergence.** Each scanner now publishes a
+  per-boot identity, and the uplink requires a new boot plus an immutable
+  identity snapshot, exact manifest receipt, live command ingress, fixed slot
+  role, and role-specific radio health before declaring a UART update done.
+- **Long relay stability.** Stateful UART receipt parsing preserves split JSON
+  lines, and the USB-control watchdog receives heartbeats during synchronous
+  scanner health waits instead of rebooting the uplink mid-verification.
+- **Fixed scanner topology.** The BLE-primary board keeps Wi-Fi quiesced and
+  the Wi-Fi-primary board keeps BLE quiesced, preserving the four display lanes
+  without exhausting internal radio/DMA memory.
+- **USB reset observability.** Normal ESP32-S3 USB resets report as `usb`
+  instead of `unknown` in badge status.
+
+### Verified
+- The USB-connected uplink staged one exact scanner image and serialized UART
+  updates to both physical scanner boards with SHA-256/size/CRC/session checks,
+  post-reboot identity proof, and restored BLE/Wi-Fi scan health.
+
 ## [0.64.69-badge-defcon34] - 2026-07-17
 
 ### Added

@@ -19,7 +19,7 @@
 #define MAX_SERIAL_TRACKS 64U
 #define SERIAL_PERSISTENCE_OBSERVATIONS 3U
 #define SERIAL_PERSISTENCE_MS 5000U
-#define CLOSE_RSSI_DBM (-70)
+#define CLOSE_RSSI_DBM BLE_THREAT_SKIMMER_MIN_RSSI_DBM
 #define SERIAL_REQUIRED_EVIDENCE (BLE_THREAT_EVIDENCE_SERIAL_UUID | \
                                   BLE_THREAT_EVIDENCE_SPARSE | \
                                   BLE_THREAT_EVIDENCE_PERSISTENT)
@@ -654,6 +654,10 @@ static bool observe_serial(const ble_threat_observation_t *observation,
         update_serial_track(track, observation);
     }
     if (track->alerted || track->trusted || track->has_pkoc_identity) {
+        return false;
+    }
+
+    if (track->strongest_rssi < BLE_THREAT_SKIMMER_MIN_RSSI_DBM) {
         return false;
     }
 

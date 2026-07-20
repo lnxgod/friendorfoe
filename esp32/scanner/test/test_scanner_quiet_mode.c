@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "calibration_mode.h"
+#include "nvs.h"
 
 static bool g_tx_enabled;
 static bool g_wifi_paused;
@@ -28,6 +29,77 @@ static int g_wifi_lockon_cancel_calls;
 static int g_ble_start_calls;
 static int g_ble_stop_calls;
 static int g_ble_lockon_cancel_calls;
+static int g_nvs_commit_calls;
+static bool g_nvs_role_persisted;
+static uint8_t g_nvs_schema;
+static char g_nvs_role[24];
+
+esp_err_t nvs_open(const char *namespace_name, int open_mode,
+                   nvs_handle_t *out_handle)
+{
+    (void)namespace_name;
+    if (open_mode == NVS_READONLY && !g_nvs_role_persisted) {
+        return ESP_ERR_NVS_NOT_FOUND;
+    }
+    *out_handle = 1;
+    return ESP_OK;
+}
+
+esp_err_t nvs_get_u8(nvs_handle_t handle, const char *key, uint8_t *out_value)
+{
+    (void)handle;
+    (void)key;
+    if (!g_nvs_role_persisted) {
+        return ESP_ERR_NVS_NOT_FOUND;
+    }
+    *out_value = g_nvs_schema;
+    return ESP_OK;
+}
+
+esp_err_t nvs_get_str(nvs_handle_t handle, const char *key,
+                      char *out_value, size_t *length)
+{
+    (void)handle;
+    (void)key;
+    size_t required = strlen(g_nvs_role) + 1;
+    if (!g_nvs_role_persisted || !out_value || !length || *length < required) {
+        return ESP_ERR_NVS_NOT_FOUND;
+    }
+    memcpy(out_value, g_nvs_role, required);
+    *length = required;
+    return ESP_OK;
+}
+
+esp_err_t nvs_set_u8(nvs_handle_t handle, const char *key, uint8_t value)
+{
+    (void)handle;
+    (void)key;
+    g_nvs_schema = value;
+    return ESP_OK;
+}
+
+esp_err_t nvs_set_str(nvs_handle_t handle, const char *key,
+                      const char *value)
+{
+    (void)handle;
+    (void)key;
+    strncpy(g_nvs_role, value, sizeof(g_nvs_role) - 1);
+    g_nvs_role[sizeof(g_nvs_role) - 1] = '\0';
+    return ESP_OK;
+}
+
+esp_err_t nvs_commit(nvs_handle_t handle)
+{
+    (void)handle;
+    g_nvs_commit_calls++;
+    g_nvs_role_persisted = true;
+    return ESP_OK;
+}
+
+void nvs_close(nvs_handle_t handle)
+{
+    (void)handle;
+}
 
 static void require_quiet_before_halt(void)
 {
@@ -76,12 +148,13 @@ void wifi_scanner_pause(void)
     g_wifi_active = false;
 }
 
-void wifi_scanner_resume(void)
+bool wifi_scanner_resume(void)
 {
     g_wifi_resume_calls++;
     g_wifi_paused = false;
     g_wifi_quiesced = false;
     g_wifi_active = g_wifi_resume_converges;
+    return g_wifi_active;
 }
 
 bool wifi_scanner_is_paused(void)
@@ -183,6 +256,81 @@ static void reset_call_counts(void)
     g_ble_start_calls = 0;
     g_ble_stop_calls = 0;
     g_ble_lockon_cancel_calls = 0;
+}
+
+static void close_unassigned_role_boot_window(void)
+{
+    scanner_scan_profile_runtime_ready_set(true);
+    assert(!scanner_slot_role_boot_window_close());
+    reset_call_counts();
+}
+
+static void test_invalid_late_role_is_rejected_without_mutation(void)
+{
+    bool late_recovery_required = true;
+
+    assert(!scanner_slot_role_command_apply(NULL, "ble_primary",
+                                            &late_recovery_required));
+    assert(!late_recovery_required);
+    assert(!scanner_slot_role_assignment_seen());
+    assert(!scanner_slot_role_command_seen());
+    assert(!scanner_scan_profile_assignment_seen());
+    assert(g_nvs_commit_calls == 0);
+}
+
+static void test_mismatched_late_profile_cannot_allocate_hybrid(void)
+{
+    bool late_recovery_required = true;
+
+    assert(!scanner_slot_role_command_apply("ble_primary", "hybrid_failover",
+                                            &late_recovery_required));
+    assert(!late_recovery_required);
+    assert(!scanner_slot_role_assignment_seen());
+    assert(strcmp(scanner_scan_profile_label(), "hybrid_failover") == 0);
+    assert(g_nvs_commit_calls == 0);
+    assert(g_ble_start_calls == 0);
+    assert(g_wifi_resume_calls == 0);
+}
+
+static void test_valid_late_role_claims_one_exact_recovery(void)
+{
+    bool late_recovery_required = false;
+
+    assert(scanner_slot_role_command_apply("ble_primary", "ble_primary",
+                                           &late_recovery_required));
+    assert(late_recovery_required);
+    assert(scanner_slot_role_assignment_seen());
+    assert(scanner_slot_role_command_seen());
+    assert(scanner_scan_profile_assignment_seen());
+    assert(strcmp(scanner_slot_role_label(), "ble_primary") == 0);
+    assert(strcmp(scanner_scan_profile_label(), "ble_primary") == 0);
+    assert(g_nvs_commit_calls == 1);
+    assert(g_ble_start_calls == 0);
+    assert(g_wifi_resume_calls == 0);
+}
+
+static void test_replayed_late_role_is_idempotent(void)
+{
+    bool late_recovery_required = true;
+
+    assert(scanner_slot_role_command_apply("ble_primary", "ble_primary",
+                                           &late_recovery_required));
+    assert(!late_recovery_required);
+    assert(g_nvs_commit_calls == 1);
+    assert(g_ble_start_calls == 0);
+    assert(g_wifi_resume_calls == 0);
+}
+
+static void test_durable_role_change_is_rejected_entirely(void)
+{
+    bool late_recovery_required = true;
+
+    assert(!scanner_slot_role_command_apply("wifi_primary", "wifi_primary",
+                                            &late_recovery_required));
+    assert(!late_recovery_required);
+    assert(strcmp(scanner_slot_role_label(), "ble_primary") == 0);
+    assert(strcmp(scanner_scan_profile_label(), "ble_primary") == 0);
+    assert(g_nvs_commit_calls == 1);
 }
 
 static void test_quiet_halts_both_radios_after_publishing_state(void)
@@ -314,6 +462,13 @@ static void test_wake_ack_waits_for_configured_radios_and_saved_tx(void)
 
 int main(void)
 {
+    close_unassigned_role_boot_window();
+    test_invalid_late_role_is_rejected_without_mutation();
+    test_mismatched_late_profile_cannot_allocate_hybrid();
+    test_valid_late_role_claims_one_exact_recovery();
+    test_replayed_late_role_is_idempotent();
+    test_durable_role_change_is_rejected_entirely();
+    scanner_scan_profile_runtime_ready_set(true);
     test_quiet_halts_both_radios_after_publishing_state();
     test_quiet_guards_profile_and_calibration_restart();
     test_quiet_exit_restores_saved_profile_and_tx();

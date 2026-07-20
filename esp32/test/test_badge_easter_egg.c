@@ -1,5 +1,9 @@
 #include "unity.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "badge_easter_egg.h"
 #include "badge_easter_egg_animation.h"
 #include "uart_protocol.h"
@@ -334,7 +338,7 @@ void test_badge_easter_animation_initializes_and_moves_without_collision(void)
     TEST_ASSERT_EQUAL_UINT8(0, animation.color_index);
 
     TEST_ASSERT_FALSE(badge_easter_egg_animation_step(
-        &animation, 160, 160, 64, 64, 6));
+        &animation, 128, 160, 64, 64, 6));
     TEST_ASSERT_EQUAL_INT16(11, animation.x);
     TEST_ASSERT_EQUAL_INT16(14, animation.y);
     TEST_ASSERT_EQUAL_INT8(3, animation.vx);
@@ -345,7 +349,7 @@ void test_badge_easter_animation_initializes_and_moves_without_collision(void)
 void test_badge_easter_animation_clamps_edges_and_cycles_color_once(void)
 {
     badge_easter_egg_animation_t animation = {
-        .x = 95,
+        .x = 63,
         .y = 95,
         .vx = 3,
         .vy = 2,
@@ -353,8 +357,8 @@ void test_badge_easter_animation_clamps_edges_and_cycles_color_once(void)
     };
 
     TEST_ASSERT_TRUE(badge_easter_egg_animation_step(
-        &animation, 160, 160, 64, 64, 6));
-    TEST_ASSERT_EQUAL_INT16(96, animation.x);
+        &animation, 128, 160, 64, 64, 6));
+    TEST_ASSERT_EQUAL_INT16(64, animation.x);
     TEST_ASSERT_EQUAL_INT16(96, animation.y);
     TEST_ASSERT_EQUAL_INT8(-3, animation.vx);
     TEST_ASSERT_EQUAL_INT8(-2, animation.vy);
@@ -366,7 +370,7 @@ void test_badge_easter_animation_clamps_edges_and_cycles_color_once(void)
     animation.vy = -2;
     animation.color_index = 0;
     TEST_ASSERT_TRUE(badge_easter_egg_animation_step(
-        &animation, 160, 160, 64, 64, 6));
+        &animation, 128, 160, 64, 64, 6));
     TEST_ASSERT_EQUAL_INT16(0, animation.x);
     TEST_ASSERT_EQUAL_INT16(0, animation.y);
     TEST_ASSERT_EQUAL_INT8(3, animation.vx);
@@ -390,5 +394,31 @@ void test_badge_easter_animation_rejects_invalid_bounds_safely(void)
     TEST_ASSERT_EQUAL_INT16(0, animation.y);
     TEST_ASSERT_EQUAL_UINT8(0, animation.color_index);
     TEST_ASSERT_FALSE(badge_easter_egg_animation_step(
-        NULL, 160, 160, 64, 64, 6));
+        NULL, 128, 160, 64, 64, 6));
+}
+
+void test_badge_easter_renderer_uses_only_approved_presentation_copy(void)
+{
+    FILE *source_file = fopen("uplink/main/hw/display_st7735.c", "rb");
+    TEST_ASSERT_NOT_NULL(source_file);
+    TEST_ASSERT_EQUAL_INT(0, fseek(source_file, 0, SEEK_END));
+    long source_size = ftell(source_file);
+    TEST_ASSERT_GREATER_THAN(0, source_size);
+    TEST_ASSERT_EQUAL_INT(0, fseek(source_file, 0, SEEK_SET));
+
+    char *source = malloc((size_t)source_size + 1U);
+    TEST_ASSERT_NOT_NULL(source);
+    TEST_ASSERT_EQUAL_UINT((size_t)source_size,
+                           fread(source, 1, (size_t)source_size, source_file));
+    source[source_size] = '\0';
+    fclose(source_file);
+
+    TEST_ASSERT_NOT_NULL(strstr(source, "Thank you from"));
+    TEST_ASSERT_NOT_NULL(strstr(source, "GameChangers AI"));
+    TEST_ASSERT_NOT_NULL(strstr(source, "GAMECHANGERSAI_LOGO_WIDTH"));
+    TEST_ASSERT_NOT_NULL(strstr(source, "BADGE_EASTER_EGG_PHASE_BOUNCE"));
+    TEST_ASSERT_NULL(strstr(source, "Welcome to Hell"));
+    TEST_ASSERT_NULL(strstr(source, "Just Kidding"));
+    TEST_ASSERT_NULL(strstr(source, "Defcon 34 FoF"));
+    free(source);
 }

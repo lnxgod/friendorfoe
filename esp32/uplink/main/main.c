@@ -75,7 +75,11 @@
 #define BADGE_DISPLAY_UPDATE_MS 250
 #endif
 
+/* Scanner firmware discovery is scanner-driven once after delayed boot.
+ * Explicit force-checks remain available through the busy-safe control path. */
+
 static const char *TAG = "main";
+static scanner_info_t s_debug_scanner_snapshots[2] = {0};
 
 static void log_detection_queue_heap(const char *stage)
 {
@@ -221,8 +225,12 @@ static void log_badge_debug(uint32_t free_heap, int64_t uptime_s)
     }
     bool ble_connected = uart_rx_is_ble_scanner_connected();
     bool wifi_connected = uart_rx_is_wifi_scanner_connected();
-    const scanner_info_t *ble_info = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi_info = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble_info =
+        uart_rx_get_scanner_info_snapshot(0, &s_debug_scanner_snapshots[0])
+            ? &s_debug_scanner_snapshots[0] : NULL;
+    const scanner_info_t *wifi_info =
+        uart_rx_get_scanner_info_snapshot(1, &s_debug_scanner_snapshots[1])
+            ? &s_debug_scanner_snapshots[1] : NULL;
 
     ESP_LOGW(TAG,
              "BADGE_DEBUG uplink=%s uptime=%llds heap=%lu detections=%d "
@@ -253,6 +261,36 @@ static void log_badge_debug(uint32_t free_heap, int64_t uptime_s)
     log_badge_scanner_debug("wifi", wifi_connected, wifi_info);
 }
 
+/* Assign the two physical scanner slots as soon as their UART drivers exist.
+ * This deliberately does not wait for an identity/connected frame: identical
+ * scanner images only wait a bounded time for their role at cold boot, while
+ * the uplink's USB configuration window may remain open longer than that. */
+static void send_badge_boot_slot_roles(void)
+{
+    char cmd[128];
+    const char *profile = fof_policy_scan_profile_for_slot(0, false);
+    snprintf(cmd, sizeof(cmd),
+             "{\"type\":\"scan_profile\",\"%s\":\"%s\","
+             "\"%s\":\"%s\"}",
+             JSON_KEY_SCAN_PROFILE, profile,
+             JSON_KEY_SLOT_ROLE, fof_policy_slot_role_for_slot(0));
+    bool ble_sent = uart_rx_send_command_to_scanner_checked(0, cmd);
+    ESP_LOGI(TAG, "BADGE_BOOT_ROLE ble profile=%s sent=%d",
+             profile, ble_sent ? 1 : 0);
+
+#if CONFIG_DUAL_SCANNER
+    profile = fof_policy_scan_profile_for_slot(1, false);
+    snprintf(cmd, sizeof(cmd),
+             "{\"type\":\"scan_profile\",\"%s\":\"%s\","
+             "\"%s\":\"%s\"}",
+             JSON_KEY_SCAN_PROFILE, profile,
+             JSON_KEY_SLOT_ROLE, fof_policy_slot_role_for_slot(1));
+    bool wifi_sent = uart_rx_send_command_to_scanner_checked(1, cmd);
+    ESP_LOGI(TAG, "BADGE_BOOT_ROLE wifi profile=%s sent=%d",
+             profile, wifi_sent ? 1 : 0);
+#endif
+}
+
 static void send_badge_scan_profiles(void)
 {
     if (badge_power_runtime_is_quiet() ||
@@ -263,33 +301,37 @@ static void send_badge_scan_profiles(void)
 
     bool ble_connected = uart_rx_is_ble_scanner_connected();
     bool wifi_connected = uart_rx_is_wifi_scanner_connected();
-    bool both_connected = ble_connected && wifi_connected;
-    char cmd[80];
+    char cmd[128];
 
     if (ble_connected) {
-        const char *profile = both_connected
-            ? fof_policy_scan_profile_for_slot(0, false)
-            : "hybrid_failover";
+        /* Badge scanner slots are physically fixed.  Never promote a lone
+         * peer to hybrid while the other MCU is rebooting: that transient
+         * profile initializes both radios and can exhaust DMA-capable SRAM
+         * before the second identity frame arrives. */
+        const char *profile = fof_policy_scan_profile_for_slot(0, false);
         snprintf(cmd, sizeof(cmd),
-                 "{\"type\":\"scan_profile\",\"%s\":\"%s\"}",
-                 JSON_KEY_SCAN_PROFILE, profile);
+                 "{\"type\":\"scan_profile\",\"%s\":\"%s\","
+                 "\"%s\":\"%s\"}",
+                 JSON_KEY_SCAN_PROFILE, profile,
+                 JSON_KEY_SLOT_ROLE, fof_policy_slot_role_for_slot(0));
         bool ok = uart_rx_send_command_to_scanner_checked(0, cmd);
         ESP_LOGI(TAG, "BADGE_ROLE ble profile=%s sent=%d", profile, ok ? 1 : 0);
     }
 
 #if CONFIG_DUAL_SCANNER
     if (wifi_connected) {
-        const char *profile = both_connected
-            ? fof_policy_scan_profile_for_slot(1, false)
-            : "hybrid_failover";
+        const char *profile = fof_policy_scan_profile_for_slot(1, false);
         snprintf(cmd, sizeof(cmd),
-                 "{\"type\":\"scan_profile\",\"%s\":\"%s\"}",
-                 JSON_KEY_SCAN_PROFILE, profile);
+                 "{\"type\":\"scan_profile\",\"%s\":\"%s\","
+                 "\"%s\":\"%s\"}",
+                 JSON_KEY_SCAN_PROFILE, profile,
+                 JSON_KEY_SLOT_ROLE, fof_policy_slot_role_for_slot(1));
         bool ok = uart_rx_send_command_to_scanner_checked(1, cmd);
         ESP_LOGI(TAG, "BADGE_ROLE wifi profile=%s sent=%d", profile, ok ? 1 : 0);
     }
 #endif
 }
+
 #endif
 
 /* ── Self-OTA rollback state ─────────────────────────────────────────────
@@ -438,9 +480,9 @@ static void display_task(void *arg)
         prev_detection_count = detection_count;
 
         /* Gather additional state for the new OLED layout */
-        bool ble_ok      = uart_rx_is_ble_scanner_connected();
-        bool wifi_scan_ok = uart_rx_is_wifi_scanner_connected();
-        bool scanner_ok  = ble_ok || wifi_scan_ok;
+        bool ble_connected = uart_rx_is_ble_scanner_connected();
+        bool wifi_connected = uart_rx_is_wifi_scanner_connected();
+        bool scanner_ok  = ble_connected || wifi_connected;
         bool backend_ok  = (http_upload_get_success_count() > 0 &&
                            http_upload_get_fail_count() < http_upload_get_success_count());
         uint32_t uptime  = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
@@ -450,7 +492,7 @@ static void display_task(void *arg)
         }
 
         /* OLED: BLE scanner, WiFi scanner, backend, uploads, WiFi network, battery, uptime, ID */
-        oled_update(detection_count, ble_ok, wifi_scan_ok, backend_ok,
+        oled_update(detection_count, ble_connected, wifi_connected, backend_ok,
                     upload_count, wifi_ok, battery_pct, uptime, device_id_buf);
 #ifdef FOF_BADGE_VARIANT
         badge_runtime_note_display_alive();
@@ -646,7 +688,24 @@ void app_main(void)
         ESP_LOGE(TAG, "Scanner UART lease unavailable before USB firmware staging");
         required_tasks_started = false;
     }
+#ifdef FOF_BADGE_VARIANT
+    if (!badge_safe_usb) {
+        uart_rx_init(detection_queue);
+        send_badge_boot_slot_roles();
+    } else {
+        ESP_LOGW(TAG, "Badge safe USB mode: scanner UART driver init held off");
+    }
+#endif
     serial_config_listen(3000);
+#ifdef FOF_BADGE_VARIANT
+    /* Repeat once at the far side of the bounded USB window. This covers a
+     * simultaneous power-up where the first role frame reaches a scanner
+     * just before its command listener comes online, while remaining inside
+     * the scanner's six-second cold-boot allocation budget. */
+    if (!badge_safe_usb) {
+        send_badge_boot_slot_roles();
+    }
+#endif
     if (!serial_config_start_control_task()) {
         required_tasks_started = false;
     }
@@ -729,11 +788,8 @@ void app_main(void)
 
     /* ── 12. Initialize UART RX ───────────────────────────────────────── */
 #ifdef FOF_BADGE_VARIANT
-    if (!badge_safe_usb) {
-        uart_rx_init(detection_queue);
-    } else {
-        ESP_LOGW(TAG, "Badge safe USB mode: scanner UART driver init held off");
-    }
+    /* Badge UART drivers were initialized before the USB configuration
+     * window so cold-boot role assignment could not be missed. */
 #else
     uart_rx_init(detection_queue);
 #endif
@@ -849,10 +905,9 @@ void app_main(void)
     /* ── 16. Print startup banner ─────────────────────────────────────── */
     print_banner();
 
-    /* ── 15a. Spawn the periodic firmware auto-check task. Polls the
-     *         backend on a 30-min cadence: self-OTAs the uplink and
-     *         refreshes the cached scanner firmware so a connected
-     *         scanner can self-recover via the existing fw_check flow. */
+    /* ── 15a. Non-badge network updater. The badge build never starts this
+     *         task: badge images arrive over USB and scanners receive them
+     *         over UART after their single delayed boot check. */
 #ifndef FOF_BADGE_VARIANT
     if (badge_backend_enabled && wifi_sta_is_connected()) {
         fw_auto_check_init();

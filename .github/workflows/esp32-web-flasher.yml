@@ -6,11 +6,15 @@ on:
     tags: ['v*']
     paths:
       - 'esp32/**'
+      - 'tools/badge_flasher/**'
+      - 'scripts/build_badge_factory_bundle.py'
       - '.github/workflows/esp32-web-flasher.yml'
   pull_request:
     branches: [main]
     paths:
       - 'esp32/**'
+      - 'tools/badge_flasher/**'
+      - 'scripts/build_badge_factory_bundle.py'
       - '.github/workflows/esp32-web-flasher.yml'
   release:
     types: [published]
@@ -55,6 +59,9 @@ jobs:
       - name: Run native ESP32 unit tests
         run: cd esp32 && pio test -e test
 
+      - name: Test badge factory host tool
+        run: python -m unittest discover -s tools/badge_flasher/tests -p 'test_*.py' -v
+
       - name: Test firmware build-version guard
         run: python -m pytest backend/tests/test_firmware_build_version.py -q
 
@@ -72,6 +79,9 @@ jobs:
 
       - name: Build Badge Uplink firmware (XIAO ESP32-S3)
         run: cd esp32/uplink && pio run -e uplink-s3-fof_badge
+
+      - name: Build Badge factory topology probe (XIAO ESP32-S3)
+        run: cd esp32/factory-probe && pio run -e factory-probe-s3
 
       - name: Verify embedded firmware versions
         run: python esp32/scripts/verify_firmware_versions.py --repo-root .
@@ -111,6 +121,19 @@ jobs:
           path: firmware/
           retention-days: 90
 
+      - name: Build validated badge factory bundle
+        run: |
+          mkdir -p factory-bundle
+          python scripts/build_badge_factory_bundle.py \
+            --output factory-bundle/badge-factory-flasher.zip
+
+      - name: Upload badge factory bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: badge-factory-flasher
+          path: factory-bundle/badge-factory-flasher.zip
+          retention-days: 90
+
       - name: Attach firmware to release
         if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
         env:
@@ -138,6 +161,7 @@ jobs:
           cp firmware/uplink-s3/firmware.bin    /tmp/uplink-s3-${TAG}.bin
           cp firmware/badge-scanner/firmware.bin /tmp/scanner-s3-combo-fof_badge-${TAG}.bin
           cp firmware/badge-uplink/firmware.bin  /tmp/uplink-s3-fof_badge-${TAG}.bin
+          cp factory-bundle/badge-factory-flasher.zip /tmp/badge-factory-flasher-${TAG}.zip
           cd firmware/scanner        && tar czf /tmp/scanner-firmware-${TAG}.tar.gz *.bin && cd -
           cd firmware/scanner-seed   && tar czf /tmp/scanner-seed-firmware-${TAG}.tar.gz *.bin && cd -
           cd firmware/uplink-s3      && tar czf /tmp/uplink-s3-firmware-${TAG}.tar.gz *.bin && cd -
@@ -154,6 +178,7 @@ jobs:
             /tmp/uplink-s3-firmware-${TAG}.tar.gz \
             /tmp/badge-scanner-firmware-${TAG}.tar.gz \
             /tmp/badge-uplink-firmware-${TAG}.tar.gz \
+            /tmp/badge-factory-flasher-${TAG}.zip \
             --clobber
 
   # ── Deploy web flasher to GitHub Pages ──────────────────────────────────────
