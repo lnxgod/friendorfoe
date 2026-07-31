@@ -62,25 +62,8 @@ jobs:
       - name: Test badge factory host tool
         run: python -m unittest discover -s tools/badge_flasher/tests -p 'test_*.py' -v
 
-      - name: Test badge USB host hardening
-        run: |
-          cd scripts
-          python -m unittest \
-            test_badge_mutation_entrypoints \
-            test_bound_rom \
-            test_build_badge_factory_bundle \
-            test_esptool_provenance \
-            test_fof_badge_debug_bridge \
-            test_fof_badge_flash \
-            test_fof_badge_flash_phase_a_json \
-            test_fof_badge_flash_phase_a_serial \
-            test_recover_fof_badge \
-            test_secure_artifact_tree \
-            test_usb_descriptor_binding \
-            test_user_visible_redaction \
-            test_verified_badge_artifacts \
-            test_verify_badge_usb_hardening
-          python -m pytest test_fof_flash_release.py -q
+      - name: Test portable badge release guard
+        run: cd scripts && python -m pytest test_fof_flash_release.py -q
 
       - name: Test firmware build-version guard
         run: python -m pytest backend/tests/test_firmware_build_version.py -q

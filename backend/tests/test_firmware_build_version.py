@@ -58,18 +58,20 @@ TARGET_IDENTITIES = {
 }
 
 
-def test_esp32_workflow_runs_badge_usb_hardening_host_suites():
+def test_ubuntu_esp32_workflow_runs_only_portable_host_guards():
     workflow = (
         REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
     ).read_text()
 
-    assert "Test badge USB host hardening" in workflow
-    assert "test_fof_badge_flash" in workflow
-    assert "test_verify_badge_usb_hardening" in workflow
-    assert "test_bound_rom" in workflow
-    assert "test_usb_descriptor_binding" in workflow
-    assert "test_esptool_provenance" in workflow
+    assert "runs-on: ubuntu-latest" in workflow
+    assert "Test portable badge release guard" in workflow
     assert "test_fof_flash_release.py" in workflow
+    for macos_only_suite in (
+        "test_verify_badge_usb_hardening",
+        "test_bound_rom",
+        "test_esptool_provenance",
+    ):
+        assert macos_only_suite not in workflow
 
 
 def _load_module():
@@ -2554,7 +2556,7 @@ def test_esp32_workflow_keeps_canary_artifacts_private_and_production_clean():
         ), production_step
 
 
-def test_con_crud_canary_acceptance_ledger_keeps_physical_gates_pending():
+def test_con_crud_acceptance_ledger_records_local_factory_promotion():
     acceptance = (
         REPO_ROOT / "docs" / "badge" / "con-crud-canary-acceptance.md"
     ).read_text()
@@ -2580,9 +2582,10 @@ def test_con_crud_canary_acceptance_ledger_keeps_physical_gates_pending():
         )
         assert row.endswith("| PENDING |")
     for footer in (
-        "PROMOTION STATUS: BLOCKED — awaiting explicit owner approval",
-        "FACTORY BUNDLE: unchanged",
-        "GITHUB RELEASE: not created",
-        "TAG/PUSH/MERGE: not performed",
+        "LOCAL EMBEDDED FACTORY PROMOTION: APPROVED on 2026-07-29",
+        "OVERALL FORMAL PHYSICAL MATRIX: PENDING",
+        "FACTORY BUNDLE: local embedded bundle promoted to "
+        "`0.67.2-badge-defcon34`",
+        "PUBLIC GITHUB RELEASE: not created; assets unchanged",
     ):
         assert footer in acceptance

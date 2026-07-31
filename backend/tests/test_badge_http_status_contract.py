@@ -10,28 +10,22 @@ def _source() -> str:
     return HTTP_STATUS.read_text()
 
 
-def test_con_crud_http_status_is_read_only_bounded_and_identifier_free():
+def test_con_crud_http_status_keeps_game_state_usb_only():
     source = _source()
     handler = source[
         source.index("static esp_err_t badge_status_json_handler") :
         source.index("static esp_err_t badge_control_post_handler")
     ]
 
-    assert "#if defined(FOF_DC34_GAME_CANARY)" in handler
-    assert handler.count("badge_con_runtime_snapshot(") == 1
-    for field in (
+    assert "badge_con_runtime_snapshot(" not in handler
+    assert "badge_con_runtime_set_factory_seed" not in handler
+    for game_field in (
         r'\"game_seed\":',
         r'\"game_state\":',
         r'\"game_active\":',
         r'\"game_shield\":',
     ):
-        assert field in handler
-    game_at = handler.index(r'\"game_seed\":')
-    game_slice = handler[game_at - 600 : game_at + 600]
-    assert "badge_con_runtime_set_factory_seed" not in handler
-    assert "peer" not in game_slice
-    assert "session" not in game_slice
-    assert "hardware_id" not in game_slice
+        assert game_field not in handler
 
 
 def test_badge_scanner_status_never_streams_truncated_printf_output():
