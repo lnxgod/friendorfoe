@@ -2,9 +2,6 @@ package com.friendorfoe.presentation.badge
 
 enum class BadgeDangerAction {
     REBOOT,
-    BOOTLOADER,
-    RECOVER_SLOT_0,
-    RECOVER_SLOT_1,
 }
 
 sealed interface BadgeDangerEvent {

@@ -18,12 +18,16 @@ sensor node. Same radios, same policy engine, same Android control surface,
 same backend ingest path. Walk around with it during the day; mount it later as
 part of a multi-node sensor platform.
 
-> Current tracks: Android/backend/production S3 firmware are on
-> `0.64.68-live-follow`; badge firmware is on
-> `0.64.76-badge-defcon34`. This badge release adds the themed four-lane
-> instrument UI, custom USB palettes, DEF CON 34 Easter egg, quiet/off mode,
-> and automatic integrity-checked scanner updates from the USB-connected
-> uplink. The badge and production sensor fleet intentionally move on separate
+> Current published tracks: Android/backend/production S3 firmware are on
+> `0.64.68-live-follow`; the published badge/factory release is
+> `0.64.76-badge-defcon34`. A local provisional canary source identity,
+> `0.64.87-badge-defcon34`, is limited to the connected three-board canary;
+> it is not a production-readiness or public-release version. The published
+> release adds the themed four-lane instrument UI, custom USB palettes, DEF
+> CON 34 Easter egg, quiet/off mode, and automatic integrity-checked scanner
+> updates from the USB-connected uplink. The local canary replaces that
+> physical quiet/off shortcut with a ten-second dual-button software reset.
+> The badge and production sensor fleet intentionally move on separate
 > firmware tracks.
 
 ## What The Badge Does
@@ -46,7 +50,7 @@ One physical badge trio contains:
 
 | Board | PlatformIO environment | Job |
 |-------|------------------------|-----|
-| Uplink MCU | `uplink-s3-fof_badge` | Display, USB-C, local AP, backend/client control, scanner relay flashing |
+| Uplink MCU | `uplink-s3-fof_badge` | Display, USB-C control, read-only local status, scanner relay flashing |
 | BLE-primary scanner MCU | `scanner-s3-combo-fof_badge` | BLE Remote ID, BLE fingerprints, privacy-device BLE evidence |
 | Wi-Fi-primary scanner MCU | `scanner-s3-combo-fof_badge` | Wi-Fi beacons/probes/data frames, SSID/OUI evidence, drone Wi-Fi evidence |
 
@@ -124,7 +128,7 @@ field console.
 | `android/` | Kotlin + Jetpack Compose app, badge console, privacy views, AR/list/map screens |
 | `backend/` | FastAPI ingest, enrichment, dashboard, triangulation, calibration, firmware endpoints |
 | `esp32/scanner/` | ESP32-S3 scanner firmware for BLE/Wi-Fi detection |
-| `esp32/uplink/` | ESP32-S3 uplink firmware, display, USB-C/local AP control, OTA relay |
+| `esp32/uplink/` | ESP32-S3 uplink firmware, display, USB-C control, read-only local status, UART OTA relay |
 | `esp32/shared/` | Shared C detection policy, badge display policy, themes, signatures, protocol types |
 | `docs/badge/` | Badge operator notes and current badge version matrix |
 | `scripts/` | Badge flashing, debug bridge, recovery, and utility scripts |
@@ -176,7 +180,10 @@ pio run -e scanner-s3-combo-fof_badge
 Flash a badge from the repo root:
 
 ```sh
-python3 scripts/fof_badge_flash.py --transport usb --port /dev/cu.usbmodemXXXX
+python3 scripts/fof_badge_flash.py \
+  --transport usb \
+  --only all \
+  --port /dev/cu.usbmodemXXXX
 ```
 
 Useful recovery variants:
@@ -184,9 +191,19 @@ Useful recovery variants:
 ```sh
 python3 scripts/fof_badge_flash.py --transport usb --only uplink --port /dev/cu.usbmodemXXXX
 python3 scripts/fof_badge_flash.py --transport usb --only scanners --port /dev/cu.usbmodemXXXX
-python3 scripts/fof_badge_flash.py --manual-scanner ble --port /dev/cu.usbmodemYYYY --verify-port /dev/cu.usbmodemXXXX
-python3 scripts/fof_badge_flash.py --manual-scanner wifi --port /dev/cu.usbmodemZZZZ --verify-port /dev/cu.usbmodemXXXX
 ```
+
+Only the uplink USB connection is required. If the scanner diagnostic USB
+cables are intentionally connected too, add `--bind-selected-uplink` so the
+operator explicitly binds `--port` to the uplink in the three-device census.
+Allow up to ten minutes after the build for serialized scanner convergence and
+do not unplug while progress is advancing.
+
+Scanner USB is diagnostics-only. Flashing a scanner directly is disabled:
+stage one scanner image through the uplink USB connection and let the uplink
+perform the serialized UART updates for both scanner slots.
+See [Badge Scanner Recovery](docs/badge_scanner_recovery.md) for exact success
+evidence and the fail-closed recovery procedure.
 
 ## Runtime Checks
 
@@ -198,14 +215,14 @@ FOF_STATUS
 FOF_CTL:{"cmd":"badge_display_policy_reset","persist":true}
 ```
 
-Badge local AP:
+Badge local AP (read-only):
 
 ```sh
 curl http://192.168.4.1/api/badge/status
-curl -X POST http://192.168.4.1/api/badge/control \
-  -H 'content-type: application/json' \
-  -d '{"cmd":"badge_display_policy_reset","persist":true}'
 ```
+
+Badge mutations are accepted only over the uplink's USB serial connection.
+`POST /api/badge/control` returns `403 badge_control_requires_usb`.
 
 Healthy badge facts:
 

@@ -82,8 +82,32 @@ bool fof_auto_offer_binding_matches(
 
 bool fof_auto_queue_state_allows(fof_auto_slot_state_t state);
 
+bool fof_auto_slot_is_terminal(fof_auto_slot_state_t state);
+
 bool fof_auto_wifi_gate_open(bool ble_requested,
                              fof_auto_slot_state_t ble_state);
+
+fof_auto_probe_decision_t fof_auto_readiness_probe_decide(
+    bool identity_fresh,
+    uint8_t probes_used,
+    uint8_t max_probes);
+
+/**
+ * Decide whether a gate-open scanner identity-acquisition window should wait,
+ * proceed, or fail terminally. The durable wait marker is separate from the
+ * readiness-probe budget. A fresh identity always wins at the deadline.
+ */
+fof_auto_probe_decision_t fof_auto_identity_acquisition_decide(
+    bool identity_fresh,
+    bool wait_started,
+    int64_t now_ms,
+    int64_t deadline_ms);
+
+bool fof_auto_terminal_reopen_allowed(
+    fof_auto_slot_state_t state,
+    bool identity_exhausted,
+    uint8_t attempts_used,
+    uint8_t max_attempts);
 
 fof_auto_probe_decision_t fof_auto_recovery_probe_decide(
     int64_t now_ms,

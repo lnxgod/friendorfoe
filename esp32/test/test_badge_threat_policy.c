@@ -1078,6 +1078,66 @@ void test_badge_flock_wifi_oui_produces_flock_camera_not_drone(void)
                       badge_threat_snapshot_entity_display_lane(&item));
 }
 
+void test_badge_privacy_infrastructure_oui_uses_vendor_device_wording(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t axon = make_detection(
+        DETECTION_SRC_WIFI_AP_INVENTORY,
+        "privacy_oui:00:25:DF:11:22:33",
+        "Axon",
+        0.62f,
+        -55
+    );
+    strncpy(axon.model, "Privacy Infrastructure", sizeof(axon.model) - 1);
+    strncpy(axon.class_reason, "privacy infrastructure OUI",
+            sizeof(axon.class_reason) - 1);
+    strncpy(axon.bssid, "00:25:DF:11:22:33", sizeof(axon.bssid) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&axon, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_OTHER, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_PRIVACY, event.category);
+    TEST_ASSERT_EQUAL_STRING("Axon Device", event.label);
+    TEST_ASSERT_EQUAL_STRING("privacy infrastructure OUI", event.detail);
+    TEST_ASSERT_TRUE(event.base_score < 50.0f);
+    TEST_ASSERT_NULL(strstr(event.label, "Camera"));
+    TEST_ASSERT_NULL(strstr(event.label, "Drone"));
+    TEST_ASSERT_NULL(strstr(event.detail, "camera"));
+    TEST_ASSERT_NULL(strstr(event.detail, "recording"));
+    TEST_ASSERT_NULL(strstr(event.detail, "drone"));
+}
+
+void test_badge_weak_non_drone_gate_keeps_minus_85_boundary_and_drones(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t privacy = make_detection(
+        DETECTION_SRC_WIFI_AP_INVENTORY,
+        "privacy_oui:00:25:DF:11:22:33",
+        "Axon",
+        0.62f,
+        -86
+    );
+    strncpy(privacy.model, "Privacy Infrastructure", sizeof(privacy.model) - 1);
+    strncpy(privacy.class_reason, "privacy infrastructure OUI",
+            sizeof(privacy.class_reason) - 1);
+    strncpy(privacy.bssid, "00:25:DF:11:22:33", sizeof(privacy.bssid) - 1);
+
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&privacy, &event));
+    privacy.rssi = -85;
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&privacy, &event));
+
+    const uint8_t confirmed_sources[] = {
+        DETECTION_SRC_BLE_RID,
+        DETECTION_SRC_WIFI_DJI_IE,
+        DETECTION_SRC_WIFI_BEACON,
+    };
+    for (size_t i = 0; i < sizeof(confirmed_sources) / sizeof(confirmed_sources[0]); ++i) {
+        drone_detection_t drone = make_detection(
+            confirmed_sources[i], "RID-WEAK-SIGNAL", "OpenDroneID", 0.92f, -95);
+        TEST_ASSERT_TRUE(badge_threat_classify_detection(&drone, &event));
+        TEST_ASSERT_EQUAL(BADGE_THREAT_DRONE, event.cls);
+    }
+}
+
 void test_badge_flock_wifi_oui_normalizes_common_mac_formats(void)
 {
     const char *valid_bssids[] = {

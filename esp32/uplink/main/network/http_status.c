@@ -27,6 +27,7 @@
 #include "soc/rtc_cntl_reg.h"
 #include "soc/soc.h"
 #include "uart_protocol.h"
+#include "scanner_command_producer_policy.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "cJSON.h"
@@ -45,6 +46,7 @@
 #include "detection_policy.h"
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
+#include "badge_usb_recovery.h"
 #include "badge_display_policy_runtime.h"
 #include "badge_theme_runtime.h"
 #include "badge_ble_control.h"
@@ -517,6 +519,7 @@ static const char *aggregate_calibration_scan_mode(void)
     return "degraded";
 }
 
+#ifndef FOF_BADGE_VARIANT
 static bool wait_for_node_mode(const char *expected_mode,
                                const char *expected_uuid,
                                int timeout_ms,
@@ -563,6 +566,7 @@ static bool wait_for_node_mode(const char *expected_mode,
     }
     return false;
 }
+#endif
 
 /* ── HTML status page handler ──────────────────────────────────────────── */
 
@@ -633,6 +637,7 @@ static esp_err_t status_html_handler(httpd_req_t *req)
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     /* ── Standalone banner ────────────────────────────────────────────── */
+#ifndef FOF_BADGE_VARIANT
     if (standalone) {
         httpd_resp_send_chunk(req,
             "<div style=\"background:#3d2e00;border:1px solid #d29922;"
@@ -648,6 +653,15 @@ static esp_err_t status_html_handler(httpd_req_t *req)
             "<a href=\"/setup\" style=\"color:#484f58\">Setup</a></div>",
             HTTPD_RESP_USE_STRLEN);
     }
+#else
+    httpd_resp_send_chunk(
+        req,
+        "<div style=\"background:#0d2840;border:1px solid #58a6ff;"
+        "border-radius:8px;padding:.6rem .8rem;margin:.75rem 0;"
+        "color:#58a6ff;font-size:.85rem\">"
+        "Badge configuration is USB-only</div>",
+        HTTPD_RESP_USE_STRLEN);
+#endif
 
     /* ── GPS section ───────────────────────────────────────────────────── */
     httpd_resp_send_chunk(req, "<h2>GPS</h2><div class=\"g\">", HTTPD_RESP_USE_STRLEN);
@@ -1029,6 +1043,7 @@ static esp_err_t status_json_handler(httpd_req_t *req)
 
 /* ── WiFi Setup Page ─────────────────────────────────────────────────── */
 
+#ifndef FOF_BADGE_VARIANT
 static esp_err_t setup_html_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
@@ -1315,18 +1330,18 @@ static esp_err_t connect_post_handler(httpd_req_t *req)
 
     httpd_resp_sendstr(req, "{\"ok\":true}");
 
-    /* Reboot after short delay to apply new WiFi config */
-#ifdef FOF_BADGE_VARIANT
-    badge_runtime_arm_expected_reboot("http_wifi_config");
-#endif
+    /* Reboot after short delay to apply new WiFi config. This handler is
+     * excluded from badge builds; non-badge nodes keep their direct reset. */
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
 
     return ESP_OK;
 }
+#endif
 
 /* ── OTA Firmware Update Handler ──────────────────────────────────────── */
 
+#ifndef FOF_BADGE_VARIANT
 static esp_err_t ota_post_handler(httpd_req_t *req)
 {
     ESP_LOGW(TAG, "OTA update started, content_len=%d heap=%lu",
@@ -1432,14 +1447,6 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
     ESP_LOGW(TAG, "OTA update successful! %d bytes written to %s. Rebooting...",
              received, update_partition->label);
 
-#ifdef FOF_BADGE_VARIANT
-    (void)badge_runtime_arm_reboot_network_hold(
-        badge_runtime_get_network_mode(),
-        badge_runtime_post_ota_hold_ttl_s(badge_runtime_get_network_mode(), 0)
-    );
-    badge_runtime_arm_expected_reboot("http_ota");
-#endif
-
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"OTA complete, rebooting...\"}");
 
@@ -1461,6 +1468,8 @@ ota_fail:
 }
 
 /* ── OTA info endpoint (returns partition state) ─────────────────────── */
+
+#endif
 
 static esp_err_t ota_info_handler(httpd_req_t *req)
 {
@@ -1489,6 +1498,8 @@ static esp_err_t ota_info_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+#ifndef FOF_BADGE_VARIANT
+#if 0
 static int wait_for_ota_response_since(int64_t start_ms,
                                        const char *expected_type,
                                        int timeout_ms,
@@ -1513,12 +1524,27 @@ static int wait_for_ota_response_since(int64_t start_ms,
     if (out) memset(out, 0, sizeof(*out));
     return -1;
 }
+#endif
 
 /* ── OTA Relay: stream firmware to scanner via UART ───────────────────── */
-/* Current scanner relay uses CRC32 + ACK + retransmit framing only. */
+/* Firmware mutation is USB-only; the endpoint below is a stable refusal. */
 
+#endif
+
+#ifndef FOF_BADGE_VARIANT
 static esp_err_t ota_relay_handler(httpd_req_t *req)
 {
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(
+        req,
+        "{\"ok\":false,\"error\":\"firmware_transport_refused\","
+        "\"required_transport\":\"usb_uart\","
+        "\"detail\":\"stage scanner firmware over badge USB; "
+        "automatic relay uses UART\"}");
+    return ESP_OK;
+
+#if 0
     /* Parse ?uart=ble or ?uart=wifi query param */
     char query[96] = {0};
     httpd_req_get_url_query_str(req, query, sizeof(query));
@@ -1733,9 +1759,12 @@ static esp_err_t ota_relay_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp_buf);
     return ESP_OK;
+#endif
 }
 
 /* ── URI registration ──────────────────────────────────────────────────── */
+
+#endif
 
 static const httpd_uri_t uri_status_html = {
     .uri      = "/",
@@ -1762,6 +1791,7 @@ static const httpd_uri_t uri_status_json = {
     .handler  = status_json_handler,
 };
 
+#ifndef FOF_BADGE_VARIANT
 static const httpd_uri_t uri_setup_html = {
     .uri      = "/setup",
     .method   = HTTP_GET,
@@ -1779,6 +1809,7 @@ static const httpd_uri_t uri_connect_post = {
     .method   = HTTP_POST,
     .handler  = connect_post_handler,
 };
+#endif
 
 #ifndef FOF_BADGE_VARIANT
 static const httpd_uri_t uri_ota_post = {
@@ -1926,7 +1957,6 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
                                                debug_value,
                                                sizeof(debug_value)) &&
                          strcmp(debug_value, "1") == 0;
-
     static char buf[384];
     uint32_t active_remote_id = badge_threat_snapshot_count_active(
         &snapshot,
@@ -2215,74 +2245,16 @@ static esp_err_t badge_status_json_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-#ifdef FOF_BADGE_VARIANT
-static int badge_control_ttl_s(const cJSON *root)
-{
-    const cJSON *ttl = cJSON_GetObjectItemCaseSensitive(root, "ttl_s");
-    return cJSON_IsNumber(ttl) ? ttl->valueint : 0;
-}
-
-static bool badge_control_bool(const cJSON *root, const char *key, bool fallback)
-{
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
-    if (!item) {
-        return fallback;
-    }
-    if (cJSON_IsBool(item)) {
-        return cJSON_IsTrue(item);
-    }
-    if (cJSON_IsNumber(item)) {
-        return item->valueint != 0;
-    }
-    return fallback;
-}
-
-static void badge_control_send_network_result(httpd_req_t *req,
-                                              bool applied)
-{
-    char buf[192];
-    snprintf(buf, sizeof(buf),
-             "{\"ok\":true,\"applied\":%s,\"network_mode\":\"%s\","
-             "\"network_ttl_s\":%d,\"reboot_required\":false}",
-             applied ? "true" : "false",
-             badge_runtime_network_mode_name(badge_runtime_get_network_mode()),
-             badge_runtime_get_network_ttl_s());
-    httpd_resp_sendstr(req, buf);
-}
-
-static void badge_control_send_display_policy_result(httpd_req_t *req,
-                                                     const char *message,
-                                                     bool persisted)
-{
-    bool ble_sent = false;
-    bool wifi_sent = false;
-    char cmd[BADGE_DISPLAY_POLICY_JSON_MAX + 128] = {0};
-    badge_display_policy_runtime_command_json(cmd, sizeof(cmd));
-    if (cmd[0]) {
-        ble_sent = uart_rx_send_command_to_scanner_checked(0, cmd);
-#if CONFIG_DUAL_SCANNER
-        wifi_sent = uart_rx_send_command_to_scanner_checked(1, cmd);
-#else
-        wifi_sent = true;
-#endif
-    }
-    char buf[256];
-    snprintf(buf, sizeof(buf),
-             "{\"ok\":true,\"message\":\"%s\","
-             "\"display_policy_hash\":%lu,\"persisted\":%s,"
-             "\"ble_sent\":%s,\"wifi_sent\":%s,"
-             "\"reboot_required\":false}",
-             message ? message : "display policy",
-             (unsigned long)badge_display_policy_runtime_hash(),
-             persisted ? "true" : "false",
-             ble_sent ? "true" : "false",
-             wifi_sent ? "true" : "false");
-    httpd_resp_sendstr(req, buf);
-}
-#endif
-
 static esp_err_t badge_control_post_handler(httpd_req_t *req)
 {
+#ifdef FOF_BADGE_VARIANT
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(
+        req,
+        "{\"ok\":false,\"error\":\"badge_control_requires_usb\"}");
+    return ESP_OK;
+#else
     httpd_resp_set_type(req, "application/json");
     char *body = (char *)psram_calloc(1, 2048);
     if (!body) {
@@ -2566,27 +2538,37 @@ static esp_err_t badge_control_post_handler(httpd_req_t *req)
         httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"rebooting\"}");
         cJSON_Delete(root);
 #ifdef FOF_BADGE_VARIANT
-        badge_runtime_arm_expected_reboot("http_reboot");
-#endif
+        if (!badge_usb_recovery_restart(
+                BADGE_USB_RESET_APP, "http_reboot")) {
+            ESP_LOGE(
+                TAG,
+                "HTTP badge restart blocked without reboot ownership");
+        }
+#else
         vTaskDelay(pdMS_TO_TICKS(250));
         esp_restart();
+#endif
         return ESP_OK;
     } else if (strcmp(cmd, "bootloader") == 0) {
+#ifdef FOF_BADGE_VARIANT
+        httpd_resp_sendstr(
+            req,
+            "{\"ok\":false,\"error\":\"firmware_mutation_requires_usb\"}");
+#else
         httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"bootloader\"}");
         cJSON_Delete(root);
-#ifdef FOF_BADGE_VARIANT
-        badge_runtime_arm_expected_reboot("http_bootloader");
-#endif
         vTaskDelay(pdMS_TO_TICKS(250));
         REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
         esp_restart();
         return ESP_OK;
+#endif
     } else {
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"unknown command\"}");
     }
 
     cJSON_Delete(root);
     return ESP_OK;
+#endif
 }
 
 static esp_err_t badge_html_handler(httpd_req_t *req)
@@ -2601,23 +2583,32 @@ static esp_err_t badge_html_handler(httpd_req_t *req)
         "select{background:#0d1117;color:#e6edf3}.muted{color:#8b949e}.ok{color:#3fb950}.warn{color:#d29922}.err{color:#f85149}"
         "</style></head><body><div class=\"c\"><h1>FoF Badge</h1>"
         "<div class=\"r\"><div id=\"status\" class=\"muted\">Loading...</div></div>"
+#ifndef FOF_BADGE_VARIANT
         "<div class=\"r\"><label>Mode </label><select id=\"mode\"><option value=\"local_ap\">Local AP</option><option value=\"backend\">Backend</option><option value=\"usb_only\">USB Only</option></select>"
-        "<button onclick=\"setMode()\">Save Mode</button><button onclick=\"ctl('reboot')\">Reboot</button><button onclick=\"ctl('bootloader')\">Bootloader</button></div>"
+        "<button onclick=\"setMode()\">Save Mode</button><button onclick=\"ctl('reboot')\">Reboot</button>"
+        "<button onclick=\"ctl('bootloader')\">Bootloader</button>"
+        "</div>"
         "<div class=\"r\"><label><input id=\"dbg\" type=\"checkbox\"> Display debug</label><button onclick=\"setDebug()\">Save Debug</button></div>"
+#else
+        "<div class=\"r\"><b>Badge controls are USB-only</b><div class=\"muted\">This page is read-only. Attach the badge over USB-C and use the Android badge console or laptop flasher for changes.</div></div>"
+#endif
 #ifdef FOF_BADGE_VARIANT
         "<div class=\"r\"><b>Firmware: USB/UART only</b><div class=\"muted\">Connect the uplink badge to the laptop. Flash the uplink and stage the scanner image over USB; the uplink automatically relays newer scanner firmware over UART.</div></div>"
 #else
         "<div class=\"r\"><input id=\"fw\" type=\"file\"><button onclick=\"ota()\">OTA Update</button><div id=\"otaStatus\" class=\"muted\"></div></div>"
 #endif
-        "<div class=\"r\"><a style=\"color:#58a6ff\" href=\"/setup\">Wi-Fi/backend setup</a> · <a style=\"color:#58a6ff\" href=\"/api/status\">debug JSON</a></div>"
+        "<div class=\"r\"><span class=\"muted\">Configure Wi-Fi/backend over USB</span> · <a style=\"color:#58a6ff\" href=\"/api/status\">debug JSON</a></div>"
         "<script>"
-        "async function load(){let r=await fetch('/api/badge/status');let d=await r.json();mode.value=d.mode;dbg.checked=!!d.display_debug;"
+        "async function load(){let r=await fetch('/api/badge/status');let d=await r.json();"
+#ifndef FOF_BADGE_VARIANT
+        "mode.value=d.mode;dbg.checked=!!d.display_debug;"
+#endif
         "let ents=(d.entities||[]).map(e=>e.label+' '+e.score).join(' · ')||'Clear';"
         "status.innerHTML='<b>'+d.mode_label+'</b><br>Threat '+Math.round(d.threat_score)+'<br>DRN '+d.counts.drone+' META '+d.counts.meta+' TAG '+d.counts.tracker+'<br>'+ents+'<br><span class=\"muted\">AP '+d.ap_ssid+' · '+d.ap_url+'</span>'}"
+#ifndef FOF_BADGE_VARIANT
         "async function ctl(cmd){await fetch('/api/badge/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd})});setTimeout(load,700)}"
         "async function setMode(){await fetch('/api/badge/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:'set_mode',mode:mode.value,persist:true})});load()}"
         "async function setDebug(){await fetch('/api/badge/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:'set_display_debug',enabled:dbg.checked})});load()}"
-#ifndef FOF_BADGE_VARIANT
         "async function ota(){let f=fw.files[0];if(!f){otaStatus.textContent='Choose a firmware .bin';return;}otaStatus.textContent='Uploading...';let r=await fetch('/api/ota',{method:'POST',body:f});otaStatus.textContent=await r.text()}"
 #endif
         "load();setInterval(load,2000)</script></div></body></html>");
@@ -2680,6 +2671,7 @@ static esp_err_t calibration_mode_status_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+#ifndef FOF_BADGE_VARIANT
 static esp_err_t calibration_mode_start_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -2705,8 +2697,10 @@ static esp_err_t calibration_mode_start_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    const char *session_id = cJSON_GetStringValue(cJSON_GetObjectItem(root, JSON_KEY_SESSION_ID));
-    const char *cal_uuid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "advertise_uuid"));
+    const char *session_id = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(root, JSON_KEY_SESSION_ID));
+    const char *cal_uuid = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(root, "advertise_uuid"));
     if (!session_id || !cal_uuid || session_id[0] == '\0' || cal_uuid[0] == '\0') {
         cJSON_Delete(root);
         httpd_resp_set_status(req, "400 Bad Request");
@@ -2714,29 +2708,26 @@ static esp_err_t calibration_mode_start_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    uart_rx_set_node_calibration_mode(true, session_id, cal_uuid);
+    char cmd[FOF_SCANNER_PRODUCER_JSON_CAPACITY];
+    if (!fof_scanner_calibration_start_command_json(
+            session_id, cal_uuid, cmd, sizeof(cmd))) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(
+            req,
+            "{\"ok\":false,\"error\":\"invalid_calibration_identity\"}");
+        return ESP_OK;
+    }
 
-    char cmd[192];
-    snprintf(
-        cmd,
-        sizeof(cmd),
-        "{\"type\":\"%s\",\"session_id\":\"%s\",\"calibration_uuid\":\"%s\"}",
-        MSG_TYPE_CAL_MODE_START,
-        session_id,
-        cal_uuid
-    );
+    uart_rx_set_node_calibration_mode(true, session_id, cal_uuid);
     uart_rx_send_command(cmd);
 
     bool ok = wait_for_node_mode("calibration", cal_uuid, 2500, true);
     if (!ok) {
-        snprintf(
-            cmd,
-            sizeof(cmd),
-            "{\"type\":\"%s\",\"session_id\":\"%s\"}",
-            MSG_TYPE_CAL_MODE_STOP,
-            session_id
-        );
-        uart_rx_send_command(cmd);
+        if (fof_scanner_calibration_stop_command_json(
+                session_id, cmd, sizeof(cmd))) {
+            uart_rx_send_command(cmd);
+        }
         wait_for_node_mode("normal", "", 1500, false);
         uart_rx_set_node_calibration_mode(false, "", "");
         cJSON_Delete(root);
@@ -2779,18 +2770,21 @@ static esp_err_t calibration_mode_stop_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    char cmd[128];
+    char cmd[FOF_SCANNER_PRODUCER_JSON_CAPACITY];
     const char *session_id = uart_rx_get_node_calibration_session_id();
     if (!session_id || session_id[0] == '\0') {
         session_id = "stale";
     }
-    snprintf(
-        cmd,
-        sizeof(cmd),
-        "{\"type\":\"%s\",\"session_id\":\"%s\"}",
-        MSG_TYPE_CAL_MODE_STOP,
-        session_id
-    );
+    if (!fof_scanner_calibration_stop_command_json(
+            session_id, cmd, sizeof(cmd)) &&
+        !fof_scanner_calibration_stop_command_json(
+            "stale", cmd, sizeof(cmd))) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(
+            req,
+            "{\"ok\":false,\"error\":\"calibration_stop_build_failed\"}");
+        return ESP_OK;
+    }
     uart_rx_send_command(cmd);
     if (!wait_for_node_mode("normal", "", 2500, false)) {
         httpd_resp_set_status(req, "503 Service Unavailable");
@@ -2805,6 +2799,7 @@ static esp_err_t calibration_mode_stop_handler(httpd_req_t *req)
     httpd_resp_sendstr(req, "{\"ok\":true,\"scan_mode\":\"normal\"}");
     return ESP_OK;
 }
+#endif
 
 void http_status_init(void)
 {
@@ -2835,9 +2830,11 @@ void http_status_init(void)
     r = httpd_register_uri_handler(server, &uri_status_html);  if (r != ESP_OK) ESP_LOGE(TAG, "Failed /: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_health_json);  if (r != ESP_OK) ESP_LOGE(TAG, "Failed /health: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_status_json);  if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/status: %s", esp_err_to_name(r));
+#ifndef FOF_BADGE_VARIANT
     r = httpd_register_uri_handler(server, &uri_setup_html);   if (r != ESP_OK) ESP_LOGE(TAG, "Failed /setup: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_scan_json);    if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/scan: %s", esp_err_to_name(r));
     r = httpd_register_uri_handler(server, &uri_connect_post); if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/connect: %s", esp_err_to_name(r));
+#endif
     r = httpd_register_uri_handler(server, &uri_ota_info);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota/info: %s", esp_err_to_name(r));
 #ifndef FOF_BADGE_VARIANT
     r = httpd_register_uri_handler(server, &uri_ota_post);     if (r != ESP_OK) ESP_LOGE(TAG, "Failed /api/ota: %s", esp_err_to_name(r));
@@ -2854,14 +2851,23 @@ void http_status_init(void)
 
     static const httpd_uri_t uri_cal_mode_get = {
         .uri = "/api/calibration/mode", .method = HTTP_GET, .handler = calibration_mode_status_handler };
+#ifndef FOF_BADGE_VARIANT
     static const httpd_uri_t uri_cal_mode_start = {
         .uri = "/api/calibration/mode/start", .method = HTTP_POST, .handler = calibration_mode_start_handler };
     static const httpd_uri_t uri_cal_mode_stop = {
         .uri = "/api/calibration/mode/stop", .method = HTTP_POST, .handler = calibration_mode_stop_handler };
+#endif
     httpd_register_uri_handler(server, &uri_cal_mode_get);
+#ifndef FOF_BADGE_VARIANT
     httpd_register_uri_handler(server, &uri_cal_mode_start);
     httpd_register_uri_handler(server, &uri_cal_mode_stop);
+#endif
 
+#ifdef FOF_BADGE_VARIANT
+    ESP_LOGI(TAG, "HTTP status server started on port %d (badge configuration and firmware mutation are USB/UART-only)",
+             CONFIG_HTTP_STATUS_PORT);
+#else
     ESP_LOGI(TAG, "HTTP status server started on port %d (setup at /setup, calibration mode at /api/calibration/mode*)",
              CONFIG_HTTP_STATUS_PORT);
+#endif
 }

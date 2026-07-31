@@ -65,6 +65,11 @@ const char *badge_display_min_proximity_name(badge_display_min_proximity_t prox)
 bool badge_display_policy_class_from_key(const char *key,
                                          badge_display_policy_class_t *out);
 uint32_t badge_display_policy_hash(const badge_display_policy_t *policy);
+bool badge_display_policy_parse_json_span(const uint8_t *json,
+                                          size_t json_len,
+                                          badge_display_policy_t *out,
+                                          char *err,
+                                          size_t err_len);
 bool badge_display_policy_parse_json(const char *json,
                                      badge_display_policy_t *out,
                                      char *err,

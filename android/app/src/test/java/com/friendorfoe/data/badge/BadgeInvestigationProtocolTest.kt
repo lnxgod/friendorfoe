@@ -394,6 +394,7 @@ class BadgeInvestigationProtocolTest {
             lifecycleSession = 7L,
             connectionIdentity = Any(),
             endpointIdentity = Any(),
+            hardwareId = "A4:CF:12:34:56:78",
         )
         val ownerB = BadgeUsbOwnerKey(
             attachmentToken = BadgeUsbAttachmentToken(
@@ -403,6 +404,7 @@ class BadgeInvestigationProtocolTest {
             lifecycleSession = 7L,
             connectionIdentity = Any(),
             endpointIdentity = Any(),
+            hardwareId = "A4:CF:12:34:56:79",
         )
         val ownership = BadgeUsbInvestigationOwnershipGate(ownerA)
 

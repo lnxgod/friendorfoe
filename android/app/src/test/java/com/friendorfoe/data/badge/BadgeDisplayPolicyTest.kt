@@ -16,6 +16,15 @@ class BadgeDisplayPolicyTest {
         assertEquals("both", policy.classes.getValue("meta").lane)
         assertEquals("close", policy.classes.getValue("hid").minProximity)
         assertEquals(14, policy.classes.size)
+        assertEquals(
+            BadgeDisplayClassPolicy(
+                enabled = false,
+                lane = "off",
+                minProximity = "close",
+                priority = 0,
+            ),
+            policy.classes.getValue("skimmer"),
+        )
 
         val bleAttackInfo = BadgeDisplayPolicyClasses.single { it.key == "ble_attack" }
         assertEquals("ble_attack", bleAttackInfo.key)
@@ -57,6 +66,45 @@ class BadgeDisplayPolicyTest {
             .getAsJsonObject("beacon")
         assertFalse(beacon.get("enabled").asBoolean)
         assertEquals("lower", beacon.get("lane").asString)
+    }
+
+    @Test
+    fun partialAndMalformedPolicyMapsSerializeAsOneCompleteCanonicalPolicy() {
+        val malformed = BadgeDisplayPolicy(
+            version = 99,
+            classes = linkedMapOf(
+                "drone" to BadgeDisplayClassPolicy(
+                    enabled = true,
+                    lane = "INVALID",
+                    minProximity = "far",
+                    priority = 999,
+                ),
+                "ignored" to BadgeDisplayClassPolicy(),
+            ),
+        )
+
+        val policy = badgeDisplayPolicyCommandJson(malformed)
+            .getAsJsonObject("policy")
+        val classes = policy.getAsJsonObject("classes")
+        assertEquals(1, policy.get("version").asInt)
+        assertEquals(
+            BadgeDisplayPolicyClasses.map { it.key },
+            classes.entrySet().map { it.key },
+        )
+        assertFalse(classes.has("ignored"))
+        assertEquals(
+            defaultBadgeDisplayPolicy().classes.getValue("drone").lane,
+            classes.getAsJsonObject("drone").get("lane").asString,
+        )
+        assertEquals(
+            defaultBadgeDisplayPolicy().classes.getValue("drone").minProximity,
+            classes.getAsJsonObject("drone").get("min_proximity").asString,
+        )
+        assertEquals(100, classes.getAsJsonObject("drone").get("priority").asInt)
+        assertEquals(
+            false,
+            classes.getAsJsonObject("skimmer").get("enabled").asBoolean,
+        )
     }
 
     @Test

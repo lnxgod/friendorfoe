@@ -648,52 +648,18 @@ private fun BadgeOperationsSection(
         }
 
         Text(
-            text = BadgeControlTransportPolicy.scannerFirmwareRecoveryHeading(),
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(top = 14.dp),
-        )
-        Text(
-            text = BadgeControlTransportPolicy.scannerFirmwareStagingGuidance(),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Row(
-            modifier = Modifier.padding(top = 7.dp),
-            horizontalArrangement = Arrangement.spacedBy(7.dp),
-        ) {
-            OutlinedButton(
-                onClick = { onDanger(BadgeDangerAction.RECOVER_SLOT_0) },
-                enabled = commandsEnabled,
-                modifier = Modifier.weight(1f),
-            ) { Text("Recover Slot 0") }
-            OutlinedButton(
-                onClick = { onDanger(BadgeDangerAction.RECOVER_SLOT_1) },
-                enabled = commandsEnabled,
-                modifier = Modifier.weight(1f),
-            ) { Text("Recover Slot 1") }
-        }
-
-        Text(
             text = "Danger zone",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.error,
             modifier = Modifier.padding(top = 14.dp),
         )
-        Row(
-            modifier = Modifier.padding(top = 7.dp),
-            horizontalArrangement = Arrangement.spacedBy(7.dp),
-        ) {
-            OutlinedButton(
-                onClick = { onDanger(BadgeDangerAction.REBOOT) },
-                enabled = commandsEnabled,
-                modifier = Modifier.weight(1f),
-            ) { Text("Reboot") }
-            OutlinedButton(
-                onClick = { onDanger(BadgeDangerAction.BOOTLOADER) },
-                enabled = commandsEnabled,
-                modifier = Modifier.weight(1f),
-            ) { Text("Bootloader") }
-        }
+        OutlinedButton(
+            onClick = { onDanger(BadgeDangerAction.REBOOT) },
+            enabled = commandsEnabled,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 7.dp),
+        ) { Text("Reboot") }
     }
 }
 
@@ -706,9 +672,6 @@ private fun BadgeDangerConfirmationDialog(
 ) {
     val prompt = when (action) {
         BadgeDangerAction.REBOOT -> "Reboot the badge now?"
-        BadgeDangerAction.BOOTLOADER -> "Enter badge bootloader now?"
-        BadgeDangerAction.RECOVER_SLOT_0 -> "Recover scanner slot 0 now?"
-        BadgeDangerAction.RECOVER_SLOT_1 -> "Recover scanner slot 1 now?"
     }
     AlertDialog(
         onDismissRequest = onDismiss,

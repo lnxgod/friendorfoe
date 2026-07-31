@@ -102,8 +102,8 @@ All notable changes to the ESP32 hardware edition of Friend or Foe.
   palettes restyle the existing four fixed lanes without changing their data
   contract.
 - **DEF CON 34 Easter egg.** Exact Hell, Michigan Remote ID at 666 m, exact
-  `fof-goblue`, or the temporary spare button opens the one-shot purple Wall of
-  Sheep screen.
+  `GameChangersAI-67`, or the temporary spare button opens the one-shot purple
+  Wall of Sheep screen.
 - **Nine-second quiet/off chord.** The LCD sleeps and both scanners quiesce
   while USB control and UART firmware recovery remain available.
 - **Automatic dual-scanner UART updates.** USB stages one exact scanner image;

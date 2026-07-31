@@ -84,8 +84,5 @@ class BadgeControlViewModel @Inject constructor(
 
     fun execute(action: BadgeDangerAction) = when (action) {
         BadgeDangerAction.REBOOT -> repository.rebootBadge()
-        BadgeDangerAction.BOOTLOADER -> repository.enterBootloader()
-        BadgeDangerAction.RECOVER_SLOT_0 -> repository.relayScannerFirmware("ble")
-        BadgeDangerAction.RECOVER_SLOT_1 -> repository.relayScannerFirmware("wifi")
     }
 }

@@ -23,6 +23,10 @@
 #include "scanner_rollback.h"
 #include "led_status.h"
 #include "badge_display_policy.h"
+#if defined(FOF_DC34_GAME_CANARY)
+#include "badge_con_observer.h"
+#include "badge_con_protocol.h"
+#endif
 
 #include "cJSON.h"
 
@@ -135,6 +139,9 @@ static atomic_bool s_tx_enabled = true;
 #else
 static atomic_bool s_tx_enabled = false;
 #endif
+#if defined(FOF_DC34_GAME_CANARY)
+static atomic_bool s_firmware_quiet_window_active = false;
+#endif
 static bool s_uart_tx_stack_warned = false;
 static volatile bool s_need_firmware = false;
 static char s_fw_target_version[32] = {0};
@@ -156,6 +163,20 @@ static bool scanner_data_tx_allowed(void)
     return atomic_load_explicit(&s_tx_enabled, memory_order_acquire) &&
            !scanner_quiet_mode_is_active();
 }
+
+#if defined(FOF_DC34_GAME_CANARY)
+void uart_tx_set_firmware_quiet_window(bool active)
+{
+    atomic_store_explicit(
+        &s_firmware_quiet_window_active, active, memory_order_release);
+}
+
+static bool uart_tx_firmware_quiet_window_active(void)
+{
+    return atomic_load_explicit(
+        &s_firmware_quiet_window_active, memory_order_acquire);
+}
+#endif
 
 #ifdef FOF_BADGE_VARIANT
 void uart_tx_note_badge_easter_egg(badge_easter_egg_source_t source)
@@ -255,6 +276,12 @@ void uart_tx_set_firmware_update_state(bool need_firmware,
         strncpy(s_fw_update_state, state, sizeof(s_fw_update_state) - 1);
         s_fw_update_state[sizeof(s_fw_update_state) - 1] = '\0';
     }
+#if defined(FOF_DC34_GAME_CANARY)
+    uart_tx_set_firmware_quiet_window(
+        need_firmware && state &&
+        (strcmp(state, "ready") == 0 ||
+         strcmp(state, "updating") == 0));
+#endif
     if (!need_firmware && (!state || strcmp(state, "current") == 0 || strcmp(state, "idle") == 0)) {
         s_fw_last_error[0] = '\0';
         s_fw_error_backoff_until_ms = 0;
@@ -1674,6 +1701,39 @@ void uart_tx_send_scanner_info(const char *ver, const char *board,
              scanner_time_sync_state());
 }
 
+#if defined(FOF_DC34_GAME_CANARY)
+static void uart_tx_maybe_send_badge_con_packet(
+    QueueHandle_t detection_queue)
+{
+    if (!detection_queue ||
+        !scanner_data_tx_allowed() ||
+        uart_ota_is_active_snapshot() ||
+        uart_tx_firmware_quiet_window_active() ||
+        uxQueueMessagesWaiting(detection_queue) != 0U) {
+        return;
+    }
+
+    badge_con_packet_t packet;
+    if (!badge_con_observer_take_pending(&packet)) {
+        return;
+    }
+
+    char line[BADGE_CON_UART_BUFFER_BYTES];
+    size_t wire_size = 0U;
+    if (!badge_con_render_uart_line(
+            &packet, line, sizeof(line), &wire_size) ||
+        wire_size == 0U ||
+        line[wire_size - 1U] != '\n') {
+        return;
+    }
+
+    /* The checked line writer owns the delimiter. Replace the codec's
+     * trailing newline so the wire still contains exactly one. */
+    line[wire_size - 1U] = '\0';
+    (void)uart_send_scanner_data_line(line);
+}
+#endif
+
 /* ── UART TX Task ───────────────────────────────────────────────────────── */
 
 /**
@@ -1932,6 +1992,9 @@ static void uart_tx_task(void *arg)
                          s_current_channel, (unsigned long)uptime_s);
             }
         }
+#if defined(FOF_DC34_GAME_CANARY)
+        uart_tx_maybe_send_badge_con_packet(detection_queue);
+#endif
     }
     /* Task should never return; if it does, clean up. */
     vTaskDelete(NULL);

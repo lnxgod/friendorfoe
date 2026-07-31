@@ -16,8 +16,10 @@ static void make_badge_scanner_prefix(uint8_t image[160])
     memset(image, 0, 160);
     image[0] = 0xE9;
     put_u32_le(image + 0x20, 0xABCD5432u);
-    memcpy(image + 0x30, "0.64.69-badge-live-follow", 27);
-    memcpy(image + 0x50, "fof_badge_scanner", 18);
+    memcpy(image + 0x30, "0.64.69-badge-live-follow",
+           sizeof("0.64.69-badge-live-follow"));
+    memcpy(image + 0x50, "fof_badge_scanner",
+           sizeof("fof_badge_scanner"));
 }
 
 void test_firmware_image_contract_parses_exact_app_descriptor(void)

@@ -10,9 +10,17 @@
 #include "uart_protocol.h"
 #include "config.h"
 #include "detection_policy.h"
+#include "badge_ble_rssi_policy.h"
 #include "badge_threat_policy.h"
+#include "scanner_command_schema_registry.h"
+#include "scanner_uart_line_framer.h"
+#include "scanner_uplink_ingress_registry.h"
 #include "led_status.h"
 #include "fw_store.h"
+#if defined(FOF_DC34_GAME_CANARY)
+#include "badge_con_protocol.h"
+#include "badge_con_runtime.h"
+#endif
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
 #include "badge_power_runtime.h"
@@ -35,10 +43,12 @@
 
 static const char *TAG = "uart_rx";
 
-#define LINE_BUF_SIZE       4096
+#define LINE_BUF_SIZE       SCANNER_UART_LINE_BUFFER_SIZE
 #define READ_BUF_SIZE       256
+#define UART_RX_PARTIAL_FRAME_TIMEOUT_MS 1000
 #define UART_RX_PAUSE_ACK_TIMEOUT_MS 1000
 #define UART_RX_PAUSE_POLL_MS          5
+#define UART_RX_ENTRY_ACK_TIMEOUT_MS 1000
 
 /* Scanner connection tracking */
 #define SCANNER_TIMEOUT_MS  15000
@@ -101,10 +111,16 @@ static portMUX_TYPE s_ota_response_lock = portMUX_INITIALIZER_UNLOCKED;
  * handoff: the background task may still be blocked inside uart_read_bytes()
  * and consume the first ACK.  Each task therefore publishes an explicit
  * pause acknowledgement before the relay is allowed to touch the UART. */
-static atomic_bool s_rx_paused_ble = false;
-static atomic_bool s_rx_paused_wifi = false;
-static atomic_bool s_rx_pause_acked_ble = false;
-static atomic_bool s_rx_pause_acked_wifi = false;
+static atomic_uint_fast32_t s_rx_pause_request_generation_ble = 0;
+static atomic_uint_fast32_t s_rx_pause_request_generation_wifi = 0;
+static atomic_uint_fast32_t s_rx_pause_ack_generation_ble = 0;
+static atomic_uint_fast32_t s_rx_pause_ack_generation_wifi = 0;
+static atomic_uint_fast32_t s_rx_pause_next_generation = 0;
+static atomic_bool s_rx_task_started_ble = false;
+static atomic_bool s_rx_task_started_wifi = false;
+static atomic_bool s_rx_task_entered_ble = false;
+static atomic_bool s_rx_task_entered_wifi = false;
+static uart_rx_pause_guard_t s_legacy_pause_guards[2] = {0};
 
 /* Per-scanner backpressure flags — BLE noise should not be able to pause the
  * WiFi scanner, and each scanner must be able to resume independently. */
@@ -271,8 +287,36 @@ static bool scanner_meta_status_has_strong_identity(const scanner_info_t *info)
     if (strstr(info->ble_meta_last_reason, "weak_meta") != NULL) {
         return false;
     }
-    return strcmp(info->ble_meta_identity, "strong_fp") == 0 ||
-           strcmp(info->ble_meta_identity, "detector_fp") == 0;
+    if (strcmp(info->ble_meta_identity, "strong_fp") == 0) {
+        return strcmp(info->ble_meta_last_reason, "uuid16:0xFD5F") == 0 ||
+               strcmp(info->ble_meta_last_reason, "mfr_cid:0x0D53") == 0 ||
+               strcmp(info->ble_meta_last_reason, "name:meta_glasses") == 0;
+    }
+    if (strcmp(info->ble_meta_identity, "detector_fp") != 0) {
+        return false;
+    }
+    static const char *const detector_reasons[] = {
+        "uuid16:0xFD5F",
+        "mfr_cid:0x0D53",
+        "name:RB Meta",
+        "name:Ray-Ban Meta",
+        "name:Ray-Ban Stories",
+        "name:Ray Ban Meta",
+        "name:RayBan Meta",
+        "name:Oakley Meta",
+        "name:Oakley HSTN",
+        "name:Oakley ALPH",
+        "name:OAK",
+        "name:RB-",
+        "name:RAYBAN",
+        "name:Wayfarer",
+    };
+    for (size_t i = 0; i < sizeof(detector_reasons) / sizeof(detector_reasons[0]); ++i) {
+        if (strcmp(info->ble_meta_last_reason, detector_reasons[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static int8_t badge_status_rssi_or(int8_t rssi, int8_t fallback)
@@ -300,24 +344,6 @@ static void badge_ingest_ble_tracker_status_event(int scanner_id,
         strncpy(det.ble_name, info->ble_dbg_priv_name, sizeof(det.ble_name) - 1);
         strncpy(det.class_reason,
                 info->ble_dbg_priv_reason[0] ? info->ble_dbg_priv_reason : "status:tracker",
-                sizeof(det.class_reason) - 1);
-    }
-    (void)badge_ingest_detection(&det, NULL);
-}
-
-static void badge_ingest_ble_near_status_event(int scanner_id,
-                                               const scanner_info_t *info)
-{
-    drone_detection_t det = {0};
-    det.source = DETECTION_SRC_BLE_FINGERPRINT;
-    det.confidence = 0.18f;
-    det.rssi = badge_status_rssi_or(info ? info->ble_dbg_near_rssi : 0, -48);
-    snprintf(det.drone_id, sizeof(det.drone_id), "status:ble:near:%d", scanner_id);
-    strncpy(det.manufacturer, "BLE Nearby", sizeof(det.manufacturer) - 1);
-    if (info) {
-        strncpy(det.ble_name, info->ble_dbg_near_name, sizeof(det.ble_name) - 1);
-        strncpy(det.class_reason,
-                info->ble_dbg_near_reason[0] ? info->ble_dbg_near_reason : "strong BLE near",
                 sizeof(det.class_reason) - 1);
     }
     (void)badge_ingest_detection(&det, NULL);
@@ -402,9 +428,6 @@ static void badge_ingest_scanner_status_evidence(int scanner_id,
     badge_ingest_ble_meta_status_event(info);
     if (badge_status_counter_advanced(info->ble_tracker_seen, seen->ble_tracker_seen)) {
         badge_ingest_ble_tracker_status_event(scanner_id, info);
-    }
-    if (badge_status_counter_advanced(info->ble_near_unknown_seen, seen->ble_near_unknown_seen)) {
-        badge_ingest_ble_near_status_event(scanner_id, info);
     }
     if (badge_status_counter_advanced(info->wifi_drone_ssid_emit,
                                       seen->wifi_drone_ssid_emit)) {
@@ -584,13 +607,14 @@ static bool send_json_line_to_scanner_locked(int scanner_id, const char *json_cm
     return true;
 }
 
-static void send_scanner_flow_cmd(int scanner_id, const char *type)
+static bool send_scanner_flow_cmd(int scanner_id, const char *type)
 {
     char cmd[24];
     int n = snprintf(cmd, sizeof(cmd), "{\"type\":\"%s\"}", type);
-    if (n > 0) {
-        send_json_line_to_scanner_locked(scanner_id, cmd);
+    if (n <= 0 || (size_t)n >= sizeof(cmd)) {
+        return false;
     }
+    return uart_rx_send_command_to_scanner_checked(scanner_id, cmd);
 }
 
 static bool is_low_value_ble_detection(const drone_detection_t *det)
@@ -621,10 +645,12 @@ static void maybe_resume_scanner(int scanner_id)
 
     UBaseType_t queue_count = uxQueueMessagesWaiting(s_detection_queue);
     if (queue_count <= (CONFIG_DETECTION_QUEUE_SIZE * 4 / 10)) {
-        send_scanner_flow_cmd(scanner_id, "start");
-        ESP_LOGI(TAG, "Queue drained %d/%d — resuming scanner[%d]",
-                 (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE, scanner_id);
-        atomic_store(flag, false);
+        if (send_scanner_flow_cmd(scanner_id, "start")) {
+            ESP_LOGI(TAG, "Queue drained %d/%d — resuming scanner[%d]",
+                     (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE,
+                     scanner_id);
+            atomic_store(flag, false);
+        }
     }
 }
 
@@ -665,27 +691,6 @@ static void note_scanner_json_parse_error(int scanner_id)
     } else {
         atomic_fetch_add(&s_json_parse_error_wifi, 1);
     }
-}
-
-static bool msg_type_is_scanner_originated(const char *msg_type)
-{
-    if (!msg_type) {
-        return false;
-    }
-    return strcmp(msg_type, MSG_TYPE_DETECTION) == 0 ||
-           strcmp(msg_type, MSG_TYPE_STATUS) == 0 ||
-           strcmp(msg_type, "scanner_info") == 0 ||
-           strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0 ||
-           strcmp(msg_type, "scan_profile_ack") == 0 ||
-           strcmp(msg_type, "display_control_ack") == 0 ||
-           strcmp(msg_type, "display_policy_ack") == 0 ||
-           strcmp(msg_type, "stop_ack") == 0 ||
-           strcmp(msg_type, MSG_TYPE_SCANNER_QUIET_ACK) == 0 ||
-           strcmp(msg_type, "recovery_ack") == 0 ||
-           strcmp(msg_type, "scanner_recovery") == 0 ||
-           strcmp(msg_type, MSG_TYPE_FW_CHECK) == 0 ||
-           strcmp(msg_type, MSG_TYPE_FW_READY) == 0 ||
-           strncmp(msg_type, "ota_", 4) == 0;
 }
 
 void uart_rx_set_node_calibration_mode(bool active,
@@ -845,27 +850,6 @@ static bool json_get_nonempty_string_exact(const cJSON *obj, const char *key,
     return true;
 }
 
-static bool strict_receipt_fields_absent(const cJSON *root)
-{
-    static const char *const strict_keys[] = {
-        JSON_KEY_FW_NAME,
-        "app_project",
-        "hardware_type",
-        "sha256",
-        "generation",
-        "allow_same_version",
-    };
-    if (!root) {
-        return false;
-    }
-    for (size_t i = 0; i < sizeof(strict_keys) / sizeof(strict_keys[0]); ++i) {
-        if (cJSON_GetObjectItemCaseSensitive(root, strict_keys[i])) {
-            return false;
-        }
-    }
-    return true;
-}
-
 static bool fw_ready_common_fields_valid(const cJSON *root,
                                          const char **board,
                                          const char **current_version,
@@ -939,7 +923,8 @@ static bool scanner_identity_hardware_id_is_canonical(const char *hardware_id)
 
 static uint32_t publish_scanner_identity_snapshot(int scanner_id,
                                                   const cJSON *root,
-                                                  int64_t received_ms)
+                                                  int64_t received_ms,
+                                                  bool require_complete)
 {
     if (scanner_id < 0 || scanner_id > 1 || !root ||
         !s_scanner_identity_mutex) {
@@ -986,6 +971,9 @@ static uint32_t publish_scanner_identity_snapshot(int scanner_id,
     }
     snapshot.received_ms = received_ms;
     snapshot.complete = complete;
+    if (require_complete && !snapshot.complete) {
+        return 0;
+    }
 
     /* Publication is the freshness authority. Waiting for the tiny snapshot
      * copy is safer than timing out and leaving an older complete identity
@@ -1281,7 +1269,8 @@ static bool parse_detection(const cJSON *root, drone_detection_t *det)
 
 /* ── Handle a parsed status message ────────────────────────────────────── */
 
-static void handle_status(const cJSON *root, int scanner_id)
+static void handle_status(const cJSON *root, int scanner_id,
+                          uint32_t published_identity_generation)
 {
     int ble_count  = json_get_int(root, "ble_count", 0);
     int wifi_count = json_get_int(root, "wifi_count", 0);
@@ -1303,27 +1292,51 @@ static void handle_status(const cJSON *root, int scanner_id)
         return;
     }
 
-    /* Extract scanner identity if present (piggybacks on status message) */
+    /* Ordinary status carries the same immutable identity tuple as
+     * scanner_info. Keep the live view synchronized with the separately
+     * published freshness snapshot, clearing missing fields fail-closed. */
     const char *ver = json_get_string(root, "ver", NULL);
-    if (ver) {
+    if (published_identity_generation != 0U) {
         uint32_t parsed_boot_id = 0;
-        const char *board = json_get_string(root, "board", "?");
-        const char *chip = json_get_string(root, "chip", "?");
-        const char *caps = json_get_string(root, "caps", "?");
-        strncpy(info->version, ver, sizeof(info->version) - 1);
+        const char *board = json_get_string(root, "board", "");
+        const char *firmware_name =
+            json_get_string(root, "firmware_name", "");
+        const char *app_project =
+            json_get_string(root, "app_project", "");
+        const char *hardware_type =
+            json_get_string(root, "hardware_type", "");
+        const char *hardware_id =
+            json_get_string(root, "hardware_id", "");
+        const char *chip = json_get_string(root, "chip", "");
+        const char *caps = json_get_string(root, "caps", "");
+        strncpy(info->version, ver ? ver : "",
+                sizeof(info->version) - 1);
         strncpy(info->board, board, sizeof(info->board) - 1);
+        strncpy(info->firmware_name, firmware_name,
+                sizeof(info->firmware_name) - 1);
+        strncpy(info->app_project, app_project,
+                sizeof(info->app_project) - 1);
+        strncpy(info->hardware_type, hardware_type,
+                sizeof(info->hardware_type) - 1);
+        strncpy(info->hardware_id, hardware_id,
+                sizeof(info->hardware_id) - 1);
         strncpy(info->chip, chip, sizeof(info->chip) - 1);
         strncpy(info->caps, caps, sizeof(info->caps) - 1);
         info->version[sizeof(info->version) - 1] = '\0';
         info->board[sizeof(info->board) - 1] = '\0';
+        info->firmware_name[sizeof(info->firmware_name) - 1] = '\0';
+        info->app_project[sizeof(info->app_project) - 1] = '\0';
+        info->hardware_type[sizeof(info->hardware_type) - 1] = '\0';
+        info->hardware_id[sizeof(info->hardware_id) - 1] = '\0';
         info->chip[sizeof(info->chip) - 1] = '\0';
         info->caps[sizeof(info->caps) - 1] = '\0';
+        info->identity_generation = published_identity_generation;
         info->boot_id = 0;
         if (json_get_uint32_exact(root, "boot_id", &parsed_boot_id) &&
             parsed_boot_id != 0U) {
             info->boot_id = parsed_boot_id;
         }
-        if (!info->received) {
+        if (ver && ver[0] && !info->received) {
             info->received = true;
             log_initial_identity = true;
         }
@@ -1649,10 +1662,37 @@ static void handle_status(const cJSON *root, int scanner_id)
 
 /* ── Process one complete JSON line ────────────────────────────────────── */
 
-static void process_line(const char *line, size_t len, int scanner_id)
+static void process_line(uint8_t *line, size_t len, int scanner_id)
 {
+    if (!line || len == 0U ||
+        len > SCANNER_UART_LINE_MAX_PAYLOAD) {
+        note_scanner_json_parse_error(scanner_id);
+        return;
+    }
+
+#if defined(FOF_DC34_GAME_CANARY)
+    if (len >= sizeof("FOF_CRUD:") - 1U &&
+        memcmp(line, "FOF_CRUD:", sizeof("FOF_CRUD:") - 1U) == 0) {
+        badge_con_packet_t packet = {0};
+        uint32_t local_peer = 0U;
+        uint8_t local_session = 0U;
+        bool local_identity_valid =
+            badge_con_runtime_identity(&local_peer, &local_session);
+        if (scanner_id != 0 ||
+            !badge_con_parse_uart_line(line, len, &packet) ||
+            !local_identity_valid ||
+            (packet.peer == local_peer &&
+             packet.session == local_session)) {
+            note_scanner_json_parse_error(scanner_id);
+            return;
+        }
+        (void)badge_con_runtime_apply_qualified_peer(&packet);
+        return;
+    }
+#endif
+
     badge_easter_egg_source_t easter_source =
-        badge_easter_egg_source_from_uart_frame(line, len);
+        badge_easter_egg_source_from_uart_frame((const char *)line, len);
     if (easter_source != BADGE_EASTER_EGG_SOURCE_NONE) {
 #ifdef FOF_BADGE_VARIANT
         (void)badge_easter_egg_runtime_trigger(easter_source);
@@ -1660,6 +1700,29 @@ static void process_line(const char *line, size_t len, int scanner_id)
         return;
     }
 
+    fof_scanner_uplink_decision_t decision = {0};
+    fof_scanner_uplink_ingress_result_t ingress_result =
+        fof_scanner_uplink_ingress_select_and_validate(
+            line, len, scanner_id, &decision);
+    if (ingress_result != FOF_SCANNER_UPLINK_INGRESS_OK) {
+        note_scanner_json_parse_error(scanner_id);
+        ESP_LOGW(TAG,
+                 "Scanner[%d] rejected raw UART frame result=%d len=%lu",
+                 scanner_id, (int)ingress_result, (unsigned long)len);
+        return;
+    }
+
+#if defined(FOF_DC34_GAME_CANARY)
+    if (decision.route == FOF_SCANNER_UPLINK_ROUTE_CRUD_SELF_ACK) {
+        badge_con_runtime_note_self_ack(
+            decision.crud_peer, decision.crud_session);
+        return;
+    }
+#endif
+
+    /* The raw span is authorized before it is projected to a C string. */
+    line[len] = '\0';
+    const char *json_line = (const char *)line;
     int_fast64_t now_ms = (int_fast64_t)(esp_timer_get_time() / 1000);
 
     if (memchr(line, '\0', len) != NULL) {
@@ -1668,11 +1731,11 @@ static void process_line(const char *line, size_t len, int scanner_id)
         return;
     }
     const char *parse_end = NULL;
-    cJSON *root = cJSON_ParseWithOpts(line, &parse_end, true);
+    cJSON *root = cJSON_ParseWithOpts(json_line, &parse_end, true);
     if (!root) {
         note_scanner_json_parse_error(scanner_id);
         ESP_LOGW(TAG, "Scanner[%d] JSON parse error: %.64s...",
-                 scanner_id, line);
+                 scanner_id, json_line);
         return;
     }
 
@@ -1683,37 +1746,18 @@ static void process_line(const char *line, size_t len, int scanner_id)
         return;
     }
 
-    /* Scanner firmware emits only the two byte-exact frames accepted above.
-     * Reject every decoded near-match before it can affect liveness or
-     * backpressure. This also catches cJSON strings truncated by \u0000. */
-    if (badge_easter_egg_uart_type_claims_event(msg_type)) {
-        ESP_LOGW(TAG, "Scanner[%d] noncanonical badge Easter frame ignored",
-                 scanner_id);
-        cJSON_Delete(root);
-        return;
-    }
-
-    if (strncmp(msg_type, "ble_inv_", 8) == 0) {
+    if (decision.route ==
+        FOF_SCANNER_UPLINK_ROUTE_BLE_INVESTIGATION) {
 #ifdef FOF_BADGE_VARIANT
-        if (scanner_id == BADGE_BLE_INVESTIGATION_SCANNER_SLOT) {
-            note_scanner_activity(scanner_id, now_ms);
-            if (!badge_ble_investigation_accept_scanner_json(root)) {
-                ESP_LOGW(TAG, "Scanner[0] rejected BLE investigation chunk: %s",
-                         msg_type);
-            }
-        } else {
-            ESP_LOGW(TAG, "Scanner[%d] BLE investigation route rejected", scanner_id);
+        note_scanner_activity(scanner_id, now_ms);
+        if (!badge_ble_investigation_accept_scanner_json(root)) {
+            ESP_LOGW(TAG,
+                     "Scanner[0] rejected authorized BLE investigation chunk: %s",
+                     msg_type);
         }
 #else
         ESP_LOGW(TAG, "BLE investigation chunk ignored outside badge build");
 #endif
-        cJSON_Delete(root);
-        return;
-    }
-
-    if (!msg_type_is_scanner_originated(msg_type)) {
-        ESP_LOGW(TAG, "Scanner[%d] echoed/non-scanner msg type='%s' ignored",
-                 scanner_id, msg_type);
         cJSON_Delete(root);
         return;
     }
@@ -1724,11 +1768,21 @@ static void process_line(const char *line, size_t len, int scanner_id)
      * traffic as a chance to release backpressure once the queue has drained. */
     maybe_resume_scanner(scanner_id);
 
-    if (strcmp(msg_type, MSG_TYPE_DETECTION) == 0) {
+    if (decision.route == FOF_SCANNER_UPLINK_ROUTE_DETECTION) {
         drone_detection_t det;
         if (parse_detection(root, &det)) {
             det.scanner_slot = (uint8_t)scanner_id;
             det.scanner_slots_seen = (uint8_t)(1U << scanner_id);
+
+            const bool low_effort_ble =
+                det.source == DETECTION_SRC_BLE_FINGERPRINT &&
+                (strcmp(det.manufacturer, "BLE Nearby") == 0 ||
+                 strcmp(det.manufacturer, "Unknown") == 0);
+            if (!badge_ble_low_effort_detection_allowed(low_effort_ble,
+                                                        det.rssi)) {
+                cJSON_Delete(root);
+                return;
+            }
 
             /* Skip BLE background noise (0.02 confidence) to reduce queue pressure.
              * WiFi APs (0.05) and phones (0.05) are still useful for the backend. */
@@ -1772,10 +1826,14 @@ static void process_line(const char *line, size_t len, int scanner_id)
             _Atomic bool *bp_flag = backpressure_flag_for_scanner(scanner_id);
             if (queue_count >= (CONFIG_DETECTION_QUEUE_SIZE * 8 / 10)) {
                 if (!atomic_load(bp_flag)) {
-                    send_scanner_flow_cmd(scanner_id, "stop");
-                    ESP_LOGW(TAG, "Queue pressure %d/%d — throttling scanner[%d]",
-                             (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE, scanner_id);
-                    atomic_store(bp_flag, true);
+                    if (send_scanner_flow_cmd(scanner_id, "stop")) {
+                        ESP_LOGW(
+                            TAG,
+                            "Queue pressure %d/%d — throttling scanner[%d]",
+                            (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE,
+                            scanner_id);
+                        atomic_store(bp_flag, true);
+                    }
                 }
             } else if (atomic_load(bp_flag) &&
                        queue_count <= (CONFIG_DETECTION_QUEUE_SIZE * 4 / 10)
@@ -1783,10 +1841,14 @@ static void process_line(const char *line, size_t len, int scanner_id)
                        && !badge_power_runtime_is_quiet()
 #endif
             ) {
-                send_scanner_flow_cmd(scanner_id, "start");
-                ESP_LOGI(TAG, "Queue drained %d/%d — resuming scanner[%d]",
-                         (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE, scanner_id);
-                atomic_store(bp_flag, false);
+                if (send_scanner_flow_cmd(scanner_id, "start")) {
+                    ESP_LOGI(
+                        TAG,
+                        "Queue drained %d/%d — resuming scanner[%d]",
+                        (int)queue_count, CONFIG_DETECTION_QUEUE_SIZE,
+                        scanner_id);
+                    atomic_store(bp_flag, false);
+                }
             }
 
             if (xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -1796,13 +1858,16 @@ static void process_line(const char *line, size_t len, int scanner_id)
             }
             push_recent(&det);
         }
-    } else if (strcmp(msg_type, MSG_TYPE_STATUS) == 0) {
-        handle_status(root, scanner_id);
-    } else if (strcmp(msg_type, "scanner_info") == 0) {
+    } else if (decision.route == FOF_SCANNER_UPLINK_ROUTE_STATUS) {
+        uint32_t published_identity_generation =
+            publish_scanner_identity_snapshot(
+                scanner_id, root, esp_timer_get_time() / 1000, true);
+        handle_status(root, scanner_id, published_identity_generation);
+    } else if (decision.route == FOF_SCANNER_UPLINK_ROUTE_SCANNER_INFO) {
         /* Scanner identity: version, board type, chip, capabilities, time-offset */
         uint32_t published_identity_generation =
             publish_scanner_identity_snapshot(
-                scanner_id, root, esp_timer_get_time() / 1000);
+                scanner_id, root, esp_timer_get_time() / 1000, false);
         scanner_info_t *info = scanner_info_update_begin(scanner_id);
         if (!info) {
             ESP_LOGE(TAG, "Scanner[%d] identity snapshot lock failed", scanner_id);
@@ -2073,8 +2138,9 @@ static void process_line(const char *line, size_t len, int scanner_id)
             scanner_id, &s_badge_status_evidence[scanner_id]);
         badge_power_runtime_note_scanner_identity(scanner_id);
 #endif
-    } else if (strcmp(msg_type, "recovery_ack") == 0 ||
-               strcmp(msg_type, "scanner_recovery") == 0) {
+    } else if (
+        decision.route == FOF_SCANNER_UPLINK_ROUTE_RECOVERY_ACK ||
+        decision.route == FOF_SCANNER_UPLINK_ROUTE_SCANNER_RECOVERY) {
         scanner_info_t *info = scanner_info_update_begin(scanner_id);
         if (!info) {
             ESP_LOGE(TAG, "Scanner[%d] recovery snapshot lock failed", scanner_id);
@@ -2100,7 +2166,10 @@ static void process_line(const char *line, size_t len, int scanner_id)
                  mode && mode[0] ? mode : "?",
                  safe_reason && safe_reason[0] ? safe_reason : "",
                  (unsigned long)crash_count);
-    } else if (strcmp(msg_type, MSG_TYPE_FW_CHECK) == 0) {
+    } else if (
+        decision.route == FOF_SCANNER_UPLINK_ROUTE_FIRMWARE &&
+        decision.firmware_schema_id ==
+            FOF_FW_JSON_SCHEMA_RECEIPT_FW_CHECK) {
         const char *board = json_get_string(root, "board", "");
         const char *ver = json_get_string(root, "ver", "");
         const char *reason = json_get_string(root, "reason", "");
@@ -2132,13 +2201,20 @@ static void process_line(const char *line, size_t len, int scanner_id)
                  board[0] ? board : "?",
                  ver[0] ? ver : "?");
         fw_store_handle_scanner_check(scanner_id, board, ver, reason);
-    } else if (strcmp(msg_type, MSG_TYPE_FW_READY) == 0) {
+    } else if (
+        decision.route == FOF_SCANNER_UPLINK_ROUTE_FIRMWARE &&
+        (decision.firmware_schema_id ==
+             FOF_FW_JSON_SCHEMA_RECEIPT_FW_READY_STRICT ||
+         decision.firmware_schema_id ==
+             FOF_FW_JSON_SCHEMA_RECEIPT_FW_READY_LEGACY_68)) {
         const char *board = "";
         const char *ver = "";
         const char *target = "";
         uint32_t target_size = 0;
         uint32_t target_crc32 = 0;
-        bool legacy_receipt = strict_receipt_fields_absent(root);
+        bool legacy_receipt =
+            decision.firmware_schema_id ==
+            FOF_FW_JSON_SCHEMA_RECEIPT_FW_READY_LEGACY_68;
         bool ready_frame_valid = fw_ready_common_fields_valid(
             root, &board, &ver, &target, &target_size, &target_crc32);
         bool accepted = false;
@@ -2216,7 +2292,8 @@ static void process_line(const char *line, size_t len, int scanner_id)
                  board[0] ? board : "?",
                  ver[0] ? ver : "?",
                  target[0] ? target : "?");
-    } else if (strcmp(msg_type, MSG_TYPE_CAL_MODE_ACK) == 0) {
+    } else if (
+        decision.route == FOF_SCANNER_UPLINK_ROUTE_CAL_MODE_ACK) {
         scanner_info_t *info = scanner_info_update_begin(scanner_id);
         if (!info) {
             ESP_LOGE(TAG, "Scanner[%d] calibration snapshot lock failed", scanner_id);
@@ -2240,7 +2317,8 @@ static void process_line(const char *line, size_t len, int scanner_id)
                  ok ? 1 : 0,
                  scan_mode && scan_mode[0] ? scan_mode : "normal",
                  cal_uuid && cal_uuid[0] ? cal_uuid : "-");
-    } else if (strcmp(msg_type, "scan_profile_ack") == 0) {
+    } else if (
+        decision.route == FOF_SCANNER_UPLINK_ROUTE_SCAN_PROFILE_ACK) {
         scanner_info_t *info = scanner_info_update_begin(scanner_id);
         if (!info) {
             ESP_LOGE(TAG, "Scanner[%d] profile snapshot lock failed", scanner_id);
@@ -2265,7 +2343,8 @@ static void process_line(const char *line, size_t len, int scanner_id)
         ESP_LOGI(TAG, "Scanner[%d] scan profile ack: %s",
                  scanner_id,
                  scan_profile && scan_profile[0] ? scan_profile : "?");
-    } else if (strcmp(msg_type, "display_control_ack") == 0) {
+    } else if (
+        decision.route == FOF_SCANNER_UPLINK_ROUTE_DISPLAY_CONTROL_ACK) {
         const char *view = json_get_string(root, "view", "?");
         const cJSON *button_j = cJSON_GetObjectItemCaseSensitive(root, "button_enabled");
         const cJSON *page_lock_j = cJSON_GetObjectItemCaseSensitive(root, "page_lock");
@@ -2280,7 +2359,8 @@ static void process_line(const char *line, size_t len, int scanner_id)
                  view,
                  page_lock ? 1 : 0,
                  (page_j && cJSON_IsNumber(page_j)) ? page_j->valueint : -1);
-    } else if (strcmp(msg_type, "display_policy_ack") == 0) {
+    } else if (
+        decision.route == FOF_SCANNER_UPLINK_ROUTE_DISPLAY_POLICY_ACK) {
         scanner_info_t *info = scanner_info_update_begin(scanner_id);
         if (!info) {
             ESP_LOGE(TAG, "Scanner[%d] display-policy snapshot lock failed", scanner_id);
@@ -2297,7 +2377,8 @@ static void process_line(const char *line, size_t len, int scanner_id)
         scanner_info_update_commit();
         ESP_LOGI(TAG, "Scanner[%d] display policy ack hash=%lu",
                  scanner_id, (unsigned long)display_policy_ack_hash);
-    } else if (strcmp(msg_type, MSG_TYPE_SCANNER_QUIET_ACK) == 0) {
+    } else if (
+        decision.route == FOF_SCANNER_UPLINK_ROUTE_SCANNER_QUIET_ACK) {
         scanner_info_t *info = scanner_info_update_begin(scanner_id);
         if (!info) {
             ESP_LOGE(TAG, "Scanner[%d] quiet-mode snapshot lock failed", scanner_id);
@@ -2373,8 +2454,8 @@ static void process_line(const char *line, size_t len, int scanner_id)
             ble_quiesced, wifi_quiesced, ble_active, wifi_active,
             radios_ready, tx_restored, uart_commands);
 #endif
-    } else if (strncmp(msg_type, "ota_", 4) == 0 ||
-               strcmp(msg_type, "stop_ack") == 0) {
+    } else if (
+        decision.route == FOF_SCANNER_UPLINK_ROUTE_FIRMWARE) {
         /* OTA/control response from scanner — capture for relay diagnostics. */
         portENTER_CRITICAL(&s_ota_response_lock);
         strncpy((char *)s_last_ota_response.type, msg_type, sizeof(s_last_ota_response.type) - 1);
@@ -2399,7 +2480,7 @@ typedef struct {
     int uart_num;
     int scanner_id;     /* 0=BLE scanner, 1=WiFi scanner */
     const char *label;
-    char *line_buf;
+    uint8_t *line_buf;
     uint8_t *read_buf;
 } uart_rx_task_params_t;
 
@@ -2422,7 +2503,7 @@ static bool uart_rx_ensure_task_buffers(uart_rx_task_params_t *params)
         return false;
     }
     if (!params->line_buf) {
-        params->line_buf = (char *)uart_rx_alloc_persistent_buffer(
+        params->line_buf = (uint8_t *)uart_rx_alloc_persistent_buffer(
             LINE_BUF_SIZE,
             params->label ? params->label : "UART line buffer"
         );
@@ -2455,9 +2536,8 @@ static void uart_rx_task(void *arg)
     int uart_num = params->uart_num;
     int scanner_id = params->scanner_id;
 
-    char *line_buf = params->line_buf;
+    uint8_t *line_buf = params->line_buf;
     uint8_t *read_buf = params->read_buf;
-    int  line_pos = 0;
 
     if (!line_buf || !read_buf) {
         ESP_LOGE(TAG, "UART RX task missing buffers: %s", params->label);
@@ -2465,15 +2545,35 @@ static void uart_rx_task(void *arg)
         return;
     }
 
+    scanner_uart_line_framer_t framer = {0};
+    if (!scanner_uart_line_framer_init(
+            &framer, line_buf, LINE_BUF_SIZE)) {
+        ESP_LOGE(TAG, "UART RX task failed to initialize framer: %s",
+                 params->label);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    atomic_bool *task_entered = scanner_id == 0
+        ? &s_rx_task_entered_ble : &s_rx_task_entered_wifi;
+    atomic_bool *task_started = scanner_id == 0
+        ? &s_rx_task_started_ble : &s_rx_task_started_wifi;
+    atomic_store_explicit(task_entered, true, memory_order_release);
+    atomic_store_explicit(task_started, true, memory_order_release);
+
     ESP_LOGI(TAG, "UART RX task started: %s (UART%d)", params->label, uart_num);
 
     int debug_dumps = 3;  /* dump first 3 reads for diagnostics */
     int64_t last_heartbeat_ms = esp_timer_get_time() / 1000;
+    int64_t partial_started_ms = 0;
     int total_bytes = 0;
 
     while (1) {
         /* Periodic heartbeat so we know the task is alive */
         int64_t now_ms = esp_timer_get_time() / 1000;
+#ifdef FOF_BADGE_VARIANT
+        badge_runtime_note_scanner_uart_worker_alive((uint8_t)scanner_id);
+#endif
         if (now_ms - last_heartbeat_ms > 5000) {
             note_uart_rx_stack_free(scanner_id);
             ESP_LOGI(TAG, "[%s] heartbeat: %d total bytes received stack=%lu",
@@ -2482,24 +2582,47 @@ static void uart_rx_task(void *arg)
             last_heartbeat_ms = now_ms;
         }
         /* During OTA relay, pause reading so relay handler can read ACKs directly */
-        atomic_bool *paused = (scanner_id == 0)
-            ? &s_rx_paused_ble
-            : &s_rx_paused_wifi;
-        atomic_bool *pause_acked = (scanner_id == 0)
-            ? &s_rx_pause_acked_ble
-            : &s_rx_pause_acked_wifi;
-        if (atomic_load_explicit(paused, memory_order_acquire)) {
-            atomic_store_explicit(pause_acked, true, memory_order_release);
+        atomic_uint_fast32_t *pause_request = (scanner_id == 0)
+            ? &s_rx_pause_request_generation_ble
+            : &s_rx_pause_request_generation_wifi;
+        atomic_uint_fast32_t *pause_ack = (scanner_id == 0)
+            ? &s_rx_pause_ack_generation_ble
+            : &s_rx_pause_ack_generation_wifi;
+        uint32_t request_generation = (uint32_t)atomic_load_explicit(
+            pause_request, memory_order_acquire);
+        if (request_generation != 0U) {
+            atomic_store_explicit(pause_ack, request_generation,
+                                  memory_order_release);
             do {
                 vTaskDelay(pdMS_TO_TICKS(UART_RX_PAUSE_POLL_MS));
-            } while (atomic_load_explicit(paused, memory_order_acquire));
-            atomic_store_explicit(pause_acked, false, memory_order_release);
+            } while ((uint32_t)atomic_load_explicit(
+                         pause_request, memory_order_acquire) ==
+                     request_generation);
+            uint_fast32_t acknowledged = request_generation;
+            (void)atomic_compare_exchange_strong_explicit(
+                pause_ack, &acknowledged, 0U,
+                memory_order_acq_rel, memory_order_acquire);
+            scanner_uart_line_framer_reset(&framer);
+            partial_started_ms = 0;
             continue;
         }
 
         int bytes_read = uart_read_bytes(uart_num, read_buf, READ_BUF_SIZE,
                                          pdMS_TO_TICKS(100));
         if (bytes_read <= 0) {
+            if (partial_started_ms > 0 &&
+                now_ms - partial_started_ms >=
+                    UART_RX_PARTIAL_FRAME_TIMEOUT_MS) {
+                scanner_uart_line_event_t event =
+                    scanner_uart_line_framer_expire_partial(&framer);
+                if (event.kind ==
+                    SCANNER_UART_LINE_EVENT_FRAME_REJECTED) {
+                    ESP_LOGW(TAG,
+                             "[%s] stale partial UART frame discarded",
+                             params->label);
+                }
+                partial_started_ms = 0;
+            }
             continue;
         }
         note_uart_rx_stack_free(scanner_id);
@@ -2516,30 +2639,43 @@ static void uart_rx_task(void *arg)
             ESP_LOGI(TAG, "[%s] RX %d bytes: %s", params->label, bytes_read, hex);
         }
 
-        for (int i = 0; i < bytes_read; i++) {
-            char c = (char)read_buf[i];
+        size_t offset = 0U;
+        while (offset < (size_t)bytes_read) {
+            bool had_partial =
+                scanner_uart_line_framer_has_partial(&framer);
+            size_t consumed = 0U;
+            scanner_uart_line_event_t event =
+                scanner_uart_line_framer_consume(
+                    &framer,
+                    read_buf + offset,
+                    (size_t)bytes_read - offset,
+                    &consumed);
+            if (consumed == 0U) {
+                ESP_LOGE(TAG, "[%s] UART framer made no progress",
+                         params->label);
+                break;
+            }
+            offset += consumed;
 
-            if (c == UART_MSG_DELIMITER) {
-                if (line_pos > 0) {
-                    line_buf[line_pos] = '\0';
-                    process_line(line_buf, line_pos, scanner_id);
-                    line_pos = 0;
-                }
-            } else {
-                if (line_pos < LINE_BUF_SIZE - 1) {
-                    line_buf[line_pos++] = c;
-                } else {
-                    /* Dump first 20 bytes for diagnostics */
-                    char hex[64];
-                    int hlen = 0;
-                    for (int j = 0; j < 20 && j < LINE_BUF_SIZE; j++) {
-                        hlen += snprintf(hex + hlen, sizeof(hex) - hlen, "%02X ", (uint8_t)line_buf[j]);
-                    }
-                    ESP_LOGW(TAG, "[%s] Line buffer overflow (%d bytes, no newline). First 20: %s",
-                             params->label, line_pos, hex);
+            if (event.kind == SCANNER_UART_LINE_EVENT_FRAME_READY) {
+                partial_started_ms = 0;
+                process_line((uint8_t *)event.bytes, event.byte_len,
+                             scanner_id);
+            } else if (
+                event.kind ==
+                SCANNER_UART_LINE_EVENT_FRAME_REJECTED) {
+                partial_started_ms = 0;
+                if (event.reject_reason ==
+                    SCANNER_UART_LINE_REJECT_TOO_LONG) {
                     note_scanner_line_overflow(scanner_id);
-                    line_pos = 0;
                 }
+                ESP_LOGW(TAG,
+                         "[%s] rejected UART frame reason=%d",
+                         params->label, (int)event.reject_reason);
+            } else if (
+                !had_partial &&
+                scanner_uart_line_framer_has_partial(&framer)) {
+                partial_started_ms = now_ms;
             }
         }
     }
@@ -2552,6 +2688,31 @@ static uart_rx_task_params_t s_wifi_task_params = { .uart_num = 0, .scanner_id =
 #endif
 
 /* ── Public API ────────────────────────────────────────────────────────── */
+
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+_Static_assert(
+    CONFIG_DETECTION_QUEUE_SIZE * sizeof(drone_detection_t) == 41472U,
+    "CON CRUD queue reclamation evidence changed");
+#endif
+
+uint32_t uart_rx_detection_queue_capacity(void)
+{
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    return 0U;
+#else
+    return CONFIG_DETECTION_QUEUE_SIZE;
+#endif
+}
+
+uint32_t uart_rx_detection_queue_reclaimed_bytes(void)
+{
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    return (uint32_t)(
+        CONFIG_DETECTION_QUEUE_SIZE * sizeof(drone_detection_t));
+#else
+    return 0U;
+#endif
+}
 
 static void init_uart_port(int uart_num, int rx_pin, int tx_pin, const char *label)
 {
@@ -2649,10 +2810,34 @@ void uart_rx_scanner_tx_lease_release(void)
     }
 }
 
+static bool wait_for_rx_task_entries(void)
+{
+    int64_t entry_deadline_ms = (esp_timer_get_time() / 1000) +
+                                UART_RX_ENTRY_ACK_TIMEOUT_MS;
+    bool entries_ready = false;
+    do {
+        entries_ready = atomic_load_explicit(
+            &s_rx_task_entered_ble, memory_order_acquire)
+#if CONFIG_DUAL_SCANNER
+            && atomic_load_explicit(
+                &s_rx_task_entered_wifi, memory_order_acquire)
+#endif
+            ;
+        if (!entries_ready) {
+            vTaskDelay(pdMS_TO_TICKS(UART_RX_PAUSE_POLL_MS));
+        }
+    } while (!entries_ready &&
+             (esp_timer_get_time() / 1000) < entry_deadline_ms);
+    return entries_ready;
+}
+
 bool uart_rx_start(void)
 {
-    static bool s_tasks_started = false;
-    if (s_tasks_started) {
+    if (atomic_load_explicit(&s_rx_task_started_ble, memory_order_acquire)
+#if CONFIG_DUAL_SCANNER
+        && atomic_load_explicit(&s_rx_task_started_wifi, memory_order_acquire)
+#endif
+    ) {
         return true;
     }
 
@@ -2667,6 +2852,14 @@ bool uart_rx_start(void)
     }
 #endif
 
+    atomic_store_explicit(&s_rx_task_entered_ble, false,
+                          memory_order_release);
+    atomic_store_explicit(&s_rx_task_entered_wifi, false,
+                          memory_order_release);
+    atomic_store_explicit(&s_rx_task_started_ble, false,
+                          memory_order_release);
+    atomic_store_explicit(&s_rx_task_started_wifi, false,
+                          memory_order_release);
     TaskHandle_t ble_task = NULL;
     BaseType_t ble_ok = xTaskCreate(
         uart_rx_task, "uart_rx_ble", CONFIG_UART_RX_STACK,
@@ -2685,12 +2878,31 @@ bool uart_rx_start(void)
     if (wifi_ok != pdPASS) {
         ESP_LOGE(TAG, "Failed to create WiFi scanner RX task");
         vTaskDelete(ble_task);
+        atomic_store_explicit(&s_rx_task_entered_ble, false,
+                              memory_order_release);
+        atomic_store_explicit(&s_rx_task_started_ble, false,
+                              memory_order_release);
         return false;
     }
     ESP_LOGI(TAG, "WiFi scanner RX task created");
 #endif
 
-    s_tasks_started = true;
+    if (!wait_for_rx_task_entries()) {
+        ESP_LOGE(TAG, "UART RX task entry acknowledgement timed out");
+#if CONFIG_DUAL_SCANNER
+        vTaskDelete(wifi_task);
+#endif
+        vTaskDelete(ble_task);
+        atomic_store_explicit(&s_rx_task_entered_ble, false,
+                              memory_order_release);
+        atomic_store_explicit(&s_rx_task_entered_wifi, false,
+                              memory_order_release);
+        atomic_store_explicit(&s_rx_task_started_ble, false,
+                              memory_order_release);
+        atomic_store_explicit(&s_rx_task_started_wifi, false,
+                              memory_order_release);
+        return false;
+    }
     return true;
 }
 
@@ -2741,7 +2953,8 @@ bool uart_rx_is_ble_scanner_connected(void)
 
 bool uart_rx_ble_investigation_ingress_available(void)
 {
-    return uart_rx_is_ble_scanner_connected() && !s_rx_paused_ble;
+    return uart_rx_is_ble_scanner_connected() &&
+           !uart_rx_scanner_is_paused(0);
 }
 
 bool uart_rx_is_wifi_scanner_connected(void)
@@ -2780,53 +2993,68 @@ void uart_rx_get_scanner_uart_diag(int scanner_id, scanner_uart_diag_t *out)
     out->json_parse_error_count = (uint32_t)atomic_load(json_error);
 }
 
-/* Route a command to only one UART by scanning the JSON for markers.
- *
- * Scanner delegation rule (default operating mode):
- *   - BLE-specific commands (ble_lockon / ble_lockon_cancel) → BLE UART only.
- *     While the BLE scanner focuses on an RID drone, the WiFi scanner keeps
- *     doing wide passive scanning for other detections.
- *   - WiFi-specific commands (lockon / lockon_cancel, which carry a "ch"
- *     field) → WiFi UART only. Symmetric.
- *   - Everything else (start/stop/ready/ota_*) still broadcasts to both.
- *
- * The backend also passes "type":"ble" / "type":"wifi" hints in per-node
- * lockon commands (see drone_tracker._issue_lockon); we honor those too as
- * a primary signal, falling back to the command-type string.
- */
-static bool cmd_is_ble_only(const char *json_cmd)
+static fof_scanner_deployment_t scanner_command_deployment(void)
 {
-    if (!json_cmd) return false;
-    if (strstr(json_cmd, "\"type\":\"ble\"")) return true;           /* backend hint */
-    if (strstr(json_cmd, "\"type\":\"ble_lockon\"")) return true;
-    if (strstr(json_cmd, "\"type\":\"ble_lockon_cancel\"")) return true;
-    return false;
+#ifdef FOF_BADGE_VARIANT
+    return FOF_SCANNER_DEPLOYMENT_BADGE;
+#else
+    return FOF_SCANNER_DEPLOYMENT_NON_BADGE;
+#endif
 }
 
-static bool cmd_is_wifi_only(const char *json_cmd)
+static bool scanner_command_is_scan_control(
+    fof_scanner_command_id_t command_id)
 {
-    if (!json_cmd) return false;
-    if (strstr(json_cmd, "\"type\":\"wifi\"")) return true;          /* backend hint */
-    /* Plain "lockon" / "lockon_cancel" commands are WiFi channel locks. */
-    if (strstr(json_cmd, "\"type\":\"lockon\"")) return true;
-    if (strstr(json_cmd, "\"type\":\"lockon_cancel\"")) return true;
-    return false;
+    return command_id == FOF_SCANNER_COMMAND_WIFI_LOCKON ||
+           command_id == FOF_SCANNER_COMMAND_WIFI_LOCKON_CANCEL ||
+           command_id == FOF_SCANNER_COMMAND_BLE_LOCKON ||
+           command_id == FOF_SCANNER_COMMAND_BLE_LOCKON_CANCEL;
+}
+
+static bool scanner_command_is_ble_only(
+    fof_scanner_command_id_t command_id)
+{
+    return command_id == FOF_SCANNER_COMMAND_BLE_LOCKON ||
+           command_id == FOF_SCANNER_COMMAND_BLE_LOCKON_CANCEL;
+}
+
+static bool scanner_command_is_wifi_only(
+    fof_scanner_command_id_t command_id)
+{
+    return command_id == FOF_SCANNER_COMMAND_WIFI_LOCKON ||
+           command_id == FOF_SCANNER_COMMAND_WIFI_LOCKON_CANCEL;
 }
 
 void uart_rx_send_command(const char *json_cmd)
 {
-    if (!json_cmd) return;
+    if (!json_cmd) {
+        return;
+    }
+    size_t command_len =
+        strnlen(json_cmd, SCANNER_UART_LINE_MAX_PAYLOAD + 1U);
+    fof_scanner_command_decision_t decision = {0};
+    fof_scanner_command_registry_result_t authorization =
+        fof_scanner_command_select_and_validate(
+            (const uint8_t *)json_cmd, command_len,
+            scanner_command_deployment(), &decision);
+    if (command_len == 0U ||
+        command_len > SCANNER_UART_LINE_MAX_PAYLOAD ||
+        authorization != FOF_SCANNER_COMMAND_REGISTRY_OK) {
+        ESP_LOGW(TAG, "Rejecting unauthorized scanner command result=%d",
+                 (int)authorization);
+        return;
+    }
+
     if (s_node_calibration_mode &&
-        (strstr(json_cmd, "\"type\":\"lockon\"") ||
-         strstr(json_cmd, "\"type\":\"lockon_cancel\"") ||
-         strstr(json_cmd, "\"type\":\"ble_lockon\"") ||
-         strstr(json_cmd, "\"type\":\"ble_lockon_cancel\""))) {
+        scanner_command_is_scan_control(decision.command.id)) {
         ESP_LOGW(TAG, "Rejecting scan-control command while calibration mode is active");
         return;
     }
-    const bool ble_only  = cmd_is_ble_only(json_cmd);
+    const bool ble_only =
+        scanner_command_is_ble_only(decision.command.id);
 #if CONFIG_DUAL_SCANNER
-    const bool wifi_only = cmd_is_wifi_only(json_cmd);
+    const bool wifi_only =
+        scanner_command_is_wifi_only(decision.command.id);
 #else
     const bool wifi_only = false;  /* single-scanner build: always the BLE UART */
 #endif
@@ -2860,11 +3088,24 @@ bool uart_rx_send_command_to_scanner_checked(int scanner_id, const char *json_cm
     if (!json_cmd) {
         return false;
     }
+    size_t command_len =
+        strnlen(json_cmd, SCANNER_UART_LINE_MAX_PAYLOAD + 1U);
+    fof_scanner_command_decision_t decision = {0};
+    fof_scanner_command_registry_result_t authorization =
+        fof_scanner_command_select_and_validate(
+            (const uint8_t *)json_cmd, command_len,
+            scanner_command_deployment(), &decision);
+    if (command_len == 0U ||
+        command_len > SCANNER_UART_LINE_MAX_PAYLOAD ||
+        authorization != FOF_SCANNER_COMMAND_REGISTRY_OK) {
+        ESP_LOGW(TAG,
+                 "Rejecting unauthorized scanner[%d] command result=%d",
+                 scanner_id, (int)authorization);
+        return false;
+    }
+
     if (s_node_calibration_mode &&
-        (strstr(json_cmd, "\"type\":\"lockon\"") ||
-         strstr(json_cmd, "\"type\":\"lockon_cancel\"") ||
-         strstr(json_cmd, "\"type\":\"ble_lockon\"") ||
-         strstr(json_cmd, "\"type\":\"ble_lockon_cancel\""))) {
+        scanner_command_is_scan_control(decision.command.id)) {
         ESP_LOGW(TAG, "Rejecting scan-control command while calibration mode is active");
         return false;
     }
@@ -2920,29 +3161,194 @@ void uart_rx_clear_ota_response(void)
     portEXIT_CRITICAL(&s_ota_response_lock);
 }
 
+bool uart_rx_scanner_task_started(int scanner_id)
+{
+    if (scanner_id == 0) {
+        return atomic_load_explicit(
+            &s_rx_task_started_ble, memory_order_acquire);
+    }
+    if (scanner_id == 1) {
+#if CONFIG_DUAL_SCANNER
+        return atomic_load_explicit(
+            &s_rx_task_started_wifi, memory_order_acquire);
+#else
+        return false;
+#endif
+    }
+    return false;
+}
+
+static atomic_uint_fast32_t *pause_request_for_scanner(int scanner_id)
+{
+    if (scanner_id == 0) {
+        return &s_rx_pause_request_generation_ble;
+    }
+    if (scanner_id == 1) {
+        return &s_rx_pause_request_generation_wifi;
+    }
+    return NULL;
+}
+
+static atomic_uint_fast32_t *pause_ack_for_scanner(int scanner_id)
+{
+    if (scanner_id == 0) {
+        return &s_rx_pause_ack_generation_ble;
+    }
+    if (scanner_id == 1) {
+        return &s_rx_pause_ack_generation_wifi;
+    }
+    return NULL;
+}
+
+bool uart_rx_scanner_is_paused(int scanner_id)
+{
+    atomic_uint_fast32_t *request = pause_request_for_scanner(scanner_id);
+    return request && atomic_load_explicit(
+        request, memory_order_acquire) != 0U;
+}
+
+static bool next_pause_generation(uint32_t *out)
+{
+    if (!out) {
+        return false;
+    }
+    uint_fast32_t current = atomic_load_explicit(
+        &s_rx_pause_next_generation, memory_order_acquire);
+    while (current < UINT32_MAX) {
+        uint_fast32_t desired = current + 1U;
+        if (atomic_compare_exchange_weak_explicit(
+                &s_rx_pause_next_generation, &current, desired,
+                memory_order_acq_rel, memory_order_acquire)) {
+            *out = (uint32_t)desired;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool uart_rx_pause_scanner_guarded(int scanner_id,
+                                  uart_rx_pause_guard_t *guard)
+{
+    atomic_uint_fast32_t *request = pause_request_for_scanner(scanner_id);
+    atomic_uint_fast32_t *ack = pause_ack_for_scanner(scanner_id);
+    if (!request || !ack || !guard || guard->acquired) {
+        return false;
+    }
+    memset(guard, 0, sizeof(*guard));
+    if (!uart_rx_scanner_task_started(scanner_id)) {
+        return true;
+    }
+
+    uint_fast32_t expected = 0U;
+    uint32_t request_generation = 0U;
+    if (!next_pause_generation(&request_generation)) {
+        ESP_LOGE(TAG, "UART RX pause generation exhausted");
+        return false;
+    }
+    if (!atomic_compare_exchange_strong_explicit(
+            request, &expected, request_generation,
+            memory_order_acq_rel, memory_order_acquire)) {
+        ESP_LOGE(TAG,
+                 "UART RX pause refused for scanner %d: already paused gen=%lu",
+                 scanner_id, (unsigned long)expected);
+        return false;
+    }
+    guard->request_generation = request_generation;
+    guard->acquired = true;
+
+    int64_t deadline_ms = (esp_timer_get_time() / 1000) +
+        UART_RX_PAUSE_ACK_TIMEOUT_MS;
+    uint32_t ack_generation;
+    do {
+        ack_generation = (uint32_t)atomic_load_explicit(
+            ack, memory_order_acquire);
+        if (ack_generation == request_generation) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(UART_RX_PAUSE_POLL_MS));
+    } while ((esp_timer_get_time() / 1000) < deadline_ms);
+    bool acked = ack_generation == request_generation;
+    ESP_LOGW(TAG, "UART RX pause for scanner %d gen=%lu: %s",
+             scanner_id, (unsigned long)request_generation,
+             acked ? "acknowledged" : "timeout");
+    return acked;
+}
+
+bool uart_rx_discard_scanner_backlog_guarded(int scanner_id,
+    const uart_rx_pause_guard_t *guard)
+{
+    atomic_uint_fast32_t *request =
+        pause_request_for_scanner(scanner_id);
+    atomic_uint_fast32_t *ack = pause_ack_for_scanner(scanner_id);
+    if (!request || !ack || !guard || !guard->acquired ||
+        guard->request_generation == 0U) {
+        return false;
+    }
+
+    uint32_t request_generation = (uint32_t)atomic_load_explicit(
+        request, memory_order_acquire);
+    uint32_t ack_generation = (uint32_t)atomic_load_explicit(
+        ack, memory_order_acquire);
+    if (request_generation != guard->request_generation ||
+        ack_generation != guard->request_generation) {
+        ESP_LOGE(TAG,
+                 "UART RX discard refused for scanner %d: "
+                 "guard=%lu request=%lu ack=%lu",
+                 scanner_id,
+                 (unsigned long)guard->request_generation,
+                 (unsigned long)request_generation,
+                 (unsigned long)ack_generation);
+        return false;
+    }
+
+    uart_port_t uart = scanner_uart_for_id(scanner_id);
+    esp_err_t err = uart_flush_input(uart);
+
+    request_generation = (uint32_t)atomic_load_explicit(
+        request, memory_order_acquire);
+    ack_generation = (uint32_t)atomic_load_explicit(
+        ack, memory_order_acquire);
+    bool ownership_retained =
+        request_generation == guard->request_generation &&
+        ack_generation == guard->request_generation;
+    if (err != ESP_OK || !ownership_retained) {
+        ESP_LOGE(TAG,
+                 "UART RX discard failed for scanner %d UART%d: "
+                 "err=%s guard=%lu request=%lu ack=%lu",
+                 scanner_id, uart, esp_err_to_name(err),
+                 (unsigned long)guard->request_generation,
+                 (unsigned long)request_generation,
+                 (unsigned long)ack_generation);
+        return false;
+    }
+    return true;
+}
+
+void uart_rx_resume_scanner_guarded(int scanner_id,
+                                    uart_rx_pause_guard_t *guard)
+{
+    atomic_uint_fast32_t *request = pause_request_for_scanner(scanner_id);
+    if (!request || !guard || !guard->acquired ||
+        guard->request_generation == 0U) {
+        return;
+    }
+    uint_fast32_t expected = guard->request_generation;
+    bool cleared = atomic_compare_exchange_strong_explicit(
+        request, &expected, 0U,
+        memory_order_acq_rel, memory_order_acquire);
+    ESP_LOGW(TAG, "UART RX resume for scanner %d gen=%lu: %s",
+             scanner_id, (unsigned long)guard->request_generation,
+             cleared ? "released" : "not_owner");
+    memset(guard, 0, sizeof(*guard));
+}
+
 bool uart_rx_pause_scanner(int scanner_id)
 {
     if (scanner_id < 0 || scanner_id > 1) {
         return false;
     }
-    atomic_bool *paused = scanner_id == 0
-        ? &s_rx_paused_ble
-        : &s_rx_paused_wifi;
-    atomic_bool *pause_acked = scanner_id == 0
-        ? &s_rx_pause_acked_ble
-        : &s_rx_pause_acked_wifi;
-    atomic_store_explicit(paused, true, memory_order_release);
-
-    int64_t deadline_ms = (esp_timer_get_time() / 1000) +
-        UART_RX_PAUSE_ACK_TIMEOUT_MS;
-    while (!atomic_load_explicit(pause_acked, memory_order_acquire) &&
-           (esp_timer_get_time() / 1000) < deadline_ms) {
-        vTaskDelay(pdMS_TO_TICKS(UART_RX_PAUSE_POLL_MS));
-    }
-    bool acked = atomic_load_explicit(pause_acked, memory_order_acquire);
-    ESP_LOGW(TAG, "UART RX pause for scanner %d (OTA relay): %s",
-             scanner_id, acked ? "acknowledged" : "timeout");
-    return acked;
+    return uart_rx_pause_scanner_guarded(
+        scanner_id, &s_legacy_pause_guards[scanner_id]);
 }
 
 void uart_rx_resume_scanner(int scanner_id)
@@ -2950,9 +3356,6 @@ void uart_rx_resume_scanner(int scanner_id)
     if (scanner_id < 0 || scanner_id > 1) {
         return;
     }
-    atomic_bool *paused = scanner_id == 0
-        ? &s_rx_paused_ble
-        : &s_rx_paused_wifi;
-    atomic_store_explicit(paused, false, memory_order_release);
-    ESP_LOGW(TAG, "UART RX resumed for scanner %d", scanner_id);
+    uart_rx_resume_scanner_guarded(
+        scanner_id, &s_legacy_pause_guards[scanner_id]);
 }

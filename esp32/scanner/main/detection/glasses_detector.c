@@ -70,8 +70,9 @@ typedef struct {
 
 static const mfr_cid_entry_t s_mfr_cid_db[] = {
     /* HIGH confidence — verified BLE fingerprints */
-    { 0x01AB, "Meta",           "Smart Glasses", 0.90f, true  }, /* Meta Platforms, Inc. */
-    { 0x058E, "Meta",           "Smart Glasses", 0.90f, true  }, /* Meta Platforms Technologies */
+    /* Generic Meta company IDs identify the vendor, not glasses or a camera. */
+    { 0x01AB, "Meta",           "Meta Device",   0.65f, false }, /* Meta Platforms, Inc. */
+    { 0x058E, "Meta",           "VR Headset",    0.70f, false }, /* Meta Platforms Technologies */
     { 0x0D53, "Meta",           "Smart Glasses", 0.95f, true  }, /* Luxottica — Ray-Ban Meta / Oakley Meta frame mfr */
     { 0x03C2, "Snap",           "Smart Glasses", 0.85f, true  }, /* Snapchat Inc. */
     /* Google CID 0x00E0 removed — too broad, matches Nest/Chromecast/Pixel */

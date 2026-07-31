@@ -26,6 +26,7 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
+import android.net.Uri
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
@@ -101,6 +102,33 @@ data class BadgeUsbDetection(
     val rssi: Int,
     val receivedAtElapsedMs: Long = elapsedRealtimeMs(),
 )
+
+internal fun parseBadgeUsbDetection(
+    json: String,
+    receivedAtElapsedMs: Long,
+): BadgeUsbDetection? = runCatching {
+    val obj = JsonParser.parseString(json).asJsonObject
+    BadgeUsbDetection(
+        id = obj.get("id")?.asString.orEmpty(),
+        manufacturer = obj.get("manufacturer")?.asString.orEmpty(),
+        badgeLabel = runCatching {
+            obj.get("badge_label")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+        }.getOrDefault(""),
+        badgeClass = runCatching {
+            obj.get("badge_class")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+        }.getOrDefault(""),
+        badgeEntityKey = runCatching {
+            obj.get("badge_entity_key")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+        }.getOrDefault(""),
+        source = obj.get("source")?.asInt ?: -1,
+        confidence = obj.get("confidence")?.asFloat ?: 0f,
+        threatScore = runCatching {
+            obj.get("threat_score")?.takeIf { !it.isJsonNull }?.asFloat ?: 0f
+        }.getOrDefault(0f),
+        rssi = obj.get("rssi")?.asInt ?: 0,
+        receivedAtElapsedMs = receivedAtElapsedMs,
+    )
+}.getOrNull()
 
 data class BadgeDisplayState(
     val active: Boolean = false,
@@ -258,18 +286,22 @@ data class BadgeDisplayPolicy(
     val version: Int = 1,
     val classes: Map<String, BadgeDisplayClassPolicy> = defaultBadgeDisplayPolicyClasses()
 ) {
-    fun toJsonObject(): JsonObject = JsonObject().apply {
-        addProperty("version", version)
-        add("classes", JsonObject().apply {
-            classes.forEach { (key, config) ->
-                add(key, JsonObject().apply {
-                    addProperty("enabled", config.enabled)
-                    addProperty("lane", config.lane)
-                    addProperty("min_proximity", config.minProximity)
-                    addProperty("priority", config.priority.coerceIn(0, 100))
-                })
-            }
-        })
+    fun toJsonObject(): JsonObject {
+        val normalized = normalizedV1()
+        return JsonObject().apply {
+            addProperty("version", normalized.version)
+            add("classes", JsonObject().apply {
+                BadgeDisplayPolicyClasses.forEach { info ->
+                    val config = normalized.classes.getValue(info.key)
+                    add(info.key, JsonObject().apply {
+                        addProperty("enabled", config.enabled)
+                        addProperty("lane", config.lane)
+                        addProperty("min_proximity", config.minProximity)
+                        addProperty("priority", config.priority)
+                    })
+                }
+            })
+        }
     }
 }
 
@@ -317,7 +349,7 @@ fun defaultBadgeDisplayPolicyClasses(): Map<String, BadgeDisplayClassPolicy> = m
     "meta" to BadgeDisplayClassPolicy(true, "both", "present", 95),
     "tracker" to BadgeDisplayClassPolicy(true, "lower", "near", 70),
     "wifi_attack" to BadgeDisplayClassPolicy(true, "both", "present", 90),
-    "skimmer" to BadgeDisplayClassPolicy(true, "both", "near", 88),
+    "skimmer" to BadgeDisplayClassPolicy(false, "off", "close", 0),
     "camera" to BadgeDisplayClassPolicy(true, "lower", "near", 65),
     "flock" to BadgeDisplayClassPolicy(true, "both", "present", 85),
     "lock" to BadgeDisplayClassPolicy(true, "lower", "near", 55),
@@ -331,6 +363,25 @@ fun defaultBadgeDisplayPolicyClasses(): Map<String, BadgeDisplayClassPolicy> = m
 
 fun defaultBadgeDisplayPolicy(): BadgeDisplayPolicy =
     BadgeDisplayPolicy(classes = defaultBadgeDisplayPolicyClasses())
+
+fun BadgeDisplayPolicy.normalizedV1(): BadgeDisplayPolicy {
+    val defaults = defaultBadgeDisplayPolicyClasses()
+    val lanes = setOf("top", "lower", "both", "off")
+    val proximities = setOf("present", "near", "close")
+    return BadgeDisplayPolicy(
+        version = 1,
+        classes = BadgeDisplayPolicyClasses.associate { info ->
+            val fallback = defaults.getValue(info.key)
+            val supplied = classes[info.key] ?: fallback
+            info.key to supplied.copy(
+                lane = supplied.lane.takeIf { it in lanes } ?: fallback.lane,
+                minProximity = supplied.minProximity
+                    .takeIf { it in proximities } ?: fallback.minProximity,
+                priority = supplied.priority.coerceIn(0, 100),
+            )
+        },
+    )
+}
 
 fun badgeDisplayPolicyCommandJson(
     policy: BadgeDisplayPolicy,
@@ -360,16 +411,19 @@ data class BadgeTheme(
     val brightness: Int = 100,
     val accents: Map<String, Int> = defaultBadgeThemeAccents()
 ) {
-    fun toJsonObject(): JsonObject = JsonObject().apply {
-        addProperty("version", version)
-        addProperty("palette", palette)
-        addProperty("background", background)
-        addProperty("brightness", brightness.coerceIn(25, 100))
-        add("accents", JsonObject().apply {
-            accents.forEach { (key, value) ->
-                addProperty(key, value.coerceIn(0, 0xffff))
-            }
-        })
+    fun toJsonObject(): JsonObject {
+        val normalized = normalizedV1()
+        return JsonObject().apply {
+            addProperty("version", normalized.version)
+            addProperty("palette", normalized.palette)
+            addProperty("background", normalized.background)
+            addProperty("brightness", normalized.brightness)
+            add("accents", JsonObject().apply {
+                BadgeThemeAccentClasses.forEach { accent ->
+                    addProperty(accent.key, normalized.accents.getValue(accent.key))
+                }
+            })
+        }
     }
 }
 
@@ -403,6 +457,40 @@ fun badgeThemeCommandJson(theme: BadgeTheme, persist: Boolean = true): JsonObjec
         add("theme", theme.toJsonObject())
     }
 
+private val BadgeSetModeValues = setOf(
+    "off",
+    "usb",
+    "usb_only",
+    "local_ap",
+    "ap",
+    "backend",
+)
+
+fun badgeSetModeCommandJson(mode: String): JsonObject? =
+    mode.takeIf { it in BadgeSetModeValues }?.let { validatedMode ->
+        JsonObject().apply {
+            addProperty("cmd", "set_mode")
+            addProperty("mode", validatedMode)
+            addProperty("persist", true)
+        }
+    }
+
+fun badgeRebootCommandJson(): JsonObject = JsonObject().apply {
+    addProperty("cmd", "reboot")
+}
+
+fun badgeDisplayPolicyResetCommandJson(persist: Boolean = true): JsonObject =
+    JsonObject().apply {
+        addProperty("cmd", "badge_display_policy_reset")
+        addProperty("persist", persist)
+    }
+
+fun badgeThemeResetCommandJson(persist: Boolean = true): JsonObject =
+    JsonObject().apply {
+        addProperty("cmd", "badge_theme_reset")
+        addProperty("persist", persist)
+    }
+
 data class BadgeFirmwareProgress(
     val kind: String = "",
     val ok: Boolean? = null,
@@ -414,12 +502,45 @@ data class BadgeFirmwareProgress(
     val error: String = ""
 )
 
+data class BadgeUsbHealthStatus(
+    val schema: Int = 0,
+    val taskStarted: Boolean = false,
+    val hostConnected: Boolean = false,
+    val parserState: String = "",
+    val rxBytes: Long = 0L,
+    val validCommands: Long = 0L,
+    val responsesCompleted: Long = 0L,
+    val requiredResponseFailures: Long = 0L,
+    val malformedLines: Long = 0L,
+    val droppedProgressFrames: Long = 0L,
+    val droppedOptionalFrames: Long = 0L,
+    val uploadReceived: Long = 0L,
+    val uploadSize: Long = 0L,
+    val taskHeartbeatAgeSeconds: Long? = null,
+    val lastRxAgeSeconds: Long? = null,
+    val lastCommandAgeSeconds: Long? = null,
+    val lastResponseAgeSeconds: Long? = null,
+    val lastUploadProgressAgeSeconds: Long? = null,
+)
+
+private val BadgeUsbParserStates = setOf(
+    "command",
+    "scanner_upload",
+    "uplink_upload",
+)
+
 data class BadgeControlStatus(
     val version: String = "",
     val firmwareTarget: String = "",
     val firmwareName: String = "",
     val appProject: String = "",
     val hardwareType: String = "",
+    val hardwareId: String = "",
+    val runningPartition: String = "",
+    val pendingVerify: Boolean = false,
+    val rollbackState: String = "",
+    val lastExpectedRebootReason: String = "",
+    val usbHealth: BadgeUsbHealthStatus = BadgeUsbHealthStatus(),
     val mode: String = "local_ap",
     val modeLabel: String = "Local AP",
     val threatScore: Float = 0f,
@@ -491,6 +612,9 @@ internal fun parseBadgeControlStatus(
         )
         val bleControl = parseBadgeBleControlStatus(
             runCatching { obj.getAsJsonObject("ble_control") }.getOrNull()
+        )
+        val usbHealth = parseBadgeUsbHealthStatus(
+            runCatching { obj.getAsJsonObject("usb_health") }.getOrNull()
         )
         val entities = obj.getAsJsonArray("entities")?.mapNotNull { element ->
             runCatching {
@@ -579,6 +703,13 @@ internal fun parseBadgeControlStatus(
             firmwareName = obj.badgeOptString("firmware_name"),
             appProject = obj.badgeOptString("app_project"),
             hardwareType = obj.badgeOptString("hardware_type"),
+            hardwareId = obj.badgeStrictString("hardware_id").orEmpty(),
+            runningPartition = obj.badgeStrictString("running_partition").orEmpty(),
+            pendingVerify = obj.badgeStrictBoolean("pending_verify") ?: false,
+            rollbackState = obj.badgeStrictString("rollback_state").orEmpty(),
+            lastExpectedRebootReason =
+                obj.badgeStrictString("last_expected_reboot_reason").orEmpty(),
+            usbHealth = usbHealth,
             mode = obj.badgeOptString("mode").ifBlank { "local_ap" },
             modeLabel = obj.badgeOptString("mode_label").ifBlank { "Local AP" },
             threatScore = obj.badgeOptFloat("threat_score"),
@@ -669,7 +800,53 @@ internal fun parseBadgeControlStatus(
     }.getOrNull()
 }
 
-internal fun badgeUsbIdentityError(status: BadgeControlStatus?): String? {
+private fun parseBadgeUsbHealthStatus(obj: JsonObject?): BadgeUsbHealthStatus {
+    if (obj == null) return BadgeUsbHealthStatus()
+    return BadgeUsbHealthStatus(
+        schema = obj.badgeStrictNonNegativeInt("schema") ?: 0,
+        taskStarted = obj.badgeStrictBoolean("task_started") ?: false,
+        hostConnected = obj.badgeStrictBoolean("host_connected") ?: false,
+        parserState = obj.badgeStrictString("parser_state")
+            ?.takeIf { it in BadgeUsbParserStates }
+            .orEmpty(),
+        rxBytes = obj.badgeStrictNonNegativeLong("rx_bytes") ?: 0L,
+        validCommands = obj.badgeStrictNonNegativeLong("valid_commands") ?: 0L,
+        responsesCompleted = obj.badgeStrictNonNegativeLong("responses_completed") ?: 0L,
+        requiredResponseFailures =
+            obj.badgeStrictNonNegativeLong("required_response_failures") ?: 0L,
+        malformedLines = obj.badgeStrictNonNegativeLong("malformed_lines") ?: 0L,
+        droppedProgressFrames =
+            obj.badgeStrictNonNegativeLong("dropped_progress_frames") ?: 0L,
+        droppedOptionalFrames =
+            obj.badgeStrictNonNegativeLong("dropped_optional_frames") ?: 0L,
+        uploadReceived = obj.badgeStrictNonNegativeLong("upload_received") ?: 0L,
+        uploadSize = obj.badgeStrictNonNegativeLong("upload_size") ?: 0L,
+        taskHeartbeatAgeSeconds =
+            obj.badgeStrictNonNegativeLong("task_heartbeat_age_s"),
+        lastRxAgeSeconds = obj.badgeStrictNonNegativeLong("last_rx_age_s"),
+        lastCommandAgeSeconds = obj.badgeStrictNonNegativeLong("last_command_age_s"),
+        lastResponseAgeSeconds = obj.badgeStrictNonNegativeLong("last_response_age_s"),
+        lastUploadProgressAgeSeconds =
+            obj.badgeStrictNonNegativeLong("last_upload_progress_age_s"),
+    )
+}
+
+private val BadgeHardwareIdPattern =
+    Regex("^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$")
+
+internal fun canonicalBadgeHardwareId(raw: String): String? {
+    if (!BadgeHardwareIdPattern.matches(raw)) return null
+    val canonical = raw.uppercase()
+    if (canonical == "00:00:00:00:00:00" || canonical == "FF:FF:FF:FF:FF:FF") {
+        return null
+    }
+    return canonical
+}
+
+internal fun badgeUsbIdentityError(
+    status: BadgeControlStatus?,
+    expectedHardwareId: String? = null,
+): String? {
     // These fields are self-asserted by firmware. This is a product-routing safety check,
     // not cryptographic device authentication.
     if (status == null) return "Malformed badge status"
@@ -687,13 +864,27 @@ internal fun badgeUsbIdentityError(status: BadgeControlStatus?): String? {
     ) {
         return "Unexpected USB target identity: ${status.firmwareTarget}"
     }
+    val hardwareId = canonicalBadgeHardwareId(status.hardwareId)
+        ?: return "Unexpected USB hardware ID: missing or invalid"
+    if (expectedHardwareId != null) {
+        val expected = canonicalBadgeHardwareId(expectedHardwareId)
+            ?: return "Expected USB hardware ID is invalid"
+        if (hardwareId != expected) {
+            return "USB hardware ID mismatch"
+        }
+    }
     return null
 }
 
 internal fun badgeUsbStatusFrameIdentityError(
     isStatusFrame: Boolean,
     status: BadgeControlStatus?,
-): String? = if (isStatusFrame) badgeUsbIdentityError(status) else null
+    expectedHardwareId: String? = null,
+): String? = if (isStatusFrame) {
+    badgeUsbIdentityError(status, expectedHardwareId)
+} else {
+    null
+}
 
 internal fun badgeUsbHandshakeStatus(status: BadgeControlStatus?): BadgeUsbStatus =
     if (badgeUsbIdentityError(status) == null) BadgeUsbStatus.CONNECTED else BadgeUsbStatus.ERROR
@@ -754,6 +945,49 @@ internal fun badgeUsbReaderOwnsExactSession(
     activeConnectionMatches = expectedConnection === activeConnection,
 ) && expectedLifecycleSession == activeLifecycleSession
 
+internal fun badgeUsbReaderTerminalOwnsExactSession(
+    expectedLifecycleSession: Long,
+    expectedAttachmentToken: BadgeUsbAttachmentToken,
+    expectedConnection: Any,
+    lifecycleActive: Boolean,
+    status: BadgeUsbStatus,
+    transportLabel: String,
+    activeLifecycleSession: Long?,
+    activeAttachmentToken: BadgeUsbAttachmentToken?,
+    attachmentCurrentAndActive: Boolean,
+    activeConnection: Any?,
+    activeEndpoint: Any?,
+    expectedVerifiedOwner: BadgeUsbOwnerKey?,
+    activeVerifiedOwner: BadgeUsbOwnerKey?,
+): Boolean {
+    if (transportLabel != "USB-C" ||
+        !badgeUsbReaderOwnsExactSession(
+            lifecycleActive = lifecycleActive,
+            expectedLifecycleSession = expectedLifecycleSession,
+            activeLifecycleSession = activeLifecycleSession,
+            expectedConnection = expectedConnection,
+            activeConnection = activeConnection,
+        ) ||
+        expectedAttachmentToken != activeAttachmentToken ||
+        !attachmentCurrentAndActive
+    ) {
+        return false
+    }
+    return when (status) {
+        BadgeUsbStatus.CONNECTING ->
+            expectedVerifiedOwner == null && activeVerifiedOwner == null
+        BadgeUsbStatus.CONNECTED ->
+            expectedVerifiedOwner?.let { expectedOwner ->
+                badgeUsbOwnerKeysMatch(expectedOwner, activeVerifiedOwner) &&
+                    expectedOwner.attachmentToken == expectedAttachmentToken &&
+                    expectedOwner.lifecycleSession == expectedLifecycleSession &&
+                    expectedOwner.connectionIdentity === expectedConnection &&
+                    expectedOwner.endpointIdentity === activeEndpoint
+            } == true
+        else -> false
+    }
+}
+
 internal fun badgeUsbFrameMayMutateState(
     hasVerifiedOwner: Boolean,
     acceptedIdentityHandshake: Boolean,
@@ -803,6 +1037,27 @@ internal class BadgeUsbAttachmentGate {
     }
 
     @Synchronized
+    fun activateAndPublishIfCurrent(
+        token: BadgeUsbAttachmentToken,
+        publication: () -> Unit,
+    ): Boolean {
+        if (selectedToken != token) return false
+        activeToken = token
+        publication()
+        return true
+    }
+
+    @Synchronized
+    fun publishIfCurrentAndActive(
+        token: BadgeUsbAttachmentToken,
+        publication: () -> Unit,
+    ): Boolean {
+        if (selectedToken != token || activeToken != token) return false
+        publication()
+        return true
+    }
+
+    @Synchronized
     fun isCurrentAndActive(token: BadgeUsbAttachmentToken): Boolean =
         selectedToken == token && activeToken == token
 
@@ -833,9 +1088,23 @@ internal class BadgeUsbAttachmentGate {
     }
 
     @Synchronized
+    fun invalidateExact(token: BadgeUsbAttachmentToken): BadgeUsbAttachmentInvalidation? {
+        if (selectedToken != token) return null
+        selectedToken = null
+        return BadgeUsbAttachmentInvalidation(token, activeToken == token)
+    }
+
+    @Synchronized
     fun clearActive(token: BadgeUsbAttachmentToken) {
         if (activeToken == token) activeToken = null
         if (selectedToken == token) selectedToken = null
+    }
+
+    @Synchronized
+    fun deactivateExact(token: BadgeUsbAttachmentToken): Boolean {
+        if (activeToken != token) return false
+        activeToken = null
+        return true
     }
 
     @Synchronized
@@ -867,7 +1136,26 @@ internal data class BadgeUsbOwnerKey(
     val lifecycleSession: Long,
     val connectionIdentity: Any,
     val endpointIdentity: Any,
+    val hardwareId: String,
 )
+
+internal fun badgeUsbOwnerKeyFromHandshake(
+    status: BadgeControlStatus?,
+    attachmentToken: BadgeUsbAttachmentToken,
+    lifecycleSession: Long,
+    connectionIdentity: Any,
+    endpointIdentity: Any,
+): BadgeUsbOwnerKey? {
+    if (badgeUsbIdentityError(status) != null) return null
+    val hardwareId = canonicalBadgeHardwareId(status?.hardwareId.orEmpty()) ?: return null
+    return BadgeUsbOwnerKey(
+        attachmentToken = attachmentToken,
+        lifecycleSession = lifecycleSession,
+        connectionIdentity = connectionIdentity,
+        endpointIdentity = endpointIdentity,
+        hardwareId = hardwareId,
+    )
+}
 
 internal fun badgeUsbOwnerKeysMatch(
     expected: BadgeUsbOwnerKey?,
@@ -876,7 +1164,37 @@ internal fun badgeUsbOwnerKeysMatch(
     expected.attachmentToken == actual.attachmentToken &&
     expected.lifecycleSession == actual.lifecycleSession &&
     expected.connectionIdentity === actual.connectionIdentity &&
-    expected.endpointIdentity === actual.endpointIdentity
+    expected.endpointIdentity === actual.endpointIdentity &&
+    expected.hardwareId == actual.hardwareId
+
+internal fun badgeUsbStatusResponseCounter(status: BadgeControlStatus?): Long? =
+    status?.usbHealth?.takeIf { it.schema == 1 }?.responsesCompleted
+
+internal fun badgeUsbTerminalFailureOwnsExactSession(
+    expectedOwner: BadgeUsbOwnerKey,
+    activeOwner: BadgeUsbOwnerKey?,
+    lifecycleActive: Boolean,
+    status: BadgeUsbStatus,
+    transportLabel: String,
+    activeLifecycleSession: Long?,
+    activeAttachmentToken: BadgeUsbAttachmentToken?,
+    attachmentCurrentAndActive: Boolean,
+    activeConnection: Any?,
+    activeEndpoint: Any?,
+): Boolean = badgeUsbOwnerKeysMatch(expectedOwner, activeOwner) &&
+    activeAttachmentToken == expectedOwner.attachmentToken &&
+    attachmentCurrentAndActive &&
+    badgeUsbVerifiedWriteAllowed(
+        lifecycleActive = lifecycleActive,
+        status = status,
+        transportLabel = transportLabel,
+        activeLifecycleSession = activeLifecycleSession,
+        verifiedLifecycleSession = expectedOwner.lifecycleSession,
+        activeConnection = activeConnection,
+        activeEndpoint = activeEndpoint,
+        verifiedConnection = expectedOwner.connectionIdentity,
+        verifiedEndpoint = expectedOwner.endpointIdentity,
+    )
 
 internal class BadgeUsbInvestigationOwnershipGate(
     private val owner: BadgeUsbOwnerKey,
@@ -1153,6 +1471,26 @@ private fun JsonObject.badgeOptString(key: String): String {
         .getOrDefault("")
 }
 
+private fun JsonObject.badgeStrictString(key: String): String? {
+    val primitive = get(key)?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive ?: return null
+    return primitive.takeIf { it.isString }?.asString
+}
+
+private fun JsonObject.badgeStrictNonNegativeInt(key: String): Int? {
+    val primitive = get(key)?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive ?: return null
+    return primitive.takeIf { it.isNumber }?.asString?.toIntOrNull()?.takeIf { it >= 0 }
+}
+
+private fun JsonObject.badgeStrictNonNegativeLong(key: String): Long? {
+    val primitive = get(key)?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive ?: return null
+    return primitive.takeIf { it.isNumber }?.asString?.toLongOrNull()?.takeIf { it >= 0L }
+}
+
+private fun JsonObject.badgeStrictBoolean(key: String): Boolean? {
+    val primitive = get(key)?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive ?: return null
+    return primitive.takeIf { it.isBoolean }?.asBoolean
+}
+
 private fun JsonObject.badgeOptInt(key: String, fallback: Int = 0): Int {
     return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asInt ?: fallback }
         .getOrDefault(fallback)
@@ -1191,6 +1529,58 @@ internal const val BADGE_INVESTIGATION_TOTAL_TIMEOUT_MS = 12_000L
 
 internal fun badgeInvestigationTotalTimeoutMs(requestedTimeoutMs: Long): Long =
     requestedTimeoutMs.coerceIn(1L, BADGE_INVESTIGATION_TOTAL_TIMEOUT_MS)
+
+private val BadgeInvestigationMacPattern =
+    Regex("^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$")
+
+private fun badgeInvestigationRequestIdValid(requestId: String): Boolean =
+    requestId.length in 1..32 &&
+        requestId.all { it.code in 0x21..0x7e }
+
+internal fun badgeInvestigationCommandJson(
+    request: com.friendorfoe.detection.BleInvestigationRequest,
+): JsonObject? {
+    if (request.route != com.friendorfoe.detection.BleInvestigationRoute.BADGE ||
+        !badgeInvestigationRequestIdValid(request.requestId)
+    ) return null
+
+    val mode = when (request.target.mode) {
+        BleInvestigationMode.GATT -> {
+            if (request.target.mac?.matches(BadgeInvestigationMacPattern) != true) {
+                return null
+            }
+            "gatt"
+        }
+        BleInvestigationMode.PASSIVE_CAPTURE -> {
+            if (request.target.mac != null) return null
+            "passive_capture"
+        }
+    }
+    return JsonObject().apply {
+        addProperty("cmd", "ble_investigate")
+        addProperty("request_id", request.requestId)
+        addProperty("mode", mode)
+        request.target.mac?.let {
+            addProperty("target", it.uppercase(java.util.Locale.ROOT))
+        }
+            ?: add("target", com.google.gson.JsonNull.INSTANCE)
+        addProperty("timeout_ms", badgeInvestigationTotalTimeoutMs(request.timeoutMs))
+    }
+}
+
+internal fun badgeBleInvestigationChunkCommandJson(
+    requestId: String,
+    seq: Int,
+): JsonObject? {
+    if (!badgeInvestigationRequestIdValid(requestId) || seq !in 0..63) {
+        return null
+    }
+    return JsonObject().apply {
+        addProperty("cmd", "ble_investigation_chunk")
+        addProperty("request_id", requestId)
+        addProperty("seq", seq)
+    }
+}
 
 internal enum class BadgeHttpInvestigationAction { WAIT, RETRIEVE, FAIL }
 
@@ -1670,6 +2060,7 @@ internal fun shouldStartBadgeInvestigationJob(
 private data class ActiveBadgeInvestigation(
     val generation: Long,
     val request: com.friendorfoe.detection.BleInvestigationRequest,
+    val command: JsonObject,
     val transport: BadgeInvestigationTransport,
     val parser: BadgeInvestigationStreamParser,
     val usbOwnerKey: BadgeUsbOwnerKey? = null,
@@ -1696,6 +2087,235 @@ private data class PendingBadgeGattOperation(
     val completion: CompletableDeferred<BadgeGattOperationResult> = CompletableDeferred(),
 )
 
+private data class ActiveBadgeUsbReconnectAttempt(
+    val ticket: BadgeUsbReconnectTicket,
+    val lifecycleSession: Long,
+    val attachmentToken: BadgeUsbAttachmentToken,
+    val connectionIdentity: Any? = null,
+)
+
+private data class ActiveBadgeUsbPermissionOperation(
+    val generation: Long,
+    val lifecycleSession: Long,
+    val attachmentToken: BadgeUsbAttachmentToken,
+    val deviceIdentity: BadgeUsbDeviceIdentity,
+    val selectionStamp: Long,
+    val reconnectOperation: ActiveBadgeUsbReconnectOperation?,
+    val reconnectAttempt: ActiveBadgeUsbReconnectAttempt?,
+) {
+    val dispatchGate = BadgeUsbPermissionDispatchGate()
+}
+
+private data class PreparedBadgeUsbPermissionRequest(
+    val operation: ActiveBadgeUsbPermissionOperation,
+    val shouldDispatch: Boolean,
+)
+
+private data class ConsumedBadgeUsbPermissionResult(
+    val operation: ActiveBadgeUsbPermissionOperation,
+    val selectionSnapshot: BadgeUsbSelectionSnapshot,
+    val granted: Boolean,
+)
+
+private data class BadgeUsbDetachContext(
+    val lifecycleSession: Long,
+    val reconnectOperation: ActiveBadgeUsbReconnectOperation?,
+    val reconnectAttempt: ActiveBadgeUsbReconnectAttempt?,
+    val invalidation: BadgeUsbAttachmentInvalidation?,
+)
+
+private data class BadgeUsbSelectionSnapshot(
+    val stamp: Long,
+    val lifecycleSession: Long,
+    val lifecycleActive: Boolean,
+    val operation: ActiveBadgeUsbReconnectOperation?,
+    val operationGeneration: Long?,
+    val operationActive: Boolean,
+    val verifiedOwner: BadgeUsbOwnerKey?,
+    val selectedAttachmentToken: BadgeUsbAttachmentToken?,
+    val activeAttachmentToken: BadgeUsbAttachmentToken?,
+    val activeConnection: Any?,
+    val activeUsbLifecycleSession: Long?,
+    val activeUsbIoSession: BadgeUsbIoSession?,
+)
+
+private data class BadgeUsbIoSession(
+    val lifecycleSession: Long,
+    val attachmentToken: BadgeUsbAttachmentToken,
+    val connection: android.hardware.usb.UsbDeviceConnection,
+    val usbInterface: UsbInterface,
+    val inEndpoint: UsbEndpoint,
+    val outEndpoint: UsbEndpoint,
+)
+
+private data class BadgeUsbEnumerationSnapshot(
+    val selectionSnapshot: BadgeUsbSelectionSnapshot,
+    val enumerationEpoch: Long,
+)
+
+private data class DetachedBadgeUsbInvestigation(
+    val operation: ActiveBadgeInvestigation,
+    val result: BleInvestigationResult,
+)
+
+private data class PreparedBadgeUsbInvestigationFrame(
+    val handled: Boolean = false,
+    val controlAck: Pair<CompletableDeferred<BadgeControlAck>, BadgeControlAck>? = null,
+    val terminal: Pair<CompletableDeferred<BleInvestigationResult>, BleInvestigationResult>? = null,
+)
+
+private data class DetachedBadgeUsbResources(
+    val connection: android.hardware.usb.UsbDeviceConnection?,
+    val usbInterface: UsbInterface?,
+    val readJob: Job?,
+    val handshakeJob: Job?,
+    val statusPollJob: Job?,
+    val investigation: DetachedBadgeUsbInvestigation?,
+    val ioDrain: BadgeUsbIoArbiter.Drain?,
+)
+
+private data class RetainedBadgeUsbDrainCleanup(
+    val detached: DetachedBadgeUsbResources,
+    val phaseGate: BadgeUsbIoCleanupPhaseGate = BadgeUsbIoCleanupPhaseGate(),
+)
+
+private data class PendingBadgeUsbSelection(
+    val device: UsbDevice,
+    val attachmentToken: BadgeUsbAttachmentToken,
+    val reconnectOperation: ActiveBadgeUsbReconnectOperation?,
+    val reconnectAttempt: ActiveBadgeUsbReconnectAttempt?,
+    val selectionSnapshot: BadgeUsbSelectionSnapshot,
+    val enumerationEpoch: Long,
+)
+
+private data class PreparedBadgeUsbReconnect(
+    val operation: ActiveBadgeUsbReconnectOperation,
+    val previousOperation: ActiveBadgeUsbReconnectOperation?,
+)
+
+private data class PreparedBadgeUsbStatusPoller(
+    val job: Job,
+    val previousJob: Job?,
+)
+
+private data class PreparedBadgeUsbReader(
+    val job: Job,
+    val previousJob: Job?,
+    val connection: android.hardware.usb.UsbDeviceConnection,
+    val lifecycleSession: Long,
+    val attachmentToken: BadgeUsbAttachmentToken,
+    val ioSession: BadgeUsbIoSession,
+    val selectionStamp: Long,
+)
+
+private class ActiveBadgeUsbReconnectOperation(
+    val ticket: BadgeUsbReconnectTicket,
+) {
+    lateinit var job: Job
+    private val operationGate = BadgeUsbReconnectOperationGate()
+    private var attempt: ActiveBadgeUsbReconnectAttempt? = null
+
+    fun preparePendingAttempt(
+        lifecycleSession: Long,
+        candidateIdentity: BadgeUsbDeviceIdentity,
+        operationIsCurrent: () -> Boolean,
+        selectAttachment: () -> BadgeUsbAttachmentToken,
+    ): ActiveBadgeUsbReconnectAttempt? = operationGate.prepareIfActive {
+        synchronized(this) {
+            if (!operationIsCurrent()) return@synchronized null
+            val current = attempt
+            if (current != null &&
+                (current.ticket !== ticket || current.lifecycleSession != lifecycleSession)
+            ) {
+                return@synchronized null
+            }
+            when (badgeUsbReconnectCandidatePreparation(
+                operationActive = true,
+                attemptIdentity = current?.attachmentToken?.identity,
+                attemptConnectionBound = current?.connectionIdentity != null,
+                candidateIdentity = candidateIdentity,
+            )) {
+                BadgeUsbReconnectCandidatePreparation.REJECT_BEFORE_SELECTION -> null
+                BadgeUsbReconnectCandidatePreparation.REUSE_ATTEMPT -> current
+                BadgeUsbReconnectCandidatePreparation.SELECT_AND_BIND ->
+                    ActiveBadgeUsbReconnectAttempt(
+                        ticket = ticket,
+                        lifecycleSession = lifecycleSession,
+                        attachmentToken = selectAttachment(),
+                    ).also { attempt = it }
+            }
+        }
+    }
+
+    fun bindConnection(
+        expectedAttempt: ActiveBadgeUsbReconnectAttempt,
+        connectionIdentity: Any,
+    ): ActiveBadgeUsbReconnectAttempt? = operationGate.prepareIfActive {
+        synchronized(this) {
+            if (attempt !== expectedAttempt || expectedAttempt.connectionIdentity != null) {
+                return@synchronized null
+            }
+            expectedAttempt.copy(connectionIdentity = connectionIdentity).also { attempt = it }
+        }
+    }
+
+    fun isActive(): Boolean = operationGate.isActive()
+
+    fun tryTerminalize(): Boolean = operationGate.tryTerminalize()
+
+    fun publishConnectingIfActive(publication: () -> Unit): Boolean =
+        operationGate.publishConnectingIfActive(publication)
+
+    fun completeHandshakeAndClearIfActive(
+        operationIsCurrent: () -> Boolean,
+        fullCommit: () -> Boolean,
+        completion: () -> Unit,
+    ): Boolean = operationGate.completeHandshakeAndClearIfActive(
+        operationIsCurrent = operationIsCurrent,
+        fullCommit = fullCommit,
+        completion = completion,
+    )
+
+    @Synchronized
+    fun currentAttempt(
+        lifecycleSession: Long,
+        attachmentToken: BadgeUsbAttachmentToken,
+    ): ActiveBadgeUsbReconnectAttempt? = attempt?.takeIf {
+        it.ticket === ticket &&
+            it.lifecycleSession == lifecycleSession &&
+            it.attachmentToken == attachmentToken
+    }
+
+    @Synchronized
+    fun currentAttempt(): ActiveBadgeUsbReconnectAttempt? = attempt
+
+    @Synchronized
+    fun ownsAttempt(expectedAttempt: ActiveBadgeUsbReconnectAttempt): Boolean =
+        attempt === expectedAttempt && expectedAttempt.ticket === ticket
+
+    @Synchronized
+    fun clearAttempt(
+        lifecycleSession: Long,
+        attachmentToken: BadgeUsbAttachmentToken,
+        connectionIdentity: Any?,
+    ): Boolean {
+        val current = attempt ?: return false
+        if (current.ticket !== ticket || current.lifecycleSession != lifecycleSession ||
+            current.attachmentToken != attachmentToken ||
+            (connectionIdentity != null && current.connectionIdentity !== connectionIdentity)
+        ) {
+            return false
+        }
+        attempt = null
+        return true
+    }
+
+    @Synchronized
+    fun clearAttempt() {
+        attempt = null
+    }
+}
+
 @Singleton
 class BadgeUsbRepository @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -1710,14 +2330,22 @@ class BadgeUsbRepository @Inject constructor(
             "usb_permission_attachment_generation"
         private const val EXTRA_USB_PERMISSION_DEVICE_ID = "usb_permission_device_id"
         private const val EXTRA_USB_PERMISSION_DEVICE_PATH = "usb_permission_device_path"
+        private const val EXTRA_USB_RECONNECT_GENERATION = "usb_reconnect_generation"
+        private const val EXTRA_USB_SELECTION_STAMP = "usb_selection_stamp"
+        private const val EXTRA_USB_PERMISSION_GENERATION = "usb_permission_generation"
         private const val NO_LIFECYCLE_SESSION = -1L
         private const val NO_ATTACHMENT_GENERATION = -1L
+        private const val NO_RECONNECT_GENERATION = -1L
+        private const val NO_SELECTION_STAMP = -1L
+        private const val NO_PERMISSION_GENERATION = -1L
         private const val NO_USB_DEVICE_ID = -1
         private const val ESPRESSIF_VENDOR_ID = 0x303A
         private const val BADGE_AP_BASE_URL = "http://192.168.4.1"
         private const val DEBUG_BRIDGE_BASE_URL = "http://10.0.2.2:8765"
         private const val READ_TIMEOUT_MS = 250
         private const val WRITE_TIMEOUT_MS = 250
+        private const val USB_IO_DRAIN_TIMEOUT_MS = 2_000L
+        private const val USB_IO_CLEANUP_RETRY_MS = 100L
         private const val AP_POLL_INTERVAL_MS = 2500L
         private const val DEBUG_BRIDGE_POLL_INTERVAL_MS = 1500L
         private const val BLE_SCAN_INTERVAL_MS = 6000L
@@ -1766,12 +2394,21 @@ class BadgeUsbRepository @Inject constructor(
 
     private val lifecycleGate = BadgeUsbLifecycleGate()
     private val attachmentGate = BadgeUsbAttachmentGate()
-    private var receiverRegistered = false
+    private val usbStatusPollGate = BadgeUsbStatusPollGate()
+    private val usbReconnectGate = BadgeUsbReconnectGate()
+    private val usbReconnectOperationSlot = BadgeUsbAtomicSlot<ActiveBadgeUsbReconnectOperation>()
+    private val usbReconnectSelectionGate = BadgeUsbReconnectSelectionGate()
+    private val usbEnumerationEpochGate = BadgeUsbEnumerationEpochGate()
+    private val usbIoArbiter = BadgeUsbIoArbiter()
+    private val receiverLifetimeGate = BadgeUsbReceiverLifetimeGate()
+    private val lateUsbCleanupSlot = BadgeUsbRetainedCleanupSlot()
+    private var nextUsbPermissionGeneration = 1L
+    private var activeUsbPermissionOperation: ActiveBadgeUsbPermissionOperation? = null
     private var readJob: Job? = null
     private var apPollJob: Job? = null
     private var debugBridgePollJob: Job? = null
     private var blePollJob: Job? = null
-    private var usbStatusPollJob: Job? = null
+    private val usbStatusPollJobSlot = BadgeUsbAtomicSlot<Job>()
     @Volatile private var usbHandshakeJob: Job? = null
     @Volatile private var activeConnection: android.hardware.usb.UsbDeviceConnection? = null
     private var activeInterface: UsbInterface? = null
@@ -1779,6 +2416,7 @@ class BadgeUsbRepository @Inject constructor(
     @Volatile private var activeUsbLifecycleSession: Long? = null
     @Volatile private var activeAttachmentToken: BadgeUsbAttachmentToken? = null
     @Volatile private var verifiedUsbOwnerKey: BadgeUsbOwnerKey? = null
+    @Volatile private var activeUsbIoSession: BadgeUsbIoSession? = null
     private val bluetoothManager =
         context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager?.adapter
@@ -1803,32 +2441,108 @@ class BadgeUsbRepository @Inject constructor(
                     )
                     val attachmentToken = intent.usbAttachmentToken() ?: return
                     val identity = device.attachmentIdentity()
-                    if (!lifecycleGate.isActive(lifecycleSession) ||
-                        !attachmentGate.acceptsPermission(attachmentToken, identity)
-                    ) {
-                        return
-                    }
-                    if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                        scope.launch {
-                            connectToDevice(device, lifecycleSession, attachmentToken)
+                    val reconnectGeneration = intent.getLongExtra(
+                        EXTRA_USB_RECONNECT_GENERATION,
+                        NO_RECONNECT_GENERATION,
+                    )
+                    val selectionStamp = intent.getLongExtra(
+                        EXTRA_USB_SELECTION_STAMP,
+                        NO_SELECTION_STAMP,
+                    )
+                    val permissionGeneration = intent.getLongExtra(
+                        EXTRA_USB_PERMISSION_GENERATION,
+                        NO_PERMISSION_GENERATION,
+                    )
+                    val permissionGranted = intent.getBooleanExtra(
+                        UsbManager.EXTRA_PERMISSION_GRANTED,
+                        false,
+                    )
+                    val consumed = usbReconnectSelectionGate.withBarrier {
+                        val operation = activeUsbPermissionOperation
+                            ?: return@withBarrier null
+                        if (permissionGeneration == NO_PERMISSION_GENERATION ||
+                            operation.generation != permissionGeneration ||
+                            operation.selectionStamp != selectionStamp ||
+                            selectionStamp == NO_SELECTION_STAMP ||
+                            !usbReconnectSelectionGate.isStampCurrent(selectionStamp) ||
+                            operation.lifecycleSession != lifecycleSession ||
+                            operation.attachmentToken != attachmentToken ||
+                            operation.deviceIdentity != identity ||
+                            !lifecycleGate.isActive(lifecycleSession) ||
+                            !attachmentGate.acceptsPermission(attachmentToken, identity)
+                        ) {
+                            return@withBarrier null
                         }
-                    } else {
-                        scope.launch {
-                            connectionMutex.withLock {
-                                if (!lifecycleGate.isActive(lifecycleSession) ||
-                                    !attachmentGate.acceptsPermission(attachmentToken, identity)
-                                ) {
-                                    return@withLock
-                                }
+                        val exactReconnectContext = if (
+                            reconnectGeneration != NO_RECONNECT_GENERATION
+                        ) {
+                            val reconnectOperation = operation.reconnectOperation
+                                ?: return@withBarrier null
+                            val reconnectAttempt = operation.reconnectAttempt
+                                ?: return@withBarrier null
+                            if (reconnectOperation.ticket.generation != reconnectGeneration ||
+                                !isUsbReconnectAttemptCurrent(
+                                    operation = reconnectOperation,
+                                    attempt = reconnectAttempt,
+                                    deviceIdentity = identity,
+                                    lifecycleSession = lifecycleSession,
+                                    attachmentToken = attachmentToken,
+                                    expectedConnectionIdentity = null,
+                                )
+                            ) {
+                                return@withBarrier null
+                            }
+                            reconnectOperation to reconnectAttempt
+                        } else {
+                            if (operation.reconnectOperation != null ||
+                                operation.reconnectAttempt != null ||
+                                usbReconnectOperationSlot.current() != null
+                            ) {
+                                return@withBarrier null
+                            }
+                            null
+                        }
+                        if (!clearExactUsbPermissionOperationLocked(operation)) {
+                            return@withBarrier null
+                        }
+                        usbReconnectSelectionGate.advanceStamp()
+                        val postConsumptionSnapshot =
+                            captureUsbSelectionSnapshotLocked(lifecycleSession)
+                        if (!permissionGranted) {
+                            val denialStillOwnsSelection =
+                                attachmentGate.acceptsPermission(attachmentToken, identity) &&
+                                    verifiedUsbOwnerKey == null && activeConnection == null &&
+                                    activeAttachmentToken == null
+                            if (denialStillOwnsSelection) {
                                 setState {
                                     it.copy(
                                         status = BadgeUsbStatus.PERMISSION_NEEDED,
                                         deviceName = device.displayName(),
                                         message = "USB permission denied",
-                                        transportLabel = "USB-C"
+                                        transportLabel = "USB-C",
                                     )
                                 }
                             }
+                        }
+                        ConsumedBadgeUsbPermissionResult(
+                            operation = operation.copy(
+                                reconnectOperation = exactReconnectContext?.first,
+                                reconnectAttempt = exactReconnectContext?.second,
+                            ),
+                            selectionSnapshot = postConsumptionSnapshot,
+                            granted = permissionGranted,
+                        )
+                    } ?: return
+                    if (consumed.granted) {
+                        scope.launch {
+                            connectToDevice(
+                                device = device,
+                                lifecycleSession = lifecycleSession,
+                                attachmentToken = attachmentToken,
+                                reconnectOperation = consumed.operation.reconnectOperation,
+                                reconnectAttempt = consumed.operation.reconnectAttempt,
+                                selectionSnapshot = consumed.selectionSnapshot,
+                            )
                         }
                     }
                 }
@@ -1836,18 +2550,60 @@ class BadgeUsbRepository @Inject constructor(
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val detached = intent.usbDeviceExtra()
                     if (detached != null && detached.vendorId == ESPRESSIF_VENDOR_ID) {
-                        val invalidation = attachmentGate.invalidateMatching(
-                            detached.attachmentIdentity(),
-                        )
-                        val expectedConnection = activeConnection
-                        if (invalidation?.wasActive == true && expectedConnection != null) {
-                            disconnect(
-                                reason = "Badge disconnected",
-                                expectedAttachmentToken = invalidation.token,
-                                expectedConnection = expectedConnection,
+                        val detachedIdentity = detached.attachmentIdentity()
+                        val detachContext = usbReconnectSelectionGate.withBarrier {
+                            // A detach must invalidate every pre-detach device-list read,
+                            // even across a stop/start lifecycle handoff.
+                            usbEnumerationEpochGate.advanceEpoch()
+                            val lifecycleSession = lifecycleGate.activeSession()
+                                ?: return@withBarrier null
+                            activeUsbIoSession?.takeIf {
+                                it.attachmentToken.identity == detachedIdentity
+                            }?.let { usbIoArbiter.revoke(it) }
+                            val permissionCleared = activeUsbPermissionOperation
+                                ?.takeIf { it.deviceIdentity == detachedIdentity }
+                                ?.let(::clearExactUsbPermissionOperationLocked) == true
+                            val reconnectOperation = usbReconnectOperationSlot.current()?.takeIf {
+                                usbReconnectGate.isCurrent(it.ticket, it.ticket.lifecycleSession)
+                            }
+                            val reconnectAttempt = reconnectOperation?.currentAttempt()
+                            val reconnectDetachMatches = reconnectOperation != null &&
+                                (badgeUsbReconnectDetachMatches(
+                                    reconnectOperation.ticket,
+                                    detachedIdentity,
+                                ) || reconnectAttempt?.attachmentToken?.identity == detachedIdentity)
+                            val terminalized = reconnectDetachMatches &&
+                                reconnectOperation?.tryTerminalize() == true
+                            val invalidation = attachmentGate.invalidateMatching(detachedIdentity)
+                            if (terminalized || invalidation != null || permissionCleared) {
+                                usbReconnectSelectionGate.advanceStamp()
+                            }
+                            BadgeUsbDetachContext(
+                                lifecycleSession = lifecycleSession,
+                                reconnectOperation = reconnectOperation,
+                                reconnectAttempt = reconnectAttempt,
+                                invalidation = invalidation,
                             )
+                        } ?: return
+                        val lifecycleSession = detachContext.lifecycleSession
+                        val reconnectOperation = detachContext.reconnectOperation
+                        val reconnectAttempt = detachContext.reconnectAttempt
+                        val invalidation = detachContext.invalidation
+                        val reconnectDetachMatches = reconnectOperation != null &&
+                            (badgeUsbReconnectDetachMatches(
+                                reconnectOperation.ticket,
+                                detachedIdentity,
+                            ) || reconnectAttempt?.attachmentToken?.identity == detachedIdentity)
+                        if (reconnectDetachMatches && reconnectOperation != null) {
+                            cancelUsbReconnectForDetachedOwner(
+                                operation = reconnectOperation,
+                                reconnectAttemptSnapshot = reconnectAttempt,
+                                detachedInvalidation = invalidation,
+                                lifecycleSession = lifecycleSession,
+                            )
+                        } else {
+                            cleanupUsbDetachAndRescan(invalidation, lifecycleSession)
                         }
-                        requestConnection()
                     }
                 }
             }
@@ -1855,8 +2611,11 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     fun start() {
-        if (!lifecycleGate.begin()) return
-        val lifecycleSession = lifecycleGate.activeSession() ?: return
+        val lifecycleSession = usbReconnectSelectionGate.withBarrier {
+            if (!lifecycleGate.begin()) return@withBarrier null
+            usbReconnectSelectionGate.advanceStamp()
+            lifecycleGate.activeSession()
+        } ?: return
         registerReceiverIfNeeded()
         requestConnection(lifecycleSession)
         if (BadgeControlTransportPolicy.allowsBleTether()) {
@@ -1870,9 +2629,35 @@ class BadgeUsbRepository @Inject constructor(
 
     fun stop() {
         val lifecycleSession = lifecycleGate.activeSession() ?: return
-        if (!lifecycleGate.end(lifecycleSession)) return
-        attachmentGate.invalidateCurrent()
-        disconnect("Badge USB stopped", lifecycleSession)
+        var cleanupSnapshot: BadgeUsbSelectionSnapshot? = null
+        val stopped = usbReconnectSelectionGate.withBarrier {
+            cleanupSnapshot = captureUsbSelectionSnapshotLocked(lifecycleSession)
+            cleanupSnapshot?.activeUsbIoSession?.let { usbIoArbiter.revoke(it) }
+            val permissionCleared = activeUsbPermissionOperation
+                ?.takeIf { it.lifecycleSession == lifecycleSession }
+                ?.let(::clearExactUsbPermissionOperationLocked) == true
+            val operationTerminalized = usbReconnectOperationSlot.current()
+                ?.takeIf { it.ticket.lifecycleSession == lifecycleSession }
+                ?.tryTerminalize() == true
+            if (!lifecycleGate.end(lifecycleSession)) {
+                false
+            } else {
+                val invalidation = attachmentGate.invalidateCurrent()
+                if (operationTerminalized || permissionCleared ||
+                    invalidation != null || cleanupSnapshot != null
+                ) {
+                    usbReconnectSelectionGate.advanceStamp()
+                }
+                true
+            }
+        }
+        if (!stopped) return
+        cancelUsbReconnectForLifecycle(lifecycleSession)
+        disconnect(
+            reason = "Badge USB stopped",
+            lifecycleSession = lifecycleSession,
+            expectedSnapshot = cleanupSnapshot,
+        )
         apPollJob?.cancel()
         apPollJob = null
         debugBridgePollJob?.cancel()
@@ -1880,10 +2665,6 @@ class BadgeUsbRepository @Inject constructor(
         blePollJob?.cancel()
         blePollJob = null
         closeBle("Badge BLE stopped")
-        if (receiverRegistered) {
-            runCatching { context.unregisterReceiver(usbReceiver) }
-            receiverRegistered = false
-        }
     }
 
     fun refresh() {
@@ -1892,39 +2673,113 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     private fun refresh(lifecycleSession: Long) {
-        if (!lifecycleGate.isActive(lifecycleSession)) return
+        val enumerationSnapshot = captureUsbEnumerationSnapshot(lifecycleSession) ?: return
         val candidates = findBadgeCandidates()
-        if (candidates.isEmpty()) {
-            setState {
-                it.copy(
-                    status = BadgeUsbStatus.DISCONNECTED,
-                    deviceName = null,
-                    message = "Attach a FoF badge over USB-C",
-                    transportLabel = ""
+        var reconnectTicket: BadgeUsbReconnectTicket? = null
+        val pendingSelection = usbReconnectSelectionGate.withBarrier {
+            if (!usbEnumerationSnapshotIsCurrent(enumerationSnapshot)) return@withBarrier null
+            val rawOperation = usbReconnectOperationSlot.current()
+            val currentOperation = currentUsbReconnectOperation(lifecycleSession)
+            if (rawOperation != null && currentOperation == null) return@withBarrier null
+            if (currentOperation != null) {
+                usbEnumerationEpochGate.advanceEpoch()
+                reconnectTicket = currentOperation.ticket
+                return@withBarrier null
+            }
+            if (!genericUsbSelectionMayMutate(lifecycleSession)) return@withBarrier null
+            val decisionEpoch = usbEnumerationEpochGate.advanceEpoch()
+            if (candidates.isEmpty()) {
+                val selectedAttachmentToken = attachmentGate.currentToken()
+                val invalidated = attachmentGate.invalidateCurrent()
+                val permissionCleared = clearGenericUsbPermissionOperationLocked(
+                    lifecycleSession = lifecycleSession,
+                    expectedAttachmentToken = selectedAttachmentToken,
                 )
+                if (invalidated != null || permissionCleared) {
+                    usbReconnectSelectionGate.advanceStamp()
+                }
+                setState { current ->
+                    current.copy(
+                        status = BadgeUsbStatus.DISCONNECTED,
+                        deviceName = null,
+                        message = "Attach a FoF badge over USB-C",
+                        transportLabel = ""
+                    )
+                }
+                return@withBarrier null
+            }
+            if (candidates.size > 1) {
+                val selectedAttachmentToken = attachmentGate.currentToken()
+                val invalidated = attachmentGate.invalidateCurrent()
+                val permissionCleared = clearGenericUsbPermissionOperationLocked(
+                    lifecycleSession = lifecycleSession,
+                    expectedAttachmentToken = selectedAttachmentToken,
+                )
+                if (invalidated != null || permissionCleared) {
+                    usbReconnectSelectionGate.advanceStamp()
+                }
+                reportAmbiguousBadgeDevices(candidates)
+                return@withBarrier null
+            }
+            val device = candidates.first()
+            val previousToken = attachmentGate.currentToken()
+            val attachmentToken = selectAttachment(device, lifecycleSession)
+            if (attachmentToken != previousToken) {
+                activeUsbPermissionOperation?.let(::clearExactUsbPermissionOperationLocked)
+                usbReconnectSelectionGate.advanceStamp()
+            }
+            PendingBadgeUsbSelection(
+                device = device,
+                attachmentToken = attachmentToken,
+                reconnectOperation = null,
+                reconnectAttempt = null,
+                selectionSnapshot = captureUsbSelectionSnapshotLocked(lifecycleSession),
+                enumerationEpoch = decisionEpoch,
+            )
+        }
+
+        reconnectTicket?.let { ticket ->
+            requestConnection(
+                lifecycleSession = lifecycleSession,
+                preserveRecoveryOnNoCandidates = true,
+                reconnectTicket = ticket,
+            )
+            return
+        }
+        val selection = pendingSelection ?: return
+        val hasPermission = usbManager.hasPermission(selection.device)
+        val selectionStillCurrent = usbReconnectSelectionGate.withBarrier {
+            usbEnumerationEpochGate.isEpochCurrent(selection.enumerationEpoch) &&
+                usbSelectionSnapshotIsCurrent(selection.selectionSnapshot) &&
+                attachmentGate.isCurrent(selection.attachmentToken)
+        }
+        if (!selectionStillCurrent) return
+        if (!hasPermission) {
+            usbReconnectSelectionGate.withBarrier {
+                if (!usbEnumerationEpochGate.isEpochCurrent(selection.enumerationEpoch) ||
+                    !usbSelectionSnapshotIsCurrent(selection.selectionSnapshot)
+                ) {
+                    return@withBarrier
+                }
+                setState {
+                    it.copy(
+                        status = BadgeUsbStatus.PERMISSION_NEEDED,
+                        deviceName = selection.device.displayName(),
+                        message = "FoF badge found. USB access required.",
+                        transportLabel = "USB-C"
+                    )
+                }
             }
             return
         }
-        if (candidates.size > 1) {
-            reportAmbiguousBadgeDevices(candidates)
-            return
+        scope.launch {
+            connectToDevice(
+                device = selection.device,
+                lifecycleSession = lifecycleSession,
+                attachmentToken = selection.attachmentToken,
+                selectionSnapshot = selection.selectionSnapshot,
+            )
         }
-        val device = candidates.first()
-        val attachmentToken = selectAttachment(device, lifecycleSession)
-
-        if (!usbManager.hasPermission(device)) {
-            setState {
-                it.copy(
-                    status = BadgeUsbStatus.PERMISSION_NEEDED,
-                    deviceName = device.displayName(),
-                    message = "FoF badge found. USB access required.",
-                    transportLabel = "USB-C"
-                )
-            }
-            return
-        }
-
-        scope.launch { connectToDevice(device, lifecycleSession, attachmentToken) }
     }
 
     fun requestConnection() {
@@ -1932,70 +2787,485 @@ class BadgeUsbRepository @Inject constructor(
         requestConnection(lifecycleSession)
     }
 
-    private fun requestConnection(lifecycleSession: Long) {
-        if (!lifecycleGate.isActive(lifecycleSession)) return
-        registerReceiverIfNeeded()
+    private fun requestConnection(
+        lifecycleSession: Long,
+        preserveRecoveryOnNoCandidates: Boolean = false,
+        reconnectTicket: BadgeUsbReconnectTicket? = null,
+    ) {
+        val enumerationSnapshot = captureUsbEnumerationSnapshot(lifecycleSession) ?: return
         val candidates = findBadgeCandidates()
-        if (candidates.isEmpty()) {
-            refresh(lifecycleSession)
-            return
-        }
-        if (candidates.size > 1) {
-            reportAmbiguousBadgeDevices(candidates)
-            return
-        }
-        val device = candidates.first()
-        val attachmentToken = selectAttachment(device, lifecycleSession)
-        if (usbManager.hasPermission(device)) {
-            scope.launch { connectToDevice(device, lifecycleSession, attachmentToken) }
-            return
-        }
+        var ambiguousOperation: ActiveBadgeUsbReconnectOperation? = null
+        val pendingSelection = usbReconnectSelectionGate.withBarrier {
+            if (!usbEnumerationSnapshotIsCurrent(enumerationSnapshot)) return@withBarrier null
+            val rawOperation = usbReconnectOperationSlot.current()
+            val requestedReconnectOperation = reconnectTicket?.let { requestedTicket ->
+                currentUsbReconnectOperation(lifecycleSession)?.takeIf {
+                    it === rawOperation && it.ticket === requestedTicket
+                }
+            }
+            if (reconnectTicket != null && requestedReconnectOperation == null) {
+                return@withBarrier null
+            }
+            val effectiveOperation = requestedReconnectOperation
+                ?: currentUsbReconnectOperation(lifecycleSession)
+            if (rawOperation != null && effectiveOperation == null) return@withBarrier null
+            if (effectiveOperation == null && !genericUsbSelectionMayMutate(lifecycleSession)) {
+                return@withBarrier null
+            }
+            val decisionEpoch = usbEnumerationEpochGate.advanceEpoch()
 
-        if (!lifecycleGate.isActive(lifecycleSession)) return
-
-        // UsbManager supplies EXTRA_DEVICE and EXTRA_PERMISSION_GRANTED through a fill-in
-        // intent. Android 12+ therefore requires this narrowly scoped, explicit callback
-        // PendingIntent to remain mutable.
-        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
-        val permissionIntent = PendingIntent.getBroadcast(
-            context,
-            usbPermissionRequestCode(lifecycleSession, attachmentToken),
-            Intent(ACTION_USB_PERMISSION)
-                .setPackage(context.packageName)
-                .putExtra(EXTRA_USB_PERMISSION_SESSION, lifecycleSession)
-                .putExtra(
-                    EXTRA_USB_PERMISSION_ATTACHMENT_GENERATION,
-                    attachmentToken.generation,
+            when (badgeUsbReconnectCandidateAction(
+                candidateCount = candidates.size,
+                preserveRecovery = preserveRecoveryOnNoCandidates ||
+                    effectiveOperation != null,
+            )) {
+                BadgeUsbReconnectCandidateAction.PRESERVE_RECOVERY -> return@withBarrier null
+                BadgeUsbReconnectCandidateAction.NORMAL_REFRESH -> {
+                    if (genericUsbSelectionMayMutate(lifecycleSession)) {
+                        val selectedAttachmentToken = attachmentGate.currentToken()
+                        val invalidated = attachmentGate.invalidateCurrent()
+                        val permissionCleared = clearGenericUsbPermissionOperationLocked(
+                            lifecycleSession = lifecycleSession,
+                            expectedAttachmentToken = selectedAttachmentToken,
+                        )
+                        if (invalidated != null || permissionCleared) {
+                            usbReconnectSelectionGate.advanceStamp()
+                        }
+                        setState { current ->
+                            current.copy(
+                                status = BadgeUsbStatus.DISCONNECTED,
+                                deviceName = null,
+                                message = "Attach a FoF badge over USB-C",
+                                transportLabel = ""
+                            )
+                        }
+                    }
+                    return@withBarrier null
+                }
+                BadgeUsbReconnectCandidateAction.FAIL_AMBIGUOUS -> {
+                    if (effectiveOperation != null && effectiveOperation.tryTerminalize()) {
+                        clearReconnectUsbPermissionOperationLocked(
+                            lifecycleSession = lifecycleSession,
+                            expectedReconnectOperation = effectiveOperation,
+                        )
+                        ambiguousOperation = effectiveOperation
+                        usbReconnectSelectionGate.advanceStamp()
+                    } else if (effectiveOperation == null &&
+                        genericUsbSelectionMayMutate(lifecycleSession)
+                    ) {
+                        val selectedAttachmentToken = attachmentGate.currentToken()
+                        val invalidated = attachmentGate.invalidateCurrent()
+                        val permissionCleared = clearGenericUsbPermissionOperationLocked(
+                            lifecycleSession = lifecycleSession,
+                            expectedAttachmentToken = selectedAttachmentToken,
+                        )
+                        if (invalidated != null || permissionCleared) {
+                            usbReconnectSelectionGate.advanceStamp()
+                        }
+                        reportAmbiguousBadgeDevices(candidates)
+                    }
+                    return@withBarrier null
+                }
+                BadgeUsbReconnectCandidateAction.CONNECT_ONE -> Unit
+            }
+            val device = candidates.first()
+            val deviceIdentity = device.attachmentIdentity()
+            val previousToken = attachmentGate.currentToken()
+            val previousAttempt = effectiveOperation?.currentAttempt()
+            val preparedAttempt = if (effectiveOperation != null) {
+                val attempt = effectiveOperation.preparePendingAttempt(
+                    lifecycleSession = lifecycleSession,
+                    candidateIdentity = deviceIdentity,
+                    operationIsCurrent = {
+                        usbReconnectOperationSlot.current() === effectiveOperation &&
+                            usbReconnectGate.isCurrent(
+                                effectiveOperation.ticket,
+                                lifecycleSession,
+                            ) && lifecycleGate.isActive(lifecycleSession)
+                    },
+                    selectAttachment = { selectAttachment(device, lifecycleSession) },
+                ) ?: return@withBarrier null
+                attempt.attachmentToken to attempt
+            } else {
+                if (!genericUsbSelectionMayMutate(lifecycleSession)) return@withBarrier null
+                selectAttachment(device, lifecycleSession) to null
+            }
+            if (preparedAttempt.first != previousToken || preparedAttempt.second !== previousAttempt) {
+                activeUsbPermissionOperation?.let(::clearExactUsbPermissionOperationLocked)
+                usbReconnectSelectionGate.advanceStamp()
+            }
+            PendingBadgeUsbSelection(
+                device = device,
+                attachmentToken = preparedAttempt.first,
+                reconnectOperation = effectiveOperation,
+                reconnectAttempt = preparedAttempt.second,
+                selectionSnapshot = captureUsbSelectionSnapshotLocked(lifecycleSession),
+                enumerationEpoch = decisionEpoch,
+            )
+        }
+        ambiguousOperation?.let {
+            failAmbiguousUsbReconnect(it, candidates)
+            return
+        }
+        val selection = pendingSelection ?: return
+        val device = selection.device
+        val attachmentToken = selection.attachmentToken
+        val effectiveReconnectOperation = selection.reconnectOperation
+        val reconnectAttempt = selection.reconnectAttempt
+        val deviceIdentity = device.attachmentIdentity()
+        if (effectiveReconnectOperation != null &&
+            (reconnectAttempt == null || !isUsbReconnectAttemptCurrent(
+                operation = effectiveReconnectOperation,
+                attempt = reconnectAttempt,
+                deviceIdentity = deviceIdentity,
+                lifecycleSession = lifecycleSession,
+                attachmentToken = attachmentToken,
+                expectedConnectionIdentity = reconnectAttempt.connectionIdentity,
+            ))
+        ) {
+            return
+        }
+        val hasPermission = usbManager.hasPermission(device)
+        val selectionStillCurrent = usbReconnectSelectionGate.withBarrier {
+            usbEnumerationEpochGate.isEpochCurrent(selection.enumerationEpoch) &&
+                usbSelectionSnapshotIsCurrent(selection.selectionSnapshot) &&
+                attachmentGate.isCurrent(attachmentToken) &&
+                (effectiveReconnectOperation == null ||
+                    (reconnectAttempt != null && isUsbReconnectAttemptCurrent(
+                        operation = effectiveReconnectOperation,
+                        attempt = reconnectAttempt,
+                        deviceIdentity = deviceIdentity,
+                        lifecycleSession = lifecycleSession,
+                        attachmentToken = attachmentToken,
+                        expectedConnectionIdentity = null,
+                    )))
+        }
+        if (!selectionStillCurrent) return
+        if (hasPermission) {
+            val connectSelectionSnapshot = usbReconnectSelectionGate.withBarrier {
+                if (!usbEnumerationEpochGate.isEpochCurrent(selection.enumerationEpoch) ||
+                    !usbSelectionSnapshotIsCurrent(selection.selectionSnapshot) ||
+                    !attachmentGate.isCurrent(attachmentToken)
+                ) {
+                    return@withBarrier null
+                }
+                val permissionCleared = activeUsbPermissionOperation
+                    ?.let(::clearExactUsbPermissionOperationLocked) == true
+                if (permissionCleared) {
+                    usbReconnectSelectionGate.advanceStamp()
+                }
+                captureUsbSelectionSnapshotLocked(lifecycleSession)
+            } ?: return
+            scope.launch {
+                connectToDevice(
+                    device = device,
+                    lifecycleSession = lifecycleSession,
+                    attachmentToken = attachmentToken,
+                    reconnectOperation = effectiveReconnectOperation,
+                    reconnectAttempt = reconnectAttempt,
+                    selectionSnapshot = connectSelectionSnapshot,
                 )
-                .putExtra(EXTRA_USB_PERMISSION_DEVICE_ID, attachmentToken.identity.deviceId)
-                .putExtra(
-                    EXTRA_USB_PERMISSION_DEVICE_PATH,
-                    attachmentToken.identity.devicePath,
+            }
+            return
+        }
+
+        val preparedPermission = usbReconnectSelectionGate.withBarrier {
+            if (!usbEnumerationEpochGate.isEpochCurrent(selection.enumerationEpoch) ||
+                !usbSelectionSnapshotIsCurrent(selection.selectionSnapshot) ||
+                !attachmentGate.isCurrent(attachmentToken)
+            ) {
+                return@withBarrier null
+            }
+            val reconnectStillCurrent = if (
+                effectiveReconnectOperation != null && reconnectAttempt != null
+            ) {
+                isUsbReconnectAttemptCurrent(
+                    operation = effectiveReconnectOperation,
+                    attempt = reconnectAttempt,
+                    deviceIdentity = deviceIdentity,
+                    lifecycleSession = lifecycleSession,
+                    attachmentToken = attachmentToken,
+                    expectedConnectionIdentity = null,
+                )
+            } else {
+                effectiveReconnectOperation == null &&
+                    genericUsbSelectionMayMutate(lifecycleSession)
+            }
+            if (!reconnectStillCurrent) return@withBarrier null
+            val existing = activeUsbPermissionOperation
+            if (existing != null &&
+                existing.lifecycleSession == lifecycleSession &&
+                existing.attachmentToken == attachmentToken &&
+                existing.deviceIdentity == deviceIdentity &&
+                existing.selectionStamp == selection.selectionSnapshot.stamp &&
+                existing.reconnectOperation === effectiveReconnectOperation &&
+                existing.reconnectAttempt === reconnectAttempt
+            ) {
+                return@withBarrier PreparedBadgeUsbPermissionRequest(
+                    operation = existing,
+                    shouldDispatch = false,
+                )
+            }
+            check(nextUsbPermissionGeneration != Long.MAX_VALUE) {
+                "USB permission generation exhausted"
+            }
+            val permissionSelectionStamp = usbReconnectSelectionGate.advanceStamp()
+            val permissionOperation = ActiveBadgeUsbPermissionOperation(
+                generation = nextUsbPermissionGeneration++,
+                lifecycleSession = lifecycleSession,
+                attachmentToken = attachmentToken,
+                deviceIdentity = deviceIdentity,
+                selectionStamp = permissionSelectionStamp,
+                reconnectOperation = effectiveReconnectOperation,
+                reconnectAttempt = reconnectAttempt,
+            )
+            replaceUsbPermissionOperationLocked(permissionOperation)
+            setState { current ->
+                current.copy(
+                    status = BadgeUsbStatus.PERMISSION_NEEDED,
+                    deviceName = device.displayName(),
+                    message = "Waiting for USB permission",
+                    transportLabel = "USB-C",
+                )
+            }
+            PreparedBadgeUsbPermissionRequest(
+                operation = permissionOperation,
+                shouldDispatch = true,
+            )
+        } ?: return
+        if (!preparedPermission.shouldDispatch) return
+        val permissionOperation = preparedPermission.operation
+
+        try {
+            // UsbManager supplies EXTRA_DEVICE and EXTRA_PERMISSION_GRANTED through a fill-in
+            // intent. Android 12+ therefore requires this narrowly scoped, explicit callback
+            // PendingIntent to remain mutable.
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    PendingIntent.FLAG_MUTABLE
+                } else {
+                    0
+                }
+            val permissionIntent = PendingIntent.getBroadcast(
+                context,
+                usbPermissionRequestCode(
+                    lifecycleSession = lifecycleSession,
+                    attachmentToken = attachmentToken,
+                    selectionStamp = permissionOperation.selectionStamp,
+                    permissionGeneration = permissionOperation.generation,
+                    reconnectGeneration = effectiveReconnectOperation?.ticket?.generation
+                        ?: NO_RECONNECT_GENERATION,
                 ),
-            flags
+                Intent(ACTION_USB_PERMISSION)
+                    .setPackage(context.packageName)
+                    .setData(Uri.parse(
+                        "fof-badge-usb://permission/${permissionOperation.generation}/" +
+                            "${permissionOperation.selectionStamp}/" +
+                            attachmentToken.generation,
+                    ))
+                    .putExtra(EXTRA_USB_PERMISSION_SESSION, lifecycleSession)
+                    .putExtra(EXTRA_USB_SELECTION_STAMP, permissionOperation.selectionStamp)
+                    .putExtra(EXTRA_USB_PERMISSION_GENERATION, permissionOperation.generation)
+                    .putExtra(
+                        EXTRA_USB_PERMISSION_ATTACHMENT_GENERATION,
+                        attachmentToken.generation,
+                    )
+                    .putExtra(EXTRA_USB_PERMISSION_DEVICE_ID, attachmentToken.identity.deviceId)
+                    .putExtra(
+                        EXTRA_USB_PERMISSION_DEVICE_PATH,
+                        attachmentToken.identity.devicePath,
+                    )
+                    .putExtra(
+                        EXTRA_USB_RECONNECT_GENERATION,
+                        effectiveReconnectOperation?.ticket?.generation
+                            ?: NO_RECONNECT_GENERATION,
+                    ),
+                flags,
+            )
+            val dispatched = usbReconnectSelectionGate.withBarrier {
+                if (!usbPermissionOperationMayDispatchLocked(permissionOperation)) {
+                    return@withBarrier false
+                }
+                permissionOperation.dispatchGate.dispatchIfActive {
+                    usbManager.requestPermission(device, permissionIntent)
+                }
+            }
+            if (!dispatched) return
+        } catch (failure: Exception) {
+            failUsbPermissionDispatch(permissionOperation, device, failure)
+        }
+    }
+
+    // Call only while usbReconnectSelectionGate is held. Its caller keeps that
+    // barrier through dispatchIfActive and UsbManager.requestPermission, making
+    // the final validation and physical side effect one ordered transaction.
+    private fun usbPermissionOperationMayDispatchLocked(
+        permissionOperation: ActiveBadgeUsbPermissionOperation,
+    ): Boolean {
+        val reconnectOwned = if (permissionOperation.reconnectOperation != null &&
+            permissionOperation.reconnectAttempt != null
+        ) {
+            isUsbReconnectAttemptCurrent(
+                operation = permissionOperation.reconnectOperation,
+                attempt = permissionOperation.reconnectAttempt,
+                deviceIdentity = permissionOperation.deviceIdentity,
+                lifecycleSession = permissionOperation.lifecycleSession,
+                attachmentToken = permissionOperation.attachmentToken,
+                expectedConnectionIdentity = null,
+            )
+        } else {
+            permissionOperation.reconnectOperation == null &&
+                permissionOperation.reconnectAttempt == null &&
+                genericUsbSelectionMayMutate(permissionOperation.lifecycleSession)
+        }
+        return badgeUsbPermissionMayDispatch(
+            activeOperation = activeUsbPermissionOperation,
+            expectedOperation = permissionOperation,
+            selectionStampCurrent = usbReconnectSelectionGate.isStampCurrent(
+                permissionOperation.selectionStamp,
+            ),
+            lifecycleActive = lifecycleGate.isActive(permissionOperation.lifecycleSession),
+            attachmentAccepted = attachmentGate.acceptsPermission(
+                permissionOperation.attachmentToken,
+                permissionOperation.deviceIdentity,
+            ),
+            reconnectOwned = reconnectOwned,
         )
-        usbManager.requestPermission(device, permissionIntent)
-        setState {
-            it.copy(
-                status = BadgeUsbStatus.PERMISSION_NEEDED,
-                deviceName = device.displayName(),
-                message = "Waiting for USB permission",
-                transportLabel = "USB-C"
+    }
+
+    private fun failUsbPermissionDispatch(
+        permissionOperation: ActiveBadgeUsbPermissionOperation,
+        device: UsbDevice,
+        failure: Exception,
+    ) {
+        usbReconnectSelectionGate.withBarrier {
+            if (!clearExactUsbPermissionOperationLocked(permissionOperation)) {
+                return@withBarrier
+            }
+            val reconnectStillOwned = if (permissionOperation.reconnectOperation != null &&
+                permissionOperation.reconnectAttempt != null
+            ) {
+                isUsbReconnectAttemptCurrent(
+                    operation = permissionOperation.reconnectOperation,
+                    attempt = permissionOperation.reconnectAttempt,
+                    deviceIdentity = permissionOperation.deviceIdentity,
+                    lifecycleSession = permissionOperation.lifecycleSession,
+                    attachmentToken = permissionOperation.attachmentToken,
+                    expectedConnectionIdentity = null,
+                )
+            } else {
+                permissionOperation.reconnectOperation == null &&
+                    permissionOperation.reconnectAttempt == null &&
+                    usbReconnectOperationSlot.current() == null
+            }
+            val failureStillOwnsState =
+                usbReconnectSelectionGate.isStampCurrent(permissionOperation.selectionStamp) &&
+                    lifecycleGate.isActive(permissionOperation.lifecycleSession) &&
+                    attachmentGate.acceptsPermission(
+                        permissionOperation.attachmentToken,
+                        permissionOperation.deviceIdentity,
+                    ) && reconnectStillOwned && verifiedUsbOwnerKey == null &&
+                    activeConnection == null && activeAttachmentToken == null
+            usbReconnectSelectionGate.advanceStamp()
+            if (failureStillOwnsState) {
+                setState { current ->
+                    current.copy(
+                        status = BadgeUsbStatus.ERROR,
+                        deviceName = device.displayName(),
+                        message = "USB permission request failed",
+                        transportLabel = "USB-C",
+                    )
+                }
+            }
+        }
+        Log.w(TAG, "Badge USB permission request failed", failure)
+    }
+
+    // Call only while usbReconnectSelectionGate is held. cancel() is serialized
+    // with dispatchIfActive(): it either prevents the platform call or waits for
+    // an already-running call to return before ownership is cleared.
+    private fun clearExactUsbPermissionOperationLocked(
+        expected: ActiveBadgeUsbPermissionOperation,
+    ): Boolean {
+        if (activeUsbPermissionOperation !== expected) return false
+        expected.dispatchGate.cancel()
+        activeUsbPermissionOperation = null
+        return true
+    }
+
+    // Call only while usbReconnectSelectionGate is held.
+    private fun replaceUsbPermissionOperationLocked(
+        replacement: ActiveBadgeUsbPermissionOperation,
+    ) {
+        val previous = activeUsbPermissionOperation
+        if (previous === replacement) return
+        if (previous != null) {
+            check(clearExactUsbPermissionOperationLocked(previous)) {
+                "Exact badge USB permission replacement lost its predecessor"
+            }
+        }
+        activeUsbPermissionOperation = replacement
+    }
+
+    // Call only while usbReconnectSelectionGate is held. Generic enumeration
+    // may retire only its exact lifecycle+attachment request and must not consume
+    // a reconnect-owned request. A null token is intentionally not a wildcard.
+    private fun clearGenericUsbPermissionOperationLocked(
+        lifecycleSession: Long,
+        expectedAttachmentToken: BadgeUsbAttachmentToken?,
+    ): Boolean {
+        val permission = activeUsbPermissionOperation ?: return false
+        if (!badgeUsbGenericPermissionCleanupMatches(
+                permissionLifecycleSession = permission.lifecycleSession,
+                permissionAttachmentToken = permission.attachmentToken,
+                permissionReconnectOperation = permission.reconnectOperation,
+                expectedLifecycleSession = lifecycleSession,
+                expectedAttachmentToken = expectedAttachmentToken,
+            )
+        ) {
+            return false
+        }
+        return clearExactUsbPermissionOperationLocked(permission)
+    }
+
+    // Call only while usbReconnectSelectionGate is held. A reconnect permission
+    // belongs to the operation, not to its mutable current attempt. This lets
+    // terminal operation A retire P_A even after attempt B has been prepared.
+    private fun clearReconnectUsbPermissionOperationLocked(
+        lifecycleSession: Long,
+        expectedReconnectOperation: ActiveBadgeUsbReconnectOperation,
+    ): Boolean {
+        val permission = activeUsbPermissionOperation ?: return false
+        if (!badgeUsbReconnectPermissionCleanupMatches(
+                permissionLifecycleSession = permission.lifecycleSession,
+                permissionReconnectOperation = permission.reconnectOperation,
+                expectedLifecycleSession = lifecycleSession,
+                expectedReconnectOperation = expectedReconnectOperation,
+            )
+        ) {
+            return false
+        }
+        return clearExactUsbPermissionOperationLocked(permission)
+    }
+
+    fun sendPing() {
+        val owner = verifiedUsbOwnerKey ?: return
+        scope.launch {
+            writeVerifiedUsbLine(
+                line = "FOF_PING",
+                expectedOwner = owner,
             )
         }
     }
 
-    fun sendPing() {
-        scope.launch {
-            writeVerifiedUsbLine("FOF_PING")
-        }
-    }
-
     fun requestStatus() {
+        val expectedOwner = verifiedUsbOwnerKey
         scope.launch {
-            if (hasUsbCommandPath()) {
-                writeVerifiedUsbLine("FOF_STATUS")
+            if (expectedOwner != null && hasUsbCommandPath(expectedOwner)) {
+                writeVerifiedUsbLine(
+                    line = "FOF_STATUS",
+                    expectedOwner = expectedOwner,
+                )
             } else {
                 fetchNetworkStatus(showErrors = true)
             }
@@ -2004,6 +3274,14 @@ class BadgeUsbRepository @Inject constructor(
 
     fun investigateBle(request: com.friendorfoe.detection.BleInvestigationRequest): Boolean {
         val usbOwnerSnapshot = verifiedUsbOwnerKey
+        val command = badgeInvestigationCommandJson(request)
+        if (command == null) {
+            _investigation.value = badgeInvestigationResult(
+                request, "badge", BleInvestigationState.FAILED,
+                "Invalid investigation request", "invalid_request",
+            )
+            return false
+        }
         val transport = when (
             BadgeControlTransportPolicy.select(
                 hasUsb = hasUsbCommandPath(usbOwnerSnapshot),
@@ -2069,6 +3347,7 @@ class BadgeUsbRepository @Inject constructor(
             ActiveBadgeInvestigation(
                 generation = investigationGeneration,
                 request = request,
+                command = command,
                 transport = transport,
                 parser = BadgeInvestigationStreamParser(request.requestId),
                 usbOwnerKey = usbOwnerSnapshot.takeIf {
@@ -2168,7 +3447,7 @@ class BadgeUsbRepository @Inject constructor(
             BleInvestigationState.FAILED, "Badge USB owner unavailable", "usb_write_failed",
         )
         if (!writeVerifiedUsbLine(
-                line = "FOF_CTL:${investigationCommand(operation.request)}",
+                line = "FOF_CTL:${operation.command}",
                 expectedOwner = owner,
             )
         ) {
@@ -2205,7 +3484,7 @@ class BadgeUsbRepository @Inject constructor(
         )
         val startBody = postBadgeInvestigationControl(
             baseUrl,
-            investigationCommand(operation.request),
+            operation.command,
         ) ?: return badgeInvestigationResult(
             operation.request, operation.transport.resultName,
             BleInvestigationState.FAILED, "Badge HTTP start failed", "http_error",
@@ -2271,11 +3550,10 @@ class BadgeUsbRepository @Inject constructor(
     ): BleInvestigationResult {
         var seq = 0
         while (seq < BADGE_MAX_INVESTIGATION_CHUNKS) {
-            val selection = JsonObject().apply {
-                addProperty("cmd", "ble_investigation_chunk")
-                addProperty("request_id", operation.request.requestId)
-                addProperty("seq", seq)
-            }
+            val selection = badgeBleInvestigationChunkCommandJson(
+                operation.request.requestId,
+                seq,
+            ) ?: return badgeHttpTerminalFallback(operation, terminalStatus)
             val body = postBadgeInvestigationControl(baseUrl, selection)
                 ?: return badgeInvestigationResult(
                     operation.request, operation.transport.resultName,
@@ -2360,7 +3638,7 @@ class BadgeUsbRepository @Inject constructor(
         val start = writeBleCharacteristic(
             gatt,
             control,
-            investigationCommand(operation.request).toString().toByteArray(Charsets.UTF_8),
+            operation.command.toString().toByteArray(Charsets.UTF_8),
             operation.generation,
         )
         if (isGattAuthenticationError(start.status)) {
@@ -2382,11 +3660,14 @@ class BadgeUsbRepository @Inject constructor(
                     "Badge BLE authorization was lost", "ble_not_authorized",
                 )
             }
-            val selection = JsonObject().apply {
-                addProperty("cmd", "ble_investigation_chunk")
-                addProperty("request_id", operation.request.requestId)
-                addProperty("seq", seq)
-            }
+            val selection = badgeBleInvestigationChunkCommandJson(
+                operation.request.requestId,
+                seq,
+            ) ?: return badgeInvestigationResult(
+                operation.request, operation.transport.resultName,
+                BleInvestigationState.FAILED,
+                "Badge BLE chunk request was invalid", "invalid_chunk_request",
+            )
             val selected = writeBleCharacteristic(
                 gatt,
                 control,
@@ -2450,20 +3731,6 @@ class BadgeUsbRepository @Inject constructor(
 
     private fun isGattAuthenticationError(status: Int): Boolean =
         status == BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION || status == 15
-
-    private fun investigationCommand(
-        request: com.friendorfoe.detection.BleInvestigationRequest,
-    ): JsonObject = JsonObject().apply {
-        addProperty("cmd", "ble_investigate")
-        addProperty("request_id", request.requestId)
-        addProperty(
-            "mode",
-            if (request.target.mode == BleInvestigationMode.GATT) "gatt" else "passive_capture",
-        )
-        if (request.target.mac == null) add("target", com.google.gson.JsonNull.INSTANCE)
-        else addProperty("target", request.target.mac)
-        addProperty("timeout_ms", badgeInvestigationTotalTimeoutMs(request.timeoutMs))
-    }
 
     private fun acceptInvestigationLine(
         operation: ActiveBadgeInvestigation,
@@ -2571,8 +3838,9 @@ class BadgeUsbRepository @Inject constructor(
         operation.terminal.complete(result)
     }
 
-    private fun terminateUsbInvestigationLocked(disconnectedOwner: BadgeUsbOwnerKey?) {
-        val operation = synchronized(investigationLock) {
+    private fun detachUsbInvestigationLocked(
+        disconnectedOwner: BadgeUsbOwnerKey?,
+    ): DetachedBadgeUsbInvestigation? = synchronized(investigationLock) {
             val current = activeInvestigation?.takeIf {
                 it.transport == BadgeInvestigationTransport.USB &&
                     it.usbOwnershipGate?.disconnect(disconnectedOwner) == true
@@ -2588,13 +3856,18 @@ class BadgeUsbRepository @Inject constructor(
                     "transport_disconnected",
                 )
             _investigation.value = result
-            current.controlAck.complete(
-                BadgeControlAck(accepted = false, error = "transport_disconnected"),
-            )
-            current.terminal.complete(result)
-            current
+            DetachedBadgeUsbInvestigation(current, result)
         }
-        operation?.job?.cancel()
+
+    private fun completeDetachedUsbInvestigation(
+        detached: DetachedBadgeUsbInvestigation?,
+    ) {
+        val operation = detached?.operation ?: return
+        operation.controlAck.complete(
+            BadgeControlAck(accepted = false, error = "transport_disconnected"),
+        )
+        operation.terminal.complete(detached.result)
+        operation.job?.cancel()
     }
 
     private fun rememberInvestigationRequestId(requestId: String) {
@@ -2701,31 +3974,16 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     fun setMode(mode: String) {
-        sendControl(JsonObject().apply {
-            addProperty("cmd", "set_mode")
-            addProperty("mode", mode)
-            addProperty("persist", true)
-        })
+        val command = badgeSetModeCommandJson(mode)
+        if (command == null) {
+            setState { it.copy(message = "Unsupported badge mode") }
+            return
+        }
+        sendControl(command)
     }
 
     fun rebootBadge() {
-        sendControl(JsonObject().apply {
-            addProperty("cmd", "reboot")
-        })
-    }
-
-    fun enterBootloader() {
-        sendControl(JsonObject().apply {
-            addProperty("cmd", "bootloader")
-        })
-    }
-
-    fun relayScannerFirmware(uart: String, force: Boolean = false) {
-        sendControl(JsonObject().apply {
-            addProperty("cmd", "fw_relay")
-            addProperty("uart", uart)
-            addProperty("force", force)
-        })
+        sendControl(badgeRebootCommandJson())
     }
 
     fun applyDisplayPolicy(policy: BadgeDisplayPolicy, persist: Boolean = true) {
@@ -2733,10 +3991,7 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     fun resetDisplayPolicy(persist: Boolean = true) {
-        sendControl(JsonObject().apply {
-            addProperty("cmd", "badge_display_policy_reset")
-            addProperty("persist", persist)
-        })
+        sendControl(badgeDisplayPolicyResetCommandJson(persist))
     }
 
     fun applyBadgeTheme(theme: BadgeTheme, persist: Boolean = true) {
@@ -2744,53 +3999,37 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     fun resetBadgeTheme(persist: Boolean = true) {
-        sendControl(JsonObject().apply {
-            addProperty("cmd", "badge_theme_reset")
-            addProperty("persist", persist)
-        })
+        sendControl(badgeThemeResetCommandJson(persist))
     }
 
     fun displayNav(action: BadgeDisplayNavAction) {
         sendControl(badgeDisplayNavCommandJson(action))
     }
 
-    @Suppress("UNUSED_PARAMETER")
-    fun flashScannerFirmware(
-        uart: String,
-        name: String,
-        version: String,
-        firmware: ByteArray,
-        forceRelay: Boolean = false
-    ) {
-        val guidance = BadgeControlTransportPolicy.scannerFirmwareStagingGuidance()
-        setState {
-            it.copy(
-                message = guidance,
-                firmwareProgress = BadgeFirmwareProgress(
-                    kind = "upload",
-                    stage = "disabled",
-                    total = firmware.size.toLong(),
-                    error = guidance,
-                ),
-            )
-        }
-    }
-
     private fun sendControl(payload: JsonObject) {
+        val command = payload.badgeStrictString("cmd").orEmpty()
+        if (!BadgeControlTransportPolicy.allowsAndroidControlCommand(command)) {
+            setState { it.copy(message = "Unsupported Android badge control command") }
+            return
+        }
+        val expectedOwner = verifiedUsbOwnerKey
         scope.launch {
             when (
                 BadgeControlTransportPolicy.select(
-                    hasUsb = hasUsbCommandPath(),
+                    hasUsb = expectedOwner != null && hasUsbCommandPath(expectedOwner),
                     hasBle = hasBleCommandPath(),
                     hasHttp = activeHttpBaseUrl() != null,
                 )
             ) {
                 BadgeControlTransport.USB -> {
-                    if (usbInvestigationOwnsControlReply()) {
+                    if (usbInvestigationOwnsControlReply(expectedOwner)) {
                         setState { it.copy(message = "BLE investigation command is awaiting badge reply") }
                         return@launch
                     }
-                    writeVerifiedUsbLine("FOF_CTL:$payload")
+                    writeVerifiedUsbLine(
+                        line = "FOF_CTL:$payload",
+                        expectedOwner = expectedOwner ?: return@launch,
+                    )
                 }
                 null -> setState {
                     it.copy(message = BadgeControlTransportPolicy.controlConnectionGuidance())
@@ -2841,46 +4080,478 @@ class BadgeUsbRepository @Inject constructor(
         }
     }
 
-    private fun startUsbStatusPoller() {
-        if (usbStatusPollJob?.isActive == true) return
-        usbStatusPollJob = scope.launch {
-            var pollsWithoutStatus = 0
-            while (isActive && hasUsbCommandPath()) {
-                writeVerifiedUsbLine("FOF_STATUS")
-                delay(USB_STATUS_POLL_INTERVAL_MS)
-                if (state.value.controlStatus == null) {
-                    pollsWithoutStatus++
-                    if (pollsWithoutStatus >= 3) {
-                        setState {
-                            it.copy(
-                                message = "USB serial open, waiting for badge app" +
-                                    (it.deviceName?.let { name -> " ($name)" } ?: "")
+    // Call only while usbReconnectSelectionGate is held.
+    private fun prepareUsbStatusPollerLocked(
+        owner: BadgeUsbOwnerKey,
+        deviceName: String,
+    ): PreparedBadgeUsbStatusPoller {
+        val pollJob = scope.launch(start = CoroutineStart.LAZY) {
+            val ownJob = coroutineContext[Job] ?: return@launch
+            try {
+                while (isActive) {
+                    val ticket = usbStatusPollGate.beginPoll(owner) ?: break
+                    val writeSucceeded = writeVerifiedUsbLine(
+                        line = "FOF_STATUS",
+                        expectedOwner = owner,
+                    )
+                    if (!writeSucceeded) break
+                    delay(USB_STATUS_POLL_INTERVAL_MS)
+                    when (usbStatusPollGate.finishPoll(ticket, owner)) {
+                        BadgeUsbStatusPollDecision.FRESH,
+                        BadgeUsbStatusPollDecision.MISS -> Unit
+                        BadgeUsbStatusPollDecision.TERMINATE -> {
+                            connectionMutex.withLock {
+                                terminateVerifiedUsbSessionLocked(
+                                    expectedOwner = owner,
+                                    deviceName = deviceName,
+                                    message = "Badge USB status response timed out",
+                                )
+                            }
+                            break
+                        }
+                        BadgeUsbStatusPollDecision.STALE_OWNER -> break
+                    }
+                }
+            } finally {
+                usbStatusPollJobSlot.clear(ownJob)
+            }
+        }
+        val previousJob = usbStatusPollJobSlot.replace(pollJob)
+        return PreparedBadgeUsbStatusPoller(pollJob, previousJob)
+    }
+
+    private fun startUsbStatusPoller(prepared: PreparedBadgeUsbStatusPoller) {
+        prepared.previousJob?.cancel()
+        prepared.job.start()
+    }
+
+    // Call only while connectionMutex and usbReconnectSelectionGate are held.
+    private fun prepareVerifiedUsbReconnectLocked(
+        oldOwner: BadgeUsbOwnerKey,
+    ): PreparedBadgeUsbReconnect? {
+        if (!lifecycleGate.isActive(oldOwner.lifecycleSession)) return null
+        val ticket = usbReconnectGate.bind(oldOwner) ?: return null
+        val operation = ActiveBadgeUsbReconnectOperation(ticket)
+        operation.job = scope.launch(start = CoroutineStart.LAZY) {
+            runUsbReconnectScheduler(operation)
+        }
+        val previous = usbReconnectOperationSlot.replace(operation).also {
+            it?.tryTerminalize()
+        }
+        usbReconnectSelectionGate.advanceStamp()
+        return PreparedBadgeUsbReconnect(operation, previous)
+    }
+
+    // Call only after the logical failure commit and old transport close complete.
+    private fun startVerifiedUsbReconnectLocked(prepared: PreparedBadgeUsbReconnect) {
+        prepared.previousOperation?.job?.cancel()
+        val operation = prepared.operation
+        val mayStart = usbReconnectSelectionGate.withBarrier {
+            lifecycleGate.isActive(operation.ticket.lifecycleSession) &&
+                usbReconnectOperationSlot.current() === operation &&
+                operation.isActive() &&
+                usbReconnectGate.isCurrent(
+                    operation.ticket,
+                    operation.ticket.lifecycleSession,
+                )
+        }
+        if (mayStart) operation.job.start() else cancelUsbReconnect(operation)
+    }
+
+    private fun currentUsbReconnectOperation(
+        lifecycleSession: Long,
+    ): ActiveBadgeUsbReconnectOperation? {
+        val operation = usbReconnectOperationSlot.current() ?: return null
+        return operation.takeIf {
+            usbReconnectGate.isCurrent(it.ticket, lifecycleSession)
+        }
+    }
+
+    private fun reconnectExpectedHardwareId(
+        operation: ActiveBadgeUsbReconnectOperation?,
+        lifecycleSession: Long,
+    ): String? = operation?.takeIf {
+        usbReconnectOperationSlot.current() === it && it.isActive()
+    }?.let {
+        usbReconnectGate.expectedHardwareId(it.ticket, lifecycleSession)
+    }
+
+    private fun isUsbReconnectAttemptCurrent(
+        operation: ActiveBadgeUsbReconnectOperation,
+        attempt: ActiveBadgeUsbReconnectAttempt,
+        deviceIdentity: BadgeUsbDeviceIdentity,
+        lifecycleSession: Long,
+        attachmentToken: BadgeUsbAttachmentToken,
+        expectedConnectionIdentity: Any?,
+    ): Boolean = usbReconnectOperationSlot.current() === operation &&
+        operation.isActive() &&
+        usbReconnectGate.isCurrent(operation.ticket, lifecycleSession) &&
+        lifecycleGate.isActive(lifecycleSession) &&
+        operation.ticket.lifecycleSession == lifecycleSession &&
+        operation.ownsAttempt(attempt) &&
+        attempt.ticket === operation.ticket &&
+        attempt.lifecycleSession == lifecycleSession &&
+        attempt.attachmentToken == attachmentToken &&
+        attachmentToken.identity == deviceIdentity &&
+        attachmentGate.isCurrent(attachmentToken) &&
+        if (expectedConnectionIdentity == null) {
+            attempt.connectionIdentity == null
+        } else {
+            attempt.connectionIdentity === expectedConnectionIdentity
+        }
+
+    private fun currentUsbReconnectPermissionAttempt(
+        reconnectGeneration: Long,
+        lifecycleSession: Long,
+        attachmentToken: BadgeUsbAttachmentToken,
+        deviceIdentity: BadgeUsbDeviceIdentity,
+    ): Pair<ActiveBadgeUsbReconnectOperation, ActiveBadgeUsbReconnectAttempt>? {
+        val operation = currentUsbReconnectOperation(lifecycleSession) ?: return null
+        if (operation.ticket.generation != reconnectGeneration) return null
+        val attempt = operation.currentAttempt(lifecycleSession, attachmentToken) ?: return null
+        if (!isUsbReconnectAttemptCurrent(
+                operation = operation,
+                attempt = attempt,
+                deviceIdentity = deviceIdentity,
+                lifecycleSession = lifecycleSession,
+                attachmentToken = attachmentToken,
+                expectedConnectionIdentity = null,
+            )
+        ) {
+            return null
+        }
+        return operation to attempt
+    }
+
+    private fun currentUsbReconnectOperationForAttempt(
+        lifecycleSession: Long,
+        attachmentToken: BadgeUsbAttachmentToken,
+        connectionIdentity: Any,
+    ): ActiveBadgeUsbReconnectOperation? {
+        val operation = currentUsbReconnectOperation(lifecycleSession) ?: return null
+        val attempt = operation.currentAttempt(lifecycleSession, attachmentToken) ?: return null
+        return operation.takeIf {
+            isUsbReconnectAttemptCurrent(
+                operation = operation,
+                attempt = attempt,
+                deviceIdentity = attachmentToken.identity,
+                lifecycleSession = lifecycleSession,
+                attachmentToken = attachmentToken,
+                expectedConnectionIdentity = connectionIdentity,
+            )
+        }
+    }
+
+    private fun cancelUsbReconnect(
+        operation: ActiveBadgeUsbReconnectOperation?,
+    ): Boolean {
+        if (operation == null) return false
+        val cleared = usbReconnectSelectionGate.withBarrier {
+            clearUsbReconnectOperationLocked(operation)
+        }
+        if (cleared) operation.job.cancel()
+        return cleared
+    }
+
+    private fun clearUsbReconnectOperation(
+        operation: ActiveBadgeUsbReconnectOperation,
+    ): Boolean = usbReconnectSelectionGate.withBarrier {
+        clearUsbReconnectOperationLocked(operation)
+    }
+
+    // Call only while usbReconnectSelectionGate is held.
+    private fun clearUsbReconnectOperationLocked(
+        operation: ActiveBadgeUsbReconnectOperation,
+    ): Boolean {
+        operation.tryTerminalize()
+        if (!usbReconnectOperationSlot.clear(operation)) return false
+        clearReconnectUsbPermissionOperationLocked(
+            lifecycleSession = operation.ticket.lifecycleSession,
+            expectedReconnectOperation = operation,
+        )
+        usbReconnectGate.clear(operation.ticket)
+        operation.clearAttempt()
+        usbReconnectSelectionGate.advanceStamp()
+        return true
+    }
+
+    private fun cancelUsbReconnectForLifecycle(lifecycleSession: Long): Boolean {
+        val operation = usbReconnectOperationSlot.current()
+            ?.takeIf { it.ticket.lifecycleSession == lifecycleSession }
+            ?: return false
+        return cancelUsbReconnect(operation)
+    }
+
+    private fun cancelUsbReconnectForDetachedOwner(
+        operation: ActiveBadgeUsbReconnectOperation,
+        reconnectAttemptSnapshot: ActiveBadgeUsbReconnectAttempt?,
+        detachedInvalidation: BadgeUsbAttachmentInvalidation?,
+        lifecycleSession: Long,
+    ) {
+        scope.launch {
+            connectionMutex.withLock {
+                var detachedResources: DetachedBadgeUsbResources? = null
+                var cancelOperationJob = false
+                usbReconnectSelectionGate.withBarrier {
+                    var disconnectedExactAttachment = false
+                    val operationStillCurrent =
+                        usbReconnectOperationSlot.current() === operation &&
+                            usbReconnectGate.isCurrent(
+                                operation.ticket,
+                                operation.ticket.lifecycleSession,
+                            )
+                    if (operationStillCurrent) {
+                        val reconnectAttempt = operation.currentAttempt()
+                            ?.takeIf(operation::ownsAttempt)
+                            ?: reconnectAttemptSnapshot?.takeIf(operation::ownsAttempt)
+                        if (reconnectAttempt != null) {
+                            attachmentGate.invalidateExact(reconnectAttempt.attachmentToken)
+                            val connection = reconnectAttempt.connectionIdentity as?
+                                android.hardware.usb.UsbDeviceConnection
+                            if (connection != null) {
+                                detachedResources = revokeUsbSessionLocked(
+                                    expectedLifecycleSession = reconnectAttempt.lifecycleSession,
+                                    expectedAttachmentToken = reconnectAttempt.attachmentToken,
+                                    expectedConnection = connection,
+                                )
+                                disconnectedExactAttachment = detachedResources != null
+                            }
+                        }
+                        cancelOperationJob = clearUsbReconnectOperationLocked(operation)
+                    }
+                    val detachedToken = detachedInvalidation?.token
+                    if (!disconnectedExactAttachment && detachedToken != null &&
+                        activeAttachmentToken == detachedToken
+                    ) {
+                        detachedResources = revokeUsbSessionLocked(
+                            expectedAttachmentToken = detachedToken,
+                        )
+                        disconnectedExactAttachment = detachedResources != null
+                    }
+                    if (disconnectedExactAttachment &&
+                        lifecycleGate.isActive(lifecycleSession) &&
+                        attachmentGate.currentToken() == null
+                    ) {
+                        setState { current ->
+                            reduceBadgeUsbDisconnected(current, "Badge disconnected")
+                        }
+                    }
+                }
+                if (cancelOperationJob) operation.job.cancel()
+                closeDetachedUsbResources(detachedResources)
+            }
+            requestConnection()
+        }
+    }
+
+    private fun cleanupUsbDetachAndRescan(
+        invalidation: BadgeUsbAttachmentInvalidation?,
+        lifecycleSession: Long,
+    ) {
+        scope.launch {
+            connectionMutex.withLock {
+                var detachedResources: DetachedBadgeUsbResources? = null
+                usbReconnectSelectionGate.withBarrier {
+                    val detachedToken = invalidation?.token
+                    if (detachedToken != null && activeAttachmentToken == detachedToken) {
+                        detachedResources = revokeUsbSessionLocked(
+                            expectedAttachmentToken = detachedToken,
+                        )
+                        if (detachedResources != null &&
+                            lifecycleGate.isActive(lifecycleSession) &&
+                            attachmentGate.currentToken() == null
+                        ) {
+                            setState { current ->
+                                reduceBadgeUsbDisconnected(current, "Badge disconnected")
+                            }
+                        }
+                    }
+                }
+                closeDetachedUsbResources(detachedResources)
+            }
+            requestConnection()
+        }
+    }
+
+    private fun failAmbiguousUsbReconnect(
+        operation: ActiveBadgeUsbReconnectOperation,
+        candidates: List<UsbDevice>,
+    ) {
+        scope.launch {
+            connectionMutex.withLock {
+                var detachedResources: DetachedBadgeUsbResources? = null
+                var cancelOperationJob = false
+                usbReconnectSelectionGate.withBarrier {
+                    if (usbReconnectOperationSlot.current() !== operation ||
+                        !usbReconnectGate.isCurrent(
+                            operation.ticket,
+                            operation.ticket.lifecycleSession,
+                        ) ||
+                        !lifecycleGate.isActive(operation.ticket.lifecycleSession)
+                    ) {
+                        return@withBarrier
+                    }
+                    val reconnectAttempt = operation.currentAttempt()
+                        ?.takeIf(operation::ownsAttempt)
+                    val ownsConnecting = reconnectAttempt?.let { attempt ->
+                        badgeUsbReconnectExpiryOwnsConnecting(
+                            ticket = operation.ticket,
+                            reconnectAttachmentToken = attempt.attachmentToken,
+                            reconnectConnectionIdentity = attempt.connectionIdentity,
+                            lifecycleActive = lifecycleGate.isActive(
+                                operation.ticket.lifecycleSession,
+                            ),
+                            status = state.value.status,
+                            transportLabel = state.value.transportLabel,
+                            activeLifecycleSession = activeUsbLifecycleSession,
+                            activeAttachmentToken = activeAttachmentToken,
+                            activeConnection = activeConnection,
+                            activeVerifiedOwner = verifiedUsbOwnerKey,
+                        )
+                    } == true
+                    if (reconnectAttempt != null) {
+                        if (attachmentGate.invalidateExact(reconnectAttempt.attachmentToken) != null) {
+                            usbReconnectSelectionGate.advanceStamp()
+                        }
+                        val connection = reconnectAttempt.connectionIdentity as?
+                            android.hardware.usb.UsbDeviceConnection
+                        if (ownsConnecting && connection != null) {
+                            detachedResources = revokeUsbSessionLocked(
+                                expectedLifecycleSession = reconnectAttempt.lifecycleSession,
+                                expectedAttachmentToken = reconnectAttempt.attachmentToken,
+                                expectedConnection = connection,
                             )
                         }
                     }
-                } else {
-                    pollsWithoutStatus = 0
+                    reportAmbiguousBadgeDevices(candidates)
+                    cancelOperationJob = clearUsbReconnectOperationLocked(operation)
                 }
+                if (cancelOperationJob) operation.job.cancel()
+                closeDetachedUsbResources(detachedResources)
             }
         }
     }
 
+    private suspend fun runUsbReconnectScheduler(
+        operation: ActiveBadgeUsbReconnectOperation,
+    ) {
+        try {
+            while (coroutineContext.isActive) {
+                if (usbReconnectOperationSlot.current() !== operation ||
+                    !operation.isActive() ||
+                    !lifecycleGate.isActive(operation.ticket.lifecycleSession) ||
+                    !usbReconnectGate.isCurrent(
+                        operation.ticket,
+                        operation.ticket.lifecycleSession,
+                    )
+                ) {
+                    break
+                }
+                when (usbReconnectGate.nextAttempt(
+                    operation.ticket,
+                    operation.ticket.lifecycleSession,
+                )) {
+                    BadgeUsbReconnectDecision.RETRY -> {
+                        requestConnection(
+                            lifecycleSession = operation.ticket.lifecycleSession,
+                            preserveRecoveryOnNoCandidates = true,
+                            reconnectTicket = operation.ticket,
+                        )
+                        delay(USB_RECONNECT_INTERVAL_MS)
+                    }
+                    BadgeUsbReconnectDecision.EXPIRED -> {
+                        expireUsbReconnect(operation)
+                        break
+                    }
+                    BadgeUsbReconnectDecision.STALE -> break
+                }
+            }
+        } finally {
+            if (operation.isActive()) clearUsbReconnectOperation(operation)
+        }
+    }
+
+    private suspend fun expireUsbReconnect(
+        operation: ActiveBadgeUsbReconnectOperation,
+    ) {
+        connectionMutex.withLock {
+            var detachedResources: DetachedBadgeUsbResources? = null
+            usbReconnectSelectionGate.withBarrier {
+                if (usbReconnectOperationSlot.current() !== operation ||
+                    !operation.isActive() ||
+                    !usbReconnectGate.isCurrent(
+                        operation.ticket,
+                        operation.ticket.lifecycleSession,
+                    ) ||
+                    !lifecycleGate.isActive(operation.ticket.lifecycleSession)
+                ) {
+                    return@withBarrier
+                }
+                if (!operation.tryTerminalize()) return@withBarrier
+                if (verifiedUsbOwnerKey != null || state.value.status == BadgeUsbStatus.CONNECTED) {
+                    clearUsbReconnectOperationLocked(operation)
+                    return@withBarrier
+                }
+                val reconnectAttempt = operation.currentAttempt()
+                    ?.takeIf(operation::ownsAttempt)
+                val ownsConnecting = reconnectAttempt?.let { attempt ->
+                    badgeUsbReconnectExpiryOwnsConnecting(
+                        ticket = operation.ticket,
+                        reconnectAttachmentToken = attempt.attachmentToken,
+                        reconnectConnectionIdentity = attempt.connectionIdentity,
+                        lifecycleActive = lifecycleGate.isActive(
+                            operation.ticket.lifecycleSession,
+                        ),
+                        status = state.value.status,
+                        transportLabel = state.value.transportLabel,
+                        activeLifecycleSession = activeUsbLifecycleSession,
+                        activeAttachmentToken = activeAttachmentToken,
+                        activeConnection = activeConnection,
+                        activeVerifiedOwner = verifiedUsbOwnerKey,
+                    )
+                } == true
+                if (reconnectAttempt != null) {
+                    if (attachmentGate.invalidateExact(reconnectAttempt.attachmentToken) != null) {
+                        usbReconnectSelectionGate.advanceStamp()
+                    }
+                }
+                val connection = reconnectAttempt?.connectionIdentity as?
+                    android.hardware.usb.UsbDeviceConnection
+                if (ownsConnecting && reconnectAttempt != null && connection != null) {
+                    detachedResources = revokeUsbSessionLocked(
+                        expectedLifecycleSession = reconnectAttempt.lifecycleSession,
+                        expectedAttachmentToken = reconnectAttempt.attachmentToken,
+                        expectedConnection = connection,
+                    )
+                }
+                setState { current ->
+                    reduceBadgeUsbTerminalError(
+                        current = current,
+                        deviceName = current.deviceName ?: "FoF badge",
+                        message = "Badge USB reconnect timed out",
+                    )
+                }
+                clearUsbReconnectOperationLocked(operation)
+            }
+            closeDetachedUsbResources(detachedResources)
+        }
+    }
+
     private fun registerReceiverIfNeeded() {
-        if (receiverRegistered) return
+        receiverLifetimeGate.registerOnce {
+            val filter = IntentFilter().apply {
+                addAction(ACTION_USB_PERMISSION)
+                addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+                addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+            }
 
-        val filter = IntentFilter().apply {
-            addAction(ACTION_USB_PERMISSION)
-            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
-            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                context.registerReceiver(usbReceiver, filter)
+            }
         }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            context.registerReceiver(usbReceiver, filter)
-        }
-        receiverRegistered = true
     }
 
     private fun findBadgeCandidates(): List<UsbDevice> {
@@ -2905,14 +4576,104 @@ class BadgeUsbRepository @Inject constructor(
         )
     }
 
+    private fun captureUsbEnumerationSnapshot(
+        lifecycleSession: Long,
+    ): BadgeUsbEnumerationSnapshot? = usbReconnectSelectionGate.withBarrier {
+        val selectionSnapshot = captureUsbSelectionSnapshotLocked(lifecycleSession)
+        if (!selectionSnapshot.lifecycleActive) return@withBarrier null
+        BadgeUsbEnumerationSnapshot(
+            selectionSnapshot = selectionSnapshot,
+            // Starting a newer enumeration invalidates every older device-list read,
+            // including reads whose eventual selection would be a no-op.
+            enumerationEpoch = usbEnumerationEpochGate.advanceEpoch(),
+        )
+    }
+
+    // Call only while usbReconnectSelectionGate is held.
+    private fun usbEnumerationSnapshotIsCurrent(
+        snapshot: BadgeUsbEnumerationSnapshot,
+    ): Boolean = usbEnumerationEpochGate.isEpochCurrent(snapshot.enumerationEpoch) &&
+        usbSelectionSnapshotIsCurrent(snapshot.selectionSnapshot)
+
+    private fun captureUsbSelectionSnapshot(
+        lifecycleSession: Long,
+    ): BadgeUsbSelectionSnapshot = usbReconnectSelectionGate.withBarrier {
+        captureUsbSelectionSnapshotLocked(lifecycleSession)
+    }
+
+    // Call only while usbReconnectSelectionGate is held.
+    private fun captureUsbSelectionSnapshotLocked(
+        lifecycleSession: Long,
+    ): BadgeUsbSelectionSnapshot {
+        val operation = usbReconnectOperationSlot.current()
+        return BadgeUsbSelectionSnapshot(
+            stamp = usbReconnectSelectionGate.currentStamp(),
+            lifecycleSession = lifecycleSession,
+            lifecycleActive = lifecycleGate.isActive(lifecycleSession),
+            operation = operation,
+            operationGeneration = operation?.ticket?.generation,
+            operationActive = operation?.isActive() == true,
+            verifiedOwner = verifiedUsbOwnerKey,
+            selectedAttachmentToken = attachmentGate.currentToken(),
+            activeAttachmentToken = activeAttachmentToken,
+            activeConnection = activeConnection,
+            activeUsbLifecycleSession = activeUsbLifecycleSession,
+            activeUsbIoSession = activeUsbIoSession,
+        )
+    }
+
+    // Call only while usbReconnectSelectionGate is held.
+    private fun usbSelectionSnapshotIsCurrent(
+        snapshot: BadgeUsbSelectionSnapshot,
+    ): Boolean {
+        val operation = usbReconnectOperationSlot.current()
+        return usbReconnectSelectionGate.isStampCurrent(snapshot.stamp) &&
+            lifecycleGate.isActive(snapshot.lifecycleSession) == snapshot.lifecycleActive &&
+            operation === snapshot.operation &&
+            operation?.ticket?.generation == snapshot.operationGeneration &&
+            (operation?.isActive() == true) == snapshot.operationActive &&
+            verifiedUsbOwnerKey === snapshot.verifiedOwner &&
+            attachmentGate.currentToken() == snapshot.selectedAttachmentToken &&
+            activeAttachmentToken == snapshot.activeAttachmentToken &&
+            activeConnection === snapshot.activeConnection &&
+            activeUsbLifecycleSession == snapshot.activeUsbLifecycleSession &&
+            activeUsbIoSession === snapshot.activeUsbIoSession
+    }
+
+    // Call only while usbReconnectSelectionGate is held. A generic enumeration
+    // may replace stale work, but it must never mutate a live owner or handshake.
+    private fun genericUsbSelectionMayMutate(lifecycleSession: Long): Boolean {
+        if (!lifecycleGate.isActive(lifecycleSession) ||
+            usbReconnectOperationSlot.current() != null
+        ) {
+            return false
+        }
+        val verifiedOwner = verifiedUsbOwnerKey
+        if (verifiedOwner != null &&
+            lifecycleGate.isActive(verifiedOwner.lifecycleSession)
+        ) {
+            return false
+        }
+        val connectionLifecycleSession = activeUsbLifecycleSession
+        return (activeConnection == null && activeAttachmentToken == null) ||
+            connectionLifecycleSession == null ||
+            !lifecycleGate.isActive(connectionLifecycleSession)
+    }
+
     private fun usbPermissionRequestCode(
         lifecycleSession: Long,
         attachmentToken: BadgeUsbAttachmentToken,
+        selectionStamp: Long,
+        permissionGeneration: Long,
+        reconnectGeneration: Long = NO_RECONNECT_GENERATION,
     ): Int {
         var result = lifecycleSession.hashCode()
         result = 31 * result + attachmentToken.generation.hashCode()
         result = 31 * result + attachmentToken.identity.deviceId
         result = 31 * result + attachmentToken.identity.devicePath.hashCode()
+        result = 31 * result + reconnectGeneration.hashCode()
+        result = 31 * result + selectionStamp.hashCode()
+        result = 31 * result + permissionGeneration.hashCode()
         return result
     }
 
@@ -2932,45 +4693,88 @@ class BadgeUsbRepository @Inject constructor(
         device: UsbDevice,
         lifecycleSession: Long,
         attachmentToken: BadgeUsbAttachmentToken,
+        reconnectOperation: ActiveBadgeUsbReconnectOperation? = null,
+        reconnectAttempt: ActiveBadgeUsbReconnectAttempt? = null,
+        selectionSnapshot: BadgeUsbSelectionSnapshot,
     ) {
         connectionMutex.withLock {
-            if (!lifecycleGate.isActive(lifecycleSession) ||
-                device.attachmentIdentity() != attachmentToken.identity ||
-                !attachmentGate.isCurrent(attachmentToken)
-            ) {
-                return
-            }
-            if (badgeUsbConnectionCanBeReused(
-                    status = state.value.status,
-                    activeAttachmentToken = activeAttachmentToken,
-                    requestedAttachmentToken = attachmentToken,
-                    activeLifecycleSession = activeUsbLifecycleSession,
-                    requestedLifecycleSession = lifecycleSession,
-                    connectionOpen = activeConnection != null && activeOutEndpoint != null,
+            var exactReconnectAttempt = reconnectAttempt
+            var exactSelectionSnapshot = selectionSnapshot
+            fun connectContextIsCurrent(expectedConnectionIdentity: Any?): Boolean {
+                if (!usbSelectionSnapshotIsCurrent(exactSelectionSnapshot) ||
+                    !lifecycleGate.isActive(lifecycleSession) ||
+                    device.attachmentIdentity() != attachmentToken.identity ||
+                    !attachmentGate.isCurrent(attachmentToken)
+                ) {
+                    return false
+                }
+                if (reconnectOperation == null) {
+                    return exactReconnectAttempt == null &&
+                        currentUsbReconnectOperation(lifecycleSession) == null
+                }
+                val attempt = exactReconnectAttempt ?: return false
+                return isUsbReconnectAttemptCurrent(
+                    operation = reconnectOperation,
+                    attempt = attempt,
+                    deviceIdentity = device.attachmentIdentity(),
+                    lifecycleSession = lifecycleSession,
+                    attachmentToken = attachmentToken,
+                    expectedConnectionIdentity = expectedConnectionIdentity,
                 )
-            ) {
-                return
             }
 
-            disconnectLocked()
-            if (!lifecycleGate.isActive(lifecycleSession) ||
-                !attachmentGate.isCurrent(attachmentToken)
-            ) {
-                return
+            fun commitConnectStateIfCurrent(
+                expectedConnectionIdentity: Any?,
+                update: (BadgeUsbState) -> BadgeUsbState,
+            ): Boolean = usbReconnectSelectionGate.withBarrier {
+                if (!connectContextIsCurrent(expectedConnectionIdentity)) {
+                    false
+                } else {
+                    setState(update)
+                    true
+                }
             }
-            setState {
-                it.copy(
-                    status = BadgeUsbStatus.CONNECTING,
-                    deviceName = device.displayName(),
-                    message = "Opening badge USB serial",
-                    transportLabel = "USB-C",
-                    controlStatus = null
-                )
+
+            val entryConnectionIdentity = exactReconnectAttempt?.connectionIdentity
+            var detachedPrevious: DetachedBadgeUsbResources? = null
+            val mayOpen = usbReconnectSelectionGate.withBarrier {
+                if (!connectContextIsCurrent(entryConnectionIdentity)) return@withBarrier false
+                if (entryConnectionIdentity != null) {
+                    return@withBarrier false
+                }
+                if (badgeUsbConnectionCanBeReused(
+                        status = state.value.status,
+                        activeAttachmentToken = activeAttachmentToken,
+                        requestedAttachmentToken = attachmentToken,
+                        activeLifecycleSession = activeUsbLifecycleSession,
+                        requestedLifecycleSession = lifecycleSession,
+                        connectionOpen = activeConnection != null && activeOutEndpoint != null,
+                    )
+                ) {
+                    return@withBarrier false
+                }
+                detachedPrevious = revokeUsbSessionLocked()
+                exactSelectionSnapshot = captureUsbSelectionSnapshotLocked(lifecycleSession)
+                if (!connectContextIsCurrent(expectedConnectionIdentity = null)) {
+                    return@withBarrier false
+                }
+                setState {
+                    it.copy(
+                        status = BadgeUsbStatus.CONNECTING,
+                        deviceName = device.displayName(),
+                        message = "Opening badge USB serial",
+                        transportLabel = "USB-C",
+                        controlStatus = null
+                    )
+                }
+                true
             }
+            closeDetachedUsbResources(detachedPrevious)
+            if (!mayOpen) return
 
             val port = findReadablePort(device)
             if (port == null) {
-                setState {
+                commitConnectStateIfCurrent(expectedConnectionIdentity = null) {
                     it.copy(
                         status = BadgeUsbStatus.ERROR,
                         deviceName = device.displayName(),
@@ -2983,7 +4787,7 @@ class BadgeUsbRepository @Inject constructor(
 
             val connection = usbManager.openDevice(device)
             if (connection == null) {
-                setState {
+                commitConnectStateIfCurrent(expectedConnectionIdentity = null) {
                     it.copy(
                         status = BadgeUsbStatus.ERROR,
                         deviceName = device.displayName(),
@@ -2995,8 +4799,18 @@ class BadgeUsbRepository @Inject constructor(
             }
 
             if (!connection.claimInterface(port.usbInterface, true)) {
-                connection.close()
-                setState {
+                closeDetachedUsbResources(
+                    DetachedBadgeUsbResources(
+                        connection = connection,
+                        usbInterface = null,
+                        readJob = null,
+                        handshakeJob = null,
+                        statusPollJob = null,
+                        investigation = null,
+                        ioDrain = null,
+                    ),
+                )
+                commitConnectStateIfCurrent(expectedConnectionIdentity = null) {
                     it.copy(
                         status = BadgeUsbStatus.ERROR,
                         deviceName = device.displayName(),
@@ -3007,59 +4821,139 @@ class BadgeUsbRepository @Inject constructor(
                 return
             }
 
-            if (!lifecycleGate.isActive(lifecycleSession) ||
-                !attachmentGate.isCurrent(attachmentToken) ||
-                device.attachmentIdentity() != attachmentToken.identity
-            ) {
-                runCatching { connection.releaseInterface(port.usbInterface) }
-                connection.close()
-                return
+            val connectionBound = usbReconnectSelectionGate.withBarrier {
+                if (!connectContextIsCurrent(expectedConnectionIdentity = null)) {
+                    return@withBarrier false
+                }
+                if (reconnectOperation != null) {
+                    val attempt = exactReconnectAttempt ?: return@withBarrier false
+                    val boundAttempt = reconnectOperation.bindConnection(attempt, connection)
+                        ?: return@withBarrier false
+                    exactReconnectAttempt = boundAttempt
+                    usbReconnectSelectionGate.advanceStamp()
+                    exactSelectionSnapshot = captureUsbSelectionSnapshotLocked(lifecycleSession)
+                }
+                true
             }
-
-            activeConnection = connection
-            activeInterface = port.usbInterface
-            activeOutEndpoint = port.outEndpoint
-            activeUsbLifecycleSession = lifecycleSession
-            activeAttachmentToken = attachmentToken
-            if (!attachmentGate.activate(attachmentToken)) {
-                disconnectLocked()
-                return
-            }
-            setState {
-                it.copy(
-                    status = BadgeUsbStatus.CONNECTING,
-                    deviceName = device.displayName(),
-                    message = "Checking badge USB product identity",
-                    transportLabel = "USB-C"
+            if (!connectionBound) {
+                closeDetachedUsbResources(
+                    DetachedBadgeUsbResources(
+                        connection = connection,
+                        usbInterface = port.usbInterface,
+                        readJob = null,
+                        handshakeJob = null,
+                        statusPollJob = null,
+                        investigation = null,
+                        ioDrain = null,
+                    ),
                 )
+                return
             }
-            startReader(
+            val ioSession = BadgeUsbIoSession(
+                lifecycleSession = lifecycleSession,
+                attachmentToken = attachmentToken,
+                connection = connection,
+                usbInterface = port.usbInterface,
+                inEndpoint = port.inEndpoint,
+                outEndpoint = port.outEndpoint,
+            )
+            val publishActiveConnection = {
+                publishBadgeUsbIoSession(usbIoArbiter, ioSession) {
+                    attachmentGate.activateAndPublishIfCurrent(attachmentToken) {
+                        activeUsbIoSession = ioSession
+                        activeConnection = connection
+                        activeInterface = port.usbInterface
+                        activeOutEndpoint = port.outEndpoint
+                        activeUsbLifecycleSession = lifecycleSession
+                        activeAttachmentToken = attachmentToken
+                        setState {
+                            it.copy(
+                                status = BadgeUsbStatus.CONNECTING,
+                                deviceName = device.displayName(),
+                                message = "Checking badge USB product identity",
+                                transportLabel = "USB-C"
+                            )
+                        }
+                        usbReconnectSelectionGate.advanceStamp()
+                    }
+                }
+            }
+            val publicationResult = usbReconnectSelectionGate.withBarrier {
+                if (reconnectOperation != null) {
+                    var result: BadgeUsbIoPublicationResult? = null
+                    reconnectOperation.publishConnectingIfActive {
+                        if (connectContextIsCurrent(expectedConnectionIdentity = connection)) {
+                            result = publishActiveConnection()
+                        }
+                    }
+                    result ?: BadgeUsbIoPublicationResult(
+                        published = false,
+                        drain = null,
+                    )
+                } else if (usbReconnectOperationSlot.current() == null &&
+                    connectContextIsCurrent(expectedConnectionIdentity = connection)
+                ) {
+                    publishActiveConnection()
+                } else {
+                    BadgeUsbIoPublicationResult(
+                        published = false,
+                        drain = null,
+                    )
+                }
+            }
+            if (!publicationResult.published) {
+                usbReconnectSelectionGate.withBarrier {
+                    if (reconnectOperation?.clearAttempt(
+                            lifecycleSession = lifecycleSession,
+                            attachmentToken = attachmentToken,
+                            connectionIdentity = connection,
+                        ) == true
+                    ) {
+                        usbReconnectSelectionGate.advanceStamp()
+                    }
+                }
+                closeDetachedUsbResources(
+                    DetachedBadgeUsbResources(
+                        connection = connection,
+                        usbInterface = port.usbInterface,
+                        readJob = null,
+                        handshakeJob = null,
+                        statusPollJob = null,
+                        investigation = null,
+                        ioDrain = publicationResult.drain,
+                    ),
+                )
+                return
+            }
+            val preparedReader = prepareUsbReaderLocked(
                 connection = connection,
                 inEndpoint = port.inEndpoint,
                 deviceName = device.displayName(),
                 lifecycleSession = lifecycleSession,
                 attachmentToken = attachmentToken,
+                ioSession = ioSession,
             )
-            writeConnectionBoundLineLocked(connection, port.outEndpoint, "FOF_PING")
-            writeConnectionBoundLineLocked(connection, port.outEndpoint, "FOF_STATUS")
+            if (preparedReader == null) return
+            if (!startUsbReader(preparedReader)) return
+            writeConnectionBoundLineLocked(ioSession, "FOF_PING")
+            writeConnectionBoundLineLocked(ioSession, "FOF_STATUS")
             startUsbIdentityHandshake(
                 connection = connection,
-                outEndpoint = port.outEndpoint,
                 lifecycleSession = lifecycleSession,
                 attachmentToken = attachmentToken,
                 deviceName = device.displayName(),
+                ioSession = ioSession,
             )
         }
     }
 
     private fun startUsbIdentityHandshake(
         connection: android.hardware.usb.UsbDeviceConnection,
-        outEndpoint: UsbEndpoint,
         lifecycleSession: Long,
         attachmentToken: BadgeUsbAttachmentToken,
         deviceName: String,
+        ioSession: BadgeUsbIoSession,
     ) {
-        usbHandshakeJob?.cancel()
         val handshakeJob = scope.launch(start = CoroutineStart.LAZY) {
             val ownJob = coroutineContext[Job]
             val deadlineElapsedMs = elapsedRealtimeMs() + USB_IDENTITY_HANDSHAKE_TIMEOUT_MS
@@ -3072,51 +4966,83 @@ class BadgeUsbRepository @Inject constructor(
                 )
                 if (retryDelayMs > 0L) delay(retryDelayMs)
                 val keepRunning = connectionMutex.withLock {
-                    val ownsSession = badgeUsbHandshakeOwnsSession(
-                        lifecycleActive = lifecycleGate.isActive(lifecycleSession),
-                        status = state.value.status,
-                        transportLabel = state.value.transportLabel,
-                        expectedLifecycleSession = lifecycleSession,
-                        activeLifecycleSession = activeUsbLifecycleSession,
-                        expectedConnection = connection,
-                        activeConnection = activeConnection,
-                    ) && activeAttachmentToken == attachmentToken &&
-                        attachmentGate.isCurrentAndActive(attachmentToken)
-                    when (badgeUsbHandshakeTimerAction(
-                        ownsSession = ownsSession,
-                        nowElapsedMs = elapsedRealtimeMs(),
-                        deadlineElapsedMs = deadlineElapsedMs,
-                        retryWriteBudgetMs = USB_IDENTITY_HANDSHAKE_WRITE_BUDGET_MS,
-                    )) {
-                        BadgeUsbHandshakeTimerAction.STOP -> {
-                            if (usbHandshakeJob === ownJob) usbHandshakeJob = null
-                            false
-                        }
-                        BadgeUsbHandshakeTimerAction.RETRY -> {
-                            writeConnectionBoundLineLocked(connection, outEndpoint, "FOF_PING")
-                            writeConnectionBoundLineLocked(connection, outEndpoint, "FOF_STATUS")
-                            true
-                        }
-                        BadgeUsbHandshakeTimerAction.FAIL -> {
-                            disconnectLocked()
-                            setState {
-                                reduceBadgeUsbTerminalError(
-                                    current = it.copy(
-                                        status = badgeUsbHandshakeTimeoutStatus(it.status),
-                                    ),
-                                    deviceName = deviceName,
-                                    message = "Badge USB product identity check timed out",
-                                )
+                    var detachedResources: DetachedBadgeUsbResources? = null
+                    val action = usbReconnectSelectionGate.withBarrier {
+                        val ownsExactSession = badgeUsbHandshakeOwnsSession(
+                            lifecycleActive = lifecycleGate.isActive(lifecycleSession),
+                            status = state.value.status,
+                            transportLabel = state.value.transportLabel,
+                            expectedLifecycleSession = lifecycleSession,
+                            activeLifecycleSession = activeUsbLifecycleSession,
+                            expectedConnection = connection,
+                            activeConnection = activeConnection,
+                        ) && activeAttachmentToken == attachmentToken &&
+                            attachmentGate.isCurrentAndActive(attachmentToken)
+                        val timerAction = badgeUsbHandshakeTimerAction(
+                            ownsSession = ownsExactSession,
+                            nowElapsedMs = elapsedRealtimeMs(),
+                            deadlineElapsedMs = deadlineElapsedMs,
+                            retryWriteBudgetMs = USB_IDENTITY_HANDSHAKE_WRITE_BUDGET_MS,
+                        )
+                        when (timerAction) {
+                            BadgeUsbHandshakeTimerAction.STOP -> {
+                                if (usbHandshakeJob === ownJob) {
+                                    usbHandshakeJob = null
+                                    usbReconnectSelectionGate.advanceStamp()
+                                }
                             }
-                            true
+                            BadgeUsbHandshakeTimerAction.RETRY -> Unit
+                            BadgeUsbHandshakeTimerAction.FAIL -> {
+                                detachedResources = revokeUsbSessionLocked(
+                                    expectedLifecycleSession = lifecycleSession,
+                                    expectedAttachmentToken = attachmentToken,
+                                    expectedConnection = connection,
+                                )
+                                if (detachedResources != null) {
+                                    setState {
+                                        reduceBadgeUsbTerminalError(
+                                            current = it.copy(
+                                                status = badgeUsbHandshakeTimeoutStatus(it.status),
+                                            ),
+                                            deviceName = deviceName,
+                                            message = "Badge USB product identity check timed out",
+                                        )
+                                    }
+                                }
+                            }
                         }
+                        timerAction
                     }
+                    if (action == BadgeUsbHandshakeTimerAction.RETRY) {
+                        writeConnectionBoundLineLocked(ioSession, "FOF_PING")
+                        writeConnectionBoundLineLocked(ioSession, "FOF_STATUS")
+                    }
+                    closeDetachedUsbResources(detachedResources)
+                    action == BadgeUsbHandshakeTimerAction.RETRY
                 }
                 if (!keepRunning) break
             }
         }
-        usbHandshakeJob = handshakeJob
-        handshakeJob.start()
+        var previousHandshakeJob: Job? = null
+        val installed = usbReconnectSelectionGate.withBarrier {
+            val ownsExactSession = badgeUsbHandshakeOwnsSession(
+                lifecycleActive = lifecycleGate.isActive(lifecycleSession),
+                status = state.value.status,
+                transportLabel = state.value.transportLabel,
+                expectedLifecycleSession = lifecycleSession,
+                activeLifecycleSession = activeUsbLifecycleSession,
+                expectedConnection = connection,
+                activeConnection = activeConnection,
+            ) && activeAttachmentToken == attachmentToken &&
+                attachmentGate.isCurrentAndActive(attachmentToken)
+            if (!ownsExactSession) return@withBarrier false
+            previousHandshakeJob = usbHandshakeJob
+            usbHandshakeJob = handshakeJob
+            usbReconnectSelectionGate.advanceStamp()
+            true
+        }
+        previousHandshakeJob?.cancel()
+        if (installed) handshakeJob.start() else handshakeJob.cancel()
     }
 
     // Called synchronously from handleLine while withBadgeUsbReaderOwner holds
@@ -3127,51 +5053,83 @@ class BadgeUsbRepository @Inject constructor(
         lifecycleSession: Long,
         attachmentToken: BadgeUsbAttachmentToken,
         expectedVerifiedOwner: BadgeUsbOwnerKey?,
+        reconnectOperation: ActiveBadgeUsbReconnectOperation?,
         deviceName: String,
         reason: String,
     ) {
-        val ownsHandshake = expectedVerifiedOwner == null &&
-            badgeUsbHandshakeOwnsSession(
-                lifecycleActive = lifecycleGate.isActive(lifecycleSession),
-                status = state.value.status,
-                transportLabel = state.value.transportLabel,
+        var detachedResources: DetachedBadgeUsbResources? = null
+        var cancelReconnectJob = false
+        usbReconnectSelectionGate.withBarrier {
+            val ownsExactHandshake = expectedVerifiedOwner == null &&
+                badgeUsbHandshakeOwnsSession(
+                    lifecycleActive = lifecycleGate.isActive(lifecycleSession),
+                    status = state.value.status,
+                    transportLabel = state.value.transportLabel,
+                    expectedLifecycleSession = lifecycleSession,
+                    activeLifecycleSession = activeUsbLifecycleSession,
+                    expectedConnection = connection,
+                    activeConnection = activeConnection,
+                )
+            val ownsExactVerifiedSession = expectedVerifiedOwner != null &&
+                state.value.status == BadgeUsbStatus.CONNECTED &&
+                state.value.transportLabel == "USB-C" &&
+                badgeUsbOwnerKeysMatch(expectedVerifiedOwner, verifiedUsbOwnerKey) &&
+                expectedVerifiedOwner.connectionIdentity === connection &&
+                expectedVerifiedOwner.attachmentToken == attachmentToken
+            if ((!ownsExactHandshake && !ownsExactVerifiedSession) ||
+                activeAttachmentToken != attachmentToken ||
+                !attachmentGate.isCurrentAndActive(attachmentToken)
+            ) {
+                return@withBarrier
+            }
+            detachedResources = revokeUsbSessionLocked(
                 expectedLifecycleSession = lifecycleSession,
-                activeLifecycleSession = activeUsbLifecycleSession,
+                expectedAttachmentToken = attachmentToken,
                 expectedConnection = connection,
-                activeConnection = activeConnection,
             )
-        val ownsVerifiedSession = expectedVerifiedOwner != null &&
-            state.value.status == BadgeUsbStatus.CONNECTED &&
-            state.value.transportLabel == "USB-C" &&
-            badgeUsbOwnerKeysMatch(expectedVerifiedOwner, verifiedUsbOwnerKey) &&
-            expectedVerifiedOwner.connectionIdentity === connection &&
-            expectedVerifiedOwner.attachmentToken == attachmentToken
-        if ((!ownsHandshake && !ownsVerifiedSession) ||
-            activeAttachmentToken != attachmentToken ||
-            !attachmentGate.isCurrentAndActive(attachmentToken)
-        ) {
-            return
+            if (detachedResources == null) return@withBarrier
+            setState {
+                reduceBadgeUsbTerminalError(
+                    current = it,
+                    deviceName = deviceName,
+                    message = reason,
+                )
+            }
+            if (reconnectOperation != null) {
+                cancelReconnectJob = clearUsbReconnectOperationLocked(reconnectOperation)
+            }
         }
-        disconnectLocked()
-        setState {
-            reduceBadgeUsbTerminalError(
-                current = it,
-                deviceName = deviceName,
-                message = reason,
-            )
-        }
+        if (cancelReconnectJob) reconnectOperation?.job?.cancel()
+        closeDetachedUsbResources(detachedResources)
     }
 
-    private fun startReader(
+    // Call while connectionMutex is held. The reader is created lazy, then its
+    // exact transport ownership is published under the selection transaction.
+    private fun prepareUsbReaderLocked(
         connection: android.hardware.usb.UsbDeviceConnection,
         inEndpoint: UsbEndpoint,
         deviceName: String,
         lifecycleSession: Long,
         attachmentToken: BadgeUsbAttachmentToken,
-    ) {
-        readJob?.cancel()
-        readJob = scope.launch {
+        ioSession: BadgeUsbIoSession,
+    ): PreparedBadgeUsbReader? {
+        val readerJob = scope.launch(start = CoroutineStart.LAZY) {
+            val ownJob = coroutineContext[Job] ?: return@launch
+            val ownsPublishedReader = usbReconnectSelectionGate.withBarrier {
+                readJob === ownJob && activeUsbIoSession === ioSession &&
+                    badgeUsbReaderOwnsExactSession(
+                        lifecycleActive = lifecycleGate.isActive(lifecycleSession),
+                        expectedLifecycleSession = lifecycleSession,
+                        activeLifecycleSession = activeUsbLifecycleSession,
+                        expectedConnection = connection,
+                        activeConnection = activeConnection,
+                    ) && activeAttachmentToken == attachmentToken &&
+                    attachmentGate.isCurrentAndActive(attachmentToken)
+            }
+            if (!ownsPublishedReader) return@launch
             val buffer = ByteArray(256)
+            val readerSilenceGate = BadgeUsbReaderSilenceGate()
+            readerSilenceGate.start(elapsedRealtimeMs())
             val lineFramer = BadgeUsbLineFramer(
                 onLine = { bytes, length ->
                     decodeBadgeUtf8(bytes, length)?.let { line ->
@@ -3181,6 +5139,7 @@ class BadgeUsbRepository @Inject constructor(
                             lifecycleSession = lifecycleSession,
                             attachmentToken = attachmentToken,
                             deviceName = deviceName,
+                            ioSession = ioSession,
                         )
                     }
                         ?: Log.w(TAG, "Dropping malformed UTF-8 badge line")
@@ -3191,13 +5150,49 @@ class BadgeUsbRepository @Inject constructor(
             )
             try {
                 while (isActive) {
-                    val read = connection.bulkTransfer(
-                        inEndpoint,
-                        buffer,
-                        buffer.size,
-                        READ_TIMEOUT_MS
-                    )
+                    val lease = usbIoArbiter.tryAcquire(ioSession) ?: break
+                    val ioStillCurrent = usbReconnectSelectionGate.withBarrier {
+                        activeUsbIoSession === ioSession &&
+                            readJob === ownJob &&
+                            badgeUsbReaderOwnsExactSession(
+                                lifecycleActive = lifecycleGate.isActive(lifecycleSession),
+                                expectedLifecycleSession = lifecycleSession,
+                                activeLifecycleSession = activeUsbLifecycleSession,
+                                expectedConnection = connection,
+                                activeConnection = activeConnection,
+                            ) && activeAttachmentToken == attachmentToken &&
+                            attachmentGate.isCurrentAndActive(attachmentToken) &&
+                            ioSession.inEndpoint === inEndpoint
+                    }
+                    if (!ioStillCurrent) {
+                        lease.close()
+                        break
+                    }
+                    val read = try {
+                        connection.bulkTransfer(
+                            inEndpoint,
+                            buffer,
+                            buffer.size,
+                            READ_TIMEOUT_MS
+                        )
+                    } finally {
+                        lease.close()
+                    }
+                    val readObservedAtElapsedMs = elapsedRealtimeMs()
                     if (read > 0) {
+                        if (!readerSilenceGate.recordRead(read, readObservedAtElapsedMs)) {
+                            connectionMutex.withLock {
+                                terminateUsbReaderSessionLocked(
+                                    connection = connection,
+                                    lifecycleSession = lifecycleSession,
+                                    attachmentToken = attachmentToken,
+                                    ioSession = ioSession,
+                                    deviceName = deviceName,
+                                    message = "Badge USB reader liveness failed",
+                                )
+                            }
+                            break
+                        }
                         connectionMutex.withBadgeUsbReaderOwner(
                             owns = {
                                 badgeUsbReaderOwnsExactSession(
@@ -3213,6 +5208,19 @@ class BadgeUsbRepository @Inject constructor(
                             lineFramer.accept(buffer, read)
                         }
                     } else {
+                        if (readerSilenceGate.isExpired(readObservedAtElapsedMs)) {
+                            connectionMutex.withLock {
+                                terminateUsbReaderSessionLocked(
+                                    connection = connection,
+                                    lifecycleSession = lifecycleSession,
+                                    attachmentToken = attachmentToken,
+                                    ioSession = ioSession,
+                                    deviceName = deviceName,
+                                    message = "Badge USB reader timed out",
+                                )
+                            }
+                            break
+                        }
                         delay(25)
                     }
                 }
@@ -3220,64 +5228,220 @@ class BadgeUsbRepository @Inject constructor(
                 throw cancelled
             } catch (e: Exception) {
                 Log.w(TAG, "Badge USB reader stopped", e)
-                connectionMutex.withBadgeUsbReaderOwner(
-                    owns = {
-                        badgeUsbReaderOwnsExactSession(
-                            lifecycleActive = lifecycleGate.isActive(lifecycleSession),
-                            expectedLifecycleSession = lifecycleSession,
-                            activeLifecycleSession = activeUsbLifecycleSession,
-                            expectedConnection = connection,
-                            activeConnection = activeConnection,
-                        ) && activeAttachmentToken == attachmentToken &&
-                            attachmentGate.isCurrentAndActive(attachmentToken)
-                    },
-                ) {
-                    disconnectLocked()
-                    setState { current ->
-                        reduceBadgeUsbReaderFailure(
-                            current = current,
-                            deviceName = deviceName,
-                            detail = e.message ?: "unknown error",
-                        )
-                    }
+                connectionMutex.withLock {
+                    terminateUsbReaderSessionLocked(
+                        connection = connection,
+                        lifecycleSession = lifecycleSession,
+                        attachmentToken = attachmentToken,
+                        ioSession = ioSession,
+                        deviceName = deviceName,
+                        message = "Badge USB read failed: ${e.message ?: "unknown error"}",
+                    )
                 }
             }
         }
+        var previousJob: Job? = null
+        var selectionStamp = NO_SELECTION_STAMP
+        val installed = usbReconnectSelectionGate.withBarrier {
+            if (!badgeUsbReaderOwnsExactSession(
+                    lifecycleActive = lifecycleGate.isActive(lifecycleSession),
+                    expectedLifecycleSession = lifecycleSession,
+                    activeLifecycleSession = activeUsbLifecycleSession,
+                    expectedConnection = connection,
+                    activeConnection = activeConnection,
+                ) || activeUsbIoSession !== ioSession ||
+                state.value.status != BadgeUsbStatus.CONNECTING ||
+                state.value.transportLabel != "USB-C" ||
+                activeAttachmentToken != attachmentToken ||
+                activeOutEndpoint == null ||
+                !attachmentGate.isCurrentAndActive(attachmentToken)
+            ) {
+                return@withBarrier false
+            }
+            previousJob = readJob
+            readJob = readerJob
+            selectionStamp = usbReconnectSelectionGate.advanceStamp()
+            true
+        }
+        if (!installed) {
+            readerJob.cancel()
+            return null
+        }
+        return PreparedBadgeUsbReader(
+            job = readerJob,
+            previousJob = previousJob,
+            connection = connection,
+            lifecycleSession = lifecycleSession,
+            attachmentToken = attachmentToken,
+            ioSession = ioSession,
+            selectionStamp = selectionStamp,
+        )
+    }
+
+    // Start/cancel only after the selection transaction releases. The coroutine
+    // repeats exact ownership validation before its first USB read, closing the
+    // stop-between-validation-and-dispatch window without doing I/O in the gate.
+    private fun startUsbReader(prepared: PreparedBadgeUsbReader): Boolean {
+        prepared.previousJob?.cancel()
+        val mayStart = usbReconnectSelectionGate.withBarrier {
+            usbReconnectSelectionGate.isStampCurrent(prepared.selectionStamp) &&
+                readJob === prepared.job && activeUsbIoSession === prepared.ioSession &&
+                badgeUsbReaderOwnsExactSession(
+                    lifecycleActive = lifecycleGate.isActive(prepared.lifecycleSession),
+                    expectedLifecycleSession = prepared.lifecycleSession,
+                    activeLifecycleSession = activeUsbLifecycleSession,
+                    expectedConnection = prepared.connection,
+                    activeConnection = activeConnection,
+                ) && activeAttachmentToken == prepared.attachmentToken &&
+                attachmentGate.isCurrentAndActive(prepared.attachmentToken)
+        }
+        val started = mayStart && prepared.job.start()
+        val startStillCurrent = started && usbReconnectSelectionGate.withBarrier {
+            usbReconnectSelectionGate.isStampCurrent(prepared.selectionStamp) &&
+                readJob === prepared.job && activeUsbIoSession === prepared.ioSession &&
+                badgeUsbReaderOwnsExactSession(
+                    lifecycleActive = lifecycleGate.isActive(prepared.lifecycleSession),
+                    expectedLifecycleSession = prepared.lifecycleSession,
+                    activeLifecycleSession = activeUsbLifecycleSession,
+                    expectedConnection = prepared.connection,
+                    activeConnection = activeConnection,
+                ) && activeAttachmentToken == prepared.attachmentToken &&
+                attachmentGate.isCurrentAndActive(prepared.attachmentToken)
+        }
+        if (startStillCurrent) return true
+        usbReconnectSelectionGate.withBarrier {
+            if (readJob === prepared.job) {
+                readJob = null
+                usbReconnectSelectionGate.advanceStamp()
+            }
+        }
+        prepared.job.cancel()
+        return false
+    }
+
+    // Call only while connectionMutex is held. Reader A may finish after reader B
+    // replaces it, so the full lifecycle/attachment/connection tuple must still own.
+    private fun terminateUsbReaderSessionLocked(
+        connection: android.hardware.usb.UsbDeviceConnection,
+        lifecycleSession: Long,
+        attachmentToken: BadgeUsbAttachmentToken,
+        ioSession: BadgeUsbIoSession,
+        deviceName: String,
+        message: String,
+    ): Boolean {
+        val exactReaderOwner = usbReconnectSelectionGate.withBarrier {
+            if (activeUsbIoSession !== ioSession ||
+                ioSession.lifecycleSession != lifecycleSession ||
+                ioSession.attachmentToken != attachmentToken ||
+                ioSession.connection !== connection
+            ) {
+                return@withBarrier false to null
+            }
+            val owner = verifiedUsbOwnerKey?.takeIf { owner ->
+                owner.lifecycleSession == lifecycleSession &&
+                    owner.attachmentToken == attachmentToken &&
+                    owner.connectionIdentity === connection &&
+                    owner.endpointIdentity === ioSession.outEndpoint
+            }
+            true to owner
+        }
+        if (!exactReaderOwner.first) return false
+        val expectedVerifiedOwner = exactReaderOwner.second
+        if (expectedVerifiedOwner != null) {
+            return terminateVerifiedUsbSessionLocked(
+                expectedOwner = expectedVerifiedOwner,
+                deviceName = deviceName,
+                message = message,
+            )
+        }
+        var detachedResources: DetachedBadgeUsbResources? = null
+        val committed = usbReconnectSelectionGate.withBarrier {
+            if (activeUsbIoSession !== ioSession ||
+                !badgeUsbReaderTerminalOwnsExactSession(
+                expectedLifecycleSession = lifecycleSession,
+                expectedAttachmentToken = attachmentToken,
+                expectedConnection = connection,
+                lifecycleActive = lifecycleGate.isActive(lifecycleSession),
+                status = state.value.status,
+                transportLabel = state.value.transportLabel,
+                activeLifecycleSession = activeUsbLifecycleSession,
+                activeAttachmentToken = activeAttachmentToken,
+                attachmentCurrentAndActive =
+                    attachmentGate.isCurrentAndActive(attachmentToken),
+                activeConnection = activeConnection,
+                activeEndpoint = activeOutEndpoint,
+                expectedVerifiedOwner = expectedVerifiedOwner,
+                activeVerifiedOwner = verifiedUsbOwnerKey,
+            )
+            ) {
+                return@withBarrier false
+            }
+            detachedResources = revokeUsbSessionLocked(
+                expectedLifecycleSession = lifecycleSession,
+                expectedAttachmentToken = attachmentToken,
+                expectedConnection = connection,
+            )
+            if (detachedResources == null) return@withBarrier false
+            setState { current ->
+                reduceBadgeUsbTerminalError(
+                    current = current,
+                    deviceName = deviceName,
+                    message = message,
+                )
+            }
+            true
+        }
+        closeDetachedUsbResources(detachedResources)
+        return committed
     }
 
     private suspend fun writeConnectionBoundLineLocked(
-        connection: android.hardware.usb.UsbDeviceConnection,
-        outEndpoint: UsbEndpoint,
+        ioSession: BadgeUsbIoSession,
         line: String,
     ): Boolean {
-        if (activeConnection !== connection || activeOutEndpoint !== outEndpoint) return false
         return usbWriteMutex.withLock {
-            if (activeConnection !== connection || activeOutEndpoint !== outEndpoint) {
-                return@withLock false
-            }
+            val lease = usbIoArbiter.tryAcquire(ioSession) ?: return@withLock false
+            val connection = ioSession.connection
+            val outEndpoint = ioSession.outEndpoint
             val bytes = (line + "\n").toByteArray(Charsets.UTF_8)
-            withContext(Dispatchers.IO) {
-                connection.bulkTransfer(
-                    outEndpoint,
-                    bytes,
-                    bytes.size,
-                    WRITE_TIMEOUT_MS,
-                ) == bytes.size
+            try {
+                val ioStillCurrent = usbReconnectSelectionGate.withBarrier {
+                    activeUsbIoSession === ioSession &&
+                        lifecycleGate.isActive(ioSession.lifecycleSession) &&
+                        activeUsbLifecycleSession == ioSession.lifecycleSession &&
+                        activeAttachmentToken == ioSession.attachmentToken &&
+                        attachmentGate.isCurrentAndActive(ioSession.attachmentToken) &&
+                        activeConnection === ioSession.connection &&
+                        activeInterface === ioSession.usbInterface &&
+                        activeOutEndpoint === ioSession.outEndpoint
+                }
+                if (!ioStillCurrent) return@withLock false
+                withContext(Dispatchers.IO) {
+                    connection.bulkTransfer(
+                        outEndpoint,
+                        bytes,
+                        bytes.size,
+                        WRITE_TIMEOUT_MS,
+                    ) == bytes.size
+                }
+            } finally {
+                lease.close()
             }
         }
     }
 
     private suspend fun writeVerifiedUsbLine(
         line: String,
-        expectedOwner: BadgeUsbOwnerKey? = null,
+        expectedOwner: BadgeUsbOwnerKey,
     ): Boolean = connectionMutex.withLock {
         val verifiedOwner = verifiedUsbOwnerKey ?: return@withLock false
-        if (expectedOwner != null && !badgeUsbOwnerKeysMatch(expectedOwner, verifiedOwner)) {
+        if (!badgeUsbOwnerKeysMatch(expectedOwner, verifiedOwner)) {
             return@withLock false
         }
         val lifecycleSession = verifiedOwner.lifecycleSession
         val connection = activeConnection
         val outEndpoint = activeOutEndpoint
+        val ioSession = activeUsbIoSession
         if (!badgeUsbVerifiedWriteAllowed(
                 lifecycleActive = lifecycleGate.isActive(lifecycleSession),
                 status = state.value.status,
@@ -3290,11 +5454,74 @@ class BadgeUsbRepository @Inject constructor(
                 verifiedEndpoint = verifiedOwner.endpointIdentity,
             ) || connection == null || outEndpoint == null ||
             activeAttachmentToken != verifiedOwner.attachmentToken ||
-            !attachmentGate.isCurrentAndActive(verifiedOwner.attachmentToken)
+            !attachmentGate.isCurrentAndActive(verifiedOwner.attachmentToken) ||
+            ioSession == null || ioSession.lifecycleSession != lifecycleSession ||
+            ioSession.attachmentToken != verifiedOwner.attachmentToken ||
+            ioSession.connection !== connection || ioSession.outEndpoint !== outEndpoint
         ) {
             return@withLock false
         }
-        writeConnectionBoundLineLocked(connection, outEndpoint, line)
+        val writeSucceeded = writeConnectionBoundLineLocked(
+            ioSession = ioSession,
+            line = line,
+        )
+        if (!writeSucceeded) {
+            terminateVerifiedUsbSessionLocked(
+                expectedOwner = expectedOwner,
+                deviceName = state.value.deviceName ?: "FoF badge",
+                message = "Badge USB write failed",
+            )
+        }
+        writeSucceeded
+    }
+
+    // Call only while connectionMutex is held. A queued failure from owner A must
+    // never tear down a replacement owner B that acquired the same USB path.
+    private fun terminateVerifiedUsbSessionLocked(
+        expectedOwner: BadgeUsbOwnerKey,
+        deviceName: String,
+        message: String,
+    ): Boolean {
+        var detachedResources: DetachedBadgeUsbResources? = null
+        var preparedReconnect: PreparedBadgeUsbReconnect? = null
+        val committed = usbReconnectSelectionGate.withBarrier {
+            if (!badgeUsbTerminalFailureOwnsExactSession(
+                    expectedOwner = expectedOwner,
+                    activeOwner = verifiedUsbOwnerKey,
+                    lifecycleActive = lifecycleGate.isActive(expectedOwner.lifecycleSession),
+                    status = state.value.status,
+                    transportLabel = state.value.transportLabel,
+                    activeLifecycleSession = activeUsbLifecycleSession,
+                    activeAttachmentToken = activeAttachmentToken,
+                    attachmentCurrentAndActive =
+                        attachmentGate.isCurrentAndActive(expectedOwner.attachmentToken),
+                    activeConnection = activeConnection,
+                    activeEndpoint = activeOutEndpoint,
+                )
+            ) {
+                return@withBarrier false
+            }
+            val connection = expectedOwner.connectionIdentity as?
+                android.hardware.usb.UsbDeviceConnection ?: return@withBarrier false
+            detachedResources = revokeUsbSessionLocked(
+                expectedLifecycleSession = expectedOwner.lifecycleSession,
+                expectedAttachmentToken = expectedOwner.attachmentToken,
+                expectedConnection = connection,
+            )
+            if (detachedResources == null) return@withBarrier false
+            setState { current ->
+                reduceBadgeUsbTerminalError(
+                    current = current,
+                    deviceName = deviceName,
+                    message = message,
+                )
+            }
+            preparedReconnect = prepareVerifiedUsbReconnectLocked(expectedOwner)
+            true
+        }
+        closeDetachedUsbResources(detachedResources)
+        preparedReconnect?.let(::startVerifiedUsbReconnectLocked)
+        return committed
     }
 
     private fun hasUsbCommandPath(expectedOwner: BadgeUsbOwnerKey? = null): Boolean {
@@ -3975,8 +6202,10 @@ class BadgeUsbRepository @Inject constructor(
         lifecycleSession: Long,
         attachmentToken: BadgeUsbAttachmentToken,
         deviceName: String,
+        ioSession: BadgeUsbIoSession,
     ) {
-        if (!badgeUsbReaderOwnsExactSession(
+        if (activeUsbIoSession !== ioSession ||
+            !badgeUsbReaderOwnsExactSession(
                 lifecycleActive = lifecycleGate.isActive(lifecycleSession),
                 expectedLifecycleSession = lifecycleSession,
                 activeLifecycleSession = activeUsbLifecycleSession,
@@ -3998,14 +6227,21 @@ class BadgeUsbRepository @Inject constructor(
                 owner.endpointIdentity === activeOutEndpoint &&
                 attachmentGate.isCurrentAndActive(attachmentToken)
         }
-        val investigationHandled = if (frameOwner == null) {
-            false
-        } else if (line.startsWith("FOF_INV:")) {
-            handleUsbInvestigationLine(line, frameOwner)
-        } else {
-            handleUsbInvestigationLine(trimmed, frameOwner)
+        val activeReconnectOperation = currentUsbReconnectOperation(lifecycleSession)
+        val reconnectOperation = currentUsbReconnectOperationForAttempt(
+            lifecycleSession = lifecycleSession,
+            attachmentToken = attachmentToken,
+            connectionIdentity = connection,
+        )
+        if (frameOwner == null && activeReconnectOperation != null &&
+            reconnectOperation == null
+        ) {
+            return
         }
-
+        val expectedHardwareId = reconnectExpectedHardwareId(
+            operation = reconnectOperation,
+            lifecycleSession = lifecycleSession,
+        )
         val detection = if (trimmed.startsWith("FOF_DET:")) {
             parseDetection(trimmed.removePrefix("FOF_DET:"), receivedAtElapsedMs)
         } else {
@@ -4035,12 +6271,17 @@ class BadgeUsbRepository @Inject constructor(
         } else {
             null
         }
-        badgeUsbStatusFrameIdentityError(isStatusFrame, status)?.let { identityError ->
+        badgeUsbStatusFrameIdentityError(
+            isStatusFrame = isStatusFrame,
+            status = status,
+            expectedHardwareId = frameOwner?.hardwareId ?: expectedHardwareId,
+        )?.let { identityError ->
             rejectUsbIdentityLocked(
                 connection = connection,
                 lifecycleSession = lifecycleSession,
                 attachmentToken = attachmentToken,
                 expectedVerifiedOwner = frameOwner,
+                reconnectOperation = reconnectOperation,
                 deviceName = deviceName,
                 reason = "USB device does not report FoF badge uplink identity: " +
                     identityError,
@@ -4048,21 +6289,17 @@ class BadgeUsbRepository @Inject constructor(
             return
         }
         val usbHandshakeAccepted = handshakeStatus == BadgeUsbStatus.CONNECTED
-        if (usbHandshakeAccepted) {
+        val acceptedOwner = if (usbHandshakeAccepted) {
             val outEndpoint = activeOutEndpoint ?: return
-            verifiedUsbOwnerKey = BadgeUsbOwnerKey(
+            badgeUsbOwnerKeyFromHandshake(
+                status = status,
                 attachmentToken = attachmentToken,
                 lifecycleSession = lifecycleSession,
                 connectionIdentity = connection,
                 endpointIdentity = outEndpoint,
-            )
-        }
-        if (!badgeUsbFrameMayMutateState(
-                hasVerifiedOwner = frameOwner != null,
-                acceptedIdentityHandshake = usbHandshakeAccepted,
-            )
-        ) {
-            return
+            ) ?: return
+        } else {
+            null
         }
         val firmwareProgress = when {
             trimmed.startsWith("FOF_FW_UPLOAD:") ->
@@ -4073,77 +6310,252 @@ class BadgeUsbRepository @Inject constructor(
                 parseFirmwareProgress("relay", trimmed.removePrefix("FOF_FW_RELAY:"))
             else -> null
         }
-        val activity = badgeUsbActivityForLine(
-            line = trimmed,
-            receivedAtElapsedMs = receivedAtElapsedMs,
-            detection = detection,
-            status = status,
-            firmwareProgress = firmwareProgress,
-            investigationHandled = investigationHandled,
-        )
-
-        setState { current ->
-            val nextDetections = detection?.let {
-                (listOf(it) + current.detections).take(MAX_RECENT_DETECTIONS)
-            } ?: current.detections
-
-            current.copy(
-                status = handshakeStatus ?: current.status,
-                lastLine = trimmed.take(160),
-                eventCount = if (detection != null) current.eventCount + 1 else current.eventCount,
-                detections = nextDetections,
-                activity = activity?.let { pushBadgeUsbActivity(current.activity, it) }
-                    ?: current.activity,
-                controlStatus = status ?: current.controlStatus,
-                firmwareProgress = firmwareProgress ?: current.firmwareProgress,
-                message = when {
-                    usbHandshakeAccepted -> "Badge USB connected"
-                    trimmed.startsWith("FOF_PONG:") -> "Badge replied ${trimmed.removePrefix("FOF_PONG:")}"
-                    status != null -> "Badge status updated"
-                    firmwareProgress != null -> firmwareProgress.error.ifBlank {
-                        "Firmware ${firmwareProgress.kind} ${firmwareProgress.stage} ${firmwareProgress.percent}%"
-                    }
-                    trimmed.startsWith("FOF_CTL_OK:") -> "Badge command accepted"
-                    trimmed.startsWith("FOF_CTL_ERROR:") -> "Badge command failed"
-                    investigationHandled -> "Badge investigation updated"
-                    detection != null -> "Receiving badge events"
-                    else -> current.message
-                }
+        fun frameStateUpdate(
+            investigationHandled: Boolean,
+        ): (BadgeUsbState) -> BadgeUsbState {
+            val activity = badgeUsbActivityForLine(
+                line = trimmed,
+                receivedAtElapsedMs = receivedAtElapsedMs,
+                detection = detection,
+                status = status,
+                firmwareProgress = firmwareProgress,
+                investigationHandled = investigationHandled,
             )
+            return { current ->
+                val nextDetections = detection?.let {
+                    (listOf(it) + current.detections).take(MAX_RECENT_DETECTIONS)
+                } ?: current.detections
+
+                current.copy(
+                    status = handshakeStatus ?: current.status,
+                    lastLine = trimmed.take(160),
+                    eventCount = if (detection != null) current.eventCount + 1 else current.eventCount,
+                    detections = nextDetections,
+                    activity = activity?.let { pushBadgeUsbActivity(current.activity, it) }
+                        ?: current.activity,
+                    controlStatus = status ?: current.controlStatus,
+                    firmwareProgress = firmwareProgress ?: current.firmwareProgress,
+                    message = when {
+                        usbHandshakeAccepted -> "Badge USB connected"
+                        trimmed.startsWith("FOF_PONG:") ->
+                            "Badge replied ${trimmed.removePrefix("FOF_PONG:")}"
+                        status != null -> "Badge status updated"
+                        firmwareProgress != null -> firmwareProgress.error.ifBlank {
+                            "Firmware ${firmwareProgress.kind} ${firmwareProgress.stage} " +
+                                "${firmwareProgress.percent}%"
+                        }
+                        trimmed.startsWith("FOF_CTL_OK:") -> "Badge command accepted"
+                        trimmed.startsWith("FOF_CTL_ERROR:") -> "Badge command failed"
+                        investigationHandled -> "Badge investigation updated"
+                        detection != null -> "Receiving badge events"
+                        else -> current.message
+                    }
+                )
+            }
         }
-        if (usbHandshakeAccepted) {
-            startUsbStatusPoller()
+        if (acceptedOwner != null) {
+            var preparedStatusPoller: PreparedBadgeUsbStatusPoller? = null
+            var completedReconnectJob: Job? = null
+            var completedHandshakeJob: Job? = null
+            val publishVerifiedOwner = {
+                var published = false
+                attachmentGate.publishIfCurrentAndActive(attachmentToken) {
+                    if (activeUsbIoSession === ioSession &&
+                        badgeUsbReaderOwnsExactSession(
+                            lifecycleActive = lifecycleGate.isActive(lifecycleSession),
+                            expectedLifecycleSession = lifecycleSession,
+                            activeLifecycleSession = activeUsbLifecycleSession,
+                            expectedConnection = connection,
+                            activeConnection = activeConnection,
+                        ) && activeAttachmentToken == attachmentToken &&
+                        activeOutEndpoint === acceptedOwner.endpointIdentity
+                    ) {
+                        usbStatusPollGate.bind(
+                            owner = acceptedOwner,
+                            initialResponsesCompleted = badgeUsbStatusResponseCounter(status),
+                        )
+                        verifiedUsbOwnerKey = acceptedOwner
+                        setState(frameStateUpdate(false))
+                        preparedStatusPoller = prepareUsbStatusPollerLocked(
+                            acceptedOwner,
+                            deviceName,
+                        )
+                        completedHandshakeJob = usbHandshakeJob
+                        usbHandshakeJob = null
+                        usbReconnectSelectionGate.advanceStamp()
+                        published = true
+                    }
+                }
+                published
+            }
+            val verifiedOwnerPublished = usbReconnectSelectionGate.withBarrier {
+                if (reconnectOperation != null) {
+                    reconnectOperation.completeHandshakeAndClearIfActive(
+                        operationIsCurrent = {
+                            usbReconnectOperationSlot.current() === reconnectOperation &&
+                                usbReconnectGate.isCurrent(
+                                    reconnectOperation.ticket,
+                                    reconnectOperation.ticket.lifecycleSession,
+                                ) && lifecycleGate.isActive(
+                                    reconnectOperation.ticket.lifecycleSession,
+                                )
+                        },
+                        fullCommit = publishVerifiedOwner,
+                        completion = {
+                            if (usbReconnectOperationSlot.clear(reconnectOperation)) {
+                                usbReconnectGate.clear(reconnectOperation.ticket)
+                                reconnectOperation.clearAttempt()
+                                completedReconnectJob = reconnectOperation.job
+                            }
+                        },
+                    )
+                } else if (usbReconnectOperationSlot.current() == null) {
+                    publishVerifiedOwner()
+                } else {
+                    false
+                }
+            }
+            if (!verifiedOwnerPublished) return
+            completedReconnectJob?.cancel()
+            completedHandshakeJob?.cancel()
+            preparedStatusPoller?.let(::startUsbStatusPoller)
+            return
         }
+        if (!badgeUsbFrameMayMutateState(
+                hasVerifiedOwner = frameOwner != null,
+                acceptedIdentityHandshake = usbHandshakeAccepted,
+            )
+        ) {
+            return
+        }
+        val exactFrameOwner = frameOwner ?: return
+        var preparedInvestigation = PreparedBadgeUsbInvestigationFrame()
+        val frameCommitted = usbReconnectSelectionGate.withBarrier {
+            val currentOwner = verifiedUsbOwnerKey
+            if (activeUsbIoSession !== ioSession ||
+                !lifecycleGate.isActive(lifecycleSession) ||
+                activeUsbLifecycleSession != lifecycleSession ||
+                activeAttachmentToken != attachmentToken ||
+                activeConnection !== connection ||
+                !attachmentGate.isCurrentAndActive(attachmentToken) ||
+                !badgeUsbOwnerKeysMatch(exactFrameOwner, currentOwner)
+            ) {
+                return@withBarrier false
+            }
+            preparedInvestigation = prepareUsbInvestigationFrameLocked(
+                line = if (line.startsWith("FOF_INV:")) line else trimmed,
+                frameOwner = exactFrameOwner,
+            )
+            if (isStatusFrame) {
+                usbStatusPollGate.recordStatus(
+                    owner = exactFrameOwner,
+                    responsesCompleted = badgeUsbStatusResponseCounter(status),
+                )
+            }
+            val frameStateUpdate = frameStateUpdate(preparedInvestigation.handled)
+            setState(frameStateUpdate)
+            true
+        }
+        if (!frameCommitted) return
+        completePreparedUsbInvestigationFrame(preparedInvestigation)
     }
 
-    private fun handleUsbInvestigationLine(
+    // Call only while connectionMutex -> usbReconnectSelectionGate are held.
+    // Parser/state ownership is consumed atomically; Deferred completions happen
+    // after the selection transaction releases.
+    private fun prepareUsbInvestigationFrameLocked(
         line: String,
         frameOwner: BadgeUsbOwnerKey,
-    ): Boolean {
-        val operation = synchronized(investigationLock) {
-            activeInvestigation?.takeIf {
+    ): PreparedBadgeUsbInvestigationFrame = synchronized(investigationLock) {
+        val operation = activeInvestigation?.takeIf {
                 it.transport == BadgeInvestigationTransport.USB &&
                     it.usbOwnershipGate?.acceptsFrame(frameOwner, state.value.status) == true
-            }
-        } ?: return false
-        if (line.startsWith("FOF_INV:")) {
-            return acceptInvestigationLine(operation, line).accepted
+            } ?: return@synchronized PreparedBadgeUsbInvestigationFrame()
+        val parsed = if (line.startsWith("FOF_INV:")) {
+            operation.parser.accept(line)
+        } else {
+            null
         }
         val ack = operation.ackGate.accept(
             line = line,
-            parsed = null,
+            parsed = parsed,
             ownsControlReply = !operation.controlAck.isCompleted,
-        ) ?: return false
-        operation.controlAck.complete(ack)
-        return true
+        )
+        var terminalResult: BleInvestigationResult? = null
+        if (parsed?.accepted == true) {
+            terminalResult = parsed.result?.copy(transport = operation.transport.resultName)
+            if (terminalResult != null) {
+                _investigation.value = terminalResult
+            } else {
+                val current = _investigation.value?.takeIf {
+                    it.requestId == operation.request.requestId &&
+                        it.state !in setOf(
+                            BleInvestigationState.COMPLETE,
+                            BleInvestigationState.FAILED,
+                            BleInvestigationState.CANCELLED,
+                        )
+                } ?: badgeInvestigationResult(
+                    operation.request,
+                    operation.transport.resultName,
+                    BleInvestigationState.QUEUED,
+                    "Badge investigation queued",
+                    null,
+                )
+                _investigation.value = when (val chunk = parsed.chunk) {
+                    is BleInvestigationChunk.Begin -> current.copy(
+                        state = BleInvestigationState.QUEUED,
+                        summary = "Badge investigation queued",
+                    )
+                    is BleInvestigationChunk.Progress -> current.copy(
+                        state = chunk.state,
+                        summary = badgeProgressSummary(chunk.state),
+                    )
+                    is BleInvestigationChunk.Service -> current.copy(
+                        state = BleInvestigationState.READING,
+                        services = current.services + chunk.uuid,
+                        summary = "Reading badge investigation result",
+                    )
+                    is BleInvestigationChunk.Characteristic -> current.copy(
+                        state = BleInvestigationState.READING,
+                        characteristics = current.characteristics +
+                            com.friendorfoe.detection.BleGattCharacteristicInfo(
+                                serviceUuid = chunk.serviceUuid,
+                                uuid = chunk.uuid,
+                                properties = chunk.properties,
+                            ),
+                        summary = "Reading badge investigation result",
+                    )
+                    is BleInvestigationChunk.Read -> current.copy(
+                        state = BleInvestigationState.READING,
+                        reads = current.reads + (chunk.uuid to chunk.valueHex),
+                        summary = "Reading badge investigation result",
+                    )
+                    is BleInvestigationChunk.End,
+                    null -> current
+                }
+            }
+        }
+        PreparedBadgeUsbInvestigationFrame(
+            handled = parsed?.accepted == true || ack != null,
+            controlAck = ack?.let { operation.controlAck to it },
+            terminal = terminalResult?.let { operation.terminal to it },
+        )
     }
 
-    private fun usbInvestigationOwnsControlReply(): Boolean {
-        val verifiedOwner = verifiedUsbOwnerKey
+    private fun completePreparedUsbInvestigationFrame(
+        prepared: PreparedBadgeUsbInvestigationFrame,
+    ) {
+        prepared.controlAck?.let { (completion, value) -> completion.complete(value) }
+        prepared.terminal?.let { (completion, value) -> completion.complete(value) }
+    }
+
+    private fun usbInvestigationOwnsControlReply(
+        expectedOwner: BadgeUsbOwnerKey?,
+    ): Boolean {
         return synchronized(investigationLock) {
             activeInvestigation?.let {
                 it.transport == BadgeInvestigationTransport.USB &&
-                    badgeUsbOwnerKeysMatch(it.usbOwnerKey, verifiedOwner) &&
+                    badgeUsbOwnerKeysMatch(it.usbOwnerKey, expectedOwner) &&
                     !it.controlAck.isCompleted
             } == true
         }
@@ -4152,23 +6564,8 @@ class BadgeUsbRepository @Inject constructor(
     private fun parseDetection(
         json: String,
         receivedAtElapsedMs: Long,
-    ): BadgeUsbDetection? {
-        return runCatching {
-            val obj = JsonParser.parseString(json).asJsonObject
-            BadgeUsbDetection(
-                id = obj.get("id")?.asString.orEmpty(),
-                manufacturer = obj.get("manufacturer")?.asString.orEmpty(),
-                badgeLabel = obj.optString("badge_label"),
-                badgeClass = obj.optString("badge_class"),
-                badgeEntityKey = obj.optString("badge_entity_key"),
-                source = obj.get("source")?.asInt ?: -1,
-                confidence = obj.get("confidence")?.asFloat ?: 0f,
-                threatScore = obj.optFloat("threat_score"),
-                rssi = obj.get("rssi")?.asInt ?: 0,
-                receivedAtElapsedMs = receivedAtElapsedMs,
-            )
-        }.getOrNull()
-    }
+    ): BadgeUsbDetection? =
+        parseBadgeUsbDetection(json, receivedAtElapsedMs)
 
     private fun parseFirmwareProgress(kind: String, json: String): BadgeFirmwareProgress? {
         return runCatching {
@@ -4223,58 +6620,280 @@ class BadgeUsbRepository @Inject constructor(
     private fun disconnect(
         reason: String,
         lifecycleSession: Long? = null,
-        expectedAttachmentToken: BadgeUsbAttachmentToken? = activeAttachmentToken,
-        expectedConnection: android.hardware.usb.UsbDeviceConnection? = activeConnection,
+        expectedAttachmentToken: BadgeUsbAttachmentToken? = null,
+        expectedConnection: android.hardware.usb.UsbDeviceConnection? = null,
+        expectedSnapshot: BadgeUsbSelectionSnapshot? = null,
     ) {
         scope.launch {
             connectionMutex.withLock {
-                if (lifecycleSession != null && !lifecycleGate.canClean(lifecycleSession)) {
-                    return@withLock
+                var detachedResources: DetachedBadgeUsbResources? = null
+                usbReconnectSelectionGate.withBarrier {
+                    val ownsExpectedConnection = when {
+                        expectedSnapshot != null ->
+                            activeUsbLifecycleSession == expectedSnapshot.activeUsbLifecycleSession &&
+                                activeAttachmentToken == expectedSnapshot.activeAttachmentToken &&
+                                activeConnection === expectedSnapshot.activeConnection
+                        expectedAttachmentToken != null && expectedConnection != null ->
+                            badgeUsbCleanupOwnsActive(
+                                expectedAttachmentToken = expectedAttachmentToken,
+                                expectedConnection = expectedConnection,
+                                activeAttachmentToken = activeAttachmentToken,
+                                activeConnection = activeConnection,
+                            )
+                        lifecycleSession != null -> activeUsbLifecycleSession == lifecycleSession
+                        expectedAttachmentToken != null ->
+                            activeAttachmentToken == expectedAttachmentToken
+                        else -> activeAttachmentToken == null && activeConnection == null
+                    }
+                    if (!ownsExpectedConnection) return@withBarrier
+                    detachedResources = revokeUsbSessionLocked(
+                        expectedLifecycleSession = expectedSnapshot
+                            ?.activeUsbLifecycleSession ?: lifecycleSession,
+                        expectedAttachmentToken = expectedSnapshot
+                            ?.activeAttachmentToken ?: expectedAttachmentToken,
+                        expectedConnection = (expectedSnapshot?.activeConnection as?
+                            android.hardware.usb.UsbDeviceConnection) ?: expectedConnection,
+                        expectedSnapshot = expectedSnapshot,
+                    )
+                    if (lifecycleGate.activeSession() == null &&
+                        activeConnection == null &&
+                        attachmentGate.currentToken() == null
+                    ) {
+                        setState { current -> reduceBadgeUsbDisconnected(current, reason) }
+                    }
                 }
-                val ownsExpectedConnection = when {
-                    expectedAttachmentToken != null && expectedConnection != null ->
-                        badgeUsbCleanupOwnsActive(
-                            expectedAttachmentToken = expectedAttachmentToken,
-                            expectedConnection = expectedConnection,
-                            activeAttachmentToken = activeAttachmentToken,
-                            activeConnection = activeConnection,
-                        )
-                    expectedAttachmentToken == null && expectedConnection == null ->
-                        activeAttachmentToken == null && activeConnection == null
-                    else -> false
-                }
-                if (!ownsExpectedConnection) return@withLock
-                disconnectLocked()
-                if (attachmentGate.currentToken() == null) {
-                    setState { current -> reduceBadgeUsbDisconnected(current, reason) }
-                }
+                closeDetachedUsbResources(detachedResources)
             }
         }
     }
 
-    private fun disconnectLocked() {
+    // Call only while connectionMutex and usbReconnectSelectionGate are held.
+    // This method is deliberately logical-only; callbacks and platform I/O run
+    // from closeDetachedUsbResources after the selection transaction releases.
+    private fun revokeUsbSessionLocked(
+        expectedLifecycleSession: Long? = null,
+        expectedAttachmentToken: BadgeUsbAttachmentToken? = null,
+        expectedConnection: android.hardware.usb.UsbDeviceConnection? = null,
+        expectedSnapshot: BadgeUsbSelectionSnapshot? = null,
+    ): DetachedBadgeUsbResources? {
+        if (expectedSnapshot != null &&
+            (activeUsbLifecycleSession != expectedSnapshot.activeUsbLifecycleSession ||
+                activeAttachmentToken != expectedSnapshot.activeAttachmentToken ||
+                activeConnection !== expectedSnapshot.activeConnection ||
+                activeUsbIoSession !== expectedSnapshot.activeUsbIoSession)
+        ) {
+            return null
+        }
+        if (expectedLifecycleSession != null &&
+            activeUsbLifecycleSession != expectedLifecycleSession
+        ) {
+            return null
+        }
+        if (expectedAttachmentToken != null &&
+            activeAttachmentToken != expectedAttachmentToken
+        ) {
+            return null
+        }
+        if (expectedConnection != null && activeConnection !== expectedConnection) {
+            return null
+        }
+
         val disconnectedAttachmentToken = activeAttachmentToken
-        val disconnectedOwner = verifiedUsbOwnerKey
-        verifiedUsbOwnerKey = null
-        terminateUsbInvestigationLocked(disconnectedOwner)
-        readJob?.cancel()
-        readJob = null
-        usbStatusPollJob?.cancel()
-        usbStatusPollJob = null
+        val disconnectedLifecycleSession = activeUsbLifecycleSession
         val connection = activeConnection
         val usbInterface = activeInterface
-        if (connection != null && usbInterface != null) {
-            runCatching { connection.releaseInterface(usbInterface) }
+        val disconnectedOwner = verifiedUsbOwnerKey
+        val ioSession = activeUsbIoSession
+        val ioDrain = ioSession?.let { usbIoArbiter.revoke(ioSession) }
+        val detachedReadJob = readJob
+        val detachedHandshakeJob = usbHandshakeJob
+        val detachedStatusPollJob = usbStatusPollJobSlot.take()
+        if (connection == null && usbInterface == null && disconnectedOwner == null &&
+            disconnectedAttachmentToken == null && detachedReadJob == null &&
+            detachedHandshakeJob == null && detachedStatusPollJob == null &&
+            ioSession == null
+        ) {
+            return null
         }
-        runCatching { connection?.close() }
+
+        if (disconnectedAttachmentToken != null &&
+            disconnectedLifecycleSession != null &&
+            connection != null
+        ) {
+            currentUsbReconnectOperation(disconnectedLifecycleSession)?.clearAttempt(
+                lifecycleSession = disconnectedLifecycleSession,
+                attachmentToken = disconnectedAttachmentToken,
+                connectionIdentity = connection,
+            )
+        }
+        verifiedUsbOwnerKey = null
+        if (disconnectedOwner != null) usbStatusPollGate.clear(disconnectedOwner)
+        val detachedInvestigation = detachUsbInvestigationLocked(disconnectedOwner)
+        readJob = null
+        usbHandshakeJob = null
         activeConnection = null
         activeInterface = null
         activeOutEndpoint = null
         activeUsbLifecycleSession = null
         activeAttachmentToken = null
+        activeUsbIoSession = null
         if (disconnectedAttachmentToken != null) {
-            attachmentGate.clearActive(disconnectedAttachmentToken)
+            attachmentGate.deactivateExact(disconnectedAttachmentToken)
         }
+        usbReconnectSelectionGate.advanceStamp()
+        return DetachedBadgeUsbResources(
+            connection = connection,
+            usbInterface = usbInterface,
+            readJob = detachedReadJob,
+            handshakeJob = detachedHandshakeJob,
+            statusPollJob = detachedStatusPollJob,
+            investigation = detachedInvestigation,
+            ioDrain = ioDrain,
+        )
+    }
+
+    private fun closeDetachedUsbResources(detached: DetachedBadgeUsbResources?) {
+        if (detached == null) return
+        detached.readJob?.cancel()
+        detached.handshakeJob?.cancel()
+        detached.statusPollJob?.cancel()
+        completeDetachedUsbInvestigation(detached.investigation)
+        val ioDrain = detached.ioDrain
+        val cleanup = RetainedBadgeUsbDrainCleanup(detached)
+        if (ioDrain == null) {
+            check(cleanup.phaseGate.markDrained()) {
+                "Fresh close-only badge USB cleanup did not enter drained phase"
+            }
+            if (!advanceUsbIoCleanup(cleanup)) {
+                scheduleLateUsbDrain(cleanup)
+            }
+            return
+        }
+
+        if (!usbIoArbiter.awaitDrained(ioDrain, USB_IO_DRAIN_TIMEOUT_MS)) {
+            Log.w(TAG, "Badge USB I/O is still draining; retaining handle for late close")
+            scheduleLateUsbDrain(cleanup)
+            return
+        }
+        check(cleanup.phaseGate.markDrained()) {
+            "Fresh badge USB cleanup did not enter drained phase"
+        }
+        if (!advanceUsbIoCleanup(cleanup)) {
+            scheduleLateUsbDrain(cleanup)
+        }
+    }
+
+    private fun advanceUsbIoCleanup(cleanup: RetainedBadgeUsbDrainCleanup): Boolean {
+        val ioDrain = cleanup.detached.ioDrain
+        if (cleanup.phaseGate.shouldAttemptClose()) {
+            if (!physicallyCloseDetachedUsbResources(cleanup.detached)) return false
+            check(cleanup.phaseGate.markClosed()) {
+                "Badge USB cleanup close phase changed unexpectedly"
+            }
+        }
+        if (cleanup.phaseGate.shouldAttemptDrainCompletion()) {
+            if (ioDrain != null && !usbIoArbiter.completeDrain(ioDrain)) return false
+            check(cleanup.phaseGate.markCompleted()) {
+                "Badge USB cleanup completion phase changed unexpectedly"
+            }
+        }
+        return cleanup.phaseGate.isCompleted()
+    }
+
+    private fun physicallyCloseDetachedUsbResources(
+        detached: DetachedBadgeUsbResources,
+    ): Boolean {
+        val connection = detached.connection
+        val usbInterface = detached.usbInterface
+        if (connection != null && usbInterface != null) {
+            runCatching { connection.releaseInterface(usbInterface) }
+                .onFailure { Log.w(TAG, "Badge USB interface release failed", it) }
+        }
+        return runCatching { connection?.close() }
+            .onFailure { Log.w(TAG, "Badge USB connection close failed", it) }
+            .isSuccess
+    }
+
+    private fun scheduleLateUsbDrain(cleanup: RetainedBadgeUsbDrainCleanup) {
+        val ioDrain = cleanup.detached.ioDrain
+        lateinit var reaperJob: Job
+        reaperJob = scope.launch(start = CoroutineStart.LAZY) {
+            var releasedUnderConnectionMutex = false
+            try {
+                while (isActive && !cleanup.phaseGate.isCompleted()) {
+                    if (cleanup.phaseGate.phaseName() == "DRAINING") {
+                        val drained = ioDrain == null || usbIoArbiter.awaitDrained(
+                            ioDrain,
+                            USB_IO_DRAIN_TIMEOUT_MS,
+                        )
+                        if (drained) {
+                            check(cleanup.phaseGate.markDrained()) {
+                                "Badge USB cleanup drain phase changed unexpectedly"
+                            }
+                        }
+                    } else {
+                        connectionMutex.withLock {
+                            if (advanceUsbIoCleanup(cleanup) &&
+                                cleanup.phaseGate.isCompleted()
+                            ) {
+                                check(lateUsbCleanupSlot.finishWorker(
+                                    cleanup = cleanup,
+                                    worker = reaperJob,
+                                    completed = true,
+                                )) {
+                                    "Completed badge USB cleanup lost its retained worker"
+                                }
+                                releasedUnderConnectionMutex = true
+                            }
+                        }
+                    }
+                    if (!cleanup.phaseGate.isCompleted()) {
+                        delay(USB_IO_CLEANUP_RETRY_MS)
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Log.e(TAG, "Badge USB late cleanup worker failed", failure)
+            } finally {
+                val completed = cleanup.phaseGate.isCompleted()
+                val releasedWorker = if (!releasedUnderConnectionMutex) {
+                    lateUsbCleanupSlot.finishWorker(
+                        cleanup = cleanup,
+                        worker = reaperJob,
+                        completed = completed,
+                    )
+                } else {
+                    true
+                }
+                val repositoryActive = scope.coroutineContext[Job]?.isActive == true
+                if (releasedWorker && repositoryActive) {
+                    if (completed) {
+                        lifecycleGate.activeSession()?.let { activeSession ->
+                            requestConnection(activeSession)
+                        }
+                    } else {
+                        scope.launch {
+                            delay(USB_IO_CLEANUP_RETRY_MS)
+                            scheduleLateUsbDrain(cleanup)
+                        }
+                    }
+                }
+            }
+        }
+        val installed = lateUsbCleanupSlot.tryInstall(cleanup, reaperJob)
+        if (!installed) {
+            reaperJob.cancel()
+            if (lateUsbCleanupSlot.ownsCleanup(cleanup)) return
+            if (scope.coroutineContext[Job]?.isActive == true) {
+                scope.launch {
+                    delay(USB_IO_CLEANUP_RETRY_MS)
+                    scheduleLateUsbDrain(cleanup)
+                }
+            }
+            return
+        }
+        reaperJob.start()
     }
 
     private fun setState(update: (BadgeUsbState) -> BadgeUsbState) {

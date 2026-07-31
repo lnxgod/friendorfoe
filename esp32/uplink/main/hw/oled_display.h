@@ -27,6 +27,9 @@ extern "C" {
  */
 void oled_init(void);
 
+/** Start the badge button recovery task even when panel initialization fails. */
+bool oled_badge_buttons_start(void);
+
 /** Sleep or wake the display controller without changing UI/theme state. */
 void oled_set_power(bool on);
 bool oled_is_powered(void);

@@ -12,4 +12,4 @@ if [[ ! -x "$PIO_PYTHON" ]]; then
 fi
 
 cd "$REPO_DIR"
-exec "$PIO_PYTHON" scripts/fof_badge_factory.py "$@"
+exec "$PIO_PYTHON" scripts/fof_badge_factory.py --offline "$@"

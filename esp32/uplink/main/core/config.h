@@ -8,6 +8,7 @@
  */
 
 #include "driver/uart.h"
+#include "badge_task_stack_budget.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -108,7 +109,7 @@ typedef struct {
 
 /* ── Task stack sizes (bytes) ──────────────────────────────────────────── */
 
-#define CONFIG_UART_RX_STACK        8192  /* Needs headroom for scanner proof JSON + cJSON parsing */
+#define CONFIG_UART_RX_STACK        BADGE_UART_RX_TASK_STACK_BYTES
 #define CONFIG_HTTP_UPLOAD_STACK   16384  /* Needs full 16KB for raw socket + DNS + error paths */
 #define CONFIG_GPS_STACK            3072  /* Reduced from 4096 */
 #ifdef FOF_BADGE_VARIANT

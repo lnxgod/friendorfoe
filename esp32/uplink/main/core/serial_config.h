@@ -23,26 +23,24 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * Enter serial configuration mode.
- *
- * Waits up to `timeout_ms` for the first serial command. If a command
- * arrives, extends the window until FOF_SAVE or an idle timeout.
- * Writes received values to NVS.
- *
- * @param timeout_ms  Initial wait time for first command (e.g., 3000)
- * @return true if any configuration was saved, false if timed out
- */
-bool serial_config_listen(int timeout_ms);
+typedef enum {
+    SERIAL_CONFIG_RECOVERY_DENIED = 0,
+    SERIAL_CONFIG_RECOVERY_PING,
+    SERIAL_CONFIG_RECOVERY_STATUS,
+    SERIAL_CONFIG_RECOVERY_APP_REBOOT,
+    SERIAL_CONFIG_RECOVERY_ROM_BOOT,
+    SERIAL_CONFIG_RECOVERY_UPLINK_OTA_BEGIN,
+} serial_config_recovery_command_t;
 
 /**
- * Start a low-priority USB serial control listener for runtime maintenance.
+ * Dispatch one complete line already framed by badge_usb_transport.
  *
  * Supported runtime recovery commands:
  *   FOF_PING        -> FOF_PONG:<version>
@@ -57,8 +55,32 @@ bool serial_config_listen(int timeout_ms);
  * recovery tools can catch a freshly power-cycled badge before display/scanner
  * work starts.
  */
-/** Returns true when the persistent USB control listener was created. */
-bool serial_config_start_control_task(void);
+bool serial_config_dispatch_line(
+    const uint8_t *line, size_t line_byte_len);
+
+/** Classify the dependency-free commands allowed by startup recovery. */
+serial_config_recovery_command_t serial_config_recovery_command_classify(
+    const uint8_t *line, size_t line_byte_len);
+
+/** Reauthorize and dispatch one startup-recovery command from its raw span. */
+bool serial_config_dispatch_recovery_command(
+    const uint8_t *line, size_t line_byte_len);
+
+/** Parse and dispatch the same exact uplink OTA line in normal or recovery. */
+bool serial_config_dispatch_uplink_ota_begin(
+    const uint8_t *line, size_t line_byte_len);
+
+/** Parse and classify a complete command without invoking any handler. */
+bool serial_config_line_is_recognized(
+    const uint8_t *line, size_t line_byte_len);
+
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+/**
+ * Advance an orphaned PREPARING update session without blocking USB command
+ * handling. Safe to call from the USB transport task on every loop.
+ */
+void serial_config_poll_update_preparation(uint32_t now_ms);
+#endif
 
 /** Emit one already-bounded FOF_INV frame without interleaving USB control. */
 bool serial_config_emit_investigation_frame(const char *frame);

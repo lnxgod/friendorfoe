@@ -13,6 +13,8 @@
  *   - 27+ bytes: app_code(1) + counter(1) + ODID message(25)
  */
 
+#include "badge_ble_rssi_policy.h"
+
 #if defined(BLE_REMOTE_ID_HANDOFF_TEST)
 #include "ble_fingerprint.h"
 #include "ble_threat_detector.h"
@@ -23,6 +25,9 @@
 #include <string.h>
 #else
 #include "ble_remote_id.h"
+#if defined(FOF_DC34_GAME_CANARY)
+#include "badge_con_observer.h"
+#endif
 #include "ble_fingerprint.h"
 #include "ble_investigator.h"
 #include "ble_threat_detector.h"
@@ -129,6 +134,12 @@ static bool ble_remote_id_reset_accumulator_if_stale(
     device_address[sizeof(device_address) - 1] = '\0';
     odid_state_init(state, device_address, observed_ms);
     return true;
+}
+
+static bool ble_remote_id_fingerprint_is_strong_meta(
+    const ble_fingerprint_t *fp)
+{
+    return fp && fp->device_type == BLE_DEV_META_GLASSES;
 }
 
 #if !defined(BLE_REMOTE_ID_HANDOFF_TEST)
@@ -511,29 +522,13 @@ static void badge_ble_note_meta(uint32_t hash, int8_t rssi,
     }
 }
 
-static bool badge_ble_has_structured_hint(const ble_fingerprint_t *fp)
-{
-    if (!fp) {
-        return false;
-    }
-    return fp->local_name[0] != '\0' ||
-           fp->svc_uuid_count > 0 ||
-           fp->svc_uuid_128_count > 0 ||
-           fp->company_id != 0 ||
-           fp->ad_type_count >= 3 ||
-           fp->payload_len >= 12;
-}
-
 static bool badge_ble_is_privacy_candidate(const ble_fingerprint_t *fp,
                                            int8_t rssi)
 {
     if (!fp || fp->device_type != BLE_DEV_UNKNOWN) {
         return false;
     }
-    if (rssi >= -58) {
-        return true;
-    }
-    return rssi >= -72 && badge_ble_has_structured_hint(fp);
+    return badge_ble_low_effort_rssi_allowed(rssi);
 }
 
 static const char *badge_ble_privacy_reason(const ble_fingerprint_t *fp,
@@ -562,7 +557,7 @@ static bool badge_ble_unknown_diag_should_emit(uint32_t fp_hash,
     static uint32_t s_last_hash = 0;
     static int8_t   s_best_rssi = -127;
 
-    if (rssi < -72) {
+    if (!badge_ble_low_effort_rssi_allowed(rssi)) {
         return false;
     }
     if (s_last_emit_ms == 0 ||
@@ -586,11 +581,15 @@ static bool badge_ble_should_emit_detection(const ble_fingerprint_t *fp,
                                             int8_t rssi)
 {
 #if defined(FOF_BADGE_VARIANT)
-    if (is_calibration_beacon || is_focus_target) {
+    if (is_calibration_beacon) {
         return true;
     }
     if (!fp) {
         return false;
+    }
+    if (is_focus_target) {
+        return badge_ble_low_effort_detection_allowed(
+            fp->device_type == BLE_DEV_UNKNOWN, rssi);
     }
     switch (fp->device_type) {
         case BLE_DEV_DRONE_CONTROLLER:
@@ -675,8 +674,11 @@ static void badge_emit_glasses_detection(const glasses_detection_t *gdet,
     det.first_seen_ms = now_ms;
     det.last_updated_ms = now_ms;
 
-    const bool is_meta = strcmp(gdet->manufacturer, "Meta") == 0;
-    const char *label = is_meta ? "Meta Glasses" :
+    const bool is_meta_glasses =
+        strcmp(gdet->manufacturer, "Meta") == 0 &&
+        strcmp(gdet->device_type, "Smart Glasses") == 0 &&
+        gdet->has_camera;
+    const char *label = is_meta_glasses ? "Meta Glasses" :
         (gdet->device_type[0] ? gdet->device_type : "Smart Glasses");
     snprintf(det.manufacturer, sizeof(det.manufacturer), "%s", label);
     strncpy(det.ble_name, gdet->device_name, sizeof(det.ble_name) - 1);
@@ -688,16 +690,23 @@ static void badge_emit_glasses_detection(const glasses_detection_t *gdet,
                  (unsigned long)fp_hash);
         snprintf(det.class_reason, sizeof(det.class_reason), "%s",
                  gdet->match_reason[0] ? gdet->match_reason : "glasses_detector");
-        badge_ble_note_meta(fp_hash, gdet->rssi, det.class_reason,
-                            "detector_fp", false);
+        if (is_meta_glasses) {
+            badge_ble_note_meta(fp_hash, gdet->rssi, det.class_reason,
+                                "detector_fp", false);
+        }
     } else {
         /* Weak glasses-detector hits are useful diagnostics but produced false
          * top-tile Meta alerts in noisy rooms. Keep the scanner debug state and
          * wait for a fingerprint-backed identity before emitting a badge threat.
          */
-        badge_ble_note_meta(hash, gdet->rssi,
-                            gdet->match_reason[0] ? gdet->match_reason : "glasses_detector",
-                            "weak", true);
+        if (is_meta_glasses) {
+            badge_ble_note_meta(
+                hash,
+                gdet->rssi,
+                gdet->match_reason[0] ? gdet->match_reason : "glasses_detector",
+                "weak",
+                true);
+        }
         return;
     }
     (void)xQueueSend(s_detection_queue, &det, 0);
@@ -1041,6 +1050,19 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         }
 #endif
 
+#if defined(FOF_DC34_GAME_CANARY)
+        badge_con_frame_result_t con_frame =
+            badge_con_observer_consume(
+                disc->data,
+                disc->length_data,
+                disc->rssi,
+                (uint32_t)(esp_timer_get_time() / 1000),
+                NULL);
+        if (con_frame != BADGE_CON_FRAME_NOT_GAME) {
+            return 0;
+        }
+#endif
+
         static uint32_t s_legacy_adv_rx = 0;
         s_legacy_adv_rx++;
         s_ble_adv_seen++;
@@ -1093,7 +1115,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                                  fp.is_tracker || badge_nearby_ble_diag;
         bool known_privacy_candidate = behavioral_ble_threat || is_meta_device ||
                                        fp.is_tracker;
-        if (is_meta_device) {
+        if (ble_remote_id_fingerprint_is_strong_meta(&fp)) {
             badge_ble_note_meta(fp.hash, disc->rssi, fp.class_reason,
                                 "strong_fp", false);
         }
@@ -1388,6 +1410,19 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         /* Extended discovery also reports BLE 4.x advertising packets. */
         const struct ble_gap_ext_disc_desc *ext = &event->ext_disc;
 
+#if defined(FOF_DC34_GAME_CANARY)
+        badge_con_frame_result_t con_frame =
+            badge_con_observer_consume(
+                ext->data,
+                ext->length_data,
+                ext->rssi,
+                (uint32_t)(esp_timer_get_time() / 1000),
+                NULL);
+        if (con_frame != BADGE_CON_FRAME_NOT_GAME) {
+            return 0;
+        }
+#endif
+
         static uint32_t s_ext_adv_rx = 0;
         s_ext_adv_rx++;
         s_ble_adv_seen++;
@@ -1475,7 +1510,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                                      fp.is_tracker || badge_nearby_ble_diag;
             bool known_privacy_candidate = behavioral_ble_threat || is_meta_device ||
                                            fp.is_tracker;
-            if (is_meta_device) {
+            if (ble_remote_id_fingerprint_is_strong_meta(&fp)) {
                 badge_ble_note_meta(fp.hash, ext->rssi, fp.class_reason,
                                     "strong_fp", false);
             }

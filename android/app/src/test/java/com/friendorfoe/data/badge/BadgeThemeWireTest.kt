@@ -76,4 +76,36 @@ class BadgeThemeWireTest {
         )
         assertFalse(json.getAsJsonObject("accents").has("ignored"))
     }
+
+    @Test
+    fun `command serialization itself completes partial malformed caller themes`() {
+        val command = badgeThemeCommandJson(
+            BadgeTheme(
+                version = 9,
+                palette = "NEON",
+                background = "unknown",
+                brightness = 1_000,
+                accents = linkedMapOf(
+                    "meta" to -1,
+                    "ignored" to 123,
+                ),
+            ),
+        )
+        val theme = command.getAsJsonObject("theme")
+        assertEquals(1, theme.get("version").asInt)
+        assertEquals("field", theme.get("palette").asString)
+        assertEquals("dark", theme.get("background").asString)
+        assertEquals(100, theme.get("brightness").asInt)
+        val accents = theme.getAsJsonObject("accents")
+        assertEquals(
+            BadgeThemeAccentClasses.map { it.key },
+            accents.entrySet().map { it.key },
+        )
+        assertFalse(accents.has("ignored"))
+        assertEquals(0, accents.get("meta").asInt)
+        assertEquals(
+            defaultBadgeThemeAccents().getValue("drone"),
+            accents.get("drone").asInt,
+        )
+    }
 }

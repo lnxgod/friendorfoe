@@ -12,6 +12,7 @@ import com.friendorfoe.detection.BleTracker
 import com.friendorfoe.detection.DataSourceStatus
 import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.GlassesDetector
+import com.friendorfoe.detection.GlassesStalePolicy
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.detection.RemoteIdScanner
 import com.friendorfoe.detection.WifiDroneScanner
@@ -104,6 +105,7 @@ class SkyObjectRepository @Inject constructor(
     private var collectionJob: Job? = null
     private var glassesJob: Job? = null
     private var glassesUpdateJob: Job? = null
+    private var glassesExpiryJob: Job? = null
     private val sessionGate = DetectionSessionGate()
 
     // Track user position for history persistence
@@ -308,6 +310,8 @@ class SkyObjectRepository @Inject constructor(
         glassesJob = null
         glassesUpdateJob?.cancel()
         glassesUpdateJob = null
+        glassesExpiryJob?.cancel()
+        glassesExpiryJob = null
         adsbPoller.stop()
         remoteIdScanner.stopScanning()
         wifiNanRemoteIdScanner.stopScanning()
@@ -466,37 +470,35 @@ class SkyObjectRepository @Inject constructor(
      * one entry as its BT Private Resolvable Address rotates.
      */
     private val glassesMap = java.util.concurrent.ConcurrentHashMap<String, GlassesDetection>()
-    private val GLASSES_STALE_SECONDS_DEFAULT = 60L
-    // 5 min covers a full RPA rotation cycle for Meta/Ray-Ban/Oakley/Quest, plus
-    // the reduced ad cadence of glasses already paired+connected to another phone.
-    private val GLASSES_STALE_SECONDS_HIGH_RISK = 300L
-
-    private fun staleTtlSeconds(d: GlassesDetection): Long {
-        val m = d.manufacturer
-        val t = d.deviceType
-        val highRisk = m.contains("Meta", ignoreCase = true) ||
-            m.contains("Ray-Ban", ignoreCase = true) ||
-            m.contains("Oakley", ignoreCase = true) ||
-            m.contains("Luxottica", ignoreCase = true) ||
-            t.contains("Quest", ignoreCase = true) ||
-            t.contains("Smart Glasses", ignoreCase = true) ||
-            t.contains("Flipper", ignoreCase = true) ||
-            t.contains("Pwnagotchi", ignoreCase = true) ||
-            t.contains("AirTag", ignoreCase = true) ||
-            t.contains("Tile", ignoreCase = true) ||
-            t.contains("SmartTag", ignoreCase = true)
-        return if (highRisk) GLASSES_STALE_SECONDS_HIGH_RISK else GLASSES_STALE_SECONDS_DEFAULT
-    }
 
     private fun commitGlassesUpdate() {
         val now = Instant.now()
         val staleKeys = glassesMap.filter {
-            Duration.between(it.value.lastSeen, now).seconds > staleTtlSeconds(it.value)
+            GlassesStalePolicy.isStale(it.value, now)
         }.keys
         staleKeys.forEach { glassesMap.remove(it) }
         _glassesDetections.value = glassesMap.values
             .sortedByDescending { it.rssi }
             .toList()
+    }
+
+    private fun scheduleGlassesExpiry(generation: Long) {
+        glassesExpiryJob?.cancel()
+        val delayMillis = GlassesStalePolicy.nextExpiryDelayMillis(
+            glassesMap.values,
+            Instant.now(),
+        ) ?: run {
+            glassesExpiryJob = null
+            return
+        }
+        glassesExpiryJob = scope.launch {
+            kotlinx.coroutines.delay(delayMillis)
+            glassesExpiryJob = null
+            sessionGate.runIfActive(generation) {
+                commitGlassesUpdate()
+                scheduleGlassesExpiry(generation)
+            }
+        }
     }
 
     private fun updateGlassesList(
@@ -516,6 +518,7 @@ class SkyObjectRepository @Inject constructor(
             kotlinx.coroutines.delay(1000)
             sessionGate.runIfActive(activeGeneration) {
                 commitGlassesUpdate()
+                scheduleGlassesExpiry(activeGeneration)
             }
         }
     }

@@ -72,11 +72,67 @@ bool fof_auto_queue_state_allows(fof_auto_slot_state_t state)
     return state == FOF_AUTO_SLOT_OFFERED;
 }
 
+bool fof_auto_slot_is_terminal(fof_auto_slot_state_t state)
+{
+    return state == FOF_AUTO_SLOT_EXCLUDED ||
+           state == FOF_AUTO_SLOT_CONVERGED ||
+           state == FOF_AUTO_SLOT_CURRENT ||
+           state == FOF_AUTO_SLOT_REFUSED ||
+           state == FOF_AUTO_SLOT_FAILED ||
+           state == FOF_AUTO_SLOT_NEWER_SKIPPED;
+}
+
 bool fof_auto_wifi_gate_open(bool ble_requested,
                              fof_auto_slot_state_t ble_state)
 {
-    return !ble_requested || ble_state == FOF_AUTO_SLOT_CONVERGED ||
-           ble_state == FOF_AUTO_SLOT_CURRENT;
+    return !ble_requested || fof_auto_slot_is_terminal(ble_state);
+}
+
+fof_auto_probe_decision_t fof_auto_readiness_probe_decide(
+    bool identity_fresh,
+    uint8_t probes_used,
+    uint8_t max_probes)
+{
+    if (!identity_fresh) {
+        return FOF_AUTO_PROBE_WAIT;
+    }
+    if (max_probes == 0 || probes_used >= max_probes) {
+        return FOF_AUTO_PROBE_EXHAUSTED;
+    }
+    return FOF_AUTO_PROBE_SEND;
+}
+
+fof_auto_probe_decision_t fof_auto_identity_acquisition_decide(
+    bool identity_fresh,
+    bool wait_started,
+    int64_t now_ms,
+    int64_t deadline_ms)
+{
+    if (identity_fresh) {
+        return FOF_AUTO_PROBE_SEND;
+    }
+    if (!wait_started) {
+        return FOF_AUTO_PROBE_WAIT;
+    }
+    if (deadline_ms <= 0 || now_ms >= deadline_ms) {
+        return FOF_AUTO_PROBE_EXHAUSTED;
+    }
+    return FOF_AUTO_PROBE_WAIT;
+}
+
+bool fof_auto_terminal_reopen_allowed(
+    fof_auto_slot_state_t state,
+    bool identity_exhausted,
+    uint8_t attempts_used,
+    uint8_t max_attempts)
+{
+    bool terminal_refusal =
+        state == FOF_AUTO_SLOT_REFUSED ||
+        state == FOF_AUTO_SLOT_FAILED;
+    return terminal_refusal &&
+        !identity_exhausted &&
+        max_attempts > 0 &&
+        attempts_used < max_attempts;
 }
 
 fof_auto_probe_decision_t fof_auto_recovery_probe_decide(

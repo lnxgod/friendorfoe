@@ -1,4 +1,5 @@
 #include "badge_display_policy.h"
+#include "firmware_json_schema.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -123,23 +124,6 @@ bool badge_display_policy_class_from_key(const char *key,
     return false;
 }
 
-static bool lane_from_name(const char *name, badge_display_lane_t *out)
-{
-    if (eq_nocase(name, "off"))   { if (out) *out = BADGE_DISPLAY_LANE_OFF; return true; }
-    if (eq_nocase(name, "lower")) { if (out) *out = BADGE_DISPLAY_LANE_LOWER; return true; }
-    if (eq_nocase(name, "top"))   { if (out) *out = BADGE_DISPLAY_LANE_TOP; return true; }
-    if (eq_nocase(name, "both"))  { if (out) *out = BADGE_DISPLAY_LANE_BOTH; return true; }
-    return false;
-}
-
-static bool prox_from_name(const char *name, badge_display_min_proximity_t *out)
-{
-    if (eq_nocase(name, "present")) { if (out) *out = BADGE_DISPLAY_PROX_PRESENT; return true; }
-    if (eq_nocase(name, "near"))    { if (out) *out = BADGE_DISPLAY_PROX_NEAR; return true; }
-    if (eq_nocase(name, "close"))   { if (out) *out = BADGE_DISPLAY_PROX_CLOSE; return true; }
-    return false;
-}
-
 static void hash_byte(uint32_t *h, uint8_t byte)
 {
     *h ^= byte;
@@ -164,102 +148,163 @@ uint32_t badge_display_policy_hash(const badge_display_policy_t *policy)
     return h;
 }
 
-static const char *find_string_value(const char *obj, const char *field,
-                                     char *out, size_t out_len)
+#define ARRAY_SIZE(values) (sizeof(values) / sizeof((values)[0]))
+#define TOKEN_MEMBER(member_name)                                           \
+    {member_name, FOF_JSON_STRING,                                          \
+     FOF_JSON_STRING_POLICY_ASCII_TOKEN_NO_ESCAPE}
+#define UINT32_MEMBER(member_name)                                          \
+    {member_name, FOF_JSON_UINT32, FOF_JSON_STRING_POLICY_NONE}
+#define BOOL_MEMBER(member_name)                                            \
+    {member_name, FOF_JSON_BOOL, FOF_JSON_STRING_POLICY_NONE}
+#define OBJECT_MEMBER(member_name)                                          \
+    {member_name, FOF_JSON_OBJECT, FOF_JSON_STRING_POLICY_NONE}
+
+static const fof_json_member_spec_t POLICY_MEMBERS[] = {
+    UINT32_MEMBER("version"),
+    OBJECT_MEMBER("classes"),
+};
+
+static const fof_json_member_spec_t CLASS_POLICY_MEMBERS[] = {
+    BOOL_MEMBER("enabled"),
+    TOKEN_MEMBER("lane"),
+    TOKEN_MEMBER("min_proximity"),
+    UINT32_MEMBER("priority"),
+};
+
+static bool span_equals_literal(const fof_json_value_span_t *span,
+                                const char *literal)
 {
-    char pattern[40];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", field);
-    const char *p = strstr(obj, pattern);
-    if (!p) return NULL;
-    p = strchr(p + strlen(pattern), ':');
-    if (!p) return NULL;
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (*p != '"') return NULL;
-    p++;
-    size_t used = 0;
-    while (*p && *p != '"') {
-        if (used + 1 < out_len) out[used++] = *p;
-        p++;
-    }
-    if (*p != '"') return NULL;
-    if (out_len > 0) out[used] = '\0';
-    return p + 1;
+    return span && span->bytes && literal &&
+           span->byte_len == strlen(literal) &&
+           memcmp(span->bytes, literal, span->byte_len) == 0;
 }
 
-static const char *find_bool_value(const char *obj, const char *field,
-                                   bool *out)
+static bool lane_from_span(const fof_json_value_span_t *span,
+                           badge_display_lane_t *out)
 {
-    char pattern[40];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", field);
-    const char *p = strstr(obj, pattern);
-    if (!p) return NULL;
-    p = strchr(p + strlen(pattern), ':');
-    if (!p) return NULL;
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (strncmp(p, "true", 4) == 0) {
-        if (out) *out = true;
-        return p + 4;
+    if (span_equals_literal(span, "off")) {
+        *out = BADGE_DISPLAY_LANE_OFF;
+        return true;
     }
-    if (strncmp(p, "false", 5) == 0) {
-        if (out) *out = false;
-        return p + 5;
+    if (span_equals_literal(span, "lower")) {
+        *out = BADGE_DISPLAY_LANE_LOWER;
+        return true;
     }
-    return NULL;
+    if (span_equals_literal(span, "top")) {
+        *out = BADGE_DISPLAY_LANE_TOP;
+        return true;
+    }
+    if (span_equals_literal(span, "both")) {
+        *out = BADGE_DISPLAY_LANE_BOTH;
+        return true;
+    }
+    return false;
 }
 
-static const char *find_int_value(const char *obj, const char *field,
-                                  int *out)
+static bool proximity_from_span(const fof_json_value_span_t *span,
+                                badge_display_min_proximity_t *out)
 {
-    char pattern[40];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", field);
-    const char *p = strstr(obj, pattern);
-    if (!p) return NULL;
-    p = strchr(p + strlen(pattern), ':');
-    if (!p) return NULL;
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    int sign = 1;
-    if (*p == '-') {
-        sign = -1;
-        p++;
+    if (span_equals_literal(span, "present")) {
+        *out = BADGE_DISPLAY_PROX_PRESENT;
+        return true;
     }
-    if (*p < '0' || *p > '9') return NULL;
-    int value = 0;
-    while (*p >= '0' && *p <= '9') {
-        value = value * 10 + (*p - '0');
-        p++;
+    if (span_equals_literal(span, "near")) {
+        *out = BADGE_DISPLAY_PROX_NEAR;
+        return true;
     }
-    if (out) *out = value * sign;
-    return p;
+    if (span_equals_literal(span, "close")) {
+        *out = BADGE_DISPLAY_PROX_CLOSE;
+        return true;
+    }
+    return false;
 }
 
-static const char *object_for_key(const char *json, const char *key,
-                                  const char **end_out)
+bool badge_display_policy_parse_json_span(const uint8_t *json,
+                                          size_t json_len,
+                                          badge_display_policy_t *out,
+                                          char *err,
+                                          size_t err_len)
 {
-    char pattern[48];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    const char *p = strstr(json, pattern);
-    if (!p) return NULL;
-    p = strchr(p + strlen(pattern), ':');
-    if (!p) return NULL;
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (*p != '{') return NULL;
-    int depth = 0;
-    const char *start = p;
-    for (; *p; p++) {
-        if (*p == '{') depth++;
-        if (*p == '}') {
-            depth--;
-            if (depth == 0) {
-                if (end_out) *end_out = p + 1;
-                return start;
-            }
+    if (!json || !out) {
+        set_err(err, err_len, "missing policy");
+        return false;
+    }
+    if (json_len == 0U || json_len >= BADGE_DISPLAY_POLICY_JSON_MAX) {
+        set_err(err, err_len, "policy too large");
+        return false;
+    }
+
+    fof_json_value_span_t policy_values[ARRAY_SIZE(POLICY_MEMBERS)];
+    if (fof_json_validate_exact_object_capture(
+            json, json_len, POLICY_MEMBERS, ARRAY_SIZE(POLICY_MEMBERS),
+            policy_values, ARRAY_SIZE(policy_values)) !=
+        FOF_JSON_SCHEMA_OK) {
+        set_err(err, err_len, "invalid policy schema");
+        return false;
+    }
+
+    uint32_t version = 0U;
+    if (!fof_json_value_span_parse_uint32(
+            &policy_values[0], &version) ||
+        version != BADGE_DISPLAY_POLICY_VERSION) {
+        set_err(err, err_len, "unsupported version");
+        return false;
+    }
+
+    fof_json_member_spec_t class_specs[BADGE_DISPLAY_POLICY_CLASS_COUNT];
+    fof_json_value_span_t class_values[BADGE_DISPLAY_POLICY_CLASS_COUNT];
+    for (size_t i = 0U; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; ++i) {
+        class_specs[i].name = DEFAULTS[i].key;
+        class_specs[i].type = FOF_JSON_OBJECT;
+        class_specs[i].string_policy = FOF_JSON_STRING_POLICY_NONE;
+    }
+    if (fof_json_validate_exact_object_capture(
+            policy_values[1].bytes, policy_values[1].byte_len,
+            class_specs, ARRAY_SIZE(class_specs),
+            class_values, ARRAY_SIZE(class_values)) !=
+        FOF_JSON_SCHEMA_OK) {
+        set_err(err, err_len, "invalid policy classes");
+        return false;
+    }
+
+    badge_display_policy_t parsed;
+    memset(&parsed, 0, sizeof(parsed));
+    parsed.version = (uint8_t)version;
+    for (size_t i = 0U; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; ++i) {
+        fof_json_value_span_t fields[ARRAY_SIZE(CLASS_POLICY_MEMBERS)];
+        if (fof_json_validate_exact_object_capture(
+                class_values[i].bytes, class_values[i].byte_len,
+                CLASS_POLICY_MEMBERS, ARRAY_SIZE(CLASS_POLICY_MEMBERS),
+                fields, ARRAY_SIZE(fields)) != FOF_JSON_SCHEMA_OK) {
+            set_err(err, err_len, "invalid class policy");
+            return false;
         }
+
+        fof_json_value_span_t lane = {0};
+        fof_json_value_span_t proximity = {0};
+        uint32_t priority = 0U;
+        if (!fof_json_value_span_parse_bool(
+                &fields[0], &parsed.classes[i].enabled) ||
+            !fof_json_value_span_parse_ascii_token(&fields[1], &lane) ||
+            !lane_from_span(&lane, &parsed.classes[i].lane) ||
+            !fof_json_value_span_parse_ascii_token(
+                &fields[2], &proximity) ||
+            !proximity_from_span(
+                &proximity, &parsed.classes[i].min_proximity) ||
+            !fof_json_value_span_parse_uint32(
+                &fields[3], &priority) ||
+            priority > 100U) {
+            set_err(err, err_len, "invalid class policy value");
+            return false;
+        }
+        parsed.classes[i].priority = (uint8_t)priority;
     }
-    return NULL;
+
+    *out = parsed;
+    if (err && err_len > 0U) {
+        err[0] = '\0';
+    }
+    return true;
 }
 
 bool badge_display_policy_parse_json(const char *json,
@@ -271,66 +316,17 @@ bool badge_display_policy_parse_json(const char *json,
         set_err(err, err_len, "missing policy");
         return false;
     }
-    badge_display_policy_defaults(out);
-    int version = BADGE_DISPLAY_POLICY_VERSION;
-    if (find_int_value(json, "version", &version) && version != BADGE_DISPLAY_POLICY_VERSION) {
-        set_err(err, err_len, "unsupported version");
+    size_t json_len = 0U;
+    while (json_len < BADGE_DISPLAY_POLICY_JSON_MAX &&
+           json[json_len] != '\0') {
+        json_len++;
+    }
+    if (json_len == BADGE_DISPLAY_POLICY_JSON_MAX) {
+        set_err(err, err_len, "policy too large");
         return false;
     }
-    out->version = (uint8_t)version;
-
-    const char *classes = strstr(json, "\"classes\"");
-    if (!classes) {
-        set_err(err, err_len, "missing classes");
-        return false;
-    }
-
-    for (int i = 0; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; i++) {
-        const char *end = NULL;
-        const char *obj = object_for_key(classes, DEFAULTS[i].key, &end);
-        if (!obj) continue;
-        char chunk[256];
-        size_t chunk_len = end && end > obj ? (size_t)(end - obj) : strlen(obj);
-        if (chunk_len >= sizeof(chunk)) {
-            chunk_len = sizeof(chunk) - 1;
-        }
-        memcpy(chunk, obj, chunk_len);
-        chunk[chunk_len] = '\0';
-        obj = chunk;
-
-        bool enabled = out->classes[i].enabled;
-        if (strstr(obj, "\"enabled\"") && !find_bool_value(obj, "enabled", &enabled)) {
-            set_err(err, err_len, "invalid enabled");
-            return false;
-        }
-        out->classes[i].enabled = enabled;
-
-        char value[16] = {0};
-        if (strstr(obj, "\"lane\"")) {
-            if (!find_string_value(obj, "lane", value, sizeof(value)) ||
-                !lane_from_name(value, &out->classes[i].lane)) {
-                set_err(err, err_len, "invalid lane");
-                return false;
-            }
-        }
-        if (strstr(obj, "\"min_proximity\"")) {
-            if (!find_string_value(obj, "min_proximity", value, sizeof(value)) ||
-                !prox_from_name(value, &out->classes[i].min_proximity)) {
-                set_err(err, err_len, "invalid proximity");
-                return false;
-            }
-        }
-        int priority = out->classes[i].priority;
-        if (strstr(obj, "\"priority\"")) {
-            if (!find_int_value(obj, "priority", &priority) ||
-                priority < 0 || priority > 100) {
-                set_err(err, err_len, "invalid priority");
-                return false;
-            }
-            out->classes[i].priority = (uint8_t)priority;
-        }
-    }
-    return true;
+    return badge_display_policy_parse_json_span(
+        (const uint8_t *)json, json_len, out, err, err_len);
 }
 
 size_t badge_display_policy_to_json(const badge_display_policy_t *policy,

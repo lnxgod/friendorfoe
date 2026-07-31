@@ -1,0 +1,108 @@
+#pragma once
+
+#include "ble_investigation_types.h"
+#include "firmware_json_schema.h"
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum {
+    BADGE_USB_CONTROL_SCHEMA_NONE = 0,
+    BADGE_USB_CONTROL_SCHEMA_STATUS,
+    BADGE_USB_CONTROL_SCHEMA_POWER_MODE,
+    BADGE_USB_CONTROL_SCHEMA_SET_MODE_PERSISTENT,
+    BADGE_USB_CONTROL_SCHEMA_SET_MODE_SESSION,
+    BADGE_USB_CONTROL_SCHEMA_SET_BACKEND,
+    BADGE_USB_CONTROL_SCHEMA_DISPLAY_DEBUG,
+    BADGE_USB_CONTROL_SCHEMA_NETWORK,
+    BADGE_USB_CONTROL_SCHEMA_SAFE_MODE,
+    BADGE_USB_CONTROL_SCHEMA_BLE_INVESTIGATE,
+    BADGE_USB_CONTROL_SCHEMA_BLE_CHUNK,
+    BADGE_USB_CONTROL_SCHEMA_DISPLAY_POLICY,
+    BADGE_USB_CONTROL_SCHEMA_DISPLAY_POLICY_RESET,
+    BADGE_USB_CONTROL_SCHEMA_THEME,
+    BADGE_USB_CONTROL_SCHEMA_THEME_RESET,
+    BADGE_USB_CONTROL_SCHEMA_DISPLAY_NAV,
+    BADGE_USB_CONTROL_SCHEMA_SCANNER_DISPLAY_BUTTON,
+    BADGE_USB_CONTROL_SCHEMA_SCANNER_DISPLAY_TRIGGER,
+    BADGE_USB_CONTROL_SCHEMA_SCANNER_DISPLAY_BOOT,
+    BADGE_USB_CONTROL_SCHEMA_SCANNER_TRIGGER,
+    BADGE_USB_CONTROL_SCHEMA_TRIGGER,
+    BADGE_USB_CONTROL_SCHEMA_SCANNER_SAFE_MODE,
+    BADGE_USB_CONTROL_SCHEMA_SCANNER_RECOVERY,
+    BADGE_USB_CONTROL_SCHEMA_REBOOT,
+#if defined(FOF_DC34_GAME_CANARY)
+    BADGE_USB_CONTROL_SCHEMA_PREPARE_UPDATE,
+    BADGE_USB_CONTROL_SCHEMA_FINISH_UPDATE,
+    BADGE_USB_CONTROL_SCHEMA_ABORT_UPDATE,
+#endif
+    BADGE_USB_CONTROL_SCHEMA_COUNT,
+} badge_usb_control_schema_id_t;
+
+typedef enum {
+    BADGE_USB_CONTROL_HANDLER_NONE = 0,
+    BADGE_USB_CONTROL_HANDLER_STATUS,
+    BADGE_USB_CONTROL_HANDLER_POWER_MODE,
+    BADGE_USB_CONTROL_HANDLER_SET_MODE,
+    BADGE_USB_CONTROL_HANDLER_SET_BACKEND,
+    BADGE_USB_CONTROL_HANDLER_DISPLAY_DEBUG,
+    BADGE_USB_CONTROL_HANDLER_NETWORK,
+    BADGE_USB_CONTROL_HANDLER_SAFE_MODE,
+    BADGE_USB_CONTROL_HANDLER_BLE_INVESTIGATE,
+    BADGE_USB_CONTROL_HANDLER_BLE_CHUNK,
+    BADGE_USB_CONTROL_HANDLER_DISPLAY_POLICY,
+    BADGE_USB_CONTROL_HANDLER_DISPLAY_POLICY_RESET,
+    BADGE_USB_CONTROL_HANDLER_THEME,
+    BADGE_USB_CONTROL_HANDLER_THEME_RESET,
+    BADGE_USB_CONTROL_HANDLER_DISPLAY_NAV,
+    BADGE_USB_CONTROL_HANDLER_SCANNER_DISPLAY,
+    BADGE_USB_CONTROL_HANDLER_SCANNER_TRIGGER,
+    BADGE_USB_CONTROL_HANDLER_SCANNER_SAFE_MODE,
+    BADGE_USB_CONTROL_HANDLER_REBOOT,
+#if defined(FOF_DC34_GAME_CANARY)
+    BADGE_USB_CONTROL_HANDLER_UPDATE_MODE,
+#endif
+    BADGE_USB_CONTROL_HANDLER_COUNT,
+} badge_usb_control_handler_kind_t;
+
+typedef enum {
+    BADGE_USB_CONTROL_REGISTRY_OK = 0,
+    BADGE_USB_CONTROL_REGISTRY_INVALID_ARGUMENT,
+    BADGE_USB_CONTROL_REGISTRY_SELECTOR_REJECTED,
+    BADGE_USB_CONTROL_REGISTRY_UNKNOWN_SELECTOR,
+    BADGE_USB_CONTROL_REGISTRY_NO_EXACT_SCHEMA,
+    BADGE_USB_CONTROL_REGISTRY_AMBIGUOUS_SCHEMA,
+    BADGE_USB_CONTROL_REGISTRY_SEMANTIC_REJECTED,
+} badge_usb_control_registry_result_t;
+
+typedef struct {
+    badge_usb_control_schema_id_t id;
+    badge_usb_control_handler_kind_t handler_kind;
+    const char *name;
+    const char *selector;
+    const fof_json_member_spec_t *members;
+    size_t member_count;
+} badge_usb_control_schema_descriptor_t;
+
+badge_usb_control_registry_result_t
+badge_usb_control_select_and_validate(
+    const uint8_t *bytes,
+    size_t byte_len,
+    badge_usb_control_schema_id_t *schema_id_out,
+    badge_usb_control_handler_kind_t *handler_kind_out);
+
+const badge_usb_control_schema_descriptor_t *
+badge_usb_control_schema_descriptor(badge_usb_control_schema_id_t id);
+
+bool badge_usb_control_decode_ble_investigate(
+    const uint8_t *bytes,
+    size_t byte_len,
+    ble_investigation_request_t *request_out);
+
+#ifdef __cplusplus
+}
+#endif

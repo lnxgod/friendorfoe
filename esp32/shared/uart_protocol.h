@@ -240,8 +240,6 @@ extern "C" {
  * until reflashed). */
 #define JSON_KEY_BLE_APPLE_FLAGS    "ble_apple_flags"
 
-/* Badge Easter egg events are coalesced as two fixed bits in scanner callback
- * context, then drained as fixed allocation-free frames by the UART task. */
 #define BADGE_EASTER_EGG_UART_PENDING_BLE_REMOTE_ID 0x01U
 #define BADGE_EASTER_EGG_UART_PENDING_WIFI_SSID     0x02U
 #define BADGE_EASTER_EGG_UART_PENDING_ALL           0x03U

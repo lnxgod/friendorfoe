@@ -58,6 +58,7 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     EVENT_BADGE("Event Badges", "\uD83C\uDF9F\uFE0F", 1),
     BLE_HID("BLE Input Devices", "\u2328\uFE0F", 1),
     IOT_DEVICE("IoT Devices", "\uD83D\uDCE1", 1),
+    SECURITY_INFRASTRUCTURE("Security Infrastructure", "\uD83D\uDEE1\uFE0F", 1),
     // Threat level 0 — informational
     SMART_TV("Smart TVs", "\uD83D\uDCFA", 0),
     DRONE_CONTROLLER("Drone Controllers", "\uD83C\uDFAE", 0),
@@ -142,6 +143,36 @@ class GlassesDetector @Inject constructor(
             "HC-05",
             "HC-06",
         )
+
+        internal data class ManufacturerClassification(
+            val manufacturer: String,
+            val deviceType: String,
+            val confidence: Float,
+            val hasCamera: Boolean,
+        )
+
+        internal fun manufacturerClassification(companyId: Int): ManufacturerClassification? =
+            when (companyId) {
+                BleSignatures.CID_META -> ManufacturerClassification(
+                    manufacturer = "Meta",
+                    deviceType = "Meta Device",
+                    confidence = 0.65f,
+                    hasCamera = false,
+                )
+                BleSignatures.CID_META_TECH -> ManufacturerClassification(
+                    manufacturer = "Meta",
+                    deviceType = "VR Headset",
+                    confidence = 0.70f,
+                    hasCamera = false,
+                )
+                BleSignatures.CID_LUXOTTICA -> ManufacturerClassification(
+                    manufacturer = "Meta",
+                    deviceType = "Smart Glasses",
+                    confidence = 0.95f,
+                    hasCamera = true,
+                )
+                else -> null
+            }
 
         /**
          * Derive a stable identity key for a BLE detection.
@@ -297,8 +328,6 @@ class GlassesDetector @Inject constructor(
             val confidence: Float,
             val hasCamera: Boolean
         )
-
-        private val flockOuiPrefixes = setOf("B4:1E:52")
 
         private val wifiSsidPatterns = listOf(
             // Hidden cameras / spy cameras — app ecosystems
@@ -470,6 +499,7 @@ class GlassesDetector @Inject constructor(
             deviceType.contains("Location Beacon", ignoreCase = true) -> PrivacyCategory.VENUE_BEACON
             deviceType.contains("BLE HID", ignoreCase = true) -> PrivacyCategory.BLE_HID
             deviceType.contains("HID Near", ignoreCase = true) -> PrivacyCategory.BLE_HID
+            deviceType.contains("Privacy Infrastructure", ignoreCase = true) -> PrivacyCategory.SECURITY_INFRASTRUCTURE
             deviceType.contains("Auracast", ignoreCase = true) -> PrivacyCategory.AURACAST
             deviceType.contains("LE Audio", ignoreCase = true) -> PrivacyCategory.AURACAST
             deviceType.contains("Tracker", ignoreCase = true) -> PrivacyCategory.BLE_TRACKER
@@ -562,23 +592,39 @@ class GlassesDetector @Inject constructor(
         }
 
         fun checkWifiBssid(ssid: String, bssid: String, rssi: Int): GlassesDetection? {
-            val oui = extractOui(bssid) ?: return null
-            if (oui !in flockOuiPrefixes) return null
-            val confidence = 0.95f
-            return GlassesDetection(
-                mac = bssid,
-                deviceName = ssid.ifBlank { null },
-                deviceType = "ALPR Camera",
-                manufacturer = "Flock Safety",
-                hasCamera = true,
-                rssi = rssi,
-                confidence = confidence,
-                matchReason = "wifi_oui:flock:$oui",
-                firstSeen = Instant.now(),
-                lastSeen = Instant.now(),
-                category = PrivacyCategory.ALPR_CAMERA,
-                fingerprintKey = "wifi_oui:flock:${bssid.uppercase()}"
-            )
+            val ouiPrefix = extractOui(bssid) ?: return null
+            val entry = WifiOuiDatabase.lookup(bssid) ?: return null
+            return when (entry.role) {
+                OuiRole.PRIVACY_FLOCK -> GlassesDetection(
+                    mac = bssid,
+                    deviceName = ssid.ifBlank { null },
+                    deviceType = "ALPR Camera",
+                    manufacturer = entry.manufacturer,
+                    hasCamera = true,
+                    rssi = rssi,
+                    confidence = 0.95f,
+                    matchReason = "wifi_oui:flock:$ouiPrefix",
+                    firstSeen = Instant.now(),
+                    lastSeen = Instant.now(),
+                    category = PrivacyCategory.ALPR_CAMERA,
+                    fingerprintKey = "wifi_oui:flock:${bssid.uppercase()}"
+                )
+                OuiRole.PRIVACY_INFRASTRUCTURE -> GlassesDetection(
+                    mac = bssid,
+                    deviceName = ssid.ifBlank { null },
+                    deviceType = "Privacy Infrastructure",
+                    manufacturer = entry.manufacturer,
+                    hasCamera = false,
+                    rssi = rssi,
+                    confidence = 0.62f,
+                    matchReason = "wifi_oui:privacy:$ouiPrefix",
+                    firstSeen = Instant.now(),
+                    lastSeen = Instant.now(),
+                    category = PrivacyCategory.SECURITY_INFRASTRUCTURE,
+                    fingerprintKey = "wifi_oui:privacy:${bssid.uppercase()}"
+                )
+                else -> null
+            }
         }
 
         private fun extractOui(bssid: String): String? {
@@ -677,13 +723,19 @@ class GlassesDetector @Inject constructor(
     )
 
     private val mfrDatabase = listOf(
-        // Meta — 0x01AB is general Meta, 0x058E is Meta Technologies (Quest headsets)
-        MfrEntry(BleSignatures.CID_META, "Meta", "Smart Glasses", 0.90f, true),
-        MfrEntry(BleSignatures.CID_META_TECH, "Meta", "VR Headset", 0.90f, true),  // Quest 2/3/Pro
+        // Generic Meta company IDs identify the vendor, not glasses or a camera.
+        manufacturerClassification(BleSignatures.CID_META)!!.let {
+            MfrEntry(BleSignatures.CID_META, it.manufacturer, it.deviceType, it.confidence, it.hasCamera)
+        },
+        manufacturerClassification(BleSignatures.CID_META_TECH)!!.let {
+            MfrEntry(BleSignatures.CID_META_TECH, it.manufacturer, it.deviceType, it.confidence, it.hasCamera)
+        },
         // Luxottica — frame-manufacturer CID on every Ray-Ban Meta / Oakley Meta unit.
         // This is the headline Meta-detection fix: Marauder matches on this CID,
         // firmware v0.58 matches on this CID, and the Android app did NOT until v0.59.
-        MfrEntry(BleSignatures.CID_LUXOTTICA, "Meta", "Smart Glasses", 0.95f, true),
+        manufacturerClassification(BleSignatures.CID_LUXOTTICA)!!.let {
+            MfrEntry(BleSignatures.CID_LUXOTTICA, it.manufacturer, it.deviceType, it.confidence, it.hasCamera)
+        },
         // Flipper Zero — attack / hacking tool
         MfrEntry(BleSignatures.CID_FLIPPER, "Flipper Zero", "Attack Tool", 0.95f, false),
         MfrEntry(BleSignatures.CID_SNAP, "Snap", "Smart Glasses", 0.85f, true),

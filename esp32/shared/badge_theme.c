@@ -157,7 +157,7 @@ static bool theme_name_allowed(const char *value, const char *const *allowed,
                                size_t count)
 {
     for (size_t i = 0; i < count; i++) {
-        if (eq_nocase(value, allowed[i])) return true;
+        if (strcmp(value, allowed[i]) == 0) return true;
     }
     return false;
 }
@@ -301,8 +301,11 @@ static bool parse_accents_object(badge_theme_json_cursor_t *cursor,
     return true;
 }
 
-bool badge_theme_parse_json(const char *json, badge_theme_t *out,
-                            char *err, size_t err_len)
+static bool badge_theme_parse_json_projected(
+    const char *json,
+    badge_theme_t *out,
+    char *err,
+    size_t err_len)
 {
     if (!json || !out) {
         set_err(err, err_len, "missing theme");
@@ -430,6 +433,52 @@ bool badge_theme_parse_json(const char *json, badge_theme_t *out,
     *out = parsed;
     if (err && err_len > 0) err[0] = '\0';
     return true;
+}
+
+bool badge_theme_parse_json_span(const uint8_t *json,
+                                 size_t json_len,
+                                 badge_theme_t *out,
+                                 char *err,
+                                 size_t err_len)
+{
+    if (!json || !out) {
+        set_err(err, err_len, "missing theme");
+        return false;
+    }
+    if (json_len == 0U || json_len >= BADGE_THEME_JSON_MAX) {
+        set_err(err, err_len, "theme too large");
+        return false;
+    }
+    if (memchr(json, '\0', json_len) != NULL) {
+        set_err(err, err_len, "invalid theme");
+        return false;
+    }
+
+    char projected[BADGE_THEME_JSON_MAX];
+    memcpy(projected, json, json_len);
+    projected[json_len] = '\0';
+    return badge_theme_parse_json_projected(
+        projected, out, err, err_len);
+}
+
+bool badge_theme_parse_json(const char *json, badge_theme_t *out,
+                            char *err, size_t err_len)
+{
+    if (!json || !out) {
+        set_err(err, err_len, "missing theme");
+        return false;
+    }
+    size_t json_len = 0U;
+    while (json_len < BADGE_THEME_JSON_MAX &&
+           json[json_len] != '\0') {
+        json_len++;
+    }
+    if (json_len == BADGE_THEME_JSON_MAX) {
+        set_err(err, err_len, "theme too large");
+        return false;
+    }
+    return badge_theme_parse_json_span(
+        (const uint8_t *)json, json_len, out, err, err_len);
 }
 
 size_t badge_theme_to_json(const badge_theme_t *theme, char *out, size_t out_len)
@@ -563,3 +612,53 @@ uint16_t badge_theme_contrast_floor(uint16_t foreground, uint16_t background)
     }
     return bg_luminance < 128U ? 0xFFFF : 0x0000;
 }
+
+#if defined(FOF_DC34_GAME_CANARY)
+void badge_theme_derive_con_palette(
+    const badge_theme_t *selected,
+    badge_con_present_state_t state,
+    badge_con_render_palette_t *out)
+{
+    if (!out) {
+        return;
+    }
+
+    badge_theme_t fallback;
+    if (!selected) {
+        badge_theme_defaults(&fallback);
+        selected = &fallback;
+    }
+
+    if (state < BADGE_CON_PRESENT_HUMAN ||
+        state > BADGE_CON_PRESENT_DEAD_SUPER) {
+        *out = (badge_con_render_palette_t) {
+            .chrome_primary = badge_theme_chrome_color(
+                selected, BADGE_THEME_CHROME_PANEL),
+            .chrome_secondary = badge_theme_chrome_color(
+                selected, BADGE_THEME_CHROME_PANEL_ALT),
+            .chrome_accent = badge_theme_chrome_color(
+                selected, BADGE_THEME_CHROME_SELECTION),
+            .chrome_text = badge_theme_chrome_color(
+                selected, BADGE_THEME_CHROME_TEXT_PRIMARY),
+        };
+        return;
+    }
+
+    static const uint16_t primary[] = {
+        0x07E0, 0x07FF, 0x79DD, 0xF9F5, 0xF81F, 0xF800, 0xF81F,
+    };
+    static const uint16_t accent[] = {
+        0xAFE5, 0x7FFF, 0x3FE2, 0xF81F, 0xFFE0, 0xFFFF, 0xFFE0,
+    };
+    const size_t index = (size_t)(state - BADGE_CON_PRESENT_HUMAN);
+    out->chrome_primary =
+        badge_theme_apply_brightness(selected, primary[index]);
+    out->chrome_secondary =
+        badge_theme_apply_brightness(selected, accent[index]);
+    out->chrome_accent =
+        badge_theme_apply_brightness(selected, accent[index]);
+    out->chrome_text = badge_theme_contrast_floor(
+        badge_theme_apply_brightness(selected, 0xFFFF),
+        out->chrome_primary);
+}
+#endif

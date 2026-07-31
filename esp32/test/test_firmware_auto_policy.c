@@ -115,11 +115,23 @@ void test_auto_wifi_gate_requires_ble_success_or_current(void)
     TEST_ASSERT_TRUE(fof_auto_wifi_gate_open(false, FOF_AUTO_SLOT_FAILED));
     TEST_ASSERT_TRUE(fof_auto_wifi_gate_open(true, FOF_AUTO_SLOT_CONVERGED));
     TEST_ASSERT_TRUE(fof_auto_wifi_gate_open(true, FOF_AUTO_SLOT_CURRENT));
-    TEST_ASSERT_FALSE(fof_auto_wifi_gate_open(true, FOF_AUTO_SLOT_FAILED));
-    TEST_ASSERT_FALSE(fof_auto_wifi_gate_open(true, FOF_AUTO_SLOT_REFUSED));
-    TEST_ASSERT_FALSE(fof_auto_wifi_gate_open(
+    TEST_ASSERT_TRUE(fof_auto_wifi_gate_open(true, FOF_AUTO_SLOT_REFUSED));
+    TEST_ASSERT_TRUE(fof_auto_wifi_gate_open(true, FOF_AUTO_SLOT_FAILED));
+    TEST_ASSERT_TRUE(fof_auto_wifi_gate_open(
         true, FOF_AUTO_SLOT_NEWER_SKIPPED));
+    TEST_ASSERT_TRUE(fof_auto_wifi_gate_open(true, FOF_AUTO_SLOT_EXCLUDED));
     TEST_ASSERT_FALSE(fof_auto_wifi_gate_open(true, FOF_AUTO_SLOT_RECOVERING));
+
+    TEST_ASSERT_TRUE(fof_auto_slot_is_terminal(FOF_AUTO_SLOT_EXCLUDED));
+    TEST_ASSERT_TRUE(fof_auto_slot_is_terminal(FOF_AUTO_SLOT_CONVERGED));
+    TEST_ASSERT_TRUE(fof_auto_slot_is_terminal(FOF_AUTO_SLOT_CURRENT));
+    TEST_ASSERT_TRUE(fof_auto_slot_is_terminal(FOF_AUTO_SLOT_REFUSED));
+    TEST_ASSERT_TRUE(fof_auto_slot_is_terminal(FOF_AUTO_SLOT_FAILED));
+    TEST_ASSERT_TRUE(
+        fof_auto_slot_is_terminal(FOF_AUTO_SLOT_NEWER_SKIPPED));
+    TEST_ASSERT_FALSE(
+        fof_auto_slot_is_terminal(FOF_AUTO_SLOT_AWAITING_CHECK));
+    TEST_ASSERT_FALSE(fof_auto_slot_is_terminal(FOF_AUTO_SLOT_RECOVERING));
 }
 
 void test_auto_recovery_probe_waits_without_consuming_budget(void)
@@ -148,6 +160,72 @@ void test_auto_recovery_probe_waits_without_consuming_budget(void)
     TEST_ASSERT_EQUAL_INT(
         FOF_AUTO_PROBE_EXHAUSTED,
         fof_auto_recovery_probe_decide(55000, 35000, 0, 0));
+}
+
+void test_auto_readiness_probe_waits_for_post_floor_identity_without_budget(void)
+{
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_WAIT,
+        fof_auto_readiness_probe_decide(false, 0, 3));
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_WAIT,
+        fof_auto_readiness_probe_decide(false, 3, 3));
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_SEND,
+        fof_auto_readiness_probe_decide(true, 0, 3));
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_SEND,
+        fof_auto_readiness_probe_decide(true, 2, 3));
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_EXHAUSTED,
+        fof_auto_readiness_probe_decide(true, 3, 3));
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_EXHAUSTED,
+        fof_auto_readiness_probe_decide(true, 0, 0));
+}
+
+void test_auto_identity_acquisition_is_gate_relative_bounded_and_fresh_wins(void)
+{
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_WAIT,
+        fof_auto_identity_acquisition_decide(
+            false, false, 10000, 0));
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_WAIT,
+        fof_auto_identity_acquisition_decide(
+            false, true, 39999, 40000));
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_EXHAUSTED,
+        fof_auto_identity_acquisition_decide(
+            false, true, 40000, 40000));
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_EXHAUSTED,
+        fof_auto_identity_acquisition_decide(
+            false, true, 40001, 40000));
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_EXHAUSTED,
+        fof_auto_identity_acquisition_decide(
+            false, true, 10000, 0));
+    TEST_ASSERT_EQUAL_INT(
+        FOF_AUTO_PROBE_SEND,
+        fof_auto_identity_acquisition_decide(
+            true, true, 50000, 40000));
+}
+
+void test_auto_terminal_reopen_never_renews_identity_exhaustion(void)
+{
+    TEST_ASSERT_FALSE(fof_auto_terminal_reopen_allowed(
+        FOF_AUTO_SLOT_FAILED, true, 0, 3));
+    TEST_ASSERT_TRUE(fof_auto_terminal_reopen_allowed(
+        FOF_AUTO_SLOT_FAILED, false, 0, 3));
+    TEST_ASSERT_TRUE(fof_auto_terminal_reopen_allowed(
+        FOF_AUTO_SLOT_REFUSED, false, 2, 3));
+    TEST_ASSERT_FALSE(fof_auto_terminal_reopen_allowed(
+        FOF_AUTO_SLOT_REFUSED, false, 3, 3));
+    TEST_ASSERT_FALSE(fof_auto_terminal_reopen_allowed(
+        FOF_AUTO_SLOT_CURRENT, false, 0, 3));
+    TEST_ASSERT_FALSE(fof_auto_terminal_reopen_allowed(
+        FOF_AUTO_SLOT_FAILED, false, 0, 0));
 }
 
 void test_auto_recovery_converges_only_from_full_same_mac_health_proof(void)

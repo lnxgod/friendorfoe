@@ -15,6 +15,7 @@ from typing import Mapping, NamedTuple
 _VERSION_MACROS = {
     "production": "FOF_VERSION_PROD",
     "badge": "FOF_VERSION_BADGE",
+    "badge_canary": "FOF_VERSION_BADGE_CANARY",
 }
 _APP_DESC_OFFSET = 0x20
 _APP_DESC_MIN_SIZE = 112
@@ -50,12 +51,28 @@ _TARGET_PROJECT_HARDWARE_TRACK = {
         "seeed_xiao_esp32s3",
         "badge",
     ),
+    "scanner-s3-combo-fof_badge-con-crud-canary": (
+        "fof_badge_scanner",
+        "seeed_xiao_esp32s3",
+        "badge_canary",
+    ),
     "uplink-s3": ("fof_uplink", "esp32-s3-devkitc-1", "production"),
     "uplink-s3-fof_badge": (
         "fof_badge_uplink",
         "seeed_xiao_esp32s3",
         "badge",
     ),
+    "uplink-s3-fof_badge-con-crud-canary": (
+        "fof_badge_uplink",
+        "seeed_xiao_esp32s3",
+        "badge_canary",
+    ),
+}
+_RUNTIME_TARGET_BY_ENV = {
+    "scanner-s3-combo-fof_badge-con-crud-canary": (
+        "scanner-s3-combo-fof_badge"
+    ),
+    "uplink-s3-fof_badge-con-crud-canary": "uplink-s3-fof_badge",
 }
 
 
@@ -90,6 +107,12 @@ def expected_identity_for_env(header: Path, environment: str) -> TargetIdentity:
         raise ValueError(f"Unknown firmware target: {environment}") from exc
     versions = read_version_tracks(header)
     return TargetIdentity(environment, project, hardware, versions[track])
+
+
+def runtime_target_for_env(environment: str) -> str:
+    if environment not in _TARGET_PROJECT_HARDWARE_TRACK:
+        raise ValueError(f"Unknown firmware target: {environment}")
+    return _RUNTIME_TARGET_BY_ENV.get(environment, environment)
 
 
 def invalidate_stale_cmake_cache(build_dir: Path, expected_version: str) -> bool:
@@ -151,8 +174,9 @@ def parse_app_desc_version(image: bytes) -> str | None:
 
 
 def _missing_identity_marker(image: bytes, expected: TargetIdentity) -> str | None:
-    if expected.target.encode("ascii") not in image:
-        return f'target marker "{expected.target}"'
+    runtime_target = runtime_target_for_env(expected.target)
+    if runtime_target.encode("ascii") not in image:
+        return f'target marker "{runtime_target}"'
     if expected.hardware.encode("ascii") not in image:
         return f'hardware marker "{expected.hardware}"'
     return None
@@ -194,10 +218,14 @@ def verify_firmware_images(
     return errors
 
 
-def _expected_for_project(header: Path, project: str) -> TargetIdentity | None:
+def _expected_for_project(
+    header: Path,
+    project: str,
+    version: str,
+) -> TargetIdentity | None:
     for target in _TARGET_PROJECT_HARDWARE_TRACK:
         identity = expected_identity_for_env(header, target)
-        if identity.project == project:
+        if identity.project == project and identity.version == version:
             return identity
     return None
 
@@ -229,7 +257,11 @@ def main() -> int:
         print(embedded.version)
         return 0
 
-    expected = _expected_for_project(args.version_header, embedded.project)
+    expected = _expected_for_project(
+        args.version_header,
+        embedded.project,
+        embedded.version,
+    )
     if expected is None:
         print(f"ERROR: unknown embedded project {embedded.project}", file=sys.stderr)
         return 1
@@ -244,7 +276,7 @@ def main() -> int:
         print(f"ERROR: {expected.target}: missing {missing}", file=sys.stderr)
         return 1
     print(json.dumps({
-        "target": expected.target,
+        "target": runtime_target_for_env(expected.target),
         "project": embedded.project,
         "hardware": expected.hardware,
         "version": embedded.version,

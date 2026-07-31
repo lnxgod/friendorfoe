@@ -18,6 +18,7 @@
 #include "time_sync_policy.h"
 #include "version.h"
 #include "detection_policy.h"
+#include "scanner_command_producer_policy.h"
 #ifdef FOF_BADGE_VARIANT
 #include "badge_runtime.h"
 #include "badge_display_policy_runtime.h"
@@ -1742,29 +1743,65 @@ static void http_upload_task(void *arg)
                                     cJSON *dur = cJSON_GetObjectItem(resp, "duration_s");
                                     cJSON *bssid_j = cJSON_GetObjectItem(resp, "bssid");
                                     cJSON *type_j = cJSON_GetObjectItem(resp, "type");
-                                    int lock_ch = ch ? ch->valueint : 6;
-                                    int lock_dur = dur ? dur->valueint : 45;
-                                    const char *lock_type = (type_j && type_j->valuestring) ? type_j->valuestring : "wifi";
-                                    const char *lock_bssid = (bssid_j && bssid_j->valuestring) ? bssid_j->valuestring : "";
+                                    const bool duration_is_integer =
+                                        cJSON_IsNumber(dur) &&
+                                        dur->valuedouble == (double)dur->valueint;
+                                    const bool type_is_wifi =
+                                        !type_j ||
+                                        (cJSON_IsString(type_j) &&
+                                         type_j->valuestring &&
+                                         strcmp(type_j->valuestring, "wifi") == 0);
+                                    const bool type_is_ble =
+                                        cJSON_IsString(type_j) &&
+                                        type_j->valuestring &&
+                                        strcmp(type_j->valuestring, "ble") == 0;
+                                    const bool address_shape_ok =
+                                        !bssid_j ||
+                                        (cJSON_IsString(bssid_j) &&
+                                         bssid_j->valuestring);
+                                    const char *lock_address =
+                                        cJSON_IsString(bssid_j)
+                                            ? bssid_j->valuestring
+                                            : NULL;
+                                    char cmd[FOF_SCANNER_PRODUCER_JSON_CAPACITY];
+                                    bool command_ok = false;
 
-                                    lockon_was_active = true;
-                                    char cmd[160];
-
-                                    if (strcmp(lock_type, "ble") == 0) {
-                                        /* BLE lock-on: focus on specific MAC */
-                                        ESP_LOGW(TAG, "BLE LOCK-ON: mac=%s dur=%ds", lock_bssid, lock_dur);
-                                        snprintf(cmd, sizeof(cmd),
-                                                 "{\"type\":\"ble_lockon\",\"mac\":\"%s\",\"dur\":%d}",
-                                                 lock_bssid, lock_dur);
-                                    } else {
-                                        /* WiFi lock-on: fix channel */
-                                        ESP_LOGW(TAG, "WiFi LOCK-ON: ch=%d bssid=%s dur=%ds",
-                                                 lock_ch, lock_bssid, lock_dur);
-                                        snprintf(cmd, sizeof(cmd),
-                                                 "{\"type\":\"lockon\",\"ch\":%d,\"dur\":%d,\"bssid\":\"%s\"}",
-                                                 lock_ch, lock_dur, lock_bssid);
+                                    if (duration_is_integer && type_is_ble) {
+                                        command_ok =
+                                            fof_scanner_ble_lockon_command_json(
+                                                lock_address,
+                                                dur->valueint,
+                                                cmd,
+                                                sizeof(cmd));
+                                    } else if (duration_is_integer &&
+                                               type_is_wifi &&
+                                               address_shape_ok &&
+                                               cJSON_IsNumber(ch) &&
+                                               ch->valuedouble ==
+                                                   (double)ch->valueint) {
+                                        command_ok =
+                                            fof_scanner_wifi_lockon_command_json(
+                                                ch->valueint,
+                                                dur->valueint,
+                                                lock_address
+                                                    ? lock_address
+                                                    : "",
+                                                cmd,
+                                                sizeof(cmd));
                                     }
-                                    uart_rx_send_command(cmd);
+
+                                    if (command_ok) {
+                                        lockon_was_active = true;
+                                        uart_rx_send_command(cmd);
+                                        ESP_LOGI(
+                                            TAG,
+                                            "Validated backend %s lock-on command",
+                                            type_is_ble ? "BLE" : "WiFi");
+                                    } else {
+                                        ESP_LOGW(
+                                            TAG,
+                                            "Rejected invalid backend lock-on command");
+                                    }
                                 } else if (active && !cJSON_IsTrue(active) && lockon_was_active) {
                                     ESP_LOGI(TAG, "LOCK-ON cancelled by backend");
                                     lockon_was_active = false;

@@ -15,6 +15,10 @@ typedef enum {
 enum {
     BADGE_DISPLAY_FOCUS_CAPACITY = 4,
     BADGE_DISPLAY_HEALTH_STRIP_Y = 148,
+    BADGE_DISPLAY_HEALTH_STRIP_HEIGHT = 12,
+    BADGE_DISPLAY_HEALTH_VALUE_Y_OFFSET = 7,
+    BADGE_DISPLAY_HEART_WIDTH = 7,
+    BADGE_DISPLAY_HEART_HEIGHT = 5,
 };
 
 int badge_display_contract_focus_capacity(void);
