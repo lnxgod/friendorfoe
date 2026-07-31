@@ -1,6 +1,7 @@
 package com.friendorfoe.detection
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -83,6 +84,24 @@ class PrivacyCategoryMappingTest {
                 rssi = -58
             )
         )
+    }
+
+    @Test
+    fun maps_privacy_vendor_oui_without_claiming_camera_or_drone() {
+        val detection = GlassesDetector.checkWifiSsid(
+            ssid = "",
+            bssid = "00:25:DF:11:22:33",
+            rssi = -55
+        )
+
+        assertNotNull(detection)
+        assertEquals("Axon", detection!!.manufacturer)
+        assertEquals("Privacy Infrastructure", detection.deviceType)
+        assertEquals(PrivacyCategory.SECURITY_INFRASTRUCTURE, detection.category)
+        assertFalse(detection.hasCamera)
+        assertFalse(detection.deviceType.contains("camera", ignoreCase = true))
+        assertFalse(detection.matchReason.contains("recording", ignoreCase = true))
+        assertFalse(WifiOuiDatabase.isDroneOui("00:25:DF:11:22:33"))
     }
 
     @Test

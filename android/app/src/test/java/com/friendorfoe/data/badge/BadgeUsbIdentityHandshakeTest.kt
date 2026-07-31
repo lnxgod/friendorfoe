@@ -10,11 +10,184 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BadgeUsbIdentityHandshakeTest {
+
+    @Test
+    fun `badge hardware identity canonicalizes only exact usable colon MACs`() {
+        assertEquals("A4:CF:12:34:56:78", canonicalBadgeHardwareId("A4:CF:12:34:56:78"))
+        assertEquals("A4:CF:12:34:56:78", canonicalBadgeHardwareId("a4:cf:12:34:56:78"))
+
+        listOf(
+            "",
+            " ",
+            " A4:CF:12:34:56:78",
+            "A4:CF:12:34:56:78 ",
+            "A4-CF-12-34-56-78",
+            "A4CF12345678",
+            "A4:CF:12:34:56",
+            "A4:CF:12:34:56:789",
+            "A4:CF:12:34:56:GG",
+            "00:00:00:00:00:00",
+            "ff:ff:ff:ff:ff:ff",
+        ).forEach { raw ->
+            assertNull(raw, canonicalBadgeHardwareId(raw))
+        }
+    }
+
+    @Test
+    fun `USB uplink identity requires a usable hardware MAC`() {
+        listOf(
+            "",
+            "not-a-mac",
+            "00:00:00:00:00:00",
+            "FF:FF:FF:FF:FF:FF",
+        ).forEach { hardwareId ->
+            val error = badgeUsbIdentityError(
+                badgeStatus(version = "invalid-mac").copy(hardwareId = hardwareId),
+            )
+            assertTrue(error.orEmpty(), error.orEmpty().contains("hardware ID"))
+        }
+
+        assertEquals(
+            BadgeUsbStatus.ERROR,
+            badgeUsbHandshakeStatus(badgeStatus(version = "missing-mac").copy(hardwareId = "")),
+        )
+    }
+
+    @Test
+    fun `verified USB status enforces same canonical hardware identity`() {
+        val sameBadge = badgeStatus(version = "later").copy(hardwareId = "a4:cf:12:34:56:78")
+        assertNull(
+            badgeUsbIdentityError(
+                status = sameBadge,
+                expectedHardwareId = "A4:CF:12:34:56:78",
+            ),
+        )
+        assertNull(
+            badgeUsbStatusFrameIdentityError(
+                isStatusFrame = true,
+                status = sameBadge,
+                expectedHardwareId = "A4:CF:12:34:56:78",
+            ),
+        )
+
+        val drift = badgeUsbStatusFrameIdentityError(
+            isStatusFrame = true,
+            status = sameBadge.copy(hardwareId = "A4:CF:12:34:56:79"),
+            expectedHardwareId = "A4:CF:12:34:56:78",
+        )
+        assertEquals("USB hardware ID mismatch", drift)
+        assertFalse(drift.orEmpty().contains("A4:CF:12:34:56:78"))
+        assertFalse(drift.orEmpty().contains("A4:CF:12:34:56:79"))
+    }
+
+    @Test
+    fun `handshake owner requires full badge identity and stores canonical MAC`() {
+        val token = BadgeUsbAttachmentToken(
+            generation = 11L,
+            identity = BadgeUsbDeviceIdentity(101, "/dev/badge"),
+        )
+        val connection = Any()
+        val endpoint = Any()
+        val owner = badgeUsbOwnerKeyFromHandshake(
+            status = badgeStatus(version = "verified").copy(
+                hardwareId = "a4:cf:12:34:56:78",
+            ),
+            attachmentToken = token,
+            lifecycleSession = 7L,
+            connectionIdentity = connection,
+            endpointIdentity = endpoint,
+        )
+
+        assertNotNull(owner)
+        assertEquals("A4:CF:12:34:56:78", owner!!.hardwareId)
+        assertEquals(token, owner.attachmentToken)
+        assertTrue(owner.connectionIdentity === connection)
+        assertTrue(owner.endpointIdentity === endpoint)
+        assertNull(
+            badgeUsbOwnerKeyFromHandshake(
+                status = badgeStatus(version = "missing").copy(hardwareId = ""),
+                attachmentToken = token,
+                lifecycleSession = 7L,
+                connectionIdentity = connection,
+                endpointIdentity = endpoint,
+            ),
+        )
+        assertNull(
+            badgeUsbOwnerKeyFromHandshake(
+                status = badgeStatus(version = "scanner").copy(
+                    firmwareName = "scanner-s3-combo-fof_badge",
+                ),
+                attachmentToken = token,
+                lifecycleSession = 7L,
+                connectionIdentity = connection,
+                endpointIdentity = endpoint,
+            ),
+        )
+    }
+
+    @Test
+    fun `status liveness counter is trusted only for schema one`() {
+        assertEquals(
+            12L,
+            badgeUsbStatusResponseCounter(
+                BadgeControlStatus(
+                    usbHealth = BadgeUsbHealthStatus(
+                        schema = 1,
+                        responsesCompleted = 12L,
+                    ),
+                ),
+            ),
+        )
+        assertNull(
+            badgeUsbStatusResponseCounter(
+                BadgeControlStatus(
+                    usbHealth = BadgeUsbHealthStatus(
+                        schema = 0,
+                        responsesCompleted = 12L,
+                    ),
+                ),
+            ),
+        )
+        assertNull(
+            badgeUsbStatusResponseCounter(
+                BadgeControlStatus(
+                    usbHealth = BadgeUsbHealthStatus(
+                        schema = 2,
+                        responsesCompleted = 12L,
+                    ),
+                ),
+            ),
+        )
+        assertNull(badgeUsbStatusResponseCounter(null))
+    }
+
+    @Test
+    fun `USB owner equality includes canonical badge hardware identity`() {
+        val token = BadgeUsbAttachmentToken(
+            generation = 11L,
+            identity = BadgeUsbDeviceIdentity(101, "/dev/badge"),
+        )
+        val connection = Any()
+        val endpoint = Any()
+        val expected = BadgeUsbOwnerKey(
+            attachmentToken = token,
+            lifecycleSession = 7L,
+            connectionIdentity = connection,
+            endpointIdentity = endpoint,
+            hardwareId = "A4:CF:12:34:56:78",
+        )
+        val same = expected.copy()
+        val otherBadge = expected.copy(hardwareId = "A4:CF:12:34:56:79")
+
+        assertTrue(badgeUsbOwnerKeysMatch(expected, same))
+        assertFalse(badgeUsbOwnerKeysMatch(expected, otherBadge))
+    }
 
     @Test
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -235,6 +408,19 @@ class BadgeUsbIdentityHandshakeTest {
     }
 
     @Test
+    fun `expiry invalidates only its exact pending attachment generation`() {
+        val gate = BadgeUsbAttachmentGate()
+        val identity = BadgeUsbDeviceIdentity(101, "/dev/a")
+        val tokenA = gate.select(identity)
+        val tokenB = gate.select(identity, forceNewGeneration = true)
+
+        assertNull(gate.invalidateExact(tokenA))
+        assertTrue(gate.isCurrent(tokenB))
+        assertEquals(tokenB, gate.invalidateExact(tokenB)?.token)
+        assertFalse(gate.isCurrent(tokenB))
+    }
+
+    @Test
     fun `unrelated C detach does not invalidate active A`() {
         val gate = BadgeUsbAttachmentGate()
         val identityA = BadgeUsbDeviceIdentity(101, "/dev/a")
@@ -413,6 +599,23 @@ class BadgeUsbIdentityHandshakeTest {
     }
 
     @Test
+    fun `terminal USB errors clear stale badge control status`() {
+        val failed = reduceBadgeUsbTerminalError(
+            current = BadgeUsbState(
+                status = BadgeUsbStatus.CONNECTED,
+                transportLabel = "USB-C",
+                controlStatus = badgeStatus(version = "stale"),
+            ),
+            deviceName = "FoF badge",
+            message = "Badge USB write failed",
+        )
+
+        assertEquals(BadgeUsbStatus.ERROR, failed.status)
+        assertEquals("USB-C", failed.transportLabel)
+        assertNull(failed.controlStatus)
+    }
+
+    @Test
     fun `every USB status frame is subject to identity validation`() {
         assertNull(
             badgeUsbStatusFrameIdentityError(
@@ -507,6 +710,7 @@ class BadgeUsbIdentityHandshakeTest {
                 "firmware_name":"uplink-s3-fof_badge",
                 "app_project":"fof_badge_uplink",
                 "hardware_type":"seeed_xiao_esp32s3",
+                "hardware_id":"A4:CF:12:34:56:78",
                 "version":"0.64.76-badge-defcon34"
             }""".trimIndent(),
         )
@@ -608,5 +812,6 @@ class BadgeUsbIdentityHandshakeTest {
         firmwareName = "uplink-s3-fof_badge",
         appProject = "fof_badge_uplink",
         hardwareType = "seeed_xiao_esp32s3",
+        hardwareId = "A4:CF:12:34:56:78",
     )
 }

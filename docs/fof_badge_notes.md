@@ -25,9 +25,13 @@ install flow, and runtime checks, start with [Badge README](badge/README.md).
   hard-reset, and safe-USB recovery.
 - Uplink recovery must preserve early USB control for `FOF_PING`, `FOF_STATUS`,
   `FOF_BOOTLOADER`, `FOF_REBOOT`, and safe-mode clear commands.
+- The supported field path uses one laptop cable to the uplink: flash the
+  uplink, stage one verified scanner image through uplink USB, then let the
+  uplink serialize that image over the two fixed internal UARTs. Allow up to
+  ten minutes for both scanner slots to converge.
 - Full uplink recovery flashes the bootloader, partitions, OTA data, and app
-  image. Scanner flashing should only be required when scanner firmware or
-  scanner-side telemetry changes.
+  image. Scanner diagnostic USB ports are read-only for normal field updates;
+  do not direct-flash a scanner to bypass a failed UART campaign.
 - Safe USB mode is preferred over automatic ROM bootloader entry because it
   keeps status and control available to normal users.
 
@@ -37,17 +41,23 @@ install flow, and runtime checks, start with [Badge README](badge/README.md).
 session are the source of truth. The LCD is intentionally a small awareness
 surface and should not be expected to show every recovery field.
 
-Android Privacy is the operator drill-down and control-center surface for the
-badge. It should preserve `display_state`, entity evidence/source/confidence,
+Android's dedicated Badge page is the operator drill-down and control-center
+surface. It should preserve `display_state`, entity evidence/source/confidence,
 RSSI/best RSSI, GPS/operator facts, scanner health, crash/reset state, stack,
 heap, and PSRAM fields from `FOF_STATUS` without requiring LCD layout changes.
 Connected controls should stay grounded in firmware-backed commands: appearance
-theme, display policy, scanner firmware upload/relay, recovery actions, and
-mode selection.
+theme, display policy/navigation, mode selection, and safe app reboot. Firmware
+upload, bootloader entry, scanner relay, and recovery mutation remain
+laptop-hosted operations; Android may report their status but must not perform
+them.
 
 Top-level badge `recovery_mode` values:
 
 - `normal`: USB control is alive and the badge is not in safe mode.
+- `update_preparing`: the canary has accepted a bound host update session and
+  is quiescing owned radio/firmware work before its expected reboot.
+- `update_maintenance`: USB, display status, scanner UARTs, staging, and relay
+  remain alive while the private game radio is deliberately not initialized.
 - `usb_wait`: boot is still waiting for the USB control task heartbeat.
 - `usb_stale`: USB control heartbeat has gone stale after the boot grace
   window. The runtime watchdog should arm an expected reboot and come back in

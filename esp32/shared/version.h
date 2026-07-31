@@ -21,9 +21,12 @@
  * for ESP-IDF's PROJECT_VER metadata based on the PIOENV env var.
  */
 #define FOF_VERSION_PROD  "0.64.68-live-follow"
-#define FOF_VERSION_BADGE "0.64.76-badge-defcon34"
+#define FOF_VERSION_BADGE "0.64.78-badge-defcon34"
+#define FOF_VERSION_BADGE_CANARY "0.67.2-badge-defcon34"
 
-#if defined(FOF_BADGE_VARIANT)
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+#define FOF_VERSION FOF_VERSION_BADGE_CANARY
+#elif defined(FOF_BADGE_VARIANT)
 #define FOF_VERSION FOF_VERSION_BADGE
 #else
 #define FOF_VERSION FOF_VERSION_PROD

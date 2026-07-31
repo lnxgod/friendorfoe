@@ -54,6 +54,24 @@ def make_bundle(root: Path, version: str = "0.64.76-badge-defcon34") -> Path:
 
 
 class BundleTests(unittest.TestCase):
+    def test_embedded_factory_resource_is_exact_accepted_0672(self) -> None:
+        embedded = load_bundle(
+            Path(__file__).resolve().parents[1]
+            / "resources/badge-factory-flasher-embedded.zip",
+            source="embedded-test",
+        )
+        self.assertEqual(embedded.version, "0.67.2-badge-defcon34")
+        expected = {
+            "uplink": "78ef3b6dafe61e8e2fdc3fb28447372aaf76da38cd57ca0961828bbbdc08c434",
+            "scanner": "2d0e84501baf3bc929eed03a0b9c1f0272ed66baa9b81dd4513d6dc3fa2c032b",
+        }
+        for role, digest in expected.items():
+            app = next(
+                part for part in embedded.layout(role)["parts"]
+                if part["path"] == f"{role}/firmware.bin"
+            )
+            self.assertEqual(app["sha256"], digest)
+
     def test_remote_download_is_stream_capped_and_atomic(self) -> None:
         class Response(io.BytesIO):
             headers = {}

@@ -28,10 +28,24 @@ set(SRCS
     "../../shared/psram_alloc.c"
     "../../shared/firmware_version_order.c"
     "../../shared/firmware_image_contract.c"
+    "../../shared/firmware_json_schema.c"
+    "../../shared/firmware_json_schema_registry.c"
+    "../../shared/mac_address_policy.c"
+    "../../shared/scanner_uart_line_framer.c"
+    "../../shared/scanner_command_schema_registry.c"
+    "../../shared/scanner_command_ingress.c"
 )
 
 if("$ENV{PIOENV}" MATCHES "fof_badge")
     list(APPEND SRCS "../../shared/badge_easter_egg.c")
+endif()
+
+if("$ENV{PIOENV}" STREQUAL "scanner-s3-combo-fof_badge-con-crud-canary")
+    list(APPEND SRCS
+        "detection/badge_con_observer.c"
+        "../../shared/badge_con_protocol.c"
+        "../../shared/badge_con_encounter.c"
+    )
 endif()
 
 set(REQUIRES esp_wifi driver nvs_flash esp_timer cjson esp_event esp_netif app_update esp_partition esp_psram bt mbedtls)

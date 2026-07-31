@@ -14,6 +14,40 @@ import kotlinx.coroutines.withContext
 class BadgeUsbActivityTest {
 
     @Test
+    fun `detection decoder accepts complete wire payload and rejects malformed input`() {
+        val detection = parseBadgeUsbDetection(
+            """
+                {
+                  "id":"rid-7",
+                  "manufacturer":"DJI",
+                  "badge_label":"Drone",
+                  "badge_class":"drone",
+                  "badge_entity_key":"drone:abc",
+                  "source":0,
+                  "confidence":0.875,
+                  "threat_score":72.5,
+                  "rssi":-45
+                }
+            """.trimIndent(),
+            receivedAtElapsedMs = 1234L,
+        )
+
+        assertEquals("rid-7", detection?.id)
+        assertEquals("DJI", detection?.manufacturer)
+        assertEquals("Drone", detection?.badgeLabel)
+        assertEquals("drone", detection?.badgeClass)
+        assertEquals("drone:abc", detection?.badgeEntityKey)
+        assertEquals(0, detection?.source)
+        assertEquals(0.875f, detection?.confidence)
+        assertEquals(72.5f, detection?.threatScore)
+        assertEquals(-45, detection?.rssi)
+        assertEquals(1234L, detection?.receivedAtElapsedMs)
+
+        assertNull(parseBadgeUsbDetection("not-json", 1235L))
+        assertNull(parseBadgeUsbDetection("[]", 1236L))
+    }
+
+    @Test
     fun `stable key prefers entity then id`() {
         assertEquals("entity:drone:abc", detection(entity = "drone:abc").stableKey)
         assertEquals("id:rid-7", detection(id = "rid-7").stableKey)

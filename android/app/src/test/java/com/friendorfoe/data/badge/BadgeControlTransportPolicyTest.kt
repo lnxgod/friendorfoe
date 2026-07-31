@@ -44,29 +44,36 @@ class BadgeControlTransportPolicyTest {
     }
 
     @Test
-    fun `Android scanner firmware upload is disabled in favor of laptop USB staging`() {
-        assertFalse(BadgeControlTransportPolicy.allowsAndroidFirmwareUpload())
-        assertEquals(
-            "Stage the shared scanner firmware from a laptop over USB. " +
-                "The uplink automatically converges both scanner slots one at a time " +
-                "when the staged version is newer.",
-            BadgeControlTransportPolicy.scannerFirmwareStagingGuidance(),
+    fun `Android control commands use an exact fail closed allowlist`() {
+        val allowed = setOf(
+            "set_mode",
+            "reboot",
+            "badge_display_policy",
+            "badge_display_policy_reset",
+            "badge_theme",
+            "badge_theme_reset",
+            "display_nav",
         )
-        assertFalse(
-            BadgeControlTransportPolicy.scannerFirmwareStagingGuidance()
-                .contains("then use the relay control", ignoreCase = true),
-        )
-        assertEquals(
-            "Manual Per-Slot Relay (Recovery Only)",
-            BadgeControlTransportPolicy.scannerFirmwareRecoveryHeading(),
-        )
-        assertEquals(
-            "Recover Slot 0",
-            BadgeControlTransportPolicy.scannerFirmwareRecoveryActionLabel("ble"),
-        )
-        assertEquals(
-            "Recover Slot 1",
-            BadgeControlTransportPolicy.scannerFirmwareRecoveryActionLabel("wifi"),
-        )
+        allowed.forEach { command ->
+            assertTrue(command, BadgeControlTransportPolicy.allowsAndroidControlCommand(command))
+        }
+
+        setOf(
+            "",
+            "bootloader",
+            "FOF_BOOTLOADER",
+            "rollback",
+            "fw_relay",
+            "fw_upload_begin",
+            "uplink_ota_begin",
+            "ota",
+            "REBOOT",
+            " reboot",
+            "reboot ",
+            "ble_investigate",
+            "ble_investigation_chunk",
+        ).forEach { command ->
+            assertFalse(command, BadgeControlTransportPolicy.allowsAndroidControlCommand(command))
+        }
     }
 }

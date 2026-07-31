@@ -1,5 +1,7 @@
 package com.friendorfoe.data.badge
 
+import com.google.gson.JsonParser
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -7,6 +9,215 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BadgeControlStatusParserTest {
+
+    @Test
+    fun `parses the frozen firmware USB health fixture and immutable runtime fields`() {
+        val fixtureFile = generateSequence(File(".").canonicalFile) { it.parentFile }
+            .map { root -> File(root, "docs/badge/protocol/badge_usb_health_v1.fixture.json") }
+            .firstOrNull(File::isFile)
+            ?: error("Unable to locate badge USB health fixture")
+        val fixtureJson = fixtureFile.readText()
+        val usbHealthObject = JsonParser.parseString(fixtureJson)
+            .asJsonObject
+            .getAsJsonObject("usb_health")
+
+        assertEquals(
+            setOf(
+                "schema",
+                "task_started",
+                "host_connected",
+                "parser_state",
+                "rx_bytes",
+                "valid_commands",
+                "responses_completed",
+                "required_response_failures",
+                "malformed_lines",
+                "dropped_progress_frames",
+                "dropped_optional_frames",
+                "upload_received",
+                "upload_size",
+                "task_heartbeat_age_s",
+                "last_rx_age_s",
+                "last_command_age_s",
+                "last_response_age_s",
+                "last_upload_progress_age_s",
+            ),
+            usbHealthObject.keySet(),
+        )
+
+        val root = JsonParser.parseString(fixtureJson).asJsonObject.apply {
+            addProperty("hardware_id", "A4:CF:12:34:56:78")
+            addProperty("running_partition", "ota_1")
+            addProperty("pending_verify", true)
+            addProperty("rollback_state", "pending_verify")
+            addProperty("last_expected_reboot_reason", "android_control_reboot")
+        }
+        val status = parseBadgeControlStatus(root.toString())
+
+        assertNotNull(status)
+        status!!
+        assertEquals("A4:CF:12:34:56:78", status.hardwareId)
+        assertEquals("ota_1", status.runningPartition)
+        assertTrue(status.pendingVerify)
+        assertEquals("pending_verify", status.rollbackState)
+        assertEquals("android_control_reboot", status.lastExpectedRebootReason)
+        assertEquals(
+            BadgeUsbHealthStatus(
+                schema = 1,
+                taskStarted = true,
+                hostConnected = true,
+                parserState = "command",
+                rxBytes = 128L,
+                validCommands = 3L,
+                responsesCompleted = 3L,
+                requiredResponseFailures = 0L,
+                malformedLines = 0L,
+                droppedProgressFrames = 0L,
+                droppedOptionalFrames = 0L,
+                uploadReceived = 0L,
+                uploadSize = 0L,
+                taskHeartbeatAgeSeconds = 0L,
+                lastRxAgeSeconds = 0L,
+                lastCommandAgeSeconds = 0L,
+                lastResponseAgeSeconds = 0L,
+                lastUploadProgressAgeSeconds = null,
+            ),
+            status.usbHealth,
+        )
+    }
+
+    @Test
+    fun `legacy and independently malformed runtime health fields fail closed to defaults`() {
+        val legacy = parseBadgeControlStatus("{\"version\":\"legacy\"}")
+        assertNotNull(legacy)
+        legacy!!
+        assertEquals("", legacy.hardwareId)
+        assertEquals("", legacy.runningPartition)
+        assertFalse(legacy.pendingVerify)
+        assertEquals("", legacy.rollbackState)
+        assertEquals("", legacy.lastExpectedRebootReason)
+        assertEquals(BadgeUsbHealthStatus(), legacy.usbHealth)
+
+        val malformed = parseBadgeControlStatus(
+            """
+            {
+              "hardware_id":17,
+              "running_partition":false,
+              "pending_verify":"true",
+              "rollback_state":{},
+              "last_expected_reboot_reason":[],
+              "usb_health":{
+                "schema":"1",
+                "task_started":"true",
+                "host_connected":1,
+                "parser_state":99,
+                "rx_bytes":"128",
+                "valid_commands":{},
+                "responses_completed":[],
+                "required_response_failures":false,
+                "malformed_lines":null,
+                "dropped_progress_frames":"0",
+                "dropped_optional_frames":true,
+                "upload_received":{},
+                "upload_size":[],
+                "task_heartbeat_age_s":"0",
+                "last_rx_age_s":false,
+                "last_command_age_s":{},
+                "last_response_age_s":[],
+                "last_upload_progress_age_s":"never"
+              }
+            }
+            """.trimIndent(),
+        )
+
+        assertNotNull(malformed)
+        malformed!!
+        assertEquals("", malformed.hardwareId)
+        assertEquals("", malformed.runningPartition)
+        assertFalse(malformed.pendingVerify)
+        assertEquals("", malformed.rollbackState)
+        assertEquals("", malformed.lastExpectedRebootReason)
+        assertEquals(BadgeUsbHealthStatus(), malformed.usbHealth)
+
+        val independentlyDefaulted = parseBadgeControlStatus(
+            """
+            {
+              "hardware_id":"A4:CF:12:34:56:78",
+              "running_partition":{},
+              "pending_verify":true,
+              "rollback_state":"clear",
+              "last_expected_reboot_reason":false,
+              "usb_health":{
+                "schema":1,
+                "task_started":"bad",
+                "host_connected":true,
+                "parser_state":"line",
+                "rx_bytes":7,
+                "valid_commands":"bad",
+                "responses_completed":5,
+                "last_rx_age_s":2,
+                "last_command_age_s":{}
+              }
+            }
+            """.trimIndent(),
+        )
+
+        assertNotNull(independentlyDefaulted)
+        independentlyDefaulted!!
+        assertEquals("A4:CF:12:34:56:78", independentlyDefaulted.hardwareId)
+        assertEquals("", independentlyDefaulted.runningPartition)
+        assertTrue(independentlyDefaulted.pendingVerify)
+        assertEquals("clear", independentlyDefaulted.rollbackState)
+        assertEquals("", independentlyDefaulted.lastExpectedRebootReason)
+        assertEquals(1, independentlyDefaulted.usbHealth.schema)
+        assertFalse(independentlyDefaulted.usbHealth.taskStarted)
+        assertTrue(independentlyDefaulted.usbHealth.hostConnected)
+        assertEquals("", independentlyDefaulted.usbHealth.parserState)
+        assertEquals(7L, independentlyDefaulted.usbHealth.rxBytes)
+        assertEquals(0L, independentlyDefaulted.usbHealth.validCommands)
+        assertEquals(5L, independentlyDefaulted.usbHealth.responsesCompleted)
+        assertEquals(2L, independentlyDefaulted.usbHealth.lastRxAgeSeconds)
+        assertEquals(null, independentlyDefaulted.usbHealth.lastCommandAgeSeconds)
+    }
+
+    @Test
+    fun `USB health accepts only firmware parser enums and non negative numeric fields`() {
+        listOf("command", "scanner_upload", "uplink_upload").forEach { parserState ->
+            val status = parseBadgeControlStatus(
+                """{"usb_health":{"parser_state":"$parserState"}}""",
+            )
+            assertNotNull(status)
+            assertEquals(parserState, status!!.usbHealth.parserState)
+        }
+
+        val invalid = parseBadgeControlStatus(
+            """
+            {
+              "usb_health":{
+                "schema":-1,
+                "parser_state":"line",
+                "rx_bytes":-1,
+                "valid_commands":-2,
+                "responses_completed":-3,
+                "required_response_failures":-4,
+                "malformed_lines":-5,
+                "dropped_progress_frames":-6,
+                "dropped_optional_frames":-7,
+                "upload_received":-8,
+                "upload_size":-9,
+                "task_heartbeat_age_s":-10,
+                "last_rx_age_s":-11,
+                "last_command_age_s":-12,
+                "last_response_age_s":-13,
+                "last_upload_progress_age_s":-14
+              }
+            }
+            """.trimIndent(),
+        )
+
+        assertNotNull(invalid)
+        assertEquals(BadgeUsbHealthStatus(), invalid!!.usbHealth)
+    }
 
     @Test
     fun `parses complete six accent readback for every wire palette`() {

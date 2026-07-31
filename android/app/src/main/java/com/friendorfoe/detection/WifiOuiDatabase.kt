@@ -73,30 +73,38 @@ object WifiOuiDatabase {
         "00:30:1A" to OuiEntry("Doodle Labs", "Doodle Labs (Smartbridges)"),
         "00:13:56" to OuiEntry("FLIR", "Teledyne FLIR"),
 
-        // Privacy infrastructure / ALPR / surveillance cameras
-        "B4:1E:52" to OuiEntry("Flock Safety", "Flock Safety ALPR/camera registered OUI"),
-        "C4:2F:90" to OuiEntry("Hikvision", "Hangzhou Hikvision (IP camera)", highFalsePositiveRisk = true),
-        "E8:AB:FA" to OuiEntry("Reecam", "Shenzhen Reecam (IP camera)", highFalsePositiveRisk = true),
+        // Privacy infrastructure. An OUI identifies a vendor, not a device's
+        // purpose or current activity; routing code must not infer recording.
+        "B4:1E:52" to OuiEntry("Flock Safety", "Flock Safety ALPR/camera registered OUI", role = OuiRole.PRIVACY_FLOCK),
+        "E0:A7:00" to OuiEntry("Verkada", "Verkada Inc.", role = OuiRole.PRIVACY_INFRASTRUCTURE),
+        "CC:47:BD" to OuiEntry("Rhombus", "Rhombus Systems", role = OuiRole.PRIVACY_INFRASTRUCTURE),
+        "00:25:DF" to OuiEntry("Axon", "Axon Enterprise", role = OuiRole.PRIVACY_INFRASTRUCTURE),
+        "2C:42:05" to OuiEntry("Lytx", "Lytx Inc.", role = OuiRole.PRIVACY_INFRASTRUCTURE),
+        "50:DF:95" to OuiEntry("Lytx", "Lytx Inc.", role = OuiRole.PRIVACY_INFRASTRUCTURE),
+        "58:A7:48" to OuiEntry("Lytx", "Lytx Inc.", role = OuiRole.PRIVACY_INFRASTRUCTURE),
+        "70:E4:6E" to OuiEntry("Lytx", "Lytx Inc.", role = OuiRole.PRIVACY_INFRASTRUCTURE),
+        "C4:2F:90" to OuiEntry("Hikvision", "Hangzhou Hikvision (IP camera)", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "E8:AB:FA" to OuiEntry("Reecam", "Shenzhen Reecam (IP camera)", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
 
         // Generic module makers (seen on budget drones AND unrelated IoT).
         // B0:A7:32/CC:DB:A7 were mislabeled Potensic/Holy Stone (both Espressif);
         // 10:D0:7A was HOVERAir (AMPAK), 2C:DC:AD was Autel (WNC),
         // EC:D0:9F was Yuneec (Xiaomi), 78:8C:B5 was Autel (TP-Link).
-        "24:0A:C4" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
-        "30:AE:A4" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
-        "A4:CF:12" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
-        "AC:67:B2" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
-        "10:06:1C" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
-        "B0:A7:32" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
-        "CC:DB:A7" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true),
-        "00:E0:4C" to OuiEntry("Realtek", "Realtek Semiconductor", highFalsePositiveRisk = true),
-        "08:EA:40" to OuiEntry("Bilian", "Shenzhen Bilian (LB-LINK)", highFalsePositiveRisk = true),
-        "10:D0:7A" to OuiEntry("AMPAK", "AMPAK Technology (WiFi module)", highFalsePositiveRisk = true),
-        "2C:DC:AD" to OuiEntry("WNC", "Wistron NeWeb (ODM module)", highFalsePositiveRisk = true),
-        "28:6C:07" to OuiEntry("Xiaomi", "Xiaomi Communications", highFalsePositiveRisk = true),
-        "EC:D0:9F" to OuiEntry("Xiaomi", "Xiaomi Communications", highFalsePositiveRisk = true),
-        "9C:99:A0" to OuiEntry("Xiaomi/FIMI", "Xiaomi Communications (FIMI)", highFalsePositiveRisk = true),
-        "78:8C:B5" to OuiEntry("TP-Link", "TP-Link Systems", highFalsePositiveRisk = true),
+        "24:0A:C4" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "30:AE:A4" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "A4:CF:12" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "AC:67:B2" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "10:06:1C" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "B0:A7:32" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "CC:DB:A7" to OuiEntry("Espressif", "Espressif Systems", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "00:E0:4C" to OuiEntry("Realtek", "Realtek Semiconductor", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "08:EA:40" to OuiEntry("Bilian", "Shenzhen Bilian (LB-LINK)", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "10:D0:7A" to OuiEntry("AMPAK", "AMPAK Technology (WiFi module)", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "2C:DC:AD" to OuiEntry("WNC", "Wistron NeWeb (ODM module)", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "28:6C:07" to OuiEntry("Xiaomi", "Xiaomi Communications", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "EC:D0:9F" to OuiEntry("Xiaomi", "Xiaomi Communications", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "9C:99:A0" to OuiEntry("Xiaomi/FIMI", "Xiaomi Communications (FIMI)", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+        "78:8C:B5" to OuiEntry("TP-Link", "TP-Link Systems", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
 
         // Removed as mislabels (true owner is an unrelated consumer vendor, no
         // detection value): 08:D4:6A=LG, 64:D4:DA=Intel, 58:D5:6E=D-Link,
@@ -126,7 +134,7 @@ object WifiOuiDatabase {
      */
     fun isDroneOui(bssid: String): Boolean {
         val entry = lookup(bssid) ?: return false
-        return !entry.highFalsePositiveRisk
+        return entry.role == OuiRole.DRONE && !entry.highFalsePositiveRisk
     }
 
     /**
@@ -161,8 +169,16 @@ object WifiOuiDatabase {
  * @property fullName Full registered organization name
  * @property highFalsePositiveRisk True if this OUI is also commonly used in non-drone devices
  */
+enum class OuiRole {
+    DRONE,
+    PRIVACY_FLOCK,
+    PRIVACY_INFRASTRUCTURE,
+    ENRICHMENT_ONLY
+}
+
 data class OuiEntry(
     val manufacturer: String,
     val fullName: String,
-    val highFalsePositiveRisk: Boolean = false
+    val highFalsePositiveRisk: Boolean = false,
+    val role: OuiRole = OuiRole.DRONE
 )

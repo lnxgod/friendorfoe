@@ -22,6 +22,94 @@ static badge_easter_egg_remote_id_t exact_remote_id(void)
     return rid;
 }
 
+static size_t source_occurrence_count(const char *source, const char *needle)
+{
+    size_t count = 0U;
+    size_t needle_len = strlen(needle);
+    const char *cursor = source;
+
+    while (cursor && needle_len > 0U &&
+           (cursor = strstr(cursor, needle)) != NULL) {
+        count++;
+        cursor += needle_len;
+    }
+    return count;
+}
+
+static bool source_line_starts_with(const char *line, const char *prefix)
+{
+    return strncmp(line, prefix, strlen(prefix)) == 0;
+}
+
+static bool source_position_is_canary_guarded(
+    const char *source,
+    const char *position)
+{
+    enum {
+        SOURCE_MAX_PREPROCESSOR_DEPTH = 32,
+        SOURCE_GUARD_OTHER = 0,
+        SOURCE_GUARD_CANARY = 1,
+        SOURCE_GUARD_NON_CANARY = -1,
+    };
+    int guards[SOURCE_MAX_PREPROCESSOR_DEPTH] = {0};
+    size_t depth = 0U;
+    const char *line = source;
+
+    while (line && line < position && *line) {
+        while (line < position && (*line == ' ' || *line == '\t')) {
+            line++;
+        }
+        if (source_line_starts_with(
+                line, "#if defined(FOF_DC34_GAME_CANARY)") ||
+            source_line_starts_with(
+                line, "#ifdef FOF_DC34_GAME_CANARY")) {
+            TEST_ASSERT_LESS_THAN_UINT(
+                SOURCE_MAX_PREPROCESSOR_DEPTH, depth);
+            guards[depth++] = SOURCE_GUARD_CANARY;
+        } else if (
+            source_line_starts_with(
+                line, "#if !defined(FOF_DC34_GAME_CANARY)") ||
+            source_line_starts_with(
+                line, "#ifndef FOF_DC34_GAME_CANARY")) {
+            TEST_ASSERT_LESS_THAN_UINT(
+                SOURCE_MAX_PREPROCESSOR_DEPTH, depth);
+            guards[depth++] = SOURCE_GUARD_NON_CANARY;
+        } else if (source_line_starts_with(line, "#if") ||
+                   source_line_starts_with(line, "#ifdef") ||
+                   source_line_starts_with(line, "#ifndef")) {
+            TEST_ASSERT_LESS_THAN_UINT(
+                SOURCE_MAX_PREPROCESSOR_DEPTH, depth);
+            guards[depth++] = SOURCE_GUARD_OTHER;
+        } else if (source_line_starts_with(line, "#else") && depth > 0U) {
+            guards[depth - 1U] = -guards[depth - 1U];
+        } else if (source_line_starts_with(line, "#endif") && depth > 0U) {
+            depth--;
+        }
+
+        line = strchr(line, '\n');
+        if (line) {
+            line++;
+        }
+    }
+
+    for (size_t i = 0U; i < depth; i++) {
+        if (guards[i] == SOURCE_GUARD_CANARY) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char *assert_canary_source_site(
+    const char *source,
+    const char *needle)
+{
+    const char *site = strstr(source, needle);
+    TEST_ASSERT_NOT_NULL(site);
+    TEST_ASSERT_TRUE(source_position_is_canary_guarded(source, site));
+    return site;
+}
+
 void test_badge_easter_remote_id_requires_every_exact_field(void)
 {
     badge_easter_egg_remote_id_t rid = exact_remote_id();
@@ -90,18 +178,21 @@ void test_badge_easter_remote_id_requires_exact_geodetic_altitude(void)
 
 void test_badge_easter_ssid_is_exact_case_sensitive_bytes(void)
 {
-    const uint8_t embedded_nul[10] = {
-        'f', 'o', 'f', '-', 'g', 'o', 'b', '\0', 'u', 'e',
+    const uint8_t embedded_nul[17] = {
+        'G', 'a', 'm', 'e', 'C', 'h', 'a', 'n', '\0',
+        'e', 'r', 's', 'A', 'I', '-', '6', '7',
     };
 
     TEST_ASSERT_TRUE(badge_easter_egg_ssid_matches(
+        (const uint8_t *)"GameChangersAI-67", 17));
+    TEST_ASSERT_FALSE(badge_easter_egg_ssid_matches(
+        (const uint8_t *)"gamechangersai-67", 17));
+    TEST_ASSERT_FALSE(badge_easter_egg_ssid_matches(
+        (const uint8_t *)"xGameChangersAI-67", 18));
+    TEST_ASSERT_FALSE(badge_easter_egg_ssid_matches(
+        (const uint8_t *)"GameChangersAI-67x", 18));
+    TEST_ASSERT_FALSE(badge_easter_egg_ssid_matches(
         (const uint8_t *)"fof-goblue", 10));
-    TEST_ASSERT_FALSE(badge_easter_egg_ssid_matches(
-        (const uint8_t *)"FOF-GOBLUE", 10));
-    TEST_ASSERT_FALSE(badge_easter_egg_ssid_matches(
-        (const uint8_t *)"xfof-goblue", 11));
-    TEST_ASSERT_FALSE(badge_easter_egg_ssid_matches(
-        (const uint8_t *)"fof-goblue-x", 12));
     TEST_ASSERT_FALSE(badge_easter_egg_ssid_matches(embedded_nul,
                                                     sizeof(embedded_nul)));
 }
@@ -147,6 +238,103 @@ void test_badge_easter_machine_is_one_shot_until_init(void)
     TEST_ASSERT_TRUE(machine.visible);
     TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_PHASE_THANKS, machine.phase);
     TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_WIFI_SSID, machine.source);
+}
+
+void test_badge_easter_radio_retrigger_waits_exactly_90_seconds(void)
+{
+    badge_easter_egg_machine_t machine;
+
+    badge_easter_egg_machine_init(&machine);
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID, 1000U));
+    TEST_ASSERT_FALSE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID, 2000U));
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_dismiss_at(&machine, 3000U));
+    TEST_ASSERT_TRUE(machine.radio_cooldown_active);
+    TEST_ASSERT_EQUAL_UINT32(3000U, machine.dismissed_at_ms);
+
+    TEST_ASSERT_FALSE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID, 92999U));
+    TEST_ASSERT_EQUAL_UINT32(3000U, machine.dismissed_at_ms);
+    TEST_ASSERT_FALSE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID, 92999U));
+    TEST_ASSERT_EQUAL_UINT32(3000U, machine.dismissed_at_ms);
+
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID, 93000U));
+    TEST_ASSERT_TRUE(machine.visible);
+    TEST_ASSERT_FALSE(machine.radio_cooldown_active);
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_PHASE_THANKS, machine.phase);
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID, machine.source);
+}
+
+void test_badge_easter_radio_retrigger_is_wrap_safe(void)
+{
+    const uint32_t dismissed_at = UINT32_MAX - 44999U;
+    badge_easter_egg_machine_t machine;
+
+    badge_easter_egg_machine_init(&machine);
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID,
+        dismissed_at - 1000U));
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_dismiss_at(
+        &machine, dismissed_at));
+    TEST_ASSERT_FALSE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID, 44999U));
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID, 45000U));
+}
+
+void test_badge_easter_button_stays_one_shot_after_radio_cooldown(void)
+{
+    badge_easter_egg_machine_t machine;
+
+    badge_easter_egg_machine_init(&machine);
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_BUTTON, 1000U));
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_dismiss_at(&machine, 2000U));
+    TEST_ASSERT_FALSE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_BUTTON, 92000U));
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID, 92000U));
+}
+
+void test_badge_easter_bounce_exit_starts_radio_cooldown(void)
+{
+    badge_easter_egg_machine_t machine;
+
+    badge_easter_egg_machine_init(&machine);
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID, 1000U));
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_advance_at(&machine, 2000U));
+    TEST_ASSERT_EQUAL(BADGE_EASTER_EGG_PHASE_BOUNCE, machine.phase);
+    TEST_ASSERT_FALSE(machine.radio_cooldown_active);
+
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_advance_at(&machine, 3000U));
+    TEST_ASSERT_FALSE(machine.visible);
+    TEST_ASSERT_TRUE(machine.radio_cooldown_active);
+    TEST_ASSERT_EQUAL_UINT32(3000U, machine.dismissed_at_ms);
+    TEST_ASSERT_FALSE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID, 92999U));
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID, 93000U));
+}
+
+void test_badge_easter_init_clears_radio_cooldown(void)
+{
+    badge_easter_egg_machine_t machine;
+
+    badge_easter_egg_machine_init(&machine);
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_WIFI_SSID, 1000U));
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_dismiss_at(&machine, 2000U));
+    TEST_ASSERT_TRUE(machine.radio_cooldown_active);
+
+    badge_easter_egg_machine_init(&machine);
+    TEST_ASSERT_FALSE(machine.radio_cooldown_active);
+    TEST_ASSERT_EQUAL_UINT32(0U, machine.dismissed_at_ms);
+    TEST_ASSERT_TRUE(badge_easter_egg_machine_trigger_at(
+        &machine, BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID, 2000U));
 }
 
 void test_badge_easter_machine_rejects_none_without_consuming_latch(void)
@@ -417,6 +605,121 @@ void test_badge_easter_renderer_uses_only_approved_presentation_copy(void)
     TEST_ASSERT_NOT_NULL(strstr(source, "GameChangers AI"));
     TEST_ASSERT_NOT_NULL(strstr(source, "GAMECHANGERSAI_LOGO_WIDTH"));
     TEST_ASSERT_NOT_NULL(strstr(source, "BADGE_EASTER_EGG_PHASE_BOUNCE"));
+    TEST_ASSERT_EQUAL_UINT(
+        1U, source_occurrence_count(source, "badge_con_presentation_hud("));
+    TEST_ASSERT_EQUAL_UINT(
+        1U, source_occurrence_count(source, "badge_ok_button_policy_update("));
+    TEST_ASSERT_EQUAL_UINT(
+        2U, source_occurrence_count(source, "fb_draw_heart_7x5("));
+
+    const char *button_task = strstr(source, "static void badge_button_task(");
+    TEST_ASSERT_NOT_NULL(button_task);
+    const char *policy_init = assert_canary_source_site(
+        source,
+        "badge_ok_button_policy_init(\n"
+        "        &ok_policy,\n"
+        "        BADGE_BUTTON_LONG_MS,\n"
+        "        BADGE_BUTTON_EASTER_HOLD_MS,\n"
+        "        triforce_pressed_at_boot);");
+    const char *policy_update = assert_canary_source_site(
+        source,
+        "badge_ok_button_action_t ok_action = badge_ok_button_policy_update(\n"
+        "            &ok_policy,\n"
+        "            buttons[0].stable_pressed,\n"
+        "            !suppress_single_button_dispatch &&\n"
+        "                !easter_visible_at_batch_start &&\n"
+        "                !badge_power_runtime_is_quiet(),\n"
+        "            (uint32_t)badge_now_ms());");
+    const char *reset_branch = strstr(
+        button_task, "if (power_event == BADGE_POWER_CHORD_RESET) {");
+    const char *normal_edges = strstr(
+        button_task, "if (!suppress_single_button_dispatch) {");
+    const char *action_dispatch = assert_canary_source_site(
+        source,
+        "if (ok_action == BADGE_OK_BUTTON_ACTION_DETAIL) {\n"
+        "            badge_button_working_double_press();\n"
+        "        } else if (ok_action == BADGE_OK_BUTTON_ACTION_EASTER) {\n"
+        "            (void)badge_easter_egg_runtime_trigger(\n"
+        "                BADGE_EASTER_EGG_SOURCE_BUTTON);");
+    TEST_ASSERT_NOT_NULL(reset_branch);
+    TEST_ASSERT_NOT_NULL(normal_edges);
+    TEST_ASSERT_TRUE(button_task < policy_init);
+    TEST_ASSERT_TRUE(policy_update < reset_branch);
+    TEST_ASSERT_TRUE(normal_edges < action_dispatch);
+    TEST_ASSERT_EQUAL_UINT(
+        1U, source_occurrence_count(source, "badge_ok_button_policy_init("));
+    TEST_ASSERT_EQUAL_UINT(
+        1U,
+        source_occurrence_count(
+            source, "if (ok_action == BADGE_OK_BUTTON_ACTION_DETAIL) {"));
+
+    const char *strip = strstr(
+        source, "static void draw_scanner_bottom_strip(");
+    TEST_ASSERT_NOT_NULL(strip);
+    const char *strip_end = strstr(strip, "static void draw_watch_eye(");
+    const char *hud_call = assert_canary_source_site(
+        source,
+        "badge_con_hud_plan_t hud =\n"
+        "        badge_con_presentation_hud(&s_con_render.snapshot);");
+    const char *pulse = assert_canary_source_site(
+        source, "bg = rgb565_mix_color(bg, activity_tint, mix);");
+    const char *strip_fill = strstr(
+        strip, "fb_fill_rect(0, y, LCD_W, LCD_H - y, bg);");
+    const char *hud_gate = assert_canary_source_site(
+        source, "if (hud.visible && ok && !safe_usb) {");
+    const char *heart_definition = assert_canary_source_site(
+        source, "static void fb_draw_heart_7x5(");
+    const char *heart_call = assert_canary_source_site(
+        source,
+        "fb_draw_heart_7x5(left, value_y, hud.color_rgb565);");
+    const char *value_draw = assert_canary_source_site(
+        source,
+        "fb_draw_tiny_string(\n"
+        "            left + BADGE_DISPLAY_HEART_WIDTH + 2,\n"
+        "            value_y,\n"
+        "            value,\n"
+        "            hud.color_rgb565,\n"
+        "            value_bg);");
+    const char *value_backing = assert_canary_source_site(
+        source,
+        "uint16_t value_bg = badge_theme_contrast_floor(\n"
+        "            COL_WHITE, hud.color_rgb565);\n"
+        "        fb_fill_rect(\n"
+        "            left - 2,\n"
+        "            value_y,\n"
+        "            total_w + 4,\n"
+        "            BADGE_DISPLAY_HEART_HEIGHT,\n"
+        "            value_bg);");
+    TEST_ASSERT_NOT_NULL(strip_end);
+    TEST_ASSERT_NOT_NULL(strip_fill);
+    TEST_ASSERT_NOT_EQUAL(heart_definition, heart_call);
+    TEST_ASSERT_TRUE(strip <= hud_call && hud_call < strip_end);
+    TEST_ASSERT_TRUE(strip <= pulse && pulse < strip_end);
+    TEST_ASSERT_TRUE(pulse < strip_fill);
+    TEST_ASSERT_TRUE(strip_fill < hud_gate);
+    TEST_ASSERT_TRUE(hud_gate < strip_end);
+    TEST_ASSERT_TRUE(hud_gate < value_backing);
+    TEST_ASSERT_TRUE(value_backing < heart_call);
+    TEST_ASSERT_TRUE(heart_call < value_draw);
+    TEST_ASSERT_TRUE(value_draw < strip_end);
+    TEST_ASSERT_EQUAL_UINT(
+        1U,
+        source_occurrence_count(
+            source, "bg = rgb565_mix_color(bg, activity_tint, mix);"));
+    TEST_ASSERT_NOT_NULL(strstr(
+        strip,
+        "if (hud.visible && ok && !safe_usb && activity_tint != 0U) {"));
+    TEST_ASSERT_NOT_NULL(strstr(
+        strip, "const char *role = role_names[hud.state];"));
+    TEST_ASSERT_NOT_NULL(strstr(
+        strip,
+        "snprintf(value, sizeof(value), \"%u/%u\", "
+        "hud.current, hud.maximum);"));
+    TEST_ASSERT_NULL(strstr(source, "\"UNDER ATTACK\""));
+    TEST_ASSERT_NULL(strstr(source, "\"HEALING\""));
+    TEST_ASSERT_NULL(strstr(source, "\"CURE FADING\""));
+    TEST_ASSERT_NULL(strstr(source, "\"HEALTH\""));
+    TEST_ASSERT_NULL(strstr(source, "\"CURE\""));
     TEST_ASSERT_NULL(strstr(source, "Welcome to Hell"));
     TEST_ASSERT_NULL(strstr(source, "Just Kidding"));
     TEST_ASSERT_NULL(strstr(source, "Defcon 34 FoF"));

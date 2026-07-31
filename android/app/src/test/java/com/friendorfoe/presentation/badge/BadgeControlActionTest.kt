@@ -7,6 +7,11 @@ import org.junit.Test
 class BadgeControlActionTest {
 
     @Test
+    fun `reboot is the only dangerous Android badge action`() {
+        assertEquals(listOf(BadgeDangerAction.REBOOT), BadgeDangerAction.entries)
+    }
+
+    @Test
     fun `each dangerous action requires exact confirmation`() {
         BadgeDangerAction.entries.forEach { action ->
             val armed = reduceBadgeDangerConfirmation(

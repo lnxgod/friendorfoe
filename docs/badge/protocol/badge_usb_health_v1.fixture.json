@@ -1,0 +1,22 @@
+{
+  "usb_health": {
+    "schema": 1,
+    "task_started": true,
+    "host_connected": true,
+    "parser_state": "command",
+    "rx_bytes": 128,
+    "valid_commands": 3,
+    "responses_completed": 3,
+    "required_response_failures": 0,
+    "malformed_lines": 0,
+    "dropped_progress_frames": 0,
+    "dropped_optional_frames": 0,
+    "upload_received": 0,
+    "upload_size": 0,
+    "task_heartbeat_age_s": 0,
+    "last_rx_age_s": 0,
+    "last_command_age_s": 0,
+    "last_response_age_s": 0,
+    "last_upload_progress_age_s": null
+  }
+}

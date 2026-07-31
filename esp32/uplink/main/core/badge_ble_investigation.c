@@ -319,17 +319,20 @@ static bool parse_chunk(const cJSON *root, ble_investigation_chunk_t *chunk)
     return false;
 }
 
-bool badge_ble_investigation_start(const char *request_id,
-                                   const char *mode,
-                                   const char *target_mac,
-                                   const char *transport,
-                                   char *err,
-                                   size_t err_len)
+bool badge_ble_investigation_start_with_timeout(
+    const char *request_id,
+    const char *mode,
+    const char *target_mac,
+    uint32_t timeout_ms,
+    const char *transport,
+    char *err,
+    size_t err_len)
 {
     set_error(err, err_len, "");
     ble_investigation_request_t request = {0};
     ble_investigation_request_t normalized;
     if (!request_id || !mode || !transport ||
+        timeout_ms == 0U || timeout_ms > BLE_INV_DEFAULT_TIMEOUT_MS ||
         strlen(request_id) >= sizeof(request.request_id) ||
         !ble_investigation_mode_from_name(mode, &request.mode)) {
         set_error(err, err_len, "invalid_request");
@@ -342,7 +345,7 @@ bool badge_ble_investigation_start(const char *request_id,
     }
     memcpy(request.request_id, request_id, strlen(request_id) + 1);
     memcpy(request.target_mac, target, strlen(target) + 1);
-    request.timeout_ms = BLE_INV_DEFAULT_TIMEOUT_MS;
+    request.timeout_ms = timeout_ms;
     if (!badge_ble_investigation_request_validate(&request, &normalized)) {
         set_error(err, err_len, "invalid_request");
         return false;
@@ -416,6 +419,18 @@ bool badge_ble_investigation_start(const char *request_id,
     }
     ESP_LOGI(TAG, "BLE investigation %s started via %s", request_id, transport);
     return true;
+}
+
+bool badge_ble_investigation_start(const char *request_id,
+                                   const char *mode,
+                                   const char *target_mac,
+                                   const char *transport,
+                                   char *err,
+                                   size_t err_len)
+{
+    return badge_ble_investigation_start_with_timeout(
+        request_id, mode, target_mac, BLE_INV_DEFAULT_TIMEOUT_MS,
+        transport, err, err_len);
 }
 
 bool badge_ble_investigation_start_local(const char *request_id,

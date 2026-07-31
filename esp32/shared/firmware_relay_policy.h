@@ -55,6 +55,14 @@ typedef struct {
     fof_legacy_manifest_view_t manifest;
 } fof_legacy_relay_authorization_view_t;
 
+typedef struct {
+    uint32_t expected_generation;
+    const char *expected_hardware_id;
+    uint32_t staged_generation;
+    bool live_identity_received;
+    const char *live_hardware_id;
+} fof_firmware_bound_relay_view_t;
+
 bool fof_firmware_legacy_ack_matches(
     const fof_firmware_receipt_view_t *receipt,
     const char *session_id);
@@ -78,6 +86,9 @@ bool fof_firmware_strict_receipt_matches(
 
 bool fof_firmware_legacy_relay_authorized(
     const fof_legacy_relay_authorization_view_t *authorization);
+
+bool fof_firmware_bound_relay_request_matches(
+    const fof_firmware_bound_relay_view_t *request);
 
 /**
  * Prove that a scanner crossed a reboot boundary after a relay.

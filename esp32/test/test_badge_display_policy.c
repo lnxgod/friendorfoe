@@ -6,6 +6,51 @@
 
 #include <string.h>
 
+static const char STRICT_POLICY_JSON[] =
+    "{\"version\":1,\"classes\":{"
+    "\"drone\":{\"enabled\":true,\"lane\":\"both\","
+    "\"min_proximity\":\"present\",\"priority\":100},"
+    "\"meta\":{\"enabled\":true,\"lane\":\"top\","
+    "\"min_proximity\":\"near\",\"priority\":95},"
+    "\"tracker\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"close\",\"priority\":90},"
+    "\"wifi_attack\":{\"enabled\":false,\"lane\":\"off\","
+    "\"min_proximity\":\"present\",\"priority\":85},"
+    "\"skimmer\":{\"enabled\":false,\"lane\":\"off\","
+    "\"min_proximity\":\"close\",\"priority\":0},"
+    "\"camera\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"near\",\"priority\":70},"
+    "\"flock\":{\"enabled\":true,\"lane\":\"top\","
+    "\"min_proximity\":\"present\",\"priority\":80},"
+    "\"lock\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"near\",\"priority\":60},"
+    "\"hid\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"close\",\"priority\":55},"
+    "\"beacon\":{\"enabled\":false,\"lane\":\"off\","
+    "\"min_proximity\":\"present\",\"priority\":40},"
+    "\"event_badge\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"present\",\"priority\":35},"
+    "\"auracast\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"near\",\"priority\":30},"
+    "\"scanner_status\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"present\",\"priority\":20},"
+    "\"ble_attack\":{\"enabled\":true,\"lane\":\"both\","
+    "\"min_proximity\":\"present\",\"priority\":92}}}";
+
+static void assert_policy_rejected_atomically(const char *json)
+{
+    badge_display_policy_t before;
+    badge_display_policy_t after;
+    char err[64] = {0};
+
+    memset(&before, 0xa5, sizeof(before));
+    after = before;
+    TEST_ASSERT_FALSE(badge_display_policy_parse_json(
+        json, &after, err, sizeof(err)));
+    TEST_ASSERT_EQUAL_MEMORY(&before, &after, sizeof(before));
+    TEST_ASSERT_NOT_EQUAL('\0', err[0]);
+}
+
 static drone_detection_t policy_det(uint8_t source,
                                     const char *id,
                                     const char *reason,
@@ -51,6 +96,54 @@ void test_badge_display_policy_rejects_invalid_lane(void)
 
     TEST_ASSERT_FALSE(badge_display_policy_parse_json(json, &parsed,
                                                       err, sizeof(err)));
+}
+
+void test_badge_display_policy_requires_complete_exact_schema_atomically(void)
+{
+    badge_display_policy_t parsed;
+    char err[64] = {0};
+
+    TEST_ASSERT_TRUE(badge_display_policy_parse_json(
+        STRICT_POLICY_JSON, &parsed, err, sizeof(err)));
+    TEST_ASSERT_EQUAL_UINT8(1, parsed.version);
+    TEST_ASSERT_EQUAL(
+        BADGE_DISPLAY_LANE_TOP,
+        parsed.classes[BADGE_DISPLAY_CLASS_META].lane);
+    TEST_ASSERT_EQUAL(
+        BADGE_DISPLAY_PROX_CLOSE,
+        parsed.classes[BADGE_DISPLAY_CLASS_TRACKER].min_proximity);
+    TEST_ASSERT_EQUAL_UINT8(
+        92, parsed.classes[BADGE_DISPLAY_CLASS_BLE_ATTACK].priority);
+
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"classes\":{"
+        "\"drone\":{\"enabled\":true,\"lane\":\"both\","
+        "\"min_proximity\":\"present\",\"priority\":100}}}");
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"classes\":{\"unknown\":{"
+        "\"enabled\":true,\"lane\":\"both\","
+        "\"min_proximity\":\"present\",\"priority\":100}}}");
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"unknown\":false,\"classes\":{}}");
+}
+
+void test_badge_display_policy_rejects_duplicate_and_partial_class_atomically(
+    void)
+{
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"version\":1,\"classes\":{}}");
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"classes\":{"
+        "\"drone\":{\"enabled\":true,\"enabled\":false,\"lane\":\"both\","
+        "\"min_proximity\":\"present\",\"priority\":100}}}");
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"classes\":{"
+        "\"drone\":{\"enabled\":true,\"lane\":\"both\","
+        "\"min_proximity\":\"present\"}}}");
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"classes\":{"
+        "\"drone\":{\"enabled\":1,\"lane\":\"both\","
+        "\"min_proximity\":\"present\",\"priority\":100}}}");
 }
 
 void test_badge_display_policy_disabled_beacon_suppresses_normal_detection(void)

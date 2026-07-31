@@ -12,11 +12,15 @@ from unittest import mock
 
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "esp32" / "uplink" / "tools"
 sys.path.insert(0, str(TOOLS_DIR))
-if "serial" not in sys.modules:
+try:
+    import serial as _serial_probe  # type: ignore  # noqa: F401
+except ModuleNotFoundError:
     fake_serial = types.ModuleType("serial")
     fake_serial.Serial = object
-    sys.modules["serial"] = fake_serial
-import recover_fof_badge as recover
+    with mock.patch.dict(sys.modules, {"serial": fake_serial}):
+        import recover_fof_badge as recover
+else:
+    import recover_fof_badge as recover
 
 
 class BadgeRecoveryScriptTests(unittest.TestCase):

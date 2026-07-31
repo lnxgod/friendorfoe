@@ -136,8 +136,11 @@ bool uart_tx_firmware_backoff_active(void);
  */
 void uart_tx_send_raw_json(const char *json_str);
 
+#if defined(FOF_DC34_GAME_CANARY)
+void uart_tx_set_firmware_quiet_window(bool active);
+#endif
+
 #ifdef FOF_BADGE_VARIANT
-/** Coalesce a fixed-source Easter egg event for the UART TX task. */
 void uart_tx_note_badge_easter_egg(badge_easter_egg_source_t source);
 
 bool uart_tx_set_display_policy_json(const char *json,

@@ -26,11 +26,18 @@
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "psram_alloc.h"
+#if defined(FOF_DC34_GAME_CANARY) && CONFIG_BT_ENABLED
+#include "esp_bt.h"
+#endif
 
 /* Core */
 #include "config.h"
 #include "nvs_config.h"
 #include "serial_config.h"
+#include "badge_usb_transport.h"
+#include "badge_usb_health_policy.h"
+#include "badge_usb_recovery.h"
+#include "uart_startup_gate.h"
 #include "badge_mode.h"
 #include "badge_runtime.h"
 #ifdef FOF_BADGE_VARIANT
@@ -38,6 +45,12 @@
 #include "badge_easter_egg_runtime.h"
 #include "badge_display_policy_runtime.h"
 #include "badge_theme_runtime.h"
+#if defined(FOF_DC34_GAME_CANARY)
+#include "badge_con_protocol.h"
+#include "badge_con_radio_runtime_policy.h"
+#include "badge_con_runtime.h"
+#include "badge_con_vhci.h"
+#endif
 #endif
 #include "detection_types.h"
 #include "detection_policy.h"
@@ -63,8 +76,8 @@
 
 #include "version.h"
 
-#if CONFIG_BT_ENABLED
-#error "uplink firmware must keep Bluetooth disabled; uplinks should never advertise or scan BLE"
+#if CONFIG_BT_ENABLED && !(defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY))
+#error "uplink firmware must keep Bluetooth disabled; only the explicit controller-only badge game canary may enable it"
 #endif
 
 #if !defined(UPLINK_ESP32S3)
@@ -75,11 +88,196 @@
 #define BADGE_DISPLAY_UPDATE_MS 250
 #endif
 
+static StaticTask_t s_display_task_tcb;
+/* ESP-IDF uses byte-sized StackType_t on ESP32. Static storage keeps the
+ * display worker available even when the heap is too fragmented for a late
+ * task allocation. The task stays notification-gated during recovery-only
+ * startup. */
+_Static_assert(sizeof(StackType_t) == 1,
+               "display static stack sizing requires byte StackType_t");
+static StackType_t s_display_task_stack[CONFIG_DISPLAY_STACK]
+    __attribute__((aligned(16)));
+static TaskHandle_t s_display_task_handle = NULL;
+static volatile bool s_ota_pending_verify = false;
+
 /* Scanner firmware discovery is scanner-driven once after delayed boot.
  * Explicit force-checks remain available through the busy-safe control path. */
 
 static const char *TAG = "main";
 static scanner_info_t s_debug_scanner_snapshots[2] = {0};
+
+#define UART_STARTUP_OPERATION_RETRIES 600U
+#define UART_STARTUP_OPERATION_RETRY_MS 50U
+#define UART_STARTUP_RELEASE_ATTEMPTS 3U
+#define UART_STARTUP_RELEASE_RETRY_MS 10U
+
+#if defined(FOF_DC34_GAME_CANARY)
+static badge_con_radio_runtime_policy_t s_badge_con_radio_runtime;
+/* Latched for the full boot. Clearing the RTC maintenance marker immediately
+ * before a planned restart must not let the display task initialize game RF
+ * during the final drain/restart window. */
+static bool s_badge_update_maintenance_boot = false;
+
+#define BADGE_UPDATE_SUPERVISOR_INTERVAL_MS 1000U
+#define BADGE_UPDATE_HEALTH_TIMEOUT_MS 60000U
+#define BADGE_UPDATE_RECEIPT_TIMEOUT_MS 1000U
+
+static bool badge_con_campaign_allows_radio(
+    const fw_store_campaign_snapshot_t *campaign)
+{
+    return campaign && !campaign->radio_inhibited &&
+           (campaign->state == FW_CAMPAIGN_IDLE ||
+            campaign->state == FW_CAMPAIGN_ALL_TERMINAL);
+}
+
+static void badge_con_radio_runtime_poll(uint32_t now_ms)
+{
+    fw_store_campaign_snapshot_t campaign = {0};
+    bool campaign_sampled =
+        fw_store_campaign_state_sample(&campaign);
+    bool must_yield = !campaign_sampled ||
+                      !badge_con_campaign_allows_radio(&campaign);
+    if (!badge_con_vhci_apply_radio_policy(
+            must_yield, campaign.operation_epoch)) {
+        must_yield = true;
+    }
+
+    uint32_t peer = 0U;
+    uint8_t session = 0U;
+    bool identity_valid =
+        badge_con_runtime_identity(&peer, &session);
+    badge_con_snapshot_t game = {0};
+    bool game_valid = badge_con_runtime_snapshot(&game);
+    if (badge_con_radio_runtime_controller_init_allowed(
+            !must_yield,
+            identity_valid,
+            game_valid,
+            game.active,
+            s_ota_pending_verify)) {
+        (void)badge_con_vhci_init(peer, session);
+    }
+
+    bool scanner_rebooted = false;
+    for (int lane = 0; lane < BADGE_CON_RADIO_SCANNER_LANES; lane++) {
+        scanner_info_t scanner = {0};
+        if (uart_rx_get_scanner_info_snapshot(lane, &scanner) &&
+            badge_con_radio_runtime_observe_boot_id(
+                &s_badge_con_radio_runtime, lane, scanner.boot_id)) {
+            scanner_rebooted = true;
+        }
+    }
+    if (scanner_rebooted) {
+        badge_con_runtime_clear_self_ack();
+        badge_con_vhci_set_self_ready(false);
+    }
+
+    bool exact_self_ack =
+        badge_con_runtime_self_ack_matches(peer, session);
+    if (badge_con_radio_runtime_retry_self_due(
+            &s_badge_con_radio_runtime, exact_self_ack, now_ms)) {
+        badge_con_runtime_clear_self_ack();
+        exact_self_ack = false;
+    }
+    bool self_ready = identity_valid &&
+        badge_con_radio_runtime_all_self_sent(
+            &s_badge_con_radio_runtime) &&
+        exact_self_ack;
+    badge_con_vhci_set_identity_state(
+        game_valid ? game.role : BADGE_CON_ROLE_NORMAL,
+        game_valid && game.super);
+    badge_con_vhci_set_game_active(game_valid && game.active);
+    badge_con_vhci_set_self_ready(
+        !must_yield && game_valid && game.active && self_ready);
+
+    /* Poll even while inhibited. This is the only path that can consume the
+     * controller's disable acknowledgment and publish exact radio quiescence
+     * to a waiting firmware operation. */
+    badge_con_vhci_poll(now_ms);
+    if (must_yield || !game_valid || !game.active || !identity_valid ||
+        self_ready) {
+        return;
+    }
+
+    badge_con_vhci_snapshot_t radio = {0};
+    badge_con_vhci_snapshot(&radio);
+    if (!radio.controller_initialized ||
+        radio.state == BADGE_CON_VHCI_FAILED ||
+        radio.advertising || radio.command_in_flight ||
+        radio.radio_state_uncertain) {
+        return;
+    }
+
+    int lane = badge_con_radio_runtime_next_unsent_lane(
+        &s_badge_con_radio_runtime);
+    if (lane < 0) {
+        return;
+    }
+
+    /* Checked UART writes may wait for the shared lease. Re-sample the
+     * fail-busy gate immediately before each one so game setup never queues
+     * behind or enters a firmware byte stream. */
+    if (fw_store_game_radio_must_yield()) {
+        return;
+    }
+    char command[96] = {0};
+    if (badge_con_render_self_command(
+            peer, session, command, sizeof(command)) &&
+        uart_rx_send_command_to_scanner_checked(lane, command)) {
+        badge_con_radio_runtime_note_self_sent(
+            &s_badge_con_radio_runtime, lane, now_ms);
+    }
+}
+#endif
+
+static bool uart_startup_try_claim(void *context,
+                                   fw_operation_token_t *out)
+{
+    (void)context;
+    return fw_store_operation_try_begin(
+        FW_OPERATION_OWNER_RUNTIME_STARTUP, false, out);
+}
+
+static bool uart_startup_start(void *context)
+{
+    (void)context;
+    return uart_rx_start();
+}
+
+static bool uart_startup_release(void *context,
+                                 fw_operation_token_t token)
+{
+    (void)context;
+    return fw_store_operation_end(token);
+}
+
+static void uart_startup_delay(void *context, uint32_t delay_ms)
+{
+    (void)context;
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+}
+
+static uart_startup_gate_result_t start_uart_rx_with_operation_gate(void)
+{
+    const uart_startup_gate_hooks_t hooks = {
+        .context = NULL,
+        .try_claim = uart_startup_try_claim,
+        .start = uart_startup_start,
+        .release = uart_startup_release,
+        .delay = uart_startup_delay,
+    };
+    uart_startup_gate_result_t result = uart_startup_gate_run(
+        &hooks,
+        UART_STARTUP_OPERATION_RETRIES,
+        UART_STARTUP_OPERATION_RETRY_MS,
+        UART_STARTUP_RELEASE_ATTEMPTS,
+        UART_STARTUP_RELEASE_RETRY_MS);
+    if (result == UART_STARTUP_GATE_CLAIM_TIMEOUT) {
+        ESP_LOGE(TAG, "UART startup operation remained busy");
+    } else if (result == UART_STARTUP_GATE_RELEASE_FAILED) {
+        ESP_LOGE(TAG, "UART startup operation token release failed");
+    }
+    return result;
+}
 
 static void log_detection_queue_heap(const char *stage)
 {
@@ -343,8 +541,6 @@ static void send_badge_scan_profiles(void)
  *     and_reboot() instead, which boots the previous slot.
  * Rollback is required for fleet OTA safety.
  */
-static volatile bool s_ota_pending_verify = false;
-
 static bool reset_reason_is_unhealthy_for_rollback(esp_reset_reason_t reason)
 {
     bool crash = reason == ESP_RST_PANIC ||
@@ -374,8 +570,38 @@ static void rollback_check_at_boot(void)
                  running->label);
         if (reset_reason_is_unhealthy_for_rollback(esp_reset_reason())) {
             ESP_LOGE(TAG, "OTA ROLLBACK: pending image crashed before validation");
+#ifdef FOF_BADGE_VARIANT
+            badge_runtime_expected_reboot_lease_t rollback_lease = {0};
+            badge_runtime_expected_reboot_arm_result_t arm_result =
+                badge_runtime_arm_expected_reboot(
+                    "boot_health_rollback",
+                    BADGE_RUNTIME_EXPECTED_REBOOT_TARGET_LEGACY_V078_ROLLBACK,
+                    &rollback_lease);
+            if (arm_result !=
+                BADGE_RUNTIME_EXPECTED_REBOOT_ARM_RESULT_OWNED) {
+                ESP_LOGE(
+                    TAG,
+                    "OTA rollback blocked: expected-reboot ownership=%d",
+                    (int)arm_result);
+                return;
+            }
+#endif
             vTaskDelay(pdMS_TO_TICKS(500));
             esp_ota_mark_app_invalid_rollback_and_reboot();
+#ifdef FOF_BADGE_VARIANT
+            /* A successful rollback never returns. If no fallback slot can
+             * boot, stop retrying the pending image and expose the minimal
+             * USB/display recovery surface on the next expected app boot.
+             * Reuse the rollback lease so no duplicate arm can erase it. */
+            badge_runtime_arm_usb_recovery_once();
+            if (!badge_runtime_expected_reboot_lease_is_owned(
+                    &rollback_lease)) {
+                ESP_LOGE(TAG, "OTA rollback fallback lost reboot ownership");
+                return;
+            }
+            vTaskDelay(pdMS_TO_TICKS(120));
+            esp_restart();
+#endif
         }
     } else {
         ESP_LOGI(TAG, "OTA: running partition '%s' state=%d (already verified)",
@@ -398,6 +624,7 @@ static void rollback_mark_valid(void)
     }
 }
 
+#ifndef FOF_BADGE_VARIANT
 static void rollback_and_reboot_or_restart(const char *reason)
 {
     if (s_ota_pending_verify) {
@@ -408,17 +635,117 @@ static void rollback_and_reboot_or_restart(const char *reason)
          * fallback partition), fall back to a normal restart. */
     }
     ESP_LOGE(TAG, "WATCHDOG REBOOT: %s", reason);
-#ifdef FOF_BADGE_VARIANT
-    badge_runtime_arm_expected_reboot(reason ? reason : "watchdog");
-#endif
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
 }
+#else
+static _Noreturn void rollback_and_reboot_with_owned_lease(
+    const char *reason,
+    const badge_runtime_expected_reboot_lease_t *reboot_lease)
+{
+    /*
+     * The firmware-operation restart reservation is deliberately
+     * irreversible. Reaching this executor therefore requires a lease already
+     * published by the caller, and every impossible ownership-loss branch
+     * holds safely instead of returning to a permanently reserved runtime.
+     */
+    if (!badge_runtime_expected_reboot_lease_is_owned(reboot_lease)) {
+        ESP_LOGE(TAG, "Watchdog executor entered without reboot ownership");
+        for (;;) {
+            vTaskDelay(portMAX_DELAY);
+        }
+    }
+    if (s_ota_pending_verify) {
+        ESP_LOGE(TAG,
+                 "OTA ROLLBACK: %s while PENDING_VERIFY — reverting to "
+                 "previous slot",
+                 reason ? reason : "watchdog");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_ota_mark_app_invalid_rollback_and_reboot();
+        /* Does not return on success. If it does fall through (e.g. no valid
+         * fallback partition), reuse this exact legacy-compatible owner for
+         * the safe app restart below. */
+    }
+    /*
+     * A validated repeatable failure, or a pending rollback that unexpectedly
+     * returned, gets one safe-USB boot. Ownership was proved before either
+     * token is published, so a duplicate restart cannot alter retained bytes.
+     */
+    badge_runtime_arm_usb_recovery_once();
+    ESP_LOGE(TAG, "WATCHDOG REBOOT: %s", reason);
+    if (!badge_runtime_expected_reboot_lease_is_owned(reboot_lease)) {
+        ESP_LOGE(TAG, "Watchdog restart lost expected-reboot ownership");
+        for (;;) {
+            vTaskDelay(portMAX_DELAY);
+        }
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+    for (;;) {
+        vTaskDelay(portMAX_DELAY);
+    }
+}
+#endif
 
 /* ── Display update task ───────────────────────────────────────────────── */
 
+#ifdef FOF_BADGE_VARIANT
+/* USB dispatch is live before the late startup and watchdog checks below.
+ * An automatic restart must therefore acquire the same atomic exclusion as
+ * firmware staging/relay. If an operation already owns it, sleep between
+ * retries so the upload can finish; the successful reservation also prevents
+ * a new operation from starting before the non-returning restart. */
+static bool badge_automatic_restart_when_firmware_idle(
+    const char *reason)
+{
+    bool ownership_defer_logged = false;
+    badge_runtime_expected_reboot_lease_t reboot_lease = {0};
+    for (;;) {
+        badge_runtime_expected_reboot_target_t target =
+            s_ota_pending_verify
+                ? BADGE_RUNTIME_EXPECTED_REBOOT_TARGET_LEGACY_V078_ROLLBACK
+                : BADGE_RUNTIME_EXPECTED_REBOOT_TARGET_CURRENT;
+        badge_usb_firmware_restart_prepare_result_t prepare_result =
+            badge_usb_recovery_prepare_firmware_restart(
+                reason ? reason : "watchdog", target, &reboot_lease);
+        if (prepare_result ==
+            BADGE_USB_FIRMWARE_RESTART_PREPARE_OWNED) {
+            break;
+        }
+        if (prepare_result ==
+            BADGE_USB_FIRMWARE_RESTART_PREPARE_BUSY) {
+            /*
+             * The shared preparation helper never waits while owning one
+             * side of the reboot/firmware exclusion pair. It releases any
+             * transient reboot lease before reporting firmware BUSY.
+             */
+            if (!ownership_defer_logged) {
+                ESP_LOGW(
+                    TAG,
+                    "Automatic restart waiting for reboot/firmware owner: %s",
+                    reason ? reason : "unknown");
+                ownership_defer_logged = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(25));
+            continue;
+        }
+        ESP_LOGE(
+            TAG,
+            "Automatic restart cancelled: ownership preparation failed: %s",
+            reason ? reason : "unknown");
+        return false;
+    }
+
+    rollback_and_reboot_with_owned_lease(reason, &reboot_lease);
+}
+#endif
+
 static void display_task(void *arg)
 {
+    /* Created before scanner/network work so its memory is guaranteed, but
+     * do not let it overwrite the boot/recovery screen until normal startup
+     * has completed all required worker creation. */
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     ESP_LOGI(TAG, "Display task started");
 
     int prev_detection_count = 0;
@@ -426,20 +753,49 @@ static void display_task(void *arg)
     int overlay_ticks = 0;
     detection_summary_t last_det = {0};
 #endif
+#if defined(FOF_DC34_GAME_CANARY)
+    bool update_mode_drawn = false;
+#endif
 
     while (1) {
+#if defined(FOF_DC34_GAME_CANARY)
+        if (s_badge_update_maintenance_boot) {
+            if (!update_mode_drawn) {
+                char update_session[BADGE_UPDATE_SESSION_CAPACITY] = {0};
+                (void)badge_runtime_update_session_copy(update_session);
+                oled_show_boot_status("UPDATE MODE", "USB + UART",
+                                      update_session);
+                update_mode_drawn = true;
+            }
+            if (oled_is_powered()) {
+                badge_runtime_note_display_alive();
+            }
+            badge_runtime_note_display_stack_free(
+                (uint32_t)uxTaskGetStackHighWaterMark(NULL));
+            vTaskDelay(pdMS_TO_TICKS(BADGE_UPDATE_SUPERVISOR_INTERVAL_MS));
+            continue;
+        }
+#endif
         /* Gather current state */
         int detection_count = uart_rx_get_detection_count();
+#if defined(FOF_DC34_GAME_CANARY)
+        badge_con_radio_runtime_poll(
+            (uint32_t)(esp_timer_get_time() / 1000));
+#endif
 #ifdef FOF_BADGE_VARIANT
         badge_power_runtime_poll();
         if (badge_power_runtime_is_quiet()) {
             prev_detection_count = detection_count;
-            badge_runtime_note_display_alive();
-            badge_runtime_note_scanner_uart_alive(
-                uart_rx_is_scanner_connected());
+            if (oled_is_powered()) {
+                badge_runtime_note_display_alive();
+            }
             badge_runtime_note_display_stack_free(
                 (uint32_t)uxTaskGetStackHighWaterMark(NULL));
+#if defined(FOF_DC34_GAME_CANARY)
+            vTaskDelay(pdMS_TO_TICKS(BADGE_DISPLAY_UPDATE_MS));
+#else
             vTaskDelay(pdMS_TO_TICKS(1000));
+#endif
             continue;
         }
 #endif
@@ -495,8 +851,9 @@ static void display_task(void *arg)
         oled_update(detection_count, ble_connected, wifi_connected, backend_ok,
                     upload_count, wifi_ok, battery_pct, uptime, device_id_buf);
 #ifdef FOF_BADGE_VARIANT
-        badge_runtime_note_display_alive();
-        badge_runtime_note_scanner_uart_alive(scanner_ok);
+        if (oled_is_powered()) {
+            badge_runtime_note_display_alive();
+        }
         badge_runtime_note_display_stack_free(
             (uint32_t)uxTaskGetStackHighWaterMark(NULL));
 #endif
@@ -573,11 +930,162 @@ static void print_banner(void)
     ESP_LOGI(TAG, "=============================================");
 }
 
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+static void badge_send_scanner_ota_abort_sentinel(void)
+{
+    /* Scanners can reboot while their JSON parser is replaced by the OTA
+     * binary parser. Clear that state before starting the RX workers, then
+     * leave them silent until normal mode explicitly sends READY. */
+    uint8_t abort_seq[OTA_ABORT_SENTINEL_COUNT + 1];
+    memset(abort_seq, OTA_ABORT_SENTINEL_BYTE, OTA_ABORT_SENTINEL_COUNT);
+    abort_seq[OTA_ABORT_SENTINEL_COUNT] = '\n';
+    uart_write_bytes(CONFIG_BLE_SCANNER_UART, (const char *)abort_seq,
+                     sizeof(abort_seq));
+#if CONFIG_DUAL_SCANNER
+    uart_write_bytes(CONFIG_WIFI_SCANNER_UART, (const char *)abort_seq,
+                     sizeof(abort_seq));
+#endif
+    ESP_LOGI(TAG, "Sent OTA abort sequence to all scanners");
+    vTaskDelay(pdMS_TO_TICKS(100));
+}
+
+static void badge_update_emit_required_receipt(const char *receipt)
+{
+    if (!receipt) {
+        return;
+    }
+    if (!badge_usb_transport_emit(
+            receipt, strlen(receipt), BADGE_USB_FRAME_REQUIRED,
+            pdMS_TO_TICKS(BADGE_UPDATE_RECEIPT_TIMEOUT_MS))) {
+        ESP_LOGE(TAG, "Update-maintenance required response was not delivered");
+    }
+    if (!badge_usb_transport_drain(
+            pdMS_TO_TICKS(BADGE_UPDATE_RECEIPT_TIMEOUT_MS))) {
+        ESP_LOGE(TAG, "Update-maintenance response drain timed out");
+    }
+}
+
+static bool badge_update_health_rollback(
+    const char session[BADGE_UPDATE_SESSION_CAPACITY])
+{
+    badge_runtime_expected_reboot_lease_t rollback_lease = {0};
+    badge_usb_firmware_restart_prepare_result_t prepare_result =
+        badge_usb_recovery_prepare_firmware_restart(
+            "update_health_rollback",
+            BADGE_RUNTIME_EXPECTED_REBOOT_TARGET_LEGACY_V078_ROLLBACK,
+            &rollback_lease);
+    if (prepare_result !=
+        BADGE_USB_FIRMWARE_RESTART_PREPARE_OWNED) {
+        ESP_LOGE(
+            TAG,
+            "Update-health rollback ownership preparation=%d",
+            (int)prepare_result);
+        return false;
+    }
+
+    char receipt[256] = {0};
+    snprintf(
+        receipt, sizeof(receipt),
+        "FOF_UPDATE_MODE:{\"ok\":false,\"phase\":\"error\","
+        "\"session\":\"%s\",\"retryable\":false,"
+        "\"reboot_required\":true,"
+        "\"error\":\"maintenance_health_failed\"}\n",
+        session ? session : "");
+    oled_show_boot_status("UPDATE FAILED", "rolling back",
+                          "health check");
+    badge_update_emit_required_receipt(receipt);
+    (void)badge_runtime_clear_update_maintenance(
+        "maintenance_health_failed");
+    if (!badge_runtime_expected_reboot_lease_is_owned(&rollback_lease)) {
+        ESP_LOGE(TAG, "Update-health rollback lost reboot ownership");
+        for (;;) {
+            vTaskDelay(portMAX_DELAY);
+        }
+    }
+    esp_ota_mark_app_invalid_rollback_and_reboot();
+
+    /* No rollback slot was usable. Keep USB/display recovery reachable
+     * instead of retrying a degraded pending image indefinitely. Reuse the
+     * already-owned rollback token so +4 remains visible to v0.78. */
+    badge_runtime_arm_usb_recovery_once();
+    badge_usb_recovery_restart_with_owned_lease(
+        BADGE_USB_RESET_APP,
+        "update_health_rollback",
+        &rollback_lease);
+}
+
+static bool badge_update_inactivity_restart(
+    const char session[BADGE_UPDATE_SESSION_CAPACITY])
+{
+    badge_runtime_expected_reboot_lease_t reboot_lease = {0};
+    badge_usb_firmware_restart_prepare_result_t prepare_result =
+        badge_usb_recovery_prepare_firmware_restart(
+            "update_inactivity",
+            BADGE_RUNTIME_EXPECTED_REBOOT_TARGET_CURRENT,
+            &reboot_lease);
+    if (prepare_result !=
+        BADGE_USB_FIRMWARE_RESTART_PREPARE_OWNED) {
+        return false;
+    }
+
+    char receipt[224] = {0};
+    snprintf(
+        receipt, sizeof(receipt),
+        "FOF_UPDATE_MODE:{\"ok\":true,\"phase\":\"aborting\","
+        "\"session\":\"%s\",\"retryable\":false,"
+        "\"reboot_required\":true}\n",
+        session ? session : "");
+    oled_show_boot_status("UPDATE MODE", "session idle", "restarting");
+    badge_update_emit_required_receipt(receipt);
+    (void)badge_runtime_clear_update_maintenance("inactivity_timeout");
+    badge_usb_recovery_restart_with_owned_lease(
+        BADGE_USB_RESET_APP, "update_inactivity", &reboot_lease);
+}
+
+static bool badge_update_terminal_failure_restart(
+    const char session[BADGE_UPDATE_SESSION_CAPACITY])
+{
+    badge_runtime_expected_reboot_lease_t reboot_lease = {0};
+    badge_usb_firmware_restart_prepare_result_t prepare_result =
+        badge_usb_recovery_prepare_firmware_restart(
+            "update_terminal_failure",
+            BADGE_RUNTIME_EXPECTED_REBOOT_TARGET_CURRENT,
+            &reboot_lease);
+    if (prepare_result !=
+        BADGE_USB_FIRMWARE_RESTART_PREPARE_OWNED) {
+        return false;
+    }
+
+    char receipt[256] = {0};
+    snprintf(
+        receipt, sizeof(receipt),
+        "FOF_UPDATE_MODE:{\"ok\":false,\"phase\":\"error\","
+        "\"session\":\"%s\",\"retryable\":false,"
+        "\"reboot_required\":true,"
+        "\"error\":\"scanner_campaign_failed\"}\n",
+        session ? session : "");
+    oled_show_boot_status("UPDATE FAILED", "scanner lane",
+                          "restarting");
+    badge_update_emit_required_receipt(receipt);
+    (void)badge_runtime_clear_update_maintenance(
+        "scanner_campaign_failed");
+    badge_usb_recovery_restart_with_owned_lease(
+        BADGE_USB_RESET_APP,
+        "update_terminal_failure",
+        &reboot_lease);
+}
+#endif
+
 /* ── app_main ──────────────────────────────────────────────────────────── */
 
 void app_main(void)
 {
     bool required_tasks_started = true;
+    bool usb_transport_started = badge_usb_transport_start(3000);
+#ifdef FOF_BADGE_VARIANT
+    bool badge_startup_recovery_only = false;
+    const char *badge_startup_safe_reason = NULL;
+#endif
 
     /* ── 0. Machine-readable firmware identification ──────────────────── */
     FOF_PRINT_IDENT(TAG, FOF_FIRMWARE_TARGET);
@@ -621,10 +1129,22 @@ void app_main(void)
     nvs_config_init();
     if (!fw_store_init_auto_update_coordinator()) {
         ESP_LOGE(TAG, "Scanner-update coordinator initialization failed");
+#ifdef FOF_BADGE_VARIANT
+        badge_startup_recovery_only = true;
+        badge_startup_safe_reason = "coordinator_init";
+#else
         return;
+#endif
     }
     log_detection_queue_heap("after_nvs");
 
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    QueueHandle_t detection_queue = NULL;
+    ESP_LOGI(TAG,
+             "CON CRUD canary: reclaimed unused %u-byte detection queue",
+             (unsigned)(CONFIG_DETECTION_QUEUE_SIZE *
+                        sizeof(drone_detection_t)));
+#else
     /* Reserve the live detection queue before BLE, display DMA, USB control,
      * and the event loop fragment internal RAM. xQueueCreate() requires one
      * contiguous internal allocation for all 48 drone_detection_t records. */
@@ -632,18 +1152,67 @@ void app_main(void)
         CONFIG_DETECTION_QUEUE_SIZE, sizeof(drone_detection_t));
     if (!detection_queue) {
         ESP_LOGE(TAG, "Failed to create detection queue!");
+#ifdef FOF_BADGE_VARIANT
+        badge_startup_recovery_only = true;
+        if (!badge_startup_safe_reason) {
+            badge_startup_safe_reason = "detection_queue";
+        }
+#else
         return;
+#endif
+    } else {
+        ESP_LOGI(TAG, "Detection queue created (%d slots, %d bytes each)",
+                 CONFIG_DETECTION_QUEUE_SIZE, (int)sizeof(drone_detection_t));
     }
-    ESP_LOGI(TAG, "Detection queue created (%d slots, %d bytes each)",
-             CONFIG_DETECTION_QUEUE_SIZE, (int)sizeof(drone_detection_t));
+#endif
     log_detection_queue_heap("after_queue");
 
 #ifdef FOF_BADGE_VARIANT
+#if defined(FOF_DC34_GAME_CANARY)
+    badge_runtime_init(s_ota_pending_verify);
+    bool badge_update_maintenance =
+        badge_runtime_update_maintenance_active();
+    s_badge_update_maintenance_boot = badge_update_maintenance;
+    /* This state-only runtime owns the expected-reboot hook used to preserve
+     * the exact game identity across every planned maintenance/OTA reboot. */
+    badge_con_runtime_init();
+    if (s_badge_update_maintenance_boot) {
+#if CONFIG_BT_ENABLED
+        esp_err_t bt_release =
+            esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+        if (bt_release == ESP_OK) {
+            ESP_LOGW(TAG,
+                     "Update maintenance: BLE controller memory released");
+        } else {
+            ESP_LOGE(TAG,
+                     "Update maintenance: BLE memory release failed: %s",
+                     esp_err_to_name(bt_release));
+        }
+#endif
+    } else {
+        badge_easter_egg_runtime_init();
+        badge_con_radio_runtime_policy_init(&s_badge_con_radio_runtime);
+        if (!badge_con_vhci_prepare()) {
+            ESP_LOGE(TAG,
+                     "CON CRUD radio mutex unavailable; game radio held off");
+        }
+    }
+#else
     badge_easter_egg_runtime_init();
     badge_runtime_init(s_ota_pending_verify);
+#endif
     badge_power_runtime_init();
     badge_display_policy_runtime_init();
     badge_theme_runtime_init();
+    if (badge_runtime_usb_recovery_once_consumed()) {
+        badge_startup_recovery_only = true;
+        if (!badge_startup_safe_reason) {
+            badge_startup_safe_reason = "usb_safe_once";
+        }
+    }
+    if (badge_startup_safe_reason) {
+        badge_runtime_force_safe_mode(true, badge_startup_safe_reason);
+    }
 #endif
     log_detection_queue_heap("after_badge_runtime");
 
@@ -661,8 +1230,54 @@ void app_main(void)
     /* The badge LCD must show signs of life before Wi-Fi/AP work can stall
      * boot. Keep this before serial config, Wi-Fi init, and HTTP startup. */
     oled_init();
+    if (!oled_badge_buttons_start()) {
+        badge_startup_recovery_only = true;
+        if (!badge_startup_safe_reason) {
+            badge_startup_safe_reason = "button_task";
+        }
+        badge_runtime_force_safe_mode(true, badge_startup_safe_reason);
+        badge_safe_usb = true;
+    }
     oled_show_boot_status("Starting", badge_mode_display_name(badge_mode), "");
+    if (!usb_transport_started) {
+        oled_show_boot_status("USB RECOVERY", badge_mode_display_name(badge_mode),
+                              "transport init failed");
+        /* The first initialization failure receives one expected restart.
+         * RTC state prevents a panic/restart loop; the second boot remains
+         * alive with the display/button recovery surface available. */
+        if (!badge_runtime_usb_recovery_once_consumed()) {
+            if (!badge_usb_recovery_restart(
+                    BADGE_USB_RESET_APP, "usb_safe_once")) {
+                ESP_LOGE(
+                    TAG,
+                    "USB transport recovery restart blocked without owner");
+            }
+        }
+        badge_startup_recovery_only = true;
+        badge_startup_safe_reason = "usb_transport_init";
+        badge_runtime_force_safe_mode(true, "usb_transport_init");
+        badge_safe_usb = true;
+    }
 #endif
+
+    s_display_task_handle = xTaskCreateStatic(
+        display_task, "display", CONFIG_DISPLAY_STACK,
+        NULL, CONFIG_DISPLAY_PRIORITY, s_display_task_stack,
+        &s_display_task_tcb);
+    if (!s_display_task_handle) {
+        ESP_LOGE(TAG, "Failed to create static display task (stack=%d)",
+                 CONFIG_DISPLAY_STACK);
+#ifdef FOF_BADGE_VARIANT
+        badge_startup_recovery_only = true;
+        if (!badge_startup_safe_reason) {
+            badge_startup_safe_reason = "display_task";
+        }
+        badge_runtime_force_safe_mode(true, badge_startup_safe_reason);
+        badge_safe_usb = true;
+#else
+        required_tasks_started = false;
+#endif
+    }
     log_detection_queue_heap("after_display");
 
     /* ── 2a. Cached scanner firmware status — visible proof that the
@@ -684,11 +1299,36 @@ void app_main(void)
     }
 
     /* ── 2b. Serial config window (web flasher sends config here) ──── */
+#ifdef FOF_BADGE_VARIANT
+    if (!badge_startup_recovery_only) {
+#endif
     if (!uart_rx_scanner_tx_lease_init()) {
         ESP_LOGE(TAG, "Scanner UART lease unavailable before USB firmware staging");
+#ifdef FOF_BADGE_VARIANT
+        badge_startup_recovery_only = true;
+        badge_startup_safe_reason = "scanner_uart_lease";
+        badge_runtime_force_safe_mode(true, "scanner_uart_lease");
+        badge_safe_usb = true;
+#else
         required_tasks_started = false;
+#endif
     }
 #ifdef FOF_BADGE_VARIANT
+    }
+#endif
+#ifdef FOF_BADGE_VARIANT
+#if defined(FOF_DC34_GAME_CANARY)
+    if (badge_update_maintenance) {
+        /* Maintenance initializes the same UART hardware without emitting
+         * normal slot-role/game/profile chatter. */
+        uart_rx_init(detection_queue);
+    } else if (!badge_safe_usb) {
+        uart_rx_init(detection_queue);
+        send_badge_boot_slot_roles();
+    } else {
+        ESP_LOGW(TAG, "Badge safe USB mode: scanner UART driver init held off");
+    }
+#else
     if (!badge_safe_usb) {
         uart_rx_init(detection_queue);
         send_badge_boot_slot_roles();
@@ -696,19 +1336,35 @@ void app_main(void)
         ESP_LOGW(TAG, "Badge safe USB mode: scanner UART driver init held off");
     }
 #endif
-    serial_config_listen(3000);
+#endif
+#ifdef FOF_BADGE_VARIANT
+    badge_usb_transport_set_recovery_only(badge_startup_recovery_only);
+    bool usb_dispatch_ready = usb_transport_started;
+#else
+    bool usb_dispatch_ready = usb_transport_started && required_tasks_started;
+#endif
+    if (usb_dispatch_ready) {
+        badge_usb_transport_set_dispatch_ready();
+        if (!badge_usb_transport_wait_boot_window(pdMS_TO_TICKS(3500))) {
+            ESP_LOGW(TAG, "USB boot window wait timed out; transport remains active");
+        }
+    } else if (usb_transport_started) {
+        ESP_LOGE(TAG,
+                 "USB dispatch remains gated: startup dependency unavailable");
+    }
 #ifdef FOF_BADGE_VARIANT
     /* Repeat once at the far side of the bounded USB window. This covers a
      * simultaneous power-up where the first role frame reaches a scanner
      * just before its command listener comes online, while remaining inside
      * the scanner's six-second cold-boot allocation budget. */
+#if defined(FOF_DC34_GAME_CANARY)
+    if (!badge_safe_usb && !badge_update_maintenance) {
+#else
     if (!badge_safe_usb) {
+#endif
         send_badge_boot_slot_roles();
     }
 #endif
-    if (!serial_config_start_control_task()) {
-        required_tasks_started = false;
-    }
     log_detection_queue_heap("after_usb_control");
 #ifdef FOF_BADGE_VARIANT
     badge_mode = badge_mode_get();
@@ -718,6 +1374,182 @@ void app_main(void)
     oled_show_boot_status(badge_safe_usb ? "USB RECOVERY" : "USB Ready",
                           badge_mode_display_name(badge_mode),
                           badge_safe_usb ? badge_runtime_safe_reason() : "network off");
+    if (badge_startup_recovery_only) {
+        ESP_LOGE(TAG,
+                 "Badge startup dependency unavailable; holding the minimal "
+                 "USB/display recovery surface");
+        return;
+    }
+#endif
+
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    /* Update maintenance is a distinct, radio-free boot. USB was started
+     * first, the LCD/buttons are live, and both scanner UART drivers own their
+     * fixed board pins. Do not create the event loop or initialize BLE,
+     * Wi-Fi, GPS, normal scanning, or game effects anywhere on this path. */
+    badge_update_maintenance =
+        badge_update_maintenance && !badge_runtime_is_safe_mode();
+    if (badge_update_maintenance) {
+        char update_session[BADGE_UPDATE_SESSION_CAPACITY] = {0};
+        if (!badge_runtime_update_session_copy(update_session)) {
+            ESP_LOGE(TAG,
+                     "Update-maintenance session disappeared after admission");
+            badge_runtime_force_safe_mode(true, "update_session_missing");
+            oled_show_boot_status("USB RECOVERY", "update failed",
+                                  "session missing");
+            return;
+        }
+
+        oled_show_boot_status("UPDATE MODE", "USB + UART", update_session);
+        badge_send_scanner_ota_abort_sentinel();
+
+        uart_startup_gate_result_t uart_startup =
+            start_uart_rx_with_operation_gate();
+        if (uart_startup != UART_STARTUP_GATE_OK) {
+            ESP_LOGE(TAG,
+                     "Update-maintenance scanner UART workers unavailable");
+            if (!badge_automatic_restart_when_firmware_idle(
+                    "update_uart_rx_start")) {
+                badge_runtime_force_safe_mode(true, "reboot_arm_failed");
+            }
+        }
+        if (!badge_power_runtime_start()) {
+            ESP_LOGE(TAG,
+                     "Update-maintenance button/power runtime unavailable");
+            if (!badge_automatic_restart_when_firmware_idle(
+                    "update_power_runtime")) {
+                badge_runtime_force_safe_mode(true, "reboot_arm_failed");
+            }
+        }
+        if (!fw_store_start_auto_update_coordinator()) {
+            ESP_LOGE(TAG,
+                     "Update-maintenance coordinator worker unavailable");
+            if (!badge_automatic_restart_when_firmware_idle(
+                    "update_coordinator_start")) {
+                badge_runtime_force_safe_mode(true, "reboot_arm_failed");
+            }
+        }
+        if (!fw_store_restore_auto_update_coordinator()) {
+            ESP_LOGE(TAG,
+                     "Update-maintenance durable coordinator restore failed");
+            if (!badge_automatic_restart_when_firmware_idle(
+                    "update_coordinator_restore")) {
+                badge_runtime_force_safe_mode(true, "reboot_arm_failed");
+            }
+        }
+        fw_store_scanner_stage_status_t maintenance_entry_stage = {0};
+        bool maintenance_entry_stage_certain =
+            fw_store_scanner_stage_status_snapshot(
+                &maintenance_entry_stage);
+        uint32_t maintenance_entry_scanner_generation =
+            maintenance_entry_stage_certain &&
+            maintenance_entry_stage.phase == FW_SCANNER_STAGE_COMMITTED
+                ? maintenance_entry_stage.generation
+                : 0U;
+
+        /* The display task stays on its maintenance fast path for this entire
+         * boot and only publishes LCD liveness; it never polls the game radio
+         * or renders the normal detection dashboard. */
+        xTaskNotifyGive(s_display_task_handle);
+        ESP_LOGW(TAG,
+                 "UPDATE MODE active session=%s; BLE/WiFi/GPS/scanning held off",
+                 update_session);
+
+        const uint32_t maintenance_boot_ms =
+            (uint32_t)(esp_timer_get_time() / 1000);
+        while (1) {
+            vTaskDelay(pdMS_TO_TICKS(
+                BADGE_UPDATE_SUPERVISOR_INTERVAL_MS));
+            uint32_t now_ms =
+                (uint32_t)(esp_timer_get_time() / 1000);
+            uint32_t uptime_ms =
+                (uint32_t)(now_ms - maintenance_boot_ms);
+            uint32_t internal_free = (uint32_t)heap_caps_get_free_size(
+                MALLOC_CAP_INTERNAL);
+            uint32_t internal_largest =
+                (uint32_t)heap_caps_get_largest_free_block(
+                    MALLOC_CAP_INTERNAL);
+
+            badge_runtime_poll();
+            badge_runtime_note_main_stack_free(
+                (uint32_t)uxTaskGetStackHighWaterMark(NULL));
+
+            if (s_ota_pending_verify) {
+                if (badge_runtime_update_health_can_mark_ota_valid(
+                        internal_free, internal_largest, uptime_ms)) {
+                    rollback_mark_valid();
+                }
+                if (s_ota_pending_verify &&
+                    uptime_ms >= BADGE_UPDATE_HEALTH_TIMEOUT_MS) {
+                    ESP_LOGE(
+                        TAG,
+                        "Update-maintenance health timeout: free=%lu "
+                        "largest=%lu display=%d uart=%d usb=%d",
+                        (unsigned long)internal_free,
+                        (unsigned long)internal_largest,
+                        badge_runtime_display_alive() ? 1 : 0,
+                        badge_runtime_scanner_uart_alive() ? 1 : 0,
+                        badge_runtime_usb_control_alive() ? 1 : 0);
+                    if (!badge_update_health_rollback(update_session)) {
+                        ESP_LOGE(
+                            TAG,
+                            "Update-health rollback remains blocked; "
+                            "keeping maintenance recovery alive");
+                    }
+                }
+            }
+
+            fw_store_campaign_completion_t completion =
+                fw_store_campaign_completion_sample();
+            fw_store_scanner_stage_status_t current_stage = {0};
+            bool current_stage_valid =
+                fw_store_scanner_stage_status_snapshot(&current_stage);
+            if (!s_ota_pending_verify &&
+                fw_store_campaign_terminal_exit_allowed(
+                    maintenance_entry_stage_certain,
+                    maintenance_entry_scanner_generation,
+                    current_stage_valid,
+                    &current_stage,
+                    completion)) {
+                ESP_LOGE(
+                    TAG,
+                    "Update-maintenance scanner campaign reached a "
+                    "durable terminal failure; returning to normal boot");
+                if (!badge_update_terminal_failure_restart(update_session)) {
+                    ESP_LOGE(
+                        TAG,
+                        "Terminal-failure restart blocked without "
+                        "expected-reboot ownership");
+                }
+            }
+
+            if (badge_runtime_update_inactivity_due(now_ms)) {
+                fw_store_campaign_snapshot_t campaign = {0};
+                bool campaign_sampled =
+                    fw_store_campaign_state_sample(&campaign);
+                bool campaign_idle =
+                    campaign_sampled &&
+                    (campaign.state == FW_CAMPAIGN_IDLE ||
+                     campaign.state == FW_CAMPAIGN_ALL_TERMINAL);
+                if (campaign_idle) {
+                    ESP_LOGW(TAG,
+                             "Update-maintenance session inactive; "
+                             "returning to normal boot");
+                    if (!badge_update_inactivity_restart(update_session)) {
+                        ESP_LOGE(
+                            TAG,
+                            "Inactivity restart blocked without "
+                            "expected-reboot ownership");
+                    }
+                }
+                ESP_LOGW(TAG,
+                         "Update-maintenance inactivity exit deferred: "
+                         "campaign=%d owner=%d sampled=%d",
+                         (int)campaign.state, (int)campaign.owner,
+                         campaign_sampled ? 1 : 0);
+            }
+        }
+    }
 #endif
 
     /* ── 3. Create default event loop ─────────────────────────────────── */
@@ -841,14 +1673,34 @@ void app_main(void)
 
 #ifdef FOF_BADGE_VARIANT
     if (!badge_safe_usb) {
-        if (!uart_rx_start()) {
-            required_tasks_started = false;
+        uart_startup_gate_result_t uart_startup =
+            start_uart_rx_with_operation_gate();
+        if (uart_startup != UART_STARTUP_GATE_OK) {
+            badge_runtime_force_safe_mode(true, "uart_rx_start");
+            badge_usb_transport_set_recovery_only(true);
+            oled_show_boot_status("USB RECOVERY",
+                                  badge_mode_display_name(badge_mode),
+                                  "uart_rx_start");
+            if (uart_startup == UART_STARTUP_GATE_RELEASE_FAILED) {
+                (void)badge_usb_transport_drain(pdMS_TO_TICKS(250));
+                if (!badge_usb_recovery_restart(
+                        BADGE_USB_RESET_APP,
+                        "uart_start_token_release")) {
+                    ESP_LOGE(
+                        TAG,
+                        "UART startup recovery restart blocked without owner");
+                }
+            }
+            if (!badge_automatic_restart_when_firmware_idle(
+                    "uart_rx_start")) {
+                ESP_LOGE(TAG, "UART startup automatic restart cancelled");
+            }
         }
     } else {
         ESP_LOGW(TAG, "Badge safe USB mode: scanner RX tasks held off");
     }
 #else
-    if (!uart_rx_start()) {
+    if (start_uart_rx_with_operation_gate() != UART_STARTUP_GATE_OK) {
         required_tasks_started = false;
     }
     if (!http_upload_start()) {
@@ -875,19 +1727,39 @@ void app_main(void)
     }
 #endif
 
-    /* Start display task (inline since it's simple) */
-    BaseType_t display_task_ok = xTaskCreate(
-        display_task, "display", CONFIG_DISPLAY_STACK,
-        NULL, CONFIG_DISPLAY_PRIORITY, NULL);
-    if (display_task_ok != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create display task (stack=%d)",
-                 CONFIG_DISPLAY_STACK);
-        required_tasks_started = false;
+    if (!required_tasks_started) {
+#ifdef FOF_BADGE_VARIANT
+        if (!badge_automatic_restart_when_firmware_idle(
+                "required worker task creation failed")) {
+            badge_runtime_force_safe_mode(true, "reboot_arm_failed");
+        }
+#else
+        rollback_and_reboot_or_restart("required worker task creation failed");
+#endif
     }
 
-    if (!required_tasks_started) {
-        rollback_and_reboot_or_restart("required worker task creation failed");
+    /* The permanent coordinator is created only after the shared scanner TX
+     * lease and both scanner RX tasks exist. It remains notification-blocked
+     * until durable restore runs after the generic READY commands below. */
+#ifdef FOF_BADGE_VARIANT
+    if (!badge_safe_usb) {
+        if (!fw_store_start_auto_update_coordinator()) {
+            if (!badge_automatic_restart_when_firmware_idle(
+                    "scanner-update coordinator dependencies unavailable")) {
+                badge_runtime_force_safe_mode(true, "reboot_arm_failed");
+            }
+        }
+    } else {
+        ESP_LOGW(TAG,
+                 "Badge safe USB mode: coordinator creation deferred with "
+                 "scanner RX tasks");
     }
+#else
+    if (!fw_store_start_auto_update_coordinator()) {
+        rollback_and_reboot_or_restart(
+            "scanner-update coordinator dependencies unavailable");
+    }
+#endif
 
     /* ── 15. Start HTTP status server ────────────────────────────────── */
     if (badge_ap_enabled) {
@@ -948,12 +1820,29 @@ void app_main(void)
      * startup commands have completed, or an interrupted update can be lost. */
 #ifdef FOF_BADGE_VARIANT
     if (!badge_safe_usb && !fw_store_restore_auto_update_coordinator()) {
+        if (!badge_automatic_restart_when_firmware_idle(
+                "scanner-update coordinator restore failed")) {
+            badge_runtime_force_safe_mode(true, "reboot_arm_failed");
+        }
 #else
     if (!fw_store_restore_auto_update_coordinator()) {
-#endif
         rollback_and_reboot_or_restart(
             "scanner-update coordinator restore failed");
+#endif
     }
+
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    /* Durable campaign restore is authoritative before controller admission.
+     * A pending/unknown campaign leaves the controller uninitialized; the
+     * display loop retries only after a later exact allowed epoch. */
+    badge_con_radio_runtime_poll(
+        (uint32_t)(esp_timer_get_time() / 1000));
+#endif
+
+    /* Normal startup and durable campaign restore are complete.
+     * Recovery-only returns above and intentionally leaves this task blocked
+     * on its static boot screen. */
+    xTaskNotifyGive(s_display_task_handle);
 
     /* ── 17. Connectivity watchdog ───────────────────────────────────── */
     /*
@@ -1006,22 +1895,83 @@ void app_main(void)
 
 #ifdef FOF_BADGE_VARIANT
             badge_runtime_poll();
-            if (badge_runtime_usb_control_recovery_due(uptime_s)) {
-                snprintf(reason, sizeof(reason), "usb_control_age=%llds",
-                         (long long)badge_runtime_usb_control_age_s());
-                ESP_LOGE(TAG, "Badge USB control watchdog entering safe USB mode: %s",
-                         reason);
-                oled_show_boot_status("USB RECOVERY", "restarting", reason);
-                badge_runtime_force_safe_mode(true, "usb_control_stale");
-                badge_runtime_arm_expected_reboot("usb_recovery");
-                vTaskDelay(pdMS_TO_TICKS(120));
-                esp_restart();
+            badge_usb_health_t usb_health = {0};
+            badge_usb_transport_snapshot(&usb_health);
+            fw_store_activity_t firmware_activity =
+                fw_store_activity_sample();
+            int64_t relay_progress_ms = fw_store_last_relay_progress_ms();
+            int64_t usb_now_ms = esp_timer_get_time() / 1000;
+            bool relay_active =
+                firmware_activity == FW_STORE_ACTIVITY_ACTIVE;
+            int64_t transaction_progress_ms = usb_health.last_upload_progress_ms;
+            if (relay_active && relay_progress_ms > transaction_progress_ms) {
+                transaction_progress_ms = relay_progress_ms;
             }
-            badge_runtime_note_scanner_uart_alive(uart_rx_is_scanner_connected());
+            int64_t oldest_unanswered_ms =
+                usb_health.oldest_hard_unanswered_response_ms;
+            if (usb_health.oldest_enqueued_response_ms >= 0 &&
+                (oldest_unanswered_ms < 0 ||
+                 usb_health.oldest_enqueued_response_ms <
+                    oldest_unanswered_ms)) {
+                oldest_unanswered_ms =
+                    usb_health.oldest_enqueued_response_ms;
+            }
+            badge_usb_health_action_t usb_action = BADGE_USB_HEALTH_WAITING;
+            if (firmware_activity != FW_STORE_ACTIVITY_UNKNOWN) {
+                badge_usb_health_inputs_t usb_inputs = {
+                    .safe_usb = badge_runtime_is_safe_mode(),
+                    .one_boot_recovery_consumed =
+                        badge_runtime_usb_recovery_once_consumed(),
+                    .task_started = usb_health.task_started,
+                    .host_connected = usb_health.host_connected,
+                    .transaction_active =
+                        usb_health.parser_target != BADGE_USB_BINARY_NONE ||
+                        relay_active,
+                    .now_ms = usb_now_ms,
+                    .task_heartbeat_ms = usb_health.task_heartbeat_ms,
+                    .last_rx_ms = usb_health.last_rx_ms,
+                    .last_command_ms = usb_health.last_command_ms,
+                    .last_response_ms = usb_health.last_response_ms,
+                    .oldest_unanswered_command_ms = oldest_unanswered_ms,
+                    .last_transaction_progress_ms = transaction_progress_ms,
+                    .boot_grace_ms = 120000,
+                    .stale_after_ms = 90000,
+                };
+                usb_action = badge_usb_health_decide(&usb_inputs);
+            } else {
+                ESP_LOGW(TAG,
+                         "Badge USB health waiting: firmware activity unknown");
+            }
+            if (usb_action == BADGE_USB_HEALTH_RESTART_SAFE_USB) {
+                badge_runtime_expected_reboot_lease_t reboot_lease = {0};
+                badge_usb_firmware_restart_prepare_result_t prepare_result =
+                    badge_usb_recovery_prepare_firmware_restart(
+                        "usb_safe_once",
+                        BADGE_RUNTIME_EXPECTED_REBOOT_TARGET_CURRENT,
+                        &reboot_lease);
+                if (prepare_result ==
+                    BADGE_USB_FIRMWARE_RESTART_PREPARE_OWNED) {
+                    ESP_LOGE(TAG,
+                             "Badge USB health policy requested one safe restart");
+                    oled_show_boot_status("USB RECOVERY", "restarting",
+                                          "usb_safe_once");
+                    badge_usb_recovery_restart_with_owned_lease(
+                        BADGE_USB_RESET_APP,
+                        "usb_safe_once",
+                        &reboot_lease);
+                } else {
+                    ESP_LOGW(TAG,
+                             "Badge USB health restart deferred: ownership "
+                             "preparation=%d",
+                             (int)prepare_result);
+                }
+            }
             badge_runtime_note_main_stack_free(
                 (uint32_t)uxTaskGetStackHighWaterMark(NULL));
-            if (badge_runtime_health_can_mark_ota_valid(free_heap, uptime_s)) {
+            if (badge_runtime_health_can_mark_stable(free_heap, uptime_s)) {
                 badge_runtime_mark_stable();
+            }
+            if (badge_runtime_health_can_mark_ota_valid(free_heap, uptime_s)) {
                 rollback_mark_valid();
             }
 #endif
@@ -1058,10 +2008,21 @@ void app_main(void)
             }
 
             if (!badge_backend_enabled) {
-                if (free_heap < 4000 && uptime_s > 20 && !fw_store_is_relay_active()) {
+                if (free_heap < 4000 && uptime_s > 20
+#ifndef FOF_BADGE_VARIANT
+                    && !fw_store_is_relay_active()
+#endif
+                ) {
                     snprintf(reason, sizeof(reason), "heap=%lu critically low",
                              (unsigned long)free_heap);
+#ifdef FOF_BADGE_VARIANT
+                    if (!badge_automatic_restart_when_firmware_idle(reason)) {
+                        badge_runtime_force_safe_mode(
+                            true, "reboot_arm_failed");
+                    }
+#else
                     rollback_and_reboot_or_restart(reason);
+#endif
                 }
                 continue;
             }
@@ -1113,10 +2074,21 @@ void app_main(void)
             /* Heap critically low → reboot before stack overflow crash. A leak
              * this severe in the first 20s is a strong bad-OTA signal, so a
              * PENDING_VERIFY image rolls back rather than restarts-in-place. */
-            if (free_heap < 4000 && uptime_s > 20 && !fw_store_is_relay_active()) {
+            if (free_heap < 4000 && uptime_s > 20
+#ifndef FOF_BADGE_VARIANT
+                && !fw_store_is_relay_active()
+#endif
+            ) {
                 snprintf(reason, sizeof(reason), "heap=%lu critically low",
                          (unsigned long)free_heap);
+#ifdef FOF_BADGE_VARIANT
+                if (!badge_automatic_restart_when_firmware_idle(reason)) {
+                    badge_runtime_force_safe_mode(
+                        true, "reboot_arm_failed");
+                }
+#else
                 rollback_and_reboot_or_restart(reason);
+#endif
             }
         }
     }

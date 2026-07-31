@@ -144,6 +144,21 @@ bool fof_firmware_legacy_relay_authorized(
             manifest->version, identity->version) == FOF_VERSION_NEWER;
 }
 
+bool fof_firmware_bound_relay_request_matches(
+    const fof_firmware_bound_relay_view_t *request)
+{
+    return request &&
+        request->expected_generation > 0U &&
+        request->expected_generation == request->staged_generation &&
+        request->live_identity_received &&
+        fof_firmware_hardware_id_is_canonical(
+            request->expected_hardware_id) &&
+        fof_firmware_hardware_id_is_canonical(
+            request->live_hardware_id) &&
+        strings_equal(request->expected_hardware_id,
+                      request->live_hardware_id);
+}
+
 bool fof_firmware_post_reboot_boot_id_proved(uint32_t before_boot_id,
                                              uint32_t after_boot_id)
 {

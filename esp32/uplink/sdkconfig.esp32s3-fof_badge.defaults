@@ -4,6 +4,12 @@
 # Flash size
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 
+# Keep ESP-IDF's generated flash manifest on the same custom OTA table that
+# PlatformIO uses. Without this, CMake emits a stale single-app 0x10000 offset
+# even though the badge's ota_0 partition begins at 0x20000.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_s3_fof_badge_8mb.csv"
+
 # PSRAM - 8 MB octal @ 80 MHz, conservative CAPS_ALLOC policy
 CONFIG_ESP32S3_SPIRAM_SUPPORT=y
 CONFIG_SPIRAM=y

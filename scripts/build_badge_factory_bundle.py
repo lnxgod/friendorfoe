@@ -11,6 +11,7 @@ import struct
 import sys
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -22,27 +23,81 @@ from firmware_version import parse_firmware_identity  # noqa: E402
 from tools.badge_flasher.bundles import load_bundle  # noqa: E402
 
 
-BUILDS = {
-    "probe": (
-        REPO_ROOT / "esp32/factory-probe/.pio/build/factory-probe-s3",
-        "factory-probe-s3",
-        "fof_badge_factory_probe",
+@dataclass(frozen=True, slots=True)
+class AcceptedApplication:
+    version: str
+    size: int
+    sha256: str
+
+
+ACCEPTED_VERSION = "0.67.2-badge-defcon34"
+ACCEPTED_APPLICATIONS = {
+    "uplink": AcceptedApplication(
+        ACCEPTED_VERSION,
+        1_468_464,
+        "78ef3b6dafe61e8e2fdc3fb28447372aaf76da38cd57ca0961828bbbdc08c434",
     ),
-    "uplink": (
-        REPO_ROOT / "esp32/uplink/.pio/build/uplink-s3-fof_badge",
-        "uplink-s3-fof_badge",
-        "fof_badge_uplink",
+    "scanner": AcceptedApplication(
+        ACCEPTED_VERSION,
+        1_216_800,
+        "2d0e84501baf3bc929eed03a0b9c1f0272ed66baa9b81dd4513d6dc3fa2c032b",
     ),
-    "scanner": (
-        REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo-fof_badge",
-        "scanner-s3-combo-fof_badge",
-        "fof_badge_scanner",
-    ),
+}
+
+PROBE_BUILD = (
+    REPO_ROOT / "esp32/factory-probe/.pio/build/factory-probe-s3",
+    "factory-probe-s3",
+    "fof_badge_factory_probe",
+)
+
+BUILD_PROFILES = {
+    "production": {
+        "probe": PROBE_BUILD,
+        "uplink": (
+            REPO_ROOT / "esp32/uplink/.pio/build/uplink-s3-fof_badge",
+            "uplink-s3-fof_badge",
+            "fof_badge_uplink",
+        ),
+        "scanner": (
+            REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo-fof_badge",
+            "scanner-s3-combo-fof_badge",
+            "fof_badge_scanner",
+        ),
+    },
+    "con-crud-0.67.2": {
+        "probe": PROBE_BUILD,
+        "uplink": (
+            REPO_ROOT / "esp32/uplink/.pio/build/uplink-s3-fof_badge-con-crud-canary",
+            "uplink-s3-fof_badge",
+            "fof_badge_uplink",
+        ),
+        "scanner": (
+            REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo-fof_badge-con-crud-canary",
+            "scanner-s3-combo-fof_badge",
+            "fof_badge_scanner",
+        ),
+    },
 }
 
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def verify_accepted_application(
+    path: Path,
+    expected_project: str,
+    pin: AcceptedApplication,
+) -> None:
+    identity = parse_firmware_identity(path.read_bytes())
+    if identity is None or identity.project != expected_project:
+        raise RuntimeError(f"{path}: project identity mismatch")
+    if identity.version != pin.version:
+        raise RuntimeError(f"{path}: accepted version mismatch")
+    if path.stat().st_size != pin.size:
+        raise RuntimeError(f"{path}: accepted size mismatch")
+    if sha256(path) != pin.sha256:
+        raise RuntimeError(f"{path}: accepted SHA-256 mismatch")
 
 
 def compiled_partition_offsets(path: Path) -> tuple[int, int | None]:
@@ -73,8 +128,12 @@ def compiled_partition_offsets(path: Path) -> tuple[int, int | None]:
     return app_offset, ota_data_offset
 
 
-def layout_for(role: str, root: Path, bundle_root: Path) -> dict:
-    build_dir, target, project = BUILDS[role]
+def layout_for(
+    role: str,
+    builds: dict,
+    bundle_root: Path,
+) -> dict:
+    build_dir, target, project = builds[role]
     flasher = json.loads((build_dir / "flasher_args.json").read_text())
     app_file = build_dir / "firmware.bin"
     embedded = parse_firmware_identity(app_file.read_bytes())
@@ -122,10 +181,22 @@ def layout_for(role: str, root: Path, bundle_root: Path) -> dict:
     }
 
 
-def build_bundle(output: Path, requested_version: str | None = None) -> Path:
+def build_bundle(
+    output: Path,
+    requested_version: str | None = None,
+    profile: str = "production",
+) -> Path:
     with tempfile.TemporaryDirectory(prefix="fof-factory-build-") as temporary:
         root = Path(temporary)
-        layouts = {role: layout_for(role, build_dir, root) for role, (build_dir, _, _) in BUILDS.items()}
+        builds = BUILD_PROFILES[profile]
+        if profile == "con-crud-0.67.2":
+            for role, pin in ACCEPTED_APPLICATIONS.items():
+                build_dir, _, project = builds[role]
+                verify_accepted_application(build_dir / "firmware.bin", project, pin)
+        layouts = {
+            role: layout_for(role, builds, root)
+            for role in builds
+        }
         version = layouts["uplink"]["identity"]["version"]
         if layouts["scanner"]["identity"]["version"] != version:
             raise RuntimeError("uplink and scanner build versions do not match")
@@ -157,9 +228,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--version")
+    parser.add_argument(
+        "--profile",
+        choices=tuple(BUILD_PROFILES),
+        default="production",
+    )
     args = parser.parse_args()
     try:
-        result = build_bundle(args.output.resolve(), args.version)
+        result = build_bundle(args.output.resolve(), args.version, args.profile)
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

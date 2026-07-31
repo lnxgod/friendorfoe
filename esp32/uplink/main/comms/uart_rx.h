@@ -22,6 +22,9 @@ extern "C" {
  */
 void uart_rx_init(QueueHandle_t detection_queue);
 
+uint32_t uart_rx_detection_queue_capacity(void);
+uint32_t uart_rx_detection_queue_reclaimed_bytes(void);
+
 /**
  * Start the UART RX FreeRTOS task(s).
  */
@@ -303,9 +306,28 @@ ota_response_t uart_rx_get_last_ota_response(void);
 /** Clear the OTA response buffer (call before starting relay). */
 void uart_rx_clear_ota_response(void);
 
-/** Pause/resume the UART RX task for a specific scanner during OTA relay.
- *  A true return confirms the background reader has handed UART ownership to
- *  the relay; callers that read directly must fail closed on false. */
+typedef struct {
+    uint32_t request_generation;
+    bool acquired;
+} uart_rx_pause_guard_t;
+
+/** True only when the requested scanner UART RX worker was created. */
+bool uart_rx_scanner_task_started(int scanner_id);
+
+/** True while any generation owns the requested scanner pause. */
+bool uart_rx_scanner_is_paused(int scanner_id);
+
+/** Generation-bound pause ownership. A started, pre-paused worker fails
+ *  closed without ownership; an unstarted recovery worker succeeds without
+ *  waiting and without acquiring a pause. */
+bool uart_rx_pause_scanner_guarded(int scanner_id,
+                                  uart_rx_pause_guard_t *guard);
+bool uart_rx_discard_scanner_backlog_guarded(int scanner_id,
+    const uart_rx_pause_guard_t *guard);
+void uart_rx_resume_scanner_guarded(int scanner_id,
+                                    uart_rx_pause_guard_t *guard);
+
+/** Legacy pause/resume wrappers retain existing scanner relay behavior. */
 bool uart_rx_pause_scanner(int scanner_id);
 void uart_rx_resume_scanner(int scanner_id);
 

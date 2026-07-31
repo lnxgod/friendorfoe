@@ -1271,6 +1271,15 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
     }
     memset(event, 0, sizeof(*event));
     event->cls = BADGE_THREAT_IGNORE;
+
+    /* Keep the four display lanes usable in busy RF environments. Unknown or
+     * privacy-only signals below -85 dBm are usually ambient noise; confirmed
+     * drone protocols remain visible regardless of range. */
+    if (det->rssi < 0 && det->rssi < -85 &&
+        !source_is_confirmed_drone(det->source)) {
+        return false;
+    }
+
     event->source = det->source;
     event->confidence = det->confidence;
     bool has_wifi_identity = det->ssid[0] != '\0' || det->bssid[0] != '\0';
@@ -1356,6 +1365,16 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
             copy_detail(event->detail, "evil twin evidence");
         }
         event->base_score = det->confidence >= 0.70f ? 75.0f : 60.0f;
+        event->evidence_quality = 6;
+    } else if (det->source == DETECTION_SRC_WIFI_AP_INVENTORY &&
+               contains_nocase(det->model, "privacy infrastructure") &&
+               contains_nocase(det->class_reason, "privacy infrastructure oui")) {
+        event->cls = BADGE_THREAT_OTHER;
+        event->category = BADGE_THREAT_CATEGORY_PRIVACY;
+        snprintf(event->label, sizeof(event->label), "%.16s Device",
+                 det->manufacturer[0] ? det->manufacturer : "Privacy");
+        copy_detail(event->detail, "privacy infrastructure OUI");
+        event->base_score = 45.0f;
         event->evidence_quality = 6;
     } else if ((det->source == DETECTION_SRC_WIFI_OUI ||
          det->source == DETECTION_SRC_WIFI_SSID ||

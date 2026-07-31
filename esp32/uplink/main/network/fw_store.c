@@ -10,6 +10,8 @@
  */
 
 #include "fw_store.h"
+#include "fw_manifest_store.h"
+#include "fw_relay_prepare_adapter.h"
 #include "config.h"
 #include "nvs_config.h"
 #include "uart_protocol.h"
@@ -25,11 +27,17 @@
 #ifdef FOF_BADGE_VARIANT
 #include "badge_power_runtime.h"
 #include "badge_runtime.h"
+#include "badge_usb_transport.h"
+#if defined(FOF_DC34_GAME_CANARY)
+#include "badge_con_vhci.h"
+#include "badge_update_maintenance_policy.h"
+#endif
 #endif
 
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
 #include "esp_app_format.h"
+#include "nvs.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -54,52 +62,123 @@ static const char *TAG = "fw_store";
 
 /* ── State ───────────────────────────────────────────────────────────────── */
 
-static bool s_operation_active = false;
-static bool s_operation_uart_lease = false;
+static fw_operation_state_t s_operation = {0};
 static portMUX_TYPE s_operation_lock = portMUX_INITIALIZER_UNLOCKED;
+static int64_t s_last_relay_progress_ms = -1;
+static void auto_coordinator_reconcile_radio_inhibit(void);
 
-static bool operation_try_begin(void)
+static void fw_store_note_relay_progress(void)
 {
-    bool acquired = false;
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    int64_t now_ms = esp_timer_get_time() / 1000;
     portENTER_CRITICAL(&s_operation_lock);
-    if (!s_operation_active) {
-        s_operation_active = true;
-        acquired = true;
-    }
+    s_last_relay_progress_ms = now_ms;
     portEXIT_CRITICAL(&s_operation_lock);
-    if (acquired &&
-        !uart_rx_scanner_tx_lease_acquire(pdMS_TO_TICKS(2000))) {
-        portENTER_CRITICAL(&s_operation_lock);
-        s_operation_active = false;
-        portEXIT_CRITICAL(&s_operation_lock);
-        ESP_LOGE(TAG, "Firmware operation refused: scanner UART lease unavailable");
-        return false;
-    }
-    if (acquired) {
-        portENTER_CRITICAL(&s_operation_lock);
-        s_operation_uart_lease = true;
-        portEXIT_CRITICAL(&s_operation_lock);
-    }
-    return acquired;
+    badge_runtime_update_keepalive((uint32_t)now_ms);
+#else
+    portENTER_CRITICAL(&s_operation_lock);
+    s_last_relay_progress_ms = esp_timer_get_time() / 1000;
+    portEXIT_CRITICAL(&s_operation_lock);
+#endif
 }
 
-static void operation_end(void)
+bool fw_store_operation_try_begin(fw_operation_owner_t owner,
+                                  bool acquire_uart_lease,
+                                  fw_operation_token_t *out_token)
+{
+    bool acquired = false;
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    if (badge_runtime_update_maintenance_active()) {
+        portENTER_CRITICAL(&s_operation_lock);
+        acquired = fw_operation_state_try_begin(
+            &s_operation, owner, out_token);
+        portEXIT_CRITICAL(&s_operation_lock);
+    } else {
+        if (out_token) {
+            memset(out_token, 0, sizeof(*out_token));
+        }
+        /* A normal game boot may only claim mutation after the exact inhibit
+         * epoch is acknowledged OFF. Maintenance never initializes BLE and
+         * therefore uses the ordinary exclusive operation token above. */
+        fw_operation_snapshot_t inhibit = {0};
+        portENTER_CRITICAL(&s_operation_lock);
+        (void)fw_operation_state_request_radio_inhibit(&s_operation);
+        fw_operation_state_snapshot(&s_operation, &inhibit);
+        portEXIT_CRITICAL(&s_operation_lock);
+        if (!badge_con_vhci_request_quiescence(
+                inhibit.operation_epoch) ||
+            !badge_con_vhci_radio_quiesced_for_epoch(
+                inhibit.operation_epoch)) {
+            return false;
+        }
+        portENTER_CRITICAL(&s_operation_lock);
+        acquired = fw_operation_state_try_begin_quiesced(
+            &s_operation, owner, inhibit.operation_epoch, out_token);
+        portEXIT_CRITICAL(&s_operation_lock);
+    }
+#else
+    portENTER_CRITICAL(&s_operation_lock);
+    acquired = fw_operation_state_try_begin(&s_operation, owner, out_token);
+    portEXIT_CRITICAL(&s_operation_lock);
+#endif
+    if (!acquired || !acquire_uart_lease) {
+        return acquired;
+    }
+
+    if (!uart_rx_scanner_tx_lease_acquire(pdMS_TO_TICKS(2000))) {
+        bool ignored_release = false;
+        portENTER_CRITICAL(&s_operation_lock);
+        bool cleaned = fw_operation_state_end(
+            &s_operation, *out_token, &ignored_release);
+        portEXIT_CRITICAL(&s_operation_lock);
+        memset(out_token, 0, sizeof(*out_token));
+        ESP_LOGE(TAG, "Firmware operation refused: scanner UART lease unavailable");
+        if (!cleaned || ignored_release) {
+            ESP_LOGE(TAG, "Firmware operation lease-failure cleanup rejected");
+        }
+        auto_coordinator_reconcile_radio_inhibit();
+        return false;
+    }
+
+    portENTER_CRITICAL(&s_operation_lock);
+    bool attached = fw_operation_state_attach_uart_lease(
+        &s_operation, *out_token);
+    portEXIT_CRITICAL(&s_operation_lock);
+    if (!attached) {
+        uart_rx_scanner_tx_lease_release();
+        bool ignored_release = false;
+        portENTER_CRITICAL(&s_operation_lock);
+        (void)fw_operation_state_end(
+            &s_operation, *out_token, &ignored_release);
+        portEXIT_CRITICAL(&s_operation_lock);
+        memset(out_token, 0, sizeof(*out_token));
+        ESP_LOGE(TAG, "Firmware operation UART lease attachment rejected");
+        auto_coordinator_reconcile_radio_inhibit();
+        return false;
+    }
+    return true;
+}
+
+bool fw_store_operation_end(fw_operation_token_t token)
 {
     bool release_uart_lease = false;
     portENTER_CRITICAL(&s_operation_lock);
-    s_operation_active = false;
-    release_uart_lease = s_operation_uart_lease;
-    s_operation_uart_lease = false;
+    bool released = fw_operation_state_end(
+        &s_operation, token, &release_uart_lease);
     portEXIT_CRITICAL(&s_operation_lock);
     if (release_uart_lease) {
         uart_rx_scanner_tx_lease_release();
     }
+    if (released) {
+        auto_coordinator_reconcile_radio_inhibit();
+    }
+    return released;
 }
 
-static bool operation_is_active(void)
+bool fw_store_operation_is_active(void)
 {
     portENTER_CRITICAL(&s_operation_lock);
-    bool active = s_operation_active;
+    bool active = s_operation.active;
     portEXIT_CRITICAL(&s_operation_lock);
     return active;
 }
@@ -156,6 +235,11 @@ static scanner_info_t s_fw_recovery_scanner_snapshots[2] = {0};
 #define FW_RELAY_CHUNK_DATA          256
 #endif
 #define FW_RELAY_NACK_SETTLE_MS       20
+#define FW_STORE_SERIAL_CREDIT_BYTES 4096U
+/* One maximum scanner JSON line is ~45 ms on the 921600-baud wire. Two
+ * guarded discards separated by this interval remove both the driver backlog
+ * and any pre-fence frame that was still in flight. */
+#define FW_SERIAL_IDENTITY_FENCE_DRAIN_MS 100U
 
 static uint8_t  s_fw_stage_fallback[FW_STAGE_BUF_FALLBACK];
 static uint8_t *s_fw_stage_buf = NULL;     /* resolved on first use */
@@ -163,13 +247,20 @@ static size_t   s_fw_stage_cap = 0;
 
 typedef struct {
     bool active;
+    bool durable_finalized;
+    bool credit_v1;
+    fw_operation_token_t operation_token;
     esp_ota_handle_t handle;
     const esp_partition_t *partition;
     uint32_t size;
     uint32_t received;
     uint32_t crc32;
     uint32_t expected_crc32;
+    uint32_t next_credit_at;
+    uint32_t generation;
+    uint32_t manifest_crc32;
     uint8_t target_slot_mask;
+    uart_rx_pause_guard_t scanner_pause_guards[2];
     char name[32];
     char version[32];
     char expected_sha256[FOF_FIRMWARE_SHA256_HEX_SIZE];
@@ -177,11 +268,119 @@ typedef struct {
 
 static serial_upload_state_t s_serial_upload;
 
+static void resume_guarded_scanner_inputs(
+    uart_rx_pause_guard_t scanner_guards[2])
+{
+    for (int scanner_id = 1; scanner_id >= 0; --scanner_id) {
+        uart_rx_resume_scanner_guarded(
+            scanner_id, &scanner_guards[scanner_id]);
+    }
+    http_upload_resume();
+}
+
+static void serial_upload_resume_inputs(void)
+{
+    resume_guarded_scanner_inputs(
+        s_serial_upload.scanner_pause_guards);
+}
+
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+typedef struct {
+    bool certain;
+    bool present;
+    uint32_t sequence;
+    fw_store_scanner_stage_status_t status;
+} scanner_stage_shadow_t;
+
+static portMUX_TYPE s_scanner_stage_shadow_lock =
+    portMUX_INITIALIZER_UNLOCKED;
+static scanner_stage_shadow_t s_scanner_stage_shadow = {
+    .certain = true,
+};
+
+static void scanner_stage_shadow_publish_from_serial(void)
+{
+    fw_store_scanner_stage_status_t status = {
+        .phase = s_serial_upload.durable_finalized
+            ? FW_SCANNER_STAGE_COMMITTED
+            : FW_SCANNER_STAGE_RECEIVING,
+        .generation = s_serial_upload.durable_finalized
+            ? s_serial_upload.generation : 0U,
+        .size = s_serial_upload.size,
+        .received = s_serial_upload.received,
+        .slot_mask = s_serial_upload.target_slot_mask,
+    };
+    memcpy(status.target, s_serial_upload.name, sizeof(status.target));
+    memcpy(status.sha256, s_serial_upload.expected_sha256,
+           sizeof(status.sha256));
+
+    portENTER_CRITICAL(&s_scanner_stage_shadow_lock);
+    s_scanner_stage_shadow.sequence++;
+    s_scanner_stage_shadow.certain = true;
+    s_scanner_stage_shadow.present = true;
+    s_scanner_stage_shadow.status = status;
+    portEXIT_CRITICAL(&s_scanner_stage_shadow_lock);
+}
+
+static void scanner_stage_shadow_mark_uncertain(void)
+{
+    portENTER_CRITICAL(&s_scanner_stage_shadow_lock);
+    s_scanner_stage_shadow.sequence++;
+    s_scanner_stage_shadow.certain = false;
+    portEXIT_CRITICAL(&s_scanner_stage_shadow_lock);
+}
+
+static void scanner_stage_shadow_set_certainty(bool certain)
+{
+    portENTER_CRITICAL(&s_scanner_stage_shadow_lock);
+    s_scanner_stage_shadow.sequence++;
+    s_scanner_stage_shadow.certain = certain;
+    portEXIT_CRITICAL(&s_scanner_stage_shadow_lock);
+}
+
+static void scanner_stage_shadow_clear(bool certain)
+{
+    portENTER_CRITICAL(&s_scanner_stage_shadow_lock);
+    uint32_t next_sequence = s_scanner_stage_shadow.sequence + 1U;
+    memset(&s_scanner_stage_shadow, 0,
+           sizeof(s_scanner_stage_shadow));
+    s_scanner_stage_shadow.certain = certain;
+    s_scanner_stage_shadow.sequence = next_sequence;
+    portEXIT_CRITICAL(&s_scanner_stage_shadow_lock);
+}
+
+static void scanner_stage_shadow_clear_preserving_certainty(void)
+{
+    portENTER_CRITICAL(&s_scanner_stage_shadow_lock);
+    bool certain = s_scanner_stage_shadow.certain;
+    uint32_t next_sequence = s_scanner_stage_shadow.sequence + 1U;
+    memset(&s_scanner_stage_shadow, 0,
+           sizeof(s_scanner_stage_shadow));
+    s_scanner_stage_shadow.certain = certain;
+    s_scanner_stage_shadow.sequence = next_sequence;
+    portEXIT_CRITICAL(&s_scanner_stage_shadow_lock);
+}
+
+static scanner_stage_shadow_t scanner_stage_shadow_snapshot(void)
+{
+    scanner_stage_shadow_t snapshot;
+    portENTER_CRITICAL(&s_scanner_stage_shadow_lock);
+    snapshot = s_scanner_stage_shadow;
+    portEXIT_CRITICAL(&s_scanner_stage_shadow_lock);
+    return snapshot;
+}
+#endif
+
 static bool auto_coordinator_begin_generation(uint32_t generation,
                                               uint8_t target_slot_mask,
-                                              uint32_t manifest_crc32);
+                                              uint32_t manifest_crc32,
+                                              const uart_rx_pause_guard_t
+                                                  scanner_guards[2]);
 static bool auto_coordinator_force_fail_closed(uint32_t generation,
                                                uint32_t manifest_crc32);
+static bool auto_coordinator_initialize_fail_closed(
+    uint32_t generation, uint32_t manifest_crc32);
+static void auto_coordinator_note_manifest_invalidated(void);
 static bool auto_coordinator_reprompt_requested(void);
 static bool auto_coordinator_start_worker(void);
 static void
@@ -235,24 +434,22 @@ uint8_t fw_store_request_scanner_checks(uint8_t target_slot_mask)
 
 /* ── NVS metadata keys ───────────────────────────────────────────────────── */
 
-#define NVS_FW_SIZE     "fw_size"
-#define NVS_FW_CKSUM    "fw_cksum"
-#define NVS_FW_CRC32    "fw_crc32"
-#define NVS_FW_VER      "fw_ver"
-#define NVS_FW_NAME     "fw_name"
-#define NVS_FW_PART     "fw_part"
-#define NVS_FW_VALID    "fw_valid"
-#define NVS_FW_GEN      "fw_gen"
-#define NVS_FW_MCRC     "fw_mcrc"
-#define NVS_FW_SHA256   "fw_sha256"
-#define NVS_FW_PROJECT  "fw_project"
-#define NVS_FW_HW       "fw_hw"
-#define NVS_FW_SLOT_MASK "fw_slotmask"
-#define NVS_FW_COORDINATOR "fw_coord"
+#define NVS_FW_SIZE FW_MANIFEST_KEY_SIZE
+#define NVS_FW_CKSUM FW_MANIFEST_KEY_CHECKSUM
+#define NVS_FW_CRC32 FW_MANIFEST_KEY_CRC32
+#define NVS_FW_VER FW_MANIFEST_KEY_VERSION
+#define NVS_FW_NAME FW_MANIFEST_KEY_NAME
+#define NVS_FW_PART FW_MANIFEST_KEY_PARTITION
+#define NVS_FW_VALID FW_MANIFEST_KEY_VALID
+#define NVS_FW_GEN FW_MANIFEST_KEY_GENERATION
+#define NVS_FW_MCRC FW_MANIFEST_KEY_MANIFEST_CRC32
+#define NVS_FW_SHA256 FW_MANIFEST_KEY_SHA256
+#define NVS_FW_PROJECT FW_MANIFEST_KEY_PROJECT
+#define NVS_FW_HW FW_MANIFEST_KEY_HARDWARE
+#define NVS_FW_SLOT_MASK FW_MANIFEST_KEY_SLOT_MASK
+#define NVS_FW_COORDINATOR FW_MANIFEST_KEY_COORDINATOR
 
 #define FW_AUTO_TARGET_ALL ((uint8_t)FW_AUTO_UPDATE_SLOT_ALL)
-
-#define FW_MANIFEST_COMMITTED_MAGIC 0xF0F34A11u
 
 typedef struct {
     const char *target;
@@ -319,40 +516,89 @@ static bool invalidate_fw_metadata(void)
      * a later NVS write or power cycle interrupts staging, readers fail closed. */
     bool valid_cleared = nvs_config_set_u32(NVS_FW_VALID, 0);
     bool size_cleared = nvs_config_set_u32(NVS_FW_SIZE, 0);
-    return valid_cleared && size_cleared;
+    bool invalidated = valid_cleared && size_cleared;
+    if (invalidated) {
+        /* The invalid manifest is the durable IDLE journal for an aborted
+         * staging operation. The old coordinator blob may remain in NVS, but
+         * it is no longer actionable and must not keep the live radio gate
+         * tied to stale work. */
+        auto_coordinator_note_manifest_invalidated();
+    }
+    return invalidated;
 }
 
-/** Read only a fully committed, internally consistent manifest. */
-static bool read_fw_metadata(fw_store_info_t *out)
+static esp_err_t read_manifest_string(nvs_handle_t handle,
+                                      const char *key,
+                                      char *out,
+                                      size_t out_len)
+{
+    if (!key || !out || out_len == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    size_t required = out_len;
+    return nvs_get_str(handle, key, out, &required);
+}
+
+fw_store_read_result_t fw_store_read_committed(fw_store_info_t *out)
 {
     if (!out) {
-        return false;
+        return FW_STORE_READ_ERROR;
     }
-    memset(out, 0, sizeof(*out));
 
+    memset(out, 0, sizeof(*out));
+    nvs_handle_t handle = 0;
+    esp_err_t open_result = nvs_open(
+        FW_MANIFEST_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (open_result == ESP_ERR_NVS_NOT_FOUND) {
+        return FW_STORE_READ_NO_MANIFEST;
+    }
+    if (open_result != ESP_OK) {
+        return FW_STORE_READ_ERROR;
+    }
+
+    fw_store_read_result_t result = FW_STORE_READ_ERROR;
     uint32_t valid = 0;
     uint32_t stored_crc = 0;
     uint32_t stored_slot_mask = 0;
-    if (!nvs_config_get_u32(NVS_FW_VALID, &valid) ||
-        valid != FW_MANIFEST_COMMITTED_MAGIC ||
-        !nvs_config_get_u32(NVS_FW_GEN, &out->generation) ||
-        !nvs_config_get_u32(NVS_FW_SIZE, &out->size) || out->size == 0 ||
-        !nvs_config_get_u32(NVS_FW_CRC32, &out->checksum) ||
-        !nvs_config_get_u32(NVS_FW_SLOT_MASK, &stored_slot_mask) ||
-        !nvs_config_get_u32(NVS_FW_MCRC, &stored_crc) ||
-        !nvs_config_get_string(NVS_FW_VER, out->version, sizeof(out->version)) ||
-        !nvs_config_get_string(NVS_FW_NAME, out->name, sizeof(out->name)) ||
-        !nvs_config_get_string(NVS_FW_PROJECT, out->project, sizeof(out->project)) ||
-        !nvs_config_get_string(NVS_FW_HW, out->hardware, sizeof(out->hardware)) ||
-        !nvs_config_get_string(NVS_FW_SHA256, out->sha256, sizeof(out->sha256)) ||
-        !nvs_config_get_string(NVS_FW_PART, out->partition, sizeof(out->partition))) {
-        memset(out, 0, sizeof(*out));
-        return false;
+    esp_err_t io = nvs_get_u32(handle, NVS_FW_VALID, &valid);
+    if (io == ESP_ERR_NVS_NOT_FOUND ||
+        (io == ESP_OK && valid != FW_MANIFEST_COMMITTED_MAGIC)) {
+        result = FW_STORE_READ_NO_MANIFEST;
+        goto cleanup;
+    }
+    if (io != ESP_OK) {
+        goto cleanup;
+    }
+
+    if (nvs_get_u32(handle, NVS_FW_GEN, &out->generation) != ESP_OK ||
+        nvs_get_u32(handle, NVS_FW_SIZE, &out->size) != ESP_OK ||
+        out->size == 0U ||
+        nvs_get_u32(handle, NVS_FW_CRC32, &out->checksum) != ESP_OK ||
+        nvs_get_u32(handle, NVS_FW_SLOT_MASK, &stored_slot_mask) != ESP_OK ||
+        nvs_get_u32(handle, NVS_FW_MCRC, &stored_crc) != ESP_OK ||
+        read_manifest_string(
+            handle, NVS_FW_VER, out->version,
+            sizeof(out->version)) != ESP_OK ||
+        read_manifest_string(
+            handle, NVS_FW_NAME, out->name,
+            sizeof(out->name)) != ESP_OK ||
+        read_manifest_string(
+            handle, NVS_FW_PROJECT, out->project,
+            sizeof(out->project)) != ESP_OK ||
+        read_manifest_string(
+            handle, NVS_FW_HW, out->hardware,
+            sizeof(out->hardware)) != ESP_OK ||
+        read_manifest_string(
+            handle, NVS_FW_SHA256, out->sha256,
+            sizeof(out->sha256)) != ESP_OK ||
+        read_manifest_string(
+            handle, NVS_FW_PART, out->partition,
+            sizeof(out->partition)) != ESP_OK) {
+        goto cleanup;
     }
     if (stored_slot_mask == 0 ||
         (stored_slot_mask & (uint32_t)~FW_AUTO_TARGET_ALL) != 0) {
-        memset(out, 0, sizeof(*out));
-        return false;
+        goto cleanup;
     }
     out->target_slot_mask = (uint8_t)stored_slot_mask;
 
@@ -362,18 +608,66 @@ static bool read_fw_metadata(fw_store_info_t *out)
         !fof_firmware_sha256_hex_is_valid(out->sha256) ||
         fof_firmware_version_compare(out->version, out->version) != FOF_VERSION_EQUAL ||
         fw_manifest_crc(out) != stored_crc) {
-        memset(out, 0, sizeof(*out));
-        return false;
+        goto cleanup;
     }
 
     out->manifest_crc32 = stored_crc;
     out->stored = true;
-    return true;
+    result = FW_STORE_READ_COMMITTED;
+
+cleanup:
+    nvs_close(handle);
+    if (result != FW_STORE_READ_COMMITTED) {
+        memset(out, 0, sizeof(*out));
+    }
+    return result;
+}
+
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+bool fw_store_scanner_stage_status_snapshot(
+    fw_store_scanner_stage_status_t *out)
+{
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        scanner_stage_shadow_t before =
+            scanner_stage_shadow_snapshot();
+        if (!before.certain) {
+            return false;
+        }
+        if (before.present) {
+            return fw_store_scanner_stage_status_reconcile(
+                true, &before.status, FW_STORE_READ_ERROR, NULL, out);
+        }
+
+        fw_store_info_t manifest = {0};
+        fw_store_read_result_t manifest_result =
+            fw_store_read_committed(&manifest);
+        scanner_stage_shadow_t after =
+            scanner_stage_shadow_snapshot();
+        if (before.sequence != after.sequence ||
+            before.certain != after.certain ||
+            before.present != after.present) {
+            continue;
+        }
+        return fw_store_scanner_stage_status_reconcile(
+            after.certain, NULL, manifest_result, &manifest, out);
+    }
+    return false;
+}
+#endif
+
+/** Read only a fully committed, internally consistent manifest. */
+static bool read_fw_metadata(fw_store_info_t *out)
+{
+    return fw_store_read_committed(out) == FW_STORE_READ_COMMITTED;
 }
 
 /* Forward decl — defined below near the http handlers. */
 static const esp_partition_t *get_store_partition(void);
-static void resume_all_tasks(void);
 
 typedef struct {
     const uint8_t *pattern;
@@ -542,6 +836,24 @@ static bool validate_staged_image(const esp_partition_t *partition,
     return true;
 }
 
+bool fw_store_validate_snapshot_image(
+    const esp_partition_t *partition,
+    const fw_store_info_t *snapshot,
+    char *error,
+    size_t error_len)
+{
+    if (!snapshot) {
+        if (error && error_len > 0) {
+            snprintf(error, error_len, "manifest_missing");
+        }
+        return false;
+    }
+    return validate_staged_image(
+        partition, snapshot->size, snapshot->checksum,
+        snapshot->name, snapshot->version, snapshot->sha256,
+        NULL, error, error_len);
+}
+
 static bool poison_staged_image(const esp_partition_t *partition)
 {
     if (!partition) {
@@ -568,7 +880,8 @@ static bool poison_staged_image(const esp_partition_t *partition)
     return false;
 }
 
-static bool persist_validated_metadata(fw_store_info_t *info)
+static bool persist_validated_metadata(fw_store_info_t *info,
+                                       bool terminal_gate)
 {
     if (!info || !find_target_contract(info->name) ||
         !fof_firmware_sha256_hex_is_valid(info->sha256) ||
@@ -611,6 +924,13 @@ static bool persist_validated_metadata(fw_store_info_t *info)
     if (!fields_ok) {
         return false;
     }
+    /* USB staging may not expose a valid manifest until a matching durable
+     * coordinator record proves the generation is still unarmed. This closes
+     * the reset window between manifest commit and terminal delivery. */
+    if (terminal_gate && !auto_coordinator_initialize_fail_closed(
+            info->generation, info->manifest_crc32)) {
+        return false;
+    }
     if (!nvs_config_set_u32(NVS_FW_VALID, FW_MANIFEST_COMMITTED_MAGIC)) {
         return false;
     }
@@ -623,9 +943,11 @@ const esp_partition_t *fw_store_get_target_partition(void)
     return get_store_partition();
 }
 
-bool fw_store_persist_metadata(const char *name, const char *version,
-                               const esp_partition_t *partition,
-                               uint32_t size, uint32_t crc32)
+static bool fw_store_persist_metadata_with_pause_guards(
+    const char *name, const char *version,
+    const esp_partition_t *partition,
+    uint32_t size, uint32_t crc32,
+    const uart_rx_pause_guard_t scanner_guards[2])
 {
     fw_store_info_t info = {0};
     char error[48] = {0};
@@ -636,7 +958,7 @@ bool fw_store_persist_metadata(const char *name, const char *version,
         return false;
     }
     info.target_slot_mask = FW_AUTO_UPDATE_SLOT_ALL;
-    if (!persist_validated_metadata(&info)) {
+    if (!persist_validated_metadata(&info, false)) {
         ESP_LOGE(TAG, "Failed to commit staged firmware manifest");
         (void)poison_staged_image(partition);
         (void)invalidate_fw_metadata();
@@ -645,9 +967,9 @@ bool fw_store_persist_metadata(const char *name, const char *version,
         auto_coordinator_release_excluded_slots();
         return false;
     }
-    if (!auto_coordinator_begin_generation(info.generation,
-                                           info.target_slot_mask,
-                                           info.manifest_crc32)) {
+    if (!auto_coordinator_begin_generation(
+            info.generation, info.target_slot_mask,
+            info.manifest_crc32, scanner_guards)) {
         ESP_LOGE(TAG, "Failed to commit automatic-update coordinator");
         (void)poison_staged_image(partition);
         (void)invalidate_fw_metadata();
@@ -664,6 +986,32 @@ bool fw_store_persist_metadata(const char *name, const char *version,
     return true;
 }
 
+static void auto_coordinator_kick_committed_generation(void)
+{
+    auto_coordinator_release_excluded_slots();
+    if (!auto_coordinator_reprompt_requested()) {
+        ESP_LOGE(TAG,
+                 "Committed scanner generation reprompt failed closed");
+    }
+    if (!auto_coordinator_start_worker()) {
+        ESP_LOGW(TAG,
+                 "Committed scanner generation is durable; coordinator "
+                 "worker kick deferred until UART dependencies are ready");
+    }
+}
+
+bool fw_store_persist_metadata(const char *name, const char *version,
+                               const esp_partition_t *partition,
+                               uint32_t size, uint32_t crc32)
+{
+    bool committed = fw_store_persist_metadata_with_pause_guards(
+        name, version, partition, size, crc32, NULL);
+    if (committed) {
+        auto_coordinator_kick_committed_generation();
+    }
+    return committed;
+}
+
 bool fw_store_serial_upload_active(void)
 {
     return s_serial_upload.active;
@@ -675,6 +1023,53 @@ uint32_t fw_store_serial_upload_remaining(void)
         return 0;
     }
     return s_serial_upload.size - s_serial_upload.received;
+}
+
+static bool render_serial_upload_credit_receipt(
+    const char *phase,
+    uint32_t received,
+    uint32_t credit_bytes,
+    char *out_json,
+    size_t out_json_len)
+{
+    if (!phase || !out_json || out_json_len == 0U ||
+        !s_serial_upload.active || !s_serial_upload.credit_v1 ||
+        received != s_serial_upload.received ||
+        received > s_serial_upload.size) {
+        return false;
+    }
+    const fw_target_contract_t *contract =
+        find_target_contract(s_serial_upload.name);
+    if (!contract || !s_serial_upload.partition) {
+        return false;
+    }
+    int written = snprintf(
+        out_json, out_json_len,
+        "{\"ok\":true,\"partition\":\"%s\",\"size\":%lu,"
+        "\"crc32\":%lu,\"sha256\":\"%s\","
+        "\"target\":\"%s\",\"name\":\"%s\","
+        "\"app_project\":\"%s\",\"project\":\"%s\","
+        "\"hardware_type\":\"%s\",\"hardware\":\"%s\","
+        "\"version\":\"%s\",\"slot_mask\":%u,"
+        "\"flow_control\":\"credit-v1\",\"phase\":\"%s\","
+        "\"received\":%lu,\"total\":%lu,\"credit_bytes\":%lu}",
+        s_serial_upload.partition->label,
+        (unsigned long)s_serial_upload.size,
+        (unsigned long)s_serial_upload.expected_crc32,
+        s_serial_upload.expected_sha256,
+        s_serial_upload.name,
+        s_serial_upload.name,
+        contract->project,
+        contract->project,
+        contract->hardware,
+        contract->hardware,
+        s_serial_upload.version,
+        (unsigned)s_serial_upload.target_slot_mask,
+        phase,
+        (unsigned long)received,
+        (unsigned long)s_serial_upload.size,
+        (unsigned long)credit_bytes);
+    return written > 0 && (size_t)written < out_json_len;
 }
 
 void fw_store_serial_upload_abort(const char *reason)
@@ -689,9 +1084,16 @@ void fw_store_serial_upload_abort(const char *reason)
     if (s_serial_upload.handle) {
         esp_ota_abort(s_serial_upload.handle);
     }
+    fw_operation_token_t operation_token =
+        s_serial_upload.operation_token;
+    serial_upload_resume_inputs();
     memset(&s_serial_upload, 0, sizeof(s_serial_upload));
-    resume_all_tasks();
-    operation_end();
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    scanner_stage_shadow_clear_preserving_certainty();
+#endif
+    if (!fw_store_operation_end(operation_token)) {
+        ESP_LOGE(TAG, "USB firmware staging token release rejected");
+    }
 }
 
 bool fw_store_serial_upload_begin(const char *name,
@@ -700,9 +1102,21 @@ bool fw_store_serial_upload_begin(const char *name,
                                   uint32_t expected_crc32,
                                   const char *expected_sha256,
                                   uint8_t target_slot_mask,
+                                  bool credit_v1,
                                   char *out_json,
                                   size_t out_json_len)
 {
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    if (!badge_runtime_update_maintenance_active()) {
+        if (out_json && out_json_len) {
+            snprintf(
+                out_json, out_json_len,
+                "{\"ok\":false,"
+                "\"error\":\"update_maintenance_required\"}");
+        }
+        return false;
+    }
+#endif
     if (s_serial_upload.active) {
         if (out_json && out_json_len) {
             snprintf(out_json, out_json_len,
@@ -733,7 +1147,9 @@ bool fw_store_serial_upload_begin(const char *name,
         return false;
     }
 
-    if (!operation_try_begin()) {
+    fw_operation_token_t operation_token = {0};
+    if (!fw_store_operation_try_begin(
+            FW_OPERATION_OWNER_SCANNER_STAGING, true, &operation_token)) {
         if (out_json && out_json_len) {
             snprintf(out_json, out_json_len,
                      "{\"ok\":false,\"error\":\"operation_active\"}");
@@ -742,30 +1158,74 @@ bool fw_store_serial_upload_begin(const char *name,
     }
 
     memset(&s_serial_upload, 0, sizeof(s_serial_upload));
+    s_serial_upload.operation_token = operation_token;
     http_upload_pause();
-    uart_rx_pause_scanner(0);
-#if CONFIG_DUAL_SCANNER
-    uart_rx_pause_scanner(1);
+    bool pause_ok = true;
+    for (int scanner_id = 0; scanner_id < 2; ++scanner_id) {
+        uint8_t bit = (uint8_t)(1u << scanner_id);
+        if (!(target_slot_mask & bit)) {
+            continue;
+        }
+#if !CONFIG_DUAL_SCANNER
+        if (scanner_id == 1) {
+            pause_ok = false;
+            break;
+        }
 #endif
-    vTaskDelay(pdMS_TO_TICKS(200));
+        if (!uart_rx_scanner_task_started(scanner_id) ||
+            !uart_rx_pause_scanner_guarded(
+                scanner_id,
+                &s_serial_upload.scanner_pause_guards[scanner_id]) ||
+            !s_serial_upload.scanner_pause_guards[scanner_id].acquired) {
+            pause_ok = false;
+            break;
+        }
+    }
+    if (!pause_ok) {
+        serial_upload_resume_inputs();
+        fw_operation_token_t failed_token =
+            s_serial_upload.operation_token;
+        memset(&s_serial_upload, 0, sizeof(s_serial_upload));
+        if (!fw_store_operation_end(failed_token)) {
+            ESP_LOGE(TAG, "USB staging pause token release rejected");
+        }
+        if (out_json && out_json_len) {
+            snprintf(out_json, out_json_len,
+                     "{\"ok\":false,\"error\":\"scanner_uart_pause_failed\"}");
+        }
+        return false;
+    }
 
     if (!invalidate_fw_metadata()) {
-        resume_all_tasks();
-        operation_end();
+        serial_upload_resume_inputs();
+        fw_operation_token_t failed_token =
+            s_serial_upload.operation_token;
+        memset(&s_serial_upload, 0, sizeof(s_serial_upload));
+        if (!fw_store_operation_end(failed_token)) {
+            ESP_LOGE(TAG, "USB staging invalidate token release rejected");
+        }
         if (out_json && out_json_len) {
             snprintf(out_json, out_json_len,
                      "{\"ok\":false,\"error\":\"manifest_invalidate_failed\"}");
         }
         return false;
     }
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    scanner_stage_shadow_clear(true);
+#endif
 
     esp_err_t err = esp_ota_begin(p, OTA_WITH_SEQUENTIAL_WRITES,
                                   &s_serial_upload.handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "USB staging esp_ota_begin failed: %s on '%s'",
                  esp_err_to_name(err), p->label);
-        resume_all_tasks();
-        operation_end();
+        serial_upload_resume_inputs();
+        fw_operation_token_t failed_token =
+            s_serial_upload.operation_token;
+        memset(&s_serial_upload, 0, sizeof(s_serial_upload));
+        if (!fw_store_operation_end(failed_token)) {
+            ESP_LOGE(TAG, "USB staging begin token release rejected");
+        }
         if (out_json && out_json_len) {
             snprintf(out_json, out_json_len,
                      "{\"ok\":false,\"error\":\"esp_ota_begin:%s\"}",
@@ -779,6 +1239,10 @@ bool fw_store_serial_upload_begin(const char *name,
     s_serial_upload.size = size;
     s_serial_upload.expected_crc32 = expected_crc32;
     s_serial_upload.target_slot_mask = target_slot_mask;
+    s_serial_upload.credit_v1 = credit_v1;
+    s_serial_upload.next_credit_at =
+        size < FW_STORE_SERIAL_CREDIT_BYTES
+            ? size : FW_STORE_SERIAL_CREDIT_BYTES;
     strncpy(s_serial_upload.name,
             (name && name[0]) ? name : "scanner-s3-combo-fof_badge",
             sizeof(s_serial_upload.name) - 1);
@@ -786,10 +1250,22 @@ bool fw_store_serial_upload_begin(const char *name,
             version,
             sizeof(s_serial_upload.version) - 1);
     canonicalize_sha256(expected_sha256, s_serial_upload.expected_sha256);
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    scanner_stage_shadow_publish_from_serial();
+#endif
 
     ESP_LOGW(TAG, "USB staging scanner firmware: %lu bytes to '%s' crc=%08lX",
              (unsigned long)size, p->label, (unsigned long)expected_crc32);
-    if (out_json && out_json_len) {
+    if (out_json && out_json_len && credit_v1) {
+        if (!render_serial_upload_credit_receipt(
+                "ready", 0U, s_serial_upload.next_credit_at,
+                out_json, out_json_len)) {
+            fw_store_serial_upload_abort("ready_receipt_overflow");
+            snprintf(out_json, out_json_len,
+                     "{\"ok\":false,\"error\":\"ready_receipt_overflow\"}");
+            return false;
+        }
+    } else if (out_json && out_json_len) {
         snprintf(out_json, out_json_len,
                  "{\"ok\":true,\"partition\":\"%s\",\"size\":%lu,"
                  "\"crc32\":%lu,\"sha256\":\"%s\","
@@ -809,6 +1285,10 @@ bool fw_store_serial_upload_begin(const char *name,
                  s_serial_upload.version,
                  (unsigned)s_serial_upload.target_slot_mask);
     }
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    badge_runtime_update_keepalive(
+        (uint32_t)(esp_timer_get_time() / 1000));
+#endif
     return true;
 }
 
@@ -817,15 +1297,23 @@ bool fw_store_serial_upload_write(const uint8_t *data,
                                   char *out_json,
                                   size_t out_json_len)
 {
-    if (!s_serial_upload.active || !data || len == 0) {
+    if (out_json && out_json_len) {
+        out_json[0] = '\0';
+    }
+    if (!s_serial_upload.active || s_serial_upload.durable_finalized ||
+        !data || len == 0) {
         return true;
     }
     uint32_t remaining = s_serial_upload.size - s_serial_upload.received;
-    if (len > remaining) {
+    uint32_t credit_remaining =
+        s_serial_upload.next_credit_at - s_serial_upload.received;
+    if (len > remaining ||
+        (s_serial_upload.credit_v1 && len > credit_remaining)) {
         fw_store_serial_upload_abort("too_many_bytes");
         if (out_json && out_json_len) {
             snprintf(out_json, out_json_len,
-                     "{\"ok\":false,\"error\":\"too_many_bytes\"}");
+                     "{\"ok\":false,\"error\":\"%s\"}",
+                     len > remaining ? "too_many_bytes" : "credit_overrun");
         }
         return false;
     }
@@ -841,6 +1329,33 @@ bool fw_store_serial_upload_write(const uint8_t *data,
     }
     s_serial_upload.crc32 = esp_rom_crc32_le(s_serial_upload.crc32, data, len);
     s_serial_upload.received += (uint32_t)len;
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    scanner_stage_shadow_publish_from_serial();
+    badge_runtime_update_keepalive(
+        (uint32_t)(esp_timer_get_time() / 1000));
+#endif
+    if (s_serial_upload.credit_v1 &&
+        s_serial_upload.received == s_serial_upload.next_credit_at &&
+        s_serial_upload.received < s_serial_upload.size) {
+        uint32_t remaining_after =
+            s_serial_upload.size - s_serial_upload.received;
+        uint32_t next_credit =
+            remaining_after < FW_STORE_SERIAL_CREDIT_BYTES
+                ? remaining_after : FW_STORE_SERIAL_CREDIT_BYTES;
+        s_serial_upload.next_credit_at =
+            s_serial_upload.received + next_credit;
+        if (!render_serial_upload_credit_receipt(
+                "credit", s_serial_upload.received, next_credit,
+                out_json, out_json_len)) {
+            fw_store_serial_upload_abort("credit_receipt_overflow");
+            if (out_json && out_json_len) {
+                snprintf(
+                    out_json, out_json_len,
+                    "{\"ok\":false,\"error\":\"credit_receipt_overflow\"}");
+            }
+            return false;
+        }
+    }
     return true;
 }
 
@@ -902,47 +1417,56 @@ bool fw_store_serial_upload_end(char *out_json, size_t out_json_len)
         return false;
     }
     info.target_slot_mask = s_serial_upload.target_slot_mask;
-    if (!persist_validated_metadata(&info)) {
+    if (!persist_validated_metadata(&info, true)) {
         if (out_json && out_json_len) {
             snprintf(out_json, out_json_len,
                      "{\"ok\":false,\"error\":\"manifest_commit_failed\"}");
         }
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+        scanner_stage_shadow_mark_uncertain();
+#endif
         (void)poison_staged_image(s_serial_upload.partition);
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+        bool manifest_invalidated = invalidate_fw_metadata();
+#else
         (void)invalidate_fw_metadata();
+#endif
         (void)auto_coordinator_force_fail_closed(
             info.generation, info.manifest_crc32);
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+        scanner_stage_shadow_set_certainty(manifest_invalidated);
+#endif
         fw_store_serial_upload_abort("manifest_commit_failed");
         auto_coordinator_release_excluded_slots();
         return false;
     }
-    if (!auto_coordinator_begin_generation(
-            info.generation, info.target_slot_mask,
-            info.manifest_crc32)) {
-        bool image_poisoned =
-            poison_staged_image(s_serial_upload.partition);
-        bool manifest_invalidated = invalidate_fw_metadata();
-        bool coordinator_failed_closed =
-            auto_coordinator_force_fail_closed(
-                info.generation, info.manifest_crc32);
-        ESP_LOGE(TAG,
-                 "Coordinator commit failed for generation %lu; "
-                 "image_poisoned=%d manifest_invalidated=%d fail_closed=%d",
+    if (out_json && out_json_len && s_serial_upload.credit_v1) {
+        snprintf(out_json, out_json_len,
+                 "{\"ok\":true,\"partition\":\"%s\",\"size\":%lu,"
+                 "\"crc32\":%lu,\"sha256\":\"%s\","
+                 "\"target\":\"%s\",\"name\":\"%s\","
+                 "\"app_project\":\"%s\",\"project\":\"%s\","
+                 "\"hardware_type\":\"%s\",\"hardware\":\"%s\","
+                 "\"version\":\"%s\",\"generation\":%lu,"
+                 "\"slot_mask\":%u,"
+                 "\"flow_control\":\"credit-v1\",\"phase\":\"final\","
+                 "\"received\":%lu,\"total\":%lu,\"credit_bytes\":0}",
+                 info.partition,
+                 (unsigned long)info.size,
+                 (unsigned long)info.checksum,
+                 info.sha256,
+                 info.name,
+                 info.name,
+                 info.project,
+                 info.project,
+                 info.hardware,
+                 info.hardware,
+                 info.version,
                  (unsigned long)info.generation,
-                 image_poisoned ? 1 : 0,
-                 manifest_invalidated ? 1 : 0,
-                 coordinator_failed_closed ? 1 : 0);
-        if (out_json && out_json_len) {
-            snprintf(out_json, out_json_len,
-                     "{\"ok\":false,\"error\":\"coordinator_commit_failed\","
-                     "\"generation\":%lu,\"slot_mask\":%u}",
-                     (unsigned long)info.generation,
-                     (unsigned)info.target_slot_mask);
-        }
-        fw_store_serial_upload_abort("coordinator_commit_failed");
-        auto_coordinator_release_excluded_slots();
-        return false;
-    }
-    if (out_json && out_json_len) {
+                 (unsigned)info.target_slot_mask,
+                 (unsigned long)info.size,
+                 (unsigned long)info.size);
+    } else if (out_json && out_json_len) {
         snprintf(out_json, out_json_len,
                  "{\"ok\":true,\"partition\":\"%s\",\"size\":%lu,"
                  "\"crc32\":%lu,\"sha256\":\"%s\","
@@ -972,24 +1496,183 @@ bool fw_store_serial_upload_end(char *out_json, size_t out_json_len)
              (unsigned long)info.size,
              (unsigned long)info.checksum,
              info.name, info.project, info.hardware, info.version, info.sha256);
+    s_serial_upload.durable_finalized = true;
+    s_serial_upload.generation = info.generation;
+    s_serial_upload.manifest_crc32 = info.manifest_crc32;
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    scanner_stage_shadow_publish_from_serial();
+    badge_runtime_update_keepalive(
+        (uint32_t)(esp_timer_get_time() / 1000));
+#endif
+    return true;
+}
+
+bool fw_store_serial_upload_complete_terminal(bool delivered)
+{
+    if (!s_serial_upload.active || !s_serial_upload.durable_finalized) {
+        return false;
+    }
+
+    const esp_partition_t *partition = s_serial_upload.partition;
+    uint32_t generation = s_serial_upload.generation;
+    uint32_t manifest_crc32 = s_serial_upload.manifest_crc32;
+    uint8_t target_slot_mask = s_serial_upload.target_slot_mask;
+    bool defer_scanner_activation = false;
+#ifdef FOF_BADGE_VARIANT
+    defer_scanner_activation = badge_runtime_is_safe_mode();
+#endif
+    if (!delivered) {
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+        scanner_stage_shadow_mark_uncertain();
+#endif
+        bool image_poisoned = poison_staged_image(partition);
+        bool manifest_invalidated = invalidate_fw_metadata();
+        bool coordinator_failed_closed = auto_coordinator_force_fail_closed(
+            generation, manifest_crc32);
+        ESP_LOGE(TAG,
+                 "USB terminal response failed for generation %lu; "
+                 "image_poisoned=%d manifest_invalidated=%d fail_closed=%d",
+                 (unsigned long)generation,
+                 image_poisoned ? 1 : 0,
+                 manifest_invalidated ? 1 : 0,
+                 coordinator_failed_closed ? 1 : 0);
+        fw_operation_token_t operation_token =
+            s_serial_upload.operation_token;
+        serial_upload_resume_inputs();
+        memset(&s_serial_upload, 0, sizeof(s_serial_upload));
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+        scanner_stage_shadow_clear(manifest_invalidated);
+#endif
+        if (!fw_store_operation_end(operation_token)) {
+            ESP_LOGE(TAG, "USB terminal failure token release rejected");
+        }
+        auto_coordinator_release_excluded_slots();
+        return false;
+    }
+
+    bool identity_fence_ok = true;
+    for (int scanner_id = 0; scanner_id < 2; ++scanner_id) {
+        uint8_t bit = (uint8_t)(1u << scanner_id);
+        if (!(target_slot_mask & bit)) {
+            continue;
+        }
+        if (!uart_rx_discard_scanner_backlog_guarded(
+                scanner_id,
+                &s_serial_upload.scanner_pause_guards[scanner_id])) {
+            identity_fence_ok = false;
+            break;
+        }
+    }
+    if (identity_fence_ok) {
+        vTaskDelay(pdMS_TO_TICKS(FW_SERIAL_IDENTITY_FENCE_DRAIN_MS));
+        for (int scanner_id = 0; scanner_id < 2; ++scanner_id) {
+            uint8_t bit = (uint8_t)(1u << scanner_id);
+            if (!(target_slot_mask & bit)) {
+                continue;
+            }
+            if (!uart_rx_discard_scanner_backlog_guarded(
+                    scanner_id,
+                    &s_serial_upload.scanner_pause_guards[scanner_id])) {
+                identity_fence_ok = false;
+                break;
+            }
+        }
+    }
+    if (!identity_fence_ok) {
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+        scanner_stage_shadow_mark_uncertain();
+#endif
+        bool image_poisoned = poison_staged_image(partition);
+        bool manifest_invalidated = invalidate_fw_metadata();
+        bool coordinator_failed_closed = auto_coordinator_force_fail_closed(
+            generation, manifest_crc32);
+        ESP_LOGE(TAG,
+                 "USB generation %lu scanner identity fence failed; "
+                 "image_poisoned=%d manifest_invalidated=%d fail_closed=%d",
+                 (unsigned long)generation,
+                 image_poisoned ? 1 : 0,
+                 manifest_invalidated ? 1 : 0,
+                 coordinator_failed_closed ? 1 : 0);
+        fw_operation_token_t operation_token =
+            s_serial_upload.operation_token;
+        serial_upload_resume_inputs();
+        memset(&s_serial_upload, 0, sizeof(s_serial_upload));
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+        scanner_stage_shadow_clear(manifest_invalidated);
+#endif
+        if (!fw_store_operation_end(operation_token)) {
+            ESP_LOGE(TAG, "USB identity-fence token release rejected");
+        }
+        auto_coordinator_release_excluded_slots();
+        return false;
+    }
+
+    if (!auto_coordinator_begin_generation(
+            generation, target_slot_mask, manifest_crc32,
+            s_serial_upload.scanner_pause_guards)) {
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+        scanner_stage_shadow_mark_uncertain();
+#endif
+        bool image_poisoned = poison_staged_image(partition);
+        bool manifest_invalidated = invalidate_fw_metadata();
+        bool coordinator_failed_closed = auto_coordinator_force_fail_closed(
+            generation, manifest_crc32);
+        ESP_LOGE(TAG,
+                 "USB terminal drained but generation %lu could not be armed; "
+                 "image_poisoned=%d manifest_invalidated=%d fail_closed=%d",
+                 (unsigned long)generation,
+                 image_poisoned ? 1 : 0,
+                 manifest_invalidated ? 1 : 0,
+                 coordinator_failed_closed ? 1 : 0);
+        fw_operation_token_t operation_token =
+            s_serial_upload.operation_token;
+        serial_upload_resume_inputs();
+        memset(&s_serial_upload, 0, sizeof(s_serial_upload));
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+        scanner_stage_shadow_clear(manifest_invalidated);
+#endif
+        if (!fw_store_operation_end(operation_token)) {
+            ESP_LOGE(TAG, "USB coordinator failure token release rejected");
+        }
+        auto_coordinator_release_excluded_slots();
+        return false;
+    }
+
+    fw_operation_token_t operation_token = s_serial_upload.operation_token;
+    serial_upload_resume_inputs();
     memset(&s_serial_upload, 0, sizeof(s_serial_upload));
-    resume_all_tasks();
-    operation_end();
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    scanner_stage_shadow_clear(true);
+#endif
+    if (!fw_store_operation_end(operation_token)) {
+        ESP_LOGE(TAG, "USB staging completion token release rejected");
+    }
+    if (defer_scanner_activation) {
+        ESP_LOGW(TAG,
+                 "Safe USB staged generation %lu durably; scanner prompts "
+                 "and relay worker deferred until normal-boot restore",
+                 (unsigned long)generation);
+        return true;
+    }
     auto_coordinator_release_excluded_slots();
     (void)auto_coordinator_reprompt_requested();
-    (void)auto_coordinator_start_worker();
+    if (!auto_coordinator_start_worker()) {
+        /* The permanent worker may not be dependency-ready during the early
+         * USB boot window. The committed manifest and nonterminal
+         * coordinator are the recovery journal; do not poison them merely
+         * because a notification must be deferred until UART startup. */
+        ESP_LOGW(TAG,
+                 "USB generation %lu armed durably; coordinator kick "
+                 "deferred until scanner UART dependencies are ready",
+                 (unsigned long)generation);
+        return true;
+    }
     return true;
 }
 
 bool fw_store_get_info(fw_store_info_t *out)
 {
     return read_fw_metadata(out);
-}
-
-/** Clear stored firmware metadata from NVS. */
-static void clear_fw_metadata(void)
-{
-    invalidate_fw_metadata();
 }
 
 /** Find the partition where firmware is stored, by label from NVS. */
@@ -1038,18 +1721,9 @@ static const esp_partition_t *get_store_partition(void)
     return p;
 }
 
-/** Resume all paused tasks after upload/relay completes or fails. */
-static void resume_all_tasks(void)
-{
-    uart_rx_resume_scanner(0);
-#if CONFIG_DUAL_SCANNER
-    uart_rx_resume_scanner(1);
-#endif
-    http_upload_resume();
-}
-
 /* ── POST /api/fw/upload — store firmware using OTA API ──────────────────── */
 
+#ifndef FOF_BADGE_VARIANT
 static esp_err_t fw_upload_handler(httpd_req_t *req)
 {
     const esp_partition_t *p = get_store_partition();
@@ -1067,7 +1741,10 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    if (!operation_try_begin()) {
+    fw_operation_token_t operation_token = {0};
+    uart_rx_pause_guard_t upload_pause_guards[2] = {0};
+    if (!fw_store_operation_try_begin(
+            FW_OPERATION_OWNER_SCANNER_STAGING, true, &operation_token)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "Operation in progress");
         return ESP_FAIL;
@@ -1077,17 +1754,29 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
      * The scanners flood with huge BLE JSON that consumes resources
      * needed for the 1MB firmware upload. */
     http_upload_pause();
-    uart_rx_pause_scanner(0);  /* BLE scanner */
+    bool pause_ok = uart_rx_scanner_task_started(0) &&
+        uart_rx_pause_scanner_guarded(
+            0, &upload_pause_guards[0]) &&
+        upload_pause_guards[0].acquired;
 #if CONFIG_DUAL_SCANNER
-    uart_rx_pause_scanner(1);  /* WiFi scanner */
+    pause_ok = pause_ok && uart_rx_scanner_task_started(1) &&
+        uart_rx_pause_scanner_guarded(
+            1, &upload_pause_guards[1]) &&
+        upload_pause_guards[1].acquired;
 #endif
-    vTaskDelay(pdMS_TO_TICKS(500));
+    if (!pause_ok) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Scanner UART pause failed");
+        resume_guarded_scanner_inputs(upload_pause_guards);
+        (void)fw_store_operation_end(operation_token);
+        return ESP_FAIL;
+    }
 
     if (!invalidate_fw_metadata()) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "Manifest invalidation failed");
-        resume_all_tasks();
-        operation_end();
+        resume_guarded_scanner_inputs(upload_pause_guards);
+        (void)fw_store_operation_end(operation_token);
         return ESP_FAIL;
     }
 
@@ -1114,8 +1803,8 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
         snprintf(msg, sizeof(msg), "esp_ota_begin: %s on '%s'",
                  esp_err_to_name(err), p ? p->label : "?");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, msg);
-        resume_all_tasks();
-        operation_end();
+        resume_guarded_scanner_inputs(upload_pause_guards);
+        (void)fw_store_operation_end(operation_token);
         return ESP_FAIL;
     }
 
@@ -1138,8 +1827,8 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
                     ESP_LOGE(TAG, "Upload timeout at %d/%d", received, total);
                     esp_ota_abort(ota_handle);
                     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Timeout");
-                    resume_all_tasks();
-                    operation_end();
+                    resume_guarded_scanner_inputs(upload_pause_guards);
+                    (void)fw_store_operation_end(operation_token);
                     return ESP_FAIL;
                 }
                 continue;
@@ -1147,8 +1836,8 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
             ESP_LOGE(TAG, "HTTP recv error at %d/%d", received, total);
             esp_ota_abort(ota_handle);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive failed");
-            resume_all_tasks();
-            operation_end();
+            resume_guarded_scanner_inputs(upload_pause_guards);
+            (void)fw_store_operation_end(operation_token);
             return ESP_FAIL;
         }
 
@@ -1159,8 +1848,8 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
             ESP_LOGE(TAG, "OTA write failed at %d: %s", received, esp_err_to_name(err));
             esp_ota_abort(ota_handle);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Write failed");
-            resume_all_tasks();
-            operation_end();
+            resume_guarded_scanner_inputs(upload_pause_guards);
+            (void)fw_store_operation_end(operation_token);
             return ESP_FAIL;
         }
 
@@ -1187,12 +1876,13 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
     httpd_query_key_value(query, "version", version, sizeof(version));
     httpd_query_key_value(query, "name", fw_name, sizeof(fw_name));
 
-    if (!fw_store_persist_metadata(fw_name, version, p,
-                                   (uint32_t)total, checksum)) {
+    if (!fw_store_persist_metadata_with_pause_guards(
+            fw_name, version, p, (uint32_t)total, checksum,
+            upload_pause_guards)) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                             "Firmware identity or integrity validation failed");
-        resume_all_tasks();
-        operation_end();
+        resume_guarded_scanner_inputs(upload_pause_guards);
+        (void)fw_store_operation_end(operation_token);
         return ESP_FAIL;
     }
 
@@ -1201,8 +1891,9 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
              fw_name[0] ? fw_name : "?",
              version[0] ? version : "?");
 
-    resume_all_tasks();
-    operation_end();
+    resume_guarded_scanner_inputs(upload_pause_guards);
+    (void)fw_store_operation_end(operation_token);
+    auto_coordinator_kick_committed_generation();
 
     char resp[192];
     snprintf(resp, sizeof(resp),
@@ -1217,6 +1908,8 @@ static esp_err_t fw_upload_handler(httpd_req_t *req)
 }
 
 /* ── Line-based UART read helpers (v0.59 staged handshakes) ──────────────── */
+
+#endif
 
 /* Read bytes from UART until '\n', a printable-ASCII line, or timeout.
  * Returns >=0 = line length, -1 = timeout. Skips non-printable bytes so
@@ -1709,23 +2402,31 @@ static void relay_emit_progress(int scanner_id,
                                 int64_t start_ms,
                                 const char *error)
 {
+    fw_store_note_relay_progress();
     int percent = size ? (int)(((uint64_t)bytes * 100ULL) / size) : 0;
     int64_t elapsed_s = ((esp_timer_get_time() / 1000) - start_ms) / 1000;
-    printf("FOF_FW_RELAY_PROGRESS:{\"uart\":\"%s\",\"stage\":\"%s\","
-           "\"bytes\":%lu,\"size\":%lu,\"percent\":%d,"
-           "\"chunks\":%d,\"nacks\":%d,\"retries\":%d,"
-           "\"elapsed_s\":%lld,\"error\":\"%s\"}\n",
-           scanner_id == 1 ? "wifi" : "ble",
-           stage ? stage : "relay",
-           (unsigned long)bytes,
-           (unsigned long)size,
-           percent,
-           chunks,
-           nacks,
-           retries,
-           (long long)elapsed_s,
-           error ? error : "");
-    fflush(stdout);
+    char frame[512];
+    int len = snprintf(
+        frame, sizeof(frame),
+        "FOF_FW_RELAY_PROGRESS:{\"uart\":\"%s\",\"stage\":\"%s\","
+        "\"bytes\":%lu,\"size\":%lu,\"percent\":%d,"
+        "\"chunks\":%d,\"nacks\":%d,\"retries\":%d,"
+        "\"elapsed_s\":%lld,\"error\":\"%s\"}\n",
+        scanner_id == 1 ? "wifi" : "ble",
+        stage ? stage : "relay",
+        (unsigned long)bytes,
+        (unsigned long)size,
+        percent,
+        chunks,
+        nacks,
+        retries,
+        (long long)elapsed_s,
+        error ? error : "");
+    if (len > 0 && (size_t)len < sizeof(frame)) {
+        (void)badge_usb_transport_emit(frame, (size_t)len,
+                                       BADGE_USB_FRAME_PROGRESS,
+                                       pdMS_TO_TICKS(25));
+    }
 }
 #else
 static void relay_emit_progress(int scanner_id,
@@ -2160,12 +2861,10 @@ static bool wait_for_scanner_post_update_health(
     bool saw_new_identity = false;
     bool saw_new_boot = false;
     while ((esp_timer_get_time() / 1000) < deadline_ms) {
-#ifdef FOF_BADGE_VARIANT
         /* The USB control task executes this relay synchronously. A healthy
          * 180-second post-reboot proof window must not look like a wedged USB
          * task to the 90-second self-heal watchdog. */
-        badge_runtime_note_usb_control_alive();
-#endif
+        fw_store_note_relay_progress();
         int64_t now_ms = esp_timer_get_time() / 1000;
         scanner_info_t *snapshot = &s_fw_relay_scanner_snapshots[scanner_id];
         bool have_scanner_snapshot =
@@ -2213,12 +2912,12 @@ static bool wait_for_scanner_post_update_health(
                 expected_profile,
                 fof_policy_slot_role_for_slot((uint8_t)scanner_id))) {
             ESP_LOGW(TAG,
-                     "Scanner[%d] post-update convergence proved: MAC=%s "
-                     "target=%s project=%s hardware=%s version=%s "
+                     "Scanner[%d] post-update convergence proved: "
+                     "immutable identity continuity=1 target=%s "
+                     "project=%s hardware=%s version=%s "
                      "boot=%08lx identity=%lu>%lu rollback_pending=0 "
                      "recovery=normal quiet=%d cmd_rx=%lu",
                      scanner_id,
-                     identity_snapshot.hardware_id,
                      identity_snapshot.firmware_name,
                      identity_snapshot.app_project,
                      identity_snapshot.hardware_type,
@@ -2443,6 +3142,19 @@ static void send_fw_offer(int scanner_id, bool update, const fw_store_info_t *in
     uart_rx_send_command_to_scanner(scanner_id, cmd);
 }
 
+static bool release_relay_prepared_retry(fw_relay_prepared_t *prepared)
+{
+    if (!prepared) {
+        return false;
+    }
+    for (unsigned attempt = 0; attempt < 3U; ++attempt) {
+        if (fw_relay_prepared_release(prepared)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool fw_relay_stored_to_scanner(int scanner_id,
                                        uint32_t expected_generation,
                                        const char *expected_hardware_id,
@@ -2456,59 +3168,104 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
     if (!result) result = &local;
     memset(result, 0, sizeof(*result));
     snprintf(result->stage, sizeof(result->stage), "init");
-
-    fw_store_info_t info = {0};
-    if (!fw_store_get_info(&info)) {
-        snprintf(result->error, sizeof(result->error), "no_firmware_stored");
-        remember_relay_result(scanner_id, result);
-        return false;
-    }
-    if (expected_generation != 0 &&
-        info.generation != expected_generation) {
-        snprintf(result->error, sizeof(result->error), "generation_changed");
-        remember_relay_result(scanner_id, result);
+    if (scanner_id < 0 || scanner_id >= 2) {
+        snprintf(result->error, sizeof(result->error), "invalid_scanner");
         return false;
     }
     if (expected_hardware_id && expected_hardware_id[0] &&
         !auto_hardware_id_is_canonical(expected_hardware_id)) {
+        snprintf(result->stage, sizeof(result->stage), "identity");
         snprintf(result->error, sizeof(result->error),
                  "bound_hardware_id_invalid");
         remember_relay_result(scanner_id, result);
         return false;
     }
+
+    fw_relay_prepared_t prepared = {0};
+    fw_relay_prepare_result_t prepare_result =
+        fw_relay_prepare_for_scanner(
+            scanner_id, expected_generation, &prepared);
+    if (prepare_result != FW_RELAY_PREPARED) {
+        switch (prepare_result) {
+            case FW_RELAY_NO_MANIFEST:
+                snprintf(result->error, sizeof(result->error),
+                         "no_firmware_stored");
+                break;
+            case FW_RELAY_GENERATION_CHANGED:
+                snprintf(result->stage, sizeof(result->stage), "identity");
+                snprintf(result->error, sizeof(result->error),
+                         "generation_changed");
+                break;
+            case FW_RELAY_PARTITION_INVALID:
+                snprintf(result->stage, sizeof(result->stage), "manifest");
+                snprintf(result->error, sizeof(result->error),
+                         "partition_not_found");
+                break;
+            case FW_RELAY_IMAGE_INVALID:
+                snprintf(result->stage, sizeof(result->stage), "manifest");
+                snprintf(result->error, sizeof(result->error),
+                         "staged_integrity_failed");
+                break;
+            case FW_RELAY_CLEAR_STALE:
+                snprintf(result->stage, sizeof(result->stage), "manifest");
+                snprintf(result->error, sizeof(result->error),
+                         "manifest_changed");
+                break;
+            case FW_RELAY_STORAGE_ERROR:
+                snprintf(result->stage, sizeof(result->stage), "manifest");
+                snprintf(result->error, sizeof(result->error),
+                         "manifest_storage_error");
+                break;
+            case FW_RELAY_BUSY:
+            default:
+                snprintf(result->error, sizeof(result->error),
+                         "operation_active");
+                break;
+        }
+        if ((prepared.token_owned || prepared.uart_lease_owned) &&
+            !release_relay_prepared_retry(&prepared)) {
+            snprintf(result->stage, sizeof(result->stage), "cleanup");
+            snprintf(result->error, sizeof(result->error),
+                     "operation_release_failed");
+        }
+        remember_relay_result(scanner_id, result);
+        return false;
+    }
+
+    fw_store_info_t info = prepared.manifest;
+    const esp_partition_t *p = prepared.partition;
+    bool relay_return = false;
     result->legacy = legacy_mode;
     result->size = info.size;
 
-    const esp_partition_t *p = find_fw_partition();
-    if (!p) {
-        snprintf(result->error, sizeof(result->error), "partition_not_found");
-        remember_relay_result(scanner_id, result);
-        return false;
-    }
-
-    if (!operation_try_begin()) {
-        snprintf(result->error, sizeof(result->error), "operation_active");
-        remember_relay_result(scanner_id, result);
-        return false;
-    }
-
-    fw_store_info_t verified_info = {0};
-    char staged_validation_error[48] = {0};
-    if (!validate_staged_image(p, info.size, info.checksum,
-                               info.name, info.version, info.sha256,
-                               &verified_info,
-                               staged_validation_error,
-                               sizeof(staged_validation_error))) {
-        snprintf(result->stage, sizeof(result->stage), "manifest");
-        snprintf(result->error, sizeof(result->error), "staged_integrity_failed");
-        ESP_LOGE(TAG, "Relay refused: staged image revalidation failed: %s",
-                 staged_validation_error[0]
-                     ? staged_validation_error
-                     : "unknown");
-        clear_fw_metadata();
-        operation_end();
-        remember_relay_result(scanner_id, result);
-        return false;
+    bool bound_relay_requested =
+        expected_generation != 0U ||
+        (expected_hardware_id && expected_hardware_id[0]);
+    scanner_identity_snapshot_t bound_identity_before_operation = {0};
+    bool have_bound_identity_before_operation =
+        uart_rx_get_scanner_identity_snapshot(
+            scanner_id, &bound_identity_before_operation);
+    if (bound_relay_requested) {
+        fof_firmware_bound_relay_view_t bound_request = {
+            .expected_generation = expected_generation,
+            .expected_hardware_id = expected_hardware_id,
+            .staged_generation = info.generation,
+            .live_identity_received =
+                have_bound_identity_before_operation &&
+                bound_identity_before_operation.complete,
+            .live_hardware_id =
+                bound_identity_before_operation.hardware_id,
+        };
+        if (!fof_firmware_bound_relay_request_matches(&bound_request)) {
+            snprintf(result->stage, sizeof(result->stage), "identity");
+            snprintf(result->error, sizeof(result->error),
+                     "bound_request_mismatch");
+            ESP_LOGE(TAG,
+                     "Relay refused: scanner[%d] staged generation or "
+                     "immutable identity no longer matches the bound request",
+                     scanner_id);
+            goto relay_prepared_cleanup;
+        }
     }
 
     uart_port_t uart_num = scanner_id == 1 ? CONFIG_WIFI_SCANNER_UART : CONFIG_BLE_SCANNER_UART;
@@ -2568,9 +3325,7 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
                  (long long)cmd_after.cmd_age_s,
                  result->scanner_version[0] ? result->scanner_version : "?",
                  result->scanner_fw_state[0] ? result->scanner_fw_state : "?");
-        operation_end();
-        remember_relay_result(scanner_id, result);
-        return false;
+        goto relay_prepared_cleanup;
     }
 
     scanner_identity_snapshot_t pre_update_identity = {0};
@@ -2614,13 +3369,27 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
                      "Legacy relay refused: scanner[%d] is not the exact "
                      "automatic-bound .68 badge identity",
                      scanner_id);
-            operation_end();
-            remember_relay_result(scanner_id, result);
-            return false;
+            goto relay_prepared_cleanup;
         }
     }
+    fof_firmware_bound_relay_view_t live_bound_request = {
+        .expected_generation = expected_generation,
+        .expected_hardware_id = expected_hardware_id,
+        .staged_generation = info.generation,
+        .live_identity_received =
+            have_pre_update_identity && pre_update_identity.complete,
+        .live_hardware_id = pre_update_identity.hardware_id,
+    };
+    fof_firmware_version_relation_t bound_version_relation =
+        staged_firmware_version_relation(
+            &info, pre_update_identity.board,
+            pre_update_identity.version);
+    bool bound_version_allowed =
+        bound_version_relation == FOF_VERSION_NEWER ||
+        (allow_same_version &&
+         bound_version_relation == FOF_VERSION_EQUAL);
     if (automatic_bound_relay &&
-        (!have_pre_update_identity || !pre_update_identity.complete ||
+        (!fof_firmware_bound_relay_request_matches(&live_bound_request) ||
          strcmp(pre_update_identity.hardware_id,
                 expected_hardware_id) != 0 ||
          (legacy_mode &&
@@ -2629,19 +3398,15 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
          !auto_identity_matches_manifest(
              &pre_update_identity, &info, pre_update_identity.board,
              pre_update_identity.version) ||
-         !staged_firmware_is_newer_for_scanner(
-             &info, pre_update_identity.board,
-             pre_update_identity.version))) {
+         !bound_version_allowed)) {
         snprintf(result->stage, sizeof(result->stage), "identity");
         snprintf(result->error, sizeof(result->error),
                  "bound_identity_changed");
         ESP_LOGE(TAG,
                  "Relay refused: scanner[%d] live identity no longer matches "
-                 "bound MAC %s and staged contract",
-                 scanner_id, expected_hardware_id);
-        operation_end();
-        remember_relay_result(scanner_id, result);
-        return false;
+                 "the bound staged contract",
+                 scanner_id);
+        goto relay_prepared_cleanup;
     }
     char pre_update_hardware_id[18] = {0};
     if (expected_hardware_id && expected_hardware_id[0]) {
@@ -2657,9 +3422,7 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
         snprintf(result->error, sizeof(result->error), "hardware_id_unknown");
         ESP_LOGE(TAG, "Relay refused: scanner[%d] immutable hardware id unknown",
                  scanner_id);
-        operation_end();
-        remember_relay_result(scanner_id, result);
-        return false;
+        goto relay_prepared_cleanup;
     }
 
     const char *scanner_board = cmd_after.board[0] ? cmd_after.board : cmd_before.board;
@@ -2669,9 +3432,7 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
         snprintf(result->error, sizeof(result->error), "scanner_board_unknown");
         ESP_LOGE(TAG, "Relay refused: scanner[%d] board identity is unknown",
                  scanner_id);
-        operation_end();
-        remember_relay_result(scanner_id, result);
-        return false;
+        goto relay_prepared_cleanup;
     }
     if (!staged_firmware_matches_scanner(&info, scanner_board)) {
         snprintf(result->stage, sizeof(result->stage), "version");
@@ -2679,18 +3440,14 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
         ESP_LOGE(TAG, "Relay refused: staged board=%s scanner board=%s",
                  info.name[0] ? info.name : "?",
                  scanner_board);
-        operation_end();
-        remember_relay_result(scanner_id, result);
-        return false;
+        goto relay_prepared_cleanup;
     }
     if (!scanner_version || !scanner_version[0]) {
         snprintf(result->stage, sizeof(result->stage), "version");
         snprintf(result->error, sizeof(result->error), "scanner_version_unknown");
         ESP_LOGE(TAG, "Relay refused: scanner[%d] version is unknown",
                  scanner_id);
-        operation_end();
-        remember_relay_result(scanner_id, result);
-        return false;
+        goto relay_prepared_cleanup;
     }
 
     fof_firmware_version_relation_t version_relation =
@@ -2710,9 +3467,7 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
                  (int)version_relation,
                  allow_same_version ? 1 : 0,
                  reason);
-        operation_end();
-        remember_relay_result(scanner_id, result);
-        return false;
+        goto relay_prepared_cleanup;
     }
 
     http_upload_pause();
@@ -2726,9 +3481,7 @@ static bool fw_relay_stored_to_scanner(int scanner_id,
                  scanner_id);
         uart_rx_resume_scanner(scanner_id);
         http_upload_resume();
-        operation_end();
-        remember_relay_result(scanner_id, result);
-        return false;
+        goto relay_prepared_cleanup;
     }
 
     /* The background RX task may have left a partial/oversized scanner_info
@@ -3208,7 +3961,6 @@ relay_done:;
     }
 
     http_upload_resume();
-    operation_end();
 
     result->ok = relay_ok;
     result->legacy = legacy_mode;
@@ -3224,12 +3976,23 @@ relay_done:;
     result->stage[sizeof(result->stage) - 1] = '\0';
     strncpy(result->error, error_msg, sizeof(result->error) - 1);
     result->error[sizeof(result->error) - 1] = '\0';
+    relay_return = relay_ok;
+
+relay_prepared_cleanup:
+    if (!release_relay_prepared_retry(&prepared)) {
+        relay_return = false;
+        result->ok = false;
+        snprintf(result->stage, sizeof(result->stage), "cleanup");
+        snprintf(result->error, sizeof(result->error),
+                 "operation_release_failed");
+    }
     remember_relay_result(scanner_id, result);
-    return relay_ok;
+    return relay_return;
 }
 
 /* ── POST /api/fw/relay — staged handshake + fire-and-forget with NACK ──── */
 
+#ifndef FOF_BADGE_VARIANT
 static esp_err_t fw_relay_handler(httpd_req_t *req)
 {
     char query[96] = {0};
@@ -3295,6 +4058,8 @@ static esp_err_t fw_relay_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+#endif
+
 bool fw_store_relay_staged_to_scanner(int scanner_id,
                                       char *out_json,
                                       size_t out_json_len)
@@ -3353,6 +4118,53 @@ bool fw_store_relay_staged_to_scanner_ex(int scanner_id,
     return ok;
 }
 
+bool fw_store_relay_staged_to_scanner_bound(
+    int scanner_id,
+    uint32_t expected_generation,
+    const char *expected_hardware_id,
+    bool force_probe_skip,
+    bool allow_same_version,
+    char *out_json,
+    size_t out_json_len)
+{
+    const char *slot = scanner_id == 1 ? "wifi" : "ble";
+    const char *receipt_hardware_id =
+        auto_hardware_id_is_canonical(expected_hardware_id)
+            ? expected_hardware_id : "";
+    fw_relay_result_t result = {0};
+    bool ok = fw_relay_stored_to_scanner(scanner_id, expected_generation,
+                                         expected_hardware_id, false, false,
+                                         force_probe_skip,
+                                         allow_same_version, &result);
+    if (out_json && out_json_len > 0) {
+        if (ok) {
+            snprintf(
+                out_json, out_json_len,
+                "{\"ok\":true,\"phase\":\"final\",\"slot\":\"%s\","
+                "\"uart\":\"%s\",\"generation\":%lu,"
+                "\"hardware_id\":\"%s\",\"size\":%lu,\"bytes\":%lu,"
+                "\"chunks\":%d,\"stage\":\"done\",\"done\":true,"
+                "\"error\":\"\"}",
+                slot, slot, (unsigned long)expected_generation,
+                receipt_hardware_id, (unsigned long)result.size,
+                (unsigned long)result.bytes, result.chunks);
+        } else {
+            snprintf(
+                out_json, out_json_len,
+                "{\"ok\":false,\"phase\":\"final\",\"slot\":\"%s\","
+                "\"uart\":\"%s\",\"generation\":%lu,"
+                "\"hardware_id\":\"%s\",\"size\":%lu,\"bytes\":%lu,"
+                "\"chunks\":%d,\"stage\":\"%s\",\"done\":false,"
+                "\"error\":\"relay_failed\"}",
+                slot, slot, (unsigned long)expected_generation,
+                receipt_hardware_id, (unsigned long)result.size,
+                (unsigned long)result.bytes, result.chunks,
+                result.stage[0] ? result.stage : "init");
+        }
+    }
+    return ok;
+}
+
 #define FW_AUTO_COORDINATOR_MAGIC 0xF0F34C01u
 #define FW_AUTO_COORDINATOR_SCHEMA 3u
 #define FW_AUTO_RELAY_MAX_ATTEMPTS 3
@@ -3362,8 +4174,12 @@ bool fw_store_relay_staged_to_scanner_ex(int scanner_id,
 #define FW_AUTO_COORDINATOR_SAVE_RETRIES 3
 #define FW_AUTO_OFFER_BINDING_TTL_MS 60000
 #define FW_AUTO_IDENTITY_MAX_AGE_MS 60000
-#define FW_AUTO_SECOND_IDENTITY_WAIT_MS 12000
+#define FW_AUTO_SECOND_IDENTITY_WAIT_MS 20000
 #define FW_AUTO_IDENTITY_POLL_MS 100
+#define FW_AUTO_IDENTITY_ACQUISITION_TIMEOUT_MS 30000
+#define FW_AUTO_IDENTITY_WAIT_NONE 0U
+#define FW_AUTO_IDENTITY_WAIT_ACTIVE 1U
+#define FW_AUTO_IDENTITY_WAIT_EXHAUSTED 2U
 #define FW_AUTO_RECOVERY_COOLDOWN_MS 35000
 #define FW_AUTO_RECOVERY_PROBE_DELAY_MS 20000
 
@@ -3434,11 +4250,30 @@ static StaticSemaphore_t s_auto_coordinator_mutex_storage;
 static SemaphoreHandle_t s_auto_coordinator_mutex;
 static fw_auto_coordinator_blob_t s_auto_coordinator;
 static bool s_auto_coordinator_loaded = false;
+static bool s_auto_coordinator_persistence_uncertain = false;
+
+typedef enum {
+    AUTO_COORDINATOR_DEPENDENCY_DEFERRED = 0,
+    AUTO_COORDINATOR_IDLE,
+    AUTO_COORDINATOR_RUNNING,
+    AUTO_COORDINATOR_QUIESCING,
+    AUTO_COORDINATOR_SUSPENDED,
+} auto_coordinator_lifecycle_t;
+
+static StaticTask_t s_auto_relay_task_tcb;
+static StackType_t
+    s_auto_relay_task_stack[FW_AUTO_RELAY_TASK_STACK_SIZE];
+static TaskHandle_t s_auto_relay_task_handle;
+static auto_coordinator_lifecycle_t s_auto_coordinator_lifecycle =
+    AUTO_COORDINATOR_DEPENDENCY_DEFERRED;
 static bool s_auto_relay_worker_running = false;
+static bool s_auto_preempt_requested = false;
 /* These values are deliberately volatile. A reboot requires a new
  * identity/check/offer sequence before a scanner can be queued again. They
  * are read and written only while s_auto_coordinator_mutex is held. */
 static uint32_t s_auto_identity_generation_floor[
+    FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
+static int64_t s_auto_identity_acquisition_deadline_ms[
     FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
 static fw_auto_offer_binding_t s_auto_offer_bindings[
     FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
@@ -3464,10 +4299,15 @@ bool fw_store_init_auto_update_coordinator(void)
     return true;
 }
 
-static bool auto_coordinator_lock(void)
+static bool auto_coordinator_lock_ticks(TickType_t wait_ticks)
 {
     SemaphoreHandle_t mutex = s_auto_coordinator_mutex;
-    return mutex && xSemaphoreTake(mutex, pdMS_TO_TICKS(3000)) == pdTRUE;
+    return mutex && xSemaphoreTake(mutex, wait_ticks) == pdTRUE;
+}
+
+static bool auto_coordinator_lock(void)
+{
+    return auto_coordinator_lock_ticks(pdMS_TO_TICKS(3000));
 }
 
 static void auto_coordinator_unlock(void)
@@ -3475,22 +4315,63 @@ static void auto_coordinator_unlock(void)
     xSemaphoreGive(s_auto_coordinator_mutex);
 }
 
+bool fw_store_try_reserve_recovery_restart(void)
+{
+    portENTER_CRITICAL(&s_operation_lock);
+    bool reserved = fw_operation_state_try_reserve_recovery_restart(
+        &s_operation);
+    portEXIT_CRITICAL(&s_operation_lock);
+    /* A successful reservation is consumed only by a _Noreturn restart.
+     * There is deliberately no clear path: allowing a new firmware operation
+     * after the watchdog commits to restart would reopen the TOCTOU race. */
+    return reserved;
+}
+
+fw_store_activity_t fw_store_activity_sample(void)
+{
+    if (fw_store_operation_is_active()) {
+        return FW_STORE_ACTIVITY_ACTIVE;
+    }
+    if (!s_auto_coordinator_mutex) {
+        return FW_STORE_ACTIVITY_UNKNOWN;
+    }
+    if (!auto_coordinator_lock()) {
+        return FW_STORE_ACTIVITY_UNKNOWN;
+    }
+    auto_coordinator_unlock();
+    /* A coordinator worker may spend minutes waiting for scanner readiness.
+     * Only a positively owned flash/upload/relay operation is transaction
+     * activity for the USB watchdog. */
+    return FW_STORE_ACTIVITY_INACTIVE;
+}
+
 bool fw_store_is_relay_active(void)
 {
-    if (operation_is_active()) {
+    if (fw_store_operation_is_active()) {
         return true;
     }
     if (!s_auto_coordinator_mutex) {
+        /* Preserve the pre-tristate startup behavior: no initialized
+         * coordinator means no coordinator worker can be running. */
         return false;
     }
     if (!auto_coordinator_lock()) {
-        /* Fail busy if the coordinator state cannot be sampled. Routine
-         * commands are safe to defer and must never race an armed update. */
+        /* Routine command callers remain fail-busy on uncertainty. */
         return true;
     }
-    bool worker_running = s_auto_relay_worker_running;
+    bool worker_running =
+        s_auto_coordinator_lifecycle == AUTO_COORDINATOR_RUNNING ||
+        s_auto_coordinator_lifecycle == AUTO_COORDINATOR_QUIESCING;
     auto_coordinator_unlock();
     return worker_running;
+}
+
+int64_t fw_store_last_relay_progress_ms(void)
+{
+    portENTER_CRITICAL(&s_operation_lock);
+    int64_t progress_ms = s_last_relay_progress_ms;
+    portEXIT_CRITICAL(&s_operation_lock);
+    return progress_ms;
 }
 
 static void auto_capture_identity_floors(
@@ -3510,6 +4391,86 @@ static void auto_capture_identity_floors(
     }
 }
 
+static bool auto_capture_identity_floors_fenced(
+    uint8_t target_slot_mask,
+    const uart_rx_pause_guard_t scanner_guards[
+        FW_AUTO_UPDATE_SCANNER_COUNT],
+    uint32_t floors[FW_AUTO_UPDATE_SCANNER_COUNT])
+{
+    uart_rx_pause_guard_t owned_guards[
+        FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
+    const uart_rx_pause_guard_t *active_guards = scanner_guards;
+    if (!floors || target_slot_mask == 0 ||
+        (target_slot_mask & (uint8_t)~FW_AUTO_TARGET_ALL) != 0) {
+        return false;
+    }
+
+    if (!active_guards) {
+        active_guards = owned_guards;
+        for (int scanner_id = 0;
+             scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT; ++scanner_id) {
+            uint8_t bit = (uint8_t)(1u << scanner_id);
+            if (!(target_slot_mask & bit)) {
+                continue;
+            }
+#if !CONFIG_DUAL_SCANNER
+            if (scanner_id == 1) {
+                for (int resume_id = scanner_id - 1;
+                     resume_id >= 0; --resume_id) {
+                    uart_rx_resume_scanner_guarded(
+                        resume_id, &owned_guards[resume_id]);
+                }
+                return false;
+            }
+#endif
+            if (!uart_rx_scanner_task_started(scanner_id) ||
+                !uart_rx_pause_scanner_guarded(
+                    scanner_id, &owned_guards[scanner_id]) ||
+                !owned_guards[scanner_id].acquired) {
+                for (int resume_id = scanner_id;
+                     resume_id >= 0; --resume_id) {
+                    uart_rx_resume_scanner_guarded(
+                        resume_id, &owned_guards[resume_id]);
+                }
+                return false;
+            }
+        }
+    }
+
+    bool fenced = true;
+    for (int pass = 0; pass < 2 && fenced; ++pass) {
+        for (int scanner_id = 0;
+             scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT; ++scanner_id) {
+            uint8_t bit = (uint8_t)(1u << scanner_id);
+            if (!(target_slot_mask & bit)) {
+                continue;
+            }
+            if (!uart_rx_discard_scanner_backlog_guarded(
+                    scanner_id, &active_guards[scanner_id])) {
+                fenced = false;
+                break;
+            }
+        }
+        if (pass == 0 && fenced) {
+            vTaskDelay(pdMS_TO_TICKS(
+                FW_SERIAL_IDENTITY_FENCE_DRAIN_MS));
+        }
+    }
+    if (fenced) {
+        /* No parser can publish while the exact pause generations remain
+         * acknowledged, so this snapshot is a stable campaign floor. */
+        auto_capture_identity_floors(floors);
+    }
+    if (!scanner_guards) {
+        for (int scanner_id = FW_AUTO_UPDATE_SCANNER_COUNT - 1;
+             scanner_id >= 0; --scanner_id) {
+            uart_rx_resume_scanner_guarded(
+                scanner_id, &owned_guards[scanner_id]);
+        }
+    }
+    return fenced;
+}
+
 static void auto_set_identity_floors_locked(
     const uint32_t floors[FW_AUTO_UPDATE_SCANNER_COUNT])
 {
@@ -3517,6 +4478,10 @@ static void auto_set_identity_floors_locked(
          ++scanner_id) {
         s_auto_identity_generation_floor[scanner_id] = floors
             ? floors[scanner_id] : 0;
+        /* A durable ACTIVE marker restored with no monotonic deadline is
+         * intentionally terminal on first gate-open evaluation. A marker
+         * that was never started receives a new gate-relative window. */
+        s_auto_identity_acquisition_deadline_ms[scanner_id] = 0;
         memset(&s_auto_offer_bindings[scanner_id], 0,
                sizeof(s_auto_offer_bindings[scanner_id]));
         memset(&s_auto_ready_bindings[scanner_id], 0,
@@ -3524,6 +4489,47 @@ static void auto_set_identity_floors_locked(
         s_auto_legacy_ready[scanner_id] = false;
         s_auto_recovery_not_before_ms[scanner_id] = 0;
         s_auto_recovery_next_probe_ms[scanner_id] = 0;
+    }
+}
+
+static void auto_identity_acquisition_clear_locked(int scanner_id)
+{
+    if (scanner_id < 0 ||
+        scanner_id >= FW_AUTO_UPDATE_SCANNER_COUNT) {
+        return;
+    }
+    s_auto_coordinator.reserved[scanner_id] =
+        FW_AUTO_IDENTITY_WAIT_NONE;
+    s_auto_identity_acquisition_deadline_ms[scanner_id] = 0;
+}
+
+static void auto_identity_acquisition_exhaust_locked(int scanner_id)
+{
+    if (scanner_id < 0 ||
+        scanner_id >= FW_AUTO_UPDATE_SCANNER_COUNT) {
+        return;
+    }
+    s_auto_coordinator.reserved[scanner_id] =
+        FW_AUTO_IDENTITY_WAIT_EXHAUSTED;
+    s_auto_identity_acquisition_deadline_ms[scanner_id] = 0;
+}
+
+static void auto_identity_acquisition_start_locked(
+    int scanner_id, int64_t now_ms)
+{
+    if (scanner_id < 0 ||
+        scanner_id >= FW_AUTO_UPDATE_SCANNER_COUNT) {
+        return;
+    }
+    s_auto_coordinator.reserved[scanner_id] =
+        FW_AUTO_IDENTITY_WAIT_ACTIVE;
+    if (now_ms > INT64_MAX -
+            FW_AUTO_IDENTITY_ACQUISITION_TIMEOUT_MS) {
+        s_auto_identity_acquisition_deadline_ms[scanner_id] =
+            INT64_MAX;
+    } else {
+        s_auto_identity_acquisition_deadline_ms[scanner_id] =
+            now_ms + FW_AUTO_IDENTITY_ACQUISITION_TIMEOUT_MS;
     }
 }
 
@@ -3644,12 +4650,275 @@ static uint32_t auto_coordinator_crc(const fw_auto_coordinator_blob_t *blob)
 
 static bool auto_coordinator_slot_is_terminal(uint8_t state)
 {
-    return state == FW_AUTO_SLOT_EXCLUDED ||
-           state == FW_AUTO_SLOT_CONVERGED ||
-           state == FW_AUTO_SLOT_CURRENT ||
-           state == FW_AUTO_SLOT_NEWER_SKIPPED ||
-           state == FW_AUTO_SLOT_REFUSED ||
-           state == FW_AUTO_SLOT_FAILED;
+    return fof_auto_slot_is_terminal((fof_auto_slot_state_t)state);
+}
+
+static bool auto_coordinator_all_terminal_locked(void)
+{
+    if (!s_auto_coordinator_loaded) {
+        return false;
+    }
+    if (s_auto_coordinator.fail_closed) {
+        return true;
+    }
+    bool requested = false;
+    for (int scanner_id = 0;
+         scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT; ++scanner_id) {
+        uint8_t bit = (uint8_t)(1u << scanner_id);
+        if (!(s_auto_coordinator.target_slot_mask & bit)) {
+            continue;
+        }
+        requested = true;
+        if (!auto_coordinator_slot_is_terminal(
+                s_auto_coordinator.slot_state[scanner_id])) {
+            return false;
+        }
+    }
+    return requested;
+}
+
+static bool auto_coordinator_has_nonterminal_locked(void)
+{
+    if (!s_auto_coordinator_loaded ||
+        s_auto_coordinator.fail_closed) {
+        return false;
+    }
+    for (int scanner_id = 0;
+         scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT; ++scanner_id) {
+        uint8_t bit = (uint8_t)(1u << scanner_id);
+        if ((s_auto_coordinator.target_slot_mask & bit) &&
+            !auto_coordinator_slot_is_terminal(
+                s_auto_coordinator.slot_state[scanner_id])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static fw_operation_snapshot_t operation_snapshot(void)
+{
+    fw_operation_snapshot_t snapshot = {0};
+    portENTER_CRITICAL(&s_operation_lock);
+    fw_operation_state_snapshot(&s_operation, &snapshot);
+    portEXIT_CRITICAL(&s_operation_lock);
+    return snapshot;
+}
+
+static void auto_coordinator_latch_radio_inhibit_locked(void)
+{
+    portENTER_CRITICAL(&s_operation_lock);
+    (void)fw_operation_state_request_radio_inhibit(&s_operation);
+    portEXIT_CRITICAL(&s_operation_lock);
+}
+
+static void auto_coordinator_reconcile_radio_inhibit_locked(void)
+{
+    bool radio_safe = !s_auto_coordinator_persistence_uncertain &&
+        (!s_auto_coordinator_loaded ||
+         auto_coordinator_all_terminal_locked());
+    portENTER_CRITICAL(&s_operation_lock);
+    if (radio_safe && !s_auto_preempt_requested) {
+        (void)fw_operation_state_clear_radio_inhibit(&s_operation);
+    } else {
+        (void)fw_operation_state_request_radio_inhibit(&s_operation);
+    }
+    portEXIT_CRITICAL(&s_operation_lock);
+}
+
+static void auto_coordinator_reconcile_radio_inhibit(void)
+{
+    if (!auto_coordinator_lock()) {
+        /* Coordinator uncertainty is always fail-busy. */
+        portENTER_CRITICAL(&s_operation_lock);
+        (void)fw_operation_state_request_radio_inhibit(&s_operation);
+        portEXIT_CRITICAL(&s_operation_lock);
+        return;
+    }
+    auto_coordinator_reconcile_radio_inhibit_locked();
+    auto_coordinator_unlock();
+}
+
+static void auto_coordinator_note_manifest_invalidated(void)
+{
+    if (!s_auto_coordinator_mutex || !auto_coordinator_lock()) {
+        return;
+    }
+    memset(&s_auto_coordinator, 0, sizeof(s_auto_coordinator));
+    s_auto_coordinator_loaded = false;
+    s_auto_coordinator_persistence_uncertain = false;
+    auto_set_identity_floors_locked(NULL);
+    auto_coordinator_reconcile_radio_inhibit_locked();
+    auto_coordinator_unlock();
+}
+
+bool fw_store_campaign_state_sample(fw_store_campaign_snapshot_t *out)
+{
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->state = FW_CAMPAIGN_UNKNOWN;
+    out->radio_inhibited = true;
+
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        fw_operation_snapshot_t before = operation_snapshot();
+        if (!auto_coordinator_lock_ticks(0)) {
+            out->owner = before.owner;
+            out->operation_epoch = before.operation_epoch;
+            return false;
+        }
+        bool loaded = s_auto_coordinator_loaded;
+        bool all_terminal = auto_coordinator_all_terminal_locked();
+        bool persistence_uncertain =
+            s_auto_coordinator_persistence_uncertain;
+        bool dependency_deferred =
+            s_auto_coordinator_lifecycle ==
+                AUTO_COORDINATOR_DEPENDENCY_DEFERRED ||
+            (loaded && auto_coordinator_has_nonterminal_locked() &&
+             !s_auto_relay_task_handle);
+        uint32_t generation = loaded
+            ? s_auto_coordinator.generation : 0U;
+        auto_coordinator_unlock();
+
+        fw_operation_snapshot_t after = operation_snapshot();
+        if (before.operation_epoch != after.operation_epoch ||
+            before.active != after.active ||
+            before.owner != after.owner ||
+            before.radio_inhibited != after.radio_inhibited ||
+            before.preemption_requested != after.preemption_requested ||
+            before.recovery_restart_reserved !=
+                after.recovery_restart_reserved) {
+            continue;
+        }
+        if (persistence_uncertain) {
+            out->owner = after.owner;
+            out->operation_epoch = after.operation_epoch;
+            out->manifest_generation = generation;
+            return false;
+        }
+
+        out->owner = after.owner;
+        out->operation_epoch = after.operation_epoch;
+        out->manifest_generation = generation;
+        if (after.active) {
+            out->state = FW_CAMPAIGN_OPERATION_ACTIVE;
+        } else if (!loaded) {
+            out->state = FW_CAMPAIGN_IDLE;
+        } else if (all_terminal) {
+            out->state = FW_CAMPAIGN_ALL_TERMINAL;
+        } else if (dependency_deferred) {
+            out->state = FW_CAMPAIGN_DEPENDENCY_DEFERRED;
+        } else {
+            out->state = FW_CAMPAIGN_PENDING;
+        }
+        out->radio_inhibited = after.radio_inhibited ||
+            (out->state != FW_CAMPAIGN_IDLE &&
+             out->state != FW_CAMPAIGN_ALL_TERMINAL);
+        return true;
+    }
+
+    fw_operation_snapshot_t final_snapshot = operation_snapshot();
+    out->owner = final_snapshot.owner;
+    out->operation_epoch = final_snapshot.operation_epoch;
+    return false;
+}
+
+fw_update_preempt_result_t fw_store_request_update_preemption(void)
+{
+    fw_operation_snapshot_t operation = {0};
+    portENTER_CRITICAL(&s_operation_lock);
+    /* Close the no-owner window before sampling coordinator state. Once this
+     * latch is set, a worker that passed its coordinator safe point still
+     * cannot claim a mutation token before the maintenance reboot. */
+    (void)fw_operation_state_request_preemption(&s_operation);
+    fw_operation_state_snapshot(&s_operation, &operation);
+    portEXIT_CRITICAL(&s_operation_lock);
+
+    if (operation.recovery_restart_reserved) {
+        return FW_UPDATE_PREEMPT_BUSY;
+    }
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    bool radio_request_accepted =
+        badge_con_vhci_request_quiescence(
+            operation.operation_epoch);
+#endif
+    if (!auto_coordinator_lock_ticks(0)) {
+        return operation.active ? FW_UPDATE_PREEMPT_WAITING_FOR_OWNER
+                                : FW_UPDATE_PREEMPT_BUSY;
+    }
+    s_auto_preempt_requested = true;
+    bool coordinator_suspended = false;
+    if (s_auto_relay_worker_running ||
+        s_auto_coordinator_lifecycle == AUTO_COORDINATOR_RUNNING ||
+        s_auto_coordinator_lifecycle == AUTO_COORDINATOR_QUIESCING) {
+        s_auto_coordinator_lifecycle = AUTO_COORDINATOR_QUIESCING;
+    } else {
+        s_auto_coordinator_lifecycle = AUTO_COORDINATOR_SUSPENDED;
+        s_auto_relay_worker_running = false;
+        coordinator_suspended = true;
+    }
+    TaskHandle_t worker = s_auto_relay_task_handle;
+    auto_coordinator_unlock();
+    if (worker) {
+        xTaskNotifyGive(worker);
+    }
+
+    if (operation.active) {
+        return FW_UPDATE_PREEMPT_WAITING_FOR_OWNER;
+    }
+    /* QUIESCED is an acknowledged safe point, not merely an empty operation
+     * token. The permanent worker may still be validating identity or
+     * reconciling NVS after the request; let the host retry until the worker
+     * itself publishes SUSPENDED. */
+    if (!coordinator_suspended) {
+        return FW_UPDATE_PREEMPT_BUSY;
+    }
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+    operation = operation_snapshot();
+    if (operation.active) {
+        return FW_UPDATE_PREEMPT_WAITING_FOR_OWNER;
+    }
+    uint32_t acknowledged_inhibit_epoch = operation.operation_epoch;
+    radio_request_accepted =
+        badge_con_vhci_request_quiescence(
+            acknowledged_inhibit_epoch) &&
+        radio_request_accepted;
+    fw_operation_snapshot_t verified = operation_snapshot();
+    if (verified.operation_epoch != acknowledged_inhibit_epoch ||
+        !verified.radio_inhibited || !verified.preemption_requested) {
+        return verified.active ? FW_UPDATE_PREEMPT_WAITING_FOR_OWNER
+                               : FW_UPDATE_PREEMPT_BUSY;
+    }
+    operation = verified;
+    bool radio_quiesced = radio_request_accepted &&
+        badge_con_vhci_radio_quiesced_for_epoch(
+            acknowledged_inhibit_epoch);
+    badge_update_prepare_action_t action =
+        badge_update_prepare_decide(
+            operation.active, true, radio_quiesced);
+    if (action == BADGE_UPDATE_PREPARE_REBOOT_QUIESCED) {
+        return FW_UPDATE_PREEMPT_QUIESCED;
+    }
+    if (action == BADGE_UPDATE_PREPARE_REBOOT_SAFE) {
+        return FW_UPDATE_PREEMPT_REBOOT_SAFE;
+    }
+    return action == BADGE_UPDATE_PREPARE_WAITING_FOR_OWNER
+        ? FW_UPDATE_PREEMPT_WAITING_FOR_OWNER
+        : FW_UPDATE_PREEMPT_BUSY;
+#else
+    operation = operation_snapshot();
+#endif
+    return operation.active ? FW_UPDATE_PREEMPT_WAITING_FOR_OWNER
+                            : FW_UPDATE_PREEMPT_QUIESCED;
+}
+
+bool fw_store_game_radio_must_yield(void)
+{
+    fw_store_campaign_snapshot_t snapshot = {0};
+    return !fw_store_campaign_state_sample(&snapshot) ||
+        snapshot.radio_inhibited ||
+        (snapshot.state != FW_CAMPAIGN_IDLE &&
+         snapshot.state != FW_CAMPAIGN_ALL_TERMINAL);
 }
 
 static const char *auto_coordinator_state_name(uint8_t state)
@@ -3693,10 +4962,21 @@ static bool auto_coordinator_blob_valid(
         bool bound_required = state == FW_AUTO_SLOT_READY_QUEUED ||
             state == FW_AUTO_SLOT_RELAYING ||
             state == FW_AUTO_SLOT_RECOVERING;
+        bool identity_wait_state =
+            state == FW_AUTO_SLOT_AWAITING_CHECK ||
+            state == FW_AUTO_SLOT_OFFERED;
         if (state > FW_AUTO_SLOT_RECOVERING ||
             blob->relay_attempts[scanner_id] > FW_AUTO_RELAY_MAX_ATTEMPTS ||
             blob->readiness_probe_attempts[scanner_id] >
                 FW_AUTO_READY_MAX_PROBES ||
+            blob->reserved[scanner_id] >
+                FW_AUTO_IDENTITY_WAIT_EXHAUSTED ||
+            (blob->reserved[scanner_id] ==
+                 FW_AUTO_IDENTITY_WAIT_ACTIVE &&
+             !identity_wait_state) ||
+            (blob->reserved[scanner_id] ==
+                 FW_AUTO_IDENTITY_WAIT_EXHAUSTED &&
+             (!requested || state != FW_AUTO_SLOT_FAILED)) ||
             (bound_present && !auto_hardware_id_is_canonical(
                 blob->bound_hardware_id[scanner_id])) ||
             bound_required != bound_present) {
@@ -3723,6 +5003,68 @@ static bool auto_coordinator_blob_valid(
     return true;
 }
 
+#if defined(FOF_BADGE_VARIANT) && defined(FOF_DC34_GAME_CANARY)
+static bool operation_snapshot_has_mutation_owner(
+    const fw_operation_snapshot_t *snapshot)
+{
+    return !snapshot || snapshot->active ||
+        snapshot->owner != FW_OPERATION_OWNER_NONE;
+}
+
+fw_store_campaign_completion_t
+fw_store_campaign_completion_sample(void)
+{
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        fw_operation_snapshot_t before = operation_snapshot();
+        if (operation_snapshot_has_mutation_owner(&before)) {
+            return FW_CAMPAIGN_COMPLETION_PENDING;
+        }
+        if (!auto_coordinator_lock_ticks(0)) {
+            fw_operation_snapshot_t after = operation_snapshot();
+            return operation_snapshot_has_mutation_owner(&after)
+                ? FW_CAMPAIGN_COMPLETION_PENDING
+                : FW_CAMPAIGN_COMPLETION_UNKNOWN;
+        }
+
+        fw_store_campaign_completion_view_t view = {
+            .operation_active = before.active,
+            .operation_owner = before.owner,
+            .coordinator_sampled = true,
+            .persistence_certain =
+                !s_auto_coordinator_persistence_uncertain,
+            .campaign_loaded = s_auto_coordinator_loaded,
+            .campaign_valid = !s_auto_coordinator_loaded ||
+                auto_coordinator_blob_valid(&s_auto_coordinator),
+            .campaign_fail_closed = s_auto_coordinator_loaded &&
+                s_auto_coordinator.fail_closed,
+            .target_slot_mask = s_auto_coordinator_loaded
+                ? s_auto_coordinator.target_slot_mask : 0U,
+        };
+        if (s_auto_coordinator_loaded) {
+            for (int scanner_id = 0;
+                 scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT; ++scanner_id) {
+                view.slot_state[scanner_id] =
+                    (fof_auto_slot_state_t)
+                        s_auto_coordinator.slot_state[scanner_id];
+            }
+        }
+        auto_coordinator_unlock();
+
+        fw_operation_snapshot_t after = operation_snapshot();
+        if (operation_snapshot_has_mutation_owner(&after)) {
+            return FW_CAMPAIGN_COMPLETION_PENDING;
+        }
+        if (before.operation_epoch != after.operation_epoch ||
+            before.active != after.active ||
+            before.owner != after.owner) {
+            continue;
+        }
+        return fw_store_campaign_completion_classify(&view);
+    }
+    return FW_CAMPAIGN_COMPLETION_UNKNOWN;
+}
+#endif
+
 static bool auto_coordinator_save_locked(void)
 {
     if (!s_auto_coordinator_loaded) {
@@ -3735,10 +5077,24 @@ static bool auto_coordinator_save_locked(void)
     if (!auto_coordinator_blob_valid(&s_auto_coordinator)) {
         ESP_LOGE(TAG,
                  "Refusing to persist invalid schema 3 coordinator state");
+        s_auto_coordinator_persistence_uncertain = true;
+        auto_coordinator_latch_radio_inhibit_locked();
         return false;
     }
-    return nvs_config_set_blob(NVS_FW_COORDINATOR, &s_auto_coordinator,
-                               sizeof(s_auto_coordinator));
+    bool saved = nvs_config_set_blob(
+        NVS_FW_COORDINATOR, &s_auto_coordinator,
+        sizeof(s_auto_coordinator));
+    s_auto_coordinator_persistence_uncertain = !saved;
+    if (saved) {
+        /* Publish radio permission only after the exact terminal/idle record
+         * is durable. Nonterminal saves keep the sticky inhibit latched. */
+        auto_coordinator_reconcile_radio_inhibit_locked();
+    } else {
+        portENTER_CRITICAL(&s_operation_lock);
+        (void)fw_operation_state_request_radio_inhibit(&s_operation);
+        portEXIT_CRITICAL(&s_operation_lock);
+    }
+    return saved;
 }
 
 static void auto_coordinator_set_fail_closed_locked(
@@ -3751,6 +5107,7 @@ static void auto_coordinator_set_fail_closed_locked(
     s_auto_coordinator.fail_closed = 1;
     for (int scanner_id = 0; scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT;
          ++scanner_id) {
+        s_auto_identity_acquisition_deadline_ms[scanner_id] = 0;
         s_auto_coordinator.relay_attempts[scanner_id] =
             FW_AUTO_RELAY_MAX_ATTEMPTS;
         s_auto_coordinator.readiness_probe_attempts[scanner_id] =
@@ -3801,19 +5158,21 @@ static bool auto_coordinator_force_fail_closed(uint32_t generation,
 
 static bool auto_coordinator_begin_generation(uint32_t generation,
                                               uint8_t target_slot_mask,
-                                              uint32_t manifest_crc32)
+                                              uint32_t manifest_crc32,
+                                              const uart_rx_pause_guard_t
+                                                  scanner_guards[2])
 {
     uint32_t identity_floors[FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
     if (generation == 0 || target_slot_mask == 0 ||
         (target_slot_mask & (uint8_t)~FW_AUTO_TARGET_ALL) != 0) {
         return false;
     }
-    /* Snapshot identity generations before taking the coordinator mutex so
-     * publication and coordinator lock ordering can never invert. */
-    auto_capture_identity_floors(identity_floors);
-    if (!auto_coordinator_lock()) {
+    if (!auto_capture_identity_floors_fenced(
+            target_slot_mask, scanner_guards, identity_floors) ||
+        !auto_coordinator_lock()) {
         return false;
     }
+    auto_coordinator_latch_radio_inhibit_locked();
     memset(&s_auto_coordinator, 0, sizeof(s_auto_coordinator));
     auto_set_identity_floors_locked(identity_floors);
     s_auto_coordinator_loaded = true;
@@ -3867,7 +5226,9 @@ void fw_store_get_auto_update_status(fw_auto_update_status_t *out)
     if (!out) return;
     memset(out, 0, sizeof(*out));
     if (!auto_coordinator_lock()) return;
-    out->worker_running = s_auto_relay_worker_running;
+    out->worker_running =
+        s_auto_coordinator_lifecycle == AUTO_COORDINATOR_RUNNING ||
+        s_auto_coordinator_lifecycle == AUTO_COORDINATOR_QUIESCING;
     if (s_auto_coordinator_loaded) {
         out->generation = s_auto_coordinator.generation;
         out->target_slot_mask = s_auto_coordinator.target_slot_mask;
@@ -3960,22 +5321,29 @@ static bool auto_reopen_terminal_for_newer_check(
 
     uint8_t state = s_auto_coordinator_loaded
         ? s_auto_coordinator.slot_state[scanner_id] : FW_AUTO_SLOT_EXCLUDED;
-    bool terminal_refusal = state == FW_AUTO_SLOT_REFUSED ||
-        state == FW_AUTO_SLOT_FAILED;
-    if (!terminal_refusal ||
+    bool identity_exhausted =
+        s_auto_coordinator.reserved[scanner_id] ==
+            FW_AUTO_IDENTITY_WAIT_EXHAUSTED;
+    if (!fof_auto_terminal_reopen_allowed(
+            (fof_auto_slot_state_t)state,
+            identity_exhausted,
+            s_auto_coordinator.relay_attempts[scanner_id],
+            FW_AUTO_RELAY_MAX_ATTEMPTS) ||
         s_auto_coordinator.generation != generation ||
-        s_auto_coordinator.relay_attempts[scanner_id] >=
-            FW_AUTO_RELAY_MAX_ATTEMPTS) {
+        !(s_auto_coordinator.target_slot_mask &
+          (uint8_t)(1u << scanner_id))) {
         auto_coordinator_unlock();
         return false;
     }
 
+    auto_coordinator_latch_radio_inhibit_locked();
     fw_auto_coordinator_blob_t before = s_auto_coordinator;
     uint8_t bit = (uint8_t)(1u << scanner_id);
     s_auto_coordinator.slot_state[scanner_id] = FW_AUTO_SLOT_AWAITING_CHECK;
     s_auto_coordinator.pending_mask &= (uint8_t)~bit;
     s_auto_coordinator.bound_hardware_id[scanner_id][0] = '\0';
     s_auto_coordinator.readiness_probe_attempts[scanner_id] = 0;
+    auto_identity_acquisition_clear_locked(scanner_id);
     if (!auto_coordinator_save_locked()) {
         s_auto_coordinator = before;
         auto_coordinator_unlock();
@@ -4013,6 +5381,7 @@ static void auto_reset_ready_queue_after_revalidation_failure(
         s_auto_coordinator.slot_state[scanner_id] =
             FW_AUTO_SLOT_AWAITING_CHECK;
         s_auto_coordinator.bound_hardware_id[scanner_id][0] = '\0';
+        auto_identity_acquisition_clear_locked(scanner_id);
         if (!auto_coordinator_save_locked()) {
             (void)before;
             auto_coordinator_fail_closed_after_save_failure_locked(
@@ -4073,6 +5442,42 @@ static void auto_begin_recovery_after_restore(uint8_t recovery_mask)
                  "held for %d ms",
                  scanner_id, FW_AUTO_RECOVERY_COOLDOWN_MS);
     }
+}
+
+static bool auto_deliver_identity_prompts(
+    uint32_t prompt_generation, uint8_t prompt_mask)
+{
+    uint8_t sent_mask = fw_store_request_scanner_checks(prompt_mask);
+    uint8_t failed_mask = prompt_mask & (uint8_t)~sent_mask;
+    if (failed_mask == 0) {
+        return true;
+    }
+
+    while (!auto_coordinator_lock()) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+    bool changed = false;
+    for (int scanner_id = 0;
+         scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT; ++scanner_id) {
+        uint8_t bit = (uint8_t)(1u << scanner_id);
+        uint8_t state = s_auto_coordinator.slot_state[scanner_id];
+        if ((failed_mask & bit) &&
+            s_auto_coordinator_loaded &&
+            s_auto_coordinator.generation == prompt_generation &&
+            !auto_coordinator_slot_is_terminal(state) &&
+            s_auto_coordinator.reserved[scanner_id] ==
+                FW_AUTO_IDENTITY_WAIT_ACTIVE) {
+            auto_identity_acquisition_clear_locked(scanner_id);
+            changed = true;
+        }
+    }
+    bool rolled_back = !changed || auto_coordinator_save_locked();
+    if (!rolled_back) {
+        auto_coordinator_fail_closed_after_save_failure_locked(
+            "identity_prompt_rollback");
+    }
+    auto_coordinator_unlock();
+    return false;
 }
 
 static bool auto_wait_for_ready_second_identity(
@@ -4142,34 +5547,83 @@ static void auto_advance_ready_binding_locked(
 static void fw_auto_relay_task(void *arg)
 {
     (void)arg;
-    /* The stage/boot path sends probe #1 immediately.  Waiting a full probe
-     * interval here gives scanners time to boot and answer before probe #2;
-     * three persisted probes therefore span roughly 30 seconds. */
-    vTaskDelay(pdMS_TO_TICKS(FW_AUTO_READY_PROBE_DELAY_MS));
-    while (true) {
+    for (;;) {
+        /* One statically allocated worker lives for the entire boot. Kicks
+         * carry no campaign data; every fact is re-read from the durable
+         * coordinator after wake. */
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (!auto_coordinator_lock()) {
+            continue;
+        }
+        if (s_auto_preempt_requested) {
+            s_auto_relay_worker_running = false;
+            s_auto_coordinator_lifecycle = AUTO_COORDINATOR_SUSPENDED;
+            auto_coordinator_reconcile_radio_inhibit_locked();
+            auto_coordinator_unlock();
+            continue;
+        }
+        s_auto_relay_worker_running = true;
+        s_auto_coordinator_lifecycle = AUTO_COORDINATOR_RUNNING;
+        auto_coordinator_unlock();
+
+        /* The stage/boot path sends probe #1 immediately. Waiting a full
+         * interval gives scanners time to answer before probe #2. A
+         * preemption notification interrupts this wait. */
+        (void)ulTaskNotifyTake(
+            pdTRUE, pdMS_TO_TICKS(FW_AUTO_READY_PROBE_DELAY_MS));
+        while (true) {
+            if (auto_coordinator_lock_ticks(0)) {
+                bool suspend = s_auto_preempt_requested;
+                if (suspend) {
+                    s_auto_relay_worker_running = false;
+                    s_auto_coordinator_lifecycle =
+                        AUTO_COORDINATOR_SUSPENDED;
+                    auto_coordinator_reconcile_radio_inhibit_locked();
+                }
+                auto_coordinator_unlock();
+                if (suspend) {
+                    break;
+                }
+            }
         int scanner_id = -1;
         int probe_scanner_id = -1;
         int recovery_probe_scanner_id = -1;
         bool recovery_waiting = false;
         bool recovery_terminal = false;
+        bool readiness_waiting = false;
+        uint8_t identity_prompt_mask = 0;
+        uint32_t identity_prompt_generation = 0;
         uint32_t recovery_wait_ms = 250;
         uint32_t relay_generation = 0;
         uint8_t attempt_number = 0;
         bool legacy_mode = false;
         fw_auto_offer_binding_t ready_binding = {0};
         char relay_bound_hardware_id[18] = {0};
+        scanner_identity_snapshot_t
+            readiness_identities[FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
+        bool readiness_identity_available[FW_AUTO_UPDATE_SCANNER_COUNT] = {
+            false
+        };
 
         /* A store/upload owner has not attempted a scanner relay.  Wait for
          * it to finish before reserving a durable relay attempt. */
-        if (operation_is_active()) {
-            vTaskDelay(pdMS_TO_TICKS(500));
+        if (fw_store_operation_is_active()) {
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
             continue;
+        }
+
+        /* Identity publication has its own mutex. Snapshot outside the
+         * coordinator lock so update admission never inverts lock order. */
+        for (int slot = 0; slot < FW_AUTO_UPDATE_SCANNER_COUNT; ++slot) {
+            readiness_identity_available[slot] =
+                uart_rx_get_scanner_identity_snapshot(
+                    slot, &readiness_identities[slot]);
         }
 
         if (!auto_coordinator_lock()) {
             /* The task still owns worker_running.  Retry instead of exiting
              * with a phantom running flag that would suppress all restarts. */
-            vTaskDelay(pdMS_TO_TICKS(250));
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
             continue;
         }
         if (!s_auto_coordinator_loaded) {
@@ -4292,19 +5746,95 @@ static void fw_auto_relay_task(void *arg)
                          state != FW_AUTO_SLOT_OFFERED)) {
                         continue;
                     }
-                    if (s_auto_coordinator.readiness_probe_attempts[slot] >=
-                        FW_AUTO_READY_MAX_PROBES) {
+                    fof_auto_identity_view_t identity_view =
+                        auto_identity_view(&readiness_identities[slot]);
+                    bool identity_fresh =
+                        readiness_identity_available[slot] &&
+                        fof_auto_identity_is_fresh(
+                            &identity_view,
+                            s_auto_identity_generation_floor[slot],
+                            recovery_now_ms,
+                            FW_AUTO_IDENTITY_MAX_AGE_MS);
+                    bool identity_wait_started =
+                        s_auto_coordinator.reserved[slot] ==
+                            FW_AUTO_IDENTITY_WAIT_ACTIVE;
+                    fof_auto_probe_decision_t acquisition_decision =
+                        fof_auto_identity_acquisition_decide(
+                            identity_fresh,
+                            identity_wait_started,
+                            recovery_now_ms,
+                            s_auto_identity_acquisition_deadline_ms[slot]);
+                    if (acquisition_decision == FOF_AUTO_PROBE_WAIT) {
+                        if (!identity_wait_started) {
+                            fw_auto_coordinator_blob_t wait_before =
+                                s_auto_coordinator;
+                            auto_identity_acquisition_start_locked(
+                                slot, recovery_now_ms);
+                            if (!auto_coordinator_save_locked()) {
+                                (void)wait_before;
+                                auto_coordinator_fail_closed_after_save_failure_locked(
+                                    "identity_acquisition_started");
+                                s_auto_relay_worker_running = false;
+                            } else {
+                                identity_prompt_mask |= bit;
+                                identity_prompt_generation =
+                                    s_auto_coordinator.generation;
+                                readiness_waiting = true;
+                            }
+                        } else {
+                            readiness_waiting = true;
+                        }
+                        break;
+                    }
+                    if (acquisition_decision ==
+                        FOF_AUTO_PROBE_EXHAUSTED) {
+                        fw_auto_coordinator_blob_t timeout_before =
+                            s_auto_coordinator;
+                        s_auto_coordinator.slot_state[slot] =
+                            FW_AUTO_SLOT_FAILED;
+                        s_auto_coordinator.pending_mask &=
+                            (uint8_t)~bit;
+                        s_auto_coordinator
+                            .bound_hardware_id[slot][0] = '\0';
+                        auto_identity_acquisition_exhaust_locked(slot);
+                        if (!auto_coordinator_save_locked()) {
+                            (void)timeout_before;
+                            auto_coordinator_fail_closed_after_save_failure_locked(
+                                "identity_acquisition_timeout");
+                            s_auto_relay_worker_running = false;
+                        } else {
+                            auto_clear_ready_bindings_locked(slot);
+                            probe_scanner_id = -2;
+                        }
+                        break;
+                    }
+
+                    auto_identity_acquisition_clear_locked(slot);
+                    fof_auto_probe_decision_t decision =
+                        fof_auto_readiness_probe_decide(
+                            true,
+                            s_auto_coordinator
+                                .readiness_probe_attempts[slot],
+                            FW_AUTO_READY_MAX_PROBES);
+                    if (decision == FOF_AUTO_PROBE_WAIT) {
+                        readiness_waiting = true;
+                        break;
+                    }
+                    if (decision == FOF_AUTO_PROBE_EXHAUSTED) {
                         fw_auto_coordinator_blob_t exhausted_before =
                             s_auto_coordinator;
                         s_auto_coordinator.slot_state[slot] =
                             FW_AUTO_SLOT_FAILED;
                         s_auto_coordinator.pending_mask &= (uint8_t)~bit;
+                        s_auto_coordinator
+                            .bound_hardware_id[slot][0] = '\0';
                         if (!auto_coordinator_save_locked()) {
                             (void)exhausted_before;
                             auto_coordinator_fail_closed_after_save_failure_locked(
                                 "readiness_probe_exhausted");
                             s_auto_relay_worker_running = false;
                         } else {
+                            auto_clear_ready_bindings_locked(slot);
                             probe_scanner_id = -2;
                         }
                         break;
@@ -4326,18 +5856,34 @@ static void fw_auto_relay_task(void *arg)
 
         if (scanner_id < 0 && probe_scanner_id == -1 &&
             recovery_probe_scanner_id == -1 && !recovery_waiting &&
-            !recovery_terminal &&
+            !recovery_terminal && !readiness_waiting &&
             s_auto_relay_worker_running) {
             s_auto_relay_worker_running = false;
         }
         bool worker_continues = s_auto_relay_worker_running;
         auto_coordinator_unlock();
 
+        bool identity_delivered = identity_prompt_mask == 0 ||
+            auto_deliver_identity_prompts(
+                identity_prompt_generation, identity_prompt_mask);
+        if (!identity_delivered) {
+            if (!auto_coordinator_lock()) {
+                break;
+            }
+            worker_continues = s_auto_relay_worker_running;
+            auto_coordinator_unlock();
+            if (!worker_continues) {
+                break;
+            }
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
+            continue;
+        }
         if (recovery_probe_scanner_id >= 0) {
             uart_rx_send_command_to_scanner(
                 recovery_probe_scanner_id,
                 "{\"type\":\"fw_check_now\"}");
-            vTaskDelay(pdMS_TO_TICKS(FW_AUTO_RECOVERY_PROBE_DELAY_MS));
+            (void)ulTaskNotifyTake(
+                pdTRUE, pdMS_TO_TICKS(FW_AUTO_RECOVERY_PROBE_DELAY_MS));
             continue;
         }
         if (recovery_terminal) {
@@ -4345,7 +5891,15 @@ static void fw_auto_relay_task(void *arg)
             continue;
         }
         if (recovery_waiting) {
-            vTaskDelay(pdMS_TO_TICKS(recovery_wait_ms));
+            (void)ulTaskNotifyTake(
+                pdTRUE, pdMS_TO_TICKS(recovery_wait_ms));
+            continue;
+        }
+        if (readiness_waiting) {
+            /* A disconnected or not-yet-identified scanner spends no durable
+             * readiness budget. A later status/identity frame can recover the
+             * same campaign without restaging firmware. */
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
             continue;
         }
 
@@ -4370,8 +5924,8 @@ static void fw_auto_relay_task(void *arg)
 
             /* Do not let a store operation that started during the identity
              * wait force a durable attempt reservation. */
-            if (operation_is_active()) {
-                vTaskDelay(pdMS_TO_TICKS(500));
+            if (fw_store_operation_is_active()) {
+                (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
                 continue;
             }
 
@@ -4388,7 +5942,7 @@ static void fw_auto_relay_task(void *arg)
             }
 
             while (!auto_coordinator_lock()) {
-                vTaskDelay(pdMS_TO_TICKS(250));
+                (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
             }
             uint8_t bit = (uint8_t)(1u << scanner_id);
             int64_t now_ms = esp_timer_get_time() / 1000;
@@ -4470,6 +6024,39 @@ static void fw_auto_relay_task(void *arg)
                 continue;
             }
 
+            /* A maintenance request may arrive after the durable attempt
+             * reservation but before any OTA byte. Return that untouched
+             * budget and suspend at this last safe point. */
+            while (!auto_coordinator_lock()) {
+                (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
+            }
+            bool preempt_before_bytes = s_auto_preempt_requested;
+            if (preempt_before_bytes &&
+                s_auto_coordinator_loaded &&
+                s_auto_coordinator.generation == relay_generation &&
+                s_auto_coordinator.slot_state[scanner_id] ==
+                    FW_AUTO_SLOT_RELAYING) {
+                if (s_auto_coordinator.relay_attempts[scanner_id] > 0) {
+                    s_auto_coordinator.relay_attempts[scanner_id]--;
+                }
+                s_auto_coordinator.slot_state[scanner_id] =
+                    FW_AUTO_SLOT_READY_QUEUED;
+                s_auto_coordinator.pending_mask |= bit;
+                if (!auto_coordinator_save_locked()) {
+                    auto_coordinator_fail_closed_after_save_failure_locked(
+                        "preempt_before_relay_bytes");
+                }
+            }
+            if (preempt_before_bytes) {
+                s_auto_relay_worker_running = false;
+                s_auto_coordinator_lifecycle =
+                    AUTO_COORDINATOR_SUSPENDED;
+            }
+            auto_coordinator_unlock();
+            if (preempt_before_bytes) {
+                continue;
+            }
+
             fw_relay_result_t result = {0};
             ESP_LOGW(TAG,
                      "Auto scanner relay[%d] stack free before transfer=%lu",
@@ -4495,7 +6082,7 @@ static void fw_auto_relay_task(void *arg)
                 /* This task still owns the durable RELAYING reservation. Do
                  * not discard its only transfer/health result on transient
                  * mutex contention; mirror the loop-top retry behavior. */
-                vTaskDelay(pdMS_TO_TICKS(250));
+                (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
             }
             if (s_auto_coordinator_loaded &&
                 s_auto_coordinator.generation == relay_generation &&
@@ -4503,7 +6090,7 @@ static void fw_auto_relay_task(void *arg)
                     FW_AUTO_SLOT_RELAYING) {
                 fw_auto_coordinator_blob_t before = s_auto_coordinator;
                 if (strcmp(result.error, "operation_active") == 0) {
-                    /* operation_try_begin() lost a race after the busy
+                    /* The authoritative token claim lost a race after the busy
                      * check, so no scanner relay started.  Restore the
                      * reserved budget durably before requeueing. */
                     if (s_auto_coordinator.relay_attempts[scanner_id] > 0) {
@@ -4526,6 +6113,7 @@ static void fw_auto_relay_task(void *arg)
                     s_auto_coordinator.pending_mask &=
                         (uint8_t)~(1u << scanner_id);
                     s_auto_coordinator.bound_hardware_id[scanner_id][0] = '\0';
+                    auto_identity_acquisition_clear_locked(scanner_id);
                     identity_reset = true;
                 } else if (result.ok) {
                     s_auto_coordinator.slot_state[scanner_id] =
@@ -4581,7 +6169,9 @@ static void fw_auto_relay_task(void *arg)
                 (void)auto_coordinator_reprompt_requested();
             }
             if (retry) {
-                vTaskDelay(pdMS_TO_TICKS(1000u << attempt_number));
+                (void)ulTaskNotifyTake(
+                    pdTRUE,
+                    pdMS_TO_TICKS(1000u << attempt_number));
             }
             continue;
         }
@@ -4589,7 +6179,8 @@ static void fw_auto_relay_task(void *arg)
         if (probe_scanner_id >= 0) {
             uart_rx_send_command_to_scanner(
                 probe_scanner_id, "{\"type\":\"fw_check_now\"}");
-            vTaskDelay(pdMS_TO_TICKS(FW_AUTO_READY_PROBE_DELAY_MS));
+            (void)ulTaskNotifyTake(
+                pdTRUE, pdMS_TO_TICKS(FW_AUTO_READY_PROBE_DELAY_MS));
             continue;
         }
         if (probe_scanner_id == -2) {
@@ -4601,9 +6192,16 @@ static void fw_auto_relay_task(void *arg)
         if (!worker_continues) {
             break;
         }
+        }
+        auto_coordinator_release_excluded_slots();
+        if (auto_coordinator_lock()) {
+            s_auto_relay_worker_running = false;
+            s_auto_coordinator_lifecycle = s_auto_preempt_requested
+                ? AUTO_COORDINATOR_SUSPENDED : AUTO_COORDINATOR_IDLE;
+            auto_coordinator_reconcile_radio_inhibit_locked();
+            auto_coordinator_unlock();
+        }
     }
-    auto_coordinator_release_excluded_slots();
-    vTaskDelete(NULL);
 }
 
 static bool auto_coordinator_start_worker(void)
@@ -4629,30 +6227,88 @@ static bool auto_coordinator_start_worker(void)
         auto_coordinator_unlock();
         return has_work ? already_running : true;
     }
-    s_auto_relay_worker_running = true;
-    auto_coordinator_unlock();
-
-    BaseType_t ok = xTaskCreate(fw_auto_relay_task, "fw_auto_relay",
-                                FW_AUTO_RELAY_TASK_STACK_SIZE, NULL, 5, NULL);
-    if (ok != pdPASS) {
-        if (auto_coordinator_lock()) {
-            s_auto_relay_worker_running = false;
-            auto_coordinator_unlock();
-        }
-        ESP_LOGE(TAG, "Failed to create durable scanner-update worker");
+    if (!s_auto_relay_task_handle || s_auto_preempt_requested) {
+        s_auto_coordinator_lifecycle = s_auto_preempt_requested
+            ? AUTO_COORDINATOR_SUSPENDED
+            : AUTO_COORDINATOR_DEPENDENCY_DEFERRED;
+        auto_coordinator_latch_radio_inhibit_locked();
+        auto_coordinator_unlock();
         return false;
     }
+    s_auto_relay_worker_running = true;
+    s_auto_coordinator_lifecycle = AUTO_COORDINATOR_RUNNING;
+    TaskHandle_t worker = s_auto_relay_task_handle;
+    auto_coordinator_unlock();
+    xTaskNotifyGive(worker);
+    return true;
+}
+
+bool fw_store_start_auto_update_coordinator(void)
+{
+    if (!s_auto_coordinator_mutex ||
+        !uart_rx_scanner_task_started(0)
+#if CONFIG_DUAL_SCANNER
+        || !uart_rx_scanner_task_started(1)
+#endif
+    ) {
+        if (auto_coordinator_lock_ticks(0)) {
+            s_auto_coordinator_lifecycle =
+                AUTO_COORDINATOR_DEPENDENCY_DEFERRED;
+            if (auto_coordinator_has_nonterminal_locked()) {
+                auto_coordinator_latch_radio_inhibit_locked();
+            }
+            auto_coordinator_unlock();
+        }
+        return false;
+    }
+
+    if (!auto_coordinator_lock()) {
+        return false;
+    }
+    if (!s_auto_relay_task_handle) {
+        s_auto_relay_task_handle = xTaskCreateStatic(
+            fw_auto_relay_task, "fw_auto_relay",
+            FW_AUTO_RELAY_TASK_STACK_SIZE, NULL, 5,
+            s_auto_relay_task_stack, &s_auto_relay_task_tcb);
+        if (!s_auto_relay_task_handle) {
+            s_auto_coordinator_lifecycle =
+                AUTO_COORDINATOR_DEPENDENCY_DEFERRED;
+            auto_coordinator_latch_radio_inhibit_locked();
+            auto_coordinator_unlock();
+            ESP_LOGE(TAG,
+                     "Failed to create static scanner-update coordinator");
+            return false;
+        }
+    }
+    s_auto_coordinator_lifecycle = AUTO_COORDINATOR_IDLE;
+    auto_coordinator_reconcile_radio_inhibit_locked();
+    auto_coordinator_unlock();
     return true;
 }
 
 static bool auto_coordinator_reprompt_requested(void)
 {
-    uint8_t send_mask = 0;
+    uint8_t identity_prompt_mask = 0;
+    uint8_t readiness_prompt_mask = 0;
+    uint8_t terminal_mask = 0;
+    uint32_t prompt_generation = 0;
+    bool save_failed = false;
+    scanner_identity_snapshot_t
+        identities[FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
+    bool identity_available[FW_AUTO_UPDATE_SCANNER_COUNT] = {false};
+    for (int scanner_id = 0;
+         scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT; ++scanner_id) {
+        identity_available[scanner_id] =
+            uart_rx_get_scanner_identity_snapshot(
+                scanner_id, &identities[scanner_id]);
+    }
     if (!auto_coordinator_lock()) {
         return false;
     }
     fw_auto_coordinator_blob_t before = s_auto_coordinator;
+    int64_t now_ms = esp_timer_get_time() / 1000;
     if (s_auto_coordinator_loaded) {
+        prompt_generation = s_auto_coordinator.generation;
         for (int scanner_id = 0;
              scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT; ++scanner_id) {
             uint8_t bit = (uint8_t)(1u << scanner_id);
@@ -4664,31 +6320,93 @@ static bool auto_coordinator_reprompt_requested(void)
                  state != FW_AUTO_SLOT_OFFERED)) {
                 continue;
             }
-            if (s_auto_coordinator.readiness_probe_attempts[scanner_id] >=
-                FW_AUTO_READY_MAX_PROBES) {
+            fof_auto_identity_view_t identity_view =
+                auto_identity_view(&identities[scanner_id]);
+            bool identity_fresh = identity_available[scanner_id] &&
+                fof_auto_identity_is_fresh(
+                    &identity_view,
+                    s_auto_identity_generation_floor[scanner_id],
+                    now_ms, FW_AUTO_IDENTITY_MAX_AGE_MS);
+            bool identity_wait_started =
+                s_auto_coordinator.reserved[scanner_id] ==
+                    FW_AUTO_IDENTITY_WAIT_ACTIVE;
+            fof_auto_probe_decision_t acquisition_decision =
+                fof_auto_identity_acquisition_decide(
+                    identity_fresh,
+                    identity_wait_started,
+                    now_ms,
+                    s_auto_identity_acquisition_deadline_ms[scanner_id]);
+            if (acquisition_decision == FOF_AUTO_PROBE_WAIT) {
+                if (!identity_wait_started) {
+                    auto_identity_acquisition_start_locked(
+                        scanner_id, now_ms);
+                    /* The post-fence identity cannot become fresh unless the
+                     * scanner is asked to publish it. This first prompt starts
+                     * no relay and spends no readiness-probe budget. */
+                    identity_prompt_mask |= bit;
+                }
+                continue;
+            }
+            if (acquisition_decision ==
+                FOF_AUTO_PROBE_EXHAUSTED) {
+                s_auto_coordinator.slot_state[scanner_id] =
+                    FW_AUTO_SLOT_FAILED;
+                s_auto_coordinator.pending_mask &= (uint8_t)~bit;
+                s_auto_coordinator
+                    .bound_hardware_id[scanner_id][0] = '\0';
+                auto_identity_acquisition_exhaust_locked(scanner_id);
+                terminal_mask |= bit;
+                continue;
+            }
+
+            auto_identity_acquisition_clear_locked(scanner_id);
+            fof_auto_probe_decision_t decision =
+                fof_auto_readiness_probe_decide(
+                    true,
+                    s_auto_coordinator
+                        .readiness_probe_attempts[scanner_id],
+                    FW_AUTO_READY_MAX_PROBES);
+            if (decision == FOF_AUTO_PROBE_WAIT) {
+                continue;
+            }
+            if (decision == FOF_AUTO_PROBE_EXHAUSTED) {
                 s_auto_coordinator.slot_state[scanner_id] = FW_AUTO_SLOT_FAILED;
+                s_auto_coordinator.pending_mask &= (uint8_t)~bit;
+                s_auto_coordinator
+                    .bound_hardware_id[scanner_id][0] = '\0';
+                terminal_mask |= bit;
                 continue;
             }
             s_auto_coordinator.readiness_probe_attempts[scanner_id]++;
-            send_mask |= bit;
+            readiness_prompt_mask |= bit;
         }
     }
     bool changed = memcmp(&before, &s_auto_coordinator,
                           sizeof(before)) != 0;
     if (changed && !auto_coordinator_save_locked()) {
-        s_auto_coordinator = before;
-        send_mask = 0;
+        auto_coordinator_fail_closed_after_save_failure_locked(
+            "identity_reprompt");
+        identity_prompt_mask = 0;
+        readiness_prompt_mask = 0;
+        terminal_mask = 0;
+        save_failed = true;
+    } else {
+        for (int scanner_id = 0;
+             scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT; ++scanner_id) {
+            if (terminal_mask & (uint8_t)(1u << scanner_id)) {
+                auto_clear_ready_bindings_locked(scanner_id);
+            }
+        }
     }
     auto_coordinator_unlock();
 
-    for (int scanner_id = 0; scanner_id < FW_AUTO_UPDATE_SCANNER_COUNT;
-         ++scanner_id) {
-        if (send_mask & (uint8_t)(1u << scanner_id)) {
-            uart_rx_send_command_to_scanner(
-                scanner_id, "{\"type\":\"fw_check_now\"}");
-        }
+    bool identity_delivered = auto_deliver_identity_prompts(
+        prompt_generation, identity_prompt_mask);
+    if (!identity_delivered) {
+        return false;
     }
-    return changed ? send_mask != 0 : true;
+    (void)fw_store_request_scanner_checks(readiness_prompt_mask);
+    return !save_failed;
 }
 
 static void auto_coordinator_release_excluded_slots(void)
@@ -4765,6 +6483,7 @@ static bool enqueue_auto_relay(
              "%s", identity->hardware_id);
     s_auto_coordinator.slot_state[scanner_id] = FW_AUTO_SLOT_READY_QUEUED;
     s_auto_coordinator.pending_mask |= bit;
+    auto_identity_acquisition_clear_locked(scanner_id);
     bool ok = auto_coordinator_save_locked();
     if (!ok) {
         s_auto_coordinator = before;
@@ -4875,6 +6594,7 @@ static bool auto_coordinator_record_scanner_check(
     fw_auto_coordinator_blob_t before = s_auto_coordinator;
     s_auto_coordinator.slot_state[scanner_id] = new_state;
     s_auto_coordinator.bound_hardware_id[scanner_id][0] = '\0';
+    auto_identity_acquisition_clear_locked(scanner_id);
     if (auto_coordinator_slot_is_terminal(new_state)) {
         s_auto_coordinator.pending_mask &= (uint8_t)~bit;
     }
@@ -4941,6 +6661,7 @@ static bool auto_coordinator_record_current_identity(
     s_auto_coordinator.slot_state[scanner_id] = FW_AUTO_SLOT_CURRENT;
     s_auto_coordinator.pending_mask &= (uint8_t)~bit;
     s_auto_coordinator.bound_hardware_id[scanner_id][0] = '\0';
+    auto_identity_acquisition_clear_locked(scanner_id);
     bool ok = auto_coordinator_save_locked();
     if (!ok) {
         s_auto_coordinator = before;
@@ -4954,6 +6675,58 @@ static bool auto_coordinator_record_current_identity(
         (void)auto_coordinator_reprompt_requested();
         (void)auto_coordinator_start_worker();
     }
+    return ok;
+}
+
+static bool auto_coordinator_record_fresh_offer(
+    int scanner_id,
+    const fw_store_info_t *info,
+    const scanner_identity_snapshot_t *identity,
+    const char *scanner_board,
+    const char *scanner_version)
+{
+    if (scanner_id < 0 || scanner_id >= FW_AUTO_UPDATE_SCANNER_COUNT ||
+        !info || !identity ||
+        !auto_identity_matches_manifest(
+            identity, info, scanner_board, scanner_version)) {
+        return false;
+    }
+
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    fof_auto_identity_view_t identity_view = auto_identity_view(identity);
+    if (!auto_coordinator_lock()) {
+        return false;
+    }
+    uint8_t bit = (uint8_t)(1u << scanner_id);
+    uint8_t current = s_auto_coordinator.slot_state[scanner_id];
+    if (!s_auto_coordinator_loaded ||
+        s_auto_coordinator.generation != info->generation ||
+        s_auto_coordinator.manifest_crc32 != info->manifest_crc32 ||
+        !(s_auto_coordinator.target_slot_mask & bit) ||
+        !auto_coordinator_slot_gate_open_locked(scanner_id) ||
+        (current != FW_AUTO_SLOT_AWAITING_CHECK &&
+         current != FW_AUTO_SLOT_OFFERED) ||
+        !fof_auto_identity_is_fresh(
+            &identity_view,
+            s_auto_identity_generation_floor[scanner_id],
+            now_ms, FW_AUTO_IDENTITY_MAX_AGE_MS)) {
+        auto_coordinator_unlock();
+        return false;
+    }
+
+    fw_auto_coordinator_blob_t before = s_auto_coordinator;
+    s_auto_coordinator.slot_state[scanner_id] =
+        FW_AUTO_SLOT_OFFERED;
+    s_auto_coordinator.pending_mask &= (uint8_t)~bit;
+    s_auto_coordinator.bound_hardware_id[scanner_id][0] = '\0';
+    auto_identity_acquisition_clear_locked(scanner_id);
+    bool ok = auto_coordinator_save_locked();
+    if (!ok) {
+        s_auto_coordinator = before;
+    } else {
+        auto_clear_ready_bindings_locked(scanner_id);
+    }
+    auto_coordinator_unlock();
     return ok;
 }
 
@@ -5000,6 +6773,7 @@ static bool auto_coordinator_record_legacy_offer(
     s_auto_coordinator.slot_state[scanner_id] = FW_AUTO_SLOT_OFFERED;
     s_auto_coordinator.pending_mask &= (uint8_t)~bit;
     s_auto_coordinator.bound_hardware_id[scanner_id][0] = '\0';
+    auto_identity_acquisition_clear_locked(scanner_id);
     if (!auto_coordinator_save_locked()) {
         s_auto_coordinator = before;
         auto_coordinator_unlock();
@@ -5168,6 +6942,7 @@ auto_coordinator_handle_recovery_check(
     s_auto_coordinator.slot_state[scanner_id] = new_state;
     s_auto_coordinator.pending_mask &= (uint8_t)~bit;
     s_auto_coordinator.bound_hardware_id[scanner_id][0] = '\0';
+    auto_identity_acquisition_clear_locked(scanner_id);
     if (!auto_coordinator_save_locked()) {
         auto_coordinator_fail_closed_after_save_failure_locked(
             "recovery_result");
@@ -5197,13 +6972,42 @@ bool fw_store_restore_auto_update_coordinator(void)
 {
     fw_store_info_t info = {0};
     uint32_t identity_floors[FW_AUTO_UPDATE_SCANNER_COUNT] = {0};
-    if (!fw_store_get_info(&info) || !info.stored) {
+    fw_store_read_result_t manifest_read =
+        fw_store_read_committed(&info);
+    if (manifest_read == FW_STORE_READ_NO_MANIFEST) {
         ESP_LOGI(TAG, "No staged manifest; automatic-update coordinator idle");
+        auto_coordinator_note_manifest_invalidated();
         return true;
     }
-    /* UART RX is already running at restore. Copy its small synchronized
-     * identity snapshots before ever taking the coordinator mutex. */
-    auto_capture_identity_floors(identity_floors);
+    if (manifest_read == FW_STORE_READ_ERROR || !info.stored) {
+        ESP_LOGE(TAG,
+                 "Staged manifest could not be classified safely; "
+                 "automatic-update coordinator remains inhibited");
+        if (auto_coordinator_lock()) {
+            s_auto_coordinator_persistence_uncertain = true;
+            auto_coordinator_latch_radio_inhibit_locked();
+            auto_coordinator_unlock();
+        } else {
+            portENTER_CRITICAL(&s_operation_lock);
+            (void)fw_operation_state_request_radio_inhibit(&s_operation);
+            portEXIT_CRITICAL(&s_operation_lock);
+        }
+        return false;
+    }
+    /* Restore establishes a fresh parser epoch too. Otherwise bytes queued
+     * before the reboot-time coordinator floor could be timestamped as new
+     * when the RX task catches up. */
+    if (!auto_capture_identity_floors_fenced(
+            info.target_slot_mask, NULL, identity_floors)) {
+        ESP_LOGE(TAG,
+                 "Coordinator restore could not fence scanner UART identity");
+        if (auto_coordinator_lock()) {
+            s_auto_coordinator_persistence_uncertain = true;
+            auto_coordinator_latch_radio_inhibit_locked();
+            auto_coordinator_unlock();
+        }
+        return false;
+    }
 
     uint8_t serialized_blob[NVS_CONFIG_MAX_BLOB_SIZE] = {0};
     fw_auto_coordinator_blob_t blob = {0};
@@ -5244,7 +7048,7 @@ bool fw_store_restore_auto_update_coordinator(void)
             return true;
         }
         bool initialized = auto_coordinator_begin_generation(
-            info.generation, info.target_slot_mask, manifest_crc32);
+            info.generation, info.target_slot_mask, manifest_crc32, NULL);
         if (!initialized) {
             (void)auto_coordinator_initialize_fail_closed(
                 info.generation, manifest_crc32);
@@ -5261,6 +7065,11 @@ bool fw_store_restore_auto_update_coordinator(void)
                  "Coordinator record read failed; refusing manifest-journal "
                  "rebuild for generation %lu",
                  (unsigned long)info.generation);
+        if (auto_coordinator_lock()) {
+            s_auto_coordinator_persistence_uncertain = true;
+            auto_coordinator_latch_radio_inhibit_locked();
+            auto_coordinator_unlock();
+        }
         return false;
     }
 
@@ -5288,6 +7097,11 @@ bool fw_store_restore_auto_update_coordinator(void)
                  "Present coordinator record is corrupt, unknown, or does "
                  "not match staged generation %lu; refusing fresh budgets",
                  (unsigned long)info.generation);
+        if (auto_coordinator_lock()) {
+            s_auto_coordinator_persistence_uncertain = true;
+            auto_coordinator_latch_radio_inhibit_locked();
+            auto_coordinator_unlock();
+        }
         return false;
     }
 
@@ -5296,7 +7110,9 @@ bool fw_store_restore_auto_update_coordinator(void)
     }
     s_auto_coordinator = blob;
     s_auto_coordinator_loaded = true;
+    s_auto_coordinator_persistence_uncertain = false;
     s_auto_relay_worker_running = false;
+    auto_coordinator_reconcile_radio_inhibit_locked();
     if (migrated_from_v2) {
         if (!auto_coordinator_save_locked()) {
             s_auto_coordinator_loaded = false;
@@ -5307,6 +7123,15 @@ bool fw_store_restore_auto_update_coordinator(void)
                      "aborting restore without scanner side effects");
             return false;
         }
+    }
+    if (blob.fail_closed) {
+        auto_coordinator_unlock();
+        ESP_LOGW(TAG,
+                 "Restored unarmed/fail-closed scanner generation %lu; "
+                 "automatic relay remains disabled",
+                 (unsigned long)blob.generation);
+        auto_coordinator_release_excluded_slots();
+        return true;
     }
     auto_set_identity_floors_locked(identity_floors);
     bool changed = false;
@@ -5459,9 +7284,12 @@ void fw_store_handle_scanner_check(int scanner_id,
                           "staged_update_available");
             return;
         }
-        if (!auto_coordinator_record_scanner_check(
-                scanner_id, info.generation, FW_AUTO_SLOT_OFFERED)) {
-            send_fw_offer(scanner_id, false, &info, "coordinator_unavailable");
+        if (!have_identity ||
+            !auto_coordinator_record_fresh_offer(
+                scanner_id, &info, &identity,
+                scanner_board, scanner_version)) {
+            send_fw_offer(scanner_id, false, &info,
+                          "post_floor_identity_required");
             return;
         }
         send_fw_offer(scanner_id, true, &info, "staged_update_available");
@@ -5688,6 +7516,7 @@ static esp_err_t fw_info_handler(httpd_req_t *req)
 
 /* ── POST /api/fw/trigger — ask scanner(s) to run fw_check now ─────────── */
 
+#ifndef FOF_BADGE_VARIANT
 static esp_err_t fw_trigger_handler(httpd_req_t *req)
 {
     char query[96] = {0};
@@ -5728,6 +7557,8 @@ static esp_err_t fw_trigger_handler(httpd_req_t *req)
 }
 
 /* ── Registration ────────────────────────────────────────────────────────── */
+
+#endif
 
 #ifndef FOF_BADGE_VARIANT
 static const httpd_uri_t uri_fw_upload = {

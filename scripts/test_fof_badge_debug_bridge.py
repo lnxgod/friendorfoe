@@ -10,11 +10,15 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-if "serial" not in sys.modules:
+try:
+    import serial as _serial_probe  # type: ignore  # noqa: F401
+except ModuleNotFoundError:
     fake_serial = types.ModuleType("serial")
     fake_serial.Serial = object
-    sys.modules["serial"] = fake_serial
-import fof_badge_debug_bridge as bridge
+    with mock.patch.dict(sys.modules, {"serial": fake_serial}):
+        import fof_badge_debug_bridge as bridge
+else:
+    import fof_badge_debug_bridge as bridge
 
 
 class FakeSerial:

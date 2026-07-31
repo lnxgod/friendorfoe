@@ -148,12 +148,44 @@ void test_wifi_oui_database_includes_flock_safety(void)
     TEST_ASSERT_NOT_NULL(entry);
     TEST_ASSERT_EQUAL_STRING("Flock Safety", entry->manufacturer);
     TEST_ASSERT_FALSE(entry->high_false_positive);
+    TEST_ASSERT_EQUAL(OUI_ROLE_PRIVACY_FLOCK, entry->role);
     if (field) {
         TEST_ASSERT_NOT_EQUAL(0, strcmp("Flock Safety", field->manufacturer));
     }
     if (wildcard) {
         TEST_ASSERT_NOT_EQUAL(0, strcmp("Flock Safety", wildcard->manufacturer));
     }
+}
+
+void test_wifi_oui_database_assigns_explicit_detection_roles(void)
+{
+    static const uint8_t privacy_ouis[][3] = {
+        {0xE0, 0xA7, 0x00}, /* Verkada */
+        {0xCC, 0x47, 0xBD}, /* Rhombus */
+        {0x00, 0x25, 0xDF}, /* Axon */
+        {0x2C, 0x42, 0x05}, /* Lytx */
+        {0x50, 0xDF, 0x95},
+        {0x58, 0xA7, 0x48},
+        {0x70, 0xE4, 0x6E},
+    };
+    const uint8_t dji_oui[3] = {0x60, 0x60, 0x1F};
+    const uint8_t generic_module_oui[3] = {0x24, 0x0A, 0xC4};
+
+    for (size_t i = 0; i < sizeof(privacy_ouis) / sizeof(privacy_ouis[0]); ++i) {
+        const oui_entry_t *entry = wifi_oui_lookup_raw(privacy_ouis[i]);
+        TEST_ASSERT_NOT_NULL(entry);
+        TEST_ASSERT_EQUAL(OUI_ROLE_PRIVACY_INFRASTRUCTURE, entry->role);
+        TEST_ASSERT_FALSE(entry->high_false_positive);
+    }
+
+    const oui_entry_t *dji = wifi_oui_lookup_raw(dji_oui);
+    TEST_ASSERT_NOT_NULL(dji);
+    TEST_ASSERT_EQUAL(OUI_ROLE_DRONE, dji->role);
+
+    const oui_entry_t *generic_module = wifi_oui_lookup_raw(generic_module_oui);
+    TEST_ASSERT_NOT_NULL(generic_module);
+    TEST_ASSERT_EQUAL(OUI_ROLE_ENRICHMENT_ONLY, generic_module->role);
+    TEST_ASSERT_TRUE(generic_module->high_false_positive);
 }
 
 void test_wifi_oui_database_normalizes_flock_safety_mac_formats(void)
@@ -630,6 +662,26 @@ void test_ble_fingerprint_meta_feb8_is_generic_meta_device(void)
     TEST_ASSERT_EQUAL(BLE_DEV_META_DEVICE, fp.device_type);
     TEST_ASSERT_EQUAL_STRING("Meta Device", fp.type_name);
     TEST_ASSERT_EQUAL_STRING("uuid16:0xFEB8", fp.class_reason);
+}
+
+void test_ble_remote_id_only_specific_meta_fingerprint_drives_badge_status(void)
+{
+    ble_fingerprint_t generic_meta = {
+        .device_type = BLE_DEV_META_DEVICE,
+        .company_id = 0x01AB,
+    };
+    ble_fingerprint_t quest = {
+        .device_type = BLE_DEV_META_DEVICE,
+        .company_id = 0x058E,
+    };
+    ble_fingerprint_t glasses = {
+        .device_type = BLE_DEV_META_GLASSES,
+        .company_id = 0x0D53,
+    };
+
+    TEST_ASSERT_FALSE(ble_remote_id_fingerprint_is_strong_meta(&generic_meta));
+    TEST_ASSERT_FALSE(ble_remote_id_fingerprint_is_strong_meta(&quest));
+    TEST_ASSERT_TRUE(ble_remote_id_fingerprint_is_strong_meta(&glasses));
 }
 
 void test_ble_fingerprint_luxottica_cid_is_meta_glasses(void)

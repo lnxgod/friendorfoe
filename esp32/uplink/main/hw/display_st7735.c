@@ -28,8 +28,10 @@
 #include "version.h"
 #include "detection_types.h"
 #include "detection_policy.h"
+#include "badge_ble_rssi_policy.h"
 #include "badge_threat_policy.h"
 #include "badge_runtime.h"
+#include "badge_usb_recovery.h"
 #include "badge_display_policy_runtime.h"
 #include "badge_display_contract.h"
 #include "badge_theme_runtime.h"
@@ -38,10 +40,15 @@
 #include "badge_power_runtime.h"
 #include "badge_easter_egg_runtime.h"
 #include "badge_easter_egg_animation.h"
+#if defined(FOF_DC34_GAME_CANARY)
+#include "badge_con_runtime.h"
+#include "badge_ok_button_policy.h"
+#endif
 #include "badge_ble_control.h"
 #include "badge_ble_investigation.h"
 #include "badge_investigation_policy.h"
 #include "gamechangersai_logo.h"
+#include "psram_alloc.h"
 #include "wall_of_sheep_logo.h"
 
 #include <string.h>
@@ -59,6 +66,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"  /* esp_rom_delay_us for bit-bang fallback */
 
@@ -79,9 +87,13 @@ static const char *TAG = "st7735";
 #define BADGE_BUTTON_DEBOUNCE_MS  60
 #define BADGE_BUTTON_LONG_MS      850
 #define BADGE_BUTTON_DOUBLE_TAP_MS 320
-#define BADGE_POWER_CHORD_HOLD_MS 9000
+#define BADGE_RESET_CHORD_HOLD_MS 10000
+#if defined(FOF_DC34_GAME_CANARY)
+#define BADGE_BUTTON_EASTER_HOLD_MS 6000U
+#endif
+#define BADGE_USB_CONFIRM_MS       5000
 #define BADGE_DETAIL_TIMEOUT_MS   30000
-#define BADGE_BUTTON_STACK_WORDS  4096
+#define BADGE_BUTTON_STACK_BYTES  4096
 #define BADGE_BUTTON1_ENABLE_ACTIONS 0
 /* Backlight: panel BL pin is wired directly to 3V3 on this badge build,
  * so the firmware does not drive it. -1 disables the GPIO drive path. */
@@ -164,6 +176,7 @@ static uint16_t           *s_fb = NULL;       /* big endian RGB565 */
 static uint8_t            *s_tx_chunk = NULL; /* internal DMA-safe SPI staging */
 static bool                s_initialized = false;
 static _Atomic bool        s_panel_awake = false;
+static _Atomic bool        s_usb_recovery_prompt_active = false;
 static SemaphoreHandle_t   s_display_mutex = NULL;
 /* Refreshed once under s_display_mutex for each dashboard frame. Keeping the
  * complete copies here avoids placing two 1496-byte scanner_info_t values on
@@ -173,6 +186,32 @@ static bool                s_display_scanner_present[2] = {false, false};
 static int                 s_spi_error_count = 0;
 static uint32_t s_anim_frame = 0;
 static uint32_t s_queue_page_frame = 0;
+
+#if defined(FOF_DC34_GAME_CANARY)
+typedef enum {
+    BADGE_CON_RENDER_ACTIVITY_NONE = 0,
+    BADGE_CON_RENDER_ACTIVITY_ATTACKED,
+    BADGE_CON_RENDER_ACTIVITY_HEALING,
+    BADGE_CON_RENDER_ACTIVITY_CURE_FADING,
+    BADGE_CON_RENDER_ACTIVITY_INFECTED,
+    BADGE_CON_RENDER_ACTIVITY_CURED,
+} badge_con_render_activity_t;
+
+typedef struct {
+    badge_con_present_state_t state;
+    badge_con_render_activity_t activity;
+    badge_con_snapshot_t snapshot;
+    badge_con_render_palette_t palette;
+} badge_con_render_context_t;
+
+static badge_con_render_context_t s_con_render = {0};
+static badge_con_role_t s_con_previous_role = BADGE_CON_ROLE_NORMAL;
+static uint8_t s_con_previous_shield = 0U;
+static uint8_t s_con_activity_frames = 0U;
+static bool s_con_previous_valid = false;
+static badge_con_render_activity_t s_con_activity =
+    BADGE_CON_RENDER_ACTIVITY_NONE;
+#endif
 
 static void display_refresh_scanner_snapshots(void)
 {
@@ -205,6 +244,14 @@ typedef enum {
 
 static volatile badge_button_overlay_t s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
 static TaskHandle_t s_button_task = NULL;
+static StaticTask_t s_button_task_tcb;
+/* ESP-IDF's StackType_t is byte-sized on ESP32. Keep the recovery task's
+ * storage explicit and aligned so starting physical recovery never depends
+ * on a fragmented heap. */
+_Static_assert(sizeof(StackType_t) == 1,
+               "badge button static stack sizing requires byte StackType_t");
+static StackType_t s_button_task_stack[BADGE_BUTTON_STACK_BYTES]
+    __attribute__((aligned(16)));
 
 static volatile int s_focus_index = 0;
 static volatile bool s_detail_mode = false;
@@ -314,9 +361,16 @@ typedef struct {
     bool long_sent;
     bool boot_ignored;
     bool consume_release;
+    bool released_boot_ignored;
     TickType_t changed_tick;
     TickType_t pressed_tick;
 } badge_button_state_t;
+
+typedef enum {
+    BADGE_BUTTON_EDGE_NONE = 0,
+    BADGE_BUTTON_EDGE_PRESSED,
+    BADGE_BUTTON_EDGE_RELEASED,
+} badge_button_edge_t;
 
 static int64_t badge_now_ms(void)
 {
@@ -734,10 +788,9 @@ static void badge_button_short_press(badge_button_id_t id)
     }
 }
 
-static void badge_button_poll_one(badge_button_state_t *button,
-                                  TickType_t now,
-                                  bool easter_visible_at_batch_start,
-                                  bool *easter_transition_claimed)
+static badge_button_edge_t badge_button_sample_one(
+    badge_button_state_t *button,
+    TickType_t now)
 {
     int raw_level = gpio_get_level(button->pin);
     bool raw_pressed = badge_button_level_is_pressed(raw_level,
@@ -745,21 +798,19 @@ static void badge_button_poll_one(badge_button_state_t *button,
     badge_button_diag_note_raw(button, raw_pressed, raw_level);
     TickType_t debounce_ticks = pdMS_TO_TICKS(BADGE_BUTTON_DEBOUNCE_MS);
     if (debounce_ticks == 0) debounce_ticks = 1;
-    TickType_t long_ticks = pdMS_TO_TICKS(BADGE_BUTTON_LONG_MS);
-    if (long_ticks == 0) long_ticks = 1;
 
     if (raw_pressed != button->last_raw_pressed) {
         button->last_raw_pressed = raw_pressed;
         button->changed_tick = now;
         badge_button_diag_note_edge(button);
-        return;
+        return BADGE_BUTTON_EDGE_NONE;
     }
 
     if (raw_pressed == button->stable_pressed) {
-        return;
+        return BADGE_BUTTON_EDGE_NONE;
     }
     if ((TickType_t)(now - button->changed_tick) < debounce_ticks) {
-        return;
+        return BADGE_BUTTON_EDGE_NONE;
     }
 
     button->stable_pressed = raw_pressed;
@@ -767,7 +818,29 @@ static void badge_button_poll_one(badge_button_state_t *button,
         button->pressed_tick = now;
         button->long_sent = false;
         button->boot_ignored = false;
+        button->released_boot_ignored = false;
         badge_button_diag_note_stable(button, true);
+        return BADGE_BUTTON_EDGE_PRESSED;
+    }
+
+    button->released_boot_ignored = button->boot_ignored;
+    button->boot_ignored = false;
+    badge_button_diag_note_stable(button, false);
+    return BADGE_BUTTON_EDGE_RELEASED;
+}
+
+static void badge_button_dispatch_edge(
+    badge_button_state_t *button,
+    badge_button_edge_t edge,
+    TickType_t now,
+    bool easter_visible_at_batch_start,
+    bool *easter_transition_claimed)
+{
+    if (!button || edge == BADGE_BUTTON_EDGE_NONE) {
+        return;
+    }
+
+    if (edge == BADGE_BUTTON_EDGE_PRESSED) {
         if (badge_easter_egg_claim_press_in_batch(
                 easter_visible_at_batch_start,
                 easter_transition_claimed)) {
@@ -789,9 +862,8 @@ static void badge_button_poll_one(badge_button_state_t *button,
         return;
     }
 
-    bool boot_ignored = button->boot_ignored;
-    button->boot_ignored = false;
-    badge_button_diag_note_stable(button, false);
+    bool boot_ignored = button->released_boot_ignored;
+    button->released_boot_ignored = false;
     if (button->consume_release) {
         button->consume_release = false;
         button->long_sent = false;
@@ -806,6 +878,8 @@ static void badge_button_poll_one(badge_button_state_t *button,
     }
 
     TickType_t held_ticks = now - button->pressed_tick;
+    TickType_t long_ticks = pdMS_TO_TICKS(BADGE_BUTTON_LONG_MS);
+    if (long_ticks == 0) long_ticks = 1;
     bool long_press = held_ticks >= long_ticks;
     if (boot_ignored) {
         button->long_sent = false;
@@ -831,9 +905,38 @@ static void badge_button_poll_one(badge_button_state_t *button,
                 badge_button_dispatch_b2_gesture(event);
             }
         } else {
+#if defined(FOF_DC34_GAME_CANARY)
+#else
             (void)badge_easter_egg_runtime_trigger(
                 BADGE_EASTER_EGG_SOURCE_BUTTON);
+#endif
         }
+    }
+}
+
+static void badge_button_restart_or_resume(
+    badge_usb_reset_target_t target,
+    const char *reason)
+{
+    /*
+     * A successful recovery restart never returns. A rejected reboot lease
+     * must release only the display prompt and resume the live dashboard;
+     * it must not fall through into a second reset target.
+     */
+    if (target == BADGE_USB_RESET_ROM) {
+        /*
+         * The ESP32-S3 ROM cannot redraw this panel. Flush a definitive final
+         * frame first; the ST7735 retains it throughout the host flash.
+         */
+        oled_show_boot_status(
+            "USB FLASH MODE", "READY FOR HOST", "DO NOT UNPLUG");
+    }
+    if (!badge_usb_recovery_restart(target, reason)) {
+        atomic_store(&s_usb_recovery_prompt_active, false);
+        ESP_LOGE(
+            TAG,
+            "Button restart blocked without reboot ownership target=%s",
+            target == BADGE_USB_RESET_ROM ? "rom" : "app");
     }
 }
 
@@ -849,6 +952,14 @@ static void badge_button_task(void *arg)
     bool qr_pressed_at_boot = badge_button_is_pressed(
         BADGE_BUTTON_QR_PIN,
         BADGE_BUTTON_QR_ACTIVE_HIGH);
+#if defined(FOF_DC34_GAME_CANARY)
+    badge_ok_button_policy_t ok_policy;
+    badge_ok_button_policy_init(
+        &ok_policy,
+        BADGE_BUTTON_LONG_MS,
+        BADGE_BUTTON_EASTER_HOLD_MS,
+        triforce_pressed_at_boot);
+#endif
     badge_button_state_t buttons[] = {
         {
             .pin = BADGE_BUTTON_TRIFORCE_PIN,
@@ -879,7 +990,7 @@ static void badge_button_task(void *arg)
     };
     badge_power_chord_t power_chord;
     badge_power_chord_init(&power_chord,
-                           BADGE_POWER_CHORD_HOLD_MS,
+                           BADGE_RESET_CHORD_HOLD_MS,
                            triforce_pressed_at_boot,
                            qr_pressed_at_boot,
                            (uint32_t)badge_now_ms());
@@ -893,6 +1004,11 @@ static void badge_button_task(void *arg)
     s_button_diag.b2_boot_ignored = qr_pressed_at_boot;
     s_button_diag.b2_active_high = BADGE_BUTTON_QR_ACTIVE_HIGH;
     s_button_diag.b2_raw_level = gpio_get_level(BADGE_BUTTON_QR_PIN);
+    badge_power_chord_dispatch_gate_t chord_dispatch_gate;
+    badge_power_chord_dispatch_gate_init(
+        &chord_dispatch_gate,
+        triforce_pressed_at_boot,
+        qr_pressed_at_boot);
 
     while (true) {
         now = xTaskGetTickCount();
@@ -901,42 +1017,165 @@ static void badge_button_task(void *arg)
             badge_easter_egg_runtime_snapshot(&easter_snapshot) &&
             easter_snapshot.visible;
         bool easter_transition_claimed = false;
+        badge_button_edge_t edges[2] = {
+            BADGE_BUTTON_EDGE_NONE,
+            BADGE_BUTTON_EDGE_NONE,
+        };
         for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
-            badge_button_poll_one(&buttons[i], now,
-                                  easter_visible_at_batch_start,
-                                  &easter_transition_claimed);
-            if (buttons[i].diag_index == 1 &&
-                !badge_power_runtime_is_quiet() &&
-                !buttons[i].stable_pressed &&
-                !buttons[i].last_raw_pressed) {
-                badge_button_dispatch_b2_gesture(
-                    badge_button_gesture_poll(&s_b2_gesture,
-                                              (uint32_t)badge_now_ms()));
-            }
+            edges[i] = badge_button_sample_one(&buttons[i], now);
         }
+        bool both_held =
+            buttons[0].stable_pressed && buttons[1].stable_pressed;
         bool chord_allowed =
-            !buttons[0].consume_release && !buttons[1].consume_release &&
             !buttons[0].boot_ignored && !buttons[1].boot_ignored;
-        if (badge_power_chord_update(
+        badge_power_chord_event_t power_event = badge_power_chord_update(
                 &power_chord,
                 buttons[0].stable_pressed,
                 buttons[1].stable_pressed,
                 chord_allowed,
-                (uint32_t)badge_now_ms()) == BADGE_POWER_CHORD_TOGGLE) {
+                (uint32_t)badge_now_ms());
+        bool suppress_single_button_dispatch =
+            badge_power_chord_dispatch_gate_update(
+                &chord_dispatch_gate,
+                buttons[0].stable_pressed,
+                buttons[1].stable_pressed,
+                power_event);
+#if defined(FOF_DC34_GAME_CANARY)
+        badge_ok_button_action_t ok_action = badge_ok_button_policy_update(
+            &ok_policy,
+            buttons[0].stable_pressed,
+            !suppress_single_button_dispatch &&
+                !easter_visible_at_batch_start &&
+                !badge_power_runtime_is_quiet(),
+            (uint32_t)badge_now_ms());
+#endif
+        if (both_held) {
             buttons[0].consume_release = true;
             buttons[1].consume_release = true;
             badge_button_gesture_cancel(&s_b2_gesture);
             badge_button_diag_set_b2_gesture("");
-            badge_power_runtime_toggle("button_chord");
+        }
+        if (power_event == BADGE_POWER_CHORD_RESET) {
+            buttons[0].consume_release = true;
+            buttons[1].consume_release = true;
+            badge_button_gesture_cancel(&s_b2_gesture);
+            badge_button_diag_set_b2_gesture("");
+            /*
+             * The physical ten-second chord is the recovery intent signal.
+             * Do not make recovery depend on the USB driver already reporting
+             * a host: that creates a circular failure when the transport is
+             * precisely what needs repair. Require full chord release and a
+             * fresh debounced OK press before ROM entry. MENU or timeout
+             * always stays in the application.
+             */
+            int64_t released_since_ms = -1;
+            while (released_since_ms < 0 ||
+                   badge_now_ms() - released_since_ms < BADGE_BUTTON_DEBOUNCE_MS) {
+                bool ok_pressed = badge_button_is_pressed(
+                    BADGE_BUTTON_TRIFORCE_PIN,
+                    BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH);
+                bool menu_pressed = badge_button_is_pressed(
+                    BADGE_BUTTON_QR_PIN,
+                    BADGE_BUTTON_QR_ACTIVE_HIGH);
+                if (ok_pressed || menu_pressed) {
+                    released_since_ms = -1;
+                } else if (released_since_ms < 0) {
+                    released_since_ms = badge_now_ms();
+                }
+                vTaskDelay(pdMS_TO_TICKS(BADGE_BUTTON_POLL_MS));
+            }
+
+            oled_set_power(true);
+            atomic_store(&s_usb_recovery_prompt_active, true);
+            oled_show_boot_status("USB FLASH?", "OK=YES", "MENU=RESET");
+            int64_t confirm_started_ms = badge_now_ms();
+            int candidate = -1;
+            int64_t candidate_since_ms = -1;
+            bool confirmation_handled = false;
+            while (badge_now_ms() - confirm_started_ms < BADGE_USB_CONFIRM_MS) {
+                bool ok_pressed = badge_button_is_pressed(
+                    BADGE_BUTTON_TRIFORCE_PIN,
+                    BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH);
+                bool menu_pressed = badge_button_is_pressed(
+                    BADGE_BUTTON_QR_PIN,
+                    BADGE_BUTTON_QR_ACTIVE_HIGH);
+                int next_candidate = menu_pressed ? 1 : (ok_pressed ? 0 : -1);
+                if (next_candidate != candidate) {
+                    candidate = next_candidate;
+                    candidate_since_ms = candidate >= 0 ? badge_now_ms() : -1;
+                }
+                if (candidate >= 0 && candidate_since_ms >= 0 &&
+                    badge_now_ms() - candidate_since_ms >=
+                        BADGE_BUTTON_DEBOUNCE_MS) {
+                    bool flash_confirmed = candidate == 0;
+                    badge_usb_reset_target_t target =
+                        badge_usb_recovery_target(flash_confirmed);
+                    const char *reason =
+                        target == BADGE_USB_RESET_ROM
+                            ? "button_usb_rom"
+                            : "button_reboot";
+                    confirmation_handled = true;
+                    badge_button_restart_or_resume(target, reason);
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(BADGE_BUTTON_POLL_MS));
+            }
+            if (!confirmation_handled) {
+                badge_button_restart_or_resume(
+                    badge_usb_recovery_target(false),
+                    "button_reboot");
+            }
+            atomic_store(&s_usb_recovery_prompt_active, false);
+            continue;
+        }
+        if (!suppress_single_button_dispatch) {
+            for (size_t i = 0;
+                 i < sizeof(buttons) / sizeof(buttons[0]);
+                 i++) {
+                badge_button_dispatch_edge(
+                    &buttons[i],
+                    edges[i],
+                    now,
+                    easter_visible_at_batch_start,
+                    &easter_transition_claimed);
+            }
+            if (!badge_power_runtime_is_quiet() &&
+                !buttons[1].stable_pressed &&
+                !buttons[1].last_raw_pressed) {
+                badge_button_dispatch_b2_gesture(
+                    badge_button_gesture_poll(
+                        &s_b2_gesture, (uint32_t)badge_now_ms()));
+            }
+        }
+#if defined(FOF_DC34_GAME_CANARY)
+        if (ok_action == BADGE_OK_BUTTON_ACTION_DETAIL) {
+            badge_button_working_double_press();
+        } else if (ok_action == BADGE_OK_BUTTON_ACTION_EASTER) {
+            (void)badge_easter_egg_runtime_trigger(
+                BADGE_EASTER_EGG_SOURCE_BUTTON);
+        }
+#endif
+        if (suppress_single_button_dispatch &&
+            !chord_dispatch_gate.suppress_until_full_release &&
+            !buttons[0].stable_pressed &&
+            !buttons[1].stable_pressed) {
+            buttons[0].consume_release = false;
+            buttons[1].consume_release = false;
+            buttons[0].long_sent = false;
+            buttons[1].long_sent = false;
+            badge_button_gesture_cancel(&s_b2_gesture);
+            badge_button_diag_set_b2_gesture("");
         }
         badge_button_diag_set_b2_pending();
         vTaskDelay(pdMS_TO_TICKS(BADGE_BUTTON_POLL_MS));
     }
 }
 
-static void badge_buttons_start(void)
+static bool badge_buttons_start(void)
 {
-    if (s_button_task) return;
+    if (s_button_task) {
+        return true;
+    }
 
     gpio_reset_pin(BADGE_BUTTON_TRIFORCE_PIN);
     gpio_reset_pin(BADGE_BUTTON_QR_PIN);
@@ -952,21 +1191,26 @@ static void badge_buttons_start(void)
     esp_err_t err = gpio_config(&button_io);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Badge button GPIO config failed: %d", err);
-        return;
+        return false;
     }
 
-    BaseType_t ok = xTaskCreate(badge_button_task, "badge_buttons",
-                                BADGE_BUTTON_STACK_WORDS,
-                                NULL, 3, &s_button_task);
-    if (ok != pdPASS) {
-        s_button_task = NULL;
+    s_button_task = xTaskCreateStatic(
+        badge_button_task, "badge_buttons", BADGE_BUTTON_STACK_BYTES,
+        NULL, 3, s_button_task_stack, &s_button_task_tcb);
+    if (!s_button_task) {
         ESP_LOGE(TAG, "Badge button task start failed");
-        return;
+        return false;
     }
     ESP_LOGI(TAG, "Badge buttons active: GPIO%d=Easter-trigger active-%s GPIO%d=next/detail/QR active-low",
              BADGE_BUTTON_TRIFORCE_PIN,
              BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH ? "high" : "low",
              BADGE_BUTTON_QR_PIN);
+    return true;
+}
+
+bool oled_badge_buttons_start(void)
+{
+    return badge_buttons_start();
 }
 
 /* ── 5x7 ASCII font (printable chars 0x20-0x7E) ───────────────────────── */
@@ -1190,6 +1434,18 @@ static void fb_hline(int x0, int x1, int y, uint16_t color)
     for (int x = x0; x <= x1; x++) row[x] = be;
 }
 
+#if defined(FOF_DC34_GAME_CANARY)
+static void fb_draw_heart_7x5(int x, int y, uint16_t color)
+{
+    fb_hline(x + 1, x + 2, y, color);
+    fb_hline(x + 4, x + 5, y, color);
+    fb_hline(x, x + 6, y + 1, color);
+    fb_hline(x, x + 6, y + 2, color);
+    fb_hline(x + 1, x + 5, y + 3, color);
+    fb_hline(x + 2, x + 4, y + 4, color);
+}
+#endif
+
 static void fb_draw_line(int x0, int y0, int x1, int y1, uint16_t color)
 {
     int dx = abs(x1 - x0);
@@ -1334,6 +1590,95 @@ static uint16_t rgb565_mix_color(uint16_t a, uint16_t b, uint8_t t)
     return (uint16_t)((r << 11) | (g << 5) | bl);
 }
 
+#if defined(FOF_DC34_GAME_CANARY)
+static void badge_con_render_begin(void)
+{
+    memset(&s_con_render, 0, sizeof(s_con_render));
+    if (!badge_con_runtime_snapshot(&s_con_render.snapshot) ||
+        !s_con_render.snapshot.active) {
+        s_con_previous_valid = false;
+        s_con_activity_frames = 0U;
+        s_con_activity = BADGE_CON_RENDER_ACTIVITY_NONE;
+        return;
+    }
+
+    badge_con_render_activity_t activity =
+        BADGE_CON_RENDER_ACTIVITY_NONE;
+    if (s_con_previous_valid) {
+        if (s_con_previous_role != s_con_render.snapshot.role) {
+            activity = s_con_render.snapshot.role ==
+                BADGE_CON_ROLE_INFECTED
+                ? BADGE_CON_RENDER_ACTIVITY_INFECTED
+                : BADGE_CON_RENDER_ACTIVITY_CURED;
+        } else if (s_con_previous_shield !=
+                   s_con_render.snapshot.shield) {
+            activity = s_con_render.snapshot.shield >
+                s_con_previous_shield
+                ? BADGE_CON_RENDER_ACTIVITY_HEALING
+                : (s_con_render.snapshot.role ==
+                   BADGE_CON_ROLE_INFECTED
+                    ? BADGE_CON_RENDER_ACTIVITY_CURE_FADING
+                    : BADGE_CON_RENDER_ACTIVITY_ATTACKED);
+        }
+    }
+    if (activity != BADGE_CON_RENDER_ACTIVITY_NONE) {
+        s_con_activity = activity;
+        s_con_activity_frames = 12U;
+    } else if (s_con_activity_frames > 0U) {
+        s_con_activity_frames--;
+    }
+    if (s_con_activity_frames == 0U) {
+        s_con_activity = BADGE_CON_RENDER_ACTIVITY_NONE;
+    }
+    s_con_render.activity = s_con_activity;
+    s_con_previous_role = s_con_render.snapshot.role;
+    s_con_previous_shield = s_con_render.snapshot.shield;
+    s_con_previous_valid = true;
+
+    s_con_render.state =
+        badge_con_presentation_select(&s_con_render.snapshot);
+    badge_theme_derive_con_palette(
+        badge_theme_runtime_get(),
+        s_con_render.state,
+        &s_con_render.palette);
+}
+
+static void badge_con_render_end(void)
+{
+    memset(&s_con_render, 0, sizeof(s_con_render));
+}
+
+static uint16_t badge_con_render_chrome(
+    badge_theme_chrome_role_t role,
+    uint16_t selected)
+{
+    if (s_con_render.state == BADGE_CON_PRESENT_INACTIVE) {
+        return selected;
+    }
+
+    switch (role) {
+    case BADGE_THEME_CHROME_CANVAS:
+        return rgb565_scale_color(s_con_render.palette.chrome_primary, 38);
+    case BADGE_THEME_CHROME_PANEL:
+    case BADGE_THEME_CHROME_PANEL_ALT:
+        return rgb565_scale_color(
+            s_con_render.palette.chrome_primary,
+            role == BADGE_THEME_CHROME_PANEL ? 82 : 62);
+    case BADGE_THEME_CHROME_TEXT_PRIMARY:
+        return s_con_render.palette.chrome_text;
+    case BADGE_THEME_CHROME_TEXT_SECONDARY:
+        return s_con_render.palette.chrome_secondary;
+    case BADGE_THEME_CHROME_SELECTION:
+        return s_con_render.palette.chrome_accent;
+    case BADGE_THEME_CHROME_SCANNER_DOWN:
+    case BADGE_THEME_CHROME_ROLE_COUNT:
+    default:
+        return selected;
+    }
+}
+
+#endif
+
 static uint16_t badge_theme_panel_color(uint16_t fallback)
 {
     const badge_theme_t *theme = badge_theme_runtime_get();
@@ -1343,7 +1688,13 @@ static uint16_t badge_theme_panel_color(uint16_t fallback)
 
 static uint16_t badge_theme_chrome(badge_theme_chrome_role_t role)
 {
-    return badge_theme_chrome_color(badge_theme_runtime_get(), role);
+    uint16_t selected =
+        badge_theme_chrome_color(badge_theme_runtime_get(), role);
+#if defined(FOF_DC34_GAME_CANARY)
+    return badge_con_render_chrome(role, selected);
+#else
+    return selected;
+#endif
 }
 
 static uint16_t badge_theme_safe_chrome(badge_theme_chrome_role_t role,
@@ -1440,6 +1791,28 @@ static void draw_gamechangersai_logo_tinted(int x0, int y0, uint16_t tint)
         }
     }
 }
+
+#if defined(FOF_DC34_GAME_CANARY)
+static void draw_badge_con_dead_screen(void)
+{
+    s_detail_mode = false;
+    uint16_t bg = COL_BLACK;
+    uint16_t accent = s_con_render.palette.chrome_accent;
+    fb_clear(bg);
+    fb_draw_string_centered(
+        LCD_W / 2, 8, "YOU DIED OF", COL_WHITE, bg, 1);
+    fb_draw_string_centered(
+        LCD_W / 2, 20, "CON CRUD", accent, bg, 2);
+    draw_gamechangersai_logo_tinted(
+        (LCD_W - (int)GAMECHANGERSAI_LOGO_WIDTH) / 2, 48, accent);
+    if (s_con_render.state == BADGE_CON_PRESENT_DEAD_SUPER) {
+        fb_draw_string_centered(
+            LCD_W / 2, 116, "SUPER ZOMBIE x2", COL_YELLOW, bg, 1);
+    }
+    fb_draw_string_centered(
+        LCD_W / 2, 143, "REBOOT TO FIX", COL_WHITE, bg, 1);
+}
+#endif
 
 static void draw_badge_easter_thanks_screen(void)
 {
@@ -3503,56 +3876,20 @@ static const scanner_info_t *scanner_status_best_ble_live_info(uint32_t *payload
     uint32_t empty = 0;
     for (int i = 0; i < 2; i++) {
         const scanner_info_t *info = infos[i];
-        if (!info || info->ble_any_seen == 0 || info->ble_any_best_rssi >= 0) {
+        if (!info || info->ble_any_seen == 0 ||
+            !badge_ble_low_effort_rssi_allowed(
+                info->ble_any_last_rssi)) {
             continue;
         }
         payload = scanner_status_max_u32(payload, info->ble_any_with_payload_seen);
         empty = scanner_status_max_u32(empty, info->ble_any_empty_seen);
-        if (!best || info->ble_any_best_rssi > best->ble_any_best_rssi) {
+        if (!best || info->ble_any_last_rssi > best->ble_any_last_rssi) {
             best = info;
         }
     }
     if (payload_out) *payload_out = payload;
     if (empty_out) *empty_out = empty;
     return best;
-}
-
-static bool badge_text_has_value(const char *s)
-{
-    return s && s[0] != '\0' && strcmp(s, "?") != 0;
-}
-
-static bool badge_text_contains_nocase(const char *haystack, const char *needle)
-{
-    if (!haystack || !needle || !needle[0]) {
-        return false;
-    }
-    size_t needle_len = strlen(needle);
-    for (const char *p = haystack; *p; p++) {
-        size_t i = 0;
-        while (i < needle_len && p[i]) {
-            char a = p[i];
-            char b = needle[i];
-            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
-            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
-            if (a != b) {
-                break;
-            }
-            i++;
-        }
-        if (i == needle_len) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool badge_ble_label_is_generic(const char *label)
-{
-    return !badge_text_has_value(label) ||
-           strcmp(label, "BLE") == 0 ||
-           strcmp(label, "BLE Nearby") == 0 ||
-           badge_text_contains_nocase(label, "unknown");
 }
 
 static void format_ble_signal_status(const scanner_info_t *info,
@@ -3570,56 +3907,8 @@ static void format_ble_signal_status(const scanner_info_t *info,
         snprintf(detail_out, detail_len, "strong BLE");
         return;
     }
-
-    const char *guess = info->ble_dbg_near_label;
-    const char *name = info->ble_dbg_near_name;
-    const char *reason = info->ble_dbg_near_reason;
-    int rssi = info->ble_dbg_near_rssi < 0
-        ? info->ble_dbg_near_rssi
-        : info->ble_any_best_rssi;
-
-    if (!badge_ble_label_is_generic(guess)) {
-        if (badge_text_contains_nocase(guess, "tracker") ||
-            badge_text_contains_nocase(guess, "airtag") ||
-            badge_text_contains_nocase(guess, "tile") ||
-            badge_text_contains_nocase(guess, "tag")) {
-            snprintf(label_out, label_len, "TRACKER?");
-        } else if (badge_text_contains_nocase(guess, "hid") ||
-                   badge_text_contains_nocase(guess, "keyboard") ||
-                   badge_text_contains_nocase(guess, "mouse")) {
-            snprintf(label_out, label_len, "HID?");
-        } else if (badge_text_contains_nocase(guess, "camera")) {
-            snprintf(label_out, label_len, "CAMERA?");
-        } else if (badge_text_contains_nocase(guess, "lock")) {
-            snprintf(label_out, label_len, "LOCK?");
-        } else {
-            snprintf(label_out, label_len, "%.23s", guess);
-        }
-    }
-
-    char hint[28] = {0};
-    if (badge_text_has_value(name)) {
-        snprintf(hint, sizeof(hint), "%.20s", name);
-    } else if (!badge_ble_label_is_generic(guess)) {
-        snprintf(hint, sizeof(hint), "%.20s", guess);
-    } else if (info->ble_dbg_near_svc0 != 0) {
-        snprintf(hint, sizeof(hint), "svc %04X", (unsigned)info->ble_dbg_near_svc0);
-    } else if (info->ble_dbg_near_cid != 0) {
-        snprintf(hint, sizeof(hint), "cid %04X", (unsigned)info->ble_dbg_near_cid);
-    } else if (badge_text_has_value(reason)) {
-        snprintf(hint, sizeof(hint), "%.20s", reason);
-    } else {
-        snprintf(hint, sizeof(hint), "unknown BLE");
-    }
-
-    if (badge_text_has_value(name) && info->ble_dbg_near_svc0 != 0) {
-        snprintf(detail_out, detail_len, "%.18s svc%04X %ddB",
-                 name, (unsigned)info->ble_dbg_near_svc0, rssi);
-    } else if (rssi < 0) {
-        snprintf(detail_out, detail_len, "%s %ddB", hint, rssi);
-    } else {
-        snprintf(detail_out, detail_len, "%s active", hint);
-    }
+    snprintf(detail_out, detail_len, "strong BLE %ddB",
+             (int)info->ble_any_last_rssi);
 }
 
 static void draw_scanner_health_line(int y, bool ble_scanner_ok,
@@ -3810,7 +4099,9 @@ static int build_scanner_diag_rows(badge_display_diag_t *rows, int max_rows,
         } else if (tracker_seen > 0) {
             label = "TAG SIGNAL";
             snprintf(detail, sizeof(detail), "tag signals active");
-        } else if (ble_live && ble_live->ble_any_best_rssi >= -60) {
+        } else if (ble_live &&
+                   badge_ble_low_effort_rssi_allowed(
+                       ble_live->ble_any_last_rssi)) {
             (void)payload;
             format_ble_signal_status(ble_live, ble_label_buf, sizeof(ble_label_buf),
                                      detail, sizeof(detail));
@@ -3916,6 +4207,33 @@ static void draw_scanner_bottom_strip(int y, bool ble_scanner_ok,
         : rgb565_mix_color(panel,
                            badge_theme_chrome(BADGE_THEME_CHROME_SCANNER_DOWN),
                            44);
+    const bool safe_usb = badge_runtime_is_safe_mode();
+#if defined(FOF_DC34_GAME_CANARY)
+    badge_con_hud_plan_t hud =
+        badge_con_presentation_hud(&s_con_render.snapshot);
+    uint16_t activity_tint = 0U;
+    switch (s_con_render.activity) {
+    case BADGE_CON_RENDER_ACTIVITY_ATTACKED:
+    case BADGE_CON_RENDER_ACTIVITY_CURE_FADING:
+        activity_tint = BADGE_CON_HUD_HUMAN_RGB565;
+        break;
+    case BADGE_CON_RENDER_ACTIVITY_HEALING:
+    case BADGE_CON_RENDER_ACTIVITY_CURED:
+        activity_tint = BADGE_CON_HUD_HEALER_RGB565;
+        break;
+    case BADGE_CON_RENDER_ACTIVITY_INFECTED:
+        activity_tint = BADGE_CON_HUD_INFECTED_RGB565;
+        break;
+    case BADGE_CON_RENDER_ACTIVITY_NONE:
+    default:
+        break;
+    }
+    if (hud.visible && ok && !safe_usb && activity_tint != 0U) {
+        uint8_t mix = (((uint32_t)badge_now_ms() / 250U) & 1U)
+            ? 72U : 40U;
+        bg = rgb565_mix_color(bg, activity_tint, mix);
+    }
+#endif
     uint16_t fg = ok
         ? badge_theme_contrast_floor(
             badge_theme_accent(BADGE_THEME_ACCENT_CLEAR, COL_SOFT_GREEN), bg)
@@ -3926,32 +4244,56 @@ static void draw_scanner_bottom_strip(int y, bool ble_scanner_ok,
     char line[36];
     snprintf(line, sizeof(line), "BLE %s  WIFI %s",
              proof_word(ble_state), proof_word(wifi_state));
-    int64_t uptime_s = esp_timer_get_time() / 1000000LL;
-    char uptime_label[32];
-    if (uptime_s < 3600) {
-        snprintf(uptime_label, sizeof(uptime_label), "U%lld:%02lld",
-                 (long long)(uptime_s / 60),
-                 (long long)(uptime_s % 60));
-    } else {
-        snprintf(uptime_label, sizeof(uptime_label), "U%lldh%02lld",
-                 (long long)(uptime_s / 3600),
-                 (long long)((uptime_s / 60) % 60));
-    }
-    const bool safe_usb = badge_runtime_is_safe_mode();
     const bool usb_alive = badge_runtime_usb_control_alive();
     const char *usb_label = safe_usb ? "SAFE" : (usb_alive ? "USBC" : "USB?");
-    char right_label[48];
-    snprintf(right_label, sizeof(right_label), "%s %s", uptime_label, usb_label);
     uint16_t usb_color = safe_usb
         ? badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg)
         : (usb_alive
             ? badge_theme_safe_chrome(BADGE_THEME_CHROME_SELECTION, bg)
             : badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY));
-    int usb_w = tiny_pixel_width(right_label);
+    int usb_w = tiny_pixel_width(usb_label);
     int left_w = LCD_W - usb_w - 14;
     if (left_w < 40) left_w = 40;
+#if defined(FOF_DC34_GAME_CANARY)
+    if (hud.visible && ok && !safe_usb) {
+        static const char *const role_names[] = {
+            "", "HUMAN", "HUMAN", "INFECTED", "HEALER",
+            "SUPER ZOMBIE",
+        };
+        const char *role = role_names[hud.state];
+        fb_draw_string_centered(
+            LCD_W / 2,
+            y,
+            role,
+            s_con_render.palette.chrome_accent,
+            bg,
+            1);
+        char value[8];
+        snprintf(value, sizeof(value), "%u/%u", hud.current, hud.maximum);
+        int value_w = tiny_pixel_width(value);
+        int total_w = BADGE_DISPLAY_HEART_WIDTH + 2 + value_w;
+        int left = (LCD_W - total_w) / 2;
+        int value_y = y + BADGE_DISPLAY_HEALTH_VALUE_Y_OFFSET;
+        uint16_t value_bg = badge_theme_contrast_floor(
+            COL_WHITE, hud.color_rgb565);
+        fb_fill_rect(
+            left - 2,
+            value_y,
+            total_w + 4,
+            BADGE_DISPLAY_HEART_HEIGHT,
+            value_bg);
+        fb_draw_heart_7x5(left, value_y, hud.color_rgb565);
+        fb_draw_tiny_string(
+            left + BADGE_DISPLAY_HEART_WIDTH + 2,
+            value_y,
+            value,
+            hud.color_rgb565,
+            value_bg);
+        return;
+    }
+#endif
     fb_draw_tiny_string_fit(4, y + 4, line, left_w, fg, bg);
-    fb_draw_tiny_string(LCD_W - usb_w - 4, y + 4, right_label, usb_color, bg);
+    fb_draw_tiny_string(LCD_W - usb_w - 4, y + 4, usb_label, usb_color, bg);
 }
 
 static void draw_watch_eye(int cx, int cy, int w, int h, int gaze,
@@ -5358,7 +5700,8 @@ static int build_billboard_status_rows(
     if (badge_meta_glasses_count(snapshot) == 0 && ble_live &&
         (!snapshot || snapshot->active_counts[BADGE_THREAT_TRACKER] == 0) &&
         tracker_seen == 0 &&
-        ble_live->ble_any_best_rssi >= -60) {
+        badge_ble_low_effort_rssi_allowed(
+            ble_live->ble_any_last_rssi)) {
         (void)empty_seen;
         char label[24];
         format_ble_signal_status(ble_live, label, sizeof(label),
@@ -6037,6 +6380,15 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
     (void)wifi_color;
     (void)accent;
 
+#if defined(FOF_DC34_GAME_CANARY)
+    badge_con_render_begin();
+    if (s_con_render.state == BADGE_CON_PRESENT_DEAD ||
+        s_con_render.state == BADGE_CON_PRESENT_DEAD_SUPER) {
+        draw_badge_con_dead_screen();
+        badge_con_render_end();
+        return;
+    }
+#endif
     draw_threat_background(snapshot);
 
     const badge_threat_snapshot_entity_t *top_items[2] = {0};
@@ -6101,6 +6453,9 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
     draw_focus_outline();
     draw_scanner_bottom_strip(badge_display_contract_health_strip_y(),
                               ble_scanner_ok, wifi_scanner_ok);
+#if defined(FOF_DC34_GAME_CANARY)
+    badge_con_render_end();
+#endif
 }
 
 static void draw_detail_pair(int y, const char *label, const char *value)
@@ -6652,7 +7007,16 @@ void oled_init(void)
     ESP_LOGI(TAG, "Backlight pin GPIO%d driven HIGH", ST7735_PIN_BL);
 #endif
 
-    /* Allocate framebuffer in PSRAM. */
+#if defined(FOF_DC34_GAME_CANARY)
+    s_fb = psram_alloc_strict(LCD_FB_BYTES);
+    if (!s_fb) {
+        ESP_LOGE(TAG,
+                 "PSRAM framebuffer allocation failed (%d bytes); "
+                 "continuing headless for USB/UART recovery",
+                 LCD_FB_BYTES);
+        return;
+    }
+#else
     s_fb = heap_caps_malloc(LCD_FB_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_fb) {
         /* Fall back to internal heap — 40 KB is large but the badge has
@@ -6663,6 +7027,7 @@ void oled_init(void)
         ESP_LOGE(TAG, "Framebuffer allocation failed (%d bytes)", LCD_FB_BYTES);
         return;
     }
+#endif
     memset(s_fb, 0, LCD_FB_BYTES);
 
     s_tx_chunk = heap_caps_malloc(20 * LCD_W * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
@@ -6707,8 +7072,6 @@ void oled_init(void)
     atomic_store(&s_panel_awake, true);
     ESP_LOGI(TAG, "ST7735 initialized (128x160, SPI3 @ %d MHz, CS GPIO%d)",
              ST7735_SPI_HZ / 1000000, ST7735_PIN_CS);
-
-    badge_buttons_start();
 
     /* Show the badge splash once the panel is configured. The heavy color
      * diagnostics stay compiled in for bench bring-up, but normal boot keeps
@@ -6769,6 +7132,7 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     (void)battery_pct;  /* badge has no battery monitor */
     (void)uptime_s;
     if (!s_initialized || !oled_is_powered()) return;
+    if (atomic_load(&s_usb_recovery_prompt_active)) return;
     badge_ble_investigation_poll();
     if (!display_lock(pdMS_TO_TICKS(30))) return;
     if (!oled_is_powered()) {

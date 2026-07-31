@@ -9,6 +9,16 @@ internal enum class BadgeControlTransport {
  * detection and read-only badge status over HTTP are separate capabilities.
  */
 internal object BadgeControlTransportPolicy {
+    private val androidControlCommands = setOf(
+        "set_mode",
+        "reboot",
+        "badge_display_policy",
+        "badge_display_policy_reset",
+        "badge_theme",
+        "badge_theme_reset",
+        "display_nav",
+    )
+
     fun select(
         hasUsb: Boolean,
         @Suppress("UNUSED_PARAMETER") hasBle: Boolean,
@@ -28,22 +38,9 @@ internal object BadgeControlTransportPolicy {
         BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
     )
 
-    fun allowsAndroidFirmwareUpload(): Boolean = false
+    fun allowsAndroidControlCommand(command: String): Boolean =
+        command in androidControlCommands
 
     fun controlConnectionGuidance(): String =
         "Attach a FoF badge over USB-C to send controls"
-
-    fun scannerFirmwareStagingGuidance(): String =
-        "Stage the shared scanner firmware from a laptop over USB. " +
-            "The uplink automatically converges both scanner slots one at a time " +
-            "when the staged version is newer."
-
-    fun scannerFirmwareRecoveryHeading(): String =
-        "Manual Per-Slot Relay (Recovery Only)"
-
-    fun scannerFirmwareRecoveryActionLabel(uart: String): String = when (uart.lowercase()) {
-        "ble" -> "Recover Slot 0"
-        "wifi" -> "Recover Slot 1"
-        else -> "Recover Scanner"
-    }
 }

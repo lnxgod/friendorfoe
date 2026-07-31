@@ -361,11 +361,12 @@ static const oui_entry_t *lookup_flock_frame_oui(const uint8_t *mac)
     }
 
     const oui_entry_t *oui = wifi_oui_lookup_raw(mac);
-    if (!oui || !oui->manufacturer || oui->high_false_positive) {
+    if (!oui || !oui->manufacturer || oui->high_false_positive ||
+        oui->role != OUI_ROLE_PRIVACY_FLOCK) {
         return NULL;
     }
 
-    return strstr(oui->manufacturer, "Flock") ? oui : NULL;
+    return oui;
 }
 
 static void emit_flock_data_frame_detection(const uint8_t *flock_mac,
@@ -446,6 +447,46 @@ static bool emit_privacy_wifi_detection(const fof_privacy_wifi_signature_t *sig,
     return true;
 }
 
+static bool emit_privacy_oui_detection(const oui_entry_t *oui,
+                                       const uint8_t *bssid,
+                                       int8_t rssi,
+                                       const char *ssid,
+                                       uint8_t auth_mode,
+                                       uint16_t channel,
+                                       int64_t ts_ms)
+{
+    if (!oui || oui->role != OUI_ROLE_PRIVACY_INFRASTRUCTURE ||
+        !oui->manufacturer || !bssid) {
+        return false;
+    }
+    if (!beacon_rate_limit_allow(bssid, rssi, ts_ms)) {
+        return true;
+    }
+
+    drone_detection_t det;
+    init_detection(&det, bssid, rssi, ssid ? ssid : "");
+    det.source = DETECTION_SRC_WIFI_AP_INVENTORY;
+    det.confidence = 0.62f;
+    det.wifi_auth_mode = auth_mode;
+    det.freq_mhz = (channel <= 13) ? (2407 + channel * 5) : (5000 + channel * 5);
+    strncpy(det.manufacturer, oui->manufacturer, sizeof(det.manufacturer) - 1);
+    strncpy(det.model, "Privacy Infrastructure", sizeof(det.model) - 1);
+    strncpy(det.class_reason, "privacy infrastructure OUI",
+            sizeof(det.class_reason) - 1);
+    snprintf(det.drone_id, sizeof(det.drone_id),
+             "privacy_oui:%02X:%02X:%02X:%02X:%02X:%02X",
+             bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+
+    ESP_LOGI(TAG, "Privacy vendor device: BSSID=%s (%s) RSSI=%d ~%.0fm",
+             det.bssid, oui->manufacturer, rssi, det.estimated_distance_m);
+    update_hot_channel(channel);
+    add_channel_heat(channel, 2);
+    if (s_detection_queue) {
+        xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
+    }
+    return true;
+}
+
 /* ── Beacon frame parser ───────────────────────────────────────────────────── */
 
 /**
@@ -497,9 +538,6 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
         offset = tag_data_offset + tag_len;
     }
 
-    /* Pwnagotchi's beacon forwarding uses a hardcoded sender MAC of
-     * DE:AD:BE:EF:DE:AD. Exact SSID observation above intentionally happens
-     * first so badge triggers are not hidden behind this classification. */
     static const uint8_t PWNAGOTCHI_MAC[6] = {
         0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD
     };
@@ -788,7 +826,14 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
     /* Priority 4: OUI prefix match (catches hidden/generic SSIDs) */
     {
         const oui_entry_t *oui = wifi_oui_lookup_raw(bssid);
-        if (oui && !oui->high_false_positive) {
+        if (emit_privacy_oui_detection(
+                oui, bssid, rssi, ssid, beacon_auth_mode,
+                s_current_channel, beacon_ts)) {
+            return;
+        }
+        if (oui && !oui->high_false_positive &&
+            (oui->role == OUI_ROLE_DRONE ||
+             oui->role == OUI_ROLE_PRIVACY_FLOCK)) {
             if (!beacon_rate_limit_allow(bssid, rssi, beacon_ts)) {
                 return;
             }
@@ -1143,8 +1188,7 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
         ssid_ie_present &&
         wildcard_ssid_ie &&
         src_oui &&
-        src_oui->manufacturer &&
-        strstr(src_oui->manufacturer, "Flock") != NULL;
+        src_oui->role == OUI_ROLE_PRIVACY_FLOCK;
 
     /* Drop broadcast probes — they flood UART/queue/heap for zero value.
      * Exception: field research has observed Flock ALPR nodes sending wildcard
@@ -1675,7 +1719,10 @@ static void process_scan_results(void)
         const drone_ssid_pattern_t *pattern = wifi_ssid_match(ssid);
         bool soft = (!pattern && wifi_ssid_match_soft(ssid));
         const oui_entry_t *oui = wifi_oui_lookup_raw(bssid);
-        bool strong_oui = (oui && !oui->high_false_positive);
+        bool strong_oui =
+            oui && !oui->high_false_positive &&
+            (oui->role == OUI_ROLE_DRONE ||
+             oui->role == OUI_ROLE_PRIVACY_FLOCK);
 
 #ifdef FOF_BADGE_VARIANT
         fof_policy_evil_twin_alert_t evil_twin;
@@ -1694,6 +1741,12 @@ static void process_scan_results(void)
 
         if (privacy && emit_privacy_wifi_detection(
                 privacy, bssid, rssi, ssid, (uint8_t)ap_list[i].authmode,
+                ch, scan_ts)) {
+            continue;
+        }
+
+        if (emit_privacy_oui_detection(
+                oui, bssid, rssi, ssid, (uint8_t)ap_list[i].authmode,
                 ch, scan_ts)) {
             continue;
         }

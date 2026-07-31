@@ -5,12 +5,13 @@
 #include <stdlib.h>
 
 #ifndef FW_AUTO_CHECK_HOST_TEST
+#include "esp_timer.h"
+#ifndef FOF_BADGE_VARIANT
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_system.h"
-#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_crc.h"
 #include "freertos/FreeRTOS.h"
@@ -23,8 +24,6 @@
 #include "uart_rx.h"
 #include "nvs_config.h"
 #include "version.h"
-#ifdef FOF_BADGE_VARIANT
-#include "badge_runtime.h"
 #endif
 #endif
 
@@ -66,15 +65,10 @@ bool fw_auto_check_version_differs(const char *local, const char *remote)
 
 /* ── Runtime ─────────────────────────────────────────────────────────────── */
 
-static const char *TAG = "fw_auto";
-
 static const char  *s_status = "idle";
 static int64_t      s_last_check_ms = 0;
 static char         s_remote_uplink_ver[40] = {0};
 static char         s_remote_scanner_ver[40] = {0};
-static int64_t      s_backoff_s = 0;
-static TaskHandle_t s_task = NULL;
-static scanner_info_t s_auto_check_scanner_snapshots[2] = {0};
 
 const char *fw_auto_check_status(void)
 {
@@ -90,6 +84,12 @@ int64_t fw_auto_check_last_age_s(void)
 
 const char *fw_auto_check_remote_uplink_version(void) { return s_remote_uplink_ver; }
 const char *fw_auto_check_remote_scanner_version(void) { return s_remote_scanner_ver; }
+
+#ifndef FOF_BADGE_VARIANT
+static const char *TAG = "fw_auto";
+static int64_t      s_backoff_s = 0;
+static TaskHandle_t s_task = NULL;
+static scanner_info_t s_auto_check_scanner_snapshots[2] = {0};
 
 /* HTTP body collection for esp_http_client. */
 typedef struct {
@@ -295,9 +295,6 @@ static esp_err_t try_self_update_uplink(const char *backend_base)
 
     ESP_LOGW(TAG, "%s OTA complete (%d bytes, crc=%lu) — restarting",
              FOF_FIRMWARE_TARGET, received, (unsigned long)crc);
-#ifdef FOF_BADGE_VARIANT
-    badge_runtime_arm_expected_reboot("auto_ota");
-#endif
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
     return ESP_OK;  /* unreachable */
@@ -452,8 +449,13 @@ static void auto_check_task(void *arg)
     }
 }
 
+#endif
+
 void fw_auto_check_init(void)
 {
+#ifdef FOF_BADGE_VARIANT
+    return;
+#else
     if (s_task != NULL) return;
     BaseType_t ok = xTaskCreatePinnedToCore(
         auto_check_task, "fw_auto", 6144, NULL,
@@ -465,6 +467,7 @@ void fw_auto_check_init(void)
         ESP_LOGW(TAG, "fw_auto_check task started; first check in %ds, then every %ds",
                  FIRST_CHECK_DELAY_S, CHECK_INTERVAL_S);
     }
+#endif
 }
 
 #endif /* FW_AUTO_CHECK_HOST_TEST */

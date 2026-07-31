@@ -23,3 +23,17 @@ void test_badge_display_contract_keeps_four_fixed_lanes(void)
     TEST_ASSERT_EQUAL(BADGE_LANE_INVALID, badge_display_contract_lane(-1));
     TEST_ASSERT_EQUAL(BADGE_LANE_INVALID, badge_display_contract_lane(4));
 }
+
+void test_badge_display_contract_keeps_heart_inside_health_strip(void)
+{
+    TEST_ASSERT_EQUAL_INT(
+        160,
+        BADGE_DISPLAY_HEALTH_STRIP_Y +
+            BADGE_DISPLAY_HEALTH_STRIP_HEIGHT);
+    TEST_ASSERT_EQUAL_INT(
+        BADGE_DISPLAY_HEALTH_STRIP_HEIGHT,
+        BADGE_DISPLAY_HEALTH_VALUE_Y_OFFSET +
+            BADGE_DISPLAY_HEART_HEIGHT);
+    TEST_ASSERT_EQUAL_INT(7, BADGE_DISPLAY_HEART_WIDTH);
+    TEST_ASSERT_EQUAL_INT(5, BADGE_DISPLAY_HEART_HEIGHT);
+}

@@ -67,6 +67,64 @@ class BadgeNavigationContractTest {
     }
 
     @Test
+    fun `Android badge sources cannot expose firmware mutation commands`() {
+        val repository = source("com/friendorfoe/data/badge/BadgeUsbRepository.kt")
+        val policy = source("com/friendorfoe/data/badge/BadgeControlTransportPolicy.kt")
+        val viewModel = source("com/friendorfoe/presentation/badge/BadgeControlViewModel.kt")
+        val screen = source("com/friendorfoe/presentation/badge/BadgeControlScreen.kt")
+        val action = source("com/friendorfoe/presentation/badge/BadgeControlAction.kt")
+        val outboundSources = listOf(repository, policy, viewModel, screen, action)
+
+        listOf(
+            "fun enterBootloader(",
+            "fun relayScannerFirmware(",
+            "fun flashScannerFirmware(",
+            "BadgeDangerAction.BOOTLOADER",
+            "BadgeDangerAction.RECOVER_SLOT_0",
+            "BadgeDangerAction.RECOVER_SLOT_1",
+            "scannerFirmwareStagingGuidance",
+            "scannerFirmwareRecoveryHeading",
+            "scannerFirmwareRecoveryActionLabel",
+            "Enter badge bootloader now?",
+            "Recover scanner slot 0 now?",
+            "Recover scanner slot 1 now?",
+            "Manual Per-Slot Relay",
+        ).forEach { prohibited ->
+            assertFalse(
+                "Android still exposes $prohibited",
+                outboundSources.any { it.contains(prohibited) },
+            )
+        }
+        listOf(
+            "addProperty(\"cmd\", \"bootloader\")",
+            "addProperty(\"cmd\", \"fw_relay\")",
+            "addProperty(\"cmd\", \"fw_upload_begin\")",
+            "addProperty(\"cmd\", \"uplink_ota_begin\")",
+        ).forEach { payload -> assertFalse(payload, repository.contains(payload)) }
+
+        val allowlistGuard = repository.indexOf(
+            "BadgeControlTransportPolicy.allowsAndroidControlCommand(command)",
+        )
+        val usbWrite = repository.indexOf("line = \"FOF_CTL:\$payload\"")
+        assertTrue("missing Android command allowlist guard", allowlistGuard >= 0)
+        assertTrue("missing USB control write", usbWrite >= 0)
+        assertTrue("allowlist guard must precede USB write", allowlistGuard < usbWrite)
+        assertTrue(viewModel.contains("BadgeDangerAction.REBOOT -> repository.rebootBadge()"))
+        assertTrue(screen.contains("BadgeDangerAction.REBOOT"))
+        assertTrue(screen.contains("Reboot the badge now?"))
+
+        listOf(
+            "FOF_FW_UPLOAD:",
+            "FOF_FW_RELAY_PROGRESS:",
+            "FOF_FW_RELAY:",
+            "BadgeFirmwareProgress",
+            "parseFirmwareProgress",
+        ).forEach { diagnostic ->
+            assertTrue("missing diagnostic parser $diagnostic", repository.contains(diagnostic))
+        }
+    }
+
+    @Test
     fun `focused live event is found across all 64 entries before feed is bounded`() {
         val activity = (1..64).map { position ->
             BadgeUsbActivity(
@@ -94,7 +152,7 @@ class BadgeNavigationContractTest {
     }
 
     @Test
-    fun `every remote command family has explicit disabled state and danger confirmation`() {
+    fun `every remote command family has explicit disabled state and reboot confirmation`() {
         val screen = source("com/friendorfoe/presentation/badge/BadgeControlScreen.kt")
         val appearance = source("com/friendorfoe/presentation/badge/BadgeAppearanceSection.kt")
         val filters = source("com/friendorfoe/presentation/badge/BadgeDisplayFiltersSection.kt")
@@ -109,15 +167,12 @@ class BadgeNavigationContractTest {
         assertTrue(screen.contains("reduceBadgeDangerCommand("))
         assertTrue(screen.contains("commandsEnabled = commandsEnabled"))
         assertTrue(screen.contains("enabled = commandsEnabled"))
-        BadgeDangerAction.entries.forEach { action ->
-            assertTrue(screen.contains("BadgeDangerAction.${action.name}"))
+        assertEquals(listOf(BadgeDangerAction.REBOOT), BadgeDangerAction.entries)
+        assertTrue(screen.contains("BadgeDangerAction.REBOOT"))
+        assertTrue(screen.contains("Reboot the badge now?"))
+        listOf("Bootloader", "Recover Slot", "Recover scanner").forEach { prohibited ->
+            assertFalse("unexpected $prohibited", screen.contains(prohibited))
         }
-        listOf(
-            "Reboot the badge now?",
-            "Enter badge bootloader now?",
-            "Recover scanner slot 0 now?",
-            "Recover scanner slot 1 now?",
-        ).forEach { prompt -> assertTrue("missing $prompt", screen.contains(prompt)) }
     }
 
     @Test

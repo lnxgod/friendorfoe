@@ -491,3 +491,43 @@ void test_relay_policy_post_reboot_proof_requires_a_new_nonzero_boot_id(void)
     TEST_ASSERT_FALSE(fof_firmware_post_reboot_boot_id_proved(
         0x12345678U, 0x12345678U));
 }
+
+void test_relay_policy_bound_request_requires_generation_and_exact_live_mac(void)
+{
+    fof_firmware_bound_relay_view_t view = {
+        .expected_generation = TEST_GENERATION,
+        .expected_hardware_id = TEST_MAC,
+        .staged_generation = TEST_GENERATION,
+        .live_identity_received = true,
+        .live_hardware_id = TEST_MAC,
+    };
+    TEST_ASSERT_TRUE(fof_firmware_bound_relay_request_matches(&view));
+
+    view.expected_generation = 0U;
+    TEST_ASSERT_FALSE(fof_firmware_bound_relay_request_matches(&view));
+    view.expected_generation = TEST_GENERATION;
+
+    view.expected_hardware_id = NULL;
+    TEST_ASSERT_FALSE(fof_firmware_bound_relay_request_matches(&view));
+    view.expected_hardware_id = TEST_MAC;
+
+    view.staged_generation = TEST_GENERATION + 1U;
+    TEST_ASSERT_FALSE(fof_firmware_bound_relay_request_matches(&view));
+    view.staged_generation = TEST_GENERATION;
+
+    view.live_identity_received = false;
+    TEST_ASSERT_FALSE(fof_firmware_bound_relay_request_matches(&view));
+    view.live_identity_received = true;
+
+    view.live_hardware_id = TEST_OTHER_MAC;
+    TEST_ASSERT_FALSE(fof_firmware_bound_relay_request_matches(&view));
+    view.live_hardware_id = TEST_MAC;
+
+    view.expected_hardware_id = "e0-72-a1-f9-48-58";
+    TEST_ASSERT_FALSE(fof_firmware_bound_relay_request_matches(&view));
+    view.expected_hardware_id = TEST_MAC;
+
+    view.live_hardware_id = "e0-72-a1-f9-48-58";
+    TEST_ASSERT_FALSE(fof_firmware_bound_relay_request_matches(&view));
+    TEST_ASSERT_FALSE(fof_firmware_bound_relay_request_matches(NULL));
+}

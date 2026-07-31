@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "badge_ble_investigation_state.h"
 #include "cJSON.h"
@@ -20,6 +21,14 @@ bool badge_ble_investigation_start(const char *request_id,
                                    const char *transport,
                                    char *err,
                                    size_t err_len);
+bool badge_ble_investigation_start_with_timeout(
+    const char *request_id,
+    const char *mode,
+    const char *target_mac,
+    uint32_t timeout_ms,
+    const char *transport,
+    char *err,
+    size_t err_len);
 bool badge_ble_investigation_start_local(const char *request_id,
                                          const char *mode,
                                          const char *target_mac,
