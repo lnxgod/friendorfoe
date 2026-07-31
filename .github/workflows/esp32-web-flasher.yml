@@ -77,6 +77,11 @@ jobs:
       - name: Build Uplink firmware (ESP32-S3)
         run: umask 0022 && cd esp32/uplink && pio run -e uplink-s3
 
+      - name: Harden PlatformIO partition generator mode
+        run: >-
+          chmod 0644
+          "$HOME/.platformio/packages/framework-espidf/components/partition_table/gen_esp32part.py"
+
       - name: Build Badge Scanner firmware (XIAO ESP32-S3)
         run: >-
           umask 0022 &&

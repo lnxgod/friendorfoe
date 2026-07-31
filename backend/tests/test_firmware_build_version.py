@@ -2534,6 +2534,27 @@ def test_esp32_workflow_builds_firmware_with_non_writable_group_mode():
         assert step.index("umask 0022") < step.index("pio run"), build_step
 
 
+def test_esp32_workflow_hardens_extracted_partition_generator_mode():
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
+    ).read_text()
+    hardening = _workflow_named_step(
+        workflow,
+        "Harden PlatformIO partition generator mode",
+    )
+
+    assert "chmod 0644" in hardening
+    assert (
+        "framework-espidf/components/partition_table/gen_esp32part.py"
+        in hardening
+    )
+    assert workflow.index(
+        "Harden PlatformIO partition generator mode"
+    ) < workflow.index(
+        "Build Badge Scanner firmware (XIAO ESP32-S3)"
+    )
+
+
 def test_esp32_workflow_keeps_canary_artifacts_private_and_production_clean():
     workflow = (
         REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
