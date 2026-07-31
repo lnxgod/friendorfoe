@@ -196,6 +196,18 @@ def test_web_flasher_site_validator_requires_exact_five_target_release(tmp_path)
     assert any("cannot read" in error for error in errors)
 
 
+def test_checked_in_web_flasher_manifests_match_release_tracks():
+    module = _load_verify_module()
+    header = REPO_ROOT / "esp32" / "shared" / "version.h"
+    site_root = REPO_ROOT / "esp32" / "web-flasher"
+
+    for target, spec in module.WEB_FLASHER_TARGETS.items():
+        manifest = json.loads((site_root / spec["manifest"]).read_text())
+        expected = module.expected_identity_for_env(header, target)
+
+        assert manifest["version"] == expected.version
+
+
 def test_pages_deploy_fails_closed_on_build_or_artifact_validation_failure():
     workflow = (
         REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
