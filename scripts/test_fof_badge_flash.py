@@ -564,7 +564,7 @@ def _bound_rom_stage(
 
 
 def _test_frozen_usb_artifacts(
-    version: str = "0.64.78-badge-defcon34",
+    version: str = "0.67.2-badge-defcon34",
 ) -> flash.FrozenUsbFirmwareArtifacts:
     platform = flash.PLATFORMS["badge-trio-xiao-s3"]
     return flash.FrozenUsbFirmwareArtifacts(
@@ -935,7 +935,7 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
             def freeze_for_mutation(self):
                 events.append(f"{self.role}.freeze")
                 return (
-                    _frozen_uplink_set("0.64.78-badge-defcon34")
+                    _frozen_uplink_set("0.67.2-badge-defcon34")
                     if self.role == "uplink"
                     else _frozen_firmware_set(
                         f"{self.role}-firmware".encode("ascii")
@@ -1015,7 +1015,7 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
                 flash.PLATFORMS["badge-trio-xiao-s3"],
                 True,
                 ["ble", "wifi"],
-                "0.64.78-badge-defcon34",
+                "0.67.2-badge-defcon34",
             )
 
         self.assertEqual(events[-1], "descriptor")
@@ -1027,7 +1027,7 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
         invalid = flash.FrozenUsbFirmwareArtifacts(
             uplink=_frozen_firmware_set(_firmware_image(
                 platform["uplink_project"],
-                "0.64.78-badge-defcon34",
+                "0.67.2-badge-defcon34",
                 platform["uplink_name"],
                 platform["hardware_type"],
             )),
@@ -1053,7 +1053,7 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
                 platform,
                 True,
                 [],
-                "0.64.78-badge-defcon34",
+                "0.67.2-badge-defcon34",
                 frozen_artifacts=invalid,
             )
 
@@ -1063,7 +1063,7 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
         self,
     ) -> None:
         platform = flash.PLATFORMS["badge-trio-xiao-s3"]
-        issued = _frozen_uplink_set("0.64.78-badge-defcon34")
+        issued = _frozen_uplink_set("0.67.2-badge-defcon34")
         public_copy = artifact_tree.FrozenArtifactSet(
             receipt_sha256=issued.receipt_sha256,
             members=issued.members,
@@ -1093,7 +1093,7 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
                 platform,
                 True,
                 [],
-                "0.64.78-badge-defcon34",
+                "0.67.2-badge-defcon34",
                 frozen_artifacts=supplied,
             )
 
@@ -1104,7 +1104,7 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
     ) -> None:
         platform = flash.PLATFORMS["badge-trio-xiao-s3"]
         supplied = flash.FrozenUsbFirmwareArtifacts(
-            uplink=_frozen_uplink_set("0.64.78-badge-defcon34"),
+            uplink=_frozen_uplink_set("0.67.2-badge-defcon34"),
             scanner=None,
         )
         args = SimpleNamespace(
@@ -1139,7 +1139,7 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
         class MutationBlocked(RuntimeError):
             pass
 
-        version = "0.64.78-badge-defcon34"
+        version = "0.67.2-badge-defcon34"
         initial = _uplink_status(version)
         args = SimpleNamespace(
             port="/dev/fake-uplink",
@@ -1460,7 +1460,7 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
             esp32_dir = Path(temp_dir)
             (esp32_dir / "shared").mkdir()
             (esp32_dir / "shared" / "version.h").write_text(
-                '#define FOF_VERSION_BADGE "0.64.78-badge-defcon34"\n'
+                '#define FOF_VERSION_BADGE "0.67.2-badge-defcon34"\n'
                 '#define FOF_VERSION_BADGE_CANARY '
                 '"0.64.79-badge-defcon34"\n'
             )
@@ -1469,7 +1469,7 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
                     flash.repo_version(
                         flash.PLATFORMS["badge-trio-xiao-s3"]
                     ),
-                    "0.64.78-badge-defcon34",
+                    "0.67.2-badge-defcon34",
                 )
                 self.assertEqual(
                     flash.repo_version(
@@ -1598,7 +1598,7 @@ class BadgeFlashGuardrailTests(unittest.TestCase):
             with mock.patch.object(
                 flash, "verify_badge_scanner_build", verifier, create=True
             ), mock.patch.object(
-                flash, "repo_version", return_value="0.64.78-badge-defcon34"
+                flash, "repo_version", return_value="0.67.2-badge-defcon34"
             ), mock.patch.object(
                 flash, "validate_firmware_artifact"
             ), self.assertRaisesRegex(
@@ -4605,7 +4605,7 @@ _ROM_VERIFIER_BUILD_PATHS = (
 
 
 class BadgeRomLayoutTests(unittest.TestCase):
-    VERSION = "0.64.78-badge-defcon34"
+    VERSION = "0.67.2-badge-defcon34"
 
     def _fixture(self, root: str, *, partition_table: bytes | None = None,
                  bootloader: bytes | None = None,

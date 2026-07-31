@@ -8,6 +8,7 @@ on:
       - 'esp32/**'
       - 'tools/badge_flasher/**'
       - 'scripts/build_badge_factory_bundle.py'
+      - 'scripts/package_public_badge_release.py'
       - '.github/workflows/esp32-web-flasher.yml'
   pull_request:
     branches: [main]
@@ -15,6 +16,7 @@ on:
       - 'esp32/**'
       - 'tools/badge_flasher/**'
       - 'scripts/build_badge_factory_bundle.py'
+      - 'scripts/package_public_badge_release.py'
       - '.github/workflows/esp32-web-flasher.yml'
   release:
     types: [published]
@@ -190,13 +192,7 @@ jobs:
           cp esp32/uplink/.pio/build/uplink-s3/partitions.bin firmware/uplink-s3/partition-table.bin
           cp esp32/uplink/.pio/build/uplink-s3/firmware.bin   firmware/uplink-s3/
 
-          cp esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/bootloader.bin firmware/badge-scanner/
-          cp esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/partitions.bin firmware/badge-scanner/partition-table.bin
-          cp esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/firmware.bin   firmware/badge-scanner/
-
-          cp esp32/uplink/.pio/build/uplink-s3-fof_badge/bootloader.bin firmware/badge-uplink/
-          cp esp32/uplink/.pio/build/uplink-s3-fof_badge/partitions.bin firmware/badge-uplink/partition-table.bin
-          cp esp32/uplink/.pio/build/uplink-s3-fof_badge/firmware.bin   firmware/badge-uplink/
+          python scripts/package_public_badge_release.py --output-root firmware
 
           echo "=== Firmware sizes ==="
           find firmware -name '*.bin' -exec ls -lh {} \;
@@ -211,8 +207,8 @@ jobs:
       - name: Build validated badge factory bundle
         run: |
           mkdir -p factory-bundle
-          python scripts/build_badge_factory_bundle.py \
-            --output factory-bundle/badge-factory-flasher.zip
+          cp tools/badge_flasher/resources/badge-factory-flasher-embedded.zip \
+            factory-bundle/badge-factory-flasher.zip
 
       - name: Upload badge factory bundle artifact
         uses: actions/upload-artifact@v4

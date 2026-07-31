@@ -33,7 +33,7 @@ TARGET_IDENTITIES = {
     "scanner-s3-combo-fof_badge": (
         "fof_badge_scanner",
         "seeed_xiao_esp32s3",
-        "0.64.78-badge-defcon34",
+        "0.67.2-badge-defcon34",
     ),
     "scanner-s3-combo-fof_badge-con-crud-canary": (
         "fof_badge_scanner",
@@ -48,7 +48,7 @@ TARGET_IDENTITIES = {
     "uplink-s3-fof_badge": (
         "fof_badge_uplink",
         "seeed_xiao_esp32s3",
-        "0.64.78-badge-defcon34",
+        "0.67.2-badge-defcon34",
     ),
     "uplink-s3-fof_badge-con-crud-canary": (
         "fof_badge_uplink",
@@ -160,19 +160,30 @@ def _write_web_flasher_site(module, site_root: Path) -> None:
         firmware_dir.mkdir(parents=True, exist_ok=True)
         (firmware_dir / "bootloader.bin").write_bytes(b"boot")
         (firmware_dir / "partition-table.bin").write_bytes(b"partition")
+        if "fof_badge" in target:
+            (firmware_dir / "ota-data-initial.bin").write_bytes(b"ota-data")
         (firmware_dir / "firmware.bin").write_bytes(
             _esp_image(project, version, target, hardware)
         )
+        parts = [
+            {"path": f'{spec["firmware_dir"]}/bootloader.bin', "offset": 0},
+            {"path": f'{spec["firmware_dir"]}/partition-table.bin', "offset": 32768},
+        ]
+        if "fof_badge" in target:
+            parts.append({
+                "path": f'{spec["firmware_dir"]}/ota-data-initial.bin',
+                "offset": 61440,
+            })
+        parts.append({
+            "path": f'{spec["firmware_dir"]}/firmware.bin',
+            "offset": 131072,
+        })
         manifest = {
             "name": target,
             "version": version,
             "builds": [{
                 "chipFamily": "ESP32-S3",
-                "parts": [
-                    {"path": f'{spec["firmware_dir"]}/bootloader.bin', "offset": 0},
-                    {"path": f'{spec["firmware_dir"]}/partition-table.bin', "offset": 32768},
-                    {"path": f'{spec["firmware_dir"]}/firmware.bin', "offset": 131072},
-                ],
+                "parts": parts,
             }],
         }
         (site_root / spec["manifest"]).write_text(json.dumps(manifest))
@@ -208,6 +219,61 @@ def test_checked_in_web_flasher_manifests_match_release_tracks():
         assert manifest["version"] == expected.version
 
 
+def test_public_badge_track_promotes_the_hardware_accepted_bundle():
+    module = _load_verify_module()
+    errors = module.verify_accepted_badge_promotion(
+        REPO_ROOT / "esp32" / "shared" / "version.h",
+        REPO_ROOT / "esp32" / "web-flasher",
+        REPO_ROOT
+        / "tools"
+        / "badge_flasher"
+        / "resources"
+        / "badge-factory-flasher-embedded.zip",
+    )
+
+    assert errors == []
+
+
+def test_pages_badge_artifacts_must_match_the_accepted_bundle(tmp_path):
+    module = _load_verify_module()
+    header = REPO_ROOT / "esp32" / "shared" / "version.h"
+    accepted_bundle = (
+        REPO_ROOT
+        / "tools"
+        / "badge_flasher"
+        / "resources"
+        / "badge-factory-flasher-embedded.zip"
+    )
+    _write_web_flasher_site(module, tmp_path)
+
+    from scripts import package_public_badge_release as packager
+
+    packager.package_public_badge_release(
+        accepted_bundle,
+        tmp_path / "firmware",
+        expected_version="0.67.2-badge-defcon34",
+    )
+    assert module.verify_web_flasher_site(
+        header,
+        tmp_path,
+        accepted_bundle,
+    ) == []
+
+    scanner = tmp_path / "firmware" / "badge-scanner" / "firmware.bin"
+    scanner.write_bytes(scanner.read_bytes() + b"changed")
+
+    errors = module.verify_web_flasher_site(
+        header,
+        tmp_path,
+        accepted_bundle,
+    )
+    assert any(
+        "scanner-s3-combo-fof_badge" in error
+        and "hardware-accepted badge bundle" in error
+        for error in errors
+    )
+
+
 def test_pages_deploy_fails_closed_on_build_or_artifact_validation_failure():
     workflow = (
         REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
@@ -238,14 +304,14 @@ def test_shared_header_selects_production_and_badge_tracks():
         "0.64.68-live-follow"
     )
     assert module.expected_version_for_env(header, "uplink-s3-fof_badge") == (
-        "0.64.78-badge-defcon34"
+        "0.67.2-badge-defcon34"
     )
     assert module.expected_identity_for_env(
         header, "uplink-s3-fof_badge-con-crud-canary"
     ).version == "0.67.2-badge-defcon34"
     assert module.expected_identity_for_env(
         header, "scanner-s3-combo-fof_badge"
-    ).version == "0.64.78-badge-defcon34"
+    ).version == "0.67.2-badge-defcon34"
     assert module.expected_identity_for_env(
         header, "scanner-s3-combo-fof_badge-con-crud-canary"
     ).version == "0.67.2-badge-defcon34"
@@ -286,12 +352,12 @@ def test_current_generated_project_version_keeps_cmake_cache(tmp_path):
     cache = build_dir / "CMakeCache.txt"
     cache.write_text("generated cache")
     (build_dir / "project_description.json").write_text(
-        json.dumps({"project_version": "0.64.78-badge-defcon34"})
+        json.dumps({"project_version": "0.67.2-badge-defcon34"})
     )
 
     changed = module.invalidate_stale_cmake_cache(
         build_dir,
-        "0.64.78-badge-defcon34",
+        "0.67.2-badge-defcon34",
     )
 
     assert changed is False
@@ -616,7 +682,7 @@ def test_all_five_descriptor_identities_are_verified_and_mismatch_is_reported(tm
     badge = images["scanner-s3-combo-fof_badge"]
     badge.write_bytes(_esp_image(
         "fof_scanner",
-        "0.64.78-badge-defcon34",
+        "0.67.2-badge-defcon34",
         "scanner-s3-combo-fof_badge",
         "seeed_xiao_esp32s3",
     ))
@@ -635,7 +701,7 @@ def test_verifier_rejects_missing_target_or_hardware_identity_markers(tmp_path):
     image = tmp_path / "uplink.bin"
     image.write_bytes(_esp_image(
         "fof_badge_uplink",
-        "0.64.78-badge-defcon34",
+        "0.67.2-badge-defcon34",
         target,
     ))
 
@@ -1502,7 +1568,7 @@ def _write_uplink_acceptance_fixture(
     _write_production_build_evidence(
         production,
         project="fof_badge_uplink",
-        version="0.64.78-badge-defcon34",
+        version="0.67.2-badge-defcon34",
         runtime_target="uplink-s3-fof_badge",
         hardware="seeed_xiao_esp32s3",
         sdkconfig_defaults="sdkconfig.esp32s3-fof_badge.defaults",
@@ -1546,7 +1612,7 @@ def _write_scanner_acceptance_fixture(
     _write_production_build_evidence(
         production,
         project="fof_badge_scanner",
-        version="0.64.78-badge-defcon34",
+        version="0.67.2-badge-defcon34",
         runtime_target="scanner-s3-combo-fof_badge",
         hardware="seeed_xiao_esp32s3",
         sdkconfig_defaults="sdkconfig.scanner-s3-fof_badge.defaults",
@@ -2133,7 +2199,7 @@ def test_badge_uplink_canary_acceptance_rejects_canary_track_production(
 
     assert any(
         "production firmware identity" in error
-        and "0.64.78-badge-defcon34" in error
+        and "0.67.2-badge-defcon34" in error
         for error in errors
     )
 
@@ -2568,7 +2634,7 @@ def test_esp32_workflow_hardens_verified_platformio_runtime_modes():
     )
 
 
-def test_esp32_workflow_keeps_canary_artifacts_private_and_production_clean():
+def test_esp32_workflow_keeps_unaccepted_canaries_private_and_promotes_accepted_bundle():
     workflow = (
         REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
     ).read_text()
@@ -2596,6 +2662,17 @@ def test_esp32_workflow_keeps_canary_artifacts_private_and_production_clean():
     assert "private-canary/" in private_upload
     assert "con-crud-canary-${{ github.sha }}" in private_upload
 
+    public_package = _workflow_named_step(workflow, "Package firmware binaries")
+    factory_bundle = _workflow_named_step(
+        workflow,
+        "Build validated badge factory bundle",
+    )
+    assert (
+        "python scripts/package_public_badge_release.py --output-root firmware"
+        in public_package
+    )
+    assert "badge-factory-flasher-embedded.zip" in factory_bundle
+
     for production_step in (
         "Package firmware binaries",
         "Upload firmware artifact",
@@ -2610,10 +2687,11 @@ def test_esp32_workflow_keeps_canary_artifacts_private_and_production_clean():
         ), production_step
 
 
-def test_con_crud_acceptance_ledger_records_local_factory_promotion():
+def test_con_crud_acceptance_ledger_records_accepted_public_promotion():
     acceptance = (
         REPO_ROOT / "docs" / "badge" / "con-crud-canary-acceptance.md"
     ).read_text()
+    normalized_acceptance = " ".join(acceptance.split())
 
     assert "Overall acceptance: **PENDING**" in acceptance
     assert "Two-badge BLE propagation" in acceptance
@@ -2640,6 +2718,8 @@ def test_con_crud_acceptance_ledger_records_local_factory_promotion():
         "OVERALL FORMAL PHYSICAL MATRIX: PENDING",
         "FACTORY BUNDLE: local embedded bundle promoted to "
         "`0.67.2-badge-defcon34`",
-        "PUBLIC GITHUB RELEASE: not created; assets unchanged",
+        "PUBLIC RELEASE TARGET: `v0.67.2-badge-defcon34`",
+        "PUBLIC WEB/RELEASE PROMOTION: APPROVED by owner on 2026-07-31",
+        "Deployment is complete only after Pages and release assets match",
     ):
-        assert footer in acceptance
+        assert footer in normalized_acceptance

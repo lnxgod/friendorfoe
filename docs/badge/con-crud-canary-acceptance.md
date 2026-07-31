@@ -3,9 +3,10 @@
 Overall acceptance: **PENDING**
 
 This ledger is the promotion boundary for the DEFCON 34 CON CRUD badge game.
-The canary remains private until every automated and physical gate below is
-green and promotion is explicitly approved. A successful compile alone is not
-acceptance.
+Canary builds remain private unless an exact hardware-accepted artifact set is
+explicitly approved by the owner. A successful compile alone is not
+acceptance. The exact `.67.2` exception is recorded below; it does not mark the
+broader formal physical matrix complete.
 
 ## Artifact boundary
 
@@ -17,7 +18,11 @@ acceptance.
 - CI stores canary binaries only below `private-canary/` in the short-lived
   `con-crud-canary-${GITHUB_SHA}` workflow artifact.
 - The `esp32-firmware` artifact, GitHub release assets, factory bundle, and
-  GitHub Pages deployment must reference production environments only.
+  GitHub Pages deployment normally reference production environments only.
+  The sole exception is the owner-approved, hardware-accepted
+  `0.67.2-badge-defcon34` factory bundle. Public packaging must copy those
+  exact bytes and verify their sizes and SHA-256 values; rebuilding is not an
+  equivalent promotion.
 - A canary verifier fails if either build directory has the wrong identity,
   either firmware is missing/empty/a symlink, the two directories resolve to
   the same place, or the canary and production firmware hashes are equal. It
@@ -194,7 +199,7 @@ reproduce the applicable evidence before promotion.
 | Physical Android USB | The current `.87` evidence used the laptop host path; direct Android USB status, theme, palette, display controls, disconnect/reconnect, and game-mode coexistence have not been physically exercised | PENDING |
 | USB maintenance and OTA retry | One laptop-hosted `.87` uplink-and-both-scanners campaign passed, but game-active USB command preemption, interrupted-update retry, and the required repeated physical cycles remain unproved | PENDING |
 | Buttons and display | Ten-second dual-button reset plus human/infected/immune screen themes require physical testing | PENDING |
-| Production release acceptance | The `.87` candidate remains private and provisional; no production artifact replacement, factory default change, tag, push, merge, or public release is accepted | PENDING |
+| Exact `.67.2` release acceptance | The owner approved public promotion of only the hardware-accepted `.67.2` factory bytes; rebuilt or different artifacts remain rejected | PASS |
 
 ## Reproduction commands
 
@@ -224,10 +229,9 @@ python esp32/scripts/verify_badge_uplink_build.py \
   --canary-production-build-dir esp32/uplink/.pio/build/uplink-s3-fof_badge
 ```
 
-The overall formal physical matrix remains **PENDING**. Do not replace a
-production environment, GitHub release asset, Pages artifact, or public web
-flasher with the canary. The owner-approved local embedded factory bundle is
-the sole promotion exception recorded below.
+The overall formal physical matrix remains **PENDING**. Do not promote an
+arbitrary or rebuilt canary. The exact owner-approved embedded `.67.2` factory
+bundle is the sole public promotion exception recorded below.
 
 LOCAL EMBEDDED FACTORY PROMOTION: APPROVED on 2026-07-29
 
@@ -235,9 +239,11 @@ OVERALL FORMAL PHYSICAL MATRIX: PENDING
 
 FACTORY BUNDLE: local embedded bundle promoted to `0.67.2-badge-defcon34`
 
-PUBLIC GITHUB RELEASE: not created; assets unchanged
+PUBLIC RELEASE TARGET: `v0.67.2-badge-defcon34`
 
-TAG/PUSH/MERGE: not performed
+PUBLIC WEB/RELEASE PROMOTION: APPROVED by owner on 2026-07-31
+
+TAG/PUSH/MERGE: authorized for the exact accepted bytes only
 
 ### `.67.2` accepted local factory promotion — 2026-07-29
 
@@ -256,10 +262,11 @@ badge had one uplink and BLE-primary/Wi-Fi-primary scanners on the exact
 healthy-radio gates. The approved per-badge seeds were HUMAN/`normal`,
 INFECTED/`infected`, and HEALER/`immune`.
 
-PROMOTION STATUS: approved for the local embedded factory bundle only. GitHub
-release assets, tags, pushes, public web-flasher assets/manifests, and Pages
-remain unchanged. This local factory promotion does not change the overall
-ledger's pending formal physical matrix.
+PROMOTION STATUS AT THIS CHECKPOINT: approved for the local embedded factory
+bundle only. GitHub release assets, tags, pushes, public web-flasher
+assets/manifests, and Pages were unchanged on 2026-07-29. This historical
+checkpoint does not change the overall ledger's pending formal physical
+matrix.
 
 ### `.67.2` final factory/reassignment canary — 2026-07-30
 
@@ -287,6 +294,22 @@ new complete-device provisioning pass.
 
 No device identifiers or receipts are copied into this public-safe ledger.
 FINAL FACTORY CANARY: PASS for new-badge local-bundle provisioning and
-REASSIGNED for the role-only canaries. The broader formal physical matrix,
-public release assets, tag, push, merge, Pages, and web-flasher state remain
-unchanged.
+REASSIGNED for the role-only canaries. At this 2026-07-30 checkpoint, the
+broader formal physical matrix, public release assets, tag, push, merge,
+Pages, and web-flasher state remained unchanged.
+
+### `.67.2` exact-byte public promotion - 2026-07-31
+
+The owner approved publishing the hardware-accepted factory bundle through
+GitHub Pages, the web flasher, and the immutable tag
+`v0.67.2-badge-defcon34`. The scanner application must remain exactly
+1,216,800 bytes with SHA-256
+`2d0e84501baf3bc929eed03a0b9c1f0272ed66baa9b81dd4513d6dc3fa2c032b`.
+The uplink application must remain exactly 1,468,464 bytes with SHA-256
+`78ef3b6dafe61e8e2fdc3fb28447372aaf76da38cd57ca0961828bbbdc08c434`.
+
+The public manifests must identify `0.67.2-badge-defcon34` and include the
+accepted bootloader, partition table, initial OTA data at `0xF000`, and
+application at `0x20000`. Deployment is complete only after Pages and release
+assets match every accepted bundle part by size and SHA-256. This narrow
+promotion does not convert the remaining physical matrix rows to PASS.
