@@ -2514,6 +2514,26 @@ def _workflow_named_step(workflow: str, name: str) -> str:
     return workflow[start:] if end < 0 else workflow[start:end]
 
 
+def test_esp32_workflow_builds_firmware_with_non_writable_group_mode():
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
+    ).read_text()
+
+    for build_step in (
+        "Build Scanner firmware (ESP32-S3 combo)",
+        "Build Scanner firmware (ESP32-S3 combo seed)",
+        "Build Uplink firmware (ESP32-S3)",
+        "Build Badge Scanner firmware (XIAO ESP32-S3)",
+        "Build private Badge Scanner canary",
+        "Build Badge Uplink firmware (XIAO ESP32-S3)",
+        "Build private Badge Uplink canary",
+        "Build Badge factory topology probe (XIAO ESP32-S3)",
+    ):
+        step = _workflow_named_step(workflow, build_step)
+        assert "umask 0022" in step, build_step
+        assert step.index("umask 0022") < step.index("pio run"), build_step
+
+
 def test_esp32_workflow_keeps_canary_artifacts_private_and_production_clean():
     workflow = (
         REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
