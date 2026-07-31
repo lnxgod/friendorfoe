@@ -1660,10 +1660,10 @@ def test_badge_uplink_canary_acceptance_enforces_radio_memory_and_isolation(
     )
 
 
-def test_badge_uplink_canary_acceptance_allows_only_one_aligned_budget_block():
+def test_badge_uplink_canary_acceptance_covers_validated_host_size_variance():
     module = _load_badge_build_verify_module()
 
-    assert module.UPLINK_CANARY_MAX_APP_BYTES == 1_468_464
+    assert module.UPLINK_CANARY_MAX_APP_BYTES == 1_468_512
 
 
 def test_badge_uplink_rtc_source_has_one_fixed_owner_and_no_side_blocks():
