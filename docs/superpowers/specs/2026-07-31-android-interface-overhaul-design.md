@@ -47,6 +47,8 @@ Combine a staged correctness overhaul with a substantial visual cleanup:
 
 This is preferred over a visual-only patch, which would leave misleading behavior behind, and over a full rewrite, which would delay a usable Android release and increase regression risk.
 
+The approved visual approach is **Faithful cleanup**. Preserve the app's current Material 3 identity, system light/dark themes, typography, blue actions, severity colors, search field, outline chips, compact rows, and seven-button navigation. Improve hierarchy, spacing, touch targets, state wording, and route ownership without introducing a new dashboard aesthetic, decorative hardware rendering, or a visual rebrand.
+
 ## Product Principles
 
 ### One destination, one job
@@ -79,16 +81,16 @@ Top-level navigation uses `launchSingleTop`, saves/restores route state, and pop
 
 ### Compact seven-button bar
 
-Replace the default Material expanding selection pill with a compact seven-slot bar:
+Refine the current Material navigation into seven fixed-width slots:
 
 - all seven icons remain visible;
-- normal text sizes show compact one-line labels;
-- the active destination uses a thin indicator and restrained surface tint;
+- preserve the current icon family and soft selected pill/tint;
+- normal text sizes show the selected destination as a compact one-line label without changing neighboring slot widths;
 - the current route is always named in the screen header;
 - at large font scales where seven labels cannot fit without wrapping, the bar retains the seven icons and accessible full labels while the header supplies the visible route name;
 - every item has a minimum 48dp interactive area and a full TalkBack label.
 
-The certified portrait widths are 360dp and 412dp. At 1.0x font scale the compact labels remain visible; at 1.3x and 2.0x the bar may switch to icon-only presentation while retaining all seven 48dp targets and full semantics. Widths below 336dp cannot satisfy seven simultaneous 48dp targets and are outside this release's certified layout matrix. Portrait and landscape windows narrower than 600dp use the bottom bar. A landscape window at least 600dp wide uses a compact navigation rail with the same seven actions; this is the only bottom-bar/rail breakpoint in this release.
+The certified portrait widths are 360dp and 412dp. At 1.0x font scale the selected label remains visible on one line; at 1.3x and 2.0x the bar may switch to icon-only presentation while retaining all seven 48dp targets and full semantics. Widths below 336dp cannot satisfy seven simultaneous 48dp targets and are outside this release's certified layout matrix. Portrait and landscape windows narrower than 600dp use the bottom bar. A landscape window at least 600dp wide uses a compact navigation rail with the same seven actions; this is the only bottom-bar/rail breakpoint in this release.
 
 The bar is visible on all seven top-level destinations. It is hidden on secondary workflows such as object detail, Reference Guide, EMF/IR tools, device recovery, and Calibration.
 
@@ -149,24 +151,26 @@ The initial Android capability matrix is deliberately conservative:
 
 | Capability | Verified USB serial | Verified badge local-AP HTTP | Verified BLE | Debug bridge |
 |---|:---:|:---:|:---:|:---:|
-| Read status/feed | Yes | Yes | Yes | Simulated/read-only |
-| Short LCD navigation (`NEXT`, `DETAIL`, `BACK`) | Yes | Yes | Yes when payload is at most negotiated MTU minus 3 bytes | No |
-| Change network mode | Yes | Yes | Yes when payload is at most negotiated MTU minus 3 bytes | No |
-| Apply appearance/theme | Yes | Yes | No | Preview only |
-| Apply full display policy | Yes | Yes | No | Preview only |
-| Reboot or enter bootloader | Yes, with confirmation | No | No | No |
+| Read status/feed | Yes | Yes | Yes | Yes, from a physical badge proxy in debug builds |
+| Short LCD navigation (UI `Next`, `Detail`, `Back`; payload `next`, `detail`, `back`) | Yes | Yes | Yes when payload is at most negotiated MTU minus 3 bytes | Yes |
+| Change network mode | Yes | Yes | No | Yes |
+| Apply Theme V1 accent/background/intensity values | Yes | Yes | No in this release | Yes |
+| Apply full Display Policy V1 | Yes | Yes | No | Yes |
+| Reboot or enter bootloader | Yes, with confirmation | No | No | Yes, with confirmation |
 | In-app firmware upload | No in this release | No | No | No |
 
-Unknown capability is never rendered as an editable default. A control is editable only when the active transport is verified live and the matrix permits it. BLE appearance and display-policy payloads remain unavailable because the current Android path has neither chunking nor a reliable full-payload acknowledgement.
+Unknown capability is never rendered as an editable default. A control is editable only when the active transport is verified live and the matrix permits it. BLE theme and display-policy payloads remain unavailable in this release because Android does not yet track negotiated MTU plus reliable hash readback for Theme V1, and a full default policy exceeds the firmware's BLE control buffer.
+
+LCD navigation labels may be title-cased in the UI, but every transport serializes the firmware's case-sensitive lowercase action values `next`, `detail`, and `back`.
 
 `Verified live` is transport-specific and requires a fresh, successfully parsed FoF badge status, not merely an open socket, GATT connection, HTTP 2xx response, or Espressif USB vendor ID:
 
 - USB requires exactly one candidate with vendor ID `0x303A`, a readable serial interface, and a FoF status response with a nonblank protocol/version value inside the USB freshness window.
 - Badge AP requires a valid FoF status body from the existing fixed badge-AP endpoint at `192.168.4.1` inside the AP freshness window. It is unrelated to the user-configured sensor backend.
 - BLE requires the expected FoF service plus status/control characteristics and a valid parsed status value inside the BLE freshness window.
-- The debug bridge is a debug-build simulator and never proves that physical hardware supports a capability.
+- The debug bridge is not a simulator. In debug builds it proxies HTTP commands to a physical badge over USB serial, waits for the badge's real `FOF_CTL_OK` or `FOF_CTL_ERROR`, and returns physical status/readback. Bridge reachability without a valid physical badge response is not verified live.
 
-Reboot or bootloader additionally requires the verified USB predicate above, an unambiguous single USB candidate, and a hardware-tested Android command path. If any predicate is absent, both operations stay unavailable. The support matrix may enable a physical transport only after an Android phone-plus-badge smoke test proves status plus each enabled reversible command class on that transport; an untested transport remains visibly `Unverified` and its mutating controls remain unavailable.
+Reboot or bootloader additionally requires verified USB or verified physical debug-bridge status, an unambiguous badge target, and a hardware-tested Android command path. If any predicate is absent, both operations stay unavailable. The support matrix may enable a physical transport only after an Android phone-plus-badge or emulator-plus-physical-bridge smoke test proves status plus each enabled reversible command class on that transport; an untested transport remains visibly `Unverified` and its mutating controls remain unavailable.
 
 Command state terminology is exact:
 
@@ -176,6 +180,65 @@ Command state terminology is exact:
 - **Verified:** the command is acknowledged and every readable submitted field is applied.
 
 Android never retries a mutating command automatically. A 5-second acknowledgement timeout becomes a visible `Not verified` result with manual Refresh/Retry. Commands without readable post-state may report `Command accepted` or `Command acknowledged`, never `Applied` or `Verified`.
+
+### Firmware-exact badge configuration contract
+
+Android does not draw the physical triangular badge or simulate its ST7735 LCD. Device-reported focus/title/status may be shown as text, but it is never rendered as a pretend badge screen. Badge configuration exposes only fields already parsed by the installed firmware.
+
+Theme V1 uses `cmd: "badge_theme"`, `persist: true`, and a version-1 `theme` object. Android sends accent values as unsigned decimal integers even though the UI also shows their zero-padded hexadecimal RGB565 representation. The firmware's `palette` tag is omitted from the UI because it is stored and hashed but not consumed by the renderer. Android preserves a valid device-read palette tag unchanged for schema/hash compatibility; if no valid tag was read, Theme Apply remains unavailable rather than inventing one. `Brightness` is renamed `Color intensity 25–100%` because it scales theme-backed RGB565 channels; the physical LCD backlight is fixed.
+
+The initial six accent rows use the exact firmware keys and defaults:
+
+| UI label | Firmware key | RGB565 | Decimal | Approximate RGB888 |
+|---|---|---:|---:|---:|
+| Drone | `drone` | `0xFEA0` | 65184 | `#FFD600` |
+| Meta | `meta` | `0xF833` | 63539 | `#FF049C` |
+| Tracker | `tracker` | `0xF81F` | 63519 | `#FF00FF` |
+| Flock | `flock` | `0xA81F` | 43039 | `#AC00FF` |
+| Wi-Fi Attack | `wifi_attack` | `0x07FF` | 2047 | `#00FFFF` |
+| Clear | `clear` | `0x2F65` | 12133 | `#29EE29` |
+
+Each row shows a semantic swatch, label, `0xHHHH` code, and transmitted decimal integer. The existing safe swatch choices remain available with 48dp labeled targets. Android does not offer `0x0000` as an accent because the renderer treats zero as absent and substitutes a fallback. A general RGB picker is out of scope; adding one later requires deterministic RGB888-to-RGB565 conversion and the same readback proof.
+
+Background choices show truthful user-facing names plus the exact firmware tag and seed:
+
+| UI label | Firmware tag | RGB565 seed |
+|---|---|---:|
+| Black | `dark` | `0x0000` |
+| Dim | `dim` | `0x1082` |
+| Blue-black | `scanline` | `0x0108` |
+
+`scanline` is not described as a pattern control because firmware uses it only as a blue-black background seed. The Badge screen shows the current `theme_hash` in eight-digit hexadecimal. The canonical default Theme V1 hash is `0xC3AA2A8D` and is covered by an Android parity test.
+
+Display Policy V1 uses `cmd: "badge_display_policy"`, `persist: true`, and the exact 13 firmware keys below. Lane values are `off`, `lower`, `top`, or `both`; minimum proximity is `present`, `near`, or `close`. Firmware thresholds are `close >= -60 dBm`, `near >= -76 dBm`, and `present` below `-76 dBm`.
+
+| Key | Default enabled | Default lane | Default proximity | Stored priority |
+|---|:---:|---|---|---:|
+| `drone` | Yes | `both` | `present` | 100 |
+| `meta` | Yes | `both` | `present` | 95 |
+| `tracker` | Yes | `lower` | `near` | 70 |
+| `wifi_attack` | Yes | `both` | `present` | 90 |
+| `skimmer` | Yes | `both` | `near` | 88 |
+| `camera` | Yes | `lower` | `near` | 65 |
+| `flock` | Yes | `both` | `present` | 85 |
+| `lock` | Yes | `lower` | `near` | 55 |
+| `hid` | Yes | `lower` | `close` | 45 |
+| `beacon` | Yes | `lower` | `near` | 30 |
+| `event_badge` | Yes | `lower` | `near` | 35 |
+| `auracast` | Yes | `lower` | `near` | 20 |
+| `scanner_status` | Yes | `lower` | `present` | 10 |
+
+Priority remains serialized at its existing value for schema/hash compatibility but has no Android editor because current firmware does not use it in allow, order, or render logic. Android-only quick presets may remain only when labeled `Preset`; they change only `enabled`, lane, and proximity, preserve priority unchanged, show the resulting class fields before Apply, and never imply a firmware mode.
+
+The UI explains the firmware safety floor: some high-confidence drone, Wi-Fi attack, skimmer, flock, close-proximity, or score-80 evidence can still pass when a class is disabled or lane is `off`. `Off` is therefore not presented as an absolute suppression guarantee.
+
+Apply proof uses the real protocol:
+
+- HTTP/debug-bridge responses parse the JSON body and treat `ok: false` as failure even when HTTP status is 2xx.
+- USB parses `FOF_CTL_OK` and `FOF_CTL_ERROR` bodies rather than only their prefixes.
+- Theme becomes `Verified` only when canonical readback fields match the draft and readback `theme_hash` matches the accepted hash.
+- Display policy becomes `Applied on badge` when top-level fields/hash match. It becomes `Verified on scanners` only when every connected scanner's `display_policy_ack_hash` matches the top-level policy hash; `ble_sent` or `wifi_sent` alone is only an attempted write.
+- The canonical default Display Policy V1 hash `0x0DAD6299` is covered by Android parity tests.
 
 ### Observable settings
 
@@ -269,7 +332,7 @@ Rows use responsive multiline content and shared category/source semantics. Sele
 
 ### Privacy
 
-Privacy preserves the current merged findings list and tap/detail journey but contains no badge configuration and no unrelated sky-alert footer.
+Privacy preserves the current merged findings list and tap/detail journey but contains no badge configuration, sweep-tool cards, or unrelated sky-alert footer. Magnetic-field and IR tools move to `Info > Advanced` with Calibration so Privacy remains a findings list.
 
 The top of the screen contains:
 
@@ -289,6 +352,8 @@ Findings are ordered by actionable severity and then recency. Each row shows the
 - concise evidence/limitation;
 - detail affordance.
 
+The approved Faithful-cleanup presentation retains the current `THREATS`, `AWARENESS`, `NEARBY`, and `INFO` grouping, tinted section strips, counts, compact flat rows, blue actions, and system light/dark themes. It aligns counts and RSSI, replaces emoji or ambiguous glyphs with the existing Material icon family, increases interactive areas to 48dp, and gives primary text enough room to wrap. It does not replace the list with metric cards or a dashboard.
+
 Rows expose Ignore, Track, or RSSI sweep only when the source-specific capability supports it. The direction feature is named `RSSI direction sweep`, not `device locator`, until its confidence model can justify a stronger claim. Cancel always ends an active scan and sensor collection has an explicit lifecycle.
 
 New critical findings are clickable, announced through accessibility live-region semantics, and deep-link to the exact finding. Informational and owned devices remain visible without inflating the threat count.
@@ -304,15 +369,16 @@ Badge is the fifth triangle/tune top-level destination and the only top-level ba
 The default hierarchy is:
 
 1. **Connection summary:** verified device/transport, live/stale/error state, refresh/reconnect action.
-2. **LCD preview:** current Android-known badge presentation, clearly labeled when it is a local preview rather than verified device state.
-3. **Appearance:** only confirmed, visibly supported palette/theme/brightness controls.
-4. **Display rules:** readable category rows with plain-language lane/proximity behavior, consistent enable/disable semantics, and active/applied state.
-5. **Apply area:** dirty-state summary, `Revert draft`, and `Apply changes`; success/failure/verification shown adjacent to the action.
-6. **Advanced device tools:** diagnostics and device recovery as secondary routes.
+2. **LCD accent colors:** the six Theme V1 rows with semantic swatch, firmware key, hexadecimal RGB565 code, transmitted decimal value, and current readback hash.
+3. **Background and color intensity:** the three exact background seeds and `Color intensity 25–100%`, with fixed-backlight limitation.
+4. **Display rules:** the 13 exact Display Policy V1 classes with plain-language lane/proximity behavior, safety-floor disclosure, and active/applied state; no priority slider.
+5. **Apply area:** dirty-state summary, `Revert draft`, and `Apply changes`; accepted, badge-applied, scanner-verified, timeout, and failure states shown adjacent to the action.
+6. **Device-reported status:** textual focus/title/status and diagnostics only; no badge illustration or simulated LCD.
+7. **Advanced device tools:** diagnostics and device recovery as secondary routes.
 
-Appearance and display policy use one consistent draft/apply/revert interaction. Reset does not bypass the draft model or send immediately. Switching sections does not discard edits.
+Theme and display policy use one consistent draft/apply/revert interaction. Reset does not bypass the draft model or send immediately. Switching sections does not discard edits.
 
-Theme swatches and selection controls have text labels, selected semantics, and 48dp targets. A class cannot be simultaneously enabled with lane `OFF`; disabling a class disables or hides its dependent editors.
+Theme swatches and selection controls have text labels, selected semantics, and 48dp targets. A class cannot be simultaneously enabled with lane `OFF`; disabling a class disables or hides its dependent lane/proximity editors while preserving the stored priority field unchanged for contract compatibility.
 
 Reboot and bootloader operations are never shown as ordinary peer actions. They live in a danger/recovery surface with:
 
@@ -353,6 +419,8 @@ Info remains the seventh top-level destination and keeps the bottom bar visible.
 5. About, support, version, and updates;
 6. Advanced.
 
+Advanced contains Magnetic-field sweep, IR-like light scan, and the de-emphasized Triangulation Calibration entry. These are secondary tools, not Privacy findings or top-level destinations.
+
 Settings rows are whole-row semantic toggles with accurate effective OS state. `Sensor Backend Connection` is retained and gates every Android backend poller in AR, Map, and Privacy; disabling it clears remote Current/cache state without deleting persisted History. `Privacy Scanner` is renamed `Phone privacy scan` because it controls local collectors only. Ultrasonic enablement requests/checks microphone permission.
 
 Privacy & Data accurately states that:
@@ -387,16 +455,23 @@ IR uses `possible IR-like light` rather than claiming a camera. Preview analysis
 
 ## Visual System
 
-The visual direction is a density and hierarchy brief, not a pixel-perfect dependency on a mockup. Implementation uses the existing Material 3 theme and code-native Compose components:
+The approved **Faithful cleanup** direction treats the current Android app—not the rejected generated concept—as the visual source of truth. Implementation uses the existing Material 3 theme and code-native Compose components without a rebrand.
 
-- compact app bars and filters;
-- calm neutral/lavender-gray surfaces;
-- blue/teal interaction emphasis;
-- amber for attention and red only for destructive/error state;
-- restrained cards with one information level per surface;
-- multiline content instead of ellipsizing primary information;
-- no glassmorphism, neon/cyberpunk decoration, oversized metric cards, or nested scroll regions;
-- shared components for source health, finding rows, empty/error states, Object Peek, section headers, and confirmation/progress flows.
+Preserve the existing theme tokens:
+
+- dark background `#0B1117`, surface `#101820`, raised/variant surface `#263241`, primary cyan `#7DD3FC`, secondary green `#86EFAC`, amber `#FBBF24`, error red `#F87171`, text `#E5EEF7`, and muted text `#B7C4D2`;
+- light background `#F6F8FB`, surface `#FFFFFF`, variant surface `#E3EAF2`, primary blue `#0369A1`, green `#2E7D32`, amber `#B45309`, error red `#D32F2F`, text `#17202A`, and muted text `#566575`;
+- current Android sans typography at 12–16sp for most content, semibold hierarchy, 8–12dp shapes, and the existing 4/8/12/16dp spacing rhythm.
+
+Preserve and refine the recognizable patterns:
+
+- one rounded search field, horizontally scrolling outline chips, compact result/filter summaries, flat rows, thin dividers, small status dots, short tags, tinted severity strips, minimal elevation, blue text/actions, and the current soft selected-navigation pill;
+- slightly clearer spacing and alignment than the current dense screens, without large empty zones or oversized cards;
+- multiline primary/evidence content rather than ellipsizing the information needed to judge a finding;
+- shared source-health, finding-row, empty/error, Object Peek, section-header, and confirmation/progress components that look native to the current app;
+- no invented badge illustration, LCD simulator, lavender dashboard, glassmorphism, neon/cyberpunk decoration, oversized metric cards, or nested scrolling panels.
+
+Both light and dark system themes are first-class and preserve the same information hierarchy. Color never carries severity, selection, ownership, or status alone.
 
 The certified route matrix supports 1.0x and 1.3x font scale without overlap, unreachable actions, or wrapped navigation labels. It includes all seven top-level routes plus Object Peek, Full Detail, Capture Review, Map advanced filters, History detail, Reference Guide, `Privacy > Ignored devices`, Badge Diagnostics, Badge Device Recovery, the Calibration unavailable entry, EMF, IR, permission-recovery states, and long confirmation dialogs. The seven-destination shell is additionally checked at 2.0x with icon-only navigation permitted. TalkBack descriptions do not duplicate visible text, and color is never the sole carrier of category/severity/selection.
 
@@ -431,8 +506,8 @@ The certified route matrix supports 1.0x and 1.3x font scale without overlap, un
 
 ### Stage 2: Core destination redesign
 
-- Build Badge configuration and app-scoped connection presentation.
-- Reformat Privacy as the clean findings list.
+- Build the firmware-exact Badge configuration and app-scoped connection presentation with no hardware/LCD simulator.
+- Reformat Privacy using the approved Faithful-cleanup version of its current grouped findings list.
 - Refactor List, History, and Info around shared state/empty/error components.
 
 ### Stage 3: AR, Map, and secondary screens
@@ -463,7 +538,14 @@ The certified route matrix supports 1.0x and 1.3x font scale without overlap, un
 - filter active count, reset, unknown-distance policy, and no-match behavior.
 - backend setting gates all Android pollers and clears remote state.
 - badge transport/capability and draft/apply/ack/failure state.
-- unsupported BLE display-policy remains unavailable and in-app firmware upload is absent.
+- empty status, missing/malformed Theme V1 or Display Policy V1 fields, zero hashes, and blank firmware version remain unknown/unverified and cannot enable Apply; parser fallback objects never become editable device state.
+- LCD navigation serializes exact lowercase `next/detail/back` actions and BLE network-mode control remains unavailable.
+- Theme V1 default values and `0xC3AA2A8D` hash match firmware; accent JSON uses the exact keys and unsigned decimal RGB565 values.
+- Theme Apply preserves a valid device-read palette tag without exposing a selector and remains unavailable when that compatibility value is unknown.
+- Theme V1 backgrounds map `dark/dim/scanline` to displayed seeds `0x0000/0x1082/0x0108`, color intensity stays within 25–100, and accent zero is unavailable.
+- Display Policy V1 has the exact 13 keys/default fields and `0x0DAD6299` hash; stored priority survives round trips without an editable control.
+- HTTP/debug-bridge `ok: false`, USB `FOF_CTL_ERROR`, readback-hash mismatch, and scanner-ACK mismatch cannot become successful apply states.
+- unsupported BLE Theme V1/display-policy apply remains unavailable and in-app firmware upload is absent.
 - `calibrationEntryAvailable` follows the backend-setting plus current-session `/health` predicate.
 - app version ordering and invalid backend URL validation.
 
@@ -472,7 +554,10 @@ The certified route matrix supports 1.0x and 1.3x font scale without overlap, un
 - onboarding completion and stable seven-destination navigation/back-stack behavior;
 - all seven top-level buttons remain reachable and route to the correct destination;
 - List and Privacy contain no badge configuration controls;
-- Badge contains appearance/display configuration and retains drafts across section changes;
+- Privacy retains the current `THREATS/AWARENESS/NEARBY/INFO` grouping and contains no sweep-tool cards;
+- Badge contains the six labeled accent/code rows, three exact backgrounds, color intensity, and Display Policy V1 controls, and retains drafts across section changes;
+- Badge contains no palette selector, backlight/brightness claim, editable priority, badge illustration, or simulated LCD;
+- both existing light and dark themes preserve the Faithful-cleanup hierarchy and semantics;
 - History opens exact snapshot semantics;
 - Privacy orders actionable severity before recency and renders only the available row fields/actions;
 - notification/deep-link routing opens the exact keyed finding or its explicit expired state;
@@ -497,7 +582,7 @@ From `android/`:
 
 Start `Pixel8_API35` before `connectedDebugAndroidTest`. Use the Android emulator QA workflow with two API 35 configurations: a 412dp-wide `Pixel8_API35` profile and a 360dp-wide compact profile. Traverse the complete certified route matrix at 1.0x and 1.3x font scale on both portrait widths, check the seven-destination shell at 2.0x, and rotate both profiles to cover bottom-bar behavior below 600dp and navigation-rail behavior at 600dp or wider. Capture screenshots/UI trees for the core screens, exercise onboarding and route restoration, and inspect logcat for crashes or repeated errors.
 
-Before any physical transport is labeled verified for release, use the user-provided Android phone and badge for an Android-only smoke test. Do not update or flash firmware. For USB, Badge AP, and BLE paths intended to be enabled, read valid status across at least two refresh intervals, exercise one reversible command from each enabled command class, verify the returned state, and restore the original badge configuration. Test reboot/bootloader only with separate explicit user approval; otherwise those controls remain unavailable. Record unavailable transports as unverified rather than converting them to a pass.
+Before any physical transport is labeled verified for release, use the user-provided Android phone and badge or the emulator plus physical debug bridge for an Android-only smoke test. Do not update or flash firmware. For USB, Badge AP, debug-bridge, and BLE paths intended to be enabled, read valid status across at least two refresh intervals, exercise one reversible command from each enabled command class, verify the returned state, and restore the original badge configuration. Test reboot/bootloader only with separate explicit user approval; otherwise those controls remain unavailable. Record unavailable transports as unverified rather than converting them to a pass.
 
 ## Acceptance Criteria
 
@@ -505,15 +590,20 @@ The overhaul is complete only when all of the following are true:
 
 - The app has exactly seven top-level destinations in the approved order: AR, Map, List, Privacy, Badge, History, Info.
 - The bottom bar works on all seven top-level destinations without clipped/wrapped selected labels at tested font scales.
+- The app retains its current Material light/dark identity, typography, blue actions, compact flat rows, severity strips, outline chips, and soft selected-navigation treatment; the overhaul does not introduce the rejected dashboard aesthetic.
 - Onboarding completion and the last valid top-level route restore after process recreation; an invalid saved route falls back to AR, and Back from a top-level route exits instead of replaying tabs.
-- Privacy is a current-findings list and contains no badge configuration; it visibly distinguishes source health, loading, no findings, no matches, stale data, partial-source failure, and full failure.
+- Privacy is a current-findings list using the approved Faithful-cleanup `THREATS/AWARENESS/NEARBY/INFO` presentation and contains no badge configuration or sweep-tool cards; it visibly distinguishes source health, loading, no findings, no matches, stale data, partial-source failure, and full failure.
 - Every Privacy row uses only available evidence, exposes source/severity/freshness/ownership/signal/limitation data when known, renders only supported source-specific actions, and sorts by actionable severity then recency.
 - Ignored devices persist by source and stable ID, can be restored from `Privacy > Ignored devices`, and do not suppress unrelated or unstable identities.
 - List contains no badge configuration.
 - Badge is the sole top-level badge configuration surface.
 - Badge controls match the conservative transport matrix; a mutation can report `Applied` or `Verified` only from the specified acknowledgement/post-state evidence, and a timeout never becomes success or an automatic retry.
+- Badge shows no physical-badge drawing or LCD simulator. It shows the six exact Theme V1 accent keys with swatch, RGB565 hex, transmitted decimal value, three exact background seeds, color intensity with fixed-backlight limitation, and readback hashes.
+- Badge omits the inactive firmware palette selector and nonfunctional policy-priority editor; Display Policy V1 uses the exact 13 keys, lane/proximity values, and safety-floor explanation.
+- The debug bridge is described and treated as a debug-build proxy to a physical USB badge, never as simulated hardware.
 - Android contains no arbitrary firmware-file picker, firmware upload, or firmware flash action.
 - Calibration is reachable from Info Advanced and is not a top-level button; while `calibrationEntryAvailable` is false, it is visibly unavailable and cannot open the calibration route.
+- Magnetic-field sweep and IR-like light scan are secondary entries under Info Advanced, not cards ahead of Privacy findings.
 - Apple/AirPods activity is informational and cannot trigger the old listening claim, threat count, or high-risk notification on any Android live source.
 - History loads the exact selected snapshot, labels it historical, supports local clear/delete, and explains local retention/location behavior without offering export.
 - AR/Zoom never save without an explicit user action.
