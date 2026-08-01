@@ -2,6 +2,7 @@ package com.friendorfoe.presentation.privacy
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.friendorfoe.data.DetectionPrefs
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.sensor.SensorFusionEngine
 import com.friendorfoe.sensor.SensorFusionLease
@@ -30,6 +31,7 @@ class PrivacyViewModel @Inject constructor(
     private val repository: PrivacyFindingRepository,
     phonePrivacySourceAdapter: PhonePrivacySourceAdapter,
     private val sensorFusionEngine: SensorFusionEngine,
+    private val detectionPrefs: DetectionPrefs,
 ) : ViewModel() {
     private val filters = MutableStateFlow(PrivacyFilterState())
     private val directionController = RssiDirectionSweepController(
@@ -98,6 +100,20 @@ class PrivacyViewModel @Inject constructor(
     fun retryAllFailed() {
         viewModelScope.launch {
             repository.retryAllFailed()
+        }
+    }
+
+    fun enablePhonePrivacyScanning() {
+        detectionPrefs.privacyEnabled = true
+        detectionPrefs.backendOnlyMode = false
+        recover(PrivacySourceKind.PHONE_BLE)
+    }
+
+    fun onPrivacyPermissionResolved(source: PrivacySourceKind) {
+        if (source == PrivacySourceKind.PHONE_BLE) {
+            enablePhonePrivacyScanning()
+        } else {
+            recover(source)
         }
     }
 

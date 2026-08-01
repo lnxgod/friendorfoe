@@ -255,6 +255,12 @@ class PhonePrivacySourceAdapterTest {
         assertEquals(SourceHealthState.FAILED, adapter.bleSnapshot().health.state)
         assertEquals("Turn on Bluetooth", adapter.bleSnapshot().health.recoveryLabel)
         assertEquals("Bluetooth is turned off", adapter.bleSnapshot().health.message)
+
+        events.emit(GlassesScanEvent.Failure("BLE privacy scan failed after 3 attempts"))
+        runCurrent()
+
+        assertEquals("Turn on Bluetooth", adapter.bleSnapshot().health.recoveryLabel)
+        assertEquals("Bluetooth is turned off", adapter.bleSnapshot().health.message)
     }
 
     @Test

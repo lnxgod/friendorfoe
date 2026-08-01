@@ -485,18 +485,22 @@ class PhonePrivacySourceAdapter internal constructor(
 
     private fun publishFailure(source: PrivacySourceKind, message: String) {
         updateSnapshot(source) { previous ->
+            val bluetoothRadioOff = source == PrivacySourceKind.PHONE_BLE &&
+                (message == BLUETOOTH_RADIO_OFF_MESSAGE ||
+                    previous.health.recoveryLabel == TURN_ON_BLUETOOTH_RECOVERY)
             previous.copy(
                 health = previous.health.copy(
                     state = SourceHealthState.FAILED,
-                    recoveryLabel = if (
-                        source == PrivacySourceKind.PHONE_BLE &&
-                        message == BLUETOOTH_RADIO_OFF_MESSAGE
-                    ) {
+                    recoveryLabel = if (bluetoothRadioOff) {
                         TURN_ON_BLUETOOTH_RECOVERY
                     } else {
                         "Retry"
                     },
-                    message = message,
+                    message = if (bluetoothRadioOff) {
+                        BLUETOOTH_RADIO_OFF_MESSAGE
+                    } else {
+                        message
+                    },
                 ),
                 findings = rowsFor(source),
                 emittedAtElapsedMs = clock.nowElapsedMs(),
