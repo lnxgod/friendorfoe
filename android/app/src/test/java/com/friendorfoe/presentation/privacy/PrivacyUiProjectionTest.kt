@@ -180,6 +180,19 @@ class PrivacyUiProjectionTest {
     }
 
     @Test
+    fun pausedCoreBluetoothScanIsNotHiddenByLiveOptionalUltrasonic() {
+        val summary = summarizePrivacySources(
+            listOf(
+                health(PrivacySourceKind.PHONE_BLE, SourceHealthState.PAUSED),
+                health(PrivacySourceKind.PHONE_ULTRASONIC, SourceHealthState.LIVE),
+            ),
+        ).single()
+
+        assertEquals(SourceHealthState.PAUSED, summary.state)
+        assertEquals(PrivacySourceKind.PHONE_BLE, summary.recoverySource)
+    }
+
+    @Test
     fun focusedFindingUsesOnlyTheExactRoutableKey() {
         val expected = finding(id = "expected", routableId = "entity:42")
         val lookalike = finding(

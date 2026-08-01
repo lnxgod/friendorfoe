@@ -1,5 +1,6 @@
 package com.friendorfoe.presentation.privacy
 
+import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -111,8 +112,10 @@ fun PrivacyScreen(
     }
     val bluetoothSettingsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
-    ) {
-        viewModel.recover(PrivacySourceKind.PHONE_BLE)
+    ) { result ->
+        if (shouldRetryAfterBluetoothEnable(result.resultCode)) {
+            viewModel.recover(PrivacySourceKind.PHONE_BLE)
+        }
     }
 
     val awaitingSource = awaitingSettingsPermissionSource
@@ -144,12 +147,13 @@ fun PrivacyScreen(
                 }
             },
             onResolveSourcePermission = { source ->
-                val feature = permissionFeatureForPrivacySource(source)
-                if (permissionBindings.stateFor(feature).isUsable()) {
-                    viewModel.onPrivacyPermissionResolved(source)
-                } else {
-                    pendingPermissionSource = source
-                }
+                permissionFeatureForPrivacySource(source)?.let { feature ->
+                    if (permissionBindings.stateFor(feature).isUsable()) {
+                        viewModel.onPrivacyPermissionResolved(source)
+                    } else {
+                        pendingPermissionSource = source
+                    }
+                } ?: viewModel.recover(source)
             },
             onTurnOnBluetooth = {
                 bluetoothSettingsLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
@@ -174,7 +178,7 @@ fun PrivacyScreen(
     )
 
     pendingPermissionSource?.let { source ->
-        val feature = permissionFeatureForPrivacySource(source)
+        val feature = requireNotNull(permissionFeatureForPrivacySource(source))
         val permissionState = permissionBindings.stateFor(feature)
         val canRequest = permissionState == PermissionUiState.Denied
         AlertDialog(
@@ -299,11 +303,18 @@ fun PrivacyContent(
                 val blockedSource = state.sourceHealth.firstOrNull {
                     it.state == SourceHealthState.PERMISSION_BLOCKED
                 }?.source ?: PrivacySourceKind.PHONE_BLE
+                val appFeature = permissionFeatureForPrivacySource(blockedSource)
                 FofErrorState(
                     title = "Permission needed",
                     detail = body.message,
-                    actionLabel = "Grant access",
-                    onAction = { actions.onResolveSourcePermission(blockedSource) },
+                    actionLabel = if (appFeature == null) "Connect badge" else "Grant access",
+                    onAction = {
+                        if (appFeature == null) {
+                            actions.onRecoverSource(blockedSource)
+                        } else {
+                            actions.onResolveSourcePermission(blockedSource)
+                        }
+                    },
                 )
             }
             is PrivacyBodyState.Unsupported -> item {
@@ -436,8 +447,14 @@ private fun PrivacySourceStatusRow(
                 "Turn on" to actions.onEnablePhoneScan
             }
             summary.recoveryLabel == "Grant permission" -> {
-                "Grant access" to {
-                    actions.onResolveSourcePermission(summary.recoverySource)
+                if (permissionFeatureForPrivacySource(summary.recoverySource) == null) {
+                    "Connect badge" to {
+                        actions.onRecoverSource(summary.recoverySource)
+                    }
+                } else {
+                    "Grant access" to {
+                        actions.onResolveSourcePermission(summary.recoverySource)
+                    }
                 }
             }
             summary.recoveryLabel == "Turn on Bluetooth" -> {
@@ -464,10 +481,17 @@ private fun PrivacySourceStatusRow(
     }
 }
 
-private fun permissionFeatureForPrivacySource(source: PrivacySourceKind): AppFeature = when (source) {
+private fun permissionFeatureForPrivacySource(source: PrivacySourceKind): AppFeature? = when (source) {
+    PrivacySourceKind.PHONE_BLE,
+    PrivacySourceKind.WIFI_ANALYSIS,
+    -> AppFeature.PHONE_PRIVACY_SCAN
+
     PrivacySourceKind.PHONE_ULTRASONIC -> AppFeature.ULTRASONIC
-    else -> AppFeature.PHONE_PRIVACY_SCAN
+    else -> null
 }
+
+internal fun shouldRetryAfterBluetoothEnable(resultCode: Int): Boolean =
+    resultCode == Activity.RESULT_OK
 
 @Composable
 private fun PrivacySearchAndFilters(

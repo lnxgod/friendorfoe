@@ -206,6 +206,46 @@ class PrivacyScreenTest {
     }
 
     @Test
+    fun badgePermissionRecoveryReconnectsBadgeWithoutRequestingPhoneRadioAccess() {
+        var badgeRecoveries = 0
+        var phonePermissionRequests = 0
+        val state = projectPrivacyUiState(
+            PrivacyCurrentState(
+                sources = listOf(
+                    health(
+                        PrivacySourceKind.BADGE_USB,
+                        SourceHealthState.PERMISSION_BLOCKED,
+                        message = "Badge permission is required",
+                    ),
+                ),
+                findings = emptyList(),
+                threatCount = 0,
+                alertEligible = emptyList(),
+                initialResolutionComplete = true,
+            ),
+        )
+        compose.setContent {
+            FriendOrFoeTheme {
+                PrivacyContent(
+                    state = state,
+                    actions = PrivacyActions(
+                        onRecoverSource = { source ->
+                            if (source == PrivacySourceKind.BADGE_USB) badgeRecoveries++
+                        },
+                        onResolveSourcePermission = { phonePermissionRequests++ },
+                    ),
+                )
+            }
+        }
+
+        compose.onNodeWithText("Connect badge").assertHasClickAction().performClick()
+        compose.runOnIdle {
+            assertEquals(1, badgeRecoveries)
+            assertEquals(0, phonePermissionRequests)
+        }
+    }
+
+    @Test
     fun headerQualifiesZeroFindingsWhileSourcesAreStillResolving() {
         val state = projectPrivacyUiState(
             PrivacyCurrentState(
