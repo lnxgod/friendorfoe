@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-31
 
-**Status:** Proposed; awaiting written-spec review
+**Status:** Approved on 2026-07-31
 
 **Affected surface:** `android/` only
 
@@ -152,11 +152,11 @@ The initial Android capability matrix is deliberately conservative:
 | Capability | Verified USB serial | Verified badge local-AP HTTP | Verified BLE | Debug bridge |
 |---|:---:|:---:|:---:|:---:|
 | Read status/feed | Yes | Yes | Yes | Yes, from a physical badge proxy in debug builds |
-| Short LCD navigation (UI `Next`, `Detail`, `Back`; payload `next`, `detail`, `back`) | Yes | Yes | Yes when payload is at most negotiated MTU minus 3 bytes | Yes |
+| Short LCD navigation (UI `Next`, `Detail`, `Back`; payload `next`, `detail`, `back`) | Yes | Yes | Per action when bonded/encrypted and payload is at most negotiated MTU minus 3 bytes | Yes |
 | Change network mode | Yes | Yes | No | Yes |
 | Apply Theme V1 accent/background/intensity values | Yes | Yes | No in this release | Yes |
 | Apply full Display Policy V1 | Yes | Yes | No | Yes |
-| Reboot or enter bootloader | Yes, with confirmation | No | No | Yes, with confirmation |
+| Reboot or enter bootloader | Yes, with confirmation | No | No | No |
 | In-app firmware upload | No in this release | No | No | No |
 
 Unknown capability is never rendered as an editable default. A control is editable only when the active transport is verified live and the matrix permits it. BLE theme and display-policy payloads remain unavailable in this release because Android does not yet track negotiated MTU plus reliable hash readback for Theme V1, and a full default policy exceeds the firmware's BLE control buffer.
@@ -167,10 +167,10 @@ LCD navigation labels may be title-cased in the UI, but every transport serializ
 
 - USB requires exactly one candidate with vendor ID `0x303A`, a readable serial interface, and a FoF status response with a nonblank protocol/version value inside the USB freshness window.
 - Badge AP requires a valid FoF status body from the existing fixed badge-AP endpoint at `192.168.4.1` inside the AP freshness window. It is unrelated to the user-configured sensor backend.
-- BLE requires the expected FoF service plus status/control characteristics and a valid parsed status value inside the BLE freshness window.
-- The debug bridge is not a simulator. In debug builds it proxies HTTP commands to a physical badge over USB serial, waits for the badge's real `FOF_CTL_OK` or `FOF_CTL_ERROR`, and returns physical status/readback. Bridge reachability without a valid physical badge response is not verified live.
+- BLE requires the expected FoF service plus status/control characteristics and a valid parsed status value inside the BLE freshness window. Navigation mutation additionally requires bonded and encrypted GATT evidence, and support is computed separately for each serialized action length.
+- The debug bridge is not a simulator. In debug builds it proxies HTTP commands to a physical badge over USB serial, waits for the badge's real `FOF_CTL_OK` or `FOF_CTL_ERROR`, and returns physical status/readback. Bridge reachability without a valid physical badge response, a nonblank physical serial port, fresh physical age, and a present blank physical `last_error` is not verified live.
 
-Reboot or bootloader additionally requires verified USB or verified physical debug-bridge status, an unambiguous badge target, and a hardware-tested Android command path. If any predicate is absent, both operations stay unavailable. The support matrix may enable a physical transport only after an Android phone-plus-badge or emulator-plus-physical-bridge smoke test proves status plus each enabled reversible command class on that transport; an untested transport remains visibly `Unverified` and its mutating controls remain unavailable.
+Reboot or bootloader additionally requires verified direct USB serial, an unambiguous badge target, and a hardware-tested Android command path. The shipped debug bridge waits only for `FOF_CTL_OK`/`FOF_CTL_ERROR`, while firmware recovery emits dedicated `FOF_REBOOT:OK`/`FOF_BOOTLOADER:OK` lines; because bridge-script changes are outside this Android-only scope, recovery is unsupported through the debug bridge. If any direct-USB predicate is absent, both operations stay unavailable. The support matrix may enable a physical transport only after an Android phone-plus-badge or emulator-plus-physical-bridge smoke test proves status plus each enabled reversible command class on that transport; an untested transport remains visibly `Unverified` and its mutating controls remain unavailable.
 
 Command state terminology is exact:
 
@@ -236,6 +236,7 @@ Apply proof uses the real protocol:
 
 - HTTP/debug-bridge responses parse the JSON body and treat `ok: false` as failure even when HTTP status is 2xx.
 - USB parses `FOF_CTL_OK` and `FOF_CTL_ERROR` bodies rather than only their prefixes.
+- Direct USB recovery accepts `FOF_REBOOT:OK` only for a pending reboot and `FOF_BOOTLOADER:OK` only for a pending bootloader command; mismatched or late recovery lines cannot complete another command.
 - Theme becomes `Verified` only when canonical readback fields match the draft and readback `theme_hash` matches the accepted hash.
 - Display policy becomes `Applied on badge` when top-level fields/hash match. It becomes `Verified on scanners` only when every connected scanner's `display_policy_ack_hash` matches the top-level policy hash; `ble_sent` or `wifi_sent` alone is only an attempted write.
 - The canonical default Display Policy V1 hash `0x0DAD6299` is covered by Android parity tests.
@@ -391,7 +392,7 @@ Reboot and bootloader operations are never shown as ordinary peer actions. They 
 
 The current arbitrary-file in-app firmware picker/upload action is removed from this release. Advanced Device Recovery may show Android-read firmware version/status and explain that updates happen outside this app, but it does not link, select, upload, or flash a firmware image. Reintroducing in-app firmware upload requires a separately approved signed/targeted package design.
 
-If Android cannot validate enough information to offer reboot or bootloader safely, the operation remains unavailable and explains the required supported USB connection.
+If Android cannot validate enough information to offer reboot or bootloader safely, the operation remains unavailable and explains that verified direct USB is required.
 
 ### History
 
@@ -582,7 +583,7 @@ From `android/`:
 
 Start `Pixel8_API35` before `connectedDebugAndroidTest`. Use the Android emulator QA workflow with two API 35 configurations: a 412dp-wide `Pixel8_API35` profile and a 360dp-wide compact profile. Traverse the complete certified route matrix at 1.0x and 1.3x font scale on both portrait widths, check the seven-destination shell at 2.0x, and rotate both profiles to cover bottom-bar behavior below 600dp and navigation-rail behavior at 600dp or wider. Capture screenshots/UI trees for the core screens, exercise onboarding and route restoration, and inspect logcat for crashes or repeated errors.
 
-Before any physical transport is labeled verified for release, use the user-provided Android phone and badge or the emulator plus physical debug bridge for an Android-only smoke test. Do not update or flash firmware. For USB, Badge AP, debug-bridge, and BLE paths intended to be enabled, read valid status across at least two refresh intervals, exercise one reversible command from each enabled command class, verify the returned state, and restore the original badge configuration. Test reboot/bootloader only with separate explicit user approval; otherwise those controls remain unavailable. Record unavailable transports as unverified rather than converting them to a pass.
+Before any physical transport is labeled verified for release, use the user-provided Android phone and badge or the emulator plus physical debug bridge for an Android-only smoke test. Do not update or flash firmware. For USB, Badge AP, debug-bridge, and BLE paths intended to be enabled, read valid status across at least two refresh intervals, exercise one reversible command from each enabled command class, verify the returned state, and restore the original badge configuration. Test reboot/bootloader only over verified direct USB and with separate explicit user approval; otherwise those controls remain unavailable. Record unavailable transports as unverified rather than converting them to a pass.
 
 ## Acceptance Criteria
 
