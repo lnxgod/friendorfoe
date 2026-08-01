@@ -38,20 +38,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.Remove
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
@@ -141,7 +134,8 @@ import kotlin.math.sin
 fun ArViewScreen(
     onObjectTapped: (String) -> Unit,
     viewModel: ArViewModel = hiltViewModel(),
-    detailViewModel: DetailViewModel = hiltViewModel()
+    detailViewModel: DetailViewModel = hiltViewModel(),
+    captureReviewViewModel: CaptureReviewViewModel = hiltViewModel(),
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val activity = LocalContext.current as? Activity
@@ -184,17 +178,11 @@ fun ArViewScreen(
     val lockedObjectId by viewModel.lockedObjectId.collectAsStateWithLifecycle()
     val lockedScreenPosition by viewModel.lockedScreenPosition.collectAsStateWithLifecycle()
     val snapTarget by viewModel.snapTarget.collectAsStateWithLifecycle()
-
-    // Auto-capture state
-    val autoCaptureEnabled by viewModel.autoCaptureEnabled.collectAsStateWithLifecycle()
-    val lastAutoCapture by viewModel.lastAutoCapture.collectAsStateWithLifecycle()
     val proximityDrones by viewModel.proximityDrones.collectAsStateWithLifecycle()
-    val autoCapturePhase by viewModel.autoCapturePhase.collectAsStateWithLifecycle()
+    val objectPeek by viewModel.objectPeek.collectAsStateWithLifecycle()
+    val captureReviewState by captureReviewViewModel.state.collectAsStateWithLifecycle()
 
-    // Main-screen capture state
     var captureInProgress by remember { mutableStateOf(false) }
-    var capturedPhotoUri by remember { mutableStateOf<android.net.Uri?>(null) }
-    var showShareConfirmation by remember { mutableStateOf(false) }
 
     // Manage sensor lifecycle: start on resume, stop on pause
     DisposableEffect(lifecycleOwner) {
@@ -215,24 +203,23 @@ fun ArViewScreen(
 
     val context = LocalContext.current
     val hapticFeedback = LocalHapticFeedback.current
+    val captureInteractions = remember(viewModel, captureReviewViewModel) {
+        ArCaptureInteractions(captureReviewViewModel, viewModel::showObjectPeek)
+    }
 
     // Load detail when an object is selected
     LaunchedEffect(selectedObjectId) {
         selectedObjectId?.let { detailViewModel.loadDetail(it) }
     }
 
-    // Auto-capture: attempt on each visual detection update
-    LaunchedEffect(visualCount, autoCaptureEnabled) {
-        if (autoCaptureEnabled) {
-            viewModel.attemptAutoCapture(context)
-        }
-    }
-
-    // Auto-capture toast
-    LaunchedEffect(lastAutoCapture) {
-        if (lastAutoCapture != null) {
-            android.widget.Toast.makeText(context, lastAutoCapture, android.widget.Toast.LENGTH_SHORT).show()
-            viewModel.clearLastAutoCapture()
+    LaunchedEffect(captureReviewViewModel, context) {
+        captureReviewViewModel.effects.collect { effect ->
+            when (effect) {
+                is CaptureReviewEffect.LaunchShare -> {
+                    val shareIntent = captureShareIntent(effect.request)
+                    context.startActivity(Intent.createChooser(shareIntent, "Share photo"))
+                }
+            }
         }
     }
 
@@ -256,7 +243,7 @@ fun ArViewScreen(
             orientation = orientation,
             onLabelTapped = { objectId ->
                 hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                viewModel.snapAndAutoCapture(objectId, context)
+                captureInteractions.onLabelTapped(objectId)
             },
             onLabelLongPressed = { objectId ->
                 hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -267,37 +254,6 @@ fun ArViewScreen(
             onReticleTapped = { viewModel.unlockObject() },
             modifier = Modifier.fillMaxSize()
         )
-
-        // Auto-capture phase indicator
-        if (autoCapturePhase != com.friendorfoe.presentation.ar.ArViewModel.AutoCaptureState.IDLE) {
-            val phaseText = when (autoCapturePhase) {
-                com.friendorfoe.presentation.ar.ArViewModel.AutoCaptureState.TRACKING -> "TRACKING..."
-                com.friendorfoe.presentation.ar.ArViewModel.AutoCaptureState.CAPTURING -> "CAPTURING..."
-                com.friendorfoe.presentation.ar.ArViewModel.AutoCaptureState.DONE -> "CAPTURED!"
-                else -> ""
-            }
-            val phaseColor = when (autoCapturePhase) {
-                com.friendorfoe.presentation.ar.ArViewModel.AutoCaptureState.DONE -> androidx.compose.ui.graphics.Color(0xFF4CAF50)
-                else -> androidx.compose.ui.graphics.Color(0xFF00BCD4)
-            }
-            androidx.compose.foundation.layout.Box(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 80.dp)
-                    .background(
-                        phaseColor.copy(alpha = 0.85f),
-                        androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
-                    )
-                    .padding(horizontal = 20.dp, vertical = 8.dp)
-            ) {
-                androidx.compose.material3.Text(
-                    text = phaseText,
-                    color = androidx.compose.ui.graphics.Color.White,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                    fontSize = 16.sp
-                )
-            }
-        }
 
         // Layer 3: Compass strip at top
         CompassOverlay(
@@ -427,54 +383,21 @@ fun ArViewScreen(
                 }
             }
 
-            // Take Photo button
-            IconButton(
-                onClick = {
+            CaptureShutterButton(
+                captureInProgress = captureInProgress,
+                onCapture = {
                     if (!captureInProgress) {
                         captureInProgress = true
-                        viewModel.capturePhotoFromMainScreen(context) { uri ->
-                            captureInProgress = false
-                            if (uri != null) {
-                                capturedPhotoUri = uri
-                                showShareConfirmation = true
+                        captureInteractions.captureWith { callback ->
+                            viewModel.capturePhotoDraft("sky") { draft ->
+                                captureInProgress = false
+                                callback(draft)
                             }
                         }
                     }
                 },
-                enabled = !captureInProgress,
-                modifier = Modifier
-                    .size(56.dp)
-                    .background(
-                        color = if (captureInProgress) Color.Gray else Color.White,
-                        shape = CircleShape
-                    )
-            ) {
-                Icon(
-                    imageVector = if (captureInProgress) Icons.Default.HourglassEmpty else Icons.Default.CameraAlt,
-                    contentDescription = "Take Photo",
-                    tint = Color.Black,
-                    modifier = Modifier.size(28.dp)
-                )
-            }
-
-            // Auto-capture toggle
-            IconButton(
-                onClick = { viewModel.toggleAutoCapture() },
-                modifier = Modifier
-                    .size(36.dp)
-                    .background(
-                        color = if (autoCaptureEnabled) Color(0xFF4CAF50).copy(alpha = 0.8f)
-                            else Color.Gray.copy(alpha = 0.5f),
-                        shape = CircleShape
-                    )
-            ) {
-                Text(
-                    text = "A",
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
+                modifier = Modifier.size(56.dp),
+            )
         }
 
         // Drone proximity alert banner
@@ -524,77 +447,6 @@ fun ArViewScreen(
                         text = "$mfr | $proximityLabel | ${rssi}dBm",
                         color = Color.White.copy(alpha = 0.9f),
                         fontSize = 12.sp
-                    )
-                }
-            }
-        }
-
-        // Share confirmation bar (bottom, above status bar)
-        if (showShareConfirmation) {
-            // Auto-dismiss after 6 seconds
-            LaunchedEffect(showShareConfirmation) {
-                kotlinx.coroutines.delay(6000L)
-                showShareConfirmation = false
-            }
-
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 64.dp, start = 16.dp, end = 16.dp)
-                    .background(
-                        color = Color(0xDD2E7D32),
-                        shape = RoundedCornerShape(24.dp)
-                    )
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = "Photo saved",
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    modifier = Modifier.weight(1f)
-                )
-                TextButton(
-                    onClick = {
-                        capturedPhotoUri?.let { uri ->
-                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                type = "image/jpeg"
-                                putExtra(Intent.EXTRA_STREAM, uri)
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            }
-                            context.startActivity(Intent.createChooser(shareIntent, "Share photo"))
-                        }
-                    }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Share,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "Share",
-                        color = Color.White,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(start = 4.dp)
-                    )
-                }
-                IconButton(
-                    onClick = { showShareConfirmation = false },
-                    modifier = Modifier.size(28.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Dismiss",
-                        tint = Color.White.copy(alpha = 0.7f),
-                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
@@ -766,6 +618,24 @@ fun ArViewScreen(
         )
     }
 
+    objectPeek?.let { peek ->
+        ObjectPeek(
+            state = peek,
+            onInspect = viewModel::inspectObjectPeek,
+            onCapture = {
+                val objectId = peek.objectId
+                viewModel.dismissObjectPeek()
+                viewModel.snapToObject(objectId)
+            },
+            onFullDetails = {
+                val objectId = peek.objectId
+                viewModel.dismissObjectPeek()
+                onObjectTapped(objectId)
+            },
+            onDismiss = viewModel::dismissObjectPeek,
+        )
+    }
+
     // Bottom sheet for snap-to photo capture (tapped AR label)
     snapTarget?.let { target ->
         SnapPhotoSheet(
@@ -775,7 +645,11 @@ fun ArViewScreen(
             minZoomRatio = minZoomRatio,
             maxZoomRatio = maxZoomRatio,
             onZoomChange = { viewModel.setZoomRatio(it) },
-            onCapture = { onResult -> viewModel.capturePhoto(context, onResult) },
+            onCapture = { onResult -> viewModel.capturePhotoDraft(target.label, onResult) },
+            onReview = { draft ->
+                viewModel.dismissSnap()
+                captureInteractions.reviewCapturedDraft(draft)
+            },
             onViewDetails = {
                 val id = target.objectId
                 viewModel.dismissSnap()
@@ -783,6 +657,18 @@ fun ArViewScreen(
             },
             onDismiss = { viewModel.dismissSnap() }
         )
+    }
+
+    if (captureReviewState !is CaptureReviewState.Empty) {
+        ModalBottomSheet(onDismissRequest = captureReviewViewModel::discard) {
+            CaptureReviewScreen(
+                state = captureReviewState,
+                onSave = { captureReviewViewModel.save() },
+                onShare = { captureReviewViewModel.share() },
+                onDiscard = captureReviewViewModel::discard,
+                onRetrySave = { captureReviewViewModel.retrySave() },
+            )
+        }
     }
 
     // Bottom sheet for unidentified tap (empty space)
@@ -917,7 +803,7 @@ private fun CameraPreview(
  * @param onLabelTapped Callback with sky object ID when a label is tapped
  */
 @Composable
-private fun ArOverlay(
+internal fun ArOverlay(
     screenPositions: List<ScreenPosition>,
     unmatchedVisuals: List<VisualDetection>,
     classifiedUnknowns: List<ClassifiedVisualDetection>,

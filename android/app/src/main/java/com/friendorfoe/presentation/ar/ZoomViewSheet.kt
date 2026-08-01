@@ -1,14 +1,6 @@
 package com.friendorfoe.presentation.ar
 
-import android.content.ContentValues
-import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.os.Environment
-import android.provider.MediaStore
-import android.util.Log
-import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -25,11 +17,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Save
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
@@ -52,7 +39,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,13 +47,10 @@ import com.friendorfoe.detection.ClassifiedVisualDetection
 import com.friendorfoe.detection.VisualClassification
 import com.friendorfoe.detection.VisualDetection
 import kotlinx.coroutines.delay
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * Bottom sheet that shows a zoomed crop of a visual detection from the camera frame.
- * Supports pinch-to-zoom, pan, and photo save to device gallery.
+ * Supports pinch-to-zoom and pan without writing anything to device Photos.
  * Auto-refreshes every 300ms while open.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -82,15 +65,8 @@ fun ZoomViewSheet(
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val context = LocalContext.current
-
     // Crop state that auto-refreshes
     var croppedBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var fullFrame by remember { mutableStateOf<Bitmap?>(null) }
-
-    // Save state
-    var saveState by remember { mutableStateOf(SaveState.IDLE) }
-    var autoSaved by remember { mutableStateOf(false) }
 
     // Pinch-to-zoom state — start at 2x for better initial view
     var scale by remember { mutableFloatStateOf(2f) }
@@ -115,28 +91,9 @@ fun ZoomViewSheet(
         while (true) {
             val frame = getFrame()
             if (frame != null) {
-                fullFrame = frame
                 croppedBitmap = cropDetection(frame, detection)
             }
             delay(300L)
-        }
-    }
-
-    // Auto-save first good frame for identified objects (LIKELY_DRONE or LIKELY_AIRCRAFT)
-    LaunchedEffect(croppedBitmap, classification) {
-        if (!autoSaved && croppedBitmap != null && fullFrame != null) {
-            val shouldAutoSave = classification == VisualClassification.LIKELY_DRONE ||
-                    classification == VisualClassification.LIKELY_AIRCRAFT
-            if (shouldAutoSave) {
-                autoSaved = true
-                saveDetectionPhotos(
-                    context = context,
-                    cropped = croppedBitmap!!,
-                    fullFrame = fullFrame!!,
-                    detection = detection,
-                    classificationLabel = classificationLabel(classification)
-                )
-            }
         }
     }
 
@@ -266,73 +223,22 @@ fun ZoomViewSheet(
             }
 
             Spacer(modifier = Modifier.height(8.dp))
-
-            // Save button
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Button(
-                    onClick = {
-                        val crop = croppedBitmap
-                        val frame = fullFrame
-                        if (crop != null && frame != null && saveState != SaveState.SAVING) {
-                            saveState = SaveState.SAVING
-                            saveDetectionPhotos(
-                                context = context,
-                                cropped = crop,
-                                fullFrame = frame,
-                                detection = detection,
-                                classificationLabel = classificationLabel(classification),
-                                onComplete = { success ->
-                                    saveState = if (success) SaveState.SAVED else SaveState.IDLE
-                                }
-                            )
-                        }
-                    },
-                    enabled = croppedBitmap != null && saveState != SaveState.SAVING,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (saveState == SaveState.SAVED) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
-                    )
-                ) {
-                    Icon(
-                        imageVector = if (saveState == SaveState.SAVED) Icons.Default.CheckCircle else Icons.Default.Save,
-                        contentDescription = "Save",
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = when (saveState) {
-                            SaveState.IDLE -> "Save Photo"
-                            SaveState.SAVING -> "Saving..."
-                            SaveState.SAVED -> "Saved"
-                        }
-                    )
-                }
-            }
-
-            if (autoSaved) {
-                Text(
-                    text = "Auto-saved to FriendOrFoe album",
-                    color = MaterialTheme.colorScheme.secondary,
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
-            }
+            Text(
+                text = "Inspect only — no photo has been saved.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+            )
 
             Spacer(modifier = Modifier.height(8.dp))
 
             // Info section
             Text(
-                text = "NOT in any aircraft database",
-                color = MaterialTheme.colorScheme.error,
+                text = "No radio match is currently available",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier
-                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
                     .padding(horizontal = 8.dp, vertical = 4.dp)
             )
 
@@ -355,106 +261,6 @@ fun ZoomViewSheet(
             Spacer(modifier = Modifier.height(16.dp))
         }
     }
-}
-
-private enum class SaveState { IDLE, SAVING, SAVED }
-
-/**
- * Save both cropped detection and full frame with bounding box to the device gallery.
- * Files go to Pictures/FriendOrFoe/ album.
- */
-private fun saveDetectionPhotos(
-    context: Context,
-    cropped: Bitmap,
-    fullFrame: Bitmap,
-    detection: VisualDetection,
-    classificationLabel: String,
-    onComplete: ((Boolean) -> Unit)? = null
-) {
-    val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-    val safeLabel = classificationLabel.replace(" ", "_").lowercase()
-
-    Thread {
-        try {
-            // 1. Save cropped detection
-            saveBitmapToGallery(
-                context = context,
-                bitmap = cropped,
-                fileName = "friendorfoe_${safeLabel}_crop_$timestamp",
-                description = "FriendOrFoe detection: $classificationLabel"
-            )
-
-            // 2. Save full frame with bounding box overlay
-            val annotated = fullFrame.copy(Bitmap.Config.ARGB_8888, true)
-            val canvas = Canvas(annotated)
-            val paint = Paint().apply {
-                color = android.graphics.Color.RED
-                style = Paint.Style.STROKE
-                strokeWidth = 4f
-            }
-            val frameW = annotated.width.toFloat()
-            val frameH = annotated.height.toFloat()
-            val halfW = detection.width / 2f
-            val halfH = detection.height / 2f
-            val left = (detection.centerX - halfW) * frameW
-            val top = (detection.centerY - halfH) * frameH
-            val right = (detection.centerX + halfW) * frameW
-            val bottom = (detection.centerY + halfH) * frameH
-            canvas.drawRect(left, top, right, bottom, paint)
-
-            // Draw label
-            val textPaint = Paint().apply {
-                color = android.graphics.Color.RED
-                textSize = 32f
-                isAntiAlias = true
-            }
-            canvas.drawText(classificationLabel, left, (top - 8f).coerceAtLeast(32f), textPaint)
-
-            saveBitmapToGallery(
-                context = context,
-                bitmap = annotated,
-                fileName = "friendorfoe_${safeLabel}_full_$timestamp",
-                description = "FriendOrFoe full frame: $classificationLabel"
-            )
-            annotated.recycle()
-
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                Toast.makeText(context, "Photo saved to FriendOrFoe album", Toast.LENGTH_SHORT).show()
-                onComplete?.invoke(true)
-            }
-        } catch (e: Exception) {
-            Log.e("ZoomViewSheet", "Failed to save photo", e)
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                Toast.makeText(context, "Failed to save photo", Toast.LENGTH_SHORT).show()
-                onComplete?.invoke(false)
-            }
-        }
-    }.start()
-}
-
-/**
- * Save a bitmap to the device gallery via MediaStore (no permissions needed on API 29+).
- */
-private fun saveBitmapToGallery(
-    context: Context,
-    bitmap: Bitmap,
-    fileName: String,
-    description: String
-) {
-    val contentValues = ContentValues().apply {
-        put(MediaStore.Images.Media.DISPLAY_NAME, "$fileName.jpg")
-        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-        put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/FriendOrFoe")
-        put(MediaStore.Images.Media.DESCRIPTION, description)
-    }
-
-    val resolver = context.contentResolver
-    val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-        ?: throw IllegalStateException("Failed to create MediaStore entry")
-
-    resolver.openOutputStream(uri)?.use { outputStream ->
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 95, outputStream)
-    } ?: throw IllegalStateException("Failed to open output stream")
 }
 
 /**
