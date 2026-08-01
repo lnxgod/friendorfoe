@@ -18,6 +18,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -118,5 +119,30 @@ class NavigationShellTest {
 
         compose.onNodeWithTag("screen_info").assertIsDisplayed()
         assertEquals(0, hostDisposals.intValue)
+    }
+
+    @Test
+    fun productionInfoReferenceActionNavigatesThroughARealNavHost() {
+        compose.setContent {
+            FriendOrFoeTheme {
+                val navController = rememberNavController()
+                NavHost(navController = navController, startDestination = "test_info") {
+                    composable("test_info") {
+                        InfoTopLevelRoute(
+                            navController = navController,
+                            viewModel = null,
+                        )
+                    }
+                    composable("reference_guide") {
+                        Text("Reference guide", Modifier.testTag("screen_reference_guide"))
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithTag("info_list").performScrollToIndex(3)
+        compose.onNodeWithTag("info_reference_guide").performClick()
+
+        compose.onNodeWithTag("screen_reference_guide").assertIsDisplayed()
     }
 }

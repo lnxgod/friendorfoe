@@ -175,25 +175,35 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
     }
 
     composable(Screen.Info.route) {
-        TopLevelRouteRoot(TopLevelDestination.INFO) {
-            val aboutViewModel: AboutViewModel = hiltViewModel()
-            AboutScreen(
-                onBack = { navController.popBackStack() },
-                viewModel = aboutViewModel,
-                onNavigateToCalibrate = {
-                    navController.navigate(Screen.Calibrate.route) { launchSingleTop = true }
-                },
-                onNavigateToEmfSweep = {
-                    navController.navigate(Screen.EmfSweep.route) { launchSingleTop = true }
-                },
-                onNavigateToIrCameraScan = {
-                    navController.navigate(Screen.IrCameraScan.route) { launchSingleTop = true }
-                },
-                onNavigateToPrivacy = {
-                    navigateTopLevel(navController, TopLevelDestination.PRIVACY)
-                },
-            )
-        }
+        InfoTopLevelRoute(
+            navController = navController,
+            viewModel = hiltViewModel<AboutViewModel>(),
+        )
+    }
+}
+
+@Composable
+internal fun InfoTopLevelRoute(
+    navController: NavHostController,
+    viewModel: AboutViewModel?,
+) {
+    TopLevelRouteRoot(TopLevelDestination.INFO) {
+        AboutScreen(
+            onBack = { navController.popBackStack() },
+            viewModel = viewModel,
+            onNavigateToCalibrate = {
+                navController.navigate(Screen.Calibrate.route) { launchSingleTop = true }
+            },
+            onNavigateToEmfSweep = {
+                navController.navigate(Screen.EmfSweep.route) { launchSingleTop = true }
+            },
+            onNavigateToIrCameraScan = {
+                navController.navigate(Screen.IrCameraScan.route) { launchSingleTop = true }
+            },
+            onNavigateToReference = {
+                navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
+            },
+        )
     }
 }
 
