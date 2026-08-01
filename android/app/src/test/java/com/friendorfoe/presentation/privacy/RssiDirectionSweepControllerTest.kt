@@ -8,6 +8,8 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -46,6 +48,11 @@ class RssiDirectionSweepControllerTest {
         repeat(5) { samples.emit(sample(finding.observationKey, -60 + it, it * 20f)) }
         samples.emit(sample(PrivacyFindingKey(PrivacySourceKind.PHONE_BLE, "other"), -10, 90f))
         runCurrent()
+
+        assertEquals(
+            DirectionSweepState.Sampling(finding.observationKey, sampleCount = 5, currentDbm = -56),
+            controller.state.value,
+        )
 
         controller.finish()
 
@@ -113,6 +120,36 @@ class RssiDirectionSweepControllerTest {
 
         assertEquals(DirectionSweepState.Sampling(second.observationKey), controller.state.value)
         assertEquals("", controller.resultText.value)
+    }
+
+    @Test
+    fun clickTimeResolutionRejectsAnExpiredOrPausedRenderedRow() {
+        val rendered = phoneFinding(canTrack = true)
+        val staleCurrent = rendered.copy(
+            freshness = FindingFreshness.STALE,
+            capabilities = PrivacyCapabilities(),
+        )
+        val state = PrivacyCurrentState(
+            sources = emptyList(),
+            findings = listOf(staleCurrent),
+            threatCount = 0,
+            alertEligible = emptyList(),
+        )
+
+        assertNull(resolveDirectionSweepTarget(state, rendered.observationKey))
+    }
+
+    @Test
+    fun clickTimeResolutionReturnsOnlyTheExactCurrentLiveRow() {
+        val current = phoneFinding(canTrack = true)
+        val state = PrivacyCurrentState(
+            sources = emptyList(),
+            findings = listOf(current, phoneFinding(canTrack = true, id = "other")),
+            threatCount = 0,
+            alertEligible = emptyList(),
+        )
+
+        assertSame(current, resolveDirectionSweepTarget(state, current.observationKey))
     }
 
     private fun sample(

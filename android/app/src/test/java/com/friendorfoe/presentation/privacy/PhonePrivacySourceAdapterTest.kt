@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -29,6 +30,73 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PhonePrivacySourceAdapterTest {
+
+    @Test
+    fun rssiSampleStreamUsesTheMappedObservationKeyAndCapturedBearing() = runTest {
+        val settings = MutableStateFlow(
+            DetectionSettings.defaults().copy(phonePrivacyScanEnabled = true),
+        )
+        val permissions = MutableStateFlow(LocalDetectionPermissions.None.copy(bluetoothScan = true))
+        val events = MutableSharedFlow<GlassesScanEvent>(extraBufferCapacity = 1)
+        val expectedKey = PrivacyFindingKey(
+            PrivacySourceKind.PHONE_BLE,
+            "observation:fp:meta-one",
+        )
+        val adapter = PhonePrivacySourceAdapter(
+            settings = settings,
+            permissions = permissions,
+            bleEvents = { events },
+            ultrasonicEvents = { flow { kotlinx.coroutines.awaitCancellation() } },
+            bleTracker = BleTracker(),
+            clock = FakeClock(elapsed = 2_000L),
+            scope = backgroundScope,
+            compassBearing = { 123f },
+        )
+        val received = mutableListOf<RssiSample>()
+        backgroundScope.launch {
+            adapter.samplesFor(expectedKey).take(1).collect(received::add)
+        }
+        runCurrent()
+
+        events.emit(GlassesScanEvent.Observation(glasses("fp:meta-one", "AA:BB")))
+        runCurrent()
+
+        assertEquals(
+            listOf(RssiSample(expectedKey, -52, 123f, observedAtElapsedMs = 2_000L)),
+            received,
+        )
+    }
+
+    @Test
+    fun rssiSampleStreamWaitsForARealOrientationReading() = runTest {
+        val settings = MutableStateFlow(
+            DetectionSettings.defaults().copy(phonePrivacyScanEnabled = true),
+        )
+        val permissions = MutableStateFlow(LocalDetectionPermissions.None.copy(bluetoothScan = true))
+        val events = MutableSharedFlow<GlassesScanEvent>(extraBufferCapacity = 1)
+        val adapter = PhonePrivacySourceAdapter(
+            settings = settings,
+            permissions = permissions,
+            bleEvents = { events },
+            ultrasonicEvents = { flow { kotlinx.coroutines.awaitCancellation() } },
+            bleTracker = BleTracker(),
+            clock = FakeClock(elapsed = 2_000L),
+            scope = backgroundScope,
+            compassBearing = { null },
+        )
+        val received = mutableListOf<RssiSample>()
+        backgroundScope.launch {
+            adapter.samplesFor(
+                PrivacyFindingKey(PrivacySourceKind.PHONE_BLE, "observation:fp:meta-one"),
+            ).collect(received::add)
+        }
+        runCurrent()
+
+        events.emit(GlassesScanEvent.Observation(glasses("fp:meta-one", "AA:BB")))
+        runCurrent()
+
+        assertTrue(received.isEmpty())
+    }
 
     @Test
     fun disabledPhoneSourcesResolveAsTwoPausedSnapshotsWithoutStartingCollectors() = runTest {

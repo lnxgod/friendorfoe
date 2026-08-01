@@ -21,7 +21,11 @@ data class RssiSample(
 
 sealed interface DirectionSweepState {
     data object Idle : DirectionSweepState
-    data class Sampling(val key: PrivacyFindingKey, val sampleCount: Int = 0) : DirectionSweepState
+    data class Sampling(
+        val key: PrivacyFindingKey,
+        val sampleCount: Int = 0,
+        val currentDbm: Int? = null,
+    ) : DirectionSweepState
     data class InsufficientSamples(val count: Int) : DirectionSweepState
     data class Complete(val key: PrivacyFindingKey) : DirectionSweepState
 }
@@ -84,7 +88,11 @@ class RssiDirectionSweepController(
                             captured += sample
                             captured.size
                         }
-                        _state.value = DirectionSweepState.Sampling(key, count)
+                        _state.value = DirectionSweepState.Sampling(
+                            key = key,
+                            sampleCount = count,
+                            currentDbm = sample.dbm,
+                        )
                     }
             }
             if (currentCoroutineContext().isActive && targetKey == key) {

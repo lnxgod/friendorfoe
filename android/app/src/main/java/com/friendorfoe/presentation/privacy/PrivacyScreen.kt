@@ -41,6 +41,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -89,9 +90,15 @@ fun PrivacyScreen(
     viewModel: PrivacyViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val directionState by viewModel.directionSweepState.collectAsStateWithLifecycle()
+    val directionResult by viewModel.directionResultText.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var detailKey by remember { mutableStateOf<PrivacyFindingKey?>(null) }
     var trackingKey by remember { mutableStateOf<PrivacyFindingKey?>(null) }
+
+    DisposableEffect(viewModel) {
+        onDispose { viewModel.cancelDirectionSweep() }
+    }
 
     PrivacyContent(
         state = state,
@@ -113,7 +120,11 @@ fun PrivacyScreen(
             onOpenBackendSettings = onOpenInfo,
             onOpenIgnoredDevices = onOpenIgnoredDevices,
             onIgnore = viewModel::ignore,
-            onTrack = { trackingKey = it.observationKey },
+            onTrack = {
+                if (viewModel.startDirectionSweep(it)) {
+                    trackingKey = it.observationKey
+                }
+            },
             onOpenDetails = { key ->
                 if (onOpenFinding != null) onOpenFinding(key) else detailKey = key
             },
@@ -131,7 +142,18 @@ fun PrivacyScreen(
         val finding = state.visibleFindings.singleOrNull { it.observationKey == key }
         PrivacySignalSweepDialog(
             finding = finding,
-            onDismiss = { trackingKey = null },
+            state = directionState,
+            resultText = directionResult,
+            onFinish = viewModel::finishDirectionSweep,
+            onRetry = {
+                finding?.let { current ->
+                    if (!viewModel.startDirectionSweep(current)) trackingKey = null
+                }
+            },
+            onDismiss = {
+                viewModel.cancelDirectionSweep()
+                trackingKey = null
+            },
         )
     }
 }
@@ -627,6 +649,10 @@ private fun PrivacyFindingDetailDialog(
 @Composable
 private fun PrivacySignalSweepDialog(
     finding: PrivacyFinding?,
+    state: DirectionSweepState,
+    resultText: String,
+    onFinish: () -> Unit,
+    onRetry: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
@@ -642,16 +668,58 @@ private fun PrivacySignalSweepDialog(
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
-                Text(
-                    "Turn slowly and watch the live signal. A less negative dBm value is stronger. " +
-                        "RSSI is approximate and does not locate the device.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                when (state) {
+                    DirectionSweepState.Idle -> Text("Sweep stopped.")
+                    is DirectionSweepState.Sampling -> {
+                        Text(
+                            "Turn slowly through a full circle while holding the phone steady. " +
+                                "A less negative dBm value is stronger.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            buildString {
+                                state.currentDbm?.let { append("$it dBm  •  ") }
+                                append("${state.sampleCount} of 40 samples")
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    is DirectionSweepState.InsufficientSamples,
+                    is DirectionSweepState.Complete -> Text(
+                        resultText,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) {
-                Text("Done")
+            when (state) {
+                is DirectionSweepState.Sampling -> {
+                    TextButton(onClick = onFinish, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("Finish")
+                    }
+                }
+                is DirectionSweepState.InsufficientSamples -> {
+                    TextButton(onClick = onRetry, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("Try again")
+                    }
+                }
+                DirectionSweepState.Idle,
+                is DirectionSweepState.Complete -> {
+                    TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("Done")
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            if (state is DirectionSweepState.Sampling ||
+                state is DirectionSweepState.InsufficientSamples
+            ) {
+                TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("Cancel")
+                }
             }
         },
     )

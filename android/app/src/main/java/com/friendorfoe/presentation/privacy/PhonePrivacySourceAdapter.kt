@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.update
@@ -43,9 +44,9 @@ class PhonePrivacySourceAdapter internal constructor(
     private val bleTracker: BleTracker,
     private val clock: MonotonicClock,
     private val scope: CoroutineScope,
-    private val compassBearing: () -> Float = { 0f },
+    private val compassBearing: () -> Float? = { null },
     private val followerPollIntervalMs: Long = 30_000L,
-) : PrivacySourceAdapter {
+) : PrivacySourceAdapter, RssiSampleSource {
 
     @Inject
     constructor(
@@ -65,7 +66,13 @@ class PhonePrivacySourceAdapter internal constructor(
         bleTracker = bleTracker,
         clock = clock,
         scope = scope,
-        compassBearing = { sensorFusionEngine.orientation.value.azimuthDegrees },
+        compassBearing = {
+            if (sensorFusionEngine.orientationReady.value) {
+                sensorFusionEngine.orientation.value.azimuthDegrees
+            } else {
+                null
+            }
+        },
     )
 
     override val adapterId: String = "phone"
@@ -83,6 +90,7 @@ class PhonePrivacySourceAdapter internal constructor(
     private val ultrasonicSequence = AtomicLong(0L)
     private val bleRetry = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private val ultrasonicRetry = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val rssiSamples = MutableSharedFlow<RssiSample>(extraBufferCapacity = 64)
 
     private val _snapshots = MutableStateFlow(
         listOf(
@@ -91,6 +99,9 @@ class PhonePrivacySourceAdapter internal constructor(
         ),
     )
     override val snapshots: StateFlow<List<PrivacySourceSnapshot>> = _snapshots.asStateFlow()
+
+    override fun samplesFor(key: PrivacyFindingKey): Flow<RssiSample> =
+        rssiSamples.filter { it.findingKey == key }
 
     init {
         scope.launch {
@@ -203,13 +214,14 @@ class PhonePrivacySourceAdapter internal constructor(
                         terminalEvent = false
                         val nowElapsed = clock.nowElapsedMs()
                         val nowWall = clock.nowWallClock().toEpochMilli()
+                        val bearing = compassBearing()
                         if (settings.value.stalkerEnabled) {
-                            bleTracker.recordPrivacyObservation(event.detection, compassBearing())
+                            bleTracker.recordPrivacyObservation(event.detection, bearing ?: 0f)
                         } else {
                             bleTracker.recordDirectionSample(
                                 mac = event.detection.mac,
                                 rssi = event.detection.rssi,
-                                compassBearing = compassBearing(),
+                                compassBearing = bearing ?: 0f,
                             )
                         }
                         val finding = mapBle(
@@ -222,6 +234,16 @@ class PhonePrivacySourceAdapter internal constructor(
                             bleObservationElapsedByMac[event.detection.mac] = nowElapsed
                             bleRows[finding.observationKey] = finding
                             boundBleCache()
+                        }
+                        if (bearing != null) {
+                            rssiSamples.tryEmit(
+                                RssiSample(
+                                    findingKey = finding.observationKey,
+                                    dbm = event.detection.rssi,
+                                    azimuthDegrees = bearing,
+                                    observedAtElapsedMs = nowElapsed,
+                                ),
+                            )
                         }
                         publishSuccess(PrivacySourceKind.PHONE_BLE, nowElapsed, nowWall)
                     }

@@ -22,6 +22,7 @@ import com.friendorfoe.domain.model.SkyObject
 import com.friendorfoe.domain.usecase.FilterEngine
 import com.friendorfoe.presentation.collectBackendWhileEnabled
 import com.friendorfoe.sensor.SensorFusionEngine
+import com.friendorfoe.sensor.SensorFusionLease
 import com.friendorfoe.sensor.VisualFocusRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -113,6 +114,7 @@ class MapViewModel @Inject constructor(
 
     private val backendIntegrationState =
         MapBackendIntegrationState(skyObjectRepository.skyObjects)
+    private var compassSensorLease: SensorFusionLease? = null
 
     companion object {
         private const val TAG = "MapViewModel"
@@ -219,10 +221,15 @@ class MapViewModel @Inject constructor(
 
     fun toggleFollowCompass() {
         val newValue = !_followCompass.value
-        _followCompass.value = newValue
         if (newValue) {
-            sensorFusionEngine.start()
+            if (compassSensorLease == null) {
+                compassSensorLease = sensorFusionEngine.acquire()
+            }
+        } else {
+            compassSensorLease?.close()
+            compassSensorLease = null
         }
+        _followCompass.value = newValue
     }
 
     // --- Sensor map (ESP32 backend triangulation) ---
@@ -355,8 +362,7 @@ class MapViewModel @Inject constructor(
         super.onCleared()
         stopLocationUpdates()
         stopSensorMapPolling()
-        if (_followCompass.value) {
-            sensorFusionEngine.stop()
-        }
+        compassSensorLease?.close()
+        compassSensorLease = null
     }
 }

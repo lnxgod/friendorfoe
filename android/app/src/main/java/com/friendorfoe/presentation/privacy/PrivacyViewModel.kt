@@ -3,20 +3,53 @@ package com.friendorfoe.presentation.privacy
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.detection.PrivacyCategory
+import com.friendorfoe.sensor.SensorFusionEngine
+import com.friendorfoe.sensor.SensorFusionLease
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+internal fun resolveDirectionSweepTarget(
+    current: PrivacyCurrentState,
+    key: PrivacyFindingKey,
+): PrivacyFinding? = current.findings.singleOrNull { it.observationKey == key }
+    ?.takeIf { finding ->
+        finding.source == PrivacySourceKind.PHONE_BLE &&
+            finding.freshness == FindingFreshness.LIVE &&
+            finding.capabilities.canOpenDirectionSweep
+    }
 
 @HiltViewModel
 class PrivacyViewModel @Inject constructor(
     private val repository: PrivacyFindingRepository,
+    phonePrivacySourceAdapter: PhonePrivacySourceAdapter,
+    private val sensorFusionEngine: SensorFusionEngine,
 ) : ViewModel() {
     private val filters = MutableStateFlow(PrivacyFilterState())
+    private val directionController = RssiDirectionSweepController(
+        sampleSource = phonePrivacySourceAdapter,
+        scope = viewModelScope,
+    )
+    val directionSweepState = directionController.state
+    val directionResultText = directionController.resultText
+    private var sweepSensorLease: SensorFusionLease? = null
+
+    init {
+        viewModelScope.launch {
+            directionSweepState.collect { state ->
+                if (state !is DirectionSweepState.Sampling) {
+                    sweepSensorLease?.close()
+                    sweepSensorLease = null
+                }
+            }
+        }
+    }
 
     val uiState: StateFlow<PrivacyUiState> = combine(
         repository.currentState,
@@ -66,6 +99,42 @@ class PrivacyViewModel @Inject constructor(
         viewModelScope.launch {
             repository.retryAllFailed()
         }
+    }
+
+    fun startDirectionSweep(finding: PrivacyFinding): Boolean {
+        val currentFinding = resolveDirectionSweepTarget(
+            current = repository.currentState.value,
+            key = finding.observationKey,
+        ) ?: return false
+        if (sweepSensorLease == null) {
+            sweepSensorLease = sensorFusionEngine.acquire()
+        }
+        directionController.start(currentFinding)
+        val started = directionSweepState.value is DirectionSweepState.Sampling
+        if (!started) {
+            sweepSensorLease?.close()
+            sweepSensorLease = null
+        }
+        return started
+    }
+
+    fun finishDirectionSweep() {
+        directionController.finish()
+        sweepSensorLease?.close()
+        sweepSensorLease = null
+    }
+
+    fun cancelDirectionSweep() {
+        directionController.cancel()
+        sweepSensorLease?.close()
+        sweepSensorLease = null
+    }
+
+    override fun onCleared() {
+        directionController.cancel()
+        sweepSensorLease?.close()
+        sweepSensorLease = null
+        super.onCleared()
     }
 
     private fun <T> Set<T>.toggle(value: T): Set<T> =

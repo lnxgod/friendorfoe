@@ -51,6 +51,7 @@ import com.friendorfoe.sensor.CameraFovCalculator
 import com.friendorfoe.sensor.DeviceOrientation
 import com.friendorfoe.sensor.ScreenPosition
 import com.friendorfoe.sensor.SensorFusionEngine
+import com.friendorfoe.sensor.SensorFusionLease
 import com.friendorfoe.detection.RoiConfirmation
 import com.friendorfoe.detection.RoiConfirmationEngine
 import com.friendorfoe.sensor.CompassBiasEstimator
@@ -147,6 +148,7 @@ class ArViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val captureProcessingExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private var sensorFusionLease: SensorFusionLease? = null
 
     companion object {
         private const val TAG = "ArViewModel"
@@ -994,7 +996,9 @@ class ArViewModel @Inject constructor(
         Log.i(TAG, "Starting sensors and detection")
 
         // Start sensor fusion for orientation
-        sensorFusionEngine.start()
+        if (sensorFusionLease == null) {
+            sensorFusionLease = sensorFusionEngine.acquire()
+        }
 
         // Calibrate camera FOV from hardware
         try {
@@ -1296,7 +1300,8 @@ class ArViewModel @Inject constructor(
      */
     fun stopSensors() {
         Log.i(TAG, "Stopping AR sensors (scanning continues for other screens)")
-        sensorFusionEngine.stop()
+        sensorFusionLease?.close()
+        sensorFusionLease = null
         arCoreOrientationProvider.stop()
 
         // Cancel ARCore update job FIRST, then pause session (avoids race on session.update())
