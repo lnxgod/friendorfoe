@@ -67,6 +67,32 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
+internal class MapScreenLifecycleActions(
+    private val startLocation: () -> Unit,
+    private val stopLocation: () -> Unit,
+    private val startPolling: () -> Unit,
+    private val stopPolling: () -> Unit,
+) {
+    fun onEvent(event: Lifecycle.Event) {
+        when (event) {
+            Lifecycle.Event.ON_RESUME -> {
+                startLocation()
+                startPolling()
+            }
+            Lifecycle.Event.ON_PAUSE -> {
+                stopLocation()
+                stopPolling()
+            }
+            else -> Unit
+        }
+    }
+
+    fun dispose() {
+        stopLocation()
+        stopPolling()
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MapViewScreen(
@@ -98,23 +124,17 @@ fun MapViewScreen(
 
     // Manage location lifecycle
     DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_RESUME -> {
-                    viewModel.startLocationUpdates()
-                    viewModel.startSensorMapPolling()
-                }
-                Lifecycle.Event.ON_PAUSE -> {
-                    viewModel.stopLocationUpdates()
-                    viewModel.stopSensorMapPolling()
-                }
-                else -> {}
-            }
-        }
+        val lifecycleActions = MapScreenLifecycleActions(
+            startLocation = viewModel::startLocationUpdates,
+            stopLocation = viewModel::stopLocationUpdates,
+            startPolling = viewModel::startSensorMapPolling,
+            stopPolling = viewModel::stopSensorMapPolling,
+        )
+        val observer = LifecycleEventObserver { _, event -> lifecycleActions.onEvent(event) }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            viewModel.stopLocationUpdates()
+            lifecycleActions.dispose()
         }
     }
 

@@ -44,27 +44,36 @@ internal sealed interface PrivacyBackendPollState {
     data class Failed(val message: String?) : PrivacyBackendPollState
 }
 
+internal class PrivacyBackendIntegrationState(
+    val localDetections: StateFlow<List<GlassesDetection>>,
+    val badgeState: StateFlow<BadgeUsbState>,
+) {
+    val wifiAnomalies = MutableStateFlow<List<WifiAnomalyDetector.WifiAnomaly>>(emptyList())
+    val backendPrivacyDetections = MutableStateFlow<List<GlassesDetection>>(emptyList())
+    val backendPollState =
+        MutableStateFlow<PrivacyBackendPollState>(PrivacyBackendPollState.Disabled)
+}
+
 internal suspend fun collectPrivacyBackend(
     settings: Flow<DetectionSettings>,
     intervalMs: Long,
-    backendPrivacyDetections: MutableStateFlow<List<GlassesDetection>>,
-    backendPollState: MutableStateFlow<PrivacyBackendPollState>,
+    state: PrivacyBackendIntegrationState,
     fetchDetections: suspend () -> List<GlassesDetection>,
 ) {
     collectBackendWhileEnabled(
         settings = settings,
         intervalMs = intervalMs,
         clear = {
-            backendPrivacyDetections.value = emptyList()
-            backendPollState.value = PrivacyBackendPollState.Disabled
+            state.backendPrivacyDetections.value = emptyList()
+            state.backendPollState.value = PrivacyBackendPollState.Disabled
         },
         fetch = fetchDetections,
         publish = { detections ->
-            backendPrivacyDetections.value = detections
-            backendPollState.value = PrivacyBackendPollState.Connected
+            state.backendPrivacyDetections.value = detections
+            state.backendPollState.value = PrivacyBackendPollState.Connected
         },
         onFailure = { failure ->
-            backendPollState.value = PrivacyBackendPollState.Failed(failure.message)
+            state.backendPollState.value = PrivacyBackendPollState.Failed(failure.message)
         },
     )
 }
@@ -79,6 +88,11 @@ class PrivacyViewModel @Inject constructor(
     private val badgeUsbRepository: BadgeUsbRepository,
     private val privacyAlertNotifier: PrivacyAlertNotifier,
 ) : ViewModel() {
+
+    private val backendIntegrationState = PrivacyBackendIntegrationState(
+        localDetections = skyObjectRepository.glassesDetections,
+        badgeState = badgeUsbRepository.state,
+    )
 
     private val _backendOnlyMode = MutableStateFlow(skyObjectRepository.prefs.backendOnlyMode)
     val backendOnlyMode: StateFlow<Boolean> = _backendOnlyMode.asStateFlow()
@@ -131,19 +145,17 @@ class PrivacyViewModel @Inject constructor(
         }
     }
 
-    private val _wifiAnomalies = MutableStateFlow<List<WifiAnomalyDetector.WifiAnomaly>>(emptyList())
+    private val _wifiAnomalies = backendIntegrationState.wifiAnomalies
     val wifiAnomalies: StateFlow<List<WifiAnomalyDetector.WifiAnomaly>> = _wifiAnomalies.asStateFlow()
-    private val _backendPrivacyDetections = MutableStateFlow<List<GlassesDetection>>(emptyList())
-    private val _backendPollState =
-        MutableStateFlow<PrivacyBackendPollState>(PrivacyBackendPollState.Disabled)
+    private val _backendPrivacyDetections = backendIntegrationState.backendPrivacyDetections
+    private val _backendPollState = backendIntegrationState.backendPollState
     internal val backendPollState: StateFlow<PrivacyBackendPollState> = _backendPollState.asStateFlow()
 
     private val backendPollJob = viewModelScope.launch {
         collectPrivacyBackend(
             settings = detectionPrefs.settings,
             intervalMs = 5_000L,
-            backendPrivacyDetections = _backendPrivacyDetections,
-            backendPollState = _backendPollState,
+            state = backendIntegrationState,
             fetchDetections = {
                 sensorMapApiService.getLivePrivacyDevices().devices.mapNotNull {
                     it.toGlassesDetection()
@@ -151,12 +163,12 @@ class PrivacyViewModel @Inject constructor(
             },
         )
     }
-    val badgeUsbState = badgeUsbRepository.state
+    val badgeUsbState = backendIntegrationState.badgeState
 
     val privacyDetections: StateFlow<List<GlassesDetection>> = combine(
-        skyObjectRepository.glassesDetections,
+        backendIntegrationState.localDetections,
         _backendPrivacyDetections,
-        badgeUsbRepository.state,
+        backendIntegrationState.badgeState,
         _wifiAnomalies,
     ) { local, backend, badge, wifiAnomalies ->
         val normalizedLocal = local.map(PrivacyFindingNormalizer::normalize)

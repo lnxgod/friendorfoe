@@ -1,7 +1,11 @@
 package com.friendorfoe.presentation.privacy
 
 import com.friendorfoe.data.DetectionSettings
+import com.friendorfoe.data.badge.BadgeControlStatus
+import com.friendorfoe.data.badge.BadgeThreatEntity
+import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.detection.GlassesDetection
+import com.friendorfoe.detection.WifiAnomalyDetector
 import java.time.Instant
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
@@ -23,9 +27,36 @@ class PrivacyBackendPollingTest {
     @Test
     fun endpointReplacementRejectsLateResultAndDisableClearsOnlyRemoteState() = runTest {
         val settings = MutableStateFlow(DetectionSettings.defaults())
-        val backend = MutableStateFlow<List<GlassesDetection>>(emptyList())
-        val pollState = MutableStateFlow<PrivacyBackendPollState>(PrivacyBackendPollState.Disabled)
         val local = MutableStateFlow(listOf(detection("local")))
+        val badge = MutableStateFlow(
+            BadgeUsbState(
+                controlStatus = BadgeControlStatus(
+                    entities = listOf(
+                        BadgeThreatEntity(
+                            label = "badge-row",
+                            threatClass = "tracker",
+                            score = 50,
+                            ageSeconds = 1,
+                            rssi = -60,
+                            events = 1,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val state = PrivacyBackendIntegrationState(
+            localDetections = local,
+            badgeState = badge,
+        )
+        val wifiRow = WifiAnomalyDetector.WifiAnomaly(
+            type = "evil_twin",
+            ssid = "wifi-row",
+            details = "test",
+            threatLevel = 2,
+            bssids = listOf("00:11:22:33:44:55"),
+            timestamp = Instant.EPOCH,
+        )
+        state.wifiAnomalies.value = listOf(wifiRow)
         var fetchCount = 0
         var oldFetchObservedCancellation = false
         var oldContinuation: Continuation<List<GlassesDetection>>? = null
@@ -33,8 +64,7 @@ class PrivacyBackendPollingTest {
             collectPrivacyBackend(
                 settings = settings,
                 intervalMs = 100,
-                backendPrivacyDetections = backend,
-                backendPollState = pollState,
+                state = state,
                 fetchDetections = {
                     fetchCount++
                     when (fetchCount) {
@@ -49,7 +79,7 @@ class PrivacyBackendPollingTest {
         }
 
         runCurrent()
-        assertEquals(listOf("first"), backend.value.map { it.mac })
+        assertEquals(listOf("first"), state.backendPrivacyDetections.value.map { it.mac })
         advanceTimeBy(100)
         runCurrent()
 
@@ -59,14 +89,19 @@ class PrivacyBackendPollingTest {
         runCurrent()
 
         assertTrue(oldFetchObservedCancellation)
-        assertEquals(listOf("replacement"), backend.value.map { it.mac })
-        assertEquals(PrivacyBackendPollState.Connected, pollState.value)
+        assertEquals(listOf("replacement"), state.backendPrivacyDetections.value.map { it.mac })
+        assertEquals(PrivacyBackendPollState.Connected, state.backendPollState.value)
         settings.value = settings.value.copy(sensorBackendEnabled = false)
         runCurrent()
 
-        assertTrue(backend.value.isEmpty())
-        assertEquals(PrivacyBackendPollState.Disabled, pollState.value)
-        assertEquals(listOf("local"), local.value.map { it.mac })
+        assertTrue(state.backendPrivacyDetections.value.isEmpty())
+        assertEquals(PrivacyBackendPollState.Disabled, state.backendPollState.value)
+        assertEquals(listOf("local"), state.localDetections.value.map { it.mac })
+        assertEquals(
+            listOf("badge:tracker::badge-row"),
+            state.badgeState.value.toPrivacyDetections().map { it.fingerprintKey },
+        )
+        assertEquals(listOf(wifiRow), state.wifiAnomalies.value)
         job.cancel()
     }
 

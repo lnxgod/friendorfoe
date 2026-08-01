@@ -44,27 +44,43 @@ internal data class MapBackendSnapshot(
     val activeDroneAlertCount: Int?,
 )
 
+internal class MapBackendIntegrationState(
+    val localObjects: StateFlow<List<SkyObject>>,
+) {
+    val selectedObjectId = MutableStateFlow<String?>(null)
+    val sensorDrones = MutableStateFlow<List<LocatedDroneDto>>(emptyList())
+    val remoteSensors = MutableStateFlow<List<SensorDto>>(emptyList())
+    val sensorMapOnline = MutableStateFlow(false)
+    val droneAlertCount = MutableStateFlow(0)
+    val pollingRequested = MutableStateFlow(false)
+
+    fun startPolling() {
+        pollingRequested.value = true
+    }
+
+    fun stopPolling() {
+        pollingRequested.value = false
+    }
+}
+
 internal suspend fun collectMapBackend(
     settings: Flow<DetectionSettings>,
     intervalMs: Long,
-    sensorDrones: MutableStateFlow<List<LocatedDroneDto>>,
-    remoteSensors: MutableStateFlow<List<SensorDto>>,
-    sensorMapOnline: MutableStateFlow<Boolean>,
-    droneAlertCount: MutableStateFlow<Int>,
+    state: MapBackendIntegrationState,
     fetchSnapshot: suspend () -> MapBackendSnapshot,
 ) {
     collectBackendWhileEnabled(
         settings = settings,
         intervalMs = intervalMs,
         clear = {
-            sensorDrones.value = emptyList()
-            remoteSensors.value = emptyList()
-            sensorMapOnline.value = false
-            droneAlertCount.value = 0
+            state.sensorDrones.value = emptyList()
+            state.remoteSensors.value = emptyList()
+            state.sensorMapOnline.value = false
+            state.droneAlertCount.value = 0
         },
         fetch = fetchSnapshot,
         publish = { response ->
-            sensorDrones.value = response.map.drones.filter { drone ->
+            state.sensorDrones.value = response.map.drones.filter { drone ->
                 drone.classification in MAP_DRONE_CLASSIFICATIONS ||
                     drone.droneId.startsWith("rid_") ||
                     drone.droneId.startsWith("probe_") ||
@@ -72,11 +88,11 @@ internal suspend fun collectMapBackend(
                     drone.droneId.startsWith("FoF-Drone-") ||
                     drone.positionSource == "gps"
             }
-            remoteSensors.value = response.map.sensors
-            sensorMapOnline.value = true
-            response.activeDroneAlertCount?.let { droneAlertCount.value = it }
+            state.remoteSensors.value = response.map.sensors
+            state.sensorMapOnline.value = true
+            response.activeDroneAlertCount?.let { state.droneAlertCount.value = it }
         },
-        onFailure = { sensorMapOnline.value = false },
+        onFailure = { state.sensorMapOnline.value = false },
     )
 }
 
@@ -94,6 +110,9 @@ class MapViewModel @Inject constructor(
     private val detectionPrefs: DetectionPrefs,
     private val sensorMapApiService: SensorMapApiService
 ) : ViewModel() {
+
+    private val backendIntegrationState =
+        MapBackendIntegrationState(skyObjectRepository.skyObjects)
 
     companion object {
         private const val TAG = "MapViewModel"
@@ -150,7 +169,7 @@ class MapViewModel @Inject constructor(
     }
 
     val skyObjects: StateFlow<List<SkyObject>> = combine(
-        skyObjectRepository.skyObjects,
+        backendIntegrationState.localObjects,
         _filterState
     ) { objects, filter ->
         FilterEngine.applyFilters(objects, filter)
@@ -183,7 +202,7 @@ class MapViewModel @Inject constructor(
     )
     val userPosition: StateFlow<Position> = _userPosition.asStateFlow()
 
-    private val _selectedObjectId = MutableStateFlow<String?>(null)
+    private val _selectedObjectId = backendIntegrationState.selectedObjectId
     val selectedObjectId: StateFlow<String?> = _selectedObjectId.asStateFlow()
 
     private val _followCompass = MutableStateFlow(false)
@@ -208,23 +227,23 @@ class MapViewModel @Inject constructor(
 
     // --- Sensor map (ESP32 backend triangulation) ---
 
-    private val _sensorDrones = MutableStateFlow<List<LocatedDroneDto>>(emptyList())
+    private val _sensorDrones = backendIntegrationState.sensorDrones
     /** Drones detected by remote ESP32 sensors — only confirmed/likely drones, not trackers or unknown BLE. */
     val sensorDrones: StateFlow<List<LocatedDroneDto>> = _sensorDrones.asStateFlow()
 
-    private val _remoteSensors = MutableStateFlow<List<SensorDto>>(emptyList())
+    private val _remoteSensors = backendIntegrationState.remoteSensors
     /** Active ESP32 sensor nodes with their GPS positions. */
     val remoteSensors: StateFlow<List<SensorDto>> = _remoteSensors.asStateFlow()
 
-    private val _sensorMapOnline = MutableStateFlow(false)
+    private val _sensorMapOnline = backendIntegrationState.sensorMapOnline
     /** True when the backend sensor map API is reachable. */
     val sensorMapOnline: StateFlow<Boolean> = _sensorMapOnline.asStateFlow()
 
-    private val _droneAlertCount = MutableStateFlow(0)
+    private val _droneAlertCount = backendIntegrationState.droneAlertCount
     /** Number of active drone alerts from the backend. */
     val droneAlertCount: StateFlow<Int> = _droneAlertCount.asStateFlow()
 
-    private val sensorPollingRequested = MutableStateFlow(false)
+    private val sensorPollingRequested = backendIntegrationState.pollingRequested
     private val sensorPollingSettings = combine(
         detectionPrefs.settings,
         sensorPollingRequested,
@@ -236,10 +255,7 @@ class MapViewModel @Inject constructor(
         collectMapBackend(
             settings = sensorPollingSettings,
             intervalMs = 5_000L,
-            sensorDrones = _sensorDrones,
-            remoteSensors = _remoteSensors,
-            sensorMapOnline = _sensorMapOnline,
-            droneAlertCount = _droneAlertCount,
+            state = backendIntegrationState,
             fetchSnapshot = {
                 MapBackendSnapshot(
                     map = sensorMapApiService.getDroneMap(),
@@ -257,11 +273,11 @@ class MapViewModel @Inject constructor(
 
     /** Start polling the backend sensor map endpoint every 5 seconds. */
     fun startSensorMapPolling() {
-        sensorPollingRequested.value = true
+        backendIntegrationState.startPolling()
     }
 
     fun stopSensorMapPolling() {
-        sensorPollingRequested.value = false
+        backendIntegrationState.stopPolling()
     }
 
     private var locationStarted = java.util.concurrent.atomic.AtomicBoolean(false)

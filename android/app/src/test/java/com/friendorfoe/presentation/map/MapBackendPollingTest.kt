@@ -4,6 +4,11 @@ import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.data.remote.DroneMapDto
 import com.friendorfoe.data.remote.LocatedDroneDto
 import com.friendorfoe.data.remote.SensorDto
+import com.friendorfoe.domain.model.DetectionSource
+import com.friendorfoe.domain.model.Drone
+import com.friendorfoe.domain.model.Position
+import com.friendorfoe.domain.model.SkyObject
+import java.time.Instant
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
@@ -25,11 +30,18 @@ class MapBackendPollingTest {
     @Test
     fun endpointReplacementRejectsLateResultAndDisableClearsOnlyRemoteState() = runTest {
         val settings = MutableStateFlow(DetectionSettings.defaults())
-        val drones = MutableStateFlow<List<LocatedDroneDto>>(emptyList())
-        val sensors = MutableStateFlow<List<SensorDto>>(emptyList())
-        val online = MutableStateFlow(false)
-        val alertCount = MutableStateFlow(0)
-        val localRows = MutableStateFlow(listOf("local-row"))
+        val localObject = Drone(
+            id = "local-row",
+            position = Position(1.0, 2.0, 3.0),
+            source = DetectionSource.REMOTE_ID,
+            confidence = 1f,
+            firstSeen = Instant.EPOCH,
+            lastUpdated = Instant.EPOCH,
+            droneId = "local-row",
+        )
+        val localObjects = MutableStateFlow<List<SkyObject>>(listOf(localObject))
+        val state = MapBackendIntegrationState(localObjects)
+        state.selectedObjectId.value = localObject.id
         var fetchCount = 0
         var oldFetchObservedCancellation = false
         var oldContinuation: Continuation<MapBackendSnapshot>? = null
@@ -37,10 +49,7 @@ class MapBackendPollingTest {
             collectMapBackend(
                 settings = settings,
                 intervalMs = 100,
-                sensorDrones = drones,
-                remoteSensors = sensors,
-                sensorMapOnline = online,
-                droneAlertCount = alertCount,
+                state = state,
                 fetchSnapshot = {
                     fetchCount++
                     when (fetchCount) {
@@ -55,7 +64,7 @@ class MapBackendPollingTest {
         }
 
         runCurrent()
-        assertEquals(listOf("first"), drones.value.map { it.droneId })
+        assertEquals(listOf("first"), state.sensorDrones.value.map { it.droneId })
         advanceTimeBy(100)
         runCurrent()
 
@@ -65,16 +74,17 @@ class MapBackendPollingTest {
         runCurrent()
 
         assertTrue(oldFetchObservedCancellation)
-        assertEquals(listOf("replacement"), drones.value.map { it.droneId })
-        assertEquals(2, alertCount.value)
+        assertEquals(listOf("replacement"), state.sensorDrones.value.map { it.droneId })
+        assertEquals(2, state.droneAlertCount.value)
         settings.value = settings.value.copy(sensorBackendEnabled = false)
         runCurrent()
 
-        assertTrue(drones.value.isEmpty())
-        assertTrue(sensors.value.isEmpty())
-        assertFalse(online.value)
-        assertEquals(0, alertCount.value)
-        assertEquals(listOf("local-row"), localRows.value)
+        assertTrue(state.sensorDrones.value.isEmpty())
+        assertTrue(state.remoteSensors.value.isEmpty())
+        assertFalse(state.sensorMapOnline.value)
+        assertEquals(0, state.droneAlertCount.value)
+        assertEquals(listOf(localObject), state.localObjects.value)
+        assertEquals(localObject.id, state.selectedObjectId.value)
         job.cancel()
     }
 

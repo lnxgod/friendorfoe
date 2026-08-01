@@ -82,28 +82,33 @@ import java.time.Instant
 import javax.inject.Inject
 import kotlin.math.roundToInt
 
+internal class ArBackendIntegrationState {
+    val localObservations = MutableStateFlow<List<VisualDetection>>(emptyList())
+    val sensorBackendOnline = MutableStateFlow(false)
+    val sensorDroneCount = MutableStateFlow(0)
+}
+
 internal suspend fun collectArBackend(
     settings: Flow<DetectionSettings>,
     intervalMs: Long,
-    sensorBackendOnline: MutableStateFlow<Boolean>,
-    sensorDroneCount: MutableStateFlow<Int>,
+    state: ArBackendIntegrationState,
     fetchDroneCount: suspend () -> Int,
 ) {
     collectBackendWhileEnabled(
         settings = settings,
         intervalMs = intervalMs,
         clear = {
-            sensorBackendOnline.value = false
-            sensorDroneCount.value = 0
+            state.sensorBackendOnline.value = false
+            state.sensorDroneCount.value = 0
         },
         fetch = fetchDroneCount,
         publish = { count ->
-            sensorBackendOnline.value = true
-            sensorDroneCount.value = count
+            state.sensorBackendOnline.value = true
+            state.sensorDroneCount.value = count
         },
         onFailure = {
-            sensorBackendOnline.value = false
-            sensorDroneCount.value = 0
+            state.sensorBackendOnline.value = false
+            state.sensorDroneCount.value = 0
         },
     )
 }
@@ -507,7 +512,8 @@ class ArViewModel @Inject constructor(
 
     // --- Unmatched visual detections (visual-only, no radio match) ---
 
-    private val _unmatchedVisuals = MutableStateFlow<List<VisualDetection>>(emptyList())
+    private val backendIntegrationState = ArBackendIntegrationState()
+    private val _unmatchedVisuals = backendIntegrationState.localObservations
     val unmatchedVisuals: StateFlow<List<VisualDetection>> = _unmatchedVisuals.asStateFlow()
 
     // --- Zoom target for tap-to-zoom ---
@@ -1189,18 +1195,17 @@ class ArViewModel @Inject constructor(
 
     // --- Sensor backend (ESP32 network) ---
 
-    private val _sensorBackendOnline = MutableStateFlow(false)
+    private val _sensorBackendOnline = backendIntegrationState.sensorBackendOnline
     val sensorBackendOnline: StateFlow<Boolean> = _sensorBackendOnline.asStateFlow()
 
-    private val _sensorDroneCount = MutableStateFlow(0)
+    private val _sensorDroneCount = backendIntegrationState.sensorDroneCount
     val sensorDroneCount: StateFlow<Int> = _sensorDroneCount.asStateFlow()
 
     private val sensorBackendJob = viewModelScope.launch(Dispatchers.IO) {
         collectArBackend(
             settings = detectionPrefs.settings,
             intervalMs = 5_000L,
-            sensorBackendOnline = _sensorBackendOnline,
-            sensorDroneCount = _sensorDroneCount,
+            state = backendIntegrationState,
             fetchDroneCount = { sensorMapApiService.getDroneAlerts().activeDroneCount },
         )
     }
