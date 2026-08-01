@@ -5,8 +5,11 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
+import dagger.hilt.android.qualifiers.ApplicationContext
+import javax.inject.Inject
+import javax.inject.Singleton
 
-internal data class LocalDetectionPermissions(
+data class LocalDetectionPermissions(
     val bluetoothScan: Boolean,
     val wifiAwareScan: Boolean,
     val wifiManagerScanResults: Boolean,
@@ -20,6 +23,17 @@ internal data class LocalDetectionPermissions(
             audioCapture = false,
         )
     }
+}
+
+interface LocalDetectionPermissionProvider {
+    fun current(): LocalDetectionPermissions
+}
+
+@Singleton
+class AndroidLocalDetectionPermissionProvider @Inject constructor(
+    @ApplicationContext private val context: Context,
+) : LocalDetectionPermissionProvider {
+    override fun current(): LocalDetectionPermissions = currentLocalDetectionPermissions(context)
 }
 
 internal enum class ProtectedDetectionSource {

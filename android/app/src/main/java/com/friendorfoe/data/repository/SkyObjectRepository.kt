@@ -1,8 +1,6 @@
 package com.friendorfoe.data.repository
 
-import android.content.Context
 import android.util.Log
-import dagger.hilt.android.qualifiers.ApplicationContext
 import com.friendorfoe.data.local.HistoryDao
 import com.friendorfoe.data.local.HistoryEntity
 import com.friendorfoe.data.local.TrackingDao
@@ -69,7 +67,7 @@ class SkyObjectRepository @Inject constructor(
     private val sensorFusionEngine: com.friendorfoe.sensor.SensorFusionEngine,
     private val historyDao: HistoryDao,
     private val trackingDao: TrackingDao,
-    @ApplicationContext private val appContext: Context,
+    private val localDetectionPermissionProvider: LocalDetectionPermissionProvider,
 ) : RuntimePermissionChangeNotifier {
 
     companion object {
@@ -162,7 +160,7 @@ class SkyObjectRepository @Inject constructor(
 
     /** Re-evaluate protected collectors after a feature-owned permission flow completes. */
     override fun onRuntimePermissionsChanged() {
-        val permissions = currentLocalDetectionPermissions(appContext)
+        val permissions = localDetectionPermissionProvider.current()
         if (shouldRestartForPermissionChange(isRunning.get(), activeLocalPermissions, permissions)) {
             restartDetectionSources()
         }
@@ -189,7 +187,7 @@ class SkyObjectRepository @Inject constructor(
      * @param longitude User's current longitude for ADS-B polling
      */
     fun ensureStarted(latitude: Double, longitude: Double) {
-        val permissions = currentLocalDetectionPermissions(appContext)
+        val permissions = localDetectionPermissionProvider.current()
         if (!isRunning.compareAndSet(false, true)) {
             updatePosition(latitude, longitude)
             if (shouldRestartForPermissionChange(true, activeLocalPermissions, permissions)) {

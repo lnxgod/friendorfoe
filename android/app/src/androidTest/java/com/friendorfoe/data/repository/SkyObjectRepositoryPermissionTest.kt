@@ -1,10 +1,7 @@
 package com.friendorfoe.data.repository
 
-import android.Manifest
-import android.content.pm.PackageManager
 import androidx.compose.material3.Text
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.core.content.ContextCompat
 import androidx.test.platform.app.InstrumentationRegistry
 import com.friendorfoe.FriendOrFoeApplication
 import kotlinx.coroutines.Job
@@ -19,39 +16,56 @@ class SkyObjectRepositoryPermissionTest {
 
     @Test
     fun permissionChangeCancelsAndReplacesTheRealCollectorJob() {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val context = instrumentation.targetContext
-        assertTrue(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) ==
-                PackageManager.PERMISSION_DENIED
-        )
-        assertTrue(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
-                PackageManager.PERMISSION_DENIED
-        )
-
-        compose.setContent { Text("Collector lifecycle host") }
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
         val repository = (context.applicationContext as FriendOrFoeApplication).skyObjectRepository
-        compose.waitUntil(timeoutMillis = 5_000) { repository.collectionJobForTest()?.isActive == true }
-        val deniedPermissionJob = requireNotNull(repository.collectionJobForTest())
+        val permissions = MutableLocalDetectionPermissionProvider(LocalDetectionPermissions.None)
+        val productionProvider = repository.replacePermissionProviderForTest(permissions)
 
-        instrumentation.uiAutomation.grantRuntimePermission(
-            context.packageName,
-            Manifest.permission.BLUETOOTH_SCAN,
-        )
-        instrumentation.uiAutomation.grantRuntimePermission(
-            context.packageName,
-            Manifest.permission.BLUETOOTH_CONNECT,
-        )
-        repository.onRuntimePermissionsChanged()
+        try {
+            compose.setContent { Text("Collector lifecycle host") }
+            repository.onRuntimePermissionsChanged()
+            compose.waitUntil(timeoutMillis = 5_000) {
+                repository.collectionJobForTest()?.isActive == true
+            }
+            val deniedPermissionJob = requireNotNull(repository.collectionJobForTest())
 
-        compose.waitUntil(timeoutMillis = 5_000) {
-            repository.collectionJobForTest()?.let { it !== deniedPermissionJob && it.isActive } == true
+            permissions.current = LocalDetectionPermissions(
+                bluetoothScan = true,
+                wifiAwareScan = false,
+                wifiManagerScanResults = false,
+                audioCapture = false,
+            )
+            repository.onRuntimePermissionsChanged()
+
+            compose.waitUntil(timeoutMillis = 5_000) {
+                repository.collectionJobForTest()?.let {
+                    it !== deniedPermissionJob && it.isActive
+                } == true
+            }
+            val grantedPermissionJob = requireNotNull(repository.collectionJobForTest())
+            assertTrue(deniedPermissionJob.isCancelled)
+            assertNotSame(deniedPermissionJob, grantedPermissionJob)
+            assertTrue(grantedPermissionJob.isActive)
+        } finally {
+            repository.replacePermissionProviderForTest(productionProvider)
+            repository.onRuntimePermissionsChanged()
         }
-        val grantedPermissionJob = requireNotNull(repository.collectionJobForTest())
-        assertTrue(deniedPermissionJob.isCancelled)
-        assertNotSame(deniedPermissionJob, grantedPermissionJob)
-        assertTrue(grantedPermissionJob.isActive)
+    }
+}
+
+private class MutableLocalDetectionPermissionProvider(
+    var current: LocalDetectionPermissions,
+) : LocalDetectionPermissionProvider {
+    override fun current(): LocalDetectionPermissions = current
+}
+
+private fun SkyObjectRepository.replacePermissionProviderForTest(
+    replacement: LocalDetectionPermissionProvider,
+): LocalDetectionPermissionProvider {
+    val field = SkyObjectRepository::class.java.getDeclaredField("localDetectionPermissionProvider")
+    field.isAccessible = true
+    return (field.get(this) as LocalDetectionPermissionProvider).also {
+        field.set(this, replacement)
     }
 }
 
