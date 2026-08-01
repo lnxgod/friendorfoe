@@ -15,7 +15,8 @@ object PrivacyFindingNormalizer {
             input.category == PrivacyCategory.REMOTE_LISTENING ||
             listOf(input.deviceType, input.deviceName, input.matchReason)
                 .filterNotNull().any { it.contains("listening", ignoreCase = true) }
-        val alreadyMappedAppleActivity = input.matchReason == "apple_activity"
+        val alreadyMappedAppleActivity = input.matchReason == "apple_activity" ||
+            input.matchReason == "own_device:apple_activity"
         if (!appleEvidence || (!listeningClaim && !alreadyMappedAppleActivity)) return input
 
         val airPodsEvidence = input.deviceType.contains("airpods", ignoreCase = true) ||

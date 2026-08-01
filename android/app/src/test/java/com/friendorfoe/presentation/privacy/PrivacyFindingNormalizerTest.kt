@@ -89,6 +89,39 @@ class PrivacyFindingNormalizerTest {
     }
 
     @Test
+    fun bondedLocalAppleActivityUsesOwnedNameAndScrubsLegacyDetails() {
+        val normalized = PrivacyFindingNormalizer.normalize(
+            detection(
+                deviceName = "Bill's AirPods Pro",
+                deviceType = "AirPods connection/activity nearby",
+                manufacturer = "Apple",
+                hasCamera = true,
+                matchReason = "own_device:apple_activity",
+                details = mapOf(
+                    "Apple State" to "AirPods in",
+                    "Listening Signal" to "legacy microphone claim",
+                    "legacy_claim" to "possible eavesdrop device",
+                ),
+                category = PrivacyCategory.APPLE_CONTINUITY,
+                isBonded = true,
+                bleCompanyId = 0x004C,
+                bleAppleFlags = 1,
+            )
+        )
+
+        assertEquals("Bill's AirPods Pro", normalized.deviceType)
+        assertEquals("Bill's AirPods Pro", normalized.deviceName)
+        assertEquals(PrivacyCategory.APPLE_CONTINUITY, normalized.category)
+        assertFalse(normalized.hasCamera)
+        assertEquals("apple_activity", normalized.matchReason)
+        assertEquals(mapOf(
+            "Apple State" to "AirPods in",
+            "evidence" to "An Apple device reports connected AirPods and media, call, or video activity.",
+            "limitation" to "Live Listen and microphone use cannot be determined from BLE.",
+        ), normalized.details)
+    }
+
+    @Test
     fun unbondedAppleDeviceDoesNotPreserveAdvertisedName() {
         val normalized = PrivacyFindingNormalizer.normalize(
             detection(
