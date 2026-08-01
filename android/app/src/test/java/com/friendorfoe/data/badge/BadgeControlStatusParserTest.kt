@@ -98,6 +98,44 @@ class BadgeControlStatusParserTest {
     }
 
     @Test
+    fun hashTokensMustBeUnsignedDecimalUint32Integers() {
+        val base = validStatusJson()
+        val fractionalTheme = parseBadgeControlStatus(
+            base.replace("\"theme_hash\":3282709133", "\"theme_hash\":3282709133.0"),
+            receivedAtElapsedMs = 10L
+        )!!
+        val scientificPolicy = parseBadgeControlStatus(
+            base.replace("\"display_policy_hash\":229466777", "\"display_policy_hash\":2.29466777e8"),
+            receivedAtElapsedMs = 10L
+        )!!
+        val negativeTheme = parseBadgeControlStatus(
+            base.replace("\"theme_hash\":3282709133", "\"theme_hash\":-1"),
+            receivedAtElapsedMs = 10L
+        )!!
+        val zeroPolicy = parseBadgeControlStatus(
+            base.replace("\"display_policy_hash\":229466777", "\"display_policy_hash\":0"),
+            receivedAtElapsedMs = 10L
+        )!!
+        val overflowTheme = parseBadgeControlStatus(
+            base.replace("\"theme_hash\":3282709133", "\"theme_hash\":4294967296"),
+            receivedAtElapsedMs = 10L
+        )!!
+
+        assertFalse(fractionalTheme.themeReadback.isEditable)
+        assertTrue(fractionalTheme.policyReadback.isEditable)
+        assertEquals("FLOCK CAM", fractionalTheme.entities.single().label)
+        assertFalse(scientificPolicy.policyReadback.isEditable)
+        assertTrue(scientificPolicy.themeReadback.isEditable)
+        assertEquals("FLOCK CAM", scientificPolicy.entities.single().label)
+        assertFalse(negativeTheme.themeReadback.isEditable)
+        assertTrue(negativeTheme.policyReadback.isEditable)
+        assertFalse(zeroPolicy.policyReadback.isEditable)
+        assertTrue(zeroPolicy.themeReadback.isEditable)
+        assertFalse(overflowTheme.themeReadback.isEditable)
+        assertTrue(overflowTheme.policyReadback.isEditable)
+    }
+
+    @Test
     fun persistedModeWinsOverRuntimeNetworkOff() {
         val status = parseBadgeControlStatus(
             validStatusJson(mode = "usb_only", runtimeNetworkMode = "off"),
@@ -239,6 +277,45 @@ class BadgeControlStatusParserTest {
     }
 
     @Test
+    fun themePolicyAndRowObjectsRequireExactRootShapes() {
+        val extraThemeRoot = completeThemeJson.replace(
+            "\"version\":1,",
+            "\"version\":1,\"future\":true,"
+        )
+        val extraPolicyRoot = completePolicyJson.replace(
+            "\"version\":1,",
+            "\"version\":1,\"future\":true,"
+        )
+        val extraPolicyRow = completePolicyJson.replace(
+            "\"priority\":100}",
+            "\"priority\":100,\"future\":true}"
+        )
+
+        val themeInvalid = parseBadgeControlStatus(
+            validStatusJson(themeJson = extraThemeRoot),
+            receivedAtElapsedMs = 10L
+        )!!
+        val policyRootInvalid = parseBadgeControlStatus(
+            validStatusJson(policyJson = extraPolicyRoot),
+            receivedAtElapsedMs = 10L
+        )!!
+        val policyRowInvalid = parseBadgeControlStatus(
+            validStatusJson(policyJson = extraPolicyRow),
+            receivedAtElapsedMs = 10L
+        )!!
+
+        assertFalse(themeInvalid.themeReadback.isEditable)
+        assertTrue(themeInvalid.policyReadback.isEditable)
+        assertEquals("FLOCK CAM", themeInvalid.entities.single().label)
+        assertFalse(policyRootInvalid.policyReadback.isEditable)
+        assertTrue(policyRootInvalid.themeReadback.isEditable)
+        assertEquals("FLOCK CAM", policyRootInvalid.entities.single().label)
+        assertFalse(policyRowInvalid.policyReadback.isEditable)
+        assertTrue(policyRowInvalid.themeReadback.isEditable)
+        assertEquals("FLOCK CAM", policyRowInvalid.entities.single().label)
+    }
+
+    @Test
     fun debugBridgeLastErrorPreservesMissingVersusBlank() {
         val blank = parseBadgeControlStatus(
             validStatusJson(),
@@ -259,6 +336,31 @@ class BadgeControlStatusParserTest {
         assertEquals("", blank.debugBridge?.lastError)
         assertNull(missing.debugBridge?.lastError)
         assertNull(wrongPrimitive.debugBridge?.lastError)
+    }
+
+    @Test
+    fun debugBridgeStatusAgePreservesSignedTimeAndRejectsInvalidValues() {
+        val underflow = parseBadgeControlStatus(
+            validStatusJson(),
+            receivedAtElapsedMs = 500L
+        )!!
+        val negative = parseBadgeControlStatus(
+            validStatusJson().replace("\"status_age_s\":1.25", "\"status_age_s\":-0.1"),
+            receivedAtElapsedMs = 500L
+        )!!
+        val nonFinite = parseBadgeControlStatus(
+            validStatusJson().replace("\"status_age_s\":1.25", "\"status_age_s\":1e309"),
+            receivedAtElapsedMs = 500L
+        )!!
+        val unrepresentable = parseBadgeControlStatus(
+            validStatusJson().replace("\"status_age_s\":1.25", "\"status_age_s\":1e16"),
+            receivedAtElapsedMs = 500L
+        )!!
+
+        assertEquals(-750L, underflow.debugBridge?.physicalResponseAtElapsedMs)
+        assertNull(negative.debugBridge?.physicalResponseAtElapsedMs)
+        assertNull(nonFinite.debugBridge?.physicalResponseAtElapsedMs)
+        assertNull(unrepresentable.debugBridge?.physicalResponseAtElapsedMs)
     }
 
     private fun validStatusJson(

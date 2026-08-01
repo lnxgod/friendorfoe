@@ -3,7 +3,8 @@ package com.friendorfoe.data.badge
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
-import kotlin.math.roundToLong
+import java.math.BigDecimal
+import java.math.RoundingMode
 
 internal fun parseBadgeControlStatus(
     json: String,
@@ -21,11 +22,11 @@ internal fun parseBadgeControlStatus(
         val countsObj = obj.badgeObjectOrNull("counts")
         val themeReadback = parseBadgeThemeReadback(
             obj.badgeObjectOrNull("theme"),
-            obj.badgeStrictLongOrNull("theme_hash")
+            obj.badgeFirmwareHashOrNull("theme_hash")
         )
         val policyReadback = parseBadgePolicyReadback(
             obj.badgeObjectOrNull("display_policy"),
-            obj.badgeStrictLongOrNull("display_policy_hash")
+            obj.badgeFirmwareHashOrNull("display_policy_hash")
         )
 
         BadgeControlStatus(
@@ -122,6 +123,15 @@ private fun parseBadgeThemeReadback(
         return BadgeConfigReadback(null, hash, "Theme hash is missing or unknown")
     }
     val parsed = runCatching {
+        require(
+            obj.keySet() == setOf(
+                "version",
+                "palette",
+                "background",
+                "brightness",
+                "accents"
+            )
+        ) { "Theme object shape is invalid" }
         val accentsObj = obj.badgeRequiredObject("accents")
         require(accentsObj.keySet() == BadgeTheme.accentOrder.toSet()) {
             "Theme accent set is incomplete"
@@ -157,6 +167,9 @@ private fun parseBadgePolicyReadback(
         return BadgeConfigReadback(null, hash, "Display policy hash is missing or unknown")
     }
     val parsed = runCatching {
+        require(obj.keySet() == setOf("version", "classes")) {
+            "Display policy object shape is invalid"
+        }
         val classesObj = obj.badgeRequiredObject("classes")
         require(classesObj.keySet() == BadgeDisplayPolicy.classOrder.toSet()) {
             "Display policy class set is incomplete"
@@ -166,6 +179,14 @@ private fun parseBadgePolicyReadback(
             classes = linkedMapOf<String, BadgeDisplayRule>().apply {
                 BadgeDisplayPolicy.classOrder.forEach { key ->
                     val row = classesObj.badgeRequiredObject(key)
+                    require(
+                        row.keySet() == setOf(
+                            "enabled",
+                            "lane",
+                            "min_proximity",
+                            "priority"
+                        )
+                    ) { "Display policy row shape is invalid: $key" }
                     put(
                         key,
                         BadgeDisplayRule(
@@ -215,12 +236,10 @@ private fun parseBadgeDebugBridgeEvidence(
     receivedAtElapsedMs: Long
 ): BadgeDebugBridgeEvidence? {
     if (obj == null) return null
-    val ageSeconds = obj.badgeStrictDoubleOrNull("status_age_s")
-    val responseAt = ageSeconds
-        ?.takeIf { it >= 0.0 }
-        ?.let { age ->
-            (receivedAtElapsedMs - (age * 1000.0).roundToLong()).coerceAtLeast(0L)
-        }
+    val ageMs = obj.badgeStatusAgeMsOrNull("status_age_s")
+    val responseAt = ageMs?.let { age ->
+        runCatching { Math.subtractExact(receivedAtElapsedMs, age) }.getOrNull()
+    }
     return BadgeDebugBridgeEvidence(
         physicalSerialPort = obj.badgeStrictStringOrNull("serial_port")
             ?.takeIf { it.isNotBlank() },
@@ -422,16 +441,29 @@ private fun JsonObject.badgeStrictStringOrNull(key: String): String? {
     return value.asString
 }
 
-private fun JsonObject.badgeStrictLongOrNull(key: String): Long? {
+private fun JsonObject.badgeFirmwareHashOrNull(key: String): Long? {
     val value = get(key) as? JsonPrimitive ?: return null
     if (!value.isNumber) return null
-    return runCatching { value.asLong }.getOrNull()
+    val wireNumber = value.toString()
+    if (!wireNumber.matches(Regex("\\d+"))) return null
+    return wireNumber.toLongOrNull()?.takeIf { it in 1..0xFFFF_FFFFL }
 }
 
-private fun JsonObject.badgeStrictDoubleOrNull(key: String): Double? {
+private fun JsonObject.badgeStatusAgeMsOrNull(key: String): Long? {
     val value = get(key) as? JsonPrimitive ?: return null
     if (!value.isNumber) return null
-    return runCatching { value.asDouble }.getOrNull()
+    val wireNumber = value.toString()
+    val seconds = wireNumber.toDoubleOrNull() ?: return null
+    if (!seconds.isFinite() || seconds < 0.0) return null
+    val milliseconds = runCatching {
+        BigDecimal(wireNumber)
+            .movePointRight(3)
+            .setScale(0, RoundingMode.HALF_UP)
+    }.getOrNull() ?: return null
+    if (milliseconds < BigDecimal.ZERO || milliseconds > BigDecimal.valueOf(Long.MAX_VALUE)) {
+        return null
+    }
+    return runCatching { milliseconds.longValueExact() }.getOrNull()
 }
 
 private fun JsonObject.badgeOptString(key: String): String =

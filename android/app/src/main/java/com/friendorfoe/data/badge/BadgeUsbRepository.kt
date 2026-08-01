@@ -1252,7 +1252,7 @@ class BadgeUsbRepository @Inject constructor(
         } else {
             null
         }
-        val recoveryAcknowledgement = recoveryTracker.accept(trimmed)
+        val recoveryAcknowledgement = recoveryTracker.acceptSerialLine(line)
         val recoveryStillPending = recoveryTracker.pendingCommand != null
         val firmwareProgress = when {
             trimmed.startsWith("FOF_FW_UPLOAD:") ->

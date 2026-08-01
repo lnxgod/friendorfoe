@@ -409,7 +409,7 @@ internal class BadgeRecoveryTracker {
     }
 
     @Synchronized
-    fun accept(line: String): BadgeRecoveryAcknowledgement? {
+    fun acceptSerialLine(line: String): BadgeRecoveryAcknowledgement? {
         val acknowledgement = parseBadgeRecoveryAcknowledgement(line, pendingCommand)
             ?: return null
         pendingCommand = null
