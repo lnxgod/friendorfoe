@@ -1,6 +1,13 @@
 package com.friendorfoe.presentation.privacy
 
 import com.friendorfoe.data.badge.BadgeThreatEntity
+import com.friendorfoe.data.badge.BadgeBleControlStatus
+import com.friendorfoe.data.badge.BadgeConfigReadback
+import com.friendorfoe.data.badge.BadgeControlStatus
+import com.friendorfoe.data.badge.BadgeNetworkModeReadback
+import com.friendorfoe.data.badge.BadgeReportingStatus
+import com.friendorfoe.data.badge.BadgeThreatCounts
+import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.detection.PrivacyCategory
 import java.time.Instant
 import org.junit.Assert.assertEquals
@@ -179,6 +186,27 @@ class BadgePrivacyMapperTest {
         assertEquals(PrivacyCategory.REMOTE_LISTENING, listeningOnly.category)
     }
 
+    @Test
+    fun remappingCachedBadgeStatusDoesNotRejuvenateAbsoluteLastSeenTime() {
+        val state = BadgeUsbState(
+            controlStatus = statusFixture(
+                receivedAtElapsedMs = 1_000,
+                entity = badgeEntity(
+                    label = "Venue beacon",
+                    detail = "cached row",
+                    category = "BEACON",
+                    code = "BCN",
+                ).copy(lastSeenSeconds = 2),
+            ),
+        )
+
+        val first = state.toPrivacyDetections().single()
+        val remappedThirtySecondsLater = state.toPrivacyDetections().single()
+
+        assertEquals(Instant.parse("2026-05-18T11:59:58Z"), first.lastSeen)
+        assertEquals(first.lastSeen, remappedThirtySecondsLater.lastSeen)
+    }
+
     private fun badgeEntity(
         label: String,
         detail: String,
@@ -218,5 +246,33 @@ class BadgePrivacyMapperTest {
         operatorLat = null,
         operatorLon = null,
         operatorId = null,
+    )
+
+    private fun statusFixture(
+        receivedAtElapsedMs: Long,
+        entity: BadgeThreatEntity,
+    ) = BadgeControlStatus(
+        version = "0.64.65",
+        receivedAtElapsedMs = receivedAtElapsedMs,
+        receivedAtWallClock = Instant.parse("2026-05-18T12:00:00Z"),
+        themeReadback = BadgeConfigReadback(null, null, "not included in fixture"),
+        policyReadback = BadgeConfigReadback(null, null, "not included in fixture"),
+        networkModeReadback = BadgeNetworkModeReadback(null, "not included in fixture"),
+        entities = listOf(entity),
+        scanners = emptyList(),
+        displayState = null,
+        debugBridge = null,
+        reporting = BadgeReportingStatus(),
+        counts = BadgeThreatCounts(),
+        bleControl = BadgeBleControlStatus(),
+        safeMode = false,
+        safeReason = "",
+        resetReason = "",
+        crashCount = 0,
+        recoveryMode = "",
+        stackFreeBytes = emptyMap(),
+        heapInternalFreeBytes = 0,
+        heapInternalMinimumFreeBytes = 0,
+        psramFreeBytes = 0,
     )
 }

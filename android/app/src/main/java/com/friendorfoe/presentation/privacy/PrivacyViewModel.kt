@@ -93,7 +93,7 @@ class PrivacyViewModel @Inject constructor(
 
     private val backendIntegrationState = PrivacyBackendIntegrationState(
         localDetections = skyObjectRepository.glassesDetections,
-        badgeState = badgeUsbRepository.state,
+        badgeState = badgeUsbRepository.legacyState,
     )
 
     private val _backendOnlyMode = MutableStateFlow(skyObjectRepository.prefs.backendOnlyMode)
@@ -114,7 +114,6 @@ class PrivacyViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
-        skyObjectRepository.ensureStarted(0.0, 0.0)
         // Poll the WifiAnomalyDetector every 15 s. Surfaces Pwnagotchi beacons
         // (attack tool), evil-twin APs, karma attacks — all computed off the
         // existing WiFi scan-results cache that other scanners already populate.
@@ -247,15 +246,6 @@ class PrivacyViewModel @Inject constructor(
         badgeUsbRepository.requestStatus()
     }
 
-    fun startBadgeUsb() {
-        syncBackendMode()
-        badgeUsbRepository.start()
-    }
-
-    fun stopBadgeUsb() {
-        badgeUsbRepository.stop()
-    }
-
     fun connectBadgeUsb() {
         badgeUsbRepository.requestConnection()
     }
@@ -274,19 +264,6 @@ class PrivacyViewModel @Inject constructor(
 
     fun badgeBootloader() {
         badgeUsbRepository.enterBootloader()
-    }
-
-    fun relayBadgeScannerFirmware(uart: String) {
-        badgeUsbRepository.relayScannerFirmware(uart)
-    }
-
-    fun flashBadgeScannerFirmware(uart: String, name: String, firmware: ByteArray) {
-        badgeUsbRepository.flashScannerFirmware(
-            uart = uart,
-            name = name,
-            version = "android-upload",
-            firmware = firmware
-        )
     }
 
     fun enablePhonePrivacyScanning() {
@@ -496,9 +473,9 @@ class PrivacyViewModel @Inject constructor(
     }
 }
 
-internal fun BadgeUsbState.toPrivacyDetections(now: Instant = Instant.now()): List<GlassesDetection> {
+internal fun BadgeUsbState.toPrivacyDetections(): List<GlassesDetection> {
     val status = controlStatus ?: return emptyList()
-    return status.entities.mapNotNull { it.toPrivacyDetection(now) }
+    return status.entities.mapNotNull { it.toPrivacyDetection(status.receivedAtWallClock) }
 }
 
 internal fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetection? {

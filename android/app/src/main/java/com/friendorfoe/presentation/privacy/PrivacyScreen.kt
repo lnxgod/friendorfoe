@@ -1,7 +1,5 @@
 package com.friendorfoe.presentation.privacy
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,7 +21,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,15 +29,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.badge.BadgeControlStatus
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
@@ -89,21 +82,6 @@ fun PrivacyScreen(
     val threatCount by viewModel.threatCount.collectAsStateWithLifecycle()
     val badgeUsbState by viewModel.badgeUsbState.collectAsStateWithLifecycle()
     val backendOnlyMode by viewModel.backendOnlyMode.collectAsStateWithLifecycle()
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_RESUME -> viewModel.startBadgeUsb()
-                Lifecycle.Event.ON_PAUSE -> viewModel.stopBadgeUsb()
-                else -> {}
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
 
     // Track expanded categories (high-threat auto-expanded)
     val expandedCategories = remember {
@@ -198,8 +176,6 @@ fun PrivacyScreen(
             onSetMode = viewModel::setBadgeMode,
             onReboot = viewModel::rebootBadge,
             onBootloader = viewModel::badgeBootloader,
-            onRelayScannerFirmware = viewModel::relayBadgeScannerFirmware,
-            onFlashScannerFirmware = viewModel::flashBadgeScannerFirmware,
             onApplyDisplayPolicy = viewModel::applyBadgeDisplayPolicy,
             onResetDisplayPolicy = viewModel::resetBadgeDisplayPolicy,
             onApplyTheme = viewModel::applyBadgeTheme,
@@ -486,8 +462,6 @@ private fun BadgeDetailPanel(
     onSetMode: (BadgeNetworkMode) -> Unit,
     onReboot: () -> Unit,
     onBootloader: () -> Unit,
-    onRelayScannerFirmware: (String) -> Unit,
-    onFlashScannerFirmware: (String, String, ByteArray) -> Unit,
     onApplyDisplayPolicy: (BadgeDisplayPolicy) -> Unit,
     onResetDisplayPolicy: () -> Unit,
     onApplyTheme: (BadgeTheme) -> Unit,
@@ -640,9 +614,7 @@ private fun BadgeDetailPanel(
                 state = state,
                 onSetMode = onSetMode,
                 onReboot = onReboot,
-                onBootloader = onBootloader,
-                onRelayScannerFirmware = onRelayScannerFirmware,
-                onFlashScannerFirmware = onFlashScannerFirmware
+                onBootloader = onBootloader
             )
             Spacer(modifier = Modifier.height(8.dp))
             val editableTheme = draftTheme
@@ -704,30 +676,8 @@ private fun BadgeOperationsSection(
     state: BadgeUsbState,
     onSetMode: (BadgeNetworkMode) -> Unit,
     onReboot: () -> Unit,
-    onBootloader: () -> Unit,
-    onRelayScannerFirmware: (String) -> Unit,
-    onFlashScannerFirmware: (String, String, ByteArray) -> Unit
+    onBootloader: () -> Unit
 ) {
-    val context = LocalContext.current
-    var pendingFirmwareUart by remember { mutableStateOf("ble") }
-    val firmwarePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            val bytes = runCatching {
-                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            }.getOrNull()
-            if (bytes != null && bytes.isNotEmpty()) {
-                val name = uri.lastPathSegment
-                    ?.substringAfterLast('/')
-                    ?.substringAfterLast(':')
-                    ?.ifBlank { null }
-                    ?: "scanner-s3-combo-fof_badge.bin"
-                onFlashScannerFirmware(pendingFirmwareUart, name, bytes)
-            }
-        }
-    }
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -747,8 +697,7 @@ private fun BadgeOperationsSection(
                 Text(
                     text = listOfNotNull(
                         state.transportLabel.ifBlank { null },
-                        state.controlStatus?.networkModeReadback?.value?.displayLabel(),
-                        state.firmwareProgress?.stage?.ifBlank { null }
+                        state.controlStatus?.networkModeReadback?.value?.displayLabel()
                     ).joinToString("  |  ").ifBlank { state.message },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -788,64 +737,6 @@ private fun BadgeOperationsSection(
                 enabled = state.controlStatus?.networkModeReadback?.isEditable == true,
                 modifier = Modifier.weight(1f)
             ) { Text("USB", maxLines = 1) }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "Scanner Firmware",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Button(
-                onClick = {
-                    pendingFirmwareUart = "ble"
-                    firmwarePicker.launch(arrayOf("application/octet-stream", "*/*"))
-                },
-                modifier = Modifier.weight(1f)
-            ) { Text("BLE Slot", maxLines = 1) }
-            Button(
-                onClick = {
-                    pendingFirmwareUart = "wifi"
-                    firmwarePicker.launch(arrayOf("application/octet-stream", "*/*"))
-                },
-                modifier = Modifier.weight(1f)
-            ) { Text("WiFi Slot", maxLines = 1) }
-        }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 6.dp)
-        ) {
-            OutlinedButton(
-                onClick = { onRelayScannerFirmware("ble") },
-                modifier = Modifier.weight(1f)
-            ) { Text("Relay BLE", maxLines = 1) }
-            OutlinedButton(
-                onClick = { onRelayScannerFirmware("wifi") },
-                modifier = Modifier.weight(1f)
-            ) { Text("Relay WiFi", maxLines = 1) }
-        }
-
-        state.firmwareProgress?.let { progress ->
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = progress.error.ifBlank {
-                    "${progress.kind} ${progress.uart.ifBlank { "scanner" }} ${progress.stage} ${progress.percent}%"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = if (progress.error.isBlank()) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.error
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
         }
 
         Spacer(modifier = Modifier.height(8.dp))

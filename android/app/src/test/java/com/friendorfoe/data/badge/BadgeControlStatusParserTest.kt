@@ -1,5 +1,6 @@
 package com.friendorfoe.data.badge
 
+import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -8,6 +9,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BadgeControlStatusParserTest {
+
+    private fun parseBadgeControlStatus(
+        json: String,
+        receivedAtElapsedMs: Long,
+    ): BadgeControlStatus? = com.friendorfoe.data.badge.parseBadgeControlStatus(
+        json = json,
+        receivedAtElapsedMs = receivedAtElapsedMs,
+        receivedAtWallClock = Instant.EPOCH,
+    )
 
     @Test
     fun parsesCompleteStrictReadbacksAndExtendedStatus() {

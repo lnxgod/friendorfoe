@@ -1,5 +1,7 @@
 package com.friendorfoe.data.badge
 
+import java.time.Instant
+
 data class BadgeDisplayState(
     val active: Boolean = false,
     val detailMode: Boolean = false,
@@ -170,6 +172,7 @@ data class BadgeDebugBridgeEvidence(
 data class BadgeControlStatus(
     val version: String,
     val receivedAtElapsedMs: Long,
+    val receivedAtWallClock: Instant,
     val themeReadback: BadgeConfigReadback<BadgeTheme>,
     val policyReadback: BadgeConfigReadback<BadgeDisplayPolicy>,
     val networkModeReadback: BadgeNetworkModeReadback,
@@ -209,5 +212,4 @@ data class BadgeUsbState(
     val eventCount: Int = 0,
     val detections: List<BadgeUsbDetection> = emptyList(),
     val controlStatus: BadgeControlStatus? = null,
-    val firmwareProgress: BadgeFirmwareProgress? = null
 )

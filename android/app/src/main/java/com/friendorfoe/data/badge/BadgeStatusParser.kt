@@ -5,10 +5,12 @@ import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.time.Instant
 
 internal fun parseBadgeControlStatus(
     json: String,
-    receivedAtElapsedMs: Long
+    receivedAtElapsedMs: Long,
+    receivedAtWallClock: Instant,
 ): BadgeControlStatus? {
     return runCatching {
         val element = JsonParser.parseString(json)
@@ -28,20 +30,21 @@ internal fun parseBadgeControlStatus(
             obj.badgeObjectOrNull("display_policy"),
             obj.badgeFirmwareHashOrNull("display_policy_hash")
         )
-
+        val debugBridge = parseBadgeDebugBridgeEvidence(
+            obj.badgeObjectOrNull("debug_bridge"),
+            receivedAtElapsedMs,
+        )
         BadgeControlStatus(
             version = version,
             receivedAtElapsedMs = receivedAtElapsedMs,
+            receivedAtWallClock = receivedAtWallClock,
             themeReadback = themeReadback,
             policyReadback = policyReadback,
             networkModeReadback = parseBadgeNetworkModeReadback(obj),
             entities = parseBadgeEntities(obj),
             scanners = parseBadgeScanners(obj),
             displayState = parseBadgeDisplayState(obj.badgeObjectOrNull("display_state")),
-            debugBridge = parseBadgeDebugBridgeEvidence(
-                obj.badgeObjectOrNull("debug_bridge"),
-                receivedAtElapsedMs
-            ),
+            debugBridge = debugBridge,
             reporting = BadgeReportingStatus(
                 networkMode = reportingObj?.badgeOptString("network_mode")
                     ?.takeIf { it.isNotBlank() }

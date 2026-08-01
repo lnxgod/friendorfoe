@@ -1,32 +1,29 @@
 package com.friendorfoe
 
 import android.app.Application
-import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
-import com.friendorfoe.data.repository.SkyObjectRepository
+import com.friendorfoe.data.badge.BadgeControlPort
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
 @HiltAndroidApp
-class FriendOrFoeApplication : Application() {
+class FriendOrFoeApplication : Application(), DefaultLifecycleObserver {
 
-    @Inject lateinit var skyObjectRepository: SkyObjectRepository
+    @Inject lateinit var badgeControlPort: BadgeControlPort
 
     override fun onCreate() {
-        super.onCreate()
+        super<Application>.onCreate()
 
-        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onStart(owner: LifecycleOwner) {
-                Log.i("FriendOrFoeApp", "App foregrounded — starting permission-eligible detection sources")
-                skyObjectRepository.ensureStarted(0.0, 0.0)
-            }
+        ProcessLifecycleOwner.get().lifecycle.addObserver(this)
+    }
 
-            override fun onStop(owner: LifecycleOwner) {
-                Log.i("FriendOrFoeApp", "App backgrounded — stopping scanning to save battery")
-                skyObjectRepository.stop()
-            }
-        })
+    override fun onStart(owner: LifecycleOwner) {
+        badgeControlPort.start()
+    }
+
+    override fun onStop(owner: LifecycleOwner) {
+        badgeControlPort.stop()
     }
 }

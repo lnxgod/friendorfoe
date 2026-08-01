@@ -101,7 +101,7 @@ class ListViewModel @Inject constructor(
     val bleTracker = skyObjectRepository.bleTracker
 
     /** Direct USB-C feed from the badge firmware. */
-    val badgeUsbState = badgeUsbRepository.state
+    val badgeUsbState = badgeUsbRepository.legacyState
 
     /** Ignore a privacy device (persists across restarts). */
     fun ignoreDevice(mac: String) {
@@ -111,14 +111,6 @@ class ListViewModel @Inject constructor(
     /** Start BLE direction scan to find a device. */
     fun startDirectionScan(mac: String) {
         bleTracker.startDirectionScan(mac)
-    }
-
-    fun startBadgeUsb() {
-        badgeUsbRepository.start()
-    }
-
-    fun stopBadgeUsb() {
-        badgeUsbRepository.stop()
     }
 
     fun connectBadgeUsb() {
@@ -143,19 +135,6 @@ class ListViewModel @Inject constructor(
 
     fun badgeBootloader() {
         badgeUsbRepository.enterBootloader()
-    }
-
-    fun relayBadgeScannerFirmware(uart: String) {
-        badgeUsbRepository.relayScannerFirmware(uart)
-    }
-
-    fun flashBadgeScannerFirmware(uart: String, name: String, firmware: ByteArray) {
-        badgeUsbRepository.flashScannerFirmware(
-            uart = uart,
-            name = name,
-            version = "android-upload",
-            firmware = firmware
-        )
     }
 
     fun applyBadgeDisplayPolicy(policy: BadgeDisplayPolicy) {
@@ -252,7 +231,6 @@ class ListViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         stopLocationUpdates()
-        stopBadgeUsb()
     }
 }
 

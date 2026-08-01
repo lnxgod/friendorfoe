@@ -5,6 +5,12 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val badgeDebugBridgeUrl = providers.gradleProperty("badgeDebugBridgeUrl")
+    .getOrElse("http://10.0.2.2:8765/")
+
+fun buildConfigString(value: String): String =
+    "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
 android {
     namespace = "com.friendorfoe"
     compileSdk = 35
@@ -40,9 +46,15 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            buildConfigField("String", "BADGE_DEBUG_BRIDGE_BASE_URL", buildConfigString(""))
         }
         debug {
             isMinifyEnabled = false
+            buildConfigField(
+                "String",
+                "BADGE_DEBUG_BRIDGE_BASE_URL",
+                buildConfigString(badgeDebugBridgeUrl),
+            )
         }
     }
 

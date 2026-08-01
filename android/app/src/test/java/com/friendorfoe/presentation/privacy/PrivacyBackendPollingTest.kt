@@ -38,6 +38,7 @@ class PrivacyBackendPollingTest {
                 controlStatus = BadgeControlStatus(
                     version = "test",
                     receivedAtElapsedMs = 0L,
+                    receivedAtWallClock = Instant.EPOCH,
                     themeReadback = BadgeConfigReadback(null, null, "not part of this fixture"),
                     policyReadback = BadgeConfigReadback(null, null, "not part of this fixture"),
                     networkModeReadback = BadgeNetworkModeReadback(
