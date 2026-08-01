@@ -51,6 +51,23 @@ class BadgePrivacySourceAdapterTest {
     }
 
     @Test
+    fun usbPermissionBlockedOffersBadgeConnectionRecovery() = runTest {
+        val port = FakeBadgePort().apply {
+            state.value = BadgeUsbState(
+                status = BadgeUsbStatus.PERMISSION_NEEDED,
+                message = "Badge permission is required",
+                transportLabel = "USB-C",
+            )
+        }
+        val adapter = adapterFor(port, FakeClock(), backgroundScope)
+
+        val snapshot = adapter.snapshots.value.single()
+        assertEquals(PrivacySourceKind.BADGE_USB, snapshot.health.source)
+        assertEquals(SourceHealthState.PERMISSION_BLOCKED, snapshot.health.state)
+        assertEquals("Connect badge", snapshot.health.recoveryLabel)
+    }
+
+    @Test
     fun connectingPhasesKeepOneResolutionStartUntilTheReducerDeadline() = runTest {
         val port = FakeBadgePort()
         val clock = FakeClock(elapsed = 10_000L)

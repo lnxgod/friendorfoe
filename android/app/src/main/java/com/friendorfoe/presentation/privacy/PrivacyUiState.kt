@@ -132,7 +132,14 @@ fun summarizePrivacySources(
             it.source == PrivacySourceKind.PHONE_BLE &&
             it.state == SourceHealthState.PAUSED
     }
-    if (pausedCorePhoneScan != null) {
+    val optionalPhoneStatesAreNonActionable = members
+        .filterNot { it.source == PrivacySourceKind.PHONE_BLE }
+        .all {
+            it.state == SourceHealthState.LIVE ||
+                it.state == SourceHealthState.PAUSED ||
+                it.state == SourceHealthState.UNSUPPORTED
+        }
+    if (pausedCorePhoneScan != null && optionalPhoneStatesAreNonActionable) {
         return@mapNotNull PrivacySourceSummary(
             group = group,
             state = SourceHealthState.PAUSED,
