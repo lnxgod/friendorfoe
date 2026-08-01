@@ -13,6 +13,132 @@ import org.junit.Test
 
 class MapPresentationTest {
     @Test
+    fun usableLocationPermissionWaitsForAFiniteNonOriginPosition() {
+        assertEquals(
+            MapCameraAction.WaitForLocation,
+            mapCameraAction(
+                locationPermissionUsable = true,
+                userPosition = Position(0.0, 0.0, 0.0),
+                cameraInitialized = false,
+                followPhone = false,
+                userControlsCamera = false,
+            ),
+        )
+        assertEquals(
+            MapCameraAction.WaitForLocation,
+            mapCameraAction(
+                locationPermissionUsable = true,
+                userPosition = Position(Double.NaN, -117.1, 0.0),
+                cameraInitialized = false,
+                followPhone = false,
+                userControlsCamera = false,
+            ),
+        )
+        assertEquals(
+            MapCameraAction.WaitForLocation,
+            mapCameraAction(
+                locationPermissionUsable = true,
+                userPosition = Position(32.7, Double.POSITIVE_INFINITY, 0.0),
+                cameraInitialized = false,
+                followPhone = false,
+                userControlsCamera = false,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldRevealMap(
+                locationPermissionUsable = true,
+                userPosition = Position(0.0, 0.0, 0.0),
+            ),
+        )
+    }
+
+    @Test
+    fun firstValidPhonePositionInitializesTheCamera() {
+        listOf(
+            Position(32.7, -117.1, 0.0),
+            Position(0.0, -117.1, 0.0),
+            Position(32.7, 0.0, 0.0),
+        ).forEach { position ->
+            assertEquals(
+                MapCameraAction.InitializeAtPhone,
+                mapCameraAction(
+                    locationPermissionUsable = true,
+                    userPosition = position,
+                    cameraInitialized = false,
+                    followPhone = false,
+                    userControlsCamera = false,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun ordinaryGpsUpdatesKeepTheInitializedCamera() {
+        assertEquals(
+            MapCameraAction.KeepUserCamera,
+            mapCameraAction(
+                locationPermissionUsable = true,
+                userPosition = Position(32.8, -117.2, 0.0),
+                cameraInitialized = true,
+                followPhone = false,
+                userControlsCamera = false,
+            ),
+        )
+    }
+
+    @Test
+    fun explicitFollowCentersOnThePhone() {
+        assertEquals(
+            MapCameraAction.FollowPhone,
+            mapCameraAction(
+                locationPermissionUsable = true,
+                userPosition = Position(32.8, -117.2, 0.0),
+                cameraInitialized = true,
+                followPhone = true,
+                userControlsCamera = false,
+            ),
+        )
+    }
+
+    @Test
+    fun userControlledCameraWinsOverLocationAndFollowChanges() {
+        assertEquals(
+            MapCameraAction.KeepUserCamera,
+            mapCameraAction(
+                locationPermissionUsable = true,
+                userPosition = Position(32.9, -117.3, 0.0),
+                cameraInitialized = true,
+                followPhone = true,
+                userControlsCamera = true,
+            ),
+        )
+    }
+
+    @Test
+    fun unavailableLocationPermissionRevealsTheBrowsableMapImmediately() {
+        val uninitializedPosition = Position(0.0, 0.0, 0.0)
+
+        assertEquals(
+            MapCameraAction.KeepUserCamera,
+            mapCameraAction(
+                locationPermissionUsable = false,
+                userPosition = uninitializedPosition,
+                cameraInitialized = false,
+                followPhone = false,
+                userControlsCamera = false,
+            ),
+        )
+        assertEquals(
+            true,
+            shouldRevealMap(
+                locationPermissionUsable = false,
+                userPosition = uninitializedPosition,
+            ),
+        )
+    }
+
+    @Test
     fun absentUserPositionNeverInventsAnOrigin() {
         val initial = MapUiState()
 
@@ -28,8 +154,12 @@ class MapPresentationTest {
             mapSurfaceForLocation(userPosition = null, locationDenied = true),
         )
         assertEquals(
-            MapSurfaceState.Ready,
+            MapSurfaceState.AwaitingLocation,
             mapSurfaceForLocation(Position(0.0, 0.0, 0.0), locationDenied = false),
+        )
+        assertEquals(
+            MapSurfaceState.Ready,
+            mapSurfaceForLocation(Position(32.7, -117.1, 0.0), locationDenied = false),
         )
     }
 

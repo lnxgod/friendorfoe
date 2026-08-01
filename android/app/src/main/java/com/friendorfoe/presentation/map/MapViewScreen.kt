@@ -25,9 +25,11 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -47,20 +49,11 @@ import com.friendorfoe.presentation.detail.DroneDetailContent
 import com.friendorfoe.presentation.filter.FilterBar
 import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.permissions.isUsable
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.onStart
-import kotlinx.coroutines.flow.transformLatest
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.MapEventsOverlay
-
-private const val MAP_PAN_TIMEOUT_MS = 10_000L
 
 internal class MapScreenLifecycleActions(
     private val canStartLocation: () -> Boolean = { true },
@@ -93,7 +86,7 @@ internal data class MapOverlayPlan(
     val renderTargets: Boolean,
     val renderUserMarker: Boolean,
     val renderPreciseUserOverlays: Boolean,
-    val autoCenterOnUser: Boolean,
+    val locationPermissionUsable: Boolean,
 )
 
 internal fun mapOverlayPlan(
@@ -106,21 +99,9 @@ internal fun mapOverlayPlan(
         renderUserMarker = hasUsableUserPosition,
         renderPreciseUserOverlays =
             locationPermissionState == PermissionUiState.Granted && hasValidUserPosition,
-        autoCenterOnUser = hasUsableUserPosition,
+        locationPermissionUsable = locationPermissionState.isUsable(),
     )
 }
-
-@OptIn(ExperimentalCoroutinesApi::class)
-internal fun mapPanActivity(
-    gestures: Flow<Unit>,
-    timeoutMs: Long = MAP_PAN_TIMEOUT_MS,
-): Flow<Boolean> = gestures
-    .transformLatest {
-        emit(true)
-        delay(timeoutMs)
-        emit(false)
-    }
-    .onStart { emit(false) }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -182,15 +163,7 @@ fun MapViewScreen(
         selectedObjectId?.let { detailViewModel.loadDetail(it) }
     }
 
-    val panGestures = remember {
-        MutableSharedFlow<Unit>(
-            extraBufferCapacity = 1,
-            onBufferOverflow = BufferOverflow.DROP_OLDEST,
-        )
-    }
-    val isUserPanning by remember(panGestures) {
-        mapPanActivity(panGestures)
-    }.collectAsState(initial = false)
+    var userControlsCamera by rememberSaveable { mutableStateOf(false) }
 
     val isDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
 
@@ -200,11 +173,11 @@ fun MapViewScreen(
             setMultiTouchControls(true)
             controller.setZoom(10.0)
             zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
-            // Detect user pan/zoom gestures to temporarily disable auto-center
+            // Any deliberate map touch leaves the camera under user control.
             setOnTouchListener { _, event ->
-                if (event.action == android.view.MotionEvent.ACTION_MOVE ||
-                    event.action == android.view.MotionEvent.ACTION_DOWN) {
-                    panGestures.tryEmit(Unit)
+                if (event.action == android.view.MotionEvent.ACTION_DOWN) {
+                    userControlsCamera = true
+                    viewModel.stopFollowingCompass()
                 }
                 false  // Don't consume — let the map handle it
             }
@@ -234,7 +207,11 @@ fun MapViewScreen(
     }
     val overlayPlan = mapOverlayPlan(
         locationPermissionState = locationPermissionState,
-        hasValidUserPosition = userPosition.latitude != 0.0 || userPosition.longitude != 0.0,
+        hasValidUserPosition = userPosition.hasValidMapCoordinates(),
+    )
+    val revealMap = shouldRevealMap(
+        locationPermissionUsable = locationPermissionState.isUsable(),
+        userPosition = userPosition,
     )
 
     // Apply dark mode color filter to map tiles
@@ -256,25 +233,46 @@ fun MapViewScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        AndroidView(
-            factory = { mapView },
-            modifier = Modifier.fillMaxSize(),
-            update = {
-                overlayController.render(
-                    mapTracks = mapTracks,
-                    userPosition = userPosition,
-                    followCompass = followCompass,
-                    stabilizedMapHeading = stabilizedMapHeading,
-                    activeVisualFocusIds = activeVisualFocusIds,
-                    remoteSensors = remoteSensors,
-                    sensorDrones = sensorDrones,
-                    remoteSearchResults = remoteSearchResults,
-                    remoteSearchCenter = remoteSearchCenter,
-                    isUserPanning = isUserPanning,
-                    overlayPlan = overlayPlan,
-                )
+        if (revealMap) {
+            AndroidView(
+                factory = { mapView },
+                modifier = Modifier.fillMaxSize(),
+                update = {
+                    overlayController.render(
+                        mapTracks = mapTracks,
+                        userPosition = userPosition,
+                        followCompass = followCompass,
+                        stabilizedMapHeading = stabilizedMapHeading,
+                        activeVisualFocusIds = activeVisualFocusIds,
+                        remoteSensors = remoteSensors,
+                        sensorDrones = sensorDrones,
+                        remoteSearchResults = remoteSearchResults,
+                        remoteSearchCenter = remoteSearchCenter,
+                        userControlsCamera = userControlsCamera,
+                        overlayPlan = overlayPlan,
+                    )
+                }
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surface),
+                contentAlignment = Alignment.Center,
+            ) {
+                androidx.compose.foundation.layout.Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator()
+                    Text(
+                        text = "Finding your location…",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
-        )
+        }
 
         if (!locationPermissionState.isUsable()) {
             Surface(
@@ -356,7 +354,10 @@ fun MapViewScreen(
 
         // Compass follow toggle FAB
         FloatingActionButton(
-            onClick = { viewModel.toggleFollowCompass() },
+            onClick = {
+                if (!followCompass) userControlsCamera = false
+                viewModel.toggleFollowCompass()
+            },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(16.dp)

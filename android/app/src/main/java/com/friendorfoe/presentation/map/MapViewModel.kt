@@ -285,16 +285,20 @@ class MapViewModel @Inject constructor(
     }
 
     fun toggleFollowCompass() {
-        val newValue = !_followCompass.value
-        if (newValue) {
+        if (_followCompass.value) {
+            stopFollowingCompass()
+        } else {
             if (compassSensorLease == null) {
                 compassSensorLease = sensorFusionEngine.acquire()
             }
-        } else {
-            compassSensorLease?.close()
-            compassSensorLease = null
+            _followCompass.value = true
         }
-        _followCompass.value = newValue
+    }
+
+    fun stopFollowingCompass() {
+        compassSensorLease?.close()
+        compassSensorLease = null
+        _followCompass.value = false
     }
 
     // --- Sensor map (ESP32 backend triangulation) ---

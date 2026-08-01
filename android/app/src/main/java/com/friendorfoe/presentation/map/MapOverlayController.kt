@@ -206,6 +206,7 @@ internal class MapOverlayController(
     private var remoteSearchRing: Polygon? = null
     private var distanceRingKey: DistanceRingKey? = null
     private val distanceRings = mutableListOf<Polygon>()
+    private var cameraInitialized = false
 
     fun render(
         mapTracks: List<MapTrack>,
@@ -217,10 +218,16 @@ internal class MapOverlayController(
         sensorDrones: List<LocatedDroneDto>,
         remoteSearchResults: List<SkyObject>,
         remoteSearchCenter: Position?,
-        isUserPanning: Boolean,
+        userControlsCamera: Boolean,
         overlayPlan: MapOverlayPlan,
     ) {
         map.mapOrientation = if (followCompass) -stabilizedMapHeading else 0f
+        applyCameraAction(
+            userPosition = userPosition,
+            followPhone = followCompass,
+            userControlsCamera = userControlsCamera,
+            locationPermissionUsable = overlayPlan.locationPermissionUsable,
+        )
 
         if (overlayPlan.renderTargets) {
             updateAircraftMarkers(mapTracks, activeVisualFocusIds)
@@ -231,7 +238,7 @@ internal class MapOverlayController(
             updateRemoteSearchRing(remoteSearchCenter)
         }
 
-        if (overlayPlan.renderUserMarker && userPosition.hasMapCoordinates()) {
+        if (overlayPlan.renderUserMarker && userPosition.hasValidMapCoordinates()) {
             val userGeoPoint = userPosition.toGeoPoint()
             if (overlayPlan.renderPreciseUserOverlays) {
                 updateDistanceRings(userPosition, remoteSearchCenter)
@@ -245,9 +252,6 @@ internal class MapOverlayController(
                 headingDegrees = stabilizedMapHeading,
                 precise = overlayPlan.renderPreciseUserOverlays,
             )
-            if (overlayPlan.autoCenterOnUser) {
-                updateCenter(userGeoPoint, followCompass, isUserPanning)
-            }
         } else {
             clearUserOverlays()
         }
@@ -260,7 +264,7 @@ internal class MapOverlayController(
         activeVisualFocusIds: Set<String>,
     ) {
         val presentations = tracks
-            .filter { it.position.hasMapCoordinates() }
+            .filter { it.position.hasValidMapCoordinates() }
             .map { track ->
                 track.toAircraftMarkerPresentation(track.skyObject.id in activeVisualFocusIds)
             }
@@ -309,7 +313,7 @@ internal class MapOverlayController(
         localObjectIds: Set<String>,
     ) {
         val desired = remoteSearchResults.filter {
-            it.position.hasMapCoordinates() && it.id !in localObjectIds
+            it.position.hasValidMapCoordinates() && it.id !in localObjectIds
         }
         remoteMarkers.render(
             desired = desired,
@@ -565,18 +569,30 @@ internal class MapOverlayController(
         clearPreciseUserOverlays()
     }
 
-    private fun updateCenter(userGeoPoint: GeoPoint, following: Boolean, isUserPanning: Boolean) {
-        if (isUserPanning) return
-        if (following) {
-            map.controller.animateTo(userGeoPoint)
-            return
+    private fun applyCameraAction(
+        userPosition: Position,
+        followPhone: Boolean,
+        userControlsCamera: Boolean,
+        locationPermissionUsable: Boolean,
+    ) {
+        when (
+            mapCameraAction(
+                locationPermissionUsable = locationPermissionUsable,
+                userPosition = userPosition,
+                cameraInitialized = cameraInitialized,
+                followPhone = followPhone,
+                userControlsCamera = userControlsCamera,
+            )
+        ) {
+            MapCameraAction.InitializeAtPhone -> {
+                map.controller.setZoom(INITIAL_MAP_ZOOM)
+                map.controller.setCenter(userPosition.toGeoPoint())
+                cameraInitialized = true
+            }
+            MapCameraAction.FollowPhone -> map.controller.setCenter(userPosition.toGeoPoint())
+            MapCameraAction.WaitForLocation,
+            MapCameraAction.KeepUserCamera -> Unit
         }
-
-        val currentCenter = map.mapCenter
-        val distanceMeters = userGeoPoint.distanceToAsDouble(
-            GeoPoint(currentCenter.latitude, currentCenter.longitude)
-        )
-        if (distanceMeters > 500) map.controller.animateTo(userGeoPoint)
     }
 
     private fun createDistanceRing(center: GeoPoint, radiusNm: Double): Polygon = Polygon(map).apply {
@@ -636,8 +652,6 @@ private fun markerSnippet(obj: SkyObject): String = when (obj) {
     }
     is Drone -> obj.manufacturer ?: "Unknown drone"
 }
-
-private fun Position.hasMapCoordinates(): Boolean = latitude != 0.0 || longitude != 0.0
 
 private fun Position.toGeoPoint(): GeoPoint = GeoPoint(latitude, longitude)
 

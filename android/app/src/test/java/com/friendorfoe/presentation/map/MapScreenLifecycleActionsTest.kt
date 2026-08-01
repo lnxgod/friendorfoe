@@ -83,7 +83,7 @@ class MapScreenLifecycleActionsTest {
         assertTrue(plan.renderTargets)
         assertFalse(plan.renderUserMarker)
         assertFalse(plan.renderPreciseUserOverlays)
-        assertFalse(plan.autoCenterOnUser)
+        assertFalse(plan.locationPermissionUsable)
     }
 
     @Test
@@ -96,6 +96,6 @@ class MapScreenLifecycleActionsTest {
         assertTrue(plan.renderTargets)
         assertTrue(plan.renderUserMarker)
         assertFalse(plan.renderPreciseUserOverlays)
-        assertTrue(plan.autoCenterOnUser)
+        assertTrue(plan.locationPermissionUsable)
     }
 }
