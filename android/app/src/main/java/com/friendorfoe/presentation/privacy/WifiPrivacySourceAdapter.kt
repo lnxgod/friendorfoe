@@ -92,6 +92,7 @@ class WifiPrivacySourceAdapter internal constructor(
         if (source != PrivacySourceKind.WIFI_ANALYSIS) {
             return PrivacyRecoveryResult.SourceUnavailable(source)
         }
+        resetLoadingDeadline()
         retry.emit(Unit)
         return PrivacyRecoveryResult.Recovered(source)
     }
@@ -233,7 +234,23 @@ class WifiPrivacySourceAdapter internal constructor(
     }
 
     private fun updateSnapshot(transform: (PrivacySourceSnapshot) -> PrivacySourceSnapshot) {
-        _snapshots.update { current -> listOf(transform(current.single())) }
+        _snapshots.update { current ->
+            val previous = current.single()
+            listOf(transform(previous).preserveLoadingStartFrom(previous))
+        }
+    }
+
+    private fun resetLoadingDeadline() {
+        _snapshots.update { current ->
+            val snapshot = current.single()
+            listOf(
+                if (snapshot.health.state == SourceHealthState.LOADING) {
+                    snapshot.copy(emittedAtElapsedMs = clock.nowElapsedMs())
+                } else {
+                    snapshot
+                },
+            )
+        }
     }
 
     private fun rows(): List<PrivacyFinding> =

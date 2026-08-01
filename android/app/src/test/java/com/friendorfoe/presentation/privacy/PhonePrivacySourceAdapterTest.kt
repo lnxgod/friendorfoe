@@ -32,6 +32,26 @@ import org.junit.Test
 class PhonePrivacySourceAdapterTest {
 
     @Test
+    fun enabledStartupDoesNotRestampItsLoadingDeadline() = runTest {
+        val clock = FakeClock(elapsed = 1_000L)
+        val adapter = adapter(
+            settings = MutableStateFlow(
+                DetectionSettings.defaults().copy(phonePrivacyScanEnabled = true),
+            ),
+            permissions = MutableStateFlow(
+                LocalDetectionPermissions.None.copy(bluetoothScan = true),
+            ),
+            clock = clock,
+        )
+        clock.elapsed = 5_000L
+
+        runCurrent()
+
+        assertEquals(SourceHealthState.LOADING, adapter.bleSnapshot().health.state)
+        assertEquals(1_000L, adapter.bleSnapshot().emittedAtElapsedMs)
+    }
+
+    @Test
     fun rssiSampleStreamUsesTheMappedObservationKeyAndCapturedBearing() = runTest {
         val settings = MutableStateFlow(
             DetectionSettings.defaults().copy(phonePrivacyScanEnabled = true),

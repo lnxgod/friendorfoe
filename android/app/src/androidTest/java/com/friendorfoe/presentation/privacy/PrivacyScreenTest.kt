@@ -95,6 +95,25 @@ class PrivacyScreenTest {
     }
 
     @Test
+    fun headerQualifiesZeroFindingsWhileSourcesAreStillResolving() {
+        val state = projectPrivacyUiState(
+            PrivacyCurrentState(
+                sources = listOf(health(PrivacySourceKind.PHONE_BLE, SourceHealthState.LOADING)),
+                findings = emptyList(),
+                threatCount = 0,
+                alertEligible = emptyList(),
+                initialResolutionComplete = false,
+            ),
+        )
+        compose.setContent {
+            FriendOrFoeTheme { PrivacyContent(state, PrivacyActions()) }
+        }
+
+        compose.onNodeWithText("0 findings so far · sources still resolving").assertIsDisplayed()
+        compose.onNodeWithText("0 current findings").assertDoesNotExist()
+    }
+
+    @Test
     fun noMatchesExplainsFiltersAndOffersARealReset() {
         var cleared = 0
         val state = projectPrivacyUiState(

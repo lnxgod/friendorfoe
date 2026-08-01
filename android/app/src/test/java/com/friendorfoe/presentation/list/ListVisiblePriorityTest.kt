@@ -144,6 +144,37 @@ class ListVisiblePriorityTest {
         assertEquals(Color(0xFF1565C0), listAttentionColor(signaledAircraft))
     }
 
+    @Test
+    fun `rows expose exact human source labels`() {
+        assertEquals("ADS-B", listSourceLabel(DetectionSource.ADS_B))
+        assertEquals("Remote ID", listSourceLabel(DetectionSource.REMOTE_ID))
+        assertEquals("Remote ID · Wi-Fi", listSourceLabel(DetectionSource.WIFI_NAN))
+        assertEquals("Remote ID · Wi-Fi", listSourceLabel(DetectionSource.WIFI_BEACON))
+        assertEquals("Phone", listSourceLabel(DetectionSource.WIFI))
+    }
+
+    @Test
+    fun `rows expose category and attention as text not color alone`() {
+        val sheriff = aircraft(
+            id = "SHERIFF",
+            confidence = 0.95f,
+            distanceMeters = 2_000.0,
+            category = ObjectCategory.GOVERNMENT,
+            operatorName = "SAN DIEGO COUNTY SHERIFF",
+            classificationSignals = listOf("OWNER:PUBLIC_SAFETY"),
+        )
+        val military = aircraft(
+            id = "MIL",
+            confidence = 0.95f,
+            distanceMeters = 2_000.0,
+            category = ObjectCategory.MILITARY,
+        )
+
+        assertEquals("General aviation", listCategoryLabel(ObjectCategory.GENERAL_AVIATION))
+        assertEquals("Law enforcement", listAttentionLabel(sheriff))
+        assertEquals("Military", listAttentionLabel(military))
+    }
+
     private fun aircraft(
         id: String,
         confidence: Float,

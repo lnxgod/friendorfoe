@@ -141,12 +141,14 @@ fun ArViewScreen(
     viewModel: ArViewModel = hiltViewModel(),
     detailViewModel: DetailViewModel = hiltViewModel(),
     captureReviewViewModel: CaptureReviewViewModel = hiltViewModel(),
+    isPreciseLocation: Boolean = true,
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val activity = LocalContext.current as? Activity
 
     // Collect state from ViewModel
     val screenPositions by viewModel.screenPositions.collectAsStateWithLifecycle()
+    val displayedScreenPositions = if (isPreciseLocation) screenPositions else emptyList()
     val aircraftCount by viewModel.aircraftCount.collectAsStateWithLifecycle()
     val droneCount by viewModel.droneCount.collectAsStateWithLifecycle()
     val militaryCount by viewModel.militaryCount.collectAsStateWithLifecycle()
@@ -252,6 +254,13 @@ fun ArViewScreen(
         selectedObjectId?.let { detailViewModel.loadDetail(it) }
     }
 
+    LaunchedEffect(isPreciseLocation) {
+        if (!isPreciseLocation) {
+            viewModel.selectObject(null)
+            viewModel.unlockObject()
+        }
+    }
+
     LaunchedEffect(captureReviewViewModel, context) {
         captureReviewViewModel.effects.collect { effect ->
             when (effect) {
@@ -274,7 +283,7 @@ fun ArViewScreen(
 
         // Layer 2: AR Overlay with floating labels + visual bounding boxes
         ArOverlay(
-            screenPositions = screenPositions,
+            screenPositions = displayedScreenPositions,
             unmatchedVisuals = unmatchedVisuals,
             classifiedUnknowns = classifiedUnknowns,
             darkTargetScores = darkTargetScores,
@@ -307,7 +316,7 @@ fun ArViewScreen(
 
         // Lock-on HUD badge: shown when an object is locked
         if (lockedObjectId != null) {
-            val lockedLabel = screenPositions
+            val lockedLabel = displayedScreenPositions
                 .firstOrNull { it.skyObject.id == lockedObjectId }
                 ?.let { sp ->
                     when (val obj = sp.skyObject) {
@@ -537,7 +546,7 @@ fun ArViewScreen(
     // Auto-zoom when detail bottom sheet opens
     LaunchedEffect(selectedObjectId) {
         if (selectedObjectId != null) {
-            val sp = screenPositions.firstOrNull { it.skyObject.id == selectedObjectId }
+            val sp = displayedScreenPositions.firstOrNull { it.skyObject.id == selectedObjectId }
             if (sp != null) {
                 viewModel.zoomToObject(sp.distanceMeters)
             }
@@ -573,7 +582,9 @@ fun ArViewScreen(
                         aircraft = state.aircraft,
                         detail = state.detail,
                         onZoom = {
-                            val sp = screenPositions.firstOrNull { it.skyObject.id == state.aircraft.id }
+                            val sp = displayedScreenPositions.firstOrNull {
+                                it.skyObject.id == state.aircraft.id
+                            }
                             if (sp != null) {
                                 val synth = VisualDetection(
                                     trackingId = sp.skyObject.id.hashCode(),
@@ -600,7 +611,9 @@ fun ArViewScreen(
                         nearbyCandidates = nearbyCandidates,
                         positionTrail = positionTrail,
                         onZoom = {
-                            val sp = screenPositions.firstOrNull { it.skyObject.id == state.drone.id }
+                            val sp = displayedScreenPositions.firstOrNull {
+                                it.skyObject.id == state.drone.id
+                            }
                             if (sp != null) {
                                 val synth = VisualDetection(
                                     trackingId = sp.skyObject.id.hashCode(),

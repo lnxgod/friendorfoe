@@ -3,6 +3,7 @@ package com.friendorfoe.presentation.filter
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.FilterChip
@@ -49,7 +50,8 @@ fun FilterCategoryChips(
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = color.copy(alpha = 0.2f),
                     selectedLabelColor = color
-                )
+                ),
+                modifier = Modifier.heightIn(min = 48.dp),
             )
         }
     }

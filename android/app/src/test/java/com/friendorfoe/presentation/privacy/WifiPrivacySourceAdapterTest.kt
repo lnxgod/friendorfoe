@@ -26,6 +26,23 @@ import org.junit.Test
 class WifiPrivacySourceAdapterTest {
 
     @Test
+    fun enabledStartupDoesNotRestampItsLoadingDeadline() = runTest {
+        val clock = FakeClock(elapsed = 500L)
+        val adapter = adapter(
+            settings = enabledSettings(signatures = true, anomalies = false),
+            permissions = permitted(),
+            wifiEvents = { flow { awaitCancellation() } },
+            clock = clock,
+        )
+        clock.elapsed = 5_000L
+
+        runCurrent()
+
+        assertEquals(SourceHealthState.LOADING, adapter.snapshot().health.state)
+        assertEquals(500L, adapter.snapshot().emittedAtElapsedMs)
+    }
+
+    @Test
     fun pausedAndPermissionBlockedGatesNeverAcquireThePhysicalScanStream() = runTest {
         val settings = MutableStateFlow(
             DetectionSettings.defaults().copy(
@@ -209,13 +226,14 @@ class WifiPrivacySourceAdapterTest {
         wifiEvents: () -> Flow<WifiScanEvent>,
         signatureMapper: (WifiScanBatch) -> List<GlassesDetection> = { emptyList() },
         anomalyMapper: (WifiScanBatch) -> List<WifiAnomalyDetector.WifiAnomaly> = { emptyList() },
+        clock: FakeClock = FakeClock(),
     ) = WifiPrivacySourceAdapter(
         settings = settings,
         permissions = permissions,
         wifiEvents = wifiEvents,
         signatureMapper = signatureMapper,
         anomalyMapper = anomalyMapper,
-        clock = FakeClock(),
+        clock = clock,
         scope = backgroundScope,
     )
 
@@ -275,8 +293,10 @@ class WifiPrivacySourceAdapterTest {
 
     private fun WifiPrivacySourceAdapter.snapshot(): PrivacySourceSnapshot = snapshots.value.single()
 
-    private class FakeClock : MonotonicClock {
-        override fun nowElapsedMs(): Long = 500L
+    private class FakeClock(
+        var elapsed: Long = 500L,
+    ) : MonotonicClock {
+        override fun nowElapsedMs(): Long = elapsed
         override fun nowWallClock(): Instant = Instant.ofEpochMilli(5_000L)
         override fun ticks(periodMs: Long): Flow<Long> = MutableStateFlow(nowElapsedMs())
     }

@@ -52,7 +52,9 @@ fun presentHistoricalDetail(row: HistoryEntity): DetailPresentation = DetailPres
     advanced = buildList {
         row.description?.takeIf(String::isNotBlank)?.let { add(DetailField("Description", it)) }
         row.distanceMeters?.let { add(DetailField("Distance at observation", formatDetailDistance(it))) }
-        add(DetailField("Position at observation", formatPosition(row.latitude, row.longitude)))
+        formatKnownPosition(row.latitude, row.longitude)?.let {
+            add(DetailField("Position at observation", it))
+        }
         add(DetailField("Altitude at observation", formatAltitude(row.altitudeMeters)))
         add(DetailField("Confidence", formatConfidence(row.confidence)))
     },
@@ -61,7 +63,10 @@ fun presentHistoricalDetail(row: HistoryEntity): DetailPresentation = DetailPres
         DetailField("Object type", row.objectType),
         DetailField("First observed", formatDetailInstant(Instant.ofEpochMilli(row.firstSeen))),
         DetailField("Last observed", formatDetailInstant(Instant.ofEpochMilli(row.lastSeen))),
-        DetailField("Phone position at observation", formatPosition(row.userLatitude, row.userLongitude)),
+    ) + listOfNotNull(
+        formatKnownPosition(row.userLatitude, row.userLongitude)?.let {
+            DetailField("Phone position at observation", it)
+        },
     ),
     retryLabel = null,
 )
@@ -100,7 +105,7 @@ fun presentLiveDetail(
             operator?.let { add(DetailField("Operator", it)) }
             remoteDetail?.country?.takeIf(String::isNotBlank)?.let { add(DetailField("Country", it)) }
             routeLabel(origin, destination)?.let { add(DetailField("Route", it)) }
-            add(DetailField("Position", aircraft.position.format()))
+            aircraft.position.formatKnown()?.let { add(DetailField("Position", it)) }
             add(DetailField("Altitude", formatAltitude(aircraft.position.altitudeMeters)))
             aircraft.position.speedMps?.let { add(DetailField("Speed", formatSpeed(it))) }
             aircraft.position.heading?.let { add(DetailField("Heading", "${it.roundToInt()}°")) }
@@ -144,7 +149,7 @@ fun presentLiveDroneDetail(drone: Drone): DetailPresentation = DetailPresentatio
         drone.estimatedDistanceMeters?.let {
             add(DetailField("Estimated signal distance", formatDetailDistance(it)))
         }
-        add(DetailField("Position", drone.position.format()))
+        drone.position.formatKnown()?.let { add(DetailField("Position", it)) }
         add(DetailField("Altitude", formatAltitude(drone.position.altitudeMeters)))
         operatorPosition(drone)?.let { add(DetailField("Operator position", it)) }
         add(DetailField("Confidence", formatConfidence(drone.confidence)))
@@ -202,7 +207,10 @@ private fun historyCategoryLabel(category: String): String = ObjectCategory.entr
     ?: category.replace('_', ' ').trim().replaceFirstChar { it.titlecase(Locale.US) }
         .ifBlank { "Unclassified" }
 
-private fun Position.format(): String = formatPosition(latitude, longitude)
+private fun Position.formatKnown(): String? = formatKnownPosition(latitude, longitude)
+
+private fun formatKnownPosition(latitude: Double, longitude: Double): String? =
+    if (latitude == 0.0 && longitude == 0.0) null else formatPosition(latitude, longitude)
 
 private fun formatPosition(latitude: Double, longitude: Double): String =
     String.format(Locale.US, "%.5f, %.5f", latitude, longitude)
@@ -210,7 +218,7 @@ private fun formatPosition(latitude: Double, longitude: Double): String =
 private fun operatorPosition(drone: Drone): String? {
     val latitude = drone.operatorLatitude ?: return null
     val longitude = drone.operatorLongitude ?: return null
-    return formatPosition(latitude, longitude)
+    return formatKnownPosition(latitude, longitude)
 }
 
 private fun formatAltitude(meters: Double): String =

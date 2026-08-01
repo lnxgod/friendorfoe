@@ -14,6 +14,18 @@ data class HistoryUiState(
     val deletionInProgress: Boolean = false,
 )
 
+data class HistoryActions(
+    val onQueryChanged: (String) -> Unit = {},
+    val onOpenFilters: () -> Unit = {},
+    val onClearFilters: () -> Unit = {},
+    val onOpenRow: (Long) -> Unit = {},
+    val onRequestDelete: (HistoryEntity) -> Unit = {},
+    val onRequestClearAll: () -> Unit = {},
+    val onRetry: () -> Unit = {},
+    val onDismissDeletion: () -> Unit = {},
+    val onConfirmDeletion: () -> Unit = {},
+)
+
 sealed interface PendingHistoryDeletion {
     data class Row(val id: Long, val label: String) : PendingHistoryDeletion
     data object All : PendingHistoryDeletion

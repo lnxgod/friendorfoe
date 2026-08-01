@@ -1,5 +1,6 @@
 package com.friendorfoe.presentation.about
 
+import androidx.lifecycle.SavedStateHandle
 import com.friendorfoe.data.AppVersion
 import com.friendorfoe.data.BackendEndpoint
 import com.friendorfoe.data.DetectionSettings
@@ -9,6 +10,9 @@ import com.friendorfoe.data.repository.AppUpdateMetadata
 import com.friendorfoe.data.repository.AppUpdateRepository
 import com.friendorfoe.data.repository.BackendSessionHealthRepository
 import com.friendorfoe.data.repository.SessionHealth
+import com.friendorfoe.presentation.permissions.AppFeature
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.PermissionStateSource
 import com.friendorfoe.test.MainDispatcherRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -146,26 +150,161 @@ class AboutViewModelTest {
     }
 
     @Test
-    fun sourceStatusDoesNotCallAConfiguredSourceOnWithoutRuntimeEvidence() = runTest {
-        val viewModel = viewModel(
-            settings = FakeInfoSettingsStore(DetectionSettings.defaults().copy(
+    fun sourceStatusCallsOutMissingRuntimeAndNotificationDelivery() {
+        val statuses = sourceStatus(
+            settings = DetectionSettings.defaults().copy(
                 phonePrivacyScanEnabled = true,
                 privacyNotificationsEnabled = true,
-            )),
+            ),
+            endpoint = endpoint("http://fof-server.local:8000/"),
+            health = SessionHealth.Untested,
+            permissionStates = mapOf(
+                AppFeature.LOCAL_RADIO_DISCOVERY to PermissionUiState.Granted,
+                AppFeature.PHONE_PRIVACY_SCAN to PermissionUiState.Denied,
+                AppFeature.ULTRASONIC to PermissionUiState.Denied,
+                AppFeature.PRIVACY_ALERTS to PermissionUiState.NotificationsBlocked,
+                AppFeature.SKY_ALERTS to PermissionUiState.Granted,
+            ),
+        )
+
+        val privacy = statuses.single {
+            it.key == InfoSourceKey.PHONE_PRIVACY_SCAN
+        }
+        val notifications = statuses.single {
+            it.key == InfoSourceKey.NOTIFICATION_DELIVERY
+        }
+        assertEquals("Permission needed", privacy.statusText)
+        assertEquals("Permission needed", notifications.statusText)
+        assertFalse(privacy.effective ?: true)
+        assertFalse(notifications.effective ?: true)
+    }
+
+    @Test
+    fun permissionBackedSettingsMapOnlyToTheFeatureTheyActuallyNeed() {
+        assertEquals(
+            AppFeature.LOCAL_RADIO_DISCOVERY,
+            permissionFeatureForSetting(InfoSettingKey.BLE_REMOTE_ID),
+        )
+        assertEquals(
+            AppFeature.LOCAL_RADIO_DISCOVERY,
+            permissionFeatureForSetting(InfoSettingKey.WIFI_REMOTE_ID),
+        )
+        assertEquals(
+            AppFeature.PHONE_PRIVACY_SCAN,
+            permissionFeatureForSetting(InfoSettingKey.PHONE_PRIVACY_SCAN),
+        )
+        assertEquals(
+            AppFeature.PRIVACY_ALERTS,
+            permissionFeatureForSetting(InfoSettingKey.PRIVACY_ALERTS),
+        )
+        listOf(
+            InfoSettingKey.DRONE_ALERTS,
+            InfoSettingKey.HELICOPTER_ALERTS,
+            InfoSettingKey.MILITARY_ALERTS,
+            InfoSettingKey.POLICE_ALERTS,
+        ).forEach {
+            assertEquals(AppFeature.SKY_ALERTS, permissionFeatureForSetting(it))
+        }
+        assertEquals(AppFeature.ULTRASONIC, permissionFeatureForSetting(InfoSettingKey.ULTRASONIC))
+        assertNull(permissionFeatureForSetting(InfoSettingKey.ADS_B))
+        assertNull(permissionFeatureForSetting(InfoSettingKey.STALKER))
+    }
+
+    @Test
+    fun followerAndWifiAnomalyControlsWaitForAnEffectivePhoneScan() {
+        val configured = DetectionSettings.defaults().copy(
+            phonePrivacyScanEnabled = true,
+            backendOnlyMode = false,
+        )
+
+        assertFalse(
+            isInfoSettingInteractive(
+                InfoSettingKey.STALKER,
+                configured,
+                PermissionUiState.Denied,
+            )
+        )
+        assertFalse(
+            isInfoSettingInteractive(
+                InfoSettingKey.WIFI_ANOMALY,
+                configured.copy(phonePrivacyScanEnabled = false),
+                PermissionUiState.Granted,
+            )
+        )
+        assertTrue(
+            isInfoSettingInteractive(
+                InfoSettingKey.STALKER,
+                configured,
+                PermissionUiState.Granted,
+            )
+        )
+        assertFalse(
+            isInfoSettingInteractive(
+                InfoSettingKey.WIFI_ANOMALY,
+                configured.copy(backendOnlyMode = true),
+                PermissionUiState.Granted,
+            )
+        )
+        assertEquals(
+            "Requires Phone privacy scan.",
+            infoSettingDisabledReason(
+                InfoSettingKey.STALKER,
+                configured.copy(phonePrivacyScanEnabled = false),
+                PermissionUiState.Granted,
+            ),
+        )
+        assertEquals(
+            "Unavailable in backend-only mode.",
+            infoSettingDisabledReason(
+                InfoSettingKey.WIFI_ANOMALY,
+                configured.copy(backendOnlyMode = true),
+                PermissionUiState.Granted,
+            ),
+        )
+    }
+
+    @Test
+    fun pendingPermissionEnableSurvivesRecreationAndCommitsAfterGrant() = runTest {
+        val settings = FakeInfoSettingsStore(
+            DetectionSettings.defaults().copy(phonePrivacyScanEnabled = false)
+        )
+        val savedState = SavedStateHandle()
+        val deniedPermissions = AppFeature.entries.associateWith { feature ->
+            if (feature == AppFeature.PHONE_PRIVACY_SCAN) PermissionUiState.Denied
+            else PermissionUiState.Granted
+        }
+        val first = viewModel(
+            settings = settings,
             session = sessionRepository(),
+            savedStateHandle = savedState,
+            permissionStates = deniedPermissions,
+        )
+
+        first.beginPermissionEnable(InfoSettingKey.PHONE_PRIVACY_SCAN)
+        first.markPermissionRequestLaunched()
+
+        val recreated = viewModel(
+            settings = settings,
+            session = sessionRepository(),
+            savedStateHandle = savedState,
+            permissionStates = deniedPermissions,
+        )
+        assertEquals(
+            InfoSettingKey.PHONE_PRIVACY_SCAN,
+            recreated.pendingPermissionSetting.value?.key,
+        )
+
+        recreated.resolvePendingPermission(
+            feature = AppFeature.PHONE_PRIVACY_SCAN,
+            state = PermissionUiState.Granted,
         )
         advanceUntilIdle()
 
-        val privacy = viewModel.uiState.value.sourceStatus.single {
-            it.key == InfoSourceKey.PHONE_PRIVACY_SCAN
-        }
-        val notifications = viewModel.uiState.value.sourceStatus.single {
-            it.key == InfoSourceKey.NOTIFICATION_DELIVERY
-        }
-        assertEquals("Configured", privacy.statusText)
-        assertEquals("Configured", notifications.statusText)
-        assertNull(privacy.effective)
-        assertNull(notifications.effective)
+        assertEquals(
+            InfoSettingKey.PHONE_PRIVACY_SCAN to true,
+            settings.writes.last(),
+        )
+        assertNull(recreated.pendingPermissionSetting.value)
     }
 
     @Test
@@ -183,11 +322,16 @@ class AboutViewModelTest {
         session: BackendSessionHealthRepository,
         updateRepository: AppUpdateRepository = FixedUpdateRepository(Result.failure(Exception())),
         installed: AppVersion = AppVersion(108, "0.64.65"),
+        permissionStates: Map<AppFeature, PermissionUiState> =
+            AppFeature.entries.associateWith { PermissionUiState.Granted },
+        savedStateHandle: SavedStateHandle = SavedStateHandle(),
     ) = AboutViewModel(
         settingsStore = settings,
         sessionHealthRepository = session,
         appUpdateRepository = updateRepository,
         installedVersion = installed,
+        permissionStateSource = FixedPermissionStateSource(permissionStates),
+        savedStateHandle = savedStateHandle,
     )
 
     private fun sessionRepository() = BackendSessionHealthRepository(
@@ -196,6 +340,12 @@ class AboutViewModelTest {
     )
 
     private fun endpoint(raw: String) = BackendEndpoint.parse(raw).getOrThrow()
+}
+
+private class FixedPermissionStateSource(
+    initial: Map<AppFeature, PermissionUiState>,
+) : PermissionStateSource {
+    override val states = MutableStateFlow(initial)
 }
 
 private class FakeInfoSettingsStore(initial: DetectionSettings) : InfoSettingsStore {

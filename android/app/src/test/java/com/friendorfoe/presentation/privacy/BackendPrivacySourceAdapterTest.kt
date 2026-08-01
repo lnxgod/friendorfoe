@@ -26,6 +26,23 @@ import kotlin.coroutines.suspendCoroutine
 class BackendPrivacySourceAdapterTest {
 
     @Test
+    fun enabledStartupDoesNotRestampItsLoadingDeadline() = runTest {
+        val clock = FakeClock(elapsed = 10_000L)
+        val adapter = BackendPrivacySourceAdapter(
+            settings = MutableStateFlow(DetectionSettings.defaults()),
+            fetch = { awaitCancellation() },
+            clock = clock,
+            scope = backgroundScope,
+        )
+        clock.elapsed = 15_000L
+
+        runCurrent()
+
+        assertEquals(SourceHealthState.LOADING, adapter.snapshot().health.state)
+        assertEquals(10_000L, adapter.snapshot().emittedAtElapsedMs)
+    }
+
+    @Test
     fun endpointReplacementCancelsLateFetchAndPublishesOnlyTheNewNamespace() = runTest {
         val settings = MutableStateFlow(
             DetectionSettings.defaults().copy(backendUrl = "https://old.example/"),

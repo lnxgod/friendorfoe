@@ -66,10 +66,14 @@ data class PrivacyUiState(
     val body: PrivacyBodyState = PrivacyBodyState.Loading,
     val lastUpdatedWallMs: Long? = null,
     val partialFailureCount: Int = 0,
+    val initialResolutionComplete: Boolean = false,
     val focusedKey: PrivacyFindingKey? = null,
     val focusedFinding: PrivacyFinding? = null,
     val focusedFindingExpired: Boolean = false,
-)
+) {
+    val findingCountLabel: String
+        get() = privacyFindingCountLabel(totalCurrentCount, initialResolutionComplete)
+}
 
 fun projectPrivacyUiState(
     current: PrivacyCurrentState,
@@ -98,12 +102,23 @@ fun projectPrivacyUiState(
         lastUpdatedWallMs = current.sources.mapNotNull(PrivacySourceHealth::lastSuccessWallMs)
             .maxOrNull(),
         partialFailureCount = current.sources.count { it.state == SourceHealthState.FAILED },
+        initialResolutionComplete = current.initialResolutionComplete,
         focusedKey = focusedKey,
         focusedFinding = focused,
         focusedFindingExpired = focusedKey != null &&
             current.initialResolutionComplete &&
             focused == null,
     )
+}
+
+private fun privacyFindingCountLabel(
+    count: Int,
+    initialResolutionComplete: Boolean,
+): String = when {
+    initialResolutionComplete ->
+        "$count current finding${if (count == 1) "" else "s"}"
+    count == 0 -> "0 findings so far · sources still resolving"
+    else -> "$count finding${if (count == 1) "" else "s"} so far · some sources still resolving"
 }
 
 fun summarizePrivacySources(
@@ -204,6 +219,7 @@ fun PrivacySourceKind.userLabel(): String = when (this) {
     PrivacySourceKind.PHONE_BLE -> "Phone Bluetooth"
     PrivacySourceKind.PHONE_ULTRASONIC -> "Phone ultrasonic"
     PrivacySourceKind.BACKEND -> "Backend"
+    PrivacySourceKind.BADGE -> "Badge"
     PrivacySourceKind.BADGE_USB -> "Badge USB"
     PrivacySourceKind.BADGE_AP -> "Badge local Wi-Fi"
     PrivacySourceKind.BADGE_BLE -> "Badge Bluetooth"
@@ -216,6 +232,7 @@ private fun PrivacySourceKind.group(): PrivacySourceGroup = when (this) {
     PrivacySourceKind.PHONE_ULTRASONIC -> PrivacySourceGroup.PHONE
 
     PrivacySourceKind.BACKEND -> PrivacySourceGroup.BACKEND
+    PrivacySourceKind.BADGE,
     PrivacySourceKind.BADGE_USB,
     PrivacySourceKind.BADGE_AP,
     PrivacySourceKind.BADGE_BLE,

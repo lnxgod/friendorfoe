@@ -4,9 +4,11 @@ import com.friendorfoe.data.local.HistoryEntity
 import com.friendorfoe.data.repository.HistoryStore
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
+import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.domain.model.SourceFilterGroup
 import com.friendorfoe.presentation.detail.DetailLookup
 import com.friendorfoe.presentation.detail.DetailSelectionLoader
 import com.friendorfoe.presentation.components.CollectionBodyState
@@ -15,6 +17,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -190,6 +194,67 @@ class HistorySelectionTest {
 
         assertEquals(listOf(12L, 11L), content.rows.map(HistoryEntity::id))
     }
+
+    @Test
+    fun nonemptyHistoryFilteredToZeroIsNoMatchesNotEmpty() = runTest {
+        val store = FakeHistoryStore(listOf(history(id = 11L, displayName = "TEST123")))
+        val viewModel = HistoryViewModel(store)
+
+        viewModel.updateFilter(FilterState(searchQuery = "not-present"))
+
+        assertEquals(
+            CollectionBodyState.NoMatches(activeFilterCount = 1),
+            viewModel.uiState.value.body,
+        )
+    }
+
+    @Test
+    fun historyCountsEachActiveFilterDimensionOnce() = runTest {
+        val store = FakeHistoryStore(listOf(history(id = 11L)))
+        val viewModel = HistoryViewModel(store)
+
+        viewModel.updateFilter(
+            FilterState(
+                selectedCategories = setOf(ObjectCategory.COMMERCIAL, ObjectCategory.DRONE),
+                selectedSources = setOf(SourceFilterGroup.ADS_B, SourceFilterGroup.REMOTE_ID),
+            ),
+        )
+
+        assertEquals(2, viewModel.uiState.value.activeFilterCount)
+    }
+
+    @Test
+    fun historySourceLabelsUseHumanReadableLocalSourceNames() {
+        assertEquals("ADS-B", detectionSourceLabel("ads_b"))
+        assertEquals("Remote ID", detectionSourceLabel("remote_id"))
+        assertEquals("Remote ID · Wi-Fi", detectionSourceLabel("wifi_nan"))
+        assertEquals("Remote ID · Wi-Fi", detectionSourceLabel("wifi_beacon"))
+        assertEquals("Phone", detectionSourceLabel("wifi"))
+    }
+
+    @Test
+    fun historyFailureOffersRetryAndResubscribesToTheStore() = runTest {
+        val store = FakeHistoryStore(
+            initialRows = emptyList(),
+            observationFailures = ArrayDeque(
+                listOf(IllegalStateException("database unavailable")),
+            ),
+        )
+        val viewModel = HistoryViewModel(store)
+
+        assertEquals(
+            CollectionBodyState.Failed(
+                message = "Couldn't load History. Try again.",
+                canRetry = true,
+            ),
+            viewModel.uiState.value.body,
+        )
+
+        viewModel.retryHistory()
+
+        assertEquals(2, store.observeSubscriptions)
+        assertEquals(CollectionBodyState.Empty, viewModel.uiState.value.body)
+    }
 }
 
 private class FakeHistoryStore(
@@ -197,12 +262,18 @@ private class FakeHistoryStore(
     private val deleteGate: CompletableDeferred<Unit>? = null,
     private val rowFailures: ArrayDeque<Throwable> = ArrayDeque(),
     private val clearFailures: ArrayDeque<Throwable> = ArrayDeque(),
+    private val observationFailures: ArrayDeque<Throwable> = ArrayDeque(),
 ) : HistoryStore {
     val rows = MutableStateFlow(initialRows)
     val deletedIds = mutableListOf<Long>()
     var clearCalls = 0
+    var observeSubscriptions = 0
 
-    override fun observeAll(): Flow<List<HistoryEntity>> = rows
+    override fun observeAll(): Flow<List<HistoryEntity>> = flow {
+        observeSubscriptions += 1
+        observationFailures.removeFirstOrNull()?.let { throw it }
+        emitAll(rows)
+    }
 
     override fun observeByType(objectType: String): Flow<List<HistoryEntity>> = rows
 

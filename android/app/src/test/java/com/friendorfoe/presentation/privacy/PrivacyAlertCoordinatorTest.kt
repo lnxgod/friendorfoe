@@ -284,11 +284,13 @@ class PrivacyAlertCoordinatorTest {
     private data object EmptyPreferences : AppPreferences {
         override val launchState: Flow<AppLaunchState> = flowOf(AppLaunchState.NeedsOnboarding)
         override val ignoredFindingKeys: Flow<Set<String>> = flowOf(emptySet())
+        override val requestedPermissions: Flow<Set<String>> = flowOf(emptySet())
 
         override suspend fun setOnboardingComplete() = Unit
         override suspend fun setLastTopLevelRoute(route: String) = Unit
         override suspend fun ignoreFinding(key: FindingPreferenceKey) = Unit
         override suspend fun restoreFinding(key: FindingPreferenceKey) = Unit
+        override suspend fun markPermissionsRequested(permissions: Set<String>) = Unit
     }
 
     private class FakeClock : MonotonicClock {

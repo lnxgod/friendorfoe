@@ -3,6 +3,7 @@ package com.friendorfoe.presentation.list
 import androidx.compose.ui.graphics.Color
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.Drone
+import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
@@ -24,6 +25,13 @@ data class ListUiState(
     val filter: FilterState = FilterState(),
     val activeFilterCount: Int = 0,
     val body: ListBodyState = ListBodyState.Loading,
+)
+
+data class ListActions(
+    val onQueryChanged: (String) -> Unit = {},
+    val onOpenFilters: () -> Unit = {},
+    val onClearFilters: () -> Unit = {},
+    val onOpenPeek: (SkyObject) -> Unit = {},
 )
 
 fun reduceListBody(
@@ -102,6 +110,39 @@ internal fun listAttentionColor(skyObject: SkyObject): Color? =
         ObjectCategory.EMERGENCY -> Color(0xFFE91E63)
         else -> null
     }
+
+internal fun listSourceLabel(source: DetectionSource): String = when (source) {
+    DetectionSource.ADS_B -> "ADS-B"
+    DetectionSource.REMOTE_ID -> "Remote ID"
+    DetectionSource.WIFI_NAN, DetectionSource.WIFI_BEACON -> "Remote ID · Wi-Fi"
+    DetectionSource.WIFI -> "Phone"
+}
+
+internal fun listCategoryLabel(category: ObjectCategory): String = when (category) {
+    ObjectCategory.COMMERCIAL -> "Commercial"
+    ObjectCategory.GENERAL_AVIATION -> "General aviation"
+    ObjectCategory.MILITARY -> "Military"
+    ObjectCategory.HELICOPTER -> "Helicopter"
+    ObjectCategory.GOVERNMENT -> "Government"
+    ObjectCategory.EMERGENCY -> "Emergency"
+    ObjectCategory.CARGO -> "Cargo"
+    ObjectCategory.DRONE -> "Drone"
+    ObjectCategory.GROUND_VEHICLE -> "Ground vehicle"
+    ObjectCategory.UNKNOWN -> "Unknown"
+}
+
+internal fun listAttentionLabel(skyObject: SkyObject): String? = when (listBadgeText(skyObject)) {
+    "LAW" -> "Law enforcement"
+    "FIRE" -> "Fire / rescue"
+    "EMS" -> "Emergency medical"
+    "PS" -> "Public safety"
+    else -> when (skyObject.category) {
+        ObjectCategory.MILITARY -> "Military"
+        ObjectCategory.GOVERNMENT -> "Government"
+        ObjectCategory.EMERGENCY -> "Emergency"
+        else -> null
+    }
+}
 
 internal fun listSurfacePriority(skyObject: SkyObject): Int = when (skyObject) {
     is Aircraft -> when {

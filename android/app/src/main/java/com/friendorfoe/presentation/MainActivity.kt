@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.friendorfoe.data.preferences.AppLaunchState
@@ -32,12 +33,20 @@ import com.friendorfoe.presentation.privacy.PendingPrivacyRouteQueue
 import com.friendorfoe.presentation.privacy.PrivacyLaunchIntentPayload
 import com.friendorfoe.presentation.privacy.PrivacyNotificationRoute
 import com.friendorfoe.presentation.privacy.acceptPrivacyLaunchIntent
+import com.friendorfoe.presentation.permissions.PermissionStateRepository
+import com.friendorfoe.presentation.permissions.capturePermissionRationales
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import com.friendorfoe.presentation.welcome.WelcomeScreen
+import com.friendorfoe.data.repository.RuntimePermissionChangeNotifier
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    @Inject lateinit var permissionStateRepository: PermissionStateRepository
+    @Inject lateinit var runtimePermissionChangeNotifier: RuntimePermissionChangeNotifier
+
     private lateinit var pendingPrivacyRoute: PendingPrivacyRouteQueue
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +71,16 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         enqueuePrivacyRoute(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Activity-backed rationale evidence is captured before any coroutine can suspend.
+        val rationales = capturePermissionRationales(this)
+        runtimePermissionChangeNotifier.onRuntimePermissionsChanged()
+        lifecycleScope.launch {
+            permissionStateRepository.refresh(rationales)
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

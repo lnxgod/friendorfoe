@@ -452,6 +452,47 @@ class PrivacyCurrentReducerTest {
         assertTrue(resolved.initialResolutionComplete)
     }
 
+    @Test
+    fun loadingSourceRemainsUnresolvedImmediatelyBeforeTheMonotonicDeadline() {
+        val state = PrivacyCurrentReducer().reduce(
+            sources = listOf(
+                snapshot(
+                    source = PrivacySourceKind.WIFI_ANALYSIS,
+                    state = SourceHealthState.LOADING,
+                    findings = emptyList(),
+                    emittedAtElapsedMs = now - 19_999L,
+                ),
+            ),
+            ignoredKeys = emptySet(),
+            nowElapsedMs = now,
+        )
+
+        assertEquals(SourceHealthState.LOADING, state.sources.single().state)
+        assertFalse(state.initialResolutionComplete)
+    }
+
+    @Test
+    fun loadingSourceFailsAtTheMonotonicDeadlineAndCompletesInitialResolution() {
+        val state = PrivacyCurrentReducer().reduce(
+            sources = listOf(
+                snapshot(
+                    source = PrivacySourceKind.WIFI_ANALYSIS,
+                    state = SourceHealthState.LOADING,
+                    findings = emptyList(),
+                    emittedAtElapsedMs = now - 20_000L,
+                ),
+            ),
+            ignoredKeys = emptySet(),
+            nowElapsedMs = now,
+        )
+
+        val health = state.sources.single()
+        assertEquals(SourceHealthState.FAILED, health.state)
+        assertEquals("Retry", health.recoveryLabel)
+        assertTrue(health.message.orEmpty().contains("20 seconds"))
+        assertTrue(state.initialResolutionComplete)
+    }
+
     private fun reduce(vararg snapshots: PrivacySourceSnapshot): PrivacyCurrentState =
         PrivacyCurrentReducer().reduce(snapshots.toList(), emptySet(), now)
 
@@ -477,10 +518,11 @@ class PrivacyCurrentReducerTest {
         source: PrivacySourceKind,
         state: SourceHealthState,
         findings: List<PrivacyFinding>,
+        emittedAtElapsedMs: Long = now,
     ) = PrivacySourceSnapshot(
         health = health(source, state),
         findings = findings,
-        emittedAtElapsedMs = now,
+        emittedAtElapsedMs = emittedAtElapsedMs,
     )
 
     private fun health(

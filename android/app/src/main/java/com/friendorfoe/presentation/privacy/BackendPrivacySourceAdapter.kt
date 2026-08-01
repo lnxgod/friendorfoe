@@ -109,16 +109,24 @@ class BackendPrivacySourceAdapter internal constructor(
                 }
 
                 if (activeEndpoint != endpoint) {
+                    val previousEndpoint = activeEndpoint
                     activeEndpoint = endpoint
                     retainedRows = emptyList()
-                    _snapshots.value = listOf(
-                        snapshot(
+                    val next = snapshot(
                             state = SourceHealthState.LOADING,
                             rows = emptyList(),
                             lastSuccessElapsedMs = null,
                             lastSuccessWallMs = null,
-                        ),
-                    )
+                        )
+                    _snapshots.update { current ->
+                        listOf(
+                            if (previousEndpoint == null) {
+                                next.preserveLoadingStartFrom(current.single())
+                            } else {
+                                next
+                            },
+                        )
+                    }
                 } else {
                     publishState(
                         state = resumedHealth(retainedRows.isNotEmpty()),
@@ -172,6 +180,7 @@ class BackendPrivacySourceAdapter internal constructor(
         if (source != PrivacySourceKind.BACKEND) {
             return PrivacyRecoveryResult.SourceUnavailable(source)
         }
+        resetLoadingDeadline()
         retry.emit(Unit)
         return PrivacyRecoveryResult.Recovered(source)
     }
@@ -192,7 +201,20 @@ class BackendPrivacySourceAdapter internal constructor(
                     ),
                     findings = retainedRows,
                     emittedAtElapsedMs = clock.nowElapsedMs(),
-                ),
+                ).preserveLoadingStartFrom(previous),
+            )
+        }
+    }
+
+    private fun resetLoadingDeadline() {
+        _snapshots.update { current ->
+            val snapshot = current.single()
+            listOf(
+                if (snapshot.health.state == SourceHealthState.LOADING) {
+                    snapshot.copy(emittedAtElapsedMs = clock.nowElapsedMs())
+                } else {
+                    snapshot
+                },
             )
         }
     }

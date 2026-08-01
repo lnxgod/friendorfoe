@@ -2,10 +2,34 @@ package com.friendorfoe.presentation.privacy
 
 import com.friendorfoe.detection.PrivacyCategory
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PrivacyUiProjectionTest {
+
+    @Test
+    fun findingCountIsQualifiedUntilEverySourceFinishesInitialResolution() {
+        val unresolvedEmpty = projectPrivacyUiState(
+            current(initialResolutionComplete = false),
+        )
+        val unresolvedFinding = projectPrivacyUiState(
+            current(
+                findings = listOf(finding()),
+                initialResolutionComplete = false,
+            ),
+        )
+        val resolvedEmpty = projectPrivacyUiState(current())
+        val resolvedFinding = projectPrivacyUiState(current(findings = listOf(finding())))
+
+        assertFalse(unresolvedEmpty.initialResolutionComplete)
+        assertEquals("0 findings so far · sources still resolving", unresolvedEmpty.findingCountLabel)
+        assertEquals("1 finding so far · some sources still resolving", unresolvedFinding.findingCountLabel)
+        assertTrue(resolvedEmpty.initialResolutionComplete)
+        assertEquals("0 current findings", resolvedEmpty.findingCountLabel)
+        assertEquals("1 current finding", resolvedFinding.findingCountLabel)
+    }
     @Test
     fun findingsMapToTheFourHumanReadableSections() {
         assertEquals(PrivacySection.THREATS, finding(FindingSeverity.CRITICAL).section())
@@ -179,12 +203,13 @@ class PrivacyUiProjectionTest {
         sources: List<PrivacySourceHealth> = listOf(
             health(PrivacySourceKind.PHONE_BLE, SourceHealthState.LIVE),
         ),
+        initialResolutionComplete: Boolean = true,
     ) = PrivacyCurrentState(
         sources = sources,
         findings = findings,
         threatCount = findings.count { it.severity.rank >= FindingSeverity.AWARENESS.rank },
         alertEligible = emptyList(),
-        initialResolutionComplete = true,
+        initialResolutionComplete = initialResolutionComplete,
     )
 
     private fun health(

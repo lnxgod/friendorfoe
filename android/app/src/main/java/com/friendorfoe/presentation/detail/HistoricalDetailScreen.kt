@@ -53,7 +53,9 @@ fun HistoricalDetailScreen(
         Box(Modifier.fillMaxSize().padding(innerPadding), contentAlignment = Alignment.Center) {
             when (val state = detailState) {
                 DetailState.Idle, DetailState.Loading -> CircularProgressIndicator()
-                is DetailState.HistoricalLoaded -> HistoricalDetailContent(state.snapshot)
+                is DetailState.HistoricalLoaded -> DetailOverviewContent(
+                    model = presentHistoricalDetail(state.snapshot),
+                )
                 is DetailState.Error -> HistoricalErrorContent(
                     message = state.message,
                     onBack = onBack,

@@ -5,13 +5,18 @@ import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.local.HistoryEntity
 import com.friendorfoe.data.repository.HistoryStore
 import com.friendorfoe.domain.model.FilterState
+import com.friendorfoe.domain.model.activeFilterCount
 import com.friendorfoe.domain.usecase.FilterEngine
 import com.friendorfoe.presentation.components.CollectionBodyState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -25,22 +30,39 @@ class HistoryViewModel @Inject constructor(
     private val pendingDeletion = MutableStateFlow<PendingHistoryDeletion?>(null)
     private val deletionError = MutableStateFlow<String?>(null)
     private val deletionInProgress = MutableStateFlow(false)
+    private val historyReloads = MutableSharedFlow<Unit>(replay = 1).apply { tryEmit(Unit) }
+    private val historyRows = historyReloads.flatMapLatest {
+        historyStore.observeAll()
+            .map<List<HistoryEntity>, Result<List<HistoryEntity>>> { Result.success(it) }
+            .catch { error ->
+                if (error is CancellationException) throw error
+                emit(Result.failure(error))
+            }
+    }
 
     val uiState: StateFlow<HistoryUiState> = combine(
-        historyStore.observeAll(),
+        historyRows,
         filter,
         pendingDeletion,
         deletionError,
         deletionInProgress,
-    ) { entries, currentFilter, pending, currentDeletionError, isDeleting ->
-        val filtered = FilterEngine.applyFilters(entries, currentFilter)
+    ) { rowsResult, currentFilter, pending, currentDeletionError, isDeleting ->
+        val entries = rowsResult.getOrNull()
+        val filterCount = activeFilterCount(currentFilter)
+        val filtered = entries?.let { FilterEngine.applyFilters(it, currentFilter) }.orEmpty()
         HistoryUiState(
             filter = currentFilter,
-            totalCount = entries.size,
-            activeFilterCount = currentFilter.activeCount(),
+            totalCount = entries?.size ?: 0,
+            activeFilterCount = filterCount,
             body = when {
+                entries == null -> CollectionBodyState.Failed(
+                    message = "Couldn't load History. Try again.",
+                    canRetry = true,
+                )
                 entries.isEmpty() -> CollectionBodyState.Empty
-                filtered.isEmpty() -> CollectionBodyState.Empty
+                filtered.isEmpty() -> CollectionBodyState.NoMatches(
+                    activeFilterCount = filterCount,
+                )
                 else -> CollectionBodyState.Content(filtered)
             },
             pendingDeletion = pending,
@@ -55,6 +77,10 @@ class HistoryViewModel @Inject constructor(
 
     fun updateFilter(filterState: FilterState) {
         filter.value = filterState
+    }
+
+    fun retryHistory() {
+        historyReloads.tryEmit(Unit)
     }
 
     fun requestDelete(row: HistoryEntity) {
@@ -100,11 +126,3 @@ class HistoryViewModel @Inject constructor(
             }
         } ?: viewModelScope.launch { }
 }
-
-private fun FilterState.activeCount(): Int =
-    selectedCategories.size +
-        selectedSources.size +
-        listOfNotNull(objectTypeFilter, maxDistanceNm, minAltitudeFt, maxAltitudeFt).size +
-        searchQuery.takeIf(String::isNotBlank)?.let { 1 }.orZero()
-
-private fun Int?.orZero(): Int = this ?: 0

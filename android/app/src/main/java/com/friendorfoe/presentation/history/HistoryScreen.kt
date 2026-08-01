@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,7 +23,6 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -32,6 +32,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -39,19 +42,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.local.HistoryEntity
 import com.friendorfoe.domain.model.FilterState
+import com.friendorfoe.domain.model.cleared
 import com.friendorfoe.presentation.components.CollectionBodyState
+import com.friendorfoe.presentation.components.FofConfirmationDialog
 import com.friendorfoe.presentation.components.FofEmptyState
 import com.friendorfoe.presentation.components.FofFailureState
 import com.friendorfoe.presentation.components.FofLoadingState
 import com.friendorfoe.presentation.components.FofNoMatchesState
 import com.friendorfoe.presentation.components.FofScreenHeader
-import com.friendorfoe.presentation.filter.FilterBar
+import com.friendorfoe.presentation.components.FofStaleBanner
+import com.friendorfoe.presentation.filter.CompactFilterBar
+import com.friendorfoe.presentation.filter.FilterModalSheet
 import com.friendorfoe.presentation.util.categoryColor
 import com.friendorfoe.presentation.util.isMilitary
 import java.time.Instant
@@ -60,6 +66,11 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
+internal const val HISTORY_RETENTION_COPY =
+    "History may include observation and phone coordinates. Records stay on this device " +
+        "until you delete them, clear History, clear app data, or uninstall."
+
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun HistoryScreen(
     onEntryTapped: (Long) -> Unit,
@@ -68,21 +79,141 @@ fun HistoryScreen(
     viewModel: HistoryViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var filtersOpen by rememberSaveable { mutableStateOf(false) }
 
     HistoryContent(
         state = state,
-        onFilterChanged = viewModel::updateFilter,
-        onEntryTapped = onEntryTapped,
-        onRequestDelete = viewModel::requestDelete,
-        onRequestClearAll = viewModel::requestClearAll,
-        onDismissDeletion = viewModel::dismissDeletion,
-        onConfirmDeletion = viewModel::confirmDeletion,
-        onNavigateToReferenceGuide = onNavigateToReferenceGuide,
-        onNavigateToAbout = onNavigateToAbout,
+        actions = HistoryActions(
+            onQueryChanged = { query ->
+                viewModel.updateFilter(state.filter.copy(searchQuery = query))
+            },
+            onOpenFilters = { filtersOpen = true },
+            onClearFilters = { viewModel.updateFilter(state.filter.cleared()) },
+            onOpenRow = onEntryTapped,
+            onRequestDelete = viewModel::requestDelete,
+            onRequestClearAll = viewModel::requestClearAll,
+            onRetry = viewModel::retryHistory,
+            onDismissDeletion = viewModel::dismissDeletion,
+            onConfirmDeletion = { viewModel.confirmDeletion() },
+        ),
     )
+
+    if (filtersOpen) {
+        FilterModalSheet(
+            filterState = state.filter,
+            onFilterStateChange = viewModel::updateFilter,
+            onDismiss = { filtersOpen = false },
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun HistoryContent(
+    state: HistoryUiState,
+    actions: HistoryActions,
+) {
+    val headerCount = when (state.body) {
+        CollectionBodyState.Loading, is CollectionBodyState.Failed -> null
+        else -> state.totalCount
+    }
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                FofScreenHeader(
+                    title = "History",
+                    count = headerCount,
+                    countLabel = if (headerCount == 1) "detection" else "detections",
+                )
+            }
+            TextButton(
+                onClick = actions.onRequestClearAll,
+                enabled = state.totalCount > 0 && !state.deletionInProgress,
+                modifier = Modifier.heightIn(min = 48.dp).testTag("history_clear_all"),
+            ) {
+                Text("Clear all")
+            }
+        }
+
+        Text(
+            text = HISTORY_RETENTION_COPY,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        )
+
+        CompactFilterBar(
+            filterState = state.filter,
+            resultCount = headerCount?.let { visibleHistoryCount(state.body) },
+            activeFilterCount = state.activeFilterCount,
+            onQueryChanged = actions.onQueryChanged,
+            onOpenFilters = actions.onOpenFilters,
+            onClearFilters = actions.onClearFilters,
+        )
+
+        when (val body = state.body) {
+            CollectionBodyState.Loading -> FofLoadingState("Loading History")
+            CollectionBodyState.Empty -> EmptyHistoryState()
+            is CollectionBodyState.Content -> HistoryRows(
+                rows = body.rows,
+                actions = actions,
+            )
+            is CollectionBodyState.Stale -> HistoryRows(
+                rows = body.rows,
+                actions = actions,
+                staleMessage = body.message,
+                staleAgeMs = body.ageMs,
+            )
+            is CollectionBodyState.NoMatches -> FofNoMatchesState(
+                activeFilterCount = body.activeFilterCount,
+                onClearFilters = actions.onClearFilters,
+            )
+            is CollectionBodyState.Failed -> FofFailureState(
+                message = body.message,
+                onRetry = actions.onRetry.takeIf { body.canRetry },
+            )
+        }
+    }
+
+    when (val pending = state.pendingDeletion) {
+        is PendingHistoryDeletion.Row -> FofConfirmationDialog(
+            title = "Delete ${pending.label}?",
+            message = "This permanently removes this detection from on-device history.",
+            confirmLabel = when {
+                state.deletionInProgress -> "Deleting…"
+                state.deletionError != null -> "Retry"
+                else -> "Delete"
+            },
+            onConfirm = actions.onConfirmDeletion,
+            onDismiss = actions.onDismissDeletion,
+            inProgress = state.deletionInProgress,
+            error = state.deletionError,
+            confirmTag = "history_confirm_delete_row",
+            dismissTag = "history_cancel_delete",
+        )
+        PendingHistoryDeletion.All -> FofConfirmationDialog(
+            title = "Clear all history?",
+            message = "This permanently removes every detection stored on this device.",
+            confirmLabel = when {
+                state.deletionInProgress -> "Clearing…"
+                state.deletionError != null -> "Retry"
+                else -> "Clear all"
+            },
+            onConfirm = actions.onConfirmDeletion,
+            onDismiss = actions.onDismissDeletion,
+            inProgress = state.deletionInProgress,
+            error = state.deletionError,
+            confirmTag = "history_confirm_clear_all",
+            dismissTag = "history_cancel_delete",
+        )
+        null -> Unit
+    }
+}
+
+@Suppress("UNUSED_PARAMETER")
 @Composable
 internal fun HistoryContent(
     state: HistoryUiState,
@@ -95,157 +226,65 @@ internal fun HistoryContent(
     onNavigateToReferenceGuide: (() -> Unit)? = null,
     onNavigateToAbout: (() -> Unit)? = null,
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        FilterBar(
+    HistoryContent(
+        state = state,
+        actions = HistoryActions(
+            onQueryChanged = { onFilterChanged(state.filter.copy(searchQuery = it)) },
+            onOpenFilters = {
+                onFilterChanged(state.filter.copy(isAdvancedExpanded = true))
+            },
+            onClearFilters = { onFilterChanged(state.filter.cleared()) },
+            onOpenRow = onEntryTapped,
+            onRequestDelete = onRequestDelete,
+            onRequestClearAll = onRequestClearAll,
+            onDismissDeletion = onDismissDeletion,
+            onConfirmDeletion = onConfirmDeletion,
+        ),
+    )
+    if (state.filter.isAdvancedExpanded) {
+        FilterModalSheet(
             filterState = state.filter,
             onFilterStateChange = onFilterChanged,
-            resultCount = (state.body as? CollectionBodyState.Content)?.rows?.size ?: 0,
-            onNavigateToReferenceGuide = onNavigateToReferenceGuide,
-            onNavigateToAbout = onNavigateToAbout,
+            onDismiss = {
+                onFilterChanged(state.filter.copy(isAdvancedExpanded = false))
+            },
         )
-
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-        ) {
-            FofScreenHeader(
-                title = "History",
-                count = state.totalCount,
-                countLabel = if (state.totalCount == 1) "detection" else "detections",
-            )
-            TextButton(
-                onClick = onRequestClearAll,
-                enabled = state.totalCount > 0,
-                modifier = Modifier.align(Alignment.End).testTag("history_clear_all"),
-            ) { Text("Clear all") }
-        }
-
-        Text(
-            text = "History stays on this device until you delete it or clear app data.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-        )
-
-        when (val body = state.body) {
-            CollectionBodyState.Loading -> FofLoadingState("Loading history")
-            CollectionBodyState.Empty -> EmptyHistoryState()
-            is CollectionBodyState.Content -> {
-                val grouped = groupRowsByDate(body.rows)
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    grouped.forEach { (dateLabel, entries) ->
-                        stickyHeader(key = dateLabel) { DateGroupHeader(dateLabel) }
-                        items(items = entries, key = HistoryEntity::id) { entry ->
-                            HistoryItem(
-                                entry = entry,
-                                onClick = { onEntryTapped(entry.id) },
-                                onDelete = { onRequestDelete(entry) },
-                            )
-                            HorizontalDivider(
-                                color = MaterialTheme.colorScheme.outlineVariant,
-                                thickness = 0.5.dp,
-                            )
-                        }
-                    }
-                }
-            }
-            is CollectionBodyState.Stale -> {
-                val grouped = groupRowsByDate(body.rows)
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    item { Text(body.message, Modifier.padding(16.dp)) }
-                    grouped.forEach { (dateLabel, entries) ->
-                        stickyHeader(key = dateLabel) { DateGroupHeader(dateLabel) }
-                        items(items = entries, key = HistoryEntity::id) { entry ->
-                            HistoryItem(
-                                entry = entry,
-                                onClick = { onEntryTapped(entry.id) },
-                                onDelete = { onRequestDelete(entry) },
-                            )
-                        }
-                    }
-                }
-            }
-            is CollectionBodyState.NoMatches -> FofNoMatchesState(
-                activeFilterCount = body.activeFilterCount,
-                onClearFilters = { onFilterChanged(FilterState()) },
-            )
-            is CollectionBodyState.Failed -> FofFailureState(body.message)
-        }
     }
+}
 
-    when (val pending = state.pendingDeletion) {
-        is PendingHistoryDeletion.Row -> AlertDialog(
-            onDismissRequest = onDismissDeletion,
-            title = { Text("Delete ${pending.label}?") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("This permanently removes this detection from on-device history.")
-                    state.deletionError?.let { error ->
-                        Text(error, color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = onDismissDeletion,
-                    enabled = !state.deletionInProgress,
-                    modifier = Modifier.testTag("history_cancel_delete"),
-                ) {
-                    Text("Cancel")
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = onConfirmDeletion,
-                    enabled = !state.deletionInProgress,
-                    modifier = Modifier.testTag("history_confirm_delete_row"),
-                ) {
-                    Text(
-                        when {
-                            state.deletionInProgress -> "Deleting…"
-                            state.deletionError != null -> "Retry"
-                            else -> "Delete"
-                        },
-                    )
-                }
-            },
-        )
-        PendingHistoryDeletion.All -> AlertDialog(
-            onDismissRequest = onDismissDeletion,
-            title = { Text("Clear all history?") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("This permanently removes every detection stored on this device.")
-                    state.deletionError?.let { error ->
-                        Text(error, color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = onDismissDeletion,
-                    enabled = !state.deletionInProgress,
-                    modifier = Modifier.testTag("history_cancel_delete"),
-                ) {
-                    Text("Cancel")
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = onConfirmDeletion,
-                    enabled = !state.deletionInProgress,
-                    modifier = Modifier.testTag("history_confirm_clear_all"),
-                ) {
-                    Text(
-                        when {
-                            state.deletionInProgress -> "Clearing…"
-                            state.deletionError != null -> "Retry"
-                            else -> "Clear all"
-                        },
-                    )
-                }
-            },
-        )
-        null -> Unit
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun HistoryRows(
+    rows: List<HistoryEntity>,
+    actions: HistoryActions,
+    staleMessage: String? = null,
+    staleAgeMs: Long? = null,
+) {
+    val grouped = groupRowsByDate(rows)
+    LazyColumn(modifier = Modifier.fillMaxSize().testTag("history_results")) {
+        if (staleMessage != null) {
+            item(key = "stale") {
+                FofStaleBanner(
+                    message = staleMessage,
+                    ageMs = staleAgeMs,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
+        }
+        grouped.forEach { (dateLabel, entries) ->
+            stickyHeader(key = dateLabel) { DateGroupHeader(dateLabel) }
+            items(items = entries, key = HistoryEntity::id) { entry ->
+                HistoryItem(
+                    entry = entry,
+                    onClick = { actions.onOpenRow(entry.id) },
+                    onDelete = { actions.onRequestDelete(entry) },
+                )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    thickness = 0.5.dp,
+                )
+            }
+        }
     }
 }
 
@@ -253,10 +292,16 @@ internal fun HistoryContent(
 private fun EmptyHistoryState() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         FofEmptyState(
-            title = "No detections recorded yet",
-            detail = "Past aircraft and drone detections will appear here",
+            title = "No saved detections",
+            detail = "Detections you keep will appear here.",
         )
     }
+}
+
+private fun visibleHistoryCount(body: CollectionBodyState<HistoryEntity>): Int = when (body) {
+    is CollectionBodyState.Content -> body.rows.size
+    is CollectionBodyState.Stale -> body.rows.size
+    else -> 0
 }
 
 private fun groupRowsByDate(entries: List<HistoryEntity>): Map<String, List<HistoryEntity>> {
@@ -300,33 +345,35 @@ private fun HistoryItem(entry: HistoryEntity, onClick: () -> Unit, onDelete: () 
     }
 
     Row(
-        modifier = Modifier.fillMaxWidth().then(rowBackground).clickable(onClick = onClick)
-            .testTag("history_row_${entry.id}").padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).then(rowBackground)
+            .clickable(onClick = onClick).testTag("history_row_${entry.id}")
+            .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(12.dp).clip(CircleShape).background(categoryColor(entry.category)))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                entry.displayName,
+                text = entry.displayName,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
             )
             if (!entry.description.isNullOrBlank()) {
                 Text(
-                    entry.description,
+                    text = entry.description,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
+            Text(
+                text = historyCategoryLabel(entry.category),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         Column(horizontalAlignment = Alignment.End) {
             Text(
-                formatTime(entry.lastSeen),
+                text = formatTime(entry.lastSeen),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -334,7 +381,7 @@ private fun HistoryItem(entry: HistoryEntity, onClick: () -> Unit, onDelete: () 
         }
         IconButton(
             onClick = onDelete,
-            modifier = Modifier.testTag("history_delete_${entry.id}"),
+            modifier = Modifier.size(48.dp).testTag("history_delete_${entry.id}"),
         ) {
             Icon(Icons.Default.DeleteOutline, contentDescription = "Delete ${entry.displayName}")
         }
@@ -345,8 +392,11 @@ private fun HistoryItem(entry: HistoryEntity, onClick: () -> Unit, onDelete: () 
 private fun DetectionSourceBadge(source: String) {
     val (icon, label) = detectionSourceInfo(source)
     Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-        Row(Modifier.padding(horizontal = 4.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, contentDescription = label, modifier = Modifier.size(12.dp))
+        Row(
+            Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(12.dp))
             Spacer(Modifier.width(2.dp))
             Text(label, style = MaterialTheme.typography.labelSmall)
         }
@@ -360,14 +410,28 @@ private fun formatTime(epochMillis: Long): String = Instant.ofEpochMilli(epochMi
 internal fun detectionSourceLabel(source: String): String = when (source.lowercase()) {
     "ads_b" -> "ADS-B"
     "remote_id" -> "Remote ID"
-    "wifi_nan" -> "WiFi NaN"
-    "wifi_beacon" -> "WiFi Beacon"
-    "wifi" -> "WiFi"
+    "wifi_nan", "wifi_beacon" -> "Remote ID · Wi-Fi"
+    "wifi" -> "Phone"
+    "configured_backend" -> "Configured backend"
     else -> source
 }
 
+internal fun historyCategoryLabel(category: String): String = when (category.lowercase()) {
+    "commercial" -> "Commercial"
+    "general_aviation" -> "General aviation"
+    "military" -> "Military"
+    "helicopter" -> "Helicopter"
+    "government" -> "Government"
+    "emergency" -> "Emergency"
+    "cargo" -> "Cargo"
+    "drone" -> "Drone"
+    "ground_vehicle" -> "Ground vehicle"
+    "unknown" -> "Unknown"
+    else -> category.replace('_', ' ').replaceFirstChar { it.titlecase(Locale.getDefault()) }
+}
+
 private fun detectionSourceInfo(source: String): Pair<ImageVector, String> = when (source.lowercase()) {
-    "ads_b" -> Icons.Default.CellTower to detectionSourceLabel(source)
+    "ads_b", "configured_backend" -> Icons.Default.CellTower to detectionSourceLabel(source)
     "remote_id" -> Icons.Default.Bluetooth to detectionSourceLabel(source)
     "wifi_nan", "wifi_beacon", "wifi" -> Icons.Default.Wifi to detectionSourceLabel(source)
     else -> Icons.Default.CellTower to source

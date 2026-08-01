@@ -277,6 +277,7 @@ class PrivacyFindingRepositoryTest {
         val ignored = MutableStateFlow<Set<String>>(emptySet())
         override val launchState: Flow<AppLaunchState> = flowOf(AppLaunchState.NeedsOnboarding)
         override val ignoredFindingKeys: Flow<Set<String>> = ignored
+        override val requestedPermissions = MutableStateFlow(emptySet<String>())
 
         override suspend fun setOnboardingComplete() = Unit
         override suspend fun setLastTopLevelRoute(route: String) = Unit
@@ -287,6 +288,10 @@ class PrivacyFindingRepositoryTest {
 
         override suspend fun restoreFinding(key: FindingPreferenceKey) {
             ignored.value -= key.encoded
+        }
+
+        override suspend fun markPermissionsRequested(permissions: Set<String>) {
+            requestedPermissions.value += permissions
         }
     }
 

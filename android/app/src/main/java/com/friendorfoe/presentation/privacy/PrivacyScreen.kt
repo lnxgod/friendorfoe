@@ -258,7 +258,7 @@ private fun PrivacyHeader(
         Column(modifier = Modifier.weight(1f)) {
             Text("Privacy", style = MaterialTheme.typography.headlineSmall)
             Text(
-                text = "${state.totalCurrentCount} current finding${if (state.totalCurrentCount == 1) "" else "s"}",
+                text = state.findingCountLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

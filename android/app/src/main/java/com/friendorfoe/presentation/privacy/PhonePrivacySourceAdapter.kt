@@ -148,10 +148,12 @@ class PhonePrivacySourceAdapter internal constructor(
     override suspend fun recover(source: PrivacySourceKind): PrivacyRecoveryResult {
         return when (source) {
             PrivacySourceKind.PHONE_BLE -> {
+                resetLoadingDeadline(source)
                 bleRetry.emit(Unit)
                 PrivacyRecoveryResult.Recovered(source)
             }
             PrivacySourceKind.PHONE_ULTRASONIC -> {
+                resetLoadingDeadline(source)
                 ultrasonicRetry.emit(Unit)
                 PrivacyRecoveryResult.Recovered(source)
             }
@@ -529,8 +531,24 @@ class PhonePrivacySourceAdapter internal constructor(
     ) {
         _snapshots.update { current ->
             current.map { snapshot ->
-                if (snapshot.health.source == source) transform(snapshot) else snapshot
+                if (snapshot.health.source == source) {
+                    transform(snapshot).preserveLoadingStartFrom(snapshot)
+                } else {
+                    snapshot
+                }
             }.sortedBy { it.health.source.preferenceId }
+        }
+    }
+
+    private fun resetLoadingDeadline(source: PrivacySourceKind) {
+        _snapshots.update { current ->
+            current.map { snapshot ->
+                if (snapshot.health.source == source && snapshot.health.state == SourceHealthState.LOADING) {
+                    snapshot.copy(emittedAtElapsedMs = clock.nowElapsedMs())
+                } else {
+                    snapshot
+                }
+            }
         }
     }
 

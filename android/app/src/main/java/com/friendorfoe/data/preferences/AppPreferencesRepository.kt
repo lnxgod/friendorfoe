@@ -29,6 +29,7 @@ class AppPreferencesRepository @Inject constructor(
     private val onboarding = booleanPreferencesKey("onboarding_complete")
     private val lastRoute = stringPreferencesKey("last_top_level_route")
     private val ignored = stringSetPreferencesKey("ignored_finding_keys")
+    private val requested = stringSetPreferencesKey("requested_permissions")
 
     override val launchState: Flow<AppLaunchState> = context.fofDataStore.data.map { prefs ->
         if (prefs[onboarding] != true) AppLaunchState.NeedsOnboarding
@@ -37,6 +38,9 @@ class AppPreferencesRepository @Inject constructor(
 
     override val ignoredFindingKeys: Flow<Set<String>> = context.fofDataStore.data
         .map { it[ignored].orEmpty() }
+
+    override val requestedPermissions: Flow<Set<String>> = context.fofDataStore.data
+        .map { it[requested].orEmpty() }
 
     override suspend fun setOnboardingComplete() {
         context.fofDataStore.edit {
@@ -60,6 +64,13 @@ class AppPreferencesRepository @Inject constructor(
     override suspend fun restoreFinding(key: FindingPreferenceKey) {
         context.fofDataStore.edit {
             it[ignored] = it[ignored].orEmpty() - key.encoded
+        }
+    }
+
+    override suspend fun markPermissionsRequested(permissions: Set<String>) {
+        if (permissions.isEmpty()) return
+        context.fofDataStore.edit {
+            it[requested] = it[requested].orEmpty() + permissions
         }
     }
 

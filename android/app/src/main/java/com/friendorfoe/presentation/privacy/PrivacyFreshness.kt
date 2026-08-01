@@ -9,6 +9,7 @@ val PrivacyFreshnessPolicies: Map<PrivacySourceKind, FreshnessPolicy> = mapOf(
     PrivacySourceKind.PHONE_BLE to FreshnessPolicy(staleAfterMs = 30_000L, removeAfterMs = 90_000L),
     PrivacySourceKind.PHONE_ULTRASONIC to FreshnessPolicy(staleAfterMs = 30_000L, removeAfterMs = 60_000L),
     PrivacySourceKind.BACKEND to FreshnessPolicy(staleAfterMs = 15_000L, removeAfterMs = 60_000L),
+    PrivacySourceKind.BADGE to FreshnessPolicy(staleAfterMs = 10_000L, removeAfterMs = 60_000L),
     PrivacySourceKind.BADGE_USB to FreshnessPolicy(staleAfterMs = 10_000L, removeAfterMs = 60_000L),
     PrivacySourceKind.BADGE_AP to FreshnessPolicy(staleAfterMs = 10_000L, removeAfterMs = 60_000L),
     PrivacySourceKind.BADGE_BLE to FreshnessPolicy(staleAfterMs = 20_000L, removeAfterMs = 60_000L),

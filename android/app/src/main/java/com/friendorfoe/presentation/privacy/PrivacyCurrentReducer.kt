@@ -32,7 +32,14 @@ class PrivacyCurrentReducer {
     ): PrivacyCurrentState {
         val effectiveSources = sources
             .map { snapshot ->
-                snapshot.copy(health = agedSourceHealth(snapshot.health, nowElapsedMs))
+                val agedHealth = agedSourceHealth(snapshot.health, nowElapsedMs)
+                snapshot.copy(
+                    health = boundedInitialResolutionHealth(
+                        health = agedHealth,
+                        resolutionStartedAtElapsedMs = snapshot.emittedAtElapsedMs,
+                        nowElapsedMs = nowElapsedMs,
+                    ),
+                )
             }
             .sortedBy { it.health.source.preferenceId }
 
@@ -92,6 +99,27 @@ class PrivacyCurrentReducer {
         )
     }
 }
+
+private fun boundedInitialResolutionHealth(
+    health: PrivacySourceHealth,
+    resolutionStartedAtElapsedMs: Long,
+    nowElapsedMs: Long,
+): PrivacySourceHealth {
+    if (health.state != SourceHealthState.LOADING) return health
+    val age = when {
+        nowElapsedMs <= resolutionStartedAtElapsedMs -> 0L
+        nowElapsedMs - resolutionStartedAtElapsedMs < 0L -> Long.MAX_VALUE
+        else -> nowElapsedMs - resolutionStartedAtElapsedMs
+    }
+    if (age < INITIAL_RESOLUTION_TIMEOUT_MS) return health
+    return health.copy(
+        state = SourceHealthState.FAILED,
+        recoveryLabel = "Retry",
+        message = "This privacy source did not respond within 20 seconds.",
+    )
+}
+
+private const val INITIAL_RESOLUTION_TIMEOUT_MS = 20_000L
 
 private val privacyFindingDuplicateComparator =
     compareBy<PrivacyFinding> { it.lastObservedElapsedMs }

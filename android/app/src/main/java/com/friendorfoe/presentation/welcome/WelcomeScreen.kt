@@ -81,7 +81,7 @@ fun WelcomeContent(actions: WelcomeActions) {
             shape = MaterialTheme.shapes.small,
         ) {
             Text(
-                text = "Get Started",
+                text = "Continue",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
             )

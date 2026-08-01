@@ -1,6 +1,7 @@
 package com.friendorfoe.presentation.about
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.AppVersion
 import com.friendorfoe.data.BackendEndpoint
@@ -12,6 +13,10 @@ import com.friendorfoe.data.repository.AppUpdateRepository
 import com.friendorfoe.data.repository.BackendSessionHealthRepository
 import com.friendorfoe.data.repository.SessionHealth
 import com.friendorfoe.data.repository.SkyObjectRepository
+import com.friendorfoe.presentation.permissions.AppFeature
+import com.friendorfoe.presentation.permissions.PermissionStateSource
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.isUsable
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -90,6 +95,7 @@ sealed interface UpdateUiState {
 
 data class InfoUiState(
     val settings: DetectionSettings = DetectionSettings.defaults(),
+    val permissionStates: Map<AppFeature, PermissionUiState> = emptyMap(),
     val sourceStatus: List<InfoSourceStatus> = emptyList(),
     val backendUrlDraft: String = DetectionSettings.defaults().backendUrl,
     val backendUrlError: String? = null,
@@ -105,6 +111,11 @@ data class InfoUiState(
     val backendValidationError: String? get() = backendUrlError
     val connectionStatus: ConnectionTestState get() = connection
 }
+
+data class PendingInfoPermissionSetting(
+    val key: InfoSettingKey,
+    val requestLaunched: Boolean,
+)
 
 typealias InfoSettingsUiState = InfoUiState
 
@@ -196,6 +207,8 @@ class AboutViewModel @Inject constructor(
     private val sessionHealthRepository: BackendSessionHealthRepository,
     private val appUpdateRepository: AppUpdateRepository,
     private val installedVersion: AppVersion,
+    private val permissionStateSource: PermissionStateSource,
+    private val savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
     private val initialSettings = settingsStore.settings.value
     private val backendDraft = MutableStateFlow(
@@ -206,6 +219,9 @@ class AboutViewModel @Inject constructor(
         ),
     )
     private val updateState = MutableStateFlow<UpdateUiState>(UpdateUiState.Idle)
+    private val _pendingPermissionSetting = MutableStateFlow(readPendingPermissionSetting())
+    val pendingPermissionSetting: StateFlow<PendingInfoPermissionSetting?> =
+        _pendingPermissionSetting
     private val updateGeneration = AtomicLong(0L)
     private var updateJob: Job? = null
 
@@ -232,21 +248,43 @@ class AboutViewModel @Inject constructor(
                 }
             }
         }
+        viewModelScope.launch {
+            permissionStateSource.states.collect { permissionStates ->
+                val pending = _pendingPermissionSetting.value ?: return@collect
+                if (!pending.requestLaunched) return@collect
+                val feature = permissionFeatureForSetting(pending.key) ?: return@collect
+                val state = permissionStates[feature] ?: return@collect
+                if (state.isUsable()) resolvePendingPermission(feature, state)
+            }
+        }
     }
 
-    val uiState: StateFlow<InfoUiState> = combine(
+    private val settingsAndPermissions = combine(
         settingsStore.settings,
+        permissionStateSource.states,
+    ) { settings, permissions -> settings to permissions }
+
+    val uiState: StateFlow<InfoUiState> = combine(
+        settingsAndPermissions,
         backendDraft,
         sessionHealthRepository.health,
         sessionHealthRepository.serverVersion,
         updateState,
-    ) { settings, draft, health, serverVersion, update ->
-        projectInfoUiState(settings, draft, health, serverVersion, update)
+    ) { settingsWithPermissions, draft, health, serverVersion, update ->
+        projectInfoUiState(
+            settings = settingsWithPermissions.first,
+            permissionStates = settingsWithPermissions.second,
+            draft = draft,
+            health = health,
+            serverVersion = serverVersion,
+            update = update,
+        )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
         initialValue = projectInfoUiState(
             settings = initialSettings,
+            permissionStates = permissionStateSource.states.value,
             draft = backendDraft.value,
             health = sessionHealthRepository.health.value,
             serverVersion = sessionHealthRepository.serverVersion.value,
@@ -259,6 +297,32 @@ class AboutViewModel @Inject constructor(
         if (key == InfoSettingKey.SENSOR_BACKEND && !enabled) {
             sessionHealthRepository.invalidate()
         }
+    }
+
+    fun beginPermissionEnable(key: InfoSettingKey) {
+        requireNotNull(permissionFeatureForSetting(key)) {
+            "$key is not backed by a contextual permission"
+        }
+        persistPendingPermission(PendingInfoPermissionSetting(key, requestLaunched = false))
+    }
+
+    fun markPermissionRequestLaunched() {
+        val pending = _pendingPermissionSetting.value ?: return
+        persistPendingPermission(pending.copy(requestLaunched = true))
+    }
+
+    fun cancelPendingPermission() {
+        persistPendingPermission(null)
+    }
+
+    fun resolvePendingPermission(
+        feature: AppFeature,
+        state: PermissionUiState,
+    ) {
+        val pending = _pendingPermissionSetting.value ?: return
+        if (permissionFeatureForSetting(pending.key) != feature) return
+        if (state.isUsable()) settingsStore.set(pending.key, true)
+        persistPendingPermission(null)
     }
 
     fun editBackendUrl(raw: String) {
@@ -362,8 +426,24 @@ class AboutViewModel @Inject constructor(
         }
     }
 
+    private fun readPendingPermissionSetting(): PendingInfoPermissionSetting? {
+        val name = savedStateHandle.get<String>(PENDING_PERMISSION_SETTING_KEY) ?: return null
+        val key = InfoSettingKey.entries.firstOrNull { it.name == name } ?: return null
+        return PendingInfoPermissionSetting(
+            key = key,
+            requestLaunched = savedStateHandle[PENDING_PERMISSION_LAUNCHED_KEY] ?: false,
+        )
+    }
+
+    private fun persistPendingPermission(pending: PendingInfoPermissionSetting?) {
+        savedStateHandle[PENDING_PERMISSION_SETTING_KEY] = pending?.key?.name
+        savedStateHandle[PENDING_PERMISSION_LAUNCHED_KEY] = pending?.requestLaunched ?: false
+        _pendingPermissionSetting.value = pending
+    }
+
     private fun projectInfoUiState(
         settings: DetectionSettings,
+        permissionStates: Map<AppFeature, PermissionUiState>,
         draft: BackendDraft,
         health: SessionHealth,
         serverVersion: String?,
@@ -378,7 +458,13 @@ class AboutViewModel @Inject constructor(
         )
         return InfoUiState(
             settings = settings,
-            sourceStatus = sourceStatus(settings, configuredEndpoint, health),
+            permissionStates = permissionStates,
+            sourceStatus = sourceStatus(
+                settings,
+                configuredEndpoint,
+                health,
+                permissionStates,
+            ),
             backendUrlDraft = draft.text,
             backendUrlError = draft.error,
             backendUrlCanSave = BackendEndpoint.parse(draft.text).isSuccess,
@@ -394,6 +480,9 @@ class AboutViewModel @Inject constructor(
         )
     }
 }
+
+private const val PENDING_PERMISSION_SETTING_KEY = "pending_info_permission_setting"
+private const val PENDING_PERMISSION_LAUNCHED_KEY = "pending_info_permission_launched"
 
 private fun String.validationError(): String? =
     if (BackendEndpoint.parse(this).isSuccess) null else BACKEND_URL_ERROR
@@ -435,10 +524,11 @@ private fun connectionState(
     }
 }
 
-private fun sourceStatus(
+internal fun sourceStatus(
     settings: DetectionSettings,
     endpoint: BackendEndpoint?,
     health: SessionHealth,
+    permissionStates: Map<AppFeature, PermissionUiState>,
 ): List<InfoSourceStatus> = listOf(
     neutralSource(
         InfoSourceKey.ADS_B,
@@ -446,38 +536,93 @@ private fun sourceStatus(
         settings.adsbEnabled,
         "Aircraft data source",
     ),
-    neutralSource(
+    permissionAwareSource(
         InfoSourceKey.BLE_REMOTE_ID,
         "BLE Remote ID",
         settings.bleRidEnabled,
-        "Bluetooth permission is checked when this feature is used",
+        permissionStates[AppFeature.LOCAL_RADIO_DISCOVERY] ?: PermissionUiState.Loading,
+        "Bluetooth and nearby Wi-Fi access",
     ),
-    neutralSource(
+    permissionAwareSource(
         InfoSourceKey.WIFI_REMOTE_ID,
         "Wi-Fi Remote ID",
         settings.wifiEnabled,
-        "Nearby Wi-Fi/location permission is checked when this feature is used",
+        permissionStates[AppFeature.LOCAL_RADIO_DISCOVERY] ?: PermissionUiState.Loading,
+        "Nearby Wi-Fi and location-protected scan results",
     ),
-    neutralSource(
+    permissionAwareSource(
         InfoSourceKey.PHONE_PRIVACY_SCAN,
         "Phone privacy scan",
         settings.phonePrivacyScanEnabled,
+        permissionStates[AppFeature.PHONE_PRIVACY_SCAN] ?: PermissionUiState.Loading,
         "Local BLE and Wi-Fi collectors",
     ),
-    neutralSource(
+    permissionAwareSource(
         InfoSourceKey.ULTRASONIC,
         "Ultrasonic",
         settings.ultrasonicEnabled,
-        "Microphone permission is checked when this feature is used",
+        permissionStates[AppFeature.ULTRASONIC] ?: PermissionUiState.Loading,
+        "Microphone access for high-frequency sampling",
     ),
     backendSource(settings.sensorBackendEnabled, endpoint, health),
-    neutralSource(
+    permissionAwareSource(
         InfoSourceKey.NOTIFICATION_DELIVERY,
         "Notification delivery",
-        settings.privacyNotificationsEnabled,
-        "Android notification permission and channel state apply",
+        settings.anyAlertsEnabled(),
+        configuredNotificationState(settings, permissionStates),
+        "Android permission, global delivery, and each configured alert channel",
     ),
 )
+
+internal fun permissionFeatureForSetting(key: InfoSettingKey): AppFeature? = when (key) {
+    InfoSettingKey.BLE_REMOTE_ID,
+    InfoSettingKey.WIFI_REMOTE_ID,
+    -> AppFeature.LOCAL_RADIO_DISCOVERY
+
+    InfoSettingKey.PHONE_PRIVACY_SCAN -> AppFeature.PHONE_PRIVACY_SCAN
+    InfoSettingKey.ULTRASONIC -> AppFeature.ULTRASONIC
+    InfoSettingKey.PRIVACY_ALERTS -> AppFeature.PRIVACY_ALERTS
+    InfoSettingKey.DRONE_ALERTS,
+    InfoSettingKey.HELICOPTER_ALERTS,
+    InfoSettingKey.MILITARY_ALERTS,
+    InfoSettingKey.POLICE_ALERTS,
+    -> AppFeature.SKY_ALERTS
+
+    InfoSettingKey.ADS_B,
+    InfoSettingKey.STALKER,
+    InfoSettingKey.WIFI_ANOMALY,
+    InfoSettingKey.SENSOR_BACKEND,
+    InfoSettingKey.BACKEND_ONLY,
+    -> null
+}
+
+internal fun isInfoSettingInteractive(
+    key: InfoSettingKey,
+    settings: DetectionSettings,
+    phonePrivacyPermission: PermissionUiState,
+): Boolean = when (key) {
+    InfoSettingKey.STALKER,
+    InfoSettingKey.WIFI_ANOMALY,
+    -> settings.phonePrivacyScanEnabled &&
+        !settings.backendOnlyMode &&
+        phonePrivacyPermission.isUsable()
+
+    else -> true
+}
+
+internal fun infoSettingDisabledReason(
+    key: InfoSettingKey,
+    settings: DetectionSettings,
+    phonePrivacyPermission: PermissionUiState,
+): String? {
+    if (key != InfoSettingKey.STALKER && key != InfoSettingKey.WIFI_ANOMALY) return null
+    return when {
+        !settings.phonePrivacyScanEnabled || !phonePrivacyPermission.isUsable() ->
+            "Requires Phone privacy scan."
+        settings.backendOnlyMode -> "Unavailable in backend-only mode."
+        else -> null
+    }
+}
 
 private fun neutralSource(
     key: InfoSourceKey,
@@ -492,6 +637,54 @@ private fun neutralSource(
     statusText = if (configured) "Configured" else "Off",
     detail = detail,
 )
+
+private fun permissionAwareSource(
+    key: InfoSourceKey,
+    label: String,
+    configured: Boolean,
+    permissionState: PermissionUiState,
+    detail: String,
+): InfoSourceStatus = InfoSourceStatus(
+    key = key,
+    label = label,
+    configured = configured,
+    effective = when {
+        !configured -> null
+        permissionState == PermissionUiState.Loading -> null
+        else -> permissionState.isUsable()
+    },
+    statusText = when {
+        !configured -> "Off"
+        permissionState == PermissionUiState.Loading -> "Checking"
+        permissionState.isUsable() -> "Ready"
+        else -> "Permission needed"
+    },
+    detail = detail,
+)
+
+private fun DetectionSettings.anyAlertsEnabled(): Boolean =
+    privacyNotificationsEnabled || droneAlertsEnabled || helicopterAlertsEnabled ||
+        militaryAlertsEnabled || policeAlertsEnabled
+
+private fun configuredNotificationState(
+    settings: DetectionSettings,
+    permissionStates: Map<AppFeature, PermissionUiState>,
+): PermissionUiState {
+    val configuredStates = buildList {
+        if (settings.privacyNotificationsEnabled) {
+            add(permissionStates[AppFeature.PRIVACY_ALERTS] ?: PermissionUiState.Loading)
+        }
+        if (
+            settings.droneAlertsEnabled || settings.helicopterAlertsEnabled ||
+            settings.militaryAlertsEnabled || settings.policeAlertsEnabled
+        ) {
+            add(permissionStates[AppFeature.SKY_ALERTS] ?: PermissionUiState.Loading)
+        }
+    }
+    return configuredStates.firstOrNull { !it.isUsable() }
+        ?: configuredStates.firstOrNull()
+        ?: PermissionUiState.Granted
+}
 
 private fun backendSource(
     configured: Boolean,

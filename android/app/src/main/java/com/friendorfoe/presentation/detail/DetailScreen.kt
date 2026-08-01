@@ -103,8 +103,6 @@ fun DetailScreen(
     viewModel: DetailViewModel = hiltViewModel()
 ) {
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
-    val positionTrail by viewModel.positionTrail.collectAsStateWithLifecycle()
-
     // Load detail on first composition
     LaunchedEffect(objectId) {
         viewModel.loadDetail(objectId)
@@ -156,23 +154,32 @@ fun DetailScreen(
                 }
 
                 is DetailState.AircraftLoaded -> {
-                    AircraftDetailContent(
-                        aircraft = state.aircraft,
-                        detail = state.detail,
-                        onNavigateToAircraftGuide = onNavigateToAircraftGuide
+                    DetailOverviewContent(
+                        model = presentLiveDetail(
+                            aircraft = state.aircraft,
+                            remoteDetail = state.detail,
+                            remoteFailure = state.remoteFailure,
+                        ),
+                        onRetryDetails = state.remoteFailure?.let { viewModel::retryRemoteDetail },
+                        referenceLabel = "Aircraft reference",
+                        onOpenReference = onNavigateToAircraftGuide?.let { navigate ->
+                            { navigate(state.detail?.aircraftType ?: state.aircraft.aircraftType) }
+                        },
                     )
                 }
 
                 is DetailState.DroneLoaded -> {
-                    DroneDetailContent(
-                        drone = state.drone,
-                        positionTrail = positionTrail,
-                        onNavigateToDroneGuide = onNavigateToDroneGuide
+                    DetailOverviewContent(
+                        model = presentLiveDroneDetail(state.drone),
+                        referenceLabel = "Drone reference",
+                        onOpenReference = onNavigateToDroneGuide?.let { navigate ->
+                            { navigate(state.drone.manufacturer) }
+                        },
                     )
                 }
 
                 is DetailState.HistoricalLoaded -> {
-                    HistoricalDetailContent(snapshot = state.snapshot)
+                    DetailOverviewContent(model = presentHistoricalDetail(state.snapshot))
                 }
 
                 is DetailState.Error -> {

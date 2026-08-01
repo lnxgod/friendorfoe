@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Navigation
@@ -22,6 +24,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -55,6 +58,8 @@ import com.friendorfoe.presentation.detail.DetailViewModel
 import com.friendorfoe.presentation.detail.DroneDetailContent
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.presentation.util.categoryColorArgb
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.isUsable
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -68,6 +73,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 internal class MapScreenLifecycleActions(
+    private val canStartLocation: () -> Boolean = { true },
     private val startLocation: () -> Unit,
     private val stopLocation: () -> Unit,
     private val startPolling: () -> Unit,
@@ -76,7 +82,7 @@ internal class MapScreenLifecycleActions(
     fun onEvent(event: Lifecycle.Event) {
         when (event) {
             Lifecycle.Event.ON_RESUME -> {
-                startLocation()
+                if (canStartLocation()) startLocation()
                 startPolling()
             }
             Lifecycle.Event.ON_PAUSE -> {
@@ -93,12 +99,36 @@ internal class MapScreenLifecycleActions(
     }
 }
 
+internal data class MapOverlayPlan(
+    val renderTargets: Boolean,
+    val renderUserMarker: Boolean,
+    val renderPreciseUserOverlays: Boolean,
+    val autoCenterOnUser: Boolean,
+)
+
+internal fun mapOverlayPlan(
+    locationPermissionState: PermissionUiState,
+    hasValidUserPosition: Boolean,
+): MapOverlayPlan {
+    val hasUsableUserPosition = locationPermissionState.isUsable() && hasValidUserPosition
+    return MapOverlayPlan(
+        renderTargets = true,
+        renderUserMarker = hasUsableUserPosition,
+        renderPreciseUserOverlays =
+            locationPermissionState == PermissionUiState.Granted && hasValidUserPosition,
+        autoCenterOnUser = hasUsableUserPosition,
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MapViewScreen(
     onObjectTapped: (String) -> Unit,
     viewModel: MapViewModel = hiltViewModel(),
-    detailViewModel: DetailViewModel = hiltViewModel()
+    detailViewModel: DetailViewModel = hiltViewModel(),
+    locationPermissionState: PermissionUiState = PermissionUiState.Granted,
+    onRequestLocation: () -> Unit = {},
+    onOpenLocationSettings: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -123,8 +153,9 @@ fun MapViewScreen(
     }
 
     // Manage location lifecycle
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, locationPermissionState) {
         val lifecycleActions = MapScreenLifecycleActions(
+            canStartLocation = locationPermissionState::isUsable,
             startLocation = viewModel::startLocationUpdates,
             stopLocation = viewModel::stopLocationUpdates,
             startPolling = viewModel::startSensorMapPolling,
@@ -136,6 +167,11 @@ fun MapViewScreen(
             lifecycleOwner.lifecycle.removeObserver(observer)
             lifecycleActions.dispose()
         }
+    }
+
+    LaunchedEffect(locationPermissionState) {
+        if (locationPermissionState.isUsable()) viewModel.startLocationUpdates()
+        else viewModel.stopLocationUpdates()
     }
 
     // Load detail when selected
@@ -209,53 +245,62 @@ fun MapViewScreen(
                     map.mapOrientation = 0f
                 }
 
-                // Update map center to user position
-                if (userPosition.latitude != 0.0 || userPosition.longitude != 0.0) {
-                    val userGeoPoint = GeoPoint(userPosition.latitude, userPosition.longitude)
+                val hasValidUserPosition =
+                    userPosition.latitude != 0.0 || userPosition.longitude != 0.0
+                val overlayPlan = mapOverlayPlan(
+                    locationPermissionState = locationPermissionState,
+                    hasValidUserPosition = hasValidUserPosition,
+                )
+                val userGeoPoint = if (hasValidUserPosition) {
+                    GeoPoint(userPosition.latitude, userPosition.longitude)
+                } else {
+                    null
+                }
 
-                    // Clear overlays but preserve the long-press event handler
-                    val eventsOverlay = map.overlays.filterIsInstance<MapEventsOverlay>().firstOrNull()
-                    map.overlays.clear()
-                    if (eventsOverlay != null) map.overlays.add(eventsOverlay)
+                // Rebuild all data overlays independently of phone-location access.
+                val eventsOverlay = map.overlays.filterIsInstance<MapEventsOverlay>().firstOrNull()
+                map.overlays.clear()
+                if (eventsOverlay != null) map.overlays.add(eventsOverlay)
 
-                    // Distance rings at 10 NM and 25 NM
+                if (overlayPlan.renderPreciseUserOverlays && userGeoPoint != null) {
                     addDistanceRing(map, userGeoPoint, 10.0)
                     addDistanceRing(map, userGeoPoint, 25.0)
-
-                    // Remote search ring (250 NM) if active
-                    if (remoteSearchCenter != null) {
-                        val searchGeo = GeoPoint(remoteSearchCenter!!.latitude, remoteSearchCenter!!.longitude)
-                        addDistanceRing(map, searchGeo, 250.0)
-                        // Search center pin
-                        val pin = Marker(map).apply {
-                            position = searchGeo
-                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                            title = "Search area (250 NM)"
-                            snippet = "${remoteSearchResults.size} aircraft found"
-                        }
-                        map.overlays.add(pin)
-                    }
-
-                    // FOV cone showing camera direction (only when following compass)
                     if (followCompass) {
                         addFovCone(map, userGeoPoint, compassHeading, map.zoomLevelDouble)
                     }
+                }
 
-                    // User position marker
+                // Remote searches are anchored to the selected map point, not phone location.
+                remoteSearchCenter?.let { center ->
+                    val searchGeo = GeoPoint(center.latitude, center.longitude)
+                    addDistanceRing(map, searchGeo, 250.0)
+                    val pin = Marker(map).apply {
+                        position = searchGeo
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                        title = "Search area (250 NM)"
+                        snippet = "${remoteSearchResults.size} aircraft found"
+                    }
+                    map.overlays.add(pin)
+                }
+
+                if (overlayPlan.renderUserMarker && userGeoPoint != null) {
                     val userMarker = Marker(map).apply {
                         position = userGeoPoint
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-                        title = "You"
+                        title = if (locationPermissionState == PermissionUiState.Granted) {
+                            "You"
+                        } else {
+                            "Approximate location"
+                        }
                         icon = createUserDrawable(context, followCompass, compassHeading)
                     }
                     map.overlays.add(userMarker)
+                }
 
-                    // Aircraft markers
+                if (overlayPlan.renderTargets) {
                     for (obj in skyObjects) {
                         if (obj.position.latitude == 0.0 && obj.position.longitude == 0.0) continue
                         val geoPoint = GeoPoint(obj.position.latitude, obj.position.longitude)
-                        val color = categoryColorArgb(obj.category)
-
                         val marker = Marker(map).apply {
                             position = geoPoint
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
@@ -264,9 +309,9 @@ fun MapViewScreen(
                             icon = createCategoryMarkerDrawable(
                                 context = context,
                                 category = obj.category,
-                                color = color,
+                                color = categoryColorArgb(obj.category),
                                 heading = getHeading(obj),
-                                visuallyConfirmed = obj.id in activeVisualFocusIds
+                                visuallyConfirmed = obj.id in activeVisualFocusIds,
                             )
                             setOnMarkerClickListener { _, _ ->
                                 viewModel.selectObject(obj.id)
@@ -276,28 +321,24 @@ fun MapViewScreen(
                         map.overlays.add(marker)
                     }
 
-                    // Remote ESP32 sensor markers (green squares)
                     for (sensor in remoteSensors) {
-                        val sGeo = GeoPoint(sensor.lat, sensor.lon)
-                        val sMarker = Marker(map).apply {
-                            position = sGeo
+                        val sensorGeoPoint = GeoPoint(sensor.lat, sensor.lon)
+                        val marker = Marker(map).apply {
+                            position = sensorGeoPoint
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                             title = "Sensor: ${sensor.deviceId}"
                             icon = createSensorDrawable(context)
                         }
-                        map.overlays.add(sMarker)
+                        map.overlays.add(marker)
                     }
 
-                    // Sensor-detected drones (triangulated / range-estimated)
                     for (drone in sensorDrones) {
-                        val dGeo = GeoPoint(drone.lat, drone.lon)
-
-                        // Range circle for single-sensor detections
+                        val droneGeoPoint = GeoPoint(drone.lat, drone.lon)
                         if (drone.positionSource == "range_only" && drone.rangeM != null) {
                             val rangeCircle = Polygon(map).apply {
-                                points = Polygon.pointsAsCircle(dGeo, drone.rangeM)
+                                points = Polygon.pointsAsCircle(droneGeoPoint, drone.rangeM)
                                 fillPaint.apply {
-                                    color = 0x20FF6D00  // semi-transparent orange
+                                    color = 0x20FF6D00
                                     style = Paint.Style.FILL
                                 }
                                 outlinePaint.apply {
@@ -310,12 +351,15 @@ fun MapViewScreen(
                             map.overlays.add(rangeCircle)
                         }
 
-                        // Accuracy circle for triangulated positions
-                        if (drone.positionSource == "trilateration" && drone.accuracyM != null && drone.accuracyM > 10) {
-                            val accCircle = Polygon(map).apply {
-                                points = Polygon.pointsAsCircle(dGeo, drone.accuracyM)
+                        if (
+                            drone.positionSource == "trilateration" &&
+                            drone.accuracyM != null &&
+                            drone.accuracyM > 10
+                        ) {
+                            val accuracyCircle = Polygon(map).apply {
+                                points = Polygon.pointsAsCircle(droneGeoPoint, drone.accuracyM)
                                 fillPaint.apply {
-                                    color = 0x15E91E63  // faint pink
+                                    color = 0x15E91E63
                                     style = Paint.Style.FILL
                                 }
                                 outlinePaint.apply {
@@ -324,18 +368,17 @@ fun MapViewScreen(
                                     style = Paint.Style.STROKE
                                 }
                             }
-                            map.overlays.add(accCircle)
+                            map.overlays.add(accuracyCircle)
                         }
 
-                        // Drone marker
                         val droneColor = when (drone.positionSource) {
-                            "gps" -> 0xFFF44336.toInt()            // red — GPS confirmed
-                            "trilateration" -> 0xFFE91E63.toInt()  // pink — triangulated
-                            "intersection" -> 0xFFFF9800.toInt()   // orange — 2-sensor
-                            else -> 0xFFFF6D00.toInt()             // dark orange — range only
+                            "gps" -> 0xFFF44336.toInt()
+                            "trilateration" -> 0xFFE91E63.toInt()
+                            "intersection" -> 0xFFFF9800.toInt()
+                            else -> 0xFFFF6D00.toInt()
                         }
                         val droneMarker = Marker(map).apply {
-                            position = dGeo
+                            position = droneGeoPoint
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                             title = buildSensorDroneTitle(drone)
                             snippet = buildSensorDroneSnippet(drone)
@@ -344,25 +387,8 @@ fun MapViewScreen(
                         map.overlays.add(droneMarker)
                     }
 
-                    // Center map on user — but NOT while user is actively panning
-                    if (!isUserPanning) {
-                        if (followCompass) {
-                            map.controller.animateTo(userGeoPoint)
-                        } else {
-                            val currentCenter = map.mapCenter
-                            val dist = userGeoPoint.distanceToAsDouble(
-                                GeoPoint(currentCenter.latitude, currentCenter.longitude)
-                            )
-                            if (dist > 500) {
-                                map.controller.animateTo(userGeoPoint)
-                            }
-                        }
-                    }
-
-                    // Remote search results (different color — cyan markers)
                     for (obj in remoteSearchResults) {
                         if (obj.position.latitude == 0.0 && obj.position.longitude == 0.0) continue
-                        // Skip if already in local skyObjects
                         if (skyObjects.any { it.id == obj.id }) continue
                         val geoPoint = GeoPoint(obj.position.latitude, obj.position.longitude)
                         val marker = Marker(map).apply {
@@ -370,7 +396,12 @@ fun MapViewScreen(
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                             title = getMarkerTitle(obj)
                             snippet = "Remote: ${getMarkerSnippet(obj)}"
-                            icon = createCategoryMarkerDrawable(context, obj.category, 0xFF00BCD4.toInt(), getHeading(obj))
+                            icon = createCategoryMarkerDrawable(
+                                context,
+                                obj.category,
+                                0xFF00BCD4.toInt(),
+                                getHeading(obj),
+                            )
                             setOnMarkerClickListener { _, _ ->
                                 viewModel.selectObject(obj.id)
                                 onObjectTapped(obj.id)
@@ -379,11 +410,80 @@ fun MapViewScreen(
                         }
                         map.overlays.add(marker)
                     }
-
-                    map.invalidate()
                 }
+
+                if (overlayPlan.autoCenterOnUser && userGeoPoint != null && !isUserPanning) {
+                    if (followCompass) {
+                        map.controller.animateTo(userGeoPoint)
+                    } else {
+                        val currentCenter = map.mapCenter
+                        val distance = userGeoPoint.distanceToAsDouble(
+                            GeoPoint(currentCenter.latitude, currentCenter.longitude)
+                        )
+                        if (distance > 500) {
+                            map.controller.animateTo(userGeoPoint)
+                        }
+                    }
+                }
+
+                map.invalidate()
             }
         )
+
+        if (!locationPermissionState.isUsable()) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 16.dp, end = 16.dp, bottom = 88.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                tonalElevation = 4.dp,
+            ) {
+                androidx.compose.foundation.layout.Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Map works without your location", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Browse and search the map now. Allow location only when you want nearby centering.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (locationPermissionState != PermissionUiState.Loading) {
+                        Button(
+                            onClick = if (locationPermissionState == PermissionUiState.Denied) {
+                                onRequestLocation
+                            } else {
+                                onOpenLocationSettings
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                if (locationPermissionState == PermissionUiState.Denied) {
+                                    "Use my location"
+                                } else {
+                                    "Open app settings"
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        } else if (locationPermissionState == PermissionUiState.Approximate) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 16.dp, end = 16.dp, bottom = 88.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+            ) {
+                Text(
+                    "Approximate location · precise distance and bearing are hidden",
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
 
         // Remote search indicator
         if (remoteSearching) {

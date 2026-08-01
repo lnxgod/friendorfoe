@@ -43,6 +43,11 @@ import com.friendorfoe.presentation.privacy.IgnoredDevicesScreen
 import com.friendorfoe.presentation.privacy.PrivacyScreen
 import com.friendorfoe.presentation.privacy.PrivacyFindingDetailsRoute
 import com.friendorfoe.presentation.reference.ReferenceGuideScreen
+import com.friendorfoe.presentation.permissions.AppFeature
+import com.friendorfoe.presentation.permissions.ContextualPermissionGate
+import com.friendorfoe.presentation.permissions.FeaturePermissionGate
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.rememberPermissionBindings
 
 private const val MAIN_GRAPH_ROUTE = "main_graph"
 private const val REFERENCE_GUIDE_BASE_ROUTE = "reference_guide"
@@ -82,28 +87,71 @@ internal fun TopLevelRouteRoot(
     ) { content() }
 }
 
+@Composable
+internal fun ArPermissionRoute(
+    cameraState: PermissionUiState,
+    locationState: PermissionUiState,
+    onRequestCamera: () -> Unit,
+    onOpenCameraSettings: () -> Unit,
+    content: @Composable (PermissionUiState) -> Unit,
+) {
+    FeaturePermissionGate(
+        feature = AppFeature.AR_CAMERA,
+        state = cameraState,
+        onRequest = onRequestCamera,
+        onOpenSettings = onOpenCameraSettings,
+    ) {
+        content(locationState)
+    }
+}
+
 private fun NavGraphBuilder.registerSevenTopLevelDestinations(
     navController: NavHostController,
 ) {
     composable(Screen.ArView.route) {
         TopLevelRouteRoot(TopLevelDestination.AR) {
             val arViewModel: ArViewModel = hiltViewModel()
-            PermissionHandler(viewModel = arViewModel) {
-                ArViewScreen(
-                    onObjectTapped = { objectId ->
-                        navController.navigate(Screen.Detail.createRoute(objectId))
-                    },
+            val permissions = rememberPermissionBindings()
+            ArPermissionRoute(
+                cameraState = permissions.stateFor(AppFeature.AR_CAMERA),
+                locationState = permissions.stateFor(AppFeature.AR_MAP_LOCATION),
+                onRequestCamera = { permissions.request(AppFeature.AR_CAMERA) },
+                onOpenCameraSettings = { permissions.openSettings(AppFeature.AR_CAMERA) },
+            ) { locationState ->
+                PermissionHandler(
                     viewModel = arViewModel,
-                )
+                    locationPermissionState = locationState,
+                    onRequestLocation = { permissions.request(AppFeature.AR_MAP_LOCATION) },
+                    onOpenLocationSettings = {
+                        permissions.openSettings(AppFeature.AR_MAP_LOCATION)
+                    },
+                ) {
+                    ArViewScreen(
+                        onObjectTapped = { objectId ->
+                            navController.navigate(Screen.Detail.createRoute(objectId))
+                        },
+                        viewModel = arViewModel,
+                        isPreciseLocation = locationState == PermissionUiState.Granted,
+                    )
+                }
             }
         }
     }
 
     composable(Screen.MapView.route) {
         TopLevelRouteRoot(TopLevelDestination.MAP) {
+            val permissions = rememberPermissionBindings()
+            val locationState = permissions.stateFor(AppFeature.AR_MAP_LOCATION)
             MapViewScreen(
                 onObjectTapped = { objectId ->
                     navController.navigate(Screen.Detail.createRoute(objectId))
+                },
+                locationPermissionState = locationState,
+                onRequestLocation = {
+                    permissions.request(AppFeature.AR_MAP_LOCATION)
+                },
+                onOpenLocationSettings = {
+                    permissions.openSettings(AppFeature.AR_MAP_LOCATION)
                 },
             )
         }
@@ -299,7 +347,14 @@ private fun NavGraphBuilder.registerSecondaryDestinations(
     }
 
     composable(Screen.IrCameraScan.route) {
-        IrCameraScanScreen(onBack = { navController.popBackStack() })
+        val permissions = rememberPermissionBindings()
+        ContextualPermissionGate(
+            feature = AppFeature.IR_CAMERA,
+            bindings = permissions,
+            onBack = { navController.popBackStack() },
+        ) {
+            IrCameraScanScreen(onBack = { navController.popBackStack() })
+        }
     }
 
     composable(Screen.IgnoredDevices.route) {

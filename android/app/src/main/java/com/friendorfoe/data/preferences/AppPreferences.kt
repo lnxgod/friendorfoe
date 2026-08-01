@@ -5,11 +5,13 @@ import kotlinx.coroutines.flow.Flow
 interface AppPreferences {
     val launchState: Flow<AppLaunchState>
     val ignoredFindingKeys: Flow<Set<String>>
+    val requestedPermissions: Flow<Set<String>>
 
     suspend fun setOnboardingComplete()
     suspend fun setLastTopLevelRoute(route: String)
     suspend fun ignoreFinding(key: FindingPreferenceKey)
     suspend fun restoreFinding(key: FindingPreferenceKey)
+    suspend fun markPermissionsRequested(permissions: Set<String>)
 }
 
 sealed interface AppLaunchState {

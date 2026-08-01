@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -24,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.ObjectTypeFilter
 import com.friendorfoe.domain.model.SourceFilterGroup
+import com.friendorfoe.domain.model.cleared
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -31,10 +34,12 @@ import kotlin.math.roundToInt
 fun FilterAdvancedSection(
     filterState: FilterState,
     onFilterStateChange: (FilterState) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    alwaysVisible: Boolean = false,
+    showClearAction: Boolean = true,
 ) {
     AnimatedVisibility(
-        visible = filterState.isAdvancedExpanded,
+        visible = alwaysVisible || filterState.isAdvancedExpanded,
         enter = expandVertically(),
         exit = shrinkVertically(),
         modifier = modifier
@@ -54,7 +59,8 @@ fun FilterAdvancedSection(
                             else ObjectTypeFilter.AIRCRAFT
                         onFilterStateChange(filterState.copy(objectTypeFilter = newType))
                     },
-                    label = { Text("Aircraft") }
+                    label = { Text("Aircraft") },
+                    modifier = Modifier.heightIn(min = 48.dp),
                 )
                 FilterChip(
                     selected = filterState.objectTypeFilter == ObjectTypeFilter.DRONE,
@@ -63,7 +69,8 @@ fun FilterAdvancedSection(
                             else ObjectTypeFilter.DRONE
                         onFilterStateChange(filterState.copy(objectTypeFilter = newType))
                     },
-                    label = { Text("Drone") }
+                    label = { Text("Drone") },
+                    modifier = Modifier.heightIn(min = 48.dp),
                 )
             }
 
@@ -76,7 +83,7 @@ fun FilterAdvancedSection(
                     val label = when (group) {
                         SourceFilterGroup.ADS_B -> "ADS-B"
                         SourceFilterGroup.REMOTE_ID -> "Remote ID"
-                        SourceFilterGroup.WIFI -> "WiFi"
+                        SourceFilterGroup.WIFI -> "Wi-Fi / phone"
                     }
                     val selected = group in filterState.selectedSources
                     FilterChip(
@@ -86,7 +93,8 @@ fun FilterAdvancedSection(
                                 else filterState.selectedSources + group
                             onFilterStateChange(filterState.copy(selectedSources = newSources))
                         },
-                        label = { Text(label) }
+                        label = { Text(label) },
+                        modifier = Modifier.heightIn(min = 48.dp),
                     )
                 }
             }
@@ -96,6 +104,14 @@ fun FilterAdvancedSection(
             // Distance slider
             val distanceValue = filterState.maxDistanceNm ?: 100f
             Text("Max Distance: ${if (filterState.maxDistanceNm != null) "${distanceValue.roundToInt()} NM" else "No limit"}")
+            if (filterState.maxDistanceNm != null) {
+                Text(
+                    text = "Rows without distance are excluded",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
             Slider(
                 value = distanceValue,
                 onValueChange = { value ->
@@ -131,15 +147,18 @@ fun FilterAdvancedSection(
             Spacer(modifier = Modifier.height(8.dp))
 
             // Clear All button
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = {
-                    onFilterStateChange(FilterState())
-                }) {
-                    Text("Clear All")
+            if (showClearAction) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(
+                        onClick = { onFilterStateChange(filterState.cleared()) },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) {
+                        Text("Clear filters")
+                    }
                 }
             }
         }

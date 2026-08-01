@@ -45,6 +45,7 @@ class AppChromeViewModelTest {
 private class FakeAppPreferences(initialLaunchState: AppLaunchState) : AppPreferences {
     override val launchState = MutableStateFlow(initialLaunchState)
     override val ignoredFindingKeys = MutableStateFlow(emptySet<String>())
+    override val requestedPermissions = MutableStateFlow(emptySet<String>())
     var onboardingCompletionCount = 0
 
     override suspend fun setOnboardingComplete() {
@@ -56,4 +57,8 @@ private class FakeAppPreferences(initialLaunchState: AppLaunchState) : AppPrefer
     override suspend fun ignoreFinding(key: FindingPreferenceKey) = Unit
 
     override suspend fun restoreFinding(key: FindingPreferenceKey) = Unit
+
+    override suspend fun markPermissionsRequested(permissions: Set<String>) {
+        requestedPermissions.value += permissions
+    }
 }

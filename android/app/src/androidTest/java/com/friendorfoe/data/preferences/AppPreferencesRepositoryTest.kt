@@ -1,5 +1,6 @@
 package com.friendorfoe.data.preferences
 
+import android.Manifest
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.flow.first
@@ -16,7 +17,7 @@ class AppPreferencesRepositoryTest {
         get() = InstrumentationRegistry.getInstrumentation().targetContext
 
     @Test
-    fun onboardingRouteAndIgnoredKeysSurviveRepositoryRecreation() = runBlocking {
+    fun appStateSurvivesRepositoryRecreationAndPermissionHistoryUnions() = runBlocking {
         val first = AppPreferencesRepository(context)
         first.resetForInstrumentation()
         try {
@@ -24,10 +25,24 @@ class AppPreferencesRepositoryTest {
             first.setOnboardingComplete()
             first.setLastTopLevelRoute("privacy")
             first.ignoreFinding(ignored)
+            first.markPermissionsRequested(
+                setOf(
+                    Manifest.permission.CAMERA,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                )
+            )
+            first.markPermissionsRequested(setOf(Manifest.permission.CAMERA))
 
             val recreated = AppPreferencesRepository(context)
             assertEquals(AppLaunchState.Ready("privacy"), recreated.launchState.first())
             assertEquals(setOf(ignored.encoded), recreated.ignoredFindingKeys.first())
+            assertEquals(
+                setOf(
+                    Manifest.permission.CAMERA,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                ),
+                recreated.requestedPermissions.first(),
+            )
 
             recreated.restoreFinding(ignored)
             assertTrue(recreated.ignoredFindingKeys.first().isEmpty())

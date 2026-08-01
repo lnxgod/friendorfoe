@@ -7,6 +7,7 @@ enum class PrivacySourceKind(val preferenceId: String) {
     PHONE_BLE("phone_ble"),
     PHONE_ULTRASONIC("phone_ultrasonic"),
     BACKEND("backend"),
+    BADGE("badge"),
     BADGE_USB("badge_usb"),
     BADGE_AP("badge_ap"),
     BADGE_BLE("badge_ble"),
@@ -120,6 +121,18 @@ data class PrivacySourceSnapshot(
             "Snapshot ${health.source} contains a finding from another source"
         }
     }
+}
+
+internal fun PrivacySourceSnapshot.preserveLoadingStartFrom(
+    previous: PrivacySourceSnapshot?,
+): PrivacySourceSnapshot = if (
+    previous?.health?.source == health.source &&
+    previous.health.state == SourceHealthState.LOADING &&
+    health.state == SourceHealthState.LOADING
+) {
+    copy(emittedAtElapsedMs = previous.emittedAtElapsedMs)
+} else {
+    this
 }
 
 data class PrivacyCurrentState(

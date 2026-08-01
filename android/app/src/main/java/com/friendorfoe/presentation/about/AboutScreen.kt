@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -31,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -45,6 +47,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.presentation.components.FofActionRow
 import com.friendorfoe.presentation.components.FofScreenHeader
 import com.friendorfoe.presentation.components.FofSection
+import com.friendorfoe.presentation.permissions.PermissionBackedToggle
+import com.friendorfoe.presentation.permissions.PermissionBindings
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.isUsable
+import com.friendorfoe.presentation.permissions.permissionExplanation
+import com.friendorfoe.presentation.permissions.permissionRecovery
+import com.friendorfoe.presentation.permissions.permissionTitle
+import com.friendorfoe.presentation.permissions.rememberPermissionBindings
 
 val INFO_SECTION_TITLES = listOf(
     "Source & permission status",
@@ -57,6 +67,10 @@ val INFO_SECTION_TITLES = listOf(
 
 data class InfoActions(
     val onSetSetting: (InfoSettingKey, Boolean) -> Unit = { _, _ -> },
+    val permissionStateFor: (InfoSettingKey) -> PermissionUiState = {
+        PermissionUiState.Granted
+    },
+    val settingDisabledReason: (InfoSettingKey) -> String? = { null },
     val onEditBackendUrl: (String) -> Unit = {},
     val onSaveBackendUrl: () -> Unit = {},
     val onTestConnection: () -> Unit = {},
@@ -80,6 +94,7 @@ fun AboutScreen(
     onNavigateToIrCameraScan: (() -> Unit)? = null,
     onNavigateToPrivacy: (() -> Unit)? = null,
     onNavigateToReference: (() -> Unit)? = null,
+    permissionBindings: PermissionBindings? = null,
 ) {
     val context = LocalContext.current
     val state by if (viewModel != null) {
@@ -87,28 +102,104 @@ fun AboutScreen(
     } else {
         androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(InfoUiState()) }
     }
+    val activePermissionBindings = if (permissionBindings != null) {
+        permissionBindings
+    } else {
+        rememberPermissionBindings(
+            onPermissionResolution = { feature, resolved ->
+                viewModel?.resolvePendingPermission(feature, resolved)
+            }
+        )
+    }
+    val pendingPermissionSetting by if (viewModel != null) {
+        viewModel.pendingPermissionSetting.collectAsStateWithLifecycle()
+    } else {
+        remember {
+            androidx.compose.runtime.mutableStateOf<PendingInfoPermissionSetting?>(null)
+        }
+    }
+    val actions = InfoActions(
+        onSetSetting = { key, enabled ->
+            val feature = permissionFeatureForSetting(key)
+            val permissionState = feature?.let(activePermissionBindings::stateFor)
+            when {
+                feature == null || !enabled -> viewModel?.setSetting(key, enabled)
+                permissionState?.isUsable() == true -> viewModel?.setSetting(key, true)
+                else -> viewModel?.beginPermissionEnable(key)
+            }
+        },
+        permissionStateFor = { key ->
+            permissionFeatureForSetting(key)?.let(activePermissionBindings::stateFor)
+                ?: PermissionUiState.Granted
+        },
+        settingDisabledReason = { key ->
+            infoSettingDisabledReason(
+                key = key,
+                settings = state.settings,
+                phonePrivacyPermission = activePermissionBindings.stateFor(
+                    com.friendorfoe.presentation.permissions.AppFeature.PHONE_PRIVACY_SCAN
+                ),
+            )
+        },
+        onEditBackendUrl = { viewModel?.editBackendUrl(it) },
+        onSaveBackendUrl = { viewModel?.saveBackendUrl() },
+        onTestConnection = { viewModel?.testConnection() },
+        onCheckForUpdates = { viewModel?.checkForUpdates() },
+        onOpenUpdate = { url -> context.openUri(url) },
+        onContactSupport = {
+            context.openUri(
+                "mailto:lnxgod@gmail.com?subject=" +
+                    Uri.encode("Friend or Foe feedback"),
+            )
+        },
+        onRefreshCalibration = { viewModel?.refreshCalibrationAvailability() },
+        onOpenReference = { onNavigateToReference?.invoke() },
+        onOpenMagneticField = { onNavigateToEmfSweep?.invoke() },
+        onOpenIrLikeLight = { onNavigateToIrCameraScan?.invoke() },
+        onOpenCalibration = { onNavigateToCalibrate?.invoke() },
+    )
     InfoContent(
         state = state,
-        actions = InfoActions(
-            onSetSetting = { key, enabled -> viewModel?.setSetting(key, enabled) },
-            onEditBackendUrl = { viewModel?.editBackendUrl(it) },
-            onSaveBackendUrl = { viewModel?.saveBackendUrl() },
-            onTestConnection = { viewModel?.testConnection() },
-            onCheckForUpdates = { viewModel?.checkForUpdates() },
-            onOpenUpdate = { url -> context.openUri(url) },
-            onContactSupport = {
-                context.openUri(
-                    "mailto:lnxgod@gmail.com?subject=" +
-                        Uri.encode("Friend or Foe feedback"),
+        actions = actions,
+    )
+
+    pendingPermissionSetting?.takeIf { !it.requestLaunched }?.let { pending ->
+        val key = pending.key
+        val feature = requireNotNull(permissionFeatureForSetting(key))
+        val permissionState = activePermissionBindings.stateFor(feature)
+        val canRequest = permissionState == PermissionUiState.Denied
+        AlertDialog(
+            onDismissRequest = { viewModel?.cancelPendingPermission() },
+            title = { Text(permissionTitle(feature)) },
+            text = {
+                Text(
+                    if (canRequest) permissionExplanation(feature)
+                    else permissionRecovery(feature, permissionState)
                 )
             },
-            onRefreshCalibration = { viewModel?.refreshCalibrationAvailability() },
-            onOpenReference = { onNavigateToReference?.invoke() },
-            onOpenMagneticField = { onNavigateToEmfSweep?.invoke() },
-            onOpenIrLikeLight = { onNavigateToIrCameraScan?.invoke() },
-            onOpenCalibration = { onNavigateToCalibrate?.invoke() },
-        ),
-    )
+            confirmButton = {
+                TextButton(
+                    enabled = permissionState != PermissionUiState.Loading,
+                    onClick = {
+                        if (canRequest) {
+                            viewModel?.markPermissionRequestLaunched()
+                            activePermissionBindings.request(feature) { resolved ->
+                                viewModel?.resolvePendingPermission(feature, resolved)
+                            }
+                        } else {
+                            viewModel?.markPermissionRequestLaunched()
+                            activePermissionBindings.openSettings(feature)
+                        }
+                    },
+                ) {
+                    Text(if (canRequest) "Continue" else "Open settings")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel?.cancelPendingPermission() }) { Text("Cancel") }
+            },
+        )
+    }
 }
 
 private fun android.content.Context.openUri(raw: String) {
@@ -358,13 +449,32 @@ private fun SettingsToggleRow(
     checked: Boolean,
     actions: InfoActions,
 ) {
+    val permissionFeature = permissionFeatureForSetting(key)
+    val permissionState = permissionFeature?.let { actions.permissionStateFor(key) }
+    val disabledReason = actions.settingDisabledReason(key)
+    val enabled = disabledReason == null
+    if (permissionFeature != null && permissionState != null) {
+        PermissionBackedToggle(
+            tag = "setting_${key.name.lowercase()}",
+            label = title,
+            description = description,
+            checked = checked,
+            permissionState = permissionState,
+            onOpenExplanation = { actions.onSetSetting(key, true) },
+            onCommitChecked = { actions.onSetSetting(key, it) },
+            enabled = enabled,
+            disabledReason = disabledReason,
+        )
+        return
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = 60.dp)
             .testTag("setting_${key.name.lowercase()}")
             .toggleable(
-                value = checked,
+                value = checked && enabled,
+                enabled = enabled,
                 role = Role.Switch,
                 onValueChange = { actions.onSetSetting(key, it) },
             )
@@ -379,12 +489,12 @@ private fun SettingsToggleRow(
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = description,
+                text = disabledReason?.let { "$description · $it" } ?: description,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Switch(checked = checked, onCheckedChange = null)
+        Switch(checked = checked && enabled, onCheckedChange = null, enabled = enabled)
     }
 }
 

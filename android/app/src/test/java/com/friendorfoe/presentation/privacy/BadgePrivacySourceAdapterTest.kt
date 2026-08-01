@@ -31,11 +31,75 @@ import org.junit.Test
 class BadgePrivacySourceAdapterTest {
 
     @Test
+    fun absentBadgeIsImmediatelyUnavailableWithoutClaimingATransport() = runTest {
+        val adapter = BadgePrivacySourceAdapter(FakeBadgePort(), FakeClock(), backgroundScope)
+
+        val snapshot = adapter.snapshots.value.single()
+        assertEquals("badge", snapshot.health.source.preferenceId)
+        assertEquals(SourceHealthState.UNSUPPORTED, snapshot.health.state)
+        assertEquals("No badge connected", snapshot.health.message)
+        assertNull(snapshot.health.lastSuccessElapsedMs)
+        assertTrue(snapshot.findings.isEmpty())
+    }
+
+    @Test
+    fun disconnectedKnownTransportResolvesImmediatelyInsteadOfCheckingForever() = runTest {
+        val port = FakeBadgePort().apply {
+            state.value = BadgeRepositoryState(
+                connection = BadgeConnectionEvidence(
+                    transport = BadgeTransport.USB_SERIAL,
+                    transportGeneration = 1L,
+                    phase = BadgeConnectionPhase.DISCONNECTED,
+                ),
+            )
+        }
+        val adapter = BadgePrivacySourceAdapter(port, FakeClock(), backgroundScope)
+
+        val snapshot = adapter.snapshots.value.single()
+        assertEquals(PrivacySourceKind.BADGE_USB, snapshot.health.source)
+        assertEquals(SourceHealthState.PAUSED, snapshot.health.state)
+        assertEquals("No badge connected", snapshot.health.message)
+    }
+
+    @Test
+    fun connectingPhasesKeepOneResolutionStartUntilTheReducerDeadline() = runTest {
+        val port = FakeBadgePort()
+        val clock = FakeClock(elapsed = 10_000L)
+        val adapter = BadgePrivacySourceAdapter(port, clock, backgroundScope)
+        port.state.value = BadgeRepositoryState(
+            connection = BadgeConnectionEvidence(
+                transport = BadgeTransport.BLE_GATT,
+                transportGeneration = 1L,
+                phase = BadgeConnectionPhase.CONNECTING,
+            ),
+        )
+        runCurrent()
+        assertEquals(10_000L, adapter.snapshots.value.single().emittedAtElapsedMs)
+
+        clock.elapsed = 19_000L
+        port.state.value = port.state.value.copy(
+            connection = port.state.value.connection.copy(
+                phase = BadgeConnectionPhase.TRANSPORT_OPEN,
+            ),
+        )
+        runCurrent()
+
+        val loading = adapter.snapshots.value.single()
+        assertEquals(SourceHealthState.LOADING, loading.health.state)
+        assertEquals(10_000L, loading.emittedAtElapsedMs)
+        val resolved = PrivacyCurrentReducer().reduce(
+            sources = listOf(loading),
+            ignoredKeys = emptySet(),
+            nowElapsedMs = 30_000L,
+        )
+        assertEquals(SourceHealthState.FAILED, resolved.sources.single().state)
+    }
+
+    @Test
     fun observesOnlyActiveTransportAndSwitchRemovesTheOldBadgeSnapshot() = runTest {
         val port = FakeBadgePort()
         val adapter = BadgePrivacySourceAdapter(port, FakeClock(), backgroundScope)
         runCurrent()
-        assertTrue(adapter.snapshots.value.isEmpty())
 
         port.state.value = badgeState(
             transport = BadgeTransport.USB_SERIAL,
@@ -388,9 +452,11 @@ class BadgePrivacySourceAdapterTest {
             BadgeCommandOutcome.Unsupported("fixture")
     }
 
-    private class FakeClock : MonotonicClock {
-        override fun nowElapsedMs(): Long = 10_000L
+    private class FakeClock(
+        var elapsed: Long = 10_000L,
+    ) : MonotonicClock {
+        override fun nowElapsedMs(): Long = elapsed
         override fun nowWallClock(): Instant = Instant.ofEpochMilli(100_000L)
-        override fun ticks(periodMs: Long): Flow<Long> = MutableStateFlow(10_000L)
+        override fun ticks(periodMs: Long): Flow<Long> = MutableStateFlow(elapsed)
     }
 }
