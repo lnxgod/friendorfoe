@@ -488,7 +488,14 @@ class PhonePrivacySourceAdapter internal constructor(
             previous.copy(
                 health = previous.health.copy(
                     state = SourceHealthState.FAILED,
-                    recoveryLabel = "Retry",
+                    recoveryLabel = if (
+                        source == PrivacySourceKind.PHONE_BLE &&
+                        message == BLUETOOTH_RADIO_OFF_MESSAGE
+                    ) {
+                        TURN_ON_BLUETOOTH_RECOVERY
+                    } else {
+                        "Retry"
+                    },
                     message = message,
                 ),
                 findings = rowsFor(source),
@@ -737,6 +744,8 @@ class PhonePrivacySourceAdapter internal constructor(
         private const val MAX_BLE_ROWS = 200
         private const val MAX_ULTRASONIC_ROWS = 64
         private const val ULTRASONIC_IDENTITY_BIN_HZ = 100f
+        private const val BLUETOOTH_RADIO_OFF_MESSAGE = "Bluetooth is turned off"
+        private const val TURN_ON_BLUETOOTH_RECOVERY = "Turn on Bluetooth"
         private val APPLE_DEVICE_TOKENS = setOf(
             "apple",
             "airpods",
