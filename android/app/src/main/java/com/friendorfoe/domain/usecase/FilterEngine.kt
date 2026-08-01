@@ -59,10 +59,7 @@ object FilterEngine {
         }
 
         // Distance filter (NM)
-        if (filter.maxDistanceNm != null && obj.distanceMeters != null) {
-            val nm = obj.distanceMeters!! / 1852.0
-            if (nm > filter.maxDistanceNm) return false
-        }
+        if (!distanceMatches(obj.distanceMeters, filter.maxDistanceNm)) return false
 
         // Altitude filter (feet)
         val altFt = (obj.position.altitudeMeters * 3.281).toInt()
@@ -108,10 +105,7 @@ object FilterEngine {
         }
 
         // Distance filter (NM)
-        if (filter.maxDistanceNm != null && entry.distanceMeters != null) {
-            val nm = entry.distanceMeters / 1852.0
-            if (nm > filter.maxDistanceNm) return false
-        }
+        if (!distanceMatches(entry.distanceMeters, filter.maxDistanceNm)) return false
 
         // Altitude filter (feet)
         val altFt = (entry.altitudeMeters * 3.281).toInt()
@@ -133,4 +127,12 @@ object FilterEngine {
         "wifi_nan", "wifi_beacon", "wifi" -> SourceFilterGroup.WIFI
         else -> null
     }
+
+    private fun distanceMatches(distanceMeters: Double?, maxDistanceNm: Float?): Boolean = when {
+        maxDistanceNm == null -> true
+        distanceMeters == null -> false
+        else -> distanceMeters / METERS_PER_NAUTICAL_MILE <= maxDistanceNm
+    }
+
+    private const val METERS_PER_NAUTICAL_MILE = 1852.0
 }

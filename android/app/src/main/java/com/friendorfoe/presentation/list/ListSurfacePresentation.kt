@@ -3,8 +3,48 @@ package com.friendorfoe.presentation.list
 import androidx.compose.ui.graphics.Color
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.Drone
+import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
+
+sealed interface ListBodyState {
+    data object Loading : ListBodyState
+    data class Results(val rows: List<SkyObject>) : ListBodyState
+    data class StaleResults(
+        val rows: List<SkyObject>,
+        val ageMs: Long?,
+        val message: String,
+    ) : ListBodyState
+    data object NoDetections : ListBodyState
+    data class NoMatches(val activeFilterCount: Int) : ListBodyState
+    data class Failed(val message: String) : ListBodyState
+}
+
+data class ListUiState(
+    val filter: FilterState = FilterState(),
+    val activeFilterCount: Int = 0,
+    val body: ListBodyState = ListBodyState.Loading,
+)
+
+fun reduceListBody(
+    raw: List<SkyObject>,
+    visible: List<SkyObject>,
+    resolved: Boolean,
+    failure: String?,
+    cacheAgeMs: Long? = null,
+    activeFilterCount: Int = 0,
+): ListBodyState = when {
+    !resolved -> ListBodyState.Loading
+    failure != null && visible.isNotEmpty() -> ListBodyState.StaleResults(
+        rows = visible,
+        ageMs = cacheAgeMs,
+        message = failure,
+    )
+    failure != null -> ListBodyState.Failed(failure)
+    raw.isEmpty() -> ListBodyState.NoDetections
+    visible.isEmpty() -> ListBodyState.NoMatches(activeFilterCount)
+    else -> ListBodyState.Results(visible)
+}
 
 internal data class ListBadgeVisual(
     val label: String,
