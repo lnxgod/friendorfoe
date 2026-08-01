@@ -481,36 +481,34 @@ class GlassesDetector @Inject constructor(
             rssi: Int,
         ): Triple<Float, String, String>? = appleRemoteListeningMatch(apple, rssi)
 
+        internal fun appleActivityMatchForTest(
+            apple: AppleContinuityDecoder.AppleContinuity?,
+            rssi: Int,
+        ): Triple<Float, String, String>? = appleActivityMatch(apple, rssi)
+
         internal fun appleContinuityMatchForTest(
             apple: AppleContinuityDecoder.AppleContinuity?,
             rssi: Int,
         ): Triple<Float, String, String>? = appleContinuityMatch(apple, rssi)
 
         private fun appleRemoteListeningMatch(
+            @Suppress("UNUSED_PARAMETER") apple: AppleContinuityDecoder.AppleContinuity?,
+            @Suppress("UNUSED_PARAMETER") rssi: Int,
+        ): Triple<Float, String, String>? = null
+
+        private fun appleActivityMatch(
             apple: AppleContinuityDecoder.AppleContinuity?,
             rssi: Int,
         ): Triple<Float, String, String>? {
-            val flags = apple?.flagsByte ?: return null
-            val airpodsConnected = flags and BleSignatures.APPLE_FLAG_AIRPODS_IN != 0
-            if (!airpodsConnected) return null
-
-            val activity = apple.activity
-            val activeAudioPath = activity in setOf(1, 2, 3)
-            val close = rssi >= -60
-            if (!activeAudioPath) return null
-
-            val activityLabel = when (activity) {
-                1 -> "audio"
-                2 -> "phone"
-                3 -> "video"
-                else -> return null
-            }
-            val confidence = when {
-                activeAudioPath && close -> 0.82f
-                else -> 0.74f
-            }
-            val detail = "AirPods connected + $activityLabel activity"
-            return Triple(confidence, detail, "apple_remote_listening")
+            val continuity = apple ?: return null
+            val hasAirPods = (continuity.flagsByte ?: 0) and
+                BleSignatures.APPLE_FLAG_AIRPODS_IN != 0
+            val hasActivity = continuity.activity in setOf(1, 2, 3)
+            if (!hasAirPods && !hasActivity) return null
+            val title = if (hasAirPods) "AirPods connection/activity nearby"
+                else "Apple device activity nearby"
+            val confidence = if (rssi >= -70) 0.70f else 0.64f
+            return Triple(confidence, title, "apple_activity")
         }
 
         private fun appleContinuityMatch(
@@ -1330,14 +1328,14 @@ class GlassesDetector @Inject constructor(
             if (appleData != null && appleData.size >= 3) {
                 val appleType = appleData[0].toInt() and 0xFF
                 val appleContinuity = AppleContinuityDecoder.decode(appleData)
-                appleRemoteListeningMatch(appleContinuity, rssi)?.let { match ->
-                    val (confidence, detail, reason) = match
+                appleActivityMatch(appleContinuity, rssi)?.let { match ->
+                    val (confidence, title, reason) = match
                     if (confidence > bestConf) {
                         bestConf = confidence
                         bestMfr = "Apple"
-                        bestType = "Possible Remote Listening"
+                        bestType = title
                         bestCamera = false
-                        bestReason = "$reason:$detail"
+                        bestReason = reason
                     }
                 }
                 appleContinuityMatch(appleContinuity, rssi)?.let { match ->
@@ -1478,7 +1476,10 @@ class GlassesDetector @Inject constructor(
         }
 
         // Assign category based on device type
-        val category = categorize(bestType)
+        val category = when {
+            bestReason == "apple_activity" -> PrivacyCategory.APPLE_CONTINUITY
+            else -> categorize(bestType)
+        }
         if (category == PrivacyCategory.REMOTE_LISTENING) {
             parsedDetails["Listening Signal"] = bestReason.substringAfter(":", "AirPods connected")
             parsedDetails["Limit"] = "Possible path only; BLE cannot confirm Live Listen or intent"

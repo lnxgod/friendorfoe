@@ -96,7 +96,7 @@ class PrivacyViewModel @Inject constructor(
                     val response = sensorMapApiService.getLivePrivacyDevices()
                     _backendPrivacyDetections.value = response.devices.mapNotNull {
                         it.toGlassesDetection()
-                    }
+                    }.map(PrivacyFindingNormalizer::normalize)
                 } catch (_: Throwable) {
                     // Backend privacy view is an enhancement; keep local phone
                     // detection working if the backend is unreachable.
@@ -117,9 +117,13 @@ class PrivacyViewModel @Inject constructor(
         badgeUsbRepository.state,
         _wifiAnomalies,
     ) { local, backend, badge, wifiAnomalies ->
-        mergePrivacyDetections(
-            local,
+        val normalizedLocal = local.map(PrivacyFindingNormalizer::normalize)
+        val normalizedRemote = (
             backend + badge.toPrivacyDetections() + wifiAnomalies.map { it.toPrivacyDetection() }
+        ).map(PrivacyFindingNormalizer::normalize)
+        mergePrivacyDetections(
+            normalizedLocal,
+            normalizedRemote,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -306,7 +310,7 @@ class PrivacyViewModel @Inject constructor(
             if (privacyEvidence.isNotEmpty()) put("evidence", privacyEvidence.joinToString("; ") { it.toString() })
             appleContinuity?.let { put("apple_continuity", it.toString()) }
         }
-        return GlassesDetection(
+        return PrivacyFindingNormalizer.normalize(GlassesDetection(
             mac = lastBssid ?: fingerprint ?: key,
             deviceName = displayDetail ?: deviceType,
             deviceType = type,
@@ -331,7 +335,7 @@ class PrivacyViewModel @Inject constructor(
             bleCompanyId = bleCompanyId,
             bleAppleType = bleAppleType,
             bleAppleFlags = bleAppleFlags,
-        )
+        ))
     }
 
     private fun LivePrivacyDeviceDto.stablePrivacyKey(): String {
@@ -456,6 +460,7 @@ internal fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetectio
         bestRssi != 0 -> bestRssi
         else -> -100
     }
+    val appleListeningEvidence = appleListeningEvidence()
     val detailMap = buildMap {
         put("source", "usb_badge")
         if (threatClass.isNotBlank()) put("class", threatClass)
@@ -470,6 +475,7 @@ internal fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetectio
         if (freqMhz > 0) put("freq_mhz", freqMhz.toString())
         if (detail.isNotBlank()) put("detail", detail)
         if (evidence.isNotBlank()) put("evidence", evidence)
+        appleListeningEvidence?.let { put("apple_badge_evidence", it.explicitAppleField) }
         if (source.isNotBlank()) put("badge_source", source)
         if (sourceId != 0) put("badge_source_id", sourceId.toString())
         if (confidencePct > 0) put("confidence", "$confidencePct%")
@@ -480,7 +486,7 @@ internal fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetectio
         if (groupCount > 1) put("group", groupCount.toString())
         operatorId?.let { put("operator_id", it) }
     }
-    return GlassesDetection(
+    return PrivacyFindingNormalizer.normalize(GlassesDetection(
         mac = key,
         deviceName = displayName.takeIf { it.isNotBlank() },
         deviceType = title,
@@ -501,8 +507,33 @@ internal fun BadgeThreatEntity.toPrivacyDetection(now: Instant): GlassesDetectio
         category = category,
         fingerprintKey = key,
         seenMacs = setOf(key)
-    )
+    ))
 }
+
+private data class AppleListeningEvidence(
+    val explicitAppleField: String,
+)
+
+private fun BadgeThreatEntity.appleListeningEvidence(): AppleListeningEvidence? {
+    val fields = listOf(label, detail, evidence, category, code)
+    val appleField = fields.firstOrNull { APPLE_BADGE_EVIDENCE.containsMatchIn(it) }
+        ?: return null
+    val hasListeningWording = fields.any { LISTENING_BADGE_EVIDENCE.containsMatchIn(it) } ||
+        category.equals("LISTEN", ignoreCase = true) ||
+        code.equals("LIS", ignoreCase = true)
+    if (!hasListeningWording) return null
+    return AppleListeningEvidence(explicitAppleField = appleField)
+}
+
+private val APPLE_BADGE_EVIDENCE = Regex(
+    pattern = "(?<![A-Za-z0-9])(?:Apple|AirPods?)(?![A-Za-z0-9])",
+    option = RegexOption.IGNORE_CASE,
+)
+
+private val LISTENING_BADGE_EVIDENCE = Regex(
+    pattern = "(?<![A-Za-z0-9])(?:listen(?:ing)?|eavesdrop(?:ping)?)(?![A-Za-z0-9])",
+    option = RegexOption.IGNORE_CASE,
+)
 
 private fun BadgeThreatEntity.categoryForBadgeEntity(): PrivacyCategory {
     val cls = threatClass.lowercase()

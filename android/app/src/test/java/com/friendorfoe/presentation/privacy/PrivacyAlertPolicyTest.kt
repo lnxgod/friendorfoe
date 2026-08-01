@@ -32,10 +32,11 @@ class PrivacyAlertPolicyTest {
             )
         )
 
-        val bonded = PrivacyAlertPolicy.fromDetection(
-            detection(category = PrivacyCategory.SMART_GLASSES, isBonded = true)
-        )!!
-        assertFalse(PrivacyAlertPolicy().shouldNotify(bonded, ignoredMacs = emptySet()))
+        assertNull(
+            PrivacyAlertPolicy.fromDetection(
+                detection(category = PrivacyCategory.SMART_GLASSES, isBonded = true)
+            )
+        )
 
         val ignored = PrivacyAlertPolicy.fromDetection(
             detection(category = PrivacyCategory.ATTACK_TOOL)
@@ -69,22 +70,53 @@ class PrivacyAlertPolicyTest {
         assertFalse(policy.shouldNotify(stalkerLow, ignoredMacs = emptySet()))
     }
 
+    @Test
+    fun appleListeningClaimCannotBecomeAlertCandidate() {
+        val candidate = PrivacyAlertPolicy.fromDetection(
+            detection(
+                category = PrivacyCategory.REMOTE_LISTENING,
+                manufacturer = "Apple",
+                deviceType = "Possible Remote Listening",
+                matchReason = "backend:REMOTE_LISTENING",
+                bleCompanyId = 0x004C,
+            )
+        )
+
+        assertNull(candidate)
+    }
+
     private fun detection(
         category: PrivacyCategory,
-        isBonded: Boolean = false
+        isBonded: Boolean = false,
+        manufacturer: String = "Test",
+        deviceType: String = category.label,
+        matchReason: String = "test",
+        bleCompanyId: Int? = null,
     ) = GlassesDetection(
         mac = "AA:BB:CC:00:00:01",
         deviceName = "Test Device",
-        deviceType = category.label,
-        manufacturer = "Test",
+        deviceType = deviceType,
+        manufacturer = manufacturer,
         hasCamera = category.threatLevel >= 2,
         rssi = -50,
         confidence = 0.9f,
-        matchReason = "test",
+        matchReason = matchReason,
         firstSeen = Instant.parse("2026-06-11T12:00:00Z"),
         lastSeen = Instant.parse("2026-06-11T12:00:10Z"),
+        details = emptyMap(),
         category = category,
         isBonded = isBonded,
+        bleCompanyId = bleCompanyId,
+        bleAppleType = null,
+        bleAppleFlags = null,
+        bleAppleAction = null,
+        bleAppleIosVersion = null,
+        bleAdvFlags = null,
+        bleDualModeHost = false,
+        bleJa3Hash = null,
+        bleServiceUuids = emptyList(),
+        bleAppearance = null,
+        bleLocalName = null,
         fingerprintKey = "fp:test",
         seenMacs = setOf("AA:BB:CC:00:00:01")
     )

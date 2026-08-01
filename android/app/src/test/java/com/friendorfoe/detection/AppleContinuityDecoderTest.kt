@@ -229,18 +229,17 @@ class AppleContinuityDecoderTest {
     }
 
     @Test
-    fun `AirPods with active phone activity classifies as remote listening`() {
-        val bytes = byteArrayOf(
+    fun `AirPods with active phone activity is informational not listening`() {
+        val apple = AppleContinuityDecoder.decode(byteArrayOf(
             0x10,
             0x01, 0x02, 0x03,  // auth
             0x12,              // iOS nibble, phone activity
             0x01               // AirPods connected flag
-        )
-        val result = AppleContinuityDecoder.decode(bytes)!!
+        ))!!
 
-        val match = GlassesDetector.appleRemoteListeningMatchForTest(result, rssi = -45)
-
-        assertNotNull(match)
-        assertEquals("apple_remote_listening", match!!.third)
+        assertNull(GlassesDetector.appleRemoteListeningMatchForTest(apple, rssi = -45))
+        val activity = GlassesDetector.appleActivityMatchForTest(apple, rssi = -45)
+        assertNotNull(activity)
+        assertEquals("AirPods connection/activity nearby", activity!!.second)
     }
 }

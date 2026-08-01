@@ -6,6 +6,7 @@ import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class BadgePrivacyMapperTest {
@@ -110,4 +111,112 @@ class BadgePrivacyMapperTest {
         assertEquals("Evil Twin: open clone vs WPA2; ref 00:11:22:33:44:55 ch6",
             detection.details.getValue("evidence"))
     }
+
+    @Test
+    fun badgeAppleListeningEvidenceIsNormalizedFromTheSameEntity() {
+        val entity = badgeEntity(
+            label = "Apple AirPods",
+            detail = "possible listening activity",
+            category = "LISTEN",
+            code = "LIS",
+        )
+
+        val normalized = entity.toPrivacyDetection(Instant.parse("2026-05-18T12:00:00Z"))!!
+
+        assertEquals(PrivacyCategory.APPLE_CONTINUITY, normalized.category)
+        assertEquals("AirPods connection/activity nearby", normalized.deviceType)
+        assertEquals("apple_activity", normalized.matchReason)
+        assertEquals("usb_badge", normalized.details.getValue("source"))
+    }
+
+    @Test
+    fun badgeAppleListeningEvidenceNormalizesWithoutListeningCategoryCode() {
+        val normalized = badgeEntity(
+            label = "Apple AirPods",
+            detail = "nearby accessory",
+            evidence = "possible listening activity",
+            category = "AUDIO",
+            code = "AUD",
+        ).toPrivacyDetection(Instant.parse("2026-05-18T12:00:00Z"))!!
+
+        assertEquals(PrivacyCategory.APPLE_CONTINUITY, normalized.category)
+        assertEquals("AirPods connection/activity nearby", normalized.deviceType)
+        assertEquals("apple_activity", normalized.matchReason)
+        assertEquals("usb_badge", normalized.details.getValue("source"))
+    }
+
+    @Test
+    fun underscoreDelimitedBadgeEvidenceIsNormalized() {
+        val normalized = badgeEntity(
+            label = "Unknown signal",
+            detail = "nearby activity",
+            category = "APPLE_REMOTE_LISTENING",
+            code = "OTHER",
+        ).toPrivacyDetection(Instant.parse("2026-05-18T12:00:00Z"))!!
+
+        assertEquals(PrivacyCategory.APPLE_CONTINUITY, normalized.category)
+        assertEquals("Apple device activity nearby", normalized.deviceType)
+        assertEquals("apple_activity", normalized.matchReason)
+    }
+
+    @Test
+    fun neighboringAppleAndListeningBadgeRowsAreNotCorrelated() {
+        val appleOnly = badgeEntity(
+            label = "Apple AirPods",
+            detail = "nearby accessory",
+            category = "AUDIO",
+            code = "AUD",
+        ).toPrivacyDetection(Instant.parse("2026-05-18T12:00:00Z"))!!
+        val listeningOnly = badgeEntity(
+            label = "Unknown signal",
+            detail = "possible listening activity",
+            category = "LISTEN",
+            code = "LIS",
+        ).toPrivacyDetection(Instant.parse("2026-05-18T12:00:00Z"))!!
+
+        assertSame(appleOnly, PrivacyFindingNormalizer.normalize(appleOnly))
+        assertSame(listeningOnly, PrivacyFindingNormalizer.normalize(listeningOnly))
+        assertEquals(PrivacyCategory.REMOTE_LISTENING, listeningOnly.category)
+    }
+
+    private fun badgeEntity(
+        label: String,
+        detail: String,
+        evidence: String = "",
+        category: String,
+        code: String,
+    ) = BadgeThreatEntity(
+        label = label,
+        detail = detail,
+        evidence = evidence,
+        threatClass = "privacy",
+        category = category,
+        code = code,
+        displayId = "badge-row-1",
+        source = "ble",
+        sourceId = 1,
+        ssid = "",
+        bssid = "",
+        authMode = -1,
+        freqMhz = 0,
+        score = 75,
+        confidencePct = 70,
+        evidenceQuality = 2,
+        displayRank = 1,
+        ageSeconds = 3,
+        lastSeenSeconds = 1,
+        rssi = -48,
+        bestRssi = -45,
+        events = 2,
+        seenCount = 2,
+        groupCount = 1,
+        proximityLevel = 2,
+        stale = false,
+        lat = null,
+        lon = null,
+        altitudeM = null,
+        operatorLat = null,
+        operatorLon = null,
+        operatorId = null,
+    )
 }

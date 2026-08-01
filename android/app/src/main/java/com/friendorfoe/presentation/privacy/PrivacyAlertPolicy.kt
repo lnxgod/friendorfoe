@@ -38,21 +38,22 @@ class PrivacyAlertPolicy(
 
     companion object {
         fun fromDetection(detection: GlassesDetection): PrivacyAlertCandidate? {
-            if (detection.category.threatLevel < 2) return null
-            if (detection.category == PrivacyCategory.INFORMATIONAL) return null
-            val label = detection.deviceName?.takeIf { it.isNotBlank() }
-                ?: detection.deviceType
+            val normalized = PrivacyFindingNormalizer.normalize(detection)
+            if (normalized.category == PrivacyCategory.APPLE_CONTINUITY) return null
+            if (normalized.category.threatLevel < 2 || normalized.isBonded) return null
+            val label = normalized.deviceName?.takeIf { it.isNotBlank() }
+                ?: normalized.deviceType
             return PrivacyAlertCandidate(
                 key = listOf(
-                    detection.fingerprintKey.ifBlank { "mac:${detection.mac}" },
-                    detection.category.name,
-                    detection.matchReason
+                    normalized.fingerprintKey.ifBlank { "mac:${normalized.mac}" },
+                    normalized.category.name,
+                    normalized.matchReason
                 ).joinToString(":"),
-                title = "${detection.category.label} detected",
-                body = "$label nearby (${detection.rssi} dBm)",
-                threatLevel = detection.category.threatLevel,
-                macs = detection.seenMacs + detection.mac,
-                isBonded = detection.isBonded
+                title = "${normalized.category.label} detected",
+                body = "$label nearby (${normalized.rssi} dBm)",
+                threatLevel = normalized.category.threatLevel,
+                macs = normalized.seenMacs + normalized.mac,
+                isBonded = normalized.isBonded
             )
         }
 
