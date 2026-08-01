@@ -3,10 +3,6 @@ package com.friendorfoe.presentation.privacy
 import androidx.lifecycle.ViewModel
 import com.friendorfoe.data.DetectionPrefs
 import com.friendorfoe.data.DetectionSettings
-import com.friendorfoe.data.badge.BadgeDisplayPolicy
-import com.friendorfoe.data.badge.BadgeDisplayAction
-import com.friendorfoe.data.badge.BadgeNetworkMode
-import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbRepository
 import com.friendorfoe.data.badge.BadgeUsbState
@@ -87,7 +83,7 @@ class PrivacyViewModel @Inject constructor(
     private val wifiAnomalyDetector: WifiAnomalyDetector,
     private val detectionPrefs: DetectionPrefs,
     private val sensorMapApiService: SensorMapApiService,
-    private val badgeUsbRepository: BadgeUsbRepository,
+    badgeUsbRepository: BadgeUsbRepository,
     private val privacyAlertNotifier: PrivacyAlertNotifier,
 ) : ViewModel() {
 
@@ -164,8 +160,6 @@ class PrivacyViewModel @Inject constructor(
             },
         )
     }
-    val badgeUsbState = backendIntegrationState.badgeState
-
     val privacyDetections: StateFlow<List<GlassesDetection>> = combine(
         backendIntegrationState.localDetections,
         _backendPrivacyDetections,
@@ -243,27 +237,6 @@ class PrivacyViewModel @Inject constructor(
     fun refreshDetections() {
         syncBackendMode()
         skyObjectRepository.refreshPrivacyDetections()
-        badgeUsbRepository.requestStatus()
-    }
-
-    fun connectBadgeUsb() {
-        badgeUsbRepository.requestConnection()
-    }
-
-    fun refreshBadgeStatus() {
-        badgeUsbRepository.requestStatus()
-    }
-
-    fun setBadgeMode(mode: BadgeNetworkMode) {
-        badgeUsbRepository.setMode(mode)
-    }
-
-    fun rebootBadge() {
-        badgeUsbRepository.rebootBadge()
-    }
-
-    fun badgeBootloader() {
-        badgeUsbRepository.enterBootloader()
     }
 
     fun enablePhonePrivacyScanning() {
@@ -274,26 +247,6 @@ class PrivacyViewModel @Inject constructor(
         _backendOnlyMode.value = false
     }
 
-    fun badgeNextFocus() {
-        badgeUsbRepository.displayNav(BadgeDisplayAction.NEXT)
-    }
-
-    fun badgeToggleDetail() {
-        badgeUsbRepository.displayNav(BadgeDisplayAction.DETAIL)
-    }
-
-    fun badgeBackFromDetail() {
-        badgeUsbRepository.displayNav(BadgeDisplayAction.BACK)
-    }
-
-    fun applyBadgeDisplayPolicy(policy: BadgeDisplayPolicy) {
-        badgeUsbRepository.applyDisplayPolicy(policy)
-    }
-
-    fun resetBadgeDisplayPolicy() {
-        badgeUsbRepository.resetDisplayPolicy()
-    }
-
     private fun currentSkyAlertSettings(): SkyAlertSettings =
         SkyAlertSettings(
             droneAlertsEnabled = skyObjectRepository.prefs.droneAlertsEnabled,
@@ -301,14 +254,6 @@ class PrivacyViewModel @Inject constructor(
             militaryAlertsEnabled = skyObjectRepository.prefs.militaryAlertsEnabled,
             policeAlertsEnabled = skyObjectRepository.prefs.policeAlertsEnabled
         )
-
-    fun applyBadgeTheme(theme: BadgeTheme) {
-        badgeUsbRepository.applyBadgeTheme(theme)
-    }
-
-    fun resetBadgeTheme() {
-        badgeUsbRepository.resetBadgeTheme()
-    }
 
     fun startDirectionScan(mac: String) {
         bleTracker.startDirectionScan(mac)

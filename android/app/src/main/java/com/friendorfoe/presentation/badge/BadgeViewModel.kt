@@ -82,7 +82,7 @@ class BadgeViewModel @Inject constructor(
 
     override fun updateTheme(transform: (BadgeTheme) -> BadgeTheme) {
         _uiState.update { state ->
-            if (state.applyInFlight) return@update state
+            if (state.mutationLocked) return@update state
             val next = state.draftTheme?.let(transform) ?: return@update state
             state.copy(
                 draftTheme = next,
@@ -102,7 +102,7 @@ class BadgeViewModel @Inject constructor(
 
     override fun updatePolicy(transform: (BadgeDisplayPolicy) -> BadgeDisplayPolicy) {
         _uiState.update { state ->
-            if (state.applyInFlight) return@update state
+            if (state.mutationLocked) return@update state
             val next = state.draftPolicy?.let(transform) ?: return@update state
             state.copy(
                 draftPolicy = next,
@@ -122,7 +122,7 @@ class BadgeViewModel @Inject constructor(
 
     override fun updateNetworkMode(mode: BadgeNetworkMode) {
         _uiState.update { state ->
-            if (state.applyInFlight || state.appliedNetworkMode == null) return@update state
+            if (state.mutationLocked || state.appliedNetworkMode == null) return@update state
             state.copy(
                 draftNetworkMode = mode,
                 applyState = state.applyState.copy(
@@ -141,40 +141,36 @@ class BadgeViewModel @Inject constructor(
 
     override fun useFirmwareDefaultsInDraft() {
         _uiState.update { state ->
-            if (state.applyInFlight) return@update state
-            val defaults = BadgeDisplayPolicy.firmwareDefaults()
-            val nextPolicy = state.appliedPolicy?.let { applied ->
-                defaults.copy(
-                    classes = BadgeDisplayPolicy.classOrder.associateWithTo(linkedMapOf()) { key ->
-                        defaults.classes.getValue(key).copy(
-                            priority = applied.classes.getValue(key).priority,
-                        )
-                    },
-                )
-            }
-            val nextTheme = state.appliedTheme?.let { applied ->
-                BadgeTheme.firmwareDefaults().copy(palette = applied.palette)
-            }
+            if (state.mutationLocked) return@update state
+            val nextTheme = state.firmwareDefaultThemeDraftOrNull()
+                ?.takeIf { it != state.draftTheme }
+            val nextPolicy = state.firmwareDefaultPolicyDraftOrNull()
+                ?.takeIf { it != state.draftPolicy }
+            if (nextTheme == null && nextPolicy == null) return@update state
             state.copy(
-                draftTheme = nextTheme,
-                draftPolicy = nextPolicy,
+                draftTheme = nextTheme ?: state.draftTheme,
+                draftPolicy = nextPolicy ?: state.draftPolicy,
                 applyState = state.applyState.copy(
-                    theme = BadgeSectionApplyResult(
-                        section = BadgeConfigSection.THEME,
-                        phase = if (nextTheme != null && nextTheme != state.appliedTheme) {
-                            BadgeApplyPhase.DIRTY
-                        } else {
-                            BadgeApplyPhase.CLEAN
-                        },
-                    ),
-                    policy = BadgeSectionApplyResult(
-                        section = BadgeConfigSection.DISPLAY_POLICY,
-                        phase = if (nextPolicy != null && nextPolicy != state.appliedPolicy) {
-                            BadgeApplyPhase.DIRTY
-                        } else {
-                            BadgeApplyPhase.CLEAN
-                        },
-                    ),
+                    theme = nextTheme?.let {
+                        BadgeSectionApplyResult(
+                            section = BadgeConfigSection.THEME,
+                            phase = if (it != state.appliedTheme) {
+                                BadgeApplyPhase.DIRTY
+                            } else {
+                                BadgeApplyPhase.CLEAN
+                            },
+                        )
+                    } ?: state.applyState.theme,
+                    policy = nextPolicy?.let {
+                        BadgeSectionApplyResult(
+                            section = BadgeConfigSection.DISPLAY_POLICY,
+                            phase = if (it != state.appliedPolicy) {
+                                BadgeApplyPhase.DIRTY
+                            } else {
+                                BadgeApplyPhase.CLEAN
+                            },
+                        )
+                    } ?: state.applyState.policy,
                 ),
             )
         }
@@ -182,12 +178,39 @@ class BadgeViewModel @Inject constructor(
 
     override fun revertDraft() {
         _uiState.update { state ->
-            if (state.applyInFlight) return@update state
+            if (state.mutationLocked) return@update state
+            val revertTheme = state.themeDirty &&
+                state.appliedTheme != null && state.draftTheme != null
+            val revertPolicy = state.policyDirty &&
+                state.appliedPolicy != null && state.draftPolicy != null
+            val revertNetwork = state.networkDirty &&
+                state.appliedNetworkMode != null && state.draftNetworkMode != null
+            if (!revertTheme && !revertPolicy && !revertNetwork) return@update state
             state.copy(
-                draftTheme = state.appliedTheme,
-                draftPolicy = state.appliedPolicy,
-                draftNetworkMode = state.appliedNetworkMode,
-                applyState = BadgeApplyState(),
+                draftTheme = if (revertTheme) state.appliedTheme else state.draftTheme,
+                draftPolicy = if (revertPolicy) state.appliedPolicy else state.draftPolicy,
+                draftNetworkMode = if (revertNetwork) {
+                    state.appliedNetworkMode
+                } else {
+                    state.draftNetworkMode
+                },
+                applyState = state.applyState.copy(
+                    theme = if (revertTheme) {
+                        BadgeSectionApplyResult(BadgeConfigSection.THEME)
+                    } else {
+                        state.applyState.theme
+                    },
+                    policy = if (revertPolicy) {
+                        BadgeSectionApplyResult(BadgeConfigSection.DISPLAY_POLICY)
+                    } else {
+                        state.applyState.policy
+                    },
+                    network = if (revertNetwork) {
+                        BadgeSectionApplyResult(BadgeConfigSection.NETWORK_MODE)
+                    } else {
+                        state.applyState.network
+                    },
+                ),
             )
         }
     }
@@ -218,6 +241,11 @@ class BadgeViewModel @Inject constructor(
                     .takeIf { submittedNetwork != null }
                     ?: BadgeSectionApplyResult(BadgeConfigSection.NETWORK_MODE),
             ),
+            recoveryAvailability = recoveryAvailability(
+                connection = snapshot.connection,
+                recovery = snapshot.recovery,
+                applyInFlight = true,
+            ),
         )
         if (!_uiState.compareAndSet(snapshot, claimedState)) return
 
@@ -237,7 +265,14 @@ class BadgeViewModel @Inject constructor(
                 if (identityIsCurrent(identity)) {
                     _uiState.update { state ->
                         if (state.connection.identityOrNull() == identity) {
-                            state.copy(applyInFlight = false)
+                            state.copy(
+                                applyInFlight = false,
+                                recoveryAvailability = recoveryAvailability(
+                                    connection = state.connection,
+                                    recovery = state.recovery,
+                                    applyInFlight = false,
+                                ),
+                            )
                         } else {
                             state
                         }
@@ -254,7 +289,11 @@ class BadgeViewModel @Inject constructor(
 
     override fun navigateDisplay(action: BadgeDisplayAction) {
         val snapshot = _uiState.value
-        if (snapshot.displayNavigationSupport[action] != BadgeCapabilitySupport.SUPPORTED) return
+        if (snapshot.mutationLocked ||
+            snapshot.displayNavigationSupport[action] != BadgeCapabilitySupport.SUPPORTED
+        ) {
+            return
+        }
         val identity = snapshot.connection.identityOrNull() ?: return
         viewModelScope.launch {
             val outcome = executeSafely(BadgeCommand.NavigateDisplay(action))
@@ -274,19 +313,25 @@ class BadgeViewModel @Inject constructor(
         _uiState.update { state ->
             val availability = state.recoveryAvailability[action]
             val connection = state.connection
-            if (availability?.enabled != true ||
+            if (state.mutationLocked || availability?.enabled != true ||
                 connection.transport != BadgeTransport.USB_SERIAL ||
                 connection.targetId.isNullOrBlank() ||
                 connection.transportGeneration == null
             ) {
                 return@update state
             }
+            val recovery = BadgeRecoveryState(
+                action = action,
+                targetId = connection.targetId,
+                targetTransportGeneration = connection.transportGeneration,
+                phase = BadgeRecoveryPhase.CONFIRMING,
+            )
             state.copy(
-                recovery = BadgeRecoveryState(
-                    action = action,
-                    targetId = connection.targetId,
-                    targetTransportGeneration = connection.transportGeneration,
-                    phase = BadgeRecoveryPhase.CONFIRMING,
+                recovery = recovery,
+                recoveryAvailability = recoveryAvailability(
+                    connection = connection,
+                    recovery = recovery,
+                    applyInFlight = state.applyInFlight,
                 ),
             )
         }
@@ -295,7 +340,15 @@ class BadgeViewModel @Inject constructor(
     override fun cancelRecovery() {
         _uiState.update { state ->
             if (state.recovery.phase != BadgeRecoveryPhase.CONFIRMING) return@update state
-            state.copy(recovery = BadgeRecoveryState())
+            val recovery = BadgeRecoveryState()
+            state.copy(
+                recovery = recovery,
+                recoveryAvailability = recoveryAvailability(
+                    connection = state.connection,
+                    recovery = recovery,
+                    applyInFlight = state.applyInFlight,
+                ),
+            )
         }
     }
 
@@ -309,16 +362,19 @@ class BadgeViewModel @Inject constructor(
             identity.transport != BadgeTransport.USB_SERIAL ||
             recovery.targetId != identity.targetId ||
             recovery.targetTransportGeneration != identity.transportGeneration ||
-            snapshot.recoveryAvailability[action]?.enabled != true
+            badgeCapability(snapshot.connection, action.capability) !=
+            BadgeCapabilitySupport.SUPPORTED
         ) {
             return
         }
 
+        val pendingRecovery = snapshot.recovery.copy(phase = BadgeRecoveryPhase.PENDING)
         val claimedState = snapshot.copy(
-            recovery = snapshot.recovery.copy(phase = BadgeRecoveryPhase.PENDING),
+            recovery = pendingRecovery,
             recoveryAvailability = recoveryAvailability(
-                snapshot.connection,
-                pending = true,
+                connection = snapshot.connection,
+                recovery = pendingRecovery,
+                applyInFlight = snapshot.applyInFlight,
             ),
         )
         if (!_uiState.compareAndSet(snapshot, claimedState)) return
@@ -376,8 +432,9 @@ class BadgeViewModel @Inject constructor(
                     state.copy(
                         recovery = next,
                         recoveryAvailability = recoveryAvailability(
-                            state.connection,
-                            pending = false,
+                            connection = state.connection,
+                            recovery = next,
+                            applyInFlight = state.applyInFlight,
                         ),
                     )
                 } else {
@@ -432,78 +489,190 @@ class BadgeViewModel @Inject constructor(
                     ?: BadgeRecoveryState(),
             )
             if (status != null) {
-                next = mergeCleanReadbacks(next, status)
+                next = reconcileReadbacks(next, status)
             } else {
                 next = clearUnsafeReadbacks(next)
             }
+            val recovery = next.recovery.takeUnless {
+                it.phase == BadgeRecoveryPhase.CONFIRMING &&
+                    !recoveryConfirmationIsValid(connection, it)
+            } ?: BadgeRecoveryState()
             next.copy(
+                recovery = recovery,
                 recoveryAvailability = recoveryAvailability(
-                    connection,
-                    pending = next.recovery.phase == BadgeRecoveryPhase.PENDING,
+                    connection = connection,
+                    recovery = recovery,
+                    applyInFlight = next.applyInFlight,
                 ),
             )
         }
     }
 
-    private fun mergeCleanReadbacks(
+    private fun recoveryConfirmationIsValid(
+        connection: BadgeConnectionEvidence,
+        recovery: BadgeRecoveryState,
+    ): Boolean {
+        val action = recovery.action ?: return false
+        return connection.transport == BadgeTransport.USB_SERIAL &&
+            recovery.targetId == connection.targetId &&
+            recovery.targetTransportGeneration == connection.transportGeneration &&
+            badgeCapability(connection, action.capability) == BadgeCapabilitySupport.SUPPORTED
+    }
+
+    private fun reconcileReadbacks(
         state: BadgeUiState,
         status: BadgeControlStatus,
     ): BadgeUiState {
         var next = state
         next = when {
-            !status.themeReadback.isEditable -> next.copy(
-                appliedTheme = null,
-                draftTheme = null,
-                applyState = next.applyState.copy(
-                    theme = BadgeSectionApplyResult(BadgeConfigSection.THEME),
-                ),
+            !status.themeReadback.isEditable -> invalidateThemeReadback(
+                next,
+                status.themeReadback.issue ?: "Theme readback is unavailable",
             )
-            !next.themeDirty && !next.applyInFlight -> next.copy(
-                appliedTheme = status.themeReadback.value,
-                draftTheme = status.themeReadback.value,
-            )
-            else -> next
+            else -> {
+                val hadNoAppliedBaseline = next.appliedTheme == null
+                val retainedDraft = next.draftTheme.takeIf { next.themeDirty }
+                val applied = status.themeReadback.value
+                val draft = retainedDraft ?: applied
+                next.copy(
+                    appliedTheme = applied,
+                    draftTheme = draft,
+                    applyState = next.applyState.copy(
+                        theme = if (shouldNormalizeMatchingReadback(
+                                hadNoAppliedBaseline = hadNoAppliedBaseline,
+                                retainedDraftPresent = retainedDraft != null,
+                                draftMatchesApplied = draft == applied,
+                                phase = next.applyState.theme.phase,
+                            )
+                        ) {
+                            BadgeSectionApplyResult(BadgeConfigSection.THEME)
+                        } else {
+                            next.applyState.theme
+                        },
+                    ),
+                )
+            }
         }
         next = when {
-            !status.policyReadback.isEditable -> next.copy(
-                appliedPolicy = null,
-                draftPolicy = null,
-                applyState = next.applyState.copy(
-                    policy = BadgeSectionApplyResult(BadgeConfigSection.DISPLAY_POLICY),
-                ),
+            !status.policyReadback.isEditable -> invalidatePolicyReadback(
+                next,
+                status.policyReadback.issue ?: "Display policy readback is unavailable",
             )
-            !next.policyDirty && !next.applyInFlight -> next.copy(
-                appliedPolicy = status.policyReadback.value,
-                draftPolicy = status.policyReadback.value,
-            )
-            else -> next
+            else -> {
+                val hadNoAppliedBaseline = next.appliedPolicy == null
+                val retainedDraft = next.draftPolicy.takeIf { next.policyDirty }
+                val applied = status.policyReadback.value
+                val draft = retainedDraft ?: applied
+                next.copy(
+                    appliedPolicy = applied,
+                    draftPolicy = draft,
+                    applyState = next.applyState.copy(
+                        policy = if (shouldNormalizeMatchingReadback(
+                                hadNoAppliedBaseline = hadNoAppliedBaseline,
+                                retainedDraftPresent = retainedDraft != null,
+                                draftMatchesApplied = draft == applied,
+                                phase = next.applyState.policy.phase,
+                            )
+                        ) {
+                            BadgeSectionApplyResult(BadgeConfigSection.DISPLAY_POLICY)
+                        } else {
+                            next.applyState.policy
+                        },
+                    ),
+                )
+            }
         }
         next = when {
-            !status.networkModeReadback.isEditable -> next.copy(
-                appliedNetworkMode = null,
-                draftNetworkMode = null,
-                applyState = next.applyState.copy(
-                    network = BadgeSectionApplyResult(BadgeConfigSection.NETWORK_MODE),
-                ),
+            !status.networkModeReadback.isEditable -> invalidateNetworkReadback(
+                next,
+                status.networkModeReadback.issue ?: "Network mode readback is unavailable",
             )
-            !next.networkDirty && !next.applyInFlight -> next.copy(
-                appliedNetworkMode = status.networkModeReadback.value,
-                draftNetworkMode = status.networkModeReadback.value,
-            )
-            else -> next
+            else -> {
+                val hadNoAppliedBaseline = next.appliedNetworkMode == null
+                val retainedDraft = next.draftNetworkMode.takeIf { next.networkDirty }
+                val applied = status.networkModeReadback.value
+                val draft = retainedDraft ?: applied
+                next.copy(
+                    appliedNetworkMode = applied,
+                    draftNetworkMode = draft,
+                    applyState = next.applyState.copy(
+                        network = if (shouldNormalizeMatchingReadback(
+                                hadNoAppliedBaseline = hadNoAppliedBaseline,
+                                retainedDraftPresent = retainedDraft != null,
+                                draftMatchesApplied = draft == applied,
+                                phase = next.applyState.network.phase,
+                            )
+                        ) {
+                            BadgeSectionApplyResult(BadgeConfigSection.NETWORK_MODE)
+                        } else {
+                            next.applyState.network
+                        },
+                    ),
+                )
+            }
         }
         return next
     }
 
-    private fun clearUnsafeReadbacks(state: BadgeUiState): BadgeUiState = state.copy(
-        appliedTheme = null,
-        draftTheme = null,
-        appliedPolicy = null,
-        draftPolicy = null,
-        appliedNetworkMode = null,
-        draftNetworkMode = null,
-        applyState = BadgeApplyState(),
-    )
+    private fun shouldNormalizeMatchingReadback(
+        hadNoAppliedBaseline: Boolean,
+        retainedDraftPresent: Boolean,
+        draftMatchesApplied: Boolean,
+        phase: BadgeApplyPhase,
+    ): Boolean = retainedDraftPresent && draftMatchesApplied &&
+        (phase == BadgeApplyPhase.DIRTY ||
+            (hadNoAppliedBaseline && phase == BadgeApplyPhase.FAILED))
+
+    private fun clearUnsafeReadbacks(state: BadgeUiState): BadgeUiState =
+        invalidateNetworkReadback(
+            invalidatePolicyReadback(
+                invalidateThemeReadback(state, "Theme proof requires fresh badge status"),
+                "Display policy proof requires fresh badge status",
+            ),
+            "Network mode proof requires fresh badge status",
+        )
+
+    private fun invalidateThemeReadback(
+        state: BadgeUiState,
+        message: String,
+    ): BadgeUiState {
+        val retainedDraft = state.draftTheme.takeIf { state.themeDirty }
+        return state.copy(
+            appliedTheme = null,
+            draftTheme = retainedDraft,
+            applyState = state.applyState.copy(
+                theme = state.applyState.theme.invalidateSuccessfulProof(message),
+            ),
+        )
+    }
+
+    private fun invalidatePolicyReadback(
+        state: BadgeUiState,
+        message: String,
+    ): BadgeUiState {
+        val retainedDraft = state.draftPolicy.takeIf { state.policyDirty }
+        return state.copy(
+            appliedPolicy = null,
+            draftPolicy = retainedDraft,
+            applyState = state.applyState.copy(
+                policy = state.applyState.policy.invalidateSuccessfulProof(message),
+            ),
+        )
+    }
+
+    private fun invalidateNetworkReadback(
+        state: BadgeUiState,
+        message: String,
+    ): BadgeUiState {
+        val retainedDraft = state.draftNetworkMode.takeIf { state.networkDirty }
+        return state.copy(
+            appliedNetworkMode = null,
+            draftNetworkMode = retainedDraft,
+            applyState = state.applyState.copy(
+                network = state.applyState.network.invalidateSuccessfulProof(message),
+            ),
+        )
+    }
 
     private suspend fun applyTheme(identity: BadgeConnectionIdentity, submitted: BadgeTheme) {
         val baseline = baselineReceipt(identity) ?: run {
@@ -1069,11 +1238,23 @@ class BadgeViewModel @Inject constructor(
 
     private fun recoveryAvailability(
         connection: BadgeConnectionEvidence,
-        pending: Boolean,
+        recovery: BadgeRecoveryState,
+        applyInFlight: Boolean,
     ): Map<BadgeRecoveryAction, BadgeRecoveryAvailability> =
         BadgeRecoveryAction.entries.associateWith { action ->
             when {
-                pending -> BadgeRecoveryAvailability(false, "Recovery command pending")
+                applyInFlight -> BadgeRecoveryAvailability(
+                    false,
+                    "Badge changes are being applied",
+                )
+                recovery.phase == BadgeRecoveryPhase.CONFIRMING -> BadgeRecoveryAvailability(
+                    false,
+                    "Recovery confirmation pending",
+                )
+                recovery.recoveryRequiresReconnectFor(connection) -> BadgeRecoveryAvailability(
+                    false,
+                    recovery.reconnectGuidance ?: "Reconnect and refresh badge status",
+                )
                 connection.transport == BadgeTransport.USB_SERIAL &&
                     (connection.usbCandidateCount != 1 ||
                         connection.targetId.isNullOrBlank() ||
@@ -1108,6 +1289,16 @@ private data class BadgeConnectionIdentity(
     val transportGeneration: Long,
     val targetId: String,
 )
+
+private fun BadgeRecoveryState.recoveryRequiresReconnectFor(
+    connection: BadgeConnectionEvidence,
+): Boolean = phase in setOf(
+    BadgeRecoveryPhase.PENDING,
+    BadgeRecoveryPhase.ACKNOWLEDGED,
+    BadgeRecoveryPhase.NOT_VERIFIED,
+    BadgeRecoveryPhase.FAILED,
+) && targetId == connection.targetId &&
+    targetTransportGeneration == connection.transportGeneration
 
 private fun BadgeConnectionEvidence.identityOrNull(): BadgeConnectionIdentity? {
     val concreteTransport = transport ?: return null
@@ -1170,3 +1361,12 @@ private fun BadgeSectionApplyResult.invalidatedProof(
     message = message,
     readbackHash = currentReadbackHash,
 )
+
+private fun BadgeSectionApplyResult.invalidateSuccessfulProof(
+    message: String,
+): BadgeSectionApplyResult = when (phase) {
+    BadgeApplyPhase.APPLIED_ON_BADGE,
+    BadgeApplyPhase.VERIFIED,
+    BadgeApplyPhase.VERIFIED_ON_SCANNERS -> invalidatedProof(message)
+    else -> this
+}

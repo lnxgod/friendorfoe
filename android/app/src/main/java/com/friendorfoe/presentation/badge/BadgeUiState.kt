@@ -114,8 +114,18 @@ data class BadgeUiState(
         get() = draftNetworkMode != appliedNetworkMode
     val isDirty: Boolean
         get() = themeDirty || policyDirty || networkDirty
+    val recoveryCommandActive: Boolean
+        get() = recovery.phase == BadgeRecoveryPhase.CONFIRMING ||
+            recovery.phase == BadgeRecoveryPhase.PENDING
+    val recoveryRequiresReconnect: Boolean
+        get() = recovery.phase == BadgeRecoveryPhase.PENDING ||
+            recovery.phase == BadgeRecoveryPhase.ACKNOWLEDGED ||
+            recovery.phase == BadgeRecoveryPhase.NOT_VERIFIED ||
+            recovery.phase == BadgeRecoveryPhase.FAILED
+    val mutationLocked: Boolean
+        get() = applyInFlight || recovery.phase != BadgeRecoveryPhase.IDLE
     val canApply: Boolean
-        get() = isDirty && !applyInFlight &&
+        get() = isDirty && !mutationLocked &&
             (!themeDirty || (
                 appliedTheme != null &&
                     draftTheme != null &&
@@ -132,4 +142,46 @@ data class BadgeUiState(
                     draftNetworkMode != null &&
                     capabilities[BadgeCapability.NETWORK_MODE] == BadgeCapabilitySupport.SUPPORTED
                 ))
+    val canUseFirmwareDefaults: Boolean
+        get() = !mutationLocked && (
+            firmwareDefaultThemeDraftOrNull()?.let { it != draftTheme } == true ||
+                firmwareDefaultPolicyDraftOrNull()?.let { it != draftPolicy } == true
+            )
+    val canRevertDraft: Boolean
+        get() = !mutationLocked && (
+            (themeDirty && appliedTheme != null && draftTheme != null) ||
+                (policyDirty && appliedPolicy != null && draftPolicy != null) ||
+                (networkDirty && appliedNetworkMode != null && draftNetworkMode != null)
+            )
+}
+
+internal fun BadgeUiState.firmwareDefaultThemeDraftOrNull(): BadgeTheme? {
+    val applied = appliedTheme ?: return null
+    if (draftTheme == null ||
+        capabilities[BadgeCapability.THEME_V1] != BadgeCapabilitySupport.SUPPORTED
+    ) {
+        return null
+    }
+    val readback = controlStatus?.themeReadback
+    if (readback?.isEditable != true || readback.value != applied) return null
+    return BadgeTheme.firmwareDefaults().copy(palette = applied.palette)
+}
+
+internal fun BadgeUiState.firmwareDefaultPolicyDraftOrNull(): BadgeDisplayPolicy? {
+    val applied = appliedPolicy ?: return null
+    if (draftPolicy == null ||
+        capabilities[BadgeCapability.DISPLAY_POLICY_V1] != BadgeCapabilitySupport.SUPPORTED
+    ) {
+        return null
+    }
+    val readback = controlStatus?.policyReadback
+    if (readback?.isEditable != true || readback.value != applied) return null
+    val defaults = BadgeDisplayPolicy.firmwareDefaults()
+    return defaults.copy(
+        classes = BadgeDisplayPolicy.classOrder.associateWithTo(linkedMapOf()) { key ->
+            defaults.classes.getValue(key).copy(
+                priority = applied.classes.getValue(key).priority,
+            )
+        },
+    )
 }

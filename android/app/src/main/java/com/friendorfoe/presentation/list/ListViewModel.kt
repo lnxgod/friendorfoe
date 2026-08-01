@@ -7,10 +7,6 @@ import android.location.LocationManager
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.friendorfoe.data.badge.BadgeUsbRepository
-import com.friendorfoe.data.badge.BadgeDisplayPolicy
-import com.friendorfoe.data.badge.BadgeNetworkMode
-import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
@@ -42,7 +38,6 @@ import javax.inject.Inject
 @HiltViewModel
 class ListViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
-    private val badgeUsbRepository: BadgeUsbRepository,
     private val visualFocusRepository: VisualFocusRepository,
     private val locationManager: LocationManager
 ) : ViewModel() {
@@ -100,9 +95,6 @@ class ListViewModel @Inject constructor(
     /** BLE direction finder. */
     val bleTracker = skyObjectRepository.bleTracker
 
-    /** Direct USB-C feed from the badge firmware. */
-    val badgeUsbState = badgeUsbRepository.legacyState
-
     /** Ignore a privacy device (persists across restarts). */
     fun ignoreDevice(mac: String) {
         skyObjectRepository.ignorePrivacyDevice(mac)
@@ -111,46 +103,6 @@ class ListViewModel @Inject constructor(
     /** Start BLE direction scan to find a device. */
     fun startDirectionScan(mac: String) {
         bleTracker.startDirectionScan(mac)
-    }
-
-    fun connectBadgeUsb() {
-        badgeUsbRepository.requestConnection()
-    }
-
-    fun pingBadgeUsb() {
-        badgeUsbRepository.sendPing()
-    }
-
-    fun refreshBadgeStatus() {
-        badgeUsbRepository.requestStatus()
-    }
-
-    fun setBadgeMode(mode: BadgeNetworkMode) {
-        badgeUsbRepository.setMode(mode)
-    }
-
-    fun rebootBadge() {
-        badgeUsbRepository.rebootBadge()
-    }
-
-    fun badgeBootloader() {
-        badgeUsbRepository.enterBootloader()
-    }
-
-    fun applyBadgeDisplayPolicy(policy: BadgeDisplayPolicy) {
-        badgeUsbRepository.applyDisplayPolicy(policy)
-    }
-
-    fun resetBadgeDisplayPolicy() {
-        badgeUsbRepository.resetDisplayPolicy()
-    }
-
-    fun applyBadgeTheme(theme: BadgeTheme) {
-        badgeUsbRepository.applyBadgeTheme(theme)
-    }
-
-    fun resetBadgeTheme() {
-        badgeUsbRepository.resetBadgeTheme()
     }
 
     private val _userPosition = MutableStateFlow(

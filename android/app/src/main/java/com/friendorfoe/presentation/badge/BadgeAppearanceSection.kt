@@ -1,195 +1,285 @@
 package com.friendorfoe.presentation.badge
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.friendorfoe.data.badge.BadgeTheme
-import com.friendorfoe.data.badge.BadgeThemeAccentClasses
-import com.friendorfoe.data.badge.BadgeThemeBackgrounds
-import com.friendorfoe.data.badge.BadgeThemePalettes
-
-private data class ThemeSwatch(val label: String, val rgb565: Int)
-
-private val ThemeSwatches = listOf(
-    ThemeSwatch("Ice", 0x07FF),
-    ThemeSwatch("Gold", 0xFEA0),
-    ThemeSwatch("Fire", 0xF800),
-    ThemeSwatch("Rose", 0xF833),
-    ThemeSwatch("Violet", 0xA81F),
-    ThemeSwatch("Green", 0x2F65)
-)
 
 @Composable
 fun BadgeAppearanceSection(
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
-    theme: BadgeTheme,
-    themeHash: Long,
-    onThemeChange: (BadgeTheme) -> Unit,
-    onApply: () -> Unit,
-    onReset: () -> Unit,
-    onRefresh: () -> Unit
+    theme: BadgeTheme?,
+    themeHash: Long?,
+    enabled: Boolean,
+    unavailableReason: String?,
+    onThemeChange: ((BadgeTheme) -> BadgeTheme) -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                MaterialTheme.colorScheme.surface.copy(alpha = 0.45f),
-                RoundedCornerShape(8.dp)
-            )
-            .padding(8.dp)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.Transparent)
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Badge Appearance",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "${theme.palette} / ${theme.background} / ${theme.intensity}%  #$themeHash",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            OutlinedButton(onClick = { onExpandedChange(!expanded) }) {
-                Text(if (expanded) "Hide" else "Edit")
-            }
-        }
-
-        if (!expanded) return@Column
-
-        Spacer(modifier = Modifier.height(8.dp))
-        Text("Palette", style = MaterialTheme.typography.labelSmall)
-        SegmentedTextRow(
-            values = BadgeThemePalettes,
-            selected = theme.palette,
-            onSelect = { onThemeChange(theme.copy(palette = it)) }
-        )
-        Spacer(modifier = Modifier.height(6.dp))
-        Text("Background", style = MaterialTheme.typography.labelSmall)
-        SegmentedTextRow(
-            values = BadgeThemeBackgrounds,
-            selected = theme.background,
-            onSelect = { onThemeChange(theme.copy(background = it)) }
-        )
-        Spacer(modifier = Modifier.height(6.dp))
+    BadgeSectionCard {
         Text(
-            text = "Brightness ${theme.intensity}%",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            "LCD accent colors",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
         )
-        Slider(
-            value = theme.intensity.toFloat(),
-            onValueChange = {
-                onThemeChange(theme.copy(intensity = it.toInt().coerceIn(25, 100)))
-            },
-            valueRange = 25f..100f
+        Text(
+            "Select badge-safe RGB565 values. The badge reports the exact stored code.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        BadgeThemeAccentClasses.forEach { accent ->
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = accent.label,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f)
+        Text(
+            "Theme hash ${hashCode32(themeHash)}",
+            style = MaterialTheme.typography.labelMedium,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        if (theme == null) {
+            Text(
+                unavailableReason ?: "Theme readback is unavailable",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+        } else {
+            BadgeThemeAccentOptions.forEach { info ->
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
                 )
-                ThemeSwatches.forEach { swatch ->
-                    val selected = theme.accents[accent.key] == swatch.rgb565
-                    Box(
-                        modifier = Modifier
-                            .size(if (selected) 24.dp else 20.dp)
-                            .background(rgb565Color(swatch.rgb565), RoundedCornerShape(4.dp))
-                            .clickable {
-                                onThemeChange(
-                                    theme.copy(
-                                        accents = theme.accents + (accent.key to swatch.rgb565)
-                                    )
-                                )
+                AccentRow(
+                    info = info,
+                    selectedRgb565 = theme.accents.getValue(info.firmwareKey),
+                    enabled = enabled,
+                    onSelect = { rgb565 ->
+                        onThemeChange { current ->
+                            current.copy(
+                                accents = LinkedHashMap(current.accents).apply {
+                                    put(info.firmwareKey, rgb565)
+                                },
+                            )
+                        }
+                    },
+                )
+            }
+
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+            )
+            Text("Background", style = MaterialTheme.typography.labelLarge)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .testTag("badge_backgrounds"),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                BadgeThemeBackgroundOptions.forEach { option ->
+                    FilterChip(
+                        selected = theme.background == option.firmwareKey,
+                        onClick = {
+                            onThemeChange { current ->
+                                current.copy(background = option.firmwareKey)
                             }
+                        },
+                        enabled = enabled,
+                        label = {
+                            Text(
+                                "${option.label} — ${option.firmwareKey} — 0x%04X".format(
+                                    option.rgb565,
+                                ),
+                            )
+                        },
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("badge_background_${option.firmwareKey}"),
                     )
-                    Spacer(modifier = Modifier.width(5.dp))
                 }
             }
-            Spacer(modifier = Modifier.height(5.dp))
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(onClick = onApply) {
-                Text("Apply")
-            }
-            OutlinedButton(onClick = onReset) {
-                Text("Reset")
-            }
-            OutlinedButton(onClick = onRefresh) {
-                Text("Refresh")
+
+            Text(
+                "Color intensity ${theme.intensity}%",
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Slider(
+                value = theme.intensity.toFloat(),
+                onValueChange = { value ->
+                    onThemeChange { current ->
+                        current.copy(intensity = value.toInt().coerceIn(25, 100))
+                    }
+                },
+                enabled = enabled,
+                valueRange = 25f..100f,
+                steps = 74,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = "Color intensity" }
+                    .testTag("badge_intensity"),
+            )
+            Text(
+                "25%–100%",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "Color intensity changes RGB565 output; the badge backlight is fixed.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (!enabled && unavailableReason != null) {
+                Text(
+                    unavailableReason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun SegmentedTextRow(
-    values: List<String>,
-    selected: String,
-    onSelect: (String) -> Unit
+private fun AccentRow(
+    info: BadgeThemeAccentInfo,
+    selectedRgb565: Int,
+    enabled: Boolean,
+    onSelect: (Int) -> Unit,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        values.forEach { value ->
-            OutlinedButton(
-                onClick = { onSelect(value) },
-                modifier = Modifier.weight(1f)
-            ) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+            .testTag("badge_accent_${info.firmwareKey}"),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(24.dp)
+                    .background(rgb565Color(selectedRgb565), RoundedCornerShape(6.dp)),
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(info.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                 Text(
-                    text = value.uppercase(),
+                    info.firmwareKey,
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (selected == value) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                rgb565Code(selectedRgb565),
+                style = MaterialTheme.typography.labelMedium,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SafeThemeSwatches.forEach { swatch ->
+                FilterChip(
+                    selected = swatch.rgb565 == selectedRgb565,
+                    onClick = { onSelect(swatch.rgb565) },
+                    enabled = enabled,
+                    leadingIcon = {
+                        Box(
+                            Modifier
+                                .size(16.dp)
+                                .background(rgb565Color(swatch.rgb565), RoundedCornerShape(4.dp)),
+                        )
                     },
-                    maxLines = 1
+                    label = { Text(swatch.label) },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .semantics {
+                            contentDescription =
+                                "${info.label} ${swatch.label} color, 0x%04X".format(
+                                    swatch.rgb565,
+                                )
+                        }
+                        .testTag(
+                            "badge_accent_${info.firmwareKey}_swatch_%04x".format(
+                                swatch.rgb565,
+                            ),
+                        ),
                 )
             }
         }
     }
 }
 
-private fun rgb565Color(rgb565: Int): Color {
-    val r = ((rgb565 shr 11) and 0x1f) * 255 / 31
-    val g = ((rgb565 shr 5) and 0x3f) * 255 / 63
-    val b = (rgb565 and 0x1f) * 255 / 31
-    return Color(r, g, b)
+@Composable
+internal fun BadgeSectionCard(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        ),
+        content = {
+            Column(
+                Modifier.fillMaxWidth().padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                content = content,
+            )
+        },
+    )
+}
+
+@Composable
+internal fun BadgeResponsiveActionPair(
+    first: @Composable (Modifier) -> Unit,
+    second: @Composable (Modifier) -> Unit,
+) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val stackActions = maxWidth < 360.dp || LocalDensity.current.fontScale >= 1.3f
+        if (stackActions) {
+            Column(
+                Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                first(Modifier.fillMaxWidth())
+                second(Modifier.fillMaxWidth())
+            }
+        } else {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                first(Modifier.weight(1f))
+                second(Modifier.weight(1f))
+            }
+        }
+    }
 }

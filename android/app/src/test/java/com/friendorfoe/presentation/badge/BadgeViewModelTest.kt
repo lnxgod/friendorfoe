@@ -129,13 +129,24 @@ class BadgeViewModelTest {
     }
 
     @Test
-    fun sameIdentityInvalidConnectionEvidenceClearsPreviouslyKnownReadbacks() =
+    fun sameIdentityStaleEvidenceRetainsDirtyDraftsAndTypedResultsButDisablesApply() =
         runTest(dispatcher) {
+            val changedTheme = BadgeTheme.firmwareDefaults().copy(intensity = 70)
+            val changedPolicy = BadgeDisplayPolicy.firmwareDefaults().withEnabled("beacon", false)
             val port = FakeBadgeControlPort(statusWithDefaultConfig())
             val viewModel = BadgeViewModel(port, testClock)
             runCurrent()
-            viewModel.updateTheme { it.copy(intensity = 70) }
+            viewModel.updateTheme { changedTheme }
+            viewModel.updatePolicy { changedPolicy }
+            viewModel.updateNetworkMode(BadgeNetworkMode.BACKEND)
             assertTrue(viewModel.uiState.value.canApply)
+
+            repeat(3) { port.enqueue(BadgeCommandOutcome.Failed("transient failure")) }
+            viewModel.applyChanges()
+            advanceUntilIdle()
+            assertEquals(BadgeApplyPhase.FAILED, viewModel.uiState.value.applyState.theme.phase)
+            assertEquals(BadgeApplyPhase.FAILED, viewModel.uiState.value.applyState.policy.phase)
+            assertEquals(BadgeApplyPhase.FAILED, viewModel.uiState.value.applyState.network.phase)
 
             port.emit(
                 statusWithDefaultConfig(receivedAt = 2_000),
@@ -148,7 +159,14 @@ class BadgeViewModelTest {
 
             assertNull(viewModel.uiState.value.controlStatus)
             assertNull(viewModel.uiState.value.appliedTheme)
-            assertNull(viewModel.uiState.value.draftTheme)
+            assertNull(viewModel.uiState.value.appliedPolicy)
+            assertNull(viewModel.uiState.value.appliedNetworkMode)
+            assertEquals(changedTheme, viewModel.uiState.value.draftTheme)
+            assertEquals(changedPolicy, viewModel.uiState.value.draftPolicy)
+            assertEquals(BadgeNetworkMode.BACKEND, viewModel.uiState.value.draftNetworkMode)
+            assertEquals(BadgeApplyPhase.FAILED, viewModel.uiState.value.applyState.theme.phase)
+            assertEquals(BadgeApplyPhase.FAILED, viewModel.uiState.value.applyState.policy.phase)
+            assertEquals(BadgeApplyPhase.FAILED, viewModel.uiState.value.applyState.network.phase)
             assertFalse(viewModel.uiState.value.canApply)
         }
 
@@ -166,19 +184,162 @@ class BadgeViewModelTest {
     }
 
     @Test
-    fun sameIdentityUnknownReadbackClearsUnsafeDraftAndDisablesApply() = runTest(dispatcher) {
+    fun sameIdentityUnknownReadbacksRetainDirtyDraftsAndDisableApply() = runTest(dispatcher) {
+        val changedTheme = BadgeTheme.firmwareDefaults().copy(intensity = 70)
+        val changedPolicy = BadgeDisplayPolicy.firmwareDefaults().withEnabled("beacon", false)
         val port = FakeBadgeControlPort(statusWithDefaultConfig())
         val viewModel = BadgeViewModel(port, testClock)
         runCurrent()
-        viewModel.updateTheme { it.copy(intensity = 70) }
+        viewModel.updateTheme { changedTheme }
+        viewModel.updatePolicy { changedPolicy }
+        viewModel.updateNetworkMode(BadgeNetworkMode.BACKEND)
         assertTrue(viewModel.uiState.value.canApply)
 
         port.emit(statusWithUnknownConfig(receivedAt = 2_000))
         runCurrent()
 
         assertNull(viewModel.uiState.value.appliedTheme)
+        assertNull(viewModel.uiState.value.appliedPolicy)
+        assertNull(viewModel.uiState.value.appliedNetworkMode)
+        assertEquals(changedTheme, viewModel.uiState.value.draftTheme)
+        assertEquals(changedPolicy, viewModel.uiState.value.draftPolicy)
+        assertEquals(BadgeNetworkMode.BACKEND, viewModel.uiState.value.draftNetworkMode)
+        assertEquals(BadgeApplyPhase.DIRTY, viewModel.uiState.value.applyState.theme.phase)
+        assertEquals(BadgeApplyPhase.DIRTY, viewModel.uiState.value.applyState.policy.phase)
+        assertEquals(BadgeApplyPhase.DIRTY, viewModel.uiState.value.applyState.network.phase)
+        assertFalse(viewModel.uiState.value.canApply)
+    }
+
+    @Test
+    fun freshEditableReadbacksRestoreAppliedBaselinesWithoutOverwritingRetainedDrafts() =
+        runTest(dispatcher) {
+            val changedTheme = BadgeTheme.firmwareDefaults().copy(intensity = 70)
+            val changedPolicy = BadgeDisplayPolicy.firmwareDefaults().withEnabled("beacon", false)
+            val freshTheme = BadgeTheme.firmwareDefaults().copy(intensity = 55)
+            val freshPolicy = BadgeDisplayPolicy.firmwareDefaults().withEnabled("auracast", false)
+            val port = FakeBadgeControlPort(statusWithDefaultConfig())
+            val viewModel = BadgeViewModel(port, testClock)
+            runCurrent()
+            viewModel.updateTheme { changedTheme }
+            viewModel.updatePolicy { changedPolicy }
+            viewModel.updateNetworkMode(BadgeNetworkMode.BACKEND)
+
+            port.emit(statusWithUnknownConfig(receivedAt = 2_000))
+            runCurrent()
+            assertFalse(viewModel.uiState.value.canApply)
+
+            port.emit(
+                statusWithDefaultConfig(
+                    receivedAt = 3_000,
+                    theme = freshTheme,
+                    policy = freshPolicy,
+                    networkMode = BadgeNetworkMode.LOCAL_AP,
+                ),
+            )
+            runCurrent()
+
+            assertEquals(freshTheme, viewModel.uiState.value.appliedTheme)
+            assertEquals(freshPolicy, viewModel.uiState.value.appliedPolicy)
+            assertEquals(BadgeNetworkMode.LOCAL_AP, viewModel.uiState.value.appliedNetworkMode)
+            assertEquals(changedTheme, viewModel.uiState.value.draftTheme)
+            assertEquals(changedPolicy, viewModel.uiState.value.draftPolicy)
+            assertEquals(BadgeNetworkMode.BACKEND, viewModel.uiState.value.draftNetworkMode)
+            assertEquals(BadgeApplyPhase.DIRTY, viewModel.uiState.value.applyState.theme.phase)
+            assertEquals(BadgeApplyPhase.DIRTY, viewModel.uiState.value.applyState.policy.phase)
+            assertEquals(BadgeApplyPhase.DIRTY, viewModel.uiState.value.applyState.network.phase)
+            assertTrue(viewModel.uiState.value.canApply)
+        }
+
+    @Test
+    fun freshReadbacksEqualToRetainedDraftsNormalizeResultsToClean() = runTest(dispatcher) {
+        val changedTheme = BadgeTheme.firmwareDefaults().copy(intensity = 70)
+        val changedPolicy = BadgeDisplayPolicy.firmwareDefaults().withEnabled("beacon", false)
+        val port = FakeBadgeControlPort(statusWithDefaultConfig())
+        repeat(3) { port.enqueue(BadgeCommandOutcome.Failed("not applied")) }
+        val viewModel = BadgeViewModel(port, testClock)
+        runCurrent()
+        viewModel.updateTheme { changedTheme }
+        viewModel.updatePolicy { changedPolicy }
+        viewModel.updateNetworkMode(BadgeNetworkMode.BACKEND)
+        viewModel.applyChanges()
+        advanceUntilIdle()
+        assertEquals(BadgeApplyPhase.FAILED, viewModel.uiState.value.applyState.theme.phase)
+
+        port.emit(statusWithUnknownConfig(receivedAt = 2_000))
+        runCurrent()
+        port.emit(
+            statusWithDefaultConfig(
+                receivedAt = 3_000,
+                theme = changedTheme,
+                policy = changedPolicy,
+                networkMode = BadgeNetworkMode.BACKEND,
+            ),
+        )
+        runCurrent()
+
+        assertEquals(changedTheme, viewModel.uiState.value.appliedTheme)
+        assertEquals(changedTheme, viewModel.uiState.value.draftTheme)
+        assertEquals(changedPolicy, viewModel.uiState.value.appliedPolicy)
+        assertEquals(changedPolicy, viewModel.uiState.value.draftPolicy)
+        assertEquals(BadgeNetworkMode.BACKEND, viewModel.uiState.value.appliedNetworkMode)
+        assertEquals(BadgeNetworkMode.BACKEND, viewModel.uiState.value.draftNetworkMode)
+        assertTrue(viewModel.uiState.value.applyState.activeResults.isEmpty())
+        assertFalse(viewModel.uiState.value.isDirty)
+        assertFalse(viewModel.uiState.value.canApply)
+    }
+
+    @Test
+    fun freshReadbacksMatchingDirtyDraftsNormalizeDirtyResultsToClean() = runTest(dispatcher) {
+        val changedTheme = BadgeTheme.firmwareDefaults().copy(intensity = 70)
+        val changedPolicy = BadgeDisplayPolicy.firmwareDefaults().withEnabled("beacon", false)
+        val port = FakeBadgeControlPort(statusWithDefaultConfig())
+        val viewModel = BadgeViewModel(port, testClock)
+        runCurrent()
+        viewModel.updateTheme { changedTheme }
+        viewModel.updatePolicy { changedPolicy }
+        viewModel.updateNetworkMode(BadgeNetworkMode.BACKEND)
+
+        assertEquals(BadgeApplyPhase.DIRTY, viewModel.uiState.value.applyState.theme.phase)
+        assertEquals(BadgeApplyPhase.DIRTY, viewModel.uiState.value.applyState.policy.phase)
+        assertEquals(BadgeApplyPhase.DIRTY, viewModel.uiState.value.applyState.network.phase)
+
+        port.emit(
+            statusWithDefaultConfig(
+                receivedAt = 2_000,
+                theme = changedTheme,
+                policy = changedPolicy,
+                networkMode = BadgeNetworkMode.BACKEND,
+            ),
+        )
+        runCurrent()
+
+        assertEquals(changedTheme, viewModel.uiState.value.appliedTheme)
+        assertEquals(changedTheme, viewModel.uiState.value.draftTheme)
+        assertEquals(changedPolicy, viewModel.uiState.value.appliedPolicy)
+        assertEquals(changedPolicy, viewModel.uiState.value.draftPolicy)
+        assertEquals(BadgeNetworkMode.BACKEND, viewModel.uiState.value.appliedNetworkMode)
+        assertEquals(BadgeNetworkMode.BACKEND, viewModel.uiState.value.draftNetworkMode)
+        assertTrue(viewModel.uiState.value.applyState.activeResults.isEmpty())
+        assertFalse(viewModel.uiState.value.isDirty)
+        assertFalse(viewModel.uiState.value.canApply)
+    }
+
+    @Test
+    fun sameIdentityUnknownReadbacksLeaveCleanSectionsNull() = runTest(dispatcher) {
+        val port = FakeBadgeControlPort(statusWithDefaultConfig())
+        val viewModel = BadgeViewModel(port, testClock)
+        runCurrent()
+
+        port.emit(statusWithUnknownConfig(receivedAt = 2_000))
+        runCurrent()
+
+        assertNull(viewModel.uiState.value.appliedTheme)
         assertNull(viewModel.uiState.value.draftTheme)
-        assertEquals(BadgeApplyPhase.CLEAN, viewModel.uiState.value.applyState.theme.phase)
+        assertNull(viewModel.uiState.value.appliedPolicy)
+        assertNull(viewModel.uiState.value.draftPolicy)
+        assertNull(viewModel.uiState.value.appliedNetworkMode)
+        assertNull(viewModel.uiState.value.draftNetworkMode)
+        assertTrue(viewModel.uiState.value.applyState.activeResults.isEmpty())
         assertFalse(viewModel.uiState.value.canApply)
     }
 
@@ -188,6 +349,8 @@ class BadgeViewModelTest {
         val viewModel = BadgeViewModel(port, testClock)
         runCurrent()
         viewModel.updateTheme { it.copy(intensity = 70) }
+        viewModel.updatePolicy { it.withEnabled("beacon", false) }
+        viewModel.updateNetworkMode(BadgeNetworkMode.BACKEND)
 
         port.emit(
             statusWithUnknownConfig(receivedAt = 2_000),
@@ -197,7 +360,12 @@ class BadgeViewModelTest {
 
         assertNull(viewModel.uiState.value.appliedTheme)
         assertNull(viewModel.uiState.value.draftTheme)
+        assertNull(viewModel.uiState.value.appliedPolicy)
+        assertNull(viewModel.uiState.value.draftPolicy)
+        assertNull(viewModel.uiState.value.appliedNetworkMode)
+        assertNull(viewModel.uiState.value.draftNetworkMode)
         assertTrue(viewModel.uiState.value.applyState.activeResults.isEmpty())
+        assertFalse(viewModel.uiState.value.canApply)
     }
 
     @Test
@@ -247,6 +415,102 @@ class BadgeViewModelTest {
         }
         assertEquals(BadgeNetworkMode.BACKEND, viewModel.uiState.value.draftNetworkMode)
     }
+
+    @Test
+    fun defaultsOnlyTransformFreshSupportedSectionsWithoutBlockingValidThemeApply() =
+        runTest(dispatcher) {
+            val appliedTheme = BadgeTheme.firmwareDefaults().copy(
+                palette = "night",
+                intensity = 70,
+            )
+            val appliedPolicy = BadgeDisplayPolicy.firmwareDefaults().withEnabled("beacon", false)
+            val connection = certifiedUsbConnection().copy(
+                releaseCertifiedMutations = setOf(BadgeCapability.THEME_V1),
+            )
+            val port = FakeBadgeControlPort(
+                statusWithDefaultConfig(theme = appliedTheme, policy = appliedPolicy),
+                connection,
+            )
+            val viewModel = BadgeViewModel(port, testClock)
+            runCurrent()
+            assertTrue(viewModel.uiState.value.canUseFirmwareDefaults)
+
+            viewModel.useFirmwareDefaultsInDraft()
+
+            assertEquals(
+                BadgeTheme.firmwareDefaults().copy(palette = "night"),
+                viewModel.uiState.value.draftTheme,
+            )
+            assertEquals(appliedPolicy, viewModel.uiState.value.draftPolicy)
+            assertEquals(BadgeApplyPhase.DIRTY, viewModel.uiState.value.applyState.theme.phase)
+            assertEquals(BadgeApplyPhase.CLEAN, viewModel.uiState.value.applyState.policy.phase)
+            assertTrue(viewModel.uiState.value.canApply)
+        }
+
+    @Test
+    fun defaultsDoNotEraseRetainedDraftsOrTypedResultsWithoutFreshAppliedBaselines() =
+        runTest(dispatcher) {
+            val changedTheme = BadgeTheme.firmwareDefaults().copy(intensity = 70)
+            val changedPolicy = BadgeDisplayPolicy.firmwareDefaults().withEnabled("beacon", false)
+            val port = FakeBadgeControlPort(statusWithDefaultConfig())
+            val viewModel = BadgeViewModel(port, testClock)
+            runCurrent()
+            viewModel.updateTheme { changedTheme }
+            viewModel.updatePolicy { changedPolicy }
+            viewModel.updateNetworkMode(BadgeNetworkMode.BACKEND)
+            port.emit(statusWithUnknownConfig(receivedAt = 2_000))
+            runCurrent()
+            val before = viewModel.uiState.value
+            assertFalse(before.canUseFirmwareDefaults)
+
+            viewModel.useFirmwareDefaultsInDraft()
+
+            val after = viewModel.uiState.value
+            assertEquals(changedTheme, after.draftTheme)
+            assertEquals(changedPolicy, after.draftPolicy)
+            assertEquals(BadgeNetworkMode.BACKEND, after.draftNetworkMode)
+            assertEquals(before.applyState, after.applyState)
+            assertFalse(after.canApply)
+        }
+
+    @Test
+    fun revertIsSectionAwareAndCannotEraseRetainedDraftWithoutAppliedBaseline() =
+        runTest(dispatcher) {
+            val changedTheme = BadgeTheme.firmwareDefaults().copy(intensity = 70)
+            val changedPolicy = BadgeDisplayPolicy.firmwareDefaults().withEnabled("beacon", false)
+            val port = FakeBadgeControlPort(statusWithDefaultConfig())
+            val viewModel = BadgeViewModel(port, testClock)
+            runCurrent()
+            viewModel.updateTheme { changedTheme }
+            viewModel.updatePolicy { changedPolicy }
+
+            port.emit(
+                badgeStatus(
+                    receivedAt = 2_000,
+                    themeReadback = BadgeConfigReadback(
+                        BadgeTheme.firmwareDefaults(),
+                        BadgeTheme.firmwareDefaults().firmwareHash(),
+                        null,
+                    ),
+                    policyReadback = BadgeConfigReadback(null, null, "unknown policy"),
+                    networkReadback = BadgeNetworkModeReadback(BadgeNetworkMode.USB_ONLY, null),
+                ),
+            )
+            runCurrent()
+            assertTrue(viewModel.uiState.value.canRevertDraft)
+
+            viewModel.revertDraft()
+
+            assertEquals(BadgeTheme.firmwareDefaults(), viewModel.uiState.value.draftTheme)
+            assertEquals(BadgeApplyPhase.CLEAN, viewModel.uiState.value.applyState.theme.phase)
+            assertEquals(changedPolicy, viewModel.uiState.value.draftPolicy)
+            assertEquals(BadgeApplyPhase.DIRTY, viewModel.uiState.value.applyState.policy.phase)
+            assertFalse(viewModel.uiState.value.canRevertDraft)
+
+            val retained = viewModel.uiState.value
+            viewModel.revertDraft()
+            assertEquals(retained, viewModel.uiState.value)
+        }
 
     @Test
     fun hashMismatchCannotBecomeVerified() = runTest(dispatcher) {
@@ -911,6 +1175,30 @@ class BadgeViewModelTest {
     }
 
     @Test
+    fun applyInFlightRejectsRecoveryAndDisplayNavigationMutations() = runTest(dispatcher) {
+        val changed = BadgeTheme.firmwareDefaults().copy(intensity = 70)
+        val port = FakeBadgeControlPort(statusWithDefaultConfig())
+        port.blockNextCommand()
+        val viewModel = BadgeViewModel(port, testClock)
+        runCurrent()
+        viewModel.updateTheme { changed }
+
+        viewModel.applyChanges()
+        assertTrue(viewModel.uiState.value.mutationLocked)
+        viewModel.requestRecovery(BadgeRecoveryAction.REBOOT)
+        viewModel.navigateDisplay(BadgeDisplayAction.NEXT)
+        runCurrent()
+
+        assertEquals(BadgeRecoveryPhase.IDLE, viewModel.uiState.value.recovery.phase)
+        assertEquals(listOf(BadgeCommand.ApplyTheme(changed)), port.commands)
+
+        port.releaseBlockedCommand(acknowledged(themeHash = changed.firmwareHash()))
+        runCurrent()
+        port.emit(statusWithDefaultConfig(theme = changed, receivedAt = 2_000))
+        advanceUntilIdle()
+    }
+
+    @Test
     fun simultaneousApplyCallsAtomicallyClaimOneDraftSnapshot() = runTest(dispatcher) {
         val port = FakeBadgeControlPort(statusWithDefaultConfig())
         port.blockNextCommand()
@@ -1053,6 +1341,81 @@ class BadgeViewModelTest {
     }
 
     @Test
+    fun recoveryConfirmationLocksDraftApplyDefaultsRevertAndDisplayMutations() =
+        runTest(dispatcher) {
+            val changedTheme = BadgeTheme.firmwareDefaults().copy(intensity = 70)
+            val port = FakeBadgeControlPort(statusWithDefaultConfig())
+            val viewModel = BadgeViewModel(port, testClock)
+            runCurrent()
+            viewModel.updateTheme { changedTheme }
+            assertTrue(viewModel.uiState.value.canApply)
+
+            viewModel.requestRecovery(BadgeRecoveryAction.REBOOT)
+            val confirming = viewModel.uiState.value
+            assertEquals(BadgeRecoveryPhase.CONFIRMING, confirming.recovery.phase)
+            assertTrue(confirming.recoveryCommandActive)
+            assertFalse(confirming.recoveryRequiresReconnect)
+            assertTrue(confirming.mutationLocked)
+            assertFalse(confirming.canApply)
+            assertFalse(confirming.canUseFirmwareDefaults)
+            assertFalse(confirming.canRevertDraft)
+
+            viewModel.updateTheme { it.copy(intensity = 80) }
+            viewModel.updatePolicy { it.withEnabled("beacon", false) }
+            viewModel.updateNetworkMode(BadgeNetworkMode.BACKEND)
+            viewModel.useFirmwareDefaultsInDraft()
+            viewModel.revertDraft()
+            viewModel.applyChanges()
+            viewModel.navigateDisplay(BadgeDisplayAction.NEXT)
+            runCurrent()
+
+            assertEquals(changedTheme, viewModel.uiState.value.draftTheme)
+            assertEquals(BadgeDisplayPolicy.firmwareDefaults(), viewModel.uiState.value.draftPolicy)
+            assertEquals(BadgeNetworkMode.USB_ONLY, viewModel.uiState.value.draftNetworkMode)
+            assertTrue(port.commands.isEmpty())
+
+            viewModel.cancelRecovery()
+            assertEquals(BadgeRecoveryPhase.IDLE, viewModel.uiState.value.recovery.phase)
+            assertFalse(viewModel.uiState.value.mutationLocked)
+            assertTrue(viewModel.uiState.value.canApply)
+            BadgeRecoveryAction.entries.forEach { action ->
+                assertTrue(viewModel.uiState.value.recoveryAvailability.getValue(action).enabled)
+            }
+        }
+
+    @Test
+    fun pendingRecoveryKeepsAllConfigurationAndDisplayMutationsLocked() =
+        runTest(dispatcher) {
+            val changedTheme = BadgeTheme.firmwareDefaults().copy(intensity = 70)
+            val port = FakeBadgeControlPort(statusWithDefaultConfig())
+            port.blockNextCommand()
+            val viewModel = BadgeViewModel(port, testClock)
+            runCurrent()
+            viewModel.updateTheme { changedTheme }
+            viewModel.requestRecovery(BadgeRecoveryAction.REBOOT)
+            viewModel.confirmRecovery()
+            runCurrent()
+            val pending = viewModel.uiState.value
+            assertEquals(BadgeRecoveryPhase.PENDING, pending.recovery.phase)
+            assertTrue(pending.recoveryCommandActive)
+            assertTrue(pending.recoveryRequiresReconnect)
+            assertTrue(pending.mutationLocked)
+            assertFalse(pending.canApply)
+
+            viewModel.updateTheme { it.copy(intensity = 80) }
+            viewModel.useFirmwareDefaultsInDraft()
+            viewModel.revertDraft()
+            viewModel.applyChanges()
+            viewModel.navigateDisplay(BadgeDisplayAction.NEXT)
+            runCurrent()
+
+            assertEquals(changedTheme, viewModel.uiState.value.draftTheme)
+            assertEquals(listOf(BadgeCommand.Reboot), port.commands)
+            port.releaseBlockedCommand(acknowledged())
+            advanceUntilIdle()
+        }
+
+    @Test
     fun bleAndDebugConnectionsNeverExecuteRecoveryCommands() = runTest(dispatcher) {
         listOf(
             certifiedBleConnection(mtu = 64),
@@ -1077,30 +1440,69 @@ class BadgeViewModelTest {
     }
 
     @Test
-    fun recoveryCapabilityRevokedBeforeConfirmationNeverExecutes() = runTest(dispatcher) {
-        val port = FakeBadgeControlPort(statusWithDefaultConfig())
-        val viewModel = BadgeViewModel(port, testClock)
-        runCurrent()
-        viewModel.requestRecovery(BadgeRecoveryAction.REBOOT)
-        assertEquals(BadgeRecoveryPhase.CONFIRMING, viewModel.uiState.value.recovery.phase)
+    fun sameTargetInvalidationDismissesRecoveryConfirmationAndNeverExecutes() =
+        runTest(dispatcher) {
+            val cases = listOf(
+                Triple(
+                    "revoked recovery certification",
+                    certifiedUsbConnection(receivedAt = 2_000).copy(
+                        releaseCertifiedMutations = BadgeCapability.entries.toSet() -
+                            BadgeCapability.REBOOT,
+                    ),
+                    "Verified direct USB is required",
+                ),
+                Triple(
+                    "stale connection evidence",
+                    certifiedUsbConnection(
+                        phase = BadgeConnectionPhase.STALE,
+                        receivedAt = 2_001,
+                    ),
+                    "Verified direct USB is required",
+                ),
+                Triple(
+                    "ambiguous USB evidence",
+                    certifiedUsbConnection(receivedAt = 2_002).copy(usbCandidateCount = 2),
+                    "Connect exactly one badge over USB before recovery",
+                ),
+            )
 
-        port.emit(
-            statusWithDefaultConfig(receivedAt = 2_000),
-            certifiedUsbConnection(receivedAt = 2_000).copy(
-                releaseCertifiedMutations = BadgeCapability.entries.toSet() -
-                    BadgeCapability.REBOOT,
-            ),
-        )
-        runCurrent()
-        viewModel.confirmRecovery()
-        runCurrent()
+            cases.forEachIndexed { index, (label, invalidConnection, expectedReason) ->
+                val port = FakeBadgeControlPort(statusWithDefaultConfig())
+                val viewModel = BadgeViewModel(port, testClock)
+                runCurrent()
+                viewModel.requestRecovery(BadgeRecoveryAction.REBOOT)
+                assertEquals(
+                    "$label starts from a real confirmation",
+                    BadgeRecoveryPhase.CONFIRMING,
+                    viewModel.uiState.value.recovery.phase,
+                )
 
-        assertTrue(port.commands.isEmpty())
-        assertFalse(
-            viewModel.uiState.value.recoveryAvailability
-                .getValue(BadgeRecoveryAction.REBOOT).enabled,
-        )
-    }
+                port.emit(
+                    statusWithDefaultConfig(receivedAt = 2_000L + index),
+                    invalidConnection,
+                )
+                runCurrent()
+
+                val invalidated = viewModel.uiState.value
+                assertEquals(
+                    "$label dismisses the obsolete confirmation",
+                    BadgeRecoveryPhase.IDLE,
+                    invalidated.recovery.phase,
+                )
+                assertNull("$label clears the obsolete recovery action", invalidated.recovery.action)
+                assertFalse(
+                    invalidated.recoveryAvailability.getValue(BadgeRecoveryAction.REBOOT).enabled,
+                )
+                assertEquals(
+                    expectedReason,
+                    invalidated.recoveryAvailability.getValue(BadgeRecoveryAction.REBOOT).reason,
+                )
+
+                viewModel.confirmRecovery()
+                runCurrent()
+                assertTrue("$label never sends a recovery command", port.commands.isEmpty())
+            }
+        }
 
     @Test
     fun simultaneousRecoveryConfirmationsAtomicallyClaimOneCommand() = runTest(dispatcher) {
@@ -1127,39 +1529,68 @@ class BadgeViewModelTest {
     }
 
     @Test
-    fun recoveryNonSuccessOutcomesRemainTypedAndIncludeReconnectGuidance() =
+    fun terminalRecoveryOutcomesLockBothActionsUntilConnectionGenerationChanges() =
         runTest(dispatcher) {
-            val port = FakeBadgeControlPort(statusWithDefaultConfig())
-            port.enqueue(BadgeCommandOutcome.TimedOut)
-            port.enqueue(BadgeCommandOutcome.Accepted("transport only"))
-            port.enqueue(BadgeCommandOutcome.Failed("reboot rejected"))
-            val viewModel = BadgeViewModel(port, testClock)
-            runCurrent()
-
-            viewModel.requestRecovery(BadgeRecoveryAction.REBOOT)
-            viewModel.confirmRecovery()
-            advanceUntilIdle()
-            assertEquals(BadgeRecoveryPhase.NOT_VERIFIED, viewModel.uiState.value.recovery.phase)
-            assertEquals(
-                "Reconnect and refresh badge status",
-                viewModel.uiState.value.recovery.reconnectGuidance,
+            val cases = listOf(
+                acknowledged() to BadgeRecoveryPhase.ACKNOWLEDGED,
+                BadgeCommandOutcome.TimedOut to BadgeRecoveryPhase.NOT_VERIFIED,
+                BadgeCommandOutcome.Failed("reboot rejected") to BadgeRecoveryPhase.FAILED,
             )
+            cases.forEachIndexed { index, (outcome, expectedPhase) ->
+                val port = FakeBadgeControlPort(statusWithDefaultConfig())
+                port.enqueue(outcome)
+                val viewModel = BadgeViewModel(port, testClock)
+                runCurrent()
 
-            viewModel.requestRecovery(BadgeRecoveryAction.REBOOT)
-            viewModel.confirmRecovery()
-            advanceUntilIdle()
-            assertEquals(BadgeRecoveryPhase.NOT_VERIFIED, viewModel.uiState.value.recovery.phase)
+                viewModel.requestRecovery(BadgeRecoveryAction.REBOOT)
+                viewModel.confirmRecovery()
+                advanceUntilIdle()
 
-            viewModel.requestRecovery(BadgeRecoveryAction.REBOOT)
-            viewModel.confirmRecovery()
-            advanceUntilIdle()
-            assertEquals(BadgeRecoveryPhase.FAILED, viewModel.uiState.value.recovery.phase)
-            assertEquals("reboot rejected", viewModel.uiState.value.recovery.message)
-            assertEquals(
-                "Reconnect and refresh badge status",
-                viewModel.uiState.value.recovery.reconnectGuidance,
-            )
-            assertEquals(3, port.commands.size)
+                assertEquals(expectedPhase, viewModel.uiState.value.recovery.phase)
+                assertEquals(
+                    "Reconnect and refresh badge status",
+                    viewModel.uiState.value.recovery.reconnectGuidance,
+                )
+                assertTrue(viewModel.uiState.value.recoveryRequiresReconnect)
+                assertTrue(viewModel.uiState.value.mutationLocked)
+                BadgeRecoveryAction.entries.forEach { action ->
+                    val availability = viewModel.uiState.value.recoveryAvailability.getValue(action)
+                    assertFalse(availability.enabled)
+                    assertEquals("Reconnect and refresh badge status", availability.reason)
+                }
+
+                viewModel.requestRecovery(BadgeRecoveryAction.ENTER_BOOTLOADER)
+                viewModel.confirmRecovery()
+                runCurrent()
+                assertEquals(1, port.commands.size)
+
+                val sameGenerationReceipt = 2_000L + index
+                port.emit(
+                    statusWithDefaultConfig(receivedAt = sameGenerationReceipt),
+                    certifiedUsbConnection(receivedAt = sameGenerationReceipt),
+                )
+                runCurrent()
+                assertTrue(viewModel.uiState.value.recoveryRequiresReconnect)
+                BadgeRecoveryAction.entries.forEach { action ->
+                    assertFalse(viewModel.uiState.value.recoveryAvailability.getValue(action).enabled)
+                }
+
+                val nextGenerationReceipt = 3_000L + index
+                port.emit(
+                    statusWithDefaultConfig(receivedAt = nextGenerationReceipt),
+                    certifiedUsbConnection(
+                        generation = 2,
+                        receivedAt = nextGenerationReceipt,
+                    ),
+                )
+                runCurrent()
+                assertEquals(BadgeRecoveryPhase.IDLE, viewModel.uiState.value.recovery.phase)
+                assertFalse(viewModel.uiState.value.recoveryRequiresReconnect)
+                assertFalse(viewModel.uiState.value.mutationLocked)
+                BadgeRecoveryAction.entries.forEach { action ->
+                    assertTrue(viewModel.uiState.value.recoveryAvailability.getValue(action).enabled)
+                }
+            }
         }
 
     @Test

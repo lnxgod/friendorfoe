@@ -1,282 +1,220 @@
 package com.friendorfoe.presentation.badge
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.friendorfoe.data.badge.BadgeDisplayLane
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.badge.BadgeDisplayPolicyClasses
 import com.friendorfoe.data.badge.BadgeDisplayRule
 import com.friendorfoe.data.badge.BadgeMinimumProximity
-import com.friendorfoe.data.badge.defaultBadgeDisplayPolicyClasses
 
-private enum class BadgeRowDensityPreset(val label: String) {
-    Focus("Focus"),
-    Balanced("Balanced"),
-    Full("Full")
+private val displayClassLabels = BadgeDisplayPolicyClasses.associate { info ->
+    info.key to when (info.key) {
+        "wifi_attack" -> "Wi-Fi Attack"
+        "flock" -> "Flock / ALPR"
+        else -> info.label
+    }
 }
-
-private val highSignalClasses = setOf("drone", "meta", "wifi_attack", "skimmer", "flock")
-private val mediumSignalClasses = setOf("tracker", "camera", "lock")
 
 @Composable
 fun BadgeDisplayFiltersSection(
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
-    policy: BadgeDisplayPolicy,
-    displayPolicyHash: Long,
-    filteredCounts: Map<String, Int>,
-    onPolicyChange: (BadgeDisplayPolicy) -> Unit,
-    onApply: () -> Unit,
-    onReset: () -> Unit,
-    onRefresh: () -> Unit
+    policy: BadgeDisplayPolicy?,
+    policyHash: Long?,
+    enabled: Boolean,
+    unavailableReason: String?,
+    onPolicyChange: ((BadgeDisplayPolicy) -> BadgeDisplayPolicy) -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                MaterialTheme.colorScheme.surface.copy(alpha = 0.45f),
-                RoundedCornerShape(8.dp)
-            )
-            .padding(8.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Display Filters",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Badge LCD row density and scanner emission policy  #$displayPolicyHash",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            OutlinedButton(onClick = { onExpandedChange(!expanded) }) {
-                Text(if (expanded) "Hide" else "Edit")
-            }
-        }
-
-        if (!expanded) return@Column
-
-        Spacer(modifier = Modifier.height(8.dp))
+    BadgeSectionCard {
         Text(
-            text = "Row density",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            "Display rules",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf(
-                BadgeRowDensityPreset.Focus,
-                BadgeRowDensityPreset.Balanced,
-                BadgeRowDensityPreset.Full
-            ).forEach { preset ->
-                OutlinedButton(
-                    onClick = { onPolicyChange(policy.withRowDensityPreset(preset)) },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = preset.label.uppercase(),
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1
-                    )
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        BadgeDisplayPolicyClasses.forEach { info ->
-            val config = policy.classes.getValue(info.key)
-            val filtered = filteredCounts[info.key] ?: 0
-            BadgeDisplayClassRow(
-                policyKey = info.key,
-                label = info.label,
-                filtered = filtered,
-                config = config,
-                onChange = { key, next ->
-                    onPolicyChange(
-                        if (next.enabled != config.enabled) {
-                            policy.withEnabled(key, next.enabled)
-                        } else {
-                            policy.copy(classes = policy.classes + (key to next))
-                        }
-                    )
-                }
-            )
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 6.dp),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(onClick = onApply) {
-                Text("Apply")
-            }
-            OutlinedButton(onClick = onReset) {
-                Text("Reset Defaults")
-            }
-            OutlinedButton(onClick = onRefresh) {
-                Text("Refresh")
-            }
-        }
-    }
-}
+        Text(
+            "Policy hash ${hashCode32(policyHash)}",
+            style = MaterialTheme.typography.labelMedium,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "Close ≥ -60 dBm · Near ≥ -76 dBm · Present < -76 dBm",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "Off is not an absolute suppression guarantee; firmware safety rules may still show high-confidence evidence.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.tertiary,
+        )
 
-private fun BadgeDisplayPolicy.withRowDensityPreset(
-    preset: BadgeRowDensityPreset
-): BadgeDisplayPolicy {
-    val defaults = defaultBadgeDisplayPolicyClasses()
-    val next = when (preset) {
-        BadgeRowDensityPreset.Balanced -> defaults
-        BadgeRowDensityPreset.Focus -> defaults.mapValues { (key, config) ->
-            when (key) {
-                in highSignalClasses -> config.copy(
-                    enabled = true,
-                    lane = BadgeDisplayLane.BOTH,
-                    minProximity = BadgeMinimumProximity.PRESENT,
-                    priority = (config.priority + 5).coerceAtMost(100)
+        if (policy == null) {
+            Text(
+                unavailableReason ?: "Display policy readback is unavailable",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+        } else {
+            BadgeDisplayPolicy.classOrder.forEach { key ->
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
                 )
-                in mediumSignalClasses -> config.copy(
-                    enabled = true,
-                    lane = BadgeDisplayLane.LOWER,
-                    minProximity = BadgeMinimumProximity.CLOSE,
-                    priority = (config.priority + 10).coerceAtMost(100)
+                val rule = policy.classes.getValue(key)
+                DisplayRuleRow(
+                    firmwareKey = key,
+                    label = displayClassLabels.getValue(key),
+                    rule = rule,
+                    controlsEnabled = enabled,
+                    onEnabledChange = { nextEnabled ->
+                        onPolicyChange { current -> current.withEnabled(key, nextEnabled) }
+                    },
+                    onLaneChange = { lane ->
+                        onPolicyChange { current ->
+                            val currentRule = current.classes.getValue(key)
+                            current.copy(
+                                classes = LinkedHashMap(current.classes).apply {
+                                    put(key, currentRule.copy(lane = lane))
+                                },
+                            )
+                        }
+                    },
+                    onProximityChange = { proximity ->
+                        onPolicyChange { current ->
+                            val currentRule = current.classes.getValue(key)
+                            current.copy(
+                                classes = LinkedHashMap(current.classes).apply {
+                                    put(key, currentRule.copy(minProximity = proximity))
+                                },
+                            )
+                        }
+                    },
                 )
-                else -> config.copy(enabled = false, lane = BadgeDisplayLane.OFF)
+            }
+            if (!enabled && unavailableReason != null) {
+                Text(
+                    unavailableReason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
         }
-        BadgeRowDensityPreset.Full -> defaults.mapValues { (key, config) ->
-            config.copy(
-                enabled = true,
-                lane = if (key in highSignalClasses) {
-                    BadgeDisplayLane.BOTH
-                } else {
-                    BadgeDisplayLane.LOWER
-                },
-                minProximity = BadgeMinimumProximity.PRESENT,
-                priority = config.priority.coerceAtLeast(25)
-            )
-        }
     }
-    return copy(classes = next)
 }
 
 @Composable
-private fun BadgeDisplayClassRow(
-    policyKey: String,
+private fun DisplayRuleRow(
+    firmwareKey: String,
     label: String,
-    filtered: Int,
-    config: BadgeDisplayRule,
-    onChange: (String, BadgeDisplayRule) -> Unit
+    rule: BadgeDisplayRule,
+    controlsEnabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onLaneChange: (BadgeDisplayLane) -> Unit,
+    onProximityChange: (BadgeMinimumProximity) -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth()) {
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp).testTag("badge_rule_$firmwareKey"),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
+            Column(Modifier.weight(1f)) {
+                Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                 Text(
-                    text = label,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    text = "Suppressed $filtered  |  Priority ${config.priority}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    firmwareKey,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Switch(
-                checked = config.enabled,
-                onCheckedChange = { onChange(policyKey, config.copy(enabled = it)) }
+                checked = rule.enabled,
+                onCheckedChange = onEnabledChange,
+                enabled = controlsEnabled,
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .semantics { contentDescription = "$label display rule" }
+                    .testTag("badge_rule_${firmwareKey}_toggle"),
             )
         }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "Lane",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            BadgeDisplayLane.entries.forEach { lane ->
-                OutlinedButton(
-                    onClick = {
-                        onChange(
-                            policyKey,
-                            config.copy(
-                                enabled = if (lane == BadgeDisplayLane.OFF) {
-                                    false
-                                } else {
-                                    config.enabled
-                                },
-                                lane = lane
-                            )
+
+        if (!rule.enabled) {
+            Text(
+                "Off",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text("Lane", style = MaterialTheme.typography.labelSmall)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .testTag("badge_rule_${firmwareKey}_lanes"),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf(BadgeDisplayLane.LOWER, BadgeDisplayLane.TOP, BadgeDisplayLane.BOTH)
+                    .forEach { lane ->
+                        FilterChip(
+                            selected = rule.lane == lane,
+                            onClick = { onLaneChange(lane) },
+                            enabled = controlsEnabled,
+                            label = { Text(lane.wireValue.replaceFirstChar(Char::uppercase)) },
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .semantics {
+                                    contentDescription = "$label ${lane.wireValue} lane"
+                                }
+                                .testTag("badge_rule_${firmwareKey}_lane_${lane.wireValue}"),
                         )
-                    },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = lane.wireValue.uppercase(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (config.lane == lane) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
+                    }
+            }
+
+            Text("Minimum proximity", style = MaterialTheme.typography.labelSmall)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .testTag("badge_rule_${firmwareKey}_proximity"),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                BadgeMinimumProximity.entries.forEach { proximity ->
+                    FilterChip(
+                        selected = rule.minProximity == proximity,
+                        onClick = { onProximityChange(proximity) },
+                        enabled = controlsEnabled,
+                        label = {
+                            Text(proximity.wireValue.replaceFirstChar(Char::uppercase))
                         },
-                        maxLines = 1
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .semantics {
+                                contentDescription =
+                                    "$label ${proximity.wireValue} minimum proximity"
+                            }
+                            .testTag(
+                                "badge_rule_${firmwareKey}_proximity_${proximity.wireValue}",
+                            ),
                     )
                 }
             }
         }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "Minimum proximity",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            BadgeMinimumProximity.entries.forEach { prox ->
-                OutlinedButton(
-                    onClick = { onChange(policyKey, config.copy(minProximity = prox)) },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = prox.wireValue.uppercase(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (config.minProximity == prox) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                        maxLines = 1
-                    )
-                }
-            }
-        }
-        Slider(
-            value = config.priority.toFloat(),
-            onValueChange = {
-                onChange(policyKey, config.copy(priority = it.toInt().coerceIn(0, 100)))
-            },
-            valueRange = 0f..100f
-        )
     }
 }

@@ -21,14 +21,10 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,21 +44,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.friendorfoe.data.badge.BadgeUsbDetection
-import com.friendorfoe.data.badge.BadgeDisplayPolicy
-import com.friendorfoe.data.badge.BadgeNetworkMode
-import com.friendorfoe.data.badge.BadgeTheme
-import com.friendorfoe.data.badge.BadgeUsbState
-import com.friendorfoe.data.badge.BadgeUsbStatus
-import com.friendorfoe.data.badge.defaultBadgeDisplayPolicy
-import com.friendorfoe.data.badge.defaultBadgeTheme
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
 import com.friendorfoe.detection.BleTracker
 import com.friendorfoe.detection.GlassesDetection
-import com.friendorfoe.presentation.badge.BadgeAppearanceSection
-import com.friendorfoe.presentation.badge.BadgeDisplayFiltersSection
 import com.friendorfoe.presentation.filter.FilterBar
 import com.friendorfoe.presentation.util.categoryBadge
 import com.friendorfoe.presentation.util.categoryColor
@@ -86,8 +72,6 @@ fun ListViewScreen(
     val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
     val activeVisualFocusIds by viewModel.activeVisualFocusIds.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
-    val badgeUsbState by viewModel.badgeUsbState.collectAsStateWithLifecycle()
-
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -116,21 +100,6 @@ fun ListViewScreen(
             onNavigateToAbout = onNavigateToAbout
         )
 
-        BadgeUsbPanel(
-            state = badgeUsbState,
-            onConnect = viewModel::connectBadgeUsb,
-            onPing = viewModel::pingBadgeUsb,
-            onRefreshStatus = viewModel::refreshBadgeStatus,
-            onSetMode = viewModel::setBadgeMode,
-            onReboot = viewModel::rebootBadge,
-            onBootloader = viewModel::badgeBootloader,
-            onApplyDisplayPolicy = viewModel::applyBadgeDisplayPolicy,
-            onResetDisplayPolicy = viewModel::resetBadgeDisplayPolicy,
-            onApplyTheme = viewModel::applyBadgeTheme,
-            onResetTheme = viewModel::resetBadgeTheme,
-            onRefreshDisplayPolicy = viewModel::refreshBadgeStatus
-        )
-
         if (skyObjects.isEmpty()) {
             EmptyListState()
         } else {
@@ -153,301 +122,6 @@ fun ListViewScreen(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun BadgeUsbPanel(
-    state: BadgeUsbState,
-    onConnect: () -> Unit,
-    onPing: () -> Unit,
-    onRefreshStatus: () -> Unit,
-    onSetMode: (BadgeNetworkMode) -> Unit,
-    onReboot: () -> Unit,
-    onBootloader: () -> Unit,
-    onApplyDisplayPolicy: (BadgeDisplayPolicy) -> Unit,
-    onResetDisplayPolicy: () -> Unit,
-    onApplyTheme: (BadgeTheme) -> Unit,
-    onResetTheme: () -> Unit,
-    onRefreshDisplayPolicy: () -> Unit
-) {
-    val accent = when (state.status) {
-        BadgeUsbStatus.CONNECTED -> Color(0xFF2E7D32)
-        BadgeUsbStatus.AP_CONNECTED -> Color(0xFF2E7D32)
-        BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED -> Color(0xFF2E7D32)
-        BadgeUsbStatus.BLE_CONNECTED -> Color(0xFF2E7D32)
-        BadgeUsbStatus.CONNECTING -> MaterialTheme.colorScheme.primary
-        BadgeUsbStatus.PERMISSION_NEEDED -> Color(0xFF1565C0)
-        BadgeUsbStatus.ERROR -> MaterialTheme.colorScheme.error
-        BadgeUsbStatus.DISCONNECTED -> MaterialTheme.colorScheme.outline
-    }
-    val latest = state.detections.firstOrNull()
-    val badgeStatus = state.controlStatus
-    val controlsAvailable = state.status == BadgeUsbStatus.CONNECTED ||
-        state.status == BadgeUsbStatus.AP_CONNECTED ||
-        state.status == BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED ||
-        state.status == BadgeUsbStatus.BLE_CONNECTED
-    val transportLabel = when (state.status) {
-        BadgeUsbStatus.CONNECTED -> state.transportLabel.ifBlank { "USB-C" }
-        BadgeUsbStatus.AP_CONNECTED -> state.transportLabel.ifBlank { "Badge AP" }
-        BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED -> state.transportLabel.ifBlank { "Debug Bridge" }
-        BadgeUsbStatus.BLE_CONNECTED -> state.transportLabel.ifBlank { "BLE" }
-        BadgeUsbStatus.CONNECTING,
-        BadgeUsbStatus.PERMISSION_NEEDED -> "USB-C"
-        BadgeUsbStatus.ERROR,
-        BadgeUsbStatus.DISCONNECTED -> "offline"
-    }
-    var filtersExpanded by remember { mutableStateOf(false) }
-    var appearanceExpanded by remember { mutableStateOf(false) }
-    var draftPolicy by remember { mutableStateOf<BadgeDisplayPolicy?>(null) }
-    var draftTheme by remember { mutableStateOf<BadgeTheme?>(null) }
-
-    LaunchedEffect(badgeStatus?.policyReadback?.hash, badgeStatus?.policyReadback?.issue) {
-        draftPolicy = badgeStatus?.policyReadback?.value
-    }
-    LaunchedEffect(badgeStatus?.themeReadback?.hash, badgeStatus?.themeReadback?.issue) {
-        draftTheme = badgeStatus?.themeReadback?.value
-    }
-
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        shape = RoundedCornerShape(8.dp),
-        tonalElevation = 2.dp,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .clip(CircleShape)
-                        .background(accent)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Badge Control  |  $transportLabel",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = state.deviceName ?: state.message,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                if (controlsAvailable) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(onClick = onRefreshStatus) {
-                            Text("Status")
-                        }
-                        if (state.status == BadgeUsbStatus.CONNECTED) {
-                            OutlinedButton(onClick = onPing) {
-                                Text("Ping")
-                            }
-                        }
-                    }
-                } else {
-                    Button(onClick = onConnect) {
-                        Text("Connect")
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = "${state.message} | ${state.eventCount} badge events",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-
-            if (badgeStatus != null) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "${badgeStatus.reporting.networkMode.uppercase()} | Upload ${badgeStatus.reporting.uploadsOk}/${badgeStatus.reporting.uploadsFail} | Threat ${badgeStatus.threatScore.toInt()} | DRN ${badgeStatus.counts.drone} META ${badgeStatus.counts.meta} TAG ${badgeStatus.counts.tracker}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                val scannerText = badgeStatus.scanners.joinToString(" | ") {
-                    "${it.uart.ifBlank { "?" }} ${it.health.ifBlank { if (it.connected) "ok" else "missing" }} ${it.scanProfile.ifBlank { it.slotRole }}"
-                }
-                if (scannerText.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = scannerText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                val entityText = badgeStatus.entities.joinToString(" | ") { "${it.label} ${it.score}" }
-                if (entityText.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = entityText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                if (controlsAvailable) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(
-                            onClick = { onSetMode(BadgeNetworkMode.LOCAL_AP) },
-                            enabled = badgeStatus.networkModeReadback.isEditable
-                        ) {
-                            Text("Local AP")
-                        }
-                        OutlinedButton(
-                            onClick = { onSetMode(BadgeNetworkMode.BACKEND) },
-                            enabled = badgeStatus.networkModeReadback.isEditable
-                        ) {
-                            Text("Backend")
-                        }
-                        OutlinedButton(
-                            onClick = { onSetMode(BadgeNetworkMode.USB_ONLY) },
-                            enabled = badgeStatus.networkModeReadback.isEditable
-                        ) {
-                            Text("USB")
-                        }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(
-                            onClick = onReboot,
-                            enabled = state.status == BadgeUsbStatus.CONNECTED
-                        ) {
-                            Text("Reboot")
-                        }
-                        OutlinedButton(
-                            onClick = onBootloader,
-                            enabled = state.status == BadgeUsbStatus.CONNECTED
-                        ) {
-                            Text("Bootloader")
-                        }
-                    }
-                    val editableTheme = draftTheme
-                    if (badgeStatus.themeReadback.isEditable && editableTheme != null) {
-                        BadgeAppearanceSection(
-                            expanded = appearanceExpanded,
-                            onExpandedChange = { appearanceExpanded = it },
-                            theme = editableTheme,
-                            themeHash = badgeStatus.themeReadback.hash ?: 0L,
-                            onThemeChange = { draftTheme = it },
-                            onApply = { onApplyTheme(editableTheme) },
-                            onReset = {
-                                draftTheme = defaultBadgeTheme()
-                                onResetTheme()
-                            },
-                            onRefresh = onRefreshDisplayPolicy
-                        )
-                    } else {
-                        BadgeReadbackUnavailable(
-                            label = "Badge appearance",
-                            issue = badgeStatus.themeReadback.issue
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    val editablePolicy = draftPolicy
-                    if (badgeStatus.policyReadback.isEditable && editablePolicy != null) {
-                        BadgeDisplayFiltersSection(
-                            expanded = filtersExpanded,
-                            onExpandedChange = { filtersExpanded = it },
-                            policy = editablePolicy,
-                            displayPolicyHash = badgeStatus.policyReadback.hash ?: 0L,
-                            filteredCounts = badgeStatus.filteredCounts,
-                            onPolicyChange = { draftPolicy = it },
-                            onApply = { onApplyDisplayPolicy(editablePolicy) },
-                            onReset = {
-                                draftPolicy = defaultBadgeDisplayPolicy()
-                                onResetDisplayPolicy()
-                            },
-                            onRefresh = onRefreshDisplayPolicy
-                        )
-                    } else {
-                        BadgeReadbackUnavailable(
-                            label = "Display filters",
-                            issue = badgeStatus.policyReadback.issue
-                        )
-                    }
-                }
-            }
-
-            if (latest != null) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = badgeDetectionText(latest),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            } else if (state.lastLine != null) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = state.lastLine,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun BadgeReadbackUnavailable(label: String, issue: String?) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.35f)
-    ) {
-        Column(modifier = Modifier.padding(8.dp)) {
-            Text(
-                text = "$label unavailable",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = issue ?: "Waiting for a complete verified badge readback",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            OutlinedButton(onClick = {}, enabled = false) {
-                Text("Edit")
-            }
-        }
-    }
-}
-
-private fun badgeDetectionText(detection: BadgeUsbDetection): String {
-    val label = friendlyBadgeLabel(detection)
-    val confidence = (detection.confidence * 100f).toInt().coerceIn(0, 100)
-    val rssi = if (detection.rssi < 0) " ${detection.rssi}dBm" else ""
-    return "$label  $confidence%$rssi"
-}
-
-private fun friendlyBadgeLabel(detection: BadgeUsbDetection): String {
-    val text = "${detection.manufacturer} ${detection.id}".lowercase()
-    return when {
-        "flock" in text || "alpr" in text -> "Flock / ALPR"
-        "meta" in text || "ray-ban" in text || "rayban" in text || "oakley" in text -> "Meta Glasses"
-        "dji" in text -> "DJI Drone"
-        "remote" in text || detection.source == 0 || detection.source == 3 -> "Remote ID"
-        "airtag" in text || "tracker" in text || "tile" in text || "findmy" in text -> "Tracker"
-        detection.source == 5 || detection.source == 7 -> "Wi-Fi Anomaly"
-        else -> detection.manufacturer.ifBlank { "Badge event" }
     }
 }
 
