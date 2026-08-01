@@ -297,6 +297,20 @@ internal class BadgeTransportGenerationGate {
             true
         }
 
+    fun replaceAndRunIfCurrent(
+        token: BadgeActiveTransportToken,
+        action: (BadgeActiveTransportToken) -> Unit,
+    ): Boolean = synchronized(lock) {
+        if (!started || token != activeTransport ||
+            token.sessionGeneration != sessionGeneration
+        ) {
+            return@synchronized false
+        }
+        val replacement = newActiveToken(token.transport)
+        action(replacement)
+        true
+    }
+
     private fun newActiveToken(transport: BadgeTransport): BadgeActiveTransportToken {
         val token = BadgeActiveTransportToken(
             sessionGeneration = sessionGeneration,

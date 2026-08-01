@@ -36,7 +36,15 @@ Implemented the Android-only Badge transport safety boundary. No file under `esp
   from final identity check through `bulkTransfer`.
 - Made HTTP discovery token-bound before the request. Expired or unverified HTTP leases
   release so AP/debug/BLE fallback remains possible, while late responses cannot reclaim
-  a new generation. A debug physical serial change rotates the generation before publish.
+  a new generation. Status requests now have newest-request publication and compare-and-swap
+  generation replacement, so a slow debug target A cannot reclaim after a newer target B.
+- Linearized HTTP mutation start at non-blocking OkHttp `enqueue` while holding status-request
+  then transport authority. An in-flight status request blocks command start, and the exact
+  published target/token is rechecked at that final point without holding a general lock over
+  network I/O.
+- Linearized BLE scan start against synchronous session invalidation and replaced loose scan
+  flags with an identity-bound lease. Callback, timeout, and lifecycle stops retain that exact
+  lease through the platform stop attempt; stale work cannot clear a newer scan.
 - Added a debug-build-only bridge URL with an emulator default and Gradle-property
   override. Release emits an empty URL and cannot poll or execute the bridge. Debug
   recovery remains unsupported.
@@ -68,8 +76,25 @@ Additional failing-first regressions reproduced and fixed:
 - exact recovery acknowledgement being lost on its expected detach;
 - BLE read/control overlap, setup-operation overlap, and stale waiter reacquisition after
   a GATT reset;
+- AP/debug POST initiation after stop, direct-USB takeover, or physical-target replacement;
+- slow target-A debug status reclaiming after a fast target-B request;
+- BLE scan starting after stop, duplicate concurrent scan starts, stale timeout clearing a
+  newer lease, and lifecycle return before the exact platform stop attempt;
 - status receipt wall-clock defaults and Privacy remap rejuvenation;
 - legacy route encoding of spaces, `*`, `~`, slash, and Unicode.
+
+The concurrency fix round had four explicit RED checkpoints:
+
+- missing HTTP command/status and BLE scan coordinators failed test compilation;
+- missing compare-and-swap transport replacement failed test compilation;
+- missing active-status and lease-held stop APIs failed test compilation; and
+- a stopped HTTP request gate incorrectly authorized a command start, producing one expected
+  behavioral test failure before the session-active guard was added.
+
+An independent post-fix concurrency review found no remaining Android-formal blocker or lock
+cycle. A bridge serial switch after Android has atomically enqueued a command cannot be bound
+without an expected-serial compare-and-swap in the bridge API; this remains a physical
+certification boundary, and checked-in debug mutation certification is therefore still empty.
 
 ## Fresh verification
 
@@ -80,11 +105,18 @@ Additional failing-first regressions reproduced and fixed:
 - Expanded focused command also included `BadgePrivacyMapperTest` and `RouteCodecTest`.
   - Result: `BUILD SUCCESSFUL`
   - Count: 64 tests, 0 skipped, 0 failures, 0 errors
+- Race-focused command:
+  `./gradlew testDebugUnitTest --tests com.friendorfoe.data.badge.BadgeTransportRaceCoordinatorTest`
+  - Result: `BUILD SUCCESSFUL`
+  - Count: 13 tests, 0 skipped, 0 failures, 0 errors
+- Full Badge package command included every `com.friendorfoe.data.badge.*` test.
+  - Result: `BUILD SUCCESSFUL`
+  - Count: 99 tests, 0 skipped, 0 failures, 0 errors
 - Full JVM command: `./gradlew testDebugUnitTest --rerun-tasks`
-  - Result: `BUILD SUCCESSFUL in 54s`
-  - Count: 362 tests, 0 skipped, 0 failures, 0 errors
+  - Result: `BUILD SUCCESSFUL in 28s`
+  - Count: 375 tests, 0 skipped, 0 failures, 0 errors
 - APK command: `./gradlew assembleDebug --rerun-tasks`
-  - Result: `BUILD SUCCESSFUL in 43s`
+  - Result: `BUILD SUCCESSFUL in 31s`
   - 41 tasks executed
 - Release BuildConfig proof:
   - `DEBUG = false`
@@ -121,6 +153,7 @@ Production/configuration:
 - `android/app/src/main/java/com/friendorfoe/data/badge/BadgeReleaseCertification.kt`
 - `android/app/src/main/java/com/friendorfoe/data/badge/BadgeStatusModels.kt`
 - `android/app/src/main/java/com/friendorfoe/data/badge/BadgeStatusParser.kt`
+- `android/app/src/main/java/com/friendorfoe/data/badge/BadgeTransportRaceCoordinators.kt`
 - `android/app/src/main/java/com/friendorfoe/data/badge/BadgeUsbRepository.kt`
 - `android/app/src/main/java/com/friendorfoe/data/time/MonotonicClock.kt`
 - `android/app/src/main/java/com/friendorfoe/di/ApplicationCoroutineModule.kt`
@@ -136,6 +169,7 @@ Tests:
 - `android/app/src/test/java/com/friendorfoe/data/badge/BadgeConnectionCapabilityTest.kt`
 - `android/app/src/test/java/com/friendorfoe/data/badge/BadgeControlAcknowledgementTest.kt`
 - `android/app/src/test/java/com/friendorfoe/data/badge/BadgeControlStatusParserTest.kt`
+- `android/app/src/test/java/com/friendorfoe/data/badge/BadgeTransportRaceCoordinatorTest.kt`
 - `android/app/src/test/java/com/friendorfoe/data/badge/BadgeUsbLineParserTest.kt`
 - `android/app/src/test/java/com/friendorfoe/presentation/navigation/RouteCodecTest.kt`
 - `android/app/src/test/java/com/friendorfoe/presentation/privacy/BadgePrivacyMapperTest.kt`

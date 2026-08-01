@@ -35,6 +35,7 @@ import com.friendorfoe.di.ApplicationScope
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
@@ -55,12 +56,17 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import kotlin.coroutines.resume
 
 enum class BadgeUsbStatus {
     DISCONNECTED,
@@ -134,10 +140,13 @@ class BadgeUsbRepository @Inject constructor(
     private val lifecycleLock = Any()
     private val started = AtomicBoolean(false)
     private val transportGate = BadgeTransportGenerationGate()
+    private val httpCommandStarts = BadgeHttpCommandStartGate(transportGate)
+    private val httpStatusRequests = BadgeHttpStatusRequestGate()
     private val usbPermissionRequests = BadgeUsbPermissionRequestGate()
     private val usbCommands = BadgeUsbCommandCoordinator()
     private val bleCommands = BadgeBleCommandCoordinator()
     private val bleGattOperations = BadgeBleGattOperationCoordinator()
+    private val bleScanLeases = BadgeBleScanLeaseCoordinator<ScanCallback>()
     private val jsonMediaType = "application/json".toMediaType()
 
     private val stateStore = BadgeRepositoryStateStore(
@@ -176,8 +185,6 @@ class BadgeUsbRepository @Inject constructor(
     @Volatile private var activeBleControlChar: BluetoothGattCharacteristic? = null
     @Volatile private var activeBleStatusChar: BluetoothGattCharacteristic? = null
     @Volatile private var negotiatedBleMtu = 23
-    @Volatile private var bleScanning = false
-    @Volatile private var activeBleScanCallback: ScanCallback? = null
     @Volatile private var bleMutationInFlight = false
 
     init {
@@ -257,6 +264,7 @@ class BadgeUsbRepository @Inject constructor(
         synchronized(lifecycleLock) {
             if (!started.compareAndSet(false, true)) return
             val session = transportGate.startSession()
+            httpStatusRequests.startSession(session)
             sessionGeneration = session
             registerReceiverIfNeeded()
             val sessionToken = transportGate.captureSession(session)
@@ -270,6 +278,7 @@ class BadgeUsbRepository @Inject constructor(
     override fun stop() {
         synchronized(lifecycleLock) {
             if (!started.getAndSet(false)) return
+            httpStatusRequests.stopSession()
             transportGate.stopSession()
             sessionGeneration = 0L
             activeTransportToken = null
@@ -642,7 +651,11 @@ class BadgeUsbRepository @Inject constructor(
         val baseUrl = BADGE_AP_ENDPOINT.toHttpUrlOrNullSafe()
             ?: return BadgeCommandOutcome.Failed("Badge AP endpoint is invalid")
         val sentAt = clock.nowElapsedMs()
-        val result = postJsonCommand(baseUrl, command)
+        val result = postJsonCommand(
+            baseUrl = baseUrl,
+            command = command,
+            expectedAuthority = BadgeHttpCommandAuthority(token, BADGE_AP_ENDPOINT),
+        )
         val outcome = result.fold(
             onSuccess = { response -> parseHttpCommandOutcome(response.code, response.body) },
             onFailure = { BadgeCommandOutcome.Failed("Badge AP command failed") },
@@ -686,12 +699,18 @@ class BadgeUsbRepository @Inject constructor(
         ) {
             return BadgeCommandOutcome.Failed("Debug bridge physical status is incomplete")
         }
+        val expectedTargetId = preEvidence.physicalSerialPort
+            ?: return BadgeCommandOutcome.Failed("Debug bridge physical status is incomplete")
         if (!transportGate.isCurrent(token)) {
             return BadgeCommandOutcome.Unsupported("Debug bridge session changed")
         }
 
         val sentAt = clock.nowElapsedMs()
-        val response = postJsonCommand(baseUrl, command).getOrElse {
+        val response = postJsonCommand(
+            baseUrl = baseUrl,
+            command = command,
+            expectedAuthority = BadgeHttpCommandAuthority(token, expectedTargetId),
+        ).getOrElse {
             return BadgeCommandOutcome.Failed("Debug bridge command failed")
         }
         if (response.code !in 200..299) {
@@ -1110,111 +1129,131 @@ class BadgeUsbRepository @Inject constructor(
         showErrors: Boolean,
     ): Boolean {
         if (!transportGate.isSessionCurrent(session.sessionGeneration)) return false
-        val token = transportGate.claim(session, transport) ?: return false
-        val snapshot = requestHttpStatus(baseUrl).getOrNull()
-        if (snapshot == null) {
-            transportGate.runIfCurrent(token) {
-                val publishedLease = activeHttpToken == token &&
-                    state.value.connection.transport == transport
-                if (showErrors) {
-                    _legacyState.update { it.copy(message = "${transport.label()} status unavailable") }
-                }
-                if (!publishedLease || state.value.connection.phase == BadgeConnectionPhase.EXPIRED) {
-                    if (activeHttpToken == token) activeHttpToken = null
-                    if (activeTransportToken == token) activeTransportToken = null
-                    transportGate.release(token)
-                }
-            }
-            return false
-        }
-        val status = if (transport == BadgeTransport.DEBUG_BRIDGE) {
-            snapshot.status.effectiveDebugReceipt()
-        } else {
-            snapshot.status
-        }
-        val debug = status.debugBridge
-        val evidenceComplete = transport != BadgeTransport.DEBUG_BRIDGE ||
-            (debug?.physicalResponseAtElapsedMs != null &&
-                !debug.physicalSerialPort.isNullOrBlank() &&
-                debug.lastError != null)
-        var evidence = BadgeConnectionEvidence(
+        val statusRequest = httpStatusRequests.begin(
+            sessionGeneration = session.sessionGeneration,
             transport = transport,
-            phase = if (evidenceComplete) {
-                verifiedBadgeConnectionPhase(
-                    transport = transport,
-                    effectiveReceivedAtElapsedMs = status.receivedAtElapsedMs,
-                    nowElapsedMs = clock.nowElapsedMs(),
-                )
+        ) ?: return false
+        try {
+            val token = transportGate.claim(session, transport) ?: return false
+            val snapshot = requestHttpStatus(baseUrl).getOrNull()
+            if (snapshot == null) {
+                httpStatusRequests.runIfLatest(statusRequest) {
+                    transportGate.runIfCurrent(token) {
+                        val publishedLease = activeHttpToken == token &&
+                            state.value.connection.transport == transport
+                        if (showErrors) {
+                            _legacyState.update {
+                                it.copy(message = "${transport.label()} status unavailable")
+                            }
+                        }
+                        if (!publishedLease ||
+                            state.value.connection.phase == BadgeConnectionPhase.EXPIRED
+                        ) {
+                            if (activeHttpToken == token) activeHttpToken = null
+                            if (activeTransportToken == token) activeTransportToken = null
+                            transportGate.release(token)
+                        }
+                    }
+                }
+                return false
+            }
+            val status = if (transport == BadgeTransport.DEBUG_BRIDGE) {
+                snapshot.status.effectiveDebugReceipt()
             } else {
-                BadgeConnectionPhase.TRANSPORT_OPEN
-            },
-            lastValidStatusAtElapsedMs = status.receivedAtElapsedMs.takeIf { evidenceComplete },
-            protocolVersion = status.version.takeIf { evidenceComplete },
-            targetId = when (transport) {
-                BadgeTransport.LOCAL_AP_HTTP -> targetId
-                BadgeTransport.DEBUG_BRIDGE -> debug?.physicalSerialPort
-                else -> null
-            },
-            badgeApEndpoint = targetId.takeIf { transport == BadgeTransport.LOCAL_AP_HTTP },
-            debugBridgeSerialPort = debug?.physicalSerialPort,
-            debugPhysicalStatusAtElapsedMs = debug?.physicalResponseAtElapsedMs,
-            debugBridgeLastError = debug?.lastError,
-            releaseCertifiedMutations = certification.forTransport(transport),
-        )
-        val statusIsCurrent = shouldRetainHttpLease(evidenceComplete, evidence.phase)
-        val currentConnection = state.value.connection
-        val publicationToken = if (transport == BadgeTransport.DEBUG_BRIDGE &&
-            currentConnection.transport == BadgeTransport.DEBUG_BRIDGE &&
-            currentConnection.targetId != evidence.targetId
-        ) {
-            transportGate.claimNewConnection(session, transport) ?: return false
-        } else {
-            token
+                snapshot.status
+            }
+            val debug = status.debugBridge
+            val evidenceComplete = transport != BadgeTransport.DEBUG_BRIDGE ||
+                (debug?.physicalResponseAtElapsedMs != null &&
+                    !debug.physicalSerialPort.isNullOrBlank() &&
+                    debug.lastError != null)
+            val evidence = BadgeConnectionEvidence(
+                transport = transport,
+                phase = if (evidenceComplete) {
+                    verifiedBadgeConnectionPhase(
+                        transport = transport,
+                        effectiveReceivedAtElapsedMs = status.receivedAtElapsedMs,
+                        nowElapsedMs = clock.nowElapsedMs(),
+                    )
+                } else {
+                    BadgeConnectionPhase.TRANSPORT_OPEN
+                },
+                lastValidStatusAtElapsedMs = status.receivedAtElapsedMs.takeIf { evidenceComplete },
+                protocolVersion = status.version.takeIf { evidenceComplete },
+                targetId = when (transport) {
+                    BadgeTransport.LOCAL_AP_HTTP -> targetId
+                    BadgeTransport.DEBUG_BRIDGE -> debug?.physicalSerialPort
+                    else -> null
+                },
+                badgeApEndpoint = targetId.takeIf { transport == BadgeTransport.LOCAL_AP_HTTP },
+                debugBridgeSerialPort = debug?.physicalSerialPort,
+                debugPhysicalStatusAtElapsedMs = debug?.physicalResponseAtElapsedMs,
+                debugBridgeLastError = debug?.lastError,
+                releaseCertifiedMutations = certification.forTransport(transport),
+            )
+            val statusIsCurrent = shouldRetainHttpLease(evidenceComplete, evidence.phase)
+            var published = false
+            httpStatusRequests.runIfLatest(statusRequest) {
+                val publish: (BadgeActiveTransportToken) -> Unit = { publicationToken ->
+                    val publicationEvidence = evidence.copy(
+                        transportGeneration = publicationToken.transportGeneration,
+                    )
+                    activeTransportToken = publicationToken
+                    activeHttpToken = publicationToken
+                    stateStore.update { current ->
+                        val changedTarget =
+                            current.connection.transport != publicationEvidence.transport ||
+                                current.connection.targetId != publicationEvidence.targetId
+                        current.copy(
+                            connection = publicationEvidence,
+                            controlStatus = status.takeIf { statusIsCurrent },
+                            detections = current.detections.takeUnless {
+                                changedTarget || !statusIsCurrent
+                            }.orEmpty(),
+                        )
+                    }
+                    _legacyState.update {
+                        it.copy(
+                            status = publicationEvidence.toLegacyStatus(),
+                            deviceName = when (transport) {
+                                BadgeTransport.LOCAL_AP_HTTP -> "FoF Badge AP"
+                                BadgeTransport.DEBUG_BRIDGE -> "FoF Debug Bridge"
+                                else -> it.deviceName
+                            },
+                            message = if (statusIsCurrent) {
+                                "${transport.label()} status verified"
+                            } else if (publicationEvidence.phase == BadgeConnectionPhase.EXPIRED) {
+                                "${transport.label()} physical status expired"
+                            } else {
+                                "${transport.label()} open; physical badge status unverified"
+                            },
+                            transportLabel = transport.label(),
+                            controlStatus = status.takeIf { statusIsCurrent },
+                            detections = it.detections.takeIf { statusIsCurrent }.orEmpty(),
+                        )
+                    }
+                    if (!statusIsCurrent) {
+                        activeHttpToken = null
+                        if (activeTransportToken == publicationToken) activeTransportToken = null
+                        transportGate.release(publicationToken)
+                    }
+                    published = true
+                }
+
+                val currentConnection = state.value.connection
+                if (transport == BadgeTransport.DEBUG_BRIDGE &&
+                    currentConnection.transport == BadgeTransport.DEBUG_BRIDGE &&
+                    currentConnection.targetId != evidence.targetId
+                ) {
+                    transportGate.replaceAndRunIfCurrent(token, publish)
+                } else {
+                    transportGate.runIfCurrent(token) { publish(token) }
+                }
+            }
+            return published && statusIsCurrent
+        } finally {
+            httpStatusRequests.finish(statusRequest)
         }
-        evidence = evidence.copy(transportGeneration = publicationToken.transportGeneration)
-        var published = false
-        transportGate.runIfCurrent(publicationToken) {
-            activeTransportToken = publicationToken
-            activeHttpToken = publicationToken
-            stateStore.update { current ->
-                val changedTarget = current.connection.transport != evidence.transport ||
-                    current.connection.targetId != evidence.targetId
-                current.copy(
-                    connection = evidence,
-                    controlStatus = status.takeIf { statusIsCurrent },
-                    detections = current.detections.takeUnless {
-                        changedTarget || !statusIsCurrent
-                    }.orEmpty(),
-                )
-            }
-            _legacyState.update {
-                it.copy(
-                    status = evidence.toLegacyStatus(),
-                    deviceName = when (transport) {
-                        BadgeTransport.LOCAL_AP_HTTP -> "FoF Badge AP"
-                        BadgeTransport.DEBUG_BRIDGE -> "FoF Debug Bridge"
-                        else -> it.deviceName
-                    },
-                    message = if (statusIsCurrent) {
-                        "${transport.label()} status verified"
-                    } else if (evidence.phase == BadgeConnectionPhase.EXPIRED) {
-                        "${transport.label()} physical status expired"
-                    } else {
-                        "${transport.label()} open; physical badge status unverified"
-                    },
-                    transportLabel = transport.label(),
-                    controlStatus = status.takeIf { statusIsCurrent },
-                    detections = it.detections.takeIf { statusIsCurrent }.orEmpty(),
-                )
-            }
-            if (!statusIsCurrent) {
-                activeHttpToken = null
-                if (activeTransportToken == publicationToken) activeTransportToken = null
-                transportGate.release(publicationToken)
-            }
-            published = true
-        }
-        return published && statusIsCurrent
     }
 
     private suspend fun requestHttpStatus(baseUrl: HttpUrl): Result<HttpStatusSnapshot> =
@@ -1242,14 +1281,69 @@ class BadgeUsbRepository @Inject constructor(
     private suspend fun postJsonCommand(
         baseUrl: HttpUrl,
         command: BadgeCommand,
-    ): Result<BadgeHttpResponse> = withContext(Dispatchers.IO) {
-        runCatching {
-            val request = Request.Builder()
+        expectedAuthority: BadgeHttpCommandAuthority,
+    ): Result<BadgeHttpResponse> {
+        val request = runCatching {
+            Request.Builder()
                 .url(baseUrl.resolve("api/badge/control") ?: error("Invalid badge control URL"))
                 .post(command.toControlJson().toString().toRequestBody(jsonMediaType))
                 .build()
-            executeBadgeCommandCall(httpClients, request)
+        }.getOrElse { return Result.failure(it) }
+        val call = httpClients.command.newCall(request)
+        return suspendCancellableCoroutine { continuation ->
+            val completionClaimed = AtomicBoolean(false)
+            fun complete(result: Result<BadgeHttpResponse>) {
+                if (completionClaimed.compareAndSet(false, true)) {
+                    continuation.resume(result)
+                }
+            }
+
+            continuation.invokeOnCancellation {
+                completionClaimed.compareAndSet(false, true)
+                call.cancel()
+            }
+            val callback = object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    complete(Result.failure(e))
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val result = runCatching {
+                        response.use {
+                            BadgeHttpResponse(it.code, it.body?.string().orEmpty())
+                        }
+                    }
+                    complete(result)
+                }
+            }
+            val startResult = runCatching {
+                var commandStarted = false
+                val noStatusRequestInFlight = httpStatusRequests.runIfNoActiveRequest(
+                    expectedAuthority.token.transport,
+                ) {
+                    commandStarted = httpCommandStarts.startIfAuthorized(
+                        expected = expectedAuthority,
+                        current = ::currentHttpCommandAuthority,
+                        start = { call.enqueue(callback) },
+                    )
+                }
+                noStatusRequestInFlight && commandStarted
+            }
+            when {
+                startResult.isFailure -> complete(Result.failure(startResult.exceptionOrNull()!!))
+                !startResult.getOrDefault(false) -> complete(
+                    Result.failure(IllegalStateException("Badge HTTP command authority changed")),
+                )
+            }
         }
+    }
+
+    private fun currentHttpCommandAuthority(): BadgeHttpCommandAuthority? {
+        val token = activeHttpToken ?: return null
+        val connection = state.value.connection
+        val targetId = connection.targetId ?: return null
+        if (!connection.matchesActiveToken(token)) return null
+        return BadgeHttpCommandAuthority(token, targetId)
     }
 
     private fun publishStatus(token: BadgeActiveTransportToken, rawStatus: BadgeControlStatus) {
@@ -1327,12 +1421,11 @@ class BadgeUsbRepository @Inject constructor(
     @SuppressLint("MissingPermission")
     private fun startBleScanIfPossible(session: BadgeTransportSessionToken) {
         if (!transportGate.isSessionCurrent(session.sessionGeneration) ||
-            !hasBlePermissions() || bleScanning || activeGatt != null
+            !hasBlePermissions() || activeGatt != null
         ) {
             return
         }
         val scanner = bluetoothAdapter?.bluetoothLeScanner ?: return
-        bleScanning = true
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 if (!transportGate.isSessionCurrent(session.sessionGeneration)) return
@@ -1341,17 +1434,21 @@ class BadgeUsbRepository @Inject constructor(
                 val hasService = result.scanRecord?.serviceUuids
                     ?.any { it.uuid == BADGE_BLE_SERVICE_UUID } == true
                 if (!hasService && !name.contains("FoF Badge", ignoreCase = true)) return
-                runCatching { scanner.stopScan(this) }
-                bleScanning = false
-                if (activeBleScanCallback === this) activeBleScanCallback = null
+                val stopped = runCatching {
+                    bleScanLeases.stopIfCurrent(this) { activeCallback ->
+                        scanner.stopScan(activeCallback)
+                    }
+                }.getOrDefault(false)
+                if (!stopped) return
+                if (!transportGate.isSessionCurrent(session.sessionGeneration)) return
                 connectBle(result.device, session)
             }
 
             override fun onScanFailed(errorCode: Int) {
-                if (!transportGate.isSessionCurrent(session.sessionGeneration)) return
-                bleScanning = false
-                if (activeBleScanCallback === this) activeBleScanCallback = null
-                _legacyState.update { it.copy(message = "Badge BLE scan failed: $errorCode") }
+                if (!bleScanLeases.completeIfCurrent(this)) return
+                transportGate.runIfSessionCurrent(session.sessionGeneration) {
+                    _legacyState.update { it.copy(message = "Badge BLE scan failed: $errorCode") }
+                }
             }
         }
         val filters = listOf(
@@ -1360,18 +1457,26 @@ class BadgeUsbRepository @Inject constructor(
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
-        activeBleScanCallback = callback
-        runCatching { scanner.startScan(filters, settings, callback) }
-            .onSuccess {
-                scope.launch {
-                    delay(BLE_SCAN_WINDOW_MS)
-                    if (activeBleScanCallback === callback) stopBleScan()
+        var scanStarted = false
+        runCatching {
+            transportGate.runIfSessionHasNoActiveTransport(session.sessionGeneration) {
+                if (!started.get() || activeGatt != null) return@runIfSessionHasNoActiveTransport
+                scanStarted = bleScanLeases.startIfIdle(callback) {
+                    scanner.startScan(filters, settings, callback)
                 }
             }
-            .onFailure {
-                bleScanning = false
-                if (activeBleScanCallback === callback) activeBleScanCallback = null
+        }.onFailure {
+            bleScanLeases.completeIfCurrent(callback)
+        }
+        if (!scanStarted) return
+        scope.launch {
+            delay(BLE_SCAN_WINDOW_MS)
+            runCatching {
+                bleScanLeases.stopIfCurrent(callback) { expiredCallback ->
+                    if (hasBlePermissions()) scanner.stopScan(expiredCallback)
+                }
             }
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -1760,11 +1865,12 @@ class BadgeUsbRepository @Inject constructor(
 
     @SuppressLint("MissingPermission")
     private fun stopBleScan() {
-        val callback = activeBleScanCallback
-        activeBleScanCallback = null
-        bleScanning = false
-        if (callback != null && hasBlePermissions()) {
-            runCatching { bluetoothAdapter?.bluetoothLeScanner?.stopScan(callback) }
+        runCatching {
+            bleScanLeases.stopCurrent { callback ->
+                if (hasBlePermissions()) {
+                    bluetoothAdapter?.bluetoothLeScanner?.stopScan(callback)
+                }
+            }
         }
     }
 
