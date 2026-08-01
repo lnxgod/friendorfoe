@@ -33,5 +33,8 @@ class AppPreferenceRulesTest {
         assertNull(FindingPreferenceKey.decode("missing-separator"))
         assertNull(FindingPreferenceKey.decode("phone_ble\u001F"))
         assertNull(FindingPreferenceKey.decode("\u001FAA:BB"))
+        assertNull(FindingPreferenceKey.decode("phone_ble\u001Fstable\u001Fextra"))
+        assertNull(FindingPreferenceKey.create("phone\u001Fble", "stable"))
+        assertNull(FindingPreferenceKey.create("phone_ble", "stable\u001Fextra"))
     }
 }

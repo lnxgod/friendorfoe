@@ -22,14 +22,24 @@ data class FindingPreferenceKey private constructor(
     val source: String,
     val stableId: String,
 ) {
-    val encoded: String = "$source\u001F$stableId"
+    val encoded: String = "$source$SEPARATOR$stableId"
 
     companion object {
+        private const val SEPARATOR = '\u001F'
+
         fun create(source: String, stableId: String): FindingPreferenceKey? =
-            if (source.isBlank() || stableId.isBlank()) null else FindingPreferenceKey(source, stableId)
+            if (
+                source.isBlank() || stableId.isBlank() ||
+                SEPARATOR in source || SEPARATOR in stableId
+            ) {
+                null
+            } else {
+                FindingPreferenceKey(source, stableId)
+            }
 
         fun decode(encoded: String): FindingPreferenceKey? {
-            val parts = encoded.split('\u001F', limit = 2)
+            if (encoded.count { it == SEPARATOR } != 1) return null
+            val parts = encoded.split(SEPARATOR)
             return if (parts.size == 2) create(parts[0], parts[1]) else null
         }
     }
