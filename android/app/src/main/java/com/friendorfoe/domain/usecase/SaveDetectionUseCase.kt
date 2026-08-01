@@ -1,7 +1,7 @@
 package com.friendorfoe.domain.usecase
 
 import com.friendorfoe.data.local.HistoryEntity
-import com.friendorfoe.data.repository.HistoryRepository
+import com.friendorfoe.data.repository.HistoryStore
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.SkyObject
@@ -13,7 +13,7 @@ import javax.inject.Inject
  * Converts domain SkyObject instances to HistoryEntity for persistence.
  */
 class SaveDetectionUseCase @Inject constructor(
-    private val historyRepository: HistoryRepository
+    private val historyStore: HistoryStore
 ) {
     /**
      * Save a sky object detection to history.
@@ -64,6 +64,6 @@ class SaveDetectionUseCase @Inject constructor(
                 lastSeen = skyObject.lastUpdated.toEpochMilli()
             )
         }
-        historyRepository.saveDetection(entity)
+        historyStore.save(entity)
     }
 }

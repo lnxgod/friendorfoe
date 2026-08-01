@@ -114,6 +114,7 @@ fun DetailScreen(
     val title = when (val state = detailState) {
         is DetailState.AircraftLoaded -> state.aircraft.callsign ?: state.aircraft.registration ?: "Aircraft"
         is DetailState.DroneLoaded -> state.drone.droneId ?: "Drone"
+        is DetailState.HistoricalLoaded -> state.snapshot.displayName
         else -> "Object Detail"
     }
 
@@ -168,6 +169,10 @@ fun DetailScreen(
                         positionTrail = positionTrail,
                         onNavigateToDroneGuide = onNavigateToDroneGuide
                     )
+                }
+
+                is DetailState.HistoricalLoaded -> {
+                    HistoricalDetailContent(snapshot = state.snapshot)
                 }
 
                 is DetailState.Error -> {

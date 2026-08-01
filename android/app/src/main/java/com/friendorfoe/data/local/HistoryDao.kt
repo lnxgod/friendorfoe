@@ -31,6 +31,10 @@ interface HistoryDao {
     @Query("SELECT * FROM detection_history WHERE object_id = :objectId ORDER BY last_seen DESC LIMIT 1")
     suspend fun getByObjectId(objectId: String): HistoryEntity?
 
+    /** Get the immutable history row identified by its database primary key. */
+    @Query("SELECT * FROM detection_history WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): HistoryEntity?
+
     /** Insert or update a history entry. */
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(entity: HistoryEntity): Long

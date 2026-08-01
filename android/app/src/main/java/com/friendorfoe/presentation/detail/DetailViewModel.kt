@@ -3,7 +3,7 @@ package com.friendorfoe.presentation.detail
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.friendorfoe.data.local.HistoryDao
+import com.friendorfoe.data.local.HistoryEntity
 import com.friendorfoe.data.remote.AircraftDetailDto
 import com.friendorfoe.data.repository.AircraftRepository
 import com.friendorfoe.data.repository.SkyObjectRepository
@@ -35,7 +35,7 @@ import kotlin.math.sqrt
 class DetailViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
     private val aircraftRepository: AircraftRepository,
-    private val historyDao: HistoryDao
+    private val selectionLoader: DetailSelectionLoader,
 ) : ViewModel() {
 
     companion object {
@@ -63,8 +63,7 @@ class DetailViewModel @Inject constructor(
         _nearbyCandidates.value = emptyList()
         _positionTrail.value = emptyList()
 
-        val skyObject = skyObjectRepository.skyObjects.value
-            .firstOrNull { it.id == objectId }
+        val skyObject = selectionLoader.loadCurrent(objectId)
 
         if (skyObject != null) {
             // Live object — show immediately, no Loading state
@@ -114,7 +113,7 @@ class DetailViewModel @Inject constructor(
     private fun loadFromHistory(objectId: String) {
         viewModelScope.launch {
             try {
-                val historyEntity = historyDao.getByObjectId(objectId)
+                val historyEntity = selectionLoader.loadFallback(objectId)
                 if (historyEntity == null) {
                     _detailState.value = DetailState.Error("Object not found.")
                     return@launch
@@ -170,6 +169,22 @@ class DetailViewModel @Inject constructor(
         }
     }
 
+    fun loadHistoricalDetail(historyId: Long) {
+        _nearbyCandidates.value = emptyList()
+        _positionTrail.value = emptyList()
+        _detailState.value = DetailState.Loading
+        viewModelScope.launch {
+            try {
+                _detailState.value = selectionLoader.loadHistorical(historyId)
+                    ?.let(DetailState::HistoricalLoaded)
+                    ?: DetailState.Error("Historical detection is no longer available.")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to load historical detection: ${e.message}", e)
+                _detailState.value = DetailState.Error("Could not load historical detection.")
+            }
+        }
+    }
+
     private fun buildNearbyCandidates(tappedDrone: Drone): List<Drone> {
         val allDrones = skyObjectRepository.skyObjects.value.filterIsInstance<Drone>()
             .filter { it.id != tappedDrone.id }
@@ -220,6 +235,9 @@ sealed class DetailState {
 
     /** Drone detail loaded from local detection data */
     data class DroneLoaded(val drone: Drone) : DetailState()
+
+    /** Immutable database snapshot loaded by its history primary key. */
+    data class HistoricalLoaded(val snapshot: HistoryEntity) : DetailState()
 
     /** Error loading detail */
     data class Error(val message: String) : DetailState()

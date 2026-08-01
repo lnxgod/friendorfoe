@@ -455,6 +455,9 @@ fun MapViewScreen(
                 is DetailState.DroneLoaded -> {
                     DroneDetailContent(drone = state.drone)
                 }
+                is DetailState.HistoricalLoaded -> {
+                    LaunchedEffect(Unit) { viewModel.selectObject(null) }
+                }
                 is DetailState.Error -> {
                     Box(
                         modifier = Modifier

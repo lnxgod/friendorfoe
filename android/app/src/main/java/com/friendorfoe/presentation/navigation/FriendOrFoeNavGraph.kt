@@ -28,6 +28,7 @@ import com.friendorfoe.presentation.ar.PermissionHandler
 import com.friendorfoe.presentation.badge.BadgeConnectionLoadingScreen
 import com.friendorfoe.presentation.calibrate.CalibrateScreen
 import com.friendorfoe.presentation.detail.DetailScreen
+import com.friendorfoe.presentation.detail.HistoricalDetailScreen
 import com.friendorfoe.presentation.drones.DroneReferenceScreen
 import com.friendorfoe.presentation.history.HistoryScreen
 import com.friendorfoe.presentation.list.ListViewScreen
@@ -140,8 +141,8 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
     composable(Screen.History.route) {
         TopLevelRouteRoot(TopLevelDestination.HISTORY) {
             HistoryScreen(
-                onEntryTapped = { objectId ->
-                    navController.navigate(Screen.Detail.createRoute(objectId))
+                onEntryTapped = { historyId ->
+                    navController.navigate(Screen.HistoricalDetail.createRoute(historyId))
                 },
                 onNavigateToReferenceGuide = {
                     navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
@@ -192,6 +193,19 @@ private fun NavGraphBuilder.registerSecondaryDestinations(
             },
             onNavigateToAircraftGuide = { typeCode ->
                 navController.navigate(Screen.AircraftGuide.createRoute(typeCode))
+            },
+        )
+    }
+
+    composable(
+        route = Screen.HistoricalDetail.route,
+        arguments = listOf(navArgument("historyId") { type = NavType.LongType }),
+    ) { backStackEntry ->
+        HistoricalDetailScreen(
+            historyId = requireNotNull(backStackEntry.arguments).getLong("historyId"),
+            onBack = navController::popBackStack,
+            onReturnToHistory = {
+                navController.popBackStack(Screen.History.route, inclusive = false)
             },
         )
     }
