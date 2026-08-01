@@ -406,6 +406,25 @@ class PrivacyCurrentReducerTest {
     }
 
     @Test
+    fun plainAppleContinuityCannotBecomeAThreatOrAlertFromInflatedSeverity() {
+        val appleActivity = finding(
+            source = PrivacySourceKind.BACKEND,
+            sourceRecordId = "apple-handoff",
+            title = "Apple Handoff nearby",
+            category = PrivacyCategory.APPLE_CONTINUITY,
+            severity = FindingSeverity.CRITICAL,
+            routableKey = PrivacyFindingKey(PrivacySourceKind.BACKEND, "route:apple-handoff"),
+            appleEvidence = null,
+        )
+
+        val state = reduce(liveSnapshot(appleActivity))
+
+        assertEquals(FindingSeverity.INFO, state.findings.single().severity)
+        assertEquals(0, state.threatCount)
+        assertTrue(state.alertEligible.isEmpty())
+    }
+
+    @Test
     fun initialResolutionRequiresAtLeastOneSourceAndNoLoadingHealth() {
         val empty = PrivacyCurrentReducer().reduce(emptyList(), emptySet(), now)
         val loading = reduce(

@@ -49,11 +49,23 @@ object PrivacyFindingNormalizer {
     }
 
     fun normalize(input: PrivacyFinding): PrivacyFinding {
-        val apple = input.appleEvidence ?: inferredSameRowAppleEvidence(input) ?: return input
-        if (!apple.appleFamilyEvidence || !apple.listeningOrientedCategoryOrWording) return input
+        val categorySafe = if (
+            input.category == PrivacyCategory.APPLE_CONTINUITY &&
+            input.severity != FindingSeverity.INFO
+        ) {
+            input.copy(severity = FindingSeverity.INFO)
+        } else {
+            input
+        }
+        val apple = categorySafe.appleEvidence
+            ?: inferredSameRowAppleEvidence(categorySafe)
+            ?: return categorySafe
+        if (!apple.appleFamilyEvidence || !apple.listeningOrientedCategoryOrWording) {
+            return categorySafe
+        }
 
-        val safeOwnedTitle = input.title.takeIf {
-            input.ownership == Ownership.OWNED &&
+        val safeOwnedTitle = categorySafe.title.takeIf {
+            categorySafe.ownership == Ownership.OWNED &&
                 it.isNotBlank() &&
                 !containsListeningClaim(it)
         }
@@ -62,7 +74,7 @@ object PrivacyFindingNormalizer {
         } else {
             "Apple device activity nearby"
         }
-        return input.copy(
+        return categorySafe.copy(
             title = title,
             evidence = if (apple.airPodsAssociationEvidence) {
                 "An Apple device reports connected AirPods and media, call, or video activity."

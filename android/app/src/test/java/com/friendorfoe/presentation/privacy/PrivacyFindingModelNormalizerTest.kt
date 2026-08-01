@@ -165,6 +165,22 @@ class PrivacyFindingModelNormalizerTest {
     }
 
     @Test
+    fun plainAppleContinuityCannotKeepAnInflatedCriticalSeverity() {
+        val input = finding(
+            title = "Apple Handoff nearby",
+            category = PrivacyCategory.APPLE_CONTINUITY,
+            severity = FindingSeverity.CRITICAL,
+            appleEvidence = null,
+        )
+
+        val normalized = PrivacyFindingNormalizer.normalize(input)
+
+        assertEquals("Apple Handoff nearby", normalized.title)
+        assertEquals(PrivacyCategory.APPLE_CONTINUITY, normalized.category)
+        assertEquals(FindingSeverity.INFO, normalized.severity)
+    }
+
+    @Test
     fun nonAppleListeningFindingIsPreserved() {
         val input = finding(
             title = "Possible listening device",
