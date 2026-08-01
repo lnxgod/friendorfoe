@@ -1,34 +1,26 @@
 package com.friendorfoe.presentation.privacy
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.ImageFormat
-import android.graphics.Rect
-import android.graphics.YuvImage
-import android.util.Size
 import android.view.ViewGroup
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,343 +31,364 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import java.io.ByteArrayOutputStream
-import java.util.concurrent.Executors
+import androidx.compose.ui.platform.testTag
+import kotlin.math.roundToInt
 
-@OptIn(ExperimentalMaterial3Api::class)
+data class IrActions(
+    val onRetryBind: () -> Unit = {},
+    val onOpenSettings: () -> Unit = {},
+    val onBack: () -> Unit = {},
+)
+
 @Composable
 fun IrCameraScanScreen(
     onBack: () -> Unit,
-    viewModel: IrCameraScanViewModel = hiltViewModel()
-) {
-    val context = LocalContext.current
-    var cameraLens by remember { mutableStateOf(IrCameraLens.STARTING) }
-    var cameraGranted by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                PackageManager.PERMISSION_GRANTED
-        )
-    }
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        cameraGranted = granted
-        viewModel.onRuntimePermissionsChanged()
-    }
-
-    LaunchedEffect(Unit) {
-        viewModel.reset()
-        if (!cameraGranted) {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
-        }
-    }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("IR Camera Scan") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    Button(onClick = viewModel::reset, modifier = Modifier.padding(end = 8.dp)) {
-                        Text("Reset")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
-            )
-        }
-    ) { innerPadding ->
-        if (!cameraGranted) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = "Camera permission required",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Button(
-                    onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
-                    modifier = Modifier.padding(top = 16.dp)
-                ) {
-                    Text("Grant Camera")
-                }
-            }
-            return@Scaffold
-        }
-
-        val state by viewModel.uiState.collectAsStateWithLifecycle()
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            IrCameraPreview(
-                onFrame = viewModel::analyzeFrame,
-                onCameraLensChanged = { cameraLens = it },
-                modifier = Modifier.fillMaxSize()
-            )
-            Column(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.58f))
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                val statusText = when {
-                    state.roomTooBright -> "Too much ambient light. Dark room required."
-                    cameraLens == IrCameraLens.BACK_FALLBACK -> "Front camera unavailable. IR scan may be unreliable."
-                    cameraLens == IrCameraLens.UNAVAILABLE -> "No camera available."
-                    cameraLens == IrCameraLens.FRONT -> "Front camera active. Dark room required."
-                    else -> "Starting front camera. Dark room required."
-                }
-                Text(
-                    text = statusText,
-                    color = if (state.roomTooBright || cameraLens != IrCameraLens.FRONT) {
-                        Color(0xFFFFEB3B)
-                    } else {
-                        Color.White
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                state.sources.forEach { source ->
-                    val center = Offset(source.x * size.width, source.y * size.height)
-                    val radius = 18.dp.toPx() + source.confidence * 14.dp.toPx()
-                    drawCircle(
-                        color = Color(0xFFFFEB3B).copy(alpha = 0.35f),
-                        radius = radius,
-                        center = center
-                    )
-                    drawCircle(
-                        color = Color(0xFFFFEB3B),
-                        radius = radius,
-                        center = center,
-                        style = Stroke(width = 3.dp.toPx())
-                    )
-                }
-            }
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.58f))
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "${state.sources.size} source${if (state.sources.size == 1) "" else "s"}",
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Frames ${state.framesAnalyzed}  Peak ${state.peakCount}  Ambient ${state.ambientBrightness}",
-                    color = Color.White.copy(alpha = 0.78f),
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-    }
-}
-
-private enum class IrCameraLens {
-    STARTING,
-    FRONT,
-    BACK_FALLBACK,
-    UNAVAILABLE
-}
-
-@Composable
-private fun IrCameraPreview(
-    onFrame: (Bitmap) -> Unit,
-    onCameraLensChanged: (IrCameraLens) -> Unit,
-    modifier: Modifier = Modifier
+    viewModel: IrCameraScanViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
-    val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            runCatching { cameraProviderFuture.get().unbindAll() }
-            analysisExecutor.shutdown()
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val bindingGeneration by viewModel.bindingGeneration.collectAsStateWithLifecycle()
+    val previewView = remember(context) {
+        PreviewView(context).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         }
     }
+    val binder = remember(context) {
+        CameraXIrCameraBinder(context.applicationContext)
+    }
+    val shouldBind = state !is IrCameraUiState.BindFailed
 
-    AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            val previewView = PreviewView(ctx).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
+    DisposableEffect(
+        lifecycleOwner,
+        previewView,
+        binder,
+        bindingGeneration,
+        shouldBind,
+    ) {
+        var bound = false
+        fun bindIfNeeded() {
+            if (!bound && shouldBind) {
+                bound = true
+                binder.bind(
+                    lifecycleOwner = lifecycleOwner,
+                    previewView = previewView,
+                    onFrame = viewModel::onFrame,
+                    onFailure = viewModel::onBindFailure,
                 )
-                scaleType = PreviewView.ScaleType.FILL_CENTER
-                implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             }
-
-            cameraProviderFuture.addListener({
-                val cameraProvider = cameraProviderFuture.get()
-                val preview = Preview.Builder()
-                    .build()
-                    .also { it.setSurfaceProvider(previewView.surfaceProvider) }
-                val analysis = ImageAnalysis.Builder()
-                    .setTargetResolution(Size(640, 480))
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-                    .also {
-                        it.setAnalyzer(analysisExecutor) { imageProxy ->
-                            try {
-                                imageProxy.toBitmapSafe()?.let(onFrame)
-                            } finally {
-                                imageProxy.close()
-                            }
-                        }
-                    }
-                val selector = runCatching {
-                    when {
-                        cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) -> {
-                            onCameraLensChanged(IrCameraLens.FRONT)
-                            CameraSelector.DEFAULT_FRONT_CAMERA
-                        }
-                        cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) -> {
-                            onCameraLensChanged(IrCameraLens.BACK_FALLBACK)
-                            CameraSelector.DEFAULT_BACK_CAMERA
-                        }
-                        else -> {
-                            onCameraLensChanged(IrCameraLens.UNAVAILABLE)
-                            null
-                        }
-                    }
-                }.getOrNull()
-                if (selector == null) {
-                    cameraProvider.unbindAll()
-                    return@addListener
-                }
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
-            }, ContextCompat.getMainExecutor(ctx))
-
-            previewView
         }
+
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> bindIfNeeded()
+                Lifecycle.Event.ON_STOP -> {
+                    binder.unbind()
+                    bound = false
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            bindIfNeeded()
+        }
+        if (!shouldBind) binder.unbind()
+
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            binder.unbind()
+        }
+    }
+
+    IrCameraContent(
+        state = state,
+        actions = IrActions(
+            onRetryBind = viewModel::retryBinding,
+            onBack = onBack,
+        ),
+        previewContent = {
+            AndroidView(
+                factory = { previewView },
+                modifier = Modifier.fillMaxSize(),
+            )
+        },
     )
 }
 
-private fun ImageProxy.toBitmapSafe(): Bitmap? {
-    return try {
-        if (planes.size < 3) return null
-        val nv21 = toNv21()
-        val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-        val out = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(Rect(0, 0, width, height), 80, out)
-        val imageBytes = out.toByteArray()
-        BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-    } catch (_: Exception) {
-        null
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun IrCameraContent(
+    state: IrCameraUiState,
+    actions: IrActions,
+    modifier: Modifier = Modifier,
+    previewContent: @Composable () -> Unit = {},
+) {
+    Scaffold(
+        modifier = modifier,
+        topBar = {
+            TopAppBar(
+                title = { Text("IR-like light scan") },
+                navigationIcon = {
+                    IconButton(onClick = actions.onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+            )
+        },
+    ) { innerPadding ->
+        when (state) {
+            is IrCameraUiState.BindFailed -> IrBindFailure(
+                message = state.message,
+                onRetry = actions.onRetryBind,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+            )
+            IrCameraUiState.BindingCamera -> IrPreviewSurface(
+                frame = null,
+                previewContent = previewContent,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+            )
+            is IrCameraUiState.Live -> IrPreviewSurface(
+                frame = state.frame,
+                previewContent = previewContent,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+            )
+        }
     }
 }
 
-private fun ImageProxy.toNv21(): ByteArray {
-    val ySize = width * height
-    val uvWidth = width / 2
-    val uvHeight = height / 2
-    val out = ByteArray(ySize + uvWidth * uvHeight * 2)
-
-    copyPlaneToOutput(
-        plane = planes[0],
-        planeWidth = width,
-        planeHeight = height,
-        output = out,
-        outputOffset = 0,
-        outputPixelStride = 1
-    )
-    copyPlaneToOutput(
-        plane = planes[2],
-        planeWidth = uvWidth,
-        planeHeight = uvHeight,
-        output = out,
-        outputOffset = ySize,
-        outputPixelStride = 2
-    )
-    copyPlaneToOutput(
-        plane = planes[1],
-        planeWidth = uvWidth,
-        planeHeight = uvHeight,
-        output = out,
-        outputOffset = ySize + 1,
-        outputPixelStride = 2
-    )
-
-    return out
+@Composable
+private fun IrPreviewSurface(
+    frame: IrPreviewFrame?,
+    previewContent: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    BoxWithConstraints(
+        modifier = modifier
+            .testTag("ir_preview")
+            .background(Color.Black),
+    ) {
+        previewContent()
+        if (frame == null) {
+            Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                CircularProgressIndicator(color = Color.White)
+                Text(
+                    text = "Starting camera…",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
+        } else {
+            BrightPointMarkers(frame)
+            IrEvidenceBanner(
+                frame = frame,
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
+            IrExplanationCard(
+                frame = frame,
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
+        }
+    }
 }
 
-private fun copyPlaneToOutput(
-    plane: ImageProxy.PlaneProxy,
-    planeWidth: Int,
-    planeHeight: Int,
-    output: ByteArray,
-    outputOffset: Int,
-    outputPixelStride: Int
+@Composable
+private fun androidx.compose.foundation.layout.BoxWithConstraintsScope.BrightPointMarkers(
+    frame: IrPreviewFrame,
 ) {
-    val buffer = plane.buffer.duplicate()
-    val rowStride = plane.rowStride
-    val pixelStride = plane.pixelStride
-    val rowBuffer = ByteArray(rowStride)
-    var outputIndex = outputOffset
-
-    for (row in 0 until planeHeight) {
-        val rowStart = row * rowStride
-        val rowLength = if (pixelStride == 1 && outputPixelStride == 1) {
-            planeWidth
-        } else {
-            (planeWidth - 1) * pixelStride + 1
+    val density = LocalDensity.current
+    val markerSize = 34.dp
+    val markerSizePx = with(density) { markerSize.roundToPx() }
+    val surfaceWidthPx = constraints.maxWidth
+    val surfaceHeightPx = constraints.maxHeight
+    val mapped = frame.mappedCentersPx
+        ?.takeIf { it.size == frame.analysis.sources.size }
+        ?: frame.analysis.sources.mapNotNull { source ->
+            runCatching {
+                transformAnalysisPoint(
+                    source = source.centerPx,
+                    metadata = frame.metadata,
+                    previewWidth = frame.previewWidthPx,
+                    previewHeight = frame.previewHeightPx,
+                )
+            }.getOrNull()
         }
-        buffer.position(rowStart)
-        if (pixelStride == 1 && outputPixelStride == 1) {
-            buffer.get(output, outputIndex, planeWidth)
-            outputIndex += planeWidth
-        } else {
-            buffer.get(rowBuffer, 0, rowLength)
-            var inputIndex = 0
-            repeat(planeWidth) {
-                output[outputIndex] = rowBuffer[inputIndex]
-                outputIndex += outputPixelStride
-                inputIndex += pixelStride
-            }
+
+    mapped.forEachIndexed { index, point ->
+        val displayX = point.x / frame.previewWidthPx * surfaceWidthPx
+        val displayY = point.y / frame.previewHeightPx * surfaceHeightPx
+        if (displayX in 0f..surfaceWidthPx.toFloat() &&
+            displayY in 0f..surfaceHeightPx.toFloat()
+        ) {
+            val left = (displayX - markerSizePx / 2f)
+                .roundToInt()
+                .coerceIn(0, (surfaceWidthPx - markerSizePx).coerceAtLeast(0))
+            val top = (displayY - markerSizePx / 2f)
+                .roundToInt()
+                .coerceIn(0, (surfaceHeightPx - markerSizePx).coerceAtLeast(0))
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset(left, top) }
+                    .size(markerSize)
+                    .testTag("ir_source_$index")
+                    .semantics {
+                        contentDescription = "Possible IR-like light ${index + 1}"
+                    }
+                    .background(Color(0x33FFEB3B), CircleShape)
+                    .border(3.dp, Color(0xFFFFEB3B), CircleShape),
+            )
+        }
+    }
+}
+
+@Composable
+private fun IrEvidenceBanner(
+    frame: IrPreviewFrame,
+    modifier: Modifier = Modifier,
+) {
+    val sourceCount = frame.analysis.sources.size
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Color.Black.copy(alpha = 0.68f))
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(
+            text = if (sourceCount == 0) {
+                "No persistent bright points"
+            } else {
+                "Possible IR-like light · $sourceCount bright ${if (sourceCount == 1) "point" else "points"}"
+            },
+            color = Color.White,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            text = if (frame.analysis.roomTooBright) {
+                "The scene is bright, so faint points may be washed out."
+            } else {
+                "Ambient sample ${frame.analysis.ambientBrightness}/255"
+            },
+            color = if (frame.analysis.roomTooBright) Color(0xFFFFE082) else Color.White.copy(alpha = 0.78f),
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+@Composable
+private fun IrExplanationCard(
+    frame: IrPreviewFrame,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .widthIn(max = 680.dp)
+            .fillMaxWidth()
+            .background(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            )
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = "What this view can show",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            text = "Bright or blinking pixels can come from displays, LEDs, reflections, compression, or sensor noise. They do not identify a camera.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = if (frame.metadata.frontCamera) "Front camera" else "Back camera",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "Evidence only",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+@Composable
+private fun IrBindFailure(
+    message: String,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = 520.dp)
+                .fillMaxWidth()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(
+                text = "Camera could not start",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "This tool only highlights possible IR-like light; it does not identify a camera.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(onClick = onRetry) { Text("Retry") }
         }
     }
 }

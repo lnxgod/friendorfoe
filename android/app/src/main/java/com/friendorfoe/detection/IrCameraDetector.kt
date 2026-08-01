@@ -6,17 +6,9 @@ import kotlin.math.abs
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Detects infrared LEDs from night-vision hidden cameras using the
- * phone's front-facing camera (which typically lacks an IR-cut filter).
- *
- * IR LEDs at 850nm appear as bright white/purple spots on the camera.
- * 940nm LEDs are harder to detect but may still show faintly.
- *
- * Usage: User activates "IR Scan" mode, turns off room lights, and
- * slowly pans the front camera around the room. The detector analyzes
- * each frame for bright near-white or purple clusters that persist across frames.
- */
+data class FloatPoint(val x: Float, val y: Float)
+
+/** Finds persistent bright, low-saturation pixels without classifying their source. */
 @Singleton
 class IrCameraDetector @Inject constructor() {
 
@@ -40,8 +32,7 @@ class IrCameraDetector @Inject constructor() {
     }
 
     data class IrSource(
-        val x: Float,          // Normalized 0-1 position in frame
-        val y: Float,
+        val centerPx: FloatPoint,
         val brightness: Int,   // Peak brightness 0-255
         val clusterSize: Int,  // Number of bright pixels in cluster
         val confidence: Float  // 0.0-1.0
@@ -50,11 +41,53 @@ class IrCameraDetector @Inject constructor() {
     data class FrameAnalysis(
         val sources: List<IrSource>,
         val ambientBrightness: Int,
-        val roomTooBright: Boolean
+        val roomTooBright: Boolean,
+        val analyzedWidth: Int,
+        val analyzedHeight: Int,
     )
 
-    // Persistence tracking: grid cell -> consecutive frame count
-    private val persistenceMap = mutableMapOf<Int, Int>()
+    class Session internal constructor(
+        private val detector: IrCameraDetector,
+    ) {
+        private val persistenceMap = mutableMapOf<Int, Int>()
+
+        fun analyzeFrame(bitmap: Bitmap): List<IrSource> =
+            analyzeFrameWithEnvironment(bitmap).sources
+
+        fun analyzeFrameWithEnvironment(bitmap: Bitmap): FrameAnalysis =
+            detector.analyzeBitmap(bitmap, persistenceMap)
+
+        internal fun analyzePixelsForTest(
+            width: Int,
+            height: Int,
+            pixels: IntArray,
+        ): List<IrSource> = detector.analyzePixels(
+            width = width,
+            height = height,
+            pixels = pixels,
+            persistenceMap = persistenceMap,
+        ).sources
+
+        internal fun analyzePixelsWithEnvironmentForTest(
+            width: Int,
+            height: Int,
+            pixels: IntArray,
+        ): FrameAnalysis = detector.analyzePixels(
+            width = width,
+            height = height,
+            pixels = pixels,
+            persistenceMap = persistenceMap,
+        )
+
+        fun reset() {
+            persistenceMap.clear()
+        }
+    }
+
+    private val defaultSession = Session(this)
+
+    /** A binding generation gets its own persistence history. */
+    fun newSession(): Session = Session(this)
 
     /**
      * Analyze a camera frame for IR LED sources.
@@ -63,23 +96,36 @@ class IrCameraDetector @Inject constructor() {
      * @return List of detected IR sources, empty if none found
      */
     fun analyzeFrame(bitmap: Bitmap): List<IrSource> {
-        return analyzeFrameWithEnvironment(bitmap).sources
+        return defaultSession.analyzeFrame(bitmap)
     }
 
     fun analyzeFrameWithEnvironment(bitmap: Bitmap): FrameAnalysis {
+        return defaultSession.analyzeFrameWithEnvironment(bitmap)
+    }
+
+    private fun analyzeBitmap(
+        bitmap: Bitmap,
+        persistenceMap: MutableMap<Int, Int>,
+    ): FrameAnalysis {
         if (bitmap.isRecycled) {
-            return FrameAnalysis(emptyList(), ambientBrightness = 0, roomTooBright = false)
+            return FrameAnalysis(
+                sources = emptyList(),
+                ambientBrightness = 0,
+                roomTooBright = false,
+                analyzedWidth = 0,
+                analyzedHeight = 0,
+            )
         }
 
         val width = bitmap.width
         val height = bitmap.height
         val pixels = IntArray(width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-        return analyzePixels(width, height, pixels)
+        return analyzePixels(width, height, pixels, persistenceMap)
     }
 
     internal fun analyzePixelsForTest(width: Int, height: Int, pixels: IntArray): List<IrSource> {
-        return analyzePixels(width, height, pixels).sources
+        return defaultSession.analyzePixelsForTest(width, height, pixels)
     }
 
     internal fun analyzePixelsWithEnvironmentForTest(
@@ -87,20 +133,33 @@ class IrCameraDetector @Inject constructor() {
         height: Int,
         pixels: IntArray
     ): FrameAnalysis {
-        return analyzePixels(width, height, pixels)
+        return defaultSession.analyzePixelsWithEnvironmentForTest(width, height, pixels)
     }
 
-    private fun analyzePixels(width: Int, height: Int, pixels: IntArray): FrameAnalysis {
+    private fun analyzePixels(
+        width: Int,
+        height: Int,
+        pixels: IntArray,
+        persistenceMap: MutableMap<Int, Int>,
+    ): FrameAnalysis {
         if (width <= 0 || height <= 0 || pixels.size < width * height) {
-            return FrameAnalysis(emptyList(), ambientBrightness = 0, roomTooBright = false)
+            return FrameAnalysis(
+                sources = emptyList(),
+                ambientBrightness = 0,
+                roomTooBright = false,
+                analyzedWidth = width.coerceAtLeast(0),
+                analyzedHeight = height.coerceAtLeast(0),
+            )
         }
 
-        val gridW = (width / GRID_CELL_SIZE).coerceAtLeast(1)
-        val gridH = (height / GRID_CELL_SIZE).coerceAtLeast(1)
+        val gridW = ((width + GRID_CELL_SIZE - 1) / GRID_CELL_SIZE).coerceAtLeast(1)
+        val gridH = ((height + GRID_CELL_SIZE - 1) / GRID_CELL_SIZE).coerceAtLeast(1)
 
         // Count bright, low-saturation pixels per grid cell
         val gridCounts = IntArray(gridW * gridH)
         val gridBrightness = IntArray(gridW * gridH)
+        val gridXSum = LongArray(gridW * gridH)
+        val gridYSum = LongArray(gridW * gridH)
         var brightnessSum = 0L
 
         for (y in 0 until height) {
@@ -122,6 +181,8 @@ class IrCameraDetector @Inject constructor() {
                     val gy = (y / GRID_CELL_SIZE).coerceAtMost(gridH - 1)
                     val idx = gy * gridW + gx
                     gridCounts[idx]++
+                    gridXSum[idx] += x.toLong()
+                    gridYSum[idx] += y.toLong()
                     if (brightness > gridBrightness[idx]) {
                         gridBrightness[idx] = brightness
                     }
@@ -132,7 +193,13 @@ class IrCameraDetector @Inject constructor() {
         val ambientBrightness = (brightnessSum / (width * height)).toInt()
         if (ambientBrightness >= ROOM_TOO_BRIGHT_AVERAGE) {
             persistenceMap.clear()
-            return FrameAnalysis(emptyList(), ambientBrightness, roomTooBright = true)
+            return FrameAnalysis(
+                sources = emptyList(),
+                ambientBrightness = ambientBrightness,
+                roomTooBright = true,
+                analyzedWidth = width,
+                analyzedHeight = height,
+            )
         }
 
         // Find cells with enough bright pixels
@@ -148,10 +215,11 @@ class IrCameraDetector @Inject constructor() {
 
                 // Require 2+ consecutive frames to report (filters noise)
                 if (persistence >= 2) {
-                    val gy = idx / gridW
-                    val gx = idx % gridW
-                    val centerX = (gx * GRID_CELL_SIZE + GRID_CELL_SIZE / 2).toFloat() / width
-                    val centerY = (gy * GRID_CELL_SIZE + GRID_CELL_SIZE / 2).toFloat() / height
+                    val count = gridCounts[idx].coerceAtLeast(1)
+                    val center = FloatPoint(
+                        x = gridXSum[idx].toFloat() / count,
+                        y = gridYSum[idx].toFloat() / count,
+                    )
 
                     val confidence = when {
                         persistence >= 5 -> 0.95f
@@ -160,8 +228,7 @@ class IrCameraDetector @Inject constructor() {
                     }
 
                     results.add(IrSource(
-                        x = centerX,
-                        y = centerY,
+                        centerPx = center,
                         brightness = gridBrightness[idx],
                         clusterSize = gridCounts[idx],
                         confidence = confidence
@@ -175,10 +242,16 @@ class IrCameraDetector @Inject constructor() {
 
         if (results.isNotEmpty()) {
             val maxPersistence = currentFrameCells.maxOfOrNull { persistenceMap[it] ?: 0 } ?: 0
-            safeLogInfo("IR sources detected: ${results.size} (persistence: $maxPersistence)")
+            safeLogInfo("Persistent bright points: ${results.size} (persistence: $maxPersistence)")
         }
 
-        return FrameAnalysis(results, ambientBrightness, roomTooBright = false)
+        return FrameAnalysis(
+            sources = results,
+            ambientBrightness = ambientBrightness,
+            roomTooBright = false,
+            analyzedWidth = width,
+            analyzedHeight = height,
+        )
     }
 
     private fun isPotentialIrPixel(
@@ -202,7 +275,7 @@ class IrCameraDetector @Inject constructor() {
 
     /** Reset persistence tracking (e.g., when scan mode is entered) */
     fun reset() {
-        persistenceMap.clear()
+        defaultSession.reset()
     }
 
     private fun safeLogInfo(message: String) {

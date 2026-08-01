@@ -1,21 +1,23 @@
 package com.friendorfoe.presentation.privacy
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -25,169 +27,283 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.friendorfoe.detection.EmfDetector
 
-@OptIn(ExperimentalMaterial3Api::class)
+data class MagneticFieldActions(
+    val onResetBaseline: () -> Unit = {},
+    val onRetry: () -> Unit = {},
+    val onBack: () -> Unit = {},
+)
+
 @Composable
 fun EmfSweepScreen(
     onBack: () -> Unit,
-    viewModel: EmfSweepViewModel = hiltViewModel()
+    viewModel: EmfSweepViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val reading = state.reading
+    val lifecycleOwner = LocalLifecycleOwner.current
 
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> viewModel.start()
+                Lifecycle.Event.ON_STOP -> viewModel.stop()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            viewModel.start()
+        }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.stop()
+        }
+    }
+
+    MagneticFieldContent(
+        state = state,
+        actions = MagneticFieldActions(
+            onResetBaseline = viewModel::resetBaseline,
+            onRetry = viewModel::start,
+            onBack = onBack,
+        ),
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MagneticFieldContent(
+    state: MagneticFieldUiState,
+    actions: MagneticFieldActions,
+    modifier: Modifier = Modifier,
+) {
     Scaffold(
+        modifier = modifier,
         topBar = {
             TopAppBar(
-                title = { Text("EMF Sweep") },
+                title = { Text("Magnetic-field sweep") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = actions.onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
             )
-        }
+        },
     ) { innerPadding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
-                .padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+                .padding(innerPadding),
+            contentAlignment = Alignment.TopCenter,
         ) {
-            if (!state.sensorAvailable) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
                 Text(
-                    text = "Magnetometer unavailable",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.error
+                    text = "Use the phone's magnetometer to compare field strength as you move it.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(
-                    text = "This device does not expose the magnetic-field sensor needed for EMF sweep mode.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Button(onClick = viewModel::start) { Text("Retry") }
-                return@Column
-            }
 
-            EmfGauge(
-                magnitude = reading?.magnitudeUt ?: 0f,
-                level = reading?.level ?: EmfDetector.EmfLevel.NORMAL,
-                modifier = Modifier.size(260.dp)
-            )
-
-            Text(
-                text = "${formatUt(reading?.magnitudeUt ?: 0f)} uT",
-                style = MaterialTheme.typography.displayMedium,
-                fontWeight = FontWeight.Bold,
-                color = colorForLevel(reading?.level ?: EmfDetector.EmfLevel.NORMAL)
-            )
-            Text(
-                text = "Peak ${formatUt(state.peakUt)} uT",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            reading?.let {
-                ComponentRow("X", it.x)
-                ComponentRow("Y", it.y)
-                ComponentRow("Z", it.z)
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-            Button(onClick = viewModel::resetPeak) {
-                Text("Reset Peak")
+                when (state) {
+                    MagneticFieldUiState.Initializing -> InitializingCard()
+                    MagneticFieldUiState.SensorUnavailable -> SensorUnavailableCard(actions.onRetry)
+                    is MagneticFieldUiState.AwaitingAccurateBaseline -> {
+                        AwaitingBaselineCard(state, actions.onResetBaseline)
+                    }
+                    is MagneticFieldUiState.Live -> LiveMagneticFieldCard(state, actions.onResetBaseline)
+                    is MagneticFieldUiState.Failed -> FailureCard(state.message, actions.onRetry)
+                }
             }
         }
     }
 }
 
 @Composable
-private fun EmfGauge(
-    magnitude: Float,
-    level: EmfDetector.EmfLevel,
-    modifier: Modifier = Modifier
-) {
-    val color = colorForLevel(level)
-    val sweep = (magnitude / 400f).coerceIn(0f, 1f) * 270f
-    Box(
-        modifier = modifier
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f), RoundedCornerShape(8.dp)),
-        contentAlignment = Alignment.Center
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-            val strokeWidth = 18.dp.toPx()
-            val topLeft = Offset(strokeWidth, strokeWidth)
-            val size = Size(this.size.width - strokeWidth * 2, this.size.height - strokeWidth * 2)
-            drawArc(
-                color = Color(0xFF9E9E9E).copy(alpha = 0.25f),
-                startAngle = 135f,
-                sweepAngle = 270f,
-                useCenter = false,
-                topLeft = topLeft,
-                size = size,
-                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-            )
-            drawArc(
-                color = color,
-                startAngle = 135f,
-                sweepAngle = sweep,
-                useCenter = false,
-                topLeft = topLeft,
-                size = size,
-                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-            )
-        }
+private fun InitializingCard() {
+    EvidenceCard {
         Text(
-            text = level.name,
+            text = "Waiting for a reliable magnetometer sample",
             style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            color = color
+            fontWeight = FontWeight.SemiBold,
         )
-    }
-}
-
-@Composable
-private fun ComponentRow(label: String, value: Float) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f), RoundedCornerShape(6.dp))
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
         Text(
-            text = "${formatUt(value)} uT",
+            text = "A high-accuracy sample will set the baseline. The first reading can take a moment while the sensor calibrates.",
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
 
-private fun formatUt(value: Float): String = "%.1f".format(value)
+@Composable
+private fun SensorUnavailableCard(onRetry: () -> Unit) {
+    EvidenceCard {
+        Text(
+            text = "Magnetometer unavailable",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "This phone does not expose the magnetic-field sensor this tool needs.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(onClick = onRetry) { Text("Retry") }
+    }
+}
 
 @Composable
-private fun colorForLevel(level: EmfDetector.EmfLevel): Color = when (level) {
-    EmfDetector.EmfLevel.NORMAL -> Color(0xFF2E7D32)
-    EmfDetector.EmfLevel.LOW -> Color(0xFFF9A825)
-    EmfDetector.EmfLevel.MEDIUM -> Color(0xFFEF6C00)
-    EmfDetector.EmfLevel.HIGH -> MaterialTheme.colorScheme.error
+private fun AwaitingBaselineCard(
+    state: MagneticFieldUiState.AwaitingAccurateBaseline,
+    onReset: () -> Unit,
+) {
+    EvidenceCard {
+        Text(
+            text = "Waiting for a high-accuracy baseline",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        AccuracyChip(state.accuracyLabel)
+        Text(
+            text = "Move the phone in a figure eight, then hold it still. Reset uses the next high-accuracy sample as the new baseline.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(onClick = onReset) { Text("Reset baseline") }
+    }
 }
+
+@Composable
+private fun LiveMagneticFieldCard(
+    state: MagneticFieldUiState.Live,
+    onReset: () -> Unit,
+) {
+    EvidenceCard {
+        Text(
+            text = formatMicroTesla(state.totalMicroTesla),
+            style = MaterialTheme.typography.displayMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Text(
+            text = "Current field strength",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        AccuracyChip(state.accuracyLabel)
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    shape = RoundedCornerShape(14.dp),
+                )
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            MeasurementRow("Baseline", formatMicroTesla(state.baselineMicroTesla))
+            MeasurementRow("Change", formatMicroTesla(state.deviationMicroTesla))
+            MeasurementRow("Largest change", formatMicroTesla(state.peakDeviationMicroTesla))
+        }
+
+        Text(
+            text = "A deviation is a magnetic-field change. It cannot identify electronics, cameras, or intent.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(onClick = onReset) { Text("Reset baseline") }
+    }
+}
+
+@Composable
+private fun FailureCard(message: String, onRetry: () -> Unit) {
+    EvidenceCard {
+        Text(
+            text = "Magnetometer could not start",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(onClick = onRetry) { Text("Retry") }
+    }
+}
+
+@Composable
+private fun EvidenceCard(content: @Composable ColumnScope.() -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            horizontalAlignment = Alignment.Start,
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun AccuracyChip(label: String) {
+    Text(
+        text = label,
+        modifier = Modifier
+            .background(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = RoundedCornerShape(50),
+            )
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSecondaryContainer,
+    )
+}
+
+@Composable
+private fun MeasurementRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.End,
+        )
+    }
+}
+
+private fun formatMicroTesla(value: Float): String = "%.1f µT".format(value)
