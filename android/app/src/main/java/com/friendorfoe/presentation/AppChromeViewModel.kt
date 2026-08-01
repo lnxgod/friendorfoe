@@ -2,56 +2,32 @@ package com.friendorfoe.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.friendorfoe.data.remote.SensorMapApiService
-import com.friendorfoe.presentation.calibrate.probeIntelBadgeCount
+import com.friendorfoe.data.preferences.AppLaunchState
+import com.friendorfoe.data.preferences.AppPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+data class AppChromeUiState(
+    val launchState: AppLaunchState = AppLaunchState.Loading,
+)
 
 @HiltViewModel
 class AppChromeViewModel @Inject constructor(
-    private val sensorMapApiService: SensorMapApiService,
+    private val appPreferences: AppPreferences,
 ) : ViewModel() {
+    val uiState = appPreferences.launchState
+        .map(::AppChromeUiState)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, AppChromeUiState())
 
-    private val _calibrateBadgeCount = MutableStateFlow(0)
-    val calibrateBadgeCount: StateFlow<Int> = _calibrateBadgeCount.asStateFlow()
-
-    private var pollJob: Job? = null
-
-    fun start() {
-        if (pollJob != null) return
-        refreshNow()
-        pollJob = viewModelScope.launch {
-            while (isActive) {
-                delay(15_000L)
-                fetchBadgeCount()
-            }
-        }
+    fun completeOnboarding() = viewModelScope.launch {
+        appPreferences.setOnboardingComplete()
     }
 
-    fun stop() {
-        pollJob?.cancel()
-        pollJob = null
-    }
-
-    fun refreshNow() {
-        viewModelScope.launch {
-            fetchBadgeCount()
-        }
-    }
-
-    private suspend fun fetchBadgeCount() {
-        try {
-            val stats = sensorMapApiService.getEventStats()
-            _calibrateBadgeCount.value = probeIntelBadgeCount(stats)
-        } catch (_: Exception) {
-            _calibrateBadgeCount.value = 0
-        }
+    fun recordTopLevelRoute(route: String) = viewModelScope.launch {
+        appPreferences.setLastTopLevelRoute(route)
     }
 }

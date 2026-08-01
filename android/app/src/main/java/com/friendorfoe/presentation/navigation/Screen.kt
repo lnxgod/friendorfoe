@@ -1,66 +1,64 @@
 package com.friendorfoe.presentation.navigation
 
-/**
- * Navigation destinations for the app.
- *
- * Three main screens:
- * - AR View (default): live camera viewfinder with floating labels
- * - List View: all detected objects sorted by distance
- * - History: past identifications from Room DB
- *
- * Plus a detail screen for tapping on a specific object.
- */
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.ui.graphics.vector.ImageVector
+
 sealed class Screen(val route: String) {
-    /** AR viewfinder with floating labels on sky objects */
     data object ArView : Screen("ar_view")
-
-    /** 2D map view with aircraft markers on OpenStreetMap */
     data object MapView : Screen("map_view")
-
-    /** List of all currently detected objects */
     data object ListView : Screen("list_view")
-
-    /** Historical detection records */
-    data object History : Screen("history")
-
-    /** Detail card for a specific sky object */
-    data object Detail : Screen("detail/{objectId}") {
-        fun createRoute(objectId: String) = "detail/$objectId"
-    }
-
-    /** Drone reference guide */
-    data object DroneGuide : Screen("drone_guide?manufacturer={manufacturer}") {
-        fun createRoute(manufacturer: String? = null) =
-            if (manufacturer != null) "drone_guide?manufacturer=$manufacturer"
-            else "drone_guide"
-    }
-
-    /** Aircraft reference guide */
-    data object AircraftGuide : Screen("aircraft_guide?type={type}") {
-        fun createRoute(typeCode: String? = null) =
-            if (typeCode != null) "aircraft_guide?type=$typeCode"
-            else "aircraft_guide"
-    }
-
-    /** Combined reference guide with Aircraft + Drone tabs */
-    data object ReferenceGuide : Screen("reference_guide")
-
-    /** Privacy scanner screen */
     data object Privacy : Screen("privacy")
-
-    /** Close-range magnetometer sweep for hidden electronics */
-    data object EmfSweep : Screen("emf_sweep")
-
-    /** Front-camera IR LED scan for night-vision camera emitters */
-    data object IrCameraScan : Screen("ir_camera_scan")
-
-    /** Calibration walk: phone advertises BLE from known GPS so the
-     *  backend can fit a per-listener path-loss model for triangulation. */
-    data object Calibrate : Screen("calibrate")
-
-    /** Help / About screen */
-    data object About : Screen("about")
-
-    /** Welcome / launch screen */
-    data object Welcome : Screen("welcome")
+    data object Badge : Screen("badge")
+    data object History : Screen("history")
+    data object Info : Screen("info")
+    data object Detail : Screen("detail/{objectId}") {
+        fun createRoute(objectId: String) = "detail/${encodeRouteSegment(objectId)}"
+    }
+    data object HistoricalDetail : Screen("history_detail/{historyId}") {
+        fun createRoute(historyId: Long) = "history_detail/$historyId"
+    }
+    data object ReferenceGuide : Screen("reference_guide?tab={tab}&query={query}")
+    data object DroneGuide : Screen("drone_guide?manufacturer={manufacturer}") {
+        fun createRoute(manufacturer: String? = null) = manufacturer?.let {
+            "drone_guide?manufacturer=${encodeRouteSegment(it)}"
+        } ?: "drone_guide"
+    }
+    data object AircraftGuide : Screen("aircraft_guide?type={type}") {
+        fun createRoute(typeCode: String? = null) = typeCode?.let {
+            "aircraft_guide?type=${encodeRouteSegment(it)}"
+        } ?: "aircraft_guide"
+    }
+    data object IgnoredDevices : Screen("privacy/ignored")
+    data object BadgeDiagnostics : Screen("badge/diagnostics")
+    data object BadgeRecovery : Screen("badge/recovery")
+    data object EmfSweep : Screen("info/advanced/magnetic_field")
+    data object IrCameraScan : Screen("info/advanced/ir_light")
+    data object Calibrate : Screen("info/advanced/calibrate")
 }
+
+enum class TopLevelDestination(
+    val label: String,
+    val route: String,
+    val icon: ImageVector,
+) {
+    AR("AR", Screen.ArView.route, Icons.Default.Visibility),
+    MAP("Map", Screen.MapView.route, Icons.Default.Map),
+    LIST("List", Screen.ListView.route, Icons.AutoMirrored.Filled.List),
+    PRIVACY("Privacy", Screen.Privacy.route, Icons.Default.Shield),
+    BADGE("Badge", Screen.Badge.route, Icons.Default.Tune),
+    HISTORY("History", Screen.History.route, Icons.Default.History),
+    INFO("Info", Screen.Info.route, Icons.Default.Info),
+}
+
+enum class BackDisposition { EXIT_APP, POP_SECONDARY }
+
+fun backDisposition(route: String?): BackDisposition =
+    if (route in TopLevelDestination.entries.map { it.route }) BackDisposition.EXIT_APP
+    else BackDisposition.POP_SECONDARY
