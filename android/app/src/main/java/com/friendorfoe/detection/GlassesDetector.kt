@@ -8,11 +8,10 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.util.Log
 import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.transform
 import kotlinx.coroutines.launch
 import java.time.Instant
 import javax.inject.Inject
@@ -111,6 +110,67 @@ data class GlassesDetection(
     val seenMacs: Set<String> = setOf(mac)
 )
 
+sealed interface GlassesScanEvent {
+    data object Ready : GlassesScanEvent
+    data class Observation(val detection: GlassesDetection) : GlassesScanEvent
+    data class Failure(val message: String) : GlassesScanEvent
+    data class PermissionBlocked(val message: String) : GlassesScanEvent
+    data class Unsupported(val message: String) : GlassesScanEvent
+}
+
+internal class GlassesScanCallbackRegistry<T>(
+    private val stopCallback: (T) -> Unit,
+) {
+    private val callbacks = linkedSetOf<T>()
+    private var closed = false
+
+    val registeredCount: Int
+        get() = synchronized(callbacks) { callbacks.size }
+
+    fun register(callback: T): GlassesScanEvent.Ready? {
+        val closing = synchronized(callbacks) {
+            if (closed) {
+                true
+            } else {
+                callbacks += callback
+                false
+            }
+        }
+        if (closing) {
+            val stopped = runCatching { stopCallback(callback) }.isSuccess
+            if (!stopped) {
+                synchronized(callbacks) { callbacks += callback }
+            }
+            return null
+        }
+        return GlassesScanEvent.Ready
+    }
+
+    fun stop(callback: T): Boolean {
+        if (synchronized(callbacks) { callback !in callbacks }) return true
+        return try {
+            stopCallback(callback)
+            synchronized(callbacks) { callbacks -= callback }
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    fun closeAndStopAll() {
+        val snapshot = synchronized(callbacks) {
+            closed = true
+            callbacks.toList()
+        }
+        snapshot.forEach(::stop)
+    }
+}
+
+private data class RegisteredBleScan(
+    val scanner: BluetoothLeScanner,
+    val callback: ScanCallback,
+)
+
 /**
  * BLE scanner that detects smart glasses, body cameras, and other
  * privacy-intrusion devices by matching BLE advertisements against
@@ -121,7 +181,6 @@ data class GlassesDetection(
 @Singleton
 class GlassesDetector @Inject constructor(
     private val bluetoothManager: BluetoothManager,
-    private val detectionPrefs: com.friendorfoe.data.DetectionPrefs
 ) {
     companion object {
         private const val TAG = "GlassesDetector"
@@ -1005,10 +1064,6 @@ class GlassesDetector @Inject constructor(
     private val detectedDevices = java.util.concurrent.ConcurrentHashMap<String, GlassesDetection>()
     /** MAC addresses of devices bonded to THIS phone — used to tag "your device" vs "nearby threat" */
     private val myBondedAddresses = java.util.concurrent.CopyOnWriteArraySet<String>()
-    private var bleScanner: BluetoothLeScanner? = null
-    private var activeScanCallback: ScanCallback? = null
-    @Volatile var isScanRunning = false
-        private set
 
     /** Clear all cached detections — used by refresh button in UI */
     fun clearAllDetections() {
@@ -1026,12 +1081,19 @@ class GlassesDetector @Inject constructor(
      * to ~10s+ intervals — easy to miss on initial scan start).
      */
     @SuppressLint("MissingPermission")
-    fun startScanning(): Flow<GlassesDetection> = callbackFlow {
+    fun scanEvents(): Flow<GlassesScanEvent> = callbackFlow {
         val SCAN_RESTART_INTERVAL_MS = 15_000L // Restart scan every 15s — resets Android dedup
         val SCAN_FAILURE_RETRY_MS = 5_000L     // Wait 5s before retrying after failure
         val MAX_RETRIES = 3
 
         var retryCount = 0
+        var lastStartWasUnsupported = false
+        var lastStartWasPermissionBlocked = false
+        var localScanner: BluetoothLeScanner? = null
+        var activeRegistration: RegisteredBleScan? = null
+        val callbackRegistry = GlassesScanCallbackRegistry<RegisteredBleScan> { registration ->
+            registration.scanner.stopScan(registration.callback)
+        }
 
         val scanSettings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -1039,11 +1101,22 @@ class GlassesDetector @Inject constructor(
             .setReportDelay(0)
             .build()
 
+        fun reportPermissionBlocked(security: SecurityException) {
+            Log.w(TAG, "BLE scan permission was revoked", security)
+            lastStartWasPermissionBlocked = true
+            lastStartWasUnsupported = false
+            trySend(
+                GlassesScanEvent.PermissionBlocked(
+                    security.message ?: "Nearby devices permission was revoked",
+                ),
+            )
+        }
+
         fun buildScanCallback(): ScanCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 val detection = checkScanResult(result)
                 if (detection != null) {
-                    trySend(detection)
+                    trySend(GlassesScanEvent.Observation(detection))
                 }
             }
 
@@ -1051,7 +1124,7 @@ class GlassesDetector @Inject constructor(
                 for (result in results) {
                     val detection = checkScanResult(result)
                     if (detection != null) {
-                        trySend(detection)
+                        trySend(GlassesScanEvent.Observation(detection))
                     }
                 }
             }
@@ -1065,46 +1138,97 @@ class GlassesDetector @Inject constructor(
                     else -> "UNKNOWN($errorCode)"
                 }
                 Log.e(TAG, "BLE scan failed: $errorName")
-                isScanRunning = false
 
                 // ALREADY_STARTED means a scan is running — that's actually fine
                 if (errorCode == SCAN_FAILED_ALREADY_STARTED) {
-                    isScanRunning = true
+                    return
                 }
+                val event = if (errorCode == SCAN_FAILED_FEATURE_UNSUPPORTED) {
+                    GlassesScanEvent.Unsupported("BLE privacy scan is unsupported on this device")
+                } else {
+                    GlassesScanEvent.Failure("BLE privacy scan failed: $errorName")
+                }
+                trySend(event)
             }
         }
 
         suspend fun doStartScan(): Boolean {
-            val adapter = bluetoothManager.adapter
-            if (adapter == null || !adapter.isEnabled) {
-                Log.w(TAG, "Bluetooth not available, skipping glasses scan")
+            val adapter = try {
+                bluetoothManager.adapter
+            } catch (security: SecurityException) {
+                reportPermissionBlocked(security)
+                return false
+            }
+            if (adapter == null) {
+                Log.w(TAG, "Bluetooth hardware not available, skipping glasses scan")
+                lastStartWasUnsupported = true
+                lastStartWasPermissionBlocked = false
+                trySend(GlassesScanEvent.Unsupported("Bluetooth hardware is unavailable"))
+                return false
+            }
+            val bluetoothEnabled = try {
+                adapter.isEnabled
+            } catch (security: SecurityException) {
+                reportPermissionBlocked(security)
+                return false
+            }
+            if (!bluetoothEnabled) {
+                Log.w(TAG, "Bluetooth is turned off, deferring glasses scan")
+                lastStartWasUnsupported = false
+                lastStartWasPermissionBlocked = false
+                trySend(GlassesScanEvent.Failure("Bluetooth is turned off"))
                 return false
             }
 
-            val scanner = adapter.bluetoothLeScanner
-            if (scanner == null) {
-                Log.w(TAG, "BLE scanner not available")
+            val scanner = try {
+                adapter.bluetoothLeScanner
+            } catch (security: SecurityException) {
+                reportPermissionBlocked(security)
                 return false
             }
-            bleScanner = scanner
+            if (scanner == null) {
+                Log.w(TAG, "BLE scanner not available")
+                lastStartWasUnsupported = true
+                lastStartWasPermissionBlocked = false
+                trySend(GlassesScanEvent.Unsupported("BLE scanning is unsupported on this device"))
+                return false
+            }
+            localScanner = scanner
 
             val callback = buildScanCallback()
 
             // Stop any previous scan before starting a new one
-            activeScanCallback?.let { old ->
-                try { scanner.stopScan(old) } catch (_: Exception) {}
+            activeRegistration?.let { old ->
+                if (!callbackRegistry.stop(old)) {
+                    Log.w(TAG, "Previous BLE scan callback will be retried during cleanup")
+                }
             }
 
-            activeScanCallback = callback
             try {
                 scanner.startScan(null, scanSettings, callback)
-                isScanRunning = true
+                val registration = RegisteredBleScan(scanner, callback)
+                val ready = callbackRegistry.register(registration) ?: run {
+                    callbackRegistry.closeAndStopAll()
+                    if (callbackRegistry.registeredCount > 0) {
+                        trySend(GlassesScanEvent.Failure("BLE scan cleanup failed"))
+                    }
+                    return false
+                }
+                activeRegistration = registration
+                trySend(ready)
                 retryCount = 0
+                lastStartWasUnsupported = false
+                lastStartWasPermissionBlocked = false
                 Log.i(TAG, "BLE privacy scan started successfully")
                 return true
+            } catch (security: SecurityException) {
+                reportPermissionBlocked(security)
+                return false
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start BLE scan: ${e.message}")
-                isScanRunning = false
+                lastStartWasPermissionBlocked = false
+                lastStartWasUnsupported = false
+                trySend(GlassesScanEvent.Failure(e.message ?: "BLE privacy scan could not start"))
                 return false
             }
         }
@@ -1123,27 +1247,40 @@ class GlassesDetector @Inject constructor(
          * double-delivery window into a single detection per physical device.
          */
         suspend fun rotateScannerOverlap() {
-            val scanner = bleScanner ?: run { doStartScan(); return }
-            val oldCallback = activeScanCallback
+            val scanner = localScanner ?: run { doStartScan(); return }
+            val oldRegistration = activeRegistration
             val newCallback = buildScanCallback()
             try {
                 scanner.startScan(null, scanSettings, newCallback)
+            } catch (security: SecurityException) {
+                reportPermissionBlocked(security)
+                return
             } catch (e: Exception) {
                 Log.w(TAG, "Overlap scan start failed, falling back to sequential", e)
                 doStartScan()
                 return
             }
-            activeScanCallback = newCallback
-            isScanRunning = true
+            val registration = RegisteredBleScan(scanner, newCallback)
+            val ready = callbackRegistry.register(registration) ?: run {
+                callbackRegistry.closeAndStopAll()
+                if (callbackRegistry.registeredCount > 0) {
+                    trySend(GlassesScanEvent.Failure("BLE scan cleanup failed"))
+                }
+                return
+            }
+            trySend(ready)
+            activeRegistration = registration
             delay(2000)
-            oldCallback?.let {
-                try { scanner.stopScan(it) } catch (_: Exception) {}
+            oldRegistration?.let {
+                if (!callbackRegistry.stop(it)) {
+                    Log.w(TAG, "Overlapped BLE scan callback will be retried during cleanup")
+                }
             }
         }
 
         // Initial start with retry
         var started = false
-        while (!started && retryCount < MAX_RETRIES) {
+        while (!started && retryCount < MAX_RETRIES && !lastStartWasPermissionBlocked) {
             started = doStartScan()
             if (!started) {
                 retryCount++
@@ -1154,10 +1291,12 @@ class GlassesDetector @Inject constructor(
 
         if (!started) {
             Log.e(TAG, "BLE scan failed after $MAX_RETRIES retries")
+            if (!lastStartWasUnsupported && !lastStartWasPermissionBlocked) {
+                trySend(GlassesScanEvent.Failure("BLE privacy scan failed after $MAX_RETRIES attempts"))
+            }
             close()
             return@callbackFlow
         }
-
         // Check bonded/paired BLE devices — catches glasses that are already
         // Build set of YOUR bonded device addresses — used to tag BLE scan
         // results as "your device" vs "someone else's nearby device"
@@ -1214,7 +1353,7 @@ class GlassesDetector @Inject constructor(
                             isBonded = true // It's YOUR connected device
                         )
                         detectedDevices[key] = detection
-                        trySend(detection)
+                        trySend(GlassesScanEvent.Observation(detection))
                         if (existing == null) {
                             Log.i(TAG, "Connected device detected: $name (${nameMatch.deviceType})")
                         }
@@ -1241,7 +1380,7 @@ class GlassesDetector @Inject constructor(
         checkConnectedDevices()
 
         // Periodic: restart BLE scan + check connected devices + Classic BT discovery
-        val restartJob = CoroutineScope(Dispatchers.Default).launch {
+        val restartJob = launch {
             while (true) {
                 delay(SCAN_RESTART_INTERVAL_MS)
                 refreshBondedList()
@@ -1259,43 +1398,31 @@ class GlassesDetector @Inject constructor(
 
         awaitClose {
             Log.i(TAG, "Stopping smart glasses BLE scan")
-            isScanRunning = false
             restartJob.cancel()
-            try {
-                activeScanCallback?.let { cb -> bleScanner?.stopScan(cb) }
-            } catch (e: Exception) {
-                Log.w(TAG, "Error stopping glasses scan", e)
+            callbackRegistry.closeAndStopAll()
+            if (callbackRegistry.registeredCount > 0) {
+                Log.w(
+                    TAG,
+                    "${callbackRegistry.registeredCount} BLE scan callbacks could not be stopped",
+                )
             }
-            activeScanCallback = null
-            bleScanner = null
+            activeRegistration = null
+            localScanner = null
             detectedDevices.clear()
         }
+    }
+
+    fun startScanning(): Flow<GlassesDetection> = scanEvents().transform { event ->
+        if (event is GlassesScanEvent.Observation) emit(event.detection)
     }
 
     @SuppressLint("MissingPermission")
     fun stopScanning() {
-        try {
-            activeScanCallback?.let { cb -> bleScanner?.stopScan(cb) }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error stopping glasses scan", e)
-        } finally {
-            activeScanCallback = null
-            bleScanner = null
-            detectedDevices.clear()
-        }
+        Log.w(TAG, "stopScanning() is obsolete; cancel the scanEvents collector that owns the callback")
     }
-
-    /** Ignore a MAC address — won't be reported again */
-    fun ignoreDevice(mac: String) = detectionPrefs.ignoreMac(mac)
-
-    /** Un-ignore a MAC address */
-    fun unignoreDevice(mac: String) = detectionPrefs.unignoreMac(mac)
 
     private fun checkScanResult(result: ScanResult): GlassesDetection? {
         val mac = result.device.address
-
-        // Skip ignored devices
-        if (mac in detectionPrefs.getIgnoredMacs()) return null
 
         val rssi = result.rssi
         val record = result.scanRecord ?: return null

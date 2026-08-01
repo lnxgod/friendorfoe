@@ -127,6 +127,26 @@ class BleTracker @Inject constructor() {
         timestamp = Instant.now()
     )
 
+    /** Records one privacy-advertisement sample using the latest valid Sky location seed. */
+    fun recordPrivacyObservation(
+        detection: GlassesDetection,
+        compassBearing: Float,
+    ) {
+        val latestLocation = synchronized(userLocations) { userLocations.lastOrNull() }
+        recordSightingAt(
+            mac = detection.mac,
+            rssi = detection.rssi,
+            deviceName = detection.deviceName,
+            deviceType = detection.deviceType,
+            manufacturer = detection.manufacturer,
+            hasCamera = detection.hasCamera,
+            userLat = latestLocation?.latitude ?: 0.0,
+            userLon = latestLocation?.longitude ?: 0.0,
+            compassBearing = compassBearing,
+            timestamp = detection.lastSeen,
+        )
+    }
+
     internal fun recordSightingAt(
         mac: String,
         rssi: Int,
@@ -168,7 +188,14 @@ class BleTracker @Inject constructor() {
             }
         }
 
-        // If we're doing a direction scan on this device, record sample
+        recordDirectionSample(mac, rssi, compassBearing)
+    }
+
+    /**
+     * Feed an active direction sweep without retaining movement history.
+     * This keeps an explicitly requested sweep responsive when stalker analysis is disabled.
+     */
+    fun recordDirectionSample(mac: String, rssi: Int, compassBearing: Float) {
         if (directionScanTarget == mac) {
             directionSamples.add(compassBearing to rssi)
         }
@@ -230,7 +257,10 @@ class BleTracker @Inject constructor() {
 
             // Check if device has been seen at multiple user locations
             val uniqueLocations = synchronized(device.sightings) {
-                device.sightings.map { "${it.userLat.format(4)},${it.userLon.format(4)}" }.toSet()
+                device.sightings
+                    .filter { isValidLocation(it.userLat, it.userLon) }
+                    .map { "${it.userLat.format(4)},${it.userLon.format(4)}" }
+                    .toSet()
             }
 
             if (userMovement > FOLLOW_MIN_MOVEMENT_M && uniqueLocations.size > 1) {
@@ -264,7 +294,7 @@ class BleTracker @Inject constructor() {
     fun startDirectionScan(mac: String) {
         directionScanTarget = mac
         synchronized(directionSamples) { directionSamples.clear() }
-        Log.i(TAG, "Direction scan started for $mac — rotate 360° slowly")
+        safeLogInfo("Direction scan started for $mac — rotate 360° slowly")
     }
 
     /**
@@ -279,7 +309,7 @@ class BleTracker @Inject constructor() {
         val snapshot = synchronized(directionSamples) { directionSamples.toList() }
 
         if (snapshot.size < MIN_DIRECTION_SAMPLES) {
-            Log.w(TAG, "Direction scan: only ${snapshot.size} samples, need $MIN_DIRECTION_SAMPLES")
+            safeLogWarning("Direction scan: only ${snapshot.size} samples, need $MIN_DIRECTION_SAMPLES")
             return null
         }
 
@@ -311,7 +341,7 @@ class BleTracker @Inject constructor() {
             else -> 0.3f
         }
 
-        Log.i(TAG, "Direction scan complete: bearing=${"%.0f".format(normalizedBearing)}° confidence=${"%.0f".format(confidence * 100)}% peak=${peakRssi}dBm (${snapshot.size} samples)")
+        safeLogInfo("Direction scan complete: bearing=${"%.0f".format(normalizedBearing)}° confidence=${"%.0f".format(confidence * 100)}% peak=${peakRssi}dBm (${snapshot.size} samples)")
 
         return DirectionResult(
             mac = mac,
@@ -368,6 +398,14 @@ class BleTracker @Inject constructor() {
     private fun safeLogWarning(message: String) {
         try {
             Log.w(TAG, message)
+        } catch (_: RuntimeException) {
+            // Android Log is not available in plain JVM unit tests.
+        }
+    }
+
+    private fun safeLogInfo(message: String) {
+        try {
+            Log.i(TAG, message)
         } catch (_: RuntimeException) {
             // Android Log is not available in plain JVM unit tests.
         }

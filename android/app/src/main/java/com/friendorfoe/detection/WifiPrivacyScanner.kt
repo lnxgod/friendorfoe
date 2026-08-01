@@ -42,16 +42,20 @@ class WifiPrivacyScanner @Inject constructor(
         }
     }
 
-    fun startScanning(): Flow<GlassesDetection> =
-        wifiScanCoordinator.scanResults().transform { scanResults ->
-            val networks = scanResults.mapNotNull { result ->
-                val bssid = result.BSSID ?: return@mapNotNull null
+    fun mapBatch(batch: WifiScanBatch): List<GlassesDetection> =
+        detectPrivacyNetworks(
+            batch.networks.map { network ->
                 WifiPrivacyNetwork(
-                    ssid = result.SSID.orEmpty(),
-                    bssid = bssid,
-                    rssi = result.level
+                    ssid = network.ssid,
+                    bssid = network.bssid,
+                    rssi = network.rssi,
                 )
-            }
-            detectPrivacyNetworks(networks).forEach { emit(it) }
+            },
+        )
+
+    fun startScanning(): Flow<GlassesDetection> =
+        wifiScanCoordinator.scanEvents().transform { event ->
+            if (event !is WifiScanEvent.Success) return@transform
+            mapBatch(event.batch).forEach { emit(it) }
         }
 }

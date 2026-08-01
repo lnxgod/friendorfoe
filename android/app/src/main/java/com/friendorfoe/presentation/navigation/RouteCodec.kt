@@ -1,6 +1,7 @@
 package com.friendorfoe.presentation.navigation
 
 import java.nio.charset.StandardCharsets
+import java.net.URLDecoder
 
 fun encodeRouteSegment(value: String): String = buildString {
     value.toByteArray(StandardCharsets.UTF_8).forEach { byte ->
@@ -21,3 +22,10 @@ fun encodeRouteSegment(value: String): String = buildString {
 }
 
 private const val HEX_DIGITS = "0123456789ABCDEF"
+
+fun decodeRouteSegment(value: String): String? = runCatching {
+    URLDecoder.decode(
+        value.replace("+", "%2B"),
+        StandardCharsets.UTF_8.name(),
+    )
+}.getOrNull()

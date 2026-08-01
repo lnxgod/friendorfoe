@@ -1,21 +1,43 @@
 package com.friendorfoe.presentation.privacy
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -26,585 +48,671 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.PrivacyCategory
-import com.friendorfoe.presentation.alerts.SkyAlertCandidate
-import com.friendorfoe.presentation.components.FofActionRow
 import com.friendorfoe.presentation.components.FofEmptyState
-import com.friendorfoe.presentation.components.FofSection
-import com.friendorfoe.presentation.components.FofStatusStrip
-import com.friendorfoe.presentation.components.FofTone
+import com.friendorfoe.presentation.components.FofErrorState
+import com.friendorfoe.presentation.components.FofLoadingState
+import com.friendorfoe.presentation.components.FofNoMatchesState
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
-/** Section group definition for threat-level grouping */
-private data class SectionGroup(
-    val title: String,
-    val threatLevel: Int,
-    val color: @Composable () -> Color,
-    val icon: String
-)
-
-private val sectionGroups = listOf(
-    SectionGroup("THREATS", 3, { Color(0xFFD32F2F) }, "\uD83D\uDD34"),
-    SectionGroup("AWARENESS", 2, { Color(0xFFFF9800) }, "\uD83D\uDFE0"),
-    SectionGroup("NEARBY", 1, { Color(0xFFFFC107) }, "\uD83D\uDFE1"),
-    SectionGroup("INFO", 0, { Color(0xFF9E9E9E) }, "\u26AA"),
+data class PrivacyActions(
+    val onRecoverSource: (PrivacySourceKind) -> Unit = {},
+    val onQueryChanged: (String) -> Unit = {},
+    val onToggleCategory: (PrivacyCategory) -> Unit = {},
+    val onToggleSource: (PrivacySourceKind) -> Unit = {},
+    val onClearFilters: () -> Unit = {},
+    val onRetryAllSources: () -> Unit = {},
+    val onOpenPermissionSettings: () -> Unit = {},
+    val onOpenBackendSettings: (() -> Unit)? = null,
+    val onOpenIgnoredDevices: (() -> Unit)? = null,
+    val onIgnore: (PrivacyFinding) -> Unit = {},
+    val onTrack: (PrivacyFinding) -> Unit = {},
+    val onOpenDetails: (PrivacyFindingKey) -> Unit = {},
 )
 
 @Composable
 fun PrivacyScreen(
-    onNavigateToEmfSweep: (() -> Unit)? = null,
-    onNavigateToIrCameraScan: (() -> Unit)? = null,
-    viewModel: PrivacyViewModel = hiltViewModel()
+    onOpenIgnoredDevices: (() -> Unit)? = null,
+    onOpenInfo: (() -> Unit)? = null,
+    onOpenFinding: ((PrivacyFindingKey) -> Unit)? = null,
+    viewModel: PrivacyViewModel = hiltViewModel(),
 ) {
-    val categorized by viewModel.categorizedDetections.collectAsStateWithLifecycle()
-    val totalCount by viewModel.totalCount.collectAsStateWithLifecycle()
-    val threatCount by viewModel.threatCount.collectAsStateWithLifecycle()
-    val backendOnlyMode by viewModel.backendOnlyMode.collectAsStateWithLifecycle()
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var detailKey by remember { mutableStateOf<PrivacyFindingKey?>(null) }
+    var trackingKey by remember { mutableStateOf<PrivacyFindingKey?>(null) }
 
-    // Track expanded categories (high-threat auto-expanded)
-    val expandedCategories = remember {
-        mutableStateOf(setOf(PrivacyCategory.SMART_GLASSES,
-            PrivacyCategory.HIDDEN_CAMERA, PrivacyCategory.ATTACK_TOOL,
-            PrivacyCategory.ULTRASONIC_BEACON, PrivacyCategory.RETAIL_TRACKER,
-            PrivacyCategory.SURVEILLANCE_CAMERA, PrivacyCategory.ALPR_CAMERA,
-            PrivacyCategory.MOBILE_KEY_LOCK,
-            PrivacyCategory.BABY_MONITOR, PrivacyCategory.THERMAL_CAMERA,
-            PrivacyCategory.CONFERENCE_CAMERA, PrivacyCategory.VIDEO_INTERCOM,
-            PrivacyCategory.VOICE_RECORDER, PrivacyCategory.REMOTE_LISTENING,
-            PrivacyCategory.SMART_PEN,
-            PrivacyCategory.PAYMENT_READER,
-            PrivacyCategory.SMART_SPEAKER, PrivacyCategory.SMART_HOME_HUB,
-            PrivacyCategory.GPS_TRACKER, PrivacyCategory.OBD_TRACKER,
-            PrivacyCategory.VENUE_BEACON, PrivacyCategory.EVENT_BADGE,
-            PrivacyCategory.BLE_HID, PrivacyCategory.AURACAST,
-            PrivacyCategory.APPLE_CONTINUITY))
+    PrivacyContent(
+        state = state,
+        actions = PrivacyActions(
+            onRecoverSource = viewModel::recover,
+            onQueryChanged = viewModel::updateQuery,
+            onToggleCategory = viewModel::toggleCategory,
+            onToggleSource = viewModel::toggleSource,
+            onClearFilters = viewModel::clearFilters,
+            onRetryAllSources = viewModel::retryAllFailed,
+            onOpenPermissionSettings = {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:${context.packageName}"),
+                    ),
+                )
+            },
+            onOpenBackendSettings = onOpenInfo,
+            onOpenIgnoredDevices = onOpenIgnoredDevices,
+            onIgnore = viewModel::ignore,
+            onTrack = { trackingKey = it.observationKey },
+            onOpenDetails = { key ->
+                if (onOpenFinding != null) onOpenFinding(key) else detailKey = key
+            },
+        ),
+    )
+
+    detailKey?.let { key ->
+        val finding = state.visibleFindings.singleOrNull { it.routableKey == key }
+        PrivacyFindingDetailDialog(
+            finding = finding,
+            onDismiss = { detailKey = null },
+        )
     }
+    trackingKey?.let { key ->
+        val finding = state.visibleFindings.singleOrNull { it.observationKey == key }
+        PrivacySignalSweepDialog(
+            finding = finding,
+            onDismiss = { trackingKey = null },
+        )
+    }
+}
 
-    // Track collapsed sections (all expanded by default)
-    val collapsedSections = remember { mutableStateOf(setOf<Int>()) }
-
-    var selectedDetail by remember { mutableStateOf<GlassesDetection?>(null) }
-    var trackingTarget by remember { mutableStateOf<GlassesDetection?>(null) }
-    val ultrasonicAlerts by viewModel.ultrasonicAlerts.collectAsStateWithLifecycle()
-    val wifiAnomalies by viewModel.wifiAnomalies.collectAsStateWithLifecycle()
-    val stalkerAlerts by viewModel.stalkerAlerts.collectAsStateWithLifecycle()
-    val skyAlertCandidates by viewModel.skyAlertCandidates.collectAsStateWithLifecycle()
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        // WiFi anomaly banner (Pwnagotchi, evil twin, karma attack)
-        if (wifiAnomalies.isNotEmpty()) {
-            val worst = wifiAnomalies.maxByOrNull { it.threatLevel } ?: wifiAnomalies.first()
-            val title = when (worst.type) {
-                "pwnagotchi" -> "Pwnagotchi detected"
-                "evil_twin" -> "Evil twin AP detected"
-                "karma_attack" -> "Karma attack detected"
-                "rogue_ap" -> "Rogue AP detected"
-                else -> "WiFi anomaly"
+@Composable
+fun PrivacyContent(
+    state: PrivacyUiState,
+    actions: PrivacyActions,
+    modifier: Modifier = Modifier,
+) {
+    LazyColumn(
+        modifier = modifier.fillMaxSize().testTag("privacy_content"),
+        contentPadding = PaddingValues(bottom = 24.dp),
+    ) {
+        item {
+            PrivacyHeader(state, actions.onOpenIgnoredDevices)
+        }
+        if (state.sourceSummaries.isNotEmpty()) {
+            item {
+                PrivacySourceHealthSummary(state.sourceSummaries, actions)
             }
-            FofStatusStrip(
-                label = "WIFI",
-                title = title,
-                detail = worst.details,
-                tone = FofTone.Danger
-            )
+        }
+        if (state.lastUpdatedWallMs != null) {
+            item {
+                Text(
+                    text = "Updated ${formatPrivacyWallTime(state.lastUpdatedWallMs)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
+        }
+        item {
+            PrivacySearchAndFilters(state, actions)
         }
 
-        // Ultrasonic beacon alert banner (high priority, above everything)
-        if (ultrasonicAlerts.isNotEmpty()) {
-            val alert = ultrasonicAlerts.last()
-            FofStatusStrip(
-                label = "ULTRA",
-                title = "Ultrasonic beacon detected",
-                detail = "${"%.0f".format(alert.frequencyHz)} Hz | SNR ${"%.1f".format(alert.snrDb)} dB | ${alert.persistenceFrames} frames",
-                tone = FofTone.Danger
-            )
-        }
-
-        if (stalkerAlerts.isNotEmpty()) {
-            val alert = stalkerAlerts.maxByOrNull { it.threatLevel } ?: stalkerAlerts.first()
-            FofStatusStrip(
-                label = "BLE",
-                title = "Follower alert",
-                detail = "${alert.device.deviceName ?: alert.device.deviceType ?: alert.device.mac} appears ${alert.reason}",
-                tone = FofTone.Danger
-            )
-        }
-
-        if (backendOnlyMode) {
-            BackendOnlyPausedRow(
-                onUsePhoneScanner = viewModel::enablePhonePrivacyScanning
-            )
-        }
-
-        SweepToolsRow(
-            onNavigateToEmfSweep = onNavigateToEmfSweep,
-            onNavigateToIrCameraScan = onNavigateToIrCameraScan
-        )
-
-        FofStatusStrip(
-            label = "SCAN",
-            title = if (threatCount > 0) "Privacy threats detected" else "Privacy scanner active",
-            detail = "$totalCount device${if (totalCount != 1) "s" else ""} detected" +
-                if (threatCount > 0) " | $threatCount threat${if (threatCount != 1) "s" else ""}" else "",
-            tone = if (threatCount > 0) FofTone.Danger else FofTone.Primary
-        )
-
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            if (categorized.isEmpty()) {
-                item(key = "empty_privacy_devices") {
-                    FofEmptyState(
-                        title = "No privacy devices detected",
-                        detail = "Scanning for smart glasses, cameras, trackers, speakers, locks, and other nearby devices.",
-                        label = "PRIVACY",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(32.dp)
-                    )
-                }
-            } else {
-                for (section in sectionGroups) {
-                    // Get categories in this section that have detections
-                    val sectionCategories = categorized.filter { it.key.threatLevel == section.threatLevel }
-                    if (sectionCategories.isEmpty()) continue
-
-                    val sectionDeviceCount = sectionCategories.values.sumOf { it.size }
-                    val isSectionCollapsed = section.threatLevel in collapsedSections.value
-
-                    // Section group header
-                    item(key = "section_${section.threatLevel}") {
-                        SectionHeader(
-                            section = section,
-                            deviceCount = sectionDeviceCount,
-                            isCollapsed = isSectionCollapsed,
-                            onClick = {
-                                collapsedSections.value = if (isSectionCollapsed) {
-                                    collapsedSections.value - section.threatLevel
-                                } else {
-                                    collapsedSections.value + section.threatLevel
-                                }
-                            }
-                        )
-                    }
-
-                    if (!isSectionCollapsed) {
-                        sectionCategories.forEach { (category, devices) ->
-                            // Category header (indented under section)
-                            item(key = "header_${category.name}") {
-                                val isExpanded = category in expandedCategories.value
-                                CategoryHeader(
-                                    category = category,
-                                    count = devices.size,
-                                    isExpanded = isExpanded,
-                                    onClick = {
-                                        expandedCategories.value = if (isExpanded) {
-                                            expandedCategories.value - category
-                                        } else {
-                                            expandedCategories.value + category
-                                        }
-                                    }
-                                )
-                            }
-
-                            // Device cards (if expanded)
-                            if (category in expandedCategories.value) {
-                                items(
-                                    items = devices.sortedByDescending { it.rssi },
-                                    key = { "device_${it.mac}_${it.matchReason}" }
-                                ) { detection ->
-                                    DeviceCard(
-                                        detection = detection,
-                                        onIgnore = { viewModel.ignoreDevice(detection.mac) },
-                                        onTrack = { trackingTarget = detection },
-                                        onDetails = { selectedDetail = detection }
-                                    )
-                                }
-                            }
+        when (val body = state.body) {
+            PrivacyBodyState.Loading -> item {
+                FofLoadingState("Checking Phone, Backend, Badge, and Wi-Fi sources")
+            }
+            PrivacyBodyState.Empty -> item {
+                FofEmptyState("No current findings")
+            }
+            is PrivacyBodyState.NoMatches -> item {
+                FofNoMatchesState(body.activeFilterCount, actions.onClearFilters)
+            }
+            is PrivacyBodyState.RetryableFailure -> item {
+                FofErrorState(
+                    title = "Privacy sources unavailable",
+                    detail = body.message,
+                    actionLabel = "Retry",
+                    onAction = actions.onRetryAllSources,
+                )
+            }
+            is PrivacyBodyState.PermissionBlocked -> item {
+                FofErrorState(
+                    title = "Permission needed",
+                    detail = body.message,
+                    actionLabel = "Open app settings",
+                    onAction = actions.onOpenPermissionSettings,
+                )
+            }
+            is PrivacyBodyState.Unsupported -> item {
+                FofEmptyState(body.message)
+            }
+            is PrivacyBodyState.Stale -> item {
+                FofEmptyState(
+                    title = "Results are stale",
+                    detail = body.message,
+                    modifier = Modifier.fillMaxWidth().padding(24.dp),
+                )
+            }
+            PrivacyBodyState.Content -> {
+                PrivacySection.entries.forEach { section ->
+                    val rows = state.visibleFindings.filter { it.section() == section }
+                    if (rows.isNotEmpty()) {
+                        item(key = "section_${section.name}") {
+                            PrivacySectionStrip(section, rows.size)
+                        }
+                        items(
+                            items = rows,
+                            key = { it.observationKey.encoded },
+                        ) { finding ->
+                            PrivacyFindingRow(finding, actions)
                         }
                     }
                 }
             }
-            item(key = "sky_alerts_footer") {
-                SkyAlertsFooter(candidates = skyAlertCandidates)
-            }
         }
     }
-
-    // Detail dialog
-    if (selectedDetail != null) {
-        DeviceDetailDialog(
-            detection = selectedDetail!!,
-            onIgnore = {
-                viewModel.ignoreDevice(selectedDetail!!.mac)
-                selectedDetail = null
-            },
-            onTrack = {
-                trackingTarget = selectedDetail
-                selectedDetail = null
-            },
-            onDismiss = { selectedDetail = null }
-        )
-    }
-
-    // Direction scan overlay (full-screen)
-    if (trackingTarget != null) {
-        DirectionScanOverlay(
-            detection = trackingTarget!!,
-            viewModel = viewModel,
-            onDismiss = { trackingTarget = null }
-        )
-    }
 }
 
 @Composable
-private fun BackendOnlyPausedRow(
-    onUsePhoneScanner: () -> Unit
+private fun PrivacyHeader(
+    state: PrivacyUiState,
+    onOpenIgnoredDevices: (() -> Unit)?,
 ) {
-    FofStatusStrip(
-        label = "PHONE",
-        title = "Local privacy scan paused",
-        detail = "Backend-only mode is on; badge/API feeds still work.",
-        tone = FofTone.Primary,
-        actionLabel = "Use Phone",
-        onAction = onUsePhoneScanner
-    )
-}
-
-@Composable
-private fun SweepToolsRow(
-    onNavigateToEmfSweep: (() -> Unit)?,
-    onNavigateToIrCameraScan: (() -> Unit)?
-) {
-    FofSection(
-        title = "Sweep Tools",
-        subtitle = "Run close-range checks when a signal needs a second look.",
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 16.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        FofActionRow(
-            title = "EMF Sweep",
-            description = "Magnetometer check for nearby electronics",
-            enabled = onNavigateToEmfSweep != null,
-            onClick = onNavigateToEmfSweep
-        )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        FofActionRow(
-            title = "IR Camera Scan",
-            description = "Front-camera scan for active IR light sources",
-            enabled = onNavigateToIrCameraScan != null,
-            onClick = onNavigateToIrCameraScan
-        )
-    }
-}
-
-@Composable
-private fun SkyAlertsFooter(
-    candidates: List<SkyAlertCandidate>
-) {
-    FofSection(
-        title = "Sky Alerts",
-        subtitle = "Current alert matches",
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-    ) {
-        if (candidates.isEmpty()) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Privacy", style = MaterialTheme.typography.headlineSmall)
             Text(
-                text = "No sky alerts in current settings",
+                text = "${state.totalCurrentCount} current finding${if (state.totalCurrentCount == 1) "" else "s"}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 12.dp)
             )
-        } else {
-            val visibleCandidates = candidates.take(8)
-            visibleCandidates.forEachIndexed { index, candidate ->
-                FofActionRow(
-                    title = candidate.title,
-                    description = candidate.body.ifBlank { "Nearby object" },
-                    trailingLabel = ""
-                )
-                if (index != visibleCandidates.lastIndex) {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                }
-            }
-            if (candidates.size > visibleCandidates.size) {
+        }
+        if (state.threatCount > 0) {
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.error.copy(alpha = 0.10f),
+            ) {
                 Text(
-                    text = "${candidates.size - visibleCandidates.size} more",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 8.dp)
+                    text = "${state.threatCount} need attention",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                 )
+            }
+        }
+        if (onOpenIgnoredDevices != null) {
+            IconButton(
+                onClick = onOpenIgnoredDevices,
+                modifier = Modifier.size(48.dp),
+            ) {
+                Icon(Icons.Default.Block, contentDescription = "Ignored findings")
             }
         }
     }
 }
 
 @Composable
-private fun SectionHeader(
-    section: SectionGroup,
-    deviceCount: Int,
-    isCollapsed: Boolean,
-    onClick: () -> Unit
-) {
-    val sectionColor = section.color()
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .background(sectionColor.copy(alpha = 0.08f))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = if (isCollapsed) "\u25B6" else "\u25BC",
-            color = sectionColor,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(text = section.icon)
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(
-            text = section.title,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
-            color = sectionColor,
-            modifier = Modifier.weight(1f)
-        )
-        Text(
-            text = "$deviceCount",
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
-            color = sectionColor,
-            modifier = Modifier
-                .background(sectionColor.copy(alpha = 0.15f), MaterialTheme.shapes.small)
-                .padding(horizontal = 10.dp, vertical = 3.dp)
-        )
-    }
-}
-
-@Composable
-private fun CategoryHeader(
-    category: PrivacyCategory,
-    count: Int,
-    isExpanded: Boolean,
-    onClick: () -> Unit
-) {
-    val threatColor = when (category.threatLevel) {
-        3 -> MaterialTheme.colorScheme.error
-        2 -> Color(0xFFFF9800)
-        1 -> Color(0xFFFFC107)
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-            .padding(start = 28.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = if (isExpanded) "\u25BC" else "\u25B6",
-            color = threatColor,
-            style = MaterialTheme.typography.bodySmall
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(text = category.icon, modifier = Modifier.width(22.dp))
-        Text(
-            text = category.label,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = threatColor,
-            modifier = Modifier.weight(1f)
-        )
-        Text(
-            text = "$count",
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            color = threatColor,
-            modifier = Modifier
-                .background(threatColor.copy(alpha = 0.12f), MaterialTheme.shapes.extraSmall)
-                .padding(horizontal = 6.dp, vertical = 1.dp)
-        )
-    }
-}
-
-@Composable
-private fun DeviceCard(
-    detection: GlassesDetection,
-    onIgnore: () -> Unit,
-    onTrack: () -> Unit,
-    onDetails: () -> Unit
+private fun PrivacySourceHealthSummary(
+    summaries: List<PrivacySourceSummary>,
+    actions: PrivacyActions,
 ) {
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onDetails)
-            .padding(start = 40.dp, end = 16.dp, top = 6.dp, bottom = 6.dp)
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        summaries.forEachIndexed { index, summary ->
+            PrivacySourceStatusRow(summary, actions)
+            if (index != summaries.lastIndex) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrivacySourceStatusRow(
+    summary: PrivacySourceSummary,
+    actions: PrivacyActions,
+) {
+    val color = sourceHealthColor(summary.state)
+    Row(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(8.dp).background(color, RoundedCornerShape(4.dp)))
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = summary.group.label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.width(72.dp),
+        )
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = if (detection.hasCamera) "\uD83D\uDCF7" else "\uD83D\uDD0A",
-                modifier = Modifier.width(22.dp)
+                text = summary.state.userLabel(),
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold,
+                color = color,
             )
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "${detection.manufacturer} ${detection.deviceType}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    if (detection.seenMacs.size > 1) {
-                        Text(
-                            text = " \u00B7 ${detection.seenMacs.size} MACs",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            summary.message?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        val action = when (summary.recoveryLabel) {
+            "Grant permission" -> "Open settings" to actions.onOpenPermissionSettings
+            "Fix backend URL" -> actions.onOpenBackendSettings?.let { "Open Info" to it }
+            null, "" -> null
+            else -> summary.recoveryLabel to { actions.onRecoverSource(summary.recoverySource) }
+        }
+        if (action != null) {
+            TextButton(
+                onClick = action.second,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) {
+                Text(action.first)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrivacySearchAndFilters(
+    state: PrivacyUiState,
+    actions: PrivacyActions,
+) {
+    var categoriesOpen by remember { mutableStateOf(false) }
+    var sourcesOpen by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        OutlinedTextField(
+            value = state.filters.query,
+            onValueChange = actions.onQueryChanged,
+            modifier = Modifier.fillMaxWidth().testTag("privacy_search"),
+            singleLine = true,
+            label = { Text("Search current findings") },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            trailingIcon = if (state.filters.query.isNotEmpty()) {
+                {
+                    IconButton(
+                        onClick = { actions.onQueryChanged("") },
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Clear search")
+                    }
+                }
+            } else {
+                null
+            },
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box {
+                FilterChip(
+                    selected = state.filters.categories.isNotEmpty(),
+                    onClick = { categoriesOpen = true },
+                    label = {
+                        Text(filterLabel("Categories", state.filters.categories.size))
+                    },
+                    leadingIcon = { Icon(Icons.Default.FilterList, contentDescription = null) },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                )
+                DropdownMenu(
+                    expanded = categoriesOpen,
+                    onDismissRequest = { categoriesOpen = false },
+                ) {
+                    state.availableCategories.forEach { category ->
+                        DropdownMenuItem(
+                            text = { Text(category.label) },
+                            onClick = { actions.onToggleCategory(category) },
+                            leadingIcon = {
+                                Checkbox(
+                                    checked = category in state.filters.categories,
+                                    onCheckedChange = null,
+                                )
+                            },
                         )
                     }
                 }
-                if (detection.deviceName != null) {
-                    Text(
-                        text = detection.deviceName,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            }
+            Box {
+                FilterChip(
+                    selected = state.filters.sources.isNotEmpty(),
+                    onClick = { sourcesOpen = true },
+                    label = { Text(filterLabel("Sources", state.filters.sources.size)) },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                )
+                DropdownMenu(
+                    expanded = sourcesOpen,
+                    onDismissRequest = { sourcesOpen = false },
+                ) {
+                    state.availableSources.forEach { source ->
+                        DropdownMenuItem(
+                            text = { Text(source.userLabel()) },
+                            onClick = { actions.onToggleSource(source) },
+                            leadingIcon = {
+                                Checkbox(
+                                    checked = source in state.filters.sources,
+                                    onCheckedChange = null,
+                                )
+                            },
+                        )
+                    }
                 }
             }
-            Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    text = "${detection.rssi}dB",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Medium,
-                    color = when {
-                        detection.rssi > -50 -> MaterialTheme.colorScheme.error
-                        detection.rssi > -70 -> Color(0xFFFF9800)
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
-                Text(
-                    text = "${(detection.confidence * 100).toInt()}%",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                )
+            if (state.filters.activeFilterCount > 0) {
+                TextButton(
+                    onClick = actions.onClearFilters,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text("Clear")
+                }
             }
         }
-
-        // Parsed details
-        if (detection.details.isNotEmpty()) {
-            Text(
-                text = detection.details.entries.take(3).joinToString(" \u2022 ") { "${it.key}: ${it.value}" },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                modifier = Modifier.padding(start = 22.dp, top = 2.dp)
-            )
-        }
-
-        // Match reason
-        Text(
-            text = detection.matchReason,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-            modifier = Modifier.padding(start = 22.dp, top = 1.dp)
-        )
-
-        // Action buttons
-        Row(
-            modifier = Modifier.padding(start = 22.dp, top = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = "Ignore",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.clickable(onClick = onIgnore)
-            )
-            Text(
-                text = "Track",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.clickable(onClick = onTrack)
-            )
-        }
-
-        HorizontalDivider(
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
-            modifier = Modifier.padding(top = 6.dp)
-        )
     }
 }
 
 @Composable
-private fun DeviceDetailDialog(
-    detection: GlassesDetection,
-    onIgnore: () -> Unit,
-    onTrack: () -> Unit,
-    onDismiss: () -> Unit
+private fun PrivacySectionStrip(section: PrivacySection, count: Int) {
+    val color = sectionColor(section)
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+        color = color.copy(alpha = 0.10f),
+        tonalElevation = 0.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = section.label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = color,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = count.toString(),
+                style = MaterialTheme.typography.labelMedium,
+                color = color,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PrivacyFindingRow(
+    finding: PrivacyFinding,
+    actions: PrivacyActions,
+) {
+    val accent = sectionColor(finding.section())
+    val rowModifier = if (finding.routableKey != null) {
+        Modifier.clickable { actions.onOpenDetails(requireNotNull(finding.routableKey)) }
+    } else {
+        Modifier
+    }
+    Row(
+        modifier = rowModifier
+            .fillMaxWidth()
+            .testTag("finding_${finding.displayId}")
+            .semantics {
+                contentDescription = buildString {
+                    append(finding.severity.userLabel())
+                    append(", ")
+                    append(finding.source.userLabel())
+                    append(", ")
+                    append(finding.title)
+                }
+            },
+    ) {
+        Box(Modifier.width(4.dp).heightIn(min = 136.dp).background(accent))
+        Column(
+            modifier = Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Row(verticalAlignment = Alignment.Top) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = finding.title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = buildFindingMetadata(finding),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                finding.signalDbm?.let {
+                    Text(
+                        text = "$it dBm",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
+            }
+            finding.evidence?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            finding.limitation?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                            RoundedCornerShape(8.dp),
+                        )
+                        .padding(8.dp),
+                )
+            }
+            PrivacyFindingActions(finding, actions)
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+@Composable
+private fun PrivacyFindingActions(
+    finding: PrivacyFinding,
+    actions: PrivacyActions,
+) {
+    if (!finding.capabilities.canIgnore &&
+        !finding.capabilities.canTrack &&
+        finding.routableKey == null
+    ) {
+        return
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        if (finding.capabilities.canIgnore) {
+            TextButton(
+                onClick = { actions.onIgnore(finding) },
+                modifier = Modifier.heightIn(min = 48.dp)
+                    .testTag("finding_${finding.displayId}_ignore"),
+            ) {
+                Text("Ignore")
+            }
+        }
+        if (finding.capabilities.canTrack) {
+            TextButton(
+                onClick = { actions.onTrack(finding) },
+                modifier = Modifier.heightIn(min = 48.dp)
+                    .testTag("finding_${finding.displayId}_track")
+                    .semantics {
+                        contentDescription = "Open RSSI direction sweep for ${finding.title}"
+                    },
+            ) {
+                Icon(Icons.Default.MyLocation, contentDescription = null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Track")
+            }
+        }
+        finding.routableKey?.let { key ->
+            TextButton(
+                onClick = { actions.onOpenDetails(key) },
+                modifier = Modifier.heightIn(min = 48.dp)
+                    .testTag("finding_${finding.displayId}_details"),
+            ) {
+                Text("Details")
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrivacyFindingDetailDialog(
+    finding: PrivacyFinding?,
+    onDismiss: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = if (detection.hasCamera) "\uD83D\uDCF7" else "\uD83D\uDD0A",
-                    modifier = Modifier.width(28.dp)
-                )
-                Text("${detection.manufacturer} ${detection.deviceType}")
-            }
-        },
+        title = { Text(finding?.title ?: "Item no longer current") },
         text = {
-            Column {
-                if (detection.deviceName != null) DetailRow("Name", detection.deviceName)
-                DetailRow("MAC", detection.mac)
-                DetailRow("RSSI", "${detection.rssi} dBm")
-                DetailRow("Confidence", "${(detection.confidence * 100).toInt()}%")
-                DetailRow("Match", detection.matchReason)
-                DetailRow("Category", detection.category.label)
-                DetailRow("Camera", if (detection.hasCamera) "Yes" else "No")
-
-                if (detection.details.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Parsed Details", fontWeight = FontWeight.Medium,
-                         style = MaterialTheme.typography.titleSmall)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    for ((key, value) in detection.details) {
-                        DetailRow(key, value)
+            if (finding == null) {
+                Text("This exact finding is no longer in the current list.")
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(buildFindingMetadata(finding), style = MaterialTheme.typography.labelMedium)
+                    finding.evidence?.let { Text(it) }
+                    finding.limitation?.let {
+                        Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    finding.signalDbm?.let { Text("Signal: $it dBm") }
                 }
             }
         },
         confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onIgnore) { Text("Ignore") }
-                TextButton(onClick = onTrack) { Text("Track") }
-                TextButton(onClick = onDismiss) { Text("Close") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("Close")
             }
-        }
+        },
     )
 }
 
 @Composable
-private fun DetailRow(label: String, value: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 1.dp)
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(90.dp)
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.Medium
-        )
-    }
+private fun PrivacySignalSweepDialog(
+    finding: PrivacyFinding?,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("RSSI direction sweep") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(finding?.title ?: "Signal is no longer current")
+                finding?.signalDbm?.let {
+                    Text(
+                        text = "$it dBm",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                Text(
+                    "Turn slowly and watch the live signal. A less negative dBm value is stronger. " +
+                        "RSSI is approximate and does not locate the device.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("Done")
+            }
+        },
+    )
 }
+
+private fun filterLabel(label: String, selected: Int): String =
+    if (selected == 0) label else "$label · $selected"
+
+private fun buildFindingMetadata(finding: PrivacyFinding): String = buildList {
+    add(finding.severity.userLabel())
+    add(finding.source.userLabel())
+    add(finding.category.label)
+    add(
+        when (finding.freshness) {
+            FindingFreshness.LIVE -> "Live"
+            FindingFreshness.STALE -> "Stale"
+            FindingFreshness.PAUSED_CACHED -> "Paused copy"
+            FindingFreshness.EXPIRED -> "Expired"
+        },
+    )
+    if (finding.ownership == Ownership.OWNED) add("Your device")
+}.joinToString(" · ")
+
+private fun FindingSeverity.userLabel(): String = when (this) {
+    FindingSeverity.CRITICAL -> "Threat"
+    FindingSeverity.AWARENESS -> "Awareness"
+    FindingSeverity.NEARBY -> "Nearby"
+    FindingSeverity.INFO -> "Info"
+}
+
+private fun SourceHealthState.userLabel(): String = when (this) {
+    SourceHealthState.LOADING -> "Checking"
+    SourceHealthState.LIVE -> "Live"
+    SourceHealthState.STALE -> "Stale"
+    SourceHealthState.PAUSED -> "Off"
+    SourceHealthState.PERMISSION_BLOCKED -> "Permission needed"
+    SourceHealthState.UNSUPPORTED -> "Unavailable"
+    SourceHealthState.FAILED -> "Failed"
+}
+
+@Composable
+private fun sourceHealthColor(state: SourceHealthState): Color = when (state) {
+    SourceHealthState.LIVE -> MaterialTheme.colorScheme.secondary
+    SourceHealthState.LOADING -> MaterialTheme.colorScheme.primary
+    SourceHealthState.STALE,
+    SourceHealthState.PAUSED -> MaterialTheme.colorScheme.tertiary
+    SourceHealthState.PERMISSION_BLOCKED,
+    SourceHealthState.FAILED -> MaterialTheme.colorScheme.error
+    SourceHealthState.UNSUPPORTED -> MaterialTheme.colorScheme.outline
+}
+
+@Composable
+private fun sectionColor(section: PrivacySection): Color = when (section) {
+    PrivacySection.THREATS -> MaterialTheme.colorScheme.error
+    PrivacySection.AWARENESS -> MaterialTheme.colorScheme.tertiary
+    PrivacySection.NEARBY -> MaterialTheme.colorScheme.primary
+    PrivacySection.INFO -> MaterialTheme.colorScheme.outline
+}
+
+private fun formatPrivacyWallTime(wallMs: Long): String = runCatching {
+    DateTimeFormatter.ofPattern("h:mm a")
+        .withZone(ZoneId.systemDefault())
+        .format(Instant.ofEpochMilli(wallMs))
+}.getOrDefault("recently")

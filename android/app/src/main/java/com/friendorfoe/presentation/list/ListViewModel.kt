@@ -86,25 +86,6 @@ class ListViewModel @Inject constructor(
         initialValue = emptyList()
     )
 
-    /** Smart glasses / privacy devices detected nearby. */
-    val glassesDetections = skyObjectRepository.glassesDetections
-
-    /** BLE stalker/follower alerts. */
-    val stalkerAlerts = skyObjectRepository.stalkerAlerts
-
-    /** BLE direction finder. */
-    val bleTracker = skyObjectRepository.bleTracker
-
-    /** Ignore a privacy device (persists across restarts). */
-    fun ignoreDevice(mac: String) {
-        skyObjectRepository.ignorePrivacyDevice(mac)
-    }
-
-    /** Start BLE direction scan to find a device. */
-    fun startDirectionScan(mac: String) {
-        bleTracker.startDirectionScan(mac)
-    }
-
     private val _userPosition = MutableStateFlow(
         Position(latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0)
     )

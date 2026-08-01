@@ -39,6 +39,7 @@ import com.friendorfoe.presentation.list.ListViewScreen
 import com.friendorfoe.presentation.map.MapViewScreen
 import com.friendorfoe.presentation.privacy.EmfSweepScreen
 import com.friendorfoe.presentation.privacy.IrCameraScanScreen
+import com.friendorfoe.presentation.privacy.IgnoredDevicesScreen
 import com.friendorfoe.presentation.privacy.PrivacyScreen
 import com.friendorfoe.presentation.reference.ReferenceGuideScreen
 
@@ -126,11 +127,11 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
     composable(Screen.Privacy.route) {
         TopLevelRouteRoot(TopLevelDestination.PRIVACY) {
             PrivacyScreen(
-                onNavigateToEmfSweep = {
-                    navController.navigate(Screen.EmfSweep.route) { launchSingleTop = true }
+                onOpenIgnoredDevices = {
+                    navController.navigate(Screen.IgnoredDevices.route) { launchSingleTop = true }
                 },
-                onNavigateToIrCameraScan = {
-                    navController.navigate(Screen.IrCameraScan.route) { launchSingleTop = true }
+                onOpenInfo = {
+                    navigateTopLevel(navController, TopLevelDestination.INFO)
                 },
             )
         }
@@ -285,6 +286,10 @@ private fun NavGraphBuilder.registerSecondaryDestinations(
 
     composable(Screen.IrCameraScan.route) {
         IrCameraScanScreen(onBack = { navController.popBackStack() })
+    }
+
+    composable(Screen.IgnoredDevices.route) {
+        IgnoredDevicesScreen(onBack = { navController.popBackStack() })
     }
 
     composable(Screen.BadgeDiagnostics.route) {
