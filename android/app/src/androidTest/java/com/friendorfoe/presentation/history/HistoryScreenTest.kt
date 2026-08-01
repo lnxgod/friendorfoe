@@ -135,6 +135,32 @@ class HistoryScreenTest {
         assertEquals(1, rowDeleteCalls)
         assertEquals(1, clearCalls)
     }
+
+    @Test
+    fun deletionFailureIsVisibleAndRetryUsesConfirmAction() {
+        var retryCalls = 0
+        compose.setContent {
+            FriendOrFoeTheme {
+                HistoryContent(
+                    state = contentState(history(id = 11L)).copy(
+                        pendingDeletion = PendingHistoryDeletion.Row(11L, "Stored callsign"),
+                        deletionError = "Couldn't delete this detection. Try again.",
+                    ),
+                    onFilterChanged = {},
+                    onEntryTapped = {},
+                    onRequestDelete = {},
+                    onRequestClearAll = {},
+                    onDismissDeletion = {},
+                    onConfirmDeletion = { retryCalls++ },
+                )
+            }
+        }
+
+        compose.onNodeWithText("Couldn't delete this detection. Try again.").assertIsDisplayed()
+        compose.onNodeWithText("Retry").performClick()
+
+        assertEquals(1, retryCalls)
+    }
 }
 
 private fun contentState(vararg rows: HistoryEntity) = HistoryUiState(

@@ -176,30 +176,72 @@ internal fun HistoryContent(
         is PendingHistoryDeletion.Row -> AlertDialog(
             onDismissRequest = onDismissDeletion,
             title = { Text("Delete ${pending.label}?") },
-            text = { Text("This permanently removes this detection from on-device history.") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("This permanently removes this detection from on-device history.")
+                    state.deletionError?.let { error ->
+                        Text(error, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
             dismissButton = {
-                TextButton(onClick = onDismissDeletion, Modifier.testTag("history_cancel_delete")) {
+                TextButton(
+                    onClick = onDismissDeletion,
+                    enabled = !state.deletionInProgress,
+                    modifier = Modifier.testTag("history_cancel_delete"),
+                ) {
                     Text("Cancel")
                 }
             },
             confirmButton = {
-                TextButton(onClick = onConfirmDeletion, Modifier.testTag("history_confirm_delete_row")) {
-                    Text("Delete")
+                TextButton(
+                    onClick = onConfirmDeletion,
+                    enabled = !state.deletionInProgress,
+                    modifier = Modifier.testTag("history_confirm_delete_row"),
+                ) {
+                    Text(
+                        when {
+                            state.deletionInProgress -> "Deleting…"
+                            state.deletionError != null -> "Retry"
+                            else -> "Delete"
+                        },
+                    )
                 }
             },
         )
         PendingHistoryDeletion.All -> AlertDialog(
             onDismissRequest = onDismissDeletion,
             title = { Text("Clear all history?") },
-            text = { Text("This permanently removes every detection stored on this device.") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("This permanently removes every detection stored on this device.")
+                    state.deletionError?.let { error ->
+                        Text(error, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
             dismissButton = {
-                TextButton(onClick = onDismissDeletion, Modifier.testTag("history_cancel_delete")) {
+                TextButton(
+                    onClick = onDismissDeletion,
+                    enabled = !state.deletionInProgress,
+                    modifier = Modifier.testTag("history_cancel_delete"),
+                ) {
                     Text("Cancel")
                 }
             },
             confirmButton = {
-                TextButton(onClick = onConfirmDeletion, Modifier.testTag("history_confirm_clear_all")) {
-                    Text("Clear all")
+                TextButton(
+                    onClick = onConfirmDeletion,
+                    enabled = !state.deletionInProgress,
+                    modifier = Modifier.testTag("history_confirm_clear_all"),
+                ) {
+                    Text(
+                        when {
+                            state.deletionInProgress -> "Clearing…"
+                            state.deletionError != null -> "Retry"
+                            else -> "Clear all"
+                        },
+                    )
                 }
             },
         )

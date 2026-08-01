@@ -10,6 +10,8 @@ data class HistoryUiState(
     val activeFilterCount: Int = 0,
     val body: CollectionBodyState<HistoryEntity> = CollectionBodyState.Loading,
     val pendingDeletion: PendingHistoryDeletion? = null,
+    val deletionError: String? = null,
+    val deletionInProgress: Boolean = false,
 )
 
 sealed interface PendingHistoryDeletion {

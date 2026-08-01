@@ -12,10 +12,13 @@ import com.friendorfoe.presentation.detail.DetailSelectionLoader
 import com.friendorfoe.presentation.components.CollectionBodyState
 import com.friendorfoe.test.MainDispatcherRule
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.time.Instant
@@ -97,6 +100,83 @@ class HistorySelectionTest {
     }
 
     @Test
+    fun rowDeleteFailurePreservesExactRetryContextAndRetryClearsFailure() = runTest {
+        val row = history(id = 11L, displayName = "Stored callsign")
+        val store = FakeHistoryStore(
+            initialRows = listOf(row),
+            rowFailures = ArrayDeque(listOf(IllegalStateException("disk unavailable"))),
+        )
+        val viewModel = HistoryViewModel(store)
+
+        viewModel.requestDelete(row)
+        var escaped: Throwable? = null
+        viewModel.confirmDeletion().also { job ->
+            job.invokeOnCompletion { escaped = it }
+            job.join()
+        }
+
+        assertNull(escaped)
+        assertEquals(PendingHistoryDeletion.Row(11L, "Stored callsign"), viewModel.uiState.value.pendingDeletion)
+        assertEquals("Couldn't delete this detection. Try again.", viewModel.uiState.value.deletionError)
+        assertEquals(listOf(11L), store.deletedIds)
+
+        viewModel.confirmDeletion().join()
+
+        assertEquals(listOf(11L, 11L), store.deletedIds)
+        assertNull(viewModel.uiState.value.pendingDeletion)
+        assertNull(viewModel.uiState.value.deletionError)
+    }
+
+    @Test
+    fun clearFailurePreservesAllRetryContextAndRetryClearsFailure() = runTest {
+        val store = FakeHistoryStore(
+            initialRows = listOf(history(id = 11L)),
+            clearFailures = ArrayDeque(listOf(IllegalStateException("database locked"))),
+        )
+        val viewModel = HistoryViewModel(store)
+
+        viewModel.requestClearAll()
+        var escaped: Throwable? = null
+        viewModel.confirmDeletion().also { job ->
+            job.invokeOnCompletion { escaped = it }
+            job.join()
+        }
+
+        assertNull(escaped)
+        assertEquals(PendingHistoryDeletion.All, viewModel.uiState.value.pendingDeletion)
+        assertEquals("Couldn't clear history. Try again.", viewModel.uiState.value.deletionError)
+        assertEquals(1, store.clearCalls)
+
+        viewModel.confirmDeletion().join()
+
+        assertEquals(2, store.clearCalls)
+        assertNull(viewModel.uiState.value.pendingDeletion)
+        assertNull(viewModel.uiState.value.deletionError)
+    }
+
+    @Test
+    fun cancellationPropagatesWithoutBeingRenderedAsDeletionFailure() = runTest {
+        val row = history(id = 11L, displayName = "Stored callsign")
+        val store = FakeHistoryStore(
+            initialRows = listOf(row),
+            rowFailures = ArrayDeque(listOf(CancellationException("cancelled"))),
+        )
+        val viewModel = HistoryViewModel(store)
+
+        viewModel.requestDelete(row)
+        var completion: Throwable? = null
+        viewModel.confirmDeletion().also { job ->
+            job.invokeOnCompletion { completion = it }
+            job.join()
+        }
+
+        assertTrue(completion is CancellationException)
+        assertEquals(PendingHistoryDeletion.Row(11L, "Stored callsign"), viewModel.uiState.value.pendingDeletion)
+        assertNull(viewModel.uiState.value.deletionError)
+        assertEquals(listOf(11L), store.deletedIds)
+    }
+
+    @Test
     fun contentStatePreservesStoreRowOrder() = runTest {
         val store = FakeHistoryStore(
             listOf(
@@ -115,6 +195,8 @@ class HistorySelectionTest {
 private class FakeHistoryStore(
     initialRows: List<HistoryEntity>,
     private val deleteGate: CompletableDeferred<Unit>? = null,
+    private val rowFailures: ArrayDeque<Throwable> = ArrayDeque(),
+    private val clearFailures: ArrayDeque<Throwable> = ArrayDeque(),
 ) : HistoryStore {
     val rows = MutableStateFlow(initialRows)
     val deletedIds = mutableListOf<Long>()
@@ -133,12 +215,14 @@ private class FakeHistoryStore(
 
     override suspend fun deleteById(id: Long) {
         deletedIds += id
+        rowFailures.removeFirstOrNull()?.let { throw it }
         deleteGate?.await()
         rows.value = rows.value.filterNot { it.id == id }
     }
 
     override suspend fun clearAll() {
         clearCalls += 1
+        clearFailures.removeFirstOrNull()?.let { throw it }
         rows.value = emptyList()
     }
 
