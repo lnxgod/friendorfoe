@@ -71,6 +71,8 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_HELICOPTER_ALERTS = "alert_helicopters_enabled"
         private const val KEY_MILITARY_ALERTS = "alert_military_enabled"
         private const val KEY_POLICE_ALERTS = "alert_police_enabled"
+        private const val KEY_IGNORED_MACS = "privacy_ignored_macs"
+        private const val KEY_IGNORED_IDENTITIES = "privacy_ignored_identities_v2"
         private const val KEY_SENSOR_BACKEND = "sensor_backend_enabled"
         private const val KEY_BACKEND_URL = "sensor_backend_url"
         private const val KEY_BACKEND_ONLY = "sensor_backend_only_mode"
@@ -106,6 +108,21 @@ class DetectionPrefs @Inject constructor(
         sensorBackendEnabled = sensorBackendEnabled,
         backendOnlyMode = backendOnlyMode,
         backendUrl = backendUrl,
+    )
+
+    private val ignoredIdentityStore = IgnoredIdentityStore(
+        readStructured = {
+            prefs.getStringSet(KEY_IGNORED_IDENTITIES, null)?.toSet()
+        },
+        readLegacyCsv = {
+            prefs.getString(KEY_IGNORED_MACS, null)
+        },
+        persistStructured = { identities ->
+            prefs.edit()
+                .putStringSet(KEY_IGNORED_IDENTITIES, identities.toSet())
+                .remove(KEY_IGNORED_MACS)
+                .apply()
+        },
     )
 
     var adsbEnabled: Boolean
@@ -184,4 +201,25 @@ class DetectionPrefs @Inject constructor(
         get() = prefs.getString(KEY_OPERATOR_LABEL, "") ?: ""
         set(value) = prefs.edit().putString(KEY_OPERATOR_LABEL, value).apply()
 
+    /** Canonical privacy identities dismissed by the user. */
+    fun getIgnoredIdentities(): Set<String> = ignoredIdentityStore.get()
+
+    /** Retained for callers that predate stable fingerprints. */
+    fun getIgnoredMacs(): Set<String> = getIgnoredIdentities()
+
+    fun ignoreIdentities(identities: Iterable<String>) {
+        ignoredIdentityStore.add(identities)
+    }
+
+    fun ignoreMac(mac: String) {
+        ignoreIdentities(setOf(mac))
+    }
+
+    fun unignoreIdentities(identities: Iterable<String>) {
+        ignoredIdentityStore.remove(identities)
+    }
+
+    fun unignoreMac(mac: String) {
+        unignoreIdentities(setOf(mac))
+    }
 }

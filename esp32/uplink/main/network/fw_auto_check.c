@@ -5,12 +5,13 @@
 #include <stdlib.h>
 
 #ifndef FW_AUTO_CHECK_HOST_TEST
+#include "esp_timer.h"
+#ifndef FOF_BADGE_VARIANT
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_system.h"
-#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_crc.h"
 #include "freertos/FreeRTOS.h"
@@ -23,8 +24,6 @@
 #include "uart_rx.h"
 #include "nvs_config.h"
 #include "version.h"
-#ifdef FOF_BADGE_VARIANT
-#include "badge_runtime.h"
 #endif
 #endif
 
@@ -66,14 +65,10 @@ bool fw_auto_check_version_differs(const char *local, const char *remote)
 
 /* ── Runtime ─────────────────────────────────────────────────────────────── */
 
-static const char *TAG = "fw_auto";
-
 static const char  *s_status = "idle";
 static int64_t      s_last_check_ms = 0;
 static char         s_remote_uplink_ver[40] = {0};
 static char         s_remote_scanner_ver[40] = {0};
-static int64_t      s_backoff_s = 0;
-static TaskHandle_t s_task = NULL;
 
 const char *fw_auto_check_status(void)
 {
@@ -89,6 +84,12 @@ int64_t fw_auto_check_last_age_s(void)
 
 const char *fw_auto_check_remote_uplink_version(void) { return s_remote_uplink_ver; }
 const char *fw_auto_check_remote_scanner_version(void) { return s_remote_scanner_ver; }
+
+#ifndef FOF_BADGE_VARIANT
+static const char *TAG = "fw_auto";
+static int64_t      s_backoff_s = 0;
+static TaskHandle_t s_task = NULL;
+static scanner_info_t s_auto_check_scanner_snapshots[2] = {0};
 
 /* HTTP body collection for esp_http_client. */
 typedef struct {
@@ -249,32 +250,21 @@ static esp_err_t download_to_partition(const char *backend_base, const char *nam
 /* Try to update the uplink itself. Returns ESP_OK if a reboot is imminent. */
 static esp_err_t try_self_update_uplink(const char *backend_base)
 {
-#if defined(FOF_BADGE_VARIANT)
-    (void)backend_base;
-    /* The badge has its own LCD wiring and version track. The production
-     * backend catalog entry is currently "uplink-s3", so letting the badge
-     * self-OTA against that name replaces it with the non-LCD production
-     * image and leaves the ST7735 white. Keep scanner-cache refresh enabled
-     * by returning ESP_OK, but never self-replace the badge from this path. */
-    ESP_LOGI(TAG, "FoF Badge: uplink self-OTA skipped; preserving badge display firmware");
-    s_remote_uplink_ver[0] = '\0';
-    return ESP_OK;
-#else
     char remote_ver[40] = {0};
     int  remote_size = 0;
-    esp_err_t err = fetch_metadata(backend_base, "uplink-s3",
+    esp_err_t err = fetch_metadata(backend_base, FOF_FIRMWARE_TARGET,
                                    remote_ver, sizeof(remote_ver), &remote_size);
     if (err != ESP_OK) return err;
     strncpy(s_remote_uplink_ver, remote_ver, sizeof(s_remote_uplink_ver) - 1);
     s_remote_uplink_ver[sizeof(s_remote_uplink_ver) - 1] = '\0';
 
     if (!fw_auto_check_version_differs(FOF_VERSION, remote_ver)) {
-        ESP_LOGI(TAG, "uplink-s3: local=%s remote=%s — up to date",
-                 FOF_VERSION, remote_ver);
+        ESP_LOGI(TAG, "%s: local=%s remote=%s — up to date",
+                 FOF_FIRMWARE_TARGET, FOF_VERSION, remote_ver);
         return ESP_OK;
     }
-    ESP_LOGW(TAG, "uplink-s3: local=%s remote=%s — self-OTA starting (%d bytes)",
-             FOF_VERSION, remote_ver, remote_size);
+    ESP_LOGW(TAG, "%s: local=%s remote=%s — self-OTA starting (%d bytes)",
+             FOF_FIRMWARE_TARGET, FOF_VERSION, remote_ver, remote_size);
     s_status = "updating";
 
     const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
@@ -283,7 +273,8 @@ static esp_err_t try_self_update_uplink(const char *backend_base)
     esp_ota_handle_t handle = 0;
     int received = 0;
     uint32_t crc = 0;
-    err = download_to_partition(backend_base, "uplink-s3", next, &handle, &received, &crc);
+    err = download_to_partition(backend_base, FOF_FIRMWARE_TARGET,
+                                next, &handle, &received, &crc);
     if (err != ESP_OK) {
         s_status = "error:download";
         return err;
@@ -302,35 +293,39 @@ static esp_err_t try_self_update_uplink(const char *backend_base)
         return err;
     }
 
-    ESP_LOGW(TAG, "uplink-s3 OTA complete (%d bytes, crc=%lu) — restarting",
-             received, (unsigned long)crc);
-#ifdef FOF_BADGE_VARIANT
-    badge_runtime_arm_expected_reboot("auto_ota");
-#endif
+    ESP_LOGW(TAG, "%s OTA complete (%d bytes, crc=%lu) — restarting",
+             FOF_FIRMWARE_TARGET, received, (unsigned long)crc);
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
     return ESP_OK;  /* unreachable */
-#endif
 }
 
 /**
  * Pick the right scanner firmware name based on what's connected.
  * Returns NULL if no scanner identified yet.
  */
-static const char *connected_scanner_board(void)
+static bool connected_scanner_board(char *board, size_t board_len)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    if (ble && ble->received && ble->board[0]) return ble->board;
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
-    if (wifi && wifi->received && wifi->board[0]) return wifi->board;
-    return NULL;
+    if (!board || board_len == 0) return false;
+    for (int scanner_id = 0; scanner_id < 2; scanner_id++) {
+        scanner_info_t *snapshot =
+            &s_auto_check_scanner_snapshots[scanner_id];
+        if (uart_rx_get_scanner_info_snapshot(scanner_id, snapshot) &&
+            snapshot->board[0]) {
+            strncpy(board, snapshot->board, board_len - 1);
+            board[board_len - 1] = '\0';
+            return true;
+        }
+    }
+    board[0] = '\0';
+    return false;
 }
 
 /* Refresh the fw_store cache for the connected scanner variant. */
 static esp_err_t try_refresh_scanner_cache(const char *backend_base)
 {
-    const char *board = connected_scanner_board();
-    if (!board) {
+    char board[32] = {0};
+    if (!connected_scanner_board(board, sizeof(board))) {
         ESP_LOGI(TAG, "scanner board unknown — skipping cache refresh");
         return ESP_OK;
     }
@@ -385,8 +380,11 @@ static esp_err_t try_refresh_scanner_cache(const char *backend_base)
      * fw_upload_handler likewise calls esp_ota_abort here. */
     esp_ota_abort(handle);
 
-    fw_store_persist_metadata(board, remote_ver, p,
-                              (uint32_t)received, crc);
+    if (!fw_store_persist_metadata(board, remote_ver, p,
+                                   (uint32_t)received, crc)) {
+        ESP_LOGE(TAG, "Downloaded scanner image failed embedded identity/SHA validation");
+        return ESP_ERR_INVALID_RESPONSE;
+    }
     ESP_LOGW(TAG, "fw_store refreshed: %s v%s (%d bytes, crc=%lu) on '%s'",
              board, remote_ver, received, (unsigned long)crc, p->label);
     return ESP_OK;
@@ -451,8 +449,13 @@ static void auto_check_task(void *arg)
     }
 }
 
+#endif
+
 void fw_auto_check_init(void)
 {
+#ifdef FOF_BADGE_VARIANT
+    return;
+#else
     if (s_task != NULL) return;
     BaseType_t ok = xTaskCreatePinnedToCore(
         auto_check_task, "fw_auto", 6144, NULL,
@@ -464,6 +467,7 @@ void fw_auto_check_init(void)
         ESP_LOGW(TAG, "fw_auto_check task started; first check in %ds, then every %ds",
                  FIRST_CHECK_DELAY_S, CHECK_INTERVAL_S);
     }
+#endif
 }
 
 #endif /* FW_AUTO_CHECK_HOST_TEST */

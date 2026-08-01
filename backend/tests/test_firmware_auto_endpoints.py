@@ -4,12 +4,59 @@ These are the endpoints uplinks poll for self-update + scanner-cache refresh.
 """
 
 import hashlib
+import struct
+import time
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 from app.routers import nodes
+from app.services import firmware_manager
+from app.services.firmware_manager import FIRMWARE_TYPES, FirmwareAsset, FirmwareManager
+
+
+PRODUCTION_VERSION = "0.64.68-live-follow"
+BADGE_VERSION = "0.64.76-badge-defcon34"
+RELEASE_TAG = "v0.64.68-live-follow"
+
+
+def _esp_firmware_image(version: str) -> bytes:
+    encoded_version = version.encode("ascii")
+    image = bytearray(0x20 + 256)
+    image[0] = 0xE9
+    struct.pack_into("<I", image, 0x20, 0xABCD5432)
+    image[0x30:0x50] = encoded_version.ljust(32, b"\x00")
+    return bytes(image)
+
+
+def _cached_github_manager(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    name: str,
+    image: bytes,
+) -> FirmwareManager:
+    cache_dir = tmp_path / "firmware-cache"
+    monkeypatch.setattr(firmware_manager, "CACHE_DIR", cache_dir)
+    for target, info in FIRMWARE_TYPES.items():
+        monkeypatch.setitem(info, "local_bin", tmp_path / "missing" / target / "firmware.bin")
+
+    manager = FirmwareManager()
+    manager.release_tag = RELEASE_TAG
+    manager.last_check = time.time()
+    cache_path = cache_dir / f"{RELEASE_TAG}_{name}.bin"
+    cache_path.write_bytes(image)
+    info = FIRMWARE_TYPES[name]
+    manager.assets[name] = FirmwareAsset(
+        name,
+        info["description"],
+        RELEASE_TAG,
+        len(image),
+        f"https://example.test/{name}.bin",
+        str(cache_path),
+        time.time(),
+    )
+    return manager
 
 
 @pytest.mark.asyncio
@@ -80,6 +127,64 @@ async def test_badge_scanner_firmware_name_is_served_for_auto_refresh():
     finally:
         nodes._firmware_mgr.clear_custom_firmware(firmware_name)
         nodes._FW_HASH_CACHE.pop(firmware_name, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "embedded_version"),
+    [
+        ("uplink-s3", PRODUCTION_VERSION),
+        ("uplink-s3-fof_badge", BADGE_VERSION),
+    ],
+)
+async def test_github_fallback_endpoints_report_embedded_image_version(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    name: str,
+    embedded_version: str,
+):
+    image = _esp_firmware_image(embedded_version)
+    manager = _cached_github_manager(monkeypatch, tmp_path, name, image)
+    monkeypatch.setattr(nodes, "_firmware_mgr", manager)
+    nodes._FW_HASH_CACHE.pop(name, None)
+
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            latest = await c.get(f"/nodes/firmware/latest/{name}")
+            download = await c.get(f"/nodes/firmware/download/{name}")
+
+        assert latest.status_code == 200, latest.text
+        assert latest.json()["version"] == embedded_version
+        assert latest.json()["sha256"] == hashlib.sha256(image).hexdigest()
+        assert download.status_code == 200
+        assert download.content == image
+        assert download.headers["x-fof-firmware-version"] == embedded_version
+    finally:
+        nodes._FW_HASH_CACHE.pop(name, None)
+
+
+@pytest.mark.asyncio
+async def test_malformed_github_fallback_endpoint_version_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    name = "uplink-s3"
+    image = b"not-an-esp-image"
+    manager = _cached_github_manager(monkeypatch, tmp_path, name, image)
+    monkeypatch.setattr(nodes, "_firmware_mgr", manager)
+    nodes._FW_HASH_CACHE.pop(name, None)
+
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            latest = await c.get(f"/nodes/firmware/latest/{name}")
+            download = await c.get(f"/nodes/firmware/download/{name}")
+
+        assert latest.status_code == 200, latest.text
+        assert latest.json()["version"] == "unknown"
+        assert download.status_code == 200
+        assert download.headers["x-fof-firmware-version"] == "unknown"
+    finally:
+        nodes._FW_HASH_CACHE.pop(name, None)
 
 
 @pytest.mark.asyncio

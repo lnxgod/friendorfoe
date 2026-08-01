@@ -7,24 +7,25 @@
  *   2. Stage the entire firmware image in PSRAM. Validate the full-image
  *      CRC there, BEFORE touching the OTA partition. A mid-flash abort no
  *      longer leaves the flash in an inconsistent state.
- *   3. Keep a clean state machine (IDLE → STAGING → VALIDATING → FLASHING
- *      → REBOOTING, plus ERROR transients). Every error path calls a single
+ *   3. Keep a clean state machine (IDLE → STAGING → VALIDATING →
+ *      AWAITING_FINALIZE → VALIDATING → FLASHING → REBOOTING, plus ERROR
+ *      transients). Every error path calls a single
  *      cleanup routine that frees PSRAM, resumes scans, and returns to IDLE
  *      so the scanner is always recoverable without a physical reset.
  *   4. Idle-watchdog: if no chunk arrives for 30 s while staging, declare
  *      the transfer stuck and recover.
  *   5. Explicit `{"type":"ota_abort"}` support so the uplink can cancel.
  *
- * Protocol on the wire (unchanged from v0.59):
+ * Protocol on the wire:
  *   Uplink → Scanner:  {"type":"stop"}            (scanner emits stop_ack in main.c)
  *                      {"type":"ota_begin","size":N,"crc":C}
  *                      [binary chunks: OTA_CHUNK_MAGIC seq(2) len(2) data CRC32(4)]
- *                      {"type":"ota_end"}          (informational; auto-finalize
- *                                                   still fires when bytes received
- *                                                   == total_size)
+ *                      {"type":"ota_end",...}     (exact session + manifest)
  *                      {"type":"ota_abort"}        (cancel)
  *   Scanner → Uplink:  {"type":"ota_ack"}          (entered OTA mode OK)
  *                      {"type":"ota_nack","seq":N} (bad chunk CRC — retransmit)
+ *                      {"type":"ota_staged",...}   (full image verified;
+ *                                                     JSON framing may resume)
  *                      {"type":"ota_done","received":N}  (image valid, rebooting)
  *                      {"type":"ota_error","reason":"X"} (error, back to IDLE)
  */
@@ -36,9 +37,13 @@
 #include "wifi_scanner.h"
 #include "ble_remote_id.h"
 #include "calibration_mode.h"
+#include "firmware_image_contract.h"
+#include "firmware_version_order.h"
+#include "version.h"
 
 #include <string.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_system.h"
@@ -48,6 +53,7 @@
 #include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "mbedtls/sha256.h"
 
 static const char *TAG = "uart_ota";
 
@@ -56,6 +62,7 @@ static const char *TAG = "uart_ota";
  * ~50-80 ms under normal conditions; 30 s is an order of magnitude over
  * the worst slow-link case. */
 #define STAGING_IDLE_TIMEOUT_MS   30000
+#define FINALIZE_IDLE_TIMEOUT_MS  30000
 
 /* Overall operation ceiling — even a slow 2 MB firmware should flash in
  * well under this window (stage+validate+flash ≈ 3–6 min wall clock). */
@@ -73,6 +80,7 @@ typedef enum {
     OTA_IDLE = 0,
     OTA_STAGING,      /* receiving chunks into PSRAM buffer */
     OTA_VALIDATING,   /* computing full-image CRC from PSRAM */
+    OTA_AWAITING_FINALIZE, /* exact ota_staged emitted; waiting for ota_end */
     OTA_FLASHING,     /* esp_ota_write from PSRAM to flash partition */
     OTA_REBOOTING     /* esp_restart imminent */
 } ota_state_t;
@@ -86,6 +94,7 @@ static struct {
     uint32_t                 expected_image_crc;
     bool                     has_expected_crc;
     char                     session_id[24];
+    uart_ota_manifest_t      manifest;
 
     /* Staging buffer in PSRAM (NULL when IDLE) */
     uint8_t                 *buffer;
@@ -101,7 +110,9 @@ static struct {
     uint8_t                  crc_pos;
     uint16_t                 chunk_seq;
     uint16_t                 expected_seq;
-    enum { PHASE_HEADER, PHASE_DATA, PHASE_CRC } phase;
+    uint8_t                  abort_sentinel_run;
+    uint32_t                 discard_remaining;
+    enum { PHASE_HEADER, PHASE_DATA, PHASE_CRC, PHASE_DISCARD } phase;
 
     /* Timing */
     int64_t                  start_ms;         /* OTA session start */
@@ -110,14 +121,51 @@ static struct {
 } s_ota = {0};
 
 static bool s_radio_control_enabled = true;
+static atomic_bool s_session_active = false;
 
 /* ── Wire helpers ──────────────────────────────────────────────────────── */
 
 static void send_json(const char *json)
 {
-    if (s_ota.uart_num == UART_NUM_MAX) return;
-    uart_write_bytes(s_ota.uart_num, json, strlen(json));
-    uart_write_bytes(s_ota.uart_num, "\n", 1);
+    if (s_ota.uart_num == UART_NUM_MAX || !json) return;
+    /* Share the scanner-wide UART mutex with scanner_info/status/control
+     * telemetry so a safe-mode heartbeat cannot splice bytes into an OTA
+     * receipt while the binary RX path is active. */
+    uart_tx_send_raw_json(json);
+}
+
+static bool send_manifest_event(const char *type)
+{
+    if (!type || !type[0] || !s_ota.session_id[0]) {
+        return false;
+    }
+    char line[512];
+    int written = snprintf(
+        line, sizeof(line),
+        "{\"type\":\"%s\",\"session_id\":\"%s\","
+        "\"target_ver\":\"%s\",\"fw_name\":\"%s\","
+        "\"app_project\":\"%s\",\"hardware_type\":\"%s\","
+        "\"sha256\":\"%s\",\"generation\":%lu,"
+        "\"size\":%lu,\"crc\":%lu,\"allow_same_version\":%s,"
+        "\"received\":%lu}",
+        type,
+        s_ota.session_id,
+        s_ota.manifest.version,
+        s_ota.manifest.target,
+        s_ota.manifest.project,
+        s_ota.manifest.hardware,
+        s_ota.manifest.sha256,
+        (unsigned long)s_ota.manifest.generation,
+        (unsigned long)s_ota.manifest.size,
+        (unsigned long)s_ota.manifest.crc32,
+        s_ota.manifest.allow_same_version ? "true" : "false",
+        (unsigned long)s_ota.received);
+    if (written < 0 || (size_t)written >= sizeof(line)) {
+        ESP_LOGE(TAG, "OTA %s manifest event overflow", type);
+        return false;
+    }
+    send_json(line);
+    return true;
 }
 
 static void send_chunk_nack(uint16_t seq)
@@ -219,6 +267,7 @@ static void resume_scans(void)
  * send_json still works for the caller's trailing ota_error emit. */
 static void cleanup_and_idle(void)
 {
+    atomic_store_explicit(&s_session_active, false, memory_order_release);
     if (s_ota.buffer) {
         psram_free(s_ota.buffer);
         s_ota.buffer = NULL;
@@ -237,7 +286,8 @@ static void cleanup_and_idle(void)
 
 bool uart_ota_begin(uint32_t total_size, uint32_t expected_crc,
                     bool has_crc, uart_port_t uart_num,
-                    const char *session_id)
+                    const char *session_id,
+                    const uart_ota_manifest_t *manifest)
 {
     s_ota.uart_num = uart_num;   /* so error emits go to the right port */
 
@@ -253,6 +303,38 @@ bool uart_ota_begin(uint32_t total_size, uint32_t expected_crc,
         s_ota.session_id[sizeof(s_ota.session_id) - 1] = '\0';
     } else {
         s_ota.session_id[0] = '\0';
+    }
+
+    /* The relay manifest is immutable from offer through flash. Refuse any
+     * legacy/partial begin, cross-target image, downgrade, or guessed suffix. */
+    fof_firmware_version_relation_t relation = manifest
+        ? fof_firmware_version_compare(manifest->version, FOF_VERSION)
+        : FOF_VERSION_INVALID;
+    bool version_allowed = relation == FOF_VERSION_NEWER ||
+        (relation == FOF_VERSION_EQUAL && manifest && manifest->allow_same_version);
+    if (!manifest || !session_id || !session_id[0] ||
+        strlen(session_id) >= sizeof(s_ota.session_id) ||
+        strcmp(manifest->target, FOF_FIRMWARE_TARGET) != 0 ||
+        strcmp(manifest->project, FOF_APP_PROJECT) != 0 ||
+        strcmp(manifest->hardware, FOF_HARDWARE_TYPE) != 0 ||
+        !fof_firmware_sha256_hex_is_valid(manifest->sha256) ||
+        manifest->generation == 0 || manifest->size != total_size ||
+        manifest->crc32 != expected_crc || !has_crc || expected_crc == 0 ||
+        !version_allowed) {
+        ESP_LOGE(TAG,
+                 "ota_begin: manifest refused target=%s project=%s hardware=%s "
+                 "version=%s current=%s relation=%d gen=%lu crc=%s%08lX",
+                 manifest ? manifest->target : "?",
+                 manifest ? manifest->project : "?",
+                 manifest ? manifest->hardware : "?",
+                 manifest ? manifest->version : "?",
+                 FOF_VERSION,
+                 (int)relation,
+                 (unsigned long)(manifest ? manifest->generation : 0),
+                 has_crc ? "" : "missing/",
+                 (unsigned long)expected_crc);
+        send_ota_error("manifest_refused");
+        return false;
     }
 
     /* Sanity checks */
@@ -285,6 +367,7 @@ bool uart_ota_begin(uint32_t total_size, uint32_t expected_crc,
     s_ota.total_size         = total_size;
     s_ota.expected_image_crc = expected_crc;
     s_ota.has_expected_crc   = has_crc;
+    s_ota.manifest           = *manifest;
     strncpy(s_ota.session_id, session_copy, sizeof(s_ota.session_id) - 1);
     s_ota.session_id[sizeof(s_ota.session_id) - 1] = '\0';
     s_ota.received           = 0;
@@ -297,33 +380,113 @@ bool uart_ota_begin(uint32_t total_size, uint32_t expected_crc,
     s_ota.last_chunk_ms      = s_ota.start_ms;
     s_ota.next_progress_bytes = OTA_RELAY_PROGRESS_INTERVAL_BYTES;
     s_ota.state              = OTA_STAGING;
+    atomic_store_explicit(&s_session_active, true, memory_order_release);
 
-    ESP_LOGW(TAG, "OTA staging: %lu bytes -> PSRAM (session=%s image CRC %s%08lX, PSRAM free=%u KB)",
+    ESP_LOGW(TAG,
+             "OTA staging: %lu bytes -> PSRAM (session=%s image CRC=%08lX "
+             "SHA256=%s target=%s project=%s hardware=%s version=%s gen=%lu "
+             "PSRAM free=%u KB)",
              (unsigned long)total_size,
              s_ota.session_id[0] ? s_ota.session_id : "none",
-             has_crc ? "" : "none/",
              (unsigned long)expected_crc,
+             s_ota.manifest.sha256,
+             s_ota.manifest.target,
+             s_ota.manifest.project,
+             s_ota.manifest.hardware,
+             s_ota.manifest.version,
+             (unsigned long)s_ota.manifest.generation,
              (unsigned)(psram_free_size() / 1024));
 
-    /* Ready for chunks */
-    if (s_ota.session_id[0]) {
-        char ack[80];
-        snprintf(ack, sizeof(ack),
-                 "{\"type\":\"ota_ack\",\"session_id\":\"%s\"}",
-                 s_ota.session_id);
-        send_json(ack);
-    } else {
-        send_json("{\"type\":\"ota_ack\"}");
+    /* Echo the full immutable manifest before accepting chunks. */
+    if (!send_manifest_event(MSG_TYPE_OTA_ACK)) {
+        send_ota_error("manifest_ack_failed");
+        cleanup_and_idle();
+        return false;
     }
     return true;
 }
 
-/* Kick off the final flash phase: verify full-image CRC in PSRAM, then
- * esp_ota_begin/write/end/set_boot_partition → ota_done → reboot. Any error
- * cleans up and stays in the running firmware. */
-static bool validate_and_flash(void)
+static bool buffer_contains_c_string(const uint8_t *buffer,
+                                     size_t buffer_len,
+                                     const char *value)
+{
+    if (!buffer || !value || !value[0]) return false;
+    size_t pattern_len = strlen(value) + 1;
+    if (pattern_len > buffer_len) return false;
+    for (size_t offset = 0; offset + pattern_len <= buffer_len; ++offset) {
+        if (memcmp(buffer + offset, value, pattern_len) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool staged_image_matches_manifest(void)
+{
+    fof_firmware_image_identity_t identity = {0};
+    if (!fof_firmware_image_parse_identity(s_ota.buffer, s_ota.received,
+                                           &identity)) {
+        send_ota_error("invalid_app_descriptor");
+        return false;
+    }
+    if (strcmp(identity.project, s_ota.manifest.project) != 0 ||
+        strcmp(identity.version, s_ota.manifest.version) != 0) {
+        ESP_LOGE(TAG,
+                 "Embedded identity mismatch project=%s/%s version=%s/%s",
+                 identity.project, s_ota.manifest.project,
+                 identity.version, s_ota.manifest.version);
+        send_ota_error("embedded_identity_mismatch");
+        return false;
+    }
+    if (!buffer_contains_c_string(s_ota.buffer, s_ota.received,
+                                  s_ota.manifest.target) ||
+        !buffer_contains_c_string(s_ota.buffer, s_ota.received,
+                                  s_ota.manifest.hardware)) {
+        send_ota_error("identity_marker_missing");
+        return false;
+    }
+
+    uint8_t digest[FOF_FIRMWARE_SHA256_SIZE];
+    char computed[FOF_FIRMWARE_SHA256_HEX_SIZE];
+    if (mbedtls_sha256(s_ota.buffer, s_ota.received, digest, 0) != 0) {
+        send_ota_error("sha256_failed");
+        return false;
+    }
+    fof_firmware_sha256_to_hex(digest, computed);
+    unsigned difference = 0;
+    for (size_t i = 0; i < FOF_FIRMWARE_SHA256_HEX_LENGTH; ++i) {
+        char expected = s_ota.manifest.sha256[i];
+        if (expected >= 'A' && expected <= 'F') {
+            expected = (char)(expected - 'A' + 'a');
+        }
+        difference |= (unsigned)(computed[i] ^ expected);
+    }
+    if (difference != 0) {
+        ESP_LOGE(TAG, "IMAGE SHA256 MISMATCH: expected=%s got=%s",
+                 s_ota.manifest.sha256, computed);
+        send_ota_error("sha256_mismatch");
+        return false;
+    }
+    ESP_LOGW(TAG,
+             "Image manifest verified: target=%s project=%s hardware=%s "
+             "version=%s SHA256=%s gen=%lu",
+             s_ota.manifest.target,
+             identity.project,
+             s_ota.manifest.hardware,
+             identity.version,
+             computed,
+             (unsigned long)s_ota.manifest.generation);
+    return true;
+}
+
+static bool validate_staged_buffer(void)
 {
     s_ota.state = OTA_VALIDATING;
+
+    if (!s_ota.buffer || s_ota.received != s_ota.total_size) {
+        send_ota_error("incomplete");
+        return false;
+    }
 
     if (s_ota.has_expected_crc) {
         uint32_t actual = esp_rom_crc32_le(0, s_ota.buffer, s_ota.received);
@@ -332,11 +495,27 @@ static bool validate_and_flash(void)
                      (unsigned long)s_ota.expected_image_crc,
                      (unsigned long)actual);
             send_ota_error("image_crc_mismatch");
-            cleanup_and_idle();
             return false;
         }
         ESP_LOGW(TAG, "Image CRC verified: %08lX (%lu bytes)",
                  (unsigned long)actual, (unsigned long)s_ota.received);
+    }
+
+    if (!staged_image_matches_manifest()) {
+        return false;
+    }
+
+    return true;
+}
+
+/* Kick off the final flash phase only after main.c has validated a separately
+ * framed ota_end against the active session and immutable manifest. Recheck
+ * PSRAM immediately before touching flash, then commit and reboot. */
+static bool validate_and_flash(void)
+{
+    if (!validate_staged_buffer()) {
+        cleanup_and_idle();
+        return false;
     }
 
     s_ota.state = OTA_FLASHING;
@@ -424,17 +603,9 @@ static bool validate_and_flash(void)
     ESP_LOGW(TAG, "OTA complete — %lu bytes in '%s'. Emitting done + rebooting.",
              (unsigned long)s_ota.received, update->label);
 
-    char buf[112];
-    if (s_ota.session_id[0]) {
-        snprintf(buf, sizeof(buf),
-                 "{\"type\":\"ota_done\",\"received\":%lu,\"session_id\":\"%s\"}",
-                 (unsigned long)s_ota.received,
-                 s_ota.session_id);
-    } else {
-        snprintf(buf, sizeof(buf), "{\"type\":\"ota_done\",\"received\":%lu}",
-                 (unsigned long)s_ota.received);
+    if (!send_manifest_event(MSG_TYPE_OTA_DONE)) {
+        ESP_LOGE(TAG, "Failed to emit manifest-bound ota_done");
     }
-    send_json(buf);
 
     /* Make sure the "done" bytes physically leave the UART TX FIFO before
      * we reset, otherwise the uplink's Stage 3 waits on silence. */
@@ -459,6 +630,19 @@ bool uart_ota_process_data(const uint8_t *data, int len)
         switch (s_ota.phase) {
 
         case PHASE_HEADER:
+            /* Out-of-band recovery escape. It is only recognized outside a
+             * framed payload, so ordinary 0xFF bytes in firmware data cannot
+             * abort an update. This also makes the uplink boot sentinel real. */
+            if (s_ota.hdr_pos == 0 && b == OTA_ABORT_SENTINEL_BYTE) {
+                if (++s_ota.abort_sentinel_run >= OTA_ABORT_SENTINEL_COUNT) {
+                    ESP_LOGW(TAG, "OTA wire-abort sentinel received");
+                    send_ota_error("wire_abort");
+                    cleanup_and_idle();
+                    return false;
+                }
+                continue;
+            }
+            s_ota.abort_sentinel_run = 0;
             if (s_ota.hdr_pos == 0 && b != OTA_CHUNK_MAGIC) {
                 continue;  /* skip non-magic filler between chunks */
             }
@@ -466,17 +650,37 @@ bool uart_ota_process_data(const uint8_t *data, int len)
             if (s_ota.hdr_pos >= OTA_CHUNK_HEADER_SIZE) {
                 uint16_t seq  = ((uint16_t)s_ota.hdr_buf[1] << 8) | s_ota.hdr_buf[2];
                 uint16_t clen = ((uint16_t)s_ota.hdr_buf[3] << 8) | s_ota.hdr_buf[4];
-                if (clen > OTA_CHUNK_MAX_DATA) {
-                    ESP_LOGE(TAG, "Chunk too large: %d (seq %d)", clen, seq);
-                    s_ota.hdr_pos = 0;
-                    continue;
+                if (clen == 0 || clen > OTA_CHUNK_MAX_DATA) {
+                    ESP_LOGE(TAG, "Invalid chunk length: %u (seq %u)",
+                             (unsigned)clen, (unsigned)seq);
+                    send_ota_error("invalid_chunk_length");
+                    cleanup_and_idle();
+                    return false;
                 }
                 if (seq != s_ota.expected_seq) {
                     ESP_LOGW(TAG, "Unexpected OTA seq=%u expected=%u -> NACK expected",
                              (unsigned)seq, (unsigned)s_ota.expected_seq);
                     send_chunk_nack(s_ota.expected_seq);
                     s_ota.hdr_pos = 0;
-                    continue;
+                    /* Consume the rejected frame's declared payload + CRC as
+                     * opaque bytes. Otherwise an 0xF0 in its firmware data
+                     * can be mistaken for a fresh header and destroy resync. */
+                    s_ota.discard_remaining =
+                        (uint32_t)clen + OTA_CHUNK_CRC_SIZE;
+                    s_ota.phase = PHASE_DISCARD;
+                    break;
+                }
+                if (s_ota.received > s_ota.total_size ||
+                    (uint32_t)clen > s_ota.total_size - s_ota.received) {
+                    uint32_t remaining = s_ota.received <= s_ota.total_size
+                        ? s_ota.total_size - s_ota.received : 0;
+                    ESP_LOGE(TAG,
+                             "Chunk overruns manifest: seq=%u len=%u remaining=%lu",
+                             (unsigned)seq, (unsigned)clen,
+                             (unsigned long)remaining);
+                    send_ota_error("chunk_overrun");
+                    cleanup_and_idle();
+                    return false;
                 }
                 s_ota.chunk_seq = seq;
                 s_ota.chunk_len = clen;
@@ -517,13 +721,9 @@ bool uart_ota_process_data(const uint8_t *data, int len)
 
                 /* Good chunk: copy into the PSRAM staging buffer at the
                  * current offset. Bounds guard against a runaway sender. */
-                uint32_t write_len = s_ota.chunk_len;
-                uint32_t space_left = s_ota.total_size - s_ota.received;
-                if (write_len > space_left) write_len = space_left;
-
                 memcpy(s_ota.buffer + s_ota.received,
-                       s_ota.chunk_buf, write_len);
-                s_ota.received     += write_len;
+                       s_ota.chunk_buf, s_ota.chunk_len);
+                s_ota.received     += s_ota.chunk_len;
                 s_ota.last_chunk_ms = esp_timer_get_time() / 1000;
                 s_ota.phase         = PHASE_HEADER;
                 s_ota.expected_seq++;
@@ -544,14 +744,38 @@ bool uart_ota_process_data(const uint8_t *data, int len)
                              (unsigned)(psram_free_size() / 1024));
                 }
 
-                /* All bytes staged — validate + flash. No separate
-                 * uart_ota_finalize() call needed; we auto-progress. */
+                /* Establish a real framing barrier before flash commit. The
+                 * uplink must receive this exact staged receipt and then send
+                 * a separately framed, manifest-bound ota_end command. */
                 if (s_ota.received >= s_ota.total_size) {
-                    ESP_LOGI(TAG, "All %lu bytes staged — validating + flashing",
+                    ESP_LOGI(TAG, "All %lu bytes staged — validating before ota_end",
                              (unsigned long)s_ota.received);
-                    validate_and_flash();   /* one-way ticket; reboots on success */
-                    return false;
+                    if (!validate_staged_buffer()) {
+                        cleanup_and_idle();
+                        return false;
+                    }
+                    s_ota.state = OTA_AWAITING_FINALIZE;
+                    s_ota.last_chunk_ms = esp_timer_get_time() / 1000;
+                    if (!send_manifest_event(MSG_TYPE_OTA_STAGED)) {
+                        send_ota_error("staged_receipt_failed");
+                        cleanup_and_idle();
+                        return false;
+                    }
+                    ESP_LOGW(TAG,
+                             "OTA image verified and staged; waiting for exact "
+                             "session/manifest ota_end");
+                    return true;
                 }
+            }
+            break;
+
+        case PHASE_DISCARD:
+            if (s_ota.discard_remaining > 0) {
+                s_ota.discard_remaining--;
+            }
+            if (s_ota.discard_remaining == 0) {
+                s_ota.phase = PHASE_HEADER;
+                s_ota.abort_sentinel_run = 0;
             }
             break;
         }
@@ -559,11 +783,14 @@ bool uart_ota_process_data(const uint8_t *data, int len)
     return true;
 }
 
-/* Informational ota_end entry point. Validation+flash is also driven by the
- * chunk stream reaching total_size in process_data(). */
+/* The only flash-commit entry point. main.c calls this after validating the
+ * separately framed ota_end session and every immutable manifest field. */
 bool uart_ota_finalize(void)
 {
-    if (s_ota.state != OTA_STAGING) return false;
+    if (s_ota.state != OTA_AWAITING_FINALIZE) {
+        ESP_LOGE(TAG, "Finalize refused in state=%s", uart_ota_state_label());
+        return false;
+    }
     if (s_ota.received != s_ota.total_size) {
         ESP_LOGE(TAG, "finalize called with %lu/%lu bytes — aborting",
                  (unsigned long)s_ota.received, (unsigned long)s_ota.total_size);
@@ -604,6 +831,16 @@ bool uart_ota_is_active(void)
         return false;
     }
 
+    if (s_ota.state == OTA_AWAITING_FINALIZE &&
+        s_ota.last_chunk_ms > 0 &&
+        (now_ms - s_ota.last_chunk_ms) > FINALIZE_IDLE_TIMEOUT_MS) {
+        ESP_LOGE(TAG, "No manifest-bound ota_end for %lldms — aborting",
+                 (long long)(now_ms - s_ota.last_chunk_ms));
+        send_ota_error("finalize_timeout");
+        cleanup_and_idle();
+        return false;
+    }
+
     /* Overall ceiling — catch anything that slips past the idle watchdog. */
     if (s_ota.start_ms > 0 && (now_ms - s_ota.start_ms) > OPERATION_CEILING_MS) {
         ESP_LOGE(TAG, "OTA overall timeout (%lldms) — aborting",
@@ -615,12 +852,23 @@ bool uart_ota_is_active(void)
     return true;
 }
 
+bool uart_ota_is_active_snapshot(void)
+{
+    return atomic_load_explicit(&s_session_active, memory_order_acquire);
+}
+
+bool uart_ota_is_receiving_binary(void)
+{
+    return uart_ota_is_active() && s_ota.state == OTA_STAGING;
+}
+
 const char *uart_ota_state_label(void)
 {
     switch (s_ota.state) {
         case OTA_IDLE:       return "idle";
         case OTA_STAGING:    return "staging";
         case OTA_VALIDATING: return "validating";
+        case OTA_AWAITING_FINALIZE: return "awaiting_finalize";
         case OTA_FLASHING:   return "flashing";
         case OTA_REBOOTING:  return "rebooting";
         default:             return "unknown";
@@ -630,6 +878,20 @@ const char *uart_ota_state_label(void)
 const char *uart_ota_session_id(void)
 {
     return s_ota.session_id;
+}
+
+bool uart_ota_manifest_matches_active(const uart_ota_manifest_t *manifest)
+{
+    return manifest && s_ota.state != OTA_IDLE &&
+           strcmp(manifest->target, s_ota.manifest.target) == 0 &&
+           strcmp(manifest->project, s_ota.manifest.project) == 0 &&
+           strcmp(manifest->hardware, s_ota.manifest.hardware) == 0 &&
+           strcmp(manifest->version, s_ota.manifest.version) == 0 &&
+           strcmp(manifest->sha256, s_ota.manifest.sha256) == 0 &&
+           manifest->generation == s_ota.manifest.generation &&
+           manifest->size == s_ota.manifest.size &&
+           manifest->crc32 == s_ota.manifest.crc32 &&
+           manifest->allow_same_version == s_ota.manifest.allow_same_version;
 }
 
 uint32_t uart_ota_received(void)

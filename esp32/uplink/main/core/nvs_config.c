@@ -120,6 +120,79 @@ bool nvs_config_get_u32(const char *key, uint32_t *value)
     return false;
 }
 
+bool nvs_config_set_blob(const char *key, const void *data, size_t size)
+{
+    if (!s_initialized || !key || !data || size == 0 ||
+        size > NVS_CONFIG_MAX_BLOB_SIZE) {
+        return false;
+    }
+
+    esp_err_t err = nvs_set_blob(s_nvs_handle, key, data, size);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS set_blob '%s' (%u bytes) failed: %s",
+                 key, (unsigned)size, esp_err_to_name(err));
+        return false;
+    }
+    err = nvs_commit(s_nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS blob commit '%s' failed: %s",
+                 key, esp_err_to_name(err));
+        return false;
+    }
+    ESP_LOGD(TAG, "NVS committed blob '%s' (%u bytes)",
+             key, (unsigned)size);
+    return true;
+}
+
+nvs_config_blob_read_status_t nvs_config_read_blob(
+    const char *key, void *data, size_t capacity, size_t *out_size)
+{
+    if (out_size) {
+        *out_size = 0;
+    }
+    if (!s_initialized || !key || !data || capacity == 0 ||
+        capacity > NVS_CONFIG_MAX_BLOB_SIZE) {
+        return NVS_CONFIG_BLOB_READ_ERROR;
+    }
+
+    size_t required = 0;
+    esp_err_t err = nvs_get_blob(s_nvs_handle, key, NULL, &required);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        return NVS_CONFIG_BLOB_MISSING;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "NVS blob length '%s' failed: %s",
+                 key, esp_err_to_name(err));
+        return NVS_CONFIG_BLOB_READ_ERROR;
+    }
+    if (required == 0 || required > capacity ||
+        required > NVS_CONFIG_MAX_BLOB_SIZE) {
+        ESP_LOGW(TAG, "NVS blob '%s' has invalid size %u (capacity=%u)",
+                 key, (unsigned)required, (unsigned)capacity);
+        return NVS_CONFIG_BLOB_READ_ERROR;
+    }
+
+    size_t read_size = required;
+    err = nvs_get_blob(s_nvs_handle, key, data, &read_size);
+    if (err != ESP_OK || read_size != required) {
+        ESP_LOGW(TAG, "NVS blob read '%s' failed: %s size=%u/%u",
+                 key, esp_err_to_name(err), (unsigned)read_size,
+                 (unsigned)required);
+        return NVS_CONFIG_BLOB_READ_ERROR;
+    }
+    if (out_size) {
+        *out_size = read_size;
+    }
+    return NVS_CONFIG_BLOB_PRESENT;
+}
+
+bool nvs_config_get_blob(const char *key, void *data, size_t capacity,
+                         size_t *out_size)
+{
+    return nvs_config_read_blob(key, data, capacity, out_size) ==
+        NVS_CONFIG_BLOB_PRESENT;
+}
+
 /* ── Convenience getters with defaults ─────────────────────────────────── */
 
 static void get_with_default(const char *nvs_key, const char *default_val,

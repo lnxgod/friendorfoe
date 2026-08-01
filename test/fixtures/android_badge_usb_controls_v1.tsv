@@ -1,0 +1,16 @@
+set_mode_local_ap	{"cmd":"set_mode","mode":"local_ap","persist":true}
+set_mode_backend	{"cmd":"set_mode","mode":"backend","persist":true}
+set_mode_usb_only	{"cmd":"set_mode","mode":"usb_only","persist":true}
+reboot	{"cmd":"reboot"}
+display_policy	{"cmd":"badge_display_policy","persist":true,"policy":{"version":1,"classes":{"drone":{"enabled":true,"lane":"both","min_proximity":"present","priority":100},"meta":{"enabled":true,"lane":"both","min_proximity":"present","priority":95},"tracker":{"enabled":true,"lane":"lower","min_proximity":"near","priority":70},"wifi_attack":{"enabled":true,"lane":"both","min_proximity":"present","priority":90},"skimmer":{"enabled":false,"lane":"off","min_proximity":"close","priority":0},"camera":{"enabled":true,"lane":"lower","min_proximity":"near","priority":65},"flock":{"enabled":true,"lane":"both","min_proximity":"present","priority":85},"lock":{"enabled":true,"lane":"lower","min_proximity":"near","priority":55},"hid":{"enabled":true,"lane":"lower","min_proximity":"close","priority":45},"beacon":{"enabled":true,"lane":"lower","min_proximity":"near","priority":30},"event_badge":{"enabled":true,"lane":"lower","min_proximity":"near","priority":35},"auracast":{"enabled":true,"lane":"lower","min_proximity":"near","priority":20},"scanner_status":{"enabled":true,"lane":"lower","min_proximity":"present","priority":10},"ble_attack":{"enabled":true,"lane":"both","min_proximity":"present","priority":92}}}}
+display_policy_reset	{"cmd":"badge_display_policy_reset","persist":true}
+theme	{"cmd":"badge_theme","persist":true,"theme":{"version":1,"palette":"field","background":"dark","brightness":100,"accents":{"drone":65184,"meta":63539,"tracker":63519,"flock":43039,"wifi_attack":2047,"clear":12133}}}
+theme_reset	{"cmd":"badge_theme_reset","persist":true}
+display_nav_next	{"cmd":"display_nav","action":"next"}
+display_nav_detail	{"cmd":"display_nav","action":"detail"}
+display_nav_page	{"cmd":"display_nav","action":"page"}
+display_nav_back	{"cmd":"display_nav","action":"back"}
+ble_investigate_gatt	{"cmd":"ble_investigate","request_id":"android-gatt","mode":"gatt","target":"AA:BB:CC:DD:EE:FF","timeout_ms":7500}
+ble_investigate_passive	{"cmd":"ble_investigate","request_id":"android-passive","mode":"passive_capture","target":null,"timeout_ms":12000}
+ble_chunk_first	{"cmd":"ble_investigation_chunk","request_id":"android-gatt","seq":0}
+ble_chunk_last	{"cmd":"ble_investigation_chunk","request_id":"android-gatt","seq":63}

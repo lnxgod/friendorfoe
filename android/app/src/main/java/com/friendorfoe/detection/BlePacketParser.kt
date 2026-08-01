@@ -417,6 +417,7 @@ object BlePacketParser {
         return BleAdvertisement(
             mac = result.device.address,
             rssi = result.rssi,
+            connectable = result.isConnectable,
             totalLength = bytes?.size ?: 0,
             adTypes = adTypes,
             payloadStructHash = structHash,

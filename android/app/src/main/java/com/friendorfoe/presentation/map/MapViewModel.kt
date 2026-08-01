@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -15,6 +16,7 @@ import com.friendorfoe.data.remote.SensorDto
 import com.friendorfoe.data.remote.SensorMapApiService
 import com.friendorfoe.data.repository.AircraftRepository
 import com.friendorfoe.data.repository.SkyObjectRepository
+import com.friendorfoe.data.repository.validatedLocationAccuracyMeters
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
@@ -27,18 +29,59 @@ import com.friendorfoe.sensor.VisualFocusRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+
+private const val MAP_FRAME_INTERVAL_MS = 250L
+
+internal fun mapFrameClock(
+    epochNowMs: () -> Long = System::currentTimeMillis,
+    monotonicNowMs: () -> Long = SystemClock::elapsedRealtime,
+    waitForNextFrame: suspend (Long) -> Unit = { delay(it) },
+): Flow<Long> = flow {
+    var nextFrameAtMs = monotonicNowMs()
+    while (currentCoroutineContext().isActive) {
+        emit(epochNowMs())
+        nextFrameAtMs += MAP_FRAME_INTERVAL_MS
+        waitForNextFrame((nextFrameAtMs - monotonicNowMs()).coerceAtLeast(0L))
+    }
+}
+
+@OptIn(ExperimentalCoroutinesApi::class)
+internal fun stabilizedMapHeadingFlow(
+    followCompass: Flow<Boolean>,
+    compassHeading: Flow<Float>,
+    monotonicNowMs: () -> Long = SystemClock::elapsedRealtime,
+): Flow<Float> {
+    val stabilizer = MapHeadingStabilizer()
+    return followCompass.flatMapLatest { enabled ->
+        if (!enabled) {
+            flow {
+                stabilizer.reset()
+                emit(0f)
+            }
+        } else {
+            compassHeading.mapNotNull { heading ->
+                stabilizer.update(heading, monotonicNowMs())
+            }
+        }
+    }
+}
 
 internal data class MapBackendSnapshot(
     val map: DroneMapDto,
@@ -181,6 +224,19 @@ class MapViewModel @Inject constructor(
         initialValue = emptyList()
     )
 
+    private val mapTrackProjector = MapTrackProjector()
+
+    val mapTracks: StateFlow<List<MapTrack>> = combine(
+        mapFrameClock(),
+        skyObjects,
+    ) { nowMs, objects ->
+        mapTrackProjector.project(objects, nowMs)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = emptyList(),
+    )
+
     private val visualFocusClock = kotlinx.coroutines.flow.flow {
         while (true) {
             emit(System.currentTimeMillis())
@@ -214,6 +270,15 @@ class MapViewModel @Inject constructor(
     val compassHeading: StateFlow<Float> = sensorFusionEngine.orientation
         .map { it.azimuthDegrees }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0f)
+
+    val stabilizedMapHeading: StateFlow<Float> = stabilizedMapHeadingFlow(
+        followCompass = followCompass,
+        compassHeading = compassHeading,
+    ).stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = 0f,
+    )
 
     fun selectObject(objectId: String?) {
         _selectedObjectId.value = objectId
@@ -299,11 +364,20 @@ class MapViewModel @Inject constructor(
             )
 
             // Ensure scanning is running even if AR was never visited
+            val accuracyMeters = location.validatedLocationAccuracyMeters()
             if (!scanningStarted) {
-                skyObjectRepository.ensureStarted(location.latitude, location.longitude)
+                skyObjectRepository.ensureStarted(
+                    location.latitude,
+                    location.longitude,
+                    accuracyMeters,
+                )
                 scanningStarted = true
             } else {
-                skyObjectRepository.updatePosition(location.latitude, location.longitude)
+                skyObjectRepository.updatePosition(
+                    location.latitude,
+                    location.longitude,
+                    accuracyMeters,
+                )
             }
         }
 

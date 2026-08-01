@@ -27,18 +27,36 @@
 #include "uart_rx.h"
 #include "version.h"
 #include "detection_types.h"
+#include "detection_policy.h"
+#include "badge_ble_rssi_policy.h"
 #include "badge_threat_policy.h"
 #include "badge_runtime.h"
+#include "badge_usb_recovery.h"
 #include "badge_display_policy_runtime.h"
+#include "badge_display_contract.h"
 #include "badge_theme_runtime.h"
 #include "badge_button_gesture.h"
+#include "badge_power_chord.h"
+#include "badge_power_runtime.h"
+#include "badge_easter_egg_runtime.h"
+#include "badge_easter_egg_animation.h"
+#if defined(FOF_DC34_GAME_CANARY)
+#include "badge_con_runtime.h"
+#include "badge_ok_button_policy.h"
+#endif
 #include "badge_ble_control.h"
+#include "badge_ble_investigation.h"
+#include "badge_investigation_policy.h"
+#include "gamechangersai_logo.h"
+#include "psram_alloc.h"
+#include "wall_of_sheep_logo.h"
 
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdatomic.h>
 
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
@@ -48,6 +66,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"  /* esp_rom_delay_us for bit-bang fallback */
 
@@ -68,8 +87,13 @@ static const char *TAG = "st7735";
 #define BADGE_BUTTON_DEBOUNCE_MS  60
 #define BADGE_BUTTON_LONG_MS      850
 #define BADGE_BUTTON_DOUBLE_TAP_MS 320
+#define BADGE_RESET_CHORD_HOLD_MS 10000
+#if defined(FOF_DC34_GAME_CANARY)
+#define BADGE_BUTTON_EASTER_HOLD_MS 6000U
+#endif
+#define BADGE_USB_CONFIRM_MS       5000
 #define BADGE_DETAIL_TIMEOUT_MS   30000
-#define BADGE_BUTTON_STACK_WORDS  4096
+#define BADGE_BUTTON_STACK_BYTES  4096
 #define BADGE_BUTTON1_ENABLE_ACTIONS 0
 /* Backlight: panel BL pin is wired directly to 3V3 on this badge build,
  * so the firmware does not drive it. -1 disables the GPIO drive path. */
@@ -117,9 +141,11 @@ static const char *TAG = "st7735";
 
 /* ST7735 commands */
 #define ST_CMD_SWRESET      0x01
+#define ST_CMD_SLPIN        0x10
 #define ST_CMD_SLPOUT       0x11
 #define ST_CMD_NORON        0x13
 #define ST_CMD_INVOFF       0x20
+#define ST_CMD_DISPOFF      0x28
 #define ST_CMD_DISPON       0x29
 #define ST_CMD_CASET        0x2A
 #define ST_CMD_RASET        0x2B
@@ -149,10 +175,60 @@ static spi_device_handle_t s_spi = NULL;
 static uint16_t           *s_fb = NULL;       /* big endian RGB565 */
 static uint8_t            *s_tx_chunk = NULL; /* internal DMA-safe SPI staging */
 static bool                s_initialized = false;
+static _Atomic bool        s_panel_awake = false;
+static _Atomic bool        s_usb_recovery_prompt_active = false;
 static SemaphoreHandle_t   s_display_mutex = NULL;
+/* Refreshed once under s_display_mutex for each dashboard frame. Keeping the
+ * complete copies here avoids placing two 1496-byte scanner_info_t values on
+ * the already deep display-task stack while still preventing torn reads. */
+static scanner_info_t      s_display_scanner_snapshots[2] = {0};
+static bool                s_display_scanner_present[2] = {false, false};
 static int                 s_spi_error_count = 0;
 static uint32_t s_anim_frame = 0;
 static uint32_t s_queue_page_frame = 0;
+
+#if defined(FOF_DC34_GAME_CANARY)
+typedef enum {
+    BADGE_CON_RENDER_ACTIVITY_NONE = 0,
+    BADGE_CON_RENDER_ACTIVITY_ATTACKED,
+    BADGE_CON_RENDER_ACTIVITY_HEALING,
+    BADGE_CON_RENDER_ACTIVITY_CURE_FADING,
+    BADGE_CON_RENDER_ACTIVITY_INFECTED,
+    BADGE_CON_RENDER_ACTIVITY_CURED,
+} badge_con_render_activity_t;
+
+typedef struct {
+    badge_con_present_state_t state;
+    badge_con_render_activity_t activity;
+    badge_con_snapshot_t snapshot;
+    badge_con_render_palette_t palette;
+} badge_con_render_context_t;
+
+static badge_con_render_context_t s_con_render = {0};
+static badge_con_role_t s_con_previous_role = BADGE_CON_ROLE_NORMAL;
+static uint8_t s_con_previous_shield = 0U;
+static uint8_t s_con_activity_frames = 0U;
+static bool s_con_previous_valid = false;
+static badge_con_render_activity_t s_con_activity =
+    BADGE_CON_RENDER_ACTIVITY_NONE;
+#endif
+
+static void display_refresh_scanner_snapshots(void)
+{
+    for (int scanner_id = 0; scanner_id < 2; scanner_id++) {
+        s_display_scanner_present[scanner_id] =
+            uart_rx_get_scanner_info_snapshot(
+                scanner_id, &s_display_scanner_snapshots[scanner_id]);
+    }
+}
+
+static const scanner_info_t *display_scanner_snapshot(int scanner_id)
+{
+    return scanner_id >= 0 && scanner_id < 2 &&
+           s_display_scanner_present[scanner_id]
+        ? &s_display_scanner_snapshots[scanner_id]
+        : NULL;
+}
 
 typedef enum {
     BADGE_BUTTON_OVERLAY_NONE = 0,
@@ -168,6 +244,14 @@ typedef enum {
 
 static volatile badge_button_overlay_t s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
 static TaskHandle_t s_button_task = NULL;
+static StaticTask_t s_button_task_tcb;
+/* ESP-IDF's StackType_t is byte-sized on ESP32. Keep the recovery task's
+ * storage explicit and aligned so starting physical recovery never depends
+ * on a fragmented heap. */
+_Static_assert(sizeof(StackType_t) == 1,
+               "badge button static stack sizing requires byte StackType_t");
+static StackType_t s_button_task_stack[BADGE_BUTTON_STACK_BYTES]
+    __attribute__((aligned(16)));
 
 static volatile int s_focus_index = 0;
 static volatile bool s_detail_mode = false;
@@ -192,7 +276,7 @@ typedef struct {
     badge_threat_snapshot_entity_t entity;
 } badge_focus_entry_t;
 
-#define BADGE_FOCUS_ENTRY_MAX 4
+#define BADGE_FOCUS_ENTRY_MAX BADGE_DISPLAY_FOCUS_CAPACITY
 
 typedef struct {
     badge_focus_entry_t entries[BADGE_FOCUS_ENTRY_MAX];
@@ -205,6 +289,23 @@ typedef struct {
 
 static badge_focus_model_t s_focus_model = {0};
 
+typedef struct {
+    bool visible;
+    ble_investigation_mode_t mode;
+    ble_investigation_state_t state;
+    int page;
+    int64_t started_ms;
+    badge_threat_category_t category;
+    char request_id[BLE_INV_REQUEST_ID_LEN];
+    char target_mac[18];
+    char selection_key[BADGE_THREAT_KEY_LEN];
+    char start_error[BLE_INV_ERROR_LEN];
+} badge_investigation_overlay_t;
+
+static badge_investigation_overlay_t s_investigation_overlay = {0};
+static ble_investigation_result_t s_investigation_result;
+static uint32_t s_investigation_request_counter = 0;
+
 static bool display_lock(TickType_t wait_ticks)
 {
     if (!s_display_mutex) return true;
@@ -215,6 +316,12 @@ static void display_unlock(void)
 {
     if (s_display_mutex) {
         xSemaphoreGive(s_display_mutex);
+    }
+}
+
+static void badge_button_display_lock(void)
+{
+    while (!display_lock(portMAX_DELAY)) {
     }
 }
 
@@ -253,9 +360,17 @@ typedef struct {
     bool stable_pressed;
     bool long_sent;
     bool boot_ignored;
+    bool consume_release;
+    bool released_boot_ignored;
     TickType_t changed_tick;
     TickType_t pressed_tick;
 } badge_button_state_t;
+
+typedef enum {
+    BADGE_BUTTON_EDGE_NONE = 0,
+    BADGE_BUTTON_EDGE_PRESSED,
+    BADGE_BUTTON_EDGE_RELEASED,
+} badge_button_edge_t;
 
 static int64_t badge_now_ms(void)
 {
@@ -429,11 +544,21 @@ static void badge_button_toggle_overlay(badge_button_overlay_t overlay)
 
 static void badge_button_working_single_press(void)
 {
+    badge_button_display_lock();
+    if (s_investigation_overlay.visible) {
+        s_investigation_overlay.page = badge_investigation_next_page(
+            s_investigation_overlay.state,
+            s_investigation_overlay.page);
+        badge_button_note_activity();
+        display_unlock();
+        return;
+    }
     if (s_button_overlay != BADGE_BUTTON_OVERLAY_NONE) {
         badge_button_note_activity();
         s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
         s_detail_mode = false;
         s_detail_page = 0;
+        display_unlock();
         return;
     }
     if (s_detail_mode) {
@@ -441,37 +566,180 @@ static void badge_button_working_single_press(void)
     } else {
         badge_display_nav_next();
     }
+    display_unlock();
 }
 
 static void badge_button_working_double_press(void)
 {
+    badge_button_display_lock();
+    if (s_investigation_overlay.visible) {
+        s_investigation_overlay.visible = false;
+        badge_button_note_activity();
+        display_unlock();
+        return;
+    }
     if (s_button_overlay != BADGE_BUTTON_OVERLAY_NONE) {
         badge_button_note_activity();
         s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
         s_detail_mode = false;
         s_detail_page = 0;
+        display_unlock();
         return;
     }
     badge_display_nav_detail();
+    display_unlock();
+}
+
+static bool badge_investigation_prepare_overlay(
+    const badge_investigation_selection_t *selection,
+    const char *request_id,
+    ble_investigation_mode_t mode)
+{
+    if (!selection || !request_id) return false;
+    badge_button_display_lock();
+    memset(&s_investigation_overlay, 0, sizeof(s_investigation_overlay));
+    s_investigation_overlay.visible = true;
+    s_investigation_overlay.mode = mode;
+    s_investigation_overlay.state = BLE_INV_QUEUED;
+    s_investigation_overlay.page = 0;
+    s_investigation_overlay.started_ms = badge_now_ms();
+    s_investigation_overlay.category = selection->category;
+    snprintf(s_investigation_overlay.request_id,
+             sizeof(s_investigation_overlay.request_id), "%s", request_id);
+    snprintf(s_investigation_overlay.target_mac,
+             sizeof(s_investigation_overlay.target_mac), "%s",
+             mode == BLE_INV_MODE_GATT ? selection->bssid : "");
+    snprintf(s_investigation_overlay.selection_key,
+             sizeof(s_investigation_overlay.selection_key), "%s",
+             selection->key);
+    ble_investigation_result_init(&s_investigation_result);
+    s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
+    s_detail_mode = false;
+    s_detail_page = 0;
+    display_unlock();
+    return true;
+}
+
+static void badge_investigation_note_start_error(const char *request_id,
+                                                 const char *error)
+{
+    if (!request_id) return;
+    badge_button_display_lock();
+    if (s_investigation_overlay.visible &&
+        strcmp(s_investigation_overlay.request_id, request_id) == 0) {
+        s_investigation_overlay.state = BLE_INV_FAILED;
+        s_investigation_overlay.page = 1;
+        snprintf(s_investigation_overlay.start_error,
+                 sizeof(s_investigation_overlay.start_error), "%s",
+                 error && error[0] ? error : "start_failed");
+    }
+    display_unlock();
+}
+
+static void badge_display_open_deepest_detail(
+    const badge_investigation_selection_t *selection)
+{
+    if (!selection) return;
+    badge_button_display_lock();
+    for (int i = 0; i < s_focus_model.count; ++i) {
+        badge_focus_entry_t *entry = &s_focus_model.entries[i];
+        if (entry->active && strcmp(entry->key, selection->key) == 0) {
+            s_focus_index = i;
+            s_focus_model.focus_index = i;
+            s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
+            s_detail_mode = true;
+            s_detail_page = 2;
+            break;
+        }
+    }
+    display_unlock();
+}
+
+static void badge_button_pair_phone(badge_button_overlay_t previous_overlay)
+{
+    if (previous_overlay == BADGE_BUTTON_OVERLAY_BLE_PAIR ||
+        previous_overlay == BADGE_BUTTON_OVERLAY_QR) {
+        badge_button_display_lock();
+        s_detail_mode = false;
+        s_detail_page = 0;
+        s_button_overlay = previous_overlay == BADGE_BUTTON_OVERLAY_BLE_PAIR
+            ? BADGE_BUTTON_OVERLAY_QR
+            : BADGE_BUTTON_OVERLAY_TRIFORCE;
+        display_unlock();
+        return;
+    }
+
+    bool pairing_open = badge_ble_control_open_pairing_window();
+    badge_button_display_lock();
+    s_detail_mode = false;
+    s_detail_page = 0;
+    s_button_overlay = pairing_open
+        ? BADGE_BUTTON_OVERLAY_BLE_PAIR
+        : BADGE_BUTTON_OVERLAY_QR;
+    display_unlock();
 }
 
 static void badge_button_working_long_press(void)
 {
     badge_button_note_activity();
-    s_detail_mode = false;
-    s_detail_page = 0;
-    if (s_button_overlay == BADGE_BUTTON_OVERLAY_BLE_PAIR) {
-        s_button_overlay = BADGE_BUTTON_OVERLAY_QR;
+    badge_investigation_selection_t selection;
+    badge_button_overlay_t previous_overlay;
+
+    badge_button_display_lock();
+    if (s_investigation_overlay.visible) {
+        display_unlock();
         return;
     }
-    if (s_button_overlay == BADGE_BUTTON_OVERLAY_QR) {
-        s_button_overlay = BADGE_BUTTON_OVERLAY_TRIFORCE;
-    } else {
-        if (badge_ble_control_open_pairing_window()) {
-            s_button_overlay = BADGE_BUTTON_OVERLAY_BLE_PAIR;
-        } else {
-            s_button_overlay = BADGE_BUTTON_OVERLAY_QR;
-        }
+    previous_overlay = s_button_overlay;
+    int focus_index = s_focus_model.focus_index;
+    const badge_focus_entry_t *entry =
+        focus_index >= 0 && focus_index < s_focus_model.count
+            ? &s_focus_model.entries[focus_index]
+            : NULL;
+    badge_investigation_selection_copy(
+        &selection,
+        entry && entry->active && entry->is_entity,
+        entry && entry->is_entity ? entry->entity.source : 0,
+        entry && entry->is_entity ? entry->entity.category
+                                  : BADGE_THREAT_CATEGORY_NONE,
+        entry ? entry->key : "",
+        entry && entry->is_entity ? entry->entity.bssid : "");
+    display_unlock();
+
+    if (previous_overlay != BADGE_BUTTON_OVERLAY_NONE) {
+        badge_button_pair_phone(previous_overlay);
+        return;
+    }
+
+    badge_hold_action_t action = badge_investigation_hold_action(&selection);
+    if (action == BADGE_HOLD_PAIR_PHONE) {
+        badge_button_pair_phone(previous_overlay);
+        return;
+    }
+    if (action == BADGE_HOLD_SHOW_DETAIL) {
+        badge_display_open_deepest_detail(&selection);
+        return;
+    }
+
+    char request_id[BLE_INV_REQUEST_ID_LEN];
+    uint32_t counter = ++s_investigation_request_counter;
+    snprintf(request_id, sizeof(request_id), "btn-%08lx-%04lx",
+             (unsigned long)((uint64_t)badge_now_ms() & 0xffffffffULL),
+             (unsigned long)(counter & 0xffffU));
+    ble_investigation_mode_t mode = action == BADGE_HOLD_INVESTIGATE_PASSIVE
+        ? BLE_INV_MODE_PASSIVE_CAPTURE
+        : BLE_INV_MODE_GATT;
+    if (!badge_investigation_prepare_overlay(&selection, request_id, mode)) {
+        return;
+    }
+
+    char error[BLE_INV_ERROR_LEN] = {0};
+    const char *target_mac = mode == BLE_INV_MODE_GATT ? selection.bssid : "";
+    bool started = badge_ble_investigation_start(
+        request_id, ble_investigation_mode_name(mode), target_mac,
+        "badge_button", error, sizeof(error));
+    if (!started) {
+        badge_investigation_note_start_error(request_id, error);
     }
 }
 
@@ -520,7 +788,9 @@ static void badge_button_short_press(badge_button_id_t id)
     }
 }
 
-static void badge_button_poll_one(badge_button_state_t *button, TickType_t now)
+static badge_button_edge_t badge_button_sample_one(
+    badge_button_state_t *button,
+    TickType_t now)
 {
     int raw_level = gpio_get_level(button->pin);
     bool raw_pressed = badge_button_level_is_pressed(raw_level,
@@ -528,21 +798,19 @@ static void badge_button_poll_one(badge_button_state_t *button, TickType_t now)
     badge_button_diag_note_raw(button, raw_pressed, raw_level);
     TickType_t debounce_ticks = pdMS_TO_TICKS(BADGE_BUTTON_DEBOUNCE_MS);
     if (debounce_ticks == 0) debounce_ticks = 1;
-    TickType_t long_ticks = pdMS_TO_TICKS(BADGE_BUTTON_LONG_MS);
-    if (long_ticks == 0) long_ticks = 1;
 
     if (raw_pressed != button->last_raw_pressed) {
         button->last_raw_pressed = raw_pressed;
         button->changed_tick = now;
         badge_button_diag_note_edge(button);
-        return;
+        return BADGE_BUTTON_EDGE_NONE;
     }
 
     if (raw_pressed == button->stable_pressed) {
-        return;
+        return BADGE_BUTTON_EDGE_NONE;
     }
     if ((TickType_t)(now - button->changed_tick) < debounce_ticks) {
-        return;
+        return BADGE_BUTTON_EDGE_NONE;
     }
 
     button->stable_pressed = raw_pressed;
@@ -550,15 +818,69 @@ static void badge_button_poll_one(badge_button_state_t *button, TickType_t now)
         button->pressed_tick = now;
         button->long_sent = false;
         button->boot_ignored = false;
+        button->released_boot_ignored = false;
         badge_button_diag_note_stable(button, true);
+        return BADGE_BUTTON_EDGE_PRESSED;
+    }
+
+    button->released_boot_ignored = button->boot_ignored;
+    button->boot_ignored = false;
+    badge_button_diag_note_stable(button, false);
+    return BADGE_BUTTON_EDGE_RELEASED;
+}
+
+static void badge_button_dispatch_edge(
+    badge_button_state_t *button,
+    badge_button_edge_t edge,
+    TickType_t now,
+    bool easter_visible_at_batch_start,
+    bool *easter_transition_claimed)
+{
+    if (!button || edge == BADGE_BUTTON_EDGE_NONE) {
         return;
     }
 
-    bool boot_ignored = button->boot_ignored;
+    if (edge == BADGE_BUTTON_EDGE_PRESSED) {
+        if (badge_easter_egg_claim_press_in_batch(
+                easter_visible_at_batch_start,
+                easter_transition_claimed)) {
+            (void)badge_easter_egg_runtime_advance();
+        }
+        if (easter_visible_at_batch_start) {
+            button->consume_release = true;
+            badge_button_gesture_cancel(&s_b2_gesture);
+            badge_button_diag_set_b2_gesture("");
+            badge_button_display_lock();
+            s_button_overlay = BADGE_BUTTON_OVERLAY_NONE;
+            s_detail_mode = false;
+            s_detail_page = 0;
+            display_unlock();
+        }
+        if (badge_power_runtime_is_quiet()) {
+            return;
+        }
+        return;
+    }
+
+    bool boot_ignored = button->released_boot_ignored;
+    button->released_boot_ignored = false;
+    if (button->consume_release) {
+        button->consume_release = false;
+        button->long_sent = false;
+        return;
+    }
+
+    if (badge_power_runtime_is_quiet()) {
+        button->long_sent = false;
+        badge_button_gesture_cancel(&s_b2_gesture);
+        badge_button_diag_set_b2_gesture("");
+        return;
+    }
+
     TickType_t held_ticks = now - button->pressed_tick;
+    TickType_t long_ticks = pdMS_TO_TICKS(BADGE_BUTTON_LONG_MS);
+    if (long_ticks == 0) long_ticks = 1;
     bool long_press = held_ticks >= long_ticks;
-    button->boot_ignored = false;
-    badge_button_diag_note_stable(button, false);
     if (boot_ignored) {
         button->long_sent = false;
     } else if (long_press) {
@@ -582,16 +904,40 @@ static void badge_button_poll_one(badge_button_state_t *button, TickType_t now)
             } else {
                 badge_button_dispatch_b2_gesture(event);
             }
-        } else if (BADGE_BUTTON1_ENABLE_ACTIONS) {
-            badge_button_short_press(button->id);
+        } else {
+#if defined(FOF_DC34_GAME_CANARY)
+#else
+            (void)badge_easter_egg_runtime_trigger(
+                BADGE_EASTER_EGG_SOURCE_BUTTON);
+#endif
         }
     }
 }
 
-static void badge_button_poll_hold(badge_button_state_t *button, TickType_t now)
+static void badge_button_restart_or_resume(
+    badge_usb_reset_target_t target,
+    const char *reason)
 {
-    (void)button;
-    (void)now;
+    /*
+     * A successful recovery restart never returns. A rejected reboot lease
+     * must release only the display prompt and resume the live dashboard;
+     * it must not fall through into a second reset target.
+     */
+    if (target == BADGE_USB_RESET_ROM) {
+        /*
+         * The ESP32-S3 ROM cannot redraw this panel. Flush a definitive final
+         * frame first; the ST7735 retains it throughout the host flash.
+         */
+        oled_show_boot_status(
+            "USB FLASH MODE", "READY FOR HOST", "DO NOT UNPLUG");
+    }
+    if (!badge_usb_recovery_restart(target, reason)) {
+        atomic_store(&s_usb_recovery_prompt_active, false);
+        ESP_LOGE(
+            TAG,
+            "Button restart blocked without reboot ownership target=%s",
+            target == BADGE_USB_RESET_ROM ? "rom" : "app");
+    }
 }
 
 static void badge_button_task(void *arg)
@@ -606,6 +952,14 @@ static void badge_button_task(void *arg)
     bool qr_pressed_at_boot = badge_button_is_pressed(
         BADGE_BUTTON_QR_PIN,
         BADGE_BUTTON_QR_ACTIVE_HIGH);
+#if defined(FOF_DC34_GAME_CANARY)
+    badge_ok_button_policy_t ok_policy;
+    badge_ok_button_policy_init(
+        &ok_policy,
+        BADGE_BUTTON_LONG_MS,
+        BADGE_BUTTON_EASTER_HOLD_MS,
+        triforce_pressed_at_boot);
+#endif
     badge_button_state_t buttons[] = {
         {
             .pin = BADGE_BUTTON_TRIFORCE_PIN,
@@ -634,6 +988,12 @@ static void badge_button_task(void *arg)
             .pressed_tick = now,
         },
     };
+    badge_power_chord_t power_chord;
+    badge_power_chord_init(&power_chord,
+                           BADGE_RESET_CHORD_HOLD_MS,
+                           triforce_pressed_at_boot,
+                           qr_pressed_at_boot,
+                           (uint32_t)badge_now_ms());
     s_button_diag.b1_raw_pressed = triforce_pressed_at_boot;
     s_button_diag.b1_stable_pressed = triforce_pressed_at_boot;
     s_button_diag.b1_boot_ignored = triforce_pressed_at_boot;
@@ -644,28 +1004,178 @@ static void badge_button_task(void *arg)
     s_button_diag.b2_boot_ignored = qr_pressed_at_boot;
     s_button_diag.b2_active_high = BADGE_BUTTON_QR_ACTIVE_HIGH;
     s_button_diag.b2_raw_level = gpio_get_level(BADGE_BUTTON_QR_PIN);
+    badge_power_chord_dispatch_gate_t chord_dispatch_gate;
+    badge_power_chord_dispatch_gate_init(
+        &chord_dispatch_gate,
+        triforce_pressed_at_boot,
+        qr_pressed_at_boot);
 
     while (true) {
         now = xTaskGetTickCount();
+        badge_easter_egg_machine_t easter_snapshot = {0};
+        bool easter_visible_at_batch_start =
+            badge_easter_egg_runtime_snapshot(&easter_snapshot) &&
+            easter_snapshot.visible;
+        bool easter_transition_claimed = false;
+        badge_button_edge_t edges[2] = {
+            BADGE_BUTTON_EDGE_NONE,
+            BADGE_BUTTON_EDGE_NONE,
+        };
         for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
-            badge_button_poll_one(&buttons[i], now);
-            badge_button_poll_hold(&buttons[i], now);
-            if (buttons[i].diag_index == 1 &&
-                !buttons[i].stable_pressed &&
-                !buttons[i].last_raw_pressed) {
-                badge_button_dispatch_b2_gesture(
-                    badge_button_gesture_poll(&s_b2_gesture,
-                                              (uint32_t)badge_now_ms()));
+            edges[i] = badge_button_sample_one(&buttons[i], now);
+        }
+        bool both_held =
+            buttons[0].stable_pressed && buttons[1].stable_pressed;
+        bool chord_allowed =
+            !buttons[0].boot_ignored && !buttons[1].boot_ignored;
+        badge_power_chord_event_t power_event = badge_power_chord_update(
+                &power_chord,
+                buttons[0].stable_pressed,
+                buttons[1].stable_pressed,
+                chord_allowed,
+                (uint32_t)badge_now_ms());
+        bool suppress_single_button_dispatch =
+            badge_power_chord_dispatch_gate_update(
+                &chord_dispatch_gate,
+                buttons[0].stable_pressed,
+                buttons[1].stable_pressed,
+                power_event);
+#if defined(FOF_DC34_GAME_CANARY)
+        badge_ok_button_action_t ok_action = badge_ok_button_policy_update(
+            &ok_policy,
+            buttons[0].stable_pressed,
+            !suppress_single_button_dispatch &&
+                !easter_visible_at_batch_start &&
+                !badge_power_runtime_is_quiet(),
+            (uint32_t)badge_now_ms());
+#endif
+        if (both_held) {
+            buttons[0].consume_release = true;
+            buttons[1].consume_release = true;
+            badge_button_gesture_cancel(&s_b2_gesture);
+            badge_button_diag_set_b2_gesture("");
+        }
+        if (power_event == BADGE_POWER_CHORD_RESET) {
+            buttons[0].consume_release = true;
+            buttons[1].consume_release = true;
+            badge_button_gesture_cancel(&s_b2_gesture);
+            badge_button_diag_set_b2_gesture("");
+            /*
+             * The physical ten-second chord is the recovery intent signal.
+             * Do not make recovery depend on the USB driver already reporting
+             * a host: that creates a circular failure when the transport is
+             * precisely what needs repair. Require full chord release and a
+             * fresh debounced OK press before ROM entry. MENU or timeout
+             * always stays in the application.
+             */
+            int64_t released_since_ms = -1;
+            while (released_since_ms < 0 ||
+                   badge_now_ms() - released_since_ms < BADGE_BUTTON_DEBOUNCE_MS) {
+                bool ok_pressed = badge_button_is_pressed(
+                    BADGE_BUTTON_TRIFORCE_PIN,
+                    BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH);
+                bool menu_pressed = badge_button_is_pressed(
+                    BADGE_BUTTON_QR_PIN,
+                    BADGE_BUTTON_QR_ACTIVE_HIGH);
+                if (ok_pressed || menu_pressed) {
+                    released_since_ms = -1;
+                } else if (released_since_ms < 0) {
+                    released_since_ms = badge_now_ms();
+                }
+                vTaskDelay(pdMS_TO_TICKS(BADGE_BUTTON_POLL_MS));
             }
+
+            oled_set_power(true);
+            atomic_store(&s_usb_recovery_prompt_active, true);
+            oled_show_boot_status("USB FLASH?", "OK=YES", "MENU=RESET");
+            int64_t confirm_started_ms = badge_now_ms();
+            int candidate = -1;
+            int64_t candidate_since_ms = -1;
+            bool confirmation_handled = false;
+            while (badge_now_ms() - confirm_started_ms < BADGE_USB_CONFIRM_MS) {
+                bool ok_pressed = badge_button_is_pressed(
+                    BADGE_BUTTON_TRIFORCE_PIN,
+                    BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH);
+                bool menu_pressed = badge_button_is_pressed(
+                    BADGE_BUTTON_QR_PIN,
+                    BADGE_BUTTON_QR_ACTIVE_HIGH);
+                int next_candidate = menu_pressed ? 1 : (ok_pressed ? 0 : -1);
+                if (next_candidate != candidate) {
+                    candidate = next_candidate;
+                    candidate_since_ms = candidate >= 0 ? badge_now_ms() : -1;
+                }
+                if (candidate >= 0 && candidate_since_ms >= 0 &&
+                    badge_now_ms() - candidate_since_ms >=
+                        BADGE_BUTTON_DEBOUNCE_MS) {
+                    bool flash_confirmed = candidate == 0;
+                    badge_usb_reset_target_t target =
+                        badge_usb_recovery_target(flash_confirmed);
+                    const char *reason =
+                        target == BADGE_USB_RESET_ROM
+                            ? "button_usb_rom"
+                            : "button_reboot";
+                    confirmation_handled = true;
+                    badge_button_restart_or_resume(target, reason);
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(BADGE_BUTTON_POLL_MS));
+            }
+            if (!confirmation_handled) {
+                badge_button_restart_or_resume(
+                    badge_usb_recovery_target(false),
+                    "button_reboot");
+            }
+            atomic_store(&s_usb_recovery_prompt_active, false);
+            continue;
+        }
+        if (!suppress_single_button_dispatch) {
+            for (size_t i = 0;
+                 i < sizeof(buttons) / sizeof(buttons[0]);
+                 i++) {
+                badge_button_dispatch_edge(
+                    &buttons[i],
+                    edges[i],
+                    now,
+                    easter_visible_at_batch_start,
+                    &easter_transition_claimed);
+            }
+            if (!badge_power_runtime_is_quiet() &&
+                !buttons[1].stable_pressed &&
+                !buttons[1].last_raw_pressed) {
+                badge_button_dispatch_b2_gesture(
+                    badge_button_gesture_poll(
+                        &s_b2_gesture, (uint32_t)badge_now_ms()));
+            }
+        }
+#if defined(FOF_DC34_GAME_CANARY)
+        if (ok_action == BADGE_OK_BUTTON_ACTION_DETAIL) {
+            badge_button_working_double_press();
+        } else if (ok_action == BADGE_OK_BUTTON_ACTION_EASTER) {
+            (void)badge_easter_egg_runtime_trigger(
+                BADGE_EASTER_EGG_SOURCE_BUTTON);
+        }
+#endif
+        if (suppress_single_button_dispatch &&
+            !chord_dispatch_gate.suppress_until_full_release &&
+            !buttons[0].stable_pressed &&
+            !buttons[1].stable_pressed) {
+            buttons[0].consume_release = false;
+            buttons[1].consume_release = false;
+            buttons[0].long_sent = false;
+            buttons[1].long_sent = false;
+            badge_button_gesture_cancel(&s_b2_gesture);
+            badge_button_diag_set_b2_gesture("");
         }
         badge_button_diag_set_b2_pending();
         vTaskDelay(pdMS_TO_TICKS(BADGE_BUTTON_POLL_MS));
     }
 }
 
-static void badge_buttons_start(void)
+static bool badge_buttons_start(void)
 {
-    if (s_button_task) return;
+    if (s_button_task) {
+        return true;
+    }
 
     gpio_reset_pin(BADGE_BUTTON_TRIFORCE_PIN);
     gpio_reset_pin(BADGE_BUTTON_QR_PIN);
@@ -681,21 +1191,26 @@ static void badge_buttons_start(void)
     esp_err_t err = gpio_config(&button_io);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Badge button GPIO config failed: %d", err);
-        return;
+        return false;
     }
 
-    BaseType_t ok = xTaskCreate(badge_button_task, "badge_buttons",
-                                BADGE_BUTTON_STACK_WORDS,
-                                NULL, 3, &s_button_task);
-    if (ok != pdPASS) {
-        s_button_task = NULL;
+    s_button_task = xTaskCreateStatic(
+        badge_button_task, "badge_buttons", BADGE_BUTTON_STACK_BYTES,
+        NULL, 3, s_button_task_stack, &s_button_task_tcb);
+    if (!s_button_task) {
         ESP_LOGE(TAG, "Badge button task start failed");
-        return;
+        return false;
     }
-    ESP_LOGI(TAG, "Badge buttons active: GPIO%d=diag-only active-%s GPIO%d=next/detail/QR active-low",
+    ESP_LOGI(TAG, "Badge buttons active: GPIO%d=Easter-trigger active-%s GPIO%d=next/detail/QR active-low",
              BADGE_BUTTON_TRIFORCE_PIN,
              BADGE_BUTTON_TRIFORCE_ACTIVE_HIGH ? "high" : "low",
              BADGE_BUTTON_QR_PIN);
+    return true;
+}
+
+bool oled_badge_buttons_start(void)
+{
+    return badge_buttons_start();
 }
 
 /* ── 5x7 ASCII font (printable chars 0x20-0x7E) ───────────────────────── */
@@ -919,6 +1434,18 @@ static void fb_hline(int x0, int x1, int y, uint16_t color)
     for (int x = x0; x <= x1; x++) row[x] = be;
 }
 
+#if defined(FOF_DC34_GAME_CANARY)
+static void fb_draw_heart_7x5(int x, int y, uint16_t color)
+{
+    fb_hline(x + 1, x + 2, y, color);
+    fb_hline(x + 4, x + 5, y, color);
+    fb_hline(x, x + 6, y + 1, color);
+    fb_hline(x, x + 6, y + 2, color);
+    fb_hline(x + 1, x + 5, y + 3, color);
+    fb_hline(x + 2, x + 4, y + 4, color);
+}
+#endif
+
 static void fb_draw_line(int x0, int y0, int x1, int y1, uint16_t color)
 {
     int dx = abs(x1 - x0);
@@ -1063,14 +1590,117 @@ static uint16_t rgb565_mix_color(uint16_t a, uint16_t b, uint8_t t)
     return (uint16_t)((r << 11) | (g << 5) | bl);
 }
 
+#if defined(FOF_DC34_GAME_CANARY)
+static void badge_con_render_begin(void)
+{
+    memset(&s_con_render, 0, sizeof(s_con_render));
+    if (!badge_con_runtime_snapshot(&s_con_render.snapshot) ||
+        !s_con_render.snapshot.active) {
+        s_con_previous_valid = false;
+        s_con_activity_frames = 0U;
+        s_con_activity = BADGE_CON_RENDER_ACTIVITY_NONE;
+        return;
+    }
+
+    badge_con_render_activity_t activity =
+        BADGE_CON_RENDER_ACTIVITY_NONE;
+    if (s_con_previous_valid) {
+        if (s_con_previous_role != s_con_render.snapshot.role) {
+            activity = s_con_render.snapshot.role ==
+                BADGE_CON_ROLE_INFECTED
+                ? BADGE_CON_RENDER_ACTIVITY_INFECTED
+                : BADGE_CON_RENDER_ACTIVITY_CURED;
+        } else if (s_con_previous_shield !=
+                   s_con_render.snapshot.shield) {
+            activity = s_con_render.snapshot.shield >
+                s_con_previous_shield
+                ? BADGE_CON_RENDER_ACTIVITY_HEALING
+                : (s_con_render.snapshot.role ==
+                   BADGE_CON_ROLE_INFECTED
+                    ? BADGE_CON_RENDER_ACTIVITY_CURE_FADING
+                    : BADGE_CON_RENDER_ACTIVITY_ATTACKED);
+        }
+    }
+    if (activity != BADGE_CON_RENDER_ACTIVITY_NONE) {
+        s_con_activity = activity;
+        s_con_activity_frames = 12U;
+    } else if (s_con_activity_frames > 0U) {
+        s_con_activity_frames--;
+    }
+    if (s_con_activity_frames == 0U) {
+        s_con_activity = BADGE_CON_RENDER_ACTIVITY_NONE;
+    }
+    s_con_render.activity = s_con_activity;
+    s_con_previous_role = s_con_render.snapshot.role;
+    s_con_previous_shield = s_con_render.snapshot.shield;
+    s_con_previous_valid = true;
+
+    s_con_render.state =
+        badge_con_presentation_select(&s_con_render.snapshot);
+    badge_theme_derive_con_palette(
+        badge_theme_runtime_get(),
+        s_con_render.state,
+        &s_con_render.palette);
+}
+
+static void badge_con_render_end(void)
+{
+    memset(&s_con_render, 0, sizeof(s_con_render));
+}
+
+static uint16_t badge_con_render_chrome(
+    badge_theme_chrome_role_t role,
+    uint16_t selected)
+{
+    if (s_con_render.state == BADGE_CON_PRESENT_INACTIVE) {
+        return selected;
+    }
+
+    switch (role) {
+    case BADGE_THEME_CHROME_CANVAS:
+        return rgb565_scale_color(s_con_render.palette.chrome_primary, 38);
+    case BADGE_THEME_CHROME_PANEL:
+    case BADGE_THEME_CHROME_PANEL_ALT:
+        return rgb565_scale_color(
+            s_con_render.palette.chrome_primary,
+            role == BADGE_THEME_CHROME_PANEL ? 82 : 62);
+    case BADGE_THEME_CHROME_TEXT_PRIMARY:
+        return s_con_render.palette.chrome_text;
+    case BADGE_THEME_CHROME_TEXT_SECONDARY:
+        return s_con_render.palette.chrome_secondary;
+    case BADGE_THEME_CHROME_SELECTION:
+        return s_con_render.palette.chrome_accent;
+    case BADGE_THEME_CHROME_SCANNER_DOWN:
+    case BADGE_THEME_CHROME_ROLE_COUNT:
+    default:
+        return selected;
+    }
+}
+
+#endif
+
 static uint16_t badge_theme_panel_color(uint16_t fallback)
 {
     const badge_theme_t *theme = badge_theme_runtime_get();
-    uint16_t bg = badge_theme_background_color(theme);
-    if (bg == COL_BLACK) {
-        return badge_theme_apply_brightness(theme, fallback);
-    }
-    return rgb565_mix_color(bg, fallback, 80);
+    uint16_t panel = badge_theme_chrome_color(theme, BADGE_THEME_CHROME_PANEL);
+    return panel ? panel : badge_theme_apply_brightness(theme, fallback);
+}
+
+static uint16_t badge_theme_chrome(badge_theme_chrome_role_t role)
+{
+    uint16_t selected =
+        badge_theme_chrome_color(badge_theme_runtime_get(), role);
+#if defined(FOF_DC34_GAME_CANARY)
+    return badge_con_render_chrome(role, selected);
+#else
+    return selected;
+#endif
+}
+
+static uint16_t badge_theme_safe_chrome(badge_theme_chrome_role_t role,
+                                        uint16_t background)
+{
+    return badge_theme_contrast_floor(badge_theme_chrome(role), background);
 }
 
 static uint16_t badge_theme_accent(badge_theme_accent_t accent,
@@ -1124,6 +1754,161 @@ static void fb_draw_string_centered(int cx, int y, const char *s,
 {
     int w = str_pixel_width(s, scale);
     fb_draw_string(cx - w / 2, y, s, fg, bg, scale);
+}
+
+static void draw_wall_of_sheep_logo(int x0, int y0)
+{
+    for (uint32_t y = 0; y < WALL_OF_SHEEP_LOGO_HEIGHT; ++y) {
+        for (uint32_t x = 0; x < WALL_OF_SHEEP_LOGO_WIDTH; ++x) {
+            uint8_t index = wall_of_sheep_logo_pixels[
+                y * WALL_OF_SHEEP_LOGO_WIDTH + x];
+            if (index == WALL_OF_SHEEP_LOGO_TRANSPARENT_INDEX ||
+                index >= WALL_OF_SHEEP_LOGO_PALETTE_SIZE) {
+                continue;
+            }
+            fb_set_pixel(x0 + (int)x, y0 + (int)y,
+                         wall_of_sheep_logo_palette[index]);
+        }
+    }
+}
+
+static void draw_gamechangersai_logo_tinted(int x0, int y0, uint16_t tint)
+{
+    static const uint8_t brightness[GAMECHANGERSAI_LOGO_PALETTE_SIZE] = {
+        0, 42, 68, 96, 128, 164, 208, 255,
+    };
+
+    for (uint32_t y = 0; y < GAMECHANGERSAI_LOGO_HEIGHT; ++y) {
+        for (uint32_t x = 0; x < GAMECHANGERSAI_LOGO_WIDTH; ++x) {
+            uint8_t level = gamechangersai_logo_levels[
+                y * GAMECHANGERSAI_LOGO_WIDTH + x];
+            if (level == GAMECHANGERSAI_LOGO_TRANSPARENT_INDEX ||
+                level >= GAMECHANGERSAI_LOGO_PALETTE_SIZE) {
+                continue;
+            }
+            fb_set_pixel(x0 + (int)x, y0 + (int)y,
+                         rgb565_scale_color(tint, brightness[level]));
+        }
+    }
+}
+
+#if defined(FOF_DC34_GAME_CANARY)
+static void draw_badge_con_dead_screen(void)
+{
+    s_detail_mode = false;
+    uint16_t bg = COL_BLACK;
+    uint16_t accent = s_con_render.palette.chrome_accent;
+    fb_clear(bg);
+    fb_draw_string_centered(
+        LCD_W / 2, 8, "YOU DIED OF", COL_WHITE, bg, 1);
+    fb_draw_string_centered(
+        LCD_W / 2, 20, "CON CRUD", accent, bg, 2);
+    draw_gamechangersai_logo_tinted(
+        (LCD_W - (int)GAMECHANGERSAI_LOGO_WIDTH) / 2, 48, accent);
+    if (s_con_render.state == BADGE_CON_PRESENT_DEAD_SUPER) {
+        fb_draw_string_centered(
+            LCD_W / 2, 116, "SUPER ZOMBIE x2", COL_YELLOW, bg, 1);
+    }
+    fb_draw_string_centered(
+        LCD_W / 2, 143, "REBOOT TO FIX", COL_WHITE, bg, 1);
+}
+#endif
+
+static void draw_badge_easter_thanks_screen(void)
+{
+    const uint16_t uv_deep = 0x1809;
+    const uint16_t uv_band = 0x4016;
+    const uint16_t uv_bright = 0xA81F;
+    const int logo_x = (LCD_W - (int)WALL_OF_SHEEP_LOGO_WIDTH) / 2;
+    const int logo_y = 10;
+
+    fb_clear(COL_BLACK);
+
+    /* Blacklight bands and hard instrument ticks frame the focal mark. */
+    for (int y = 8; y < LCD_H - 8; y += 12) {
+        fb_fill_rect(4, y, LCD_W - 8, 1,
+                     (y % 24) == 8 ? uv_deep : COL_DEEP_VIOLET);
+    }
+    fb_fill_rect(2, 2, LCD_W - 4, 2, uv_bright);
+    fb_fill_rect(2, LCD_H - 4, LCD_W - 4, 2, uv_bright);
+    fb_fill_rect(2, 2, 2, LCD_H - 4, uv_bright);
+    fb_fill_rect(LCD_W - 4, 2, 2, LCD_H - 4, uv_bright);
+    fb_fill_rect(6, 6, LCD_W - 12, 2, uv_band);
+    fb_fill_rect(6, 84, LCD_W - 12, 3, uv_band);
+    fb_fill_rect(6, 122, LCD_W - 12, 2, uv_band);
+    for (int x = 10; x < LCD_W - 9; x += 9) {
+        int tick_h = (x % 18) == 10 ? 4 : 2;
+        fb_fill_rect(x, 4, 1, tick_h, COL_VIOLET);
+        fb_fill_rect(x, LCD_H - 4 - tick_h, 1, tick_h, COL_VIOLET);
+    }
+
+    fb_fill_rect(logo_x - 3, logo_y - 2,
+                 (int)WALL_OF_SHEEP_LOGO_WIDTH + 6,
+                 (int)WALL_OF_SHEEP_LOGO_HEIGHT + 4, uv_deep);
+    fb_fill_rect(logo_x - 1, logo_y,
+                 (int)WALL_OF_SHEEP_LOGO_WIDTH + 2,
+                 (int)WALL_OF_SHEEP_LOGO_HEIGHT, COL_BLACK);
+    draw_wall_of_sheep_logo(logo_x, logo_y);
+
+    fb_fill_rect(10, 92, LCD_W - 20, 12, COL_BLACK);
+    fb_draw_string_centered(LCD_W / 2, 94, "Thank you from",
+                            COL_WHITE, COL_BLACK, 1);
+    fb_fill_rect(8, 110, LCD_W - 16, 12, COL_BLACK);
+    fb_draw_string_centered(LCD_W / 2, 112, "GameChangers AI",
+                            0xD59F, COL_BLACK, 1);
+
+    fb_fill_rect(9, 138, LCD_W - 18, 1, uv_band);
+    for (int x = 13; x < LCD_W - 12; x += 12) {
+        fb_fill_rect(x, 145, 5, 2, uv_bright);
+    }
+}
+
+static badge_easter_egg_animation_t s_easter_animation;
+static bool s_easter_animation_initialized = false;
+
+static void draw_badge_easter_bounce_screen(void)
+{
+    static const uint16_t colors[] = {
+        COL_CYAN,
+        COL_MAGENTA,
+        COL_LINK_BRIGHT,
+        COL_GOLD,
+        0x349F,
+        COL_WHITE,
+    };
+
+    if (!s_easter_animation_initialized) {
+        badge_easter_egg_animation_init(&s_easter_animation);
+        s_easter_animation_initialized = true;
+    }
+
+    fb_clear(COL_BLACK);
+    uint8_t color_index = s_easter_animation.color_index;
+    if (color_index >= sizeof(colors) / sizeof(colors[0])) {
+        color_index = 0;
+        s_easter_animation.color_index = 0;
+    }
+    draw_gamechangersai_logo_tinted(s_easter_animation.x,
+                                    s_easter_animation.y,
+                                    colors[color_index]);
+    (void)badge_easter_egg_animation_step(
+        &s_easter_animation,
+        LCD_W,
+        LCD_H,
+        GAMECHANGERSAI_LOGO_WIDTH,
+        GAMECHANGERSAI_LOGO_HEIGHT,
+        (uint8_t)(sizeof(colors) / sizeof(colors[0])));
+}
+
+static void draw_badge_easter_egg_screen(badge_easter_egg_phase_t phase)
+{
+    if (phase == BADGE_EASTER_EGG_PHASE_BOUNCE) {
+        draw_badge_easter_bounce_screen();
+        return;
+    }
+
+    s_easter_animation_initialized = false;
+    draw_badge_easter_thanks_screen();
 }
 
 /* ── Pin-blink diagnostic ──────────────────────────────────────────────── */
@@ -2022,24 +2807,30 @@ static void draw_threat_background(const badge_threat_snapshot_t *snapshot)
     uint16_t bg = rgb565_mix_color(rgb565_scale_color(deep, 120),
                                    rgb565_scale_color(base, 70),
                                    mix);
+    uint16_t canvas = badge_theme_chrome(BADGE_THEME_CHROME_CANVAS);
     uint16_t theme_bg = badge_theme_background_color(badge_theme_runtime_get());
     if (theme_bg != COL_BLACK) {
-        bg = rgb565_mix_color(theme_bg, bg, 118);
+        canvas = rgb565_mix_color(canvas, theme_bg, 128);
+    }
+    if (canvas != COL_BLACK) {
+        bg = rgb565_mix_color(canvas, bg, 118);
     }
     fb_fill_rect(0, 0, LCD_W, LCD_H, bg);
 
-    uint16_t band = rgb565_mix_color(bg, rgb565_scale_color(base, 110), 52);
+    uint16_t panel = badge_theme_chrome(BADGE_THEME_CHROME_PANEL);
+    uint16_t panel_alt = badge_theme_chrome(BADGE_THEME_CHROME_PANEL_ALT);
+    uint16_t band = rgb565_mix_color(bg, panel_alt, 64);
     for (int y = 0; y < LCD_H; y += 8) {
         fb_fill_rect(0, y, LCD_W, 1, band);
     }
-    uint16_t mark = rgb565_mix_color(bg, rgb565_scale_color(COL_GOLD_DARK, 72), 26);
+    uint16_t mark = rgb565_mix_color(bg, panel, 48);
     draw_triforce_flat_scaled(LCD_W / 2, 82, 118, 104, -4, mark);
     if (prox == BADGE_THREAT_PROX_CLOSE) {
         uint16_t hot = rgb565_mix_color(base, COL_WHITE, 52);
         fb_fill_rect(0, 14, LCD_W, 2, hot);
         fb_fill_rect(0, LCD_H - 3, LCD_W, 3, hot);
     }
-    fb_fill_rect(0, 0, LCD_W, 15, rgb565_mix_color(bg, COL_BLACK, 92));
+    fb_fill_rect(0, 0, LCD_W, 15, rgb565_mix_color(bg, panel, 92));
 }
 
 static const char *proximity_label(badge_threat_proximity_t prox)
@@ -2812,11 +3603,24 @@ static void draw_diag_row(int y, int h, const badge_display_diag_t *diag)
         return;
     }
     uint16_t color = diag_color(diag);
+    badge_theme_chrome_role_t panel_role =
+        y == badge_display_contract_lane_y(2)
+            ? BADGE_THEME_CHROME_PANEL
+            : BADGE_THEME_CHROME_PANEL_ALT;
+    uint16_t panel = badge_theme_chrome(panel_role);
     uint16_t bg = diag->severe
-        ? rgb565_mix_color(COL_PANEL_2, COL_DIMRED, 72)
-        : rgb565_scale_color(COL_PANEL_2, 96);
+        ? rgb565_mix_color(panel,
+                           badge_theme_chrome(BADGE_THEME_CHROME_SCANNER_DOWN),
+                           42)
+        : panel;
+    uint16_t primary = badge_theme_safe_chrome(
+        BADGE_THEME_CHROME_TEXT_PRIMARY, bg);
+    uint16_t secondary = badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY);
+    uint16_t rail_color = diag->severe
+        ? badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg)
+        : badge_theme_contrast_floor(color, bg);
     fb_fill_rect(0, y, LCD_W, h, bg);
-    fb_fill_rect(0, y, 5, h, color);
+    fb_fill_rect(0, y, 5, h, rail_color);
     bool show_stat = diag->stat[0] != '\0' &&
                      strcmp(diag->stat, "BLE") != 0 &&
                      strcmp(diag->stat, "WiFi") != 0 &&
@@ -2828,14 +3632,15 @@ static void draw_diag_row(int y, int h, const badge_display_diag_t *diag)
     int label_max = LCD_W - label_x - (sw > 0 ? sw + 9 : 5);
     if (label_max < 40) label_max = 40;
     fb_draw_string_fast_marquee(label_x, y + 4, diag->label, label_max,
-                                diag->severe ? COL_WHITE : COL_GRAY, bg);
+                                diag->severe ? primary : secondary, bg);
     if (show_stat) {
-        fb_draw_tiny_string(LCD_W - sw - 4, y + 6, diag->stat, color, bg);
+        fb_draw_tiny_string(LCD_W - sw - 4, y + 6, diag->stat,
+                            rail_color, bg);
     }
     if (diag->detail[0]) {
         fb_draw_string_fast_marquee(label_x, y + 19, diag->detail,
                                     LCD_W - label_x - 5,
-                                    diag->severe ? COL_GOLD : COL_DARKGRAY,
+                                    diag->severe ? rail_color : secondary,
                                     bg);
     }
 }
@@ -2966,8 +3771,8 @@ static uint32_t scanner_status_max_u32(uint32_t a, uint32_t b)
 static const scanner_info_t *scanner_status_freshest_drone_ssid_info(void)
 {
     const scanner_info_t *infos[2] = {
-        uart_rx_get_ble_scanner_info(),
-        uart_rx_get_wifi_scanner_info(),
+        display_scanner_snapshot(0),
+        display_scanner_snapshot(1),
     };
     const scanner_info_t *best = NULL;
     int64_t best_age = -1;
@@ -2987,8 +3792,8 @@ static const scanner_info_t *scanner_status_freshest_drone_ssid_info(void)
 static const scanner_info_t *scanner_status_freshest_notable_ssid_info(void)
 {
     const scanner_info_t *infos[2] = {
-        uart_rx_get_ble_scanner_info(),
-        uart_rx_get_wifi_scanner_info(),
+        display_scanner_snapshot(0),
+        display_scanner_snapshot(1),
     };
     const scanner_info_t *best = NULL;
     int64_t best_age = -1;
@@ -3008,8 +3813,8 @@ static const scanner_info_t *scanner_status_freshest_notable_ssid_info(void)
 static const scanner_info_t *scanner_status_freshest_meta_info(void)
 {
     const scanner_info_t *infos[2] = {
-        uart_rx_get_ble_scanner_info(),
-        uart_rx_get_wifi_scanner_info(),
+        display_scanner_snapshot(0),
+        display_scanner_snapshot(1),
     };
     const scanner_info_t *best = NULL;
     int64_t best_age = -1;
@@ -3028,16 +3833,16 @@ static const scanner_info_t *scanner_status_freshest_meta_info(void)
 
 static uint32_t scanner_status_rid_seen_max(void)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     return scanner_status_max_u32(ble ? ble->rid_emit : 0U,
                                   wifi ? wifi->rid_emit : 0U);
 }
 
 static uint32_t scanner_status_ble_tracker_seen_max(void)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     return scanner_status_max_u32(ble ? ble->ble_tracker_seen : 0U,
                                   wifi ? wifi->ble_tracker_seen : 0U);
 }
@@ -3046,8 +3851,8 @@ static bool scanner_status_wifi_anomaly_summary(uint32_t *deauth_out,
                                                 uint32_t *disassoc_out,
                                                 bool *beacon_out)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     uint32_t deauth = scanner_status_max_u32(ble ? ble->deauth_count : 0U,
                                              wifi ? wifi->deauth_count : 0U);
     uint32_t disassoc = scanner_status_max_u32(ble ? ble->disassoc_count : 0U,
@@ -3063,64 +3868,28 @@ static const scanner_info_t *scanner_status_best_ble_live_info(uint32_t *payload
                                                                uint32_t *empty_out)
 {
     const scanner_info_t *infos[2] = {
-        uart_rx_get_ble_scanner_info(),
-        uart_rx_get_wifi_scanner_info(),
+        display_scanner_snapshot(0),
+        display_scanner_snapshot(1),
     };
     const scanner_info_t *best = NULL;
     uint32_t payload = 0;
     uint32_t empty = 0;
     for (int i = 0; i < 2; i++) {
         const scanner_info_t *info = infos[i];
-        if (!info || info->ble_any_seen == 0 || info->ble_any_best_rssi >= 0) {
+        if (!info || info->ble_any_seen == 0 ||
+            !badge_ble_low_effort_rssi_allowed(
+                info->ble_any_last_rssi)) {
             continue;
         }
         payload = scanner_status_max_u32(payload, info->ble_any_with_payload_seen);
         empty = scanner_status_max_u32(empty, info->ble_any_empty_seen);
-        if (!best || info->ble_any_best_rssi > best->ble_any_best_rssi) {
+        if (!best || info->ble_any_last_rssi > best->ble_any_last_rssi) {
             best = info;
         }
     }
     if (payload_out) *payload_out = payload;
     if (empty_out) *empty_out = empty;
     return best;
-}
-
-static bool badge_text_has_value(const char *s)
-{
-    return s && s[0] != '\0' && strcmp(s, "?") != 0;
-}
-
-static bool badge_text_contains_nocase(const char *haystack, const char *needle)
-{
-    if (!haystack || !needle || !needle[0]) {
-        return false;
-    }
-    size_t needle_len = strlen(needle);
-    for (const char *p = haystack; *p; p++) {
-        size_t i = 0;
-        while (i < needle_len && p[i]) {
-            char a = p[i];
-            char b = needle[i];
-            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
-            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
-            if (a != b) {
-                break;
-            }
-            i++;
-        }
-        if (i == needle_len) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool badge_ble_label_is_generic(const char *label)
-{
-    return !badge_text_has_value(label) ||
-           strcmp(label, "BLE") == 0 ||
-           strcmp(label, "BLE Nearby") == 0 ||
-           badge_text_contains_nocase(label, "unknown");
 }
 
 static void format_ble_signal_status(const scanner_info_t *info,
@@ -3138,69 +3907,23 @@ static void format_ble_signal_status(const scanner_info_t *info,
         snprintf(detail_out, detail_len, "strong BLE");
         return;
     }
-
-    const char *guess = info->ble_dbg_near_label;
-    const char *name = info->ble_dbg_near_name;
-    const char *reason = info->ble_dbg_near_reason;
-    int rssi = info->ble_dbg_near_rssi < 0
-        ? info->ble_dbg_near_rssi
-        : info->ble_any_best_rssi;
-
-    if (!badge_ble_label_is_generic(guess)) {
-        if (badge_text_contains_nocase(guess, "tracker") ||
-            badge_text_contains_nocase(guess, "airtag") ||
-            badge_text_contains_nocase(guess, "tile") ||
-            badge_text_contains_nocase(guess, "tag")) {
-            snprintf(label_out, label_len, "TRACKER?");
-        } else if (badge_text_contains_nocase(guess, "hid") ||
-                   badge_text_contains_nocase(guess, "keyboard") ||
-                   badge_text_contains_nocase(guess, "mouse")) {
-            snprintf(label_out, label_len, "HID?");
-        } else if (badge_text_contains_nocase(guess, "camera")) {
-            snprintf(label_out, label_len, "CAMERA?");
-        } else if (badge_text_contains_nocase(guess, "lock")) {
-            snprintf(label_out, label_len, "LOCK?");
-        } else {
-            snprintf(label_out, label_len, "%.23s", guess);
-        }
-    }
-
-    char hint[28] = {0};
-    if (badge_text_has_value(name)) {
-        snprintf(hint, sizeof(hint), "%.20s", name);
-    } else if (!badge_ble_label_is_generic(guess)) {
-        snprintf(hint, sizeof(hint), "%.20s", guess);
-    } else if (info->ble_dbg_near_svc0 != 0) {
-        snprintf(hint, sizeof(hint), "svc %04X", (unsigned)info->ble_dbg_near_svc0);
-    } else if (info->ble_dbg_near_cid != 0) {
-        snprintf(hint, sizeof(hint), "cid %04X", (unsigned)info->ble_dbg_near_cid);
-    } else if (badge_text_has_value(reason)) {
-        snprintf(hint, sizeof(hint), "%.20s", reason);
-    } else {
-        snprintf(hint, sizeof(hint), "unknown BLE");
-    }
-
-    if (badge_text_has_value(name) && info->ble_dbg_near_svc0 != 0) {
-        snprintf(detail_out, detail_len, "%.18s svc%04X %ddB",
-                 name, (unsigned)info->ble_dbg_near_svc0, rssi);
-    } else if (rssi < 0) {
-        snprintf(detail_out, detail_len, "%s %ddB", hint, rssi);
-    } else {
-        snprintf(detail_out, detail_len, "%s active", hint);
-    }
+    snprintf(detail_out, detail_len, "strong BLE %ddB",
+             (int)info->ble_any_last_rssi);
 }
 
 static void draw_scanner_health_line(int y, bool ble_scanner_ok,
                                      bool wifi_scanner_ok)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     scanner_uart_diag_t ble_uart = {0};
     scanner_uart_diag_t wifi_uart = {0};
     uart_rx_get_scanner_uart_diag(0, &ble_uart);
     uart_rx_get_scanner_uart_diag(1, &wifi_uart);
-    const char *ble_expected = wifi_scanner_ok ? "ble_primary" : "hybrid_failover";
-    const char *wifi_expected = ble_scanner_ok ? "wifi_primary" : "hybrid_failover";
+    const char *ble_expected = fof_policy_scan_profile_for_topology(
+        0, false, wifi_scanner_ok, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
+    const char *wifi_expected = fof_policy_scan_profile_for_topology(
+        1, false, ble_scanner_ok, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
     const char *ble_actual = (ble && ble->scan_profile[0]) ? ble->scan_profile : "";
     const char *wifi_actual = (wifi && wifi->scan_profile[0]) ? wifi->scan_profile : "";
     bool ble_role_ok = ble_scanner_ok && strcmp(ble_actual, ble_expected) == 0;
@@ -3261,9 +3984,13 @@ static void draw_scanner_health_line(int y, bool ble_scanner_ok,
                     !ble_old && !wifi_old && strcmp(ble_state, "quiet") != 0 &&
                     strcmp(ble_state, "off") != 0 &&
                     strcmp(ble_state, "notag") != 0;
+    uint16_t bg = badge_theme_chrome(BADGE_THEME_CHROME_CANVAS);
+    uint16_t fg = proof_ok
+        ? badge_theme_contrast_floor(
+            badge_theme_accent(BADGE_THEME_ACCENT_CLEAR, COL_SOFT_GREEN), bg)
+        : badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg);
     fb_draw_tiny_string_fit(4, y, line, LCD_W - 27,
-                            proof_ok ? COL_SOFT_GREEN : COL_GOLD,
-                            COL_BLACK);
+                            fg, bg);
 }
 
 static void add_diag_row(badge_display_diag_t *rows, int max_rows, int *count,
@@ -3292,8 +4019,8 @@ static int build_scanner_diag_rows(badge_display_diag_t *rows, int max_rows,
         return 0;
     }
     int count = 0;
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     scanner_uart_diag_t ble_uart = {0};
     scanner_uart_diag_t wifi_uart = {0};
     uart_rx_get_scanner_uart_diag(0, &ble_uart);
@@ -3306,8 +4033,10 @@ static int build_scanner_diag_rows(badge_display_diag_t *rows, int max_rows,
     bool wifi_cmd_fresh = wifi_scanner_ok && wifi &&
                           (wifi->cmd_rx_count > 0 &&
                            wifi->cmd_last_age_s >= 0 && wifi->cmd_last_age_s <= 30);
-    const char *ble_expected = wifi_scanner_ok ? "ble_primary" : "hybrid_failover";
-    const char *wifi_expected = ble_scanner_ok ? "wifi_primary" : "hybrid_failover";
+    const char *ble_expected = fof_policy_scan_profile_for_topology(
+        0, false, wifi_scanner_ok, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
+    const char *wifi_expected = fof_policy_scan_profile_for_topology(
+        1, false, ble_scanner_ok, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
     const char *ble_actual = (ble && ble->scan_profile[0]) ? ble->scan_profile : "";
     const char *wifi_actual = (wifi && wifi->scan_profile[0]) ? wifi->scan_profile : "";
     bool ble_role_ok = ble_scanner_ok && strcmp(ble_actual, ble_expected) == 0;
@@ -3370,7 +4099,9 @@ static int build_scanner_diag_rows(badge_display_diag_t *rows, int max_rows,
         } else if (tracker_seen > 0) {
             label = "TAG SIGNAL";
             snprintf(detail, sizeof(detail), "tag signals active");
-        } else if (ble_live && ble_live->ble_any_best_rssi >= -60) {
+        } else if (ble_live &&
+                   badge_ble_low_effort_rssi_allowed(
+                       ble_live->ble_any_last_rssi)) {
             (void)payload;
             format_ble_signal_status(ble_live, ble_label_buf, sizeof(ble_label_buf),
                                      detail, sizeof(detail));
@@ -3443,8 +4174,8 @@ static const char *proof_word(const char *state)
 static void draw_scanner_bottom_strip(int y, bool ble_scanner_ok,
                                       bool wifi_scanner_ok)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     scanner_uart_diag_t ble_uart = {0};
     scanner_uart_diag_t wifi_uart = {0};
     uart_rx_get_scanner_uart_diag(0, &ble_uart);
@@ -3457,8 +4188,10 @@ static void draw_scanner_bottom_strip(int y, bool ble_scanner_ok,
     bool wifi_cmd_fresh = wifi_scanner_ok && wifi &&
                           (wifi->cmd_rx_count > 0 &&
                            wifi->cmd_last_age_s >= 0 && wifi->cmd_last_age_s <= 45);
-    const char *ble_expected = wifi_scanner_ok ? "ble_primary" : "hybrid_failover";
-    const char *wifi_expected = ble_scanner_ok ? "wifi_primary" : "hybrid_failover";
+    const char *ble_expected = fof_policy_scan_profile_for_topology(
+        0, false, wifi_scanner_ok, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
+    const char *wifi_expected = fof_policy_scan_profile_for_topology(
+        1, false, ble_scanner_ok, FOF_POLICY_FIXED_SLOT_TOPOLOGY);
     const char *ble_actual = (ble && ble->scan_profile[0]) ? ble->scan_profile : "";
     const char *wifi_actual = (wifi && wifi->scan_profile[0]) ? wifi->scan_profile : "";
     bool ble_role_ok = ble_scanner_ok && strcmp(ble_actual, ble_expected) == 0;
@@ -3468,38 +4201,99 @@ static void draw_scanner_bottom_strip(int y, bool ble_scanner_ok,
     const char *wifi_state = wifi_proof_label(wifi_scanner_ok, wifi_uart.raw_seen, wifi_role_ok,
                                               wifi_cmd_fresh, wifi_old);
     bool ok = strcmp(ble_state, "ok") == 0 && strcmp(wifi_state, "ok") == 0;
-    uint16_t bg = ok ? rgb565_scale_color(COL_PANEL, 82)
-                     : rgb565_mix_color(COL_PANEL_2, COL_DIMRED, 62);
-    uint16_t fg = ok ? COL_SOFT_GREEN : COL_GOLD;
+    uint16_t panel = badge_theme_chrome(BADGE_THEME_CHROME_PANEL_ALT);
+    uint16_t bg = ok
+        ? panel
+        : rgb565_mix_color(panel,
+                           badge_theme_chrome(BADGE_THEME_CHROME_SCANNER_DOWN),
+                           44);
+    const bool safe_usb = badge_runtime_is_safe_mode();
+#if defined(FOF_DC34_GAME_CANARY)
+    badge_con_hud_plan_t hud =
+        badge_con_presentation_hud(&s_con_render.snapshot);
+    uint16_t activity_tint = 0U;
+    switch (s_con_render.activity) {
+    case BADGE_CON_RENDER_ACTIVITY_ATTACKED:
+    case BADGE_CON_RENDER_ACTIVITY_CURE_FADING:
+        activity_tint = BADGE_CON_HUD_HUMAN_RGB565;
+        break;
+    case BADGE_CON_RENDER_ACTIVITY_HEALING:
+    case BADGE_CON_RENDER_ACTIVITY_CURED:
+        activity_tint = BADGE_CON_HUD_HEALER_RGB565;
+        break;
+    case BADGE_CON_RENDER_ACTIVITY_INFECTED:
+        activity_tint = BADGE_CON_HUD_INFECTED_RGB565;
+        break;
+    case BADGE_CON_RENDER_ACTIVITY_NONE:
+    default:
+        break;
+    }
+    if (hud.visible && ok && !safe_usb && activity_tint != 0U) {
+        uint8_t mix = (((uint32_t)badge_now_ms() / 250U) & 1U)
+            ? 72U : 40U;
+        bg = rgb565_mix_color(bg, activity_tint, mix);
+    }
+#endif
+    uint16_t fg = ok
+        ? badge_theme_contrast_floor(
+            badge_theme_accent(BADGE_THEME_ACCENT_CLEAR, COL_SOFT_GREEN), bg)
+        : badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg);
 
     fb_fill_rect(0, y, LCD_W, LCD_H - y, bg);
     fb_fill_rect(0, y, LCD_W, 1, rgb565_scale_color(fg, 110));
     char line[36];
     snprintf(line, sizeof(line), "BLE %s  WIFI %s",
              proof_word(ble_state), proof_word(wifi_state));
-    int64_t uptime_s = esp_timer_get_time() / 1000000LL;
-    char uptime_label[32];
-    if (uptime_s < 3600) {
-        snprintf(uptime_label, sizeof(uptime_label), "U%lld:%02lld",
-                 (long long)(uptime_s / 60),
-                 (long long)(uptime_s % 60));
-    } else {
-        snprintf(uptime_label, sizeof(uptime_label), "U%lldh%02lld",
-                 (long long)(uptime_s / 3600),
-                 (long long)((uptime_s / 60) % 60));
-    }
-    const bool safe_usb = badge_runtime_is_safe_mode();
     const bool usb_alive = badge_runtime_usb_control_alive();
     const char *usb_label = safe_usb ? "SAFE" : (usb_alive ? "USBC" : "USB?");
-    char right_label[48];
-    snprintf(right_label, sizeof(right_label), "%s %s", uptime_label, usb_label);
-    uint16_t usb_color = safe_usb ? COL_GOLD :
-                         (usb_alive ? COL_LINK_BRIGHT : COL_DARKGRAY);
-    int usb_w = tiny_pixel_width(right_label);
+    uint16_t usb_color = safe_usb
+        ? badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg)
+        : (usb_alive
+            ? badge_theme_safe_chrome(BADGE_THEME_CHROME_SELECTION, bg)
+            : badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY));
+    int usb_w = tiny_pixel_width(usb_label);
     int left_w = LCD_W - usb_w - 14;
     if (left_w < 40) left_w = 40;
+#if defined(FOF_DC34_GAME_CANARY)
+    if (hud.visible && ok && !safe_usb) {
+        static const char *const role_names[] = {
+            "", "HUMAN", "HUMAN", "INFECTED", "HEALER",
+            "SUPER ZOMBIE",
+        };
+        const char *role = role_names[hud.state];
+        fb_draw_string_centered(
+            LCD_W / 2,
+            y,
+            role,
+            s_con_render.palette.chrome_accent,
+            bg,
+            1);
+        char value[8];
+        snprintf(value, sizeof(value), "%u/%u", hud.current, hud.maximum);
+        int value_w = tiny_pixel_width(value);
+        int total_w = BADGE_DISPLAY_HEART_WIDTH + 2 + value_w;
+        int left = (LCD_W - total_w) / 2;
+        int value_y = y + BADGE_DISPLAY_HEALTH_VALUE_Y_OFFSET;
+        uint16_t value_bg = badge_theme_contrast_floor(
+            COL_WHITE, hud.color_rgb565);
+        fb_fill_rect(
+            left - 2,
+            value_y,
+            total_w + 4,
+            BADGE_DISPLAY_HEART_HEIGHT,
+            value_bg);
+        fb_draw_heart_7x5(left, value_y, hud.color_rgb565);
+        fb_draw_tiny_string(
+            left + BADGE_DISPLAY_HEART_WIDTH + 2,
+            value_y,
+            value,
+            hud.color_rgb565,
+            value_bg);
+        return;
+    }
+#endif
     fb_draw_tiny_string_fit(4, y + 4, line, left_w, fg, bg);
-    fb_draw_tiny_string(LCD_W - usb_w - 4, y + 4, right_label, usb_color, bg);
+    fb_draw_tiny_string(LCD_W - usb_w - 4, y + 4, usb_label, usb_color, bg);
 }
 
 static void draw_watch_eye(int cx, int cy, int w, int h, int gaze,
@@ -3577,8 +4371,8 @@ static void draw_empty_watch_state(int y, int h, bool ble_scanner_ok,
 
 static bool scanner_status_has_badge_evidence(void)
 {
-    const scanner_info_t *ble = uart_rx_get_ble_scanner_info();
-    const scanner_info_t *wifi = uart_rx_get_wifi_scanner_info();
+    const scanner_info_t *ble = display_scanner_snapshot(0);
+    const scanner_info_t *wifi = display_scanner_snapshot(1);
     const scanner_info_t *infos[2] = {ble, wifi};
     uint32_t ble_evidence = 0;
     for (int i = 0; i < 2; i++) {
@@ -3664,47 +4458,8 @@ static badge_display_policy_class_t badge_display_policy_entity_class(
     if (badge_threat_snapshot_entity_is_evil_twin(item)) {
         return BADGE_DISPLAY_CLASS_WIFI_ATTACK;
     }
-    switch (item->category) {
-        case BADGE_THREAT_CATEGORY_DRONE:
-        case BADGE_THREAT_CATEGORY_SSID:
-            return BADGE_DISPLAY_CLASS_DRONE;
-        case BADGE_THREAT_CATEGORY_GLASS:
-            return BADGE_DISPLAY_CLASS_META;
-        case BADGE_THREAT_CATEGORY_TAG_CLOSE:
-            return BADGE_DISPLAY_CLASS_TRACKER;
-        case BADGE_THREAT_CATEGORY_WIFI:
-            return BADGE_DISPLAY_CLASS_WIFI_ATTACK;
-        case BADGE_THREAT_CATEGORY_SKIM:
-            return BADGE_DISPLAY_CLASS_SKIMMER;
-        case BADGE_THREAT_CATEGORY_CAMERA:
-            return BADGE_DISPLAY_CLASS_CAMERA;
-        case BADGE_THREAT_CATEGORY_FLOCK:
-            return BADGE_DISPLAY_CLASS_FLOCK;
-        case BADGE_THREAT_CATEGORY_LOCK:
-            return BADGE_DISPLAY_CLASS_LOCK;
-        case BADGE_THREAT_CATEGORY_HID:
-            return BADGE_DISPLAY_CLASS_HID;
-        case BADGE_THREAT_CATEGORY_BEACON:
-            return BADGE_DISPLAY_CLASS_BEACON;
-        case BADGE_THREAT_CATEGORY_EVENT_BADGE:
-            return BADGE_DISPLAY_CLASS_EVENT_BADGE;
-        case BADGE_THREAT_CATEGORY_AUDIO:
-            return BADGE_DISPLAY_CLASS_AURACAST;
-        default:
-            break;
-    }
-    switch (item->cls) {
-        case BADGE_THREAT_DRONE:
-            return BADGE_DISPLAY_CLASS_DRONE;
-        case BADGE_THREAT_META:
-            return BADGE_DISPLAY_CLASS_META;
-        case BADGE_THREAT_TRACKER:
-            return BADGE_DISPLAY_CLASS_TRACKER;
-        case BADGE_THREAT_WIFI_ANOMALY:
-            return BADGE_DISPLAY_CLASS_WIFI_ATTACK;
-        default:
-            return BADGE_DISPLAY_CLASS_SCANNER_STATUS;
-    }
+    return badge_display_policy_class_for_threat_snapshot(item->category,
+                                                           item->cls);
 }
 
 static bool badge_display_policy_lane_includes(badge_display_lane_t cfg_lane,
@@ -4292,7 +5047,7 @@ static void format_badge_title_for_snapshot(
             snprintf(out, out_len, "FLOCK CAM");
             return;
         case BADGE_THREAT_CATEGORY_SKIM:
-            snprintf(out, out_len, "SKIMMER");
+            snprintf(out, out_len, "POSSIBLE SKIMMER");
             return;
         case BADGE_THREAT_CATEGORY_CAMERA:
             snprintf(out, out_len, "CAMERA NEAR");
@@ -4420,21 +5175,36 @@ static void draw_top_concern_tile(int y, badge_ui_domain_t domain,
     uint16_t color = item ? ui_category_base_color(item->category)
                           : ui_domain_base_color(domain);
     if (item && item->stale) {
-        color = COL_GRAY;
+        color = badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY);
     }
+    badge_theme_chrome_role_t panel_role =
+        y == badge_display_contract_lane_y(0)
+            ? BADGE_THEME_CHROME_PANEL
+            : BADGE_THEME_CHROME_PANEL_ALT;
+    uint16_t panel = badge_theme_chrome(panel_role);
     uint16_t bg = item
-        ? rgb565_mix_color(rgb565_scale_color(color, 54), COL_BLACK, 100)
-        : rgb565_scale_color(COL_PANEL, scanner_ok ? 82 : 60);
+        ? rgb565_mix_color(panel, rgb565_scale_color(color, 54), 96)
+        : panel;
     if (!scanner_ok && !item) {
-        bg = rgb565_mix_color(COL_PANEL_2, COL_DIMRED, 58);
+        bg = rgb565_mix_color(panel,
+                              badge_theme_chrome(BADGE_THEME_CHROME_SCANNER_DOWN),
+                              38);
     }
+    uint16_t primary = badge_theme_safe_chrome(
+        BADGE_THEME_CHROME_TEXT_PRIMARY, bg);
+    uint16_t secondary = badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY);
+    uint16_t scanner_down = badge_theme_safe_chrome(
+        BADGE_THEME_CHROME_SCANNER_DOWN, bg);
+    uint16_t rail_color = (!scanner_ok && !item)
+        ? scanner_down
+        : badge_theme_contrast_floor(color, bg);
     int bar_percent = item ? (int)badge_top_item_heat_percent(snapshot, item) : 0;
     uint16_t bar_color = item ? badge_top_item_heat_color_for_snapshot(snapshot, item)
                               : color;
 
     fb_fill_rect(0, y, LCD_W, h, bg);
-    draw_panel_triforce_mark(y, h, bg, color);
-    fb_fill_rect(0, y, 5, h, color);
+    draw_panel_triforce_mark(y, h, bg, rail_color);
+    fb_fill_rect(0, y, 5, h, rail_color);
 
     if (item) {
         char title[24];
@@ -4471,15 +5241,18 @@ static void draw_top_concern_tile(int y, badge_ui_domain_t domain,
         int title_scale = str_pixel_width(title, 2) <= title_max ? 2 : 1;
         fb_draw_string_fit_scaled(7, y + (title_scale == 2 ? 4 : 8),
                                   title, title_max,
-                                  COL_WHITE, bg, title_scale);
+                                  primary, bg, title_scale);
         if (count_w > 0) {
             int count_x = LCD_W - count_w - 5;
-            uint16_t count_bg = rgb565_mix_color(bg, COL_BLACK, 138);
+            uint16_t count_bg = rgb565_mix_color(
+                bg, badge_theme_chrome(BADGE_THEME_CHROME_CANVAS), 138);
+            uint16_t count_color = badge_theme_contrast_floor(bar_color, count_bg);
             fb_fill_rect(count_x - 2, y + 1, count_w + 5, 23, count_bg);
             fb_draw_string(count_x + 1, y + 3, count_text,
-                           rgb565_scale_color(COL_BLACK, 150), count_bg, 3);
+                           badge_theme_chrome(BADGE_THEME_CHROME_CANVAS),
+                           count_bg, 3);
             fb_draw_string(count_x, y + 2, count_text,
-                           bar_color, count_bg, 3);
+                           count_color, count_bg, 3);
         }
 
         char detail[56];
@@ -4504,8 +5277,9 @@ static void draw_top_concern_tile(int y, badge_ui_domain_t domain,
         int tw = tiny_pixel_width(tag);
         int detail_max = LCD_W - 14;
         uint16_t detail_color = item->stale
-            ? COL_DARKGRAY
-            : rgb565_mix_color(COL_WHITE, bar_color, 84);
+            ? secondary
+            : badge_theme_contrast_floor(
+                rgb565_mix_color(primary, bar_color, 84), bg);
         size_t large_chars = (size_t)(detail_max / 6);
         if (badge_threat_top_detail_uses_large_text(detail, large_chars)) {
             fb_draw_string_fit(8, y + 23, detail, detail_max,
@@ -4519,29 +5293,36 @@ static void draw_top_concern_tile(int y, badge_ui_domain_t domain,
             fb_draw_tiny_string_fit(8, y + 24, detail, tiny_detail_max,
                                     detail_color, bg);
             fb_draw_tiny_string(LCD_W - tw - 4, y + 24, tag,
-                                rgb565_mix_color(color, bg, 90), bg);
+                                rgb565_mix_color(rail_color, bg, 90), bg);
         }
     } else {
-        fb_draw_tiny_string(8, y + 5, lane, color, bg);
+        fb_draw_tiny_string(8, y + 5, lane, rail_color, bg);
 
         char meta[14];
         snprintf(meta, sizeof(meta), "%s", scanner_ok ? "OK" : "CHECK");
         int mw = str_pixel_width(meta, 1);
 
         fb_draw_string_fit(30, y + 4, clear_label, LCD_W - 35 - mw,
-                           COL_GRAY, bg);
+                           primary, bg);
         fb_draw_string(LCD_W - mw - 4, y + 4, meta,
-                       scanner_ok ? COL_SOFT_GREEN : COL_GOLD, bg, 1);
+                       scanner_ok
+                           ? badge_theme_accent(BADGE_THEME_ACCENT_CLEAR,
+                                                COL_SOFT_GREEN)
+                           : scanner_down,
+                       bg, 1);
 
         char detail[48];
         snprintf(detail, sizeof(detail), "%s", clear_detail ? clear_detail : "");
-        fb_draw_string_fit(30, y + 17, detail, LCD_W - 35, COL_DARKGRAY, bg);
+        fb_draw_string_fit(30, y + 17, detail, LCD_W - 35, secondary, bg);
     }
 
     int bar_w = item ? (bar_percent * (LCD_W - 40) / 100) : 0;
     if (bar_w < 0) bar_w = 0;
     if (bar_w > LCD_W - 40) bar_w = LCD_W - 40;
-    fb_fill_rect(30, y + 32, LCD_W - 40, 2, rgb565_scale_color(COL_DARKGRAY, 120));
+    fb_fill_rect(30, y + 32, LCD_W - 40, 2,
+                 rgb565_mix_color(bg,
+                                  badge_theme_chrome(BADGE_THEME_CHROME_PANEL_ALT),
+                                  112));
     if (bar_w > 0) {
         fb_fill_rect(30, y + 32, bar_w, 2, bar_color);
     }
@@ -4625,14 +5406,26 @@ static void draw_billboard_row(int y, int h,
                                const badge_threat_snapshot_t *snapshot,
                                const badge_threat_snapshot_entity_t *item)
 {
-    uint16_t color = item->stale ? COL_GRAY : ui_category_base_color(item->category);
-    uint16_t bg = item->stale ? rgb565_scale_color(COL_PANEL_2, 86) : COL_PANEL_2;
+    uint16_t secondary = badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY);
+    uint16_t color = item->stale ? secondary : ui_category_base_color(item->category);
+    badge_theme_chrome_role_t panel_role =
+        y == badge_display_contract_lane_y(2)
+            ? BADGE_THEME_CHROME_PANEL
+            : BADGE_THEME_CHROME_PANEL_ALT;
+    uint16_t panel = badge_theme_chrome(panel_role);
+    uint16_t bg = item->stale
+        ? rgb565_mix_color(panel,
+                           badge_theme_chrome(BADGE_THEME_CHROME_CANVAS), 72)
+        : panel;
+    uint16_t primary = badge_theme_safe_chrome(
+        BADGE_THEME_CHROME_TEXT_PRIMARY, bg);
+    uint16_t rail_color = badge_theme_contrast_floor(color, bg);
     fb_fill_rect(0, y, LCD_W, h, bg);
-    draw_panel_triforce_mark(y, h, bg, color);
-    fb_fill_rect(0, y, 5, h, color);
+    draw_panel_triforce_mark(y, h, bg, rail_color);
+    fb_fill_rect(0, y, 5, h, rail_color);
 
     const char *code = ui_item_code(item);
-    fb_draw_tiny_string(8, y + 5, code, color, bg);
+    fb_draw_tiny_string(8, y + 5, code, rail_color, bg);
     int label_x = 8 + tiny_pixel_width(code) + 6;
 
     char age[10];
@@ -4655,9 +5448,9 @@ static void draw_billboard_row(int y, int h,
     }
     fb_draw_string_fast_marquee(label_x, y + 3, title,
                                 LCD_W - label_x - aw - 8,
-                                item->stale ? COL_GRAY : COL_WHITE, bg);
+                                item->stale ? secondary : primary, bg);
     fb_draw_tiny_string(LCD_W - aw - 4, y + 6, age,
-                        item->stale ? COL_DARKGRAY : color, bg);
+                        item->stale ? secondary : rail_color, bg);
 
     char detail[80];
     char clean[32];
@@ -4683,15 +5476,17 @@ static void draw_billboard_row(int y, int h,
         }
     }
     fb_draw_string_fast_marquee(8, y + 19, detail, LCD_W - 12,
-                                item->stale ? COL_DARKGRAY
-                                            : rgb565_mix_color(COL_WHITE, color, 85),
+                                item->stale ? secondary
+                                            : badge_theme_contrast_floor(
+                                                rgb565_mix_color(primary, color, 85),
+                                                bg),
                                 bg);
 
     uint8_t heat = badge_item_heat_percent(snapshot, item);
     uint16_t heat_color = badge_item_heat_color(item, heat);
     int heat_w = (int)heat * (LCD_W - 16) / 100;
     fb_fill_rect(8, y + h - 3, LCD_W - 16, 2,
-                 rgb565_scale_color(COL_DARKGRAY, 110));
+                 rgb565_mix_color(bg, secondary, 72));
     if (heat_w > 0) {
         fb_fill_rect(8, y + h - 3, heat_w, 2, heat_color);
     }
@@ -4701,16 +5496,29 @@ static void draw_idle_billboard(int y, int h,
                                 const char *label, const char *detail,
                                 bool ok)
 {
-    uint16_t color = ok ? COL_SOFT_GREEN : COL_GOLD;
-    uint16_t bg = ok ? rgb565_scale_color(COL_PANEL, 78)
-                     : rgb565_mix_color(COL_PANEL_2, COL_DIMRED, 48);
+    badge_theme_chrome_role_t panel_role =
+        y == badge_display_contract_lane_y(2)
+            ? BADGE_THEME_CHROME_PANEL
+            : BADGE_THEME_CHROME_PANEL_ALT;
+    uint16_t panel = badge_theme_chrome(panel_role);
+    uint16_t bg = ok
+        ? panel
+        : rgb565_mix_color(panel,
+                           badge_theme_chrome(BADGE_THEME_CHROME_SCANNER_DOWN),
+                           38);
+    uint16_t color = ok
+        ? badge_theme_accent(BADGE_THEME_ACCENT_CLEAR, COL_SOFT_GREEN)
+        : badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg);
+    uint16_t primary = badge_theme_safe_chrome(
+        BADGE_THEME_CHROME_TEXT_PRIMARY, bg);
+    uint16_t secondary = badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY);
     fb_fill_rect(0, y, LCD_W, h, bg);
     draw_panel_triforce_mark(y, h, bg, color);
     fb_fill_rect(0, y, 5, h, color);
     fb_draw_string_fit(10, y + 4, label, LCD_W - 16,
-                       ok ? COL_GRAY : COL_WHITE, bg);
+                       ok ? primary : color, bg);
     fb_draw_string_fit(10, y + 18, detail, LCD_W - 16,
-                       ok ? COL_DARKGRAY : COL_GOLD, bg);
+                       ok ? secondary : color, bg);
 }
 
 static bool badge_board_text_visible(const badge_threat_snapshot_t *snapshot,
@@ -4892,7 +5700,8 @@ static int build_billboard_status_rows(
     if (badge_meta_glasses_count(snapshot) == 0 && ble_live &&
         (!snapshot || snapshot->active_counts[BADGE_THREAT_TRACKER] == 0) &&
         tracker_seen == 0 &&
-        ble_live->ble_any_best_rssi >= -60) {
+        badge_ble_low_effort_rssi_allowed(
+            ble_live->ble_any_last_rssi)) {
         (void)empty_seen;
         char label[24];
         format_ble_signal_status(ble_live, label, sizeof(label),
@@ -5329,12 +6138,18 @@ static void draw_focus_outline(void)
     if (!entry || !entry->active || entry->h <= 0) {
         return;
     }
-    uint16_t color = entry->severe ? COL_GOLD : COL_LINK_BRIGHT;
+    badge_theme_chrome_role_t panel_role = (s_focus_model.focus_index & 1)
+        ? BADGE_THEME_CHROME_PANEL_ALT
+        : BADGE_THEME_CHROME_PANEL;
+    uint16_t bg = badge_theme_chrome(panel_role);
+    uint16_t color = entry->severe
+        ? badge_theme_safe_chrome(BADGE_THEME_CHROME_SCANNER_DOWN, bg)
+        : badge_theme_safe_chrome(BADGE_THEME_CHROME_SELECTION, bg);
     fb_fill_rect(1, entry->y + 1, LCD_W - 2, 1, color);
     fb_fill_rect(1, entry->y + entry->h - 2, LCD_W - 2, 1, color);
     fb_fill_rect(1, entry->y + 1, 1, entry->h - 2, color);
     fb_fill_rect(LCD_W - 2, entry->y + 1, 1, entry->h - 2, color);
-    fb_draw_tiny_string(LCD_W - 18, entry->y + 3, "SEL", color, COL_BLACK);
+    fb_draw_tiny_string(LCD_W - 18, entry->y + 3, "SEL", color, bg);
 }
 
 static void draw_billboard_candidate_lane(
@@ -5360,12 +6175,13 @@ static void draw_badge_billboards(const badge_threat_snapshot_t *snapshot,
                                   badge_display_viewed_t *viewed,
                                   bool backend_ok, bool wifi_network_ok)
 {
-    const int y0 = 78;
-    const int bottom_y = 148;
-    const int row_h = 34;
-    const int row_gap = 1;
+    const int y0 = badge_display_contract_lane_y(2);
+    const int wifi_y = badge_display_contract_lane_y(3);
+    const int bottom_y = badge_display_contract_health_strip_y();
+    const int row_h = badge_display_contract_lane_height(2);
 
-    fb_fill_rect(0, y0, LCD_W, bottom_y - y0, COL_BLACK);
+    fb_fill_rect(0, y0, LCD_W, bottom_y - y0,
+                 badge_theme_chrome(BADGE_THEME_CHROME_CANVAS));
     static badge_billboard_candidate_t ble_candidates[8];
     static badge_billboard_candidate_t wifi_candidates[8];
     memset(ble_candidates, 0, sizeof(ble_candidates));
@@ -5407,7 +6223,8 @@ static void draw_badge_billboards(const badge_threat_snapshot_t *snapshot,
     badge_focus_add_candidate(snapshot, wifi_candidate, "LOWER WIFI",
                               wifi_scanner_ok ? "WIFI CLEAR" : "WIFI OFFLINE",
                               wifi_scanner_ok ? "No SSID or attack" : "Check WiFi scanner",
-                              y0 + row_h + row_gap, row_h, wifi_pos, wifi_total);
+                              wifi_y, badge_display_contract_lane_height(3),
+                              wifi_pos, wifi_total);
 
     if (ble_candidate) {
         draw_billboard_candidate_lane(y0, row_h, snapshot, ble_candidate);
@@ -5418,10 +6235,11 @@ static void draw_badge_billboards(const badge_threat_snapshot_t *snapshot,
                             ble_scanner_ok);
     }
     if (wifi_candidate) {
-        draw_billboard_candidate_lane(y0 + row_h + row_gap, row_h,
+        draw_billboard_candidate_lane(wifi_y,
+                                      badge_display_contract_lane_height(3),
                                       snapshot, wifi_candidate);
     } else {
-        draw_idle_billboard(y0 + row_h + row_gap, row_h,
+        draw_idle_billboard(wifi_y, badge_display_contract_lane_height(3),
                             wifi_scanner_ok ? "WIFI CLEAR" : "WIFI OFFLINE",
                             wifi_scanner_ok ? "No SSID or attack" :
                             backend_ok ? "Backend connected" :
@@ -5433,14 +6251,20 @@ static void draw_badge_billboards(const badge_threat_snapshot_t *snapshot,
     if (ble_total > 1) {
         char page[24];
         snprintf(page, sizeof(page), "%d/%d", ble_pos + 1, ble_total);
+        uint16_t page_bg = badge_theme_chrome(BADGE_THEME_CHROME_PANEL);
         fb_draw_tiny_string(LCD_W - tiny_pixel_width(page) - 4,
-                            y0 + row_h - 8, page, COL_DARKGRAY, COL_PANEL_2);
+                            y0 + row_h - 8, page,
+                            badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY),
+                            page_bg);
     }
     if (wifi_total > 1) {
         char page[24];
         snprintf(page, sizeof(page), "%d/%d", wifi_pos + 1, wifi_total);
+        uint16_t page_bg = badge_theme_chrome(BADGE_THEME_CHROME_PANEL_ALT);
         fb_draw_tiny_string(LCD_W - tiny_pixel_width(page) - 4,
-                            bottom_y - 8, page, COL_DARKGRAY, COL_PANEL_2);
+                            bottom_y - 8, page,
+                            badge_theme_chrome(BADGE_THEME_CHROME_TEXT_SECONDARY),
+                            page_bg);
     }
     badge_focus_model_finish();
 }
@@ -5450,7 +6274,7 @@ static void draw_evidence_queue(const badge_threat_snapshot_t *snapshot,
                                 bool backend_ok, bool wifi_network_ok)
 {
     const int list_y = 15;
-    const int bottom_y = 148;
+    const int bottom_y = badge_display_contract_health_strip_y();
     const int row_h = 32;
     const int row_gap = 1;
     const int visible_rows = 4;
@@ -5556,6 +6380,15 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
     (void)wifi_color;
     (void)accent;
 
+#if defined(FOF_DC34_GAME_CANARY)
+    badge_con_render_begin();
+    if (s_con_render.state == BADGE_CON_PRESENT_DEAD ||
+        s_con_render.state == BADGE_CON_PRESENT_DEAD_SUPER) {
+        draw_badge_con_dead_screen();
+        badge_con_render_end();
+        return;
+    }
+#endif
     draw_threat_background(snapshot);
 
     const badge_threat_snapshot_entity_t *top_items[2] = {0};
@@ -5569,7 +6402,8 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
     badge_focus_model_reset();
     badge_threat_display_lane_t other_lane = badge_top_item_lane(top_items[0]);
     for (int slot = 0; slot < 2; slot++) {
-        const int y = slot == 0 ? 0 : 39;
+        const int y = badge_display_contract_lane_y(slot);
+        const int h = badge_display_contract_lane_height(slot);
         const badge_threat_snapshot_entity_t *item = top_items[slot];
         badge_threat_display_lane_t lane = item
             ? badge_top_item_lane(item)
@@ -5592,10 +6426,10 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
             : (ble_scanner_ok ? "No tags/glasses" : "Check BLE scanner");
 
         if (item) {
-            badge_focus_add_entity(snapshot, item, focus_label, y, 37,
+            badge_focus_add_entity(snapshot, item, focus_label, y, h,
                                    top_pos[slot], top_total[slot]);
         } else {
-            badge_focus_add_idle(focus_label, clear_label, clear_detail, y, 37);
+            badge_focus_add_idle(focus_label, clear_label, clear_detail, y, h);
         }
         draw_top_concern_tile(
             y,
@@ -5617,7 +6451,11 @@ static void draw_badge_dashboard(const badge_threat_snapshot_t *snapshot,
                           &viewed,
                           backend_ok, wifi_network_ok);
     draw_focus_outline();
-    draw_scanner_bottom_strip(148, ble_scanner_ok, wifi_scanner_ok);
+    draw_scanner_bottom_strip(badge_display_contract_health_strip_y(),
+                              ble_scanner_ok, wifi_scanner_ok);
+#if defined(FOF_DC34_GAME_CANARY)
+    badge_con_render_end();
+#endif
 }
 
 static void draw_detail_pair(int y, const char *label, const char *value)
@@ -5717,6 +6555,264 @@ static void draw_badge_focused_detail_screen(void)
     fb_draw_tiny_string(6, 151, "B2 page  dbl back", COL_DARKGRAY, COL_BLACK);
 }
 
+static void badge_investigation_refresh_locked(void)
+{
+    if (!s_investigation_overlay.visible ||
+        s_investigation_overlay.start_error[0] != '\0') {
+        return;
+    }
+    badge_ble_investigation_get(&s_investigation_result);
+    if (s_investigation_result.request_id[0] == '\0' ||
+        strcmp(s_investigation_result.request_id,
+               s_investigation_overlay.request_id) != 0) {
+        return;
+    }
+    if (!badge_investigation_state_is_active(s_investigation_result.state) &&
+        !badge_investigation_state_is_terminal(s_investigation_result.state)) {
+        return;
+    }
+    s_investigation_overlay.mode = s_investigation_result.mode;
+    s_investigation_overlay.state = s_investigation_result.state;
+    s_investigation_overlay.page = badge_investigation_normalize_page(
+        s_investigation_overlay.state, s_investigation_overlay.page);
+}
+
+static void badge_sanitize_text(char *out, size_t out_len,
+                                const char *text, size_t text_bound)
+{
+    if (!out || out_len == 0) return;
+    size_t used = 0;
+    while (text && used + 1 < out_len && used < text_bound && text[used]) {
+        unsigned char ch = (unsigned char)text[used];
+        out[used] = ch >= 0x20 && ch <= 0x7e ? (char)ch : '?';
+        used++;
+    }
+    out[used] = '\0';
+}
+
+static bool badge_uuid_has_serial_marker(const char *uuid)
+{
+    if (!uuid) return false;
+    char lower[BLE_INV_UUID_LEN];
+    size_t i = 0;
+    while (i + 1 < sizeof(lower) && uuid[i]) {
+        char ch = uuid[i];
+        lower[i] = ch >= 'A' && ch <= 'Z' ? (char)(ch + ('a' - 'A')) : ch;
+        i++;
+    }
+    lower[i] = '\0';
+    return strstr(lower, "ffe0") || strstr(lower, "ffe1") ||
+           strstr(lower, "fff0") || strstr(lower, "fff1") ||
+           strstr(lower, "6e400001") || strstr(lower, "6e400002") ||
+           strstr(lower, "6e400003");
+}
+
+static const char *badge_investigation_serial_uuid(void)
+{
+    for (uint8_t i = 0; i < s_investigation_result.service_count; ++i) {
+        if (badge_uuid_has_serial_marker(s_investigation_result.services[i])) {
+            return s_investigation_result.services[i];
+        }
+    }
+    for (uint8_t i = 0; i < s_investigation_result.characteristic_count; ++i) {
+        if (badge_uuid_has_serial_marker(
+                s_investigation_result.characteristics[i].uuid)) {
+            return s_investigation_result.characteristics[i].uuid;
+        }
+    }
+    for (uint8_t i = 0; i < s_investigation_result.read_count; ++i) {
+        if (badge_uuid_has_serial_marker(s_investigation_result.reads[i].uuid)) {
+            return s_investigation_result.reads[i].uuid;
+        }
+    }
+    return NULL;
+}
+
+static void badge_draw_split_uuid(int y, const char *label, const char *uuid)
+{
+    char clean[BLE_INV_UUID_LEN];
+    char first[20];
+    char second[20];
+    badge_sanitize_text(clean, sizeof(clean), uuid, BLE_INV_UUID_LEN);
+    snprintf(first, sizeof(first), "%.18s", clean);
+    snprintf(second, sizeof(second), "%.18s", clean + strlen(first));
+    fb_draw_tiny_string(7, y, label, COL_DARKGRAY, COL_BLACK);
+    fb_draw_tiny_string_fit(7, y + 7, first, LCD_W - 14,
+                            COL_WHITE, COL_BLACK);
+    if (second[0]) {
+        fb_draw_tiny_string_fit(7, y + 14, second, LCD_W - 14,
+                                COL_GRAY, COL_BLACK);
+    }
+}
+
+static void draw_badge_investigation_overlay(void)
+{
+    const badge_investigation_overlay_t *overlay = &s_investigation_overlay;
+    const char *state_name = ble_investigation_state_name(overlay->state);
+    char state[20];
+    char value[96];
+    badge_sanitize_text(state, sizeof(state), state_name ? state_name : "idle", 19);
+
+    fb_clear(COL_BLACK);
+    fb_fill_rect(0, 0, LCD_W, 15,
+                 badge_investigation_state_is_active(overlay->state)
+                     ? COL_DEEP_CYAN
+                     : overlay->state == BLE_INV_COMPLETE
+                         ? COL_LINK_DARK : COL_DEEP_ROSE);
+
+    if (badge_investigation_state_is_active(overlay->state)) {
+        fb_draw_tiny_string(6, 4, "BLE INVESTIGATION", COL_CYAN, COL_DEEP_CYAN);
+        fb_draw_string_centered(LCD_W / 2, 24, "CHECKING",
+                                COL_WHITE, COL_BLACK, 2);
+        fb_draw_tiny_string(8, 50, "PHASE", COL_DARKGRAY, COL_BLACK);
+        fb_draw_string_fit(8, 59, state, LCD_W - 16,
+                           COL_CYAN, COL_BLACK);
+        fb_draw_tiny_string(8, 79,
+            overlay->mode == BLE_INV_MODE_GATT ? "TARGET" : "PASSIVE FAMILY",
+            COL_DARKGRAY, COL_BLACK);
+        badge_sanitize_text(
+            value, sizeof(value),
+            overlay->mode == BLE_INV_MODE_GATT
+                ? overlay->target_mac
+                : badge_threat_category_name(overlay->category),
+            overlay->mode == BLE_INV_MODE_GATT
+                ? sizeof(overlay->target_mac)
+                : BADGE_THREAT_LABEL_LEN);
+        fb_draw_string_fit(8, 88, value, LCD_W - 16,
+                           COL_WHITE, COL_BLACK);
+        int64_t elapsed_ms = badge_now_ms() - overlay->started_ms;
+        if (elapsed_ms < 0) elapsed_ms = 0;
+        int remaining_s = (int)((BLE_INV_DEFAULT_TIMEOUT_MS + 999 - elapsed_ms) / 1000);
+        if (remaining_s < 0) remaining_s = 0;
+        if (remaining_s > BLE_INV_DEFAULT_TIMEOUT_MS / 1000) {
+            remaining_s = BLE_INV_DEFAULT_TIMEOUT_MS / 1000;
+        }
+        snprintf(value, sizeof(value), "%d SEC LEFT", remaining_s);
+        fb_draw_string_centered(LCD_W / 2, 122, value,
+                                COL_GOLD, COL_BLACK, 1);
+        fb_draw_tiny_string(6, 151, "DBL EXIT", COL_DARKGRAY, COL_BLACK);
+        return;
+    }
+
+    snprintf(value, sizeof(value), "RESULT %d/3", overlay->page);
+    fb_draw_tiny_string(6, 4, value, COL_WHITE,
+                        overlay->state == BLE_INV_COMPLETE
+                            ? COL_LINK_DARK : COL_DEEP_ROSE);
+    fb_draw_tiny_string(LCD_W - tiny_pixel_width(state) - 5, 4,
+                        state, COL_GRAY,
+                        overlay->state == BLE_INV_COMPLETE
+                            ? COL_LINK_DARK : COL_DEEP_ROSE);
+
+    if (overlay->page == 1) {
+        char request[BLE_INV_REQUEST_ID_LEN];
+        badge_sanitize_text(request, sizeof(request), overlay->request_id,
+                            sizeof(overlay->request_id));
+        fb_draw_string_fit(7, 21, "IDENTITY / ROUTE", LCD_W - 14,
+                           COL_WHITE, COL_BLACK);
+        fb_draw_tiny_string_fit(7, 40, request, LCD_W - 14,
+                                COL_GRAY, COL_BLACK);
+        draw_detail_pair(57, "ROUTE",
+            overlay->mode == BLE_INV_MODE_GATT ? "GATT" : "PASSIVE");
+        badge_sanitize_text(value, sizeof(value),
+            overlay->mode == BLE_INV_MODE_GATT
+                ? overlay->target_mac
+                : badge_threat_category_name(overlay->category),
+            overlay->mode == BLE_INV_MODE_GATT
+                ? sizeof(overlay->target_mac)
+                : BADGE_THREAT_LABEL_LEN);
+        draw_detail_pair(75,
+            overlay->mode == BLE_INV_MODE_GATT ? "TARGET" : "FAMILY", value);
+        const char *summary = s_investigation_result.summary;
+        size_t summary_bound = sizeof(s_investigation_result.summary);
+        if (!summary[0]) {
+            summary = overlay->start_error[0]
+                ? overlay->start_error : s_investigation_result.error;
+            summary_bound = overlay->start_error[0]
+                ? sizeof(overlay->start_error)
+                : sizeof(s_investigation_result.error);
+        }
+        badge_sanitize_text(value, sizeof(value), summary, summary_bound);
+        fb_draw_tiny_string(7, 97, "SUMMARY", COL_DARKGRAY, COL_BLACK);
+        fb_draw_tiny_string_fit(7, 106,
+                                value[0] ? value : "NO SUMMARY REPORTED",
+                                LCD_W - 14, COL_WHITE, COL_BLACK);
+    } else if (overlay->page == 2) {
+        fb_draw_string_fit(7, 21, "SERVICES / SERIAL", LCD_W - 14,
+                           COL_WHITE, COL_BLACK);
+        snprintf(value, sizeof(value), "%u SVC  %u CHAR  %u READ",
+                 (unsigned)s_investigation_result.service_count,
+                 (unsigned)s_investigation_result.characteristic_count,
+                 (unsigned)s_investigation_result.read_count);
+        fb_draw_tiny_string_fit(7, 40, value, LCD_W - 14,
+                                COL_GRAY, COL_BLACK);
+        const char *service = s_investigation_result.service_count > 0
+            ? s_investigation_result.services[0] : NULL;
+        if (service) {
+            badge_draw_split_uuid(55, "SERVICE UUID", service);
+        } else {
+            draw_detail_pair(59, "SVC", "none reported");
+        }
+        const char *serial_uuid = badge_investigation_serial_uuid();
+        if (serial_uuid) {
+            badge_draw_split_uuid(91, "SERIAL UUID", serial_uuid);
+        } else {
+            draw_detail_pair(95, "SERIAL", "none reported");
+        }
+    } else {
+        badge_investigation_security_view_t security;
+        bool auth_evidence_known = badge_investigation_auth_evidence_known(
+            s_investigation_result.mode,
+            s_investigation_result.state,
+            s_investigation_result.authentication_required);
+        badge_investigation_security_view(
+            auth_evidence_known,
+            s_investigation_result.authentication_required, &security);
+        fb_draw_string_fit(7, 21, "SECURITY / EVIDENCE", LCD_W - 14,
+                           COL_WHITE, COL_BLACK);
+        snprintf(value, sizeof(value), "CONNECTABLE %s", security.connectable);
+        fb_draw_tiny_string_fit(7, 40, value, LCD_W - 14,
+                                COL_GRAY, COL_BLACK);
+        snprintf(value, sizeof(value), "BONDED %s", security.bonded);
+        fb_draw_tiny_string_fit(7, 49, value, LCD_W - 14,
+                                COL_GRAY, COL_BLACK);
+        snprintf(value, sizeof(value), "ENCRYPTED %s", security.encrypted);
+        fb_draw_tiny_string_fit(7, 58, value, LCD_W - 14,
+                                COL_GRAY, COL_BLACK);
+        snprintf(value, sizeof(value), "AUTH %s", security.authentication);
+        fb_draw_tiny_string_fit(7, 67, value, LCD_W - 14,
+                                COL_WHITE, COL_BLACK);
+        snprintf(value, sizeof(value), "TRUNC %s",
+                 s_investigation_result.truncated ? "YES" : "NO");
+        fb_draw_tiny_string_fit(7, 76, value, LCD_W - 14,
+                                COL_WHITE, COL_BLACK);
+        char read_evidence[BADGE_INVESTIGATION_READ_EVIDENCE_LEN] = {0};
+        bool have_read_evidence = s_investigation_result.read_count > 0 &&
+            badge_investigation_format_read_evidence(
+                &s_investigation_result.reads[0],
+                read_evidence, sizeof(read_evidence));
+        fb_draw_tiny_string(7, 91, "CAPTURED READ",
+                            COL_DARKGRAY, COL_BLACK);
+        fb_draw_tiny_string_fit(7, 100,
+                                have_read_evidence ? read_evidence : "NONE",
+                                LCD_W - 14,
+                                have_read_evidence ? COL_CYAN : COL_GRAY,
+                                COL_BLACK);
+        const char *error = overlay->start_error[0]
+            ? overlay->start_error : s_investigation_result.error;
+        badge_sanitize_text(value, sizeof(value), error,
+                            overlay->start_error[0]
+                                ? sizeof(overlay->start_error)
+                                : sizeof(s_investigation_result.error));
+        fb_draw_tiny_string(7, 116, "ERROR",
+                            COL_DARKGRAY, COL_BLACK);
+        fb_draw_tiny_string_fit(7, 125,
+                                value[0] ? value : "NONE",
+                                LCD_W - 14,
+                                value[0] ? COL_ROSE : COL_GRAY, COL_BLACK);
+    }
+    fb_draw_tiny_string(6, 151, "B2 PAGE  DBL EXIT", COL_DARKGRAY, COL_BLACK);
+}
+
 bool oled_badge_get_display_state(oled_badge_display_state_t *out)
 {
     if (!out) {
@@ -5730,6 +6826,16 @@ bool oled_badge_get_display_state(oled_badge_display_state_t *out)
     const badge_focus_entry_t *entry = badge_focus_current_entry();
     out->detail_mode = s_detail_mode;
     out->detail_page = s_detail_page;
+    out->investigation_active = s_investigation_overlay.visible;
+    snprintf(out->investigation_request_id,
+             sizeof(out->investigation_request_id), "%s",
+             s_investigation_overlay.request_id);
+    const char *investigation_state = ble_investigation_state_name(
+        s_investigation_overlay.state);
+    snprintf(out->investigation_state,
+             sizeof(out->investigation_state), "%s",
+             investigation_state ? investigation_state : "idle");
+    out->investigation_page = s_investigation_overlay.page;
     out->focus_index = s_focus_model.focus_index;
     out->focus_total = s_focus_model.count;
     if (!entry || !entry->active) {
@@ -5901,7 +7007,16 @@ void oled_init(void)
     ESP_LOGI(TAG, "Backlight pin GPIO%d driven HIGH", ST7735_PIN_BL);
 #endif
 
-    /* Allocate framebuffer in PSRAM. */
+#if defined(FOF_DC34_GAME_CANARY)
+    s_fb = psram_alloc_strict(LCD_FB_BYTES);
+    if (!s_fb) {
+        ESP_LOGE(TAG,
+                 "PSRAM framebuffer allocation failed (%d bytes); "
+                 "continuing headless for USB/UART recovery",
+                 LCD_FB_BYTES);
+        return;
+    }
+#else
     s_fb = heap_caps_malloc(LCD_FB_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_fb) {
         /* Fall back to internal heap — 40 KB is large but the badge has
@@ -5912,6 +7027,7 @@ void oled_init(void)
         ESP_LOGE(TAG, "Framebuffer allocation failed (%d bytes)", LCD_FB_BYTES);
         return;
     }
+#endif
     memset(s_fb, 0, LCD_FB_BYTES);
 
     s_tx_chunk = heap_caps_malloc(20 * LCD_W * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
@@ -5953,15 +7069,58 @@ void oled_init(void)
     st7735_panel_init();
 
     s_initialized = true;
+    atomic_store(&s_panel_awake, true);
     ESP_LOGI(TAG, "ST7735 initialized (128x160, SPI3 @ %d MHz, CS GPIO%d)",
              ST7735_SPI_HZ / 1000000, ST7735_PIN_CS);
-
-    badge_buttons_start();
 
     /* Show the badge splash once the panel is configured. The heavy color
      * diagnostics stay compiled in for bench bring-up, but normal boot keeps
      * the LCD experience clean. */
     splash_show();
+}
+
+bool oled_is_powered(void)
+{
+    return s_initialized && atomic_load(&s_panel_awake);
+}
+
+void oled_set_power(bool on)
+{
+    if (!s_initialized || on == oled_is_powered()) {
+        return;
+    }
+    if (!display_lock(pdMS_TO_TICKS(300))) {
+        ESP_LOGW(TAG, "Panel power transition lock timed out");
+        return;
+    }
+    if (on == oled_is_powered()) {
+        display_unlock();
+        return;
+    }
+
+    if (on) {
+        st_write_cmd(ST_CMD_SLPOUT);
+        vTaskDelay(pdMS_TO_TICKS(120));
+        st_write_cmd(ST_CMD_DISPON);
+#if ST7735_PIN_BL >= 0
+        gpio_set_level(ST7735_PIN_BL, 1);
+#endif
+        atomic_store(&s_panel_awake, true);
+        ESP_LOGI(TAG, "Badge panel awake; next display tick restores live UI");
+    } else {
+        fb_clear(COL_BLACK);
+        st_flush();
+        st_write_cmd(ST_CMD_DISPOFF);
+        vTaskDelay(pdMS_TO_TICKS(5));
+        st_write_cmd(ST_CMD_SLPIN);
+#if ST7735_PIN_BL >= 0
+        gpio_set_level(ST7735_PIN_BL, 0);
+#else
+        ESP_LOGW(TAG, "Panel sleeping; backlight remains tied high by badge hardware");
+#endif
+        atomic_store(&s_panel_awake, false);
+    }
+    display_unlock();
 }
 
 void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
@@ -5972,10 +7131,32 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
     (void)upload_count;
     (void)battery_pct;  /* badge has no battery monitor */
     (void)uptime_s;
-    if (!s_initialized) return;
+    if (!s_initialized || !oled_is_powered()) return;
+    if (atomic_load(&s_usb_recovery_prompt_active)) return;
+    badge_ble_investigation_poll();
     if (!display_lock(pdMS_TO_TICKS(30))) return;
+    if (!oled_is_powered()) {
+        display_unlock();
+        return;
+    }
 
     s_anim_frame++;
+    badge_easter_egg_machine_t easter;
+    if (badge_easter_egg_runtime_snapshot(&easter) && easter.visible) {
+        draw_badge_easter_egg_screen(easter.phase);
+        st_flush();
+        display_unlock();
+        return;
+    }
+    s_easter_animation_initialized = false;
+    badge_investigation_refresh_locked();
+    if (s_investigation_overlay.visible) {
+        draw_badge_investigation_overlay();
+        s_queue_page_frame++;
+        st_flush();
+        display_unlock();
+        return;
+    }
     if (s_detail_mode && s_last_button_ms > 0 &&
         (badge_now_ms() - s_last_button_ms) > BADGE_DETAIL_TIMEOUT_MS) {
         s_detail_mode = false;
@@ -6004,6 +7185,7 @@ void oled_update(int detection_count, bool ble_scanner_ok, bool wifi_scanner_ok,
         return;
     }
 
+    display_refresh_scanner_snapshots();
     static badge_threat_snapshot_t snapshot;
     uart_rx_get_badge_threat_snapshot(&snapshot);
 
@@ -6039,16 +7221,24 @@ void oled_show_detection(const char *detection_id, const char *manufacturer,
 
 void oled_show_boot_status(const char *stage, const char *mode, const char *line)
 {
-    if (!s_initialized) return;
+    if (!s_initialized || !oled_is_powered()) return;
     if (!display_lock(pdMS_TO_TICKS(300))) return;
+    if (!oled_is_powered()) {
+        display_unlock();
+        return;
+    }
     draw_boot_screen(stage, mode, line);
     display_unlock();
 }
 
 void oled_clear(void)
 {
-    if (!s_initialized) return;
+    if (!s_initialized || !oled_is_powered()) return;
     if (!display_lock(pdMS_TO_TICKS(300))) return;
+    if (!oled_is_powered()) {
+        display_unlock();
+        return;
+    }
     fb_clear(COL_BLACK);
     st_flush();
     display_unlock();

@@ -24,6 +24,7 @@ import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.data.remote.SensorMapApiService
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.data.repository.WeatherRepository
+import com.friendorfoe.data.repository.validatedLocationAccuracyMeters
 import com.friendorfoe.detection.AcousticDetector
 import com.friendorfoe.detection.AiClassifier
 import com.friendorfoe.detection.TrainingDataCollector
@@ -964,7 +965,11 @@ class ArViewModel @Inject constructor(
             _gpsStatus.value = GpsStatus.LOCKED
 
             // Ensure scanners are running (idempotent — safe if already started by Map)
-            skyObjectRepository.ensureStarted(location.latitude, location.longitude)
+            skyObjectRepository.ensureStarted(
+                location.latitude,
+                location.longitude,
+                location.validatedLocationAccuracyMeters(),
+            )
 
             Log.d(TAG, "Location updated: (${location.latitude}, ${location.longitude}), alt=${location.altitude}m")
         }
@@ -1073,25 +1078,22 @@ class ArViewModel @Inject constructor(
                 val lastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                     ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
 
-                val initialLat = lastKnown?.latitude ?: 0.0
-                val initialLon = lastKnown?.longitude ?: 0.0
-
                 if (lastKnown != null) {
                     _userPosition.value = Position(
-                        latitude = initialLat,
-                        longitude = initialLon,
+                        latitude = lastKnown.latitude,
+                        longitude = lastKnown.longitude,
                         altitudeMeters = lastKnown.altitude
                     )
                     _gpsStatus.value = GpsStatus.LOCKED
-                    Log.d(TAG, "Using last known location: ($initialLat, $initialLon)")
-                }
-
-                // Don't start ADS-B polling if we have no valid position
-                if (initialLat != 0.0 || initialLon != 0.0) {
-                    skyObjectRepository.ensureStarted(initialLat, initialLon)
+                    Log.d(TAG, "Using last known location: (${lastKnown.latitude}, ${lastKnown.longitude})")
+                    skyObjectRepository.ensureStarted(
+                        lastKnown.latitude,
+                        lastKnown.longitude,
+                        lastKnown.validatedLocationAccuracyMeters(),
+                    )
                 } else {
                     // Start BLE/WiFi scanners only (they don't need GPS)
-                    skyObjectRepository.ensureStarted(0.0, 0.0)
+                    skyObjectRepository.ensureScannerStarted()
                 }
             } catch (e: SecurityException) {
                 Log.e(TAG, "Location permission not granted", e)

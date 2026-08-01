@@ -1,9 +1,12 @@
 package com.friendorfoe.detection
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
+import com.friendorfoe.data.badge.BadgeThreatEntity
+import com.friendorfoe.presentation.badge.badgeInvestigationTarget
 
 class PrivacyCategoryMappingTest {
 
@@ -81,6 +84,24 @@ class PrivacyCategoryMappingTest {
                 rssi = -58
             )
         )
+    }
+
+    @Test
+    fun maps_privacy_vendor_oui_without_claiming_camera_or_drone() {
+        val detection = GlassesDetector.checkWifiSsid(
+            ssid = "",
+            bssid = "00:25:DF:11:22:33",
+            rssi = -55
+        )
+
+        assertNotNull(detection)
+        assertEquals("Axon", detection!!.manufacturer)
+        assertEquals("Privacy Infrastructure", detection.deviceType)
+        assertEquals(PrivacyCategory.SECURITY_INFRASTRUCTURE, detection.category)
+        assertFalse(detection.hasCamera)
+        assertFalse(detection.deviceType.contains("camera", ignoreCase = true))
+        assertFalse(detection.matchReason.contains("recording", ignoreCase = true))
+        assertFalse(WifiOuiDatabase.isDroneOui("00:25:DF:11:22:33"))
     }
 
     @Test
@@ -227,5 +248,40 @@ class PrivacyCategoryMappingTest {
             PrivacyCategory.INFORMATIONAL,
             GlassesDetector.categorizeDeviceType("Personal Device")
         )
+    }
+
+    @Test
+    fun badge_ble_entity_has_gatt_target_and_badge_origin() {
+        val detection = BadgeThreatEntity(
+            label = "Serial device",
+            threatClass = "ble",
+            bssid = "C0:98:E5:00:00:01",
+            score = 95,
+            ageSeconds = 0,
+            rssi = -45,
+            events = 1,
+        ).badgeInvestigationTarget(nowElapsedMs = 0L)!!
+
+        assertEquals(PrivacyDetectionOrigin.BADGE, detection.origin)
+        assertEquals(BleInvestigationMode.GATT, detection.mode)
+        assertEquals("C0:98:E5:00:00:01", detection.mac)
+    }
+
+    @Test
+    fun badge_pairing_spam_has_passive_capture_target() {
+        val detection = BadgeThreatEntity(
+            label = "BLE Spam",
+            threatClass = "ble",
+            category = "BLE_SPAM",
+            code = "BLE_SPAM",
+            score = 95,
+            ageSeconds = 0,
+            rssi = -45,
+            events = 24,
+        ).badgeInvestigationTarget(nowElapsedMs = 0L)!!
+
+        assertEquals(PrivacyDetectionOrigin.BADGE, detection.origin)
+        assertEquals(BleInvestigationMode.PASSIVE_CAPTURE, detection.mode)
+        assertNull(detection.mac)
     }
 }

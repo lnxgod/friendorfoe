@@ -759,18 +759,7 @@ class PhonePrivacySourceAdapterTest {
     fun followerAnalysisRunsOnCadenceInsteadOfEveryBlePacket() = runTest {
         val now = Instant.now()
         val tracker = BleTracker()
-        tracker.recordSightingAt(
-            "CC:DD", -60, "Tag", "BLE Tracker", "Generic", false,
-            37.0, -122.0, 0f, now.minusSeconds(181),
-        )
-        tracker.recordSightingAt(
-            "CC:DD", -59, "Tag", "BLE Tracker", "Generic", false,
-            37.0, -122.0, 0f, now.minusSeconds(120),
-        )
-        tracker.recordSightingAt(
-            "CC:DD", -58, "Tag", "BLE Tracker", "Generic", false,
-            37.0, -122.0, 0f, now.minusSeconds(60),
-        )
+        recordQualifyingFollowerHistory(tracker, now)
         val settings = MutableStateFlow(
             DetectionSettings.defaults().copy(phonePrivacyScanEnabled = true),
         )
@@ -804,18 +793,7 @@ class PhonePrivacySourceAdapterTest {
     fun recurringFollowerPollsPreserveTheLastRealBleObservationTime() = runTest {
         val now = Instant.now()
         val tracker = BleTracker()
-        tracker.recordSightingAt(
-            "CC:DD", -60, "Tag", "BLE Tracker", "Generic", false,
-            37.0, -122.0, 0f, now.minusSeconds(181),
-        )
-        tracker.recordSightingAt(
-            "CC:DD", -59, "Tag", "BLE Tracker", "Generic", false,
-            37.0, -122.0, 0f, now.minusSeconds(120),
-        )
-        tracker.recordSightingAt(
-            "CC:DD", -58, "Tag", "BLE Tracker", "Generic", false,
-            37.0, -122.0, 0f, now.minusSeconds(60),
-        )
+        recordQualifyingFollowerHistory(tracker, now)
         val settings = MutableStateFlow(
             DetectionSettings.defaults().copy(phonePrivacyScanEnabled = true),
         )
@@ -855,18 +833,7 @@ class PhonePrivacySourceAdapterTest {
     fun disablingStalkerAnalysisImmediatelyRemovesFollowerRowsButKeepsOrdinaryBleFindings() = runTest {
         val now = Instant.now()
         val tracker = BleTracker()
-        tracker.recordSightingAt(
-            "CC:DD", -60, "Tag", "BLE Tracker", "Generic", false,
-            37.0, -122.0, 0f, now.minusSeconds(181),
-        )
-        tracker.recordSightingAt(
-            "CC:DD", -59, "Tag", "BLE Tracker", "Generic", false,
-            37.0, -122.0, 0f, now.minusSeconds(120),
-        )
-        tracker.recordSightingAt(
-            "CC:DD", -58, "Tag", "BLE Tracker", "Generic", false,
-            37.0, -122.0, 0f, now.minusSeconds(60),
-        )
+        recordQualifyingFollowerHistory(tracker, now)
         val settings = MutableStateFlow(
             DetectionSettings.defaults().copy(phonePrivacyScanEnabled = true),
         )
@@ -968,6 +935,26 @@ class PhonePrivacySourceAdapterTest {
         clock = clock,
         scope = backgroundScope,
     )
+
+    private fun recordQualifyingFollowerHistory(tracker: BleTracker, now: Instant) {
+        val latitudes = listOf(37.0000, 37.0000, 37.0008, 37.0008, 37.0017, 37.0017)
+        latitudes.forEachIndexed { index, latitude ->
+            tracker.recordSightingAt(
+                mac = "CC:DD",
+                rssi = -60 + index,
+                deviceName = "Tag",
+                deviceType = "BLE Tracker",
+                manufacturer = "Generic",
+                hasCamera = false,
+                userLat = latitude,
+                userLon = -122.0,
+                compassBearing = 0f,
+                timestamp = now.minusSeconds(301L - index * 60L),
+                category = PrivacyCategory.BLE_TRACKER,
+                locationAccuracyMeters = 5f,
+            )
+        }
+    }
 
     private fun PhonePrivacySourceAdapter.bleSnapshot(): PrivacySourceSnapshot =
         snapshots.value.single { it.health.source == PrivacySourceKind.PHONE_BLE }

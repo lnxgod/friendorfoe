@@ -11,6 +11,7 @@
  */
 
 #include "detection_types.h"
+#include "ble_fingerprint.h"
 #include "open_drone_id_parser.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -95,12 +96,29 @@ typedef struct {
 } ble_remote_id_stats_t;
 
 bool ble_remote_id_is_scanning(void);
+/** True after NimBLE/controller initialization completed successfully. */
+bool ble_remote_id_is_initialized(void);
+/** True only when scan and NimBLE host task lifecycle are fully stopped. */
+bool ble_remote_id_is_quiesced(void);
+/** True when the NimBLE host is synced and extended discovery is running. */
+bool ble_remote_id_is_active(void);
 void ble_remote_id_get_stats(ble_remote_id_stats_t *out);
 void ble_remote_id_reset_profile_counters(void);
 void ble_remote_id_meta_reacquire_tick(bool allow_restart);
 uint32_t ble_remote_id_service_seen_count(void);
 uint32_t ble_remote_id_emit_count(void);
 uint32_t ble_remote_id_privacy_seen_count(void);
+
+bool ble_remote_id_pause_for_investigation(void);
+bool ble_remote_id_resume_after_investigation(void);
+void ble_remote_id_note_investigation_advertisement(const uint8_t mac[6],
+                                                    const ble_fingerprint_t *fp,
+                                                    int8_t rssi,
+                                                    uint8_t props,
+                                                    int64_t now_ms);
+bool ble_remote_id_lookup_peer_addr_type(const uint8_t mac[6],
+                                         int64_t now_ms,
+                                         uint8_t *addr_type_out);
 
 /**
  * Focus BLE reporting on a specific advertiser MAC.

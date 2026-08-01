@@ -1,0 +1,89 @@
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "firmware_json_schema.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum {
+    FOF_FW_JSON_INGRESS_HOST_TO_UPLINK_USB = 0,
+    FOF_FW_JSON_INGRESS_UPLINK_TO_SCANNER_UART,
+    FOF_FW_JSON_INGRESS_SCANNER_TO_UPLINK_UART,
+} fof_fw_json_ingress_t;
+
+typedef enum {
+    FOF_FW_JSON_SCHEMA_NONE = 0,
+
+    FOF_FW_JSON_SCHEMA_USB_FW_RELAY_BASE,
+    FOF_FW_JSON_SCHEMA_USB_FW_RELAY_FORCED,
+    FOF_FW_JSON_SCHEMA_USB_FW_UPLOAD_BEGIN,
+    FOF_FW_JSON_SCHEMA_USB_FW_UPLOAD_BEGIN_SESSION,
+    FOF_FW_JSON_SCHEMA_USB_UPLINK_OTA_BEGIN,
+    FOF_FW_JSON_SCHEMA_USB_UPLINK_OTA_BEGIN_SESSION,
+    FOF_FW_JSON_SCHEMA_USB_FW_CHECK,
+    FOF_FW_JSON_SCHEMA_USB_FW_CHECK_UART,
+    FOF_FW_JSON_SCHEMA_USB_FW_CHECK_NOW,
+    FOF_FW_JSON_SCHEMA_USB_FW_CHECK_NOW_UART,
+
+    FOF_FW_JSON_SCHEMA_SCANNER_FW_OFFER,
+    FOF_FW_JSON_SCHEMA_SCANNER_FW_CHECK_NOW,
+    FOF_FW_JSON_SCHEMA_SCANNER_OTA_BEGIN,
+    FOF_FW_JSON_SCHEMA_SCANNER_OTA_END,
+    FOF_FW_JSON_SCHEMA_SCANNER_OTA_ABORT_ACTIVE,
+    FOF_FW_JSON_SCHEMA_SCANNER_OTA_ABORT_UNBOUND,
+
+    FOF_FW_JSON_SCHEMA_RECEIPT_FW_CHECK,
+    FOF_FW_JSON_SCHEMA_RECEIPT_FW_READY_STRICT,
+    FOF_FW_JSON_SCHEMA_RECEIPT_FW_READY_LEGACY_68,
+    FOF_FW_JSON_SCHEMA_RECEIPT_OTA_ACK_MODERN,
+    FOF_FW_JSON_SCHEMA_RECEIPT_OTA_ACK_LEGACY_68,
+    FOF_FW_JSON_SCHEMA_RECEIPT_OTA_STAGED_MODERN,
+    FOF_FW_JSON_SCHEMA_RECEIPT_OTA_DONE_MODERN,
+    FOF_FW_JSON_SCHEMA_RECEIPT_OTA_DONE_LEGACY_68,
+    FOF_FW_JSON_SCHEMA_RECEIPT_OTA_PROGRESS_ACTIVE_SHARED,
+    FOF_FW_JSON_SCHEMA_RECEIPT_OTA_PROGRESS_UNBOUND_MODERN,
+    FOF_FW_JSON_SCHEMA_RECEIPT_OTA_NACK_ACTIVE_SHARED,
+    FOF_FW_JSON_SCHEMA_RECEIPT_OTA_NACK_UNBOUND_SHARED,
+    FOF_FW_JSON_SCHEMA_RECEIPT_OTA_ERROR_ACTIVE_SHARED,
+    FOF_FW_JSON_SCHEMA_RECEIPT_OTA_ERROR_PRESESSION_MODERN,
+    FOF_FW_JSON_SCHEMA_RECEIPT_OTA_ERROR_PRESESSION_LEGACY_68,
+    FOF_FW_JSON_SCHEMA_RECEIPT_STOP_ACK_SHARED,
+
+    FOF_FW_JSON_SCHEMA_COUNT,
+} fof_fw_json_schema_id_t;
+
+typedef enum {
+    FOF_FW_JSON_REGISTRY_OK = 0,
+    FOF_FW_JSON_REGISTRY_INVALID_ARGUMENT,
+    FOF_FW_JSON_REGISTRY_SELECTOR_REJECTED,
+    FOF_FW_JSON_REGISTRY_UNKNOWN_SELECTOR,
+    FOF_FW_JSON_REGISTRY_NO_EXACT_SCHEMA,
+    FOF_FW_JSON_REGISTRY_AMBIGUOUS_SCHEMA,
+} fof_fw_json_registry_result_t;
+
+typedef struct {
+    fof_fw_json_schema_id_t id;
+    fof_fw_json_ingress_t ingress;
+    const char *name;
+    const char *selector_name;
+    const char *selector_value;
+    const fof_json_member_spec_t *members;
+    size_t member_count;
+} fof_fw_json_schema_descriptor_t;
+
+fof_fw_json_registry_result_t fof_fw_json_select_and_validate(
+    fof_fw_json_ingress_t ingress,
+    const uint8_t *bytes,
+    size_t byte_len,
+    fof_fw_json_schema_id_t *schema_id_out);
+
+const fof_fw_json_schema_descriptor_t *
+fof_fw_json_schema_descriptor(fof_fw_json_schema_id_t id);
+
+#ifdef __cplusplus
+}
+#endif

@@ -33,6 +33,12 @@ behavior; legacy ESP32 nodes have no PSRAM and this document does not apply.
    - cJSON scratch for outbound detection payloads — we rely on static
      `snprintf` buffers for HTTP POSTs.
 
+   For the DEF CON badge release, Android theme and display-policy control is
+   deliberately USB-only badge control. The uplink compiles Bluetooth/NimBLE
+   out entirely, while the two scanner boards continue to own BLE detection.
+   This avoids spending internal RAM on an idle badge-control radio and does
+   not move any task stack or RID hot-path object into PSRAM.
+
 5. **Things that SHOULD go to PSRAM:**
    - **Uplink offline detection queue** — large ring buffer so a WiFi
      outage doesn't drop detections. 2 MB covers ~10 minutes of steady

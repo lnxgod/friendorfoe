@@ -8,6 +8,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.repository.SkyObjectRepository
+import com.friendorfoe.data.repository.validatedLocationAccuracyMeters
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
@@ -102,11 +103,20 @@ class ListViewModel @Inject constructor(
                 altitudeMeters = location.altitude
             )
 
+            val accuracyMeters = location.validatedLocationAccuracyMeters()
             if (!scanningStarted) {
-                skyObjectRepository.ensureStarted(location.latitude, location.longitude)
+                skyObjectRepository.ensureStarted(
+                    location.latitude,
+                    location.longitude,
+                    accuracyMeters,
+                )
                 scanningStarted = true
             } else {
-                skyObjectRepository.updatePosition(location.latitude, location.longitude)
+                skyObjectRepository.updatePosition(
+                    location.latitude,
+                    location.longitude,
+                    accuracyMeters,
+                )
             }
         }
 

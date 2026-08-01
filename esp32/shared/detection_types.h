@@ -25,6 +25,14 @@ extern "C" {
 #define DETECTION_SRC_WIFI_ASSOC    7   /* AP<->STA association traffic */
 #define DETECTION_SRC_WIFI_AP_INVENTORY 8 /* Diagnostic generic AP inventory */
 
+/* Behavioral BLE threat kinds. Zero is the legacy/no-threat value. */
+#define BLE_THREAT_KIND_NONE            0
+#define BLE_THREAT_KIND_PAIRING_SPAM    1
+#define BLE_THREAT_KIND_SERIAL_SKIMMER  2
+
+/* Demo-safe badge policy: retain wire compatibility, emit no skimmer rows. */
+#define BADGE_SKIMMER_DETECTION_ENABLED 0
+
 /* ── Full drone detection state ──────────────────────────────────────────── */
 
 typedef struct {
@@ -139,6 +147,14 @@ typedef struct {
      * bit 1 = WiFi slot. */
     uint8_t     scanner_slot;
     uint8_t     scanner_slots_seen;
+
+    /* Behavioral BLE evidence. Appended for wire/backward compatibility. */
+    uint8_t     ble_threat_kind;
+    uint8_t     ble_prompt_family_mask;
+    uint16_t    ble_unique_macs;
+    uint16_t    ble_observation_count;
+    uint16_t    ble_serial_service_uuid;
+    uint8_t     ble_threat_evidence_mask;
 } drone_detection_t;
 
 #ifdef __cplusplus

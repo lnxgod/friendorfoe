@@ -15,6 +15,8 @@
 #define OLED_BADGE_STATE_TEXT_LEN 80
 #define OLED_BADGE_STATE_KEY_LEN 64
 #define OLED_BADGE_STATE_EVIDENCE_LEN 48
+#define OLED_BADGE_INVESTIGATION_REQUEST_ID_LEN 33
+#define OLED_BADGE_INVESTIGATION_STATE_LEN 16
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,6 +26,13 @@ extern "C" {
  * Initialize I2C and the SSD1306 display controller.
  */
 void oled_init(void);
+
+/** Start the badge button recovery task even when panel initialization fails. */
+bool oled_badge_buttons_start(void);
+
+/** Sleep or wake the display controller without changing UI/theme state. */
+void oled_set_power(bool on);
+bool oled_is_powered(void);
 
 /**
  * Redraw the main status screen with uplink + node + detection info.
@@ -64,6 +73,10 @@ typedef struct {
     bool active;
     bool detail_mode;
     int detail_page;
+    bool investigation_active;
+    char investigation_request_id[OLED_BADGE_INVESTIGATION_REQUEST_ID_LEN];
+    char investigation_state[OLED_BADGE_INVESTIGATION_STATE_LEN];
+    int investigation_page;
     int focus_index;
     int focus_total;
     int item_index;

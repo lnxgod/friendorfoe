@@ -6,11 +6,17 @@ on:
     tags: ['v*']
     paths:
       - 'esp32/**'
+      - 'tools/badge_flasher/**'
+      - 'scripts/build_badge_factory_bundle.py'
+      - 'scripts/package_public_badge_release.py'
       - '.github/workflows/esp32-web-flasher.yml'
   pull_request:
     branches: [main]
     paths:
       - 'esp32/**'
+      - 'tools/badge_flasher/**'
+      - 'scripts/build_badge_factory_bundle.py'
+      - 'scripts/package_public_badge_release.py'
       - '.github/workflows/esp32-web-flasher.yml'
   release:
     types: [published]
@@ -25,7 +31,7 @@ jobs:
   build:
     # Android-only app releases use tags like vX.Y.Z-android-... so the app's
     # GitHub update check can see them without packaging firmware assets.
-    if: ${{ !((github.event_name == 'release' && contains(github.event.release.tag_name, 'android')) || (github.event_name != 'release' && contains(github.ref_name, 'android'))) }}
+    if: ${{ !((github.event_name == 'release' && contains(github.event.release.tag_name, '-android-')) || (github.event_name != 'release' && contains(github.ref_name, '-android-'))) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -39,7 +45,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install PlatformIO
-        run: pip install platformio
+        run: pip install platformio pytest
 
       - name: Cache PlatformIO packages
         uses: actions/cache@v4
@@ -55,20 +61,119 @@ jobs:
       - name: Run native ESP32 unit tests
         run: cd esp32 && pio test -e test
 
+      - name: Test badge factory host tool
+        run: python -m unittest discover -s tools/badge_flasher/tests -p 'test_*.py' -v
+
+      - name: Test portable badge release guard
+        run: cd scripts && python -m pytest test_fof_flash_release.py -q
+
+      - name: Test firmware build-version guard
+        run: python -m pytest backend/tests/test_firmware_build_version.py -q
+
       - name: Build Scanner firmware (ESP32-S3 combo)
-        run: cd esp32/scanner && pio run -e scanner-s3-combo
+        run: umask 0022 && cd esp32/scanner && pio run -e scanner-s3-combo
 
       - name: Build Scanner firmware (ESP32-S3 combo seed)
-        run: cd esp32/scanner && pio run -e scanner-s3-combo-seed
+        run: umask 0022 && cd esp32/scanner && pio run -e scanner-s3-combo-seed
 
       - name: Build Uplink firmware (ESP32-S3)
-        run: cd esp32/uplink && pio run -e uplink-s3
+        run: umask 0022 && cd esp32/uplink && pio run -e uplink-s3
+
+      - name: Harden verified PlatformIO runtime modes
+        run: |
+          python -c 'import os, sys; os.chmod(os.path.realpath(sys.executable), 0o755)'
+          chmod 0644 \
+            "$HOME/.platformio/packages/framework-espidf/components/partition_table/gen_esp32part.py"
 
       - name: Build Badge Scanner firmware (XIAO ESP32-S3)
-        run: cd esp32/scanner && pio run -e scanner-s3-combo-fof_badge
+        run: >-
+          umask 0022 &&
+          cd esp32/scanner &&
+          pio run -e scanner-s3-combo-fof_badge
+
+      - name: Verify Badge Scanner flash manifests
+        run: >-
+          python esp32/scripts/verify_badge_scanner_build.py
+          --build-dir esp32/scanner/.pio/build/scanner-s3-combo-fof_badge
+          --partition-source esp32/scanner/partitions_s3_scanner_8mb.csv
+          --sdkconfig esp32/scanner/sdkconfig.scanner-s3-combo-fof_badge
+
+      - name: Build private Badge Scanner canary
+        run: >-
+          umask 0022 &&
+          cd esp32/scanner &&
+          pio run -e scanner-s3-combo-fof_badge-con-crud-canary
+
+      - name: Verify private Badge Scanner canary
+        run: >-
+          python esp32/scripts/verify_badge_scanner_build.py
+          --build-dir
+          esp32/scanner/.pio/build/scanner-s3-combo-fof_badge-con-crud-canary
+          --partition-source esp32/scanner/partitions_s3_scanner_8mb.csv
+          --sdkconfig
+          esp32/scanner/sdkconfig.scanner-s3-combo-fof_badge-con-crud-canary
+          --canary-production-build-dir
+          esp32/scanner/.pio/build/scanner-s3-combo-fof_badge
 
       - name: Build Badge Uplink firmware (XIAO ESP32-S3)
-        run: cd esp32/uplink && pio run -e uplink-s3-fof_badge
+        run: >-
+          umask 0022 &&
+          cd esp32/uplink &&
+          pio run -e uplink-s3-fof_badge
+
+      - name: Verify Badge Uplink flash manifests
+        run: >-
+          python esp32/scripts/verify_badge_uplink_build.py
+          --build-dir esp32/uplink/.pio/build/uplink-s3-fof_badge
+          --partition-source esp32/uplink/partitions_s3_fof_badge_8mb.csv
+
+      - name: Build private Badge Uplink canary
+        run: >-
+          umask 0022 &&
+          cd esp32/uplink &&
+          pio run -e uplink-s3-fof_badge-con-crud-canary
+
+      - name: Verify private Badge Uplink canary
+        run: >-
+          python esp32/scripts/verify_badge_uplink_build.py
+          --build-dir
+          esp32/uplink/.pio/build/uplink-s3-fof_badge-con-crud-canary
+          --partition-source esp32/uplink/partitions_s3_fof_badge_8mb.csv
+          --sdkconfig
+          esp32/uplink/sdkconfig.uplink-s3-fof_badge-con-crud-canary
+          --canary-production-build-dir
+          esp32/uplink/.pio/build/uplink-s3-fof_badge
+
+      - name: Build Badge factory topology probe (XIAO ESP32-S3)
+        run: >-
+          umask 0022 &&
+          cd esp32/factory-probe &&
+          pio run -e factory-probe-s3
+
+      - name: Verify embedded firmware versions
+        run: python esp32/scripts/verify_firmware_versions.py --repo-root .
+
+      - name: Package private CON CRUD canary artifact
+        run: |
+          mkdir -p private-canary/badge-scanner
+          mkdir -p private-canary/badge-uplink
+
+          cp esp32/scanner/.pio/build/scanner-s3-combo-fof_badge-con-crud-canary/bootloader.bin private-canary/badge-scanner/
+          cp esp32/scanner/.pio/build/scanner-s3-combo-fof_badge-con-crud-canary/partitions.bin private-canary/badge-scanner/partition-table.bin
+          cp esp32/scanner/.pio/build/scanner-s3-combo-fof_badge-con-crud-canary/firmware.bin private-canary/badge-scanner/
+
+          cp esp32/uplink/.pio/build/uplink-s3-fof_badge-con-crud-canary/bootloader.bin private-canary/badge-uplink/
+          cp esp32/uplink/.pio/build/uplink-s3-fof_badge-con-crud-canary/partitions.bin private-canary/badge-uplink/partition-table.bin
+          cp esp32/uplink/.pio/build/uplink-s3-fof_badge-con-crud-canary/firmware.bin private-canary/badge-uplink/
+
+          find private-canary -name '*.bin' -exec ls -lh {} \;
+
+      - name: Upload private CON CRUD canary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: con-crud-canary-${{ github.sha }}
+          path: private-canary/
+          retention-days: 14
 
       - name: Package firmware binaries
         run: |
@@ -87,13 +192,7 @@ jobs:
           cp esp32/uplink/.pio/build/uplink-s3/partitions.bin firmware/uplink-s3/partition-table.bin
           cp esp32/uplink/.pio/build/uplink-s3/firmware.bin   firmware/uplink-s3/
 
-          cp esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/bootloader.bin firmware/badge-scanner/
-          cp esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/partitions.bin firmware/badge-scanner/partition-table.bin
-          cp esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/firmware.bin   firmware/badge-scanner/
-
-          cp esp32/uplink/.pio/build/uplink-s3-fof_badge/bootloader.bin firmware/badge-uplink/
-          cp esp32/uplink/.pio/build/uplink-s3-fof_badge/partitions.bin firmware/badge-uplink/partition-table.bin
-          cp esp32/uplink/.pio/build/uplink-s3-fof_badge/firmware.bin   firmware/badge-uplink/
+          python scripts/package_public_badge_release.py --output-root firmware
 
           echo "=== Firmware sizes ==="
           find firmware -name '*.bin' -exec ls -lh {} \;
@@ -103,6 +202,19 @@ jobs:
         with:
           name: esp32-firmware
           path: firmware/
+          retention-days: 90
+
+      - name: Build validated badge factory bundle
+        run: |
+          mkdir -p factory-bundle
+          cp tools/badge_flasher/resources/badge-factory-flasher-embedded.zip \
+            factory-bundle/badge-factory-flasher.zip
+
+      - name: Upload badge factory bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: badge-factory-flasher
+          path: factory-bundle/badge-factory-flasher.zip
           retention-days: 90
 
       - name: Attach firmware to release
@@ -132,6 +244,7 @@ jobs:
           cp firmware/uplink-s3/firmware.bin    /tmp/uplink-s3-${TAG}.bin
           cp firmware/badge-scanner/firmware.bin /tmp/scanner-s3-combo-fof_badge-${TAG}.bin
           cp firmware/badge-uplink/firmware.bin  /tmp/uplink-s3-fof_badge-${TAG}.bin
+          cp factory-bundle/badge-factory-flasher.zip /tmp/badge-factory-flasher-${TAG}.zip
           cd firmware/scanner        && tar czf /tmp/scanner-firmware-${TAG}.tar.gz *.bin && cd -
           cd firmware/scanner-seed   && tar czf /tmp/scanner-seed-firmware-${TAG}.tar.gz *.bin && cd -
           cd firmware/uplink-s3      && tar czf /tmp/uplink-s3-firmware-${TAG}.tar.gz *.bin && cd -
@@ -148,16 +261,17 @@ jobs:
             /tmp/uplink-s3-firmware-${TAG}.tar.gz \
             /tmp/badge-scanner-firmware-${TAG}.tar.gz \
             /tmp/badge-uplink-firmware-${TAG}.tar.gz \
+            /tmp/badge-factory-flasher-${TAG}.zip \
             --clobber
 
   # ── Deploy web flasher to GitHub Pages ──────────────────────────────────────
   deploy:
     runs-on: ubuntu-latest
     needs: build
-    # Deploy Pages for branch/workflow runs, but not release events or tag
-    # pushes. Release tags only need firmware assets attached to the GitHub
-    # release, and the github-pages environment blocks them.
-    if: ${{ always() && github.event_name != 'release' && !startsWith(github.ref, 'refs/tags/') }}
+    # Deploy Pages for branch/workflow runs, but not pull requests, release
+    # events, or tag pushes. Those runs only need build/release validation,
+    # and the github-pages environment blocks non-main deployments.
+    if: ${{ needs.build.result == 'success' && github.event_name != 'pull_request' && github.event_name != 'release' && !startsWith(github.ref, 'refs/tags/') }}
     permissions:
       pages: write
       id-token: write
@@ -186,42 +300,12 @@ jobs:
         with:
           name: esp32-firmware
           path: _site/firmware/
-        continue-on-error: true
 
       - name: Verify site contents
         run: |
           echo "=== Pages site ==="
           find _site -type f -exec ls -lh {} \;
-
-          if [ -f _site/firmware/scanner/firmware.bin ]; then
-            echo "Scanner S3 firmware: OK"
-          else
-            echo "Scanner S3 firmware: MISSING (build may have failed)"
-          fi
-
-          if [ -f _site/firmware/scanner-seed/firmware.bin ]; then
-            echo "Scanner S3 seed firmware: OK"
-          else
-            echo "Scanner S3 seed firmware: MISSING (build may have failed)"
-          fi
-
-          if [ -f _site/firmware/uplink-s3/firmware.bin ]; then
-            echo "Uplink S3 firmware: OK"
-          else
-            echo "Uplink S3 firmware: MISSING (build may have failed)"
-          fi
-
-          if [ -f _site/firmware/badge-scanner/firmware.bin ]; then
-            echo "Badge scanner firmware: OK"
-          else
-            echo "Badge scanner firmware: MISSING (build may have failed)"
-          fi
-
-          if [ -f _site/firmware/badge-uplink/firmware.bin ]; then
-            echo "Badge uplink firmware: OK"
-          else
-            echo "Badge uplink firmware: MISSING (build may have failed)"
-          fi
+          python esp32/scripts/verify_firmware_versions.py --repo-root . --site-root _site
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

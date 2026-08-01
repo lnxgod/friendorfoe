@@ -4,8 +4,10 @@
 **/sdkconfig.uplink
 **/sdkconfig.uplink-s3
 **/sdkconfig.uplink-s3-fof_badge
+**/sdkconfig.uplink-s3-fof_badge-con-crud-canary
 **/sdkconfig.scanner-s3-combo
 **/sdkconfig.scanner-s3-combo-fof_badge
+**/sdkconfig.scanner-s3-combo-fof_badge-con-crud-canary
 **/sdkconfig.scanner-s3-combo-seed
 **/sdkconfig.scanner-s3-legacy
 **/sdkconfig.scanner-s3-wifi

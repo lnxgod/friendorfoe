@@ -13,8 +13,24 @@
  *   - 27+ bytes: app_code(1) + counter(1) + ODID message(25)
  */
 
-#include "ble_remote_id.h"
+#include "badge_ble_rssi_policy.h"
+
+#if defined(BLE_REMOTE_ID_HANDOFF_TEST)
 #include "ble_fingerprint.h"
+#include "ble_threat_detector.h"
+#include "open_drone_id_parser.h"
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdatomic.h>
+#include <string.h>
+#else
+#include "ble_remote_id.h"
+#if defined(FOF_DC34_GAME_CANARY)
+#include "badge_con_observer.h"
+#endif
+#include "ble_fingerprint.h"
+#include "ble_investigator.h"
+#include "ble_threat_detector.h"
 #include "ble_ja3.h"
 #include "open_drone_id_parser.h"
 #include "constants.h"
@@ -22,9 +38,13 @@
 #include "detection_policy.h"
 #include "core/task_priorities.h"
 #include "comms/uart_tx.h"
+#ifdef FOF_BADGE_VARIANT
+#include "badge_easter_egg.h"
+#endif
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 
 #include "calibration_mode.h"
 
@@ -52,6 +72,77 @@
 
 #include <string.h>
 #include <stdio.h>
+#endif
+
+static void ble_remote_id_prepare_behavioral_observation(
+    const uint8_t mac[6],
+    int8_t rssi,
+    uint8_t addr_type,
+    bool connectable,
+    int64_t observed_ms,
+    const ble_fingerprint_t *fp,
+    ble_threat_observation_t *observation)
+{
+    memset(observation, 0, sizeof(*observation));
+    memcpy(observation->mac, mac, sizeof(observation->mac));
+    observation->observed_ms = observed_ms;
+    observation->rssi = rssi;
+    observation->connectable = connectable;
+    observation->addr_type = addr_type;
+    observation->structural_hash = fp->hash;
+    observation->local_name = fp->local_name[0] ? fp->local_name : NULL;
+    observation->company_id = fp->company_id;
+    observation->trusted_identity =
+        ble_fingerprint_has_trusted_product_identity(fp);
+    observation->service_uuid_count = fp->svc_uuid_count > 4
+        ? 4
+        : fp->svc_uuid_count;
+    for (uint8_t i = 0; i < observation->service_uuid_count; i++) {
+        observation->service_uuids[i] = fp->service_uuids[i];
+    }
+}
+
+/* Remote ID components normally arrive seconds apart. A 30-second assembly
+ * window tolerates substantial packet loss while preventing later frames or
+ * a radio session that reuses the same BLE address from inheriting stale ID.
+ */
+#define BLE_REMOTE_ID_ACCUMULATOR_COHERENCE_MS 30000LL
+
+static bool ble_remote_id_reset_accumulator_if_stale(
+    odid_state_t *state,
+    int64_t last_seen_ms,
+    int64_t observed_ms)
+{
+    if (!state) {
+        return false;
+    }
+
+    bool clock_rolled_back = observed_ms < last_seen_ms ||
+        observed_ms < state->first_seen_ms;
+    bool assembly_timed_out = !clock_rolled_back &&
+        (observed_ms - state->first_seen_ms) >=
+            BLE_REMOTE_ID_ACCUMULATOR_COHERENCE_MS;
+    bool idle_timed_out = !clock_rolled_back &&
+        (observed_ms - last_seen_ms) >=
+            BLE_REMOTE_ID_ACCUMULATOR_COHERENCE_MS;
+    if (!clock_rolled_back && !assembly_timed_out && !idle_timed_out) {
+        return false;
+    }
+
+    char device_address[sizeof(state->device_address)];
+    memcpy(device_address, state->device_address, sizeof(device_address));
+    device_address[sizeof(device_address) - 1] = '\0';
+    odid_state_init(state, device_address, observed_ms);
+    return true;
+}
+
+static bool ble_remote_id_fingerprint_is_strong_meta(
+    const ble_fingerprint_t *fp)
+{
+    return fp && fp->device_type == BLE_DEV_META_GLASSES;
+}
+
+#if !defined(BLE_REMOTE_ID_HANDOFF_TEST)
 
 /* ── Constants ─────────────────────────────────────────────────────────────── */
 
@@ -67,12 +158,19 @@ static const char *TAG = "ble_rid";
 #define ODID_MESSAGE_SIZE           25
 #define ODID_PRIORITY_REEMIT_MS     500
 
+#define BLE_THREAT_APPLE_COMPANY_ID      0x004C
+#define BLE_THREAT_FAST_PAIR_UUID         0xFE2C
+#define BLE_THREAT_APPLE_AIRPODS_TYPE     0x07
+#define BLE_THREAT_APPLE_NEARBY_ACT_TYPE  0x0F
+#define BLE_THREAT_APPLE_NEARBY_INFO_TYPE 0x10
+
 /* ESP-IDF's FreeRTOS port uses byte-sized StackType_t on Xtensa. Badge
  * privacy classification runs inside the NimBLE host callback, and 4 KB
  * overflows as soon as Meta/Ray-Ban service UUIDs are decoded in busy air.
  */
 #define BLE_HOST_TASK_STACK_BYTES   12288
 #define BLE_HOST_TASK_PRIORITY      (configMAX_PRIORITIES - 4)
+#define BLE_INVESTIGATION_PEER_CACHE_SIZE 24
 
 #if defined(FOF_BADGE_VARIANT)
 /* Badge privacy mode wants scan responses because many glasses only put
@@ -266,12 +364,17 @@ static int collect_uuid16s_from_adv(const uint8_t *data, int length,
 }
 #endif
 static ble_device_slot_t s_devices[MAX_BLE_DEVICES];
-static bool             s_scanning = false;
-static bool             s_host_task_active = false;
-static bool             s_host_task_requested = false;
-static bool             s_host_synced = false;
+static atomic_bool      s_scanning = false;
+static atomic_bool      s_host_task_active = false;
+static atomic_bool      s_host_task_requested = false;
+static atomic_bool      s_host_synced = false;
+/* nimble_port_stop() disables the host as well as ending nimble_port_run().
+ * The first task launch is auto-started by nimble_port_init(); every later
+ * launch must explicitly enqueue a new host start before servicing events. */
+static atomic_bool      s_host_restart_required = false;
+static atomic_uint      s_start_inflight = 0;
 static bool             s_initialized = false;
-static TaskHandle_t     s_host_task_handle = NULL;
+static _Atomic(TaskHandle_t) s_host_task_handle = NULL;
 static StaticTask_t     s_host_task_tcb;
 static StackType_t      s_host_task_stack[BLE_HOST_TASK_STACK_BYTES];
 static uint8_t          s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
@@ -281,6 +384,69 @@ static uint32_t         s_ble_scan_start_count = 0;
 static uint32_t         s_ble_scan_start_ok = 0;
 static int              s_ble_scan_last_rc = 0;
 static int              s_ble_sync_last_rc = 0;
+static bool             s_investigation_gatt_active = false;
+static bool             s_investigation_resume_pending = false;
+static portMUX_TYPE     s_investigation_lock = portMUX_INITIALIZER_UNLOCKED;
+
+typedef struct {
+    uint8_t mac[6];
+    uint8_t addr_type;
+    int64_t last_seen_ms;
+    bool in_use;
+} ble_investigation_peer_t;
+
+static ble_investigation_peer_t
+    s_investigation_peers[BLE_INVESTIGATION_PEER_CACHE_SIZE];
+
+static bool investigation_gatt_is_active(void)
+{
+    bool active;
+    portENTER_CRITICAL(&s_investigation_lock);
+    active = s_investigation_gatt_active ||
+             s_investigation_resume_pending;
+    portEXIT_CRITICAL(&s_investigation_lock);
+    return active;
+}
+
+static bool investigation_host_start_is_allowed(void)
+{
+    bool gatt_active;
+    bool resume_pending;
+    portENTER_CRITICAL(&s_investigation_lock);
+    gatt_active = s_investigation_gatt_active;
+    resume_pending = s_investigation_resume_pending;
+    portEXIT_CRITICAL(&s_investigation_lock);
+    return ble_investigator_host_start_is_allowed(
+        gatt_active, resume_pending);
+}
+
+static void note_peer_addr_type(const uint8_t mac[6],
+                                uint8_t addr_type,
+                                int64_t now_ms)
+{
+    if (!mac) return;
+    portENTER_CRITICAL(&s_investigation_lock);
+    int selected = -1;
+    int oldest = 0;
+    for (int i = 0; i < BLE_INVESTIGATION_PEER_CACHE_SIZE; ++i) {
+        if (s_investigation_peers[i].in_use &&
+            memcmp(s_investigation_peers[i].mac, mac, 6) == 0) {
+            selected = i;
+            break;
+        }
+        if (!s_investigation_peers[i].in_use && selected < 0) selected = i;
+        if (s_investigation_peers[i].last_seen_ms <
+            s_investigation_peers[oldest].last_seen_ms) {
+            oldest = i;
+        }
+    }
+    if (selected < 0) selected = oldest;
+    memcpy(s_investigation_peers[selected].mac, mac, 6);
+    s_investigation_peers[selected].addr_type = addr_type;
+    s_investigation_peers[selected].last_seen_ms = now_ms;
+    s_investigation_peers[selected].in_use = true;
+    portEXIT_CRITICAL(&s_investigation_lock);
+}
 
 /* ── BLE Focus Mode (lock-on to specific MAC for Remote ID tracking) ───────── */
 
@@ -356,29 +522,13 @@ static void badge_ble_note_meta(uint32_t hash, int8_t rssi,
     }
 }
 
-static bool badge_ble_has_structured_hint(const ble_fingerprint_t *fp)
-{
-    if (!fp) {
-        return false;
-    }
-    return fp->local_name[0] != '\0' ||
-           fp->svc_uuid_count > 0 ||
-           fp->svc_uuid_128_count > 0 ||
-           fp->company_id != 0 ||
-           fp->ad_type_count >= 3 ||
-           fp->payload_len >= 12;
-}
-
 static bool badge_ble_is_privacy_candidate(const ble_fingerprint_t *fp,
                                            int8_t rssi)
 {
     if (!fp || fp->device_type != BLE_DEV_UNKNOWN) {
         return false;
     }
-    if (rssi >= -58) {
-        return true;
-    }
-    return rssi >= -72 && badge_ble_has_structured_hint(fp);
+    return badge_ble_low_effort_rssi_allowed(rssi);
 }
 
 static const char *badge_ble_privacy_reason(const ble_fingerprint_t *fp,
@@ -407,7 +557,7 @@ static bool badge_ble_unknown_diag_should_emit(uint32_t fp_hash,
     static uint32_t s_last_hash = 0;
     static int8_t   s_best_rssi = -127;
 
-    if (rssi < -72) {
+    if (!badge_ble_low_effort_rssi_allowed(rssi)) {
         return false;
     }
     if (s_last_emit_ms == 0 ||
@@ -431,21 +581,28 @@ static bool badge_ble_should_emit_detection(const ble_fingerprint_t *fp,
                                             int8_t rssi)
 {
 #if defined(FOF_BADGE_VARIANT)
-    if (is_calibration_beacon || is_focus_target) {
+    if (is_calibration_beacon) {
         return true;
     }
     if (!fp) {
         return false;
+    }
+    if (is_focus_target) {
+        return badge_ble_low_effort_detection_allowed(
+            fp->device_type == BLE_DEV_UNKNOWN, rssi);
     }
     switch (fp->device_type) {
         case BLE_DEV_DRONE_CONTROLLER:
         case BLE_DEV_DRONE_OTHER:
         case BLE_DEV_META_GLASSES:
         case BLE_DEV_META_DEVICE:
-        case BLE_DEV_CARD_SKIMMER:
+        case BLE_DEV_PAIRING_SPAM:
         case BLE_DEV_HIDDEN_CAMERA:
         case BLE_DEV_FLIPPER_ZERO:
             return true;
+        case BLE_DEV_CARD_SKIMMER:
+        case BLE_DEV_SERIAL_SKIMMER:
+            return BADGE_SKIMMER_DETECTION_ENABLED != 0;
         case BLE_DEV_MOBILE_KEY_LOCK:
         case BLE_DEV_BLE_HID:
             return rssi >= -72;
@@ -517,8 +674,11 @@ static void badge_emit_glasses_detection(const glasses_detection_t *gdet,
     det.first_seen_ms = now_ms;
     det.last_updated_ms = now_ms;
 
-    const bool is_meta = strcmp(gdet->manufacturer, "Meta") == 0;
-    const char *label = is_meta ? "Meta Glasses" :
+    const bool is_meta_glasses =
+        strcmp(gdet->manufacturer, "Meta") == 0 &&
+        strcmp(gdet->device_type, "Smart Glasses") == 0 &&
+        gdet->has_camera;
+    const char *label = is_meta_glasses ? "Meta Glasses" :
         (gdet->device_type[0] ? gdet->device_type : "Smart Glasses");
     snprintf(det.manufacturer, sizeof(det.manufacturer), "%s", label);
     strncpy(det.ble_name, gdet->device_name, sizeof(det.ble_name) - 1);
@@ -530,16 +690,23 @@ static void badge_emit_glasses_detection(const glasses_detection_t *gdet,
                  (unsigned long)fp_hash);
         snprintf(det.class_reason, sizeof(det.class_reason), "%s",
                  gdet->match_reason[0] ? gdet->match_reason : "glasses_detector");
-        badge_ble_note_meta(fp_hash, gdet->rssi, det.class_reason,
-                            "detector_fp", false);
+        if (is_meta_glasses) {
+            badge_ble_note_meta(fp_hash, gdet->rssi, det.class_reason,
+                                "detector_fp", false);
+        }
     } else {
         /* Weak glasses-detector hits are useful diagnostics but produced false
          * top-tile Meta alerts in noisy rooms. Keep the scanner debug state and
          * wait for a fingerprint-backed identity before emitting a badge threat.
          */
-        badge_ble_note_meta(hash, gdet->rssi,
-                            gdet->match_reason[0] ? gdet->match_reason : "glasses_detector",
-                            "weak", true);
+        if (is_meta_glasses) {
+            badge_ble_note_meta(
+                hash,
+                gdet->rssi,
+                gdet->match_reason[0] ? gdet->match_reason : "glasses_detector",
+                "weak",
+                true);
+        }
         return;
     }
     (void)xQueueSend(s_detection_queue, &det, 0);
@@ -556,7 +723,8 @@ static void badge_emit_glasses_detection(const glasses_detection_t *gdet,
  * Find or allocate a slot for a BLE device by MAC address.
  * If no existing slot matches, the oldest (LRU) slot is recycled.
  */
-static ble_device_slot_t *find_or_alloc_device(const uint8_t mac[6])
+static ble_device_slot_t *find_or_alloc_device(const uint8_t mac[6],
+                                               int64_t observed_ms)
 {
     int oldest_idx = 0;
     int64_t oldest_time = INT64_MAX;
@@ -565,6 +733,12 @@ static ble_device_slot_t *find_or_alloc_device(const uint8_t mac[6])
     for (int i = 0; i < MAX_BLE_DEVICES; i++) {
         if (s_devices[i].in_use) {
             if (memcmp(s_devices[i].mac, mac, 6) == 0) {
+                if (ble_remote_id_reset_accumulator_if_stale(
+                        &s_devices[i].odid,
+                        s_devices[i].last_seen_ms,
+                        observed_ms)) {
+                    s_devices[i].last_emit_ms = 0;
+                }
                 return &s_devices[i];
             }
             if (s_devices[i].last_seen_ms < oldest_time) {
@@ -583,7 +757,7 @@ static ble_device_slot_t *find_or_alloc_device(const uint8_t mac[6])
     memset(slot, 0, sizeof(*slot));
     memcpy(slot->mac, mac, 6);
     slot->in_use = true;
-    slot->last_seen_ms = now_ms();
+    slot->last_seen_ms = observed_ms;
 
     /* Initialize the ODID accumulator with the device MAC as address */
     char mac_str[18];
@@ -707,12 +881,29 @@ static void process_odid_service_data(const uint8_t mac[6],
     }
 
     /* Find or create device slot */
-    ble_device_slot_t *slot = find_or_alloc_device(mac);
-    slot->last_seen_ms = now_ms();
+    int64_t observed_ms = now_ms();
+    ble_device_slot_t *slot = find_or_alloc_device(mac, observed_ms);
+    slot->last_seen_ms = observed_ms;
 
     /* Parse the ODID message into the accumulated state (depth=0 for top-level) */
     odid_parse_message(odid_msg, (size_t)odid_len, &slot->odid, 0);
-    int64_t ts = now_ms();
+#ifdef FOF_BADGE_VARIANT
+    badge_easter_egg_remote_id_t easter_remote_id = {
+        .has_basic_id = slot->odid.has_basic_id,
+        .basic_id = slot->odid.drone_id,
+        .has_location = slot->odid.has_location,
+        .latitude_e7 = slot->odid.latitude_e7,
+        .longitude_e7 = slot->odid.longitude_e7,
+        .has_geodetic_altitude = slot->odid.has_geodetic_altitude,
+        .geodetic_altitude_half_m =
+            slot->odid.geodetic_altitude_half_m,
+    };
+    if (badge_easter_egg_remote_id_matches(&easter_remote_id)) {
+        uart_tx_note_badge_easter_egg(
+            BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID);
+    }
+#endif
+    int64_t ts = observed_ms;
     if (skip_len > 0) {
         ESP_LOGD(TAG, "BLE RID service payload len=%d skip=%d odid_len=%d",
                  data_len, skip_len, odid_len);
@@ -768,7 +959,70 @@ static void trace_ble_service_data(uint16_t uuid16, int data_len, int rssi)
 
 /* ── Forward declarations ──────────────────────────────────────────────────── */
 
-static void ble_remote_id_start_scan_internal(void);
+static bool ble_remote_id_start_scan_internal(bool investigation_resume);
+
+static bool apply_behavioral_ble_threat(const uint8_t mac[6],
+                                        int8_t rssi,
+                                        uint8_t addr_type,
+                                        uint8_t props,
+                                        int64_t observed_ms,
+                                        ble_fingerprint_t *fp,
+                                        ble_threat_signal_t *signal_out)
+{
+    if (!mac || !fp || !signal_out) {
+        return false;
+    }
+
+    memset(signal_out, 0, sizeof(*signal_out));
+    ble_threat_observation_t observation;
+    ble_remote_id_prepare_behavioral_observation(
+        mac,
+        rssi,
+        addr_type,
+        (props & BLE_HCI_ADV_CONN_MASK) != 0,
+        observed_ms,
+        fp,
+        &observation);
+
+    if (fp->company_id == BLE_THREAT_APPLE_COMPANY_ID &&
+        (fp->apple_type == BLE_THREAT_APPLE_AIRPODS_TYPE ||
+         fp->apple_type == BLE_THREAT_APPLE_NEARBY_ACT_TYPE ||
+         fp->apple_type == BLE_THREAT_APPLE_NEARBY_INFO_TYPE)) {
+        observation.prompt_family = BLE_PROMPT_APPLE;
+    } else if (ble_investigator_fingerprint_is_swift_pair(fp)) {
+        observation.prompt_family = BLE_PROMPT_SWIFT_PAIR;
+    } else {
+        for (uint8_t i = 0; i < observation.service_uuid_count; i++) {
+            if (observation.service_uuids[i] == BLE_THREAT_FAST_PAIR_UUID) {
+                observation.prompt_family = BLE_PROMPT_FAST_PAIR;
+                break;
+            }
+        }
+    }
+
+    if (!ble_threat_detector_observe(&observation, signal_out)) {
+        return false;
+    }
+
+    fp->hash = signal_out->entity_hash;
+    fp->is_tracker = false;
+    switch (signal_out->kind) {
+        case BLE_THREAT_PAIRING_SPAM:
+            fp->device_type = BLE_DEV_PAIRING_SPAM;
+            snprintf(fp->class_reason, sizeof(fp->class_reason),
+                     "behavioral:pairing_spam");
+            break;
+        case BLE_THREAT_SERIAL_SKIMMER:
+            fp->device_type = BLE_DEV_SERIAL_SKIMMER;
+            snprintf(fp->class_reason, sizeof(fp->class_reason),
+                     "behavioral:serial_skimmer");
+            break;
+        default:
+            return false;
+    }
+    fp->type_name = ble_device_type_name(fp->device_type);
+    return true;
+}
 
 /* ── NimBLE GAP event callback ─────────────────────────────────────────────── */
 
@@ -778,6 +1032,11 @@ static void ble_remote_id_start_scan_internal(void);
  */
 static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 {
+    (void)arg;
+    if (scanner_quiet_mode_is_active() &&
+        event->type != BLE_GAP_EVENT_DISC_COMPLETE) {
+        return 0;
+    }
     switch (event->type) {
     case BLE_GAP_EVENT_DISC: {
         /* Some NimBLE targets surface BLE 4.x advertisements through the
@@ -791,9 +1050,24 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         }
 #endif
 
+#if defined(FOF_DC34_GAME_CANARY)
+        badge_con_frame_result_t con_frame =
+            badge_con_observer_consume(
+                disc->data,
+                disc->length_data,
+                disc->rssi,
+                (uint32_t)(esp_timer_get_time() / 1000),
+                NULL);
+        if (con_frame != BADGE_CON_FRAME_NOT_GAME) {
+            return 0;
+        }
+#endif
+
         static uint32_t s_legacy_adv_rx = 0;
         s_legacy_adv_rx++;
         s_ble_adv_seen++;
+        int64_t observed_ms = esp_timer_get_time() / 1000;
+        note_peer_addr_type(disc->addr.val, disc->addr.type, observed_ms);
         badge_ble_note_any_packet(disc->rssi,
                                   disc->length_data,
                                   (uint8_t)(disc->event_type & 0xFF),
@@ -808,6 +1082,23 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         ble_fingerprint_compute(disc->data, disc->length_data,
                                 disc->addr.type,
                                 (uint8_t)(disc->event_type & 0xFF), &fp);
+        ble_threat_signal_t behavioral_signal = {0};
+        uint8_t behavioral_props =
+            (disc->event_type == BLE_HCI_ADV_RPT_EVTYPE_ADV_IND ||
+             disc->event_type == BLE_HCI_ADV_RPT_EVTYPE_DIR_IND)
+                ? BLE_HCI_ADV_CONN_MASK
+                : 0;
+        ble_remote_id_note_investigation_advertisement(
+            disc->addr.val, &fp, disc->rssi, behavioral_props, observed_ms);
+        bool behavioral_ble_threat = apply_behavioral_ble_threat(
+            disc->addr.val,
+            disc->rssi,
+            disc->addr.type,
+            behavioral_props,
+            observed_ms,
+            &fp,
+            &behavioral_signal
+        );
         bool is_calibration_beacon = fof_policy_ble_has_calibration_uuid_le(
             fp.service_uuids_128,
             fp.svc_uuid_128_count
@@ -820,9 +1111,11 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 #else
         bool badge_nearby_ble_diag = false;
 #endif
-        bool privacy_candidate = is_meta_device || fp.is_tracker || badge_nearby_ble_diag;
-        bool known_privacy_candidate = is_meta_device || fp.is_tracker;
-        if (is_meta_device) {
+        bool privacy_candidate = behavioral_ble_threat || is_meta_device ||
+                                 fp.is_tracker || badge_nearby_ble_diag;
+        bool known_privacy_candidate = behavioral_ble_threat || is_meta_device ||
+                                       fp.is_tracker;
+        if (ble_remote_id_fingerprint_is_strong_meta(&fp)) {
             badge_ble_note_meta(fp.hash, disc->rssi, fp.class_reason,
                                 "strong_fp", false);
         }
@@ -928,9 +1221,13 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 }
             }
 
+            const int8_t emission_rssi =
+                behavioral_signal.kind == BLE_THREAT_SERIAL_SKIMMER
+                    ? behavioral_signal.strongest_rssi
+                    : disc->rssi;
             bool should_emit = badge_ble_should_emit_detection(
                 &fp, is_calibration_beacon, is_focus_target, is_meta_device,
-                disc->rssi
+                emission_rssi
             );
             if (badge_nearby_ble_diag_emit) {
                 should_emit = true;
@@ -942,11 +1239,13 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
                 drone_detection_t det = {0};
                 det.source = DETECTION_SRC_BLE_FINGERPRINT;
-                det.rssi = disc->rssi;
+                det.rssi = emission_rssi;
                 det.last_updated_ms = now_ms;
                 det.first_seen_ms = now_ms;
 
-                if (is_calibration_beacon) {
+                if (behavioral_ble_threat) {
+                    det.confidence = behavioral_signal.confidence;
+                } else if (is_calibration_beacon) {
                     det.confidence = 0.85f;
                 } else if (fp.is_tracker) {
                     det.confidence = 0.65f;
@@ -1028,6 +1327,12 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                     memcpy(det.ble_service_uuids_128[u],
                            fp.service_uuids_128[u], 16);
                 }
+                det.ble_threat_kind = (uint8_t)behavioral_signal.kind;
+                det.ble_prompt_family_mask = behavioral_signal.prompt_family_mask;
+                det.ble_unique_macs = behavioral_signal.unique_macs;
+                det.ble_observation_count = behavioral_signal.observation_count;
+                det.ble_serial_service_uuid = behavioral_signal.serial_service_uuid;
+                det.ble_threat_evidence_mask = behavioral_signal.evidence_mask;
 
                 {
                     static struct { uint8_t mac[6]; int64_t last_us; } ival_cache[64];
@@ -1105,9 +1410,24 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         /* Extended discovery also reports BLE 4.x advertising packets. */
         const struct ble_gap_ext_disc_desc *ext = &event->ext_disc;
 
+#if defined(FOF_DC34_GAME_CANARY)
+        badge_con_frame_result_t con_frame =
+            badge_con_observer_consume(
+                ext->data,
+                ext->length_data,
+                ext->rssi,
+                (uint32_t)(esp_timer_get_time() / 1000),
+                NULL);
+        if (con_frame != BADGE_CON_FRAME_NOT_GAME) {
+            return 0;
+        }
+#endif
+
         static uint32_t s_ext_adv_rx = 0;
         s_ext_adv_rx++;
         s_ble_adv_seen++;
+        int64_t observed_ms = esp_timer_get_time() / 1000;
+        note_peer_addr_type(ext->addr.val, ext->addr.type, observed_ms);
         badge_ble_note_any_packet(ext->rssi,
                                   ext->length_data,
                                   (uint8_t)(ext->props & 0xFF),
@@ -1145,11 +1465,28 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         }
 
         ble_fingerprint_t fp = {0};
+        ble_threat_signal_t behavioral_signal = {0};
+        bool behavioral_ble_threat = false;
         bool fp_ready = false;
         if (ext->data != NULL && ext->length_data > 0) {
             ble_fingerprint_compute(ext->data, ext->length_data,
                                     ext->addr.type,
                                     (uint8_t)(ext->props & 0xFF), &fp);
+            ble_remote_id_note_investigation_advertisement(
+                ext->addr.val,
+                &fp,
+                ext->rssi,
+                (uint8_t)(ext->props & 0xFF),
+                observed_ms);
+            behavioral_ble_threat = apply_behavioral_ble_threat(
+                ext->addr.val,
+                ext->rssi,
+                ext->addr.type,
+                (uint8_t)(ext->props & 0xFF),
+                observed_ms,
+                &fp,
+                &behavioral_signal
+            );
             fp_ready = true;
         }
 
@@ -1169,9 +1506,11 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 #else
             bool badge_nearby_ble_diag = false;
 #endif
-            bool privacy_candidate = is_meta_device || fp.is_tracker || badge_nearby_ble_diag;
-            bool known_privacy_candidate = is_meta_device || fp.is_tracker;
-            if (is_meta_device) {
+            bool privacy_candidate = behavioral_ble_threat || is_meta_device ||
+                                     fp.is_tracker || badge_nearby_ble_diag;
+            bool known_privacy_candidate = behavioral_ble_threat || is_meta_device ||
+                                           fp.is_tracker;
+            if (ble_remote_id_fingerprint_is_strong_meta(&fp)) {
                 badge_ble_note_meta(fp.hash, ext->rssi, fp.class_reason,
                                     "strong_fp", false);
             }
@@ -1254,9 +1593,13 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 }
             }
 
+            const int8_t emission_rssi =
+                behavioral_signal.kind == BLE_THREAT_SERIAL_SKIMMER
+                    ? behavioral_signal.strongest_rssi
+                    : ext->rssi;
             bool should_emit = badge_ble_should_emit_detection(
                 &fp, is_calibration_beacon, is_focus_target, is_meta_device,
-                ext->rssi
+                emission_rssi
             );
             if (badge_nearby_ble_diag_emit) {
                 should_emit = true;
@@ -1268,12 +1611,14 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
                 drone_detection_t det = {0};
                 det.source = DETECTION_SRC_BLE_FINGERPRINT;
-                det.rssi = ext->rssi;
+                det.rssi = emission_rssi;
                 det.last_updated_ms = now_ms;
                 det.first_seen_ms = now_ms;
 
                 /* Confidence based on device classification */
-                if (is_calibration_beacon) {
+                if (behavioral_ble_threat) {
+                    det.confidence = behavioral_signal.confidence;
+                } else if (is_calibration_beacon) {
                     det.confidence = 0.85f;
                 } else if (fp.is_tracker) {
                     det.confidence = 0.65f;  /* Trackers are high interest */
@@ -1366,6 +1711,12 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                     memcpy(det.ble_service_uuids_128[u],
                            fp.service_uuids_128[u], 16);
                 }
+                det.ble_threat_kind = (uint8_t)behavioral_signal.kind;
+                det.ble_prompt_family_mask = behavioral_signal.prompt_family_mask;
+                det.ble_unique_macs = behavioral_signal.unique_macs;
+                det.ble_observation_count = behavioral_signal.observation_count;
+                det.ble_serial_service_uuid = behavioral_signal.serial_service_uuid;
+                det.ble_threat_evidence_mask = behavioral_signal.evidence_mask;
 
                 /* Advertisement interval tracking (per-MAC timing) */
                 {
@@ -1445,7 +1796,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISC_COMPLETE:
         ESP_LOGI(TAG, "BLE scan complete, restarting...");
         if (s_scanning) {
-            ble_remote_id_start_scan_internal();
+            (void)ble_remote_id_start_scan_internal(false);
         }
         break;
 
@@ -1458,8 +1809,18 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
 /* ── Internal: start BLE scanning ──────────────────────────────────────────── */
 
-static void ble_remote_id_start_scan_internal(void)
+static bool ble_remote_id_start_scan_internal(bool investigation_resume)
 {
+    if (scanner_quiet_mode_is_active()) {
+        s_scanning = false;
+        ESP_LOGD(TAG, "BLE scan start suppressed during scanner quiet mode");
+        return false;
+    }
+    if (!ble_investigator_scan_start_is_allowed(
+            investigation_gatt_is_active(), investigation_resume)) {
+        ESP_LOGD(TAG, "BLE scan restart suppressed during GATT investigation");
+        return false;
+    }
     /*
      * Use ble_gap_ext_disc for BLE 5 extended discovery on ESP32-S3.
      * 100% duty cycle (window == interval) to catch every advertisement.
@@ -1496,11 +1857,25 @@ static void ble_remote_id_start_scan_internal(void)
     if (rc != 0) {
         ESP_LOGE(TAG, "ble_gap_ext_disc() failed: %d; non-extended discovery is unsupported", rc);
         s_scanning = false;
+        return false;
     } else {
         s_scanning = true;
+        if (scanner_quiet_mode_is_active()) {
+            (void)ble_gap_disc_cancel();
+            s_scanning = false;
+            ESP_LOGW(TAG, "BLE scan start rolled back across quiet edge");
+            return false;
+        }
+        portENTER_CRITICAL(&s_investigation_lock);
+        if (investigation_resume) {
+            s_investigation_gatt_active = false;
+        }
+        s_investigation_resume_pending = false;
+        portEXIT_CRITICAL(&s_investigation_lock);
         s_ble_scan_start_ok++;
         ESP_LOGI(TAG, "BLE scanning started (ext_disc %s, 1M+coded PHY, 100%% duty)",
                  BLE_SCAN_PASSIVE_MODE ? "passive" : "active");
+        return true;
     }
 }
 
@@ -1541,7 +1916,7 @@ static void ble_on_sync(void)
     s_host_synced = true;
 
     ESP_LOGI(TAG, "NimBLE host synced, starting ODID scan");
-    ble_remote_id_start_scan_internal();
+    (void)ble_remote_id_start_scan_internal(false);
 }
 
 static void ble_on_reset(int reason)
@@ -1559,7 +1934,14 @@ static void ble_host_task(void *arg)
     s_host_task_requested = false;
     s_host_task_active = true;
     ESP_LOGI(TAG, "NimBLE host task started on core %d", xPortGetCoreID());
+    if (atomic_exchange_explicit(&s_host_restart_required, false,
+                                 memory_order_acq_rel)) {
+        ESP_LOGI(TAG, "Rescheduling NimBLE host after prior stop");
+        ble_hs_sched_start();
+    }
     nimble_port_run();          /* Runs forever until nimble_port_stop() */
+    atomic_store_explicit(&s_host_restart_required, true,
+                          memory_order_release);
     s_host_task_active = false;
     s_host_task_requested = false;
     s_host_synced = false;
@@ -1573,11 +1955,15 @@ static void ble_host_task(void *arg)
 static bool ble_wait_host_stopped(int timeout_ms)
 {
     int waited_ms = 0;
-    while (s_host_task_active && waited_ms < timeout_ms) {
+    while ((s_host_task_active || s_host_task_handle != NULL) &&
+           waited_ms < timeout_ms) {
+        /* Retrying also covers a host task that was created but had not yet
+         * entered nimble_port_run() when the first stop request landed. */
+        (void)nimble_port_stop();
         vTaskDelay(pdMS_TO_TICKS(25));
         waited_ms += 25;
     }
-    return !s_host_task_active;
+    return !s_host_task_active && s_host_task_handle == NULL;
 }
 
 /* ── Public API ────────────────────────────────────────────────────────────── */
@@ -1586,6 +1972,7 @@ void ble_remote_id_init(QueueHandle_t detection_queue)
 {
     s_detection_queue = detection_queue;
     memset(s_devices, 0, sizeof(s_devices));
+    ble_threat_detector_init();
 
     /* Initialize NimBLE. Keep this fail-soft: a controller/heap init error
      * should not panic the scanner into UART recovery and take WiFi down too.
@@ -1614,8 +2001,16 @@ void ble_remote_id_set_glasses_queue(QueueHandle_t queue)
 }
 #endif
 
-void ble_remote_id_start(void)
+static void ble_remote_id_start_impl(void)
 {
+    if (scanner_quiet_mode_is_active()) {
+        ESP_LOGD(TAG, "BLE host start suppressed during scanner quiet mode");
+        return;
+    }
+    if (!investigation_host_start_is_allowed()) {
+        ESP_LOGD(TAG, "BLE start suppressed during GATT investigation");
+        return;
+    }
     if (!s_initialized) {
         ESP_LOGW(TAG, "BLE start requested before NimBLE init; deferring");
         return;
@@ -1637,7 +2032,7 @@ void ble_remote_id_start(void)
     if (s_host_task_active) {
         if (!s_scanning && s_host_synced) {
             ESP_LOGW(TAG, "BLE host active but scan stopped; restarting scan");
-            ble_remote_id_start_scan_internal();
+            (void)ble_remote_id_start_scan_internal(false);
             return;
         } else if (!s_scanning && !s_host_synced) {
             int64_t now_ms = esp_timer_get_time() / 1000;
@@ -1695,24 +2090,45 @@ void ble_remote_id_start(void)
              BLE_SCAN_TASK_CORE, BLE_HOST_TASK_PRIORITY);
 }
 
+void ble_remote_id_start(void)
+{
+    atomic_fetch_add_explicit(&s_start_inflight, 1, memory_order_acq_rel);
+    ble_remote_id_start_impl();
+    if (scanner_quiet_mode_is_active()) {
+        /* An already-entered start can race the quiet edge. Roll it back;
+         * is_quiesced also observes s_start_inflight so no ACK can pass in
+         * the window before this cleanup completes. */
+        ble_remote_id_stop();
+    }
+    atomic_fetch_sub_explicit(&s_start_inflight, 1, memory_order_acq_rel);
+}
+
 void ble_remote_id_stop(void)
 {
-    if (!s_host_task_active && !s_host_task_requested && !s_scanning) {
+    if (ble_remote_id_is_quiesced()) {
         return;
     }
     s_host_task_requested = false;
-    s_scanning = false;
+    portENTER_CRITICAL(&s_investigation_lock);
+    s_investigation_gatt_active = false;
+    s_investigation_resume_pending = false;
+    portEXIT_CRITICAL(&s_investigation_lock);
 
     int rc = ble_gap_disc_cancel();
     if (rc != 0 && rc != BLE_HS_EALREADY) {
         ESP_LOGW(TAG, "ble_gap_disc_cancel() failed: %d", rc);
+    } else {
+        /* This is an observed controller cancellation, not merely the logical
+         * stop request. Host-task state remains part of the quiescence gate. */
+        s_scanning = false;
     }
 
-    nimble_port_stop();
-    if (!ble_wait_host_stopped(600)) {
-        ESP_LOGW(TAG, "BLE host stop still pending after 600ms");
+    (void)nimble_port_stop();
+    if (!ble_wait_host_stopped(1200)) {
+        ESP_LOGW(TAG, "BLE host stop still pending after 1200ms");
     }
-    ESP_LOGI(TAG, "BLE Remote ID scanner stopped");
+    ESP_LOGI(TAG, "BLE Remote ID stop requested (quiesced=%d)",
+             ble_remote_id_is_quiesced() ? 1 : 0);
 }
 
 bool ble_remote_id_is_scanning(void)
@@ -1720,12 +2136,143 @@ bool ble_remote_id_is_scanning(void)
     return s_scanning;
 }
 
+bool ble_remote_id_is_initialized(void)
+{
+    return s_initialized;
+}
+
+bool ble_remote_id_is_quiesced(void)
+{
+    bool quiesced =
+        !atomic_load_explicit(&s_scanning, memory_order_acquire) &&
+        !atomic_load_explicit(&s_host_task_active, memory_order_acquire) &&
+        !atomic_load_explicit(&s_host_task_requested, memory_order_acquire) &&
+        !atomic_load_explicit(&s_host_synced, memory_order_acquire) &&
+        atomic_load_explicit(&s_start_inflight, memory_order_acquire) == 0 &&
+        atomic_load_explicit(&s_host_task_handle, memory_order_acquire) == NULL;
+    atomic_thread_fence(memory_order_acquire);
+    return quiesced &&
+           !atomic_load_explicit(&s_scanning, memory_order_relaxed) &&
+           !atomic_load_explicit(&s_host_task_active, memory_order_relaxed) &&
+           !atomic_load_explicit(&s_host_task_requested, memory_order_relaxed) &&
+           atomic_load_explicit(&s_start_inflight, memory_order_relaxed) == 0;
+}
+
+bool ble_remote_id_is_active(void)
+{
+    bool active =
+        atomic_load_explicit(&s_scanning, memory_order_acquire) &&
+        atomic_load_explicit(&s_host_task_active, memory_order_acquire) &&
+        atomic_load_explicit(&s_host_synced, memory_order_acquire) &&
+        atomic_load_explicit(&s_start_inflight, memory_order_acquire) == 0 &&
+        atomic_load_explicit(&s_host_task_handle, memory_order_acquire) != NULL;
+    atomic_thread_fence(memory_order_acquire);
+    return active &&
+           atomic_load_explicit(&s_scanning, memory_order_relaxed) &&
+           atomic_load_explicit(&s_host_task_active, memory_order_relaxed) &&
+           atomic_load_explicit(&s_host_synced, memory_order_relaxed) &&
+           atomic_load_explicit(&s_start_inflight, memory_order_relaxed) == 0;
+}
+
+bool ble_remote_id_pause_for_investigation(void)
+{
+    portENTER_CRITICAL(&s_investigation_lock);
+    if (s_investigation_gatt_active || s_investigation_resume_pending ||
+        !s_host_task_active || !s_host_synced) {
+        portEXIT_CRITICAL(&s_investigation_lock);
+        return false;
+    }
+    s_investigation_gatt_active = true;
+    s_investigation_resume_pending = false;
+    portEXIT_CRITICAL(&s_investigation_lock);
+
+    int rc = ble_gap_disc_cancel();
+    if (rc != 0 && rc != BLE_HS_EALREADY) {
+        portENTER_CRITICAL(&s_investigation_lock);
+        s_investigation_gatt_active = false;
+        portEXIT_CRITICAL(&s_investigation_lock);
+        ESP_LOGW(TAG, "ble_gap_disc_cancel for investigation failed: %d", rc);
+        return false;
+    }
+    s_scanning = false;
+    ESP_LOGI(TAG, "BLE scan paused for bounded GATT investigation");
+    return true;
+}
+
+bool ble_remote_id_resume_after_investigation(void)
+{
+    if (scanner_quiet_mode_is_active()) {
+        portENTER_CRITICAL(&s_investigation_lock);
+        s_investigation_gatt_active = false;
+        s_investigation_resume_pending = false;
+        portEXIT_CRITICAL(&s_investigation_lock);
+        ESP_LOGD(TAG, "BLE scan resume suppressed during scanner quiet mode");
+        return true;
+    }
+    portENTER_CRITICAL(&s_investigation_lock);
+    bool gatt_active = s_investigation_gatt_active;
+    if (s_scanning) {
+        s_investigation_gatt_active = false;
+        s_investigation_resume_pending = false;
+        portEXIT_CRITICAL(&s_investigation_lock);
+        return true;
+    }
+    s_investigation_resume_pending = true;
+    portEXIT_CRITICAL(&s_investigation_lock);
+
+    if (s_host_task_active && s_host_synced) {
+        bool resumed = ble_remote_id_start_scan_internal(true);
+        ESP_LOGI(TAG,
+                 "BLE scan resume %s after %s investigation",
+                 resumed ? "completed" : "pending",
+                 gatt_active ? "GATT" : "passive");
+        return resumed;
+    }
+    ESP_LOGI(TAG, "BLE scan resume pending after %s investigation",
+             gatt_active ? "GATT" : "passive");
+    return false;
+}
+
+void ble_remote_id_note_investigation_advertisement(const uint8_t mac[6],
+                                                    const ble_fingerprint_t *fp,
+                                                    int8_t rssi,
+                                                    uint8_t props,
+                                                    int64_t now_ms)
+{
+    ble_investigator_runtime_note_advertisement(
+        mac, fp, rssi, props, now_ms);
+}
+
+bool ble_remote_id_lookup_peer_addr_type(const uint8_t mac[6],
+                                         int64_t now_ms,
+                                         uint8_t *addr_type_out)
+{
+    if (!mac || !addr_type_out) return false;
+    bool found = false;
+    portENTER_CRITICAL(&s_investigation_lock);
+    for (int i = 0; i < BLE_INVESTIGATION_PEER_CACHE_SIZE; ++i) {
+        if (s_investigation_peers[i].in_use &&
+            !ble_investigator_peer_cache_is_fresh(
+                s_investigation_peers[i].last_seen_ms, now_ms)) {
+            s_investigation_peers[i].in_use = false;
+        }
+        if (s_investigation_peers[i].in_use &&
+            memcmp(s_investigation_peers[i].mac, mac, 6) == 0) {
+            *addr_type_out = s_investigation_peers[i].addr_type;
+            found = true;
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&s_investigation_lock);
+    return found;
+}
+
 void ble_remote_id_meta_reacquire_tick(bool allow_restart)
 {
     uint32_t adv_delta = s_ble_adv_seen - s_ble_meta_reacquire_adv_seen;
     s_ble_meta_reacquire_adv_seen = s_ble_adv_seen;
 
-    if (!allow_restart) {
+    if (!allow_restart || investigation_gatt_is_active()) {
         return;
     }
 
@@ -1758,7 +2305,7 @@ void ble_remote_id_meta_reacquire_tick(bool allow_restart)
     s_scanning = false;
     s_ble_meta_last_reacquire_ms = tick_now_ms;
     s_ble_meta_reacquire_count++;
-    ble_remote_id_start_scan_internal();
+    (void)ble_remote_id_start_scan_internal(false);
 }
 
 void ble_remote_id_get_stats(ble_remote_id_stats_t *out)
@@ -1888,3 +2435,5 @@ uint32_t ble_remote_id_privacy_seen_count(void)
 {
     return s_privacy_seen;
 }
+
+#endif

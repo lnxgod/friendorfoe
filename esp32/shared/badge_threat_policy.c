@@ -482,7 +482,8 @@ static int category_priority(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_SSID:      return 70;
         case BADGE_THREAT_CATEGORY_FLOCK:     return 60;
         case BADGE_THREAT_CATEGORY_GLASS:     return 50;
-        case BADGE_THREAT_CATEGORY_SKIM:      return 40;
+        case BADGE_THREAT_CATEGORY_BLE_SPAM:  return 45;
+        case BADGE_THREAT_CATEGORY_SKIM:      return 1;
         case BADGE_THREAT_CATEGORY_CAMERA:    return 38;
         case BADGE_THREAT_CATEGORY_LOCK:      return 36;
         case BADGE_THREAT_CATEGORY_HID:       return 32;
@@ -1140,6 +1141,17 @@ static void make_event_key(const drone_detection_t *det,
         return;
     }
 
+    if (cls == BADGE_THREAT_BLE &&
+        category == BADGE_THREAT_CATEGORY_BLE_SPAM && det) {
+        char identity[40] = {0};
+        if (detection_copy_ble_fingerprint_identity(det,
+                                                    identity,
+                                                    sizeof(identity))) {
+            snprintf(out, out_len, "BLE:SPAM:%s", identity);
+            return;
+        }
+    }
+
     if (cls == BADGE_THREAT_WIFI_ANOMALY && det &&
         detection_is_evil_twin(det)) {
         const char *identity = det->ssid[0] ? det->ssid :
@@ -1259,6 +1271,15 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
     }
     memset(event, 0, sizeof(*event));
     event->cls = BADGE_THREAT_IGNORE;
+
+    /* Keep the four display lanes usable in busy RF environments. Unknown or
+     * privacy-only signals below -85 dBm are usually ambient noise; confirmed
+     * drone protocols remain visible regardless of range. */
+    if (det->rssi < 0 && det->rssi < -85 &&
+        !source_is_confirmed_drone(det->source)) {
+        return false;
+    }
+
     event->source = det->source;
     event->confidence = det->confidence;
     bool has_wifi_identity = det->ssid[0] != '\0' || det->bssid[0] != '\0';
@@ -1295,7 +1316,39 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
                               text_mentions_security_device(det->ble_name) ||
                               text_mentions_security_device(det->class_reason);
 
-    if (mfr_evil_twin) {
+    if (!BADGE_SKIMMER_DETECTION_ENABLED &&
+        (det->ble_threat_kind == BLE_THREAT_KIND_SERIAL_SKIMMER ||
+         mfr_skimmer)) {
+        return false;
+    }
+
+    if (det->ble_threat_kind == BLE_THREAT_KIND_PAIRING_SPAM) {
+        event->cls = BADGE_THREAT_BLE;
+        event->category = BADGE_THREAT_CATEGORY_BLE_SPAM;
+        copy_label(event->label, "BLE Spam");
+        snprintf(event->detail, sizeof(event->detail),
+                 "%u MACs / %u ads",
+                 (unsigned)det->ble_unique_macs,
+                 (unsigned)det->ble_observation_count);
+        event->base_score = 72.0f;
+        event->evidence_quality = 8;
+    } else if (det->ble_threat_kind == BLE_THREAT_KIND_SERIAL_SKIMMER) {
+        if (det->rssi < -45) {
+            return false;
+        }
+        event->cls = BADGE_THREAT_OTHER;
+        event->category = BADGE_THREAT_CATEGORY_SKIM;
+        copy_label(event->label, "Possible Skimmer");
+        if (det->ble_serial_service_uuid != 0) {
+            snprintf(event->detail, sizeof(event->detail),
+                     "serial UUID 0x%04X",
+                     (unsigned)det->ble_serial_service_uuid);
+        } else {
+            copy_detail(event->detail, "behavioral BLE evidence");
+        }
+        event->base_score = 66.0f;
+        event->evidence_quality = 8;
+    } else if (mfr_evil_twin) {
         event->cls = BADGE_THREAT_WIFI_ANOMALY;
         event->category = BADGE_THREAT_CATEGORY_WIFI;
         copy_label(event->label, "Evil Twin");
@@ -1312,6 +1365,16 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
             copy_detail(event->detail, "evil twin evidence");
         }
         event->base_score = det->confidence >= 0.70f ? 75.0f : 60.0f;
+        event->evidence_quality = 6;
+    } else if (det->source == DETECTION_SRC_WIFI_AP_INVENTORY &&
+               contains_nocase(det->model, "privacy infrastructure") &&
+               contains_nocase(det->class_reason, "privacy infrastructure oui")) {
+        event->cls = BADGE_THREAT_OTHER;
+        event->category = BADGE_THREAT_CATEGORY_PRIVACY;
+        snprintf(event->label, sizeof(event->label), "%.16s Device",
+                 det->manufacturer[0] ? det->manufacturer : "Privacy");
+        copy_detail(event->detail, "privacy infrastructure OUI");
+        event->base_score = 45.0f;
         event->evidence_quality = 6;
     } else if ((det->source == DETECTION_SRC_WIFI_OUI ||
          det->source == DETECTION_SRC_WIFI_SSID ||
@@ -1466,8 +1529,10 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
                (mfr_skimmer || mfr_camera || mfr_hidden_camera ||
                 mfr_event_badge || mfr_beacon || mfr_lock ||
                 mfr_hid || mfr_auracast || mfr_security)) {
-        if ((mfr_skimmer || mfr_beacon || mfr_event_badge ||
-             mfr_hid || mfr_auracast) &&
+        if (mfr_skimmer && det->rssi < -45) {
+            return false;
+        }
+        if ((mfr_beacon || mfr_event_badge || mfr_hid || mfr_auracast) &&
             det->rssi < -72 &&
             det->confidence < 0.70f) {
             return false;
@@ -1475,7 +1540,7 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
         event->cls = BADGE_THREAT_OTHER;
         if (mfr_skimmer) {
             event->category = BADGE_THREAT_CATEGORY_SKIM;
-            copy_label(event->label, "Skimmer");
+            copy_label(event->label, "Possible Skimmer");
             event->base_score = 66.0f;
             event->evidence_quality = 7;
         } else if (mfr_camera || mfr_hidden_camera) {
@@ -2264,6 +2329,7 @@ const char *badge_threat_category_code(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_WIFI:      return "WIFI";
         case BADGE_THREAT_CATEGORY_TAG_CLOSE: return "TAG";
         case BADGE_THREAT_CATEGORY_PRIVACY:   return "PRV";
+        case BADGE_THREAT_CATEGORY_BLE_SPAM:  return "BSPM";
         default:                              return "FOF";
     }
 }
@@ -2286,6 +2352,7 @@ const char *badge_threat_category_name(badge_threat_category_t category)
         case BADGE_THREAT_CATEGORY_WIFI:      return "WIFI";
         case BADGE_THREAT_CATEGORY_TAG_CLOSE: return "TAG";
         case BADGE_THREAT_CATEGORY_PRIVACY:   return "PRIV";
+        case BADGE_THREAT_CATEGORY_BLE_SPAM:  return "BLE SPAM";
         default:                              return "WATCH";
     }
 }
@@ -3225,7 +3292,10 @@ static void badge_threat_snapshot_entity_view_title(
             snprintf(out, out_len, "FLOCK CAM");
             return;
         case BADGE_THREAT_CATEGORY_SKIM:
-            snprintf(out, out_len, "SKIMMER");
+            snprintf(out, out_len, "POSSIBLE SKIMMER");
+            return;
+        case BADGE_THREAT_CATEGORY_BLE_SPAM:
+            snprintf(out, out_len, "BLE SPAM");
             return;
         case BADGE_THREAT_CATEGORY_CAMERA:
             snprintf(out, out_len, "CAMERA NEAR");

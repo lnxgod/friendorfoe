@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  */
 @Database(
     entities = [HistoryEntity::class, TrackingEntity::class],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 abstract class FriendOrFoeDatabase : RoomDatabase() {
@@ -44,13 +44,24 @@ abstract class FriendOrFoeDatabase : RoomDatabase() {
             }
         }
 
+        /** Migration from v4 to v5: retain optional Wi-Fi transmitter evidence. */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `detection_history` ADD COLUMN `ssid` TEXT")
+                db.execSQL("ALTER TABLE `detection_history` ADD COLUMN `bssid` TEXT")
+                db.execSQL("ALTER TABLE `detection_history` ADD COLUMN `signal_strength_dbm` INTEGER")
+                db.execSQL("ALTER TABLE `detection_history` ADD COLUMN `frequency_mhz` INTEGER")
+                db.execSQL("ALTER TABLE `detection_history` ADD COLUMN `channel_width_mhz` INTEGER")
+            }
+        }
+
         fun create(context: Context): FriendOrFoeDatabase {
             return Room.databaseBuilder(
                 context.applicationContext,
                 FriendOrFoeDatabase::class.java,
                 DATABASE_NAME
             )
-                .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
         }
     }

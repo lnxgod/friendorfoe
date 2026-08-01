@@ -1,0 +1,964 @@
+package com.friendorfoe.detection
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+
+@Singleton
+class AndroidBleGattInspector @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val bluetoothManager: BluetoothManager,
+) : BleInvestigator {
+    private val activeLock = Any()
+    private var activeSession: GattSession? = null
+
+    @SuppressLint("MissingPermission")
+    override suspend fun investigate(
+        request: BleInvestigationRequest,
+        progress: suspend (BleInvestigationResult) -> Unit,
+    ): BleInvestigationResult {
+        validateRequest(request)?.let { return it }
+        val targetAddress = request.target.mac
+            ?: return failedResult(request, "Target address is invalid", "invalid_target")
+
+        val adapter = bluetoothManager.adapter
+            ?: return failedResult(request, "Bluetooth is unavailable", "bluetooth_unavailable")
+        if (!adapter.isEnabled) {
+            return failedResult(request, "Bluetooth is disabled", "bluetooth_disabled")
+        }
+
+        val device = try {
+            adapter.getRemoteDevice(targetAddress)
+        } catch (_: IllegalArgumentException) {
+            return failedResult(request, "Target address is invalid", "invalid_target")
+        } catch (_: SecurityException) {
+            return failedResult(
+                request,
+                "Bluetooth connect permission is required",
+                "bluetooth_connect_permission_required",
+            )
+        }
+        val initialBondState = try {
+            device.bondState
+        } catch (_: SecurityException) {
+            return failedResult(
+                request,
+                "Bluetooth connect permission is required",
+                "bluetooth_connect_permission_required",
+            )
+        }
+        if (initialBondState == BluetoothDevice.BOND_BONDING) {
+            return failedResult(request, "Target bond state is changing", "bond_state_unstable")
+        }
+
+        val session = GattSession(
+            context = context,
+            request = request,
+            device = device,
+            targetAddress = targetAddress,
+            initialBondState = initialBondState,
+        )
+        val claimed = synchronized(activeLock) {
+            if (activeSession == null) {
+                activeSession = session
+                true
+            } else {
+                false
+            }
+        }
+        if (!claimed) {
+            return failedResult(request, "Another BLE investigation is active", "busy")
+        }
+
+        return try {
+            session.investigate(progress)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: SecurityException) {
+            failedResult(
+                request,
+                "Bluetooth connect permission was revoked",
+                "bluetooth_connect_permission_required",
+            )
+        } catch (_: Exception) {
+            failedResult(request, "GATT inspection failed", "gatt_error")
+        } finally {
+            try {
+                session.closeOnce()
+            } finally {
+                synchronized(activeLock) {
+                    if (activeSession === session) activeSession = null
+                }
+            }
+        }
+    }
+
+    override suspend fun cancel() {
+        synchronized(activeLock) { activeSession }?.cancel()
+    }
+
+    private fun validateRequest(request: BleInvestigationRequest): BleInvestigationResult? {
+        if (request.route != BleInvestigationRoute.PHONE) {
+            return failedResult(request, "Phone route required", "invalid_route")
+        }
+        if (request.target.mode != BleInvestigationMode.GATT) {
+            return failedResult(request, "GATT mode required", "invalid_mode")
+        }
+        val mac = request.target.mac
+        if (mac == null || !BluetoothAdapter.checkBluetoothAddress(mac)) {
+            return failedResult(request, "Target address is invalid", "invalid_target")
+        }
+        if (!isBleInvestigationTargetFresh(request.target.observedAtElapsedMs, elapsedRealtimeMs())) {
+            return failedResult(request, "Target observation is stale", "stale_target")
+        }
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return failedResult(
+                request,
+                "Bluetooth connect permission is required",
+                "bluetooth_connect_permission_required",
+            )
+        }
+        return null
+    }
+
+    private class GattSession(
+        private val context: Context,
+        private val request: BleInvestigationRequest,
+        private val device: BluetoothDevice,
+        private val targetAddress: String,
+        private val initialBondState: Int,
+    ) {
+        private val callbackLock = Any()
+        private val lifecycleLock = Any()
+        private val cancelled = AtomicBoolean(false)
+        private val closed = AtomicBoolean(false)
+        private val closeBarrier = BleCleanupBarrier()
+        private val bondTransitioned = AtomicBoolean(false)
+        private val permissionRevoked = AtomicBoolean(false)
+        private val unexpectedDisconnect = BleUnexpectedDisconnectLatch()
+        private val terminalized = AtomicBoolean(false)
+        private val services = mutableListOf<String>()
+        private val characteristics = mutableListOf<BleGattCharacteristicInfo>()
+        private val reads = linkedMapOf<String, String>()
+
+        private var gatt: BluetoothGatt? = null
+        private var pendingCallback: PendingCallback? = null
+        private var receiverRegistered = false
+        private var connected = false
+        private var authenticationRequired = false
+        private var truncated = false
+
+        private val callback = object : BluetoothGattCallback() {
+            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                deliver(GattEvent.Connection(status, newState))
+            }
+
+            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                deliver(GattEvent.ServicesDiscovered(status))
+            }
+
+            @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+            override fun onCharacteristicRead(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+                status: Int,
+            ) {
+                val value = characteristic.value?.copyOf() ?: byteArrayOf()
+                deliver(GattEvent.CharacteristicRead(characteristic, value, status))
+            }
+
+            override fun onCharacteristicRead(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+                value: ByteArray,
+                status: Int,
+            ) {
+                deliver(GattEvent.CharacteristicRead(characteristic, value.copyOf(), status))
+            }
+        }
+
+        private val bondReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+                when (
+                    bleBondReceiverDecision(targetAddress, initialBondState) {
+                        val changedDevice = intent.bluetoothDeviceExtra()
+                            ?: return@bleBondReceiverDecision null
+                        BleBondEvent(
+                            address = changedDevice.address,
+                            state = intent.getIntExtra(
+                                BluetoothDevice.EXTRA_BOND_STATE,
+                                BluetoothDevice.ERROR,
+                            ),
+                        )
+                    }
+                ) {
+                    BleBondReceiverDecision.IGNORE -> Unit
+                    BleBondReceiverDecision.PERMISSION_REVOKED -> reportPermissionRevoked()
+                    BleBondReceiverDecision.BOND_CHANGED -> {
+                        val changed = synchronized(lifecycleLock) {
+                            if (closed.get() || terminalized.get()) {
+                                false
+                            } else {
+                                bondTransitioned.set(true)
+                                true
+                            }
+                        }
+                        if (changed) deliver(GattEvent.BondStateChanged)
+                    }
+                }
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        suspend fun investigate(
+            progress: suspend (BleInvestigationResult) -> Unit,
+        ): BleInvestigationResult {
+            progress(result(BleInvestigationState.CONNECTING, "Connecting to BLE target"))
+            if (!registerBondReceiver()) {
+                return if (permissionRevoked.get()) permissionFailure() else cancelledResult()
+            }
+
+            val connection = expect(CallbackKind.CONNECTION)
+            val connectedGatt = synchronized(lifecycleLock) {
+                if (
+                    cancelled.get() ||
+                    closed.get() ||
+                    permissionRevoked.get() ||
+                    bondTransitioned.get() ||
+                    unexpectedDisconnect.isLatched()
+                ) {
+                    null
+                } else {
+                    device.connectGatt(
+                        context,
+                        false,
+                        callback,
+                        BluetoothDevice.TRANSPORT_LE,
+                    )?.also { gatt = it }
+                }
+            } ?: return when {
+                cancelled.get() || closed.get() -> cancelledResult()
+                permissionRevoked.get() -> permissionFailure()
+                bondTransitioned.get() -> unexpectedBondFailure()
+                unexpectedDisconnect.isLatched() -> unexpectedDisconnectFailure()
+                else -> failed("GATT connection could not start", "connect_failed")
+            }
+
+            when (val event = connection.await()) {
+                is GattEvent.Connection -> {
+                    event.authenticationResult()?.let { return it }
+                    if (
+                        event.status != BluetoothGatt.GATT_SUCCESS ||
+                        event.newState != BluetoothProfile.STATE_CONNECTED
+                    ) {
+                        return failed("GATT connection failed", "connect_failed")
+                    }
+                }
+                GattEvent.PermissionRevoked -> return permissionFailure()
+                GattEvent.BondStateChanged -> return unexpectedBondFailure()
+                GattEvent.Cancelled -> return cancelledResult()
+                else -> return failed("Unexpected connection callback", "gatt_callback_error")
+            }
+            sessionInterruptionFailure()?.let { return it }
+            connected = true
+
+            progress(result(BleInvestigationState.DISCOVERING, "Discovering GATT services"))
+            val discovery = expect(CallbackKind.SERVICES)
+            when (startGattOperation { it.discoverServices() }) {
+                BleGattOperationStart.CANCELLED -> return cancelledResult()
+                BleGattOperationStart.PERMISSION_REVOKED -> return permissionFailure()
+                BleGattOperationStart.BOND_CHANGED -> return unexpectedBondFailure()
+                BleGattOperationStart.DISCONNECTED -> return unexpectedDisconnectFailure()
+                BleGattOperationStart.FAILED ->
+                    return failed("Service discovery could not start", "discovery_start_failed")
+                BleGattOperationStart.STARTED -> Unit
+            }
+            when (val event = discovery.await()) {
+                is GattEvent.ServicesDiscovered -> {
+                    event.authenticationResult()?.let { return it }
+                    if (event.status != BluetoothGatt.GATT_SUCCESS) {
+                        return failed("Service discovery failed", "discovery_failed")
+                    }
+                }
+                is GattEvent.Connection -> {
+                    event.authenticationResult()?.let { return it }
+                    return failed("Target disconnected during discovery", "disconnected")
+                }
+                GattEvent.PermissionRevoked -> return permissionFailure()
+                GattEvent.BondStateChanged -> return unexpectedBondFailure()
+                GattEvent.Cancelled -> return cancelledResult()
+                else -> return failed("Unexpected discovery callback", "gatt_callback_error")
+            }
+            sessionInterruptionFailure()?.let { return it }
+
+            val records = snapshotGatt(connectedGatt)
+            val candidates = mutableListOf<CharacteristicRecord>()
+            for (record in records) {
+                val readable = record.characteristic.properties and
+                    BluetoothGattCharacteristic.PROPERTY_READ != 0
+                val requiresEncryption = record.characteristic.permissions and READ_ENCRYPTION_PERMISSIONS != 0
+                when (
+                    bleReadDecision(
+                        serviceUuid = record.serviceUuid,
+                        characteristicUuid = normalizedUuid(record.characteristic.uuid.toString()),
+                        readable = readable,
+                        requiresEncryption = requiresEncryption,
+                    )
+                ) {
+                    BleReadDecision.READ -> candidates += record
+                    BleReadDecision.AUTHENTICATION_REQUIRED -> authenticationRequired = true
+                    BleReadDecision.SKIP -> Unit
+                }
+            }
+            val prioritizedCandidates = candidates.sortedBy { it.readPriority() }
+            if (prioritizedCandidates.size > MAX_READS) truncated = true
+
+            progress(result(BleInvestigationState.READING, "Reading allowlisted GATT characteristics"))
+            for (record in prioritizedCandidates.take(MAX_READS)) {
+                sessionInterruptionFailure()?.let { return it }
+                val read = expect(CallbackKind.READ, record.characteristic)
+                when (startGattOperation { it.readCharacteristic(record.characteristic) }) {
+                    BleGattOperationStart.CANCELLED -> return cancelledResult()
+                    BleGattOperationStart.PERMISSION_REVOKED -> return permissionFailure()
+                    BleGattOperationStart.BOND_CHANGED -> return unexpectedBondFailure()
+                    BleGattOperationStart.DISCONNECTED -> return unexpectedDisconnectFailure()
+                    BleGattOperationStart.FAILED ->
+                        return failed("Characteristic read could not start", "read_start_failed")
+                    BleGattOperationStart.STARTED -> Unit
+                }
+                when (val event = read.await()) {
+                    is GattEvent.CharacteristicRead -> {
+                        if (isAuthenticationStatus(event.status)) {
+                            authenticationRequired = true
+                            return completed("Authentication required; read-only inspection stopped")
+                        }
+                        if (event.status != BluetoothGatt.GATT_SUCCESS) {
+                            return failed("Characteristic read failed", "read_failed")
+                        }
+                        recordRead(record, event.value)
+                    }
+                    is GattEvent.Connection -> {
+                        event.authenticationResult()?.let { return it }
+                        return failed("Target disconnected during read", "disconnected")
+                    }
+                    GattEvent.PermissionRevoked -> return permissionFailure()
+                    GattEvent.BondStateChanged -> return unexpectedBondFailure()
+                    GattEvent.Cancelled -> return cancelledResult()
+                    else -> return failed("Unexpected read callback", "gatt_callback_error")
+                }
+            }
+
+            return completed(
+                if (authenticationRequired) {
+                    "Read-only GATT inspection complete; protected characteristics skipped"
+                } else {
+                    "Read-only GATT inspection complete"
+                },
+            )
+        }
+
+        suspend fun cancel() {
+            val shouldSignalCancel = synchronized(lifecycleLock) {
+                if (cancelled.get() || terminalized.get()) {
+                    false
+                } else {
+                    cancelled.set(true)
+                    true
+                }
+            }
+            if (shouldSignalCancel) deliver(GattEvent.Cancelled)
+            closeOnce()
+        }
+
+        @SuppressLint("MissingPermission")
+        suspend fun closeOnce() {
+            closeBarrier.run {
+                val (unregisterReceiver, currentGatt) = synchronized(lifecycleLock) {
+                    closed.set(true)
+                    val unregister = receiverRegistered
+                    receiverRegistered = false
+                    val activeGatt = gatt
+                    gatt = null
+                    unregister to activeGatt
+                }
+                deliver(GattEvent.Cancelled)
+                val unregisterAction: (() -> Unit)? = if (unregisterReceiver) {
+                    { context.unregisterReceiver(bondReceiver) }
+                } else {
+                    null
+                }
+                val disconnectAction: (() -> Unit)? = currentGatt?.let { activeGatt ->
+                    { activeGatt.disconnect() }
+                }
+                val closeAction: (() -> Unit)? = currentGatt?.let { activeGatt ->
+                    { activeGatt.close() }
+                }
+                runBleSessionCleanup(unregisterAction, disconnectAction, closeAction)
+            }
+        }
+
+        private fun registerBondReceiver(): Boolean = synchronized(lifecycleLock) {
+            if (
+                cancelled.get() ||
+                closed.get() ||
+                permissionRevoked.get() ||
+                terminalized.get()
+            ) {
+                return@synchronized false
+            }
+            val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(bondReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                context.registerReceiver(bondReceiver, filter)
+            }
+            receiverRegistered = true
+            true
+        }
+
+        private fun reportPermissionRevoked() {
+            val changed = synchronized(lifecycleLock) {
+                if (closed.get() || terminalized.get()) {
+                    false
+                } else {
+                    permissionRevoked.compareAndSet(false, true)
+                }
+            }
+            if (changed) deliver(GattEvent.PermissionRevoked)
+        }
+
+        @SuppressLint("MissingPermission")
+        private fun sessionInterruptionFailure(): BleInvestigationResult? {
+            if (permissionRevoked.get()) return permissionFailure()
+            if (bondTransitioned.get()) return unexpectedBondFailure()
+            if (unexpectedDisconnect.isLatched()) return unexpectedDisconnectFailure()
+            val changed = try {
+                device.bondState != initialBondState
+            } catch (_: SecurityException) {
+                reportPermissionRevoked()
+                return permissionFailure()
+            }
+            if (changed) {
+                synchronized(lifecycleLock) { bondTransitioned.set(true) }
+                return unexpectedBondFailure()
+            }
+            return null
+        }
+
+        @SuppressLint("MissingPermission")
+        private fun startGattOperation(
+            operation: (BluetoothGatt) -> Boolean,
+        ): BleGattOperationStart =
+            synchronized(lifecycleLock) {
+                val currentGatt = gatt
+                val decision = synchronized(callbackLock) {
+                    bleGattOperationStartDecision(
+                        cancelled = cancelled.get(),
+                        closed = closed.get(),
+                        permissionRevoked = permissionRevoked.get(),
+                        bondTransitioned = bondTransitioned.get(),
+                        unexpectedDisconnect = unexpectedDisconnect.isLatched(),
+                        terminalized = terminalized.get(),
+                        hasGatt = currentGatt != null,
+                    )
+                }
+                when (decision) {
+                    BleGattOperationStart.STARTED -> try {
+                        if (operation(currentGatt!!)) {
+                            BleGattOperationStart.STARTED
+                        } else if (unexpectedDisconnect.isLatched()) {
+                            BleGattOperationStart.DISCONNECTED
+                        } else {
+                            BleGattOperationStart.FAILED
+                        }
+                    } catch (_: SecurityException) {
+                        permissionRevoked.set(true)
+                        BleGattOperationStart.PERMISSION_REVOKED
+                    }
+                    else -> decision
+                }
+            }
+
+        private fun snapshotGatt(gatt: BluetoothGatt): List<CharacteristicRecord> {
+            val discoveredServices = gatt.services.toList()
+            if (discoveredServices.size > MAX_SERVICES) truncated = true
+
+            val visibleServices = discoveredServices.take(MAX_SERVICES)
+            services += visibleServices.map { normalizedUuid(it.uuid.toString()) }
+            val traversal = boundedBleTraversal(
+                groups = visibleServices,
+                limit = MAX_CHARACTERISTICS,
+                itemsForGroup = { it.characteristics },
+            ) { service, characteristic ->
+                CharacteristicRecord(normalizedUuid(service.uuid.toString()), characteristic)
+            }
+            if (traversal.truncated) truncated = true
+            val records = traversal.items
+            characteristics += records.map { record ->
+                BleGattCharacteristicInfo(
+                    serviceUuid = record.serviceUuid,
+                    uuid = normalizedUuid(record.characteristic.uuid.toString()),
+                    properties = characteristicProperties(record.characteristic.properties),
+                )
+            }
+            return records
+        }
+
+        private fun recordRead(record: CharacteristicRecord, value: ByteArray) {
+            if (value.size > MAX_READ_BYTES) truncated = true
+            val uuid = normalizedUuid(record.characteristic.uuid.toString())
+            if (reads.containsKey(uuid)) {
+                truncated = true
+                return
+            }
+            reads[uuid] = value.take(MAX_READ_BYTES).joinToString(separator = "") { byte ->
+                String.format(Locale.US, "%02X", byte.toInt() and 0xFF)
+            }
+        }
+
+        private fun expect(
+            kind: CallbackKind,
+            characteristic: BluetoothGattCharacteristic? = null,
+        ): CompletableDeferred<GattEvent> {
+            val deferred = CompletableDeferred<GattEvent>()
+            synchronized(callbackLock) {
+                when {
+                    cancelled.get() || closed.get() -> deferred.complete(GattEvent.Cancelled)
+                    permissionRevoked.get() -> deferred.complete(GattEvent.PermissionRevoked)
+                    bondTransitioned.get() -> deferred.complete(GattEvent.BondStateChanged)
+                    unexpectedDisconnect.isLatched() ->
+                        deferred.complete(unexpectedDisconnectEvent())
+                    else -> {
+                        check(pendingCallback == null) { "A GATT callback is already pending" }
+                        pendingCallback = PendingCallback(kind, characteristic, deferred)
+                    }
+                }
+            }
+            return deferred
+        }
+
+        private fun deliver(event: GattEvent) {
+            val deferred = synchronized(callbackLock) {
+                if (event is GattEvent.Connection && event.isUnexpectedTerminalDisconnect()) {
+                    unexpectedDisconnect.recordUnexpectedDisconnect(
+                        closing = closed.get() || cancelled.get() || terminalized.get(),
+                    )
+                }
+                val pending = pendingCallback ?: return@synchronized null
+                if (!pending.matches(event)) return@synchronized null
+                pendingCallback = null
+                pending.deferred
+            }
+            deferred?.complete(event)
+        }
+
+        private fun GattEvent.Connection.isUnexpectedTerminalDisconnect(): Boolean =
+            newState == BluetoothProfile.STATE_DISCONNECTED && !isAuthenticationStatus(status)
+
+        private fun unexpectedDisconnectEvent(): GattEvent.Connection =
+            GattEvent.Connection(
+                status = BluetoothGatt.GATT_SUCCESS,
+                newState = BluetoothProfile.STATE_DISCONNECTED,
+            )
+
+        private fun GattEvent.Connection.authenticationResult(): BleInvestigationResult? {
+            if (!isAuthenticationStatus(status)) return null
+            authenticationRequired = true
+            return completed("Authentication required; pairing was not requested")
+        }
+
+        private fun GattEvent.ServicesDiscovered.authenticationResult(): BleInvestigationResult? {
+            if (!isAuthenticationStatus(status)) return null
+            authenticationRequired = true
+            return completed("Authentication required; pairing was not requested")
+        }
+
+        private fun CharacteristicRecord.readPriority(): Int {
+            val characteristicUuid = normalizedUuid(characteristic.uuid.toString())
+            return when {
+                isGapDeviceName(serviceUuid, characteristicUuid) -> 0
+                isSerialCharacteristic(characteristicUuid) -> 1
+                else -> 2
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        private fun completed(summary: String): BleInvestigationResult {
+            val decision = synchronized(lifecycleLock) {
+                var permissionWasRevoked = permissionRevoked.get()
+                val currentBondChanged = if (permissionWasRevoked) {
+                    false
+                } else {
+                    try {
+                        device.bondState != initialBondState
+                    } catch (_: SecurityException) {
+                        permissionRevoked.set(true)
+                        permissionWasRevoked = true
+                        false
+                    }
+                }
+                synchronized(callbackLock) {
+                    bleTerminalDecision(
+                        cancelled = cancelled.get(),
+                        closed = closed.get(),
+                        bondTransitioned = bondTransitioned.get(),
+                        currentBondChanged = currentBondChanged,
+                        permissionRevoked = permissionWasRevoked,
+                        unexpectedDisconnect = unexpectedDisconnect.isLatched(),
+                    ).also {
+                        when (it) {
+                            BleTerminalDecision.COMPLETE -> terminalized.set(true)
+                            BleTerminalDecision.PERMISSION_REVOKED -> Unit
+                            BleTerminalDecision.BOND_CHANGED -> bondTransitioned.set(true)
+                            BleTerminalDecision.DISCONNECTED -> Unit
+                            BleTerminalDecision.CANCELLED -> Unit
+                        }
+                    }
+                }
+            }
+            return when (decision) {
+                BleTerminalDecision.COMPLETE -> result(BleInvestigationState.COMPLETE, summary)
+                BleTerminalDecision.PERMISSION_REVOKED -> permissionFailure()
+                BleTerminalDecision.BOND_CHANGED -> unexpectedBondFailure()
+                BleTerminalDecision.DISCONNECTED -> unexpectedDisconnectFailure()
+                BleTerminalDecision.CANCELLED -> cancelledResult()
+            }
+        }
+
+        private fun failed(summary: String, error: String): BleInvestigationResult =
+            result(BleInvestigationState.FAILED, summary, error)
+
+        private fun unexpectedBondFailure(): BleInvestigationResult =
+            failed("Unexpected bond-state transition; inspection stopped", "bond_state_changed")
+
+        private fun unexpectedDisconnectFailure(): BleInvestigationResult =
+            failed("Target disconnected during inspection", "disconnected")
+
+        private fun permissionFailure(): BleInvestigationResult =
+            failed(
+                "Bluetooth connect permission was revoked",
+                "bluetooth_connect_permission_required",
+            )
+
+        private fun cancelledResult(): BleInvestigationResult =
+            result(BleInvestigationState.CANCELLED, "BLE investigation cancelled")
+
+        private fun result(
+            state: BleInvestigationState,
+            summary: String,
+            error: String? = null,
+        ): BleInvestigationResult = BleInvestigationResult(
+            requestId = request.requestId,
+            transport = "phone",
+            mode = request.target.mode,
+            targetMac = request.target.mac,
+            state = state,
+            connectable = connected,
+            services = services.toList(),
+            characteristics = characteristics.toList(),
+            reads = reads.toMap(),
+            bonded = initialBondState == BluetoothDevice.BOND_BONDED,
+            encrypted = false,
+            authenticationRequired = authenticationRequired,
+            summary = summary,
+            error = error,
+            truncated = truncated,
+        )
+
+        private data class CharacteristicRecord(
+            val serviceUuid: String,
+            val characteristic: BluetoothGattCharacteristic,
+        )
+
+        private data class PendingCallback(
+            val kind: CallbackKind,
+            val characteristic: BluetoothGattCharacteristic?,
+            val deferred: CompletableDeferred<GattEvent>,
+        ) {
+            fun matches(event: GattEvent): Boolean = when (event) {
+                GattEvent.BondStateChanged,
+                GattEvent.PermissionRevoked,
+                GattEvent.Cancelled,
+                -> true
+                is GattEvent.Connection ->
+                    kind == CallbackKind.CONNECTION ||
+                        event.newState == BluetoothProfile.STATE_DISCONNECTED ||
+                        event.status != BluetoothGatt.GATT_SUCCESS
+                is GattEvent.ServicesDiscovered -> kind == CallbackKind.SERVICES
+                is GattEvent.CharacteristicRead ->
+                    kind == CallbackKind.READ && event.characteristic === characteristic
+            }
+        }
+
+        private enum class CallbackKind { CONNECTION, SERVICES, READ }
+        private sealed interface GattEvent {
+            data class Connection(val status: Int, val newState: Int) : GattEvent
+            data class ServicesDiscovered(val status: Int) : GattEvent
+            data class CharacteristicRead(
+                val characteristic: BluetoothGattCharacteristic,
+                val value: ByteArray,
+                val status: Int,
+            ) : GattEvent
+
+            data object BondStateChanged : GattEvent
+            data object PermissionRevoked : GattEvent
+            data object Cancelled : GattEvent
+        }
+    }
+
+    private companion object {
+        const val MAX_SERVICES = 16
+        const val MAX_CHARACTERISTICS = 32
+        const val MAX_READS = 8
+        const val MAX_READ_BYTES = 64
+        const val READ_ENCRYPTION_PERMISSIONS =
+            BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED or
+                BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED_MITM
+    }
+}
+
+internal const val BLE_INVESTIGATION_TARGET_MAX_AGE_MS = 30_000L
+
+internal enum class BleReadDecision { READ, AUTHENTICATION_REQUIRED, SKIP }
+internal enum class BleTerminalDecision {
+    COMPLETE,
+    CANCELLED,
+    PERMISSION_REVOKED,
+    BOND_CHANGED,
+    DISCONNECTED,
+}
+internal enum class BleGattOperationStart {
+    STARTED,
+    CANCELLED,
+    PERMISSION_REVOKED,
+    BOND_CHANGED,
+    DISCONNECTED,
+    FAILED,
+}
+internal enum class BleBondReceiverDecision { IGNORE, PERMISSION_REVOKED, BOND_CHANGED }
+
+internal class BleUnexpectedDisconnectLatch {
+    private val latched = AtomicBoolean(false)
+
+    fun recordUnexpectedDisconnect(closing: Boolean) {
+        if (!closing) latched.compareAndSet(false, true)
+    }
+
+    fun isLatched(): Boolean = latched.get()
+}
+
+internal data class BleBondEvent(
+    val address: String,
+    val state: Int,
+)
+
+internal data class BoundedBleTraversal<T>(
+    val items: List<T>,
+    val truncated: Boolean,
+)
+
+internal fun runBleSessionCleanup(
+    unregisterReceiver: (() -> Unit)?,
+    disconnectGatt: (() -> Unit)?,
+    closeGatt: (() -> Unit)?,
+) {
+    try {
+        unregisterReceiver?.invoke()
+    } catch (_: RuntimeException) {
+        // Cleanup is best-effort; later GATT cleanup must still run.
+    }
+    try {
+        disconnectGatt?.invoke()
+    } catch (_: RuntimeException) {
+        // Closing must still run when disconnect fails.
+    }
+    try {
+        closeGatt?.invoke()
+    } catch (_: RuntimeException) {
+        // The session's once gate prevents a second close attempt.
+    }
+}
+
+internal fun bleBondReceiverDecision(
+    targetAddress: String,
+    initialBondState: Int,
+    event: () -> BleBondEvent?,
+): BleBondReceiverDecision = try {
+    val received = event()
+    if (received == null) {
+        BleBondReceiverDecision.IGNORE
+    } else {
+        when {
+            !received.address.equals(targetAddress, ignoreCase = true) ->
+                BleBondReceiverDecision.IGNORE
+            received.state == BluetoothDevice.ERROR || received.state == initialBondState ->
+                BleBondReceiverDecision.IGNORE
+            else -> BleBondReceiverDecision.BOND_CHANGED
+        }
+    }
+} catch (_: SecurityException) {
+    BleBondReceiverDecision.PERMISSION_REVOKED
+} catch (_: RuntimeException) {
+    BleBondReceiverDecision.IGNORE
+}
+
+internal fun <Group, Item, Result> boundedBleTraversal(
+    groups: Iterable<Group>,
+    limit: Int,
+    itemsForGroup: (Group) -> Iterable<Item>,
+    transform: (Group, Item) -> Result,
+): BoundedBleTraversal<Result> {
+    require(limit >= 0) { "limit must be non-negative" }
+    val items = ArrayList<Result>(limit)
+    for (group in groups) {
+        val iterator = itemsForGroup(group).iterator()
+        while (iterator.hasNext()) {
+            if (items.size == limit) return BoundedBleTraversal(items, truncated = true)
+            items += transform(group, iterator.next())
+        }
+    }
+    return BoundedBleTraversal(items, truncated = false)
+}
+
+internal fun isBleInvestigationTargetFresh(
+    observedAtElapsedMs: Long,
+    nowElapsedMs: Long,
+): Boolean =
+    observedAtElapsedMs >= 0 &&
+        observedAtElapsedMs <= nowElapsedMs &&
+        nowElapsedMs - observedAtElapsedMs <= BLE_INVESTIGATION_TARGET_MAX_AGE_MS
+
+internal fun bleReadDecision(
+    serviceUuid: String,
+    characteristicUuid: String,
+    readable: Boolean,
+    requiresEncryption: Boolean,
+): BleReadDecision {
+    val allowlisted =
+        isGapDeviceName(serviceUuid, characteristicUuid) ||
+            isBluetoothUuid(serviceUuid, "180A") ||
+            isSerialCharacteristic(characteristicUuid)
+    if (!allowlisted) return BleReadDecision.SKIP
+    if (requiresEncryption) return BleReadDecision.AUTHENTICATION_REQUIRED
+    return if (readable) BleReadDecision.READ else BleReadDecision.SKIP
+}
+
+internal fun bleGattOperationStartDecision(
+    cancelled: Boolean,
+    closed: Boolean,
+    permissionRevoked: Boolean,
+    bondTransitioned: Boolean,
+    unexpectedDisconnect: Boolean,
+    terminalized: Boolean,
+    hasGatt: Boolean,
+): BleGattOperationStart = when {
+    cancelled || closed || terminalized -> BleGattOperationStart.CANCELLED
+    permissionRevoked -> BleGattOperationStart.PERMISSION_REVOKED
+    bondTransitioned -> BleGattOperationStart.BOND_CHANGED
+    unexpectedDisconnect -> BleGattOperationStart.DISCONNECTED
+    !hasGatt -> BleGattOperationStart.FAILED
+    else -> BleGattOperationStart.STARTED
+}
+
+internal fun bleTerminalDecision(
+    cancelled: Boolean,
+    closed: Boolean,
+    bondTransitioned: Boolean,
+    currentBondChanged: Boolean,
+    permissionRevoked: Boolean = false,
+    unexpectedDisconnect: Boolean = false,
+): BleTerminalDecision = when {
+    permissionRevoked -> BleTerminalDecision.PERMISSION_REVOKED
+    bondTransitioned || currentBondChanged -> BleTerminalDecision.BOND_CHANGED
+    cancelled || closed -> BleTerminalDecision.CANCELLED
+    unexpectedDisconnect -> BleTerminalDecision.DISCONNECTED
+    else -> BleTerminalDecision.COMPLETE
+}
+
+private fun isGapDeviceName(serviceUuid: String, characteristicUuid: String): Boolean =
+    isBluetoothUuid(serviceUuid, "1800") && isBluetoothUuid(characteristicUuid, "2A00")
+
+private fun isSerialCharacteristic(characteristicUuid: String): Boolean =
+    isBluetoothUuid(characteristicUuid, "FFE1") || isBluetoothUuid(characteristicUuid, "FFF1")
+
+private fun isBluetoothUuid(uuid: String, shortUuid: String): Boolean {
+    val normalized = uuid.lowercase(Locale.US)
+    val short = shortUuid.lowercase(Locale.US)
+    return normalized == short || normalized == "0000$short-0000-1000-8000-00805f9b34fb"
+}
+
+private fun normalizedUuid(uuid: String): String = uuid.uppercase(Locale.US)
+
+private fun characteristicProperties(properties: Int): Set<String> = buildSet {
+    if (properties and BluetoothGattCharacteristic.PROPERTY_BROADCAST != 0) add("broadcast")
+    if (properties and BluetoothGattCharacteristic.PROPERTY_READ != 0) add("read")
+    if (properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0) add("write_no_response")
+    if (properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) add("write")
+    if (properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) add("notify")
+    if (properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) add("indicate")
+    if (properties and BluetoothGattCharacteristic.PROPERTY_SIGNED_WRITE != 0) add("signed_write")
+    if (properties and BluetoothGattCharacteristic.PROPERTY_EXTENDED_PROPS != 0) add("extended_properties")
+}
+
+private fun failedResult(
+    request: BleInvestigationRequest,
+    summary: String,
+    error: String,
+): BleInvestigationResult = BleInvestigationResult(
+    requestId = request.requestId,
+    transport = "phone",
+    mode = request.target.mode,
+    targetMac = request.target.mac,
+    state = BleInvestigationState.FAILED,
+    connectable = null,
+    services = emptyList(),
+    characteristics = emptyList(),
+    reads = emptyMap(),
+    bonded = false,
+    encrypted = false,
+    authenticationRequired = false,
+    summary = summary,
+    error = error,
+    truncated = false,
+)
+
+@Suppress("DEPRECATION")
+private fun Intent.bluetoothDeviceExtra(): BluetoothDevice? =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+    } else {
+        getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+    }
+
+private fun isAuthenticationStatus(status: Int): Boolean =
+    status == BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION ||
+        status == BluetoothGatt.GATT_INSUFFICIENT_ENCRYPTION ||
+        status == GATT_INSUFFICIENT_AUTHORIZATION_STATUS
+
+private const val GATT_INSUFFICIENT_AUTHORIZATION_STATUS = 8

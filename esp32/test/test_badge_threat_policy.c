@@ -1078,6 +1078,66 @@ void test_badge_flock_wifi_oui_produces_flock_camera_not_drone(void)
                       badge_threat_snapshot_entity_display_lane(&item));
 }
 
+void test_badge_privacy_infrastructure_oui_uses_vendor_device_wording(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t axon = make_detection(
+        DETECTION_SRC_WIFI_AP_INVENTORY,
+        "privacy_oui:00:25:DF:11:22:33",
+        "Axon",
+        0.62f,
+        -55
+    );
+    strncpy(axon.model, "Privacy Infrastructure", sizeof(axon.model) - 1);
+    strncpy(axon.class_reason, "privacy infrastructure OUI",
+            sizeof(axon.class_reason) - 1);
+    strncpy(axon.bssid, "00:25:DF:11:22:33", sizeof(axon.bssid) - 1);
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&axon, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_OTHER, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_PRIVACY, event.category);
+    TEST_ASSERT_EQUAL_STRING("Axon Device", event.label);
+    TEST_ASSERT_EQUAL_STRING("privacy infrastructure OUI", event.detail);
+    TEST_ASSERT_TRUE(event.base_score < 50.0f);
+    TEST_ASSERT_NULL(strstr(event.label, "Camera"));
+    TEST_ASSERT_NULL(strstr(event.label, "Drone"));
+    TEST_ASSERT_NULL(strstr(event.detail, "camera"));
+    TEST_ASSERT_NULL(strstr(event.detail, "recording"));
+    TEST_ASSERT_NULL(strstr(event.detail, "drone"));
+}
+
+void test_badge_weak_non_drone_gate_keeps_minus_85_boundary_and_drones(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t privacy = make_detection(
+        DETECTION_SRC_WIFI_AP_INVENTORY,
+        "privacy_oui:00:25:DF:11:22:33",
+        "Axon",
+        0.62f,
+        -86
+    );
+    strncpy(privacy.model, "Privacy Infrastructure", sizeof(privacy.model) - 1);
+    strncpy(privacy.class_reason, "privacy infrastructure OUI",
+            sizeof(privacy.class_reason) - 1);
+    strncpy(privacy.bssid, "00:25:DF:11:22:33", sizeof(privacy.bssid) - 1);
+
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&privacy, &event));
+    privacy.rssi = -85;
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&privacy, &event));
+
+    const uint8_t confirmed_sources[] = {
+        DETECTION_SRC_BLE_RID,
+        DETECTION_SRC_WIFI_DJI_IE,
+        DETECTION_SRC_WIFI_BEACON,
+    };
+    for (size_t i = 0; i < sizeof(confirmed_sources) / sizeof(confirmed_sources[0]); ++i) {
+        drone_detection_t drone = make_detection(
+            confirmed_sources[i], "RID-WEAK-SIGNAL", "OpenDroneID", 0.92f, -95);
+        TEST_ASSERT_TRUE(badge_threat_classify_detection(&drone, &event));
+        TEST_ASSERT_EQUAL(BADGE_THREAT_DRONE, event.cls);
+    }
+}
+
 void test_badge_flock_wifi_oui_normalizes_common_mac_formats(void)
 {
     const char *valid_bssids[] = {
@@ -1249,15 +1309,117 @@ void test_badge_skimmer_names_produce_skim_rows(void)
         "BLE:HC05",
         "Unknown",
         0.60f,
-        -46
+        -20
     );
     strncpy(skim.ble_name, "HC-05", sizeof(skim.ble_name) - 1);
 
-    TEST_ASSERT_TRUE(badge_threat_classify_detection(&skim, &event));
-    TEST_ASSERT_EQUAL(BADGE_THREAT_OTHER, event.cls);
-    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_SKIM, event.category);
-    TEST_ASSERT_EQUAL_STRING("Skimmer", event.label);
-    TEST_ASSERT_EQUAL_STRING("HC-05", event.detail);
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&skim, &event));
+}
+
+static drone_detection_t make_behavioral_ble_detection(uint8_t threat_kind,
+                                                        uint32_t entity_hash,
+                                                        const char *bssid)
+{
+    drone_detection_t det = make_detection(
+        DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:00000000:behavioral",
+        "Unknown",
+        0.82f,
+        -64
+    );
+    snprintf(det.drone_id, sizeof(det.drone_id),
+             "BLE:%08lX:behavioral", (unsigned long)entity_hash);
+    snprintf(det.model, sizeof(det.model),
+             "FP:%08lX", (unsigned long)entity_hash);
+    if (bssid) {
+        strncpy(det.bssid, bssid, sizeof(det.bssid) - 1);
+    }
+    det.ble_threat_kind = threat_kind;
+    det.ble_prompt_family_mask = 0x03;
+    det.ble_unique_macs = 7;
+    det.ble_observation_count = 11;
+    det.ble_threat_evidence_mask = 0x79;
+    return det;
+}
+
+void test_badge_pairing_spam_is_visible_as_ble_attack(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t spam = make_behavioral_ble_detection(
+        BLE_THREAT_KIND_PAIRING_SPAM,
+        0xA1B2C3D4,
+        "AA:BB:CC:DD:EE:01"
+    );
+
+    TEST_ASSERT_EQUAL_INT(5, BADGE_THREAT_CATEGORY_SKIM);
+    TEST_ASSERT_EQUAL_INT(15, BADGE_THREAT_CATEGORY_PRIVACY);
+    TEST_ASSERT_EQUAL_INT(16, BADGE_THREAT_CATEGORY_BLE_SPAM);
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&spam, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_BLE, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_BLE_SPAM, event.category);
+    TEST_ASSERT_EQUAL_STRING("BLE Spam", event.label);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 72.0f, event.base_score);
+    TEST_ASSERT_EQUAL_UINT8(8, event.evidence_quality);
+}
+
+void test_badge_pairing_spam_key_is_stable_across_rotated_macs(void)
+{
+    badge_threat_event_t first_event;
+    badge_threat_event_t rotated_event;
+    drone_detection_t first = make_behavioral_ble_detection(
+        BLE_THREAT_KIND_PAIRING_SPAM,
+        0xA1B2C3D4,
+        "AA:BB:CC:DD:EE:01"
+    );
+    drone_detection_t rotated = make_behavioral_ble_detection(
+        BLE_THREAT_KIND_PAIRING_SPAM,
+        0xA1B2C3D4,
+        "10:20:30:40:50:60"
+    );
+
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&first, &first_event));
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&rotated, &rotated_event));
+    TEST_ASSERT_EQUAL_STRING(first_event.key, rotated_event.key);
+    TEST_ASSERT_NOT_NULL(strstr(first_event.key, "FP:A1B2C3D4"));
+}
+
+void test_badge_serial_uuid_only_is_hidden(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t serial = make_behavioral_ble_detection(
+        BLE_THREAT_KIND_NONE,
+        0xFFE00001,
+        "AA:BB:CC:DD:EE:02"
+    );
+    serial.ble_prompt_family_mask = 0;
+    serial.ble_unique_macs = 1;
+    serial.ble_observation_count = 1;
+    serial.ble_serial_service_uuid = 0xFFE0;
+    serial.ble_threat_evidence_mask = 0x01;
+    serial.ble_service_uuids[0] = 0xFFE0;
+    serial.ble_svc_uuid_count = 1;
+
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&serial, &event));
+}
+
+void test_badge_combined_serial_skimmer_is_visible(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t serial = make_behavioral_ble_detection(
+        BLE_THREAT_KIND_SERIAL_SKIMMER,
+        0xFFE01234,
+        "AA:BB:CC:DD:EE:03"
+    );
+    serial.ble_prompt_family_mask = 0;
+    serial.ble_unique_macs = 1;
+    serial.ble_observation_count = 6;
+    serial.ble_serial_service_uuid = 0xFFE0;
+    serial.ble_threat_evidence_mask = 0x79;
+    serial.ble_service_uuids[0] = 0xFFE0;
+    serial.ble_svc_uuid_count = 1;
+    serial.rssi = -45;
+
+    TEST_ASSERT_FALSE(badge_threat_classify_detection(&serial, &event));
 }
 
 void test_badge_privacy_pack_maps_camera_lock_hid_labels(void)

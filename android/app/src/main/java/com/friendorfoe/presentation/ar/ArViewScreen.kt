@@ -354,34 +354,6 @@ fun ArViewScreen(
             }
         }
 
-        // Ground-pointing banner with hysteresis: show at <-10°, hide at >-5°
-        val showGroundBanner = remember { mutableStateOf(false) }
-        if (orientation.pitchDegrees < -10f) showGroundBanner.value = true
-        else if (orientation.pitchDegrees > -5f) showGroundBanner.value = false
-
-        if (showGroundBanner.value) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.Center)
-                    .padding(horizontal = 32.dp)
-                    .background(
-                        color = Color(0xBBFF8F00),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Camera pointing below horizon \u2014 aim higher to detect aircraft",
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
-            }
-        }
-
         // Layer 4: Floating zoom + capture controls (right edge)
         Column(
             modifier = Modifier

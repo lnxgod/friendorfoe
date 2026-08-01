@@ -95,6 +95,28 @@
 /* Medical */
 #define DEXCOM_COMPANY_ID       0x0267  /* Dexcom, Inc. */
 
+static bool reason_is_serial_only(const char *reason)
+{
+    return strcmp(reason, "uuid16:0xFFE0") == 0 ||
+           strcmp(reason, "uuid16:0xFFF0") == 0 ||
+           strcmp(reason, "svc_data:0xFFE0") == 0 ||
+           strcmp(reason, "svc_data:0xFFF0") == 0;
+}
+
+bool ble_fingerprint_has_trusted_product_identity(const ble_fingerprint_t *fp)
+{
+    if (!fp || fp->class_reason[0] == '\0' ||
+        fp->device_type <= BLE_DEV_UNKNOWN ||
+        fp->device_type >= BLE_DEV_COUNT ||
+        fp->device_type == BLE_DEV_CARD_SKIMMER ||
+        fp->device_type == BLE_DEV_PAIRING_SPAM ||
+        fp->device_type == BLE_DEV_SERIAL_SKIMMER) {
+        return false;
+    }
+
+    return !reason_is_serial_only(fp->class_reason);
+}
+
 /* ── Service UUIDs for known trackers ───────────────────────────────────── */
 
 #define TILE_SVC_UUID           0xFEED
@@ -191,6 +213,8 @@ static const char *s_type_names[] = {
     [BLE_DEV_MEDICAL]         = "Medical",
     [BLE_DEV_GAMING]          = "Gaming",
     [BLE_DEV_DRONE_OTHER]     = "Drone",
+    [BLE_DEV_PAIRING_SPAM]    = "BLE Spam",
+    [BLE_DEV_SERIAL_SKIMMER]  = "Possible Skimmer",
 };
 
 const char *ble_device_type_name(ble_device_type_t type)

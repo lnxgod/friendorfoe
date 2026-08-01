@@ -56,6 +56,7 @@ typedef enum {
     BADGE_THREAT_CATEGORY_WIFI,
     BADGE_THREAT_CATEGORY_TAG_CLOSE,
     BADGE_THREAT_CATEGORY_PRIVACY,
+    BADGE_THREAT_CATEGORY_BLE_SPAM,
 } badge_threat_category_t;
 
 typedef enum {

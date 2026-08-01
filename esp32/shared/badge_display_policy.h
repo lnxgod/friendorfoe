@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "badge_threat_policy.h"
 #include "detection_types.h"
 
 #ifdef __cplusplus
@@ -11,7 +12,7 @@ extern "C" {
 #endif
 
 #define BADGE_DISPLAY_POLICY_VERSION 1
-#define BADGE_DISPLAY_POLICY_CLASS_COUNT 13
+#define BADGE_DISPLAY_POLICY_CLASS_COUNT 14
 #define BADGE_DISPLAY_POLICY_JSON_MAX 1536
 
 typedef enum {
@@ -28,6 +29,7 @@ typedef enum {
     BADGE_DISPLAY_CLASS_EVENT_BADGE,
     BADGE_DISPLAY_CLASS_AURACAST,
     BADGE_DISPLAY_CLASS_SCANNER_STATUS,
+    BADGE_DISPLAY_CLASS_BLE_ATTACK,
 } badge_display_policy_class_t;
 
 typedef enum {
@@ -63,6 +65,11 @@ const char *badge_display_min_proximity_name(badge_display_min_proximity_t prox)
 bool badge_display_policy_class_from_key(const char *key,
                                          badge_display_policy_class_t *out);
 uint32_t badge_display_policy_hash(const badge_display_policy_t *policy);
+bool badge_display_policy_parse_json_span(const uint8_t *json,
+                                          size_t json_len,
+                                          badge_display_policy_t *out,
+                                          char *err,
+                                          size_t err_len);
 bool badge_display_policy_parse_json(const char *json,
                                      badge_display_policy_t *out,
                                      char *err,
@@ -76,6 +83,9 @@ size_t badge_display_policy_to_command_json(const badge_display_policy_t *policy
                                             size_t out_len);
 badge_display_policy_class_t badge_display_policy_class_for_detection(
     const drone_detection_t *det);
+badge_display_policy_class_t badge_display_policy_class_for_threat_snapshot(
+    badge_threat_category_t category,
+    badge_threat_class_t cls);
 badge_display_min_proximity_t badge_display_proximity_for_rssi(int8_t rssi);
 bool badge_display_policy_is_safety_floor(badge_display_policy_class_t cls,
                                           badge_display_min_proximity_t prox,

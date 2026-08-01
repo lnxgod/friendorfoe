@@ -22,10 +22,23 @@ extern "C" {
  */
 void uart_rx_init(QueueHandle_t detection_queue);
 
+uint32_t uart_rx_detection_queue_capacity(void);
+uint32_t uart_rx_detection_queue_reclaimed_bytes(void);
+
 /**
  * Start the UART RX FreeRTOS task(s).
  */
-void uart_rx_start(void);
+/** Returns true only when every configured scanner RX worker was created. */
+bool uart_rx_start(void);
+
+/**
+ * Hold exclusive scanner-UART TX ownership for a firmware operation. The
+ * lease is recursive so its owning task can emit OTA control JSON through the
+ * normal checked command functions while binary relay traffic is active.
+ */
+bool uart_rx_scanner_tx_lease_init(void);
+bool uart_rx_scanner_tx_lease_acquire(TickType_t wait_ticks);
+void uart_rx_scanner_tx_lease_release(void);
 
 /** Total detections received since boot. */
 int uart_rx_get_detection_count(void);
@@ -56,6 +69,9 @@ bool uart_rx_is_scanner_connected(void);
 /** True if the BLE scanner (UART1) is connected. */
 bool uart_rx_is_ble_scanner_connected(void);
 
+/** True when slot 0 can accept and return an investigation command. */
+bool uart_rx_ble_investigation_ingress_available(void);
+
 /** True if the WiFi scanner (UART2) is connected. */
 bool uart_rx_is_wifi_scanner_connected(void);
 
@@ -79,13 +95,40 @@ void uart_rx_send_command_to_scanner(int scanner_id, const char *json_cmd);
 bool uart_rx_send_command_to_scanner_checked(int scanner_id, const char *json_cmd);
 bool uart_rx_set_scanner_tx_pin_for_badge_probe(int scanner_id, int tx_pin);
 
+/**
+ * Small synchronized identity contract published from one complete
+ * scanner_info frame. Missing/malformed extended fields publish an incomplete
+ * snapshot and clear those fields instead of retaining prior identity data.
+ */
+typedef struct {
+    char version[32];
+    char board[40];
+    char firmware_name[40];
+    char app_project[32];
+    char hardware_type[24];
+    char hardware_id[18];
+    uint32_t boot_id;
+    uint32_t identity_generation;
+    int64_t received_ms;
+    bool complete;
+} scanner_identity_snapshot_t;
+
+bool uart_rx_get_scanner_identity_snapshot(
+    int scanner_id, scanner_identity_snapshot_t *out);
+
 /** Scanner identity info (received via UART scanner_info message). */
 typedef struct {
     char version[32];
     char board[40];     /* firmware catalog name, e.g. "scanner-s3-combo-fof_badge" */
+    char firmware_name[40]; /* compile-selected release target */
+    char app_project[32];   /* ESP-IDF application descriptor project */
+    char hardware_type[24]; /* physical board contract */
+    char hardware_id[18];   /* immutable base MAC, xx:xx:xx:xx:xx:xx */
     char chip[12];      /* "esp32s3" */
     char caps[32];      /* "ble,wifi" */
     bool received;
+    uint32_t boot_id;   /* non-zero random epoch, regenerated each scanner boot */
+    uint32_t identity_generation; /* increments for each scanner_info frame */
 
     /* Attack / anomaly counters (latest delta from scanner status) */
     uint16_t deauth_count;
@@ -106,10 +149,27 @@ typedef struct {
     uint32_t probe_drop_low_value;
     uint32_t probe_drop_rate_limit;
     uint32_t probe_drop_pressure;
+    bool     ble_initialized;
     bool     ble_scanning;
     bool     ble_host_active;
     bool     ble_host_synced;
+    bool     ble_quiesced;
+    bool     wifi_initialized;
+    bool     wifi_active;
+    bool     wifi_quiesced;
+    int      wifi_init_rc;
     bool     wifi_paused;
+    bool     quiet_transition_ok;
+    bool     quiet_mode;
+    bool     quiet_tx_enabled;
+    bool     quiet_uart_commands;
+    bool     quiet_ble_quiesced;
+    bool     quiet_wifi_quiesced;
+    bool     quiet_ble_active;
+    bool     quiet_wifi_active;
+    bool     quiet_radios_ready;
+    bool     quiet_tx_restored;
+    uint32_t quiet_generation;
     uint32_t wifi_total_frames;
     uint32_t wifi_beacon_frames;
     uint32_t wifi_full_scan_count;
@@ -206,6 +266,8 @@ typedef struct {
     uint32_t display_policy_filtered[BADGE_DISPLAY_POLICY_CLASS_COUNT];
     char     scan_mode[16];
     char     scan_profile[24];
+    char     slot_role[24];
+    uint32_t scan_profile_ack_generation;
     char     calibration_uuid[48];
     bool     calibration_mode_acked;
     bool     need_firmware;
@@ -225,11 +287,9 @@ typedef struct {
     uint32_t radio_restart_count;
 } scanner_info_t;
 
-/** Get scanner info for the BLE scanner (UART slot). */
-const scanner_info_t *uart_rx_get_ble_scanner_info(void);
-
-/** Get scanner info for the WiFi scanner (UART slot). */
-const scanner_info_t *uart_rx_get_wifi_scanner_info(void);
+/** Copy one complete scanner status snapshot while holding the publisher mutex.
+ *  scanner_id 0 is the BLE slot and scanner_id 1 is the WiFi slot. */
+bool uart_rx_get_scanner_info_snapshot(int scanner_id, scanner_info_t *out);
 
 /** Last OTA response received from a scanner (for relay diagnostics). */
 typedef struct {
@@ -246,9 +306,29 @@ ota_response_t uart_rx_get_last_ota_response(void);
 /** Clear the OTA response buffer (call before starting relay). */
 void uart_rx_clear_ota_response(void);
 
-/** Pause/resume the UART RX task for a specific scanner during OTA relay.
- *  When paused, the relay handler can read ACKs directly from the UART. */
-void uart_rx_pause_scanner(int scanner_id);
+typedef struct {
+    uint32_t request_generation;
+    bool acquired;
+} uart_rx_pause_guard_t;
+
+/** True only when the requested scanner UART RX worker was created. */
+bool uart_rx_scanner_task_started(int scanner_id);
+
+/** True while any generation owns the requested scanner pause. */
+bool uart_rx_scanner_is_paused(int scanner_id);
+
+/** Generation-bound pause ownership. A started, pre-paused worker fails
+ *  closed without ownership; an unstarted recovery worker succeeds without
+ *  waiting and without acquiring a pause. */
+bool uart_rx_pause_scanner_guarded(int scanner_id,
+                                  uart_rx_pause_guard_t *guard);
+bool uart_rx_discard_scanner_backlog_guarded(int scanner_id,
+    const uart_rx_pause_guard_t *guard);
+void uart_rx_resume_scanner_guarded(int scanner_id,
+                                    uart_rx_pause_guard_t *guard);
+
+/** Legacy pause/resume wrappers retain existing scanner relay behavior. */
+bool uart_rx_pause_scanner(int scanner_id);
 void uart_rx_resume_scanner(int scanner_id);
 
 void uart_rx_set_node_calibration_mode(bool active,

@@ -17,10 +17,18 @@
 extern "C" {
 #endif
 
+typedef enum {
+    OUI_ROLE_DRONE = 0,
+    OUI_ROLE_PRIVACY_FLOCK,
+    OUI_ROLE_PRIVACY_INFRASTRUCTURE,
+    OUI_ROLE_ENRICHMENT_ONLY,
+} oui_role_t;
+
 typedef struct {
     const char *manufacturer;
     const char *full_name;
     bool high_false_positive;
+    oui_role_t role;
 } oui_entry_t;
 
 /**

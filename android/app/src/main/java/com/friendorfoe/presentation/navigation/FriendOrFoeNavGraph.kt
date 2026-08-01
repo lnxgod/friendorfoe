@@ -8,7 +8,6 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -26,10 +25,7 @@ import com.friendorfoe.presentation.aircraft.AircraftReferenceScreen
 import com.friendorfoe.presentation.ar.ArViewModel
 import com.friendorfoe.presentation.ar.ArViewScreen
 import com.friendorfoe.presentation.ar.PermissionHandler
-import com.friendorfoe.presentation.badge.BadgeDiagnosticsRoute
-import com.friendorfoe.presentation.badge.BadgeRecoveryRoute
-import com.friendorfoe.presentation.badge.BadgeRoute
-import com.friendorfoe.presentation.badge.BadgeViewModel
+import com.friendorfoe.presentation.badge.BadgeControlScreen
 import com.friendorfoe.presentation.calibrate.CalibrateScreen
 import com.friendorfoe.presentation.detail.DetailScreen
 import com.friendorfoe.presentation.detail.HistoricalDetailScreen
@@ -191,18 +187,7 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
 
     composable(Screen.Badge.route) {
         TopLevelRouteRoot(TopLevelDestination.BADGE) {
-            BadgeRoute(
-                onDiagnostics = {
-                    navController.navigate(Screen.BadgeDiagnostics.route) {
-                        launchSingleTop = true
-                    }
-                },
-                onRecovery = {
-                    navController.navigate(Screen.BadgeRecovery.route) {
-                        launchSingleTop = true
-                    }
-                },
-            )
+            BadgeControlScreen()
         }
     }
 
@@ -376,26 +361,12 @@ private fun NavGraphBuilder.registerSecondaryDestinations(
         )
     }
 
-    composable(Screen.BadgeDiagnostics.route) {
-        val badgeEntry = remember(navController) {
-            navController.getBackStackEntry(Screen.Badge.route)
-        }
-        val badgeViewModel: BadgeViewModel = hiltViewModel(badgeEntry)
-        BadgeDiagnosticsRoute(
-            onBack = { navController.popBackStack() },
-            viewModel = badgeViewModel,
-        )
-    }
-
-    composable(Screen.BadgeRecovery.route) {
-        val badgeEntry = remember(navController) {
-            navController.getBackStackEntry(Screen.Badge.route)
-        }
-        val badgeViewModel: BadgeViewModel = hiltViewModel(badgeEntry)
-        BadgeRecoveryRoute(
-            onBack = { navController.popBackStack() },
-            viewModel = badgeViewModel,
-        )
+    composable(
+        route = Screen.BadgeFocus.route,
+        arguments = listOf(navArgument("focusKey") { type = NavType.StringType }),
+    ) { backStackEntry ->
+        val focusKey = backStackEntry.arguments?.getString("focusKey")
+        BadgeControlScreen(initialFocusKey = focusKey)
     }
 
     composable(Screen.Calibrate.route) {

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "candidate_version": "0.64.92-badge-defcon34",
+  "artifacts": {
+    "scanner": {
+      "sha256": "2434b5e4a20c704a886d75d6536319c7a6225aadbfdeec5c12c8a76f9e4f0615",
+      "image_bytes": 1216784,
+      "max_image_bytes": 1363148,
+      "internal_ram_bytes": 158612,
+      "max_internal_ram_bytes": 180224
+    },
+    "uplink": {
+      "sha256": "9236032ad1cd1b5d176194ec6100e429525022eddef45964db1fa7e649b165aa",
+      "image_bytes": 1467504,
+      "max_image_bytes": 1468006,
+      "internal_ram_bytes": 209116,
+      "max_internal_ram_bytes": 212992
+    }
+  },
+  "physically_accepted": false,
+  "physical_evidence": [
+    "Badge A E0:72:A1:F8:4C:68 and scanners e0:72:a1:f8:a0:04/e0:72:a1:f9:4b:ac report exact 0.64.92, normal recovery, healthy acknowledged BLE/Wi-Fi roles, and normal seed.",
+    "Badge C E0:72:A1:F9:47:FC and scanners e0:72:a1:f9:49:84/e0:72:a1:f8:4c:58 report exact 0.64.92, normal recovery, healthy acknowledged BLE/Wi-Fi roles, and immune/healer seed.",
+    "Badge B E0:72:A1:F8:86:74 and scanners e0:72:a1:f8:85:34/e0:72:a1:f9:42:54 report exact 0.64.92, normal recovery, healthy acknowledged BLE/Wi-Fi roles, and infected seed.",
+    "All three uplinks report rollback clear, no update session, 0 scanner crashes, 8,251,856 bytes PSRAM free, at least 36,648 bytes minimum-ever internal heap, and at least 4,160 bytes live scanner-UART task stack headroom."
+  ]
+}

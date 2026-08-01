@@ -1,5 +1,6 @@
 package com.friendorfoe.presentation.navigation
 
+import android.net.Uri
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.History
@@ -18,6 +19,9 @@ sealed class Screen(val route: String) {
     data object ListView : Screen("list_view")
     data object Privacy : Screen("privacy")
     data object Badge : Screen("badge")
+    data object BadgeFocus : Screen("badge/{focusKey}") {
+        fun createRoute(focusKey: String) = "badge/${Uri.encode(focusKey)}"
+    }
     data object History : Screen("history")
     data object Info : Screen("info")
     data object Detail : Screen("detail/{objectId}") {
@@ -67,8 +71,6 @@ sealed class Screen(val route: String) {
             return runCatching { PrivacyFindingKey(sourceKind, exactRecord) }.getOrNull()
         }
     }
-    data object BadgeDiagnostics : Screen("badge/diagnostics")
-    data object BadgeRecovery : Screen("badge/recovery")
     data object EmfSweep : Screen("info/advanced/magnetic_field")
     data object IrCameraScan : Screen("info/advanced/ir_light")
     data object Calibrate : Screen("info/advanced/calibrate")

@@ -1,22 +1,13 @@
 package com.friendorfoe.presentation.privacy
 
-import com.friendorfoe.data.badge.BadgeBleControlStatus
-import com.friendorfoe.data.badge.BadgeCommand
-import com.friendorfoe.data.badge.BadgeCommandOutcome
-import com.friendorfoe.data.badge.BadgeConfigReadback
-import com.friendorfoe.data.badge.BadgeConnectionEvidence
-import com.friendorfoe.data.badge.BadgeConnectionPhase
-import com.friendorfoe.data.badge.BadgeControlPort
 import com.friendorfoe.data.badge.BadgeControlStatus
-import com.friendorfoe.data.badge.BadgeNetworkModeReadback
-import com.friendorfoe.data.badge.BadgeReportingStatus
-import com.friendorfoe.data.badge.BadgeRepositoryState
-import com.friendorfoe.data.badge.BadgeThreatCounts
 import com.friendorfoe.data.badge.BadgeThreatEntity
-import com.friendorfoe.data.badge.BadgeTransport
+import com.friendorfoe.data.badge.BadgeUsbState
+import com.friendorfoe.data.badge.BadgeUsbStatus
 import com.friendorfoe.data.time.MonotonicClock
 import com.friendorfoe.detection.PrivacyCategory
 import java.time.Instant
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,7 +23,7 @@ class BadgePrivacySourceAdapterTest {
 
     @Test
     fun absentBadgeIsImmediatelyUnavailableWithoutClaimingATransport() = runTest {
-        val adapter = BadgePrivacySourceAdapter(FakeBadgePort(), FakeClock(), backgroundScope)
+        val adapter = adapterFor(FakeBadgePort(), FakeClock(), backgroundScope)
 
         val snapshot = adapter.snapshots.value.single()
         assertEquals("badge", snapshot.health.source.preferenceId)
@@ -45,15 +36,13 @@ class BadgePrivacySourceAdapterTest {
     @Test
     fun disconnectedKnownTransportResolvesImmediatelyInsteadOfCheckingForever() = runTest {
         val port = FakeBadgePort().apply {
-            state.value = BadgeRepositoryState(
-                connection = BadgeConnectionEvidence(
-                    transport = BadgeTransport.USB_SERIAL,
-                    transportGeneration = 1L,
-                    phase = BadgeConnectionPhase.DISCONNECTED,
-                ),
+            state.value = BadgeUsbState(
+                status = BadgeUsbStatus.DISCONNECTED,
+                message = "No badge connected",
+                transportLabel = "USB-C",
             )
         }
-        val adapter = BadgePrivacySourceAdapter(port, FakeClock(), backgroundScope)
+        val adapter = adapterFor(port, FakeClock(), backgroundScope)
 
         val snapshot = adapter.snapshots.value.single()
         assertEquals(PrivacySourceKind.BADGE_USB, snapshot.health.source)
@@ -65,22 +54,18 @@ class BadgePrivacySourceAdapterTest {
     fun connectingPhasesKeepOneResolutionStartUntilTheReducerDeadline() = runTest {
         val port = FakeBadgePort()
         val clock = FakeClock(elapsed = 10_000L)
-        val adapter = BadgePrivacySourceAdapter(port, clock, backgroundScope)
-        port.state.value = BadgeRepositoryState(
-            connection = BadgeConnectionEvidence(
-                transport = BadgeTransport.BLE_GATT,
-                transportGeneration = 1L,
-                phase = BadgeConnectionPhase.CONNECTING,
-            ),
+        val adapter = adapterFor(port, clock, backgroundScope)
+        port.state.value = BadgeUsbState(
+            status = BadgeUsbStatus.CONNECTING,
+            message = "Connecting to badge",
+            transportLabel = "BLE",
         )
         runCurrent()
         assertEquals(10_000L, adapter.snapshots.value.single().emittedAtElapsedMs)
 
         clock.elapsed = 19_000L
         port.state.value = port.state.value.copy(
-            connection = port.state.value.connection.copy(
-                phase = BadgeConnectionPhase.TRANSPORT_OPEN,
-            ),
+            message = "Opening badge control channel",
         )
         runCurrent()
 
@@ -98,18 +83,20 @@ class BadgePrivacySourceAdapterTest {
     @Test
     fun observesOnlyActiveTransportAndSwitchRemovesTheOldBadgeSnapshot() = runTest {
         val port = FakeBadgePort()
-        val adapter = BadgePrivacySourceAdapter(port, FakeClock(), backgroundScope)
+        val adapter = adapterFor(port, FakeClock(), backgroundScope)
         runCurrent()
 
         port.state.value = badgeState(
-            transport = BadgeTransport.USB_SERIAL,
+            status = BadgeUsbStatus.CONNECTED,
+            transportLabel = "USB-C",
             entity = badgeEntity(sourceId = 7),
         )
         runCurrent()
         assertEquals(listOf(PrivacySourceKind.BADGE_USB), adapter.snapshots.value.map { it.health.source })
 
         port.state.value = badgeState(
-            transport = BadgeTransport.LOCAL_AP_HTTP,
+            status = BadgeUsbStatus.AP_CONNECTED,
+            transportLabel = "Badge AP",
             entity = badgeEntity(sourceId = 7),
         )
         runCurrent()
@@ -117,16 +104,16 @@ class BadgePrivacySourceAdapterTest {
         assertEquals(0, port.startCalls)
         assertEquals(0, port.stopCalls)
         assertEquals(0, port.requestCalls)
-        assertEquals(0, port.refreshCalls)
+        assertEquals(0, port.statusCalls)
     }
 
     @Test
     fun provenEntityIdIsDurableButLabelsDisplayIdsAndBssidsAreNot() {
-        val status = status(entity = badgeEntity(sourceId = 9))
         val durable = BadgePrivacySourceAdapter.mapEntity(
             entity = badgeEntity(sourceId = 9),
             source = PrivacySourceKind.BADGE_USB,
-            status = status,
+            snapshotAtElapsedMs = 10_000L,
+            snapshotAtWallMs = 100_000L,
             ephemeralRecordId = "ephemeral:unused",
         )!!
         val ephemeral = BadgePrivacySourceAdapter.mapEntity(
@@ -136,13 +123,15 @@ class BadgePrivacySourceAdapterTest {
                 bssid = "AA:BB:CC:DD:EE:FF",
             ),
             source = PrivacySourceKind.BADGE_USB,
-            status = status,
+            snapshotAtElapsedMs = 10_000L,
+            snapshotAtWallMs = 100_000L,
             ephemeralRecordId = "ephemeral:1",
         )!!
         val negativeSentinel = BadgePrivacySourceAdapter.mapEntity(
             entity = badgeEntity(sourceId = -1),
             source = PrivacySourceKind.BADGE_USB,
-            status = status,
+            snapshotAtElapsedMs = 10_000L,
+            snapshotAtWallMs = 100_000L,
             ephemeralRecordId = "ephemeral:sentinel",
         )!!
 
@@ -156,22 +145,20 @@ class BadgePrivacySourceAdapterTest {
 
     @Test
     fun entityUsesReceivedAndLastSeenTimestampsWithoutRejuvenatingOnRemap() {
-        val status = status(
-            receivedElapsed = 10_000L,
-            receivedWall = 100_000L,
-            entity = badgeEntity(sourceId = 1).copy(ageSeconds = 10, lastSeenSeconds = 2),
-        )
+        val entity = badgeEntity(sourceId = 1).copy(ageSeconds = 10, lastSeenSeconds = 2)
         val first = BadgePrivacySourceAdapter.mapEntity(
-            status.entities.single(),
-            PrivacySourceKind.BADGE_BLE,
-            status,
-            "unused",
+            entity = entity,
+            source = PrivacySourceKind.BADGE_BLE,
+            snapshotAtElapsedMs = 10_000L,
+            snapshotAtWallMs = 100_000L,
+            ephemeralRecordId = "unused",
         )!!
         val remapped = BadgePrivacySourceAdapter.mapEntity(
-            status.entities.single(),
-            PrivacySourceKind.BADGE_BLE,
-            status,
-            "unused",
+            entity = entity,
+            source = PrivacySourceKind.BADGE_BLE,
+            snapshotAtElapsedMs = 10_000L,
+            snapshotAtWallMs = 100_000L,
+            ephemeralRecordId = "unused",
         )!!
 
         assertEquals(8_000L, first.lastObservedElapsedMs)
@@ -182,7 +169,6 @@ class BadgePrivacySourceAdapterTest {
 
     @Test
     fun sameEntityAppleListeningNormalizesButSplitEntitiesNeverCorrelate() {
-        val status = status(entity = badgeEntity(sourceId = 1))
         val same = BadgePrivacySourceAdapter.mapEntity(
             entity = badgeEntity(sourceId = 1).copy(
                 label = "Apple AirPods",
@@ -192,7 +178,8 @@ class BadgePrivacySourceAdapterTest {
                 code = "LISTEN",
             ),
             source = PrivacySourceKind.BADGE_USB,
-            status = status,
+            snapshotAtElapsedMs = 10_000L,
+            snapshotAtWallMs = 100_000L,
             ephemeralRecordId = "same",
         )!!
         val appleOnly = BadgePrivacySourceAdapter.mapEntity(
@@ -204,7 +191,8 @@ class BadgePrivacySourceAdapterTest {
                 code = "AUDIO",
             ),
             source = PrivacySourceKind.BADGE_USB,
-            status = status,
+            snapshotAtElapsedMs = 10_000L,
+            snapshotAtWallMs = 100_000L,
             ephemeralRecordId = "apple",
         )!!
         val listeningOnly = BadgePrivacySourceAdapter.mapEntity(
@@ -216,7 +204,8 @@ class BadgePrivacySourceAdapterTest {
                 code = "LISTEN",
             ),
             source = PrivacySourceKind.BADGE_USB,
-            status = status,
+            snapshotAtElapsedMs = 10_000L,
+            snapshotAtWallMs = 100_000L,
             ephemeralRecordId = "listening",
         )!!
 
@@ -232,9 +221,10 @@ class BadgePrivacySourceAdapterTest {
     @Test
     fun successfulBadgeStatusWithNoEntitiesIsLiveEmpty() = runTest {
         val port = FakeBadgePort()
-        val adapter = BadgePrivacySourceAdapter(port, FakeClock(), backgroundScope)
+        val adapter = adapterFor(port, FakeClock(), backgroundScope)
         port.state.value = badgeState(
-            transport = BadgeTransport.DEBUG_BRIDGE,
+            status = BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
+            transportLabel = "Debug Bridge",
             entity = null,
         )
         runCurrent()
@@ -248,16 +238,20 @@ class BadgePrivacySourceAdapterTest {
     @Test
     fun allFourBadgeTransportsMapToTheirExactSourceKind() = runTest {
         val port = FakeBadgePort()
-        val adapter = BadgePrivacySourceAdapter(port, FakeClock(), backgroundScope)
+        val adapter = adapterFor(port, FakeClock(), backgroundScope)
         val expected = listOf(
-            BadgeTransport.USB_SERIAL to PrivacySourceKind.BADGE_USB,
-            BadgeTransport.LOCAL_AP_HTTP to PrivacySourceKind.BADGE_AP,
-            BadgeTransport.BLE_GATT to PrivacySourceKind.BADGE_BLE,
-            BadgeTransport.DEBUG_BRIDGE to PrivacySourceKind.BADGE_DEBUG_BRIDGE,
+            Triple(BadgeUsbStatus.CONNECTED, "USB-C", PrivacySourceKind.BADGE_USB),
+            Triple(BadgeUsbStatus.AP_CONNECTED, "Badge AP", PrivacySourceKind.BADGE_AP),
+            Triple(BadgeUsbStatus.BLE_CONNECTED, "BLE", PrivacySourceKind.BADGE_BLE),
+            Triple(
+                BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
+                "Debug Bridge",
+                PrivacySourceKind.BADGE_DEBUG_BRIDGE,
+            ),
         )
 
-        expected.forEach { (transport, source) ->
-            port.state.value = badgeState(transport, badgeEntity(sourceId = 1))
+        expected.forEach { (status, label, source) ->
+            port.state.value = badgeState(status, label, badgeEntity(sourceId = 1))
             runCurrent()
             assertEquals(source, adapter.snapshots.value.single().health.source)
             assertTrue(adapter.snapshots.value.single().findings.all { it.source == source })
@@ -265,43 +259,44 @@ class BadgePrivacySourceAdapterTest {
     }
 
     @Test
-    fun missingOrStaleStatusNeverPretendsTheBadgeSourceIsLive() = runTest {
+    fun missingOrFailedStatusNeverPretendsTheBadgeSourceIsLive() = runTest {
         val port = FakeBadgePort()
-        val adapter = BadgePrivacySourceAdapter(port, FakeClock(), backgroundScope)
-        port.state.value = BadgeRepositoryState(
-            connection = BadgeConnectionEvidence(
-                transport = BadgeTransport.USB_SERIAL,
-                transportGeneration = 1L,
-                phase = BadgeConnectionPhase.LIVE,
-            ),
+        val adapter = adapterFor(port, FakeClock(), backgroundScope)
+        port.state.value = BadgeUsbState(
+            status = BadgeUsbStatus.CONNECTED,
+            transportLabel = "USB-C",
             controlStatus = null,
         )
         runCurrent()
         assertEquals(SourceHealthState.LOADING, adapter.snapshots.value.single().health.state)
 
-        port.state.value = badgeState(BadgeTransport.USB_SERIAL, badgeEntity(1)).copy(
-            connection = badgeState(BadgeTransport.USB_SERIAL, badgeEntity(1)).connection.copy(
-                phase = BadgeConnectionPhase.STALE,
-            ),
+        port.state.value = badgeState(
+            BadgeUsbStatus.ERROR,
+            "USB-C",
+            badgeEntity(1),
         )
         runCurrent()
-        assertEquals(SourceHealthState.STALE, adapter.snapshots.value.single().health.state)
+        assertEquals(SourceHealthState.FAILED, adapter.snapshots.value.single().health.state)
     }
 
     @Test
     fun badgeAgeArithmeticSaturatesAndNegativeAgesDoNotMoveIntoTheFuture() {
-        val status = status(receivedElapsed = 10_000L, receivedWall = 100_000L, entity = null)
         val huge = BadgePrivacySourceAdapter.mapEntity(
-            badgeEntity(1).copy(ageSeconds = Int.MAX_VALUE, lastSeenSeconds = Int.MAX_VALUE),
-            PrivacySourceKind.BADGE_USB,
-            status,
-            "huge",
+            entity = badgeEntity(1).copy(
+                ageSeconds = Int.MAX_VALUE,
+                lastSeenSeconds = Int.MAX_VALUE,
+            ),
+            source = PrivacySourceKind.BADGE_USB,
+            snapshotAtElapsedMs = 10_000L,
+            snapshotAtWallMs = 100_000L,
+            ephemeralRecordId = "huge",
         )!!
         val negative = BadgePrivacySourceAdapter.mapEntity(
-            badgeEntity(2).copy(ageSeconds = -5, lastSeenSeconds = -2),
-            PrivacySourceKind.BADGE_USB,
-            status,
-            "negative",
+            entity = badgeEntity(2).copy(ageSeconds = -5, lastSeenSeconds = -2),
+            source = PrivacySourceKind.BADGE_USB,
+            snapshotAtElapsedMs = 10_000L,
+            snapshotAtWallMs = 100_000L,
+            ephemeralRecordId = "negative",
         )!!
 
         assertEquals(0L, huge.firstSeenWallMs)
@@ -315,10 +310,11 @@ class BadgePrivacySourceAdapterTest {
     @Test
     fun repeatedUnprovenEntityWithinOneStatusLifetimeReusesEphemeralKey() = runTest {
         val port = FakeBadgePort()
-        val adapter = BadgePrivacySourceAdapter(port, FakeClock(), backgroundScope)
+        val adapter = adapterFor(port, FakeClock(), backgroundScope)
         val firstState = badgeState(
-            BadgeTransport.BLE_GATT,
-            badgeEntity(sourceId = 0).copy(displayId = "first", bssid = "AA:BB"),
+            status = BadgeUsbStatus.BLE_CONNECTED,
+            transportLabel = "BLE",
+            entity = badgeEntity(sourceId = 0).copy(displayId = "first", bssid = "AA:BB"),
         )
         port.state.value = firstState
         runCurrent()
@@ -346,28 +342,25 @@ class BadgePrivacySourceAdapterTest {
     @Test
     fun badgeRecoveryRequestsConnectionAndRefreshWithoutStartingOrStoppingTransport() = runTest {
         val port = FakeBadgePort()
-        val adapter = BadgePrivacySourceAdapter(port, FakeClock(), backgroundScope)
+        val adapter = adapterFor(port, FakeClock(), backgroundScope)
 
         assertEquals(
             PrivacyRecoveryResult.Recovered(PrivacySourceKind.BADGE_BLE),
             adapter.recover(PrivacySourceKind.BADGE_BLE),
         )
         assertEquals(1, port.requestCalls)
-        assertEquals(1, port.refreshCalls)
+        assertEquals(1, port.statusCalls)
         assertEquals(0, port.startCalls)
         assertEquals(0, port.stopCalls)
     }
 
     private fun badgeState(
-        transport: BadgeTransport,
+        status: BadgeUsbStatus,
+        transportLabel: String,
         entity: BadgeThreatEntity?,
-    ) = BadgeRepositoryState(
-        connection = BadgeConnectionEvidence(
-            transport = transport,
-            transportGeneration = 4L,
-            phase = BadgeConnectionPhase.LIVE,
-            lastValidStatusAtElapsedMs = 10_000L,
-        ),
+    ) = BadgeUsbState(
+        status = status,
+        transportLabel = transportLabel,
         controlStatus = status(entity = entity),
     )
 
@@ -390,33 +383,9 @@ class BadgePrivacySourceAdapterTest {
         nowElapsedMs = finding.lastObservedElapsedMs,
     )
 
-    private fun status(
-        receivedElapsed: Long = 10_000L,
-        receivedWall: Long = 100_000L,
-        entity: BadgeThreatEntity?,
-    ) = BadgeControlStatus(
+    private fun status(entity: BadgeThreatEntity?) = BadgeControlStatus(
         version = "test",
-        receivedAtElapsedMs = receivedElapsed,
-        receivedAtWallClock = Instant.ofEpochMilli(receivedWall),
-        themeReadback = BadgeConfigReadback(null, null, "fixture"),
-        policyReadback = BadgeConfigReadback(null, null, "fixture"),
-        networkModeReadback = BadgeNetworkModeReadback(null, "fixture"),
         entities = listOfNotNull(entity),
-        scanners = emptyList(),
-        displayState = null,
-        debugBridge = null,
-        reporting = BadgeReportingStatus(),
-        counts = BadgeThreatCounts(),
-        bleControl = BadgeBleControlStatus(),
-        safeMode = false,
-        safeReason = "",
-        resetReason = "",
-        crashCount = 0,
-        recoveryMode = "",
-        stackFreeBytes = emptyMap(),
-        heapInternalFreeBytes = 0L,
-        heapInternalMinimumFreeBytes = 0L,
-        psramFreeBytes = 0L,
     )
 
     private fun badgeEntity(sourceId: Int) = BadgeThreatEntity(
@@ -433,23 +402,34 @@ class BadgePrivacySourceAdapterTest {
         confidencePct = 85,
         ageSeconds = 3,
         lastSeenSeconds = 1,
+        snapshotAtElapsedMs = 10_000L,
         rssi = -55,
         events = 2,
     )
 
-    private class FakeBadgePort : BadgeControlPort {
-        override val state = MutableStateFlow(BadgeRepositoryState())
+    private fun adapterFor(
+        port: FakeBadgePort,
+        clock: MonotonicClock,
+        scope: CoroutineScope,
+    ) = BadgePrivacySourceAdapter(
+        state = port.state,
+        clock = clock,
+        scope = scope,
+        requestConnection = port::requestConnection,
+        requestStatus = port::requestStatus,
+    )
+
+    private class FakeBadgePort {
+        val state = MutableStateFlow(BadgeUsbState())
         var startCalls = 0
         var stopCalls = 0
         var requestCalls = 0
-        var refreshCalls = 0
+        var statusCalls = 0
 
-        override fun start() { startCalls += 1 }
-        override fun stop() { stopCalls += 1 }
-        override fun requestConnection() { requestCalls += 1 }
-        override fun refreshStatus() { refreshCalls += 1 }
-        override suspend fun execute(command: BadgeCommand): BadgeCommandOutcome =
-            BadgeCommandOutcome.Unsupported("fixture")
+        fun start() { startCalls += 1 }
+        fun stop() { stopCalls += 1 }
+        fun requestConnection() { requestCalls += 1 }
+        fun requestStatus() { statusCalls += 1 }
     }
 
     private class FakeClock(

@@ -1,0 +1,3589 @@
+{
+  "schema_version": 1,
+  "e0_status": "red",
+  "records": [
+    {
+      "id": "badge-flash-complete-uplink-layout",
+      "source": "scripts/fof_badge_flash.py",
+      "symbol_or_action": "flash_complete_uplink_layout",
+      "mutation_class": "rom-flash",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "BoundRomSession+FrozenArtifactSet",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_flash_complete_uplink_layout",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E1"
+      ]
+    },
+    {
+      "id": "badge-reset-uplink-usb-to-rom",
+      "source": "scripts/fof_badge_flash.py",
+      "symbol_or_action": "reset_uplink_usb_to_rom",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "BoundRomSession",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_reset_uplink_usb_to_rom",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "C"
+      ]
+    },
+    {
+      "id": "badge-legacy-usb-bootstrap-to-rom",
+      "source": "scripts/fof_badge_flash.py",
+      "symbol_or_action": "legacy_usb_bootstrap_to_rom",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "badge-uplink",
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "BoundRomSession",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_legacy_usb_bootstrap_to_rom",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "C",
+        "D"
+      ]
+    },
+    {
+      "id": "badge-flash-main-full-layout",
+      "source": "scripts/fof_badge_flash.py",
+      "symbol_or_action": "main full-layout branch",
+      "mutation_class": "rom-flash",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "flash_complete_uplink_layout",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_flash_main_full_layout",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E1"
+      ]
+    },
+    {
+      "id": "badge-flash-main-recovery",
+      "source": "scripts/fof_badge_flash.py",
+      "symbol_or_action": "main recovery branch",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "reset_uplink_usb_to_rom",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_flash_main_recovery",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "C"
+      ]
+    },
+    {
+      "id": "badge-flash-scanner-usb",
+      "source": "scripts/fof_badge_flash.py",
+      "symbol_or_action": "flash_scanner_usb",
+      "mutation_class": "rom-flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "frozen custom uploader",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_flash_scanner_usb",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E1"
+      ]
+    },
+    {
+      "id": "badge-flash-main-manual-scanner",
+      "source": "scripts/fof_badge_flash.py",
+      "symbol_or_action": "main --manual-scanner",
+      "mutation_class": "rom-flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "flash_scanner_usb",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_flash_main_manual_scanner",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E1"
+      ]
+    },
+    {
+      "id": "badge-upload-scanner-network",
+      "source": "scripts/fof_badge_flash.py",
+      "symbol_or_action": "upload_scanner_network",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail-before-URL/HTTP",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_upload_scanner_network",
+      "coverage": "green",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "badge-relay-scanner-network",
+      "source": "scripts/fof_badge_flash.py",
+      "symbol_or_action": "relay_scanner_network",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail-before-URL/HTTP",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_relay_scanner_network",
+      "coverage": "green",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "badge-flash-uplink-network",
+      "source": "scripts/fof_badge_flash.py",
+      "symbol_or_action": "flash_uplink_network",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail-before-URL/HTTP",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_flash_uplink_network",
+      "coverage": "green",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "badge-acceptance-reserved-cycle",
+      "source": "scripts/verify_badge_usb_hardening.py",
+      "symbol_or_action": "run_reserved_update_cycle_checkpoint",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-wrapper",
+      "canonical_implementation": "canonical updater",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_acceptance_reserved_cycle",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "B",
+        "C",
+        "D"
+      ]
+    },
+    {
+      "id": "badge-acceptance-reserved-interrupted-upload",
+      "source": "scripts/verify_badge_usb_hardening.py",
+      "symbol_or_action": "run_reserved_interrupted_upload_gate",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-wrapper",
+      "canonical_implementation": "canonical updater",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_acceptance_reserved_interrupted_upload",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "B",
+        "C",
+        "D"
+      ]
+    },
+    {
+      "id": "badge-acceptance-interrupted-upload",
+      "source": "scripts/verify_badge_usb_hardening.py",
+      "symbol_or_action": "run_interrupted_upload_gate",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-wrapper",
+      "canonical_implementation": "canonical updater",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_acceptance_interrupted_upload",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "B",
+        "C",
+        "D"
+      ]
+    },
+    {
+      "id": "badge-acceptance-main-mutating",
+      "source": "scripts/verify_badge_usb_hardening.py",
+      "symbol_or_action": "main mutating branches",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-wrapper",
+      "canonical_implementation": "canonical updater",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_acceptance_main_mutating",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "B",
+        "C",
+        "D"
+      ]
+    },
+    {
+      "id": "badge-factory-command",
+      "source": "flash-badges.command",
+      "symbol_or_action": "exec scripts/fof_badge_factory.py",
+      "mutation_class": "factory-flash",
+      "supported_targets": [
+        "badge-uplink",
+        "badge-scanner",
+        "factory-probe"
+      ],
+      "disposition": "bound-wrapper",
+      "canonical_implementation": "fof_badge_factory.main→cli.run_one",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_command",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-entry",
+      "source": "scripts/fof_badge_factory.py",
+      "symbol_or_action": "main",
+      "mutation_class": "factory-flash",
+      "supported_targets": [
+        "badge-uplink",
+        "badge-scanner",
+        "factory-probe"
+      ],
+      "disposition": "bound-wrapper",
+      "canonical_implementation": "cli.run_one",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_entry",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-choose-bundle",
+      "source": "tools/badge_flasher/cli.py",
+      "symbol_or_action": "choose_bundle",
+      "mutation_class": "artifact-consume",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "canonical public firmware release archive to completed `FrozenFactoryBundle`",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_choose_bundle",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E3",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-run-one",
+      "source": "tools/badge_flasher/cli.py",
+      "symbol_or_action": "run_one",
+      "mutation_class": "factory-flash",
+      "supported_targets": [
+        "badge-uplink",
+        "badge-scanner",
+        "factory-probe"
+      ],
+      "disposition": "bound-wrapper",
+      "canonical_implementation": "three-board state machine over frozen role sets",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_run_one",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-factory-bundle",
+      "source": "tools/badge_flasher/bundles.py",
+      "symbol_or_action": "FactoryBundle",
+      "mutation_class": "artifact-consume",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove root-bearing class before intake can succeed",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_factory_bundle",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-safe-extract",
+      "source": "tools/badge_flasher/bundles.py",
+      "symbol_or_action": "_safe_extract",
+      "mutation_class": "artifact-consume",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove extraction/path authority",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_safe_extract",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-validate-manifest",
+      "source": "tools/badge_flasher/bundles.py",
+      "symbol_or_action": "_validate_manifest",
+      "mutation_class": "artifact-consume",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove root/pathname validator",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_validate_manifest",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-load-bundle",
+      "source": "tools/badge_flasher/bundles.py",
+      "symbol_or_action": "load_bundle",
+      "mutation_class": "artifact-consume",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "complete rootless `FrozenFactoryBundle` before census/open",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_load_bundle",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-load-bundle-bytes",
+      "source": "tools/badge_flasher/bundles.py",
+      "symbol_or_action": "load_bundle_bytes (planned)",
+      "mutation_class": "artifact-consume",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "exact inner factory ZIP bytes to complete rootless `FrozenFactoryBundle`",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_load_bundle_bytes",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E3",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-select-bundle",
+      "source": "tools/badge_flasher/bundles.py",
+      "symbol_or_action": "select_bundle",
+      "mutation_class": "artifact-consume",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "select only completed frozen candidates",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_select_bundle",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-fetch-github-bundles",
+      "source": "tools/badge_flasher/bundles.py",
+      "symbol_or_action": "fetch_github_bundles",
+      "mutation_class": "artifact-consume",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "exact canonical firmware publication archive ID and frozen inner factory member",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_fetch_github_bundles",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E3",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-devices-default-runner",
+      "source": "tools/badge_flasher/devices.py",
+      "symbol_or_action": "_default_runner",
+      "mutation_class": "rom-probe",
+      "supported_targets": [
+        "factory-board"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove pathname/subprocess execution seam",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_devices_default_runner",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-platformio-python",
+      "source": "tools/badge_flasher/devices.py",
+      "symbol_or_action": "_platformio_python",
+      "mutation_class": "rom-probe",
+      "supported_targets": [
+        "factory-board"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove pathname interpreter lookup seam",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_platformio_python",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-probe-rom",
+      "source": "tools/badge_flasher/devices.py",
+      "symbol_or_action": "DeviceBackend.probe_rom",
+      "mutation_class": "rom-probe",
+      "supported_targets": [
+        "factory-board"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "replace pathname/subprocess transcript probe with `BoundRomSession.probe`",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_probe_rom",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-bound-rom-probe",
+      "source": "scripts/bound_rom.py",
+      "symbol_or_action": "BoundRomSession.probe (planned)",
+      "mutation_class": "rom-probe",
+      "supported_targets": [
+        "factory-board"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "continuously open descriptor-bound ROM identity",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_bound_rom_probe",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-usb-jtag-app-reset",
+      "source": "tools/badge_flasher/devices.py",
+      "symbol_or_action": "usb_jtag_app_reset",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "factory-board"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove pathname DTR/RTS reset seam",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_usb_jtag_app_reset",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-flash-default-runner",
+      "source": "tools/badge_flasher/flash.py",
+      "symbol_or_action": "_default_runner",
+      "mutation_class": "rom-flash",
+      "supported_targets": [
+        "factory-board"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove pathname/subprocess writer seam",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_flash_default_runner",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-flash-python",
+      "source": "tools/badge_flasher/flash.py",
+      "symbol_or_action": "_python",
+      "mutation_class": "rom-flash",
+      "supported_targets": [
+        "factory-board"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove pathname interpreter lookup seam",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_flash_python",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-flash-reported-mac",
+      "source": "tools/badge_flasher/flash.py",
+      "symbol_or_action": "_reported_mac",
+      "mutation_class": "rom-probe",
+      "supported_targets": [
+        "factory-board"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove transcript identity authority",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_flash_reported_mac",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-flash-parts",
+      "source": "tools/badge_flasher/flash.py",
+      "symbol_or_action": "FlashEngine._parts",
+      "mutation_class": "artifact-consume",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "use static role layout over supplied frozen set",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_flash_parts",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-reset-device",
+      "source": "tools/badge_flasher/flash.py",
+      "symbol_or_action": "FlashEngine.reset_device",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "factory-board"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove pathname reset helper",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_reset_device",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-prove-device",
+      "source": "tools/badge_flasher/flash.py",
+      "symbol_or_action": "FlashEngine.prove_device",
+      "mutation_class": "rom-probe",
+      "supported_targets": [
+        "factory-board"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove pathname/subprocess transcript proof",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_prove_device",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-flash-verify",
+      "source": "tools/badge_flasher/flash.py",
+      "symbol_or_action": "FlashEngine.flash_and_verify",
+      "mutation_class": "rom-flash",
+      "supported_targets": [
+        "factory-board"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "sole factory writer over exact frozen role set and bound session",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_flash_verify",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-serial-factory",
+      "source": "tools/badge_flasher/probe.py",
+      "symbol_or_action": "_serial_factory",
+      "mutation_class": "serial-open",
+      "supported_targets": [
+        "factory-probe"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove pathname serial factory and modem-control surface",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_serial_factory",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-rebind-probes",
+      "source": "tools/badge_flasher/probe.py",
+      "symbol_or_action": "rebind_probe_ports",
+      "mutation_class": "topology-probe",
+      "supported_targets": [
+        "factory-probe"
+      ],
+      "disposition": "bound-wrapper",
+      "canonical_implementation": "authenticated descriptor/base-MAC topology session",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_rebind_probes",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-discover-topology",
+      "source": "tools/badge_flasher/probe.py",
+      "symbol_or_action": "discover_topology",
+      "mutation_class": "topology-probe",
+      "supported_targets": [
+        "factory-probe"
+      ],
+      "disposition": "bound-wrapper",
+      "canonical_implementation": "authenticated nonce/HMAC topology session",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_discover_topology",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "badge-factory-wait-runtime",
+      "source": "tools/badge_flasher/verify.py",
+      "symbol_or_action": "wait_for_runtime",
+      "mutation_class": "serial-open",
+      "supported_targets": [
+        "factory-board"
+      ],
+      "disposition": "bound-wrapper",
+      "canonical_implementation": "retained reset-neutral application binding",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_factory_wait_runtime",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "C",
+        "E5"
+      ]
+    },
+    {
+      "id": "fof-flash-http-post",
+      "source": "scripts/fof_flash.py",
+      "symbol_or_action": "_http_post",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fof_flash_http_post",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "fof-flash-stage-firmware",
+      "source": "scripts/fof_flash.py",
+      "symbol_or_action": "stage_firmware",
+      "mutation_class": "staging",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fof_flash_stage_firmware",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "fof-flash-once",
+      "source": "scripts/fof_flash.py",
+      "symbol_or_action": "_flash_once",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fof_flash_once",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "fof-flash-scanner",
+      "source": "scripts/fof_flash.py",
+      "symbol_or_action": "flash_scanner",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fof_flash_scanner",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "fof-flash-main",
+      "source": "scripts/fof_flash.py",
+      "symbol_or_action": "main",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fof_flash_main",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "canary-request-json",
+      "source": "scripts/gate_canary_flash.py",
+      "symbol_or_action": "request_json",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_canary_request_json",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "canary-stage-target",
+      "source": "scripts/gate_canary_flash.py",
+      "symbol_or_action": "stage_target",
+      "mutation_class": "staging",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_canary_stage_target",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "canary-run-safe",
+      "source": "scripts/gate_canary_flash.py",
+      "symbol_or_action": "run_safe_canary",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_canary_run_safe",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "canary-run-legacy-relay",
+      "source": "scripts/gate_canary_flash.py",
+      "symbol_or_action": "run_legacy_relay",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_canary_run_legacy_relay",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "canary-print-preflight",
+      "source": "scripts/gate_canary_flash.py",
+      "symbol_or_action": "print_gate_preflight",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "tuple gate before request",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_canary_print_preflight",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "canary-main",
+      "source": "scripts/gate_canary_flash.py",
+      "symbol_or_action": "main",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_canary_main",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "firmware-types",
+      "source": "backend/app/services/firmware_manager.py",
+      "symbol_or_action": "FIRMWARE_TYPES",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "all"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "filtered catalog",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_firmware_types",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "firmware-refresh-github",
+      "source": "backend/app/services/firmware_manager.py",
+      "symbol_or_action": "FirmwareManager.refresh_from_github",
+      "mutation_class": "network-fetch",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "filtered catalog",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_firmware_refresh_github",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "firmware-get-binary",
+      "source": "backend/app/services/firmware_manager.py",
+      "symbol_or_action": "FirmwareManager.get_firmware_binary",
+      "mutation_class": "binary-fetch",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "filtered catalog",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_firmware_get_binary",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "firmware-get-version",
+      "source": "backend/app/services/firmware_manager.py",
+      "symbol_or_action": "FirmwareManager.get_firmware_version",
+      "mutation_class": "network-fetch",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "filtered catalog",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_firmware_get_version",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "firmware-set-custom",
+      "source": "backend/app/services/firmware_manager.py",
+      "symbol_or_action": "FirmwareManager.set_custom_firmware",
+      "mutation_class": "persistent-write",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "descriptor gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_firmware_set_custom",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "firmware-clear-custom",
+      "source": "backend/app/services/firmware_manager.py",
+      "symbol_or_action": "FirmwareManager.clear_custom_firmware",
+      "mutation_class": "persistent-write",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "descriptor gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_firmware_clear_custom",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "firmware-get-catalog",
+      "source": "backend/app/services/firmware_manager.py",
+      "symbol_or_action": "FirmwareManager.get_catalog",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "filtered catalog",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_firmware_get_catalog",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "uplink-heartbeat-build-payload",
+      "source": "esp32/uplink/main/comms/http_upload.c",
+      "symbol_or_action": "build_payload",
+      "mutation_class": "identity-ingress",
+      "supported_targets": [
+        "badge-uplink",
+        "badge-scanner"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "complete exact tuple emission",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_uplink_heartbeat_build_payload",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "uplink-heartbeat-append-scanner-info",
+      "source": "esp32/uplink/main/comms/http_upload.c",
+      "symbol_or_action": "append_scanner_info",
+      "mutation_class": "identity-ingress",
+      "supported_targets": [
+        "scanner-slot"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "complete exact slot tuple emission",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_uplink_heartbeat_append_scanner_info",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "backend-drone-detection-batch",
+      "source": "backend/app/models/schemas.py",
+      "symbol_or_action": "DroneDetectionBatch",
+      "mutation_class": "identity-ingress",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "bounded exact tuple validation",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_backend_drone_detection_batch",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "backend-ingest-drone-detections",
+      "source": "backend/app/routers/detections.py",
+      "symbol_or_action": "ingest_drone_detections",
+      "mutation_class": "identity-ingress",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "atomic same-tuple heartbeat persistence",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_backend_ingest_drone_detections",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "nodes-push-ota",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "push_ota_update",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "stored identity gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_push_ota",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-upload-custom",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "upload_custom_firmware",
+      "mutation_class": "persistent-write",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "descriptor/identity gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_upload_custom",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-clear-custom",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "clear_custom_firmware",
+      "mutation_class": "persistent-write",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "descriptor/identity gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_clear_custom",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-catalog",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "get_firmware_catalog",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "filtered catalog",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_catalog",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-metadata",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "_firmware_metadata",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "filtered catalog",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_metadata",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-latest",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "get_firmware_latest",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "filtered catalog",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_latest",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-download",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "get_firmware_download",
+      "mutation_class": "binary-stream",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "reject before stream",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_download",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-push-by-name",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "push_firmware_by_name",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "node+firmware tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_push_by_name",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-push-scanner",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "push_scanner_firmware",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "node+scanner tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_push_scanner",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-legacy-scanner-relay",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "_run_direct_legacy_scanner_relay",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_legacy_scanner_relay",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-scanner-targets",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "_scanner_targets",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "pre-version-HTTP tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_scanner_targets",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-stage-scanner-on-uplink",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "_stage_scanner_firmware_on_uplink",
+      "mutation_class": "staging",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_stage_scanner_on_uplink",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-trigger-scanner-check",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "_trigger_scanner_firmware_check",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_trigger_scanner_check",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-run-scanner-rollout",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "_run_scanner_rollout",
+      "mutation_class": "rollout",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "prevalidated targets",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_run_scanner_rollout",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-stage-scanner",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "stage_scanner_firmware",
+      "mutation_class": "staging",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_stage_scanner",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-scanner-readiness",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "scanner_firmware_readiness",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "tuple gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_scanner_readiness",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-stage-scanner-fleet",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "stage_scanner_firmware_fleet",
+      "mutation_class": "rollout",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "atomic tuple validation",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_stage_scanner_fleet",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-trigger-scanner-fleet",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "trigger_scanner_firmware_check",
+      "mutation_class": "rollout",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "atomic tuple validation",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_trigger_scanner_fleet",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "nodes-start-scanner-rollout",
+      "source": "backend/app/routers/nodes.py",
+      "symbol_or_action": "start_scanner_firmware_rollout",
+      "mutation_class": "rollout",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "atomic tuple validation",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_nodes_start_scanner_rollout",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "http-status-init",
+      "source": "esp32/uplink/main/network/http_status.c",
+      "symbol_or_action": "http_status_init",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "no updater URI registration",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_http_status_init",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "http-ota-post",
+      "source": "esp32/uplink/main/network/http_status.c",
+      "symbol_or_action": "ota_post_handler",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "no route",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_http_ota_post",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "http-ota-relay",
+      "source": "esp32/uplink/main/network/http_status.c",
+      "symbol_or_action": "ota_relay_handler",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "no route",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_http_ota_relay",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "http-badge-control",
+      "source": "esp32/uplink/main/network/http_status.c",
+      "symbol_or_action": "badge_control_post_handler",
+      "mutation_class": "control/reset",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "reject before restart",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_http_badge_control",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "fw-store-register",
+      "source": "esp32/uplink/main/network/fw_store.c",
+      "symbol_or_action": "fw_store_register",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "no updater URI registration",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fw_store_register",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "fw-store-upload-http",
+      "source": "esp32/uplink/main/network/fw_store.c",
+      "symbol_or_action": "fw_upload_handler",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "no route",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fw_store_upload_http",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "fw-store-relay-http",
+      "source": "esp32/uplink/main/network/fw_store.c",
+      "symbol_or_action": "fw_relay_handler",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "no route",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fw_store_relay_http",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "fw-store-trigger-http",
+      "source": "esp32/uplink/main/network/fw_store.c",
+      "symbol_or_action": "fw_trigger_handler",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "no route",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fw_store_trigger_http",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "fw-auto-check-init",
+      "source": "esp32/uplink/main/network/fw_auto_check.c",
+      "symbol_or_action": "fw_auto_check_init",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "no task/client/download",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fw_auto_check_init",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "uplink-main-http-autocheck",
+      "source": "esp32/uplink/main/main.c",
+      "symbol_or_action": "HTTP/auto-check registration",
+      "mutation_class": "network-ota",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "barrier",
+      "canonical_implementation": "badge variant barrier",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_uplink_main_http_autocheck",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "uplink-main-raw-scanner-abort-boot",
+      "source": "esp32/uplink/main/main.c",
+      "symbol_or_action": "raw scanner OTA-abort boot path",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "barrier",
+      "canonical_implementation": "cannot start transaction",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_uplink_main_raw_scanner_abort_boot",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "usb-dispatch-line",
+      "source": "esp32/uplink/main/core/badge_usb_transport.c",
+      "symbol_or_action": "dispatch_line",
+      "mutation_class": "control",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "USB transaction receiver",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_usb_dispatch_line",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "usb-consume-binary-event",
+      "source": "esp32/uplink/main/core/badge_usb_transport.c",
+      "symbol_or_action": "consume_binary_event",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "USB transaction receiver",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_usb_consume_binary_event",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "usb-consume-scanner-credit",
+      "source": "esp32/uplink/main/core/badge_usb_transport.c",
+      "symbol_or_action": "consume_scanner_credit_bytes",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "USB/UART relay",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_usb_consume_scanner_credit",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "usb-consume-uplink-bytes",
+      "source": "esp32/uplink/main/core/badge_usb_transport.c",
+      "symbol_or_action": "consume_uplink_bytes",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "USB OTA receiver",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_usb_consume_uplink_bytes",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "usb-transport-start",
+      "source": "esp32/uplink/main/core/badge_usb_transport.c",
+      "symbol_or_action": "badge_usb_transport_start",
+      "mutation_class": "control",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "USB transaction receiver",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_usb_transport_start",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "usb-uplink-ota-begin",
+      "source": "esp32/uplink/main/core/badge_usb_transport.c",
+      "symbol_or_action": "badge_usb_transport_handle_uplink_ota_begin",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "uplink_usb_ota_begin",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_usb_uplink_ota_begin",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "serial-handle-upload-begin",
+      "source": "esp32/uplink/main/core/serial_config.c",
+      "symbol_or_action": "handle_fw_upload_begin",
+      "mutation_class": "staging",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "transaction staging",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_serial_handle_upload_begin",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "serial-handle-ctl",
+      "source": "esp32/uplink/main/core/serial_config.c",
+      "symbol_or_action": "handle_ctl_command",
+      "mutation_class": "control/reset",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "A3/A3a schema path",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_serial_handle_ctl",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "serial-dispatch-line",
+      "source": "esp32/uplink/main/core/serial_config.c",
+      "symbol_or_action": "serial_config_dispatch_line",
+      "mutation_class": "control",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "schema gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_serial_dispatch_line",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "serial-bound-relay-call",
+      "source": "esp32/uplink/main/core/serial_config.c",
+      "symbol_or_action": "fw_store_relay_staged_to_scanner_bound call",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "authenticated relay",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_serial_bound_relay_call",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "fw-serial-upload-begin",
+      "source": "esp32/uplink/main/network/fw_store.c",
+      "symbol_or_action": "fw_store_serial_upload_begin",
+      "mutation_class": "staging",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "transaction staging",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fw_serial_upload_begin",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "fw-serial-upload-write",
+      "source": "esp32/uplink/main/network/fw_store.c",
+      "symbol_or_action": "fw_store_serial_upload_write",
+      "mutation_class": "staging",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "transaction staging",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fw_serial_upload_write",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "fw-serial-upload-end",
+      "source": "esp32/uplink/main/network/fw_store.c",
+      "symbol_or_action": "fw_store_serial_upload_end",
+      "mutation_class": "staging",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "transaction staging",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fw_serial_upload_end",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "fw-serial-upload-terminal",
+      "source": "esp32/uplink/main/network/fw_store.c",
+      "symbol_or_action": "fw_store_serial_upload_complete_terminal",
+      "mutation_class": "staging",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "transaction staging",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fw_serial_upload_terminal",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "fw-relay-staged-bound",
+      "source": "esp32/uplink/main/network/fw_store.c",
+      "symbol_or_action": "fw_store_relay_staged_to_scanner_bound",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "authenticated relay",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fw_relay_staged_bound",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "fw-relay-stored",
+      "source": "esp32/uplink/main/network/fw_store.c",
+      "symbol_or_action": "fw_relay_stored_to_scanner",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "authenticated relay",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_fw_relay_stored",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "uplink-ota-begin",
+      "source": "esp32/uplink/main/core/uplink_usb_ota.c",
+      "symbol_or_action": "uplink_usb_ota_begin",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "USB lifecycle",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_uplink_ota_begin",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "uplink-ota-write",
+      "source": "esp32/uplink/main/core/uplink_usb_ota.c",
+      "symbol_or_action": "uplink_usb_ota_write",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "USB lifecycle",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_uplink_ota_write",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "uplink-ota-finish",
+      "source": "esp32/uplink/main/core/uplink_usb_ota.c",
+      "symbol_or_action": "uplink_usb_ota_finish",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "USB lifecycle",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_uplink_ota_finish",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "uplink-ota-abort",
+      "source": "esp32/uplink/main/core/uplink_usb_ota.c",
+      "symbol_or_action": "uplink_usb_ota_abort",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "USB lifecycle",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_uplink_ota_abort",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "scanner-uart-listener",
+      "source": "esp32/scanner/main/main.c",
+      "symbol_or_action": "uart_cmd_listener_task",
+      "mutation_class": "control/flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "uplink UART protocol",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_scanner_uart_listener",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "scanner-direct-rom-reset",
+      "source": "esp32/scanner/main/main.c",
+      "symbol_or_action": "uart_cmd_listener_task routine ROM reset disabled",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "routine scanner UART exposes no ROM-reset function or command",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_scanner_direct_rom_reset",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "C",
+        "D"
+      ]
+    },
+    {
+      "id": "scanner-direct-rom-reset-branch",
+      "source": "esp32/scanner/main/main.c",
+      "symbol_or_action": "uart_cmd_listener_task bootloader/ota branch",
+      "mutation_class": "control/reset",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "routine bootloader/ota commands are rejected without any scanner ROM-reset function",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_scanner_direct_rom_reset_branch",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "C",
+        "D"
+      ]
+    },
+    {
+      "id": "scanner-uart-binary-branch",
+      "source": "esp32/scanner/main/main.c",
+      "symbol_or_action": "uart_cmd_listener_task binary-event branch",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "uart_ota_process_data",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_scanner_uart_binary_branch",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "scanner-uart-ota-begin-branch",
+      "source": "esp32/scanner/main/main.c",
+      "symbol_or_action": "uart_cmd_listener_task ota_begin branch",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "uart_ota_begin",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_scanner_uart_ota_begin_branch",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "scanner-uart-ota-end-branch",
+      "source": "esp32/scanner/main/main.c",
+      "symbol_or_action": "uart_cmd_listener_task ota_end branch",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "uart_ota_finalize",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_scanner_uart_ota_end_branch",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "scanner-uart-ota-abort-branch",
+      "source": "esp32/scanner/main/main.c",
+      "symbol_or_action": "uart_cmd_listener_task ota_abort branch",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "uart_ota_abort",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_scanner_uart_ota_abort_branch",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "scanner-uart-ota-begin",
+      "source": "esp32/scanner/main/comms/uart_ota.c",
+      "symbol_or_action": "uart_ota_begin",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "UART lifecycle",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_scanner_uart_ota_begin",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "scanner-uart-ota-data",
+      "source": "esp32/scanner/main/comms/uart_ota.c",
+      "symbol_or_action": "uart_ota_process_data",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "UART lifecycle",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_scanner_uart_ota_data",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "scanner-uart-ota-finalize",
+      "source": "esp32/scanner/main/comms/uart_ota.c",
+      "symbol_or_action": "uart_ota_finalize",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "UART lifecycle",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_scanner_uart_ota_finalize",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "scanner-uart-ota-abort",
+      "source": "esp32/scanner/main/comms/uart_ota.c",
+      "symbol_or_action": "uart_ota_abort",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "UART lifecycle",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_scanner_uart_ota_abort",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "button-task",
+      "source": "esp32/uplink/main/hw/display_st7735.c",
+      "symbol_or_action": "badge_button_task",
+      "mutation_class": "physical-reset",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "debounced physical recovery state machine",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_button_task",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "button-power-chord-app-reset",
+      "source": "esp32/uplink/main/hw/display_st7735.c",
+      "symbol_or_action": "badge_button_task power-chord/no-host",
+      "mutation_class": "physical-reset",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "recovery APP transition",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_button_power_chord_app_reset",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "button-confirm-rom-reset",
+      "source": "esp32/uplink/main/hw/display_st7735.c",
+      "symbol_or_action": "badge_button_task USB prompt OK",
+      "mutation_class": "physical-reset",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "recovery ROM transition",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_button_confirm_rom_reset",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "button-confirm-menu-app-reset",
+      "source": "esp32/uplink/main/hw/display_st7735.c",
+      "symbol_or_action": "badge_button_task USB prompt MENU",
+      "mutation_class": "physical-reset",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "recovery APP transition",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_button_confirm_menu_app_reset",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "button-confirm-timeout-app-reset",
+      "source": "esp32/uplink/main/hw/display_st7735.c",
+      "symbol_or_action": "badge_button_task USB prompt timeout",
+      "mutation_class": "physical-reset",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "recovery APP transition",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_button_confirm_timeout_app_reset",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "button-registration-st7735",
+      "source": "esp32/uplink/main/hw/display_st7735.c",
+      "symbol_or_action": "badge_buttons_start",
+      "mutation_class": "control",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "barrier",
+      "canonical_implementation": "register exactly one compiled `badge_button_task` on badge builds",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_button_registration_st7735",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "button-registration-oled",
+      "source": "esp32/uplink/main/hw/display_st7735.c",
+      "symbol_or_action": "oled_badge_buttons_start",
+      "mutation_class": "control",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "barrier",
+      "canonical_implementation": "delegate to `badge_buttons_start` exactly once on OLED badge builds",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_button_registration_oled",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "badge-usb-recovery-restart",
+      "source": "esp32/uplink/main/core/badge_usb_recovery.c",
+      "symbol_or_action": "badge_usb_recovery_restart",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "named recovery transition",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_badge_usb_recovery_restart",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A",
+        "D"
+      ]
+    },
+    {
+      "id": "debug-bridge-open",
+      "source": "scripts/fof_badge_debug_bridge.py",
+      "symbol_or_action": "BridgeState.open",
+      "mutation_class": "serial-open",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "unsupported before open",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_debug_bridge_open",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "debug-bridge-send-line",
+      "source": "scripts/fof_badge_debug_bridge.py",
+      "symbol_or_action": "BridgeState.send_line",
+      "mutation_class": "control",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "unsupported",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_debug_bridge_send_line",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "debug-bridge-write-bytes",
+      "source": "scripts/fof_badge_debug_bridge.py",
+      "symbol_or_action": "BridgeState.write_bytes",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "unsupported",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_debug_bridge_write_bytes",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "debug-bridge-send-control",
+      "source": "scripts/fof_badge_debug_bridge.py",
+      "symbol_or_action": "BridgeState.send_control",
+      "mutation_class": "control/reset",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "unsupported",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_debug_bridge_send_control",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "debug-bridge-upload",
+      "source": "scripts/fof_badge_debug_bridge.py",
+      "symbol_or_action": "BridgeState.upload_firmware",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "unsupported",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_debug_bridge_upload",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "debug-bridge-relay",
+      "source": "scripts/fof_badge_debug_bridge.py",
+      "symbol_or_action": "BridgeState.relay_firmware",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "unsupported",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_debug_bridge_relay",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "debug-bridge-post",
+      "source": "scripts/fof_badge_debug_bridge.py",
+      "symbol_or_action": "BadgeBridgeHandler.do_POST",
+      "mutation_class": "control",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "unsupported route",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_debug_bridge_post",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "debug-bridge-control-route",
+      "source": "scripts/fof_badge_debug_bridge.py",
+      "symbol_or_action": "BadgeBridgeHandler.handle_control /api/badge/control",
+      "mutation_class": "control/reset",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "unsupported route",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_debug_bridge_control_route",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "debug-bridge-upload-route",
+      "source": "scripts/fof_badge_debug_bridge.py",
+      "symbol_or_action": "BadgeBridgeHandler.handle_fw_upload /api/fw/upload,/api/badge/fw_upload,/api/badge/fw_upload_begin",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "unsupported routes",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_debug_bridge_upload_route",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "debug-bridge-relay-route",
+      "source": "scripts/fof_badge_debug_bridge.py",
+      "symbol_or_action": "BadgeBridgeHandler.handle_fw_relay /api/fw/relay,/api/badge/fw_relay",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "unsupported routes",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_debug_bridge_relay_route",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "debug-bridge-main",
+      "source": "scripts/fof_badge_debug_bridge.py",
+      "symbol_or_action": "main",
+      "mutation_class": "serial-open",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "explicit read-only status mode only",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_debug_bridge_main",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-usb-jtag-reset",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "usb_reset_esp32s3_jtag",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-I/O",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_usb_jtag_reset",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-kill-stale",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "kill_stale_processes",
+      "mutation_class": "process-mutation",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-process kill",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_kill_stale",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-normal-upload",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "normal_upload",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-subprocess",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_normal_upload",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-esptool-write",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "esptool_write_flash",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-write",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_esptool_write",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-set-lines",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "set_lines",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-modem control",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_set_lines",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-send-bootloader",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "send_bootloader_commands",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-serial write",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_send_bootloader",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-serial-pass",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "serial_recovery_pass",
+      "mutation_class": "serial-open",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-open",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_serial_pass",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-touch-1200",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "touch_1200",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-open",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_touch_1200",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-clear-safe-mode",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "clear_forced_safe_mode",
+      "mutation_class": "control",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-write",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_clear_safe_mode",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-request-reboot",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "request_reboot",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-write",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_request_reboot",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-try-flash-matrix",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "try_flash_matrix",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-I/O",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_try_flash_matrix",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-long-rom-catcher",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "long_rom_catcher_pass",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-I/O",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_long_rom_catcher",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-no-button-upload",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "no_button_catcher_upload",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-I/O",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_no_button_upload",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-clear-safe-reboot",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "clear_safe_mode_and_reboot",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "fail pre-I/O",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_clear_safe_reboot",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "recovery-main",
+      "source": "esp32/uplink/tools/recover_fof_badge.py",
+      "symbol_or_action": "main",
+      "mutation_class": "flash/reset",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "offline help only",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_recovery_main",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "shell-soft-bootloader",
+      "source": "esp32/flash.sh",
+      "symbol_or_action": "request_soft_bootloader",
+      "mutation_class": "reset",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact env allowlist",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_shell_soft_bootloader",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "shell-flash-board",
+      "source": "esp32/flash.sh",
+      "symbol_or_action": "flash_board",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact env allowlist",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_shell_flash_board",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "shell-detect-flash",
+      "source": "esp32/flash.sh",
+      "symbol_or_action": "detect_and_flash",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact env allowlist",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_shell_detect_flash",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "shell-main-dispatch",
+      "source": "esp32/flash.sh",
+      "symbol_or_action": "main dispatch",
+      "mutation_class": "flash",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-badge",
+      "canonical_implementation": "exact env allowlist",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_shell_main_dispatch",
+      "coverage": "red",
+      "blocked_by": [
+        "E0"
+      ]
+    },
+    {
+      "id": "pio-badge-scanner-upload",
+      "source": "esp32/scanner/platformio.ini",
+      "symbol_or_action": "[env:scanner-s3-combo-fof_badge] upload graph",
+      "mutation_class": "rom-flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "frozen custom uploader",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_pio_badge_scanner_upload",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E1"
+      ]
+    },
+    {
+      "id": "pio-badge-uplink-upload",
+      "source": "esp32/uplink/platformio.ini",
+      "symbol_or_action": "[env:uplink-s3-fof_badge] upload graph",
+      "mutation_class": "rom-flash",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "frozen custom uploader",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_pio_badge_uplink_upload",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E1"
+      ]
+    },
+    {
+      "id": "pio-factory-probe-upload",
+      "source": "esp32/factory-probe/platformio.ini",
+      "symbol_or_action": "[env:factory-probe-s3] upload graph",
+      "mutation_class": "rom-flash",
+      "supported_targets": [
+        "factory-probe"
+      ],
+      "disposition": "bound",
+      "canonical_implementation": "authenticated frozen custom uploader",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_pio_factory_probe_upload",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "C",
+        "E1",
+        "E5"
+      ]
+    },
+    {
+      "id": "web-badge-uplink-manifest",
+      "source": "esp32/web-flasher/manifest-badge-uplink.json",
+      "symbol_or_action": "whole manifest",
+      "mutation_class": "browser-flash",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "absent from built site",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_web_badge_uplink_manifest",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E4"
+      ]
+    },
+    {
+      "id": "web-badge-scanner-manifest",
+      "source": "esp32/web-flasher/manifest-badge-scanner.json",
+      "symbol_or_action": "whole manifest",
+      "mutation_class": "browser-flash",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "absent from built site",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_web_badge_scanner_manifest",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E4"
+      ]
+    },
+    {
+      "id": "web-badge-buttons",
+      "source": "esp32/web-flasher/index.html",
+      "symbol_or_action": "badge Web Serial actions",
+      "mutation_class": "browser-flash",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "absent from built site",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_web_badge_buttons",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E4"
+      ]
+    },
+    {
+      "id": "web-build-exporter",
+      "source": "esp32/web-flasher/build.sh",
+      "symbol_or_action": "badge exporter",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "frozen bytes/no browser flash",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_web_build_exporter",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E4"
+      ]
+    },
+    {
+      "id": "factory-layout",
+      "source": "scripts/build_badge_factory_bundle.py",
+      "symbol_or_action": "layout_for",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "complete frozen role set",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_factory_layout",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E5"
+      ]
+    },
+    {
+      "id": "factory-build-bundle",
+      "source": "scripts/build_badge_factory_bundle.py",
+      "symbol_or_action": "build_bundle",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "complete frozen role set",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_factory_build_bundle",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E5"
+      ]
+    },
+    {
+      "id": "android-control-policy",
+      "source": "android/app/src/main/java/com/friendorfoe/data/badge/BadgeControlTransportPolicy.kt",
+      "symbol_or_action": "BadgeControlTransportPolicy",
+      "mutation_class": "control",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "non-mutating",
+      "canonical_implementation": "reject bootloader/staging/relay/OTA",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_android_control_policy",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "android-usb-repository",
+      "source": "android/app/src/main/java/com/friendorfoe/data/badge/BadgeUsbRepository.kt",
+      "symbol_or_action": "BadgeUsbRepository",
+      "mutation_class": "control",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "non-mutating",
+      "canonical_implementation": "A3a controls only",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_android_usb_repository",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "A"
+      ]
+    },
+    {
+      "id": "ci-firmware-release-published-trigger",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "on.release.types [published]",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove release-event publisher trigger",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_firmware_release_published_trigger",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-firmware-workflow-dispatch-publication",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "on.workflow_dispatch",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "manual runs may test/build only and cannot create/edit/publish a release",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_firmware_workflow_dispatch_publication",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-firmware-tag-trigger",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "on.push.tags",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "exact `v*` excluding `v*-android-*` partition and bound tag/ref/SHA",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_firmware_tag_trigger",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-firmware-publication-concurrency",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "jobs.publish-release.concurrency (planned)",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "barrier",
+      "canonical_implementation": "friendorfoe-release-publication`, `cancel-in-progress:false",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_firmware_publication_concurrency",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-firmware-build-permissions",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "jobs.build.permissions",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "barrier",
+      "canonical_implementation": "`contents:read`; omitted permissions none",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_firmware_build_permissions",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-build-badge-scanner",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Build Badge Scanner firmware",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge-scanner"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "frozen build capability",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_build_badge_scanner",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E1",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-build-badge-uplink",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Build Badge Uplink firmware",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge-uplink"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "frozen build capability",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_build_badge_uplink",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E1",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-build-factory-probe",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Build Badge factory topology probe",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "factory-probe"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "frozen build capability",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_build_factory_probe",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E1",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-package-binaries",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Package firmware binaries",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "replace pathname copies with exact one `badge-publication-${tag}-${producer_nonce}.tar`",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_package_binaries",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E3",
+        "E5"
+      ]
+    },
+    {
+      "id": "ci-upload-firmware-artifact",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Upload firmware artifact",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "replace directory upload with exact canonical archive ID/name/size/digest/run/set",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_upload_firmware_artifact",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-build-factory-artifact",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Build validated badge factory bundle",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "frozen `factory/badge-factory-flasher.zip` inner member only",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_build_factory_artifact",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E3",
+        "E5"
+      ]
+    },
+    {
+      "id": "ci-upload-factory-artifact",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Upload badge factory bundle artifact actions/upload-artifact@v4",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "factory-bundle"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "no standalone factory artifact or release ZIP",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_upload_factory_artifact",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E3",
+        "E5"
+      ]
+    },
+    {
+      "id": "ci-release-tar-copy",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Attach firmware to release tar/copy actions",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove per-member pathname publishers",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_release_tar_copy",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "B",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-release-view",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Attach firmware to release gh release view",
+      "mutation_class": "network-fetch",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove unbound tag/name lookup and wait loop; exact release-ID API helper only",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_release_view",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-release-create",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Attach firmware to release gh release create",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove direct create-or-reuse writer; protected exact-ID publisher only",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_release_create",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-release-upload",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Attach firmware to release gh release upload --clobber",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "no clobber or public/direct multi-asset upload",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_release_upload",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-firmware-attest-archive",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "jobs.attest-publication (planned)",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "exact archive digest attestation with `actions:read,contents:read,id-token:write,attestations:write`",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_firmware_attest_archive",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-firmware-protected-publisher",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "jobs.publish-release (planned)",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "protected `release-publication` environment; `actions:read,attestations:read,contents:write`; exact one firmware asset; `make_latest:false`",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_firmware_protected_publisher",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-download-artifact",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Download firmware artifact",
+      "mutation_class": "artifact-consume",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "replace name selection with exact ID/name/size/digest/run/set and complete outer/inner verify",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_download_artifact",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-verify-site",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Verify site contents",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "exact-byte local verification",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_verify_site",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-upload-pages-artifact",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "Upload Pages artifact actions/upload-pages-artifact@v3",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "capture and verify exact artifact ID/digest",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_upload_pages_artifact",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-deploy-pages-action",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "actions/deploy-pages@v4",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove name-selected deployment action",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_deploy_pages_action",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-pages-job-permissions",
+      "source": ".github/workflows/esp32-web-flasher.yml",
+      "symbol_or_action": "jobs.deploy.permissions",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "barrier",
+      "canonical_implementation": "exact `actions:read,contents:read,pages:write,id-token:write`; environment `github-pages`",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_pages_job_permissions",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-android-tag-trigger",
+      "source": ".github/workflows/android-build.yml",
+      "symbol_or_action": "on.push.tags",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "exact `v*-android-*` partition and bound tag/ref/SHA",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_android_tag_trigger",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-android-build-job",
+      "source": ".github/workflows/android-build.yml",
+      "symbol_or_action": "jobs.build",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "read-only build; `contents:read`",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_android_build_job",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-android-sign-release-job",
+      "source": ".github/workflows/android-build.yml",
+      "symbol_or_action": "jobs.sign-release",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "read-only signer/package producer; `contents:read`",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_android_sign_release_job",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-android-upload-signed-artifact",
+      "source": ".github/workflows/android-build.yml",
+      "symbol_or_action": "Upload signed release artifact",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "exact APK and checksum artifact ID/digest",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_android_upload_signed_artifact",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-android-softprops-release",
+      "source": ".github/workflows/android-build.yml",
+      "symbol_or_action": "softprops/action-gh-release",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "disabled",
+      "canonical_implementation": "remove direct non-draft release writer",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_android_softprops_release",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-android-attest-assets",
+      "source": ".github/workflows/android-build.yml",
+      "symbol_or_action": "jobs.attest-release (planned)",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "exact APK/checksum digest attestations with `actions:read,contents:read,id-token:write,attestations:write`",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_android_attest_assets",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-android-publication-concurrency",
+      "source": ".github/workflows/android-build.yml",
+      "symbol_or_action": "jobs.publish-release.concurrency (planned)",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "barrier",
+      "canonical_implementation": "friendorfoe-release-publication`, `cancel-in-progress:false",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_android_publication_concurrency",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-android-protected-publisher",
+      "source": ".github/workflows/android-build.yml",
+      "symbol_or_action": "jobs.publish-release",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "replace current direct writer with protected `release-publication` environment; `actions:read,attestations:read,contents:write`; exact Android asset set only",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_android_protected_publisher",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "android-release-update-consumer",
+      "source": "android/app/src/main/java/com/friendorfoe/presentation/welcome/WelcomeScreen.kt",
+      "symbol_or_action": "checkForUpdates",
+      "mutation_class": "network-fetch",
+      "supported_targets": [
+        "non-badge"
+      ],
+      "disposition": "non-mutating",
+      "canonical_implementation": "`/releases/latest` accepts Android stable domain only; exact APK/checksum assets",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_android_release_update_consumer",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-promote-release-by-id",
+      "source": "scripts/publish_badge_artifacts.py",
+      "symbol_or_action": "promote_release_by_id (planned)",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "all"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "final exact ID/tag/SHA/asset/digest/attestation gate immediately authorizes PATCH/discovery",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_promote_release_by_id",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    },
+    {
+      "id": "ci-deploy-pages-by-id",
+      "source": "scripts/publish_badge_artifacts.py",
+      "symbol_or_action": "deploy_pages_by_id (planned)",
+      "mutation_class": "publication",
+      "supported_targets": [
+        "badge"
+      ],
+      "disposition": "bound-publication",
+      "canonical_implementation": "exact-ID Pages REST POST after full artifact and verified OIDC gate",
+      "behavior_test": "scripts/test_badge_mutation_entrypoints.py::test_ci_deploy_pages_by_id",
+      "coverage": "red",
+      "blocked_by": [
+        "E0",
+        "E3"
+      ]
+    }
+  ]
+}

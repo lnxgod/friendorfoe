@@ -2,7 +2,7 @@ package com.friendorfoe.data.repository
 
 import android.util.Log
 import com.friendorfoe.data.local.HistoryDao
-import com.friendorfoe.data.local.HistoryEntity
+import com.friendorfoe.data.local.toHistoryEntity
 import com.friendorfoe.data.local.TrackingDao
 import com.friendorfoe.data.local.TrackingEntity
 import com.friendorfoe.data.DetectionPrefs
@@ -31,7 +31,6 @@ import kotlinx.coroutines.launch
 import java.time.Duration
 import java.time.Instant
 import java.util.Collections
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -76,12 +75,15 @@ class SkyObjectRepository @Inject constructor(
 
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var collectionJob: Job? = null
-    private val isRunning = AtomicBoolean(false)
+    private val sessionGate = DetectionSessionGate()
     @Volatile private var activeLocalPermissions = LocalDetectionPermissions.None
 
     // Track user position for history persistence
-    @Volatile private var userLatitude: Double = 0.0
-    @Volatile private var userLongitude: Double = 0.0
+    @Volatile private var userLocationFix = UserLocationFix(
+        latitude = 0.0,
+        longitude = 0.0,
+        accuracyMeters = Float.POSITIVE_INFINITY,
+    )
 
     // Track which objects have already been persisted to avoid duplicate writes
     private val persistedObjectIds: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
@@ -110,18 +112,22 @@ class SkyObjectRepository @Inject constructor(
 
     /** Restart running collectors so About toggles take effect immediately. */
     fun restartDetectionSources() {
-        if (!isRunning.get()) return
-        val latitude = userLatitude
-        val longitude = userLongitude
-        stop()
-        ensureStarted(latitude, longitude)
+        sessionGate.restartSession(
+            onEnded = ::stopDetectionSources,
+            onStarted = ::startDetectionSources,
+        )
     }
 
     /** Re-evaluate protected collectors after a feature-owned permission flow completes. */
     override fun onRuntimePermissionsChanged() {
         localDetectionPermissionUpdates.publishCurrent()
         val permissions = localDetectionPermissionProvider.current()
-        if (shouldRestartForPermissionChange(isRunning.get(), activeLocalPermissions, permissions)) {
+        if (shouldRestartForPermissionChange(
+                sessionGate.isActive(),
+                activeLocalPermissions,
+                permissions,
+            )
+        ) {
             restartDetectionSources()
         }
     }
@@ -146,27 +152,87 @@ class SkyObjectRepository @Inject constructor(
      * @param latitude User's current latitude for ADS-B polling
      * @param longitude User's current longitude for ADS-B polling
      */
-    fun ensureStarted(latitude: Double, longitude: Double) {
+    fun ensureStarted(
+        latitude: Double,
+        longitude: Double,
+        locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
+    ) {
         val permissions = localDetectionPermissionProvider.current()
         localDetectionPermissionUpdates.publish(permissions)
-        if (!isRunning.compareAndSet(false, true)) {
-            updatePosition(latitude, longitude)
-            if (shouldRestartForPermissionChange(true, activeLocalPermissions, permissions)) {
-                restartDetectionSources()
-            }
+        val requestedFix = userLocationFixForStart(
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = validatedLocationAccuracyMeters(
+                hasAccuracy = true,
+                accuracyMeters = locationAccuracyMeters,
+            ),
+        )
+
+        if (requestedFix == null) {
+            ensureScannerStarted()
             return
         }
+
+        if (sessionGate.isActive() && shouldRestartForPermissionChange(
+                true,
+                activeLocalPermissions,
+                permissions,
+            )
+        ) {
+            applyUserLocationFix(requestedFix, updatePoller = false)
+            restartDetectionSources()
+            return
+        }
+
+        sessionGate.ensureSession(
+            onStarted = { generation ->
+                applyUserLocationFix(requestedFix, updatePoller = false)
+                startDetectionSources(generation)
+            },
+            onActive = {
+                applyUserLocationFix(requestedFix, updatePoller = true)
+            },
+        )
+    }
+
+    /** Start scanner sources without asserting or replacing a user position. */
+    fun ensureScannerStarted() {
+        val permissions = localDetectionPermissionProvider.current()
+        localDetectionPermissionUpdates.publish(permissions)
+        if (sessionGate.isActive() && shouldRestartForPermissionChange(
+                true,
+                activeLocalPermissions,
+                permissions,
+            )
+        ) {
+            restartDetectionSources()
+            return
+        }
+        sessionGate.ensureSession(
+            onStarted = ::startDetectionSources,
+            onActive = {},
+        )
+    }
+
+    private fun startDetectionSources(generation: Long) {
+        val permissions = localDetectionPermissionProvider.current()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         activeLocalPermissions = permissions
-        userLatitude = latitude
-        userLongitude = longitude
-        bleTracker.recordUserLocation(latitude, longitude)
-        Log.i(TAG, "Starting all detection sources at ($latitude, $longitude)")
+        val location = userLocationFix
+        bleTracker.recordUserLocation(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            locationAccuracyMeters = location.accuracyMeters,
+        )
+        Log.i(
+            TAG,
+            "Starting detection session $generation at (${location.latitude}, ${location.longitude})",
+        )
 
         // ADS-B is API/backend-backed. Backend-only disables local phone sensors,
         // not network aircraft feeds.
         if (detectionPrefs.adsbEnabled) {
-            adsbPoller.start(latitude, longitude)
+            adsbPoller.start(location.latitude, location.longitude)
         }
 
         // Collect from all sources (respecting per-source toggles)
@@ -201,7 +267,10 @@ class SkyObjectRepository @Inject constructor(
 
     /** Stop all detection sources. */
     fun stop() {
-        isRunning.set(false)
+        sessionGate.endSession(::stopDetectionSources)
+    }
+
+    private fun stopDetectionSources() {
         activeLocalPermissions = LocalDetectionPermissions.None
         collectionJob?.cancel()
         collectionJob = null
@@ -229,11 +298,42 @@ class SkyObjectRepository @Inject constructor(
      * @param latitude New latitude
      * @param longitude New longitude
      */
-    fun updatePosition(latitude: Double, longitude: Double) {
-        userLatitude = latitude
-        userLongitude = longitude
-        bleTracker.recordUserLocation(latitude, longitude)
-        adsbPoller.updatePosition(latitude, longitude)
+    fun updatePosition(
+        latitude: Double,
+        longitude: Double,
+        locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
+    ) {
+        val fix = UserLocationFix(
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = validatedLocationAccuracyMeters(
+                hasAccuracy = true,
+                accuracyMeters = locationAccuracyMeters,
+            ),
+        )
+        sessionGate.withGate {
+            userLocationFix = mergeUserLocationFix(userLocationFix, fix)
+            if (sessionGate.isActive()) {
+                bleTracker.recordUserLocation(
+                    latitude = latitude,
+                    longitude = longitude,
+                    locationAccuracyMeters = fix.accuracyMeters,
+                )
+                adsbPoller.updatePosition(latitude, longitude)
+            }
+        }
+    }
+
+    private fun applyUserLocationFix(fix: UserLocationFix, updatePoller: Boolean) {
+        userLocationFix = mergeUserLocationFix(userLocationFix, fix)
+        bleTracker.recordUserLocation(
+            latitude = fix.latitude,
+            longitude = fix.longitude,
+            locationAccuracyMeters = fix.accuracyMeters,
+        )
+        if (updatePoller) {
+            adsbPoller.updatePosition(fix.latitude, fix.longitude)
+        }
     }
 
     /**
@@ -460,14 +560,15 @@ class SkyObjectRepository @Inject constructor(
         fusionEngine.pruneStale(now)
 
         // Enrich objects missing distanceMeters using user position
-        val enriched = if (userLatitude != 0.0 || userLongitude != 0.0) {
+        val location = userLocationFix
+        val enriched = if (location.latitude != 0.0 || location.longitude != 0.0) {
             fused.map { obj ->
                 if (obj.distanceMeters == null &&
                     (obj.position.latitude != 0.0 || obj.position.longitude != 0.0)
                 ) {
                     val results = FloatArray(1)
                     Location.distanceBetween(
-                        userLatitude, userLongitude,
+                        location.latitude, location.longitude,
                         obj.position.latitude, obj.position.longitude,
                         results
                     )
@@ -497,58 +598,18 @@ class SkyObjectRepository @Inject constructor(
     private fun persistNewDetections(objects: List<SkyObject>) {
         val newObjects = objects.filter { it.id !in persistedObjectIds }
         if (newObjects.isEmpty()) return
+        val location = userLocationFix
 
         scope.launch(Dispatchers.IO) {
             for (obj in newObjects) {
                 try {
-                    val entity = obj.toHistoryEntity(userLatitude, userLongitude)
+                    val entity = obj.toHistoryEntity(location.latitude, location.longitude)
                     historyDao.insert(entity)
                     persistedObjectIds.add(obj.id)
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to persist detection ${obj.id}: ${e.message}")
                 }
             }
-        }
-    }
-
-    /** Convert a SkyObject to a HistoryEntity for Room persistence. */
-    private fun SkyObject.toHistoryEntity(userLat: Double, userLon: Double): HistoryEntity {
-        return when (this) {
-            is Aircraft -> HistoryEntity(
-                objectId = icaoHex,
-                objectType = "aircraft",
-                detectionSource = source.name.lowercase(),
-                category = category.name.lowercase(),
-                displayName = callsign ?: icaoHex,
-                description = displaySummary(),
-                latitude = position.latitude,
-                longitude = position.longitude,
-                altitudeMeters = position.altitudeMeters,
-                userLatitude = userLat,
-                userLongitude = userLon,
-                distanceMeters = distanceMeters,
-                confidence = confidence,
-                firstSeen = firstSeen.toEpochMilli(),
-                lastSeen = lastUpdated.toEpochMilli(),
-                photoUrl = photoUrl
-            )
-            is Drone -> HistoryEntity(
-                objectId = id,
-                objectType = "drone",
-                detectionSource = source.name.lowercase(),
-                category = category.name.lowercase(),
-                displayName = manufacturer ?: "Unknown drone",
-                description = displaySummary(),
-                latitude = position.latitude,
-                longitude = position.longitude,
-                altitudeMeters = position.altitudeMeters,
-                userLatitude = userLat,
-                userLongitude = userLon,
-                distanceMeters = distanceMeters,
-                confidence = confidence,
-                firstSeen = firstSeen.toEpochMilli(),
-                lastSeen = lastUpdated.toEpochMilli()
-            )
         }
     }
 

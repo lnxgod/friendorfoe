@@ -11,6 +11,10 @@ val badgeDebugBridgeUrl = providers.gradleProperty("badgeDebugBridgeUrl")
 fun buildConfigString(value: String): String =
     "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 android {
     namespace = "com.friendorfoe"
     compileSdk = 35
@@ -19,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 108
-        versionName = "0.64.65-privacy-beacons"
+        versionCode = 113
+        versionName = "0.67.4-android-interface-overhaul"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -80,6 +84,10 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+
+    sourceSets {
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
     }
 }
 
@@ -155,6 +163,7 @@ dependencies {
     testImplementation(libs.coroutines.test)
     androidTestImplementation(libs.androidx.test.ext)
     androidTestImplementation(libs.espresso.core)
+    androidTestImplementation(libs.room.testing)
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)
 }

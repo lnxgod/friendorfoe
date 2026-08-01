@@ -1,9 +1,55 @@
 #include "unity.h"
 
 #include "badge_display_policy.h"
+#include "badge_threat_policy.h"
 #include "detection_types.h"
 
 #include <string.h>
+
+static const char STRICT_POLICY_JSON[] =
+    "{\"version\":1,\"classes\":{"
+    "\"drone\":{\"enabled\":true,\"lane\":\"both\","
+    "\"min_proximity\":\"present\",\"priority\":100},"
+    "\"meta\":{\"enabled\":true,\"lane\":\"top\","
+    "\"min_proximity\":\"near\",\"priority\":95},"
+    "\"tracker\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"close\",\"priority\":90},"
+    "\"wifi_attack\":{\"enabled\":false,\"lane\":\"off\","
+    "\"min_proximity\":\"present\",\"priority\":85},"
+    "\"skimmer\":{\"enabled\":false,\"lane\":\"off\","
+    "\"min_proximity\":\"close\",\"priority\":0},"
+    "\"camera\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"near\",\"priority\":70},"
+    "\"flock\":{\"enabled\":true,\"lane\":\"top\","
+    "\"min_proximity\":\"present\",\"priority\":80},"
+    "\"lock\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"near\",\"priority\":60},"
+    "\"hid\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"close\",\"priority\":55},"
+    "\"beacon\":{\"enabled\":false,\"lane\":\"off\","
+    "\"min_proximity\":\"present\",\"priority\":40},"
+    "\"event_badge\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"present\",\"priority\":35},"
+    "\"auracast\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"near\",\"priority\":30},"
+    "\"scanner_status\":{\"enabled\":true,\"lane\":\"lower\","
+    "\"min_proximity\":\"present\",\"priority\":20},"
+    "\"ble_attack\":{\"enabled\":true,\"lane\":\"both\","
+    "\"min_proximity\":\"present\",\"priority\":92}}}";
+
+static void assert_policy_rejected_atomically(const char *json)
+{
+    badge_display_policy_t before;
+    badge_display_policy_t after;
+    char err[64] = {0};
+
+    memset(&before, 0xa5, sizeof(before));
+    after = before;
+    TEST_ASSERT_FALSE(badge_display_policy_parse_json(
+        json, &after, err, sizeof(err)));
+    TEST_ASSERT_EQUAL_MEMORY(&before, &after, sizeof(before));
+    TEST_ASSERT_NOT_EQUAL('\0', err[0]);
+}
 
 static drone_detection_t policy_det(uint8_t source,
                                     const char *id,
@@ -50,6 +96,54 @@ void test_badge_display_policy_rejects_invalid_lane(void)
 
     TEST_ASSERT_FALSE(badge_display_policy_parse_json(json, &parsed,
                                                       err, sizeof(err)));
+}
+
+void test_badge_display_policy_requires_complete_exact_schema_atomically(void)
+{
+    badge_display_policy_t parsed;
+    char err[64] = {0};
+
+    TEST_ASSERT_TRUE(badge_display_policy_parse_json(
+        STRICT_POLICY_JSON, &parsed, err, sizeof(err)));
+    TEST_ASSERT_EQUAL_UINT8(1, parsed.version);
+    TEST_ASSERT_EQUAL(
+        BADGE_DISPLAY_LANE_TOP,
+        parsed.classes[BADGE_DISPLAY_CLASS_META].lane);
+    TEST_ASSERT_EQUAL(
+        BADGE_DISPLAY_PROX_CLOSE,
+        parsed.classes[BADGE_DISPLAY_CLASS_TRACKER].min_proximity);
+    TEST_ASSERT_EQUAL_UINT8(
+        92, parsed.classes[BADGE_DISPLAY_CLASS_BLE_ATTACK].priority);
+
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"classes\":{"
+        "\"drone\":{\"enabled\":true,\"lane\":\"both\","
+        "\"min_proximity\":\"present\",\"priority\":100}}}");
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"classes\":{\"unknown\":{"
+        "\"enabled\":true,\"lane\":\"both\","
+        "\"min_proximity\":\"present\",\"priority\":100}}}");
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"unknown\":false,\"classes\":{}}");
+}
+
+void test_badge_display_policy_rejects_duplicate_and_partial_class_atomically(
+    void)
+{
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"version\":1,\"classes\":{}}");
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"classes\":{"
+        "\"drone\":{\"enabled\":true,\"enabled\":false,\"lane\":\"both\","
+        "\"min_proximity\":\"present\",\"priority\":100}}}");
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"classes\":{"
+        "\"drone\":{\"enabled\":true,\"lane\":\"both\","
+        "\"min_proximity\":\"present\"}}}");
+    assert_policy_rejected_atomically(
+        "{\"version\":1,\"classes\":{"
+        "\"drone\":{\"enabled\":1,\"lane\":\"both\","
+        "\"min_proximity\":\"present\",\"priority\":100}}}");
 }
 
 void test_badge_display_policy_disabled_beacon_suppresses_normal_detection(void)
@@ -104,4 +198,109 @@ void test_badge_display_policy_close_tracker_breaks_through_disabled_filter(void
     TEST_ASSERT_TRUE(badge_display_policy_allows_detection(&policy, &det,
                                                            &safety, NULL));
     TEST_ASSERT_TRUE(safety);
+}
+
+void test_badge_ble_attack_display_policy_defaults_to_both_lanes(void)
+{
+    badge_display_policy_t policy;
+    badge_display_policy_class_t cls = BADGE_DISPLAY_CLASS_SCANNER_STATUS;
+    drone_detection_t det = policy_det(DETECTION_SRC_BLE_FINGERPRINT,
+                                       "BLE:A1B2C3D4:BLE Spam",
+                                       "behavioral:pairing_spam",
+                                       0.82f,
+                                       -72);
+    det.ble_threat_kind = BLE_THREAT_KIND_PAIRING_SPAM;
+    det.ble_prompt_family_mask = 0x03;
+    det.ble_unique_macs = 7;
+    det.ble_observation_count = 11;
+
+    badge_display_policy_defaults(&policy);
+
+    TEST_ASSERT_EQUAL_INT(12, BADGE_DISPLAY_CLASS_SCANNER_STATUS);
+    TEST_ASSERT_EQUAL_INT(13, BADGE_DISPLAY_CLASS_BLE_ATTACK);
+    TEST_ASSERT_EQUAL_INT(14, BADGE_DISPLAY_POLICY_CLASS_COUNT);
+    TEST_ASSERT_EQUAL_STRING(
+        "ble_attack",
+        badge_display_policy_class_key(BADGE_DISPLAY_CLASS_BLE_ATTACK));
+    TEST_ASSERT_TRUE(policy.classes[BADGE_DISPLAY_CLASS_BLE_ATTACK].enabled);
+    TEST_ASSERT_EQUAL(BADGE_DISPLAY_LANE_BOTH,
+                      policy.classes[BADGE_DISPLAY_CLASS_BLE_ATTACK].lane);
+    TEST_ASSERT_EQUAL(BADGE_DISPLAY_PROX_PRESENT,
+                      policy.classes[BADGE_DISPLAY_CLASS_BLE_ATTACK].min_proximity);
+    TEST_ASSERT_EQUAL_UINT8(92,
+                            policy.classes[BADGE_DISPLAY_CLASS_BLE_ATTACK].priority);
+    TEST_ASSERT_TRUE(badge_display_policy_allows_detection(&policy, &det, NULL, &cls));
+    TEST_ASSERT_EQUAL(BADGE_DISPLAY_CLASS_BLE_ATTACK, cls);
+}
+
+void test_badge_skimmer_display_policy_is_lowest_priority(void)
+{
+    badge_display_policy_t policy;
+    badge_display_policy_defaults(&policy);
+
+    const badge_display_class_policy_t *skimmer =
+        &policy.classes[BADGE_DISPLAY_CLASS_SKIMMER];
+    TEST_ASSERT_FALSE(skimmer->enabled);
+    TEST_ASSERT_EQUAL(BADGE_DISPLAY_LANE_OFF, skimmer->lane);
+    TEST_ASSERT_EQUAL_UINT8(0, skimmer->priority);
+    TEST_ASSERT_FALSE(badge_display_policy_is_safety_floor(
+        BADGE_DISPLAY_CLASS_SKIMMER,
+        BADGE_DISPLAY_PROX_CLOSE,
+        100
+    ));
+}
+
+void test_badge_snapshot_categories_map_to_display_classes(void)
+{
+    static const struct {
+        badge_threat_category_t category;
+        badge_display_policy_class_t expected;
+    } cases[] = {
+        {BADGE_THREAT_CATEGORY_NONE, BADGE_DISPLAY_CLASS_SCANNER_STATUS},
+        {BADGE_THREAT_CATEGORY_DRONE, BADGE_DISPLAY_CLASS_DRONE},
+        {BADGE_THREAT_CATEGORY_SSID, BADGE_DISPLAY_CLASS_DRONE},
+        {BADGE_THREAT_CATEGORY_FLOCK, BADGE_DISPLAY_CLASS_FLOCK},
+        {BADGE_THREAT_CATEGORY_GLASS, BADGE_DISPLAY_CLASS_META},
+        {BADGE_THREAT_CATEGORY_SKIM, BADGE_DISPLAY_CLASS_SKIMMER},
+        {BADGE_THREAT_CATEGORY_CAMERA, BADGE_DISPLAY_CLASS_CAMERA},
+        {BADGE_THREAT_CATEGORY_BEACON, BADGE_DISPLAY_CLASS_BEACON},
+        {BADGE_THREAT_CATEGORY_EVENT_BADGE, BADGE_DISPLAY_CLASS_EVENT_BADGE},
+        {BADGE_THREAT_CATEGORY_LOCK, BADGE_DISPLAY_CLASS_LOCK},
+        {BADGE_THREAT_CATEGORY_HID, BADGE_DISPLAY_CLASS_HID},
+        {BADGE_THREAT_CATEGORY_AUDIO, BADGE_DISPLAY_CLASS_AURACAST},
+        {BADGE_THREAT_CATEGORY_LISTENING, BADGE_DISPLAY_CLASS_SCANNER_STATUS},
+        {BADGE_THREAT_CATEGORY_WIFI, BADGE_DISPLAY_CLASS_WIFI_ATTACK},
+        {BADGE_THREAT_CATEGORY_TAG_CLOSE, BADGE_DISPLAY_CLASS_TRACKER},
+        {BADGE_THREAT_CATEGORY_PRIVACY, BADGE_DISPLAY_CLASS_SCANNER_STATUS},
+        {BADGE_THREAT_CATEGORY_BLE_SPAM, BADGE_DISPLAY_CLASS_BLE_ATTACK},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        TEST_ASSERT_EQUAL(
+            cases[i].expected,
+            badge_display_policy_class_for_threat_snapshot(
+                cases[i].category,
+                BADGE_THREAT_OTHER));
+    }
+
+    TEST_ASSERT_EQUAL(
+        BADGE_DISPLAY_CLASS_DRONE,
+        badge_display_policy_class_for_threat_snapshot(
+            BADGE_THREAT_CATEGORY_NONE,
+            BADGE_THREAT_DRONE));
+    TEST_ASSERT_EQUAL(
+        BADGE_DISPLAY_CLASS_META,
+        badge_display_policy_class_for_threat_snapshot(
+            BADGE_THREAT_CATEGORY_NONE,
+            BADGE_THREAT_META));
+    TEST_ASSERT_EQUAL(
+        BADGE_DISPLAY_CLASS_TRACKER,
+        badge_display_policy_class_for_threat_snapshot(
+            BADGE_THREAT_CATEGORY_NONE,
+            BADGE_THREAT_TRACKER));
+    TEST_ASSERT_EQUAL(
+        BADGE_DISPLAY_CLASS_WIFI_ATTACK,
+        badge_display_policy_class_for_threat_snapshot(
+            BADGE_THREAT_CATEGORY_NONE,
+            BADGE_THREAT_WIFI_ANOMALY));
 }

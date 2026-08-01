@@ -46,11 +46,21 @@ data class BleAdvertisement(
     val microsoft: MicrosoftSwiftPairDecoder.SwiftPair? = null,
 
     // BLE-JA3 32-bit structural hash (populated by BleFeatureExtractor)
-    val ja3Hash: UInt? = null
+    val ja3Hash: UInt? = null,
+
+    val connectable: Boolean = false,
 ) {
     /** Convenience: first 16-bit service UUID or null. */
     fun primaryServiceUuid16(): Int? = serviceUuids16.firstOrNull()
 
     /** True if advertisement declares a classic-BT host (phone/laptop). */
     fun isDualMode(): Boolean = dualModeHost
+}
+
+fun BleAdvertisement.promptFamily(): BlePromptFamily? = when {
+    microsoft?.beaconType == 0x03 -> BlePromptFamily.MICROSOFT_SWIFT_PAIR
+    0xFE2C in serviceUuids16 -> BlePromptFamily.GOOGLE_FAST_PAIR
+    companyId == BleSignatures.CID_APPLE && apple?.subType in setOf(0x07, 0x0F, 0x10) ->
+        BlePromptFamily.APPLE_CONTINUITY
+    else -> null
 }

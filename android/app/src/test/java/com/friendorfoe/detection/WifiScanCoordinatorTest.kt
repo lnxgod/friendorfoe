@@ -1,13 +1,17 @@
 package com.friendorfoe.detection
 
+import android.net.wifi.ScanResult
 import com.friendorfoe.data.time.MonotonicClock
 import java.time.Instant
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -21,24 +25,19 @@ class WifiScanCoordinatorTest {
     @Test
     fun multipleConsumersShareOneReceiverAndOnePhysicalScanJob() = runTest {
         val platform = FakeWifiScanPlatform()
-        val coordinator = WifiScanCoordinator(
-            platform = platform,
-            clock = FakeClock(),
-            scope = backgroundScope,
-            scanIntervalMs = 30_000L,
-        )
+        val coordinator = coordinator(platform)
         val firstEvents = mutableListOf<WifiScanEvent>()
         val secondEvents = mutableListOf<WifiScanEvent>()
 
-        val first = collect(coordinator, firstEvents)
+        val first = collectEvents(coordinator, firstEvents)
         runCurrent()
-        val second = collect(coordinator, secondEvents)
+        val second = collectEvents(coordinator, secondEvents)
         runCurrent()
 
         assertEquals(1, platform.registerCount)
-        assertEquals(1, platform.startScanCount)
+        assertEquals(1, platform.startScanCalls)
 
-        platform.deliver(updated = true, networks = listOf(network("one")))
+        platform.dispatchResultsAvailable()
         runCurrent()
         assertEquals(1, firstEvents.filterIsInstance<WifiScanEvent.Success>().size)
         assertEquals(1, secondEvents.filterIsInstance<WifiScanEvent.Success>().size)
@@ -52,21 +51,21 @@ class WifiScanCoordinatorTest {
     }
 
     @Test
-    fun successfulUpdatedBroadcastPublishesEvenEmptyAndIsNeverReplayed() = runTest {
+    fun resultBroadcastPublishesEvenEmptyAndTypedEventIsNeverReplayed() = runTest {
         val platform = FakeWifiScanPlatform()
-        val coordinator = WifiScanCoordinator(platform, FakeClock(), backgroundScope, 30_000L)
+        val coordinator = coordinator(platform)
         val firstEvents = mutableListOf<WifiScanEvent>()
-        val first = collect(coordinator, firstEvents)
+        val first = collectEvents(coordinator, firstEvents)
         runCurrent()
 
-        platform.deliver(updated = true, networks = emptyList())
+        platform.dispatchResultsAvailable()
         runCurrent()
         val success = firstEvents.single() as WifiScanEvent.Success
         assertTrue(success.batch.networks.isEmpty())
         assertEquals(success.batch, coordinator.currentBatch.value)
 
         val lateEvents = mutableListOf<WifiScanEvent>()
-        val late = collect(coordinator, lateEvents)
+        val late = collectEvents(coordinator, lateEvents)
         runCurrent()
         assertTrue(lateEvents.isEmpty())
 
@@ -75,103 +74,221 @@ class WifiScanCoordinatorTest {
     }
 
     @Test
-    fun failedBroadcastRetainsLastSuccessfulBatchAndNeverPublishesCachedSuccess() = runTest {
+    fun failedResultReadRetainsLastSuccessfulBatch() = runTest {
         val platform = FakeWifiScanPlatform()
-        val coordinator = WifiScanCoordinator(platform, FakeClock(), backgroundScope, 30_000L)
+        val coordinator = coordinator(platform)
         val events = mutableListOf<WifiScanEvent>()
-        val collector = collect(coordinator, events)
+        val collector = collectEvents(coordinator, events)
         runCurrent()
-        platform.deliver(updated = true, networks = listOf(network("real")))
+
+        platform.dispatchResultsAvailable()
         runCurrent()
         val successfulBatch = coordinator.currentBatch.value
 
-        platform.deliver(updated = false, networks = listOf(network("cached")))
+        platform.cachedFailure = SecurityException("results revoked")
+        platform.dispatchResultsAvailable()
         runCurrent()
 
         assertEquals(successfulBatch, coordinator.currentBatch.value)
         assertEquals(1, events.filterIsInstance<WifiScanEvent.Success>().size)
         assertEquals(1, events.filterIsInstance<WifiScanEvent.Failure>().size)
+        assertEquals(WifiScanReadiness.TRANSIENT_FAILURE, coordinator.readiness.value)
         collector.cancel()
     }
 
     @Test
-    fun rejectedStartScanIsFailureAndMissingPermissionIsUnsupportedWithoutRegistration() = runTest {
+    fun rejectedStartIsFailureAndMissingPermissionCanRecoverWithoutResubscribe() = runTest {
         val rejectedPlatform = FakeWifiScanPlatform(startAccepted = false)
-        val rejected = WifiScanCoordinator(rejectedPlatform, FakeClock(), backgroundScope, 30_000L)
+        val rejected = coordinator(rejectedPlatform)
         val rejectedEvents = mutableListOf<WifiScanEvent>()
-        val rejectedCollector = collect(rejected, rejectedEvents)
+        val rejectedCollector = collectEvents(rejected, rejectedEvents)
         runCurrent()
         assertEquals(1, rejectedEvents.filterIsInstance<WifiScanEvent.Failure>().size)
+        assertTrue(rejectedCollector.isActive)
         rejectedCollector.cancel()
+        runCurrent()
 
-        val blockedPlatform = FakeWifiScanPlatform(permitted = false)
-        val blocked = WifiScanCoordinator(blockedPlatform, FakeClock(), backgroundScope, 30_000L)
+        val blockedPlatform = FakeWifiScanPlatform(
+            readinessState = WifiScanReadiness.MISSING_FINE_LOCATION,
+        )
+        val blocked = coordinator(blockedPlatform)
         val blockedEvents = mutableListOf<WifiScanEvent>()
-        val blockedCollector = collect(blocked, blockedEvents)
+        val blockedCollector = collectEvents(blocked, blockedEvents)
         runCurrent()
 
         assertEquals(1, blockedEvents.filterIsInstance<WifiScanEvent.Unsupported>().size)
-        assertEquals(0, blockedPlatform.registerCount)
-        assertEquals(0, blockedPlatform.startScanCount)
+        assertEquals(1, blockedPlatform.registerCount)
+        assertEquals(0, blockedPlatform.startScanCalls)
         assertNull(blocked.currentBatch.value)
+        assertTrue(blockedCollector.isActive)
+
+        blockedPlatform.readinessState = WifiScanReadiness.READY
+        blocked.notifyPlatformStateChanged()
+        runCurrent()
+
+        assertEquals(1, blockedPlatform.startScanCalls)
+        assertEquals(1, blockedPlatform.cachedResultsCalls)
+        assertTrue(blockedCollector.isActive)
         blockedCollector.cancel()
     }
 
-    private fun kotlinx.coroutines.test.TestScope.collect(
+    @Test
+    fun collectorStaysAliveUntilFirstPermissionGrant() = runTest {
+        val platform = FakeWifiScanPlatform(WifiScanReadiness.MISSING_FINE_LOCATION)
+        val coordinator = coordinator(platform)
+        val job = collectRawResults(coordinator)
+        runCurrent()
+
+        assertTrue(job.isActive)
+        assertEquals(0, platform.startScanCalls)
+        assertEquals(0, platform.cachedResultsCalls)
+
+        platform.readinessState = WifiScanReadiness.READY
+        coordinator.notifyPlatformStateChanged()
+        runCurrent()
+
+        assertEquals(1, platform.startScanCalls)
+        assertEquals(1, platform.cachedResultsCalls)
+        assertTrue(job.isActive)
+    }
+
+    @Test
+    fun blockedPlatformStatesNeverTouchScanApis() = runTest {
+        val platform = FakeWifiScanPlatform(WifiScanReadiness.LOCATION_SERVICES_DISABLED)
+        val coordinator = coordinator(platform)
+        val job = collectRawResults(coordinator)
+        runCurrent()
+        advanceTimeBy(1_001L)
+        runCurrent()
+
+        assertEquals(0, platform.startScanCalls)
+        assertEquals(0, platform.cachedResultsCalls)
+        assertEquals(WifiScanReadiness.LOCATION_SERVICES_DISABLED, coordinator.readiness.value)
+
+        platform.readinessState = WifiScanReadiness.WIFI_DISABLED
+        coordinator.notifyPlatformStateChanged()
+        runCurrent()
+
+        assertEquals(0, platform.startScanCalls)
+        assertEquals(0, platform.cachedResultsCalls)
+        assertEquals(WifiScanReadiness.WIFI_DISABLED, coordinator.readiness.value)
+        assertTrue(job.isActive)
+    }
+
+    @Test
+    fun securityExceptionDoesNotCloseStreamAndLaterScanRecovers() = runTest {
+        val platform = FakeWifiScanPlatform().apply {
+            startFailure = SecurityException("permission revoked")
+        }
+        val coordinator = coordinator(platform)
+        val job = collectRawResults(coordinator)
+        runCurrent()
+
+        assertEquals(WifiScanReadiness.TRANSIENT_FAILURE, coordinator.readiness.value)
+        assertTrue(job.isActive)
+
+        platform.startFailure = null
+        coordinator.notifyPlatformStateChanged()
+        runCurrent()
+
+        assertEquals(WifiScanReadiness.READY, coordinator.readiness.value)
+        assertEquals(2, platform.startScanCalls)
+        assertEquals(1, platform.cachedResultsCalls)
+        assertTrue(job.isActive)
+    }
+
+    @Test
+    fun receiverSecurityExceptionIsRecoverable() = runTest {
+        val platform = FakeWifiScanPlatform()
+        val coordinator = coordinator(platform)
+        val job = collectRawResults(coordinator)
+        runCurrent()
+
+        platform.cachedFailure = SecurityException("results revoked")
+        platform.dispatchResultsAvailable()
+        runCurrent()
+
+        assertEquals(WifiScanReadiness.TRANSIENT_FAILURE, coordinator.readiness.value)
+        assertTrue(job.isActive)
+
+        platform.cachedFailure = null
+        platform.dispatchResultsAvailable()
+        runCurrent()
+
+        assertEquals(WifiScanReadiness.READY, coordinator.readiness.value)
+        assertTrue(job.isActive)
+    }
+
+    private fun TestScope.coordinator(
+        platform: FakeWifiScanPlatform,
+    ): WifiScanCoordinator = WifiScanCoordinator(
+        platform = platform,
+        clock = FakeClock(),
+        scope = backgroundScope,
+        readyIntervalMs = 30_000L,
+        blockedRecheckMs = 1_000L,
+    )
+
+    private fun TestScope.collectEvents(
         coordinator: WifiScanCoordinator,
         sink: MutableList<WifiScanEvent>,
     ): Job = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
         coordinator.scanEvents().collect(sink::add)
     }
 
-    private fun network(suffix: String) = WifiScanNetwork(
-        ssid = "ssid-$suffix",
-        bssid = "AA:BB:CC:DD:EE:$suffix",
-        capabilities = "[ESS]",
-        rssi = -50,
-        frequencyMhz = 2_437,
-    )
+    private fun TestScope.collectRawResults(coordinator: WifiScanCoordinator): Job =
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            coordinator.scanResults().collect()
+        }
 
     private class FakeClock : MonotonicClock {
         var elapsed = 1_000L
         var wall = 10_000L
+
         override fun nowElapsedMs(): Long = elapsed++
         override fun nowWallClock(): Instant = Instant.ofEpochMilli(wall++)
         override fun ticks(periodMs: Long): Flow<Long> = MutableStateFlow(elapsed)
     }
+}
 
-    private class FakeWifiScanPlatform(
-        private val permitted: Boolean = true,
-        private val startAccepted: Boolean = true,
-    ) : WifiScanPlatform {
-        var registerCount = 0
-        var unregisterCount = 0
-        var startScanCount = 0
-        private var callback: ((Boolean) -> Unit)? = null
-        private var networks = emptyList<WifiScanNetwork>()
+private class FakeWifiScanPlatform(
+    var readinessState: WifiScanReadiness = WifiScanReadiness.READY,
+    var startAccepted: Boolean = true,
+) : WifiScanPlatform {
+    var registerCount = 0
+    var unregisterCount = 0
+    var startScanCalls = 0
+    var cachedResultsCalls = 0
+    var startFailure: SecurityException? = null
+    var cachedFailure: SecurityException? = null
+    var results: List<ScanResult> = emptyList()
+    private var resultsCallback: (() -> Unit)? = null
 
-        override fun hasRequiredPermission(): Boolean = permitted
+    override fun readiness(): WifiScanReadiness = readinessState
 
-        override fun registerResultsListener(listener: (Boolean) -> Unit) {
-            registerCount += 1
-            callback = listener
-        }
+    override fun registerResultsReceiver(onResultsAvailable: () -> Unit) {
+        registerCount += 1
+        resultsCallback = onResultsAvailable
+    }
 
-        override fun unregisterResultsListener() {
-            unregisterCount += 1
-            callback = null
-        }
+    override fun unregisterResultsReceiver() {
+        unregisterCount += 1
+        resultsCallback = null
+    }
 
-        override fun startScan(): Boolean {
-            startScanCount += 1
-            return startAccepted
-        }
+    override fun startScan(): Boolean {
+        startScanCalls += 1
+        startFailure?.let { throw it }
+        return startAccepted
+    }
 
-        override fun readLatest(): WifiScanReading = WifiScanReading(networks = networks)
+    override fun cachedResults(): List<ScanResult> {
+        cachedResultsCalls += 1
+        cachedFailure?.let { throw it }
+        return results
+    }
 
-        fun deliver(updated: Boolean, networks: List<WifiScanNetwork>) {
-            this.networks = networks
-            callback?.invoke(updated)
-        }
+    fun dispatchResultsAvailable() {
+        resultsCallback?.invoke()
     }
 }

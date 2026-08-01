@@ -8,7 +8,9 @@ set(SRCS
     "detection/french_dri_parser.c"
     "detection/open_drone_id_parser.c"
     "detection/ble_remote_id.c"
+    "detection/ble_investigator.c"
     "detection/ble_fingerprint.c"
+    "detection/ble_threat_detector.c"
     "detection/ble_ja3.c"
     "detection/glasses_detector.c"
     "detection/bayesian_fusion.c"
@@ -21,11 +23,32 @@ set(SRCS
     "../../shared/detection_policy.c"
     "../../shared/privacy_rf_signatures.c"
     "../../shared/badge_display_policy.c"
+    "../../shared/ble_investigation_protocol.c"
     "../../shared/time_sync_policy.c"
     "../../shared/psram_alloc.c"
+    "../../shared/firmware_version_order.c"
+    "../../shared/firmware_image_contract.c"
+    "../../shared/firmware_json_schema.c"
+    "../../shared/firmware_json_schema_registry.c"
+    "../../shared/mac_address_policy.c"
+    "../../shared/scanner_uart_line_framer.c"
+    "../../shared/scanner_command_schema_registry.c"
+    "../../shared/scanner_command_ingress.c"
 )
 
-set(REQUIRES esp_wifi driver nvs_flash esp_timer cjson esp_event esp_netif app_update esp_partition esp_psram bt)
+if("$ENV{PIOENV}" MATCHES "fof_badge")
+    list(APPEND SRCS "../../shared/badge_easter_egg.c")
+endif()
+
+if("$ENV{PIOENV}" STREQUAL "scanner-s3-combo-fof_badge-con-crud-canary")
+    list(APPEND SRCS
+        "detection/badge_con_observer.c"
+        "../../shared/badge_con_protocol.c"
+        "../../shared/badge_con_encounter.c"
+    )
+endif()
+
+set(REQUIRES esp_wifi driver nvs_flash esp_timer cjson esp_event esp_netif app_update esp_partition esp_psram bt mbedtls)
 
 idf_component_register(
     SRCS ${SRCS}

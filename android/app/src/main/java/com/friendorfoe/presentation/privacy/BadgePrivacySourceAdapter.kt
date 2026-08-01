@@ -1,11 +1,9 @@
 package com.friendorfoe.presentation.privacy
 
-import com.friendorfoe.data.badge.BadgeConnectionPhase
-import com.friendorfoe.data.badge.BadgeControlPort
-import com.friendorfoe.data.badge.BadgeControlStatus
-import com.friendorfoe.data.badge.BadgeRepositoryState
 import com.friendorfoe.data.badge.BadgeThreatEntity
-import com.friendorfoe.data.badge.BadgeTransport
+import com.friendorfoe.data.badge.BadgeUsbRepository
+import com.friendorfoe.data.badge.BadgeUsbState
+import com.friendorfoe.data.badge.BadgeUsbStatus
 import com.friendorfoe.data.time.MonotonicClock
 import com.friendorfoe.di.ApplicationScope
 import com.friendorfoe.detection.PrivacyCategory
@@ -18,11 +16,26 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 @Singleton
-class BadgePrivacySourceAdapter @Inject internal constructor(
-    private val controlPort: BadgeControlPort,
+class BadgePrivacySourceAdapter internal constructor(
+    private val state: StateFlow<BadgeUsbState>,
     private val clock: MonotonicClock,
     @ApplicationScope private val scope: CoroutineScope,
+    private val requestConnection: () -> Unit,
+    private val requestStatus: () -> Unit,
 ) : PrivacySourceAdapter {
+
+    @Inject
+    internal constructor(
+        repository: BadgeUsbRepository,
+        clock: MonotonicClock,
+        @ApplicationScope scope: CoroutineScope,
+    ) : this(
+        state = repository.state,
+        clock = clock,
+        scope = scope,
+        requestConnection = repository::requestConnection,
+        requestStatus = repository::requestStatus,
+    )
 
     override val adapterId: String = "badge"
     override val representedSources: Set<PrivacySourceKind> = setOf(
@@ -37,10 +50,10 @@ class BadgePrivacySourceAdapter @Inject internal constructor(
     override val snapshots: StateFlow<List<PrivacySourceSnapshot>> = _snapshots.asStateFlow()
 
     init {
-        _snapshots.value = mapState(controlPort.state.value)
+        _snapshots.value = mapState(state.value)
         scope.launch {
-            controlPort.state.collect { state ->
-                _snapshots.value = mapState(state)
+            state.collect { badgeState ->
+                _snapshots.value = mapState(badgeState)
             }
         }
     }
@@ -48,14 +61,14 @@ class BadgePrivacySourceAdapter @Inject internal constructor(
     override suspend fun recover(source: PrivacySourceKind): PrivacyRecoveryResult {
         if (source !in representedSources) return PrivacyRecoveryResult.SourceUnavailable(source)
         resetLoadingDeadline(source)
-        controlPort.requestConnection()
-        controlPort.refreshStatus()
+        requestConnection()
+        requestStatus()
         return PrivacyRecoveryResult.Recovered(source)
     }
 
-    private fun mapState(state: BadgeRepositoryState): List<PrivacySourceSnapshot> {
-        val transport = state.connection.transport
-        if (transport == null) {
+    private fun mapState(state: BadgeUsbState): List<PrivacySourceSnapshot> {
+        val source = state.sourceKindOrNull()
+        if (source == null) {
             return listOf(
                 PrivacySourceSnapshot(
                     health = PrivacySourceHealth(
@@ -71,13 +84,12 @@ class BadgePrivacySourceAdapter @Inject internal constructor(
                 ),
             )
         }
-        val source = transport.sourceKind()
         val status = state.controlStatus
         val previous = _snapshots.value.singleOrNull()
             ?.takeIf { it.health.source == source }
+        val healthState = state.status.sourceHealth(hasStatus = status != null)
 
         if (status == null) {
-            val healthState = state.connection.phase.healthWithoutStatus()
             return listOf(
                 PrivacySourceSnapshot(
                     health = PrivacySourceHealth(
@@ -87,9 +99,9 @@ class BadgePrivacySourceAdapter @Inject internal constructor(
                         lastSuccessWallMs = previous?.health?.lastSuccessWallMs,
                         recoveryLabel = if (healthState == SourceHealthState.FAILED) "Reconnect" else null,
                         message = when (healthState) {
-                            SourceHealthState.FAILED -> "Badge status is unavailable"
-                            SourceHealthState.STALE -> "Badge status is stale"
+                            SourceHealthState.FAILED -> state.message.ifBlank { "Badge status is unavailable" }
                             SourceHealthState.PAUSED -> "No badge connected"
+                            SourceHealthState.PERMISSION_BLOCKED -> "Badge permission is required"
                             else -> "Waiting for badge status"
                         },
                     ),
@@ -99,38 +111,33 @@ class BadgePrivacySourceAdapter @Inject internal constructor(
             )
         }
 
-        val generation = state.connection.transportGeneration ?: 0L
+        val nowElapsed = clock.nowElapsedMs()
+        val nowWall = clock.nowWallClock().toEpochMilli()
+        val statusElapsed = status.entities.mapNotNull { entity ->
+            entity.snapshotAtElapsedMs.takeIf { it >= 0L }
+        }.maxOrNull() ?: nowElapsed
+        val statusWall = subtractSaturated(nowWall, elapsedDelta(nowElapsed, statusElapsed))
         val rows = status.entities.mapIndexedNotNull { index, entity ->
+            val snapshotElapsed = entity.snapshotAtElapsedMs.takeIf { it >= 0L } ?: statusElapsed
+            val snapshotWall = subtractSaturated(nowWall, elapsedDelta(nowElapsed, snapshotElapsed))
             mapEntity(
                 entity = entity,
                 source = source,
-                status = status,
-                ephemeralRecordId = "ephemeral:$generation:${status.receivedAtElapsedMs}:$index",
+                snapshotAtElapsedMs = snapshotElapsed,
+                snapshotAtWallMs = snapshotWall,
+                ephemeralRecordId = "ephemeral:${source.preferenceId}:$snapshotElapsed:$index",
             )
         }.sortedBy { it.observationKey.encoded }
-        val healthState = when (state.connection.phase) {
-            BadgeConnectionPhase.LIVE -> SourceHealthState.LIVE
-            BadgeConnectionPhase.STALE,
-            BadgeConnectionPhase.EXPIRED,
-            -> SourceHealthState.STALE
-            BadgeConnectionPhase.ERROR -> SourceHealthState.FAILED
-            BadgeConnectionPhase.PERMISSION_NEEDED -> SourceHealthState.PERMISSION_BLOCKED
-            BadgeConnectionPhase.DISCONNECTED -> SourceHealthState.PAUSED
-            BadgeConnectionPhase.CONNECTING,
-            BadgeConnectionPhase.TRANSPORT_OPEN,
-            -> SourceHealthState.LOADING
-        }
         return listOf(
             PrivacySourceSnapshot(
                 health = PrivacySourceHealth(
                     source = source,
                     state = healthState,
-                    lastSuccessElapsedMs = status.receivedAtElapsedMs,
-                    lastSuccessWallMs = status.receivedAtWallClock.toEpochMilli(),
+                    lastSuccessElapsedMs = statusElapsed,
+                    lastSuccessWallMs = statusWall,
                     recoveryLabel = if (healthState == SourceHealthState.FAILED) "Reconnect" else null,
                     message = when (healthState) {
-                        SourceHealthState.STALE -> "Badge status is stale"
-                        SourceHealthState.FAILED -> "Badge status failed"
+                        SourceHealthState.FAILED -> state.message.ifBlank { "Badge status failed" }
                         SourceHealthState.PERMISSION_BLOCKED -> "Badge permission is required"
                         SourceHealthState.PAUSED -> "No badge connected"
                         SourceHealthState.LOADING -> "Waiting for current badge status"
@@ -142,6 +149,42 @@ class BadgePrivacySourceAdapter @Inject internal constructor(
             ).preserveLoadingStartFrom(previous),
         )
     }
+
+    private fun BadgeUsbState.sourceKindOrNull(): PrivacySourceKind? = when (status) {
+        BadgeUsbStatus.AP_CONNECTED -> PrivacySourceKind.BADGE_AP
+        BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED -> PrivacySourceKind.BADGE_DEBUG_BRIDGE
+        BadgeUsbStatus.BLE_CONNECTED -> PrivacySourceKind.BADGE_BLE
+        BadgeUsbStatus.CONNECTED,
+        BadgeUsbStatus.PERMISSION_NEEDED,
+        -> PrivacySourceKind.BADGE_USB
+        BadgeUsbStatus.CONNECTING,
+        BadgeUsbStatus.ERROR,
+        BadgeUsbStatus.DISCONNECTED,
+        -> when {
+            transportLabel.contains("debug", ignoreCase = true) ->
+                PrivacySourceKind.BADGE_DEBUG_BRIDGE
+            transportLabel.contains("badge ap", ignoreCase = true) ||
+                transportLabel.equals("ap", ignoreCase = true) -> PrivacySourceKind.BADGE_AP
+            transportLabel.contains("ble", ignoreCase = true) -> PrivacySourceKind.BADGE_BLE
+            transportLabel.contains("usb", ignoreCase = true) -> PrivacySourceKind.BADGE_USB
+            else -> null
+        }
+    }
+
+    private fun BadgeUsbStatus.sourceHealth(hasStatus: Boolean): SourceHealthState = when (this) {
+        BadgeUsbStatus.DISCONNECTED -> SourceHealthState.PAUSED
+        BadgeUsbStatus.PERMISSION_NEEDED -> SourceHealthState.PERMISSION_BLOCKED
+        BadgeUsbStatus.CONNECTING -> SourceHealthState.LOADING
+        BadgeUsbStatus.ERROR -> SourceHealthState.FAILED
+        BadgeUsbStatus.AP_CONNECTED,
+        BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
+        BadgeUsbStatus.BLE_CONNECTED,
+        BadgeUsbStatus.CONNECTED,
+        -> if (hasStatus) SourceHealthState.LIVE else SourceHealthState.LOADING
+    }
+
+    private fun elapsedDelta(nowElapsedMs: Long, snapshotElapsedMs: Long): Long =
+        if (snapshotElapsedMs >= nowElapsedMs) 0L else nowElapsedMs - snapshotElapsedMs
 
     private fun resetLoadingDeadline(source: PrivacySourceKind) {
         _snapshots.value = _snapshots.value.map { snapshot ->
@@ -157,7 +200,8 @@ class BadgePrivacySourceAdapter @Inject internal constructor(
         internal fun mapEntity(
             entity: BadgeThreatEntity,
             source: PrivacySourceKind,
-            status: BadgeControlStatus,
+            snapshotAtElapsedMs: Long,
+            snapshotAtWallMs: Long,
             ephemeralRecordId: String,
         ): PrivacyFinding? {
             if (entity.stale) return null
@@ -196,13 +240,11 @@ class BadgePrivacySourceAdapter @Inject internal constructor(
             } else {
                 category
             }
-            val receivedElapsed = status.receivedAtElapsedMs
-            val receivedWall = status.receivedAtWallClock.toEpochMilli()
             val lastAgeMs = secondsToMillisSaturated(entity.lastSeenSeconds.coerceAtLeast(0))
             val firstAgeMs = secondsToMillisSaturated(entity.ageSeconds.coerceAtLeast(0))
-            val lastObservedElapsed = subtractSaturated(receivedElapsed, lastAgeMs)
-            val lastWall = subtractSaturated(receivedWall, lastAgeMs)
-            val firstWall = subtractSaturated(receivedWall, firstAgeMs)
+            val lastObservedElapsed = subtractSaturated(snapshotAtElapsedMs, lastAgeMs)
+            val lastWall = subtractSaturated(snapshotAtWallMs, lastAgeMs)
+            val firstWall = subtractSaturated(snapshotAtWallMs, firstAgeMs)
             val signal = when {
                 entity.rssi != 0 -> entity.rssi
                 entity.bestRssi != 0 -> entity.bestRssi
@@ -242,26 +284,6 @@ class BadgePrivacySourceAdapter @Inject internal constructor(
                 ).takeIf { appleFamily || listening },
             )
             return PrivacyFindingNormalizer.normalize(raw)
-        }
-
-        private fun BadgeTransport.sourceKind(): PrivacySourceKind = when (this) {
-            BadgeTransport.USB_SERIAL -> PrivacySourceKind.BADGE_USB
-            BadgeTransport.LOCAL_AP_HTTP -> PrivacySourceKind.BADGE_AP
-            BadgeTransport.BLE_GATT -> PrivacySourceKind.BADGE_BLE
-            BadgeTransport.DEBUG_BRIDGE -> PrivacySourceKind.BADGE_DEBUG_BRIDGE
-        }
-
-        private fun BadgeConnectionPhase.healthWithoutStatus(): SourceHealthState = when (this) {
-            BadgeConnectionPhase.PERMISSION_NEEDED -> SourceHealthState.PERMISSION_BLOCKED
-            BadgeConnectionPhase.ERROR -> SourceHealthState.FAILED
-            BadgeConnectionPhase.STALE,
-            BadgeConnectionPhase.EXPIRED,
-            -> SourceHealthState.STALE
-            BadgeConnectionPhase.DISCONNECTED -> SourceHealthState.PAUSED
-            BadgeConnectionPhase.CONNECTING,
-            BadgeConnectionPhase.TRANSPORT_OPEN,
-            BadgeConnectionPhase.LIVE,
-            -> SourceHealthState.LOADING
         }
 
         private fun categoryFor(entity: BadgeThreatEntity): PrivacyCategory {

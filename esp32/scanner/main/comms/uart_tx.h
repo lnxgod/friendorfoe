@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include "detection_types.h"
 #include "badge_display_policy.h"
+#include "badge_easter_egg.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
@@ -135,7 +136,13 @@ bool uart_tx_firmware_backoff_active(void);
  */
 void uart_tx_send_raw_json(const char *json_str);
 
+#if defined(FOF_DC34_GAME_CANARY)
+void uart_tx_set_firmware_quiet_window(bool active);
+#endif
+
 #ifdef FOF_BADGE_VARIANT
+void uart_tx_note_badge_easter_egg(badge_easter_egg_source_t source);
+
 bool uart_tx_set_display_policy_json(const char *json,
                                      uint32_t expected_hash,
                                      char *err,

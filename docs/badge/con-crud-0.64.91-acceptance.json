@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "candidate_version": "0.64.91-badge-defcon34",
+  "artifacts": {
+    "scanner": {
+      "sha256": "2b4f93827fe93245d3b86a5cf4fa02c967b1ba403d74ec284f59987d7f14b21e",
+      "image_bytes": 1216736,
+      "max_image_bytes": 1363148,
+      "internal_ram_bytes": 158612,
+      "max_internal_ram_bytes": 180224
+    },
+    "uplink": {
+      "sha256": "38b68a895b8bf53ac897e46592b44a18dfddd4f64a240f70025394be4854d43d",
+      "image_bytes": 1467440,
+      "max_image_bytes": 1468006,
+      "internal_ram_bytes": 209116,
+      "max_internal_ram_bytes": 212992
+    }
+  },
+  "physically_accepted": false,
+  "physical_evidence": []
+}

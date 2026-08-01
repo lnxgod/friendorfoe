@@ -21,6 +21,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.friendorfoe.data.preferences.AppLaunchState
 import com.friendorfoe.data.preferences.sanitizeTopLevelRoute
+import com.friendorfoe.data.repository.RuntimePermissionChangeNotifier
+import com.friendorfoe.detection.WifiScanCoordinator
 import com.friendorfoe.presentation.alerts.SkyAlertMonitorViewModel
 import com.friendorfoe.presentation.components.FofLaunchPlaceholder
 import com.friendorfoe.presentation.navigation.BackDisposition
@@ -37,7 +39,6 @@ import com.friendorfoe.presentation.permissions.PermissionStateRepository
 import com.friendorfoe.presentation.permissions.capturePermissionRationales
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import com.friendorfoe.presentation.welcome.WelcomeScreen
-import com.friendorfoe.data.repository.RuntimePermissionChangeNotifier
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.launch
@@ -46,6 +47,7 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     @Inject lateinit var permissionStateRepository: PermissionStateRepository
     @Inject lateinit var runtimePermissionChangeNotifier: RuntimePermissionChangeNotifier
+    @Inject lateinit var wifiScanCoordinator: WifiScanCoordinator
 
     private lateinit var pendingPrivacyRoute: PendingPrivacyRouteQueue
 
@@ -77,7 +79,10 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Activity-backed rationale evidence is captured before any coroutine can suspend.
         val rationales = capturePermissionRationales(this)
-        runtimePermissionChangeNotifier.onRuntimePermissionsChanged()
+        notifyRuntimePlatformStateChanged(
+            runtimePermissionChangeNotifier,
+            wifiScanCoordinator,
+        )
         lifecycleScope.launch {
             permissionStateRepository.refresh(rationales)
         }
@@ -106,6 +111,14 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val SAVED_PRIVACY_ROUTE = "pending_privacy_finding_route"
     }
+}
+
+internal fun notifyRuntimePlatformStateChanged(
+    runtimePermissionChangeNotifier: RuntimePermissionChangeNotifier,
+    wifiScanCoordinator: WifiScanCoordinator,
+) {
+    runtimePermissionChangeNotifier.onRuntimePermissionsChanged()
+    wifiScanCoordinator.notifyPlatformStateChanged()
 }
 
 @Composable

@@ -1,12 +1,107 @@
 #include "unity.h"
 
 #include "ble_fingerprint.h"
+#include "badge_easter_egg.h"
+#include "constants.h"
 #include "detection_policy.h"
 #include "detection_types.h"
+#include "open_drone_id_parser.h"
 #include "privacy_rf_signatures.h"
 #include "wifi_oui_database.h"
 
 #include <string.h>
+
+#define BLE_REMOTE_ID_HANDOFF_TEST
+#include "../scanner/main/detection/ble_remote_id.c"
+#undef BLE_REMOTE_ID_HANDOFF_TEST
+
+static void make_ble_rid_basic_id(uint8_t message[ODID_MSG_SIZE],
+                                  const char *basic_id)
+{
+    memset(message, 0, ODID_MSG_SIZE);
+    message[0] = (uint8_t)(ODID_MSG_TYPE_BASIC_ID << 4);
+    message[1] = (uint8_t)((1 << 4) | 2);
+    size_t length = strlen(basic_id);
+    if (length > 20) {
+        length = 20;
+    }
+    memcpy(&message[2], basic_id, length);
+}
+
+static void write_ble_rid_int32_le(uint8_t *message,
+                                   size_t offset,
+                                   int32_t value)
+{
+    message[offset] = (uint8_t)(value & 0xff);
+    message[offset + 1] = (uint8_t)((value >> 8) & 0xff);
+    message[offset + 2] = (uint8_t)((value >> 16) & 0xff);
+    message[offset + 3] = (uint8_t)((value >> 24) & 0xff);
+}
+
+static void make_ble_rid_hell_location(uint8_t message[ODID_MSG_SIZE])
+{
+    memset(message, 0, ODID_MSG_SIZE);
+    message[0] = (uint8_t)(ODID_MSG_TYPE_LOCATION << 4);
+    write_ble_rid_int32_le(message, 5, 424347200);
+    write_ble_rid_int32_le(message, 9, -839850000);
+    message[15] = 0x04;
+    message[16] = 0x0d; /* 3332 half-metres on wire => 666m. */
+    message[17] = 0xff;
+    message[18] = 0xff;
+}
+
+static bool ble_rid_state_matches_hell(const odid_state_t *state)
+{
+    badge_easter_egg_remote_id_t remote_id = {
+        .has_basic_id = state->has_basic_id,
+        .basic_id = state->drone_id,
+        .has_location = state->has_location,
+        .latitude_e7 = state->latitude_e7,
+        .longitude_e7 = state->longitude_e7,
+        .has_geodetic_altitude = state->has_geodetic_altitude,
+        .geodetic_altitude_half_m = state->geodetic_altitude_half_m,
+    };
+    return badge_easter_egg_remote_id_matches(&remote_id);
+}
+
+void test_ble_remote_id_accumulator_keeps_normal_multiframe_within_window(void)
+{
+    odid_state_t state;
+    odid_state_init(&state, "AA:BB:CC:DD:EE:FF", 1000);
+
+    uint8_t basic_id[ODID_MSG_SIZE];
+    make_ble_rid_basic_id(basic_id, "fof-michagain");
+    odid_parse_message(basic_id, sizeof(basic_id), &state, 0);
+
+    TEST_ASSERT_FALSE(ble_remote_id_reset_accumulator_if_stale(
+        &state, 1000, 30999));
+
+    uint8_t location[ODID_MSG_SIZE];
+    make_ble_rid_hell_location(location);
+    odid_parse_message(location, sizeof(location), &state, 0);
+    TEST_ASSERT_TRUE(ble_rid_state_matches_hell(&state));
+}
+
+void test_ble_remote_id_accumulator_resets_same_mac_before_stale_location(void)
+{
+    odid_state_t state;
+    odid_state_init(&state, "AA:BB:CC:DD:EE:FF", 1000);
+
+    uint8_t basic_id[ODID_MSG_SIZE];
+    make_ble_rid_basic_id(basic_id, "fof-michagain");
+    odid_parse_message(basic_id, sizeof(basic_id), &state, 0);
+
+    /* Other ODID components may keep the address active, but they must not
+     * extend the lifetime of a Basic ID captured at the start of the window. */
+    TEST_ASSERT_TRUE(ble_remote_id_reset_accumulator_if_stale(
+        &state, 30900, 31000));
+    TEST_ASSERT_EQUAL_STRING("AA:BB:CC:DD:EE:FF", state.device_address);
+
+    uint8_t location[ODID_MSG_SIZE];
+    make_ble_rid_hell_location(location);
+    odid_parse_message(location, sizeof(location), &state, 0);
+    TEST_ASSERT_FALSE(ble_rid_state_matches_hell(&state));
+}
 
 void test_probe_broadcasts_still_drop(void)
 {
@@ -53,12 +148,44 @@ void test_wifi_oui_database_includes_flock_safety(void)
     TEST_ASSERT_NOT_NULL(entry);
     TEST_ASSERT_EQUAL_STRING("Flock Safety", entry->manufacturer);
     TEST_ASSERT_FALSE(entry->high_false_positive);
+    TEST_ASSERT_EQUAL(OUI_ROLE_PRIVACY_FLOCK, entry->role);
     if (field) {
         TEST_ASSERT_NOT_EQUAL(0, strcmp("Flock Safety", field->manufacturer));
     }
     if (wildcard) {
         TEST_ASSERT_NOT_EQUAL(0, strcmp("Flock Safety", wildcard->manufacturer));
     }
+}
+
+void test_wifi_oui_database_assigns_explicit_detection_roles(void)
+{
+    static const uint8_t privacy_ouis[][3] = {
+        {0xE0, 0xA7, 0x00}, /* Verkada */
+        {0xCC, 0x47, 0xBD}, /* Rhombus */
+        {0x00, 0x25, 0xDF}, /* Axon */
+        {0x2C, 0x42, 0x05}, /* Lytx */
+        {0x50, 0xDF, 0x95},
+        {0x58, 0xA7, 0x48},
+        {0x70, 0xE4, 0x6E},
+    };
+    const uint8_t dji_oui[3] = {0x60, 0x60, 0x1F};
+    const uint8_t generic_module_oui[3] = {0x24, 0x0A, 0xC4};
+
+    for (size_t i = 0; i < sizeof(privacy_ouis) / sizeof(privacy_ouis[0]); ++i) {
+        const oui_entry_t *entry = wifi_oui_lookup_raw(privacy_ouis[i]);
+        TEST_ASSERT_NOT_NULL(entry);
+        TEST_ASSERT_EQUAL(OUI_ROLE_PRIVACY_INFRASTRUCTURE, entry->role);
+        TEST_ASSERT_FALSE(entry->high_false_positive);
+    }
+
+    const oui_entry_t *dji = wifi_oui_lookup_raw(dji_oui);
+    TEST_ASSERT_NOT_NULL(dji);
+    TEST_ASSERT_EQUAL(OUI_ROLE_DRONE, dji->role);
+
+    const oui_entry_t *generic_module = wifi_oui_lookup_raw(generic_module_oui);
+    TEST_ASSERT_NOT_NULL(generic_module);
+    TEST_ASSERT_EQUAL(OUI_ROLE_ENRICHMENT_ONLY, generic_module->role);
+    TEST_ASSERT_TRUE(generic_module->high_false_positive);
 }
 
 void test_wifi_oui_database_normalizes_flock_safety_mac_formats(void)
@@ -537,6 +664,26 @@ void test_ble_fingerprint_meta_feb8_is_generic_meta_device(void)
     TEST_ASSERT_EQUAL_STRING("uuid16:0xFEB8", fp.class_reason);
 }
 
+void test_ble_remote_id_only_specific_meta_fingerprint_drives_badge_status(void)
+{
+    ble_fingerprint_t generic_meta = {
+        .device_type = BLE_DEV_META_DEVICE,
+        .company_id = 0x01AB,
+    };
+    ble_fingerprint_t quest = {
+        .device_type = BLE_DEV_META_DEVICE,
+        .company_id = 0x058E,
+    };
+    ble_fingerprint_t glasses = {
+        .device_type = BLE_DEV_META_GLASSES,
+        .company_id = 0x0D53,
+    };
+
+    TEST_ASSERT_FALSE(ble_remote_id_fingerprint_is_strong_meta(&generic_meta));
+    TEST_ASSERT_FALSE(ble_remote_id_fingerprint_is_strong_meta(&quest));
+    TEST_ASSERT_TRUE(ble_remote_id_fingerprint_is_strong_meta(&glasses));
+}
+
 void test_ble_fingerprint_luxottica_cid_is_meta_glasses(void)
 {
     static const uint8_t adv[] = {
@@ -672,6 +819,112 @@ void test_ble_fingerprint_unikey_company_id_is_not_pebblebee_tracker(void)
     TEST_ASSERT_FALSE(fp.is_tracker);
 }
 
+void test_ble_fingerprint_serial_uuids_are_not_static_skimmers(void)
+{
+    const uint8_t serial_uuids[][4] = {
+        {3, 0x16, 0xE0, 0xFF},
+        {3, 0x16, 0xF0, 0xFF},
+    };
+
+    TEST_ASSERT_EQUAL_INT(25, BLE_DEV_CARD_SKIMMER);
+    TEST_ASSERT_EQUAL_INT(38, BLE_DEV_DRONE_OTHER);
+    TEST_ASSERT_EQUAL_INT(39, BLE_DEV_PAIRING_SPAM);
+    TEST_ASSERT_EQUAL_INT(40, BLE_DEV_SERIAL_SKIMMER);
+
+    for (size_t i = 0; i < sizeof(serial_uuids) / sizeof(serial_uuids[0]); i++) {
+        ble_fingerprint_t fp;
+        ble_fingerprint_compute(serial_uuids[i], sizeof(serial_uuids[i]),
+                                1, 0, &fp);
+
+        TEST_ASSERT_EQUAL(BLE_DEV_UNKNOWN, fp.device_type);
+        TEST_ASSERT_NOT_EQUAL(BLE_DEV_SERIAL_SKIMMER, fp.device_type);
+    }
+}
+
+void test_ble_fingerprint_known_product_is_trusted_serial_identity(void)
+{
+    ble_fingerprint_t fp = {.device_type = BLE_DEV_META_GLASSES};
+    strcpy(fp.class_reason, "name:Ray-Ban Meta");
+
+    TEST_ASSERT_TRUE(ble_fingerprint_has_trusted_product_identity(&fp));
+}
+
+void test_ble_fingerprint_unknown_and_serial_candidates_are_not_trusted(void)
+{
+    ble_fingerprint_t unknown = {.device_type = BLE_DEV_UNKNOWN};
+    ble_fingerprint_t card = {.device_type = BLE_DEV_CARD_SKIMMER};
+    ble_fingerprint_t pairing = {.device_type = BLE_DEV_PAIRING_SPAM};
+    ble_fingerprint_t serial = {.device_type = BLE_DEV_SERIAL_SKIMMER};
+    ble_fingerprint_t invalid = {.device_type = BLE_DEV_COUNT};
+    strcpy(unknown.class_reason, "name:unknown");
+    strcpy(card.class_reason, "name:BT05");
+    strcpy(pairing.class_reason, "behavioral:pairing_spam");
+    strcpy(serial.class_reason, "behavioral:serial_skimmer");
+    strcpy(invalid.class_reason, "name:invalid");
+
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(NULL));
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&unknown));
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&card));
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&pairing));
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&serial));
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&invalid));
+}
+
+void test_ble_fingerprint_empty_and_serial_only_reasons_are_not_trusted(void)
+{
+    const char *serial_only_reasons[] = {
+        "uuid16:0xFFE0",
+        "uuid16:0xFFF0",
+        "svc_data:0xFFE0",
+        "svc_data:0xFFF0",
+    };
+    ble_fingerprint_t fp = {.device_type = BLE_DEV_META_GLASSES};
+
+    TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&fp));
+    for (size_t i = 0;
+         i < sizeof(serial_only_reasons) / sizeof(serial_only_reasons[0]);
+         ++i) {
+        strcpy(fp.class_reason, serial_only_reasons[i]);
+        TEST_ASSERT_FALSE(ble_fingerprint_has_trusted_product_identity(&fp));
+    }
+}
+
+void test_ble_remote_id_public_serial_unknown_handoff_is_untrusted(void)
+{
+    const uint8_t mac[6] = {0xC0, 0x98, 0xE5, 0x00, 0x00, 0x01};
+    ble_fingerprint_t fp = {
+        .device_type = BLE_DEV_UNKNOWN,
+        .company_id = 0x1234,
+    };
+    ble_threat_observation_t observation;
+    strcpy(fp.local_name, "BT");
+    strcpy(fp.class_reason, "uuid16:0xFFE0");
+
+    ble_remote_id_prepare_behavioral_observation(
+        mac, -62, 0, true, 5100, &fp, &observation);
+
+    TEST_ASSERT_EQUAL_UINT8(0, observation.addr_type);
+    TEST_ASSERT_FALSE(observation.trusted_identity);
+}
+
+void test_ble_remote_id_recognized_product_handoff_is_trusted(void)
+{
+    const uint8_t mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
+    ble_fingerprint_t fp = {
+        .device_type = BLE_DEV_META_GLASSES,
+        .company_id = 0x01AB,
+    };
+    ble_threat_observation_t observation;
+    strcpy(fp.local_name, "Ray-Ban Meta");
+    strcpy(fp.class_reason, "name:meta_glasses");
+
+    ble_remote_id_prepare_behavioral_observation(
+        mac, -48, 1, true, 5100, &fp, &observation);
+
+    TEST_ASSERT_EQUAL_UINT8(1, observation.addr_type);
+    TEST_ASSERT_TRUE(observation.trusted_identity);
+}
+
 void test_hidden_camera_ble_is_priority_not_low_value(void)
 {
     TEST_ASSERT_TRUE(fof_policy_is_priority_ble_fingerprint("Hidden Camera (suspect)"));
@@ -722,6 +975,18 @@ void test_scan_profiles_assign_slot_roles_and_calibration_override(void)
     TEST_ASSERT_EQUAL_STRING("wifi_primary", fof_policy_scan_profile_for_slot(1, false));
     TEST_ASSERT_EQUAL_STRING("calibration", fof_policy_scan_profile_for_slot(0, true));
     TEST_ASSERT_EQUAL_STRING("calibration", fof_policy_scan_profile_for_slot(1, true));
+    TEST_ASSERT_EQUAL_STRING(
+        "ble_primary",
+        fof_policy_scan_profile_for_topology(0, false, false, true));
+    TEST_ASSERT_EQUAL_STRING(
+        "wifi_primary",
+        fof_policy_scan_profile_for_topology(1, false, false, true));
+    TEST_ASSERT_EQUAL_STRING(
+        "hybrid_failover",
+        fof_policy_scan_profile_for_topology(0, false, false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "ble_primary",
+        fof_policy_scan_profile_for_topology(0, false, true, false));
 }
 
 void test_scan_profile_source_gates_normal_lanes(void)
@@ -750,6 +1015,109 @@ void test_scan_profile_source_gates_normal_lanes(void)
         "calibration", DETECTION_SRC_BLE_FINGERPRINT));
     TEST_ASSERT_FALSE(fof_policy_scan_profile_allows_source(
         "calibration", DETECTION_SRC_WIFI_AP_INVENTORY));
+}
+
+void test_badge_radio_boot_order_prioritizes_assigned_primary_and_safe_fallback(void)
+{
+    TEST_ASSERT_EQUAL(
+        FOF_POLICY_RADIO_BOOT_BLE_FIRST,
+        fof_policy_badge_radio_boot_order("ble_primary", true));
+    TEST_ASSERT_EQUAL(
+        FOF_POLICY_RADIO_BOOT_WIFI_FIRST,
+        fof_policy_badge_radio_boot_order("wifi_primary", true));
+    TEST_ASSERT_EQUAL(
+        FOF_POLICY_RADIO_BOOT_WIFI_FIRST,
+        fof_policy_badge_radio_boot_order("hybrid_failover", true));
+
+    /* Before the uplink assigns a role, preserve the last known-good badge
+     * order. Invalid/missing profiles must fail toward that same fallback. */
+    TEST_ASSERT_EQUAL(
+        FOF_POLICY_RADIO_BOOT_WIFI_FIRST,
+        fof_policy_badge_radio_boot_order("ble_primary", false));
+    TEST_ASSERT_EQUAL(
+        FOF_POLICY_RADIO_BOOT_WIFI_FIRST,
+        fof_policy_badge_radio_boot_order(NULL, true));
+    TEST_ASSERT_EQUAL(
+        FOF_POLICY_RADIO_BOOT_WIFI_FIRST,
+        fof_policy_badge_radio_boot_order("BLE_PRIMARY", true));
+}
+
+void test_badge_scanner_health_rejects_dead_primary_radio(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "missing",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", false, false, false, false, false, false,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "role_wait",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", true, false, true, false, false, false,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "cmd_wait",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", true, true, false, false, false, false,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "ble_off",
+        fof_policy_badge_scanner_health(
+            "ble_primary", true, true, true, false, false, false,
+            false, true));
+    TEST_ASSERT_EQUAL_STRING(
+        "wifi_init_failed",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", true, true, true, false, false, false,
+            true, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "wifi_off",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", true, true, true, false, true, false,
+            true, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "ok",
+        fof_policy_badge_scanner_health(
+            "ble_primary", true, true, true, true, false, false,
+            false, true));
+    TEST_ASSERT_EQUAL_STRING(
+        "ok",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", true, true, true, false, true, true,
+            true, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "wifi_init_failed",
+        fof_policy_badge_scanner_health(
+            "hybrid_failover", true, true, true, true, false, false,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "ble_off",
+        fof_policy_badge_scanner_health(
+            "hybrid_failover", true, true, true, false, true, true,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "ok",
+        fof_policy_badge_scanner_health(
+            "hybrid_failover", true, true, true, true, true, true,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "profile_invalid",
+        fof_policy_badge_scanner_health(
+            "bogus", true, true, true, true, true, true,
+            false, false));
+}
+
+void test_badge_scanner_health_requires_opposing_radio_quiescence(void)
+{
+    TEST_ASSERT_EQUAL_STRING(
+        "wifi_not_quiet",
+        fof_policy_badge_scanner_health(
+            "ble_primary", true, true, true, true, true, true,
+            false, false));
+    TEST_ASSERT_EQUAL_STRING(
+        "ble_not_quiet",
+        fof_policy_badge_scanner_health(
+            "wifi_primary", true, true, true, true, true, true,
+            false, false));
 }
 
 void test_ble_meta_reacquire_triggers_when_stale_and_advancing(void)

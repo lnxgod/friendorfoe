@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "../../shared/factory_probe_protocol.c"
+    INCLUDE_DIRS
+        "."
+        "../../shared"
+    REQUIRES
+        driver
+        esp_hw_support
+)

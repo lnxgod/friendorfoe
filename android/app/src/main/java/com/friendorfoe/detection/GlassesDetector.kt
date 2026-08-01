@@ -7,6 +7,7 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.util.Log
+import com.friendorfoe.data.DetectionPrefs
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -57,6 +58,7 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     EVENT_BADGE("Event Badges", "\uD83C\uDF9F\uFE0F", 1),
     BLE_HID("BLE Input Devices", "\u2328\uFE0F", 1),
     IOT_DEVICE("IoT Devices", "\uD83D\uDCE1", 1),
+    SECURITY_INFRASTRUCTURE("Security Infrastructure", "\uD83D\uDEE1\uFE0F", 1),
     // Threat level 0 — informational
     SMART_TV("Smart TVs", "\uD83D\uDCFA", 0),
     DRONE_CONTROLLER("Drone Controllers", "\uD83C\uDFAE", 0),
@@ -107,7 +109,9 @@ data class GlassesDetection(
      */
     val fingerprintKey: String = "mac:$mac",
     /** All MACs seen for this fingerprint since firstSeen — diagnostic + UI badge. */
-    val seenMacs: Set<String> = setOf(mac)
+    val seenMacs: Set<String> = setOf(mac),
+    val origin: PrivacyDetectionOrigin = PrivacyDetectionOrigin.ANDROID,
+    val investigationTarget: BleInvestigationTarget? = null,
 )
 
 sealed interface GlassesScanEvent {
@@ -181,9 +185,55 @@ private data class RegisteredBleScan(
 @Singleton
 class GlassesDetector @Inject constructor(
     private val bluetoothManager: BluetoothManager,
+    private val detectionPrefs: DetectionPrefs,
 ) {
     companion object {
         private const val TAG = "GlassesDetector"
+        private const val MIN_STATIC_DETECTION_CONFIDENCE = 0.60f
+        private val SERIAL_IDENTITY_REASONS = setOf(
+            "UUID16:0XFFE0",
+            "UUID16:0XFFF0",
+            "SVC_DATA:0XFFE0",
+            "SVC_DATA:0XFFF0",
+        )
+        private val GENERIC_SERIAL_PRODUCT_NAMES = setOf(
+            "BT",
+            "BLE",
+            "UART",
+            "SERIAL",
+            "HC-05",
+            "HC-06",
+        )
+
+        internal data class ManufacturerClassification(
+            val manufacturer: String,
+            val deviceType: String,
+            val confidence: Float,
+            val hasCamera: Boolean,
+        )
+
+        internal fun manufacturerClassification(companyId: Int): ManufacturerClassification? =
+            when (companyId) {
+                BleSignatures.CID_META -> ManufacturerClassification(
+                    manufacturer = "Meta",
+                    deviceType = "Meta Device",
+                    confidence = 0.65f,
+                    hasCamera = false,
+                )
+                BleSignatures.CID_META_TECH -> ManufacturerClassification(
+                    manufacturer = "Meta",
+                    deviceType = "VR Headset",
+                    confidence = 0.70f,
+                    hasCamera = false,
+                )
+                BleSignatures.CID_LUXOTTICA -> ManufacturerClassification(
+                    manufacturer = "Meta",
+                    deviceType = "Smart Glasses",
+                    confidence = 0.95f,
+                    hasCamera = true,
+                )
+                else -> null
+            }
 
         /**
          * Derive a stable identity key for a BLE detection.
@@ -226,6 +276,111 @@ class GlassesDetector @Inject constructor(
             return "fp:$m|$t|$ja3Part|$uuidPart|$namePart"
         }
 
+        internal fun isTrustedSerialProductIdentity(
+            isBonded: Boolean,
+            confidence: Float,
+            manufacturer: String,
+            deviceType: String,
+            matchReason: String,
+        ): Boolean {
+            if (isBonded) return true
+            if (confidence < MIN_STATIC_DETECTION_CONFIDENCE) return false
+
+            val normalizedManufacturer = manufacturer.trim()
+            val normalizedType = deviceType.trim()
+            val normalizedReason = matchReason.trim().uppercase()
+            if (normalizedManufacturer.isBlank() || normalizedType.isBlank() || normalizedReason.isBlank()) {
+                return false
+            }
+            if (normalizedManufacturer.equals("unknown", ignoreCase = true) ||
+                normalizedType.contains("unknown", ignoreCase = true) ||
+                normalizedReason == "ADDRESS_TYPE:PUBLIC"
+            ) {
+                return false
+            }
+            if (normalizedReason in SERIAL_IDENTITY_REASONS ||
+                normalizedType.contains("serial", ignoreCase = true) ||
+                normalizedType.contains("uart", ignoreCase = true) ||
+                normalizedType.contains("skimmer", ignoreCase = true)
+            ) {
+                return false
+            }
+
+            val nameIdentity = normalizedReason.substringAfter("NAME:", missingDelimiterValue = "")
+            return nameIdentity !in GENERIC_SERIAL_PRODUCT_NAMES
+        }
+
+        internal fun behavioralDetectionIsIgnored(
+            detection: GlassesDetection,
+            ignoredKeys: Set<String>,
+        ): Boolean = privacyIdentityIsIgnored(
+            detection.canonicalPrivacyIdentityAliases(),
+            ignoredKeys,
+        )
+
+        internal fun behavioralDetection(
+            signal: BleThreatSignal,
+            now: Instant,
+            observedAtElapsedMs: Long = elapsedRealtimeMs(),
+        ): GlassesDetection = when (signal) {
+            is BleThreatSignal.PairingSpam -> GlassesDetection(
+                mac = signal.entityKey,
+                deviceName = null,
+                deviceType = "BLE Pairing Spam",
+                manufacturer = "BLE Behavioral Analysis",
+                hasCamera = false,
+                rssi = signal.strongestRssi,
+                confidence = 0.95f,
+                matchReason = "ble_behavioral:pairing_spam",
+                firstSeen = now,
+                lastSeen = now,
+                details = mapOf(
+                    "families" to signal.families.joinToString(",") { it.name },
+                    "unique_macs" to signal.uniqueMacs.toString(),
+                    "observations" to signal.observationCount.toString(),
+                    "rssi_span" to signal.rssiSpan.toString(),
+                    "window_ms" to signal.windowMs.toString(),
+                ),
+                category = PrivacyCategory.ATTACK_TOOL,
+                fingerprintKey = signal.entityKey,
+                seenMacs = emptySet(),
+                investigationTarget = BleInvestigationTarget(
+                    mode = BleInvestigationMode.PASSIVE_CAPTURE,
+                    mac = null,
+                    entityKey = signal.entityKey,
+                    observedAtElapsedMs = observedAtElapsedMs,
+                    origin = PrivacyDetectionOrigin.ANDROID,
+                ),
+            )
+
+            is BleThreatSignal.SerialSkimmer -> GlassesDetection(
+                mac = signal.targetMac,
+                deviceName = null,
+                deviceType = "Possible Serial Skimmer",
+                manufacturer = "BLE Behavioral Analysis",
+                hasCamera = false,
+                rssi = signal.strongestRssi,
+                confidence = signal.confidence,
+                matchReason = "ble_behavioral:serial_skimmer",
+                firstSeen = now,
+                lastSeen = now,
+                details = mapOf(
+                    "serial_service_uuid" to "0x%04X".format(signal.serialServiceUuid),
+                    "evidence" to signal.evidence.joinToString(",") { it.name },
+                ),
+                category = PrivacyCategory.ATTACK_TOOL,
+                fingerprintKey = signal.entityKey,
+                seenMacs = setOf(signal.targetMac),
+                investigationTarget = BleInvestigationTarget(
+                    mode = BleInvestigationMode.GATT,
+                    mac = signal.targetMac,
+                    entityKey = signal.entityKey,
+                    observedAtElapsedMs = observedAtElapsedMs,
+                    origin = PrivacyDetectionOrigin.ANDROID,
+                ),
+            )
+        }
+
         /** Suspicious WiFi SSID patterns that indicate hidden cameras, attack tools, or spy devices */
         private data class WifiPattern(
             val prefix: String,
@@ -234,8 +389,6 @@ class GlassesDetector @Inject constructor(
             val confidence: Float,
             val hasCamera: Boolean
         )
-
-        private val flockOuiPrefixes = setOf("B4:1E:52")
 
         private val wifiSsidPatterns = listOf(
             // Hidden cameras / spy cameras — app ecosystems
@@ -407,6 +560,7 @@ class GlassesDetector @Inject constructor(
             deviceType.contains("Location Beacon", ignoreCase = true) -> PrivacyCategory.VENUE_BEACON
             deviceType.contains("BLE HID", ignoreCase = true) -> PrivacyCategory.BLE_HID
             deviceType.contains("HID Near", ignoreCase = true) -> PrivacyCategory.BLE_HID
+            deviceType.contains("Privacy Infrastructure", ignoreCase = true) -> PrivacyCategory.SECURITY_INFRASTRUCTURE
             deviceType.contains("Auracast", ignoreCase = true) -> PrivacyCategory.AURACAST
             deviceType.contains("LE Audio", ignoreCase = true) -> PrivacyCategory.AURACAST
             deviceType.contains("Tracker", ignoreCase = true) -> PrivacyCategory.BLE_TRACKER
@@ -499,23 +653,39 @@ class GlassesDetector @Inject constructor(
         }
 
         fun checkWifiBssid(ssid: String, bssid: String, rssi: Int): GlassesDetection? {
-            val oui = extractOui(bssid) ?: return null
-            if (oui !in flockOuiPrefixes) return null
-            val confidence = 0.95f
-            return GlassesDetection(
-                mac = bssid,
-                deviceName = ssid.ifBlank { null },
-                deviceType = "ALPR Camera",
-                manufacturer = "Flock Safety",
-                hasCamera = true,
-                rssi = rssi,
-                confidence = confidence,
-                matchReason = "wifi_oui:flock:$oui",
-                firstSeen = Instant.now(),
-                lastSeen = Instant.now(),
-                category = PrivacyCategory.ALPR_CAMERA,
-                fingerprintKey = "wifi_oui:flock:${bssid.uppercase()}"
-            )
+            val ouiPrefix = extractOui(bssid) ?: return null
+            val entry = WifiOuiDatabase.lookup(bssid) ?: return null
+            return when (entry.role) {
+                OuiRole.PRIVACY_FLOCK -> GlassesDetection(
+                    mac = bssid,
+                    deviceName = ssid.ifBlank { null },
+                    deviceType = "ALPR Camera",
+                    manufacturer = entry.manufacturer,
+                    hasCamera = true,
+                    rssi = rssi,
+                    confidence = 0.95f,
+                    matchReason = "wifi_oui:flock:$ouiPrefix",
+                    firstSeen = Instant.now(),
+                    lastSeen = Instant.now(),
+                    category = PrivacyCategory.ALPR_CAMERA,
+                    fingerprintKey = "wifi_oui:flock:${bssid.uppercase()}"
+                )
+                OuiRole.PRIVACY_INFRASTRUCTURE -> GlassesDetection(
+                    mac = bssid,
+                    deviceName = ssid.ifBlank { null },
+                    deviceType = "Privacy Infrastructure",
+                    manufacturer = entry.manufacturer,
+                    hasCamera = false,
+                    rssi = rssi,
+                    confidence = 0.62f,
+                    matchReason = "wifi_oui:privacy:$ouiPrefix",
+                    firstSeen = Instant.now(),
+                    lastSeen = Instant.now(),
+                    category = PrivacyCategory.SECURITY_INFRASTRUCTURE,
+                    fingerprintKey = "wifi_oui:privacy:${bssid.uppercase()}"
+                )
+                else -> null
+            }
         }
 
         private fun extractOui(bssid: String): String? {
@@ -612,13 +782,19 @@ class GlassesDetector @Inject constructor(
     )
 
     private val mfrDatabase = listOf(
-        // Meta — 0x01AB is general Meta, 0x058E is Meta Technologies (Quest headsets)
-        MfrEntry(BleSignatures.CID_META, "Meta", "Smart Glasses", 0.90f, true),
-        MfrEntry(BleSignatures.CID_META_TECH, "Meta", "VR Headset", 0.90f, true),  // Quest 2/3/Pro
+        // Generic Meta company IDs identify the vendor, not glasses or a camera.
+        manufacturerClassification(BleSignatures.CID_META)!!.let {
+            MfrEntry(BleSignatures.CID_META, it.manufacturer, it.deviceType, it.confidence, it.hasCamera)
+        },
+        manufacturerClassification(BleSignatures.CID_META_TECH)!!.let {
+            MfrEntry(BleSignatures.CID_META_TECH, it.manufacturer, it.deviceType, it.confidence, it.hasCamera)
+        },
         // Luxottica — frame-manufacturer CID on every Ray-Ban Meta / Oakley Meta unit.
         // This is the headline Meta-detection fix: Marauder matches on this CID,
         // firmware v0.58 matches on this CID, and the Android app did NOT until v0.59.
-        MfrEntry(BleSignatures.CID_LUXOTTICA, "Meta", "Smart Glasses", 0.95f, true),
+        manufacturerClassification(BleSignatures.CID_LUXOTTICA)!!.let {
+            MfrEntry(BleSignatures.CID_LUXOTTICA, it.manufacturer, it.deviceType, it.confidence, it.hasCamera)
+        },
         // Flipper Zero — attack / hacking tool
         MfrEntry(BleSignatures.CID_FLIPPER, "Flipper Zero", "Attack Tool", 0.95f, false),
         MfrEntry(BleSignatures.CID_SNAP, "Snap", "Smart Glasses", 0.85f, true),
@@ -1062,12 +1238,14 @@ class GlassesDetector @Inject constructor(
     private fun categorize(deviceType: String): PrivacyCategory = categorizeDeviceType(deviceType)
 
     private val detectedDevices = java.util.concurrent.ConcurrentHashMap<String, GlassesDetection>()
+    private val bleThreatAnalyzer = BleThreatAnalyzer()
     /** MAC addresses of devices bonded to THIS phone — used to tag "your device" vs "nearby threat" */
     private val myBondedAddresses = java.util.concurrent.CopyOnWriteArraySet<String>()
 
     /** Clear all cached detections — used by refresh button in UI */
     fun clearAllDetections() {
         detectedDevices.clear()
+        bleThreatAnalyzer.reset()
         Log.i(TAG, "All cached detections cleared (manual refresh)")
     }
 
@@ -1409,6 +1587,7 @@ class GlassesDetector @Inject constructor(
             activeRegistration = null
             localScanner = null
             detectedDevices.clear()
+            bleThreatAnalyzer.reset()
         }
     }
 
@@ -1572,14 +1751,59 @@ class GlassesDetector @Inject constructor(
             }
         }
 
-        if (bestConf < 0.60f) return null
-
-        // Parse rich details from the raw packet
-        val parsedDetails = BlePacketParser.parseAllDetails(result).toMutableMap()
-
         // Full v0.59 advertisement walk — Apple / Microsoft deep decode,
         // service UUIDs, advertising flags, appearance, local name.
         val adv = BlePacketParser.parseAdvertisement(result)
+
+        val trustedIdentity = isTrustedSerialProductIdentity(
+            isBonded = mac in myBondedAddresses,
+            confidence = bestConf,
+            manufacturer = bestMfr,
+            deviceType = bestType,
+            matchReason = bestReason,
+        )
+        val observedAtElapsedMs = elapsedRealtimeMs()
+        val behavioralSignal = bleThreatAnalyzer.observe(
+            BleThreatObservation(
+                mac = mac,
+                observedAtMs = observedAtElapsedMs,
+                rssi = rssi,
+                connectable = adv.connectable,
+                structuralHash = adv.payloadStructHash,
+                promptFamily = adv.promptFamily(),
+                serviceUuids16 = adv.serviceUuids16.toSet(),
+                localName = adv.localName,
+                companyId = adv.companyId,
+                trustedIdentity = trustedIdentity,
+            )
+        ).firstOrNull()
+        val behavioralDetection = behavioralSignal?.let {
+            behavioralDetection(it, now = Instant.now(), observedAtElapsedMs = observedAtElapsedMs)
+        }
+
+        if (bestConf < MIN_STATIC_DETECTION_CONFIDENCE) {
+            return behavioralDetection?.let(::storeBehavioralDetection)
+        }
+
+        val staticCategory = categorize(bestType)
+        val staticSignatureProtectedFromSerialHeuristic = behavioralSignal is BleThreatSignal.SerialSkimmer &&
+            bestConf > behavioralSignal.confidence &&
+            (bestCamera ||
+                bestMfr.contains("Meta", ignoreCase = true) ||
+                staticCategory in setOf(
+                    PrivacyCategory.BLE_TRACKER,
+                    PrivacyCategory.FINDMY,
+                    PrivacyCategory.ATTACK_TOOL,
+                ))
+        if (behavioralDetection != null &&
+            (staticCategory == PrivacyCategory.INFORMATIONAL ||
+                !staticSignatureProtectedFromSerialHeuristic)
+        ) {
+            return storeBehavioralDetection(behavioralDetection)
+        }
+
+        // Parse rich details from the raw packet.
+        val parsedDetails = BlePacketParser.parseAllDetails(result).toMutableMap()
 
         // Prefer the Apple enriched label when available — folds in
         // "AirPods in, Watch paired" / "Wi-Fi Password Share" / iOS version.
@@ -1671,9 +1895,30 @@ class GlassesDetector @Inject constructor(
             fingerprintKey = fingerprintKey,
             seenMacs = mergedMacs
         )
+        if (
+            privacyIdentityIsIgnored(
+                detection.canonicalPrivacyIdentityAliases(),
+                detectionPrefs.getIgnoredIdentities(),
+            )
+        ) {
+            detectedDevices.remove(fingerprintKey)
+            return null
+        }
         detectedDevices[fingerprintKey] = detection
 
         Log.i(TAG, "Detected $bestType ($bestMfr) RSSI=$rssi conf=$bestConf [$bestReason] cam=$bestCamera details=$parsedDetails")
         return detection
+    }
+
+    private fun storeBehavioralDetection(detection: GlassesDetection): GlassesDetection? {
+        if (behavioralDetectionIsIgnored(detection, detectionPrefs.getIgnoredIdentities())) return null
+
+        val existing = detectedDevices[detection.fingerprintKey]
+        val stored = detection.copy(
+            firstSeen = existing?.firstSeen ?: detection.firstSeen,
+            seenMacs = existing?.seenMacs.orEmpty() + detection.seenMacs,
+        )
+        detectedDevices[detection.fingerprintKey] = stored
+        return stored
     }
 }

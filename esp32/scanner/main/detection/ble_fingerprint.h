@@ -60,6 +60,8 @@ typedef enum {
     BLE_DEV_MEDICAL,            /* Dexcom, Medtronic */
     BLE_DEV_GAMING,             /* Nintendo, PlayStation */
     BLE_DEV_DRONE_OTHER,        /* Parrot, Autel, Skydio (non-DJI drones) */
+    BLE_DEV_PAIRING_SPAM,       /* Behavioral multi-identity pairing prompt flood */
+    BLE_DEV_SERIAL_SKIMMER,     /* Behavioral serial-service skimmer candidate */
     BLE_DEV_COUNT
 } ble_device_type_t;
 
@@ -108,6 +110,11 @@ typedef struct {
 void ble_fingerprint_compute(const uint8_t *data, int length,
                              uint8_t addr_type, uint8_t props,
                              ble_fingerprint_t *fp);
+
+/**
+ * Return whether a fingerprint contains coherent recognized product evidence.
+ */
+bool ble_fingerprint_has_trusted_product_identity(const ble_fingerprint_t *fp);
 
 /**
  * Get a human-readable name for a device type.
