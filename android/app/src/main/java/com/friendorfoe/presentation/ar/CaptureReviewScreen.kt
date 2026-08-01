@@ -15,14 +15,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -33,6 +37,12 @@ import androidx.compose.ui.unit.dp
 class ArCaptureInteractions(
     private val reviewViewModel: CaptureReviewViewModel,
     private val onObjectPeekRequested: (String) -> Unit,
+    private val onObjectPeekInspectRequested: (ObjectPeekState) -> Unit = {},
+    private val onObjectPeekDismissRequested: () -> Unit = {},
+    private val requestPhotoDraft: (String, (CaptureDraft?) -> Unit) -> Unit = { _, callback ->
+        callback(null)
+    },
+    private val onFullDetailsRequested: (String) -> Unit = {},
 ) {
     fun onLabelTapped(objectId: String) {
         onObjectPeekRequested(objectId)
@@ -44,6 +54,86 @@ class ArCaptureInteractions(
 
     fun reviewCapturedDraft(draft: CaptureDraft?) {
         draft?.let(reviewViewModel::inspect)
+    }
+
+    fun inspectObjectPeek(state: ObjectPeekState) {
+        onObjectPeekInspectRequested(state)
+    }
+
+    fun captureObjectPeek(state: ObjectPeekState) {
+        onObjectPeekDismissRequested()
+        captureWith { callback -> requestPhotoDraft(state.title, callback) }
+    }
+
+    fun openFullDetails(objectId: String) {
+        onObjectPeekDismissRequested()
+        onFullDetailsRequested(objectId)
+    }
+}
+
+class CaptureSaveInteractions(
+    private val reviewViewModel: CaptureReviewViewModel,
+    private val apiLevel: () -> Int,
+    private val hasLegacyWritePermission: () -> Boolean,
+    private val requestLegacyWritePermission: () -> Unit,
+) {
+    fun save() {
+        val sdk = apiLevel()
+        val permissionGranted = sdk > 28 || hasLegacyWritePermission()
+        when (captureSavePermissionDecision(sdk, permissionGranted)) {
+            CaptureSavePermissionDecision.SaveNow -> reviewViewModel.save()
+            CaptureSavePermissionDecision.RequestLegacyWrite -> requestLegacyWritePermission()
+        }
+    }
+
+    fun onLegacyWritePermissionResult(granted: Boolean) {
+        if (granted) {
+            reviewViewModel.save()
+        } else {
+            reviewViewModel.savePermissionDenied()
+        }
+    }
+}
+
+internal fun captureReviewSheetTransitionAllowed(
+    targetIsHidden: Boolean,
+    saving: Boolean,
+): Boolean = !targetIsHidden || !saving
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CaptureReviewModal(
+    state: CaptureReviewState,
+    onSave: () -> Unit,
+    onShare: () -> Unit,
+    onDiscard: () -> Unit,
+    onRetrySave: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val savingState = rememberUpdatedState(state is CaptureReviewState.Saving)
+    val sheetState = androidx.compose.material3.rememberModalBottomSheetState(
+        skipPartiallyExpanded = false,
+        confirmValueChange = { target ->
+            captureReviewSheetTransitionAllowed(
+                targetIsHidden = target == SheetValue.Hidden,
+                saving = savingState.value,
+            )
+        },
+    )
+    ModalBottomSheet(
+        onDismissRequest = {
+            if (!savingState.value) onDiscard()
+        },
+        sheetState = sheetState,
+        modifier = modifier,
+    ) {
+        CaptureReviewScreen(
+            state = state,
+            onSave = onSave,
+            onShare = onShare,
+            onDiscard = onDiscard,
+            onRetrySave = onRetrySave,
+        )
     }
 }
 
@@ -69,6 +159,16 @@ fun CaptureReviewScreen(
                 TextButton(onClick = onDiscard) { Text("Done") }
             }
         }
+        is CaptureReviewState.SavePermissionDenied -> ReviewContent(
+            draft = state.draft,
+            busy = false,
+            error = "Photos access was not granted. Grant access to save this capture.",
+            onSave = onSave,
+            onShare = onShare,
+            onDiscard = onDiscard,
+            onRetrySave = onSave,
+            modifier = modifier,
+        )
         is CaptureReviewState.Reviewing -> ReviewContent(
             draft = state.draft,
             busy = false,
@@ -175,8 +275,10 @@ private fun ReviewContent(
                 }
             }
         }
-        TextButton(onClick = onDiscard, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-            Text("Discard")
+        if (!busy) {
+            TextButton(onClick = onDiscard, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                Text("Discard")
+            }
         }
     }
 }

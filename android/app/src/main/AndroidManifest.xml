@@ -5,6 +5,11 @@
     <!-- Camera for AR viewfinder -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- Gallery writes need runtime access only on Android 8-9, requested from explicit Save. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
     <!-- Location for aircraft position calculation -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />

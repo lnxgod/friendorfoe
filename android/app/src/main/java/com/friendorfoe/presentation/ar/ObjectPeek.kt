@@ -10,7 +10,17 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.presentation.components.FofActionRow
+
+internal fun objectPeekEvidence(source: DetectionSource?): String = when (source) {
+    DetectionSource.ADS_B -> "ADS-B radio match"
+    DetectionSource.REMOTE_ID -> "Remote ID radio match"
+    DetectionSource.WIFI_NAN -> "Remote ID radio match (Wi-Fi NaN)"
+    DetectionSource.WIFI_BEACON -> "Remote ID radio match (Wi-Fi Beacon)"
+    DetectionSource.WIFI -> "Wi-Fi observation"
+    null -> "No radio match is currently available"
+}
 
 data class ObjectPeekState(
     val objectId: String,

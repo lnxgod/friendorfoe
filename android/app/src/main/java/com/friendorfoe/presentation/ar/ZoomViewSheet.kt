@@ -59,6 +59,7 @@ fun ZoomViewSheet(
     detection: VisualDetection,
     classified: ClassifiedVisualDetection?,
     getFrame: () -> Bitmap?,
+    evidence: String = "No radio match is currently available",
     currentZoomRatio: Float = 1.0f,
     maxZoomRatio: Float = 1.0f,
     onZoomChange: (Float) -> Unit = {},
@@ -233,7 +234,7 @@ fun ZoomViewSheet(
 
             // Info section
             Text(
-                text = "No radio match is currently available",
+                text = evidence,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,

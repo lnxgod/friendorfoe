@@ -34,9 +34,25 @@ sealed interface CaptureReviewState {
     data class Reviewing(val draft: CaptureDraft) : CaptureReviewState
     data class Saving(val draft: CaptureDraft) : CaptureReviewState
     data class Saved(val photo: SavedPhoto) : CaptureReviewState
+    data class SavePermissionDenied(val draft: CaptureDraft) : CaptureReviewState
     data class SaveFailed(val draft: CaptureDraft, val message: String) : CaptureReviewState
     data class ShareFailed(val draft: CaptureDraft, val message: String) : CaptureReviewState
 }
+
+sealed interface CaptureSavePermissionDecision {
+    data object SaveNow : CaptureSavePermissionDecision
+    data object RequestLegacyWrite : CaptureSavePermissionDecision
+}
+
+fun captureSavePermissionDecision(
+    apiLevel: Int,
+    legacyWriteGranted: Boolean,
+): CaptureSavePermissionDecision =
+    if (apiLevel <= 28 && !legacyWriteGranted) {
+        CaptureSavePermissionDecision.RequestLegacyWrite
+    } else {
+        CaptureSavePermissionDecision.SaveNow
+    }
 
 sealed interface CaptureReviewEffect {
     data class LaunchShare(val request: ShareRequest) : CaptureReviewEffect

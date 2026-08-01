@@ -4,8 +4,6 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.graphics.ImageFormat
-import android.graphics.Rect
-import android.graphics.YuvImage
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.SensorManager
@@ -80,7 +78,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.time.Instant
-import java.io.ByteArrayOutputStream
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import javax.inject.Inject
 import kotlin.math.roundToInt
 
@@ -146,6 +145,8 @@ class ArViewModel @Inject constructor(
     val trainingDataCollector: TrainingDataCollector,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
+
+    private val captureProcessingExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     companion object {
         private const val TAG = "ArViewModel"
@@ -270,12 +271,7 @@ class ArViewModel @Inject constructor(
             is Drone -> skyObject.manufacturer ?: skyObject.droneId.take(16)
             else -> objectId
         }
-        val evidence = when (skyObject?.source) {
-            DetectionSource.ADS_B -> "ADS-B radio match"
-            DetectionSource.REMOTE_ID -> "Remote ID radio match"
-            DetectionSource.WIFI, DetectionSource.WIFI_BEACON, DetectionSource.WIFI_NAN -> "Wi-Fi observation"
-            else -> "No radio match is currently available"
-        }
+        val evidence = objectPeekEvidence(skyObject?.source)
         _selectedObjectId.value = null
         _showUnidentifiedSheet.value = false
         _objectPeek.value = ObjectPeekState(
@@ -290,8 +286,9 @@ class ArViewModel @Inject constructor(
         _objectPeek.value = null
     }
 
-    fun inspectObjectPeek() {
-        val objectId = _objectPeek.value?.objectId ?: return
+    fun inspectObjectPeek(peek: ObjectPeekState) {
+        if (_objectPeek.value?.objectId != peek.objectId) return
+        val objectId = peek.objectId
         val position = screenPositions.value.firstOrNull { it.skyObject.id == objectId }
         val detection = VisualDetection(
             trackingId = objectId.hashCode(),
@@ -299,11 +296,11 @@ class ArViewModel @Inject constructor(
             centerY = position?.screenY ?: 0.5f,
             width = 0.15f,
             height = 0.15f,
-            labels = listOf(_objectPeek.value?.title ?: objectId),
+            labels = listOf(peek.title),
             timestampMs = System.currentTimeMillis(),
         )
         _objectPeek.value = null
-        showZoom(detection)
+        showZoom(detection, peek.evidence)
     }
 
     // --- Unidentified tap (empty space) bottom sheet ---
@@ -385,10 +382,16 @@ class ArViewModel @Inject constructor(
 
     private val _zoomTarget = MutableStateFlow<VisualDetection?>(null)
     val zoomTarget: StateFlow<VisualDetection?> = _zoomTarget.asStateFlow()
+    private val _zoomEvidence = MutableStateFlow("No radio match is currently available")
+    val zoomEvidence: StateFlow<String> = _zoomEvidence.asStateFlow()
 
-    fun showZoom(detection: VisualDetection) {
+    fun showZoom(
+        detection: VisualDetection,
+        evidence: String = "No radio match is currently available",
+    ) {
         _selectedObjectId.value = null
         _showUnidentifiedSheet.value = false
+        _zoomEvidence.value = evidence
         _zoomTarget.value = detection
     }
 
@@ -522,19 +525,23 @@ class ArViewModel @Inject constructor(
             androidx.core.content.ContextCompat.getMainExecutor(appContext),
             object : ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
-                    val draft = try {
-                        CaptureDraft(
-                            payload = image.toCapturePayload(),
-                            displayName = "friendorfoe_${safeLabel}_$timestamp.jpg",
-                            description = "FriendOrFoe visual capture: $label",
-                        )
-                    } catch (failure: Throwable) {
-                        Log.e(TAG, "Could not prepare captured frame", failure)
-                        null
-                    } finally {
-                        image.close()
-                    }
-                    onResult(draft)
+                    dispatchCapturedFrame(
+                        frame = image,
+                        processingExecutor = captureProcessingExecutor,
+                        resultExecutor = androidx.core.content.ContextCompat.getMainExecutor(appContext),
+                        closeFrame = ImageProxy::close,
+                        convertFrame = { capturedImage ->
+                            CaptureDraft(
+                                payload = capturedImage.toCapturePayload(),
+                                displayName = "friendorfoe_${safeLabel}_$timestamp.jpg",
+                                description = "FriendOrFoe visual capture: $label",
+                            )
+                        },
+                        onResult = onResult,
+                        onFailure = { failure ->
+                            Log.e(TAG, "Could not prepare captured frame", failure)
+                        },
+                    )
                 }
 
                 override fun onError(exception: ImageCaptureException) {
@@ -1320,6 +1327,7 @@ class ArViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
+        captureProcessingExecutor.shutdown()
         stopSensors()
         // Remove zoom observer to prevent leak
         cameraRef?.cameraInfo?.zoomState?.let { liveData ->
@@ -1338,28 +1346,27 @@ class ArViewModel @Inject constructor(
 }
 
 private fun ImageProxy.toCapturePayload(): CapturePayload {
-    val jpegBytes = when (format) {
+    return when (format) {
         ImageFormat.JPEG -> {
             val buffer = planes.first().buffer.duplicate()
-            ByteArray(buffer.remaining()).also(buffer::get)
+            val jpegBytes = ByteArray(buffer.remaining()).also(buffer::get)
+            normalizeJpegCapture(
+                jpegBytes = jpegBytes,
+                sourceWidth = width,
+                sourceHeight = height,
+                rotationDegrees = imageInfo.rotationDegrees,
+            )
         }
         ImageFormat.YUV_420_888 -> {
-            val nv21 = toNv21()
-            ByteArrayOutputStream().use { output ->
-                val compressed = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-                    .compressToJpeg(Rect(0, 0, width, height), 95, output)
-                check(compressed) { "Could not encode camera frame" }
-                output.toByteArray()
-            }
+            capturePayloadFromNv21(
+                nv21 = toNv21(),
+                sourceWidth = width,
+                sourceHeight = height,
+                rotationDegrees = imageInfo.rotationDegrees,
+            )
         }
         else -> error("Unsupported camera image format: $format")
     }
-    return CapturePayload(
-        bytes = jpegBytes,
-        mimeType = "image/jpeg",
-        widthPx = width,
-        heightPx = height,
-    )
 }
 
 private fun ImageProxy.toNv21(): ByteArray {

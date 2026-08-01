@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,15 +27,21 @@ class CaptureReviewViewModel @Inject constructor(
     private var reviewGeneration = 0L
 
     fun inspect(draft: CaptureDraft) {
-        saveJob?.cancel()
+        if (saveJob?.isCompleted == false) return
         reviewGeneration += 1
         _state.value = CaptureReviewState.Reviewing(draft)
     }
 
     fun discard() {
-        saveJob?.cancel()
+        if (saveJob?.isCompleted == false) return
         reviewGeneration += 1
         _state.value = CaptureReviewState.Empty
+    }
+
+    fun savePermissionDenied() {
+        if (saveJob?.isCompleted == false) return
+        val draft = currentDraft() ?: return
+        _state.value = CaptureReviewState.SavePermissionDenied(draft)
     }
 
     fun share(): Job? {
@@ -68,10 +75,11 @@ class CaptureReviewViewModel @Inject constructor(
     }
 
     fun save(): Job? {
-        if (saveJob?.isActive == true) return null
+        if (saveJob?.isCompleted == false) return null
         val draft = currentDraft() ?: return null
         _state.value = CaptureReviewState.Saving(draft)
-        return viewModelScope.launch {
+        lateinit var job: Job
+        job = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
                 val result = try {
                     writer.write(draft)
@@ -96,15 +104,20 @@ class CaptureReviewViewModel @Inject constructor(
                 }
                 throw cancellation
             }
-        }.also {
-            saveJob = it
         }
+        saveJob = job
+        job.invokeOnCompletion {
+            if (saveJob === job) saveJob = null
+        }
+        job.start()
+        return job
     }
 
     fun retrySave(): Job? = if (_state.value is CaptureReviewState.SaveFailed) save() else null
 
     private fun currentDraft(): CaptureDraft? = when (val value = _state.value) {
         is CaptureReviewState.Reviewing -> value.draft
+        is CaptureReviewState.SavePermissionDenied -> value.draft
         is CaptureReviewState.SaveFailed -> value.draft
         is CaptureReviewState.ShareFailed -> value.draft
         else -> null

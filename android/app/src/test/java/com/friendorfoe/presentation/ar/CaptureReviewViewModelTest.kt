@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -20,6 +21,82 @@ import org.junit.Test
 class CaptureReviewViewModelTest {
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
+
+    @Test
+    fun captureReviewSheetCannotHideWhileSaving() {
+        assertFalse(captureReviewSheetTransitionAllowed(targetIsHidden = true, saving = true))
+        assertTrue(captureReviewSheetTransitionAllowed(targetIsHidden = false, saving = true))
+        assertTrue(captureReviewSheetTransitionAllowed(targetIsHidden = true, saving = false))
+    }
+
+    @Test
+    fun legacySavePermissionPolicyOnlyRequestsAccessThroughExplicitSave() = runTest {
+        assertEquals(
+            CaptureSavePermissionDecision.RequestLegacyWrite,
+            captureSavePermissionDecision(apiLevel = 28, legacyWriteGranted = false),
+        )
+        assertEquals(
+            CaptureSavePermissionDecision.SaveNow,
+            captureSavePermissionDecision(apiLevel = 28, legacyWriteGranted = true),
+        )
+        assertEquals(
+            CaptureSavePermissionDecision.SaveNow,
+            captureSavePermissionDecision(apiLevel = 29, legacyWriteGranted = false),
+        )
+
+        val writer = FakePhotoWriter()
+        val viewModel = CaptureReviewViewModel(writer, FakeShareImageFactory())
+        var permissionRequests = 0
+        val interactions = CaptureSaveInteractions(
+            reviewViewModel = viewModel,
+            apiLevel = { 28 },
+            hasLegacyWritePermission = { false },
+            requestLegacyWritePermission = { permissionRequests += 1 },
+        )
+        val draft = captureDraft()
+        viewModel.inspect(draft)
+
+        interactions.save()
+
+        assertEquals(1, permissionRequests)
+        assertEquals(emptyList<CaptureDraft>(), writer.writes)
+        assertEquals(CaptureReviewState.Reviewing(draft), viewModel.state.value)
+
+        interactions.onLegacyWritePermissionResult(granted = false)
+        assertEquals(
+            CaptureReviewState.SavePermissionDenied(draft),
+            viewModel.state.value,
+        )
+
+        interactions.save()
+        assertEquals(2, permissionRequests)
+        assertEquals(emptyList<CaptureDraft>(), writer.writes)
+
+        interactions.onLegacyWritePermissionResult(granted = true)
+        advanceUntilIdle()
+        assertEquals(listOf(draft), writer.writes)
+    }
+
+    @Test
+    fun modernSaveNeverRequestsLegacyPermission() = runTest {
+        val writer = FakePhotoWriter()
+        val viewModel = CaptureReviewViewModel(writer, FakeShareImageFactory())
+        var permissionRequests = 0
+        val interactions = CaptureSaveInteractions(
+            reviewViewModel = viewModel,
+            apiLevel = { 35 },
+            hasLegacyWritePermission = { false },
+            requestLegacyWritePermission = { permissionRequests += 1 },
+        )
+        val draft = captureDraft()
+        viewModel.inspect(draft)
+
+        interactions.save()
+        advanceUntilIdle()
+
+        assertEquals(0, permissionRequests)
+        assertEquals(listOf(draft), writer.writes)
+    }
 
     @Test
     fun onlyExplicitSaveWritesPhoto() = runTest {
@@ -138,20 +215,38 @@ class CaptureReviewViewModelTest {
     }
 
     @Test
-    fun discardDuringSavePreventsStaleCompletionFromReopeningReview() = runTest {
+    fun savingCannotBeDiscardedOrReplacedUntilTheWriteCompletes() = runTest {
         val gate = CompletableDeferred<Unit>()
         val writer = FakePhotoWriter(gate = gate)
         val viewModel = CaptureReviewViewModel(writer, FakeShareImageFactory())
+        val firstDraft = captureDraft()
+        val secondDraft = captureDraft().copy(displayName = "friendorfoe_second.jpg")
 
-        viewModel.inspect(captureDraft())
-        viewModel.save()
+        viewModel.inspect(firstDraft)
+        val firstSave = viewModel.save()!!
         runCurrent()
         viewModel.discard()
+        viewModel.inspect(secondDraft)
+        val overlappingSave = viewModel.save()
+
+        assertNull(overlappingSave)
+        assertEquals(CaptureReviewState.Saving(firstDraft), viewModel.state.value)
+        assertEquals(listOf(firstDraft), writer.writes)
+
         gate.complete(Unit)
         advanceUntilIdle()
 
-        assertEquals(CaptureReviewState.Empty, viewModel.state.value)
-        assertEquals(1, writer.writes.size)
+        assertTrue(firstSave.isCompleted)
+        assertEquals(
+            CaptureReviewState.Saved(SavedPhoto("content://friendorfoe/saved")),
+            viewModel.state.value,
+        )
+        assertEquals(listOf(firstDraft), writer.writes)
+
+        viewModel.discard()
+        viewModel.inspect(secondDraft)
+        viewModel.save()!!.join()
+        assertEquals(listOf(firstDraft, secondDraft), writer.writes)
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.friendorfoe.presentation.ar
 
 import android.graphics.Bitmap
+import android.provider.MediaStore
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.collectAsState
@@ -19,7 +20,9 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.unit.dp
+import androidx.test.platform.app.InstrumentationRegistry
 import com.friendorfoe.detection.VisualDetection
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
@@ -45,7 +48,10 @@ class ObjectPeekTest {
         compose.setContent {
             var peek by remember { mutableStateOf<ObjectPeekState?>(null) }
             val interactions = remember {
-                ArCaptureInteractions(review) { peek = peekState() }
+                ArCaptureInteractions(
+                    reviewViewModel = review,
+                    onObjectPeekRequested = { peek = peekState() },
+                )
             }
             FriendOrFoeTheme {
                 Box {
@@ -84,7 +90,10 @@ class ObjectPeekTest {
         compose.setContent {
             var peek by remember { mutableStateOf<ObjectPeekState?>(null) }
             val interactions = remember {
-                ArCaptureInteractions(review) { peek = peekState() }
+                ArCaptureInteractions(
+                    reviewViewModel = review,
+                    onObjectPeekRequested = { peek = peekState() },
+                )
             }
             FriendOrFoeTheme {
                 Box {
@@ -118,23 +127,41 @@ class ObjectPeekTest {
 
     @Test
     fun inspectIsReadOnly() {
-        val writer = RecordingPhotoWriter()
+        val before = galleryRowCount()
+        val review = CaptureReviewViewModel(FailOnWritePhotoWriter, RecordingShareFactory())
         var inspectCalls = 0
+        var inspectedEvidence: String? = null
+        val interactions = ArCaptureInteractions(
+            reviewViewModel = review,
+            onObjectPeekRequested = {},
+            onObjectPeekInspectRequested = { peek ->
+                inspectCalls += 1
+                inspectedEvidence = peek.evidence
+            },
+        )
         compose.setContent {
             FriendOrFoeTheme {
-                ObjectPeek(peekState(), { inspectCalls++ }, {}, {}, {})
+                ObjectPeek(
+                    peekState(),
+                    { interactions.inspectObjectPeek(peekState()) },
+                    {},
+                    {},
+                    {},
+                )
             }
         }
 
         compose.onNodeWithText("Inspect").performClick()
+        compose.waitForIdle()
 
         assertEquals(1, inspectCalls)
-        assertEquals(0, writer.writes.size)
+        assertEquals("ADS-B radio match", inspectedEvidence)
+        assertEquals(before, galleryRowCount())
     }
 
     @Test
     fun zoomIsInspectOnly() {
-        val writer = RecordingPhotoWriter()
+        val before = galleryRowCount()
         val bitmap = Bitmap.createBitmap(40, 40, Bitmap.Config.ARGB_8888)
         compose.setContent {
             FriendOrFoeTheme {
@@ -142,40 +169,73 @@ class ObjectPeekTest {
                     detection = visualDetection(),
                     classified = null,
                     getFrame = { bitmap },
+                    evidence = "ADS-B radio match",
                     onDismiss = {},
                 )
             }
         }
 
         compose.onNodeWithText("Inspect only — no photo has been saved.").assertIsDisplayed()
-        assertEquals(0, writer.writes.size)
+        compose.onNodeWithText("ADS-B radio match").assertIsDisplayed()
+        compose.onNodeWithText("No radio match is currently available").assertDoesNotExist()
+        compose.waitForIdle()
+        assertEquals(before, galleryRowCount())
     }
 
     @Test
     fun fullDetailsIsReadOnly() {
-        val writer = RecordingPhotoWriter()
+        val before = galleryRowCount()
+        val review = CaptureReviewViewModel(FailOnWritePhotoWriter, RecordingShareFactory())
         var detailsCalls = 0
+        val interactions = ArCaptureInteractions(
+            reviewViewModel = review,
+            onObjectPeekRequested = {},
+            onFullDetailsRequested = { detailsCalls += 1 },
+        )
         compose.setContent {
             FriendOrFoeTheme {
-                ObjectPeek(peekState(), {}, {}, { detailsCalls++ }, {})
+                ObjectPeek(
+                    peekState(),
+                    {},
+                    {},
+                    { interactions.openFullDetails(peekState().objectId) },
+                    {},
+                )
             }
         }
 
         compose.onNodeWithText("Full details").performClick()
+        compose.waitForIdle()
 
         assertEquals(1, detailsCalls)
-        assertEquals(0, writer.writes.size)
+        assertEquals(before, galleryRowCount())
     }
 
     @Test
     fun captureOnlyCreatesReviewDraft() {
         val writer = RecordingPhotoWriter()
         val viewModel = CaptureReviewViewModel(writer, RecordingShareFactory())
-        val interactions = ArCaptureInteractions(viewModel) {}
         val draft = captureDraft()
+        val requestedLabels = mutableListOf<String>()
+        var dismissCalls = 0
+        val interactions = ArCaptureInteractions(
+            reviewViewModel = viewModel,
+            onObjectPeekRequested = {},
+            onObjectPeekDismissRequested = { dismissCalls += 1 },
+            requestPhotoDraft = { label, callback ->
+                requestedLabels += label
+                callback(draft)
+            },
+        )
         compose.setContent {
             FriendOrFoeTheme {
-                ObjectPeek(peekState(), {}, { interactions.reviewCapturedDraft(draft) }, {}, {})
+                ObjectPeek(
+                    peekState(),
+                    {},
+                    { interactions.captureObjectPeek(peekState()) },
+                    {},
+                    {},
+                )
             }
         }
 
@@ -183,6 +243,8 @@ class ObjectPeekTest {
 
         assertEquals(CaptureReviewState.Reviewing(draft), viewModel.state.value)
         assertEquals(0, writer.writes.size)
+        assertEquals(listOf("TEST123"), requestedLabels)
+        assertEquals(1, dismissCalls)
     }
 
     @Test
@@ -242,7 +304,7 @@ class ObjectPeekTest {
     fun mainShutterRequiresReviewThenSave() {
         val writer = RecordingPhotoWriter()
         val viewModel = CaptureReviewViewModel(writer, RecordingShareFactory())
-        val interactions = ArCaptureInteractions(viewModel) {}
+        val interactions = ArCaptureInteractions(viewModel, onObjectPeekRequested = {})
         val draft = captureDraft()
         compose.setContent {
             val state by viewModel.state.collectAsState()
@@ -273,7 +335,7 @@ class ObjectPeekTest {
     fun snapPhotoSheetRequiresReviewThenSave() {
         val writer = RecordingPhotoWriter()
         val viewModel = CaptureReviewViewModel(writer, RecordingShareFactory())
-        val interactions = ArCaptureInteractions(viewModel) {}
+        val interactions = ArCaptureInteractions(viewModel, onObjectPeekRequested = {})
         val draft = captureDraft()
         compose.setContent {
             val state by viewModel.state.collectAsState()
@@ -331,6 +393,91 @@ class ObjectPeekTest {
         assertEquals(2, writer.writes.size)
         compose.onNodeWithText("Saved to Photos").assertIsDisplayed()
     }
+
+    @Test
+    fun savingReviewCannotBeDiscarded() {
+        var discardCalls = 0
+        compose.setContent {
+            FriendOrFoeTheme {
+                CaptureReviewScreen(
+                    state = CaptureReviewState.Saving(captureDraft()),
+                    onSave = {},
+                    onShare = {},
+                    onDiscard = { discardCalls += 1 },
+                    onRetrySave = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Saving…").assertIsDisplayed()
+        compose.onNodeWithText("Discard").assertDoesNotExist()
+        assertEquals(0, discardCalls)
+    }
+
+    @Test
+    fun savingReviewSheetRejectsSwipeToHide() {
+        var discardCalls = 0
+        compose.setContent {
+            FriendOrFoeTheme {
+                CaptureReviewModal(
+                    state = CaptureReviewState.Saving(captureDraft()),
+                    onSave = {},
+                    onShare = {},
+                    onDiscard = { discardCalls += 1 },
+                    onRetrySave = {},
+                    modifier = Modifier.testTag("capture_review_modal"),
+                )
+            }
+        }
+
+        compose.waitForIdle()
+        compose.onNodeWithTag("capture_review_modal").performTouchInput {
+            swipeDown(durationMillis = 500)
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("Review capture").assertIsDisplayed()
+        assertEquals(0, discardCalls)
+    }
+
+    @Test
+    fun deniedLegacyPermissionKeepsDraftAndOffersHonestRetry() {
+        val draft = captureDraft()
+        var retryCalls = 0
+        compose.setContent {
+            FriendOrFoeTheme {
+                CaptureReviewScreen(
+                    state = CaptureReviewState.SavePermissionDenied(draft),
+                    onSave = { retryCalls += 1 },
+                    onShare = {},
+                    onDiscard = {},
+                    onRetrySave = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText(
+            "Photos access was not granted. Grant access to save this capture.",
+        ).assertIsDisplayed()
+        compose.onNodeWithText("Retry save").performClick()
+        assertEquals(1, retryCalls)
+    }
+}
+
+private object FailOnWritePhotoWriter : PhotoWriter {
+    override suspend fun write(draft: CaptureDraft): Result<SavedPhoto> =
+        error("A read-only Object Peek route attempted to write a photo")
+}
+
+private fun galleryRowCount(): Int {
+    val resolver = InstrumentationRegistry.getInstrumentation().targetContext.contentResolver
+    return resolver.query(
+        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+        arrayOf(MediaStore.Images.Media._ID),
+        null,
+        null,
+        null,
+    )?.use { it.count } ?: 0
 }
 
 private class RecordingPhotoWriter(

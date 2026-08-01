@@ -1,6 +1,9 @@
 package com.friendorfoe.presentation.ar
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
 import android.view.ViewGroup
 import androidx.camera.core.Camera
@@ -10,6 +13,8 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.friendorfoe.detection.VisualDetectionAnalyzer
 import java.util.concurrent.Executors
 import androidx.compose.animation.AnimatedVisibility
@@ -166,6 +171,7 @@ fun ArViewScreen(
     val visualCount by viewModel.visualCount.collectAsStateWithLifecycle()
     val alertCount by viewModel.alertCount.collectAsStateWithLifecycle()
     val zoomTarget by viewModel.zoomTarget.collectAsStateWithLifecycle()
+    val zoomEvidence by viewModel.zoomEvidence.collectAsStateWithLifecycle()
     val weatherRange by viewModel.weatherRange.collectAsStateWithLifecycle()
     val rangeOverride by viewModel.rangeOverride.collectAsStateWithLifecycle()
     val isDarkMode by viewModel.isDarkMode.collectAsStateWithLifecycle()
@@ -203,8 +209,42 @@ fun ArViewScreen(
 
     val context = LocalContext.current
     val hapticFeedback = LocalHapticFeedback.current
-    val captureInteractions = remember(viewModel, captureReviewViewModel) {
-        ArCaptureInteractions(captureReviewViewModel, viewModel::showObjectPeek)
+    val captureInteractions = remember(viewModel, captureReviewViewModel, onObjectTapped) {
+        ArCaptureInteractions(
+            reviewViewModel = captureReviewViewModel,
+            onObjectPeekRequested = viewModel::showObjectPeek,
+            onObjectPeekInspectRequested = viewModel::inspectObjectPeek,
+            onObjectPeekDismissRequested = viewModel::dismissObjectPeek,
+            requestPhotoDraft = viewModel::capturePhotoDraft,
+            onFullDetailsRequested = onObjectTapped,
+        )
+    }
+    lateinit var captureSaveInteractions: CaptureSaveInteractions
+    val legacyWritePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        captureSaveInteractions.onLegacyWritePermissionResult(granted)
+    }
+    captureSaveInteractions = remember(
+        context,
+        captureReviewViewModel,
+        legacyWritePermissionLauncher,
+    ) {
+        CaptureSaveInteractions(
+            reviewViewModel = captureReviewViewModel,
+            apiLevel = { Build.VERSION.SDK_INT },
+            hasLegacyWritePermission = {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                ) == PackageManager.PERMISSION_GRANTED
+            },
+            requestLegacyWritePermission = {
+                legacyWritePermissionLauncher.launch(
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                )
+            },
+        )
     }
 
     // Load detail when an object is selected
@@ -611,6 +651,7 @@ fun ArViewScreen(
             detection = detection,
             classified = classified,
             getFrame = { viewModel.captureZoomFrame() },
+            evidence = zoomEvidence,
             currentZoomRatio = currentZoomRatio,
             maxZoomRatio = maxZoomRatio,
             onZoomChange = { viewModel.setZoomRatio(it) },
@@ -621,17 +662,9 @@ fun ArViewScreen(
     objectPeek?.let { peek ->
         ObjectPeek(
             state = peek,
-            onInspect = viewModel::inspectObjectPeek,
-            onCapture = {
-                val objectId = peek.objectId
-                viewModel.dismissObjectPeek()
-                viewModel.snapToObject(objectId)
-            },
-            onFullDetails = {
-                val objectId = peek.objectId
-                viewModel.dismissObjectPeek()
-                onObjectTapped(objectId)
-            },
+            onInspect = { captureInteractions.inspectObjectPeek(peek) },
+            onCapture = { captureInteractions.captureObjectPeek(peek) },
+            onFullDetails = { captureInteractions.openFullDetails(peek.objectId) },
             onDismiss = viewModel::dismissObjectPeek,
         )
     }
@@ -660,15 +693,13 @@ fun ArViewScreen(
     }
 
     if (captureReviewState !is CaptureReviewState.Empty) {
-        ModalBottomSheet(onDismissRequest = captureReviewViewModel::discard) {
-            CaptureReviewScreen(
-                state = captureReviewState,
-                onSave = { captureReviewViewModel.save() },
-                onShare = { captureReviewViewModel.share() },
-                onDiscard = captureReviewViewModel::discard,
-                onRetrySave = { captureReviewViewModel.retrySave() },
-            )
-        }
+        CaptureReviewModal(
+            state = captureReviewState,
+            onSave = captureSaveInteractions::save,
+            onShare = { captureReviewViewModel.share() },
+            onDiscard = captureReviewViewModel::discard,
+            onRetrySave = captureSaveInteractions::save,
+        )
     }
 
     // Bottom sheet for unidentified tap (empty space)
