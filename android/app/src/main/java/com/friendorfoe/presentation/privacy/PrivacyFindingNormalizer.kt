@@ -47,4 +47,67 @@ object PrivacyFindingNormalizer {
             ),
         )
     }
+
+    fun normalize(input: PrivacyFinding): PrivacyFinding {
+        val apple = input.appleEvidence ?: inferredSameRowAppleEvidence(input) ?: return input
+        if (!apple.appleFamilyEvidence || !apple.listeningOrientedCategoryOrWording) return input
+
+        val safeOwnedTitle = input.title.takeIf {
+            input.ownership == Ownership.OWNED &&
+                it.isNotBlank() &&
+                !containsListeningClaim(it)
+        }
+        val title = safeOwnedTitle ?: if (apple.airPodsAssociationEvidence) {
+            "AirPods connection/activity nearby"
+        } else {
+            "Apple device activity nearby"
+        }
+        return input.copy(
+            title = title,
+            evidence = if (apple.airPodsAssociationEvidence) {
+                "An Apple device reports connected AirPods and media, call, or video activity."
+            } else {
+                "An Apple device reports a nearby activity state; the specific activity is unavailable."
+            },
+            limitation = "Live Listen and microphone use cannot be determined from BLE.",
+            category = PrivacyCategory.APPLE_CONTINUITY,
+            severity = FindingSeverity.INFO,
+        )
+    }
+
+    private fun inferredSameRowAppleEvidence(input: PrivacyFinding): PrivacyAppleListeningEvidence? {
+        val sameRowText = listOfNotNull(
+            input.title,
+            input.evidence,
+            input.category.name,
+            input.category.label,
+        ).joinToString(separator = " ")
+        val appleFamilyEvidence = APPLE_FAMILY_TOKEN.containsMatchIn(sameRowText)
+        val airPodsEvidence = AIRPODS_TOKEN.containsMatchIn(sameRowText)
+        val listeningEvidence = input.category == PrivacyCategory.REMOTE_LISTENING ||
+            listOf("listening", "eavesdrop", "live listen", "microphone").any {
+                sameRowText.contains(it, ignoreCase = true)
+            }
+        return if (appleFamilyEvidence && listeningEvidence) {
+            PrivacyAppleListeningEvidence(
+                appleFamilyEvidence = true,
+                airPodsAssociationEvidence = airPodsEvidence,
+                listeningOrientedCategoryOrWording = true,
+            )
+        } else {
+            null
+        }
+    }
+
+    private fun containsListeningClaim(text: String): Boolean =
+        listOf("listening", "eavesdrop", "live listen", "microphone").any {
+            text.contains(it, ignoreCase = true)
+        }
+
+    private val APPLE_FAMILY_TOKEN = Regex(
+        pattern = "(?i)(?<![\\p{L}\\p{N}])(?:apple|airpods|iphone|ipad)(?![\\p{L}\\p{N}])",
+    )
+    private val AIRPODS_TOKEN = Regex(
+        pattern = "(?i)(?<![\\p{L}\\p{N}])airpods(?![\\p{L}\\p{N}])",
+    )
 }
