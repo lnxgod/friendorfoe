@@ -140,7 +140,7 @@ class BadgeUsbRepository @Inject constructor(
     private val lifecycleLock = Any()
     private val started = AtomicBoolean(false)
     private val transportGate = BadgeTransportGenerationGate()
-    private val httpCommandStarts = BadgeHttpCommandStartGate(transportGate)
+    private val commandStarts = BadgeCommandStartGate(transportGate)
     private val httpStatusRequests = BadgeHttpStatusRequestGate()
     private val usbPermissionRequests = BadgeUsbPermissionRequestGate()
     private val usbCommands = BadgeUsbCommandCoordinator()
@@ -387,11 +387,22 @@ class BadgeUsbRepository @Inject constructor(
                     "Badge connection changed before the command started",
                 )
             }
+            val executionTargetId = snapshot.connection.targetId
+            if (executionTargetId.isNullOrBlank()) {
+                return@withLock BadgeCommandOutcome.Unsupported(
+                    "Badge target changed before the command started",
+                )
+            }
+            val executionAuthority = BadgeCommandStartAuthority(
+                token = executionToken,
+                targetId = executionTargetId,
+                command = command,
+            )
             val outcome = when (snapshot.connection.transport) {
-                BadgeTransport.USB_SERIAL -> executeUsbOnce(command, executionToken)
-                BadgeTransport.LOCAL_AP_HTTP -> executeApHttpOnce(command, executionToken)
-                BadgeTransport.BLE_GATT -> executeBleOnce(command, executionToken)
-                BadgeTransport.DEBUG_BRIDGE -> executeDebugBridgeOnce(command, executionToken)
+                BadgeTransport.USB_SERIAL -> executeUsbOnce(executionAuthority)
+                BadgeTransport.LOCAL_AP_HTTP -> executeApHttpOnce(executionAuthority)
+                BadgeTransport.BLE_GATT -> executeBleOnce(executionAuthority)
+                BadgeTransport.DEBUG_BRIDGE -> executeDebugBridgeOnce(executionAuthority)
                 null -> BadgeCommandOutcome.Unsupported("No badge transport is active")
             }
             var published = false
@@ -514,9 +525,10 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     private suspend fun executeUsbOnce(
-        command: BadgeCommand,
-        token: BadgeActiveTransportToken,
+        authority: BadgeCommandStartAuthority,
     ): BadgeCommandOutcome {
+        val command = authority.command
+        val token = authority.token
         if (token != activeUsbToken || !transportGate.isCurrent(token)) {
             return BadgeCommandOutcome.Unsupported("Direct USB-C session changed")
         }
@@ -535,9 +547,8 @@ class BadgeUsbRepository @Inject constructor(
         }
         var writeAttempted = false
         try {
-            when (writeUsbLine(
-                token = token,
-                line = "FOF_CTL:${command.toControlJson()}",
+            when (writeUsbCommand(
+                authority = authority,
                 onAttempt = { writeAttempted = true },
             )) {
                 UsbLineWriteResult.NOT_ATTEMPTED -> {
@@ -571,9 +582,10 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     private suspend fun executeBleOnce(
-        command: BadgeCommand,
-        token: BadgeActiveTransportToken,
+        authority: BadgeCommandStartAuthority,
     ): BadgeCommandOutcome {
+        val command = authority.command
+        val token = authority.token
         if (token != activeBleToken || !transportGate.isCurrent(token)) {
             return BadgeCommandOutcome.Unsupported("Badge BLE session changed")
         }
@@ -610,7 +622,7 @@ class BadgeUsbRepository @Inject constructor(
                 bleCommands.clearExact(deferred)
                 return BadgeCommandOutcome.Unsupported("Badge BLE session changed")
             }
-            if (!writeBleControl(token, command.toControlJson())) {
+            if (!writeBleCommand(authority)) {
                 bleGattOperations.complete(BadgeBleGattOperation.CONTROL_WRITE)
                 bleCommands.clearExact(deferred)
                 return BadgeCommandOutcome.Failed("Badge BLE write failed")
@@ -640,9 +652,9 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     private suspend fun executeApHttpOnce(
-        command: BadgeCommand,
-        token: BadgeActiveTransportToken,
+        authority: BadgeCommandStartAuthority,
     ): BadgeCommandOutcome {
+        val token = authority.token
         if (token != activeHttpToken || !transportGate.isCurrent(token) ||
             token.transport != BadgeTransport.LOCAL_AP_HTTP
         ) {
@@ -653,8 +665,7 @@ class BadgeUsbRepository @Inject constructor(
         val sentAt = clock.nowElapsedMs()
         val result = postJsonCommand(
             baseUrl = baseUrl,
-            command = command,
-            expectedAuthority = BadgeHttpCommandAuthority(token, BADGE_AP_ENDPOINT),
+            expectedAuthority = authority,
         )
         val outcome = result.fold(
             onSuccess = { response -> parseHttpCommandOutcome(response.code, response.body) },
@@ -668,9 +679,10 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     private suspend fun executeDebugBridgeOnce(
-        command: BadgeCommand,
-        token: BadgeActiveTransportToken,
+        authority: BadgeCommandStartAuthority,
     ): BadgeCommandOutcome {
+        val command = authority.command
+        val token = authority.token
         if (command == BadgeCommand.Reboot || command == BadgeCommand.EnterBootloader) {
             return BadgeCommandOutcome.Unsupported("Recovery requires direct USB-C")
         }
@@ -695,12 +707,10 @@ class BadgeUsbRepository @Inject constructor(
             nowElapsedMs = clock.nowElapsedMs(),
         ) == BadgeConnectionPhase.LIVE
         if (!pre.isUsableDebugEvidence() || preEvidence == null || !preIsLive ||
-            preEvidence.physicalSerialPort != state.value.connection.targetId
+            preEvidence.physicalSerialPort != authority.targetId
         ) {
             return BadgeCommandOutcome.Failed("Debug bridge physical status is incomplete")
         }
-        val expectedTargetId = preEvidence.physicalSerialPort
-            ?: return BadgeCommandOutcome.Failed("Debug bridge physical status is incomplete")
         if (!transportGate.isCurrent(token)) {
             return BadgeCommandOutcome.Unsupported("Debug bridge session changed")
         }
@@ -708,8 +718,7 @@ class BadgeUsbRepository @Inject constructor(
         val sentAt = clock.nowElapsedMs()
         val response = postJsonCommand(
             baseUrl = baseUrl,
-            command = command,
-            expectedAuthority = BadgeHttpCommandAuthority(token, expectedTargetId),
+            expectedAuthority = authority,
         ).getOrElse {
             return BadgeCommandOutcome.Failed("Debug bridge command failed")
         }
@@ -1050,6 +1059,51 @@ class BadgeUsbRepository @Inject constructor(
     private suspend fun writeLine(token: BadgeActiveTransportToken, line: String): Boolean =
         writeUsbLine(token, line) == UsbLineWriteResult.WRITTEN
 
+    private suspend fun writeUsbCommand(
+        authority: BadgeCommandStartAuthority,
+        onAttempt: () -> Unit,
+    ): UsbLineWriteResult =
+        withContext(Dispatchers.IO) {
+            val token = authority.token
+            val connection = activeConnection
+            val endpoint = activeOutEndpoint
+            val bytes = ("FOF_CTL:${authority.command.toControlJson()}\n")
+                .toByteArray(Charsets.UTF_8)
+            var result = UsbLineWriteResult.NOT_ATTEMPTED
+            commandStarts.startIfAuthorized(
+                expected = authority,
+                currentEvidence = { state.value.connection },
+                nowElapsedMs = clock::nowElapsedMs,
+                resourceIsCurrent = {
+                    token.transport == BadgeTransport.USB_SERIAL &&
+                        token == activeTransportToken &&
+                        token == activeUsbToken &&
+                        authority.targetId == activeUsbTargetId &&
+                        connection != null &&
+                        connection === activeConnection &&
+                        endpoint != null &&
+                        endpoint === activeOutEndpoint
+                },
+                start = {
+                    val currentConnection = checkNotNull(connection)
+                    val currentEndpoint = checkNotNull(endpoint)
+                    onAttempt()
+                    result = if (currentConnection.bulkTransfer(
+                            currentEndpoint,
+                            bytes,
+                            bytes.size,
+                            WRITE_TIMEOUT_MS,
+                        ) == bytes.size
+                    ) {
+                        UsbLineWriteResult.WRITTEN
+                    } else {
+                        UsbLineWriteResult.ATTEMPTED_UNCERTAIN
+                    }
+                },
+            )
+            result
+        }
+
     private suspend fun writeUsbLine(
         token: BadgeActiveTransportToken,
         line: String,
@@ -1280,13 +1334,15 @@ class BadgeUsbRepository @Inject constructor(
 
     private suspend fun postJsonCommand(
         baseUrl: HttpUrl,
-        command: BadgeCommand,
-        expectedAuthority: BadgeHttpCommandAuthority,
+        expectedAuthority: BadgeCommandStartAuthority,
     ): Result<BadgeHttpResponse> {
         val request = runCatching {
             Request.Builder()
                 .url(baseUrl.resolve("api/badge/control") ?: error("Invalid badge control URL"))
-                .post(command.toControlJson().toString().toRequestBody(jsonMediaType))
+                .post(
+                    expectedAuthority.command.toControlJson().toString()
+                        .toRequestBody(jsonMediaType),
+                )
                 .build()
         }.getOrElse { return Result.failure(it) }
         val call = httpClients.command.newCall(request)
@@ -1321,9 +1377,23 @@ class BadgeUsbRepository @Inject constructor(
                 val noStatusRequestInFlight = httpStatusRequests.runIfNoActiveRequest(
                     expectedAuthority.token.transport,
                 ) {
-                    commandStarted = httpCommandStarts.startIfAuthorized(
+                    commandStarted = commandStarts.startIfAuthorized(
                         expected = expectedAuthority,
-                        current = ::currentHttpCommandAuthority,
+                        currentEvidence = { state.value.connection },
+                        nowElapsedMs = clock::nowElapsedMs,
+                        resourceIsCurrent = {
+                            val token = expectedAuthority.token
+                            token == activeTransportToken &&
+                                token == activeHttpToken &&
+                                when (token.transport) {
+                                    BadgeTransport.LOCAL_AP_HTTP ->
+                                        expectedAuthority.targetId == BADGE_AP_ENDPOINT &&
+                                            baseUrl == BADGE_AP_ENDPOINT.toHttpUrlOrNullSafe()
+                                    BadgeTransport.DEBUG_BRIDGE ->
+                                        baseUrl == debugBridgeConfig.baseUrl
+                                    else -> false
+                                }
+                        },
                         start = { call.enqueue(callback) },
                     )
                 }
@@ -1336,14 +1406,6 @@ class BadgeUsbRepository @Inject constructor(
                 )
             }
         }
-    }
-
-    private fun currentHttpCommandAuthority(): BadgeHttpCommandAuthority? {
-        val token = activeHttpToken ?: return null
-        val connection = state.value.connection
-        val targetId = connection.targetId ?: return null
-        if (!connection.matchesActiveToken(token)) return null
-        return BadgeHttpCommandAuthority(token, targetId)
     }
 
     private fun publishStatus(token: BadgeActiveTransportToken, rawStatus: BadgeControlStatus) {
@@ -1789,30 +1851,45 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     @SuppressLint("MissingPermission")
-    private fun writeBleControl(
-        token: BadgeActiveTransportToken,
-        payload: JsonObject,
-    ): Boolean {
-        val bytes = payload.toString().toByteArray(Charsets.UTF_8)
+    private fun writeBleCommand(authority: BadgeCommandStartAuthority): Boolean {
+        val token = authority.token
+        val gatt = activeGatt ?: return false
+        val characteristic = activeBleControlChar ?: return false
+        val bytes = authority.command.toControlJson().toString().toByteArray(Charsets.UTF_8)
         var started = false
-        transportGate.runIfCurrent(token) {
-            val gatt = activeGatt ?: return@runIfCurrent
-            val characteristic = activeBleControlChar ?: return@runIfCurrent
-            if (!hasBlePermissions()) return@runIfCurrent
-            started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeCharacteristic(
-                    characteristic,
-                    bytes,
-                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-                ) == BluetoothGatt.GATT_SUCCESS
-            } else {
-                @Suppress("DEPRECATION")
-                characteristic.value = bytes
-                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                @Suppress("DEPRECATION")
-                gatt.writeCharacteristic(characteristic)
-            }
-        }
+        commandStarts.startIfAuthorized(
+            expected = authority,
+            currentEvidence = { state.value.connection },
+            nowElapsedMs = clock::nowElapsedMs,
+            resourceIsCurrent = {
+                token.transport == BadgeTransport.BLE_GATT &&
+                    token == activeTransportToken &&
+                    token == activeBleToken &&
+                    gatt === activeGatt &&
+                    characteristic === activeBleControlChar &&
+                    characteristic.uuid == BADGE_BLE_CONTROL_UUID &&
+                    hasBlePermissions() &&
+                    runCatching {
+                        gatt.device.address == authority.targetId &&
+                            gatt.device.bondState == BluetoothDevice.BOND_BONDED
+                    }.getOrDefault(false)
+            },
+            start = {
+                started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeCharacteristic(
+                        characteristic,
+                        bytes,
+                        BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+                    ) == BluetoothGatt.GATT_SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    characteristic.value = bytes
+                    characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    @Suppress("DEPRECATION")
+                    gatt.writeCharacteristic(characteristic)
+                }
+            },
+        )
         return started
     }
 

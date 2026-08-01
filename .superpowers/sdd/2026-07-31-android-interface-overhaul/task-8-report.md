@@ -42,6 +42,12 @@ Implemented the Android-only Badge transport safety boundary. No file under `esp
   then transport authority. An in-flight status request blocks command start, and the exact
   published target/token is rechecked at that final point without holding a general lock over
   network I/O.
+- Added one mandatory final command-start gate shared by HTTP, USB, and BLE. At the exact
+  `enqueue`, mutation `bulkTransfer`, or control `writeCharacteristic` boundary it binds the
+  snapshotted token, target, command, and concrete resource; requires a real status-receipt
+  timestamp; re-ages current evidence with the monotonic clock; and recomputes payload-aware,
+  release-certified capability. Same-token freshness, debug-error, BLE bond/encryption,
+  payload, and certification revocation therefore fail closed before the side effect starts.
 - Linearized BLE scan start against synchronous session invalidation and replaced loose scan
   flags with an identity-bound lease. Callback, timeout, and lifecycle stops retain that exact
   lease through the platform stop attempt; stale work cannot clear a newer scan.
@@ -91,10 +97,27 @@ The concurrency fix round had four explicit RED checkpoints:
 - a stopped HTTP request gate incorrectly authorized a command start, producing one expected
   behavioral test failure before the session-active guard was added.
 
-An independent post-fix concurrency review found no remaining Android-formal blocker or lock
-cycle. A bridge serial switch after Android has atomically enqueued a command cannot be bound
-without an expected-serial compare-and-swap in the bridge API; this remains a physical
-certification boundary, and checked-in debug mutation certification is therefore still empty.
+The final-authority fix round had two additional RED checkpoints:
+
+- the new cross-transport authority/gate API was absent, so the expanded race suite failed
+  test compilation before production implementation; and
+- a malformed stored `LIVE` evidence object without `lastValidStatusAtElapsedMs` incorrectly
+  reached the start callback before the helper added an explicit receipt requirement.
+- the requested repository production-wiring contract did not exist, so its exact Gradle
+  test filter failed with `No tests found`; the added two-test source contract then exposed
+  and fixed its own Java-API and balanced-call extraction issues before going green.
+
+A later formal re-review correctly found that the first concurrency fix still trusted an
+earlier capability snapshot at the physical mutation boundary. The shared final-authority
+gate above closes that gap for all three command transports while retaining status-request ->
+transport lock order. A bridge serial switch after Android has atomically enqueued a command
+cannot be bound without an expected-serial compare-and-swap in the bridge API; this remains a
+physical certification boundary, and checked-in debug mutation certification is therefore
+still empty.
+
+The final formal pass closed the Critical finding. Its sole remaining Important concern was
+that coordinator-only tests did not prove the repository retained the three platform-call
+wiring points; the two production-source wiring regressions now enforce that architecture.
 
 ## Fresh verification
 
@@ -108,16 +131,20 @@ certification boundary, and checked-in debug mutation certification is therefore
 - Race-focused command:
   `./gradlew testDebugUnitTest --tests com.friendorfoe.data.badge.BadgeTransportRaceCoordinatorTest`
   - Result: `BUILD SUCCESSFUL`
-  - Count: 13 tests, 0 skipped, 0 failures, 0 errors
+  - Count: 20 tests, 0 skipped, 0 failures, 0 errors
+- Repository-wiring command:
+  `./gradlew testDebugUnitTest --tests com.friendorfoe.data.badge.BadgeCommandStartWiringTest`
+  - Result: `BUILD SUCCESSFUL`
+  - Count: 2 tests, 0 skipped, 0 failures, 0 errors
 - Full Badge package command included every `com.friendorfoe.data.badge.*` test.
   - Result: `BUILD SUCCESSFUL`
-  - Count: 99 tests, 0 skipped, 0 failures, 0 errors
-- Full JVM command: `./gradlew testDebugUnitTest --rerun-tasks`
-  - Result: `BUILD SUCCESSFUL in 28s`
-  - Count: 375 tests, 0 skipped, 0 failures, 0 errors
-- APK command: `./gradlew assembleDebug --rerun-tasks`
-  - Result: `BUILD SUCCESSFUL in 31s`
-  - 41 tasks executed
+  - Count: 108 tests, 0 skipped, 0 failures, 0 errors
+- Full JVM command: `./gradlew testDebugUnitTest`
+  - Result: `BUILD SUCCESSFUL`
+  - Count: 384 tests, 0 skipped, 0 failures, 0 errors
+- APK command: `./gradlew assembleDebug`
+  - Result: `BUILD SUCCESSFUL`
+  - 41 tasks evaluated; APK packaging completed
 - Release BuildConfig proof:
   - `DEBUG = false`
   - `BADGE_DEBUG_BRIDGE_BASE_URL = ""`
@@ -130,6 +157,15 @@ certification boundary, and checked-in debug mutation certification is therefore
   Privacy.
 - All three production status-parser boundaries pass one captured elapsed receipt and
   one captured wall receipt explicitly; no wall-clock default remains.
+- Production static wiring has exactly three `BadgeCommandStartGate.startIfAuthorized`
+  call sites: HTTP command `enqueue`, the named USB mutation writer containing
+  `bulkTransfer`, and the named BLE mutation writer containing `writeCharacteristic`.
+- `BadgeCommandStartWiringTest` balanced-parses those named production function bodies and
+  their gate `start` lambdas, rejects platform mutation calls outside the lambdas, and
+  rejects execute paths that bypass the named authorized writers.
+- The shared helper explicitly calls `.aged(nowElapsedMs)` and `badgeCapability` with the
+  exact authority command's required capability and payload size.
+- `CheckedInBadgeReleaseCertification` remains the empty default.
 - `git diff --check`: clean.
 - Backend/firmware scope scan: no `backend/` or `esp32/` diff.
 
@@ -166,6 +202,7 @@ Production/configuration:
 
 Tests:
 
+- `android/app/src/test/java/com/friendorfoe/data/badge/BadgeCommandStartWiringTest.kt`
 - `android/app/src/test/java/com/friendorfoe/data/badge/BadgeConnectionCapabilityTest.kt`
 - `android/app/src/test/java/com/friendorfoe/data/badge/BadgeControlAcknowledgementTest.kt`
 - `android/app/src/test/java/com/friendorfoe/data/badge/BadgeControlStatusParserTest.kt`

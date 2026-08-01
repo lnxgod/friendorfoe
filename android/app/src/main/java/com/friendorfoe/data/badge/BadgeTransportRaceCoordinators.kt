@@ -1,21 +1,47 @@
 package com.friendorfoe.data.badge
 
-internal data class BadgeHttpCommandAuthority(
+internal data class BadgeCommandStartAuthority(
     val token: BadgeActiveTransportToken,
     val targetId: String,
+    val command: BadgeCommand,
 )
 
-internal class BadgeHttpCommandStartGate(
+internal fun canStartBadgeCommand(
+    evidence: BadgeConnectionEvidence,
+    expected: BadgeCommandStartAuthority,
+    nowElapsedMs: Long,
+): Boolean {
+    if (expected.targetId.isBlank() || evidence.lastValidStatusAtElapsedMs == null) return false
+    val currentEvidence = evidence.aged(nowElapsedMs)
+    return currentEvidence.matchesActiveToken(expected.token) &&
+        currentEvidence.targetId == expected.targetId &&
+        badgeCapability(
+            evidence = currentEvidence,
+            capability = expected.command.requiredCapability(),
+            payloadBytes = expected.command.payloadSizeOrNull(),
+        ) == BadgeCapabilitySupport.SUPPORTED
+}
+
+internal class BadgeCommandStartGate(
     private val transportGate: BadgeTransportGenerationGate,
 ) {
     fun startIfAuthorized(
-        expected: BadgeHttpCommandAuthority,
-        current: () -> BadgeHttpCommandAuthority?,
+        expected: BadgeCommandStartAuthority,
+        currentEvidence: () -> BadgeConnectionEvidence,
+        nowElapsedMs: () -> Long,
+        resourceIsCurrent: () -> Boolean,
         start: () -> Unit,
     ): Boolean {
         var started = false
         transportGate.runIfCurrent(expected.token) {
-            if (current() != expected) return@runIfCurrent
+            if (!canStartBadgeCommand(
+                    evidence = currentEvidence(),
+                    expected = expected,
+                    nowElapsedMs = nowElapsedMs(),
+                ) || !resourceIsCurrent()
+            ) {
+                return@runIfCurrent
+            }
             start()
             started = true
         }
