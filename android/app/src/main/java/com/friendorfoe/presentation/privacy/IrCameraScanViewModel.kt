@@ -2,6 +2,7 @@ package com.friendorfoe.presentation.privacy
 
 import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
+import com.friendorfoe.data.repository.RuntimePermissionChangeNotifier
 import com.friendorfoe.detection.IrCameraDetector
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -20,7 +21,9 @@ data class IrCameraScanUiState(
 
 @HiltViewModel
 class IrCameraScanViewModel @Inject constructor(
-    private val irCameraDetector: IrCameraDetector
+    private val irCameraDetector: IrCameraDetector,
+    private val permissionChangeNotifier: RuntimePermissionChangeNotifier =
+        RuntimePermissionChangeNotifier.NoOp
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(IrCameraScanUiState())
     val uiState: StateFlow<IrCameraScanUiState> = _uiState.asStateFlow()
@@ -41,5 +44,9 @@ class IrCameraScanViewModel @Inject constructor(
     fun reset() {
         irCameraDetector.reset()
         _uiState.value = IrCameraScanUiState()
+    }
+
+    fun onRuntimePermissionsChanged() {
+        permissionChangeNotifier.onRuntimePermissionsChanged()
     }
 }

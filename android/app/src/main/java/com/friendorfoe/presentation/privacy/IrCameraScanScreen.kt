@@ -76,7 +76,10 @@ fun IrCameraScanScreen(
     }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted -> cameraGranted = granted }
+    ) { granted ->
+        cameraGranted = granted
+        viewModel.onRuntimePermissionsChanged()
+    }
 
     LaunchedEffect(Unit) {
         viewModel.reset()

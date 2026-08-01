@@ -8,13 +8,15 @@ import androidx.core.content.ContextCompat
 
 internal data class LocalDetectionPermissions(
     val bluetoothScan: Boolean,
-    val wifiScan: Boolean,
+    val wifiAwareScan: Boolean,
+    val wifiManagerScanResults: Boolean,
     val audioCapture: Boolean,
 ) {
     companion object {
         val None = LocalDetectionPermissions(
             bluetoothScan = false,
-            wifiScan = false,
+            wifiAwareScan = false,
+            wifiManagerScanResults = false,
             audioCapture = false,
         )
     }
@@ -36,8 +38,10 @@ internal fun allowedProtectedDetectionSources(
         add(ProtectedDetectionSource.BLE_REMOTE_ID)
         add(ProtectedDetectionSource.BLE_PRIVACY)
     }
-    if (permissions.wifiScan) {
+    if (permissions.wifiAwareScan) {
         add(ProtectedDetectionSource.WIFI_REMOTE_ID)
+    }
+    if (permissions.wifiManagerScanResults) {
         add(ProtectedDetectionSource.WIFI_DRONE)
         add(ProtectedDetectionSource.WIFI_PRIVACY)
     }
@@ -52,25 +56,44 @@ internal fun shouldRestartForPermissionChange(
     current: LocalDetectionPermissions,
 ): Boolean = isRunning && active != current
 
-internal fun currentLocalDetectionPermissions(context: Context): LocalDetectionPermissions {
-    fun isGranted(permission: String): Boolean =
-        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-
-    val bluetoothScan = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        isGranted(Manifest.permission.BLUETOOTH_SCAN) &&
-            isGranted(Manifest.permission.BLUETOOTH_CONNECT)
+internal fun localDetectionPermissionsFor(
+    apiLevel: Int,
+    granted: Set<String>,
+): LocalDetectionPermissions {
+    val fineLocation = Manifest.permission.ACCESS_FINE_LOCATION in granted
+    val bluetoothScan = if (apiLevel >= Build.VERSION_CODES.S) {
+        Manifest.permission.BLUETOOTH_SCAN in granted &&
+            Manifest.permission.BLUETOOTH_CONNECT in granted
     } else {
-        isGranted(Manifest.permission.ACCESS_FINE_LOCATION)
+        fineLocation
     }
-    val wifiScan = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        isGranted(Manifest.permission.NEARBY_WIFI_DEVICES)
+    val wifiAwareScan = if (apiLevel >= Build.VERSION_CODES.TIRAMISU) {
+        Manifest.permission.NEARBY_WIFI_DEVICES in granted
     } else {
-        isGranted(Manifest.permission.ACCESS_FINE_LOCATION)
+        fineLocation
     }
 
     return LocalDetectionPermissions(
         bluetoothScan = bluetoothScan,
-        wifiScan = wifiScan,
-        audioCapture = isGranted(Manifest.permission.RECORD_AUDIO),
+        wifiAwareScan = wifiAwareScan,
+        wifiManagerScanResults = fineLocation,
+        audioCapture = Manifest.permission.RECORD_AUDIO in granted,
+    )
+}
+
+internal fun currentLocalDetectionPermissions(context: Context): LocalDetectionPermissions {
+    fun isGranted(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+
+    val relevantPermissions = setOf(
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.BLUETOOTH_SCAN,
+        Manifest.permission.BLUETOOTH_CONNECT,
+        Manifest.permission.NEARBY_WIFI_DEVICES,
+        Manifest.permission.RECORD_AUDIO,
+    )
+    return localDetectionPermissionsFor(
+        apiLevel = Build.VERSION.SDK_INT,
+        granted = relevantPermissions.filterTo(mutableSetOf(), ::isGranted),
     )
 }

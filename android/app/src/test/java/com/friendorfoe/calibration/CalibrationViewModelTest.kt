@@ -1,6 +1,7 @@
 package com.friendorfoe.calibration
 
 import com.friendorfoe.test.MainDispatcherRule
+import com.friendorfoe.data.repository.RuntimePermissionChangeNotifier
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -20,6 +21,22 @@ class CalibrationViewModelTest {
 
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
+
+    @Test
+    fun permissionResultNotifiesLocalDetectionCollectors() {
+        val notifier = RecordingRuntimePermissionChangeNotifier()
+        val viewModel = CalibrationViewModel(
+            prefs = FakeCalibrationSettingsStore(),
+            advertiser = FakeCalibrationAdvertiser(),
+            api = FakeCalibrationBackend(),
+            platform = FakeCalibrationPlatform(),
+            permissionChangeNotifier = notifier,
+        )
+
+        viewModel.onRuntimePermissionsChanged()
+
+        assertEquals(1, notifier.notificationCount)
+    }
 
     @Test
     fun refreshConnectivity_withHealthyBackendAndSensors_marksPreflightReady() = runTest {
@@ -606,6 +623,14 @@ class CalibrationViewModelTest {
           "session_readiness": {"sensors_ready":1,"sensors_total":1,"ready_overall":false,"min_required":4}
         }
         """.trimIndent()
+}
+
+private class RecordingRuntimePermissionChangeNotifier : RuntimePermissionChangeNotifier {
+    var notificationCount = 0
+
+    override fun onRuntimePermissionsChanged() {
+        notificationCount++
+    }
 }
 
 private class FakeCalibrationSettingsStore(

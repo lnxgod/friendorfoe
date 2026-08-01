@@ -131,13 +131,13 @@ fun PermissionHandler(
                 } else {
                     true
                 }
-                val localDetectionPermissionChanged =
-                    resumedLocationGranted != locationGranted ||
-                        resumedBluetoothGranted != bluetoothGranted
                 cameraGranted = resumedCameraGranted
                 locationGranted = resumedLocationGranted
                 bluetoothGranted = resumedBluetoothGranted
-                if (localDetectionPermissionChanged) viewModel.onRuntimePermissionsChanged()
+                // Re-read every protected local-detection permission (including Nearby
+                // devices and microphone) after any Settings round trip. The repository
+                // cheaply ignores snapshots that did not actually change.
+                viewModel.onRuntimePermissionsChanged()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -150,6 +150,7 @@ fun PermissionHandler(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         cameraGranted = granted
+        viewModel.onRuntimePermissionsChanged()
     }
 
     // Request camera permission on first composition if not granted

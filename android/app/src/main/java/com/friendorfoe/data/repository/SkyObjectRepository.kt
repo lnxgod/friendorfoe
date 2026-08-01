@@ -70,7 +70,7 @@ class SkyObjectRepository @Inject constructor(
     private val historyDao: HistoryDao,
     private val trackingDao: TrackingDao,
     @ApplicationContext private val appContext: Context,
-) {
+) : RuntimePermissionChangeNotifier {
 
     companion object {
         private const val TAG = "SkyObjectRepository"
@@ -161,7 +161,7 @@ class SkyObjectRepository @Inject constructor(
     }
 
     /** Re-evaluate protected collectors after a feature-owned permission flow completes. */
-    fun onRuntimePermissionsChanged() {
+    override fun onRuntimePermissionsChanged() {
         val permissions = currentLocalDetectionPermissions(appContext)
         if (shouldRestartForPermissionChange(isRunning.get(), activeLocalPermissions, permissions)) {
             restartDetectionSources()

@@ -1,5 +1,6 @@
 package com.friendorfoe.data.repository
 
+import android.Manifest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -13,7 +14,8 @@ class DetectionPermissionPolicyTest {
             allowedProtectedDetectionSources(
                 LocalDetectionPermissions(
                     bluetoothScan = false,
-                    wifiScan = false,
+                    wifiAwareScan = false,
+                    wifiManagerScanResults = false,
                     audioCapture = false,
                 )
             )
@@ -30,7 +32,8 @@ class DetectionPermissionPolicyTest {
             allowedProtectedDetectionSources(
                 LocalDetectionPermissions(
                     bluetoothScan = true,
-                    wifiScan = false,
+                    wifiAwareScan = false,
+                    wifiManagerScanResults = false,
                     audioCapture = false,
                 )
             )
@@ -38,13 +41,26 @@ class DetectionPermissionPolicyTest {
         assertEquals(
             setOf(
                 ProtectedDetectionSource.WIFI_REMOTE_ID,
+            ),
+            allowedProtectedDetectionSources(
+                LocalDetectionPermissions(
+                    bluetoothScan = false,
+                    wifiAwareScan = true,
+                    wifiManagerScanResults = false,
+                    audioCapture = false,
+                )
+            )
+        )
+        assertEquals(
+            setOf(
                 ProtectedDetectionSource.WIFI_DRONE,
                 ProtectedDetectionSource.WIFI_PRIVACY,
             ),
             allowedProtectedDetectionSources(
                 LocalDetectionPermissions(
                     bluetoothScan = false,
-                    wifiScan = true,
+                    wifiAwareScan = false,
+                    wifiManagerScanResults = true,
                     audioCapture = false,
                 )
             )
@@ -54,7 +70,8 @@ class DetectionPermissionPolicyTest {
             allowedProtectedDetectionSources(
                 LocalDetectionPermissions(
                     bluetoothScan = false,
-                    wifiScan = false,
+                    wifiAwareScan = false,
+                    wifiManagerScanResults = false,
                     audioCapture = true,
                 )
             )
@@ -69,5 +86,33 @@ class DetectionPermissionPolicyTest {
         assertTrue(shouldRestartForPermissionChange(true, none, bluetoothGranted))
         assertFalse(shouldRestartForPermissionChange(true, bluetoothGranted, bluetoothGranted))
         assertFalse(shouldRestartForPermissionChange(false, none, bluetoothGranted))
+    }
+
+    @Test
+    fun api33SeparatesNearbyWifiAwareFromLocationProtectedScanResults() {
+        val nearbyOnly = localDetectionPermissionsFor(
+            apiLevel = 33,
+            granted = setOf(Manifest.permission.NEARBY_WIFI_DEVICES),
+        )
+        assertTrue(nearbyOnly.wifiAwareScan)
+        assertFalse(nearbyOnly.wifiManagerScanResults)
+
+        val fineLocationOnly = localDetectionPermissionsFor(
+            apiLevel = 33,
+            granted = setOf(Manifest.permission.ACCESS_FINE_LOCATION),
+        )
+        assertFalse(fineLocationOnly.wifiAwareScan)
+        assertTrue(fineLocationOnly.wifiManagerScanResults)
+    }
+
+    @Test
+    fun pre33FineLocationEnablesBothWifiTransports() {
+        val permissions = localDetectionPermissionsFor(
+            apiLevel = 32,
+            granted = setOf(Manifest.permission.ACCESS_FINE_LOCATION),
+        )
+
+        assertTrue(permissions.wifiAwareScan)
+        assertTrue(permissions.wifiManagerScanResults)
     }
 }

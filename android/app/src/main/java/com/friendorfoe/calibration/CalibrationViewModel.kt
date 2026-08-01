@@ -5,6 +5,7 @@ import android.location.Location
 import android.location.LocationListener
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.friendorfoe.data.repository.RuntimePermissionChangeNotifier
 import com.google.gson.JsonObject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -38,6 +39,8 @@ class CalibrationViewModel @Inject constructor(
     private val advertiser: CalibrationAdvertiser,
     private val api: CalibrationBackend,
     private val platform: CalibrationPlatform,
+    private val permissionChangeNotifier: RuntimePermissionChangeNotifier =
+        RuntimePermissionChangeNotifier.NoOp,
 ) : ViewModel() {
     private companion object {
         const val ANCHOR_PHONE_GPS = "phone_gps"
@@ -893,6 +896,10 @@ class CalibrationViewModel @Inject constructor(
             )
         }
         return needed.filter { it !in granted }
+    }
+
+    fun onRuntimePermissionsChanged() {
+        permissionChangeNotifier.onRuntimePermissionsChanged()
     }
 
     @SuppressLint("MissingPermission")
