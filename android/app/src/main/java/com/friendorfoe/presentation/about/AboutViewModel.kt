@@ -2,16 +2,77 @@ package com.friendorfoe.presentation.about
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.friendorfoe.data.BackendEndpoint
 import com.friendorfoe.data.DetectionPrefs
+import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.data.remote.SensorMapApiService
 import com.friendorfoe.data.repository.SkyObjectRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+
+data class InfoSettingsUiState(
+    val settings: DetectionSettings = DetectionSettings.defaults(),
+    val backendValidationError: String? = null,
+    val connectionStatus: ConnectionTestState = ConnectionTestState.Idle,
+)
+
+sealed interface ConnectionTestState {
+    data object Idle : ConnectionTestState
+    data class Checking(val endpoint: BackendEndpoint) : ConnectionTestState
+    data class Connected(
+        val endpoint: BackendEndpoint,
+        val serverVersion: String?,
+    ) : ConnectionTestState
+    data class Failed(
+        val endpoint: BackendEndpoint,
+        val message: String,
+    ) : ConnectionTestState
+}
+
+internal class BackendConnectionTester(
+    private val scope: CoroutineScope,
+    private val connectionStatus: MutableStateFlow<ConnectionTestState>,
+    private val fetchServerVersion: suspend () -> String?,
+) {
+    private var job: Job? = null
+
+    fun test(endpoint: BackendEndpoint) {
+        job?.cancel()
+        connectionStatus.value = ConnectionTestState.Checking(endpoint)
+        job = scope.launch {
+            try {
+                val version = fetchServerVersion()
+                currentCoroutineContext().ensureActive()
+                connectionStatus.value = ConnectionTestState.Connected(endpoint, version)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                currentCoroutineContext().ensureActive()
+                connectionStatus.value = ConnectionTestState.Failed(
+                    endpoint = endpoint,
+                    message = failure.message?.take(80) ?: "Connection failed",
+                )
+            }
+        }
+    }
+
+    fun reset() {
+        job?.cancel()
+        job = null
+        connectionStatus.value = ConnectionTestState.Idle
+    }
+}
 
 @HiltViewModel
 class AboutViewModel @Inject constructor(
@@ -20,21 +81,25 @@ class AboutViewModel @Inject constructor(
     private val sensorMapApiService: SensorMapApiService
 ) : ViewModel() {
 
-    val adsbEnabled: Boolean get() = detectionPrefs.adsbEnabled
-    val bleRidEnabled: Boolean get() = detectionPrefs.bleRidEnabled
-    val wifiEnabled: Boolean get() = detectionPrefs.wifiEnabled
-    val privacyEnabled: Boolean get() = detectionPrefs.privacyEnabled
-    val stalkerEnabled: Boolean get() = detectionPrefs.stalkerDetectionEnabled
-    val ultrasonicEnabled: Boolean get() = detectionPrefs.ultrasonicEnabled
-    val wifiAnomalyEnabled: Boolean get() = detectionPrefs.wifiAnomalyEnabled
-    val privacyNotificationsEnabled: Boolean get() = detectionPrefs.privacyNotificationsEnabled
-    val droneAlertsEnabled: Boolean get() = detectionPrefs.droneAlertsEnabled
-    val helicopterAlertsEnabled: Boolean get() = detectionPrefs.helicopterAlertsEnabled
-    val militaryAlertsEnabled: Boolean get() = detectionPrefs.militaryAlertsEnabled
-    val policeAlertsEnabled: Boolean get() = detectionPrefs.policeAlertsEnabled
-    val sensorBackendEnabled: Boolean get() = detectionPrefs.sensorBackendEnabled
-    val backendUrl: String get() = detectionPrefs.backendUrl
-    val backendOnlyMode: Boolean get() = detectionPrefs.backendOnlyMode
+    private val backendValidationError = MutableStateFlow<String?>(null)
+    private val connectionStatus = MutableStateFlow<ConnectionTestState>(ConnectionTestState.Idle)
+    private val connectionTester = BackendConnectionTester(
+        scope = viewModelScope,
+        connectionStatus = connectionStatus,
+        fetchServerVersion = { sensorMapApiService.getHealth().version },
+    )
+
+    val uiState: StateFlow<InfoSettingsUiState> = combine(
+        detectionPrefs.settings,
+        backendValidationError,
+        connectionStatus,
+    ) { settings, error, connection ->
+        InfoSettingsUiState(settings, error, connection)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = InfoSettingsUiState(),
+    )
 
     fun setAdsbEnabled(enabled: Boolean) {
         detectionPrefs.adsbEnabled = enabled
@@ -68,26 +133,29 @@ class AboutViewModel @Inject constructor(
     fun setMilitaryAlertsEnabled(enabled: Boolean) { detectionPrefs.militaryAlertsEnabled = enabled }
     fun setPoliceAlertsEnabled(enabled: Boolean) { detectionPrefs.policeAlertsEnabled = enabled }
     fun setSensorBackendEnabled(enabled: Boolean) { detectionPrefs.sensorBackendEnabled = enabled }
-    fun setBackendUrl(url: String) { detectionPrefs.backendUrl = url }
+    fun setBackendUrl(raw: String): Result<BackendEndpoint> =
+        BackendEndpoint.parse(raw).onSuccess { endpoint ->
+            detectionPrefs.backendUrl = endpoint.baseUrl
+            backendValidationError.value = null
+            connectionTester.reset()
+        }.onFailure { failure ->
+            backendValidationError.value =
+                failure.message ?: "Enter a complete http:// or https:// URL"
+        }
     fun setBackendOnlyMode(enabled: Boolean) {
         detectionPrefs.backendOnlyMode = enabled
         skyObjectRepository.restartDetectionSources()
     }
 
-    // Connection test
-    private val _connectionStatus = MutableStateFlow<String?>(null)
-    val connectionStatus: StateFlow<String?> = _connectionStatus.asStateFlow()
-
     fun testConnection() {
-        val url = detectionPrefs.backendUrl
-        _connectionStatus.value = "Testing $url ..."
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val health = sensorMapApiService.getHealth()
-                _connectionStatus.value = "Connected to $url — v${health.version} DB:${health.database}"
-            } catch (e: Exception) {
-                _connectionStatus.value = "Failed ($url): ${e.message?.take(80)}"
-            }
+        connectionTester.reset()
+        val endpoint = BackendEndpoint.parse(detectionPrefs.backendUrl).getOrElse { failure ->
+            backendValidationError.value =
+                failure.message ?: "Enter a complete http:// or https:// URL"
+            connectionStatus.value = ConnectionTestState.Idle
+            return
         }
+        backendValidationError.value = null
+        connectionTester.test(endpoint)
     }
 }

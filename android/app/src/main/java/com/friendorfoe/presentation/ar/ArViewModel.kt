@@ -18,6 +18,8 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.friendorfoe.data.DetectionPrefs
+import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.data.remote.SensorMapApiService
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.data.repository.WeatherRepository
@@ -44,6 +46,7 @@ import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.Position
+import com.friendorfoe.presentation.collectBackendWhileEnabled
 import com.friendorfoe.sensor.ArCoreOrientationProvider
 import com.friendorfoe.sensor.CameraFovCalculator
 import com.friendorfoe.sensor.DeviceOrientation
@@ -64,6 +67,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -77,6 +81,32 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import javax.inject.Inject
 import kotlin.math.roundToInt
+
+internal suspend fun collectArBackend(
+    settings: Flow<DetectionSettings>,
+    intervalMs: Long,
+    sensorBackendOnline: MutableStateFlow<Boolean>,
+    sensorDroneCount: MutableStateFlow<Int>,
+    fetchDroneCount: suspend () -> Int,
+) {
+    collectBackendWhileEnabled(
+        settings = settings,
+        intervalMs = intervalMs,
+        clear = {
+            sensorBackendOnline.value = false
+            sensorDroneCount.value = 0
+        },
+        fetch = fetchDroneCount,
+        publish = { count ->
+            sensorBackendOnline.value = true
+            sensorDroneCount.value = count
+        },
+        onFailure = {
+            sensorBackendOnline.value = false
+            sensorDroneCount.value = 0
+        },
+    )
+}
 
 /**
  * ViewModel for the AR viewfinder screen.
@@ -103,6 +133,7 @@ class ArViewModel @Inject constructor(
     private val weatherRepository: WeatherRepository,
     private val darkTargetScorer: DarkTargetScorer,
     private val acousticDetector: AcousticDetector,
+    private val detectionPrefs: DetectionPrefs,
     private val sensorMapApiService: SensorMapApiService,
     val aiClassifier: AiClassifier,
     val trainingDataCollector: TrainingDataCollector,
@@ -1164,23 +1195,14 @@ class ArViewModel @Inject constructor(
     private val _sensorDroneCount = MutableStateFlow(0)
     val sensorDroneCount: StateFlow<Int> = _sensorDroneCount.asStateFlow()
 
-    private val DRONE_CLASSIFICATIONS = setOf("confirmed_drone", "likely_drone", "test_drone")
-
-    init {
-        // Poll sensor backend every 5 seconds
-        viewModelScope.launch(Dispatchers.IO) {
-            while (isActive) {
-                try {
-                    val alerts = sensorMapApiService.getDroneAlerts()
-                    _sensorBackendOnline.value = true
-                    _sensorDroneCount.value = alerts.activeDroneCount
-                } catch (_: Exception) {
-                    _sensorBackendOnline.value = false
-                    _sensorDroneCount.value = 0
-                }
-                delay(5000L)
-            }
-        }
+    private val sensorBackendJob = viewModelScope.launch(Dispatchers.IO) {
+        collectArBackend(
+            settings = detectionPrefs.settings,
+            intervalMs = 5_000L,
+            sensorBackendOnline = _sensorBackendOnline,
+            sensorDroneCount = _sensorDroneCount,
+            fetchDroneCount = { sensorMapApiService.getDroneAlerts().activeDroneCount },
+        )
     }
 
     // --- Data source status ---

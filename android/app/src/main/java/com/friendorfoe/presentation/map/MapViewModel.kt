@@ -7,6 +7,9 @@ import android.location.LocationManager
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.friendorfoe.data.DetectionPrefs
+import com.friendorfoe.data.DetectionSettings
+import com.friendorfoe.data.remote.DroneMapDto
 import com.friendorfoe.data.remote.LocatedDroneDto
 import com.friendorfoe.data.remote.SensorDto
 import com.friendorfoe.data.remote.SensorMapApiService
@@ -17,11 +20,14 @@ import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
 import com.friendorfoe.domain.usecase.FilterEngine
+import com.friendorfoe.presentation.collectBackendWhileEnabled
 import com.friendorfoe.sensor.SensorFusionEngine
 import com.friendorfoe.sensor.VisualFocusRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,6 +39,51 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+internal data class MapBackendSnapshot(
+    val map: DroneMapDto,
+    val activeDroneAlertCount: Int?,
+)
+
+internal suspend fun collectMapBackend(
+    settings: Flow<DetectionSettings>,
+    intervalMs: Long,
+    sensorDrones: MutableStateFlow<List<LocatedDroneDto>>,
+    remoteSensors: MutableStateFlow<List<SensorDto>>,
+    sensorMapOnline: MutableStateFlow<Boolean>,
+    droneAlertCount: MutableStateFlow<Int>,
+    fetchSnapshot: suspend () -> MapBackendSnapshot,
+) {
+    collectBackendWhileEnabled(
+        settings = settings,
+        intervalMs = intervalMs,
+        clear = {
+            sensorDrones.value = emptyList()
+            remoteSensors.value = emptyList()
+            sensorMapOnline.value = false
+            droneAlertCount.value = 0
+        },
+        fetch = fetchSnapshot,
+        publish = { response ->
+            sensorDrones.value = response.map.drones.filter { drone ->
+                drone.classification in MAP_DRONE_CLASSIFICATIONS ||
+                    drone.droneId.startsWith("rid_") ||
+                    drone.droneId.startsWith("probe_") ||
+                    drone.droneId.startsWith("FOF-Drone-") ||
+                    drone.droneId.startsWith("FoF-Drone-") ||
+                    drone.positionSource == "gps"
+            }
+            remoteSensors.value = response.map.sensors
+            sensorMapOnline.value = true
+            response.activeDroneAlertCount?.let { droneAlertCount.value = it }
+        },
+        onFailure = { sensorMapOnline.value = false },
+    )
+}
+
+private val MAP_DRONE_CLASSIFICATIONS = setOf(
+    "confirmed_drone", "likely_drone", "test_drone", "wifi_device",
+)
+
 @HiltViewModel
 class MapViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
@@ -40,6 +91,7 @@ class MapViewModel @Inject constructor(
     private val locationManager: LocationManager,
     private val sensorFusionEngine: SensorFusionEngine,
     private val visualFocusRepository: VisualFocusRepository,
+    private val detectionPrefs: DetectionPrefs,
     private val sensorMapApiService: SensorMapApiService
 ) : ViewModel() {
 
@@ -172,50 +224,44 @@ class MapViewModel @Inject constructor(
     /** Number of active drone alerts from the backend. */
     val droneAlertCount: StateFlow<Int> = _droneAlertCount.asStateFlow()
 
-    /** Classifications that represent actual drones or test devices (not phones/trackers/APs). */
-    private val DRONE_CLASSIFICATIONS = setOf(
-        "confirmed_drone", "likely_drone", "test_drone", "wifi_device"
-    )
+    private val sensorPollingRequested = MutableStateFlow(false)
+    private val sensorPollingSettings = combine(
+        detectionPrefs.settings,
+        sensorPollingRequested,
+    ) { settings, requested ->
+        settings.copy(sensorBackendEnabled = settings.sensorBackendEnabled && requested)
+    }
 
-    private var sensorPollJob: kotlinx.coroutines.Job? = null
+    private val sensorPollJob = viewModelScope.launch(Dispatchers.IO) {
+        collectMapBackend(
+            settings = sensorPollingSettings,
+            intervalMs = 5_000L,
+            sensorDrones = _sensorDrones,
+            remoteSensors = _remoteSensors,
+            sensorMapOnline = _sensorMapOnline,
+            droneAlertCount = _droneAlertCount,
+            fetchSnapshot = {
+                MapBackendSnapshot(
+                    map = sensorMapApiService.getDroneMap(),
+                    activeDroneAlertCount = try {
+                        sensorMapApiService.getDroneAlerts().activeDroneCount
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    },
+                )
+            },
+        )
+    }
 
     /** Start polling the backend sensor map endpoint every 5 seconds. */
     fun startSensorMapPolling() {
-        if (sensorPollJob != null) return
-        sensorPollJob = viewModelScope.launch(Dispatchers.IO) {
-            while (isActive) {
-                try {
-                    val response = sensorMapApiService.getDroneMap()
-                    // Filter to only real drones — no trackers, unknown BLE, known APs
-                    _sensorDrones.value = response.drones.filter { drone ->
-                        drone.classification in DRONE_CLASSIFICATIONS ||
-                        drone.droneId.startsWith("rid_") ||
-                        drone.droneId.startsWith("probe_") ||
-                        drone.droneId.startsWith("FOF-Drone-") ||
-                        drone.droneId.startsWith("FoF-Drone-") ||
-                        drone.positionSource == "gps"  // Remote ID with GPS = real drone
-                    }
-                    _remoteSensors.value = response.sensors
-                    _sensorMapOnline.value = true
-                } catch (e: Exception) {
-                    Log.d(TAG, "Sensor map poll failed: ${e.message}")
-                    _sensorMapOnline.value = false
-                }
-
-                // Also fetch drone alerts
-                try {
-                    val alerts = sensorMapApiService.getDroneAlerts()
-                    _droneAlertCount.value = alerts.activeDroneCount
-                } catch (_: Exception) {}
-
-                delay(5000L)
-            }
-        }
+        sensorPollingRequested.value = true
     }
 
     fun stopSensorMapPolling() {
-        sensorPollJob?.cancel()
-        sensorPollJob = null
+        sensorPollingRequested.value = false
     }
 
     private var locationStarted = java.util.concurrent.atomic.AtomicBoolean(false)

@@ -62,6 +62,8 @@ fun AboutScreen(
     onNavigateToPrivacy: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    val infoUiState = viewModel?.uiState?.collectAsStateWithLifecycle()?.value
+        ?: InfoSettingsUiState()
 
     Scaffold(
         topBar = {
@@ -220,19 +222,20 @@ fun AboutScreen(
                         SettingsToggle(
                             title = "Backend-Only Mode",
                             description = "Use ESP32 sensor network only — disables local phone detection for lower battery use",
-                            initialValue = viewModel.backendOnlyMode,
+                            value = infoUiState.settings.backendOnlyMode,
                             onToggle = { viewModel.setBackendOnlyMode(it) }
                         )
                         SettingsToggle(
                             title = "Sensor Backend Connection",
                             description = "Connect to ESP32 sensors for Remote ID, WiFi drone detection, and triangulation",
-                            initialValue = viewModel.sensorBackendEnabled,
+                            value = infoUiState.settings.sensorBackendEnabled,
                             onToggle = { viewModel.setSensorBackendEnabled(it) }
                         )
 
                         // Backend URL + Test Connection
-                        var urlText by remember { mutableStateOf(viewModel.backendUrl) }
-                        val connectionStatus by viewModel.connectionStatus.collectAsStateWithLifecycle()
+                        var urlText by remember(infoUiState.settings.backendUrl) {
+                            mutableStateOf(infoUiState.settings.backendUrl)
+                        }
                         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                             Text(
                                 "Backend URL",
@@ -258,17 +261,35 @@ fun AboutScreen(
                                     viewModel.setBackendUrl(urlText)
                                 }) { Text("Save URL") }
                                 TextButton(onClick = {
-                                    viewModel.setBackendUrl(urlText)
-                                    viewModel.testConnection()
+                                    viewModel.setBackendUrl(urlText).onSuccess {
+                                        viewModel.testConnection()
+                                    }
                                 }) { Text("Test Connection") }
                             }
-                            connectionStatus?.let { status ->
-                                val isOk = status.startsWith("Connected")
+                            val connectionText = when (val status = infoUiState.connectionStatus) {
+                                ConnectionTestState.Idle -> null
+                                is ConnectionTestState.Checking ->
+                                    "Testing ${status.endpoint.baseUrl} ..."
+                                is ConnectionTestState.Connected ->
+                                    "Connected to ${status.endpoint.baseUrl} — v${status.serverVersion ?: "unknown"}"
+                                is ConnectionTestState.Failed ->
+                                    "Failed (${status.endpoint.baseUrl}): ${status.message}"
+                            }
+                            connectionText?.let { status ->
+                                val isOk = infoUiState.connectionStatus is ConnectionTestState.Connected
                                 Text(
                                     text = status,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = if (isOk) Color(0xFF4CAF50) else Color(0xFFF44336),
                                     modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                            infoUiState.backendValidationError?.let { error ->
+                                Text(
+                                    text = error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFFF44336),
+                                    modifier = Modifier.padding(top = 4.dp),
                                 )
                             }
                             // Triangulation calibration entry. The walk
@@ -287,24 +308,24 @@ fun AboutScreen(
                 }
                 item {
                     // Local detection sources — grayed out description when backend-only
-                    val backendOnly = viewModel.backendOnlyMode
+                    val backendOnly = infoUiState.settings.backendOnlyMode
                     SectionCard(title = if (backendOnly) "Local Detection (Disabled — Backend-Only Mode)" else "Local Detection Sources") {
                         SettingsToggle(
                             title = "ADS-B Aircraft",
                             description = "Commercial flights, GA, military via transponder data",
-                            initialValue = viewModel.adsbEnabled,
+                            value = infoUiState.settings.adsbEnabled,
                             onToggle = { viewModel.setAdsbEnabled(it) }
                         )
                         SettingsToggle(
                             title = "BLE Remote ID (Drones)",
                             description = "FAA-compliant drone detection via Bluetooth LE",
-                            initialValue = viewModel.bleRidEnabled,
+                            value = infoUiState.settings.bleRidEnabled,
                             onToggle = { viewModel.setBleRidEnabled(it) }
                         )
                         SettingsToggle(
                             title = "WiFi Detection (Drones)",
                             description = "Drone SSID patterns, DJI DroneID, WiFi beacons",
-                            initialValue = viewModel.wifiEnabled,
+                            value = infoUiState.settings.wifiEnabled,
                             onToggle = { viewModel.setWifiEnabled(it) }
                         )
                     }
@@ -314,25 +335,25 @@ fun AboutScreen(
                         SettingsToggle(
                             title = "Drone Alerts",
                             description = "Notify when any Remote ID or WiFi drone is detected",
-                            initialValue = viewModel.droneAlertsEnabled,
+                            value = infoUiState.settings.droneAlertsEnabled,
                             onToggle = { viewModel.setDroneAlertsEnabled(it) }
                         )
                         SettingsToggle(
                             title = "Helicopter Alerts",
                             description = "Notify when a helicopter is detected at any visible range",
-                            initialValue = viewModel.helicopterAlertsEnabled,
+                            value = infoUiState.settings.helicopterAlertsEnabled,
                             onToggle = { viewModel.setHelicopterAlertsEnabled(it) }
                         )
                         SettingsToggle(
                             title = "Military Alerts",
                             description = "Notify for military aircraft within 15 mi",
-                            initialValue = viewModel.militaryAlertsEnabled,
+                            value = infoUiState.settings.militaryAlertsEnabled,
                             onToggle = { viewModel.setMilitaryAlertsEnabled(it) }
                         )
                         SettingsToggle(
                             title = "Police / Emergency Alerts",
                             description = "Notify for government, emergency, or ADS-B ground vehicles within 15 mi",
-                            initialValue = viewModel.policeAlertsEnabled,
+                            value = infoUiState.settings.policeAlertsEnabled,
                             onToggle = { viewModel.setPoliceAlertsEnabled(it) }
                         )
                     }
@@ -342,31 +363,31 @@ fun AboutScreen(
                         SettingsToggle(
                             title = "Privacy Scanner",
                             description = "Smart glasses, trackers, hidden cameras, body cams, attack tools, Tesla Sentry via BLE + WiFi",
-                            initialValue = viewModel.privacyEnabled,
+                            value = infoUiState.settings.phonePrivacyScanEnabled,
                             onToggle = { viewModel.setPrivacyEnabled(it) }
                         )
                         SettingsToggle(
                             title = "Stalker / Follower Detection",
                             description = "Alert when BLE devices follow you across locations or linger nearby",
-                            initialValue = viewModel.stalkerEnabled,
+                            value = infoUiState.settings.stalkerEnabled,
                             onToggle = { viewModel.setStalkerEnabled(it) }
                         )
                         SettingsToggle(
                             title = "WiFi Evil Twin Detection",
                             description = "Detect rogue access points, evil twin attacks, and WiFi Pineapple karma attacks",
-                            initialValue = viewModel.wifiAnomalyEnabled,
+                            value = infoUiState.settings.wifiAnomalyEnabled,
                             onToggle = { viewModel.setWifiAnomalyEnabled(it) }
                         )
                         SettingsToggle(
                             title = "Ultrasonic Beacon Detection",
                             description = "Detect inaudible 18-22 kHz tracking beacons from ads/stores (requires microphone)",
-                            initialValue = viewModel.ultrasonicEnabled,
+                            value = infoUiState.settings.ultrasonicEnabled,
                             onToggle = { viewModel.setUltrasonicEnabled(it) }
                         )
                         SettingsToggle(
                             title = "High-Risk Notifications",
                             description = "Send Android notifications for camera, tracker, attack, follower, and ultrasonic alerts",
-                            initialValue = viewModel.privacyNotificationsEnabled,
+                            value = infoUiState.settings.privacyNotificationsEnabled,
                             onToggle = { viewModel.setPrivacyNotificationsEnabled(it) }
                         )
                     }
@@ -552,10 +573,9 @@ private fun PermissionRow(permission: String, reason: String) {
 private fun SettingsToggle(
     title: String,
     description: String,
-    initialValue: Boolean,
+    value: Boolean,
     onToggle: (Boolean) -> Unit
 ) {
-    var enabled by remember { mutableStateOf(initialValue) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -576,11 +596,8 @@ private fun SettingsToggle(
         }
         Spacer(modifier = Modifier.width(8.dp))
         Switch(
-            checked = enabled,
-            onCheckedChange = {
-                enabled = it
-                onToggle(it)
-            }
+            checked = value,
+            onCheckedChange = onToggle,
         )
     }
 }

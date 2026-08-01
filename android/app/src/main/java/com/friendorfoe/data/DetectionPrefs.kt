@@ -4,12 +4,52 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.friendorfoe.calibration.CalibrationSettingsStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
+data class DetectionSettings(
+    val adsbEnabled: Boolean,
+    val bleRidEnabled: Boolean,
+    val wifiEnabled: Boolean,
+    val phonePrivacyScanEnabled: Boolean,
+    val stalkerEnabled: Boolean,
+    val ultrasonicEnabled: Boolean,
+    val wifiAnomalyEnabled: Boolean,
+    val privacyNotificationsEnabled: Boolean,
+    val droneAlertsEnabled: Boolean,
+    val helicopterAlertsEnabled: Boolean,
+    val militaryAlertsEnabled: Boolean,
+    val policeAlertsEnabled: Boolean,
+    val sensorBackendEnabled: Boolean,
+    val backendOnlyMode: Boolean,
+    val backendUrl: String,
+) {
+    companion object {
+        fun defaults() = DetectionSettings(
+            adsbEnabled = true,
+            bleRidEnabled = true,
+            wifiEnabled = true,
+            phonePrivacyScanEnabled = false,
+            stalkerEnabled = true,
+            ultrasonicEnabled = false,
+            wifiAnomalyEnabled = true,
+            privacyNotificationsEnabled = false,
+            droneAlertsEnabled = false,
+            helicopterAlertsEnabled = false,
+            militaryAlertsEnabled = false,
+            policeAlertsEnabled = false,
+            sensorBackendEnabled = true,
+            backendOnlyMode = false,
+            backendUrl = "http://fof-server.local:8000/",
+        )
+    }
+}
+
 /**
  * SharedPreferences-backed toggles for all detection sources.
- * All default to ON.
  */
 @Singleton
 class DetectionPrefs @Inject constructor(
@@ -40,6 +80,35 @@ class DetectionPrefs @Inject constructor(
         private const val DEFAULT_BACKEND_URL = "http://fof-server.local:8000/"
     }
 
+    private val _settings = MutableStateFlow(snapshot())
+    val settings: StateFlow<DetectionSettings> = _settings.asStateFlow()
+
+    private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        _settings.value = snapshot()
+    }
+
+    init {
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+    }
+
+    private fun snapshot() = DetectionSettings(
+        adsbEnabled = adsbEnabled,
+        bleRidEnabled = bleRidEnabled,
+        wifiEnabled = wifiEnabled,
+        phonePrivacyScanEnabled = privacyEnabled,
+        stalkerEnabled = stalkerDetectionEnabled,
+        ultrasonicEnabled = ultrasonicEnabled,
+        wifiAnomalyEnabled = wifiAnomalyEnabled,
+        privacyNotificationsEnabled = privacyNotificationsEnabled,
+        droneAlertsEnabled = droneAlertsEnabled,
+        helicopterAlertsEnabled = helicopterAlertsEnabled,
+        militaryAlertsEnabled = militaryAlertsEnabled,
+        policeAlertsEnabled = policeAlertsEnabled,
+        sensorBackendEnabled = sensorBackendEnabled,
+        backendOnlyMode = backendOnlyMode,
+        backendUrl = backendUrl,
+    )
+
     var adsbEnabled: Boolean
         get() = prefs.getBoolean(KEY_ADSB, true)
         set(value) = prefs.edit().putBoolean(KEY_ADSB, value).apply()
@@ -53,7 +122,7 @@ class DetectionPrefs @Inject constructor(
         set(value) = prefs.edit().putBoolean(KEY_WIFI, value).apply()
 
     var privacyEnabled: Boolean
-        get() = prefs.getBoolean(KEY_PRIVACY, true)
+        get() = prefs.getBoolean(KEY_PRIVACY, false)
         set(value) = prefs.edit().putBoolean(KEY_PRIVACY, value).apply()
 
     var stalkerDetectionEnabled: Boolean
@@ -69,23 +138,23 @@ class DetectionPrefs @Inject constructor(
         set(value) = prefs.edit().putBoolean(KEY_WIFI_ANOMALY, value).apply()
 
     var privacyNotificationsEnabled: Boolean
-        get() = prefs.getBoolean(KEY_PRIVACY_NOTIFICATIONS, true)
+        get() = prefs.getBoolean(KEY_PRIVACY_NOTIFICATIONS, false)
         set(value) = prefs.edit().putBoolean(KEY_PRIVACY_NOTIFICATIONS, value).apply()
 
     var droneAlertsEnabled: Boolean
-        get() = prefs.getBoolean(KEY_DRONE_ALERTS, true)
+        get() = prefs.getBoolean(KEY_DRONE_ALERTS, false)
         set(value) = prefs.edit().putBoolean(KEY_DRONE_ALERTS, value).apply()
 
     var helicopterAlertsEnabled: Boolean
-        get() = prefs.getBoolean(KEY_HELICOPTER_ALERTS, true)
+        get() = prefs.getBoolean(KEY_HELICOPTER_ALERTS, false)
         set(value) = prefs.edit().putBoolean(KEY_HELICOPTER_ALERTS, value).apply()
 
     var militaryAlertsEnabled: Boolean
-        get() = prefs.getBoolean(KEY_MILITARY_ALERTS, true)
+        get() = prefs.getBoolean(KEY_MILITARY_ALERTS, false)
         set(value) = prefs.edit().putBoolean(KEY_MILITARY_ALERTS, value).apply()
 
     var policeAlertsEnabled: Boolean
-        get() = prefs.getBoolean(KEY_POLICE_ALERTS, true)
+        get() = prefs.getBoolean(KEY_POLICE_ALERTS, false)
         set(value) = prefs.edit().putBoolean(KEY_POLICE_ALERTS, value).apply()
 
     /** Sensor backend (ESP32 network) — enabled by default */

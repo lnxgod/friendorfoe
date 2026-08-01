@@ -2,6 +2,7 @@ package com.friendorfoe.di
 
 import com.friendorfoe.BuildConfig
 import com.friendorfoe.data.DetectionPrefs
+import com.friendorfoe.data.configuredBackendRequestUrl
 import com.friendorfoe.data.remote.AdsbFiApiService
 import com.friendorfoe.data.remote.AdsbLolApiService
 import com.friendorfoe.data.remote.AdsbOneApiService
@@ -14,7 +15,6 @@ import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -207,18 +207,8 @@ object NetworkModule {
     fun provideBackendUrlInterceptor(detectionPrefs: DetectionPrefs): Interceptor {
         return Interceptor { chain ->
             val original = chain.request()
-            val configuredUrl = detectionPrefs.backendUrl.trimEnd('/')
-            val newBase = configuredUrl.toHttpUrlOrNull()
-            if (newBase != null) {
-                val newUrl = original.url.newBuilder()
-                    .scheme(newBase.scheme)
-                    .host(newBase.host)
-                    .port(newBase.port)
-                    .build()
-                chain.proceed(original.newBuilder().url(newUrl).build())
-            } else {
-                chain.proceed(original)
-            }
+            val newUrl = configuredBackendRequestUrl(detectionPrefs.backendUrl, original.url)
+            chain.proceed(original.newBuilder().url(newUrl).build())
         }
     }
 
