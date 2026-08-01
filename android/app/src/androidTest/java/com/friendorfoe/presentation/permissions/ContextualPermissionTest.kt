@@ -45,7 +45,7 @@ class ContextualPermissionTest {
     }
 
     @Test
-    fun deniedCameraDoesNotBlockNavigationToInfo() {
+    fun deniedCameraDoesNotBlockNavigationToAbout() {
         var selected by mutableStateOf(TopLevelDestination.AR)
         compose.setContent {
             FriendOrFoeTheme {
@@ -63,8 +63,8 @@ class ContextualPermissionTest {
                                 onOpenSettings = {},
                                 grantedContent = {},
                             )
-                        } else if (selected == TopLevelDestination.INFO) {
-                            Box(Modifier.fillMaxSize().testTag("screen_info")) { Text("Info") }
+                        } else if (selected == TopLevelDestination.ABOUT) {
+                            Box(Modifier.fillMaxSize().testTag("screen_about")) { Text("About") }
                         }
                     }
                 }
@@ -72,8 +72,8 @@ class ContextualPermissionTest {
         }
 
         compose.onNodeWithText("Camera for AR").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Info").performClick()
-        compose.onNodeWithTag("screen_info").assertIsDisplayed()
+        compose.onNodeWithContentDescription("About").performClick()
+        compose.onNodeWithTag("screen_about").assertIsDisplayed()
     }
 
     @Test

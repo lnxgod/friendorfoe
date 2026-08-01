@@ -86,8 +86,7 @@ data class InfoActions(
 
 @Suppress("UNUSED_PARAMETER")
 @Composable
-fun AboutScreen(
-    onBack: () -> Unit,
+fun InfoSettingsScreen(
     viewModel: AboutViewModel? = null,
     onNavigateToCalibrate: (() -> Unit)? = null,
     onNavigateToEmfSweep: (() -> Unit)? = null,
@@ -95,6 +94,7 @@ fun AboutScreen(
     onNavigateToPrivacy: (() -> Unit)? = null,
     onNavigateToReference: (() -> Unit)? = null,
     permissionBindings: PermissionBindings? = null,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val state by if (viewModel != null) {
@@ -161,6 +161,8 @@ fun AboutScreen(
     InfoContent(
         state = state,
         actions = actions,
+        modifier = modifier,
+        showHeader = false,
     )
 
     pendingPermissionSetting?.takeIf { !it.requestLaunched }?.let { pending ->
@@ -202,7 +204,7 @@ fun AboutScreen(
     }
 }
 
-private fun android.content.Context.openUri(raw: String) {
+internal fun android.content.Context.openUri(raw: String) {
     runCatching {
         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(raw)))
     }
@@ -213,14 +215,17 @@ fun InfoContent(
     state: InfoUiState,
     actions: InfoActions,
     modifier: Modifier = Modifier,
+    showHeader: Boolean = true,
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize().testTag("info_list"),
         contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 112.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item(key = "info_header") {
-            FofScreenHeader("Info")
+        if (showHeader) {
+            item(key = "info_header") {
+                FofScreenHeader("Info")
+            }
         }
         item(key = "info_sources") {
             InfoSection(index = 0) { SourcePermissionRows(state) }

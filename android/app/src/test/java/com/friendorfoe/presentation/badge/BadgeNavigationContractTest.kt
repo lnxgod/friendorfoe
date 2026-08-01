@@ -7,6 +7,7 @@ import com.friendorfoe.presentation.navigation.TopLevelDestination
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -15,13 +16,14 @@ class BadgeNavigationContractTest {
     @Test
     fun `bottom navigation uses exact seven item order with badge after privacy`() {
         assertEquals(
-            listOf("AR", "Map", "List", "Privacy", "Badge", "History", "Info"),
+            listOf("AR", "Map", "List", "Privacy", "Badge", "History", "About"),
             TopLevelDestination.entries.map { it.label },
         )
         assertEquals(
             Screen.Badge.route,
             TopLevelDestination.entries.single { it.label == "Badge" }.route,
         )
+        assertSame(BadgeMarkIcon, TopLevelDestination.BADGE.icon)
         assertFalse(TopLevelDestination.entries.any { it.label == "Cal" })
     }
 
