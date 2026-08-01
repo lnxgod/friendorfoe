@@ -15,7 +15,7 @@ class DetectionSettingsTest {
         assertTrue(value.stalkerEnabled)
         assertTrue(value.wifiAnomalyEnabled)
         assertTrue(value.sensorBackendEnabled)
-        assertFalse(value.phonePrivacyScanEnabled)
+        assertTrue(value.phonePrivacyScanEnabled)
         assertFalse(value.privacyNotificationsEnabled)
         assertFalse(value.droneAlertsEnabled)
         assertFalse(value.helicopterAlertsEnabled)

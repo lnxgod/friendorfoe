@@ -32,7 +32,7 @@ data class DetectionSettings(
             adsbEnabled = true,
             bleRidEnabled = true,
             wifiEnabled = true,
-            phonePrivacyScanEnabled = false,
+            phonePrivacyScanEnabled = true,
             stalkerEnabled = true,
             ultrasonicEnabled = false,
             wifiAnomalyEnabled = true,
@@ -138,7 +138,7 @@ class DetectionPrefs @Inject constructor(
         set(value) = prefs.edit().putBoolean(KEY_WIFI, value).apply()
 
     var privacyEnabled: Boolean
-        get() = prefs.getBoolean(KEY_PRIVACY, false)
+        get() = prefs.getBoolean(KEY_PRIVACY, true)
         set(value) = prefs.edit().putBoolean(KEY_PRIVACY, value).apply()
 
     var stalkerDetectionEnabled: Boolean
