@@ -29,7 +29,8 @@ fun permissionToggleAction(
     requestedChecked: Boolean,
     permissionState: PermissionUiState,
 ): PermissionToggleAction = when {
-    configuredChecked && !permissionState.isUsable() -> PermissionToggleAction.Commit(false)
+    configuredChecked && !effectiveChecked && requestedChecked && !permissionState.isUsable() ->
+        PermissionToggleAction.ShowExplanation
     requestedChecked == effectiveChecked -> PermissionToggleAction.NoChange
     !requestedChecked -> PermissionToggleAction.Commit(false)
     permissionState.isUsable() -> PermissionToggleAction.Commit(true)

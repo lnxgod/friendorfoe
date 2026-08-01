@@ -97,7 +97,11 @@ class BadgePrivacySourceAdapter internal constructor(
                         state = healthState,
                         lastSuccessElapsedMs = previous?.health?.lastSuccessElapsedMs,
                         lastSuccessWallMs = previous?.health?.lastSuccessWallMs,
-                        recoveryLabel = if (healthState == SourceHealthState.FAILED) "Reconnect" else null,
+                        recoveryLabel = when (healthState) {
+                            SourceHealthState.FAILED -> "Reconnect"
+                            SourceHealthState.PERMISSION_BLOCKED -> "Connect badge"
+                            else -> null
+                        },
                         message = when (healthState) {
                             SourceHealthState.FAILED -> state.message.ifBlank { "Badge status is unavailable" }
                             SourceHealthState.PAUSED -> "No badge connected"
@@ -135,7 +139,11 @@ class BadgePrivacySourceAdapter internal constructor(
                     state = healthState,
                     lastSuccessElapsedMs = statusElapsed,
                     lastSuccessWallMs = statusWall,
-                    recoveryLabel = if (healthState == SourceHealthState.FAILED) "Reconnect" else null,
+                    recoveryLabel = when (healthState) {
+                        SourceHealthState.FAILED -> "Reconnect"
+                        SourceHealthState.PERMISSION_BLOCKED -> "Connect badge"
+                        else -> null
+                    },
                     message = when (healthState) {
                         SourceHealthState.FAILED -> state.message.ifBlank { "Badge status failed" }
                         SourceHealthState.PERMISSION_BLOCKED -> "Badge permission is required"

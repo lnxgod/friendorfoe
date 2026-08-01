@@ -127,6 +127,30 @@ fun summarizePrivacySources(
     val members = sources.filter { it.source.group() == group }
     if (members.isEmpty()) return@mapNotNull null
 
+    val pausedCorePhoneScan = members.firstOrNull {
+        group == PrivacySourceGroup.PHONE &&
+            it.source == PrivacySourceKind.PHONE_BLE &&
+            it.state == SourceHealthState.PAUSED
+    }
+    val optionalPhoneStatesAreNonActionable = members
+        .filterNot { it.source == PrivacySourceKind.PHONE_BLE }
+        .all {
+            it.state == SourceHealthState.LIVE ||
+                it.state == SourceHealthState.PAUSED ||
+                it.state == SourceHealthState.UNSUPPORTED
+        }
+    if (pausedCorePhoneScan != null && optionalPhoneStatesAreNonActionable) {
+        return@mapNotNull PrivacySourceSummary(
+            group = group,
+            state = SourceHealthState.PAUSED,
+            representedSources = members.map(PrivacySourceHealth::source)
+                .sortedBy(PrivacySourceKind::preferenceId),
+            recoverySource = pausedCorePhoneScan.source,
+            message = pausedCorePhoneScan.message,
+            recoveryLabel = pausedCorePhoneScan.recoveryLabel,
+        )
+    }
+
     val effective = members.filterNot {
         it.state == SourceHealthState.PAUSED || it.state == SourceHealthState.UNSUPPORTED
     }.ifEmpty { members }

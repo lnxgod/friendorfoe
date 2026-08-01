@@ -95,6 +95,159 @@ class PrivacyScreenTest {
     }
 
     @Test
+    fun pausedPhoneSourceOffersOneTapActivationWithoutBecomingASettingsScreen() {
+        var activations = 0
+        val state = projectPrivacyUiState(
+            PrivacyCurrentState(
+                sources = listOf(
+                    health(
+                        PrivacySourceKind.PHONE_BLE,
+                        SourceHealthState.PAUSED,
+                        message = "Paused in detection settings",
+                    ),
+                ),
+                findings = emptyList(),
+                threatCount = 0,
+                alertEligible = emptyList(),
+                initialResolutionComplete = true,
+            ),
+        )
+        compose.setContent {
+            FriendOrFoeTheme {
+                PrivacyContent(
+                    state = state,
+                    actions = PrivacyActions(
+                        onEnablePhoneScan = { activations++ },
+                    ),
+                )
+            }
+        }
+
+        compose.onNodeWithText("Turn on").assertHasClickAction().performClick()
+        compose.runOnIdle { assertEquals(1, activations) }
+        compose.onNodeWithText("Phone privacy scan").assertDoesNotExist()
+        compose.onNodeWithText("BLE Remote ID").assertDoesNotExist()
+    }
+
+    @Test
+    fun promptablePhonePermissionOffersGrantAccessInsteadOfDeadEndSettings() {
+        var permissionRequests = 0
+        val state = projectPrivacyUiState(
+            PrivacyCurrentState(
+                sources = listOf(
+                    health(
+                        PrivacySourceKind.PHONE_BLE,
+                        SourceHealthState.PERMISSION_BLOCKED,
+                        message = "Nearby-device access is required",
+                        recoveryLabel = "Grant permission",
+                    ),
+                    health(PrivacySourceKind.BACKEND, SourceHealthState.LIVE),
+                ),
+                findings = emptyList(),
+                threatCount = 0,
+                alertEligible = emptyList(),
+                initialResolutionComplete = true,
+            ),
+        )
+        compose.setContent {
+            FriendOrFoeTheme {
+                PrivacyContent(
+                    state = state,
+                    actions = PrivacyActions(
+                        onResolveSourcePermission = { permissionRequests++ },
+                    ),
+                )
+            }
+        }
+
+        compose.onNodeWithText("Grant access").assertHasClickAction().performClick()
+        compose.runOnIdle { assertEquals(1, permissionRequests) }
+        compose.onNodeWithText("Open settings").assertDoesNotExist()
+    }
+
+    @Test
+    fun bluetoothRadioOffUsesPlatformRecoveryInsteadOfRetryingADeadScanner() {
+        var platformRecoveries = 0
+        var scannerRetries = 0
+        val state = projectPrivacyUiState(
+            PrivacyCurrentState(
+                sources = listOf(
+                    health(
+                        PrivacySourceKind.PHONE_BLE,
+                        SourceHealthState.FAILED,
+                        message = "Bluetooth is turned off",
+                        recoveryLabel = "Turn on Bluetooth",
+                    ),
+                    health(PrivacySourceKind.BACKEND, SourceHealthState.LIVE),
+                ),
+                findings = emptyList(),
+                threatCount = 0,
+                alertEligible = emptyList(),
+                initialResolutionComplete = true,
+            ),
+        )
+        compose.setContent {
+            FriendOrFoeTheme {
+                PrivacyContent(
+                    state = state,
+                    actions = PrivacyActions(
+                        onRecoverSource = { scannerRetries++ },
+                        onTurnOnBluetooth = { platformRecoveries++ },
+                    ),
+                )
+            }
+        }
+
+        compose.onNodeWithText("Turn on Bluetooth").assertHasClickAction().performClick()
+        compose.runOnIdle {
+            assertEquals(1, platformRecoveries)
+            assertEquals(0, scannerRetries)
+        }
+    }
+
+    @Test
+    fun badgePermissionRecoveryReconnectsBadgeWithoutRequestingPhoneRadioAccess() {
+        var badgeRecoveries = 0
+        var phonePermissionRequests = 0
+        val state = projectPrivacyUiState(
+            PrivacyCurrentState(
+                sources = listOf(
+                    health(
+                        PrivacySourceKind.BADGE_USB,
+                        SourceHealthState.PERMISSION_BLOCKED,
+                        message = "Badge permission is required",
+                        recoveryLabel = "Connect badge",
+                    ),
+                    health(PrivacySourceKind.BACKEND, SourceHealthState.LIVE),
+                ),
+                findings = emptyList(),
+                threatCount = 0,
+                alertEligible = emptyList(),
+                initialResolutionComplete = true,
+            ),
+        )
+        compose.setContent {
+            FriendOrFoeTheme {
+                PrivacyContent(
+                    state = state,
+                    actions = PrivacyActions(
+                        onRecoverSource = { source ->
+                            if (source == PrivacySourceKind.BADGE_USB) badgeRecoveries++
+                        },
+                        onResolveSourcePermission = { phonePermissionRequests++ },
+                    ),
+                )
+            }
+        }
+
+        compose.onNodeWithText("Connect badge").assertHasClickAction().performClick()
+        compose.runOnIdle {
+            assertEquals(1, badgeRecoveries)
+            assertEquals(0, phonePermissionRequests)
+        }
+    }
+
+    @Test
     fun headerQualifiesZeroFindingsWhileSourcesAreStillResolving() {
         val state = projectPrivacyUiState(
             PrivacyCurrentState(

@@ -120,7 +120,9 @@ class PhonePrivacySourceAdapterTest {
 
     @Test
     fun disabledPhoneSourcesResolveAsTwoPausedSnapshotsWithoutStartingCollectors() = runTest {
-        val settings = MutableStateFlow(DetectionSettings.defaults())
+        val settings = MutableStateFlow(
+            DetectionSettings.defaults().copy(phonePrivacyScanEnabled = false),
+        )
         val permissions = MutableStateFlow(LocalDetectionPermissions.None)
         var bleStarts = 0
         var ultrasonicStarts = 0
@@ -217,6 +219,7 @@ class PhonePrivacySourceAdapterTest {
         events.emit(GlassesScanEvent.Failure("scanner failed"))
         runCurrent()
         assertEquals(SourceHealthState.FAILED, adapter.bleSnapshot().health.state)
+        assertEquals("Retry", adapter.bleSnapshot().health.recoveryLabel)
         assertEquals(observedAt, adapter.bleSnapshot().findings.single().lastObservedElapsedMs)
 
         settings.value = settings.value.copy(phonePrivacyScanEnabled = false)
@@ -228,6 +231,36 @@ class PhonePrivacySourceAdapterTest {
         runCurrent()
         assertEquals(SourceHealthState.STALE, adapter.bleSnapshot().health.state)
         assertEquals(observedAt, adapter.bleSnapshot().findings.single().lastObservedElapsedMs)
+    }
+
+    @Test
+    fun bluetoothRadioOffFailureOffersTurnOnBluetoothRecovery() = runTest {
+        val settings = MutableStateFlow(
+            DetectionSettings.defaults().copy(phonePrivacyScanEnabled = true),
+        )
+        val permissions = MutableStateFlow(
+            LocalDetectionPermissions.None.copy(bluetoothScan = true),
+        )
+        val events = MutableSharedFlow<GlassesScanEvent>(extraBufferCapacity = 1)
+        val adapter = adapter(
+            settings = settings,
+            permissions = permissions,
+            bleEvents = { events },
+        )
+        runCurrent()
+
+        events.emit(GlassesScanEvent.Failure("Bluetooth is turned off"))
+        runCurrent()
+
+        assertEquals(SourceHealthState.FAILED, adapter.bleSnapshot().health.state)
+        assertEquals("Turn on Bluetooth", adapter.bleSnapshot().health.recoveryLabel)
+        assertEquals("Bluetooth is turned off", adapter.bleSnapshot().health.message)
+
+        events.emit(GlassesScanEvent.Failure("BLE privacy scan failed after 3 attempts"))
+        runCurrent()
+
+        assertEquals("Turn on Bluetooth", adapter.bleSnapshot().health.recoveryLabel)
+        assertEquals("Bluetooth is turned off", adapter.bleSnapshot().health.message)
     }
 
     @Test

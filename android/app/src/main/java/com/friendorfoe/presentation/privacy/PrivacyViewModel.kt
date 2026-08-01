@@ -2,7 +2,10 @@ package com.friendorfoe.presentation.privacy
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.detection.PrivacyCategory
+import com.friendorfoe.presentation.about.InfoSettingKey
+import com.friendorfoe.presentation.about.InfoSettingsStore
 import com.friendorfoe.sensor.SensorFusionEngine
 import com.friendorfoe.sensor.SensorFusionLease
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -30,6 +33,7 @@ class PrivacyViewModel @Inject constructor(
     private val repository: PrivacyFindingRepository,
     phonePrivacySourceAdapter: PhonePrivacySourceAdapter,
     private val sensorFusionEngine: SensorFusionEngine,
+    private val settingsStore: InfoSettingsStore,
 ) : ViewModel() {
     private val filters = MutableStateFlow(PrivacyFilterState())
     private val directionController = RssiDirectionSweepController(
@@ -101,6 +105,21 @@ class PrivacyViewModel @Inject constructor(
         }
     }
 
+    fun enablePhonePrivacyScanning() {
+        phonePrivacyEnableWrites(settingsStore.settings.value).forEach { (key, enabled) ->
+            settingsStore.set(key, enabled)
+        }
+        recover(PrivacySourceKind.PHONE_BLE)
+    }
+
+    fun onPrivacyPermissionResolved(source: PrivacySourceKind) {
+        if (source == PrivacySourceKind.PHONE_BLE) {
+            enablePhonePrivacyScanning()
+        } else {
+            recover(source)
+        }
+    }
+
     fun startDirectionSweep(finding: PrivacyFinding): Boolean {
         val currentFinding = resolveDirectionSweepTarget(
             current = repository.currentState.value,
@@ -139,4 +158,11 @@ class PrivacyViewModel @Inject constructor(
 
     private fun <T> Set<T>.toggle(value: T): Set<T> =
         if (value in this) this - value else this + value
+}
+
+internal fun phonePrivacyEnableWrites(
+    settings: DetectionSettings,
+): List<Pair<InfoSettingKey, Boolean>> = buildList {
+    add(InfoSettingKey.PHONE_PRIVACY_SCAN to true)
+    if (settings.backendOnlyMode) add(InfoSettingKey.BACKEND_ONLY to false)
 }

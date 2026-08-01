@@ -7,7 +7,8 @@ ANDROID_GRADLE = REPO_ROOT / "android" / "app" / "build.gradle.kts"
 ANDROID_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "android-build.yml"
 ESP32_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
 
-VERSION_NAME = "0.67.4-android-interface-overhaul"
+VERSION_NAME = "0.67.5-android-privacy-repair"
+VERSION_CODE = 114
 SIGNER_SHA256 = (
     "3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95"
 )
@@ -51,7 +52,7 @@ def _job(workflow: str, name: str, next_name: str | None = None) -> str:
 
 def test_android_release_identity_is_exact():
     gradle = ANDROID_GRADLE.read_text()
-    assert "versionCode = 113" in gradle
+    assert f"versionCode = {VERSION_CODE}" in gradle
     assert f'versionName = "{VERSION_NAME}"' in gradle
 
 
@@ -101,7 +102,7 @@ def test_release_signing_is_test_gated_verified_and_secret_scoped():
     assert "aapt" in signing
     assert SIGNER_SHA256 in signing
     assert "name='com.friendorfoe'" in signing
-    assert "versionCode='113'" in signing
+    assert f"versionCode='{VERSION_CODE}'" in signing
     assert f"versionName='{VERSION_NAME}'" in signing
     assert "sha256sum" in signing
     assert "rm -f android/app/release.keystore" in signing
