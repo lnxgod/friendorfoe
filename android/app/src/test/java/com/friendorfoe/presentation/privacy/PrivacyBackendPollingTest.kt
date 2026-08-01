@@ -2,6 +2,11 @@ package com.friendorfoe.presentation.privacy
 
 import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.data.badge.BadgeControlStatus
+import com.friendorfoe.data.badge.BadgeBleControlStatus
+import com.friendorfoe.data.badge.BadgeConfigReadback
+import com.friendorfoe.data.badge.BadgeNetworkModeReadback
+import com.friendorfoe.data.badge.BadgeReportingStatus
+import com.friendorfoe.data.badge.BadgeThreatCounts
 import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.detection.GlassesDetection
@@ -31,6 +36,14 @@ class PrivacyBackendPollingTest {
         val badge = MutableStateFlow(
             BadgeUsbState(
                 controlStatus = BadgeControlStatus(
+                    version = "test",
+                    receivedAtElapsedMs = 0L,
+                    themeReadback = BadgeConfigReadback(null, null, "not part of this fixture"),
+                    policyReadback = BadgeConfigReadback(null, null, "not part of this fixture"),
+                    networkModeReadback = BadgeNetworkModeReadback(
+                        null,
+                        "not part of this fixture"
+                    ),
                     entities = listOf(
                         BadgeThreatEntity(
                             label = "badge-row",
@@ -41,6 +54,21 @@ class PrivacyBackendPollingTest {
                             events = 1,
                         ),
                     ),
+                    scanners = emptyList(),
+                    displayState = null,
+                    debugBridge = null,
+                    reporting = BadgeReportingStatus(),
+                    counts = BadgeThreatCounts(),
+                    bleControl = BadgeBleControlStatus(),
+                    safeMode = false,
+                    safeReason = "",
+                    resetReason = "",
+                    crashCount = 0,
+                    recoveryMode = "",
+                    stackFreeBytes = emptyMap(),
+                    heapInternalFreeBytes = 0L,
+                    heapInternalMinimumFreeBytes = 0L,
+                    psramFreeBytes = 0L,
                 ),
             ),
         )

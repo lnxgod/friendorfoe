@@ -75,7 +75,7 @@ fun BadgeAppearanceSection(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "${theme.palette} / ${theme.background} / ${theme.brightness}%  #$themeHash",
+                    text = "${theme.palette} / ${theme.background} / ${theme.intensity}%  #$themeHash",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -105,13 +105,15 @@ fun BadgeAppearanceSection(
         )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
-            text = "Brightness ${theme.brightness}%",
+            text = "Brightness ${theme.intensity}%",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Slider(
-            value = theme.brightness.toFloat(),
-            onValueChange = { onThemeChange(theme.copy(brightness = it.toInt().coerceIn(25, 100))) },
+            value = theme.intensity.toFloat(),
+            onValueChange = {
+                onThemeChange(theme.copy(intensity = it.toInt().coerceIn(25, 100)))
+            },
             valueRange = 25f..100f
         )
         BadgeThemeAccentClasses.forEach { accent ->

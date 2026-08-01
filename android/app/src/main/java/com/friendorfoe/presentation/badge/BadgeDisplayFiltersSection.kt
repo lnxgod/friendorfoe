@@ -22,11 +22,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.friendorfoe.data.badge.BadgeDisplayClassPolicy
+import com.friendorfoe.data.badge.BadgeDisplayLane
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.badge.BadgeDisplayPolicyClasses
+import com.friendorfoe.data.badge.BadgeDisplayRule
+import com.friendorfoe.data.badge.BadgeMinimumProximity
 import com.friendorfoe.data.badge.defaultBadgeDisplayPolicyClasses
-import com.friendorfoe.data.badge.withClassEnabled
 
 private enum class BadgeRowDensityPreset(val label: String) {
     Focus("Focus"),
@@ -106,7 +107,7 @@ fun BadgeDisplayFiltersSection(
         }
         Spacer(modifier = Modifier.height(8.dp))
         BadgeDisplayPolicyClasses.forEach { info ->
-            val config = policy.classes[info.key] ?: BadgeDisplayClassPolicy()
+            val config = policy.classes.getValue(info.key)
             val filtered = filteredCounts[info.key] ?: 0
             BadgeDisplayClassRow(
                 policyKey = info.key,
@@ -116,7 +117,7 @@ fun BadgeDisplayFiltersSection(
                 onChange = { key, next ->
                     onPolicyChange(
                         if (next.enabled != config.enabled) {
-                            policy.withClassEnabled(key, next.enabled)
+                            policy.withEnabled(key, next.enabled)
                         } else {
                             policy.copy(classes = policy.classes + (key to next))
                         }
@@ -152,24 +153,28 @@ private fun BadgeDisplayPolicy.withRowDensityPreset(
             when (key) {
                 in highSignalClasses -> config.copy(
                     enabled = true,
-                    lane = "both",
-                    minProximity = "present",
+                    lane = BadgeDisplayLane.BOTH,
+                    minProximity = BadgeMinimumProximity.PRESENT,
                     priority = (config.priority + 5).coerceAtMost(100)
                 )
                 in mediumSignalClasses -> config.copy(
                     enabled = true,
-                    lane = "lower",
-                    minProximity = "close",
+                    lane = BadgeDisplayLane.LOWER,
+                    minProximity = BadgeMinimumProximity.CLOSE,
                     priority = (config.priority + 10).coerceAtMost(100)
                 )
-                else -> config.copy(enabled = false, lane = "off")
+                else -> config.copy(enabled = false, lane = BadgeDisplayLane.OFF)
             }
         }
         BadgeRowDensityPreset.Full -> defaults.mapValues { (key, config) ->
             config.copy(
                 enabled = true,
-                lane = if (key in highSignalClasses) "both" else "lower",
-                minProximity = "present",
+                lane = if (key in highSignalClasses) {
+                    BadgeDisplayLane.BOTH
+                } else {
+                    BadgeDisplayLane.LOWER
+                },
+                minProximity = BadgeMinimumProximity.PRESENT,
                 priority = config.priority.coerceAtLeast(25)
             )
         }
@@ -182,8 +187,8 @@ private fun BadgeDisplayClassRow(
     policyKey: String,
     label: String,
     filtered: Int,
-    config: BadgeDisplayClassPolicy,
-    onChange: (String, BadgeDisplayClassPolicy) -> Unit
+    config: BadgeDisplayRule,
+    onChange: (String, BadgeDisplayRule) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -211,13 +216,25 @@ private fun BadgeDisplayClassRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf("off", "lower", "top", "both").forEach { lane ->
+            BadgeDisplayLane.entries.forEach { lane ->
                 OutlinedButton(
-                    onClick = { onChange(policyKey, config.copy(lane = lane)) },
+                    onClick = {
+                        onChange(
+                            policyKey,
+                            config.copy(
+                                enabled = if (lane == BadgeDisplayLane.OFF) {
+                                    false
+                                } else {
+                                    config.enabled
+                                },
+                                lane = lane
+                            )
+                        )
+                    },
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
-                        text = lane.uppercase(),
+                        text = lane.wireValue.uppercase(),
                         style = MaterialTheme.typography.labelSmall,
                         color = if (config.lane == lane) {
                             MaterialTheme.colorScheme.primary
@@ -236,13 +253,13 @@ private fun BadgeDisplayClassRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf("present", "near", "close").forEach { prox ->
+            BadgeMinimumProximity.entries.forEach { prox ->
                 OutlinedButton(
                     onClick = { onChange(policyKey, config.copy(minProximity = prox)) },
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
-                        text = prox.uppercase(),
+                        text = prox.wireValue.uppercase(),
                         style = MaterialTheme.typography.labelSmall,
                         color = if (config.minProximity == prox) {
                             MaterialTheme.colorScheme.primary

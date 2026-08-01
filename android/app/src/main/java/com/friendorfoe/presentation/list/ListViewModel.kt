@@ -9,6 +9,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.badge.BadgeUsbRepository
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
+import com.friendorfoe.data.badge.BadgeNetworkMode
 import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.domain.model.FilterState
@@ -132,7 +133,7 @@ class ListViewModel @Inject constructor(
         badgeUsbRepository.requestStatus()
     }
 
-    fun setBadgeMode(mode: String) {
+    fun setBadgeMode(mode: BadgeNetworkMode) {
         badgeUsbRepository.setMode(mode)
     }
 

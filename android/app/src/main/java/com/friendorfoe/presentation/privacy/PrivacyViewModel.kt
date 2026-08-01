@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import com.friendorfoe.data.DetectionPrefs
 import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
+import com.friendorfoe.data.badge.BadgeDisplayAction
+import com.friendorfoe.data.badge.BadgeNetworkMode
 import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbRepository
@@ -262,7 +264,7 @@ class PrivacyViewModel @Inject constructor(
         badgeUsbRepository.requestStatus()
     }
 
-    fun setBadgeMode(mode: String) {
+    fun setBadgeMode(mode: BadgeNetworkMode) {
         badgeUsbRepository.setMode(mode)
     }
 
@@ -296,15 +298,15 @@ class PrivacyViewModel @Inject constructor(
     }
 
     fun badgeNextFocus() {
-        badgeUsbRepository.displayNav("next")
+        badgeUsbRepository.displayNav(BadgeDisplayAction.NEXT)
     }
 
     fun badgeToggleDetail() {
-        badgeUsbRepository.displayNav("detail")
+        badgeUsbRepository.displayNav(BadgeDisplayAction.DETAIL)
     }
 
     fun badgeBackFromDetail() {
-        badgeUsbRepository.displayNav("back")
+        badgeUsbRepository.displayNav(BadgeDisplayAction.BACK)
     }
 
     fun applyBadgeDisplayPolicy(policy: BadgeDisplayPolicy) {

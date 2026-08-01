@@ -28,6 +28,7 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.ParcelUuid
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.friendorfoe.BuildConfig
@@ -35,6 +36,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -81,297 +83,6 @@ data class BadgeUsbDetection(
     val rssi: Int
 )
 
-data class BadgeDisplayState(
-    val active: Boolean = false,
-    val detailMode: Boolean = false,
-    val detailPage: Int = 0,
-    val focusIndex: Int = 0,
-    val focusTotal: Int = 0,
-    val itemIndex: Int = 0,
-    val itemTotal: Int = 0,
-    val lane: String = "",
-    val title: String = "",
-    val detail: String = "",
-    val evidence: String = "",
-    val entityKey: String = "",
-    val displayId: String = "",
-    val threatClass: String = "",
-    val category: String = "",
-    val code: String = "",
-    val source: String = "",
-    val ssid: String = "",
-    val bssid: String = "",
-    val authMode: Int = -1,
-    val freqMhz: Int = 0,
-    val score: Int = 0,
-    val confidencePct: Int = 0,
-    val evidenceQuality: Int = 0,
-    val displayRank: Int = 0,
-    val ageSeconds: Int = 0,
-    val lastSeenSeconds: Int = 0,
-    val rssi: Int = 0,
-    val bestRssi: Int = 0,
-    val events: Int = 0,
-    val seenCount: Int = 0,
-    val groupCount: Int = 0,
-    val proximityLevel: Int = 0,
-    val stale: Boolean = false,
-    val lat: Double? = null,
-    val lon: Double? = null,
-    val altitudeM: Float? = null,
-    val operatorLat: Double? = null,
-    val operatorLon: Double? = null,
-    val operatorId: String? = null
-)
-
-data class BadgeThreatCounts(
-    val drone: Int = 0,
-    val meta: Int = 0,
-    val tracker: Int = 0,
-    val wifiAnomaly: Int = 0,
-    val ble: Int = 0,
-    val other: Int = 0
-)
-
-data class BadgeThreatEntity(
-    val label: String,
-    val detail: String = "",
-    val evidence: String = "",
-    val threatClass: String,
-    val category: String = "",
-    val code: String = "",
-    val displayId: String = "",
-    val source: String = "",
-    val sourceId: Int = 0,
-    val ssid: String = "",
-    val bssid: String = "",
-    val authMode: Int = -1,
-    val freqMhz: Int = 0,
-    val score: Int,
-    val confidencePct: Int = 0,
-    val evidenceQuality: Int = 0,
-    val displayRank: Int = 0,
-    val ageSeconds: Int,
-    val lastSeenSeconds: Int = 0,
-    val rssi: Int,
-    val bestRssi: Int = 0,
-    val events: Int,
-    val seenCount: Int = 0,
-    val groupCount: Int = 0,
-    val proximityLevel: Int = 0,
-    val stale: Boolean = false,
-    val lat: Double? = null,
-    val lon: Double? = null,
-    val altitudeM: Float? = null,
-    val operatorLat: Double? = null,
-    val operatorLon: Double? = null,
-    val operatorId: String? = null
-)
-
-data class BadgeReportingStatus(
-    val networkMode: String = "off",
-    val backendEnabled: Boolean = false,
-    val networkTtlSeconds: Int = 0,
-    val wifiSta: Boolean = false,
-    val standalone: Boolean = true,
-    val uploadsOk: Int = 0,
-    val uploadsFail: Int = 0,
-    val lastUploadAgeSeconds: Long? = null
-)
-
-data class BadgeScannerStatus(
-    val slot: Int = -1,
-    val uart: String = "",
-    val connected: Boolean = false,
-    val slotRole: String = "",
-    val expectedScanProfile: String = "",
-    val scanProfile: String = "",
-    val roleAcked: Boolean = false,
-    val health: String = "",
-    val uartRawSeen: Boolean = false,
-    val uartRawAgeSeconds: Long? = null,
-    val uartJsonErrors: Int = 0,
-    val commandRx: Int = 0,
-    val commandLastAgeSeconds: Long? = null,
-    val bleAdvSeen: Int = 0,
-    val bleFpEmit: Int = 0,
-    val bleMetaSeen: Int = 0,
-    val bleTrackerSeen: Int = 0,
-    val ridEmit: Int = 0,
-    val privacySeen: Int = 0,
-    val wifiTotalFrames: Int = 0,
-    val wifiDroneSsidEmit: Int = 0,
-    val wifiNotableSsidEmit: Int = 0,
-    val wifiLastDroneSsid: String = "",
-    val wifiLastNotableSsid: String = "",
-    val displayPolicyHash: Long = 0,
-    val displayPolicyAckHash: Long = 0,
-    val filteredCounts: Map<String, Int> = emptyMap(),
-    val firmwareState: String = "",
-    val targetVersion: String = "",
-    val otaState: String = "",
-    val lastFirmwareError: String = ""
-)
-
-data class BadgeBleControlStatus(
-    val enabled: Boolean = false,
-    val bonded: Boolean = false,
-    val pairingAgeSeconds: Long? = null,
-    val pairingWindowSeconds: Int = 10,
-    val connected: Boolean = false,
-    val encrypted: Boolean = false,
-    val lastError: String = "",
-    val rx: Long = 0,
-    val tx: Long = 0
-)
-
-data class BadgeDisplayClassPolicy(
-    val enabled: Boolean = true,
-    val lane: String = "lower",
-    val minProximity: String = "present",
-    val priority: Int = 50
-)
-
-data class BadgeDisplayPolicy(
-    val version: Int = 1,
-    val classes: Map<String, BadgeDisplayClassPolicy> = defaultBadgeDisplayPolicyClasses()
-) {
-    fun toJsonObject(): JsonObject = JsonObject().apply {
-        addProperty("version", version)
-        add("classes", JsonObject().apply {
-            classes.forEach { (key, config) ->
-                add(key, JsonObject().apply {
-                    addProperty("enabled", config.enabled)
-                    addProperty("lane", config.lane)
-                    addProperty("min_proximity", config.minProximity)
-                    addProperty("priority", config.priority.coerceIn(0, 100))
-                })
-            }
-        })
-    }
-}
-
-fun BadgeDisplayPolicy.withClassEnabled(key: String, enabled: Boolean): BadgeDisplayPolicy {
-    val defaults = defaultBadgeDisplayPolicyClasses()
-    val current = classes[key] ?: defaults[key] ?: return this
-    val next = if (enabled) {
-        val fallback = defaults.getValue(key)
-        current.copy(
-            enabled = true,
-            lane = if (current.lane == "off") fallback.lane else current.lane,
-            minProximity = if (current.lane == "off") fallback.minProximity else current.minProximity,
-            priority = if (current.lane == "off") fallback.priority else current.priority
-        )
-    } else {
-        current.copy(enabled = false, lane = "off")
-    }
-    return copy(classes = classes + (key to next))
-}
-
-data class BadgeDisplayPolicyClassInfo(
-    val key: String,
-    val label: String
-)
-
-val BadgeDisplayPolicyClasses = listOf(
-    BadgeDisplayPolicyClassInfo("drone", "Drone"),
-    BadgeDisplayPolicyClassInfo("meta", "Meta Glasses"),
-    BadgeDisplayPolicyClassInfo("tracker", "Tracker"),
-    BadgeDisplayPolicyClassInfo("wifi_attack", "WiFi Attack"),
-    BadgeDisplayPolicyClassInfo("skimmer", "Skimmer"),
-    BadgeDisplayPolicyClassInfo("camera", "Camera"),
-    BadgeDisplayPolicyClassInfo("flock", "Flock/ALPR"),
-    BadgeDisplayPolicyClassInfo("lock", "Lock"),
-    BadgeDisplayPolicyClassInfo("hid", "BLE HID"),
-    BadgeDisplayPolicyClassInfo("beacon", "Venue Beacon"),
-    BadgeDisplayPolicyClassInfo("event_badge", "Event Badge"),
-    BadgeDisplayPolicyClassInfo("auracast", "Auracast"),
-    BadgeDisplayPolicyClassInfo("scanner_status", "Scanner Status")
-)
-
-fun defaultBadgeDisplayPolicyClasses(): Map<String, BadgeDisplayClassPolicy> = mapOf(
-    "drone" to BadgeDisplayClassPolicy(true, "both", "present", 100),
-    "meta" to BadgeDisplayClassPolicy(true, "both", "present", 95),
-    "tracker" to BadgeDisplayClassPolicy(true, "lower", "near", 70),
-    "wifi_attack" to BadgeDisplayClassPolicy(true, "both", "present", 90),
-    "skimmer" to BadgeDisplayClassPolicy(true, "both", "near", 88),
-    "camera" to BadgeDisplayClassPolicy(true, "lower", "near", 65),
-    "flock" to BadgeDisplayClassPolicy(true, "both", "present", 85),
-    "lock" to BadgeDisplayClassPolicy(true, "lower", "near", 55),
-    "hid" to BadgeDisplayClassPolicy(true, "lower", "close", 45),
-    "beacon" to BadgeDisplayClassPolicy(true, "lower", "near", 30),
-    "event_badge" to BadgeDisplayClassPolicy(true, "lower", "near", 35),
-    "auracast" to BadgeDisplayClassPolicy(true, "lower", "near", 20),
-    "scanner_status" to BadgeDisplayClassPolicy(true, "lower", "present", 10)
-)
-
-fun defaultBadgeDisplayPolicy(): BadgeDisplayPolicy =
-    BadgeDisplayPolicy(classes = defaultBadgeDisplayPolicyClasses())
-
-fun badgeDisplayPolicyCommandJson(
-    policy: BadgeDisplayPolicy,
-    persist: Boolean = true
-): JsonObject = JsonObject().apply {
-    addProperty("cmd", "badge_display_policy")
-    addProperty("persist", persist)
-    add("policy", policy.toJsonObject())
-}
-
-fun badgeDisplayNavCommandJson(action: String): JsonObject = JsonObject().apply {
-    addProperty("cmd", "display_nav")
-    addProperty("action", action)
-}
-
-data class BadgeTheme(
-    val version: Int = 1,
-    val palette: String = "field",
-    val background: String = "dark",
-    val brightness: Int = 100,
-    val accents: Map<String, Int> = defaultBadgeThemeAccents()
-) {
-    fun toJsonObject(): JsonObject = JsonObject().apply {
-        addProperty("version", version)
-        addProperty("palette", palette)
-        addProperty("background", background)
-        addProperty("brightness", brightness.coerceIn(25, 100))
-        add("accents", JsonObject().apply {
-            accents.forEach { (key, value) ->
-                addProperty(key, value.coerceIn(0, 0xffff))
-            }
-        })
-    }
-}
-
-data class BadgeThemeAccentInfo(
-    val key: String,
-    val label: String,
-    val defaultRgb565: Int
-)
-
-val BadgeThemeAccentClasses = listOf(
-    BadgeThemeAccentInfo("drone", "Drone", 0xFEA0),
-    BadgeThemeAccentInfo("meta", "Meta", 0xF833),
-    BadgeThemeAccentInfo("tracker", "Tracker", 0xF81F),
-    BadgeThemeAccentInfo("flock", "Flock", 0xA81F),
-    BadgeThemeAccentInfo("wifi_attack", "WiFi Attack", 0x07FF),
-    BadgeThemeAccentInfo("clear", "Clear", 0x2F65)
-)
-
-val BadgeThemePalettes = listOf("field", "night", "neon", "mono")
-val BadgeThemeBackgrounds = listOf("dark", "dim", "scanline")
-
-fun defaultBadgeThemeAccents(): Map<String, Int> =
-    BadgeThemeAccentClasses.associate { it.key to it.defaultRgb565 }
-
-fun defaultBadgeTheme(): BadgeTheme = BadgeTheme()
-
-fun badgeThemeCommandJson(theme: BadgeTheme, persist: Boolean = true): JsonObject =
-    JsonObject().apply {
-        addProperty("cmd", "badge_theme")
-        addProperty("persist", persist)
-        add("theme", theme.toJsonObject())
-    }
-
 data class BadgeFirmwareProgress(
     val kind: String = "",
     val ok: Boolean? = null,
@@ -382,402 +93,6 @@ data class BadgeFirmwareProgress(
     val total: Long = 0,
     val error: String = ""
 )
-
-data class BadgeControlStatus(
-    val version: String = "",
-    val mode: String = "local_ap",
-    val modeLabel: String = "Local AP",
-    val threatScore: Float = 0f,
-    val colorRgb565: Int = 0,
-    val reporting: BadgeReportingStatus = BadgeReportingStatus(),
-    val counts: BadgeThreatCounts = BadgeThreatCounts(),
-    val entities: List<BadgeThreatEntity> = emptyList(),
-    val scanners: List<BadgeScannerStatus> = emptyList(),
-    val displayPolicy: BadgeDisplayPolicy = defaultBadgeDisplayPolicy(),
-    val displayPolicyHash: Long = 0,
-    val filteredCounts: Map<String, Int> = emptyMap(),
-    val theme: BadgeTheme = defaultBadgeTheme(),
-    val themeHash: Long = 0,
-    val displayState: BadgeDisplayState? = null,
-    val bleControl: BadgeBleControlStatus = BadgeBleControlStatus(),
-    val safeMode: Boolean = false,
-    val safeReason: String = "",
-    val resetReason: String = "",
-    val resetReasonCode: Long = 0,
-    val resetExpected: Boolean = false,
-    val crashCount: Int = 0,
-    val recoveryMode: String = "",
-    val usbControlAgeSeconds: Long? = null,
-    val stackMainFree: Int = 0,
-    val stackDisplayFree: Int = 0,
-    val stackUsbFree: Int = 0,
-    val stackUartBleFree: Int = 0,
-    val stackUartWifiFree: Int = 0,
-    val heapInternalFree: Long = 0,
-    val heapInternalMinFree: Long = 0,
-    val heapInternalLargest: Long = 0,
-    val psramTotal: Long = 0,
-    val psramFree: Long = 0,
-    val psramLargest: Long = 0
-)
-
-data class BadgeUsbState(
-    val status: BadgeUsbStatus = BadgeUsbStatus.DISCONNECTED,
-    val deviceName: String? = null,
-    val message: String = "Connect a FoF badge over USB-C",
-    val transportLabel: String = "",
-    val lastLine: String? = null,
-    val eventCount: Int = 0,
-    val detections: List<BadgeUsbDetection> = emptyList(),
-    val controlStatus: BadgeControlStatus? = null,
-    val firmwareProgress: BadgeFirmwareProgress? = null
-)
-
-internal fun parseBadgeControlStatus(json: String): BadgeControlStatus? {
-    return runCatching {
-        val obj = JsonParser.parseString(json).asJsonObject
-        val countsObj = runCatching { obj.getAsJsonObject("counts") }.getOrNull()
-        val reportingObj = runCatching { obj.getAsJsonObject("reporting") }.getOrNull()
-        val displayPolicy = parseBadgeDisplayPolicy(
-            runCatching { obj.getAsJsonObject("display_policy") }.getOrNull()
-        )
-        val filteredCounts = parseBadgeIntMap(
-            runCatching { obj.getAsJsonObject("filtered_counts") }.getOrNull()
-        )
-        val theme = parseBadgeTheme(
-            runCatching { obj.getAsJsonObject("theme") }.getOrNull()
-        )
-        val displayState = parseBadgeDisplayState(
-            runCatching { obj.getAsJsonObject("display_state") }.getOrNull()
-        )
-        val bleControl = parseBadgeBleControlStatus(
-            runCatching { obj.getAsJsonObject("ble_control") }.getOrNull()
-        )
-        val entities = obj.getAsJsonArray("entities")?.mapNotNull { element ->
-            runCatching {
-                val e = element.asJsonObject
-                BadgeThreatEntity(
-                    label = e.badgeOptString("label"),
-                    detail = e.badgeOptString("detail"),
-                    evidence = e.badgeOptString("evidence"),
-                    threatClass = e.badgeOptString("class"),
-                    category = e.badgeOptString("category"),
-                    code = e.badgeOptString("code"),
-                    displayId = e.badgeOptString("display_id"),
-                    source = e.badgeOptString("source"),
-                    sourceId = e.badgeOptInt("source_id"),
-                    ssid = e.badgeOptString("ssid"),
-                    bssid = e.badgeOptString("bssid"),
-                    authMode = e.badgeOptInt("auth_m", -1),
-                    freqMhz = e.badgeOptInt("freq_mhz"),
-                    score = e.badgeOptInt("score"),
-                    confidencePct = e.badgeOptInt("confidence_pct"),
-                    evidenceQuality = e.badgeOptInt("evidence_quality"),
-                    displayRank = e.badgeOptInt("display_rank"),
-                    ageSeconds = e.badgeOptInt("age_s"),
-                    lastSeenSeconds = e.badgeOptInt("last_seen_s"),
-                    rssi = e.badgeOptInt("rssi"),
-                    bestRssi = e.badgeOptInt("best_rssi"),
-                    events = e.badgeOptInt("events"),
-                    seenCount = e.badgeOptInt("seen_count"),
-                    groupCount = e.badgeOptInt("group_count"),
-                    proximityLevel = e.badgeOptInt("proximity_level"),
-                    stale = e.badgeOptBoolean("stale"),
-                    lat = e.badgeOptDoubleOrNull("lat"),
-                    lon = e.badgeOptDoubleOrNull("lon"),
-                    altitudeM = e.badgeOptFloatOrNull("altitude_m"),
-                    operatorLat = e.badgeOptDoubleOrNull("operator_lat"),
-                    operatorLon = e.badgeOptDoubleOrNull("operator_lon"),
-                    operatorId = e.badgeOptString("operator_id").ifBlank { null }
-                )
-            }.getOrNull()
-        }.orEmpty()
-        val scanners = obj.getAsJsonArray("scanners")?.mapNotNull { element ->
-            runCatching {
-                val s = element.asJsonObject
-                BadgeScannerStatus(
-                    slot = s.badgeOptInt("slot", -1),
-                    uart = s.badgeOptString("uart"),
-                    connected = s.badgeOptBoolean("connected"),
-                    slotRole = s.badgeOptString("slot_role"),
-                    expectedScanProfile = s.badgeOptString("expected_scan_profile"),
-                    scanProfile = s.badgeOptString("scan_profile"),
-                    roleAcked = s.badgeOptBoolean("role_acked"),
-                    health = s.badgeOptString("health"),
-                    uartRawSeen = s.badgeOptBoolean("uart_raw_seen"),
-                    uartRawAgeSeconds = s.badgeOptLongOrNull("uart_raw_age_s"),
-                    uartJsonErrors = s.badgeOptInt("uart_json_err"),
-                    commandRx = s.badgeOptInt("cmd_rx"),
-                    commandLastAgeSeconds = s.badgeOptLongOrNull("cmd_last_age_s"),
-                    bleAdvSeen = s.badgeOptInt("ble_adv_seen"),
-                    bleFpEmit = s.badgeOptInt("ble_fp_emit"),
-                    bleMetaSeen = s.badgeOptInt("ble_meta_seen"),
-                    bleTrackerSeen = s.badgeOptInt("ble_tracker_seen"),
-                    ridEmit = s.badgeOptInt("rid_emit"),
-                    privacySeen = s.badgeOptInt("privacy_seen"),
-                    wifiTotalFrames = s.badgeOptInt("wifi_total_frames"),
-                    wifiDroneSsidEmit = s.badgeOptInt("wifi_drone_ssid_emit"),
-                    wifiNotableSsidEmit = s.badgeOptInt("wifi_notable_ssid_emit"),
-                    wifiLastDroneSsid = s.badgeOptString("wifi_last_drone_ssid"),
-                    wifiLastNotableSsid = s.badgeOptString("wifi_last_notable_ssid"),
-                    displayPolicyHash = s.badgeOptLong("display_policy_hash"),
-                    displayPolicyAckHash = s.badgeOptLong("display_policy_ack_hash"),
-                    filteredCounts = parseBadgeIntMap(
-                        runCatching { s.getAsJsonObject("filtered_counts") }.getOrNull()
-                    ),
-                    firmwareState = s.badgeOptString("fw_state"),
-                    targetVersion = s.badgeOptString("target_ver"),
-                    otaState = s.badgeOptString("ota_state"),
-                    lastFirmwareError = s.badgeOptString("last_fw_error")
-                )
-            }.getOrNull()
-        }.orEmpty()
-
-        BadgeControlStatus(
-            version = obj.badgeOptString("version"),
-            mode = obj.badgeOptString("mode").ifBlank { "local_ap" },
-            modeLabel = obj.badgeOptString("mode_label").ifBlank { "Local AP" },
-            threatScore = obj.badgeOptFloat("threat_score"),
-            colorRgb565 = obj.badgeOptInt("color_rgb565"),
-            reporting = BadgeReportingStatus(
-                networkMode = reportingObj?.badgeOptString("network_mode")
-                    ?: obj.badgeOptString("network_mode").ifBlank { obj.badgeOptString("mode") },
-                backendEnabled = reportingObj?.badgeOptBoolean("backend_enabled")
-                    ?: obj.badgeOptBoolean("backend_enabled"),
-                networkTtlSeconds = reportingObj?.badgeOptInt("network_ttl_s")
-                    ?: obj.badgeOptInt("network_ttl_s"),
-                wifiSta = reportingObj?.badgeOptBoolean("wifi_sta") ?: obj.badgeOptBoolean("wifi_sta"),
-                standalone = reportingObj?.badgeOptBoolean("standalone") ?: false,
-                uploadsOk = reportingObj?.badgeOptInt("uploads_ok") ?: 0,
-                uploadsFail = reportingObj?.badgeOptInt("uploads_fail") ?: 0,
-                lastUploadAgeSeconds = reportingObj?.badgeOptLongOrNull("last_upload_age_s")
-            ),
-            counts = BadgeThreatCounts(
-                drone = countsObj?.badgeOptInt("drone") ?: 0,
-                meta = countsObj?.badgeOptInt("meta") ?: 0,
-                tracker = countsObj?.badgeOptInt("tracker") ?: 0,
-                wifiAnomaly = countsObj?.badgeOptInt("wifi_anomaly") ?: 0,
-                ble = countsObj?.badgeOptInt("ble") ?: 0,
-                other = countsObj?.badgeOptInt("other") ?: 0
-            ),
-            entities = entities,
-            scanners = scanners,
-            displayPolicy = displayPolicy,
-            displayPolicyHash = obj.badgeOptLong("display_policy_hash"),
-            filteredCounts = filteredCounts,
-            theme = theme,
-            themeHash = obj.badgeOptLong("theme_hash"),
-            displayState = displayState,
-            bleControl = bleControl,
-            safeMode = obj.badgeOptBoolean("safe_mode"),
-            safeReason = obj.badgeOptString("safe_reason"),
-            resetReason = obj.badgeOptString("reset_reason")
-                .ifBlank { reportingObj?.badgeOptString("reset_reason").orEmpty() },
-            resetReasonCode = obj.badgeOptLong("reset_reason_code").takeIf { it != 0L }
-                ?: reportingObj?.badgeOptLong("reset_reason_code")
-                ?: 0L,
-            resetExpected = if (obj.get("reset_expected") != null) {
-                obj.badgeOptBoolean("reset_expected")
-            } else {
-                reportingObj?.badgeOptBoolean("reset_expected") ?: false
-            },
-            crashCount = obj.badgeOptInt("crash_count").takeIf { it != 0 }
-                ?: reportingObj?.badgeOptInt("crash_count")
-                ?: 0,
-            recoveryMode = obj.badgeOptString("recovery_mode")
-                .ifBlank { reportingObj?.badgeOptString("recovery_mode").orEmpty() },
-            usbControlAgeSeconds = obj.badgeOptLongOrNull("usb_control_age_s")
-                ?: reportingObj?.badgeOptLongOrNull("usb_control_age_s"),
-            stackMainFree = obj.badgeOptInt("stack_main_free").takeIf { it != 0 }
-                ?: reportingObj?.badgeOptInt("stack_main_free")
-                ?: 0,
-            stackDisplayFree = obj.badgeOptInt("stack_display_free").takeIf { it != 0 }
-                ?: reportingObj?.badgeOptInt("stack_display_free")
-                ?: 0,
-            stackUsbFree = obj.badgeOptInt("stack_usb_free").takeIf { it != 0 }
-                ?: reportingObj?.badgeOptInt("stack_usb_free")
-                ?: 0,
-            stackUartBleFree = obj.badgeOptInt("stack_uart_ble_free").takeIf { it != 0 }
-                ?: reportingObj?.badgeOptInt("stack_uart_ble_free")
-                ?: 0,
-            stackUartWifiFree = obj.badgeOptInt("stack_uart_wifi_free").takeIf { it != 0 }
-                ?: reportingObj?.badgeOptInt("stack_uart_wifi_free")
-                ?: 0,
-            heapInternalFree = obj.badgeOptLong("heap_internal_free").takeIf { it != 0L }
-                ?: reportingObj?.badgeOptLong("heap_internal_free")
-                ?: 0L,
-            heapInternalMinFree = obj.badgeOptLong("heap_internal_min_free").takeIf { it != 0L }
-                ?: reportingObj?.badgeOptLong("heap_internal_min_free")
-                ?: 0L,
-            heapInternalLargest = obj.badgeOptLong("heap_internal_largest").takeIf { it != 0L }
-                ?: reportingObj?.badgeOptLong("heap_internal_largest")
-                ?: 0L,
-            psramTotal = obj.badgeOptLong("psram_total").takeIf { it != 0L }
-                ?: reportingObj?.badgeOptLong("psram_total")
-                ?: 0L,
-            psramFree = obj.badgeOptLong("psram_free").takeIf { it != 0L }
-                ?: reportingObj?.badgeOptLong("psram_free")
-                ?: 0L,
-            psramLargest = obj.badgeOptLong("psram_largest").takeIf { it != 0L }
-                ?: reportingObj?.badgeOptLong("psram_largest")
-                ?: 0L
-        )
-    }.getOrNull()
-}
-
-private fun parseBadgeDisplayPolicy(obj: JsonObject?): BadgeDisplayPolicy {
-    if (obj == null) return defaultBadgeDisplayPolicy()
-    val classesObj = runCatching { obj.getAsJsonObject("classes") }.getOrNull()
-        ?: return defaultBadgeDisplayPolicy()
-    val defaults = defaultBadgeDisplayPolicyClasses()
-    val parsed = defaults.toMutableMap()
-    BadgeDisplayPolicyClasses.forEach { info ->
-        val classObj = runCatching { classesObj.getAsJsonObject(info.key) }.getOrNull()
-        if (classObj != null) {
-            val fallback = defaults.getValue(info.key)
-            parsed[info.key] = BadgeDisplayClassPolicy(
-                enabled = classObj.badgeOptBoolean("enabled", fallback.enabled),
-                lane = classObj.badgeOptString("lane").ifBlank { fallback.lane },
-                minProximity = classObj.badgeOptString("min_proximity")
-                    .ifBlank { fallback.minProximity },
-                priority = classObj.badgeOptInt("priority", fallback.priority).coerceIn(0, 100)
-            )
-        }
-    }
-    return BadgeDisplayPolicy(
-        version = obj.badgeOptInt("version", 1),
-        classes = parsed
-    )
-}
-
-private fun parseBadgeIntMap(obj: JsonObject?): Map<String, Int> {
-    if (obj == null) return emptyMap()
-    return obj.entrySet().associate { (key, value) ->
-        key to runCatching { value.asInt }.getOrDefault(0)
-    }
-}
-
-private fun parseBadgeTheme(obj: JsonObject?): BadgeTheme {
-    if (obj == null) return defaultBadgeTheme()
-    val defaults = defaultBadgeTheme()
-    val accents = defaults.accents.toMutableMap()
-    val accentsObj = runCatching { obj.getAsJsonObject("accents") }.getOrNull()
-    BadgeThemeAccentClasses.forEach { info ->
-        val value = runCatching {
-            accentsObj?.get(info.key)?.takeIf { !it.isJsonNull }?.asInt
-        }.getOrNull()
-        if (value != null) {
-            accents[info.key] = value.coerceIn(0, 0xffff)
-        }
-    }
-    return BadgeTheme(
-        version = obj.badgeOptInt("version", 1),
-        palette = obj.badgeOptString("palette")
-            .takeIf { it in BadgeThemePalettes } ?: defaults.palette,
-        background = obj.badgeOptString("background")
-            .takeIf { it in BadgeThemeBackgrounds } ?: defaults.background,
-        brightness = obj.badgeOptInt("brightness", defaults.brightness).coerceIn(25, 100),
-        accents = accents
-    )
-}
-
-private fun parseBadgeBleControlStatus(obj: JsonObject?): BadgeBleControlStatus {
-    if (obj == null) return BadgeBleControlStatus()
-    return BadgeBleControlStatus(
-        enabled = obj.badgeOptBoolean("enabled"),
-        bonded = obj.badgeOptBoolean("bonded"),
-        pairingAgeSeconds = obj.badgeOptLongOrNull("pairing_age_s"),
-        pairingWindowSeconds = obj.badgeOptInt("pairing_window_s", 10),
-        connected = obj.badgeOptBoolean("connected"),
-        encrypted = obj.badgeOptBoolean("encrypted"),
-        lastError = obj.badgeOptString("last_error"),
-        rx = obj.badgeOptLong("rx"),
-        tx = obj.badgeOptLong("tx")
-    )
-}
-
-private fun parseBadgeDisplayState(obj: JsonObject?): BadgeDisplayState? {
-    if (obj == null) return null
-    return BadgeDisplayState(
-        active = obj.badgeOptBoolean("active"),
-        detailMode = obj.badgeOptBoolean("detail_mode"),
-        detailPage = obj.badgeOptInt("detail_page"),
-        focusIndex = obj.badgeOptInt("focus_index"),
-        focusTotal = obj.badgeOptInt("focus_total"),
-        itemIndex = obj.badgeOptInt("item_index"),
-        itemTotal = obj.badgeOptInt("item_total"),
-        lane = obj.badgeOptString("lane"),
-        title = obj.badgeOptString("title"),
-        detail = obj.badgeOptString("detail"),
-        evidence = obj.badgeOptString("evidence"),
-        entityKey = obj.badgeOptString("entity_key"),
-        displayId = obj.badgeOptString("display_id"),
-        threatClass = obj.badgeOptString("class"),
-        category = obj.badgeOptString("category"),
-        code = obj.badgeOptString("code"),
-        source = obj.badgeOptString("source"),
-        ssid = obj.badgeOptString("ssid"),
-        bssid = obj.badgeOptString("bssid"),
-        authMode = obj.badgeOptInt("auth_m", -1),
-        freqMhz = obj.badgeOptInt("freq_mhz"),
-        score = obj.badgeOptInt("score"),
-        confidencePct = obj.badgeOptInt("confidence_pct"),
-        evidenceQuality = obj.badgeOptInt("evidence_quality"),
-        displayRank = obj.badgeOptInt("display_rank"),
-        ageSeconds = obj.badgeOptInt("age_s"),
-        lastSeenSeconds = obj.badgeOptInt("last_seen_s"),
-        rssi = obj.badgeOptInt("rssi"),
-        bestRssi = obj.badgeOptInt("best_rssi"),
-        events = obj.badgeOptInt("events"),
-        seenCount = obj.badgeOptInt("seen_count"),
-        groupCount = obj.badgeOptInt("group_count"),
-        proximityLevel = obj.badgeOptInt("proximity_level"),
-        stale = obj.badgeOptBoolean("stale"),
-        lat = obj.badgeOptDoubleOrNull("lat"),
-        lon = obj.badgeOptDoubleOrNull("lon"),
-        altitudeM = obj.badgeOptFloatOrNull("altitude_m"),
-        operatorLat = obj.badgeOptDoubleOrNull("operator_lat"),
-        operatorLon = obj.badgeOptDoubleOrNull("operator_lon"),
-        operatorId = obj.badgeOptString("operator_id").ifBlank { null }
-    )
-}
-
-private fun JsonObject.badgeOptString(key: String): String {
-    return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asString.orEmpty() }
-        .getOrDefault("")
-}
-
-private fun JsonObject.badgeOptInt(key: String, fallback: Int = 0): Int {
-    return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asInt ?: fallback }
-        .getOrDefault(fallback)
-}
-
-private fun JsonObject.badgeOptLong(key: String, fallback: Long = 0L): Long {
-    return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asLong ?: fallback }
-        .getOrDefault(fallback)
-}
-
-private fun JsonObject.badgeOptLongOrNull(key: String): Long? {
-    return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asLong }.getOrNull()
-}
-
-private fun JsonObject.badgeOptFloat(key: String, fallback: Float = 0f): Float {
-    return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asFloat ?: fallback }
-        .getOrDefault(fallback)
-}
-
-private fun JsonObject.badgeOptFloatOrNull(key: String): Float? {
-    return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asFloat }.getOrNull()
-}
-
-private fun JsonObject.badgeOptDoubleOrNull(key: String): Double? {
-    return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asDouble }.getOrNull()
-}
-
-private fun JsonObject.badgeOptBoolean(key: String, fallback: Boolean = false): Boolean {
-    return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asBoolean ?: fallback }
-        .getOrDefault(fallback)
-}
 
 @Singleton
 class BadgeUsbRepository @Inject constructor(
@@ -813,6 +128,7 @@ class BadgeUsbRepository @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val connectionMutex = Mutex()
+    private val recoveryTracker = BadgeRecoveryTracker()
     private val badgeHttpClient = okHttpClient.newBuilder()
         .connectTimeout(1200, TimeUnit.MILLISECONDS)
         .readTimeout(1200, TimeUnit.MILLISECONDS)
@@ -983,24 +299,16 @@ class BadgeUsbRepository @Inject constructor(
         }
     }
 
-    fun setMode(mode: String) {
-        sendControl(JsonObject().apply {
-            addProperty("cmd", "set_mode")
-            addProperty("mode", mode)
-            addProperty("persist", true)
-        })
+    fun setMode(mode: BadgeNetworkMode) {
+        sendControl(badgeNetworkModeCommandJson(mode))
     }
 
     fun rebootBadge() {
-        sendControl(JsonObject().apply {
-            addProperty("cmd", "reboot")
-        })
+        sendRecoveryControl(BadgeRecoveryCommand.REBOOT, badgeRebootCommandJson())
     }
 
     fun enterBootloader() {
-        sendControl(JsonObject().apply {
-            addProperty("cmd", "bootloader")
-        })
+        sendRecoveryControl(BadgeRecoveryCommand.BOOTLOADER, badgeBootloaderCommandJson())
     }
 
     fun relayScannerFirmware(uart: String, force: Boolean = false) {
@@ -1011,8 +319,8 @@ class BadgeUsbRepository @Inject constructor(
         })
     }
 
-    fun applyDisplayPolicy(policy: BadgeDisplayPolicy, persist: Boolean = true) {
-        sendControl(badgeDisplayPolicyCommandJson(policy, persist))
+    fun applyDisplayPolicy(policy: BadgeDisplayPolicy) {
+        sendControl(badgeDisplayPolicyCommandJson(policy))
     }
 
     fun resetDisplayPolicy(persist: Boolean = true) {
@@ -1022,8 +330,8 @@ class BadgeUsbRepository @Inject constructor(
         })
     }
 
-    fun applyBadgeTheme(theme: BadgeTheme, persist: Boolean = true) {
-        sendControl(badgeThemeCommandJson(theme, persist))
+    fun applyBadgeTheme(theme: BadgeTheme) {
+        sendControl(badgeThemeCommandJson(theme))
     }
 
     fun resetBadgeTheme(persist: Boolean = true) {
@@ -1033,7 +341,7 @@ class BadgeUsbRepository @Inject constructor(
         })
     }
 
-    fun displayNav(action: String) {
+    fun displayNav(action: BadgeDisplayAction) {
         sendControl(badgeDisplayNavCommandJson(action))
     }
 
@@ -1090,6 +398,45 @@ class BadgeUsbRepository @Inject constructor(
                 writeBleControl(payload)
             } else {
                 postNetworkControl(payload)
+            }
+        }
+    }
+
+    private fun sendRecoveryControl(
+        command: BadgeRecoveryCommand,
+        payload: JsonObject
+    ) {
+        scope.launch {
+            if (!isDirectUsbRecoverySupported(state.value.status) || !hasUsbCommandPath()) {
+                setState {
+                    it.copy(message = "Recovery commands require a direct USB-C connection")
+                }
+                return@launch
+            }
+            if (!recoveryTracker.begin(command)) {
+                setState { it.copy(message = "A badge recovery command is already pending") }
+                return@launch
+            }
+            try {
+                writeLine("FOF_CTL:$payload")
+                setState {
+                    it.copy(
+                        message = when (command) {
+                            BadgeRecoveryCommand.REBOOT -> "Waiting for badge reboot acknowledgement"
+                            BadgeRecoveryCommand.BOOTLOADER -> {
+                                "Waiting for badge bootloader acknowledgement"
+                            }
+                        }
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                recoveryTracker.cancel(command)
+                throw cancelled
+            } catch (error: Exception) {
+                recoveryTracker.cancel(command)
+                setState {
+                    it.copy(message = "Badge recovery command failed: ${error.message.orEmpty()}")
+                }
             }
         }
     }
@@ -1442,7 +789,9 @@ class BadgeUsbRepository @Inject constructor(
         val result = runCatching {
             badgeHttpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@use null
-                parseBadgeControlStatus(response.body?.string().orEmpty())
+                val body = response.body?.string().orEmpty()
+                val receivedAtElapsedMs = SystemClock.elapsedRealtime()
+                parseBadgeControlStatus(body, receivedAtElapsedMs)
             }
         }
         val status = result.getOrNull()
@@ -1845,7 +1194,8 @@ class BadgeUsbRepository @Inject constructor(
     private fun handleBleStatusBytes(bytes: ByteArray) {
         val json = bytes.toString(Charsets.UTF_8).trim()
         if (json.isBlank()) return
-        val status = parseBadgeControlStatus(json)
+        val receivedAtElapsedMs = SystemClock.elapsedRealtime()
+        val status = parseBadgeControlStatus(json, receivedAtElapsedMs)
         setState { current ->
             current.copy(
                 status = BadgeUsbStatus.BLE_CONNECTED,
@@ -1894,10 +1244,16 @@ class BadgeUsbRepository @Inject constructor(
             null
         }
         val status = if (trimmed.startsWith("FOF_STATUS:")) {
-            parseBadgeControlStatus(trimmed.removePrefix("FOF_STATUS:"))
+            val receivedAtElapsedMs = SystemClock.elapsedRealtime()
+            parseBadgeControlStatus(
+                trimmed.removePrefix("FOF_STATUS:"),
+                receivedAtElapsedMs
+            )
         } else {
             null
         }
+        val recoveryAcknowledgement = recoveryTracker.accept(trimmed)
+        val recoveryStillPending = recoveryTracker.pendingCommand != null
         val firmwareProgress = when {
             trimmed.startsWith("FOF_FW_UPLOAD:") ->
                 parseFirmwareProgress("upload", trimmed.removePrefix("FOF_FW_UPLOAD:"))
@@ -1920,10 +1276,22 @@ class BadgeUsbRepository @Inject constructor(
                 controlStatus = status ?: current.controlStatus,
                 firmwareProgress = firmwareProgress ?: current.firmwareProgress,
                 message = when {
+                    recoveryAcknowledgement == BadgeRecoveryAcknowledgement.REBOOT_OK -> {
+                        "Badge reboot acknowledged; reconnect after it restarts"
+                    }
+                    recoveryAcknowledgement == BadgeRecoveryAcknowledgement.BOOTLOADER_OK -> {
+                        "Badge bootloader acknowledged; reconnect when recovery is complete"
+                    }
                     trimmed.startsWith("FOF_PONG:") -> "Badge replied ${trimmed.removePrefix("FOF_PONG:")}"
                     status != null -> "Badge status updated"
                     firmwareProgress != null -> firmwareProgress.error.ifBlank {
                         "Firmware ${firmwareProgress.kind} ${firmwareProgress.stage} ${firmwareProgress.percent}%"
+                    }
+                    recoveryStillPending && trimmed.startsWith("FOF_CTL_OK:") -> {
+                        "Ignoring unrelated control acknowledgement; waiting for recovery acknowledgement"
+                    }
+                    recoveryStillPending && trimmed.startsWith("FOF_CTL_ERROR:") -> {
+                        "Recovery command was not acknowledged; waiting for its exact result"
                     }
                     trimmed.startsWith("FOF_CTL_OK:") -> "Badge command accepted"
                     trimmed.startsWith("FOF_CTL_ERROR:") -> "Badge command failed"
@@ -2017,6 +1385,7 @@ class BadgeUsbRepository @Inject constructor(
     }
 
     private fun disconnectLocked() {
+        recoveryTracker.clear()
         readJob?.cancel()
         readJob = null
         usbStatusPollJob?.cancel()

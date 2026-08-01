@@ -45,6 +45,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.badge.BadgeControlStatus
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
 import com.friendorfoe.data.badge.BadgeDisplayState
+import com.friendorfoe.data.badge.BadgeNetworkMode
 import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbState
@@ -482,7 +483,7 @@ private fun BadgeDetailPanel(
     onDetail: () -> Unit,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
-    onSetMode: (String) -> Unit,
+    onSetMode: (BadgeNetworkMode) -> Unit,
     onReboot: () -> Unit,
     onBootloader: () -> Unit,
     onRelayScannerFirmware: (String) -> Unit,
@@ -503,13 +504,13 @@ private fun BadgeDetailPanel(
     var filtersExpanded by remember { mutableStateOf(false) }
     var appearanceExpanded by remember { mutableStateOf(false) }
     var operationsExpanded by remember { mutableStateOf(false) }
-    var draftPolicy by remember { mutableStateOf(status.displayPolicy) }
-    var draftTheme by remember { mutableStateOf(status.theme) }
-    LaunchedEffect(status.displayPolicyHash) {
-        draftPolicy = status.displayPolicy
+    var draftPolicy by remember { mutableStateOf(status.policyReadback.value) }
+    var draftTheme by remember { mutableStateOf(status.themeReadback.value) }
+    LaunchedEffect(status.policyReadback.hash, status.policyReadback.issue) {
+        draftPolicy = status.policyReadback.value
     }
-    LaunchedEffect(status.themeHash) {
-        draftTheme = status.theme
+    LaunchedEffect(status.themeReadback.hash, status.themeReadback.issue) {
+        draftTheme = status.themeReadback.value
     }
     Column(
         modifier = Modifier
@@ -528,7 +529,7 @@ private fun BadgeDetailPanel(
                 Text(
                     text = buildString {
                         append(if (connected) "live " else "cached ")
-                        append(status.modeLabel.ifBlank { status.mode })
+                        append(status.networkModeReadback.value?.displayLabel() ?: "mode unknown")
                         append("  |  DRN ${status.counts.drone}")
                         append(" META ${status.counts.meta}")
                         append(" TAG ${status.counts.tracker}")
@@ -569,7 +570,7 @@ private fun BadgeDetailPanel(
         }
 
         Text(
-            text = "Stack main/display/USB ${status.stackMainFree}/${status.stackDisplayFree}/${status.stackUsbFree}  UART ${status.stackUartBleFree}/${status.stackUartWifiFree}",
+            text = "Stack main/display/USB ${status.stackFreeBytes["main"] ?: 0}/${status.stackFreeBytes["display"] ?: 0}/${status.stackFreeBytes["usb"] ?: 0}  UART ${status.stackFreeBytes["uart_ble"] ?: 0}/${status.stackFreeBytes["uart_wifi"] ?: 0}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
@@ -577,7 +578,7 @@ private fun BadgeDetailPanel(
             modifier = Modifier.padding(top = 4.dp)
         )
         Text(
-            text = "Heap ${formatBytes(status.heapInternalFree)} free  PSRAM ${formatBytes(status.psramFree)} / ${formatBytes(status.psramTotal)}",
+            text = "Heap ${formatBytes(status.heapInternalFreeBytes)} free  PSRAM ${formatBytes(status.psramFreeBytes)} / ${formatBytes(status.psramTotalBytes)}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
@@ -644,34 +645,50 @@ private fun BadgeDetailPanel(
                 onFlashScannerFirmware = onFlashScannerFirmware
             )
             Spacer(modifier = Modifier.height(8.dp))
-            BadgeAppearanceSection(
-                expanded = appearanceExpanded,
-                onExpandedChange = { appearanceExpanded = it },
-                theme = draftTheme,
-                themeHash = status.themeHash,
-                onThemeChange = { draftTheme = it },
-                onApply = { onApplyTheme(draftTheme) },
-                onReset = {
-                    draftTheme = defaultBadgeTheme()
-                    onResetTheme()
-                },
-                onRefresh = onRefresh
-            )
+            val editableTheme = draftTheme
+            if (status.themeReadback.isEditable && editableTheme != null) {
+                BadgeAppearanceSection(
+                    expanded = appearanceExpanded,
+                    onExpandedChange = { appearanceExpanded = it },
+                    theme = editableTheme,
+                    themeHash = status.themeReadback.hash ?: 0L,
+                    onThemeChange = { draftTheme = it },
+                    onApply = { onApplyTheme(editableTheme) },
+                    onReset = {
+                        draftTheme = defaultBadgeTheme()
+                        onResetTheme()
+                    },
+                    onRefresh = onRefresh
+                )
+            } else {
+                BadgeReadbackUnavailable(
+                    label = "Badge appearance",
+                    issue = status.themeReadback.issue
+                )
+            }
             Spacer(modifier = Modifier.height(8.dp))
-            BadgeDisplayFiltersSection(
-                expanded = filtersExpanded,
-                onExpandedChange = { filtersExpanded = it },
-                policy = draftPolicy,
-                displayPolicyHash = status.displayPolicyHash,
-                filteredCounts = status.filteredCounts,
-                onPolicyChange = { draftPolicy = it },
-                onApply = { onApplyDisplayPolicy(draftPolicy) },
-                onReset = {
-                    draftPolicy = defaultBadgeDisplayPolicy()
-                    onResetDisplayPolicy()
-                },
-                onRefresh = onRefresh
-            )
+            val editablePolicy = draftPolicy
+            if (status.policyReadback.isEditable && editablePolicy != null) {
+                BadgeDisplayFiltersSection(
+                    expanded = filtersExpanded,
+                    onExpandedChange = { filtersExpanded = it },
+                    policy = editablePolicy,
+                    displayPolicyHash = status.policyReadback.hash ?: 0L,
+                    filteredCounts = status.filteredCounts,
+                    onPolicyChange = { draftPolicy = it },
+                    onApply = { onApplyDisplayPolicy(editablePolicy) },
+                    onReset = {
+                        draftPolicy = defaultBadgeDisplayPolicy()
+                        onResetDisplayPolicy()
+                    },
+                    onRefresh = onRefresh
+                )
+            } else {
+                BadgeReadbackUnavailable(
+                    label = "Display filters",
+                    issue = status.policyReadback.issue
+                )
+            }
         }
 
         status.entities.take(6).forEach { entity ->
@@ -685,7 +702,7 @@ private fun BadgeOperationsSection(
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     state: BadgeUsbState,
-    onSetMode: (String) -> Unit,
+    onSetMode: (BadgeNetworkMode) -> Unit,
     onReboot: () -> Unit,
     onBootloader: () -> Unit,
     onRelayScannerFirmware: (String) -> Unit,
@@ -730,7 +747,7 @@ private fun BadgeOperationsSection(
                 Text(
                     text = listOfNotNull(
                         state.transportLabel.ifBlank { null },
-                        state.controlStatus?.modeLabel?.ifBlank { null },
+                        state.controlStatus?.networkModeReadback?.value?.displayLabel(),
                         state.firmwareProgress?.stage?.ifBlank { null }
                     ).joinToString("  |  ").ifBlank { state.message },
                     style = MaterialTheme.typography.bodySmall,
@@ -757,15 +774,18 @@ private fun BadgeOperationsSection(
             modifier = Modifier.fillMaxWidth()
         ) {
             OutlinedButton(
-                onClick = { onSetMode("local_ap") },
+                onClick = { onSetMode(BadgeNetworkMode.LOCAL_AP) },
+                enabled = state.controlStatus?.networkModeReadback?.isEditable == true,
                 modifier = Modifier.weight(1f)
             ) { Text("Local AP", maxLines = 1) }
             OutlinedButton(
-                onClick = { onSetMode("backend") },
+                onClick = { onSetMode(BadgeNetworkMode.BACKEND) },
+                enabled = state.controlStatus?.networkModeReadback?.isEditable == true,
                 modifier = Modifier.weight(1f)
             ) { Text("Backend", maxLines = 1) }
             OutlinedButton(
-                onClick = { onSetMode("usb_only") },
+                onClick = { onSetMode(BadgeNetworkMode.USB_ONLY) },
+                enabled = state.controlStatus?.networkModeReadback?.isEditable == true,
                 modifier = Modifier.weight(1f)
             ) { Text("USB", maxLines = 1) }
         }
@@ -835,10 +855,12 @@ private fun BadgeOperationsSection(
         ) {
             OutlinedButton(
                 onClick = onReboot,
+                enabled = state.status == BadgeUsbStatus.CONNECTED,
                 modifier = Modifier.weight(1f)
             ) { Text("Reboot", maxLines = 1) }
             OutlinedButton(
                 onClick = onBootloader,
+                enabled = state.status == BadgeUsbStatus.CONNECTED,
                 modifier = Modifier.weight(1f)
             ) { Text("Bootloader", maxLines = 1) }
         }
@@ -989,13 +1011,42 @@ private fun badgeWifiAuthLabel(authMode: Int): String = when (authMode) {
     else -> "Unknown ($authMode)"
 }
 
+private fun BadgeNetworkMode.displayLabel(): String = when (this) {
+    BadgeNetworkMode.USB_ONLY -> "USB Only"
+    BadgeNetworkMode.LOCAL_AP -> "Local AP"
+    BadgeNetworkMode.BACKEND -> "Backend"
+}
+
+@Composable
+private fun BadgeReadbackUnavailable(label: String, issue: String?) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                MaterialTheme.colorScheme.surface.copy(alpha = 0.45f),
+                MaterialTheme.shapes.small
+            )
+            .padding(8.dp)
+    ) {
+        Text(
+            text = "$label unavailable",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = issue ?: "Waiting for a complete verified badge readback",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedButton(onClick = {}, enabled = false) { Text("Edit") }
+    }
+}
+
 @Composable
 private fun badgeHealthColor(status: BadgeControlStatus): Color = when {
     status.safeMode || status.crashCount > 0 -> MaterialTheme.colorScheme.error
-    status.stackMainFree in 1..1023 || status.stackDisplayFree in 1..1023 ||
-        status.stackUsbFree in 1..1023 || status.stackUartBleFree in 1..1023 ||
-        status.stackUartWifiFree in 1..1023 -> Color(0xFFFF9800)
-    status.psramTotal == 0L -> Color(0xFFFF9800)
+    status.stackFreeBytes.values.any { it in 1..1023 } -> Color(0xFFFF9800)
+    status.psramTotalBytes == 0L -> Color(0xFFFF9800)
     else -> Color(0xFF2E7D32)
 }
 
@@ -1006,13 +1057,13 @@ private fun BadgeControlStatus.badgeWarningText(): String = buildList {
         !resetReason.equals("POWERON", ignoreCase = true)) {
         add("reset $resetReason")
     }
-    if (psramTotal == 0L) add("PSRAM missing")
+    if (psramTotalBytes == 0L) add("PSRAM missing")
     val lowStacks = listOf(
-        "main" to stackMainFree,
-        "display" to stackDisplayFree,
-        "usb" to stackUsbFree,
-        "ble-uart" to stackUartBleFree,
-        "wifi-uart" to stackUartWifiFree
+        "main" to (stackFreeBytes["main"] ?: 0),
+        "display" to (stackFreeBytes["display"] ?: 0),
+        "usb" to (stackFreeBytes["usb"] ?: 0),
+        "ble-uart" to (stackFreeBytes["uart_ble"] ?: 0),
+        "wifi-uart" to (stackFreeBytes["uart_wifi"] ?: 0)
     ).filter { (_, value) -> value in 1..1023 }
     if (lowStacks.isNotEmpty()) {
         add("low stack " + lowStacks.joinToString(",") { "${it.first}:${it.second}" })

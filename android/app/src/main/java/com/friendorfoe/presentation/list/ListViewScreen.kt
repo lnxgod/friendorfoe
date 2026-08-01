@@ -53,6 +53,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.data.badge.BadgeUsbDetection
 import com.friendorfoe.data.badge.BadgeDisplayPolicy
+import com.friendorfoe.data.badge.BadgeNetworkMode
 import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
@@ -167,7 +168,7 @@ private fun BadgeUsbPanel(
     onConnect: () -> Unit,
     onPing: () -> Unit,
     onRefreshStatus: () -> Unit,
-    onSetMode: (String) -> Unit,
+    onSetMode: (BadgeNetworkMode) -> Unit,
     onReboot: () -> Unit,
     onBootloader: () -> Unit,
     onFlashScannerFirmware: (String, String, ByteArray) -> Unit,
@@ -225,14 +226,14 @@ private fun BadgeUsbPanel(
     var filtersExpanded by remember { mutableStateOf(false) }
     var appearanceExpanded by remember { mutableStateOf(false) }
     var scannerUpdatesExpanded by remember { mutableStateOf(false) }
-    var draftPolicy by remember { mutableStateOf(badgeStatus?.displayPolicy ?: defaultBadgeDisplayPolicy()) }
-    var draftTheme by remember { mutableStateOf(badgeStatus?.theme ?: defaultBadgeTheme()) }
+    var draftPolicy by remember { mutableStateOf<BadgeDisplayPolicy?>(null) }
+    var draftTheme by remember { mutableStateOf<BadgeTheme?>(null) }
 
-    LaunchedEffect(badgeStatus?.displayPolicyHash) {
-        badgeStatus?.displayPolicy?.let { draftPolicy = it }
+    LaunchedEffect(badgeStatus?.policyReadback?.hash, badgeStatus?.policyReadback?.issue) {
+        draftPolicy = badgeStatus?.policyReadback?.value
     }
-    LaunchedEffect(badgeStatus?.themeHash) {
-        badgeStatus?.theme?.let { draftTheme = it }
+    LaunchedEffect(badgeStatus?.themeReadback?.hash, badgeStatus?.themeReadback?.issue) {
+        draftTheme = badgeStatus?.themeReadback?.value
     }
 
     Surface(
@@ -329,21 +330,36 @@ private fun BadgeUsbPanel(
                 if (controlsAvailable) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(onClick = { onSetMode("local_ap") }) {
+                        OutlinedButton(
+                            onClick = { onSetMode(BadgeNetworkMode.LOCAL_AP) },
+                            enabled = badgeStatus.networkModeReadback.isEditable
+                        ) {
                             Text("Local AP")
                         }
-                        OutlinedButton(onClick = { onSetMode("backend") }) {
+                        OutlinedButton(
+                            onClick = { onSetMode(BadgeNetworkMode.BACKEND) },
+                            enabled = badgeStatus.networkModeReadback.isEditable
+                        ) {
                             Text("Backend")
                         }
-                        OutlinedButton(onClick = { onSetMode("usb_only") }) {
+                        OutlinedButton(
+                            onClick = { onSetMode(BadgeNetworkMode.USB_ONLY) },
+                            enabled = badgeStatus.networkModeReadback.isEditable
+                        ) {
                             Text("USB")
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(onClick = onReboot) {
+                        OutlinedButton(
+                            onClick = onReboot,
+                            enabled = state.status == BadgeUsbStatus.CONNECTED
+                        ) {
                             Text("Reboot")
                         }
-                        OutlinedButton(onClick = onBootloader) {
+                        OutlinedButton(
+                            onClick = onBootloader,
+                            enabled = state.status == BadgeUsbStatus.CONNECTED
+                        ) {
                             Text("Bootloader")
                         }
                     }
@@ -396,34 +412,50 @@ private fun BadgeUsbPanel(
                         }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
-                    BadgeAppearanceSection(
-                        expanded = appearanceExpanded,
-                        onExpandedChange = { appearanceExpanded = it },
-                        theme = draftTheme,
-                        themeHash = badgeStatus.themeHash,
-                        onThemeChange = { draftTheme = it },
-                        onApply = { onApplyTheme(draftTheme) },
-                        onReset = {
-                            draftTheme = defaultBadgeTheme()
-                            onResetTheme()
-                        },
-                        onRefresh = onRefreshDisplayPolicy
-                    )
+                    val editableTheme = draftTheme
+                    if (badgeStatus.themeReadback.isEditable && editableTheme != null) {
+                        BadgeAppearanceSection(
+                            expanded = appearanceExpanded,
+                            onExpandedChange = { appearanceExpanded = it },
+                            theme = editableTheme,
+                            themeHash = badgeStatus.themeReadback.hash ?: 0L,
+                            onThemeChange = { draftTheme = it },
+                            onApply = { onApplyTheme(editableTheme) },
+                            onReset = {
+                                draftTheme = defaultBadgeTheme()
+                                onResetTheme()
+                            },
+                            onRefresh = onRefreshDisplayPolicy
+                        )
+                    } else {
+                        BadgeReadbackUnavailable(
+                            label = "Badge appearance",
+                            issue = badgeStatus.themeReadback.issue
+                        )
+                    }
                     Spacer(modifier = Modifier.height(8.dp))
-                    BadgeDisplayFiltersSection(
-                        expanded = filtersExpanded,
-                        onExpandedChange = { filtersExpanded = it },
-                        policy = draftPolicy,
-                        displayPolicyHash = badgeStatus.displayPolicyHash,
-                        filteredCounts = badgeStatus.filteredCounts,
-                        onPolicyChange = { draftPolicy = it },
-                        onApply = { onApplyDisplayPolicy(draftPolicy) },
-                        onReset = {
-                            draftPolicy = defaultBadgeDisplayPolicy()
-                            onResetDisplayPolicy()
-                        },
-                        onRefresh = onRefreshDisplayPolicy
-                    )
+                    val editablePolicy = draftPolicy
+                    if (badgeStatus.policyReadback.isEditable && editablePolicy != null) {
+                        BadgeDisplayFiltersSection(
+                            expanded = filtersExpanded,
+                            onExpandedChange = { filtersExpanded = it },
+                            policy = editablePolicy,
+                            displayPolicyHash = badgeStatus.policyReadback.hash ?: 0L,
+                            filteredCounts = badgeStatus.filteredCounts,
+                            onPolicyChange = { draftPolicy = it },
+                            onApply = { onApplyDisplayPolicy(editablePolicy) },
+                            onReset = {
+                                draftPolicy = defaultBadgeDisplayPolicy()
+                                onResetDisplayPolicy()
+                            },
+                            onRefresh = onRefreshDisplayPolicy
+                        )
+                    } else {
+                        BadgeReadbackUnavailable(
+                            label = "Display filters",
+                            issue = badgeStatus.policyReadback.issue
+                        )
+                    }
                 }
             }
 
@@ -464,6 +496,31 @@ private fun BadgeUsbPanel(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BadgeReadbackUnavailable(label: String, issue: String?) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.35f)
+    ) {
+        Column(modifier = Modifier.padding(8.dp)) {
+            Text(
+                text = "$label unavailable",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = issue ?: "Waiting for a complete verified badge readback",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedButton(onClick = {}, enabled = false) {
+                Text("Edit")
             }
         }
     }
