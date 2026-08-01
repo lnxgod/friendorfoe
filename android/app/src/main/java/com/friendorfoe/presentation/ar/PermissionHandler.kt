@@ -87,7 +87,7 @@ fun PermissionHandler(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     // --- Permission state tracking ---
-    // Camera is the only permission gated here; Location/BT/WiFi are requested at app startup
+    // Permissions are owned by this AR flow; app startup never requests a blanket batch.
     var cameraGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -119,11 +119,11 @@ fun PermissionHandler(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                cameraGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                val resumedCameraGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                     PackageManager.PERMISSION_GRANTED
-                locationGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+                val resumedLocationGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
                     PackageManager.PERMISSION_GRANTED
-                bluetoothGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val resumedBluetoothGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) ==
                         PackageManager.PERMISSION_GRANTED &&
                     ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
@@ -131,6 +131,13 @@ fun PermissionHandler(
                 } else {
                     true
                 }
+                val localDetectionPermissionChanged =
+                    resumedLocationGranted != locationGranted ||
+                        resumedBluetoothGranted != bluetoothGranted
+                cameraGranted = resumedCameraGranted
+                locationGranted = resumedLocationGranted
+                bluetoothGranted = resumedBluetoothGranted
+                if (localDetectionPermissionChanged) viewModel.onRuntimePermissionsChanged()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

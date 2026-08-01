@@ -1,6 +1,8 @@
 package com.friendorfoe.data.repository
 
+import android.content.Context
 import android.util.Log
+import dagger.hilt.android.qualifiers.ApplicationContext
 import com.friendorfoe.data.local.HistoryDao
 import com.friendorfoe.data.local.HistoryEntity
 import com.friendorfoe.data.local.TrackingDao
@@ -66,7 +68,8 @@ class SkyObjectRepository @Inject constructor(
     private val fusionEngine: BayesianFusionEngine,
     private val sensorFusionEngine: com.friendorfoe.sensor.SensorFusionEngine,
     private val historyDao: HistoryDao,
-    private val trackingDao: TrackingDao
+    private val trackingDao: TrackingDao,
+    @ApplicationContext private val appContext: Context,
 ) {
 
     companion object {
@@ -84,6 +87,7 @@ class SkyObjectRepository @Inject constructor(
     private var glassesJob: Job? = null
     private var glassesUpdateJob: Job? = null
     private val isRunning = AtomicBoolean(false)
+    @Volatile private var activeLocalPermissions = LocalDetectionPermissions.None
 
     // Track user position for history persistence
     @Volatile private var userLatitude: Double = 0.0
@@ -156,6 +160,14 @@ class SkyObjectRepository @Inject constructor(
         ensureStarted(latitude, longitude)
     }
 
+    /** Re-evaluate protected collectors after a feature-owned permission flow completes. */
+    fun onRuntimePermissionsChanged() {
+        val permissions = currentLocalDetectionPermissions(appContext)
+        if (shouldRestartForPermissionChange(isRunning.get(), activeLocalPermissions, permissions)) {
+            restartDetectionSources()
+        }
+    }
+
     /** Get the position trail for a given object ID. */
     fun getTrail(objectId: String): List<TrailPoint> {
         return synchronized(positionTrails) {
@@ -177,11 +189,16 @@ class SkyObjectRepository @Inject constructor(
      * @param longitude User's current longitude for ADS-B polling
      */
     fun ensureStarted(latitude: Double, longitude: Double) {
+        val permissions = currentLocalDetectionPermissions(appContext)
         if (!isRunning.compareAndSet(false, true)) {
             updatePosition(latitude, longitude)
+            if (shouldRestartForPermissionChange(true, activeLocalPermissions, permissions)) {
+                restartDetectionSources()
+            }
             return
         }
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        activeLocalPermissions = permissions
         userLatitude = latitude
         userLongitude = longitude
         bleTracker.recordUserLocation(latitude, longitude)
@@ -195,25 +212,50 @@ class SkyObjectRepository @Inject constructor(
 
         // Collect from all sources (respecting per-source toggles)
         val localPhoneSensorsEnabled = !detectionPrefs.backendOnlyMode
+        val protectedSources = allowedProtectedDetectionSources(permissions)
         collectionJob = scope.launch {
             if (detectionPrefs.adsbEnabled) launch { collectAdsb() }
             if (localPhoneSensorsEnabled) {
-                if (detectionPrefs.bleRidEnabled) launch { collectRemoteId() }
-                if (detectionPrefs.bleRidEnabled) launch { collectWifiNan() }
-                if (detectionPrefs.wifiEnabled) launch { collectWifi() }
+                if (detectionPrefs.bleRidEnabled &&
+                    ProtectedDetectionSource.BLE_REMOTE_ID in protectedSources
+                ) launchProtected("BLE Remote ID") { collectRemoteId() }
+                if (detectionPrefs.bleRidEnabled &&
+                    ProtectedDetectionSource.WIFI_REMOTE_ID in protectedSources
+                ) launchProtected("WiFi NaN Remote ID") { collectWifiNan() }
+                if (detectionPrefs.wifiEnabled &&
+                    ProtectedDetectionSource.WIFI_DRONE in protectedSources
+                ) launchProtected("WiFi drone") { collectWifi() }
                 if (detectionPrefs.privacyEnabled) {
-                    glassesJob = launch { collectGlasses() }
-                    launch { collectWifiPrivacy() }
+                    if (ProtectedDetectionSource.BLE_PRIVACY in protectedSources) {
+                        glassesJob = launchProtected("BLE privacy") { collectGlasses() }
+                    }
+                    if (ProtectedDetectionSource.WIFI_PRIVACY in protectedSources) {
+                        launchProtected("WiFi privacy") { collectWifiPrivacy() }
+                    }
                 }
                 if (detectionPrefs.stalkerDetectionEnabled) launch { collectStalkerAlerts() }
-                if (detectionPrefs.ultrasonicEnabled) launch { collectUltrasonic() }
+                if (detectionPrefs.ultrasonicEnabled &&
+                    ProtectedDetectionSource.ULTRASONIC in protectedSources
+                ) launchProtected("ultrasonic") { collectUltrasonic() }
             }
+        }
+    }
+
+    private fun CoroutineScope.launchProtected(
+        sourceName: String,
+        collect: suspend () -> Unit,
+    ): Job = launch {
+        try {
+            collect()
+        } catch (error: SecurityException) {
+            Log.w(TAG, "$sourceName permission changed while starting; collector deferred", error)
         }
     }
 
     /** Stop all detection sources. */
     fun stop() {
         isRunning.set(false)
+        activeLocalPermissions = LocalDetectionPermissions.None
         collectionJob?.cancel()
         collectionJob = null
         glassesJob?.cancel()

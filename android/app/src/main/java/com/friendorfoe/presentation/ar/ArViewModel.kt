@@ -1436,6 +1436,11 @@ class ArViewModel @Inject constructor(
         }
     }
 
+    /** Restart local collectors when the AR-owned permission flow gains or loses access. */
+    fun onRuntimePermissionsChanged() {
+        skyObjectRepository.onRuntimePermissionsChanged()
+    }
+
     /**
      * Initialize ARCore session and check device availability.
      *

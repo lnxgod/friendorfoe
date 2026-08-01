@@ -1,6 +1,5 @@
 package com.friendorfoe.presentation.navigation
 
-import android.Manifest
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
@@ -25,25 +24,13 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navigation
 import androidx.test.espresso.Espresso.pressBack
-import androidx.test.platform.app.InstrumentationRegistry
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TestRule
-import org.junit.runner.Description
-import org.junit.runners.model.Statement
 
 class NavigationShellTest {
-    @get:Rule(order = 0)
-    val permissions: TestRule = RuntimePermissionRule(
-        Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.BLUETOOTH_SCAN,
-        Manifest.permission.BLUETOOTH_CONNECT,
-        Manifest.permission.NEARBY_WIFI_DEVICES,
-    )
-
-    @get:Rule(order = 1)
+    @get:Rule
     val compose = createComposeRule()
 
     @Test
@@ -132,22 +119,4 @@ class NavigationShellTest {
         compose.onNodeWithTag("screen_info").assertIsDisplayed()
         assertEquals(0, hostDisposals.intValue)
     }
-}
-
-private class RuntimePermissionRule(
-    private vararg val permissions: String,
-) : TestRule {
-    override fun apply(base: Statement, description: Description): Statement =
-        object : Statement() {
-            override fun evaluate() {
-                val instrumentation = InstrumentationRegistry.getInstrumentation()
-                permissions.forEach { permission ->
-                    instrumentation.uiAutomation.grantRuntimePermission(
-                        instrumentation.targetContext.packageName,
-                        permission,
-                    )
-                }
-                base.evaluate()
-            }
-        }
 }
