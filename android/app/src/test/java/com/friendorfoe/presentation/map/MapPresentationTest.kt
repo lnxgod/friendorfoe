@@ -5,13 +5,43 @@ import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.presentation.permissions.PermissionUiState
 import java.time.Instant
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MapPresentationTest {
+    @Test
+    fun loadingPermissionWithInvalidPositionKeepsTheLocatingSurface() {
+        assertFalse(
+            shouldRevealMap(
+                locationPermissionState = PermissionUiState.Loading,
+                userPosition = Position(0.0, 0.0, 0.0),
+            )
+        )
+    }
+
+    @Test
+    fun confirmedUnavailablePermissionRevealsTheBrowsableMapImmediately() {
+        val uninitializedPosition = Position(0.0, 0.0, 0.0)
+
+        listOf(
+            PermissionUiState.Denied,
+            PermissionUiState.PermanentlyDenied,
+        ).forEach { permissionState ->
+            assertTrue(
+                shouldRevealMap(
+                    locationPermissionState = permissionState,
+                    userPosition = uninitializedPosition,
+                )
+            )
+        }
+    }
+
     @Test
     fun usableLocationPermissionWaitsForAFiniteNonOriginPosition() {
         assertEquals(
@@ -47,7 +77,7 @@ class MapPresentationTest {
         assertEquals(
             false,
             shouldRevealMap(
-                locationPermissionUsable = true,
+                locationPermissionState = PermissionUiState.Granted,
                 userPosition = Position(0.0, 0.0, 0.0),
             ),
         )
@@ -132,7 +162,7 @@ class MapPresentationTest {
         assertEquals(
             true,
             shouldRevealMap(
-                locationPermissionUsable = false,
+                locationPermissionState = PermissionUiState.Denied,
                 userPosition = uninitializedPosition,
             ),
         )

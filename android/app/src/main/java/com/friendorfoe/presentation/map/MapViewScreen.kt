@@ -210,7 +210,7 @@ fun MapViewScreen(
         hasValidUserPosition = userPosition.hasValidMapCoordinates(),
     )
     val revealMap = shouldRevealMap(
-        locationPermissionUsable = locationPermissionState.isUsable(),
+        locationPermissionState = locationPermissionState,
         userPosition = userPosition,
     )
 

@@ -4,6 +4,8 @@ import com.friendorfoe.data.remote.LocatedDroneDto
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.isUsable
 
 internal const val INITIAL_MAP_ZOOM = 13.0
 
@@ -30,9 +32,13 @@ internal fun mapCameraAction(
 }
 
 internal fun shouldRevealMap(
-    locationPermissionUsable: Boolean,
+    locationPermissionState: PermissionUiState,
     userPosition: Position,
-): Boolean = !locationPermissionUsable || userPosition.hasValidMapCoordinates()
+): Boolean = when {
+    locationPermissionState == PermissionUiState.Loading -> false
+    locationPermissionState.isUsable() -> userPosition.hasValidMapCoordinates()
+    else -> true
+}
 
 internal fun Position.hasValidMapCoordinates(): Boolean =
     latitude.isFinite() &&
