@@ -9,6 +9,8 @@ import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.friendorfoe.presentation.privacy.PrivacyFindingKey
+import com.friendorfoe.presentation.privacy.PrivacySourceKind
 
 sealed class Screen(val route: String) {
     data object ArView : Screen("ar_view")
@@ -36,6 +38,35 @@ sealed class Screen(val route: String) {
         } ?: "aircraft_guide"
     }
     data object IgnoredDevices : Screen("privacy/ignored")
+    data object PrivacyFinding : Screen("privacy/finding/{source}/{record}") {
+        fun createRoute(key: PrivacyFindingKey): String =
+            "privacy/finding/${encodeRouteSegment(key.source.preferenceId)}/" +
+                encodeRouteSegment(key.sourceRecordId)
+
+        fun parseRoute(route: String): PrivacyFindingKey? {
+            val segments = route.split('/')
+            if (segments.size != 4 || segments[0] != "privacy" || segments[1] != "finding") {
+                return null
+            }
+            val sourceId = decodeRouteSegment(segments[2]) ?: return null
+            val record = decodeRouteSegment(segments[3])?.takeIf(String::isNotBlank) ?: return null
+            val source = PrivacySourceKind.entries.singleOrNull {
+                it.preferenceId == sourceId
+            } ?: return null
+            return runCatching { PrivacyFindingKey(source, record) }.getOrNull()
+        }
+
+        fun keyFromNavigationArguments(
+            source: String?,
+            record: String?,
+        ): PrivacyFindingKey? {
+            val sourceKind = PrivacySourceKind.entries.singleOrNull {
+                it.preferenceId == source
+            } ?: return null
+            val exactRecord = record?.takeIf(String::isNotBlank) ?: return null
+            return runCatching { PrivacyFindingKey(sourceKind, exactRecord) }.getOrNull()
+        }
+    }
     data object BadgeDiagnostics : Screen("badge/diagnostics")
     data object BadgeRecovery : Screen("badge/recovery")
     data object EmfSweep : Screen("info/advanced/magnetic_field")

@@ -10,8 +10,17 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.scan
 import kotlinx.coroutines.flow.stateIn
+
+sealed interface PrivacyFindingLookupState {
+    data object Loading : PrivacyFindingLookupState
+    data class Present(val finding: PrivacyFinding) : PrivacyFindingLookupState
+    data object Expired : PrivacyFindingLookupState
+}
 
 @Singleton
 class PrivacyFindingRepository @Inject constructor(
@@ -82,6 +91,29 @@ class PrivacyFindingRepository @Inject constructor(
 
     fun findFinding(key: PrivacyFindingKey): PrivacyFinding? =
         currentState.value.findings.firstOrNull { it.observationKey == key }
+
+    fun finding(key: PrivacyFindingKey): Flow<PrivacyFindingLookupState> = currentState
+        .scan<PrivacyCurrentState, PrivacyFindingLookupState?>(null) {
+                previous,
+                state,
+            ->
+            if (previous == PrivacyFindingLookupState.Expired) {
+                PrivacyFindingLookupState.Expired
+            } else {
+                state.findings.singleOrNull { it.routableKey == key }
+                    ?.let(PrivacyFindingLookupState::Present)
+                    ?: if (
+                        previous is PrivacyFindingLookupState.Present ||
+                        state.initialResolutionComplete
+                    ) {
+                        PrivacyFindingLookupState.Expired
+                    } else {
+                        PrivacyFindingLookupState.Loading
+                    }
+            }
+        }
+        .filterNotNull()
+        .distinctUntilChanged()
 
     suspend fun ignore(key: PrivacyFindingKey): PrivacyPreferenceResult {
         val finding = findFinding(key) ?: return PrivacyPreferenceResult.NotFound

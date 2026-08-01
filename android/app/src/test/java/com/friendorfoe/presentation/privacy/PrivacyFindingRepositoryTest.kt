@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -147,6 +148,63 @@ class PrivacyFindingRepositoryTest {
             PrivacyPreferenceResult.NotFound,
             repository.ignore(PrivacyFindingKey(PrivacySourceKind.BACKEND, "missing")),
         )
+    }
+
+    @Test
+    fun routedLookupUsesOnlyTheExactRoutableKeyAndDistinguishesExpiry() = runTest {
+        val observationKey = PrivacyFindingKey(PrivacySourceKind.BACKEND, "observation:42")
+        val routeKey = PrivacyFindingKey(PrivacySourceKind.BACKEND, "entity:42")
+        val row = finding(PrivacySourceKind.BACKEND, "placeholder").copy(
+            observationKey = observationKey,
+            routableKey = routeKey,
+        )
+        val repository = repository(
+            setOf(fakeAdapter("backend", setOf(PrivacySourceKind.BACKEND), listOf(liveSnapshot(row)))),
+        )
+        runCurrent()
+
+        val present = repository.finding(routeKey).first()
+
+        assertTrue(present is PrivacyFindingLookupState.Present)
+        assertEquals(routeKey, (present as PrivacyFindingLookupState.Present).finding.routableKey)
+        assertEquals(
+            PrivacyFindingLookupState.Expired,
+            repository.finding(observationKey).first(),
+        )
+    }
+
+    @Test
+    fun exactLookupNeverRegressesFromExpiredBackToLoadingDuringSourceRestart() = runTest {
+        val routeKey = PrivacyFindingKey(PrivacySourceKind.BACKEND, "entity:42")
+        val row = finding(PrivacySourceKind.BACKEND, "observation:42").copy(
+            routableKey = routeKey,
+        )
+        val snapshots = MutableStateFlow(listOf(liveSnapshot(row)))
+        val repository = repository(
+            setOf(FakeAdapter("backend", setOf(PrivacySourceKind.BACKEND), snapshots)),
+        )
+        val observed = mutableListOf<PrivacyFindingLookupState>()
+        val collection = backgroundScope.launch {
+            repository.finding(routeKey).collect(observed::add)
+        }
+        runCurrent()
+
+        snapshots.value = emptyList()
+        runCurrent()
+        assertEquals(PrivacyFindingLookupState.Expired, observed.last())
+        val afterExpiryCount = observed.size
+
+        snapshots.value = listOf(
+            liveSnapshot(row).copy(
+                health = liveSnapshot(row).health.copy(state = SourceHealthState.LOADING),
+                findings = emptyList(),
+            ),
+        )
+        runCurrent()
+
+        assertEquals(PrivacyFindingLookupState.Expired, observed.last())
+        assertEquals(afterExpiryCount, observed.size)
+        collection.cancel()
     }
 
     private fun TestScope.repository(

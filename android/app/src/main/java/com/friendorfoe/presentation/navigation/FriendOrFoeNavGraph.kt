@@ -41,6 +41,7 @@ import com.friendorfoe.presentation.privacy.EmfSweepScreen
 import com.friendorfoe.presentation.privacy.IrCameraScanScreen
 import com.friendorfoe.presentation.privacy.IgnoredDevicesScreen
 import com.friendorfoe.presentation.privacy.PrivacyScreen
+import com.friendorfoe.presentation.privacy.PrivacyFindingDetailsRoute
 import com.friendorfoe.presentation.reference.ReferenceGuideScreen
 
 private const val MAIN_GRAPH_ROUTE = "main_graph"
@@ -132,6 +133,9 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
                 },
                 onOpenInfo = {
                     navigateTopLevel(navController, TopLevelDestination.INFO)
+                },
+                onOpenFinding = { key ->
+                    navController.navigate(Screen.PrivacyFinding.createRoute(key))
                 },
             )
         }
@@ -290,6 +294,21 @@ private fun NavGraphBuilder.registerSecondaryDestinations(
 
     composable(Screen.IgnoredDevices.route) {
         IgnoredDevicesScreen(onBack = { navController.popBackStack() })
+    }
+
+    composable(
+        route = Screen.PrivacyFinding.route,
+        arguments = listOf(
+            navArgument("source") { type = NavType.StringType },
+            navArgument("record") { type = NavType.StringType },
+        ),
+    ) {
+        PrivacyFindingDetailsRoute(
+            onBack = { navController.popBackStack() },
+            onBackToPrivacy = {
+                navigateTopLevel(navController, TopLevelDestination.PRIVACY)
+            },
+        )
     }
 
     composable(Screen.BadgeDiagnostics.route) {

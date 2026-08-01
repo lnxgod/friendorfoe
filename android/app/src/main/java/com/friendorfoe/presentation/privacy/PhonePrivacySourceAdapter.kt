@@ -625,9 +625,7 @@ class PhonePrivacySourceAdapter internal constructor(
                 observationKey = key,
                 source = PrivacySourceKind.PHONE_BLE,
                 stableSourceId = canonical,
-                routableKey = detection.mac.takeIf { it.isNotBlank() }?.let {
-                    PrivacyFindingKey(PrivacySourceKind.PHONE_BLE, "mac:$it")
-                },
+                routableKey = key.takeIf { canonical != null },
                 title = detection.deviceType.ifBlank { detection.deviceName ?: "Nearby BLE device" },
                 evidence = knownEvidence,
                 limitation = null,
@@ -691,10 +689,7 @@ class PhonePrivacySourceAdapter internal constructor(
                 observationKey = key,
                 source = PrivacySourceKind.PHONE_BLE,
                 stableSourceId = null,
-                routableKey = PrivacyFindingKey(
-                    PrivacySourceKind.PHONE_BLE,
-                    "mac:${alert.device.mac}",
-                ),
+                routableKey = key,
                 title = alert.device.deviceType ?: "Nearby BLE device",
                 evidence = "Repeated local sightings: ${alert.reason}",
                 limitation = "Movement correlation is based on this phone's local samples.",
