@@ -9,13 +9,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CellTower
@@ -25,74 +26,67 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.friendorfoe.data.badge.BadgeUsbDetection
-import com.friendorfoe.data.badge.stableKey
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
-import com.friendorfoe.detection.BleTracker
-import com.friendorfoe.detection.GlassesDetection
-import com.friendorfoe.presentation.badge.BadgeMarkGold
-import com.friendorfoe.presentation.badge.BadgeMarkIcon
-import com.friendorfoe.presentation.filter.FilterBar
+import com.friendorfoe.domain.model.activeFilterCount
+import com.friendorfoe.domain.model.cleared
+import com.friendorfoe.presentation.components.FofEmptyState
+import com.friendorfoe.presentation.components.FofFailureState
+import com.friendorfoe.presentation.components.FofLoadingState
+import com.friendorfoe.presentation.components.FofNoMatchesState
+import com.friendorfoe.presentation.components.FofScreenHeader
+import com.friendorfoe.presentation.components.FofStaleBanner
+import com.friendorfoe.presentation.ar.ObjectPeek
+import com.friendorfoe.presentation.ar.ObjectPeekState
+import com.friendorfoe.presentation.ar.objectPeekEvidence
+import com.friendorfoe.presentation.filter.CompactFilterBar
+import com.friendorfoe.presentation.filter.FilterModalSheet
 import com.friendorfoe.presentation.util.categoryBadge
 import com.friendorfoe.presentation.util.categoryColor
-import androidx.compose.foundation.shape.RoundedCornerShape
+import java.time.Duration
+import java.time.Instant
 
-/**
- * List View screen showing all detected sky objects sorted by distance.
- *
- * Displays each object with a color-coded category indicator, callsign/ID,
- * type info, altitude, distance, and detection source icon.
- *
- * @param onObjectTapped Callback when a list item is tapped, receives object ID
- */
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun ListViewScreen(
     onObjectTapped: (String) -> Unit,
-    onBadgeDetectionTapped: (String) -> Unit,
     onNavigateToReferenceGuide: (() -> Unit)? = null,
     onNavigateToAbout: (() -> Unit)? = null,
-    viewModel: ListViewModel = hiltViewModel()
+    viewModel: ListViewModel = hiltViewModel(),
 ) {
     val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
     val activeVisualFocusIds by viewModel.activeVisualFocusIds.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
-    val badgeUsbState by viewModel.badgeUsbState.collectAsStateWithLifecycle()
-    val listFeed = remember(skyObjects, badgeUsbState.detections) {
-        mergeListFeed(skyObjects, badgeUsbState.detections)
-    }
-
     val lifecycleOwner = LocalLifecycleOwner.current
+    var filtersOpen by rememberSaveable { mutableStateOf(false) }
+
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> {
-                    viewModel.startLocationUpdates()
-                }
-                Lifecycle.Event.ON_PAUSE -> {
-                    viewModel.stopLocationUpdates()
-                }
-                else -> {}
+                Lifecycle.Event.ON_RESUME -> viewModel.startLocationUpdates()
+                Lifecycle.Event.ON_PAUSE -> viewModel.stopLocationUpdates()
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -101,165 +95,156 @@ fun ListViewScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        FilterBar(
+    val filterCount = activeFilterCount(filterState)
+    val body = when {
+        skyObjects.isNotEmpty() -> ListBodyState.Results(skyObjects)
+        filterCount > 0 -> ListBodyState.NoMatches(filterCount)
+        else -> ListBodyState.NoDetections
+    }
+    ListDestinationContent(
+        state = ListUiState(
+            filter = filterState,
+            activeFilterCount = filterCount,
+            body = body,
+        ),
+        actions = ListActions(
+            onQueryChanged = { viewModel.updateFilter(filterState.copy(searchQuery = it)) },
+            onOpenFilters = { filtersOpen = true },
+            onClearFilters = { viewModel.updateFilter(filterState.cleared()) },
+        ),
+        onFullDetails = onObjectTapped,
+        activeVisualFocusIds = activeVisualFocusIds,
+    )
+
+    if (filtersOpen) {
+        FilterModalSheet(
             filterState = filterState,
-            onFilterStateChange = { viewModel.updateFilter(it) },
-            resultCount = listFeed.size,
-            onNavigateToReferenceGuide = onNavigateToReferenceGuide,
-            onNavigateToAbout = onNavigateToAbout
+            onFilterStateChange = viewModel::updateFilter,
+            onDismiss = { filtersOpen = false },
+        )
+    }
+}
+
+@Composable
+internal fun ListDestinationContent(
+    state: ListUiState,
+    actions: ListActions,
+    onFullDetails: (String) -> Unit,
+    activeVisualFocusIds: Set<String> = emptySet(),
+) {
+    var peekObject by remember { mutableStateOf<SkyObject?>(null) }
+    ListContent(
+        state = state,
+        actions = actions.copy(onOpenPeek = { peekObject = it }),
+        activeVisualFocusIds = activeVisualFocusIds,
+    )
+    peekObject?.let { skyObject ->
+        val openDetails = {
+            peekObject = null
+            onFullDetails(skyObject.id)
+        }
+        ObjectPeek(
+            state = ObjectPeekState(
+                objectId = skyObject.id,
+                title = listPrimaryText(skyObject),
+                evidence = objectPeekEvidence(skyObject.source),
+                canCapture = false,
+            ),
+            onInspect = openDetails,
+            onCapture = {},
+            onFullDetails = openDetails,
+            onDismiss = { peekObject = null },
+        )
+    }
+}
+
+@Composable
+internal fun ListContent(
+    state: ListUiState,
+    actions: ListActions,
+    activeVisualFocusIds: Set<String> = emptySet(),
+) {
+    val visibleCount = visibleListCount(state.body)
+    val headerCount = when (state.body) {
+        ListBodyState.Loading, is ListBodyState.Failed -> null
+        else -> visibleCount
+    }
+    Column(modifier = Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+            FofScreenHeader(
+                title = "List",
+                count = headerCount,
+                countLabel = if (headerCount == 1) "object" else "objects",
+            )
+        }
+        CompactFilterBar(
+            filterState = state.filter,
+            resultCount = headerCount?.let { visibleCount },
+            activeFilterCount = state.activeFilterCount,
+            onQueryChanged = actions.onQueryChanged,
+            onOpenFilters = actions.onOpenFilters,
+            onClearFilters = actions.onClearFilters,
         )
 
-        if (listFeed.isEmpty()) {
-            EmptyListState()
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize()
+        when (val body = state.body) {
+            ListBodyState.Loading -> FofLoadingState("Loading nearby detections")
+            is ListBodyState.Results -> ListRows(
+                rows = body.rows,
+                actions = actions,
+                activeVisualFocusIds = activeVisualFocusIds,
+            )
+            is ListBodyState.StaleResults -> ListRows(
+                rows = body.rows,
+                actions = actions,
+                activeVisualFocusIds = activeVisualFocusIds,
+                staleMessage = body.message,
+                staleAgeMs = body.ageMs,
+            )
+            ListBodyState.NoDetections -> Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
             ) {
-                items(
-                    items = listFeed,
-                    key = { it.key }
-                ) { item ->
-                    when (item) {
-                        is ListFeedItem.Sky -> SkyObjectItem(
-                            skyObject = item.value,
-                            isVisuallyConfirmed = item.value.id in activeVisualFocusIds,
-                            onClick = { onObjectTapped(item.value.id) },
-                        )
-                        is ListFeedItem.Badge -> BadgeDetectionItem(
-                            detection = item.detection,
-                            onClick = {
-                                onBadgeDetectionTapped(item.detection.stableKey)
-                            },
-                        )
-                    }
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        thickness = 0.5.dp
-                    )
-                }
+                FofEmptyState(
+                    title = "No nearby detections",
+                    detail = "Aircraft and drones will appear here when detected nearby.",
+                )
+            }
+            is ListBodyState.NoMatches -> FofNoMatchesState(
+                activeFilterCount = body.activeFilterCount,
+                onClearFilters = actions.onClearFilters,
+            )
+            is ListBodyState.Failed -> FofFailureState(body.message)
+        }
+    }
+}
+
+@Composable
+private fun ListRows(
+    rows: List<SkyObject>,
+    actions: ListActions,
+    activeVisualFocusIds: Set<String>,
+    staleMessage: String? = null,
+    staleAgeMs: Long? = null,
+) {
+    LazyColumn(modifier = Modifier.fillMaxSize().testTag("list_results")) {
+        if (staleMessage != null) {
+            item(key = "stale") {
+                FofStaleBanner(
+                    message = staleMessage,
+                    ageMs = staleAgeMs,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
             }
         }
-    }
-}
-
-@Composable
-private fun BadgeDetectionItem(
-    detection: BadgeUsbDetection,
-    onClick: () -> Unit,
-) {
-    val confidence = (detection.confidence * 100f).toInt().coerceIn(0, 100)
-    val evidence = listOf(
-        detection.badgeClass,
-        badgeTransportEvidence(detection.source),
-    ).filter { it.isNotBlank() }.distinct().joinToString(" · ")
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(12.dp)
-                .clip(CircleShape)
-                .background(BadgeMarkGold),
-        )
-
-        Spacer(modifier = Modifier.width(12.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = friendlyBadgeLabel(detection),
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+        items(items = rows, key = SkyObject::id) { skyObject ->
+            SkyObjectItem(
+                skyObject = skyObject,
+                isVisuallyConfirmed = skyObject.id in activeVisualFocusIds,
+                onClick = { actions.onOpenPeek(skyObject) },
             )
-            Text(
-                text = evidence.ifBlank { "Badge USB" },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = "${detection.rssi} dBm · $confidence%",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-        }
-
-        Spacer(modifier = Modifier.width(8.dp))
-
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                text = "--",
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.Medium,
-            )
-            Text(
-                text = "--",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        Spacer(modifier = Modifier.width(8.dp))
-
-        Icon(
-            imageVector = BadgeMarkIcon,
-            contentDescription = "Badge USB",
-            modifier = Modifier.size(18.dp),
-            tint = BadgeMarkGold,
-        )
-    }
-}
-
-private fun friendlyBadgeLabel(detection: BadgeUsbDetection): String {
-    if (detection.badgeLabel.isNotBlank()) return detection.badgeLabel
-    if (detection.manufacturer.isNotBlank()) return detection.manufacturer
-    if (detection.badgeClass.isNotBlank()) return detection.badgeClass
-    return detection.id.ifBlank { "Badge event" }
-}
-
-private fun badgeTransportEvidence(source: Int): String = when (source) {
-    0 -> "BLE Remote ID"
-    1 -> "Wi-Fi SSID"
-    2 -> "DJI Wi-Fi"
-    3 -> "Wi-Fi Remote ID"
-    4 -> "Wi-Fi OUI"
-    5 -> "Wi-Fi probe"
-    6 -> "BLE"
-    7 -> "Wi-Fi association"
-    8 -> "Wi-Fi AP"
-    else -> "Badge USB"
-}
-
-@Composable
-private fun EmptyListState() {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(
-                text = "No objects detected",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Aircraft and drones will appear here\nwhen detected nearby",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant,
+                thickness = 0.5.dp,
             )
         }
     }
@@ -269,60 +254,47 @@ private fun EmptyListState() {
 private fun SkyObjectItem(
     skyObject: SkyObject,
     isVisuallyConfirmed: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
 ) {
     val attentionColor = listAttentionColor(skyObject)
     val rowBackground = attentionColor
-        ?.let {
+        ?.let { color ->
             Modifier.background(
-                it.copy(alpha = if (skyObject.category == ObjectCategory.EMERGENCY) 0.10f else 0.08f)
+                color.copy(alpha = if (skyObject.category == ObjectCategory.EMERGENCY) 0.10f else 0.08f),
             )
         }
         ?: Modifier
 
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(rowBackground)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).then(rowBackground)
+            .clickable(onClick = onClick).testTag("list_row_${skyObject.id}")
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Category color dot
         Box(
-            modifier = Modifier
-                .size(12.dp)
-                .clip(CircleShape)
-                .background(attentionColor ?: categoryColor(skyObject.category))
+            modifier = Modifier.size(12.dp).clip(CircleShape)
+                .background(attentionColor ?: categoryColor(skyObject.category)),
         )
-
-        Spacer(modifier = Modifier.width(12.dp))
-
-        // Primary and secondary text
-        Column(
-            modifier = Modifier.weight(1f)
-        ) {
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = listPrimaryText(skyObject),
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false)
+                    modifier = Modifier.weight(1f, fill = false),
                 )
                 val badge = listBadgeVisual(skyObject)?.let { it.label to it.color }
                     ?: categoryBadge(skyObject.category)
                 if (badge != null) {
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text(
                         text = badge.first,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = Color.White,
-                        modifier = Modifier
-                            .background(badge.second, RoundedCornerShape(4.dp))
-                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                        modifier = Modifier.background(badge.second, RoundedCornerShape(4.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
                     )
                 }
             }
@@ -330,321 +302,89 @@ private fun SkyObjectItem(
                 text = listSecondaryText(skyObject),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-
-        Spacer(modifier = Modifier.width(8.dp))
-
-        // Altitude and distance
-        Column(
-            horizontalAlignment = Alignment.End
-        ) {
-            Text(
-                text = formatAltitude(skyObject.position.altitudeMeters),
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.Medium
             )
             Text(
-                text = formatDistance(skyObject.distanceMeters),
+                text = listCategoryLabel(skyObject.category),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = detectionSourceIcon(skyObject.source),
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = listSourceLabel(skyObject.source),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            listAttentionLabel(skyObject)
+                ?.takeUnless { it == listCategoryLabel(skyObject.category) }
+                ?.let { label ->
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = attentionColor ?: MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            Text(
+                text = listObservationText(skyObject),
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-
-        Spacer(modifier = Modifier.width(8.dp))
-
         if (isVisuallyConfirmed) {
+            Spacer(Modifier.width(8.dp))
             Icon(
                 imageVector = Icons.Default.Visibility,
                 contentDescription = "Camera confirmed",
-                modifier = Modifier.size(18.dp),
-                tint = Color(0xFF76FF03)
+                modifier = Modifier.size(20.dp),
+                tint = Color(0xFF43A047),
             )
-            Spacer(modifier = Modifier.width(8.dp))
         }
-
-        // Detection source icon
-        Icon(
-            imageVector = detectionSourceIcon(skyObject.source),
-            contentDescription = skyObject.source.name,
-            modifier = Modifier.size(18.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
-/**
- * Formats altitude for display.
- * Uses flight levels (FL) for altitudes at or above 18,000ft (transition altitude),
- * otherwise uses feet with comma formatting.
- */
+private fun visibleListCount(body: ListBodyState): Int = when (body) {
+    is ListBodyState.Results -> body.rows.size
+    is ListBodyState.StaleResults -> body.rows.size
+    else -> 0
+}
+
+private fun listObservationText(skyObject: SkyObject): String = buildList {
+    add(formatAltitude(skyObject.position.altitudeMeters))
+    skyObject.distanceMeters?.let { add(formatDistance(it)) }
+    add(formatAge(skyObject.lastUpdated))
+}.joinToString(" · ")
+
 private fun formatAltitude(altitudeMeters: Double): String {
     val feet = (altitudeMeters * 3.281).toInt()
-    return if (feet >= 18000) {
-        "FL${feet / 100}"
-    } else {
-        "${"%,d".format(feet)}ft"
+    return if (feet >= 18_000) "FL${feet / 100}" else "${"%,d".format(feet)} ft"
+}
+
+private fun formatDistance(distanceMeters: Double): String = if (distanceMeters > 800.0) {
+    val miles = distanceMeters / 1609.344
+    if (miles >= 10.0) "${"%.0f".format(miles)} mi" else "${"%.1f".format(miles)} mi"
+} else {
+    "${distanceMeters.toInt()} m"
+}
+
+private fun formatAge(lastUpdated: Instant, now: Instant = Instant.now()): String {
+    val ageSeconds = Duration.between(lastUpdated, now).seconds.coerceAtLeast(0L)
+    return when {
+        ageSeconds < 60L -> "Updated now"
+        ageSeconds < 3_600L -> "Updated ${ageSeconds / 60L} min ago"
+        else -> "Updated ${ageSeconds / 3_600L} hr ago"
     }
 }
 
-/**
- * Formats distance for display.
- * Uses nautical miles for distances >= 1nm, otherwise km with one decimal.
- */
-private fun formatDistance(distanceMeters: Double?): String {
-    if (distanceMeters == null) return "--"
-    return if (distanceMeters > 800.0) {
-        val miles = distanceMeters / 1609.344
-        if (miles >= 10.0) "${"%.0f".format(miles)} mi"
-        else "${"%.1f".format(miles)} mi"
-    } else {
-        "${distanceMeters.toInt()} m"
-    }
-}
-
-/** Maps a [DetectionSource] to its Material icon. */
 private fun detectionSourceIcon(source: DetectionSource): ImageVector = when (source) {
     DetectionSource.ADS_B -> Icons.Default.CellTower
     DetectionSource.REMOTE_ID -> Icons.Default.Bluetooth
-    DetectionSource.WIFI_NAN -> Icons.Default.Wifi
-    DetectionSource.WIFI_BEACON -> Icons.Default.Wifi
-    DetectionSource.WIFI -> Icons.Default.Wifi
-}
-
-@Composable
-private fun PrivacyScannerSection(
-    detections: List<GlassesDetection>,
-    onIgnore: (String) -> Unit,
-    onTrack: (String) -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    var selectedDetail by remember { mutableStateOf<GlassesDetection?>(null) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.error.copy(alpha = 0.08f))
-    ) {
-        // Header — always visible, tap to expand/collapse
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { expanded = !expanded }
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Default.Visibility,
-                contentDescription = "Privacy Scanner",
-                tint = MaterialTheme.colorScheme.error,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "Privacy Scanner",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.error
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = "${detections.size} device${if (detections.size != 1) "s" else ""}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            Text(
-                text = if (expanded) "\u25B2" else "\u25BC",
-                color = MaterialTheme.colorScheme.error
-            )
-        }
-
-        // Expanded — show all devices with actions
-        if (expanded) {
-            for (det in detections) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.error.copy(alpha = 0.15f))
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { selectedDetail = det }
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = if (det.hasCamera) "\uD83D\uDCF7" else "\uD83D\uDD0A",
-                            modifier = Modifier.width(22.dp)
-                        )
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "${det.manufacturer} ${det.deviceType}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium
-                            )
-                            if (det.deviceName != null) {
-                                Text(
-                                    text = det.deviceName,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                        Text(
-                            text = "${det.rssi}dB",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                    // Parsed details row
-                    if (det.details.isNotEmpty()) {
-                        Text(
-                            text = det.details.entries.take(4).joinToString(" | ") { "${it.key}: ${it.value}" },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(start = 22.dp, top = 2.dp)
-                        )
-                    }
-                    // Match reason + confidence
-                    Text(
-                        text = "Match: ${det.matchReason} (${(det.confidence * 100).toInt()}%)",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier.padding(start = 22.dp, top = 1.dp)
-                    )
-                    // Action buttons
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 22.dp, top = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Text(
-                            text = "Ignore",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.clickable { onIgnore(det.mac) }
-                        )
-                        Text(
-                            text = "Track",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.clickable { onTrack(det.mac) }
-                        )
-                        Text(
-                            text = "Details",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.clickable { selectedDetail = det }
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    // Detail bottom sheet
-    if (selectedDetail != null) {
-        val det = selectedDetail!!
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { selectedDetail = null },
-            title = {
-                Text("${det.manufacturer} ${det.deviceType}")
-            },
-            text = {
-                Column {
-                    if (det.deviceName != null) {
-                        Text("Name: ${det.deviceName}")
-                    }
-                    Text("MAC: ${det.mac}")
-                    Text("RSSI: ${det.rssi} dBm")
-                    Text("Confidence: ${(det.confidence * 100).toInt()}%")
-                    Text("Match: ${det.matchReason}")
-                    Text("Camera: ${if (det.hasCamera) "Yes" else "No"}")
-                    if (det.details.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Parsed Details:", fontWeight = FontWeight.Medium)
-                        for ((key, value) in det.details) {
-                            Text("  $key: $value", style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    androidx.compose.material3.TextButton(onClick = {
-                        onIgnore(det.mac)
-                        selectedDetail = null
-                    }) { Text("Ignore") }
-                    androidx.compose.material3.TextButton(onClick = {
-                        onTrack(det.mac)
-                        selectedDetail = null
-                    }) { Text("Track") }
-                    androidx.compose.material3.TextButton(onClick = { selectedDetail = null }) {
-                        Text("Close")
-                    }
-                }
-            }
-        )
-    }
-}
-
-@Composable
-private fun StalkerAlertBanner(alerts: List<BleTracker.StalkerAlert>) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color(0xFFD32F2F).copy(alpha = 0.15f))
-            .padding(horizontal = 16.dp, vertical = 10.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "\u26A0\uFE0F",
-                modifier = Modifier.width(24.dp)
-            )
-            Text(
-                text = "STALKER ALERT",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFFD32F2F)
-            )
-        }
-        for (alert in alerts.take(3)) {
-            val dev = alert.device
-            val duration = dev.durationMs / 1000
-            val label = dev.deviceType ?: dev.deviceName ?: dev.mac.takeLast(8)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                val threatIcon = when (alert.threatLevel) {
-                    3 -> "\uD83D\uDED1" // stop sign
-                    2 -> "\u26A0\uFE0F" // warning
-                    else -> "\u2139\uFE0F" // info
-                }
-                Text(text = threatIcon, modifier = Modifier.width(20.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "$label (${dev.manufacturer ?: "Unknown"})",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = "${alert.reason} for ${duration}s | ${dev.sightingCount} sightings",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Text(
-                    text = "${dev.peakRssi}dB",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFD32F2F)
-                )
-            }
-        }
-    }
+    DetectionSource.WIFI_NAN, DetectionSource.WIFI_BEACON, DetectionSource.WIFI -> Icons.Default.Wifi
 }

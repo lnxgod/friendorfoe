@@ -1,213 +1,186 @@
 package com.friendorfoe.presentation
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
+import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Map
-import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material3.Icon
-import androidx.compose.material3.LocalContentColor
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import androidx.navigation.NavDestination.Companion.hierarchy
-import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.friendorfoe.data.preferences.AppLaunchState
+import com.friendorfoe.data.preferences.sanitizeTopLevelRoute
+import com.friendorfoe.data.repository.RuntimePermissionChangeNotifier
 import com.friendorfoe.detection.WifiScanCoordinator
-import com.friendorfoe.presentation.navigation.FriendOrFoeNavGraph
-import com.friendorfoe.presentation.navigation.Screen
 import com.friendorfoe.presentation.alerts.SkyAlertMonitorViewModel
-import com.friendorfoe.presentation.badge.BadgeMarkGold
-import com.friendorfoe.presentation.badge.BadgeMarkIcon
+import com.friendorfoe.presentation.components.FofLaunchPlaceholder
+import com.friendorfoe.presentation.navigation.BackDisposition
+import com.friendorfoe.presentation.navigation.FofNavigationSuite
+import com.friendorfoe.presentation.navigation.MainNavGraph
+import com.friendorfoe.presentation.navigation.TopLevelDestination
+import com.friendorfoe.presentation.navigation.backDisposition
+import com.friendorfoe.presentation.navigation.navigateTopLevel
+import com.friendorfoe.presentation.privacy.PendingPrivacyRouteQueue
+import com.friendorfoe.presentation.privacy.PrivacyLaunchIntentPayload
+import com.friendorfoe.presentation.privacy.PrivacyNotificationRoute
+import com.friendorfoe.presentation.privacy.acceptPrivacyLaunchIntent
+import com.friendorfoe.presentation.permissions.PermissionStateRepository
+import com.friendorfoe.presentation.permissions.capturePermissionRationales
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
+import com.friendorfoe.presentation.welcome.WelcomeScreen
 import dagger.hilt.android.AndroidEntryPoint
-import androidx.hilt.navigation.compose.hiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.launch
 
-/**
- * Main entry point for the Friend or Foe app.
- *
- * Sets up edge-to-edge display, Compose theming, and the navigation
- * scaffold with bottom navigation bar.
- */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-    @Inject
-    lateinit var wifiScanCoordinator: WifiScanCoordinator
+    @Inject lateinit var permissionStateRepository: PermissionStateRepository
+    @Inject lateinit var runtimePermissionChangeNotifier: RuntimePermissionChangeNotifier
+    @Inject lateinit var wifiScanCoordinator: WifiScanCoordinator
+
+    private lateinit var pendingPrivacyRoute: PendingPrivacyRouteQueue
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingPrivacyRoute = PendingPrivacyRouteQueue(
+            savedInstanceState?.getString(SAVED_PRIVACY_ROUTE),
+        )
+        enqueuePrivacyRoute(intent)
         enableEdgeToEdge()
         setContent {
+            val pendingRoute by pendingPrivacyRoute.pending.collectAsStateWithLifecycle()
             FriendOrFoeTheme {
                 FriendOrFoeApp(
-                    onPlatformStateChanged = wifiScanCoordinator::notifyPlatformStateChanged,
+                    pendingPrivacyRoute = pendingRoute,
+                    onPrivacyRouteConsumed = pendingPrivacyRoute::consume,
                 )
             }
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        enqueuePrivacyRoute(intent)
+    }
+
     override fun onResume() {
         super.onResume()
-        wifiScanCoordinator.notifyPlatformStateChanged()
+        // Activity-backed rationale evidence is captured before any coroutine can suspend.
+        val rationales = capturePermissionRationales(this)
+        notifyRuntimePlatformStateChanged(
+            runtimePermissionChangeNotifier,
+            wifiScanCoordinator,
+        )
+        lifecycleScope.launch {
+            permissionStateRepository.refresh(rationales)
+        }
     }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        pendingPrivacyRoute.savedRoute()?.let { outState.putString(SAVED_PRIVACY_ROUTE, it) }
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun enqueuePrivacyRoute(intent: Intent?) {
+        if (intent == null) return
+        val remaining = acceptPrivacyLaunchIntent(
+            queue = pendingPrivacyRoute,
+            payload = PrivacyLaunchIntentPayload(
+                dataUri = intent.dataString,
+                routeExtra = intent.getStringExtra(PrivacyNotificationRoute.EXTRA_ROUTE),
+            ),
+        )
+        if (remaining.dataUri == null && remaining.routeExtra == null) {
+            intent.data = null
+            intent.removeExtra(PrivacyNotificationRoute.EXTRA_ROUTE)
+        }
+    }
+
+    private companion object {
+        const val SAVED_PRIVACY_ROUTE = "pending_privacy_finding_route"
+    }
+}
+
+internal fun notifyRuntimePlatformStateChanged(
+    runtimePermissionChangeNotifier: RuntimePermissionChangeNotifier,
+    wifiScanCoordinator: WifiScanCoordinator,
+) {
+    runtimePermissionChangeNotifier.onRuntimePermissionsChanged()
+    wifiScanCoordinator.notifyPlatformStateChanged()
 }
 
 @Composable
 fun FriendOrFoeApp(
-    onPlatformStateChanged: () -> Unit = {},
+    viewModel: AppChromeViewModel = hiltViewModel(),
+    pendingPrivacyRoute: String? = null,
+    onPrivacyRouteConsumed: (String) -> Unit = {},
 ) {
-    val context = LocalContext.current
-    val navController = rememberNavController()
-    val navBackStackEntry by navController.currentBackStackEntryAsState()
-    val currentDestination = navBackStackEntry?.destination
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
     SkyAlertMonitor()
+    when (val launch = state.launchState) {
+        AppLaunchState.Loading -> FofLaunchPlaceholder()
+        AppLaunchState.NeedsOnboarding -> WelcomeScreen(viewModel::completeOnboarding)
+        is AppLaunchState.Ready -> MainApplicationShell(
+            startRoute = launch.startRoute,
+            onTopLevelSelected = viewModel::recordTopLevelRoute,
+            pendingPrivacyRoute = pendingPrivacyRoute,
+            onPrivacyRouteConsumed = onPrivacyRouteConsumed,
+        )
+    }
+}
 
-    // Request Location + BT + WiFi permissions at app startup (not Camera — that stays AR-only)
-    val startupPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { onPlatformStateChanged() }
+@Composable
+fun MainApplicationShell(
+    startRoute: String,
+    onTopLevelSelected: (String) -> Unit,
+    onExitRequested: (() -> Unit)? = null,
+    pendingPrivacyRoute: String? = null,
+    onPrivacyRouteConsumed: (String) -> Unit = {},
+) {
+    val navController = rememberNavController()
+    val graphStartRoute = rememberSaveable { sanitizeTopLevelRoute(startRoute) }
+    val entry by navController.currentBackStackEntryAsState()
+    val currentRoute = entry?.destination?.route
+    val isTopLevel = currentRoute in TopLevelDestination.entries.map { it.route }
+    val activity = LocalContext.current as? Activity
 
-    LaunchedEffect(Unit) {
-        val missing = buildList {
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                add(Manifest.permission.ACCESS_FINE_LOCATION)
+    LaunchedEffect(pendingPrivacyRoute, currentRoute) {
+        val route = pendingPrivacyRoute ?: return@LaunchedEffect
+        if (currentRoute == null) return@LaunchedEffect
+        navController.navigate(route) { launchSingleTop = true }
+        onPrivacyRouteConsumed(route)
+    }
+
+    BackHandler(enabled = currentRoute != null) {
+        when (backDisposition(currentRoute)) {
+            BackDisposition.EXIT_APP -> {
+                if (onExitRequested != null) onExitRequested() else activity?.finish()
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN)
-                    != PackageManager.PERMISSION_GRANTED
-                ) {
-                    add(Manifest.permission.BLUETOOTH_SCAN)
-                }
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
-                    != PackageManager.PERMISSION_GRANTED
-                ) {
-                    add(Manifest.permission.BLUETOOTH_CONNECT)
-                }
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES)
-                    != PackageManager.PERMISSION_GRANTED
-                ) {
-                    add(Manifest.permission.NEARBY_WIFI_DEVICES)
-                }
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
-                    != PackageManager.PERMISSION_GRANTED
-                ) {
-                    add(Manifest.permission.POST_NOTIFICATIONS)
-                }
-            }
-        }
-        if (missing.isNotEmpty()) {
-            startupPermissionLauncher.launch(missing.toTypedArray())
+            BackDisposition.POP_SECONDARY -> navController.popBackStack()
         }
     }
 
-    // Hide bottom nav on detail and about screens.
-    // Calibrate also excluded — active walk needs every vertical pixel
-    // for the sensor-card list + readiness banner + checkpoint feedback.
-    val showBottomBar = currentDestination?.route != Screen.Detail.route &&
-        currentDestination?.route != Screen.About.route &&
-        currentDestination?.route != Screen.Welcome.route &&
-        currentDestination?.route != Screen.DroneGuide.route &&
-        currentDestination?.route != Screen.AircraftGuide.route &&
-        currentDestination?.route != Screen.ReferenceGuide.route &&
-        currentDestination?.route != Screen.Calibrate.route &&
-        currentDestination?.route != Screen.EmfSweep.route &&
-        currentDestination?.route != Screen.IrCameraScan.route
-
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        bottomBar = {
-            if (showBottomBar) {
-                NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                    tonalElevation = 0.dp
-                ) {
-                    // 7 items — Material 3 NavigationBar handles this by
-                    // shrinking labels; keeps every top-level destination
-                    // one tap away instead of buried in menus.
-                    val bottomNavItems = listOf(
-                        BottomNavItem("AR",       Screen.ArView.route,    Icons.Default.Visibility),
-                        BottomNavItem("Map",      Screen.MapView.route,   Icons.Default.Map),
-                        BottomNavItem("List",     Screen.ListView.route,  Icons.AutoMirrored.Filled.List),
-                        BottomNavItem("Privacy",  Screen.Privacy.route,   Icons.Default.Shield),
-                        BottomNavItem("Badge",    Screen.Badge.route,     BadgeMarkIcon),
-                        BottomNavItem("History",  Screen.History.route,   Icons.Default.History),
-                        BottomNavItem("Info",     Screen.About.route,     Icons.Default.Info),
-                    )
-
-                    bottomNavItems.forEach { item ->
-                        val isSelected = if (item.route == Screen.Badge.route) {
-                            currentDestination?.route == Screen.Badge.route ||
-                                currentDestination?.route == Screen.BadgeFocus.route
-                        } else {
-                            currentDestination?.hierarchy?.any { it.route == item.route } == true
-                        }
-                        NavigationBarItem(
-                            // 7 items would clip fixed labels on narrow
-                            // phones — show the label only on the active
-                            // item. Icon + contentDescription keep the
-                            // destination clear for everything else.
-                            alwaysShowLabel = false,
-                            selected = isSelected,
-                            onClick = {
-                                navController.navigate(item.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
-                                    }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
-                            icon = {
-                                Icon(
-                                    imageVector = item.icon,
-                                    contentDescription = item.label,
-                                    tint = if (item.route == Screen.Badge.route && isSelected) {
-                                        BadgeMarkGold
-                                    } else {
-                                        LocalContentColor.current
-                                    },
-                                )
-                            },
-                            label = { Text(item.label) }
-                        )
-                    }
-                }
-            }
-        }
-    ) { innerPadding ->
-        Box(modifier = Modifier.padding(innerPadding)) {
-            FriendOrFoeNavGraph(navController = navController)
-        }
+    FofNavigationSuite(
+        showNavigation = isTopLevel,
+        currentRoute = currentRoute,
+        onNavigate = { destination ->
+            navigateTopLevel(navController, destination)
+            onTopLevelSelected(destination.route)
+        },
+    ) { padding ->
+        MainNavGraph(navController, graphStartRoute, Modifier.padding(padding))
     }
 }
 
@@ -215,9 +188,3 @@ fun FriendOrFoeApp(
 private fun SkyAlertMonitor() {
     hiltViewModel<SkyAlertMonitorViewModel>()
 }
-
-private data class BottomNavItem(
-    val label: String,
-    val route: String,
-    val icon: ImageVector
-)

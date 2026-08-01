@@ -585,4 +585,52 @@ class BleTrackerTest {
             37.0017,
         )
     }
+
+    @Test
+    fun unknownZeroCoordinateSightingsCannotCreateASecondFollowerLocation() {
+        val tracker = BleTracker()
+        val start = Instant.parse("2026-06-11T12:00:00Z")
+        tracker.recordUserLocation(37.0000, -122.0000, start)
+        tracker.recordUserLocation(37.0010, -122.0000, start.plusSeconds(200))
+
+        listOf(
+            Triple(0.0, 0.0, 0L),
+            Triple(0.0, 0.0, 80L),
+            Triple(37.0010, -122.0000, 160L),
+        ).forEach { (lat, lon, seconds) ->
+            tracker.recordSightingAt(
+                mac = "AA:BB:CC:00:00:03",
+                rssi = -60,
+                deviceName = "Unlocated device",
+                deviceType = "BLE device",
+                manufacturer = null,
+                hasCamera = false,
+                userLat = lat,
+                userLon = lon,
+                compassBearing = 0f,
+                timestamp = start.plusSeconds(seconds),
+            )
+        }
+
+        assertTrue(tracker.checkForFollowersAt(start.plusSeconds(201)).isEmpty())
+    }
+
+    @Test
+    fun directionOnlySamplesFeedAnActiveSweepWithoutCreatingMovementHistory() {
+        val tracker = BleTracker()
+        val mac = "AA:BB:CC:00:00:04"
+        tracker.startDirectionScan(mac)
+
+        repeat(8) { index ->
+            tracker.recordDirectionSample(
+                mac = mac,
+                rssi = -70 + index,
+                compassBearing = index * 45f,
+            )
+        }
+
+        assertEquals(null, tracker.getDevice(mac))
+        assertEquals(8, tracker.getDirectionSampleCount())
+        assertEquals(8, tracker.finishDirectionScan()?.samples?.size)
+    }
 }

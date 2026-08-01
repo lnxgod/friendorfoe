@@ -14,30 +14,28 @@ import javax.inject.Singleton
 @Singleton
 class HistoryRepository @Inject constructor(
     private val historyDao: HistoryDao
-) {
+) : HistoryStore {
 
     /** Get all history entries as a reactive Flow. */
-    fun getAllHistory(): Flow<List<HistoryEntity>> {
-        return historyDao.getAllHistory()
-    }
+    override fun observeAll(): Flow<List<HistoryEntity>> = historyDao.getAllHistory()
 
     /** Get history filtered by object type. */
-    fun getHistoryByType(objectType: String): Flow<List<HistoryEntity>> {
-        return historyDao.getHistoryByType(objectType)
-    }
+    override fun observeByType(objectType: String): Flow<List<HistoryEntity>> =
+        historyDao.getHistoryByType(objectType)
+
+    override suspend fun getById(id: Long): HistoryEntity? = historyDao.getById(id)
+
+    override suspend fun getNewestByObjectId(objectId: String): HistoryEntity? =
+        historyDao.getByObjectId(objectId)
 
     /** Save a detection to history. */
-    suspend fun saveDetection(entity: HistoryEntity): Long {
-        return historyDao.insert(entity)
-    }
+    override suspend fun save(entity: HistoryEntity): Long = historyDao.insert(entity)
+
+    override suspend fun deleteById(id: Long) = historyDao.deleteById(id)
 
     /** Delete all history entries. */
-    suspend fun clearHistory() {
-        historyDao.deleteAll()
-    }
+    override suspend fun clearAll() = historyDao.deleteAll()
 
     /** Delete history older than a given timestamp. */
-    suspend fun pruneHistory(beforeTimeMillis: Long) {
-        historyDao.deleteOlderThan(beforeTimeMillis)
-    }
+    override suspend fun prune(beforeTimeMillis: Long) = historyDao.deleteOlderThan(beforeTimeMillis)
 }

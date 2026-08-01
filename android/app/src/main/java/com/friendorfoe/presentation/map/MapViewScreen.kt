@@ -8,15 +8,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -42,6 +45,8 @@ import com.friendorfoe.presentation.detail.DetailState
 import com.friendorfoe.presentation.detail.DetailViewModel
 import com.friendorfoe.presentation.detail.DroneDetailContent
 import com.friendorfoe.presentation.filter.FilterBar
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.isUsable
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
@@ -56,6 +61,54 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.MapEventsOverlay
 
 private const val MAP_PAN_TIMEOUT_MS = 10_000L
+
+internal class MapScreenLifecycleActions(
+    private val canStartLocation: () -> Boolean = { true },
+    private val startLocation: () -> Unit,
+    private val stopLocation: () -> Unit,
+    private val startPolling: () -> Unit,
+    private val stopPolling: () -> Unit,
+) {
+    fun onEvent(event: Lifecycle.Event) {
+        when (event) {
+            Lifecycle.Event.ON_RESUME -> {
+                if (canStartLocation()) startLocation()
+                startPolling()
+            }
+            Lifecycle.Event.ON_PAUSE -> {
+                stopLocation()
+                stopPolling()
+            }
+            else -> Unit
+        }
+    }
+
+    fun dispose() {
+        stopLocation()
+        stopPolling()
+    }
+}
+
+internal data class MapOverlayPlan(
+    val renderTargets: Boolean,
+    val renderUserMarker: Boolean,
+    val renderPreciseUserOverlays: Boolean,
+    val autoCenterOnUser: Boolean,
+)
+
+internal fun mapOverlayPlan(
+    locationPermissionState: PermissionUiState,
+    hasValidUserPosition: Boolean,
+): MapOverlayPlan {
+    val hasUsableUserPosition = locationPermissionState.isUsable() && hasValidUserPosition
+    return MapOverlayPlan(
+        renderTargets = true,
+        renderUserMarker = hasUsableUserPosition,
+        renderPreciseUserOverlays =
+            locationPermissionState == PermissionUiState.Granted && hasValidUserPosition,
+        autoCenterOnUser = hasUsableUserPosition,
+    )
+}
 
 @OptIn(ExperimentalCoroutinesApi::class)
 internal fun mapPanActivity(
@@ -74,7 +127,10 @@ internal fun mapPanActivity(
 fun MapViewScreen(
     onObjectTapped: (String) -> Unit,
     viewModel: MapViewModel = hiltViewModel(),
-    detailViewModel: DetailViewModel = hiltViewModel()
+    detailViewModel: DetailViewModel = hiltViewModel(),
+    locationPermissionState: PermissionUiState = PermissionUiState.Granted,
+    onRequestLocation: () -> Unit = {},
+    onOpenLocationSettings: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -100,25 +156,25 @@ fun MapViewScreen(
     }
 
     // Manage location lifecycle
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_RESUME -> {
-                    viewModel.startLocationUpdates()
-                    viewModel.startSensorMapPolling()
-                }
-                Lifecycle.Event.ON_PAUSE -> {
-                    viewModel.stopLocationUpdates()
-                    viewModel.stopSensorMapPolling()
-                }
-                else -> {}
-            }
-        }
+    DisposableEffect(lifecycleOwner, locationPermissionState) {
+        val lifecycleActions = MapScreenLifecycleActions(
+            canStartLocation = locationPermissionState::isUsable,
+            startLocation = viewModel::startLocationUpdates,
+            stopLocation = viewModel::stopLocationUpdates,
+            startPolling = viewModel::startSensorMapPolling,
+            stopPolling = viewModel::stopSensorMapPolling,
+        )
+        val observer = LifecycleEventObserver { _, event -> lifecycleActions.onEvent(event) }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            viewModel.stopLocationUpdates()
+            lifecycleActions.dispose()
         }
+    }
+
+    LaunchedEffect(locationPermissionState) {
+        if (locationPermissionState.isUsable()) viewModel.startLocationUpdates()
+        else viewModel.stopLocationUpdates()
     }
 
     // Load detail when selected
@@ -176,6 +232,10 @@ fun MapViewScreen(
             },
         )
     }
+    val overlayPlan = mapOverlayPlan(
+        locationPermissionState = locationPermissionState,
+        hasValidUserPosition = userPosition.latitude != 0.0 || userPosition.longitude != 0.0,
+    )
 
     // Apply dark mode color filter to map tiles
     LaunchedEffect(isDarkTheme) {
@@ -211,9 +271,65 @@ fun MapViewScreen(
                     remoteSearchResults = remoteSearchResults,
                     remoteSearchCenter = remoteSearchCenter,
                     isUserPanning = isUserPanning,
+                    overlayPlan = overlayPlan,
                 )
             }
         )
+
+        if (!locationPermissionState.isUsable()) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 16.dp, end = 16.dp, bottom = 88.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                tonalElevation = 4.dp,
+            ) {
+                androidx.compose.foundation.layout.Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Map works without your location", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Browse and search the map now. Allow location only when you want nearby centering.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (locationPermissionState != PermissionUiState.Loading) {
+                        Button(
+                            onClick = if (locationPermissionState == PermissionUiState.Denied) {
+                                onRequestLocation
+                            } else {
+                                onOpenLocationSettings
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                if (locationPermissionState == PermissionUiState.Denied) {
+                                    "Use my location"
+                                } else {
+                                    "Open app settings"
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        } else if (locationPermissionState == PermissionUiState.Approximate) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 16.dp, end = 16.dp, bottom = 88.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+            ) {
+                Text(
+                    "Approximate location · precise distance and bearing are hidden",
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
 
         // Remote search indicator
         if (remoteSearching) {
@@ -284,6 +400,9 @@ fun MapViewScreen(
                 }
                 is DetailState.DroneLoaded -> {
                     DroneDetailContent(drone = state.drone)
+                }
+                is DetailState.HistoricalLoaded -> {
+                    LaunchedEffect(Unit) { viewModel.selectObject(null) }
                 }
                 is DetailState.Error -> {
                     Box(

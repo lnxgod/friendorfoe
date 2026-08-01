@@ -2,11 +2,10 @@ package com.friendorfoe.presentation.badge
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -19,8 +18,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -37,7 +40,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -49,8 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.friendorfoe.data.badge.BadgeTheme
 import com.friendorfoe.data.badge.BadgeThemeAccentClasses
-import com.friendorfoe.data.badge.BadgeThemeAccentInfo
-import com.friendorfoe.data.badge.BadgeThemeBackgrounds
+import com.friendorfoe.data.badge.BadgeThemeAccentInfo as FirmwareAccentInfo
 import com.friendorfoe.data.badge.BadgeThemeColorCodec
 import com.friendorfoe.data.badge.BadgeThemePalettes
 import com.friendorfoe.data.badge.BadgeThemePreset
@@ -163,6 +165,76 @@ private sealed interface ProfileNameDialogMode {
     data class Rename(val profileId: String) : ProfileNameDialogMode
 }
 
+/**
+ * Compact editor used by the dedicated Badge route. Applying remains the responsibility of the
+ * route-level action card, so every interaction here changes only the Android draft.
+ */
+@Composable
+fun BadgeAppearanceSection(
+    theme: BadgeTheme?,
+    themeHash: Long?,
+    enabled: Boolean,
+    unavailableReason: String?,
+    onThemeChange: ((BadgeTheme) -> BadgeTheme) -> Unit,
+) {
+    var colorEditorAccent by remember { mutableStateOf<FirmwareAccentInfo?>(null) }
+
+    BadgeSectionCard {
+        Text(
+            text = "Badge colors",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "Choose badge-safe colors and verify the exact RGB565 values read back.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        FirmwareHashLine(label = "Theme hash", hash = themeHash)
+
+        if (theme == null) {
+            Text(
+                text = unavailableReason ?: "Theme readback is unavailable",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+        } else {
+            BadgeFirmwareThemeEditor(
+                theme = theme,
+                controlsEnabled = enabled,
+                onThemeChange = { next -> onThemeChange { next } },
+                onEditAccent = { colorEditorAccent = it },
+            )
+            if (!enabled && unavailableReason != null) {
+                Text(
+                    text = unavailableReason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+
+    val accent = colorEditorAccent
+    if (accent != null && theme != null) {
+        BadgeThemeColorEditorDialog(
+            accentLabel = accent.label,
+            initialRgb565 = theme.accents[accent.key] ?: accent.defaultRgb565,
+            onDismiss = { colorEditorAccent = null },
+            onSave = { rgb ->
+                val encoded = BadgeThemeColorCodec.rgb888ToRgb565(rgb)
+                onThemeChange { current ->
+                    current.copy(accents = current.accents + (accent.key to encoded)).normalizedV1()
+                }
+                colorEditorAccent = null
+            },
+        )
+    }
+}
+
+/**
+ * Full editor retained for the legacy control screen while using the same truthful wire-value UI.
+ */
 @Composable
 fun BadgeAppearanceSection(
     expanded: Boolean,
@@ -181,28 +253,23 @@ fun BadgeAppearanceSection(
     commandsEnabled: Boolean = true,
     refreshEnabled: Boolean = true,
 ) {
-    var colorEditorAccent by remember { mutableStateOf<BadgeThemeAccentInfo?>(null) }
+    var colorEditorAccent by remember { mutableStateOf<FirmwareAccentInfo?>(null) }
     var profileNameDialog by remember { mutableStateOf<ProfileNameDialogMode?>(null) }
     var pendingReplaceProfileId by remember { mutableStateOf<String?>(null) }
     var pendingDeleteProfileId by remember { mutableStateOf<String?>(null) }
     var profileMessage by remember { mutableStateOf<String?>(null) }
 
     val renameProfileId = (profileNameDialog as? ProfileNameDialogMode.Rename)?.profileId
-    val renameProfileResolution = renameProfileId?.let { profileId ->
-        resolveBadgeThemeProfile(profiles, profileId)
+    val renameProfileResolution = renameProfileId?.let { resolveBadgeThemeProfile(profiles, it) }
+    val replaceProfileResolution = pendingReplaceProfileId?.let {
+        resolveBadgeThemeProfile(profiles, it)
     }
-    val replaceProfileResolution = pendingReplaceProfileId?.let { profileId ->
-        resolveBadgeThemeProfile(profiles, profileId)
-    }
-    val deleteProfileResolution = pendingDeleteProfileId?.let { profileId ->
-        resolveBadgeThemeProfile(profiles, profileId)
+    val deleteProfileResolution = pendingDeleteProfileId?.let {
+        resolveBadgeThemeProfile(profiles, it)
     }
 
     LaunchedEffect(renameProfileId, renameProfileResolution) {
-        if (
-            renameProfileId != null &&
-            renameProfileResolution == BadgeThemeProfileResolution.Missing
-        ) {
+        if (renameProfileId != null && renameProfileResolution == BadgeThemeProfileResolution.Missing) {
             profileNameDialog = null
             profileMessage = BadgeThemeProfileMissingMessage
         }
@@ -248,8 +315,8 @@ fun BadgeAppearanceSection(
             .padding(8.dp),
     ) {
         Row(
-            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -261,7 +328,7 @@ fun BadgeAppearanceSection(
                     text = buildString {
                         append(recognizedPreset?.label ?: "Custom")
                         append("  •  ${theme.palette} / ${theme.background} / ${theme.brightness}%")
-                        append("  #$themeHash")
+                        append("  •  ${hashCode32(themeHash)}")
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -285,7 +352,7 @@ fun BadgeAppearanceSection(
                 .heightIn(max = BadgeThemeStudioExpandedMaxHeightDp.dp)
                 .testTag("badge_theme_studio_expanded")
                 .semantics {
-                    contentDescription = "Bounded badge palette studio with sticky actions"
+                    contentDescription = "Bounded badge theme editor with sticky actions"
                 },
         ) {
             Column(
@@ -293,229 +360,146 @@ fun BadgeAppearanceSection(
                     .fillMaxWidth()
                     .weight(1f)
                     .verticalScroll(rememberScrollState())
-                    .testTag("badge_theme_studio_scroll")
-                    .semantics {
-                        contentDescription = "Scrollable badge palette studio content"
-                    },
+                    .testTag("badge_theme_studio_scroll"),
             ) {
-            Spacer(modifier = Modifier.height(12.dp))
-            BadgeThemePreview(theme = theme)
-
-            Spacer(modifier = Modifier.height(14.dp))
-            Text(
-                text = "Presets",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "Load a complete palette into this draft. The badge stays unchanged until Apply.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            BadgeThemePresetStrip(
-                selectedPresetId = recognizedPreset?.id,
-                onSelect = { preset ->
-                    profileMessage = null
-                    dispatch(BadgeThemeStudioAction.SelectDraft(preset.theme))
-                },
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-            BadgeThemeStudioGroup(
-            title = "Interface",
-            subtitle = "Compatible badge chrome, background treatment, and display brightness.",
-        ) {
-            Text(
-                text = "Base palette",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            SegmentedTextRow(
-                values = BadgeThemePalettes,
-                selected = theme.palette,
-                testTagPrefix = "badge_theme_palette",
-                onSelect = { palette ->
-                    dispatch(BadgeThemeStudioAction.SelectDraft(theme.copy(palette = palette)))
-                },
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Background",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            SegmentedTextRow(
-                values = BadgeThemeBackgrounds,
-                selected = theme.background,
-                testTagPrefix = "badge_theme_background",
-                onSelect = { background ->
-                    dispatch(BadgeThemeStudioAction.SelectDraft(theme.copy(background = background)))
-                },
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+                Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = "Brightness",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                Text(
-                    text = "${theme.brightness}%",
-                    style = MaterialTheme.typography.labelLarge,
+                    text = "Firmware values",
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
                 )
-            }
-            Slider(
-                value = theme.brightness.toFloat(),
-                onValueChange = { value ->
-                    dispatch(
-                        BadgeThemeStudioAction.SelectDraft(
-                            theme.copy(brightness = value.toInt().coerceIn(25, 100)),
-                        ),
-                    )
-                },
-                valueRange = 25f..100f,
-                steps = 74,
-                modifier = Modifier.testTag("badge_theme_brightness"),
-            )
-        }
-
-            Spacer(modifier = Modifier.height(10.dp))
-            BadgeThemeStudioGroup(
-            title = "Signal Colors",
-            subtitle = "Each value shows the effective quantized color rendered by the RGB565 badge display.",
-        ) {
-            BadgeThemeAccentClasses.forEachIndexed { index, accent ->
-                val rgb565 = theme.accents[accent.key] ?: accent.defaultRgb565
-                BadgeThemeAccentRow(
-                    accent = accent,
-                    rgb565 = rgb565,
-                    onClick = { colorEditorAccent = accent },
-                )
-                if (index != BadgeThemeAccentClasses.lastIndex) {
-                    HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 6.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-                    )
-                }
-            }
-        }
-
-            Spacer(modifier = Modifier.height(10.dp))
-            BadgeThemeStudioGroup(
-            title = "Saved Profiles",
-            subtitle = "Profiles stay on this Android device and are shared by List and Privacy.",
-        ) {
-            Button(
-                onClick = { profileNameDialog = ProfileNameDialogMode.Create },
-                modifier = Modifier.testTag("badge_theme_profile_create"),
-            ) {
-                Text("Save New Profile")
-            }
-            if (profiles.isEmpty()) {
                 Text(
-                    text = "No saved profiles yet.",
+                    text = "These are the exact values sent to and read back from the badge.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
                 )
-            } else {
-                profiles.forEach { profile ->
-                    HorizontalDivider(
-                        modifier = Modifier.padding(top = 10.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-                    )
-                    BadgeThemeProfileRow(
-                        profile = profile,
-                        onLoad = {
-                            profileMessage = "Loaded ${profile.name} into the draft. Press Apply to update the badge."
-                            dispatch(BadgeThemeStudioAction.SelectDraft(profile.theme))
+                FirmwareHashLine(label = "Readback hash", hash = themeHash)
+                BadgeFirmwareThemeEditor(
+                    theme = theme,
+                    controlsEnabled = true,
+                    onThemeChange = { next ->
+                        dispatch(BadgeThemeStudioAction.SelectDraft(next))
+                    },
+                    onEditAccent = { colorEditorAccent = it },
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+                BadgeThemeStudioGroup(
+                    title = "Presets",
+                    subtitle = "Loads exact firmware fields into the Android draft. Apply writes them.",
+                ) {
+                    BadgeThemePresetStrip(
+                        selectedPresetId = recognizedPreset?.id,
+                        onSelect = { preset ->
+                            profileMessage = null
+                            dispatch(BadgeThemeStudioAction.SelectDraft(preset.theme))
                         },
-                        onReplace = { pendingReplaceProfileId = profile.id },
-                        onRename = {
-                            profileNameDialog = ProfileNameDialogMode.Rename(profile.id)
-                        },
-                        onDelete = { pendingDeleteProfileId = profile.id },
                     )
                 }
-            }
-            profileMessage?.let { message ->
-                Text(
-                    text = message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .padding(top = 10.dp)
-                        .testTag("badge_theme_profile_message"),
-                )
-            }
-            }
-        }
 
-        Spacer(modifier = Modifier.height(12.dp))
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("badge_theme_studio_actions")
-                .semantics {
-                    contentDescription = "Sticky badge palette studio actions"
-                },
-            shape = RoundedCornerShape(8.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        ) {
-            Column(modifier = Modifier.padding(10.dp)) {
-                Text(
-                    text = "Draft actions",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(top = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                Spacer(modifier = Modifier.height(10.dp))
+                BadgeThemeStudioGroup(
+                    title = "Saved Profiles",
+                    subtitle = "Profiles stay in this Android app; loading one does not write the badge.",
                 ) {
                     Button(
-                        onClick = { dispatch(BadgeThemeStudioAction.Apply) },
-                        enabled = commandsEnabled,
-                        modifier = Modifier.testTag("badge_theme_apply"),
+                        onClick = { profileNameDialog = ProfileNameDialogMode.Create },
+                        modifier = Modifier.testTag("badge_theme_profile_create"),
                     ) {
-                        Text("Apply")
+                        Text("Save New Profile")
                     }
-                    OutlinedButton(
-                        onClick = {
-                            profileMessage = "Draft reset to Field. Saved profiles were not changed."
-                            dispatch(BadgeThemeStudioAction.ResetDraft)
-                        },
-                        modifier = Modifier.testTag("badge_theme_reset"),
-                    ) {
-                        Text("Reset")
+                    if (profiles.isEmpty()) {
+                        Text(
+                            text = "No saved profiles yet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                    } else {
+                        profiles.forEach { profile ->
+                            HorizontalDivider(
+                                modifier = Modifier.padding(top = 10.dp),
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                            )
+                            BadgeThemeProfileRow(
+                                profile = profile,
+                                onLoad = {
+                                    profileMessage =
+                                        "Loaded ${profile.name}. Apply to update the badge."
+                                    dispatch(BadgeThemeStudioAction.SelectDraft(profile.theme))
+                                },
+                                onReplace = { pendingReplaceProfileId = profile.id },
+                                onRename = {
+                                    profileNameDialog = ProfileNameDialogMode.Rename(profile.id)
+                                },
+                                onDelete = { pendingDeleteProfileId = profile.id },
+                            )
+                        }
                     }
-                    OutlinedButton(
-                        onClick = {
-                            dispatch(BadgeThemeStudioAction.Refresh(appliedTheme))
-                        },
-                        enabled = refreshEnabled,
-                        modifier = Modifier.testTag("badge_theme_refresh"),
-                    ) {
-                        Text("Refresh")
+                    profileMessage?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .padding(top = 10.dp)
+                                .testTag("badge_theme_profile_message"),
+                        )
                     }
                 }
-                Text(
-                    text = "Only Apply writes this draft to the badge.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
             }
-        }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("badge_theme_studio_actions")
+                    .semantics { contentDescription = "Sticky badge theme actions" },
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Button(
+                            onClick = { dispatch(BadgeThemeStudioAction.Apply) },
+                            enabled = commandsEnabled,
+                            modifier = Modifier.testTag("badge_theme_apply"),
+                        ) {
+                            Text("Apply")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                profileMessage = "Draft reset to firmware defaults."
+                                dispatch(BadgeThemeStudioAction.ResetDraft)
+                            },
+                            modifier = Modifier.testTag("badge_theme_reset"),
+                        ) {
+                            Text("Reset")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                dispatch(BadgeThemeStudioAction.Refresh(appliedTheme))
+                            },
+                            enabled = refreshEnabled,
+                            modifier = Modifier.testTag("badge_theme_refresh"),
+                        ) {
+                            Text("Refresh")
+                        }
+                    }
+                    Text(
+                        text = "Only Apply writes this draft to the badge.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
         }
     }
 
@@ -532,10 +516,10 @@ fun BadgeAppearanceSection(
     }
 
     profileNameDialog?.let { mode ->
-        val renamedProfile = (renameProfileResolution as? BadgeThemeProfileResolution.Found)?.profile
-        if (mode == ProfileNameDialogMode.Create || renamedProfile != null) {
+        val renamed = (renameProfileResolution as? BadgeThemeProfileResolution.Found)?.profile
+        if (mode == ProfileNameDialogMode.Create || renamed != null) {
             BadgeThemeProfileNameDialog(
-                renamedProfile = renamedProfile,
+                renamedProfile = renamed,
                 profiles = profiles,
                 onDismiss = { profileNameDialog = null },
                 onCreate = { name ->
@@ -548,13 +532,13 @@ fun BadgeAppearanceSection(
                     saved
                 },
                 onRename = { id, name ->
-                    val renamed = onRenameProfile(id, name)
-                    profileMessage = if (renamed) {
+                    val didRename = onRenameProfile(id, name)
+                    profileMessage = if (didRename) {
                         "Renamed profile to ${name.trim()}."
                     } else {
                         badgeThemeProfileMutationFailureMessage(BadgeThemeProfileMutation.Rename)
                     }
-                    renamed
+                    didRename
                 },
             )
         }
@@ -582,20 +566,284 @@ fun BadgeAppearanceSection(
     (deleteProfileResolution as? BadgeThemeProfileResolution.Found)?.profile?.let { profile ->
         BadgeThemeProfileConfirmationDialog(
             title = "Delete ${profile.name}?",
-            body = "This removes the saved Android profile. It does not reset or write to the badge.",
+            body = "This removes the saved Android profile. It does not reset or write the badge.",
             confirmLabel = "Delete",
             testTag = "badge_theme_profile_delete_confirm",
             onDismiss = { pendingDeleteProfileId = null },
             onConfirm = {
                 val deleted = onDeleteProfile(profile.id)
                 profileMessage = if (deleted) {
-                    "Deleted ${profile.name}. The current draft was not changed."
+                    "Deleted ${profile.name}. The draft was not changed."
                 } else {
                     badgeThemeProfileMutationFailureMessage(BadgeThemeProfileMutation.Delete)
                 }
                 pendingDeleteProfileId = null
             },
         )
+    }
+}
+
+@Composable
+private fun BadgeFirmwareThemeEditor(
+    theme: BadgeTheme,
+    controlsEnabled: Boolean,
+    onThemeChange: (BadgeTheme) -> Unit,
+    onEditAccent: (FirmwareAccentInfo) -> Unit,
+) {
+    BadgeThemeStudioGroup(
+        title = "Display fields",
+        subtitle = "Labels include the exact firmware key or encoded value.",
+    ) {
+        Text(
+            text = "Base palette · ${theme.palette}",
+            style = MaterialTheme.typography.labelMedium,
+            fontFamily = FontFamily.Monospace,
+        )
+        SegmentedTextRow(
+            values = BadgeThemePalettes,
+            selected = theme.palette,
+            testTagPrefix = "badge_theme_palette",
+            enabled = controlsEnabled,
+            onSelect = { onThemeChange(theme.copy(palette = it).normalizedV1()) },
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Background · ${theme.background}",
+            style = MaterialTheme.typography.labelMedium,
+            fontFamily = FontFamily.Monospace,
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .testTag("badge_backgrounds"),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            BadgeThemeBackgroundOptions.forEach { option ->
+                FilterChip(
+                    selected = theme.background == option.firmwareKey,
+                    onClick = {
+                        onThemeChange(theme.copy(background = option.firmwareKey).normalizedV1())
+                    },
+                    enabled = controlsEnabled,
+                    label = {
+                        Text("${option.firmwareKey} · 0x%04X".format(option.rgb565))
+                    },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("badge_background_${option.firmwareKey}"),
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "brightness",
+                style = MaterialTheme.typography.labelMedium,
+                fontFamily = FontFamily.Monospace,
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                text = "${theme.brightness}%",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        Slider(
+            value = theme.brightness.toFloat(),
+            onValueChange = { value ->
+                onThemeChange(
+                    theme.copy(brightness = value.toInt().coerceIn(25, 100)).normalizedV1(),
+                )
+            },
+            enabled = controlsEnabled,
+            valueRange = 25f..100f,
+            steps = 74,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "Firmware brightness, 25 to 100" }
+                .testTag("badge_theme_brightness"),
+        )
+        Text(
+            text = "Wire field brightness=${theme.brightness}; accepted range 25–100.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontFamily = FontFamily.Monospace,
+        )
+    }
+
+    Spacer(modifier = Modifier.height(10.dp))
+    BadgeThemeStudioGroup(
+        title = "Signal colors",
+        subtitle = "RGB565 is what firmware stores. Effective hex shows the quantized screen color.",
+    ) {
+        BadgeThemeAccentClasses.forEachIndexed { index, accent ->
+            val rgb565 = theme.accents[accent.key] ?: accent.defaultRgb565
+            BadgeThemeAccentRow(
+                accent = accent,
+                rgb565 = rgb565,
+                enabled = controlsEnabled,
+                onSelect = { encoded ->
+                    onThemeChange(
+                        theme.copy(accents = theme.accents + (accent.key to encoded)).normalizedV1(),
+                    )
+                },
+                onEdit = { onEditAccent(accent) },
+            )
+            if (index != BadgeThemeAccentClasses.lastIndex) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 6.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FirmwareHashLine(label: String, hash: Long?) {
+    Text(
+        text = "$label ${hashCode32(hash)}",
+        style = MaterialTheme.typography.labelMedium,
+        fontFamily = FontFamily.Monospace,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun SegmentedTextRow(
+    values: List<String>,
+    selected: String,
+    testTagPrefix: String,
+    enabled: Boolean,
+    onSelect: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        values.forEach { value ->
+            val optionSemantics = badgeThemeSelectedOptionSemantics(value, selected)
+            OutlinedButton(
+                onClick = { onSelect(value) },
+                enabled = enabled,
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("${testTagPrefix}_$value")
+                    .semantics {
+                        this.selected = optionSemantics.selected
+                        stateDescription = optionSemantics.stateDescription
+                    },
+                border = BorderStroke(
+                    width = if (optionSemantics.selected) 2.dp else 1.dp,
+                    color = if (optionSemantics.selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    },
+                ),
+            ) {
+                Text(value.uppercase(), style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BadgeThemeAccentRow(
+    accent: FirmwareAccentInfo,
+    rgb565: Int,
+    enabled: Boolean,
+    onSelect: (Int) -> Unit,
+    onEdit: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+            .testTag("badge_theme_accent_${accent.key}"),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .background(rgb565Color(rgb565), RoundedCornerShape(7.dp)),
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = accent.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = accent.key,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                )
+                Text(
+                    text = "${rgb565Code(rgb565)} · ${BadgeThemeColorCodec.effectiveHex(rgb565)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            TextButton(
+                onClick = onEdit,
+                enabled = enabled,
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .semantics {
+                        contentDescription =
+                            "Edit ${accent.label} color, ${rgb565Code(rgb565)}"
+                    },
+            ) {
+                Text("Edit")
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SafeThemeSwatches.forEach { swatch ->
+                FilterChip(
+                    selected = swatch.rgb565 == rgb565,
+                    onClick = { onSelect(swatch.rgb565) },
+                    enabled = enabled,
+                    leadingIcon = {
+                        Box(
+                            modifier = Modifier
+                                .size(16.dp)
+                                .background(
+                                    rgb565Color(swatch.rgb565),
+                                    RoundedCornerShape(4.dp),
+                                ),
+                        )
+                    },
+                    label = { Text(swatch.label) },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .semantics {
+                            contentDescription =
+                                "${accent.label} ${swatch.label}, ${rgb565Code(swatch.rgb565)}"
+                        }
+                        .testTag(
+                            "badge_accent_${accent.key}_swatch_%04x".format(swatch.rgb565),
+                        ),
+                )
+            }
+        }
     }
 }
 
@@ -614,9 +862,10 @@ private fun BadgeThemePresetStrip(
         BadgeThemePresets.forEach { preset ->
             val selected = preset.id == selectedPresetId
             Surface(
+                onClick = { onSelect(preset) },
                 modifier = Modifier
-                    .width(132.dp)
-                    .clickable { onSelect(preset) }
+                    .width(156.dp)
+                    .heightIn(min = 96.dp)
                     .testTag("badge_theme_preset_${preset.id}")
                     .semantics {
                         contentDescription =
@@ -646,7 +895,7 @@ private fun BadgeThemePresetStrip(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = "${preset.theme.palette} • ${preset.theme.background}",
+                        text = "${preset.theme.palette} · ${preset.theme.background} · ${preset.theme.brightness}%",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -656,14 +905,14 @@ private fun BadgeThemePresetStrip(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         BadgeThemeAccentClasses.forEach { accent ->
-                            val rgb565 = preset.theme.accents.getValue(accent.key)
+                            val encoded = preset.theme.accents.getValue(accent.key)
                             Box(
                                 modifier = Modifier
                                     .size(13.dp)
-                                    .background(rgb565Color(rgb565), RoundedCornerShape(3.dp))
+                                    .background(rgb565Color(encoded), RoundedCornerShape(3.dp))
                                     .semantics {
                                         contentDescription =
-                                            "${accent.label} ${BadgeThemeColorCodec.effectiveHex(rgb565)}"
+                                            "${accent.label} ${rgb565Code(encoded)}"
                                     },
                             )
                         }
@@ -700,98 +949,6 @@ private fun BadgeThemeStudioGroup(
             )
             content()
         }
-    }
-}
-
-@Composable
-private fun SegmentedTextRow(
-    values: List<String>,
-    selected: String,
-    testTagPrefix: String,
-    onSelect: (String) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        values.forEach { value ->
-            val optionSemantics = badgeThemeSelectedOptionSemantics(value, selected)
-            OutlinedButton(
-                onClick = { onSelect(value) },
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("${testTagPrefix}_$value")
-                    .semantics {
-                        this.selected = optionSemantics.selected
-                        stateDescription = optionSemantics.stateDescription
-                    },
-                border = BorderStroke(
-                    width = if (selected == value) 2.dp else 1.dp,
-                    color = if (selected == value) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.outline
-                    },
-                ),
-            ) {
-                Text(
-                    text = value.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (selected == value) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
-                    maxLines = 1,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun BadgeThemeAccentRow(
-    accent: BadgeThemeAccentInfo,
-    rgb565: Int,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .testTag("badge_theme_accent_${accent.key}")
-            .semantics {
-                contentDescription =
-                    "Edit ${accent.label} color, ${BadgeThemeColorCodec.effectiveHex(rgb565)}"
-            }
-            .padding(vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(36.dp)
-                .background(rgb565Color(rgb565), RoundedCornerShape(7.dp)),
-        )
-        Spacer(modifier = Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = accent.label,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = BadgeThemeColorCodec.effectiveHex(rgb565),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontFamily = FontFamily.Monospace,
-            )
-        }
-        Text(
-            text = "Edit",
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.primary,
-        )
     }
 }
 
@@ -853,11 +1010,15 @@ private fun BadgeThemeProfileRow(
             TextButton(
                 onClick = onReplace,
                 modifier = Modifier.testTag("badge_theme_profile_replace_${profile.id}"),
-            ) { Text("Replace") }
+            ) {
+                Text("Replace")
+            }
             TextButton(
                 onClick = onRename,
                 modifier = Modifier.testTag("badge_theme_profile_rename_${profile.id}"),
-            ) { Text("Rename") }
+            ) {
+                Text("Rename")
+            }
             TextButton(
                 onClick = onDelete,
                 modifier = Modifier.testTag("badge_theme_profile_delete_${profile.id}"),
@@ -895,9 +1056,7 @@ private fun BadgeThemeProfileNameDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = {
-            Text(if (renamedProfile == null) "Save Profile" else "Rename Profile")
-        },
+        title = { Text(if (renamedProfile == null) "Save Profile" else "Rename Profile") },
         text = {
             OutlinedTextField(
                 value = name,
@@ -938,9 +1097,7 @@ private fun BadgeThemeProfileNameDialog(
                 Text(if (renamedProfile == null) "Save" else "Rename")
             }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
@@ -965,8 +1122,55 @@ private fun BadgeThemeProfileConfirmationDialog(
                 Text(confirmLabel)
             }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+@Composable
+internal fun BadgeSectionCard(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            content = content,
+        )
+    }
+}
+
+@Composable
+internal fun BadgeResponsiveActionPair(
+    first: @Composable (Modifier) -> Unit,
+    second: @Composable (Modifier) -> Unit,
+) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val stackActions = maxWidth < 360.dp || LocalDensity.current.fontScale >= 1.3f
+        if (stackActions) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                first(Modifier.fillMaxWidth())
+                second(Modifier.fillMaxWidth())
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                first(Modifier.weight(1f))
+                second(Modifier.weight(1f))
+            }
+        }
+    }
 }

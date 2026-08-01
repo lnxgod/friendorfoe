@@ -2,6 +2,8 @@ package com.friendorfoe.presentation.badge
 
 import com.friendorfoe.data.badge.BadgeUsbActivity
 import com.friendorfoe.data.badge.BadgeUsbActivityKind
+import com.friendorfoe.presentation.navigation.Screen
+import com.friendorfoe.presentation.navigation.TopLevelDestination
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,20 +14,15 @@ class BadgeNavigationContractTest {
 
     @Test
     fun `bottom navigation uses exact seven item order with badge after privacy`() {
-        val source = source("com/friendorfoe/presentation/MainActivity.kt")
-        val labels = Regex("BottomNavItem\\(\\\"([^\\\"]+)\\\"")
-            .findAll(source)
-            .map { it.groupValues[1] }
-            .toList()
-
         assertEquals(
             listOf("AR", "Map", "List", "Privacy", "Badge", "History", "Info"),
-            labels,
+            TopLevelDestination.entries.map { it.label },
         )
-        assertTrue(source.contains("Screen.Badge.route"))
-        assertTrue(source.contains("BadgeMarkIcon"))
-        assertTrue(source.contains("BadgeMarkGold"))
-        assertFalse(source.contains("BottomNavItem(\"Cal\""))
+        assertEquals(
+            Screen.Badge.route,
+            TopLevelDestination.entries.single { it.label == "Badge" }.route,
+        )
+        assertFalse(TopLevelDestination.entries.any { it.label == "Cal" })
     }
 
     @Test

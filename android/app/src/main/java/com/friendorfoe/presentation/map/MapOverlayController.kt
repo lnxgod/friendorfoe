@@ -203,6 +203,7 @@ internal class MapOverlayController(
     private var userMarkerFollowsCompass: Boolean? = null
     private var fovCone: Polygon? = null
     private var remoteSearchMarker: Marker? = null
+    private var remoteSearchRing: Polygon? = null
     private var distanceRingKey: DistanceRingKey? = null
     private val distanceRings = mutableListOf<Polygon>()
 
@@ -217,20 +218,38 @@ internal class MapOverlayController(
         remoteSearchResults: List<SkyObject>,
         remoteSearchCenter: Position?,
         isUserPanning: Boolean,
+        overlayPlan: MapOverlayPlan,
     ) {
         map.mapOrientation = if (followCompass) -stabilizedMapHeading else 0f
 
-        if (userPosition.hasMapCoordinates()) {
-            val userGeoPoint = userPosition.toGeoPoint()
-            updateDistanceRings(userPosition, remoteSearchCenter)
-            updateRemoteSearchMarker(remoteSearchCenter, remoteSearchResults.size)
-            updateFovCone(userGeoPoint, followCompass, stabilizedMapHeading)
-            updateUserMarker(userGeoPoint, followCompass, stabilizedMapHeading)
+        if (overlayPlan.renderTargets) {
             updateAircraftMarkers(mapTracks, activeVisualFocusIds)
             updateSensorMarkers(remoteSensors)
             updateSensorDroneOverlays(sensorDrones)
             updateRemoteMarkers(remoteSearchResults, mapTracks.mapTo(mutableSetOf()) { it.skyObject.id })
-            updateCenter(userGeoPoint, followCompass, isUserPanning)
+            updateRemoteSearchMarker(remoteSearchCenter, remoteSearchResults.size)
+            updateRemoteSearchRing(remoteSearchCenter)
+        }
+
+        if (overlayPlan.renderUserMarker && userPosition.hasMapCoordinates()) {
+            val userGeoPoint = userPosition.toGeoPoint()
+            if (overlayPlan.renderPreciseUserOverlays) {
+                updateDistanceRings(userPosition, remoteSearchCenter)
+                updateFovCone(userGeoPoint, followCompass, stabilizedMapHeading)
+            } else {
+                clearPreciseUserOverlays()
+            }
+            updateUserMarker(
+                center = userGeoPoint,
+                following = followCompass,
+                headingDegrees = stabilizedMapHeading,
+                precise = overlayPlan.renderPreciseUserOverlays,
+            )
+            if (overlayPlan.autoCenterOnUser) {
+                updateCenter(userGeoPoint, followCompass, isUserPanning)
+            }
+        } else {
+            clearUserOverlays()
         }
 
         map.invalidate()
@@ -452,10 +471,20 @@ internal class MapOverlayController(
         val userCenter = userPosition.toGeoPoint()
         distanceRings += createDistanceRing(userCenter, 10.0).also(map.overlays::add)
         distanceRings += createDistanceRing(userCenter, 25.0).also(map.overlays::add)
-        remoteCenter?.let {
-            distanceRings += createDistanceRing(it.toGeoPoint(), 250.0).also(map.overlays::add)
-        }
         distanceRingKey = nextKey
+    }
+
+    private fun updateRemoteSearchRing(remoteCenter: Position?) {
+        if (remoteCenter == null) {
+            remoteSearchRing?.let(map.overlays::remove)
+            remoteSearchRing = null
+            return
+        }
+
+        val ring = remoteSearchRing ?: createDistanceRing(remoteCenter.toGeoPoint(), 250.0)
+            .also(map.overlays::add)
+            .also { remoteSearchRing = it }
+        ring.points = Polygon.pointsAsCircle(remoteCenter.toGeoPoint(), 250.0 * 1852.0)
     }
 
     private fun updateRemoteSearchMarker(remoteCenter: Position?, resultCount: Int) {
@@ -498,7 +527,12 @@ internal class MapOverlayController(
         cone.points = fovConePoints(center, headingDegrees, map.zoomLevelDouble)
     }
 
-    private fun updateUserMarker(center: GeoPoint, following: Boolean, headingDegrees: Float) {
+    private fun updateUserMarker(
+        center: GeoPoint,
+        following: Boolean,
+        headingDegrees: Float,
+        precise: Boolean,
+    ) {
         val marker = userMarker ?: Marker(map).apply {
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
             title = "You"
@@ -508,12 +542,27 @@ internal class MapOverlayController(
         marker.setPosition(center)
         marker.setMapHeading(if (following) headingDegrees else null)
         marker.setAlpha(1f)
-        marker.title = "You"
+        marker.title = if (precise) "You" else "Approximate location"
         marker.snippet = null
         if (userMarkerFollowsCompass != following) {
             marker.icon = createUserDrawable(context, following)
             userMarkerFollowsCompass = following
         }
+    }
+
+    private fun clearPreciseUserOverlays() {
+        fovCone?.let(map.overlays::remove)
+        fovCone = null
+        distanceRings.forEach { map.overlays.remove(it) }
+        distanceRings.clear()
+        distanceRingKey = null
+    }
+
+    private fun clearUserOverlays() {
+        userMarker?.remove(map)
+        userMarker = null
+        userMarkerFollowsCompass = null
+        clearPreciseUserOverlays()
     }
 
     private fun updateCenter(userGeoPoint: GeoPoint, following: Boolean, isUserPanning: Boolean) {

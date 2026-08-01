@@ -14,11 +14,15 @@ class IrCameraDetectorTest {
 
         assertTrue(detector.analyzePixelsForTest(WIDTH, HEIGHT, pixels).isEmpty())
 
-        val results = detector.analyzePixelsForTest(WIDTH, HEIGHT, pixels)
+        val analysis = detector.analyzePixelsWithEnvironmentForTest(WIDTH, HEIGHT, pixels)
+        val results = analysis.sources
 
         assertEquals(1, results.size)
         assertTrue(results.single().confidence >= 0.6f)
         assertTrue(results.single().brightness >= 220)
+        assertEquals(FloatPoint(20.5f, 20.5f), results.single().centerPx)
+        assertEquals(WIDTH, analysis.analyzedWidth)
+        assertEquals(HEIGHT, analysis.analyzedHeight)
     }
 
     @Test
@@ -59,6 +63,21 @@ class IrCameraDetectorTest {
         val results = detector.analyzePixelsForTest(WIDTH, HEIGHT, pixels)
 
         assertTrue(results.isEmpty())
+    }
+
+    @Test
+    fun retrySessionDoesNotInheritPersistenceFromAnOldFrameStillFinishing() {
+        val detector = IrCameraDetector()
+        val oldSession = detector.newSession()
+        val retrySession = detector.newSession()
+        val pixels = darkFrame()
+        putBlock(pixels, x = 20, y = 20, color = 0xFFFFFFFF.toInt())
+
+        assertTrue(oldSession.analyzePixelsForTest(WIDTH, HEIGHT, pixels).isEmpty())
+        assertTrue(retrySession.analyzePixelsForTest(WIDTH, HEIGHT, pixels).isEmpty())
+
+        assertEquals(1, oldSession.analyzePixelsForTest(WIDTH, HEIGHT, pixels).size)
+        assertEquals(1, retrySession.analyzePixelsForTest(WIDTH, HEIGHT, pixels).size)
     }
 
     companion object {

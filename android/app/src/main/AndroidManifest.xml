@@ -5,6 +5,11 @@
     <!-- Camera for AR viewfinder -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- Gallery writes need runtime access only on Android 8-9, requested from explicit Save. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
     <!-- Location for aircraft position calculation -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
@@ -77,10 +82,19 @@
             android:name="com.google.ar.core"
             android:value="optional" />
 
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/share_file_paths" />
+        </provider>
+
         <activity
             android:name=".presentation.MainActivity"
             android:exported="true"
-            android:screenOrientation="portrait"
             android:theme="@style/Theme.FriendOrFoe">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

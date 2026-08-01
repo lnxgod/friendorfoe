@@ -5,6 +5,12 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val badgeDebugBridgeUrl = providers.gradleProperty("badgeDebugBridgeUrl")
+    .getOrElse("http://10.0.2.2:8765/")
+
+fun buildConfigString(value: String): String =
+    "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
@@ -17,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 112
-        versionName = "0.64.70-android-defcon34-badge-ui"
+        versionCode = 113
+        versionName = "0.67.4-android-interface-overhaul"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -44,9 +50,15 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            buildConfigField("String", "BADGE_DEBUG_BRIDGE_BASE_URL", buildConfigString(""))
         }
         debug {
             isMinifyEnabled = false
+            buildConfigField(
+                "String",
+                "BADGE_DEBUG_BRIDGE_BASE_URL",
+                buildConfigString(badgeDebugBridgeUrl),
+            )
         }
     }
 
@@ -132,6 +144,9 @@ dependencies {
     implementation(libs.room.runtime)
     ksp(libs.room.compiler)
     implementation(libs.room.ktx)
+
+    // DataStore - App preferences
+    implementation(libs.androidx.datastore.preferences)
 
     // Image Loading (Coil - Compose-native async image loading)
     implementation(libs.coil.compose)

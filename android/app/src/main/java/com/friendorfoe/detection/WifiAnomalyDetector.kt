@@ -1,7 +1,5 @@
 package com.friendorfoe.detection
 
-import android.annotation.SuppressLint
-import android.net.wifi.ScanResult
 import android.util.Log
 import java.time.Instant
 import javax.inject.Inject
@@ -179,23 +177,31 @@ class WifiAnomalyDetector @Inject constructor(
     // Track BSSID → SSID history for karma detection
     private val bssidSsidHistory = mutableMapOf<String, MutableSet<String>>()
 
+    fun analyzeBatch(batch: WifiScanBatch): List<WifiAnomaly> {
+        val networks = batch.networks.map { network ->
+            WifiNetwork(
+                ssid = network.ssid,
+                bssid = network.bssid,
+                capabilities = network.capabilities,
+                rssi = network.rssi,
+                frequencyMhz = network.frequencyMhz,
+            )
+        }
+        return synchronized(bssidSsidHistory) {
+            analyzeNetworks(
+                networks = networks,
+                bssidSsidHistory = bssidSsidHistory,
+                now = Instant.ofEpochMilli(batch.observedWallMs),
+            )
+        }
+    }
+
     /**
      * Analyze current WiFi scan results for anomalies.
      * Call periodically (every 10-15 seconds).
      */
-    @SuppressLint("MissingPermission")
     fun analyze(): List<WifiAnomaly> {
-        val scanResults = wifiScanCoordinator.currentResults.value
-        val networks = scanResults.mapNotNull { result ->
-            val bssid = result.BSSID ?: return@mapNotNull null
-            WifiNetwork(
-                ssid = result.SSID.orEmpty(),
-                bssid = bssid,
-                capabilities = result.capabilities,
-                rssi = result.level,
-                frequencyMhz = result.frequency
-            )
-        }
-        return analyzeNetworks(networks, bssidSsidHistory, Instant.now())
+        val batch = wifiScanCoordinator.currentBatch.value ?: return emptyList()
+        return analyzeBatch(batch)
     }
 }

@@ -7,7 +7,6 @@ import android.location.LocationManager
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.friendorfoe.data.badge.BadgeUsbRepository
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.data.repository.validatedLocationAccuracyMeters
 import com.friendorfoe.domain.model.FilterState
@@ -40,7 +39,6 @@ import javax.inject.Inject
 @HiltViewModel
 class ListViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
-    private val badgeUsbRepository: BadgeUsbRepository,
     private val visualFocusRepository: VisualFocusRepository,
     private val locationManager: LocationManager
 ) : ViewModel() {
@@ -88,28 +86,6 @@ class ListViewModel @Inject constructor(
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = emptyList()
     )
-
-    /** Smart glasses / privacy devices detected nearby. */
-    val glassesDetections = skyObjectRepository.glassesDetections
-
-    /** BLE stalker/follower alerts. */
-    val stalkerAlerts = skyObjectRepository.stalkerAlerts
-
-    /** BLE direction finder. */
-    val bleTracker = skyObjectRepository.bleTracker
-
-    /** Direct USB-C feed from the badge firmware. */
-    val badgeUsbState = badgeUsbRepository.state
-
-    /** Ignore a privacy device (persists across restarts). */
-    fun ignoreDevice(mac: String) {
-        skyObjectRepository.ignorePrivacyDevice(mac)
-    }
-
-    /** Start BLE direction scan to find a device. */
-    fun startDirectionScan(mac: String) {
-        bleTracker.startDirectionScan(mac)
-    }
 
     private val _userPosition = MutableStateFlow(
         Position(latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0)

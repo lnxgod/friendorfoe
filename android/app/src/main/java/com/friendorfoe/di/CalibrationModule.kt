@@ -8,6 +8,10 @@ import com.friendorfoe.calibration.CalibrationBackend
 import com.friendorfoe.calibration.CalibrationPlatform
 import com.friendorfoe.calibration.CalibrationSettingsStore
 import com.friendorfoe.data.DetectionPrefs
+import com.friendorfoe.data.repository.AndroidLocalDetectionPermissionProvider
+import com.friendorfoe.data.repository.LocalDetectionPermissionProvider
+import com.friendorfoe.data.repository.RuntimePermissionChangeNotifier
+import com.friendorfoe.data.repository.SkyObjectRepository
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -33,4 +37,16 @@ abstract class CalibrationModule {
     @Binds
     @Singleton
     abstract fun bindCalibrationPlatform(impl: AndroidCalibrationPlatform): CalibrationPlatform
+
+    @Binds
+    @Singleton
+    abstract fun bindRuntimePermissionChangeNotifier(
+        impl: SkyObjectRepository,
+    ): RuntimePermissionChangeNotifier
+
+    @Binds
+    @Singleton
+    abstract fun bindLocalDetectionPermissionProvider(
+        impl: AndroidLocalDetectionPermissionProvider,
+    ): LocalDetectionPermissionProvider
 }

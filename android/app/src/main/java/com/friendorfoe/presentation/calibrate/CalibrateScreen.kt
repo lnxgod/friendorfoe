@@ -110,6 +110,7 @@ fun CalibrateScreen(
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
+        viewModel.onRuntimePermissionsChanged()
         val missing = viewModel.missingPermissions(
             result.filterValues { it }.keys
         )

@@ -11,6 +11,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
+internal fun orientationHasCompassReference(
+    vectorSensorType: Int?,
+    hasAccelMagSolution: Boolean,
+): Boolean = hasAccelMagSolution || vectorSensorType == Sensor.TYPE_ROTATION_VECTOR
+
 /**
  * Sensor Fusion Engine for computing device orientation from hardware sensors.
  *
@@ -27,7 +32,7 @@ import javax.inject.Singleton
  * - Low-pass filter (alpha ~0.8) smooths accelerometer noise
  * - getRotationMatrix + remapCoordinateSystem for portrait/upright orientation
  * - Exposes orientation as a [StateFlow] for reactive consumers
- * - start()/stop() lifecycle methods to register/unregister sensor listeners
+ * - Independent leases keep listeners registered while any screen still owns them
  *
  * Injected via Hilt; SensorManager is provided by [com.friendorfoe.di.SensorModule].
  */
@@ -51,6 +56,9 @@ class SensorFusionEngine @Inject constructor(
     }
 
     private val _orientation = MutableStateFlow(DeviceOrientation())
+    private val _orientationReady = MutableStateFlow(false)
+    /** True only after a magnetic-north-referenced heading has been produced. */
+    val orientationReady: StateFlow<Boolean> = _orientationReady.asStateFlow()
 
     /**
      * Current magnetometer accuracy level, tracked from [onAccuracyChanged].
@@ -81,8 +89,8 @@ class SensorFusionEngine @Inject constructor(
     private var hasGravity = false
     private var hasGeomagnetic = false
 
-    /** Whether the device has a gyroscope-based rotation vector sensor. */
-    private var hasRotationVector = false
+    /** Whether the selected rotation-vector sensor is referenced to magnetic north. */
+    private var hasMagneticRotationVector = false
 
     // Reusable arrays to avoid allocation in the sensor callback hot path
     private val rotationMatrix = FloatArray(9)
@@ -95,14 +103,17 @@ class SensorFusionEngine @Inject constructor(
     private var smoothedRoll = Float.NaN
 
     private var isRunning = false
+    private val leases = SensorLeaseRegistry(
+        onFirstLease = ::startHardware,
+        onLastLease = ::stopHardware,
+    )
 
     /**
-     * Start listening to accelerometer, magnetometer, and gyroscope sensors.
-     *
-     * Call this in onResume() or when the AR view becomes active.
-     * Safe to call multiple times; duplicate calls are ignored.
+     * Keep orientation sensors active until this independent lease is closed.
      */
-    fun start() {
+    fun acquire(): SensorFusionLease = leases.acquire()
+
+    private fun startHardware() {
         if (isRunning) return
         isRunning = true
 
@@ -111,16 +122,15 @@ class SensorFusionEngine @Inject constructor(
         val rotationVector = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         if (rotationVector != null) {
             sensorManager.registerListener(this, rotationVector, currentSensorDelay)
-            hasRotationVector = true
+            hasMagneticRotationVector = true
             Log.d(TAG, "Using TYPE_ROTATION_VECTOR for orientation (compass-calibrated)")
         }
 
         // 2. Fallback: TYPE_GAME_ROTATION_VECTOR (no compass, but smooth)
-        if (!hasRotationVector) {
+        if (!hasMagneticRotationVector) {
             val gameRotation = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
             if (gameRotation != null) {
                 sensorManager.registerListener(this, gameRotation, currentSensorDelay)
-                hasRotationVector = true
                 Log.d(TAG, "Using TYPE_GAME_ROTATION_VECTOR fallback for orientation")
             }
         }
@@ -140,10 +150,9 @@ class SensorFusionEngine @Inject constructor(
     /**
      * Stop listening to all sensors.
      *
-     * Call this in onPause() or when the AR view is no longer visible
-     * to conserve battery.
+     * Called only after the last independent lease closes.
      */
-    fun stop() {
+    private fun stopHardware() {
         if (!isRunning) return
         isRunning = false
         sensorManager.unregisterListener(this)
@@ -151,17 +160,36 @@ class SensorFusionEngine @Inject constructor(
         // Reset state so next start() begins fresh
         hasGravity = false
         hasGeomagnetic = false
-        hasRotationVector = false
+        hasMagneticRotationVector = false
         smoothedAzimuth = Float.NaN
         smoothedPitch = Float.NaN
         smoothedRoll = Float.NaN
+        _orientationReady.value = false
     }
 
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
-            Sensor.TYPE_ROTATION_VECTOR, Sensor.TYPE_GAME_ROTATION_VECTOR -> {
+            Sensor.TYPE_ROTATION_VECTOR -> {
                 SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
-                updateOrientation()
+                updateOrientation(
+                    compassReferenced = orientationHasCompassReference(
+                        vectorSensorType = event.sensor.type,
+                        hasAccelMagSolution = false,
+                    ),
+                )
+            }
+            Sensor.TYPE_GAME_ROTATION_VECTOR -> {
+                // Game rotation yaw is relative to an arbitrary startup frame. It can support
+                // general pitch/roll UI, but it must never make a direction sweep compass-ready.
+                if (!_orientationReady.value) {
+                    SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+                    updateOrientation(
+                        compassReferenced = orientationHasCompassReference(
+                            vectorSensorType = event.sensor.type,
+                            hasAccelMagSolution = false,
+                        ),
+                    )
+                }
             }
             Sensor.TYPE_ACCELEROMETER -> {
                 gravity = lowPassFilter(event.values, gravity)
@@ -173,9 +201,22 @@ class SensorFusionEngine @Inject constructor(
             }
         }
 
-        // Fallback: use accel+mag when rotation vector is not available
-        if (!hasRotationVector && hasGravity && hasGeomagnetic) {
-            updateOrientation()
+        // A game-vector-only phone can still provide a real magnetic heading through accel+mag.
+        if (!hasMagneticRotationVector && hasGravity && hasGeomagnetic) {
+            val solved = SensorManager.getRotationMatrix(
+                rotationMatrix,
+                null,
+                gravity,
+                geomagnetic,
+            )
+            if (solved) {
+                updateOrientation(
+                    compassReferenced = orientationHasCompassReference(
+                        vectorSensorType = null,
+                        hasAccelMagSolution = true,
+                    ),
+                )
+            }
         }
     }
 
@@ -208,13 +249,13 @@ class SensorFusionEngine @Inject constructor(
             sensorManager.unregisterListener(this)
 
             // Re-register rotation vector with same preference order
-            var reRegisteredRotation = false
+            hasMagneticRotationVector = false
             val rotationVector = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
             if (rotationVector != null) {
                 sensorManager.registerListener(this, rotationVector, currentSensorDelay)
-                reRegisteredRotation = true
+                hasMagneticRotationVector = true
             }
-            if (!reRegisteredRotation) {
+            if (!hasMagneticRotationVector) {
                 val gameRotation = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
                 gameRotation?.let {
                     sensorManager.registerListener(this, it, currentSensorDelay)
@@ -245,16 +286,7 @@ class SensorFusionEngine @Inject constructor(
      * - Pitch: elevation angle (positive = camera aimed above horizon)
      * - Roll: device tilt left/right
      */
-    private fun updateOrientation() {
-        if (!hasRotationVector) {
-            // Fallback: compute rotation matrix from accel+mag
-            val success = SensorManager.getRotationMatrix(
-                rotationMatrix, null, gravity, geomagnetic
-            )
-            if (!success) return
-        }
-        // rotationMatrix is already set by getRotationMatrixFromVector when using rotation vector
-
+    private fun updateOrientation(compassReferenced: Boolean) {
         // Remap for portrait mode with phone held upright (camera pointing at sky).
         // SensorManager.AXIS_X keeps the X axis as-is.
         // SensorManager.AXIS_Z remaps the Y axis to Z, which makes pitch represent
@@ -281,6 +313,13 @@ class SensorFusionEngine @Inject constructor(
             azimuthDeg += 360f
         }
 
+        // Never blend arbitrary game-vector yaw into the first north-referenced heading.
+        if (compassReferenced && !_orientationReady.value) {
+            smoothedAzimuth = Float.NaN
+            smoothedPitch = Float.NaN
+            smoothedRoll = Float.NaN
+        }
+
         // Apply output smoothing to reduce jitter from all sensor sources.
         // For azimuth, use circular interpolation to handle the 0/360 wrap.
         if (smoothedAzimuth.isNaN()) {
@@ -298,6 +337,7 @@ class SensorFusionEngine @Inject constructor(
             pitchDegrees = smoothedPitch,
             rollDegrees = smoothedRoll
         )
+        if (compassReferenced) _orientationReady.value = true
     }
 
     private fun circularLerp(current: Float, target: Float, alpha: Float): Float =

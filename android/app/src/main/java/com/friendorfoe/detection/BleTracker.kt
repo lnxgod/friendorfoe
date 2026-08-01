@@ -129,7 +129,8 @@ class BleTracker @Inject constructor() {
     private data class UserPoint(
         val latitude: Double,
         val longitude: Double,
-        val timestamp: Instant
+        val timestamp: Instant,
+        val accuracyMeters: Float,
     )
 
     // All tracked BLE devices keyed by MAC
@@ -175,6 +176,29 @@ class BleTracker @Inject constructor() {
         locationAccuracyMeters = locationAccuracyMeters,
     )
 
+    /** Records one privacy-advertisement sample using the latest valid Sky location seed. */
+    fun recordPrivacyObservation(
+        detection: GlassesDetection,
+        compassBearing: Float,
+    ) {
+        val latestLocation = synchronized(userLocations) { userLocations.lastOrNull() }
+        recordSightingAt(
+            mac = detection.mac,
+            rssi = detection.rssi,
+            deviceName = detection.deviceName,
+            deviceType = detection.deviceType,
+            manufacturer = detection.manufacturer,
+            hasCamera = detection.hasCamera,
+            userLat = latestLocation?.latitude ?: 0.0,
+            userLon = latestLocation?.longitude ?: 0.0,
+            compassBearing = compassBearing,
+            timestamp = detection.lastSeen,
+            category = detection.category,
+            isBonded = detection.isBonded,
+            locationAccuracyMeters = latestLocation?.accuracyMeters ?: Float.POSITIVE_INFINITY,
+        )
+    }
+
     internal fun recordSightingAt(
         mac: String,
         rssi: Int,
@@ -190,7 +214,12 @@ class BleTracker @Inject constructor() {
         isBonded: Boolean = false,
         locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
     ) {
-        recordUserLocation(userLat, userLon, timestamp)
+        recordUserLocation(
+            latitude = userLat,
+            longitude = userLon,
+            timestamp = timestamp,
+            locationAccuracyMeters = locationAccuracyMeters,
+        )
 
         val sighting = Sighting(
             rssi = rssi,
@@ -233,7 +262,14 @@ class BleTracker @Inject constructor() {
             device
         }
 
-        // If we're doing a direction scan on this device, record sample
+        recordDirectionSample(mac, rssi, compassBearing)
+    }
+
+    /**
+     * Feed an active direction sweep without retaining movement history.
+     * This keeps an explicitly requested sweep responsive when stalker analysis is disabled.
+     */
+    fun recordDirectionSample(mac: String, rssi: Int, compassBearing: Float) {
         if (directionScanTarget == mac) {
             directionSamples.add(compassBearing to rssi)
         }
@@ -243,13 +279,19 @@ class BleTracker @Inject constructor() {
      * Update user location for movement tracking.
      */
     fun updateUserLocation(location: Location) {
-        recordUserLocation(location.latitude, location.longitude, Instant.now())
+        recordUserLocation(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            timestamp = Instant.now(),
+            locationAccuracyMeters = location.accuracy,
+        )
     }
 
     internal fun recordUserLocation(
         latitude: Double,
         longitude: Double,
-        timestamp: Instant = Instant.now()
+        timestamp: Instant = Instant.now(),
+        locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
     ) {
         if (!isValidLocation(latitude, longitude)) return
         synchronized(userLocations) {
@@ -260,7 +302,14 @@ class BleTracker @Inject constructor() {
             ) {
                 return
             }
-            userLocations.add(UserPoint(latitude, longitude, timestamp))
+            userLocations.add(
+                UserPoint(
+                    latitude = latitude,
+                    longitude = longitude,
+                    timestamp = timestamp,
+                    accuracyMeters = locationAccuracyMeters,
+                ),
+            )
             // Keep last 5 minutes
             val cutoff = timestamp.minusSeconds(300)
             userLocations.removeAll { it.timestamp.isBefore(cutoff) }

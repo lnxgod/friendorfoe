@@ -3,94 +3,126 @@ package com.friendorfoe.presentation.history
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.local.HistoryEntity
-import com.friendorfoe.data.repository.HistoryRepository
+import com.friendorfoe.data.repository.HistoryStore
 import com.friendorfoe.domain.model.FilterState
+import com.friendorfoe.domain.model.activeFilterCount
 import com.friendorfoe.domain.usecase.FilterEngine
+import com.friendorfoe.presentation.components.CollectionBodyState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/**
- * ViewModel for the History screen.
- *
- * Loads all detection history from [HistoryRepository] and groups entries
- * by date for display with sticky headers (Today, Yesterday, or formatted date).
- */
 @HiltViewModel
 class HistoryViewModel @Inject constructor(
-    private val historyRepository: HistoryRepository
+    private val historyStore: HistoryStore,
 ) : ViewModel() {
-
-    companion object {
-        private val DATE_FORMATTER = DateTimeFormatter.ofPattern("MMMM d, yyyy", Locale.getDefault())
+    private val filter = MutableStateFlow(FilterState())
+    private val pendingDeletion = MutableStateFlow<PendingHistoryDeletion?>(null)
+    private val deletionError = MutableStateFlow<String?>(null)
+    private val deletionInProgress = MutableStateFlow(false)
+    private val historyReloads = MutableSharedFlow<Unit>(replay = 1).apply { tryEmit(Unit) }
+    private val historyRows = historyReloads.flatMapLatest {
+        historyStore.observeAll()
+            .map<List<HistoryEntity>, Result<List<HistoryEntity>>> { Result.success(it) }
+            .catch { error ->
+                if (error is CancellationException) throw error
+                emit(Result.failure(error))
+            }
     }
 
-    private val _filterState = MutableStateFlow(FilterState())
-    val filterState: StateFlow<FilterState> = _filterState.asStateFlow()
+    val uiState: StateFlow<HistoryUiState> = combine(
+        historyRows,
+        filter,
+        pendingDeletion,
+        deletionError,
+        deletionInProgress,
+    ) { rowsResult, currentFilter, pending, currentDeletionError, isDeleting ->
+        val entries = rowsResult.getOrNull()
+        val filterCount = activeFilterCount(currentFilter)
+        val filtered = entries?.let { FilterEngine.applyFilters(it, currentFilter) }.orEmpty()
+        HistoryUiState(
+            filter = currentFilter,
+            totalCount = entries?.size ?: 0,
+            activeFilterCount = filterCount,
+            body = when {
+                entries == null -> CollectionBodyState.Failed(
+                    message = "Couldn't load History. Try again.",
+                    canRetry = true,
+                )
+                entries.isEmpty() -> CollectionBodyState.Empty
+                filtered.isEmpty() -> CollectionBodyState.NoMatches(
+                    activeFilterCount = filterCount,
+                )
+                else -> CollectionBodyState.Content(filtered)
+            },
+            pendingDeletion = pending,
+            deletionError = currentDeletionError,
+            deletionInProgress = isDeleting,
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = HistoryUiState(),
+    )
 
     fun updateFilter(filterState: FilterState) {
-        _filterState.value = filterState
+        filter.value = filterState
     }
 
-    val filteredEntryCount: StateFlow<Int> = combine(
-        historyRepository.getAllHistory(),
-        _filterState
-    ) { entries, filter ->
-        FilterEngine.applyFilters(entries, filter).size
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = 0
-    )
+    fun retryHistory() {
+        historyReloads.tryEmit(Unit)
+    }
 
-    val groupedHistory: StateFlow<Map<String, List<HistoryEntity>>> = combine(
-        historyRepository.getAllHistory(),
-        _filterState
-    ) { entries, filter ->
-        groupByDate(FilterEngine.applyFilters(entries, filter))
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = emptyMap()
-    )
+    fun requestDelete(row: HistoryEntity) {
+        if (deletionInProgress.value) return
+        deletionError.value = null
+        pendingDeletion.value = PendingHistoryDeletion.Row(row.id, row.displayName)
+    }
 
-    /**
-     * Groups history entries by date, using friendly labels for recent dates.
-     */
-    private fun groupByDate(entries: List<HistoryEntity>): Map<String, List<HistoryEntity>> {
-        if (entries.isEmpty()) return emptyMap()
+    fun requestClearAll() {
+        if (deletionInProgress.value) return
+        deletionError.value = null
+        pendingDeletion.value = PendingHistoryDeletion.All
+    }
 
-        val zone = ZoneId.systemDefault()
-        val today = LocalDate.now(zone)
-        val yesterday = today.minusDays(1)
+    fun dismissDeletion() {
+        if (deletionInProgress.value) return
+        pendingDeletion.value = null
+        deletionError.value = null
+    }
 
-        // Use LinkedHashMap to preserve insertion order (most recent date first)
-        val grouped = linkedMapOf<String, MutableList<HistoryEntity>>()
-
-        for (entry in entries) {
-            val entryDate = Instant.ofEpochMilli(entry.lastSeen)
-                .atZone(zone)
-                .toLocalDate()
-
-            val label = when (entryDate) {
-                today -> "Today"
-                yesterday -> "Yesterday"
-                else -> entryDate.format(DATE_FORMATTER)
+    fun confirmDeletion() = pendingDeletion.value
+        ?.takeUnless { deletionInProgress.value }
+        ?.let { pending ->
+            deletionInProgress.value = true
+            deletionError.value = null
+            viewModelScope.launch {
+                try {
+                    when (pending) {
+                        is PendingHistoryDeletion.Row -> historyStore.deleteById(pending.id)
+                        PendingHistoryDeletion.All -> historyStore.clearAll()
+                    }
+                    pendingDeletion.value = null
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Throwable) {
+                    deletionError.value = when (pending) {
+                        is PendingHistoryDeletion.Row -> "Couldn't delete this detection. Try again."
+                        PendingHistoryDeletion.All -> "Couldn't clear history. Try again."
+                    }
+                } finally {
+                    deletionInProgress.value = false
+                }
             }
-
-            grouped.getOrPut(label) { mutableListOf() }.add(entry)
-        }
-
-        return grouped
-    }
+        } ?: viewModelScope.launch { }
 }

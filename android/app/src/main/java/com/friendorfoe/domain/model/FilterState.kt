@@ -11,6 +11,18 @@ data class FilterState(
     val isAdvancedExpanded: Boolean = false
 )
 
+fun activeFilterCount(filter: FilterState): Int = listOf(
+    filter.searchQuery.isNotBlank(),
+    filter.selectedCategories.isNotEmpty(),
+    filter.selectedSources.isNotEmpty(),
+    filter.objectTypeFilter != null,
+    filter.maxDistanceNm != null,
+    filter.minAltitudeFt != null,
+    filter.maxAltitudeFt != null,
+).count { it }
+
+fun FilterState.cleared(): FilterState = FilterState()
+
 enum class SourceFilterGroup { ADS_B, REMOTE_ID, WIFI }
 
 enum class ObjectTypeFilter { AIRCRAFT, DRONE }

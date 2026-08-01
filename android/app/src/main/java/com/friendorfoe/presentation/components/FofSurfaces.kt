@@ -6,18 +6,28 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -29,6 +39,36 @@ enum class FofTone {
     Success,
     Warning,
     Danger,
+}
+
+@Composable
+fun FofScreenHeader(
+    title: String,
+    count: Int? = null,
+    countLabel: String? = null,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(title, style = MaterialTheme.typography.headlineSmall)
+        if (count != null && countLabel != null) {
+            Text("$count $countLabel", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FofSecondaryScreenHeader(title: String, onBack: () -> Unit) {
+    TopAppBar(
+        title = { Text(title) },
+        navigationIcon = {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+            ) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+        },
+    )
 }
 
 @Composable
@@ -85,6 +125,7 @@ fun FofActionRow(
     Row(
         modifier = rowModifier
             .fillMaxWidth()
+            .heightIn(min = 48.dp)
             .padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -103,8 +144,6 @@ fun FofActionRow(
                 text = description,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
             )
         }
         if (onClick != null) {
@@ -135,7 +174,7 @@ fun FofStatusStrip(
 ) {
     val accent = fofToneColor(tone)
     Surface(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().heightIn(min = 48.dp),
         color = accent.copy(alpha = 0.10f),
         tonalElevation = 0.dp
     ) {
@@ -158,25 +197,112 @@ fun FofStatusStrip(
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = detail,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
                 )
             }
             if (actionLabel != null && onAction != null) {
-                TextButton(onClick = onAction) {
+                TextButton(onClick = onAction, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text(actionLabel)
                 }
             }
         }
     }
 }
+
+@Composable
+fun FofSectionStrip(
+    label: String,
+    title: String,
+    detail: String,
+    tone: FofTone = FofTone.Neutral,
+    modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    FofStatusStrip(
+        label = label,
+        title = title,
+        detail = detail,
+        tone = tone,
+        modifier = modifier,
+        actionLabel = actionLabel,
+        onAction = onAction,
+    )
+}
+
+@Composable
+fun FofStaleBanner(
+    message: String,
+    ageMs: Long?,
+    modifier: Modifier = Modifier,
+) {
+    val ageDetail = ageMs?.let(::fofAgeLabel) ?: "Saved result age is unavailable"
+    FofSectionStrip(
+        label = "STALE",
+        title = message,
+        detail = ageDetail,
+        tone = FofTone.Warning,
+        modifier = modifier,
+    )
+}
+
+@Composable
+fun FofConfirmationDialog(
+    title: String,
+    message: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    dismissLabel: String = "Cancel",
+    inProgress: Boolean = false,
+    error: String? = null,
+    confirmTag: String? = null,
+    dismissTag: String? = null,
+) {
+    AlertDialog(
+        modifier = modifier,
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(message)
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !inProgress,
+                modifier = Modifier.heightIn(min = 48.dp).withOptionalTag(dismissTag),
+            ) {
+                Text(dismissLabel)
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                enabled = !inProgress,
+                modifier = Modifier.heightIn(min = 48.dp).withOptionalTag(confirmTag),
+            ) {
+                Text(confirmLabel)
+            }
+        },
+    )
+}
+
+private fun fofAgeLabel(ageMs: Long): String = when {
+    ageMs < 60_000L -> "Updated less than a minute ago"
+    ageMs < 3_600_000L -> "Updated ${ageMs / 60_000L} minutes ago"
+    else -> "Updated ${ageMs / 3_600_000L} hours ago"
+}
+
+private fun Modifier.withOptionalTag(tag: String?): Modifier =
+    if (tag == null) this else testTag(tag)
 
 @Composable
 fun FofEmptyState(

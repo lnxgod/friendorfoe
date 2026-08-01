@@ -10,18 +10,9 @@ import com.friendorfoe.detection.AdsbPoller
 import com.friendorfoe.detection.BayesianFusionEngine
 import com.friendorfoe.detection.BleTracker
 import com.friendorfoe.detection.DataSourceStatus
-import com.friendorfoe.detection.GlassesDetection
-import com.friendorfoe.detection.GlassesDetector
-import com.friendorfoe.detection.GlassesStalePolicy
-import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.detection.RemoteIdScanner
 import com.friendorfoe.detection.WifiDroneScanner
 import com.friendorfoe.detection.WifiNanRemoteIdScanner
-import com.friendorfoe.detection.WifiPrivacyScanner
-import com.friendorfoe.detection.canonicalPrivacyIdentities
-import com.friendorfoe.detection.canonicalPrivacyIdentity
-import com.friendorfoe.detection.canonicalPrivacyIdentityAliases
-import com.friendorfoe.detection.privacyIdentityIsIgnored
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
@@ -43,23 +34,6 @@ import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private val FOLLOWER_CANDIDATE_CATEGORIES = setOf(
-    PrivacyCategory.FINDMY,
-    PrivacyCategory.BLE_TRACKER,
-    PrivacyCategory.GPS_TRACKER,
-    PrivacyCategory.OBD_TRACKER,
-    PrivacyCategory.SMART_GLASSES,
-    PrivacyCategory.ACTION_CAMERA,
-    PrivacyCategory.DASH_CAMERA,
-    PrivacyCategory.VEHICLE_CAMERA,
-    PrivacyCategory.BODY_CAMERA,
-)
-
-internal fun GlassesDetection.isFollowerCandidate(ignoredKeys: Set<String>): Boolean {
-    if (isBonded || category !in FOLLOWER_CANDIDATE_CATEGORIES) return false
-    return !privacyIdentityIsIgnored(canonicalPrivacyIdentityAliases(), ignoredKeys)
-}
-
 /**
  * Unified repository that merges all detection sources into a single stream
  * of sky objects for the presentation layer.
@@ -80,16 +54,14 @@ class SkyObjectRepository @Inject constructor(
     private val remoteIdScanner: RemoteIdScanner,
     private val wifiDroneScanner: WifiDroneScanner,
     private val wifiNanRemoteIdScanner: WifiNanRemoteIdScanner,
-    private val wifiPrivacyScanner: WifiPrivacyScanner,
-    private val glassesDetector: GlassesDetector,
-    val bleTracker: BleTracker,
-    private val ultrasonicDetector: com.friendorfoe.detection.UltrasonicDetector,
+    private val bleTracker: BleTracker,
     private val detectionPrefs: DetectionPrefs,
     private val fusionEngine: BayesianFusionEngine,
-    private val sensorFusionEngine: com.friendorfoe.sensor.SensorFusionEngine,
     private val historyDao: HistoryDao,
-    private val trackingDao: TrackingDao
-) {
+    private val trackingDao: TrackingDao,
+    private val localDetectionPermissionProvider: LocalDetectionPermissionProvider,
+    private val localDetectionPermissionUpdates: LocalDetectionPermissionUpdates,
+) : RuntimePermissionChangeNotifier {
 
     companion object {
         private const val TAG = "SkyObjectRepository"
@@ -103,14 +75,11 @@ class SkyObjectRepository @Inject constructor(
 
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var collectionJob: Job? = null
-    private var glassesJob: Job? = null
-    private var glassesUpdateJob: Job? = null
-    private var glassesExpiryJob: Job? = null
     private val sessionGate = DetectionSessionGate()
+    @Volatile private var activeLocalPermissions = LocalDetectionPermissions.None
 
     // Track user position for history persistence
-    @Volatile
-    private var userLocationFix = UserLocationFix(
+    @Volatile private var userLocationFix = UserLocationFix(
         latitude = 0.0,
         longitude = 0.0,
         accuracyMeters = Float.POSITIVE_INFINITY,
@@ -133,71 +102,12 @@ class SkyObjectRepository @Inject constructor(
     /** Combined, deduplicated list of all detected sky objects. */
     val skyObjects: StateFlow<List<SkyObject>> = _skyObjects.asStateFlow()
 
-    private val _glassesDetections = MutableStateFlow<List<GlassesDetection>>(emptyList())
-
-    /** Smart glasses / privacy devices detected nearby. */
-    val glassesDetections: StateFlow<List<GlassesDetection>> = _glassesDetections.asStateFlow()
-
-    private val _stalkerAlerts = MutableStateFlow<List<BleTracker.StalkerAlert>>(emptyList())
-
-    /** BLE devices that appear to be following the user. */
-    val stalkerAlerts: StateFlow<List<BleTracker.StalkerAlert>> = _stalkerAlerts.asStateFlow()
-
-    private val _ultrasonicAlerts = MutableStateFlow<List<com.friendorfoe.detection.UltrasonicDetector.UltrasonicAlert>>(emptyList())
-
-    /** Ultrasonic tracking beacons detected nearby. */
-    val ultrasonicAlerts: StateFlow<List<com.friendorfoe.detection.UltrasonicDetector.UltrasonicAlert>> = _ultrasonicAlerts.asStateFlow()
-
     /** Detection preferences — exposed for Settings UI. */
     val prefs: DetectionPrefs get() = detectionPrefs
-
-    /** Clear all privacy detections and rescan fresh. */
-    fun refreshPrivacyDetections() {
-        glassesDetector.clearAllDetections()
-        glassesMap.clear()
-        _glassesDetections.value = emptyList()
-        Log.i(TAG, "Privacy detections cleared — fresh scan starting")
-    }
-
-    /** Ignore a privacy device by MAC (removes from list, persists).
-     *  For MAC-rotating devices we clear every row that has ever surfaced this
-     *  MAC across its RPA rotations. */
-    fun ignorePrivacyDevice(mac: String) {
-        sessionGate.withGate {
-            val requestedIdentity = canonicalPrivacyIdentities(setOf(mac))
-            val detection = glassesMap.values.firstOrNull { candidate ->
-                privacyIdentityIsIgnored(
-                    candidate.canonicalPrivacyIdentityAliases(),
-                    requestedIdentity,
-                )
-            }
-            val identityAliases = detection?.canonicalPrivacyIdentityAliases()
-                ?: requestedIdentity
-
-            if (detection != null) {
-                glassesDetector.ignoreDevice(detection)
-            } else {
-                glassesDetector.ignoreIdentities(identityAliases)
-            }
-            bleTracker.removeEvidenceForIdentities(identityAliases)
-            glassesMap.entries.removeAll { (_, candidate) ->
-                privacyIdentityIsIgnored(
-                    candidate.canonicalPrivacyIdentityAliases(),
-                    identityAliases,
-                )
-            }
-            _stalkerAlerts.value = _stalkerAlerts.value.filterNot { alert ->
-                val alertIdentity = canonicalPrivacyIdentity(alert.device.mac)
-                alertIdentity != null && alertIdentity in identityAliases
-            }
-            updateGlassesList(force = true)
-        }
-    }
 
     /** Toggle privacy detection on/off. */
     fun setPrivacyDetectionEnabled(enabled: Boolean) {
         detectionPrefs.privacyEnabled = enabled
-        restartDetectionSources()
     }
 
     /** Restart running collectors so About toggles take effect immediately. */
@@ -206,6 +116,20 @@ class SkyObjectRepository @Inject constructor(
             onEnded = ::stopDetectionSources,
             onStarted = ::startDetectionSources,
         )
+    }
+
+    /** Re-evaluate protected collectors after a feature-owned permission flow completes. */
+    override fun onRuntimePermissionsChanged() {
+        localDetectionPermissionUpdates.publishCurrent()
+        val permissions = localDetectionPermissionProvider.current()
+        if (shouldRestartForPermissionChange(
+                sessionGate.isActive(),
+                activeLocalPermissions,
+                permissions,
+            )
+        ) {
+            restartDetectionSources()
+        }
     }
 
     /** Get the position trail for a given object ID. */
@@ -227,24 +151,36 @@ class SkyObjectRepository @Inject constructor(
      *
      * @param latitude User's current latitude for ADS-B polling
      * @param longitude User's current longitude for ADS-B polling
-     * @param locationAccuracyMeters Accuracy of the current location, or infinity when unknown
      */
     fun ensureStarted(
         latitude: Double,
         longitude: Double,
         locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
     ) {
-        val validatedAccuracy = validatedLocationAccuracyMeters(
-            hasAccuracy = true,
-            accuracyMeters = locationAccuracyMeters,
-        )
+        val permissions = localDetectionPermissionProvider.current()
+        localDetectionPermissionUpdates.publish(permissions)
         val requestedFix = userLocationFixForStart(
             latitude = latitude,
             longitude = longitude,
-            accuracyMeters = validatedAccuracy,
+            accuracyMeters = validatedLocationAccuracyMeters(
+                hasAccuracy = true,
+                accuracyMeters = locationAccuracyMeters,
+            ),
         )
+
         if (requestedFix == null) {
             ensureScannerStarted()
+            return
+        }
+
+        if (sessionGate.isActive() && shouldRestartForPermissionChange(
+                true,
+                activeLocalPermissions,
+                permissions,
+            )
+        ) {
+            applyUserLocationFix(requestedFix, updatePoller = false)
+            restartDetectionSources()
             return
         }
 
@@ -261,6 +197,17 @@ class SkyObjectRepository @Inject constructor(
 
     /** Start scanner sources without asserting or replacing a user position. */
     fun ensureScannerStarted() {
+        val permissions = localDetectionPermissionProvider.current()
+        localDetectionPermissionUpdates.publish(permissions)
+        if (sessionGate.isActive() && shouldRestartForPermissionChange(
+                true,
+                activeLocalPermissions,
+                permissions,
+            )
+        ) {
+            restartDetectionSources()
+            return
+        }
         sessionGate.ensureSession(
             onStarted = ::startDetectionSources,
             onActive = {},
@@ -268,9 +215,19 @@ class SkyObjectRepository @Inject constructor(
     }
 
     private fun startDetectionSources(generation: Long) {
+        val permissions = localDetectionPermissionProvider.current()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        activeLocalPermissions = permissions
         val location = userLocationFix
-        Log.i(TAG, "Starting detection session $generation at (${location.latitude}, ${location.longitude})")
+        bleTracker.recordUserLocation(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            locationAccuracyMeters = location.accuracyMeters,
+        )
+        Log.i(
+            TAG,
+            "Starting detection session $generation at (${location.latitude}, ${location.longitude})",
+        )
 
         // ADS-B is API/backend-backed. Backend-only disables local phone sensors,
         // not network aircraft feeds.
@@ -280,21 +237,31 @@ class SkyObjectRepository @Inject constructor(
 
         // Collect from all sources (respecting per-source toggles)
         val localPhoneSensorsEnabled = !detectionPrefs.backendOnlyMode
+        val protectedSources = allowedProtectedDetectionSources(permissions)
         collectionJob = scope.launch {
             if (detectionPrefs.adsbEnabled) launch { collectAdsb() }
             if (localPhoneSensorsEnabled) {
-                if (detectionPrefs.bleRidEnabled) launch { collectRemoteId() }
-                if (detectionPrefs.bleRidEnabled) launch { collectWifiNan() }
-                if (detectionPrefs.wifiEnabled) launch { collectWifi() }
-                if (detectionPrefs.privacyEnabled) {
-                    glassesJob = launch { collectGlasses(generation) }
-                    launch { collectWifiPrivacy(generation) }
-                }
-                if (detectionPrefs.stalkerDetectionEnabled) {
-                    launch { collectStalkerAlerts(generation) }
-                }
-                if (detectionPrefs.ultrasonicEnabled) launch { collectUltrasonic() }
+                if (detectionPrefs.bleRidEnabled &&
+                    ProtectedDetectionSource.BLE_REMOTE_ID in protectedSources
+                ) launchProtected("BLE Remote ID") { collectRemoteId() }
+                if (detectionPrefs.bleRidEnabled &&
+                    ProtectedDetectionSource.WIFI_REMOTE_ID in protectedSources
+                ) launchProtected("WiFi NaN Remote ID") { collectWifiNan() }
+                if (detectionPrefs.wifiEnabled &&
+                    ProtectedDetectionSource.WIFI_DRONE in protectedSources
+                ) launchProtected("WiFi drone") { collectWifi() }
             }
+        }
+    }
+
+    private fun CoroutineScope.launchProtected(
+        sourceName: String,
+        collect: suspend () -> Unit,
+    ): Job = launch {
+        try {
+            collect()
+        } catch (error: SecurityException) {
+            Log.w(TAG, "$sourceName permission changed while starting; collector deferred", error)
         }
     }
 
@@ -304,33 +271,22 @@ class SkyObjectRepository @Inject constructor(
     }
 
     private fun stopDetectionSources() {
+        activeLocalPermissions = LocalDetectionPermissions.None
         collectionJob?.cancel()
         collectionJob = null
-        glassesJob?.cancel()
-        glassesJob = null
-        glassesUpdateJob?.cancel()
-        glassesUpdateJob = null
-        glassesExpiryJob?.cancel()
-        glassesExpiryJob = null
         adsbPoller.stop()
         remoteIdScanner.stopScanning()
         wifiNanRemoteIdScanner.stopScanning()
         wifiDroneScanner.stopScanning()
-        glassesDetector.stopScanning()
         fusionEngine.reset()
-        bleTracker.clear()
 
         adsbObjects.clear()
         remoteIdObjects.clear()
         nanObjects.clear()
         wifiObjects.clear()
-        glassesMap.clear()
         persistedObjectIds.clear()
         positionTrails.clear()
         _skyObjects.value = emptyList()
-        _glassesDetections.value = emptyList()
-        _stalkerAlerts.value = emptyList()
-        _ultrasonicAlerts.value = emptyList()
         scope.cancel()
 
         Log.i(TAG, "All detection sources stopped")
@@ -341,7 +297,6 @@ class SkyObjectRepository @Inject constructor(
      *
      * @param latitude New latitude
      * @param longitude New longitude
-     * @param locationAccuracyMeters Accuracy of the current location, or infinity when unknown
      */
     fun updatePosition(
         latitude: Double,
@@ -359,7 +314,11 @@ class SkyObjectRepository @Inject constructor(
         sessionGate.withGate {
             userLocationFix = mergeUserLocationFix(userLocationFix, fix)
             if (sessionGate.isActive()) {
-                bleTracker.recordUserLocation(latitude, longitude)
+                bleTracker.recordUserLocation(
+                    latitude = latitude,
+                    longitude = longitude,
+                    locationAccuracyMeters = fix.accuracyMeters,
+                )
                 adsbPoller.updatePosition(latitude, longitude)
             }
         }
@@ -367,7 +326,11 @@ class SkyObjectRepository @Inject constructor(
 
     private fun applyUserLocationFix(fix: UserLocationFix, updatePoller: Boolean) {
         userLocationFix = mergeUserLocationFix(userLocationFix, fix)
-        bleTracker.recordUserLocation(fix.latitude, fix.longitude)
+        bleTracker.recordUserLocation(
+            latitude = fix.latitude,
+            longitude = fix.longitude,
+            locationAccuracyMeters = fix.accuracyMeters,
+        )
         if (updatePoller) {
             adsbPoller.updatePosition(fix.latitude, fix.longitude)
         }
@@ -443,158 +406,6 @@ class SkyObjectRepository @Inject constructor(
                 Log.d(TAG, "WiFi updated: drone ${drone.ssid}")
             }
             rebuildMergedList()
-        }
-    }
-
-    /** Collect privacy devices from every visible WiFi result, not only drone SSIDs. */
-    private suspend fun collectWifiPrivacy(generation: Long) {
-        wifiPrivacyScanner.startScanning().collect { detection ->
-            sessionGate.runIfActive(generation) {
-                if (
-                    privacyIdentityIsIgnored(
-                        detection.canonicalPrivacyIdentityAliases(),
-                        detectionPrefs.getIgnoredIdentities(),
-                    )
-                ) {
-                    return@runIfActive
-                }
-                glassesMap[detection.fingerprintKey] = detection
-                updateGlassesList(generation = generation)
-            }
-        }
-    }
-
-    /**
-     * Collect smart glasses / privacy device detections from BLE + WiFi.
-     * Keyed on GlassesDetection.fingerprintKey so one physical device stays
-     * one entry as its BT Private Resolvable Address rotates.
-     */
-    private val glassesMap = java.util.concurrent.ConcurrentHashMap<String, GlassesDetection>()
-
-    private fun commitGlassesUpdate() {
-        val now = Instant.now()
-        val staleKeys = glassesMap.filter {
-            GlassesStalePolicy.isStale(it.value, now)
-        }.keys
-        staleKeys.forEach { glassesMap.remove(it) }
-        _glassesDetections.value = glassesMap.values
-            .sortedByDescending { it.rssi }
-            .toList()
-    }
-
-    private fun scheduleGlassesExpiry(generation: Long) {
-        glassesExpiryJob?.cancel()
-        val delayMillis = GlassesStalePolicy.nextExpiryDelayMillis(
-            glassesMap.values,
-            Instant.now(),
-        ) ?: run {
-            glassesExpiryJob = null
-            return
-        }
-        glassesExpiryJob = scope.launch {
-            kotlinx.coroutines.delay(delayMillis)
-            glassesExpiryJob = null
-            sessionGate.runIfActive(generation) {
-                commitGlassesUpdate()
-                scheduleGlassesExpiry(generation)
-            }
-        }
-    }
-
-    private fun updateGlassesList(
-        generation: Long? = null,
-        force: Boolean = false,
-    ) {
-        if (force) {
-            glassesUpdateJob?.cancel()
-            commitGlassesUpdate()
-            return
-        }
-        val activeGeneration = generation ?: return
-        // Debounce: schedule an update if one isn't already pending.
-        // This ensures updates within the window are batched, never dropped.
-        if (glassesUpdateJob?.isActive == true) return
-        glassesUpdateJob = scope.launch {
-            kotlinx.coroutines.delay(1000)
-            sessionGate.runIfActive(activeGeneration) {
-                commitGlassesUpdate()
-                scheduleGlassesExpiry(activeGeneration)
-            }
-        }
-    }
-
-    private suspend fun collectGlasses(generation: Long) {
-        glassesDetector.startScanning().collect { detection ->
-            sessionGate.runIfActive(generation) {
-                if (
-                    privacyIdentityIsIgnored(
-                        detection.canonicalPrivacyIdentityAliases(),
-                        detectionPrefs.getIgnoredIdentities(),
-                    )
-                ) {
-                    return@runIfActive
-                }
-                // Merge into the fingerprint-keyed map. For MAC-rotating high-risk
-                // classes (Meta, Ray-Ban, Oakley, Quest) this collapses many RPAs
-                // per physical device into one durable row. For stable-MAC devices
-                // the fingerprintKey is "mac:<addr>" so nothing collapses.
-                val existing = glassesMap[detection.fingerprintKey]
-                val merged = if (existing == null) {
-                    detection
-                } else {
-                    detection.copy(
-                        firstSeen = existing.firstSeen,
-                        seenMacs = existing.seenMacs + detection.seenMacs
-                    )
-                }
-                glassesMap[detection.fingerprintKey] = merged
-                updateGlassesList(generation = generation)
-
-                // Feed to BLE tracker for stalker detection
-                if (
-                    detectionPrefs.stalkerDetectionEnabled &&
-                    merged.isFollowerCandidate(detectionPrefs.getIgnoredIdentities())
-                ) {
-                    val location = userLocationFix
-                    bleTracker.recordSighting(
-                        mac = merged.mac,
-                        rssi = merged.rssi,
-                        deviceName = merged.deviceName,
-                        deviceType = merged.deviceType,
-                        manufacturer = merged.manufacturer,
-                        hasCamera = merged.hasCamera,
-                        userLat = location.latitude,
-                        userLon = location.longitude,
-                        compassBearing = sensorFusionEngine.orientation.value.azimuthDegrees,
-                        category = merged.category,
-                        isBonded = merged.isBonded,
-                        locationAccuracyMeters = location.accuracyMeters,
-                    )
-                }
-            }
-        }
-    }
-
-    /** Collect ultrasonic tracking beacon alerts from microphone FFT analysis */
-    private suspend fun collectUltrasonic() {
-        Log.i(TAG, "Ultrasonic beacon monitoring started")
-        val recentAlerts = mutableListOf<com.friendorfoe.detection.UltrasonicDetector.UltrasonicAlert>()
-        ultrasonicDetector.startMonitoring().collect { alert ->
-            // Keep last 10 alerts, dedup by frequency bin (within 100Hz)
-            recentAlerts.removeAll { kotlin.math.abs(it.frequencyHz - alert.frequencyHz) < 100f }
-            recentAlerts.add(alert)
-            if (recentAlerts.size > 10) recentAlerts.removeAt(0)
-            _ultrasonicAlerts.value = recentAlerts.toList()
-        }
-    }
-
-    /** Periodically check for BLE devices following the user */
-    private suspend fun collectStalkerAlerts(generation: Long) {
-        while (true) {
-            kotlinx.coroutines.delay(30_000L) // Check every 30 seconds
-            sessionGate.runIfActive(generation) {
-                _stalkerAlerts.value = bleTracker.checkForFollowers()
-            }
         }
     }
 

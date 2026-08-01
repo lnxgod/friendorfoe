@@ -1,9 +1,12 @@
 package com.friendorfoe.presentation
 
-import com.friendorfoe.data.remote.EventStatsDto
-import com.friendorfoe.data.remote.FakeSensorMapApiService
+import com.friendorfoe.data.preferences.AppLaunchState
+import com.friendorfoe.data.preferences.AppPreferences
+import com.friendorfoe.data.preferences.FindingPreferenceKey
 import com.friendorfoe.test.MainDispatcherRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -17,23 +20,45 @@ class AppChromeViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     @Test
-    fun refreshNow_sums_probe_intel_unacknowledged_counts() = runTest {
-        val api = FakeSensorMapApiService().apply {
-            eventStats = EventStatsDto(
-                unackByType = mapOf(
-                    "new_probe_identity" to 2,
-                    "new_probe_mac" to 1,
-                    "new_probed_ssid" to 3,
-                    "probe_activity_spike" to 1,
-                    "new_rid_drone" to 9,
-                )
-            )
-        }
-        val viewModel = AppChromeViewModel(api)
+    fun launchStateAndOnboardingCompletionFollowPreferences() = runTest {
+        val preferences = FakeAppPreferences(AppLaunchState.NeedsOnboarding)
+        val viewModel = AppChromeViewModel(preferences)
 
-        viewModel.refreshNow()
+        assertEquals(
+            AppLaunchState.NeedsOnboarding,
+            viewModel.uiState.first { it.launchState !is AppLaunchState.Loading }.launchState
+        )
+
+        viewModel.completeOnboarding()
         advanceUntilIdle()
 
-        assertEquals(7, viewModel.calibrateBadgeCount.value)
+        assertEquals(1, preferences.onboardingCompletionCount)
+
+        preferences.launchState.value = AppLaunchState.Ready("privacy")
+
+        advanceUntilIdle()
+
+        assertEquals(AppLaunchState.Ready("privacy"), viewModel.uiState.value.launchState)
+    }
+}
+
+private class FakeAppPreferences(initialLaunchState: AppLaunchState) : AppPreferences {
+    override val launchState = MutableStateFlow(initialLaunchState)
+    override val ignoredFindingKeys = MutableStateFlow(emptySet<String>())
+    override val requestedPermissions = MutableStateFlow(emptySet<String>())
+    var onboardingCompletionCount = 0
+
+    override suspend fun setOnboardingComplete() {
+        onboardingCompletionCount++
+    }
+
+    override suspend fun setLastTopLevelRoute(route: String) = Unit
+
+    override suspend fun ignoreFinding(key: FindingPreferenceKey) = Unit
+
+    override suspend fun restoreFinding(key: FindingPreferenceKey) = Unit
+
+    override suspend fun markPermissionsRequested(permissions: Set<String>) {
+        requestedPermissions.value += permissions
     }
 }

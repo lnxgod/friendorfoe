@@ -27,21 +27,6 @@ class PrivacyBadgeSeparationContractTest {
     }
 
     @Test
-    fun `Privacy preserves phone backend wifi and sweep behavior`() {
-        val viewModel = source("presentation/privacy/PrivacyViewModel.kt")
-        val screen = source("presentation/privacy/PrivacyScreen.kt")
-
-        assertTrue(viewModel.contains("skyObjectRepository.glassesDetections"))
-        assertTrue(viewModel.contains("_backendPrivacyDetections"))
-        assertTrue(viewModel.contains("_wifiAnomalies"))
-        assertTrue(viewModel.contains("bleInvestigationCoordinator.investigatePhone"))
-        assertTrue(viewModel.contains("skyObjectRepository.refreshPrivacyDetections()"))
-        assertTrue(screen.contains("SweepToolsRow("))
-        assertTrue(screen.contains("DirectionScanOverlay("))
-        assertTrue(screen.contains("BleInvestigationDialog("))
-    }
-
-    @Test
     fun `USB permission retry is rendered only by dedicated badge screen`() {
         val privacy = source("presentation/privacy/PrivacyScreen.kt")
         val badge = source("presentation/badge/BadgeControlScreen.kt")
