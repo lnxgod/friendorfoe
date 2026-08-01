@@ -82,6 +82,24 @@ class PrivacyCapabilityTest {
         )
     }
 
+    @Test
+    fun malformedStableIdentityDoesNotAdvertiseIgnoreCapability() {
+        val malformed = "stable\u001Fextra"
+        val finding = finding(stableSourceId = malformed)
+
+        assertNull(finding.ignoreKey)
+        assertEquals(
+            PrivacyCapabilities(),
+            capabilitiesFor(
+                source = PrivacySourceKind.PHONE_BLE,
+                stableId = malformed,
+                hasLiveLocalSamples = true,
+                freshness = FindingFreshness.LIVE,
+                sourceHealth = SourceHealthState.LIVE,
+            ),
+        )
+    }
+
     private fun finding(stableSourceId: String?) = PrivacyFinding(
         displayId = "display",
         observationKey = PrivacyFindingKey(PrivacySourceKind.PHONE_BLE, "observation"),

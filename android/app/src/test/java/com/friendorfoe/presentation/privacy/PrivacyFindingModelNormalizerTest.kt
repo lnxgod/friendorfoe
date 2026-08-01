@@ -110,6 +110,8 @@ class PrivacyFindingModelNormalizerTest {
     fun evidenceSplitAcrossDifferentRowsNeverCorrelates() {
         val appleOnly = finding(
             title = "Apple continuity",
+            category = PrivacyCategory.APPLE_CONTINUITY,
+            severity = FindingSeverity.INFO,
             appleEvidence = PrivacyAppleListeningEvidence(
                 appleFamilyEvidence = true,
                 airPodsAssociationEvidence = true,
@@ -139,6 +141,30 @@ class PrivacyFindingModelNormalizerTest {
             category = PrivacyCategory.REMOTE_LISTENING,
             severity = FindingSeverity.CRITICAL,
             appleEvidence = null,
+        )
+
+        val normalized = PrivacyFindingNormalizer.normalize(input)
+
+        assertEquals("AirPods connection/activity nearby", normalized.title)
+        assertEquals(PrivacyCategory.APPLE_CONTINUITY, normalized.category)
+        assertEquals(FindingSeverity.INFO, normalized.severity)
+        assertEquals(
+            "Live Listen and microphone use cannot be determined from BLE.",
+            normalized.limitation,
+        )
+    }
+
+    @Test
+    fun incompleteStructuredAppleEvidenceCannotSuppressSameRowListeningDefense() {
+        val input = finding(
+            title = "Apple AirPods eavesdropping activity",
+            category = PrivacyCategory.APPLE_CONTINUITY,
+            severity = FindingSeverity.CRITICAL,
+            appleEvidence = PrivacyAppleListeningEvidence(
+                appleFamilyEvidence = true,
+                airPodsAssociationEvidence = true,
+                listeningOrientedCategoryOrWording = false,
+            ),
         )
 
         val normalized = PrivacyFindingNormalizer.normalize(input)

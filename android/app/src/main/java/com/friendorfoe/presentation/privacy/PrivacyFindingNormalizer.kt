@@ -57,9 +57,10 @@ object PrivacyFindingNormalizer {
         } else {
             input
         }
-        val apple = categorySafe.appleEvidence
-            ?: inferredSameRowAppleEvidence(categorySafe)
-            ?: return categorySafe
+        val apple = mergeAppleEvidence(
+            categorySafe.appleEvidence,
+            inferredSameRowAppleEvidence(categorySafe),
+        ) ?: return categorySafe
         if (!apple.appleFamilyEvidence || !apple.listeningOrientedCategoryOrWording) {
             return categorySafe
         }
@@ -100,15 +101,31 @@ object PrivacyFindingNormalizer {
             listOf("listening", "eavesdrop", "live listen", "microphone").any {
                 sameRowText.contains(it, ignoreCase = true)
             }
-        return if (appleFamilyEvidence && listeningEvidence) {
+        return if (appleFamilyEvidence || listeningEvidence) {
             PrivacyAppleListeningEvidence(
-                appleFamilyEvidence = true,
+                appleFamilyEvidence = appleFamilyEvidence,
                 airPodsAssociationEvidence = airPodsEvidence,
-                listeningOrientedCategoryOrWording = true,
+                listeningOrientedCategoryOrWording = listeningEvidence,
             )
         } else {
             null
         }
+    }
+
+    private fun mergeAppleEvidence(
+        structured: PrivacyAppleListeningEvidence?,
+        inferred: PrivacyAppleListeningEvidence?,
+    ): PrivacyAppleListeningEvidence? = when {
+        structured == null -> inferred
+        inferred == null -> structured
+        else -> PrivacyAppleListeningEvidence(
+            appleFamilyEvidence = structured.appleFamilyEvidence || inferred.appleFamilyEvidence,
+            airPodsAssociationEvidence =
+                structured.airPodsAssociationEvidence || inferred.airPodsAssociationEvidence,
+            listeningOrientedCategoryOrWording =
+                structured.listeningOrientedCategoryOrWording ||
+                    inferred.listeningOrientedCategoryOrWording,
+        )
     }
 
     private fun containsListeningClaim(text: String): Boolean =

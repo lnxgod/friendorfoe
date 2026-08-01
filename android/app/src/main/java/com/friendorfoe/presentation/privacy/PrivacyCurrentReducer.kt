@@ -1,5 +1,7 @@
 package com.friendorfoe.presentation.privacy
 
+import com.friendorfoe.data.preferences.FindingPreferenceKey
+
 fun capabilitiesFor(
     source: PrivacySourceKind,
     stableId: String?,
@@ -7,7 +9,9 @@ fun capabilitiesFor(
     freshness: FindingFreshness,
     sourceHealth: SourceHealthState,
 ): PrivacyCapabilities {
-    val canIgnore = !stableId.isNullOrBlank()
+    val canIgnore = stableId?.let {
+        FindingPreferenceKey.create(source.preferenceId, it)
+    } != null
     val canTrack = source == PrivacySourceKind.PHONE_BLE &&
         canIgnore &&
         hasLiveLocalSamples &&
