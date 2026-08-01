@@ -37,6 +37,9 @@ gson = "2.10.1"
 # Room
 room = "2.6.1"
 
+# DataStore
+datastore = "1.1.1"
+
 # Coroutines
 coroutines = "1.7.3"
 
@@ -102,6 +105,9 @@ gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+
+# DataStore
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 
 # Coroutines
 coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }

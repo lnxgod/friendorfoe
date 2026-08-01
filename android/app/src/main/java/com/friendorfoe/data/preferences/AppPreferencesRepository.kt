@@ -1,0 +1,70 @@
+package com.friendorfoe.data.preferences
+
+import android.content.Context
+import androidx.annotation.VisibleForTesting
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import javax.inject.Inject
+import javax.inject.Singleton
+
+private val Context.fofDataStore by preferencesDataStore(name = "fof_app_state")
+
+private val TOP_LEVEL_ROUTES = setOf(
+    "ar_view", "map_view", "list_view", "privacy", "badge", "history", "info"
+)
+
+internal fun sanitizeTopLevelRoute(route: String?): String =
+    route?.takeIf(TOP_LEVEL_ROUTES::contains) ?: "ar_view"
+
+@Singleton
+class AppPreferencesRepository @Inject constructor(
+    @ApplicationContext private val context: Context,
+) : AppPreferences {
+    private val onboarding = booleanPreferencesKey("onboarding_complete")
+    private val lastRoute = stringPreferencesKey("last_top_level_route")
+    private val ignored = stringSetPreferencesKey("ignored_finding_keys")
+
+    override val launchState: Flow<AppLaunchState> = context.fofDataStore.data.map { prefs ->
+        if (prefs[onboarding] != true) AppLaunchState.NeedsOnboarding
+        else AppLaunchState.Ready(sanitizeTopLevelRoute(prefs[lastRoute]))
+    }
+
+    override val ignoredFindingKeys: Flow<Set<String>> = context.fofDataStore.data
+        .map { it[ignored].orEmpty() }
+
+    override suspend fun setOnboardingComplete() {
+        context.fofDataStore.edit {
+            it[onboarding] = true
+            if (it[lastRoute] == null) it[lastRoute] = "ar_view"
+        }
+    }
+
+    override suspend fun setLastTopLevelRoute(route: String) {
+        context.fofDataStore.edit {
+            it[lastRoute] = sanitizeTopLevelRoute(route)
+        }
+    }
+
+    override suspend fun ignoreFinding(key: FindingPreferenceKey) {
+        context.fofDataStore.edit {
+            it[ignored] = it[ignored].orEmpty() + key.encoded
+        }
+    }
+
+    override suspend fun restoreFinding(key: FindingPreferenceKey) {
+        context.fofDataStore.edit {
+            it[ignored] = it[ignored].orEmpty() - key.encoded
+        }
+    }
+
+    @VisibleForTesting
+    suspend fun resetForInstrumentation() {
+        context.fofDataStore.edit { it.clear() }
+    }
+}

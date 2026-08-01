@@ -125,6 +125,9 @@ dependencies {
     ksp(libs.room.compiler)
     implementation(libs.room.ktx)
 
+    // DataStore - App preferences
+    implementation(libs.androidx.datastore.preferences)
+
     // Image Loading (Coil - Compose-native async image loading)
     implementation(libs.coil.compose)
 
