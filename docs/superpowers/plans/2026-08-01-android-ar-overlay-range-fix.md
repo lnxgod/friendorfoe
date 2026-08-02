@@ -268,6 +268,6 @@
   git commit -m "v0.67.7: prepare Android AR overlay release"
   ```
 
-- [ ] **Step 5: Push, open the PR, merge after checks, tag, and verify release assets**
+- [ ] **Step 5: Hand the verified local branch to the finishing workflow**
 
-  Push `codex/android-ar-overlay-range`, open a ready PR against `main`, merge after required checks, then tag the merge commit `v0.67.7-android-ar-overlay-range`. Confirm the release is published and includes `friendorfoe-v0.67.7-android-ar-overlay-range.apk` plus its SHA-256 file before handing the install link to the user.
+  Do not push or tag inside this implementation task. After the required whole-branch review, the finishing workflow pushes `codex/android-ar-overlay-range`, opens a ready PR against `main`, merges after required checks, then tags the merge commit `v0.67.7-android-ar-overlay-range`. Confirm the release is published and includes `friendorfoe-v0.67.7-android-ar-overlay-range.apk` plus its SHA-256 file before handing the install link to the user.
