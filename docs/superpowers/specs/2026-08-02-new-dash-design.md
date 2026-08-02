@@ -1,7 +1,7 @@
 # New Dash Design
 
 **Date:** 2026-08-02
-**Status:** Design approved; written specification pending review
+**Status:** Approved for implementation
 
 ## Goal
 
@@ -80,6 +80,13 @@ new-dash/
     static/
       index.html
       app.js
+      api.js
+      ui.js
+      views/
+        live.js
+        map.js
+        history.js
+        badge.js
       styles.css
       vendor/
   tests/
@@ -146,12 +153,13 @@ the source tree unless `--data-dir` explicitly requests it.
 ### Discovery and verification
 
 Automatic discovery enumerates serial devices through PySerial rather than
-matching path globs alone. A candidate must have Espressif vendor ID `0x303A`;
-the expected native USB Serial/JTAG product ID is `0x1001`. Product and
-manufacturer text are diagnostic hints, not substitutes for a mismatched
-vendor ID.
+matching path globs alone. A candidate must have Espressif vendor ID `0x303A`
+and native USB Serial/JTAG product ID `0x1001`. Product and manufacturer text
+are diagnostic hints, not substitutes for mismatched numeric IDs. macOS
+`/dev/cu.*` and `/dev/tty.*` aliases with the same stable USB identity count as
+one physical candidate, with the `/dev/cu.*` path preferred.
 
-Exactly one candidate is opened automatically. Zero candidates produces a
+Exactly one physical candidate is opened automatically. Zero candidates produces a
 waiting state. More than one produces an actionable ambiguous-device state and
 does not guess. `--port` selects an explicit path but still requires a
 successful application-level `FOF_PING` / `FOF_PONG:` exchange before the
@@ -165,6 +173,13 @@ The serial port uses the badge tools' established host settings:
 - short bounded read timeout;
 - newline-terminated UTF-8 writes;
 - UTF-8 reads with replacement for invalid bytes.
+
+The port object is configured while closed and only then opened, preventing a
+constructor-time DTR/RTS pulse. Exclusive access is requested where PySerial
+and macOS support it. Stale input is cleared and the verification write is a
+leading newline followed by `FOF_PING\n`, which resynchronizes any partial
+firmware command line. Only a complete, nonempty PONG received after that write
+verifies the session.
 
 The nominal baud is a host convention for the ESP32-S3 native USB
 Serial/JTAG console, not the internal 921600-baud scanner UART.
@@ -191,6 +206,14 @@ keeps one reader and one serialized writer for the port. Safe controls share
 the writer and receive a matching success, error, or timeout result without
 allowing status writes to interleave at the byte level.
 
+Firmware accepts at most 2047 command bytes before the newline. New Dash
+serializes controls compactly with non-finite JSON disabled and rejects any
+longer command locally. Because control replies have no request ID, only one
+mutation may be outstanding. A success reply must carry the message expected
+for that command. After a timeout, New Dash reconnects and re-verifies before
+accepting another mutation so a late reply cannot be assigned to a later
+command.
+
 ### State and reconnection
 
 The transport exposes these operator states:
@@ -208,6 +231,11 @@ path disappearance, or verification failure closes the handle and returns to
 enumeration with bounded backoff. Backoff starts at one second, doubles to a
 maximum of ten seconds, and resets after a verified connection. This permits a
 rebooted badge to return with a different `/dev/cu.usbmodem...` path.
+
+Automatic and explicit-port sessions follow a changed device path only through
+a matching USB serial number or USB location learned from the verified device.
+With neither stable property available, New Dash does not silently attach to a
+different candidate after the original path disappears.
 
 New Dash must distinguish a healthy USB control path from healthy sensing.
 Firmware safe-USB mode intentionally keeps `FOF_PING` and `FOF_STATUS` working
@@ -252,7 +280,10 @@ separate drone source and is not mislabeled as ASTM Remote ID.
 
 ### Status snapshots
 
-`FOF_STATUS` is the authoritative current-state and map feed. New Dash consumes:
+`FOF_STATUS` is the authoritative current-state and map feed. A parsed status
+requires an object root, nonempty string version, finite numeric non-boolean
+`uptime_s`, and arrays for `entities`/`scanners` when those fields are present.
+JSON NaN and Infinity are rejected. New Dash consumes:
 
 - top-level firmware version, mode, threat score, counts, reset/recovery facts,
   reporting state, memory facts, display policy/theme, and display state;
@@ -282,16 +313,17 @@ FoF badge USB
 serial transport -> protocol parser -> in-memory current state
                          |                       |
                          v                       v
-                 SQLite observations       loopback JSON API
-                                                  |
-                                                  v
-                                             browser UI
+              bounded persistence queue    loopback JSON API
+                         |                       |
+                         v                       v
+                 SQLite observations          browser UI
 ```
 
 1. The serial owner discovers and verifies the badge.
-2. `FOF_DET` records create event observations with host receipt timestamps.
+2. `FOF_DET` records update live state and enqueue event observations with host
+   receipt timestamps without blocking the USB reader.
 3. Every valid `FOF_STATUS` atomically replaces current status.
-4. Positioned Remote ID entities create track observations only when their
+4. Positioned Remote ID entities enqueue track observations only when their
    identity counters or coordinates change; repeated identical polls do not
    create rows.
 5. The application derives freshness, connection health, source labels, and
@@ -302,6 +334,11 @@ serial transport -> protocol parser -> in-memory current state
 The badge firmware's classification, labels, evidence, confidence, score, and
 stale policy remain authoritative. New Dash does not duplicate the large
 backend enrichment stack.
+
+The persistence queue is bounded at 1,024 actions. On overflow or database
+failure, New Dash retains live state, exposes a persistence-drop/error
+diagnostic, and never claims the affected record was stored. Clear and prune
+are ordered queue barriers so earlier queued rows cannot reappear afterward.
 
 ## SQLite Storage
 
@@ -358,6 +395,13 @@ The small API surface is:
 Every response uses a small consistent JSON envelope and explicit HTTP status.
 Request bodies and query limits are bounded. There is no generic proxy route,
 raw serial route, arbitrary `FOF_CTL` route, or firmware route.
+
+Success envelopes are exactly `{"ok":true,"data":...}`. Error envelopes are
+exactly `{"ok":false,"error":{"code":"...","message":"..."}}`. Current
+state has stable top-level objects `connection`, `freshness`, `status`,
+`recent_events`, and `diagnostics`. History returns `items` plus an opaque
+`next_cursor`. Clearing history requires `{"confirm":"clear-history"}` after
+the browser separately requires the operator to type `CLEAR`.
 
 The allowlist mirrors the firmware's exact version-1 contracts:
 
@@ -423,6 +467,14 @@ storage. Badge display-policy changes are labeled separately, show the current
 firmware policy, require an explicit Apply, validate all enum/range values, and
 report firmware acceptance or rejection. No optimistic UI claims a mutation
 succeeded before `FOF_CTL_OK` arrives.
+
+Dashboard presentation filters apply to Live and Map only. History query
+filters are separate and session-local. Map trails request at most the newest
+2,000 positioned track observations for currently active Remote ID identities.
+Three tile errors before any successful tile load declare the basemap offline;
+any successful tile clears that state. Theme or policy Apply remains disabled
+unless firmware supplied a complete editable version-1 object; New Dash never
+invents missing firmware settings.
 
 ## Error Handling
 
